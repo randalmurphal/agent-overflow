@@ -22,7 +22,6 @@
 // for the same reason — the single caller passes `getResolvedTheme()`.
 
 import type { ITheme } from '@xterm/xterm';
-import type { ISearchDecorationOptions } from '@xterm/addon-search';
 import type { ResolvedTheme } from '../../stores/themeMode.svelte';
 import { getThemePaletteIdentity } from '../../theme/themeApply.svelte';
 import { readTokenColors, rgbChannels } from '../../utils/cssColorProbe';
@@ -88,7 +87,7 @@ function withAlpha(concrete: string | undefined, alpha: number): string | undefi
 
 /**
  * A translucent token painted on the terminal ground, as `#rrggbb`: the
- * search addon's decoration grounds take no alpha.
+ * xterm decoration grounds take no alpha.
  */
 function flatOnGround(concrete: string | undefined, ground: string | undefined): string | undefined {
   const top = rgbChannels(concrete);
@@ -99,9 +98,15 @@ function flatOnGround(concrete: string | undefined, ground: string | undefined):
   return `#${mix(top.r, under.r)}${mix(top.g, under.g)}${mix(top.b, under.b)}`;
 }
 
+/** The find match grounds; unset when the palette is unresolved. */
+export interface TerminalFindColors {
+  match?: string;
+  current?: string;
+}
+
 interface XtermPalette {
   theme: ITheme;
-  find: ISearchDecorationOptions;
+  find: TerminalFindColors;
 }
 
 function buildPalette(): { palette: XtermPalette; resolvedAny: boolean } {
@@ -125,16 +130,11 @@ function buildPalette(): { palette: XtermPalette; resolvedAny: boolean } {
   for (const [key, token] of ANSI_SLOTS) set(key, colors[token]);
 
   // The find-bar match grounds every other pane paints, flattened onto this
-  // terminal's ground. No overview ruler is enabled; the addon still
-  // requires its colors.
-  const match = flatOnGround(colors[FIND_MATCH], background);
-  const current = flatOnGround(colors[FIND_MATCH_CURRENT], background);
-  const find: ISearchDecorationOptions = {
-    matchOverviewRuler: match ?? '',
-    activeMatchColorOverviewRuler: current ?? '',
+  // terminal's ground (decorations take only #RRGGBB).
+  const find: TerminalFindColors = {
+    match: flatOnGround(colors[FIND_MATCH], background),
+    current: flatOnGround(colors[FIND_MATCH_CURRENT], background),
   };
-  if (match) find.matchBackground = match;
-  if (current) find.activeMatchBackground = current;
 
   return { palette: { theme: theme as ITheme, find }, resolvedAny: Object.keys(theme).length > 0 };
 }
@@ -201,12 +201,11 @@ export function getXtermTheme(mode: ResolvedTheme): ITheme {
 }
 
 /**
- * The search addon's match and current-match grounds for the mode stamped
- * on the document, from the same probe and cache as `getXtermTheme`.
- * Unresolved, it names no ground and the selection alone marks the
- * current match.
+ * Terminal find's match and current-match grounds for the mode stamped on
+ * the document, from the same probe and cache as `getXtermTheme`.
+ * Unresolved, it names no ground and the matches are not painted.
  */
-export function getXtermFindDecorations(mode: ResolvedTheme): ISearchDecorationOptions {
+export function getXtermFindColors(mode: ResolvedTheme): TerminalFindColors {
   return getXtermPalette(mode).find;
 }
 

@@ -33,23 +33,25 @@ shell.
 
 ## Find
 
-`terminalFind.svelte.ts` drives the search addon `buildTerminal` loads, for
-`TerminalBody` (one find per tab, under `terminalFindKey`) and the
-take-control mirror (under its pane id). The tab strip's find button opens
-the active tab's bar. mod+f inside a focused xterm stays the shell's
-(readline, pagers): never make `find.in-pane` a terminal escape chord. The
-addon matches, not `utils/findMatch.ts`: trimmed, case-insensitive, up to
-1000 counted. It searches the 4000 lines of scrollback the terminal keeps,
-and under a full-screen program (alternate screen) only the visible screen.
+`terminalFind.svelte.ts` is the find of `TerminalBody` (one per tab, under
+`terminalFindKey`) and of the take-control mirror (under its pane id). The
+tab strip's find button opens the active tab's bar. mod+f inside a focused
+xterm stays the shell's (readline, pagers): never make `find.in-pane` a
+terminal escape chord. `terminalFindScan.ts` matches each logical line
+(wrapped rows joined) by `utils/findMatch.ts` through xterm's public buffer
+API, over the 4000 lines of scrollback the terminal keeps, and under a
+full-screen program (alternate screen) the visible screen only. The newest
+1000 matches are counted and painted as decorations.
 
-The provider schedules every re-search from `onBufferChange`, the one
+Find never reads or writes the terminal selection; it is the reader's. The
+active match is a marker on its logical line plus an offset, so it survives
+reflow and trimming. Re-searches run from `onBufferChange`, the one
 notification `buildTerminal` sends for output, resizes, `clear()` and
-`reset()`; `terminalSearch.ts` stops the addon's own. Register find only
-after the replay is parsed (the write callback) and a frame after the grid is
-fitted to it, or the restored match leaves the view. Find owns
-only the selection its search made: a re-search keeps it, and waits while the
-reader holds a selection of their own. A change of rows drops xterm's
-selection; the re-search selects find's match again.
+`reset()`, through the refresh scheduler: never scan per write. A re-search
+over full scrollback with 1000 matches stays within the 16ms budget
+`terminalFind.browser.test.ts` measures. Register find only after the replay
+is parsed (the write callback) and a frame after the grid is fitted to it,
+or the restored match leaves the view.
 
 Extend the `FakeTerminal` in `TerminalBody.test.ts` for component tests. Reset
 `setCompactLayoutForTest` after every test that changes it.

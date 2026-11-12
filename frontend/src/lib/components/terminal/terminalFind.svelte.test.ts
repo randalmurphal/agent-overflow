@@ -1,20 +1,19 @@
-// The terminal find provider over a scripted search addon: what it asks the
-// addon, and how the addon's answers become the bar's result. The addon's
-// own matching, stepping and painting run in terminalFind.browser.test.ts
-// against a real xterm.
+// The terminal find provider over a scripted buffer of plain rows: what it
+// counts, paints and scrolls, when it re-searches, and how it reaches the
+// pane find store. Real buffers (wraps, wide characters, reflow, trimming,
+// selection) run in terminalFind.browser.test.ts against a real xterm.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IDisposable } from '@xterm/xterm';
-import type { ISearchOptions, ISearchResultChangeEvent } from '@xterm/addon-search';
 import {
-  TERMINAL_FIND_HIGHLIGHT_LIMIT,
+  TERMINAL_FIND_MATCH_LIMIT,
   TERMINAL_FIND_REFRESH_DELAY_MS,
   TERMINAL_FIND_REFRESH_MAX_WAIT_MS,
   createTerminalFind,
   registerTerminalFind,
   terminalFindKey,
-  type TerminalFindSearch,
   type TerminalFindTerminal,
 } from './terminalFind.svelte';
+import type { TerminalFindColors } from './terminalTheme';
 import {
   closePaneFind,
   getPaneFindProvider,
@@ -26,101 +25,103 @@ import {
   stepPaneFind,
 } from '../../stores/paneFind.svelte';
 
-function emitter<T>() {
-  const listeners = new Set<(value: T) => void>();
-  const event = (listener: (value: T) => void): IDisposable => {
-    listeners.add(listener);
-    return { dispose: () => listeners.delete(listener) };
-  };
-  return {
-    event,
-    fire: (value: T) => { for (const listener of listeners) listener(value); },
-    get size() { return listeners.size; },
-  };
+const COLS = 80;
+
+interface Painted {
+  row: number;
+  x: number;
+  width: number;
+  background?: string;
+  disposed: boolean;
 }
 
-/**
- * An addon that answers every call with the next scripted result, over a
- * terminal whose selection is 'match' (a find selected it), 'user' or ''.
- * Like the real one, a find selects the match it lands on, or clears the
- * selection when there is none, and every selection change is announced.
- */
-function fakeAddon() {
-  const results = emitter<ISearchResultChangeEvent>();
-  const selectionChanges = emitter<void>();
-  const bufferChanges = emitter<void>();
-  const calls: Array<{ op: string; term?: string; options?: ISearchOptions }> = [];
-  let answer: ISearchResultChangeEvent = { resultIndex: -1, resultCount: 0 };
+/** A terminal of one-cell characters, `rows` high, from the top. */
+function fakeTerminal(lines: string[], rows = 24) {
+  const bufferListeners = new Set<() => void>();
+  const painted: Painted[] = [];
+  const scrolls: number[] = [];
   let failure: Error | null = null;
-  let selection = '';
-  const select = (next: string) => {
-    selection = next;
-    selectionChanges.fire();
+  const cell = {
+    chars: '',
+    getWidth: () => 1,
+    getChars() { return this.chars; },
   };
-  const find = (op: string) => (term: string, options?: ISearchOptions): boolean => {
-    calls.push({ op, term, options });
-    if (failure) throw failure;
-    const found = answer.resultCount > 0;
-    select(found ? 'match' : '');
-    results.fire(answer);
-    return found;
-  };
-  const search: TerminalFindSearch = {
-    findNext: find('next'),
-    findPrevious: find('previous'),
-    recount: find('recount'),
-    clearDecorations: () => { calls.push({ op: 'clearDecorations' }); },
-    clearActiveDecoration: () => { calls.push({ op: 'clearActiveDecoration' }); },
-    onDidChangeResults: results.event,
-  };
-  const resizes = emitter<{ cols: number; rows: number }>();
-  // Where 'match' sits: the only match position the fake knows.
-  const MATCH = { start: { x: 16, y: 250 }, end: { x: 22, y: 250 } };
-  const term: TerminalFindTerminal = {
-    cols: 80,
-    hasSelection: () => selection !== '',
-    getSelectionPosition: () => (selection === 'match' ? MATCH : selection ? { start: { x: 0, y: 5 }, end: { x: 5, y: 5 } } : undefined),
-    select: (column, row, length) => {
-      calls.push({ op: `select:${column},${row},${length}` });
-      select('match');
+  const line = (text: string) => ({
+    isWrapped: false,
+    length: COLS,
+    getCell(x: number) {
+      cell.chars = text[x] ?? '';
+      return cell;
     },
-    clearSelection: () => {
-      calls.push({ op: 'clearSelection' });
-      select('');
+    translateToString(trim?: boolean, start = 0, end = COLS) {
+      const slice = text.padEnd(COLS).slice(start, end);
+      return trim ? slice.trimEnd() : slice;
     },
-    onSelectionChange: selectionChanges.event,
-    onResize: resizes.event,
+  });
+  const term = {
+    rows,
+    buffer: {
+      active: {
+        type: 'normal',
+        get length() { return lines.length; },
+        baseY: 0,
+        cursorY: 0,
+        viewportY: 0,
+        getNullCell: () => cell,
+        getLine: (row: number) => (row < lines.length ? line(lines[row]) : undefined),
+      },
+    },
+    registerMarker(offset: number) {
+      const own: Painted[] = [];
+      return {
+        line: offset,
+        isDisposed: false,
+        own,
+        dispose() {
+          this.isDisposed = true;
+          for (const decoration of own) decoration.disposed = true;
+        },
+      };
+    },
+    registerDecoration(options: { marker: { line: number; own: Painted[] }; x: number; width: number; backgroundColor?: string }) {
+      if (failure) throw failure;
+      const decoration: Painted = { row: options.marker.line, x: options.x, width: options.width, background: options.backgroundColor, disposed: false };
+      painted.push(decoration);
+      options.marker.own.push(decoration);
+      return { onRender: () => ({ dispose() {} }), dispose: () => { decoration.disposed = true; } };
+    },
+    scrollLines(amount: number) {
+      scrolls.push(amount);
+      this.buffer.active.viewportY += amount;
+    },
   };
   return {
-    search,
-    term,
-    source: { term, search, onBufferChange: bufferChanges.event },
-    calls,
-    results,
-    bufferChanges,
-    selectionChanges,
-    selection: () => selection,
-    /** The reader selects text, or clears their selection with ''. */
-    userSelects: (text: string) => select(text === '' ? '' : 'user'),
-    /** A change of rows, inside which xterm drops the selection. */
-    resizeRows: () => {
-      resizes.fire({ cols: 80, rows: 10 });
-      select('');
-      bufferChanges.fire();
+    term: term as unknown as TerminalFindTerminal,
+    lines,
+    scrolls,
+    source: {
+      term: term as unknown as TerminalFindTerminal,
+      onBufferChange(listener: () => void): IDisposable {
+        bufferListeners.add(listener);
+        return { dispose: () => bufferListeners.delete(listener) };
+      },
     },
-    answer(resultIndex: number, resultCount: number) { answer = { resultIndex, resultCount }; },
+    /** The live paint: [row, x, width, background]. */
+    live: () => painted.filter((p) => !p.disposed).map((p) => [p.row, p.x, p.width, p.background]),
+    paintedCount: () => painted.length,
+    changed: () => { for (const listener of bufferListeners) listener(); },
     fail(err: Error | null) { failure = err; },
-    ops: () => calls.map((c) => c.op),
-    listenerCount: () => results.size + bufferChanges.size + selectionChanges.size + resizes.size,
+    listenerCount: () => bufferListeners.size,
   };
 }
 
-const DECORATIONS = { matchOverviewRuler: '#111111', activeMatchColorOverviewRuler: '#222222', matchBackground: '#111111', activeMatchBackground: '#222222' };
+const COLORS: TerminalFindColors = { match: '#111111', current: '#222222' };
+const ROWS = ['zero', 'one needle', 'two', 'three NEEDLE needle', 'four'];
 
-function setup() {
-  const addon = fakeAddon();
-  const find = createTerminalFind({ ...addon.source, decorations: () => DECORATIONS });
-  return { addon, find };
+function setup(lines = [...ROWS], rows = 24) {
+  const fake = fakeTerminal(lines, rows);
+  const find = createTerminalFind({ ...fake.source, colors: () => COLORS });
+  return { fake, find };
 }
 
 beforeEach(() => {
@@ -134,134 +135,132 @@ afterEach(() => {
 });
 
 describe('createTerminalFind', () => {
-  it('searches the trimmed query case-insensitively from the newest match, with decorations', () => {
-    const { addon, find } = setup();
-    addon.answer(2, 3);
-    find.search('  needle ');
-    expect(addon.ops()).toEqual(['clearSelection', 'previous']);
-    expect(addon.calls[1]).toMatchObject({ term: 'needle', options: { caseSensitive: false, decorations: DECORATIONS } });
+  it('matches the trimmed query by the app\'s fold rule and starts at the newest match, painted', () => {
+    const { fake, find } = setup();
+    find.search('  Needle ');
     expect(find.result).toMatchObject({ count: 3, current: 2, pending: false, capped: false, error: null });
+    expect(fake.live()).toEqual([
+      [1, 4, 6, '#111111'],
+      [3, 6, 6, '#111111'],
+      [3, 13, 6, '#111111'],
+      [3, 13, 6, '#222222'],
+    ]);
+  });
+
+  it('scrolls a match out of view to the middle of the screen, and one in view not at all', () => {
+    const { fake, find } = setup(['needle', ...Array.from({ length: 40 }, () => 'filler'), 'needle'], 10);
+    find.search('needle');
+    expect(fake.scrolls).toEqual([41 - 5]);
+    find.next();
+    expect(find.result.current).toBe(0);
+    expect(fake.scrolls).toEqual([36, -41]);
   });
 
   it('does not search again for a query that trims to the current one', () => {
-    const { addon, find } = setup();
-    addon.answer(0, 1);
+    const { fake, find } = setup();
     find.search('needle');
+    const painted = fake.paintedCount();
     find.search('needle ');
-    expect(addon.ops()).toEqual(['clearSelection', 'previous']);
+    expect(fake.paintedCount()).toBe(painted);
   });
 
-  it('steps down with next and up with previous, and reports where it landed', () => {
-    const { addon, find } = setup();
-    addon.answer(2, 3);
+  it('steps down with next and up with previous, wrapping, moving the active paint', () => {
+    const { fake, find } = setup();
     find.search('needle');
-    addon.answer(0, 3);
     find.next();
-    expect(addon.calls.at(-1)).toMatchObject({ op: 'next', term: 'needle' });
     expect(find.result.current).toBe(0);
-    addon.answer(2, 3);
+    expect(fake.live().filter((p) => p[3] === '#222222')).toEqual([[1, 4, 6, '#222222']]);
     find.previous();
-    expect(addon.calls.at(-1)).toMatchObject({ op: 'previous', term: 'needle' });
     expect(find.result.current).toBe(2);
+    find.previous();
+    expect(find.result.current).toBe(1);
+    expect(fake.live().filter((p) => p[3] === '#222222')).toEqual([[3, 6, 6, '#222222']]);
   });
 
   it('reports no match, and steps nothing without a query', () => {
-    const { addon, find } = setup();
+    const { fake, find } = setup();
     find.next();
     find.previous();
-    expect(addon.calls).toEqual([]);
-    addon.answer(-1, 0);
+    expect(fake.paintedCount()).toBe(0);
     find.search('absent');
     expect(find.result).toMatchObject({ count: 0, current: -1, pending: false });
+    find.next();
+    expect(find.result.current).toBe(-1);
+    expect(fake.scrolls).toEqual([]);
   });
 
-  it('reports a count at the highlight limit as capped', () => {
-    const { addon, find } = setup();
-    addon.answer(-1, TERMINAL_FIND_HIGHLIGHT_LIMIT);
+  it('counts and paints the newest matches up to the limit, reported as capped', () => {
+    // The limit falls inside the line of ten.
+    const singles = TERMINAL_FIND_MATCH_LIMIT - 5;
+    const { fake, find } = setup(['e', 'e'.repeat(10), ...Array.from({ length: singles }, () => 'e')]);
     find.search('e');
-    expect(find.result).toMatchObject({ count: TERMINAL_FIND_HIGHLIGHT_LIMIT, current: -1, capped: true });
+    expect(find.result).toMatchObject({ count: TERMINAL_FIND_MATCH_LIMIT, current: TERMINAL_FIND_MATCH_LIMIT - 1, capped: true });
+    const live = fake.live();
+    expect(live.length).toBe(TERMINAL_FIND_MATCH_LIMIT + 1);
+    // The newest five of the line of ten, and nothing above it.
+    expect(live.filter((p) => p[0] === 1).map((p) => p[1])).toEqual([5, 6, 7, 8, 9]);
+    expect(live.filter((p) => p[0] === 0)).toEqual([]);
   });
 
-  it('clear removes the decorations and its own match selection', () => {
-    const { addon, find } = setup();
-    addon.answer(0, 1);
+  it('clear removes every paint, and again is a no-op', () => {
+    const { fake, find } = setup();
     find.search('needle');
-    addon.calls.length = 0;
     find.clear();
-    expect(addon.ops()).toEqual(['clearDecorations', 'clearSelection']);
-    expect(addon.selection()).toBe('');
+    expect(fake.live()).toEqual([]);
     expect(find.result).toMatchObject({ count: 0, current: -1, pending: false, error: null });
     find.clear();
-    expect(addon.ops()).toEqual(['clearDecorations', 'clearSelection']);
-  });
-
-  it('clear leaves a selection the reader made after the search', () => {
-    const { addon, find } = setup();
-    addon.answer(0, 1);
-    find.search('needle');
-    addon.userSelects('some output');
-    addon.calls.length = 0;
-    find.clear();
-    expect(addon.ops()).toEqual(['clearDecorations']);
-    expect(addon.selection()).toBe('user');
+    expect(fake.live()).toEqual([]);
   });
 
   it('an empty query clears', () => {
-    const { addon, find } = setup();
-    addon.answer(0, 1);
+    const { fake, find } = setup();
     find.search('needle');
-    addon.calls.length = 0;
     find.search('   ');
-    expect(addon.ops()).toEqual(['clearDecorations', 'clearSelection']);
+    expect(fake.live()).toEqual([]);
     expect(find.result.count).toBe(0);
-  });
-
-  it('ignores an answer the addon gives after a clear', () => {
-    const { addon, find } = setup();
-    addon.answer(0, 1);
-    find.search('needle');
-    find.clear();
-    addon.results.fire({ resultIndex: 0, resultCount: 7 });
-    expect(find.result).toMatchObject({ count: 0, current: -1 });
   });
 
   it('shows a failed search as its error and reports it, until a later call succeeds', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { addon, find } = setup();
-    addon.fail(new Error('Cannot use addon until it has been loaded'));
+    const { fake, find } = setup();
+    fake.fail(new Error('decoration refused'));
     find.search('needle');
-    expect(find.result).toMatchObject({ count: 0, current: -1, error: 'Cannot use addon until it has been loaded' });
-    expect(warn).toHaveBeenCalledWith('terminal find failed', 'Cannot use addon until it has been loaded');
-    // A buffer change while failed does not read as a pending recount.
-    addon.bufferChanges.fire();
+    expect(find.result).toMatchObject({ count: 0, current: -1, error: 'decoration refused' });
+    expect(warn).toHaveBeenCalledWith('terminal find failed', 'decoration refused');
+    // A buffer change while failed does not read as a pending re-search.
+    fake.changed();
     expect(find.result.pending).toBe(false);
-    addon.fail(null);
-    addon.answer(0, 1);
+    fake.fail(null);
     find.next();
-    expect(find.result).toMatchObject({ count: 1, current: 0, error: null });
+    expect(find.result).toMatchObject({ count: 3, current: 0, error: null });
   });
 
-  it('restyle repaints the current query with the current decorations, keeping its match', () => {
-    const addon = fakeAddon();
-    let decorations = DECORATIONS;
-    const find = createTerminalFind({ ...addon.source, decorations: () => decorations });
+  it('restyle repaints the current query with the current colors, keeping its match', () => {
+    const fake = fakeTerminal([...ROWS]);
+    let colors = COLORS;
+    const find = createTerminalFind({ ...fake.source, colors: () => colors });
     find.restyle();
-    expect(addon.calls).toEqual([]);
-    addon.answer(0, 1);
+    expect(fake.paintedCount()).toBe(0);
     find.search('needle');
-    addon.calls.length = 0;
-    decorations = { ...DECORATIONS, matchBackground: '#333333' };
+    find.next();
+    colors = { match: '#333333', current: '#444444' };
     find.restyle();
-    expect(addon.ops()).toEqual(['clearDecorations', 'recount']);
-    expect(addon.calls[1].options?.decorations?.matchBackground).toBe('#333333');
     expect(find.result).toMatchObject({ current: 0, pending: false });
+    expect(fake.live()).toEqual([
+      [1, 4, 6, '#333333'],
+      [3, 6, 6, '#333333'],
+      [3, 13, 6, '#333333'],
+      [1, 4, 6, '#444444'],
+    ]);
   });
 
-  it('dispose drops every listener', () => {
-    const { addon, find } = setup();
-    expect(addon.listenerCount()).toBe(4);
+  it('dispose drops its listener and its paint', () => {
+    const { fake, find } = setup();
+    find.search('needle');
+    expect(fake.listenerCount()).toBe(1);
     find.dispose();
-    expect(addon.listenerCount()).toBe(0);
+    expect(fake.listenerCount()).toBe(0);
+    expect(fake.live()).toEqual([]);
   });
 });
 
@@ -270,131 +269,65 @@ describe('createTerminalFind re-search', () => {
     vi.useFakeTimers();
   });
 
-  it('re-searches once buffer changes pause, keeping its match selected, without scrolling', async () => {
-    const { addon, find } = setup();
-    addon.bufferChanges.fire();
+  it('re-searches once buffer changes pause, keeping its match, without scrolling', async () => {
+    const { fake, find } = setup();
+    fake.changed();
     expect(find.result.pending).toBe(false);
-    addon.answer(1, 2);
     find.search('needle');
-    addon.calls.length = 0;
-    addon.bufferChanges.fire();
+    find.next();
+    const scrolls = [...fake.scrolls];
+    fake.lines.push('five needle');
+    fake.changed();
     // Progressive: the bar keeps showing the last count beside the spinner.
-    expect(find.result).toMatchObject({ count: 2, pending: true, progressive: true });
+    expect(find.result).toMatchObject({ count: 3, pending: true, progressive: true });
     await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_DELAY_MS - 1);
-    expect(addon.calls).toEqual([]);
-    addon.answer(1, 5);
+    expect(find.result.count).toBe(3);
     await vi.advanceTimersByTimeAsync(1);
-    expect(addon.ops()).toEqual(['clearDecorations', 'recount']);
-    expect(find.result).toMatchObject({ count: 5, current: 1, pending: false });
-    expect(addon.selection()).toBe('match');
+    expect(find.result).toMatchObject({ count: 4, current: 0, pending: false });
+    expect(fake.scrolls).toEqual(scrolls);
+  });
+
+  it('a re-search keeps the active match by its offset in its line', async () => {
+    const { fake, find } = setup();
+    // The second match on its line.
+    find.search('needle');
+    expect(find.result.current).toBe(2);
+    fake.lines.push('five needle');
+    fake.changed();
+    await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_DELAY_MS);
+    expect(find.result).toMatchObject({ count: 4, current: 2, pending: false });
+    expect(fake.live().filter((p) => p[3] === '#222222')).toEqual([[3, 13, 6, '#222222']]);
   });
 
   it('re-searches at least once a second under sustained buffer changes', async () => {
-    const { addon, find } = setup();
-    addon.answer(0, 1);
+    const { fake, find } = setup();
     find.search('needle');
-    addon.calls.length = 0;
+    fake.lines.push('five needle');
     for (let at = 0; at < TERMINAL_FIND_REFRESH_MAX_WAIT_MS; at += 50) {
-      addon.bufferChanges.fire();
+      fake.changed();
       await vi.advanceTimersByTimeAsync(50);
     }
-    expect(addon.ops()).toContain('recount');
-  });
-
-  it('leaves no selection when there was none: typing in the shell cleared find\'s', async () => {
-    const { addon, find } = setup();
-    addon.answer(1, 2);
-    find.search('needle');
-    // Input clears the selection, as xterm does on user input.
-    addon.userSelects('');
-    addon.calls.length = 0;
-    addon.answer(1, 3);
-    addon.bufferChanges.fire();
-    await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_DELAY_MS);
-    expect(addon.ops()).toEqual(['clearDecorations', 'recount', 'clearSelection', 'clearActiveDecoration']);
-    expect(addon.selection()).toBe('');
-    expect(find.result).toMatchObject({ count: 3, current: -1, pending: false });
-  });
-
-  it('never moves or replaces a selection the reader made; it re-searches once that selection goes', async () => {
-    const { addon, find } = setup();
-    addon.answer(1, 2);
-    find.search('needle');
-    addon.userSelects('some output');
-    addon.calls.length = 0;
-    addon.bufferChanges.fire();
-    await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_MAX_WAIT_MS * 2);
-    expect(addon.calls).toEqual([]);
-    expect(addon.selection()).toBe('user');
-    expect(find.result).toMatchObject({ count: 2, pending: true });
-    addon.userSelects('');
-    addon.answer(0, 4);
-    await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_DELAY_MS);
-    expect(addon.ops()).toEqual(['clearDecorations', 'recount', 'clearSelection', 'clearActiveDecoration']);
-    expect(find.result).toMatchObject({ count: 4, current: -1, pending: false });
-  });
-
-  it('a step takes over from the reader\'s selection', async () => {
-    const { addon, find } = setup();
-    addon.answer(1, 2);
-    find.search('needle');
-    addon.userSelects('some output');
-    addon.bufferChanges.fire();
-    addon.answer(0, 2);
-    find.next();
-    expect(find.result).toMatchObject({ current: 0, pending: false });
-    expect(addon.selection()).toBe('match');
-    addon.calls.length = 0;
-    find.clear();
-    expect(addon.ops()).toEqual(['clearDecorations', 'clearSelection']);
-  });
-
-  it('selects its match again after a change of rows dropped it', async () => {
-    const { addon, find } = setup();
-    addon.answer(1, 2);
-    find.search('needle');
-    addon.calls.length = 0;
-    addon.resizeRows();
-    expect(addon.selection()).toBe('');
-    await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_DELAY_MS);
-    expect(addon.ops()).toEqual(['select:16,250,6', 'clearDecorations', 'recount']);
-    expect(addon.selection()).toBe('match');
-    expect(find.result).toMatchObject({ count: 2, current: 1, pending: false });
-  });
-
-  it('a reader selection after the resize wins over the held match', async () => {
-    const { addon, find } = setup();
-    addon.answer(1, 2);
-    find.search('needle');
-    addon.resizeRows();
-    await Promise.resolve();
-    addon.userSelects('some output');
-    addon.calls.length = 0;
-    await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_MAX_WAIT_MS);
-    expect(addon.calls).toEqual([]);
-    expect(addon.selection()).toBe('user');
+    expect(find.result.count).toBe(4);
   });
 
   it('a clear cancels a scheduled re-search', async () => {
-    const { addon, find } = setup();
-    addon.answer(0, 1);
+    const { fake, find } = setup();
     find.search('needle');
-    addon.bufferChanges.fire();
+    fake.changed();
     find.clear();
-    addon.calls.length = 0;
+    const painted = fake.paintedCount();
     await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_MAX_WAIT_MS);
-    expect(addon.calls).toEqual([]);
+    expect(fake.paintedCount()).toBe(painted);
   });
 
   it('dispose cancels a scheduled re-search', async () => {
-    const { addon, find } = setup();
-    addon.answer(0, 1);
+    const { fake, find } = setup();
     find.search('needle');
-    addon.bufferChanges.fire();
+    fake.changed();
     find.dispose();
-    addon.calls.length = 0;
+    const painted = fake.paintedCount();
     await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_MAX_WAIT_MS);
-    expect(addon.calls).toEqual([]);
+    expect(fake.paintedCount()).toBe(painted);
   });
 });
 
@@ -408,51 +341,44 @@ describe('registerTerminalFind', () => {
     expect(terminalFindKey('pane-2', 't1')).not.toBe(tab1);
   });
 
-  it('drives the addon through the pane find store, and release clears it', () => {
-    const addon = fakeAddon();
-    const registration = registerTerminalFind(tab1, addon.source);
+  it('is driven through the pane find store, and release clears it', () => {
+    const fake = fakeTerminal([...ROWS]);
+    const registration = registerTerminalFind(tab1, fake.source);
     expect(openPaneFind(tab1)).toBe(true);
-    addon.answer(1, 2);
     setPaneFindQuery(tab1, 'needle');
-    addon.answer(0, 2);
     stepPaneFind(tab1, 1);
-    expect(getPaneFindProvider(tab1)?.result).toMatchObject({ count: 2, current: 0 });
-    addon.calls.length = 0;
+    expect(getPaneFindProvider(tab1)?.result).toMatchObject({ count: 3, current: 0 });
     registration.release();
-    expect(addon.ops()).toEqual(['clearDecorations', 'clearSelection']);
+    expect(fake.live()).toEqual([]);
     expect(getPaneFindProvider(tab1)).toBeNull();
-    expect(addon.listenerCount()).toBe(0);
+    expect(fake.listenerCount()).toBe(0);
   });
 
   it('a tab switch leaves each terminal its own provider, bar state and matches', () => {
-    const first = fakeAddon();
+    const first = fakeTerminal([...ROWS]);
     const releaseFirst = registerTerminalFind(tab1, first.source);
     openPaneFind(tab1);
-    first.answer(0, 1);
-    setPaneFindQuery(tab1, 'alpha');
+    setPaneFindQuery(tab1, 'needle');
     // Switching away unmounts the first body; the second mounts.
     releaseFirst.release();
-    const second = fakeAddon();
+    const second = fakeTerminal([...ROWS]);
     registerTerminalFind(tab2, second.source);
     expect(isPaneFindOpen(tab2)).toBe(false);
-    expect(second.calls).toEqual([]);
-    expect(first.ops()).toContain('clearDecorations');
+    expect(second.paintedCount()).toBe(0);
+    expect(first.live()).toEqual([]);
   });
 
   it('a re-created terminal searches its open query again, and the old release leaves it', () => {
-    const before = fakeAddon();
+    const before = fakeTerminal([...ROWS]);
     const old = registerTerminalFind(tab1, before.source);
     openPaneFind(tab1);
-    before.answer(0, 1);
     setPaneFindQuery(tab1, 'needle');
-    const after = fakeAddon();
-    after.answer(0, 3);
+    const after = fakeTerminal(['needle']);
     registerTerminalFind(tab1, after.source);
-    expect(after.calls.at(-1)).toMatchObject({ op: 'previous', term: 'needle' });
-    expect(getPaneFindProvider(tab1)?.result.count).toBe(3);
+    expect(getPaneFindProvider(tab1)?.result.count).toBe(1);
     old.release();
-    expect(getPaneFindProvider(tab1)?.result.count).toBe(3);
+    expect(getPaneFindProvider(tab1)?.result.count).toBe(1);
     closePaneFind(tab1);
-    expect(after.ops().slice(-2)).toEqual(['clearDecorations', 'clearSelection']);
+    expect(after.live()).toEqual([]);
   });
 });

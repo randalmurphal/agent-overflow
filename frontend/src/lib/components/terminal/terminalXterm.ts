@@ -14,8 +14,8 @@
 //     tab chords bubble to the window handler.
 //   - Right-click: copy the selection if there is one, otherwise paste (the
 //     VS Code `copyPaste` behavior), instead of the webview's context menu.
-//   - The search addon behind the surface's find bar, and the one
-//     notification of every change to the buffer it searches.
+//   - The one notification of every change to the buffer, which the
+//     surface's find (terminalFind.svelte.ts) re-searches on.
 //
 // Keeping this in one place means the two surfaces can't drift on glyph
 // rendering or key handling. The only thing the caller owns is where input
@@ -45,8 +45,6 @@ import { errString } from '../../utils/errors';
 import { clipboardChordFor, isFontZoomChord } from './terminalKeys';
 import { isMacPlatform } from '../../utils/platform';
 import { isCompactLayout } from '../../stores/layoutMode.svelte';
-import type { TerminalFindSearch } from './terminalFind.svelte';
-import { loadTerminalSearch } from './terminalSearch';
 
 const isMac = isMacPlatform();
 
@@ -70,7 +68,6 @@ export interface BuildTerminalOptions {
 export interface BuiltTerminal {
   term: Terminal;
   fit: FitAddon;
-  search: TerminalFindSearch;
   /**
    * Fires after every change to the buffer: parsed output (which covers a
    * full reset, the alternate screen and scrollback trimming), a resize,
@@ -88,9 +85,8 @@ export interface BuiltTerminal {
 // handling.
 // `paste` is the clipboard-to-PTY route the widget's own chord and right-click
 // use, exposed so the compact key row (which has neither) offers the same
-// action with the same failure toast. `search` is the find addon the
-// surface's find provider drives (terminalFind.svelte.ts); its match
-// decorations need `allowProposedApi`.
+// action with the same failure toast. Find's match decorations
+// (terminalFind.svelte.ts) need `allowProposedApi`.
 export function buildTerminal(
   mount: HTMLDivElement,
   { onInput, isDisposed, acceptsPaste }: BuildTerminalOptions,
@@ -131,7 +127,6 @@ export function buildTerminal(
   // document-level link delegate uses, which validates http(s) and picks
   // the host binding or window.open by run mode.
   terminal.loadAddon(new WebLinksAddon((_event, uri) => void handleExternalURL(uri)));
-  const search = loadTerminalSearch(terminal);
   terminal.open(mount);
 
   // `clear()` and `reset()` change the buffer without a write, so they
@@ -299,7 +294,6 @@ export function buildTerminal(
   return {
     term: terminal,
     fit: fitAddon,
-    search,
     onBufferChange,
     paste: pasteClipboard,
     readClipboard: readClipboardText,

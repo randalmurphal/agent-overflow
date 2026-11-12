@@ -1,13 +1,13 @@
 // A kept query restored into a remounted TerminalBody, in real Chromium with
 // a real xterm: the replay parses asynchronously, and the restored search
-// must end as a fresh one does, its active match selected and in view.
+// must end as a fresh one does, its active match painted and in view.
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { Terminal } from '@xterm/xterm';
 import '../../../app.css';
 import TerminalBody from './TerminalBody.svelte';
 import { createThreadTerminalState } from './terminalStore.svelte';
-import { terminalFindKey } from './terminalFind.svelte';
+import { TERMINAL_FIND_ACTIVE_CLASS, terminalFindKey } from './terminalFind.svelte';
 import {
   getPaneFindProvider,
   openPaneFind,
@@ -67,7 +67,7 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-it('restores a kept query after the replay is parsed, with its newest match selected and in view', async () => {
+it('restores a kept query after the replay is parsed, with its newest match painted and in view', async () => {
   // The bar was open with a query when the tab's previous body went.
   const release = registerPaneFindProvider(KEY, { noun: 'terminal', result: { count: 0, current: -1, pending: false }, search: () => {}, clear: () => {} });
   openPaneFind(KEY);
@@ -101,8 +101,15 @@ it('restores a kept query after the replay is parsed, with its newest match sele
   // The parse that registered find also re-counts it once; that re-search
   // keeps the match and the view.
   await vi.waitFor(() => expect(getPaneFindProvider(KEY)!.result).toMatchObject({ count: 2, current: 1, pending: false }), { timeout: 2000 });
-  expect(xterm.getSelectionPosition()?.start.y).toBe(NEEDLE_ROWS[1]);
   expect(xterm.rows).toBeLessThan(40);
   const top = xterm.buffer.active.viewportY;
   expect(NEEDLE_ROWS[1] >= top && NEEDLE_ROWS[1] < top + xterm.rows).toBe(true);
+  // Painted on its row, which is on screen.
+  await vi.waitFor(() => {
+    const active = [...target.querySelectorAll<HTMLElement>(`.${TERMINAL_FIND_ACTIVE_CLASS}`)].filter((el) => el.style.display !== 'none');
+    expect(active.length).toBe(1);
+    const height = parseFloat(active[0].style.height);
+    expect(Math.round(parseFloat(active[0].style.top) / height)).toBe(NEEDLE_ROWS[1] - top);
+  });
+  expect(xterm.hasSelection()).toBe(false);
 });

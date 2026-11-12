@@ -75,8 +75,8 @@ region. A list region's provider is a filter: it has no `next` or
 `previous`, the bar shows the matching row count and Enter calls
 `focusFirst`, and its query narrows the rows in the page's store so every
 count follows one source. Every find, filter and highlighter matches by
-`utils/findMatch.ts`, except terminal find, which the xterm search addon
-matches ([terminal guide](../terminal/AGENTS.md#find)). The Pull requests page
+`utils/findMatch.ts`, terminal find included
+([terminal guide](../terminal/AGENTS.md#find)). The Pull requests page
 (`pulls/pullsPaneFind.svelte.ts`) and Workflows home
 (`workflows/workflowsPaneFind.svelte.ts`) filter this way.
 

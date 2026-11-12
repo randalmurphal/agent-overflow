@@ -112,13 +112,50 @@ const mocks = vi.hoisted(() => {
       }
     }
     reset(): void {}
-    getSelectionPosition(): undefined {
-      return undefined;
+    // The buffer find scans (terminalFind.svelte.ts): one row of text.
+    // Its decorations log on timeline, each disposal once.
+    bufferText = 'needle';
+    get buffer() {
+      const text = this.bufferText;
+      const cell = { chars: '', getWidth: (): number => 1, getChars(): string { return this.chars; } };
+      const line = {
+        isWrapped: false,
+        length: 80,
+        getCell(x: number) {
+          cell.chars = text[x] ?? '';
+          return cell;
+        },
+        translateToString(trim?: boolean, start = 0, end = 80): string {
+          const slice = text.padEnd(80).slice(start, end);
+          return trim ? slice.trimEnd() : slice;
+        },
+      };
+      return { active: { type: 'normal', length: 1, baseY: 0, cursorY: 0, viewportY: 0, getNullCell: () => cell, getLine: (row: number) => (row === 0 ? line : undefined) } };
     }
-    select(): void {}
-    onSelectionChange(): { dispose(): void } {
-      return { dispose(): void {} };
+    registerMarker() {
+      const owned: Array<() => void> = [];
+      return {
+        line: 0,
+        isDisposed: false,
+        owned,
+        dispose(): void {
+          this.isDisposed = true;
+          for (const dispose of owned.splice(0)) dispose();
+        },
+      };
     }
+    registerDecoration({ marker }: { marker: { owned: Array<() => void> } }) {
+      timeline.push('decorate');
+      let live = true;
+      const dispose = (): void => {
+        if (!live) return;
+        live = false;
+        timeline.push('undecorate');
+      };
+      marker.owned.push(dispose);
+      return { onRender: () => ({ dispose(): void {} }), dispose };
+    }
+    scrollLines(): void {}
     resize(columns: number, rows: number): void {
       resizes.push([columns, rows]);
       timeline.push(`resize:${columns}x${rows}`);
@@ -148,38 +185,12 @@ const mocks = vi.hoisted(() => {
       return 80;
     }
   }
-  // The search addon the body's find drives. Records its calls on the shared
-  // timeline so a test can order them against the xterm's own.
-  class FakeSearchAddon {
-    // The members terminalSearch.ts adapts.
-    _updateMatches(): void {}
-    _lineCache = { value: { _destroyLinesCache(): void {} } };
-    clearActiveDecoration(): void {}
-    resultListeners = new Set<(event: { resultIndex: number; resultCount: number }) => void>();
-    findPrevious(term: string): boolean {
-      timeline.push(`findPrevious:${term}`);
-      for (const listener of this.resultListeners) listener({ resultIndex: 0, resultCount: 1 });
-      return true;
-    }
-    findNext(term: string): boolean {
-      timeline.push(`findNext:${term}`);
-      return true;
-    }
-    clearDecorations(): void {
-      timeline.push('clearDecorations');
-    }
-    onDidChangeResults(listener: (event: { resultIndex: number; resultCount: number }) => void): { dispose(): void } {
-      this.resultListeners.add(listener);
-      return { dispose: () => { this.resultListeners.delete(listener); } };
-    }
-  }
   return {
     writes,
     resizes,
     timeline,
     throwOn,
     FakeTerminal,
-    FakeSearchAddon,
     getLastTerminal: (): FakeTerminal | null => lastTerminal,
     GetTerminalReplay: vi.fn(),
     WriteTerminal: vi.fn(async () => {}),
@@ -196,7 +207,6 @@ vi.mock('../../stores/keybindings.svelte', () => ({
 
 vi.mock('@xterm/xterm', () => ({ Terminal: mocks.FakeTerminal }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }));
-vi.mock('@xterm/addon-search', () => ({ SearchAddon: mocks.FakeSearchAddon }));
 // A theme a test can flip, to drive the body's palette effect.
 vi.mock('../../stores/themeMode.svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/themeMode.svelte')>()),
@@ -460,7 +470,8 @@ describe('TerminalBody find', () => {
     expect(getPaneFindProvider(key)).toBeNull();
 
     await vi.waitFor(() => expect(getPaneFindProvider(key)?.noun).toBe('terminal'));
-    expect(mocks.timeline).toEqual(['resize:80x24', 'write:REPLAY', 'write:LIVE', 'parsed', 'findPrevious:needle']);
+    // The match, then the active match over it.
+    expect(mocks.timeline).toEqual(['resize:80x24', 'write:REPLAY', 'write:LIVE', 'parsed', 'decorate', 'decorate']);
     expect(getPaneFindProvider(key)?.result).toMatchObject({ count: 1, current: 0 });
   });
 
@@ -483,7 +494,7 @@ describe('TerminalBody find', () => {
     try {
       setResolvedThemeForTest('light');
       await settle();
-      expect(mocks.timeline).toEqual(['clearDecorations', 'findPrevious:needle']);
+      expect(mocks.timeline).toEqual(['undecorate', 'undecorate', 'decorate', 'decorate']);
     } finally {
       setResolvedThemeForTest('dark');
     }
@@ -500,7 +511,7 @@ describe('TerminalBody find', () => {
 
     cleanup();
 
-    expect(mocks.timeline).toEqual(['clearDecorations', 'dispose']);
+    expect(mocks.timeline).toEqual(['undecorate', 'undecorate', 'dispose']);
     expect(getPaneFindProvider(key)).toBeNull();
   });
 });
