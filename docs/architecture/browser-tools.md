@@ -307,9 +307,27 @@ store's alone; the backend holds only what the engine holds.
   match. On both engines that clearing (`webkitClearSelectionScript`) runs
   in an isolated script world (`webkitFindWorld`), so a page's own
   `getSelection` or `removeAllRanges` never reaches it, over the page and
-  each same-origin frame on its own; a match selected in a cross-origin
-  frame stays selected, and any other failure fails the stop, which stays
-  owed.
+  each same-origin frame on its own, and any failure there fails the stop,
+  which stays owed. Frames are not enumerated, since `window.frames` misses
+  an iframe in a shadow root: `webkitFindFrameScript`, installed in every
+  frame at document start in the same world, announces each frame to its
+  parent, which keeps its own direct children (bounded, deduplicated,
+  pruned when used). The stop then posts a clear to each announced child of
+  the top frame, and a frame obeys a clear only from its parent, clearing
+  itself and passing it on to its own children, so a clear only travels
+  down and no frame can clear the page above or beside it; the top frame
+  obeys none. The listener is a capture-phase listener added before any page
+  script, so a page cannot swallow the message first, and the page never
+  sees the find's messages. A document regenerated with `document.open`
+  runs the script again in the same window; each run replaces its listener
+  and announces again, so the window keeps one listener and its children.
+  The console capture also runs again: it wraps the console's methods only
+  on its first run in a window, since the console and its wrappers outlive
+  `document.open`, and each run re-adds only its error and
+  unhandledrejection listeners. Nothing waits for a frame, so a frame cannot
+  fail the stop, and a frame that runs no script (sandboxed without
+  `allow-scripts`) keeps its selection. WebView2's own find bar has no
+  selection housekeeping of AO's to fix.
 - Hosted WebView2 ("engine") opens the engine's own find bar
   (`ICoreWebView2Find` with the default dialog left on), seeded with the
   SPA's selection or else the page's, and moves keyboard focus into the page.

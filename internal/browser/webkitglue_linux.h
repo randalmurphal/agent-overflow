@@ -21,6 +21,11 @@
 // Returns 1 on success, 0 when the window has no child to wrap.
 int ao_wk_host_attach(void *gtk_window);
 
+// ao_wk_set_find_frame_script keeps the script every view then created gets
+// in every frame at document start, in the named isolated world: the find's
+// per-frame selection clearing (webkitFindFrameScript). The first call wins.
+void ao_wk_set_find_frame_script(const char *script, const char *world);
+
 // ao_wk_on_main_thread reports whether the caller is the GTK thread: the one
 // ao_wk_host_attach ran on, the one every call here runs on, and the one Wails
 // blocks while services shut down. The Manager asks it to choose an inline
