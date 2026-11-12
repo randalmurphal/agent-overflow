@@ -79,6 +79,11 @@ func (s *integrationStub) WhoAmI(ctx context.Context) string {
 	return SessionFromContext(ctx) + "|" + ClientFromContext(ctx).DeviceID
 }
 
+// AmHostWindow reports whether the connection is the host's own window.
+func (s *integrationStub) AmHostWindow(ctx context.Context) bool {
+	return ConnStateFromContext(ctx).HostWindow()
+}
+
 // JoinLines accepts a slice param — the most common production shape.
 func (s *integrationStub) JoinLines(lines []string) string {
 	return strings.Join(lines, ",")

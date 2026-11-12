@@ -552,6 +552,8 @@ export {
   SaveForgeAttachment,
   ListPRReviewThreads,
   SubmitPRReview,
+  // What a submit attempt did, asked after its answer was lost.
+  GetPRReviewSubmitOutcome,
   ReplyToPRThread,
   SetPRThreadResolved,
   // The Merge section's actions (docs/specs/pull-requests.md): each is the

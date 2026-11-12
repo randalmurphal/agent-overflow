@@ -100,6 +100,15 @@ mints a ticket after `WindowRuntimeReady` and injects it through
 provides fresh URLs or separate URL/ticket values to authenticated native
 clients that need another navigation.
 
+A window host mints a window ticket (`MintWindowTicket`: the desktop
+window's injection and the `/pageurl?host=webview` answer). Its exchange
+also sets the `ao_window_<port>` cookie, and a loopback page or socket
+carrying it is the host window (`Bootstrap.HostWindow`,
+`ConnState.HostWindow`): the one client that shows the native views the
+host owns. A browser tab on the same machine holds the same launch
+credential and is not. This is an identity, not an authority. A harness
+has no window, so its pages count as the host window.
+
 Page tickets and session-bound WebSocket tickets use the shared single-use
 ticket implementation. A page ticket has no subject or deadline. A WebSocket
 ticket names a durable session and has a short lifetime.
@@ -437,7 +446,12 @@ Every connection coalesces events over a small bounded window to reduce webview
 message overhead. A single event keeps its ordinary frame shape; multiple
 events use `type:"batch"`. Non-loopback connections may also negotiate
 permessage-deflate. Coalescing preserves channel sequence order and respects
-the configured event-count bound.
+the configured event-count bound. An RPC reply goes through the connection's
+event pump, which first writes every event already queued for that
+connection, so an event a method emitted before returning reaches the client
+before its reply; item deltas a background lease is merging stay held. Carried sockets (`/ws/backend/<id>`) and a phone's own
+sockets are single ordered streams and keep that order; replay frames carry
+older ring events and are reconciled by sequence, not by reply order.
 
 Each connection caps its in-flight RPC handlers. Reaching the cap refuses the
 frame immediately with `client_overloaded` instead of parking the read loop:

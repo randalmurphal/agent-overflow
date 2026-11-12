@@ -1,13 +1,17 @@
 // Which thread:updated frames reached this client since an RPC started, so
 // the row the RPC returns does not undo them.
 //
-// The backend reads an RPC's returned row before that write's own frame
-// leaves, and other writers' frames can arrive between the call and its
-// reply. A frame that arrived after the call started is at least as new as
-// anything the client knew when it sent the call, and every later write
+// The backend announces a write before the RPC that made it returns, and
+// the transport writes every event queued for a connection ahead of that
+// connection's reply. So the frame of any write whose reply this client
+// already had arrived before that reply, and a frame arriving after a call
+// started belongs to a write made during or after the call: a write by this
+// call itself, by another client, or by background work. Every later write
 // announces its own frame, so the client converges by keeping what the
 // frame set: a row frame supersedes the whole reply, a patch the fields it
-// names. This is a leaf: it imports no store.
+// names. One exception: during reconnect replay the WS client holds live
+// frames until replay completes, so a reply can be handled before a frame
+// the backend sent ahead of it. This is a leaf: it imports no store.
 //
 // One reply is known to be newer than a row frame from its own call: a fork
 // is announced as preparing while the call runs and as ready when it ends,

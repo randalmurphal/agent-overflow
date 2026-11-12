@@ -391,7 +391,7 @@ func (a *App) rollbackCodexThreadToMessage(thread store.Thread, anchor store.Mes
 			return fmt.Errorf("codex rollback: stop empty-prefix session: %w", err)
 		}
 	}
-	if _, err := a.store.UpdateSessionRef(thread.ID, newRef); err != nil {
+	if err := a.writeSessionRef(thread.ID, newRef); err != nil {
 		return fmt.Errorf("codex rollback: persist rolled-back state: %w", err)
 	}
 	if newRef != previousRef {

@@ -12,18 +12,26 @@ import (
 )
 
 // gitlabDraftForge is a GitLab MR whose draft notes are state: POST creates
-// one and answers its id, DELETE removes one by id. failAt fails the n-th
-// create (1-based, 0 never); publishFails fails bulk_publish; deleteFails
-// refuses every delete.
+// one and answers its id, DELETE removes one by id, GET lists them. failAt
+// refuses the n-th create with a 422 (1-based, 0 never), or answers it 500
+// after creating it with failAtUnconfirmed; publishFails refuses
+// bulk_publish with a 422; publish500 answers it 500, after publishing
+// ("applied") or without ("ignored"); deleteFails answers every delete 500.
 type gitlabDraftForge struct {
-	mu           sync.Mutex
-	next         int64
-	pending      map[int64]string
-	creates      int
-	failAt       int
-	publishFails bool
-	deleteFails  bool
+	mu                sync.Mutex
+	next              int64
+	pending           map[int64]string
+	creates           int
+	failAt            int
+	failAtUnconfirmed bool
+	publishFails      bool
+	publish500        string
+	deleteFails       bool
+	publishes         int
 }
+
+const gitlabTest422 = `{"message":"422 Unprocessable Entity"}`
+const gitlabTest500 = `{"message":"500 Internal Server Error"}`
 
 func (f *gitlabDraftForge) answer(t *testing.T, mr string) func(call forgeAPICall) forgeAPIAnswer {
 	return func(call forgeAPICall) forgeAPIAnswer {
@@ -35,21 +43,36 @@ func (f *gitlabDraftForge) answer(t *testing.T, mr string) func(call forgeAPICal
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 		case key == "POST "+mr+"/draft_notes":
 			f.creates++
-			if f.creates == f.failAt {
-				return forgeAPIAnswer{Status: http.StatusInternalServerError, Body: `{"message":"500 Internal Server Error"}`}
+			if f.creates == f.failAt && !f.failAtUnconfirmed {
+				return forgeAPIAnswer{Status: http.StatusUnprocessableEntity, Body: gitlabTest422}
 			}
 			f.next++
 			f.pending[f.next] = string(call.Body)
+			if f.creates == f.failAt {
+				return forgeAPIAnswer{Status: http.StatusInternalServerError, Body: gitlabTest500}
+			}
 			return forgeAPIAnswer{Status: http.StatusCreated, Body: fmt.Sprintf(`{"id":%d}`, f.next)}
 		case key == "POST "+mr+"/draft_notes/bulk_publish":
+			f.publishes++
 			if f.publishFails {
-				return forgeAPIAnswer{Status: http.StatusInternalServerError, Body: `{"message":"500 Internal Server Error"}`}
+				return forgeAPIAnswer{Status: http.StatusUnprocessableEntity, Body: gitlabTest422}
 			}
-			clear(f.pending)
+			if f.publish500 != "ignored" {
+				clear(f.pending)
+			}
+			if f.publish500 != "" {
+				return forgeAPIAnswer{Status: http.StatusInternalServerError, Body: gitlabTest500}
+			}
 			return forgeAPIAnswer{Status: http.StatusNoContent}
+		case call.Method == http.MethodGet && strings.HasPrefix(call.Path, mr+"/draft_notes?"):
+			notes := make([]string, 0, len(f.pending))
+			for id := range f.pending {
+				notes = append(notes, fmt.Sprintf(`{"id":%d}`, id))
+			}
+			return forgeAPIAnswer{Body: "[" + strings.Join(notes, ",") + "]"}
 		case call.Method == http.MethodDelete && strings.HasPrefix(call.Path, mr+"/draft_notes/"):
 			if f.deleteFails {
-				return forgeAPIAnswer{Status: http.StatusInternalServerError, Body: `{"message":"500 Internal Server Error"}`}
+				return forgeAPIAnswer{Status: http.StatusInternalServerError, Body: gitlabTest500}
 			}
 			id, err := strconv.ParseInt(strings.TrimPrefix(call.Path, mr+"/draft_notes/"), 10, 64)
 			if _, ok := f.pending[id]; err != nil || !ok {
@@ -132,4 +155,57 @@ func TestGitLabSubmitReviewReportsDraftsItCouldNotRemove(t *testing.T) {
 	if got := forge.pendingIDs(); len(got) != 2 {
 		t.Fatalf("pending drafts = %v, want the two the failed delete left", got)
 	}
+}
+
+// A create the forge answered 500 may have made its note, so the submit
+// says one may remain pending; it is still a submit that posted nothing.
+func TestGitLabSubmitReviewUnconfirmedCreateMayLeaveADraft(t *testing.T) {
+	t.Parallel()
+	mr := gitlabTestProject + "/merge_requests/7"
+	line := 4
+	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "Summary", Comments: []ReviewLineComment{
+		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
+	}}
+	forge := &gitlabDraftForge{pending: map[int64]string{}, failAt: 2, failAtUnconfirmed: true}
+	core, _ := newForgeAPICore(t, forge.answer(t, mr))
+	_, err := core.SubmitReview(t.Context(), gitlabTestRef(7), review)
+	left, ok := errors.AsType[*DraftsLeftError](err)
+	if !ok || left.Count != 1 {
+		t.Fatalf("SubmitReview = %#v, want a DraftsLeftError for the unconfirmed create", err)
+	}
+	if _, unconfirmed := errors.AsType[*UnconfirmedSubmitError](err); unconfirmed {
+		t.Fatalf("SubmitReview = %v; a draft note is not a posted review", err)
+	}
+}
+
+// A publish answered 500 is settled by the pending draft notes: gone means
+// it published; still pending means it did not, and they are removed.
+func TestGitLabSubmitReviewPublish500IsSettledByTheDraftNotes(t *testing.T) {
+	t.Parallel()
+	mr := gitlabTestProject + "/merge_requests/7"
+	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "Summary"}
+	t.Run("applied", func(t *testing.T) {
+		t.Parallel()
+		forge := &gitlabDraftForge{pending: map[int64]string{}, publish500: "applied"}
+		core, _ := newForgeAPICore(t, forge.answer(t, mr))
+		out, err := core.SubmitReview(t.Context(), gitlabTestRef(7), review)
+		if err != nil || !out.PostedReview || forge.publishes != 1 {
+			t.Fatalf("SubmitReview = %+v, %v after %d publishes; want posted once", out, err, forge.publishes)
+		}
+	})
+	t.Run("ignored", func(t *testing.T) {
+		t.Parallel()
+		forge := &gitlabDraftForge{pending: map[int64]string{}, publish500: "ignored"}
+		core, _ := newForgeAPICore(t, forge.answer(t, mr))
+		_, err := core.SubmitReview(t.Context(), gitlabTestRef(7), review)
+		if err == nil {
+			t.Fatal("SubmitReview succeeded, want not posted")
+		}
+		if _, unconfirmed := errors.AsType[*UnconfirmedSubmitError](err); unconfirmed {
+			t.Fatalf("SubmitReview = %v, want not posted", err)
+		}
+		if got := forge.pendingIDs(); len(got) != 0 {
+			t.Fatalf("pending drafts = %v, want them removed", got)
+		}
+	})
 }

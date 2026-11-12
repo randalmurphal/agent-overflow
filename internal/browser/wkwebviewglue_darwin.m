@@ -77,7 +77,8 @@ static uint64_t ao_view_profile_id(id view) {
 // goes to WebKit — Cmd+W included, which WebKit does not handle and this app
 // has no menu to catch. AOWebView is WKWebView with one addition: modifier
 // chords are offered to Go first (aoWKVKeyChord, a synchronous set lookup),
-// and a chord AO binds is swallowed here and dispatched by the SPA. A bare
+// and a chord AO binds is swallowed here and dispatched by the SPA, which Go
+// has made first responder by then (ao_wkv_focus_app). A bare
 // Escape is offered too, with whether it repeats, and always reaches the
 // page: Go only observes it. Plain typing never crosses; the page keeps
 // every chord AO does not bind.
@@ -250,6 +251,10 @@ void ao_wkv_view_press_key(void *view, const char *key, int ctrl, int meta, int 
 
 static NSView *ao_host = nil;
 static NSView *ao_park = nil;
+// The Wails SPA's own WKWebView, the view a claimed chord hands keyboard
+// focus to (ao_wkv_focus_app). Retained like the host; a view the window
+// dropped has no window and is not focused.
+static WKWebView *ao_app_view = nil;
 
 // ao_view_clip answers the container that crops one page, or nil for a page
 // that has never been presented. A native view cannot be cropped by the DOM,
@@ -291,6 +296,38 @@ static void ao_place(NSView *view, NSRect frame) {
 
 int ao_wkv_on_main_thread(void) { return [NSThread isMainThread] ? 1 : 0; }
 
+// The find's frame script (webkitFindFrameScript) and its isolated world,
+// set once with the host.
+static NSString *ao_find_frame_script = nil;
+static NSString *ao_find_world = nil;
+
+void ao_wkv_set_find_frame_script(const char *script, const char *world) {
+  if (ao_find_frame_script == nil && script != NULL && world != NULL) {
+    ao_find_frame_script = [[NSString alloc] initWithUTF8String:script];
+    ao_find_world = [[NSString alloc] initWithUTF8String:world];
+  }
+}
+
+// ao_add_find_frame_script installs the frame script in every frame of the
+// controller's pages, in the find's world. A registration WebKit refuses
+// leaves the frames without it: a cross-origin frame then keeps a match
+// selected after find closes, and nothing else changes.
+static void ao_add_find_frame_script(WKUserContentController *controller) {
+  if (ao_find_frame_script == nil) {
+    return;
+  }
+  @try {
+    WKUserScript *frames = [[[WKUserScript alloc]
+          initWithSource:ao_find_frame_script
+           injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+        forMainFrameOnly:NO
+          inContentWorld:[WKContentWorld worldWithName:ao_find_world]] autorelease];
+    [controller addUserScript:frames];
+  } @catch (NSException *refused) {
+    NSLog(@"browser: the find frame script was not registered: %@", refused);
+  }
+}
+
 int ao_wkv_host_attach(void *ns_window) {
   @autoreleasepool {
     if (ao_host != nil) {
@@ -315,7 +352,27 @@ int ao_wkv_host_attach(void *ns_window) {
     // process's one host, exactly like the Linux overlay.
     ao_host = [content retain];
     ao_park = park;
+    // No page view has been added yet, so the content view's webview is
+    // the SPA's.
+    for (NSView *view in existing) {
+      if ([view isKindOfClass:[WKWebView class]] && ![view isKindOfClass:[AOWebView class]]) {
+        ao_app_view = [(WKWebView *)view retain];
+        break;
+      }
+    }
     return 1;
+  }
+}
+
+int ao_wkv_focus_app(void) {
+  @autoreleasepool {
+    WKWebView *app = ao_app_view;
+    NSWindow *window = app == nil ? nil : [app window];
+    if (window == nil) {
+      return 0;
+    }
+    // A window that is not key keeps the responder for when it becomes key.
+    return [window makeFirstResponder:app] ? 1 : 0;
   }
 }
 
@@ -523,16 +580,39 @@ void ao_wkv_host_present(void *view, double x, double y, double width, double he
   }
 }
 
-void ao_wkv_host_hide(void *view) {
+// ao_view_holds_focus answers whether the view's window has the view, or a
+// view inside it, as its first responder.
+static BOOL ao_view_holds_focus(NSView *view) {
+  NSResponder *responder = [[view window] firstResponder];
+  return [responder isKindOfClass:[NSView class]] && [(NSView *)responder isDescendantOf:view];
+}
+
+// ao_release_focus ends a page's hold on keyboard focus when the page stops
+// being visible. A parked view stays in the window inside the 1x1 clip and
+// would go on taking every key unseen; a view removed from its window leaves
+// the window itself as first responder, so the keys reach nothing. Either
+// way the focus goes to the SPA's webview, as a claimed chord's does
+// (ao_wkv_focus_app).
+static int ao_release_focus(BOOL held) {
+  if (!held) {
+    return 0;
+  }
+  return ao_wkv_focus_app() ? 1 : -1;
+}
+
+int ao_wkv_host_hide(void *view, int slot) {
   @autoreleasepool {
     if (view == NULL) {
-      return;
+      return 0;
     }
-    // Only this page's container. The caller parks the view out of it
-    // immediately afterwards, and an emptied container would otherwise keep
-    // painting the pane's background colour over the SPA — while another
-    // thread's presented pane is left exactly as it was.
+    BOOL held = ao_view_holds_focus((NSView *)view);
+    // Only this page's container. The park moves the view out of it, and an
+    // emptied container would otherwise keep painting the pane's background
+    // colour over the SPA, while another thread's presented pane is left
+    // exactly as it was.
     [ao_view_clip((NSView *)view) setHidden:YES];
+    ao_wkv_host_park(view, slot);
+    return ao_release_focus(held);
   }
 }
 
@@ -1066,6 +1146,7 @@ static void ao_connect_view(WKWebView *view, uint64_t page_id, uint64_t profile_
               injectionTime:WKUserScriptInjectionTimeAtDocumentStart
            forMainFrameOnly:NO] autorelease];
       [controller addUserScript:script];
+      ao_add_find_frame_script(controller);
     }
   }
 
@@ -1120,12 +1201,13 @@ void ao_wkv_view_adopt(void *view, uint64_t page_id, uint64_t profile_id,
   }
 }
 
-void ao_wkv_view_close(void *view) {
+int ao_wkv_view_close(void *view) {
   @autoreleasepool {
     if (view == NULL) {
-      return;
+      return 0;
     }
     WKWebView *v = (WKWebView *)view;
+    BOOL held = ao_view_holds_focus(v);
     ao_wkv_host_unpark(view);
     // Unpark first, then the container: it holds nothing by that point, so
     // dropping the association releases it for good. A per-page view left in
@@ -1145,6 +1227,7 @@ void ao_wkv_view_close(void *view) {
     }
     objc_setAssociatedObject(v, &kAOPageIDKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [v release];
+    return ao_release_focus(held);
   }
 }
 

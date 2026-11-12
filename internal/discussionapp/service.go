@@ -63,6 +63,9 @@ type Events interface {
 	Message(MessageEvent)
 	State(State)
 	Error(string, string)
+	// ThreadUpdated is called after a write this service committed to a
+	// thread row clients show, so every client learns the row changed.
+	ThreadUpdated(threadID string)
 }
 
 // Config provides the explicit side-effect boundaries used by Service.

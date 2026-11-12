@@ -22,10 +22,12 @@ import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
 import { createThreadPane } from './thread.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
+import { DisconnectedError, TransportError } from '../transport/wsClient';
+import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { takePinnedBackend } from '../transport/backends';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { prKey, type PRRef } from '../utils/prReference';
-import type { DiffReviewComment, PRDetail } from '../types/models';
+import type { DiffReviewComment, PRDetail, PRReviewSubmitOutcome } from '../types/models';
 import { installPRDraftsFake, type PRDraftsFake } from '../../test/helpers/prDraftsFake';
 import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
@@ -64,6 +66,11 @@ function detail(number: number, overrides: Partial<PRDetail> = {}): PRDetail {
     merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: true, viewerCanApprove: true, viewerApproved: false },
     ...overrides,
   };
+}
+
+// The attempt id a SubmitPRReview call carried.
+function attemptOf(submit: { mock: { calls: unknown[][] } }, call: number): string | undefined {
+  return (submit.mock.calls[call]?.[1] as { attemptId?: string } | undefined)?.attemptId;
 }
 
 function patchFor(path: string, lines: number): string {
@@ -437,6 +444,134 @@ describe('pinned comments and actions', () => {
     expect(state.drafts).toEqual([]);
     const held = getPRDiffReviewComments(composeWorkspaceKey(HOME_BACKEND, prKey(ref(5))), 'pr', `pr:${prKey(ref(5))}`);
     expect(held.map((comment) => comment.status)).toEqual(['sent']);
+  });
+
+  describe('on a backend with the draft submit', () => {
+    beforeEach(() => __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: ['pr-review-drafts.v1'], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 }));
+    afterEach(() => __setTransportHelloForTest(null));
+
+    // The backend's draft submit over the PR's drafts, recording each
+    // attempt's outcome: it refuses drafts that are not drafts (or, with
+    // `unmarked`, drafts an earlier review posted), else posts and marks
+    // them; `lose` drops the answer after (or, 'never', before) it ran.
+    // `unconfirmed` answers as a forge that did not confirm the review.
+    function draftBackend(fake: PRDraftsFake, opts: { lose?: 'after' | 'never'; unmarked?: boolean; unconfirmed?: boolean } = {}) {
+      const outcomes = new Map<string, PRReviewSubmitOutcome>();
+      let lose = opts.lose;
+      const submit = setBindingMock('SubmitPRReview', async (wire: { Number: number }, review: { drafts?: { ids: string[] }; attemptId?: string }) => {
+        const losing = lose;
+        lose = undefined;
+        if (losing === 'never') throw new DisconnectedError('socket closed');
+        const rows = fake.held.get(wire.Number) ?? [];
+        const ids = review.drafts?.ids ?? [];
+        let outcome: PRReviewSubmitOutcome;
+        if (opts.unconfirmed) {
+          outcome = { state: 'unconfirmed', result: { postedReview: false, postedFileComments: 0, unconfirmed: true } };
+        } else if (opts.unmarked && ids.length > 0) {
+          outcome = { state: 'failed', code: 'review_drafts_unmarked', message: 'These comments were posted by an earlier review and are being marked sent, so this review was not posted.' };
+        } else if (ids.some((id) => rows.find((candidate) => candidate.id === id)?.status !== 'draft')) {
+          outcome = { state: 'failed', code: 'review_drafts_not_drafts', message: 'Some of these comments were already sent or removed, so this review was not posted.' };
+        } else {
+          for (const candidate of rows) if (ids.includes(candidate.id)) candidate.status = 'sent';
+          outcome = { state: 'posted', result: { postedReview: true, postedFileComments: 0, sentDraftIds: ids, posted: true } };
+        }
+        if (review.attemptId) outcomes.set(review.attemptId, outcome);
+        if (losing === 'after') throw new DisconnectedError('socket closed');
+        if (outcome.state === 'failed') throw new TransportError(outcome.code!, outcome.message!);
+        return outcome.result;
+      });
+      const ask = setBindingMock('GetPRReviewSubmitOutcome', async (_wire: unknown, id: string) => outcomes.get(id) ?? { state: 'unknown' });
+      return { submit, ask };
+    }
+
+    it('names the PR’s drafts, and after a lost answer asks the backend and ends as posted', async () => {
+      const { drafts: fake } = installPRMocks();
+      const { submit, ask } = draftBackend(fake, { lose: 'after' });
+      const state = pinned(5);
+      await waitLoaded(state);
+      await state.createComment(anchor, 'needs a test');
+      state.setSummaryBody('overall');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall', comments: [], drafts: { threadId: undefined, ids: ['c1'], headSha: 'sha-5' }, attemptId: expect.any(String) });
+      expect(ask).toHaveBeenCalledWith(expect.anything(), attemptOf(submit, 0));
+      expect(fake.mark).not.toHaveBeenCalled();
+      expect(state.drafts).toEqual([]);
+      expect(state.summaryBody).toBe('');
+      expect(state.submitError).toBeNull();
+    });
+
+    it('a second tab refused because drafts another tab posted are not marked yet keeps its summary and verdict', async () => {
+      const { drafts: fake } = installPRMocks();
+      draftBackend(fake, { unmarked: true });
+      const state = pinned(5);
+      await waitLoaded(state);
+      await state.createComment(anchor, 'needs a test');
+      state.setSummaryBody('from tab B');
+      state.setVerdict('request-changes');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(TransportError);
+
+      expect(state.summaryBody).toBe('from tab B');
+      expect(state.verdict).toBe('request-changes');
+      expect(state.submitError).toBe('These comments were posted by an earlier review and are being marked sent, so this review was not posted.');
+    });
+
+    it('a second tab whose refusal answer was lost, the first tab having sent the drafts, keeps its summary and verdict', async () => {
+      const { drafts: fake } = installPRMocks();
+      const { submit } = draftBackend(fake, { lose: 'after' });
+      const state = pinned(5);
+      await waitLoaded(state);
+      await state.createComment(anchor, 'needs a test');
+      state.setSummaryBody('from tab B');
+      state.setVerdict('request-changes');
+      // Tab A sent them first.
+      for (const row of fake.held.get(5) ?? []) row.status = 'sent';
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(state.summaryBody).toBe('from tab B');
+      expect(state.verdict).toBe('request-changes');
+      expect(state.submitError).toBe('Some of these comments were already sent, so this review and its summary were not posted.');
+      expect(state.drafts).toEqual([]);
+      await state.submitPRReview();
+      expect(submit.mock.calls[1]?.[1]).toMatchObject({ verdict: 'request-changes', body: 'from tab B', drafts: { ids: [] } });
+    });
+
+    it('keeps the PR’s drafts, summary and verdict when the forge did not confirm the review, and says it may be on the PR', async () => {
+      const { drafts: fake } = installPRMocks();
+      const { submit } = draftBackend(fake, { unconfirmed: true });
+      const state = pinned(5);
+      await waitLoaded(state);
+      await state.createComment(anchor, 'needs a test');
+      state.setSummaryBody('overall');
+      state.setVerdict('approve');
+
+      await state.submitPRReview();
+
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['c1']);
+      expect(state.summaryBody).toBe('overall');
+      expect(state.verdict).toBe('approve');
+      expect(state.submitError).toBe('The forge did not confirm the review, so it may already be on the PR. Check the PR before you submit again.');
+      expect(fake.mark).not.toHaveBeenCalled();
+      expect(submit).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the PR’s drafts and summary when the lost request never reached the backend', async () => {
+      const { drafts: fake } = installPRMocks();
+      draftBackend(fake, { lose: 'never' });
+      const state = pinned(5);
+      await waitLoaded(state);
+      await state.createComment(anchor, 'needs a test');
+      state.setSummaryBody('overall');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['c1']);
+      expect(state.summaryBody).toBe('overall');
+      expect(state.submitError).toBe('The connection dropped before the review reached the computer, so nothing was posted.');
+    });
   });
 
   it('sends its drafts to a thread with their hunks, settling them, and only on the whole PR', async () => {

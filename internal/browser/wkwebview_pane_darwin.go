@@ -3,6 +3,8 @@
 package browser
 
 import (
+	"errors"
+	"log"
 	"strconv"
 	"strings"
 )
@@ -141,7 +143,9 @@ func (e *wkEngine) HidePage(handle string) {
 		p.mu.Lock()
 		slot := p.slot
 		p.mu.Unlock()
-		_ = wkHideView(p.liveView(), slot)
+		if err := wkHideView(p.liveView(), slot); err != nil && !errors.Is(err, errViewClosed) {
+			log.Printf("browser: hide page %d: %v", p.id, err)
+		}
 	}
 }
 

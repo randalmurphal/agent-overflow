@@ -38,7 +38,11 @@
         disabled={!review.commentsGranted || review.sendingComments || (review.effectiveSubmitTarget === 'agent' && review.isTurnActive)}
         title={!review.commentsGranted ? 'Not granted to this device' : review.isTurnActive && review.effectiveSubmitTarget === 'agent' ? 'Send from the chat box while the agent is working' : 'Send comments'}
         data-testid="review-send-comments"
-        onclick={() => { void (review.effectiveSubmitTarget === 'pr' ? review.submitPRReview() : review.sendComments()); }}
+        onclick={() => {
+          // Both set the pane's error (and submitError) before they reject;
+          // the rejection is for callers that await them.
+          (review.effectiveSubmitTarget === 'pr' ? review.submitPRReview() : review.sendComments()).catch(() => {});
+        }}
       >
         Send comments
       </button>

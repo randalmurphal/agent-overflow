@@ -79,6 +79,11 @@ type hostRelay interface {
 // Every windowed engine implements it; an engine with no window to show does
 // not. The Manager decides WHICH page is presented (policy); the engine
 // decides how a controller is made to appear (mechanism).
+//
+// A page that is not visible never holds keyboard focus. HidePage, and the
+// close of a page, give keyboard focus the page held to the app's webview,
+// done by the same code that hands it over for a claimed chord
+// (engineAppFocus, or the launcher's chord gate). ShowPage never takes focus.
 type paneHost interface {
 	ShowPage(handle string)
 	HidePage(handle string)

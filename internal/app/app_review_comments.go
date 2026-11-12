@@ -244,6 +244,10 @@ func (a *App) emitProposedPlanUpsert(threadID, planItemID string) error {
 
 //ao:scope threads:read
 func (a *App) ListDiffReviewComments(threadID, scope, sourceKey string) ([]store.DiffReviewComment, error) {
+	// Drafts a review posted are not listed as drafts (SubmitPRReview).
+	if err := a.reconcilePostedReviewDrafts(store.ThreadReviewOwner(threadID)); err != nil {
+		return nil, err
+	}
 	comments, err := a.store.ListDiffReviewComments(store.ThreadReviewOwner(threadID), scope, sourceKey)
 	if err != nil {
 		return nil, fmt.Errorf("list diff review comments: %w", err)

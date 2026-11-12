@@ -25,12 +25,12 @@ import (
 //     earlier state follows one describing a later state.
 //     TestThreadUpdatedFramesComeFromTheAnnouncer (internal/triage) rejects
 //     any other emit.
-//   - An RPC that returns a row returns one read before its own frame
-//     leaves, and the two reach the client as separate frames in either
-//     order. The client therefore applies a returned row only when no frame
-//     for that thread arrived after the call started
-//     (frontend/src/lib/stores/threadRowFrames.ts); otherwise the frame is
-//     the newer state.
+//   - An RPC that returns a row announces it before returning, and the
+//     transport delivers a frame emitted before a reply ahead of that reply
+//     on the caller's connection (internal/transport writeReply). A frame
+//     that reaches the client after a call started is therefore one written
+//     during or after the call, and the client keeps it over the reply
+//     (frontend/src/lib/stores/threadRowFrames.ts).
 
 // threadAnnouncer is the process's one thread row announcer, shared with the
 // triage router (newTriageRouter).
@@ -66,6 +66,20 @@ func (a *App) announceThreadIfChanged(action, threadID string, changed bool) {
 // (triage.ThreadAnnouncer.AnnouncePatch).
 func (a *App) announceThreadPatch(threadID string, patch triage.ThreadUpdateEvent) {
 	a.threadAnnouncer().AnnouncePatch(a.emitEvent, threadID, patch)
+}
+
+// writeSessionRef stores a thread's resume cursor and announces it when it
+// moved. The sidebar's fork affordance gates on it, and a later session
+// init that reports the same cursor finds nothing changed to announce.
+func (a *App) writeSessionRef(threadID, ref string) error {
+	changed, err := a.store.UpdateSessionRef(threadID, ref)
+	if err != nil {
+		return err
+	}
+	if changed {
+		a.announceThreadPatch(threadID, triage.ThreadUpdateEvent{SessionRef: &ref})
+	}
+	return nil
 }
 
 // broadcastThreadDeleted announces a row that no longer exists in SQLite. It

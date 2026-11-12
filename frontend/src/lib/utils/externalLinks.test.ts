@@ -17,6 +17,7 @@ import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app
 import { resetRunMode, setRunMode } from '../../test/runMode';
 import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../test/helpers/scopes';
 import { __resetScopesForTest } from '../transport/scopes';
+import { setHostWindowFromBootstrap } from '../transport/pageHost';
 import { resetBrowserCompanionForTest } from '../stores/browserCompanion.svelte';
 import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
 
@@ -549,6 +550,24 @@ describe('mod+click on an ordinary external link', () => {
       expect(openedExternally(systemOpen, 'https://example.com/docs')).toBe(true),
     );
     expect(act).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the plain behaviour in a page that is not the host window', async () => {
+    // A browser tab on the host holds `host` but not the native view, so a
+    // page minted from here would show only in the host's own window.
+    setHostWindowFromBootstrap(false);
+    try {
+      const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+      const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: 'thread-1', kind: 'state', pages: [] })));
+
+      expect(modClick(linkInThread())).toBe(false);
+      await waitFor(() =>
+        expect(openedExternally(systemOpen, 'https://example.com/docs')).toBe(true),
+      );
+      expect(act).not.toHaveBeenCalled();
+    } finally {
+      setHostWindowFromBootstrap(true);
+    }
   });
 
   it('falls back to the plain behaviour when the thread runs on another machine', async () => {

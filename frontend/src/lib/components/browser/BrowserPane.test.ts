@@ -250,7 +250,7 @@ describe('<BrowserPane> find', () => {
     })));
     const view = mount('bar');
     await waitFor(() => expect(hasPaneFindProvider('browser-main')).toBe(true));
-    const escape = (pageId: string) => applyBrowserCompanionState({ kind: 'escape', threadId: THREAD, pageId } as never);
+    const escape = (pageId: string) => applyBrowserCompanionState({ kind: 'escape', threadId: THREAD, pageId, mount: 'mount-1' } as never);
     escape('a');
     expect(isPaneFindOpen('browser-main')).toBe(false);
     openPaneFind('browser-main');
