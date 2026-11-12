@@ -175,7 +175,10 @@ async function runThreadMutation(
   }
   if (!updated) return null;
 
-  updated = syncThreadReply(updated, mark);
+  // The store may keep a row from a frame that arrived during the call, and
+  // that frame can predate this write (a creation echo that trails its own
+  // reply). The reply is what this operation bound, so that is the result.
+  syncThreadReply(updated, mark);
   const selectedBranch = intent.creatingBranch ? intent.newBranchName : intent.attachBranch;
   if (updated.projectId && selectedBranch) {
     recordBranchSelection(updated.projectId, selectedBranch);

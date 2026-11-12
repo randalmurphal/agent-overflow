@@ -127,6 +127,12 @@ root-scope rows; `scopeThreads` admits every scope of the threads it names.
 connections start active. Flush coalesced item deltas in sequence order before
 pass-through frames or return to active state.
 
+A connection never receives an RPC reply ahead of an event queued for it
+before the reply was written: the pump writes those events, then the reply
+(`writeReply`), so a method's own announcements precede its answer. Item
+deltas a background lease is merging stay held, and an event emitted after
+the reply has no order against it.
+
 All connections coalesce event frames to bound webview message overhead.
 Non-loopback connections may additionally use compression. Keep memory costs
 bounded per connection and preserve write deadlines so a peer that stops

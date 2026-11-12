@@ -23,6 +23,7 @@ import {
   setBindingMock,
 } from '../../test/mocks/bindings-app';
 import { makeThread } from '../../test/helpers/chat';
+import { applyThreadUpdated } from './eventsThreadRows';
 import type { Thread } from '../types/models';
 
 function thread(overrides: Partial<Thread> = {}): Thread {
@@ -135,6 +136,39 @@ describe('worktree intent materialization', () => {
     expect(attach).toHaveBeenCalledWith('thread-1', 'main');
     expect(applied?.worktreePath).toBe('/wt/feature');
     expect(worktreeIntentForThread(source).mode).toBe('local');
+  });
+
+  // The backend replies to CreateThread before its `listed` echo leaves, so
+  // on a slow client the echo can land during the attach call. It carries
+  // the row as created, which is older than the attach reply.
+  it('reports the bound workspace when the creation echo lands during the call', async () => {
+    const source = thread();
+    setThreadEnvMode(source, 'new-worktree');
+    setBindingMock('AttachThreadWorktree', async () => {
+      applyThreadUpdated({ action: 'listed', thread: source });
+      return moved(source);
+    });
+
+    const applied = await applyWorktreeIntentNow(paneFor(source));
+
+    expect(applied).toEqual({ worktreePath: '/wt/feature', branch: 'feature' });
+  });
+
+  it('returns the bound row to an explicit target caller when a stale echo lands', async () => {
+    const target = thread({ id: 'child' });
+    setThreadEnvMode(target, 'new-worktree');
+    setBindingMock('AttachThreadWorktree', async () => {
+      applyThreadUpdated({ action: 'listed', thread: target });
+      return moved(target);
+    });
+
+    const materialized = await materializeWorktreeIntentOnThread({
+      targetThread: target,
+      intent: worktreeIntentForThread(target),
+      clearIntentOnSuccess: false,
+    });
+
+    expect(materialized?.worktreePath).toBe('/wt/feature');
   });
 
   it('creates a new worktree branch with the selected base and carry flag', async () => {

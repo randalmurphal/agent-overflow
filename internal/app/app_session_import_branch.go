@@ -104,7 +104,7 @@ func (a *App) materializeImportedClaudeBranch(t store.Thread) store.Thread {
 	// refresh. UpdateSessionRef writes session_ref, clears the pending fork
 	// ref, and leaves updated_at alone, which is the same posture every other
 	// session-ref writer takes.
-	if _, err := a.store.UpdateSessionRef(t.ID, sessionID); err != nil {
+	if err := a.writeSessionRef(t.ID, sessionID); err != nil {
 		// The file is written but the row does not point at it. Remove it
 		// rather than leave an orphan transcript in the user's Claude home;
 		// the next start tries again from the same source.
