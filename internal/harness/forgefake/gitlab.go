@@ -350,6 +350,9 @@ func gitlabDiscussions(p *Pull) []map[string]any {
 			position["position_type"] = "file"
 		} else {
 			position[lineKey] = *thread.Line
+			if thread.OldLine != nil {
+				position["old_line"] = *thread.OldLine
+			}
 		}
 		if thread.StartLine != nil {
 			position["line_range"] = map[string]any{

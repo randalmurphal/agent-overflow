@@ -265,7 +265,7 @@ describe('a pinned review', () => {
     await state.reload();
     await waitLoaded(state);
 
-    expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: two, suggested: null, armed: false }]);
+    expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: two, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
     expect(state.draftBodyFor(id)).toBe('Guard this.');
     await state.createComment(id, 'Guard this.');
     expect(state.drafts.map((comment) => [comment.newLine, comment.selectedText, comment.commitSha])).toEqual([[2, 'line 2', 'sha-5b']]);

@@ -355,6 +355,17 @@ never proves a line. The contract the reader sees:
   "Comments on files not in this diff", with its path, its text, "This
   file is no longer in the diff.", "Copy text" and "Discard"; it returns
   to its file when a later diff has it again.
+- A box on a line number several rows of its file share (an Edits file
+  that changed the same line twice) says "This line appears more than once
+  in this view, so a comment cannot be attached to it." and offers only
+  "Move": a saved comment names a coordinate, not a row
+  (`patchRows.namesOneRow`, used by saving and relocation alike).
+
+A comment on an unchanged line is saved with both its old and new numbers,
+whichever half of a split row it was written on, and the review posts it
+as that line: GitHub on the right at its new number, GitLab with
+`old_line` and `new_line` both set; a draft saved before this with one
+number there still shows on its line and is left out of the review.
 
 A save is checked synchronously against the diff on screen (its subject,
 source and head, committed with its files), never against the controls'

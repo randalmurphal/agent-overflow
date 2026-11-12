@@ -7,6 +7,7 @@
   import type { PaintedSpans, PatchScopeContext } from '../../utils/diffSpanCache.svelte';
   import type { DiffGap } from '../../utils/patchFiles';
   import type { ReviewFile } from '../../utils/patchStore';
+  import type { EditorAnchor } from '../../stores/reviewPane.svelte';
   import { REVIEW_SURFACE_END_PX, type BlockRowsCache, type CommentAnchor, type EditorRow, type ReviewRow } from '../../utils/reviewRows';
 
   // One row of ReviewDiffBody's list (utils/reviewRows.ts kinds). The body
@@ -31,14 +32,16 @@
     draftEditor?: Snippet<[editor: EditorRow]>;
     commentThread?: Snippet<[threadKey: string, anchor: CommentAnchor, pulse: number]>;
     prThread?: Snippet<[thread: ReviewThread, anchor: CommentAnchor, collapsed: boolean, orphaned: boolean, pulse: number]>;
-    onAddComment?: (anchor: CommentAnchor) => void;
+    /** The diff on screen (ShownDiff.generation), for a pick's check. */
+    generation?: number;
+    onAddComment?: (anchor: EditorAnchor, generation?: number) => void;
     onExpandFold?: (path: string, foldId: number) => void;
     onExpandGap?: (path: string, gap: DiffGap, dir: ExpandDirection) => void;
   }
 
   let {
     row, file, blockRows, collapsed, onToggleCollapsed, spanOwner, spanContext, painted, wordWrap, pulse, targets,
-    overview, draftEditor, commentThread, prThread, onAddComment, onExpandFold, onExpandGap,
+    overview, draftEditor, commentThread, prThread, generation, onAddComment, onExpandFold, onExpandGap,
   }: Props = $props();
 
   // Per-file gutter width (ch) from the file's max line number — a true
@@ -90,6 +93,7 @@
     {wordWrap}
     gutterCh={gutterChars(file)}
     {targets}
+    {generation}
     {onAddComment}
     {onExpandFold}
     {onExpandGap}

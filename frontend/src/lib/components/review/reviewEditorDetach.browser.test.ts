@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import '../../../app.css';
 import ReviewPane from './ReviewPane.svelte';
+import ReviewDraftEditor from './ReviewDraftEditor.svelte';
 import { __resetReviewPaneStateForTest, reviewStateForPane, reviewSubjectForPane, type ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import { resetPanesForTest } from '../../stores/panes.svelte';
@@ -140,6 +141,24 @@ describe.each(['desktop', 'compact'] as const)('a comment whose file changed, %s
     await vi.waitFor(() => expect(review.openEditors.some((editor) => editor.id === id)).toBe(false));
   });
 
+  it('keeps its place, focus and caret when its row moves outside the rows the list holds', async () => {
+    let current = patch();
+    const { review, id, top } = await focusedEditor(() => current, layout);
+    // Earlier code at the top of the viewport, the box below it.
+    expect(top()).toBeGreaterThan(100);
+    const before = top();
+    current = patch(1000);
+    await reload(review);
+    // Its line moved a thousand rows down, out of the rows the list held.
+    await vi.waitFor(() => expect(review.openEditors).toMatchObject([{ id, state: 'detached', suggested: { newLine: 1040 } }]));
+    await vi.waitFor(() => expect(q('[data-testid="review-draft-editor-note"]')?.textContent).toContain('The file changed under this comment.'));
+    await vi.waitFor(() => expect(document.activeElement).toBe(textarea()));
+    expect(textarea().value).toBe('Half typed');
+    expect([textarea().selectionStart, textarea().selectionEnd]).toEqual([4, 4]);
+    expect(Math.abs(top() - before)).toBeLessThanOrEqual(2);
+    expect(target.querySelector('[data-review-target]')?.textContent).toContain('line 40');
+  });
+
   it('moves to a line the reader picks, and Escape cancels the move', async () => {
     let current = patch();
     const { review, id } = await focusedEditor(() => current, layout);
@@ -181,5 +200,35 @@ describe.each(['desktop', 'compact'] as const)('a comment whose file changed, %s
     button(box()!, 'Discard').click();
     await vi.waitFor(() => expect(q('[data-testid="review-gone-editors"]')).toBeNull());
     expect(target.textContent?.toLowerCase()).not.toMatch(/unplaced|detached/);
+  });
+});
+
+describe('a new comment\'s focus request', () => {
+  it('never takes focus back from where the reader moved it while its row was hidden', async () => {
+    const host = document.createElement('div');
+    host.style.visibility = 'hidden';
+    target.append(host);
+    const other = document.createElement('input');
+    target.append(other);
+    const editor = mount(ReviewDraftEditor, {
+      target: host,
+      props: {
+        editor: { id: 'e1', filePath: 'src/a.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/a.ts', side: 'new', newLine: 1 }, suggested: null, armed: false, occurrence: 0, repeated: false, generation: 1 },
+        body: '',
+        onBodyChange: () => {},
+        onCancel: () => {},
+        onSubmit: () => {},
+        consumeFocus: () => true,
+      },
+    });
+    try {
+      await frames(1);
+      other.focus();
+      host.style.visibility = 'visible';
+      await frames(4);
+      expect(document.activeElement).toBe(other);
+    } finally {
+      await unmount(editor);
+    }
   });
 });

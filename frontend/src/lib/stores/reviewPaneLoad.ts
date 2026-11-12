@@ -405,17 +405,22 @@ export async function seedEditPatchSpans(
   }
 }
 
+// A draft as a review comment, as the backend's reviewLineCommentForDraft
+// (internal/app/app_pr_review_submit.go) builds it: an unchanged line, with
+// both numbers whichever half it was written on, on the right at its new
+// number with its old one beside it; a deleted line on the left; an added
+// line on the right.
 export function reviewLineCommentForDraft(comment: DiffReviewComment): ReviewLineComment | null {
   if (comment.side === 'file') {
     return { path: comment.filePath, body: comment.body, side: 'file' };
+  }
+  if (comment.oldLine && comment.newLine) {
+    return { path: comment.filePath, body: comment.body, line: comment.newLine, oldLine: comment.oldLine, side: 'right' };
   }
   if (comment.side === 'old' && comment.oldLine) {
     return { path: comment.filePath, body: comment.body, line: comment.oldLine, side: 'left' };
   }
   if (comment.side === 'new' && comment.newLine) {
-    return { path: comment.filePath, body: comment.body, line: comment.newLine, side: 'right' };
-  }
-  if (comment.side === 'context' && comment.newLine) {
     return { path: comment.filePath, body: comment.body, line: comment.newLine, side: 'right' };
   }
   return null;

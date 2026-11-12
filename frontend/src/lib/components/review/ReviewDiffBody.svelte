@@ -25,6 +25,8 @@
   import { reviewDiffKeydown, type ReviewDiffKeysHost } from './reviewDiffKeys';
   import { elementAtEdge } from '../../utils/findReadingEdge';
   import { reportReaderNavigation } from '../../utils/scroll/readerInput';
+  import { focusWhenShown } from '../../utils/focusWhenShown';
+  import type { EditorAnchor } from '../../stores/reviewPane.svelte';
   import {
     BlockRowsCache,
     buildReviewRows,
@@ -102,7 +104,9 @@
      * top, for the title bar's peek controls. A commit card has no peek
      * controls and never reports. */
     onOverviewOffChange?: (off: boolean) => void;
-    onAddComment?: (anchor: CommentAnchor) => void;
+    /** The diff on screen (ShownDiff.generation), for a pick's check. */
+    generation?: number;
+    onAddComment?: (anchor: EditorAnchor, generation?: number) => void;
     /** Conflict view only: expands a fold row's hidden lines. */
     onExpandFold?: (path: string, foldId: number) => void;
     /** Diff view only: fetches a hunk gap's hidden context lines. */
@@ -143,6 +147,7 @@
     overviewLead = 'overview',
     empty,
     onOverviewOffChange,
+    generation,
     onAddComment,
     onExpandFold,
     onExpandGap,
@@ -332,13 +337,23 @@
   let prevPrThreads: readonly ReviewThread[] = prThreads;
   // svelte-ignore state_referenced_locally
   let prevScrollKey = scrollKey;
-  // The rows on screen, and the focused comment editor among them with its
-  // offset from the viewport top, read before a rebuild reaches the list:
-  // a reload keeps that editor where it was rather than the line above.
-  let focusedEditor: { id: string; top: number } | null = null;
+  // The focused comment editor, with its offset from the viewport top and
+  // its caret, read before a rebuild reaches the list: a reload keeps that
+  // editor where it was on screen rather than the line above, even when
+  // its row moved out of the rows the list holds (which unmounts it).
+  interface FocusedEditor {
+    id: string;
+    top: number;
+    selection: [number, number, 'forward' | 'backward' | 'none'] | null;
+  }
+  let focusedEditor: FocusedEditor | null = null;
+  let refocus: (() => void) | null = null;
+  function editorNode(id: string): Element | null {
+    return scrollEl?.querySelector(`[data-review-editor-id="${CSS.escape(id)}"]`) ?? null;
+  }
   function editorTop(id: string): number | null {
     const el = scrollEl;
-    const node = el?.querySelector(`[data-review-editor-id="${CSS.escape(id)}"]`);
+    const node = editorNode(id);
     return el && node ? node.getBoundingClientRect().top - el.getBoundingClientRect().top : null;
   }
   $effect.pre(() => {
@@ -350,18 +365,34 @@
       const node = active instanceof Element && el?.contains(active) ? active.closest('[data-review-editor-id]') : null;
       const id = node?.getAttribute('data-review-editor-id');
       const top = id ? editorTop(id) : null;
-      if (id && top !== null) focusedEditor = { id, top };
+      if (!id || top === null) return;
+      const selection = active instanceof HTMLTextAreaElement
+        ? [active.selectionStart, active.selectionEnd, active.selectionDirection] as FocusedEditor['selection']
+        : null;
+      focusedEditor = { id, top, selection };
     });
   });
-  // Scrolls the focused editor back to where it was; false when it is not
-  // rendered now.
-  function restoreFocusedEditor(keep: { id: string; top: number }): boolean {
+  // Puts the focused editor's row back at the offset the box had, by its
+  // index in the list (the row may not be mounted), then gives the box
+  // back its focus and caret when it shows and corrects by where it is
+  // measured. False when the editor has no row now.
+  function restoreFocusedEditor(keep: FocusedEditor): boolean {
     const el = scrollEl;
+    const ref = listRef;
+    const index = built.rowKeys.indexOf(`d:${keep.id}`);
+    if (!el || !ref || index < 0) return false;
     const top = editorTop(keep.id);
-    if (!el || top === null) return false;
-    if (top !== keep.top) scroll.applyScrollTarget(Math.max(0, el.scrollTop + top - keep.top));
+    if (top === null) ref.scrollToIndex(index, { offset: -keep.top });
+    else if (top !== keep.top) scroll.applyScrollTarget(Math.max(0, el.scrollTop + top - keep.top));
+    refocus?.();
+    refocus = focusWhenShown(() => editorNode(keep.id)?.querySelector('textarea'), (area) => {
+      if (keep.selection && area instanceof HTMLTextAreaElement) area.setSelectionRange(...keep.selection);
+      const now = editorTop(keep.id);
+      if (now !== null && now !== keep.top) scroll.applyScrollTarget(Math.max(0, el.scrollTop + now - keep.top));
+    });
     return true;
   }
+  $effect(() => () => refocus?.());
   $effect(() => {
     void built;
     untrack(() => {
@@ -550,6 +581,7 @@
             {draftEditor}
             {commentThread}
             {prThread}
+            {generation}
             {onAddComment}
             {onExpandFold}
             {onExpandGap}

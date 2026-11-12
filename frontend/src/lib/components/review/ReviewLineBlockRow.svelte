@@ -1,7 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import DiffLineContent from '../chat/DiffLineContent.svelte';
-  import type { CommentAnchor } from '../../stores/reviewPane.svelte';
+  import type { CommentAnchor, EditorAnchor } from '../../stores/reviewPane.svelte';
+  import { rowMatchesAnchor, type RowType } from '../../utils/patchRows';
   import { DIFF_CONTEXT_EXPAND_STEP, type ExpandDirection } from '../../utils/diffContextExpansion';
   import { gutterTintClass, lineTintClass } from '../../utils/diffLineTint';
   import { diffSpanCacheGeneration, getSpansForReviewLine, requestReviewFileSpans, type PaintedSpans, type PatchScopeContext } from '../../utils/diffSpanCache.svelte';
@@ -50,25 +51,35 @@
     gutterCh: number;
     /** Rows a detached comment editor suggests ("Use this line"). */
     targets?: readonly CommentAnchor[];
-    onAddComment?: (anchor: CommentAnchor) => void;
+    /** The diff on screen these rows are of (ShownDiff.generation): a
+     * pick is valid only there. */
+    generation?: number;
+    onAddComment?: (anchor: EditorAnchor, generation?: number) => void;
     /** Conflict view only: expands the fold row's hidden lines. */
     onExpandFold?: (path: string, foldId: number) => void;
     /** Diff view only: fetches a hunk gap's hidden context lines. */
     onExpandGap?: (path: string, gap: DiffGap, dir: ExpandDirection) => void;
   }
 
-  let { rows, splitRows, file, path, spanOwner, spanContext = null, painted = null, wordWrap, gutterCh, targets, onAddComment, onExpandFold, onExpandGap }: Props = $props();
+  let { rows, splitRows, file, path, spanOwner, spanContext = null, painted = null, wordWrap, gutterCh, targets, generation, onAddComment, onExpandFold, onExpandGap }: Props = $props();
+
+  const ROW_TYPES: Record<PatchDisplayRow['side'], RowType> = { old: 'del', new: 'add', context: 'context' };
 
   // Whether `row` (or its `half` in split view) is a suggested row: the
-  // row the anchor names, by the rules of patchRows' anchorRow.
+  // row the anchor names (patchRows' rowMatchesAnchor), on its half.
   function isTarget(row: PatchDisplayRow, half: 'old' | 'new' | null): boolean {
     if (!targets || targets.length === 0) return false;
-    return targets.some((target) => {
-      if (target.side === 'old') return half !== 'new' && row.side !== 'new' && row.oldLine === target.oldLine;
-      if (target.side === 'new') return half !== 'old' && row.side !== 'old' && row.newLine === target.newLine;
-      if (target.side === 'context') return half !== 'old' && row.side === 'context' && row.oldLine === target.oldLine && row.newLine === target.newLine;
-      return false;
-    });
+    return targets.some((target) => (target.side === 'old' ? half !== 'new' : half !== 'old')
+      && rowMatchesAnchor(ROW_TYPES[row.side], row.oldLine, row.newLine, target));
+  }
+
+  // What the add button was pressed on: a reload between the press and
+  // the click must not open the comment on the row that replaced it.
+  let pressed: { anchor: EditorAnchor; generation: number | undefined } | null = null;
+  function addComment(anchor: EditorAnchor): void {
+    const at = pressed ?? { anchor, generation };
+    pressed = null;
+    onAddComment?.(at.anchor, at.generation);
   }
   // The tree's selected-row wash.
   const TARGET_CLASS = 'before:bg-accent/15';
@@ -101,23 +112,27 @@
       : 'whitespace-pre pl-2',
   );
 
-  function stackedAnchor(row: PatchDisplayRow): CommentAnchor {
+  function stackedAnchor(row: PatchDisplayRow): EditorAnchor {
     return {
       filePath: path,
       oldLine: row.oldLine || undefined,
       newLine: row.newLine || undefined,
       side: row.side,
       selectedText: stripPatchLinePrefix(row.line),
+      lineIndex: row.lineIndex,
     };
   }
 
-  function sideAnchor(row: PatchDisplayRow, side: 'old' | 'new'): CommentAnchor {
+  // A half of a split row; an unchanged row's half carries both numbers.
+  function sideAnchor(row: PatchDisplayRow, side: 'old' | 'new'): EditorAnchor {
+    const context = row.side === 'context';
     return {
       filePath: path,
-      oldLine: side === 'old' ? row.oldLine || undefined : undefined,
-      newLine: side === 'new' ? row.newLine || undefined : undefined,
+      oldLine: side === 'old' || context ? row.oldLine || undefined : undefined,
+      newLine: side === 'new' || context ? row.newLine || undefined : undefined,
       side,
       selectedText: stripPatchLinePrefix(row.line),
+      lineIndex: row.lineIndex,
     };
   }
 
@@ -147,7 +162,7 @@
 <!-- Reserved action column: a real cell at the row's left edge, so
      the hover affordance never paints over the line numbers. A row whose
      text is still being read (`pending`) has no text to quote yet. -->
-{#snippet actionCell(row: PatchDisplayRow, anchor: CommentAnchor, side: string)}
+{#snippet actionCell(row: PatchDisplayRow, anchor: EditorAnchor, side: string)}
   <span class="flex w-5 shrink-0 items-center justify-center">
     {#if onAddComment && !row.pending}
       <button
@@ -155,7 +170,8 @@
         class="flex size-4 items-center justify-center rounded-[3px] bg-accent text-[0.6875rem] font-semibold leading-none text-accent-fg opacity-0 transition-opacity duration-75 group-hover:opacity-100 focus-visible:opacity-100 compact:opacity-100 hover:brightness-110 focus:outline-none"
         aria-label={`Add ${side} comment`}
         data-testid="review-add-comment"
-        onclick={() => onAddComment?.(anchor)}
+        onpointerdown={() => { pressed = { anchor, generation }; }}
+        onclick={() => addComment(anchor)}
       >
         +
       </button>

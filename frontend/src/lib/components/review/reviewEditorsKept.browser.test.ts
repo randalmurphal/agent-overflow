@@ -386,7 +386,7 @@ describe('open comment editors across a row unmount', () => {
     q<HTMLButtonElement>('[data-testid="review-reload"]')!.click();
     await vi.waitFor(() => expect(review.loading).toBe(false));
     await frames(4);
-    expect(review.openEditors).toEqual([opened]);
+    expect(review.openEditors).toEqual([{ ...opened, generation: opened.generation + 1 }]);
     expect(editor()?.value).toBe('kept new');
     expect(q('[data-testid="review-draft-editor-note"]')).toBeNull();
 

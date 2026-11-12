@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import ReviewDraftEditor from './ReviewDraftEditor.svelte';
 import type { EditorRow } from '../../utils/reviewRows';
 
-const editor: EditorRow = { id: 'e1', filePath: 'src/a.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/a.ts', newLine: 5, side: 'new' }, suggested: null, armed: false };
+const editor: EditorRow = { id: 'e1', filePath: 'src/a.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/a.ts', newLine: 5, side: 'new' }, suggested: null, armed: false, occurrence: 0, repeated: false, generation: 1 };
 const suggested = { filePath: 'src/a.ts', newLine: 6, side: 'new' as const, selectedText: 'x' };
 
 function setup() {
@@ -48,7 +48,7 @@ describe('<ReviewDraftEditor> keyboard submit', () => {
   });
 });
 
-function renderEditor(row: EditorRow, handlers: Partial<Record<'onSubmit' | 'onCancel' | 'onUseLine' | 'onMove' | 'onCancelMove', (...args: string[]) => void>> = {}) {
+function renderEditor(row: EditorRow, handlers: Partial<Record<'onSubmit' | 'onCancel' | 'onUseLine' | 'onMove' | 'onCancelMove', (...args: any[]) => void>> = {}) {
   const props = {
     editor: row,
     body: 'draft text',
@@ -75,7 +75,7 @@ describe('<ReviewDraftEditor> whose file changed', () => {
     await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
     expect(onSubmit).not.toHaveBeenCalled();
     await fireEvent.click(view.getByRole('button', { name: 'Use this line' }));
-    expect(onUseLine).toHaveBeenCalledWith('e1');
+    expect(onUseLine).toHaveBeenCalledWith('e1', { generation: 1, suggested });
     expect(document.activeElement).toBe(textarea);
     await fireEvent.click(view.getByRole('button', { name: 'Move' }));
     expect(onMove).toHaveBeenCalledWith('e1');
@@ -93,9 +93,32 @@ describe('<ReviewDraftEditor> whose file changed', () => {
     expect(onCancel).not.toHaveBeenCalled();
   });
 
+  it('passes the suggestion the reader pressed on, even when a reload changed it before the click', async () => {
+    const onUseLine = vi.fn();
+    const { view } = renderEditor({ ...editor, state: 'detached', anchor: null, suggested }, { onUseLine });
+    const button = view.getByRole('button', { name: 'Use this line' });
+    await fireEvent.pointerDown(button);
+    const later = { ...suggested, newLine: 9 };
+    await view.rerender({ editor: { ...editor, state: 'detached', anchor: null, suggested: later, generation: 2 } });
+    await fireEvent.click(view.getByRole('button', { name: 'Use this line' }));
+    expect(onUseLine).toHaveBeenCalledWith('e1', { generation: 1, suggested });
+  });
+
   it('shows no note on a placed editor', () => {
     const { view } = renderEditor(editor);
     expect(view.queryByTestId('review-draft-editor-note')).toBeNull();
+  });
+});
+
+describe('<ReviewDraftEditor> on a line number two rows share', () => {
+  it('says a comment cannot be attached there, and offers Move', async () => {
+    const onMove = vi.fn();
+    const { view } = renderEditor({ ...editor, repeated: true }, { onMove });
+    expect(view.getByTestId('review-draft-editor-note').textContent).toContain('This line appears more than once in this view, so a comment cannot be attached to it.');
+    expect((view.getByRole('button', { name: 'Add comment' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(view.queryByRole('button', { name: 'Use this line' })).toBeNull();
+    await fireEvent.click(view.getByRole('button', { name: 'Move' }));
+    expect(onMove).toHaveBeenCalledWith('e1');
   });
 });
 

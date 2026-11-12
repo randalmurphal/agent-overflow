@@ -890,6 +890,16 @@ func gitlabPositionForComment(comment ReviewLineComment, refs *PRDiffRefs) (*git
 	default:
 		return nil, fmt.Errorf("draft note for %s has invalid side %q", comment.Path, comment.Side)
 	}
+	if comment.OldLine != nil {
+		// An unchanged line: GitLab names it by both numbers
+		// (https://docs.gitlab.com/api/discussions/#create-new-merge-request-thread).
+		// A range would need both numbers of its start, which the comment
+		// does not carry.
+		if position.NewLine == nil || comment.StartLine != nil {
+			return nil, fmt.Errorf("draft note for %s names an unchanged line as a range or on the left", comment.Path)
+		}
+		position.OldLine = comment.OldLine
+	}
 	if comment.StartLine != nil {
 		position.LineRange = gitlabLineRange(comment.Path, side, *comment.StartLine, *comment.Line)
 	}

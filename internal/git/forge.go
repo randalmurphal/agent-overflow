@@ -257,10 +257,15 @@ type SubmitReviewRequest struct {
 	Comments []ReviewLineComment `json:"comments"`
 }
 
+// ReviewLineComment is one comment of a review: a file comment, or a line
+// on the left (Line is its old number) or the right (its new number). An
+// unchanged line is on the right with its old number in OldLine, which
+// GitLab needs beside the new one.
 type ReviewLineComment struct {
 	Path      string `json:"path"`
 	Body      string `json:"body"`
 	Line      *int   `json:"line,omitempty"`
+	OldLine   *int   `json:"oldLine,omitempty"`
 	Side      string `json:"side"`
 	StartLine *int   `json:"startLine,omitempty"`
 }

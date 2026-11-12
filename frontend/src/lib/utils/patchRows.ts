@@ -475,84 +475,221 @@ export interface RowAnchor {
   newLine?: number;
 }
 
-// An `old` anchor names a deleted line or the left half of a context
-// line (split view), a `new` anchor an added line or the right half; both
-// keep posting on their side (LEFT oldLine, RIGHT newLine).
-function walkerMatches(walker: RowWalker, anchor: RowAnchor): boolean {
-  if (walker.type === 'gap') return false;
-  if (anchor.side === 'old') return (walker.type === 'del' || walker.type === 'context') && walker.oldLine === anchor.oldLine;
-  if (anchor.side === 'new') return (walker.type === 'add' || walker.type === 'context') && walker.newLine === anchor.newLine;
-  if (anchor.side === 'context') return walker.oldLine === anchor.oldLine && walker.newLine === anchor.newLine;
+/**
+ * Whether a row of `type` with these numbers is the row `anchor` names.
+ * An anchor with both numbers names the unchanged row that has them, from
+ * either half of a split row or the unified one: a comment on an unchanged
+ * line carries both. With one number, an `old` anchor names a deleted row
+ * and a `new` one an added row. A forge thread knows only its side's
+ * number: `loose` lets that number name an unchanged row too.
+ */
+export function rowMatchesAnchor(type: RowType, oldLine: number, newLine: number, anchor: RowAnchor, loose = false): boolean {
+  if (type !== 'add' && type !== 'del' && type !== 'context') return false;
+  const old = anchor.oldLine || 0;
+  const neu = anchor.newLine || 0;
+  if (anchor.side === 'file') return false;
+  if (old > 0 && neu > 0) return type === 'context' && oldLine === old && newLine === neu;
+  if (anchor.side === 'old') return old > 0 && oldLine === old && (type === 'del' || (loose && type === 'context'));
+  if (anchor.side === 'new') return neu > 0 && newLine === neu && (type === 'add' || (loose && type === 'context'));
   return false;
 }
 
-/** Display row index of the row a comment anchor names, or -1. */
-export function anchorRow(file: ReviewFile, anchor: RowAnchor): number {
+/** Display row index of the first row a comment anchor names, or -1. */
+export function anchorRow(file: ReviewFile, anchor: RowAnchor, loose = false): number {
   if (anchor.side === 'file') return -1;
   const walker = new RowWalker(file);
   while (walker.next()) {
-    if (walkerMatches(walker, anchor)) return walker.row;
+    if (rowMatchesAnchor(walker.type, walker.oldLine, walker.newLine, anchor, loose)) return walker.row;
   }
   return -1;
 }
 
+/** The rows of a file an anchor names, from one walk. */
+export interface AnchorRows {
+  /** How many rows the anchor names. */
+  count: number;
+  /** The display row of the one at `lineIndex` (the first when none). */
+  row: number;
+  /** Its place among them, from 0. */
+  occurrence: number;
+  /** Whether it is an unchanged row. */
+  context: boolean;
+}
+
+export function anchorRows(file: ReviewFile, anchor: RowAnchor, lineIndex?: number): AnchorRows {
+  const out: AnchorRows = { count: 0, row: -1, occurrence: 0, context: false };
+  if (anchor.side === 'file') return out;
+  const walker = new RowWalker(file);
+  while (walker.next()) {
+    if (!rowMatchesAnchor(walker.type, walker.oldLine, walker.newLine, anchor)) continue;
+    if (out.row < 0 || walker.lineIndex === lineIndex) {
+      out.row = walker.row;
+      out.occurrence = out.count;
+      out.context = walker.type === 'context';
+    }
+    out.count += 1;
+  }
+  return out;
+}
+
 /**
- * The anchor lines of a file's rows, by side, for membership checks of
- * many anchors against one file (PR threads, drafts). `context` maps a
- * context row's new line to its old line, `contextOld` its old line to its
- * new line.
+ * Whether a comment saved with this coordinate can say which row it is
+ * on: exactly one row of the file has it. A merged Edits file can repeat
+ * a coordinate across its sections. Saving and relocation both use it.
+ */
+export function namesOneRow(count: number): boolean {
+  return count === 1;
+}
+
+/**
+ * The anchor of the row a one-number anchor reaches on an unchanged line,
+ * with both numbers, or the anchor itself: a comment on an unchanged line
+ * is saved with both, whichever half it was written on.
+ */
+export function completeAnchor<T extends RowAnchor>(file: ReviewFile, anchor: T): T {
+  if (anchor.side === 'file' || ((anchor.oldLine || 0) > 0 && (anchor.newLine || 0) > 0)) return anchor;
+  const walker = new RowWalker(file);
+  let context: { oldLine: number; newLine: number } | null = null;
+  while (walker.next()) {
+    if (!rowMatchesAnchor(walker.type, walker.oldLine, walker.newLine, anchor, true)) continue;
+    if (walker.type !== 'context') return anchor;
+    context ??= { oldLine: walker.oldLine, newLine: walker.newLine };
+  }
+  return context ? { ...anchor, ...context } : anchor;
+}
+
+/**
+ * The anchor lines of a file's rows, for membership checks of many
+ * anchors against one file (PR threads): deleted and added rows by their
+ * number, unchanged rows by each number to the other.
  */
 export interface AnchorLines {
-  old: Set<number>;
-  new: Set<number>;
-  context: Map<number, number>;
-  contextOld: Map<number, number>;
+  del: Set<number>;
+  add: Set<number>;
+  contextByNew: Map<number, number>;
+  contextByOld: Map<number, number>;
 }
 
 export function anchorLines(file: ReviewFile): AnchorLines {
-  const out: AnchorLines = { old: new Set(), new: new Set(), context: new Map(), contextOld: new Map() };
+  const out: AnchorLines = { del: new Set(), add: new Set(), contextByNew: new Map(), contextByOld: new Map() };
   const walker = new RowWalker(file);
   while (walker.next()) {
-    if (walker.type === 'del') out.old.add(walker.oldLine);
-    else if (walker.type === 'add') out.new.add(walker.newLine);
-    else if (walker.type === 'context' || walker.type === 'marker') {
-      if (!out.context.has(walker.newLine)) out.context.set(walker.newLine, walker.oldLine);
-      if (walker.type === 'context' && !out.contextOld.has(walker.oldLine)) out.contextOld.set(walker.oldLine, walker.newLine);
+    if (walker.type === 'del') out.del.add(walker.oldLine);
+    else if (walker.type === 'add') out.add.add(walker.newLine);
+    else if (walker.type === 'context') {
+      if (!out.contextByNew.has(walker.newLine)) out.contextByNew.set(walker.newLine, walker.oldLine);
+      if (!out.contextByOld.has(walker.oldLine)) out.contextByOld.set(walker.oldLine, walker.newLine);
     }
   }
   return out;
 }
 
-/** Whether `anchor` names a row of the file, as `anchorRow` decides. */
-export function anchorLinesMatch(lines: AnchorLines, anchor: RowAnchor): boolean {
-  if (anchor.side === 'old') {
-    return anchor.oldLine !== undefined && (lines.old.has(anchor.oldLine) || lines.contextOld.has(anchor.oldLine));
-  }
-  if (anchor.side === 'new') {
-    return anchor.newLine !== undefined && (lines.new.has(anchor.newLine) || lines.context.has(anchor.newLine));
-  }
-  if (anchor.side === 'context') {
-    return anchor.newLine !== undefined && lines.context.get(anchor.newLine) === anchor.oldLine;
-  }
+/** Whether `anchor` names a row of the file, as `rowMatchesAnchor` decides. */
+export function anchorLinesMatch(lines: AnchorLines, anchor: RowAnchor, loose = false): boolean {
+  const old = anchor.oldLine || 0;
+  const neu = anchor.newLine || 0;
+  if (anchor.side === 'file') return false;
+  if (old > 0 && neu > 0) return lines.contextByNew.get(neu) === old || lines.contextByOld.get(old) === neu;
+  if (anchor.side === 'old') return old > 0 && (lines.del.has(old) || (loose && lines.contextByOld.has(old)));
+  if (anchor.side === 'new') return neu > 0 && (lines.add.has(neu) || (loose && lines.contextByNew.has(neu)));
   return false;
 }
 
-/** The line the row-model buckets an anchor's inserts under: the line
- * `RowWalker.anchorLine` reports for the row it names. An `old` anchor on
- * a context row's left half is keyed by that row's new line. 0 for a file
- * anchor, and for a line-anchor whose row is not in the file (the inserts
- * flush after the file's rows). */
-export function anchorInsertLine(lines: AnchorLines | null, anchor: RowAnchor): number {
-  if (anchor.side === 'file') return 0;
-  if (anchor.side === 'old') {
-    const oldLine = anchor.oldLine ?? 0;
-    if (lines && !lines.old.has(oldLine)) {
-      const newLine = lines.contextOld.get(oldLine);
-      if (newLine !== undefined) return newLine || oldLine;
-    }
-    return oldLine;
+/**
+ * Rows inserted among a file's rows (comments, editors): under its header,
+ * after the row an anchor names, or after its rows when no row is named.
+ * A walk of the file's rows takes each row's inserts in row order; an
+ * insert follows only a row that is its anchor's own row, never a row of
+ * the other side that shares the number. `occurrence` picks one of the
+ * rows a repeated coordinate names.
+ */
+export class InsertSlots<T> {
+  private readonly head: T[] = [];
+  private readonly byOld = new Map<number, InsertSlot<T>[]>();
+  private readonly byNew = new Map<number, InsertSlot<T>[]>();
+  private pending = 0;
+  private readonly order: T[] = [];
+
+  constructor(private readonly compare: (a: T, b: T) => number) {}
+
+  /** Under the file header. */
+  addHead(item: T): void {
+    this.head.push(item);
   }
-  return anchor.newLine || anchor.oldLine || 0;
+
+  /** After the row `anchor` names (`occurrence`: which of several). */
+  add(item: T, anchor: RowAnchor, loose = false, occurrence = 0): void {
+    if (anchor.side === 'file') {
+      this.addHead(item);
+      return;
+    }
+    this.order.push(item);
+    this.pending += 1;
+    const slot: InsertSlot<T> = { item, anchor, loose, occurrence, seen: 0 };
+    const neu = anchor.newLine || 0;
+    const map = neu > 0 ? this.byNew : this.byOld;
+    const key = neu > 0 ? neu : anchor.oldLine || 0;
+    const list = map.get(key);
+    if (list) list.push(slot);
+    else map.set(key, [slot]);
+  }
+
+  get size(): number {
+    return this.head.length + this.pending;
+  }
+
+  /** The inserts under the header, taken. */
+  takeHead(): T[] {
+    const out = this.head.slice().sort(this.compare);
+    this.head.length = 0;
+    return out;
+  }
+
+  /** The inserts that follow a row with these numbers, taken. */
+  take(type: RowType, oldLine: number, newLine: number): T[] | null {
+    if (this.pending === 0) return null;
+    const out: T[] = [];
+    const visit = (map: Map<number, InsertSlot<T>[]>, key: number): void => {
+      const list = map.get(key);
+      if (!list) return;
+      for (let index = 0; index < list.length; index += 1) {
+        const slot = list[index];
+        if (!rowMatchesAnchor(type, oldLine, newLine, slot.anchor, slot.loose)) continue;
+        if (slot.seen < slot.occurrence) {
+          slot.seen += 1;
+          continue;
+        }
+        out.push(slot.item);
+        list.splice(index, 1);
+        index -= 1;
+        this.pending -= 1;
+      }
+      if (list.length === 0) map.delete(key);
+    };
+    if (newLine > 0) visit(this.byNew, newLine);
+    if (oldLine > 0) visit(this.byOld, oldLine);
+    return out.length > 0 ? out.sort(this.compare) : null;
+  }
+
+  /** The inserts no row took, in the order they were added. */
+  takeRest(): T[] {
+    if (this.pending === 0) return [];
+    const left = new Set<T>();
+    for (const map of [this.byNew, this.byOld]) {
+      for (const list of map.values()) for (const slot of list) left.add(slot.item);
+      map.clear();
+    }
+    this.pending = 0;
+    return this.order.filter((item) => left.has(item));
+  }
+}
+
+interface InsertSlot<T> {
+  item: T;
+  anchor: RowAnchor;
+  loose: boolean;
+  occurrence: number;
+  seen: number;
 }
 
 /**
@@ -562,16 +699,6 @@ export function anchorInsertLine(lines: AnchorLines | null, anchor: RowAnchor): 
  * passed the target and stopped improving.
  */
 export function nearestLineRow(file: ReviewFile, side: 'new' | 'old', line: number): number {
-  return lineRow(file, side, line, false);
-}
-
-/** The display row that carries exactly `line` on `side`, or -1: a thread
- * on a line the diff does not show must not borrow a neighbour's code. */
-export function exactLineRow(file: ReviewFile, side: 'new' | 'old', line: number): number {
-  return lineRow(file, side, line, true);
-}
-
-function lineRow(file: ReviewFile, side: 'new' | 'old', line: number, exact: boolean): number {
   const walker = new RowWalker(file);
   let best = -1;
   let bestDist = Infinity;
@@ -588,5 +715,5 @@ function lineRow(file: ReviewFile, side: 'new' | 'old', line: number, exact: boo
     if (dist === 0) return best;
     if (rowLine > line && bestDist < dist) break;
   }
-  return exact && bestDist !== 0 ? -1 : best;
+  return best;
 }

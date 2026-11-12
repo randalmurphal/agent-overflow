@@ -5,9 +5,9 @@ import {
   type SplitDisplayRow,
 } from './patchFiles';
 import {
-  anchorInsertLine,
   anchorLines,
   anchorLinesMatch,
+  InsertSlots,
   materializeRows,
   RowWalker,
   type AnchorLines,
@@ -72,8 +72,16 @@ export interface EditorRow {
   /** Detached: the row it renders after and "Use this line" takes. It
    * proves nothing; null when the file has no row on its side. */
   readonly suggested: CommentAnchor | null;
-  /** Detached and armed: the next line picked takes it ("Move"). */
+  /** Armed: the next line picked takes it ("Move"). */
   readonly armed: boolean;
+  /** Placed: which of the rows its coordinate names it is on, from 0. */
+  readonly occurrence: number;
+  /** Placed on a coordinate several rows of its file have: it cannot be
+   * saved there (`namesOneRow`). */
+  readonly repeated: boolean;
+  /** The diff on screen it was placed in (`ShownDiff.generation`): an
+   * action the reader took on it is valid only there. */
+  readonly generation: number;
 }
 
 /** The row key of the group of editors whose file is not in the diff. */
@@ -181,15 +189,12 @@ export function buildReviewRows(input: ReviewRowsInput): ReviewRowsResult {
     if (input.collapsedPaths.has(file.path)) continue;
 
     const inserts = insertsByFile.get(file.path);
-    pushFileLevelInserts(push, fileIndex, inserts);
+    for (const insert of inserts?.takeHead() ?? []) pushInsert(push, fileIndex, insert);
     pushLineBlocks(push, fileIndex, file, input.viewMode, inserts);
     // Anchors whose line no longer exists in the diff (the source moved
     // under a draft) still render — flushed after the file's blocks, never
     // silently dropped.
-    for (const bucket of inserts?.values() ?? []) {
-      for (const insert of bucket) pushInsert(push, fileIndex, insert);
-    }
-    inserts?.clear();
+    for (const insert of inserts?.takeRest() ?? []) pushInsert(push, fileIndex, insert);
   }
 
   if (input.files.length > 0) {
@@ -223,9 +228,9 @@ export function reviewRowEstimate(result: ReviewRowsResult, wordWrap: boolean): 
 }
 
 /**
- * The inserted rows of each file by the anchor line they follow (0: under
- * the file header), each bucket in row order. The row model consumes the
- * buckets as it walks a file's rows; so does the find scan.
+ * The inserted rows of each file, slotted after the rows they follow
+ * (`InsertSlots`). The row model takes them as it walks a file's rows; so
+ * does the find scan.
  */
 export function reviewInsertsByFile(
   files: readonly ReviewFile[],
@@ -233,8 +238,8 @@ export function reviewInsertsByFile(
   openEditors: readonly EditorRow[],
   prThreads: readonly ReviewThread[],
   expandedPRThreadIds: ReadonlySet<string>,
-): Map<string, Map<number, InsertRow[]>> {
-  const byFile = new Map<string, Map<number, InsertRow[]>>();
+): Map<string, InsertSlots<InsertRow>> {
+  const byFile = new Map<string, InsertSlots<InsertRow>>();
   const filesByPath = new Map<string, ReviewFile>();
   for (const file of files) filesByPath.set(file.path, file);
   // One walk per file that has threads, not one per thread.
@@ -248,78 +253,57 @@ export function reviewInsertsByFile(
     }
     return lines;
   }
-
-  function add(filePath: string, line: number, row: InsertRow): void {
-    const byLine = byFile.get(filePath) ?? new Map<number, InsertRow[]>();
-    const bucket = byLine.get(line) ?? [];
-    bucket.push(row);
-    byLine.set(line, bucket);
-    byFile.set(filePath, byLine);
+  function slotsOf(path: string): InsertSlots<InsertRow> {
+    let slots = byFile.get(path);
+    if (!slots) {
+      slots = new InsertSlots(compareInsertRows);
+      byFile.set(path, slots);
+    }
+    return slots;
   }
 
-  // An `old` anchor may name a context row's left half, which the walk
-  // keys by its new line: only those need the file's lines.
-  const insertLine = (anchor: CommentAnchor): number =>
-    anchorInsertLine(anchor.side === 'old' ? linesOf(anchor.filePath) : null, anchor);
-
+  // A draft follows the row its saved numbers name; one no row has is
+  // flushed after the file's rows. A draft saved before unchanged lines
+  // carried both numbers names its row by one, as a forge thread does; it
+  // shows there, and the review leaves it out (draftAnchorExists).
   for (const comment of drafts) {
     if (comment.status !== 'draft') continue;
     const anchor = commentAnchor(comment);
-    add(comment.filePath, insertLine(anchor), {
-      kind: 'comment-thread',
-      threadKey: comment.id,
-      anchor,
-    });
+    slotsOf(comment.filePath).add({ kind: 'comment-thread', threadKey: comment.id, anchor }, anchor, true);
   }
 
   // A detached editor follows its suggested row (under the header when it
   // has none); a gone one is the row model's group, not a file's insert.
   openEditors.forEach((editor, order) => {
     if (editor.state === 'gone' || !filesByPath.has(editor.filePath)) return;
+    const row: InsertRow = { kind: 'draft-editor', editor, order };
     const at = editor.state === 'placed' ? editor.anchor : editor.suggested;
-    add(editor.filePath, at === null ? 0 : insertLine(at), {
-      kind: 'draft-editor',
-      editor,
-      order,
-    });
+    if (at === null) slotsOf(editor.filePath).addHead(row);
+    else slotsOf(editor.filePath).add(row, at, false, editor.state === 'placed' ? editor.occurrence : 0);
   });
 
   for (const thread of prThreads) {
     const anchor = prThreadAnchor(thread);
     const lines = anchor.side === 'file' ? null : linesOf(anchor.filePath);
-    const anchored = lines !== null && anchorLinesMatch(lines, anchor);
+    // A forge thread names one side's number: it may be an unchanged row.
+    const anchored = lines !== null && anchorLinesMatch(lines, anchor, true);
     // Placement follows the anchor alone: a thread the forge calls outdated
     // whose line still matches the diff stays on that line (GitLab keeps
     // the position through pushes); one whose line is gone sits under the
     // file header. Only settled threads start folded.
     const orphaned = !anchored;
-    add(anchor.filePath, orphaned ? 0 : anchorInsertLine(lines, anchor), {
+    const row: InsertRow = {
       kind: 'pr-thread',
       thread,
       anchor,
       collapsed: thread.isResolved && !expandedPRThreadIds.has(thread.id),
       orphaned,
-    });
-  }
-
-  for (const byLine of byFile.values()) {
-    for (const bucket of byLine.values()) {
-      bucket.sort(compareInsertRows);
-    }
+    };
+    if (orphaned) slotsOf(anchor.filePath).addHead(row);
+    else slotsOf(anchor.filePath).add(row, anchor, true);
   }
 
   return byFile;
-}
-
-function pushFileLevelInserts(
-  push: (row: ReviewRow, key: string, fileIndex: number) => void,
-  fileIndex: number,
-  inserts: Map<number, InsertRow[]> | undefined,
-): void {
-  for (const insert of inserts?.get(0) ?? []) {
-    pushInsert(push, fileIndex, insert);
-  }
-  inserts?.delete(0);
 }
 
 /** A block of a file with no inserts, reusable at any file index. */
@@ -343,7 +327,7 @@ function pushLineBlocks(
   fileIndex: number,
   file: ReviewFile,
   viewMode: 'stacked' | 'split',
-  inserts: Map<number, InsertRow[]> | undefined,
+  inserts: InsertSlots<InsertRow> | undefined,
 ): void {
   const split = viewMode === 'split';
   if (!inserts || inserts.size === 0) {
@@ -377,7 +361,7 @@ function pushLineBlocks(
 function walkLineBlocks(
   file: ReviewFile,
   split: boolean,
-  inserts: Map<number, InsertRow[]> | undefined,
+  inserts: InsertSlots<InsertRow> | undefined,
   onBlock: (block: BlockLayout) => void,
   onInsert: (insert: InsertRow) => void,
 ): void {
@@ -438,16 +422,11 @@ function walkLineBlocks(
         splitRows += 1;
       }
     }
-    const line = walker.anchorLine();
-    const lineInserts = inserts?.get(line);
+    const lineInserts = inserts?.take(walker.type, walker.oldLine, walker.newLine) ?? null;
     const chunkEnd = (walker.row + 1) % REVIEW_LINE_BLOCK_MAX_LINES === 0;
-    if (!chunkEnd && !lineInserts?.length) continue;
+    if (!chunkEnd && !lineInserts) continue;
     close();
     for (const insert of lineInserts ?? []) onInsert(insert);
-    // Consume the bucket: a deleted row (oldLine N) and a later row
-    // (newLine N) both report line N, and attaching the same insert
-    // twice would duplicate its row key.
-    inserts?.delete(line);
   }
   close();
 }

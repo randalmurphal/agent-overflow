@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 import { setPatchTextBudgetForTest } from './patchMemory.svelte';
-import { materializeRows } from './patchRows';
-import { parseReviewFiles, PatchTextLost, type ReviewFile } from './patchStore';
+import { InsertSlots, materializeRows } from './patchRows';
+import { parseReviewFiles, PatchTextLost, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
+import { mergePatchFilesByPath, parsePatchFiles } from './patchFiles';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 import {
@@ -38,15 +39,15 @@ function addedPatch(path: string, count: number): string {
 }
 
 function editorOn(id: string, anchor: CommentAnchor): EditorRow {
-  return { id, filePath: anchor.filePath, side: anchor.side, state: 'placed', anchor, suggested: null, armed: false };
+  return { id, filePath: anchor.filePath, side: anchor.side, state: 'placed', anchor, suggested: null, armed: false, occurrence: 0, repeated: false, generation: 1 };
 }
 
 function detachedEditor(id: string, filePath: string, suggested: CommentAnchor | null = null): EditorRow {
-  return { id, filePath, side: 'new', state: 'detached', anchor: null, suggested, armed: false };
+  return { id, filePath, side: 'new', state: 'detached', anchor: null, suggested, armed: false, occurrence: 0, repeated: false, generation: 1 };
 }
 
 function goneEditor(id: string, filePath: string): EditorRow {
-  return { id, filePath, side: 'new', state: 'gone', anchor: null, suggested: null, armed: false };
+  return { id, filePath, side: 'new', state: 'gone', anchor: null, suggested: null, armed: false, occurrence: 0, repeated: false, generation: 1 };
 }
 
 function contextPatch(path: string): string {
@@ -193,7 +194,7 @@ describe('buildReviewRows', () => {
       viewMode: 'split',
       collapsedPaths: new Set(),
       drafts: [],
-      openEditors: [editorOn('left', { filePath: 'src/file.ts', side: 'old', oldLine: 3 })],
+      openEditors: [editorOn('left', { filePath: 'src/file.ts', side: 'old', oldLine: 3, newLine: 3 })],
     });
     const at = result.rows.findIndex((row) => row.kind === 'draft-editor');
     const before = result.rows[at - 1];
@@ -536,6 +537,95 @@ describe('buildReviewRows', () => {
     for (const block of lineBlocks(result.rows)) {
       expect(block.splitCount).toBe(new BlockRowsCache().get(files[0], block).splitRows?.length);
     }
+  });
+});
+
+// The file rows above an inserted row: which row it follows.
+function rowsAbove(result: { rows: ReviewRow[]; rowKeys: string[] }, key: string): number {
+  const at = result.rowKeys.indexOf(key);
+  expect(at, key).toBeGreaterThanOrEqual(0);
+  return lineBlocks(result.rows.slice(0, at)).reduce((sum, block) => sum + block.count, 0);
+}
+
+describe('InsertSlots', () => {
+  it('gives an insert only to a row of its own kind, never another row that shares the number', () => {
+    const slots = new InsertSlots<string>((a, b) => a.localeCompare(b));
+    slots.add('unchanged', { side: 'old', oldLine: 3, newLine: 2 });
+    slots.add('added', { side: 'new', newLine: 2 });
+    slots.add('forge', { side: 'new', newLine: 2 }, true);
+    // An added row with new line 2 takes the added and the forge thread's.
+    expect(slots.take('add', 0, 2)).toEqual(['added', 'forge']);
+    // A deleted row with old line 3 takes nothing.
+    expect(slots.take('del', 3, 0)).toBeNull();
+    expect(slots.take('context', 3, 2)).toEqual(['unchanged']);
+    expect(slots.size).toBe(0);
+  });
+
+  it('gives a one-number insert to an unchanged row only when loose', () => {
+    const slots = new InsertSlots<string>((a, b) => a.localeCompare(b));
+    slots.add('strict', { side: 'new', newLine: 2 });
+    slots.add('loose', { side: 'new', newLine: 2 }, true);
+    expect(slots.take('context', 3, 2)).toEqual(['loose']);
+    expect(slots.takeRest()).toEqual(['strict']);
+  });
+});
+
+describe('buildReviewRows: the row a card follows', () => {
+  // ' a', '-b', ' c', ' d': b is old 2; c is old 3 and new 2.
+  const patch = ['diff --git a/f.ts b/f.ts', 'index 1111111..2222222 100644', '--- a/f.ts', '+++ b/f.ts', '@@ -1,4 +1,3 @@', ' a', '-b', ' c', ' d'].join('\n');
+
+  it.each(['split', 'stacked'] as const)('puts a card on the left half of c after c, never under the deletion b (%s)', (viewMode) => {
+    const files = parseReviewFiles(patch);
+    const result = buildReviewRows({
+      files,
+      viewMode,
+      collapsedPaths: new Set(),
+      drafts: [draft({ id: 'saved', filePath: 'f.ts', side: 'old', oldLine: 3, newLine: 2 })],
+      openEditors: [editorOn('open', { filePath: 'f.ts', side: 'old', oldLine: 3, newLine: 2 })],
+      prThreads: [prThread({ id: 'forge', path: 'f.ts', line: 3, side: 'left' })],
+      expandedPRThreadIds: new Set(),
+    });
+    for (const key of ['t:saved', 'd:open', 'pt:forge']) expect(rowsAbove(result, key), key).toBe(3);
+    // The deletion's own card stays on it.
+    const onB = buildReviewRows({
+      files, viewMode, collapsedPaths: new Set(), drafts: [], openEditors: [],
+      prThreads: [prThread({ id: 'b', path: 'f.ts', line: 2, side: 'left' })], expandedPRThreadIds: new Set(),
+    });
+    expect(rowsAbove(onB, 'pt:b')).toBe(2);
+  });
+
+  it('shows a saved draft with one number on an unchanged line on that line, as before', () => {
+    const files = parseReviewFiles(patch);
+    const result = buildReviewRows({
+      files,
+      viewMode: 'split',
+      collapsedPaths: new Set(),
+      drafts: [draft({ id: 'left-only', filePath: 'f.ts', side: 'old', oldLine: 3 }), draft({ id: 'right-only', filePath: 'f.ts', side: 'new', newLine: 2 })],
+      openEditors: [],
+    });
+    expect(rowsAbove(result, 't:left-only')).toBe(3);
+    expect(rowsAbove(result, 't:right-only')).toBe(3);
+  });
+
+  it('puts an editor on the row of its coordinate the reader opened it on', () => {
+    // Line 1 changed twice in one turn: two added rows have new line 1.
+    const file = {
+      ...reviewFileFromPatchFile(mergePatchFilesByPath(parsePatchFiles([
+        ['diff --git a/x.go b/x.go', 'index 1111111..2222222 100644', '--- a/x.go', '+++ b/x.go', '@@ -1,1 +1,1 @@', '-a', '+b'].join('\n'),
+        ['diff --git a/x.go b/x.go', 'index 2222222..3333333 100644', '--- a/x.go', '+++ b/x.go', '@@ -1,1 +1,1 @@', '-b', '+c'].join('\n'),
+      ].join('\n')))[0]),
+      mergedSections: 2,
+    };
+    const one: CommentAnchor = { filePath: 'x.go', side: 'new', newLine: 1 };
+    const result = buildReviewRows({
+      files: [file],
+      viewMode: 'stacked',
+      collapsedPaths: new Set(),
+      drafts: [],
+      openEditors: [{ ...editorOn('first', one), occurrence: 0 }, { ...editorOn('second', one), occurrence: 1 }],
+    });
+    expect(rowsAbove(result, 'd:first')).toBe(2);
+    expect(rowsAbove(result, 'd:second')).toBe(4);
   });
 });
 

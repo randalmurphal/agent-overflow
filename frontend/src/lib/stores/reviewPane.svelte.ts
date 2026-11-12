@@ -143,12 +143,12 @@ import {
 } from '../utils/diffContextExpansion';
 import type { DiffGap } from '../utils/patchFiles';
 import { PatchTextLost, reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
-import { anchorRow } from '../utils/patchRows';
+import { anchorRows, completeAnchor, namesOneRow } from '../utils/patchRows';
 import { anchorKey, type CommentAnchor, type EditorRow, type EditorState } from '../utils/reviewRows';
 import {
   EDITOR_QUOTE_MAX_BYTES,
   lineGuard,
-  RELOCATION_BUDGET_MS,
+  RELOCATION_BUDGET_BYTES,
   RELOCATION_BUDGET_ROWS,
   RelocationBudget,
   RelocationCancelled,
@@ -372,19 +372,25 @@ export interface ReviewPaneState {
   /** Opens an editor on a line of the diff on screen, or focuses the one
    * already open on it; with an editor armed (moveEditor), moves that one
    * to the line instead. Returns its id; null when the diff on screen is
-   * not the subject the controls name, or has no such line. */
-  openDraftEditor(anchor: CommentAnchor): string | null;
+   * not the subject the controls name, has no such line, or is not the
+   * one `generation` names (the diff the reader pressed in). `anchor`'s
+   * `lineIndex` names the row among several with its coordinate. */
+  openDraftEditor(anchor: EditorAnchor, generation?: number): string | null;
   /** Discards an open editor and its text. */
   closeDraftEditor(editorId: string): void;
   /** Places a detached editor on its suggested row, as if it were opened
-   * there now. False when that row is not on screen. */
-  useSuggestedLine(editorId: string): boolean;
-  /** Arms a detached editor: the next line openDraftEditor names takes it
-   * and its text. Arming one disarms any other. */
+   * there now. False when that row is not on screen, or is not the one
+   * `seen` names: the suggestion the reader saw, in the diff it was in. */
+  useSuggestedLine(editorId: string, seen: Pick<EditorRow, 'generation' | 'suggested'>): boolean;
+  /** Arms a detached editor, or one on a line number several rows share:
+   * the next line openDraftEditor names takes it and its text. Arming one
+   * disarms any other. */
   moveEditor(editorId: string): void;
   cancelEditorMove(): void;
   /** The editor a picked line will take, if any. */
   readonly armedEditorId: string | null;
+  /** The diff on screen's generation (ShownDiff.generation); 0 before one. */
+  readonly shownGeneration: number;
   /** Store-backed editor text — survives virtualizer row unmounts. */
   draftBodyFor(editorId: string): string;
   setDraftBody(editorId: string, body: string): void;
@@ -635,11 +641,16 @@ export interface PinnedReviewPR {
 /** An open new-comment editor of the review (utils/editorPlacement.ts). */
 export type ReviewEditor = EditorRow;
 
+/** A line a gesture names: its anchor and, for a row whose coordinate
+ * other rows share, the row's line in the file's body. */
+export type EditorAnchor = CommentAnchor & { lineIndex?: number };
+
 /** Why createComment did not save: the editor belongs to another diff,
- * has no proven line, was proven against a diff no longer on screen, or
- * quotes a line longer than a comment may. */
+ * has no proven line, was proven against a diff no longer on screen, is
+ * on a line number several rows of its file share, or quotes a line
+ * longer than a comment may. */
 export class ReviewCommentRefused extends Error {
-  constructor(readonly reason: 'subject' | 'detached' | 'stale' | 'too-long', message: string) {
+  constructor(readonly reason: 'subject' | 'detached' | 'stale' | 'repeated' | 'too-long', message: string) {
     super(message);
     this.name = 'ReviewCommentRefused';
   }
@@ -650,6 +661,7 @@ const REVIEW_EDITOR_GONE = 'This file is no longer in the diff.';
 const REVIEW_EDITOR_OTHER_DIFF = 'This comment was opened on another diff.';
 const REVIEW_EDITOR_CLOSED = 'This comment editor is closed.';
 const REVIEW_QUOTE_TOO_LONG = 'This line is too long to comment on.';
+export const REVIEW_EDITOR_REPEATED = 'This line appears more than once in this view, so a comment cannot be attached to it.';
 
 /** An open editor, replaced (never changed in place) on every change, so
  * work across an await can tell whether it still stands. */
@@ -663,6 +675,10 @@ interface EditorRecord {
   readonly state: EditorState;
   /** Placed: the line it saves on. */
   readonly anchor: CommentAnchor | null;
+  /** Placed: which of the rows its coordinate names it is on, and
+   * whether there are several (it cannot be saved then). */
+  readonly occurrence: number;
+  readonly repeated: boolean;
   /** Detached: the row it shows after; proves nothing. */
   readonly suggested: CommentAnchor | null;
   /** Its last line number on its side, for the suggested row. */
@@ -695,6 +711,8 @@ function reviewSubjectKey(parts: { scope: ReviewScope; baseBranch: string | null
 /** The diff on screen, committed with its files: comments open and save
  * against it, never against the controls' subject while another loads. */
 interface ShownDiff {
+  /** Counts commits: an action is valid only in the diff it was taken in. */
+  readonly generation: number;
   readonly subject: string;
   readonly scope: ReviewScope;
   readonly sourceKey: string;
@@ -707,11 +725,11 @@ function utf8Bytes(text: string): number {
 }
 
 /** Relocation's allowance; tests narrow it. */
-const relocationBudget = { rows: RELOCATION_BUDGET_ROWS, ms: RELOCATION_BUDGET_MS };
-export function __setRelocationBudgetForTest(rows: number, ms = RELOCATION_BUDGET_MS): () => void {
+const relocationBudget = { rows: RELOCATION_BUDGET_ROWS, bytes: RELOCATION_BUDGET_BYTES };
+export function __setRelocationBudgetForTest(rows: number, bytes = RELOCATION_BUDGET_BYTES): () => void {
   const before = { ...relocationBudget };
   relocationBudget.rows = rows;
-  relocationBudget.ms = ms;
+  relocationBudget.bytes = bytes;
   return () => Object.assign(relocationBudget, before);
 }
 
@@ -1223,7 +1241,9 @@ export function createReviewPaneState(
   // The open editors of the diff on screen, as the rows place them.
   const shownEditors: readonly ReviewEditor[] = $derived(shown === null ? [] : openEditors
     .filter((editor) => editor.subject === shown?.subject)
-    .map(({ id, filePath, side, state, anchor, suggested }) => ({ id, filePath, side, state, anchor, suggested, armed: id === armedEditorId })));
+    .map(({ id, filePath, side, state, anchor, suggested, occurrence, repeated }) => ({
+      id, filePath, side, state, anchor, suggested, occurrence, repeated, armed: id === armedEditorId, generation: shown?.generation ?? 0,
+    })));
   // One gap-suppressed copy per loaded file, so a file keeps its identity
   // across rebuilds of the overlay below.
   const suppressedFiles = new WeakMap<ReviewFile, ReviewFile>();
@@ -1770,6 +1790,7 @@ export function createReviewPaneState(
       patchKey = read.patchKey;
       shownIgnoreWhitespace = requestedIgnoreWhitespace;
       shown = {
+        generation: (shown?.generation ?? 0) + 1,
         subject: committed,
         scope,
         sourceKey: sourceKeyFor(loadingPRRef),
@@ -2183,7 +2204,7 @@ export function createReviewPaneState(
   // The editor with no proven line: detached in a file of the diff, gone
   // when the file is not in it.
   function detached(editor: EditorRecord, reason: DetachReason, suggested: CommentAnchor | null = null): EditorRecord {
-    return { ...editor, state: reason === 'file-gone' ? 'gone' : 'detached', anchor: null, suggested, reason, shownFile: null, baseFile: null };
+    return { ...editor, state: reason === 'file-gone' ? 'gone' : 'detached', anchor: null, occurrence: 0, repeated: false, suggested, reason, shownFile: null, baseFile: null };
   }
 
   // Places the open editors of `subject` in `next`, the diff a load is
@@ -2205,44 +2226,62 @@ export function createReviewPaneState(
       });
     }
     try {
-      return await relocateEditors(targets, next, new RelocationBudget(relocationBudget.rows, relocationBudget.ms), () => seq !== loadSeq || disposed);
+      return await relocateEditors(targets, next, new RelocationBudget(relocationBudget.rows, relocationBudget.bytes), () => seq !== loadSeq || disposed);
     } catch (err) {
       if (err instanceof RelocationCancelled) return null;
       if (!(err instanceof PatchTextLost)) reportFrontendDiagnostic('review diff: open comment editors could not be placed', String(err));
-      return new Map(editors.map((editor) => [editor, { filePath: editor.filePath, anchor: null, proof: editor.proof, reason: 'line-changed', suggested: null }]));
+      const paths = new Set(next.map((file) => file.path));
+      return new Map(editors.map((editor) => [editor, {
+        filePath: editor.filePath, anchor: null, proof: editor.proof, reason: paths.has(editor.filePath) ? 'line-changed' : 'file-gone', suggested: null,
+      }]));
     }
   }
 
   // Applies placements in the commit step, which also disarms a Move. An
   // editor of the subject with no placement was opened on the previous
   // diff while they were worked out: nothing proves its line in this one.
+  // Whether an editor is in a file of the diff decides where it renders
+  // (its file or the group), whatever placed it.
   function applyPlacements(subject: string, placements: Map<EditorRecord, RelocationOutcome> | null): void {
     armedEditorId = null;
     keepEditorsOf(subject);
     if (openEditors.length === 0) return;
+    const inDiff = (path: string): boolean => files.some((file) => file.path === path);
     openEditors = openEditors.map((editor) => {
       const outcome = placements?.get(editor);
       if (!outcome) {
-        if (editor.state !== 'placed') return editor;
-        return detached(editor, files.some((file) => file.path === editor.filePath) ? 'line-changed' : 'file-gone');
+        if (editor.state === 'detached' && inDiff(editor.filePath)) return editor;
+        return detached(editor, inDiff(editor.filePath) ? 'line-changed' : 'file-gone', editor.state === 'detached' ? editor.suggested : null);
       }
       const moved = { ...editor, filePath: outcome.filePath, proof: outcome.proof };
+      if (!inDiff(outcome.filePath)) return detached(moved, 'file-gone');
       const shownFile = outcome.anchor ? files.find((file) => file.path === outcome.filePath) ?? null : null;
       const baseFile = outcome.anchor ? loadedFiles.find((file) => file.path === outcome.filePath) ?? null : null;
-      if (!outcome.anchor || !shownFile || !baseFile) return detached(moved, outcome.reason ?? 'line-changed', outcome.suggested);
-      return { ...moved, state: 'placed', anchor: outcome.anchor, suggested: null, reason: null, line: anchorSideLine(outcome.anchor), shownFile, baseFile };
+      if (!outcome.anchor || !shownFile || !baseFile) {
+        return detached(moved, outcome.reason === 'file-gone' || !outcome.reason ? 'line-changed' : outcome.reason, outcome.suggested);
+      }
+      return {
+        ...moved, state: 'placed', anchor: outcome.anchor, occurrence: 0, repeated: false, suggested: null, reason: null,
+        line: anchorSideLine(outcome.anchor), shownFile, baseFile,
+      };
     });
   }
 
-  // A new editor on `anchor` of the diff on screen, or null when that diff
-  // is not the subject the controls name or has no such line.
-  function newEditor(anchor: CommentAnchor, id: string = randomId()): EditorRecord | null {
+  // A new editor on `at` of the diff on screen, or null when that diff is
+  // not the subject the controls name or has no such line. An unchanged
+  // line is saved with both numbers, whichever half was used; a line
+  // number several rows share keeps the row the reader opened it on
+  // (`lineIndex`) and cannot be saved.
+  function newEditor(at: EditorAnchor, id: string = randomId()): EditorRecord | null {
     const bundle = shown;
     if (bundle === null || bundle.subject !== requestedSubject) return null;
-    const shownFile = files.find((file) => file.path === anchor.filePath);
-    const baseFile = loadedFiles.find((file) => file.path === anchor.filePath);
+    const shownFile = files.find((file) => file.path === at.filePath);
+    const baseFile = loadedFiles.find((file) => file.path === at.filePath);
     if (!shownFile || !baseFile) return null;
-    if (anchor.side !== 'file' && anchorRow(shownFile, anchor) < 0) return null;
+    const { lineIndex, ...given } = at;
+    const anchor = completeAnchor(shownFile, given);
+    const rows = anchorRows(shownFile, anchor, lineIndex);
+    if (anchor.side !== 'file' && rows.count === 0) return null;
     const quote = anchor.selectedText ?? '';
     const quoteTooLong = utf8Bytes(quote) > EDITOR_QUOTE_MAX_BYTES;
     return {
@@ -2252,6 +2291,8 @@ export function createReviewPaneState(
       side: anchor.side,
       state: 'placed',
       anchor: { ...anchor, selectedText: quoteTooLong ? '' : quote },
+      occurrence: rows.occurrence,
+      repeated: anchor.side !== 'file' && !namesOneRow(rows.count),
       suggested: null,
       line: anchorSideLine(anchor),
       reason: null,
@@ -2264,13 +2305,13 @@ export function createReviewPaneState(
     };
   }
 
-  function placedEditorOn(anchor: CommentAnchor): EditorRecord | undefined {
-    const key = anchorKey(anchor);
-    return openEditors.find((editor) => editor.subject === shown?.subject && editor.anchor !== null && anchorKey(editor.anchor) === key);
+  function placedEditorOn(at: EditorRecord): EditorRecord | undefined {
+    const key = anchorKey(at.anchor!);
+    return openEditors.find((editor) => editor.subject === shown?.subject && editor.anchor !== null && anchorKey(editor.anchor) === key && editor.occurrence === at.occurrence);
   }
 
   // Puts `editor` on `anchor` with its id and text, as if opened there now.
-  function attachEditor(editor: EditorRecord, anchor: CommentAnchor): boolean {
+  function attachEditor(editor: EditorRecord, anchor: EditorAnchor): boolean {
     const placed = newEditor(anchor, editor.id);
     if (!placed) return false;
     replaceEditor(editor, placed);
@@ -2278,34 +2319,37 @@ export function createReviewPaneState(
     return true;
   }
 
-  function openDraftEditor(anchor: CommentAnchor): string | null {
+  function openDraftEditor(anchor: EditorAnchor, generation?: number): string | null {
+    if (generation !== undefined && generation !== shown?.generation) return null;
     const armed = armedEditorId === null ? undefined : openEditors.find((editor) => editor.id === armedEditorId);
     if (armed) {
       if (!attachEditor(armed, anchor)) return null;
       pendingEditorFocusId = armed.id;
       return armed.id;
     }
-    const existing = placedEditorOn(anchor);
-    if (existing && shown?.subject === requestedSubject) {
+    const editor = newEditor(anchor);
+    if (!editor) return null;
+    const existing = placedEditorOn(editor);
+    if (existing) {
       pendingEditorFocusId = existing.id;
       return existing.id;
     }
-    const editor = newEditor(anchor);
-    if (!editor) return null;
     pendingEditorFocusId = editor.id;
     openEditors = [...openEditors, editor];
     return editor.id;
   }
 
-  function useSuggestedLine(editorId: string): boolean {
+  function useSuggestedLine(editorId: string, seen: Pick<EditorRow, 'generation' | 'suggested'>): boolean {
     const editor = openEditors.find((candidate) => candidate.id === editorId);
-    if (!editor || editor.state !== 'detached' || !editor.suggested) return false;
+    if (!editor || editor.state !== 'detached' || !editor.suggested || !seen.suggested) return false;
+    if (seen.generation !== shown?.generation || anchorKey(seen.suggested) !== anchorKey(editor.suggested)) return false;
     return attachEditor(editor, editor.suggested);
   }
 
   function moveEditor(editorId: string): void {
     const editor = openEditors.find((candidate) => candidate.id === editorId);
-    if (editor?.state === 'detached' && editor.subject === shown?.subject) armedEditorId = editorId;
+    if (!editor || editor.subject !== shown?.subject) return;
+    if (editor.state === 'detached' || (editor.state === 'placed' && editor.repeated)) armedEditorId = editorId;
   }
 
   function cancelEditorMove(): void {
@@ -2337,9 +2381,15 @@ export function createReviewPaneState(
     }
     if (editor.side === 'file') return editor.anchor;
     const sameLoad = loadedFiles.find((candidate) => candidate.path === editor.filePath) === editor.baseFile;
-    if ((file !== editor.shownFile && !sameLoad) || anchorRow(file, editor.anchor) < 0) {
+    const rows = anchorRows(file, editor.anchor);
+    if ((file !== editor.shownFile && !sameLoad) || rows.count === 0) {
       replaceEditor(editor, detached(editor, 'line-changed'));
       throw new ReviewCommentRefused('stale', REVIEW_EDITOR_DETACHED);
+    }
+    // The saved line names only a coordinate: several rows have this one.
+    if (!namesOneRow(rows.count)) {
+      if (!editor.repeated) replaceEditor(editor, { ...editor, repeated: true });
+      throw new ReviewCommentRefused('repeated', REVIEW_EDITOR_REPEATED);
     }
     if (file !== editor.shownFile) replaceEditor(editor, { ...editor, shownFile: file });
     return editor.anchor;
@@ -3198,6 +3248,7 @@ export function createReviewPaneState(
     get drafts() { return drafts; },
     get openEditors() { return shownEditors; },
     get armedEditorId() { return armedEditorId; },
+    get shownGeneration() { return shown?.generation ?? 0; },
     get commits() { return commits; },
     get selectedCommitSHA() { return selectedCommitSHA; },
     get edits() { return edits; },

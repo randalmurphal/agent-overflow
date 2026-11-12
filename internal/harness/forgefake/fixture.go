@@ -220,7 +220,9 @@ type DraftNote struct {
 	Path      string `json:"path,omitempty"`
 	Line      *int   `json:"line,omitempty"`
 	StartLine *int   `json:"startLine,omitempty"`
-	Side      string `json:"side,omitempty"`
+	// OldLine is an unchanged line's old number beside Line (see Thread).
+	OldLine *int   `json:"oldLine,omitempty"`
+	Side    string `json:"side,omitempty"`
 }
 
 // Readiness is the merge box state a pull carries beyond its reviews, CI,
@@ -316,6 +318,9 @@ type Thread struct {
 	// Line and StartLine are nil for a file-level thread.
 	Line      *int `json:"line,omitempty"`
 	StartLine *int `json:"startLine,omitempty"`
+	// OldLine is an unchanged line's old number beside Line, its new one
+	// (GitLab positions name both); nil otherwise.
+	OldLine *int `json:"oldLine,omitempty"`
 	// Side is "right" (default), "left" or "file".
 	Side     string    `json:"side,omitempty"`
 	Resolved bool      `json:"resolved,omitempty"`
@@ -723,7 +728,7 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 			return fmt.Errorf("draftNotes[%d]: author and note are required", i)
 		}
 		if draft.Path != "" {
-			probe := Thread{Path: draft.Path, Line: draft.Line, StartLine: draft.StartLine, Side: draft.Side, ID: "-", Comments: []Comment{{Author: draft.Author, Body: draft.Note}}}
+			probe := Thread{Path: draft.Path, Line: draft.Line, StartLine: draft.StartLine, OldLine: draft.OldLine, Side: draft.Side, ID: "-", Comments: []Comment{{Author: draft.Author, Body: draft.Note}}}
 			if err := probe.normalize(forge, draft.Author, "", ids); err != nil {
 				return fmt.Errorf("draftNotes[%d]: %w", i, err)
 			}
@@ -947,6 +952,9 @@ func (t *Thread) normalize(forge, author, authorName string, ids *idSource) erro
 	}
 	if t.Side != "file" && t.Line == nil {
 		return errors.New("a line thread needs line")
+	}
+	if t.OldLine != nil && (t.Side != "right" || t.StartLine != nil) {
+		return errors.New("oldLine names an unchanged line: a right-side thread on one line")
 	}
 	if t.ID == "" {
 		if forge == "github" {

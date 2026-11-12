@@ -431,7 +431,8 @@
           openEditors={review.openEditors}
           prThreads={review.prThreads}
           expandedPRThreadIds={review.expandedPRThreadIds}
-          onAddComment={review.canDraftComments && review.commentsGranted ? (anchor) => review?.openDraftEditor(anchor) : undefined}
+          generation={review.shownGeneration}
+          onAddComment={review.canDraftComments && review.commentsGranted ? (anchor, generation) => review?.openDraftEditor(anchor, generation) : undefined}
           onExpandGap={(path, gap, dir) => { void review?.expandDiffContext(path, gap, dir); }}
           jumpToFilePath={jumpFilePath ?? review.pendingJumpFilePath}
           onJumpConsumed={onJumpConsumed}
@@ -457,7 +458,7 @@
               onCancel={(editorId) => review?.closeDraftEditor(editorId)}
               onSubmit={(editorId, body) => review?.createComment(editorId, body)}
               consumeFocus={(editorId) => review?.consumeDraftEditorFocus(editorId) ?? false}
-              onUseLine={(editorId) => review?.useSuggestedLine(editorId)}
+              onUseLine={(editorId, seen) => review?.useSuggestedLine(editorId, seen)}
               onMove={(editorId) => review?.moveEditor(editorId)}
               onCancelMove={() => review?.cancelEditorMove()}
             />

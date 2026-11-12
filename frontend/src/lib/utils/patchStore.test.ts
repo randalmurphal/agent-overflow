@@ -10,8 +10,9 @@ import {
   type PatchFile,
 } from './patchFiles';
 import {
-  anchorInsertLine,
   anchorLines,
+  anchorRows,
+  completeAnchor,
   anchorLinesMatch,
   anchorRow,
   displayRowCount,
@@ -322,20 +323,34 @@ describe('split-view halves of a context row', () => {
     ' gamma',
   ].join('\n'))[0];
 
-  it('finds a left or right half on the context row, as on a changed row', () => {
+  it('names the context row from either half with both numbers; one number names it only for a forge thread', () => {
     const gamma = anchorRow(file, { side: 'context', oldLine: 3, newLine: 4 });
     expect(gamma).toBeGreaterThan(0);
-    expect(anchorRow(file, { side: 'old', oldLine: 3 })).toBe(gamma);
-    expect(anchorRow(file, { side: 'new', newLine: 4 })).toBe(gamma);
+    expect(anchorRow(file, { side: 'old', oldLine: 3, newLine: 4 })).toBe(gamma);
+    expect(anchorRow(file, { side: 'new', oldLine: 3, newLine: 4 })).toBe(gamma);
+    // A saved draft with one number on an unchanged line names no row.
+    expect(anchorRow(file, { side: 'old', oldLine: 3 })).toBe(-1);
+    expect(anchorRow(file, { side: 'new', newLine: 4 })).toBe(-1);
+    expect(anchorRow(file, { side: 'old', oldLine: 3 }, true)).toBe(gamma);
+    expect(anchorRow(file, { side: 'new', newLine: 4 }, true)).toBe(gamma);
     expect(anchorRow(file, { side: 'old', oldLine: 2 })).toBeGreaterThan(0);
-    expect(anchorRow(file, { side: 'old', oldLine: 4 })).toBe(-1);
+    expect(anchorRow(file, { side: 'old', oldLine: 4 }, true)).toBe(-1);
   });
 
-  it('agrees with the membership check saved drafts use', () => {
+  it('completes a half to both numbers, and leaves a changed line as it is', () => {
+    expect(completeAnchor(file, { side: 'old' as const, oldLine: 3 })).toEqual({ side: 'old', oldLine: 3, newLine: 4 });
+    expect(completeAnchor(file, { side: 'new' as const, newLine: 4 })).toEqual({ side: 'new', oldLine: 3, newLine: 4 });
+    expect(completeAnchor(file, { side: 'old' as const, oldLine: 2 })).toEqual({ side: 'old', oldLine: 2 });
+    expect(completeAnchor(file, { side: 'new' as const, newLine: 9 })).toEqual({ side: 'new', newLine: 9 });
+  });
+
+  it('agrees with the membership check, strict and loose', () => {
     const lines = anchorLines(file);
     for (const anchor of [
       { side: 'old' as const, oldLine: 3 },
       { side: 'new' as const, newLine: 4 },
+      { side: 'old' as const, oldLine: 3, newLine: 4 },
+      { side: 'new' as const, oldLine: 3, newLine: 4 },
       { side: 'old' as const, oldLine: 2 },
       { side: 'new' as const, newLine: 3 },
       { side: 'context' as const, oldLine: 1, newLine: 1 },
@@ -343,16 +358,15 @@ describe('split-view halves of a context row', () => {
       { side: 'new' as const, newLine: 5 },
       { side: 'context' as const, oldLine: 3, newLine: 3 },
     ]) {
-      expect(anchorLinesMatch(lines, anchor), JSON.stringify(anchor)).toBe(anchorRow(file, anchor) >= 0);
+      for (const loose of [false, true]) {
+        expect(anchorLinesMatch(lines, anchor, loose), `${JSON.stringify(anchor)} ${loose}`).toBe(anchorRow(file, anchor, loose) >= 0);
+      }
     }
   });
 
-  it('keys a left half by its row\'s new line, as the walk does', () => {
-    const lines = anchorLines(file);
-    expect(anchorInsertLine(lines, { side: 'old', oldLine: 3 })).toBe(4);
-    expect(anchorInsertLine(lines, { side: 'old', oldLine: 2 })).toBe(2);
-    expect(anchorInsertLine(lines, { side: 'new', newLine: 4 })).toBe(4);
-    expect(anchorInsertLine(null, { side: 'file' })).toBe(0);
+  it('counts the rows an anchor names and the place of the one at a line', () => {
+    expect(anchorRows(file, { side: 'old', oldLine: 3, newLine: 4 })).toMatchObject({ count: 1, occurrence: 0, context: true });
+    expect(anchorRows(file, { side: 'new', newLine: 9 })).toMatchObject({ count: 0, row: -1 });
   });
 });
 

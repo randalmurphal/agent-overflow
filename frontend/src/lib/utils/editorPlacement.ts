@@ -1,4 +1,4 @@
-import { RowWalker, type RowType } from './patchRows';
+import { namesOneRow, rowMatchesAnchor, RowWalker, type RowType } from './patchRows';
 import { LINE_HUNK, LINE_META, whenResident, type BodySegment, type ReviewFile } from './patchStore';
 import type { CommentAnchor } from './reviewRows';
 
@@ -117,37 +117,45 @@ export async function fileIdentity(file: ReviewFile, budget: RelocationBudget): 
 }
 
 async function sectionKey(file: ReviewFile, budget: RelocationBudget): Promise<string | null> {
-  budget.spend(file.body.lineCount);
+  budget.spend(file.body.lineCount, file.body.textLength);
   return await file.body.whenResident(() => file.body.contentKey());
 }
 
-/** Relocation's shared allowance: rows scanned and wall time. Spent past
- * either, the editors not yet proven are detached and the diff shows. */
+/** Relocation's shared allowance: rows walked and bytes of text read.
+ * Spent past either, the editors not yet proven are detached and the
+ * diff shows. It never reads the clock, so placement is the same every
+ * run. */
 export class RelocationBudget {
-  private rows: number;
-  private readonly deadline: number;
+  constructor(private rows: number, private bytes: number) {}
 
-  constructor(rows: number, ms: number, private readonly now: () => number = () => performance.now()) {
-    this.rows = rows;
-    this.deadline = now() + ms;
+  /** No allowance limit: reading a header to find a file is not spent. */
+  static unlimited(): RelocationBudget {
+    return new RelocationBudget(Infinity, Infinity);
   }
 
-  spend(rows: number): void {
+  spend(rows: number, bytes = 0): void {
     this.rows -= rows;
-    if (this.rows < 0 || this.now() > this.deadline) throw new RelocationBudgetSpent();
+    this.bytes -= bytes;
+    if (this.rows < 0 || this.bytes < 0) throw new RelocationBudgetSpent();
   }
 
-  /** Spends `rows` when they fit; false, spending nothing, when not. */
-  trySpend(rows: number): boolean {
-    if (rows > this.rows || this.now() > this.deadline) return false;
+  /** Spends when it fits; false, spending nothing, when not. */
+  trySpend(rows: number, bytes = 0): boolean {
+    if (rows > this.rows || bytes > this.bytes) return false;
     this.rows -= rows;
+    this.bytes -= bytes;
     return true;
   }
 }
 
 /** The default allowance: a few files of tens of thousands of rows. */
 export const RELOCATION_BUDGET_ROWS = 400_000;
-export const RELOCATION_BUDGET_MS = 750;
+export const RELOCATION_BUDGET_BYTES = 32 * 1024 * 1024;
+
+/** The largest file whose text the suggestion's text rule reads (rows and
+ * bytes); past either it goes straight to the number rule. */
+export const SUGGEST_TEXT_MAX_ROWS = 20_000;
+export const SUGGEST_TEXT_MAX_BYTES = 2 * 1024 * 1024;
 
 export class RelocationBudgetSpent extends Error {
   constructor() {
@@ -195,11 +203,13 @@ interface FoundRow {
   lineIndex: number;
 }
 
-/** A row asked for by one coordinate, and the row types that may hold it. */
+/** A row asked for by one coordinate, and the row types that may hold it
+ * (or, for a placed editor's own row, its anchor). */
 interface RowRequest {
   by: 'old' | 'new' | 'index';
   value: number;
   accept: readonly RowType[];
+  anchor?: CommentAnchor;
   /** A row with the coordinate, of an accepted type. */
   row: FoundRow | null;
   /** Whether a row had the coordinate but not an accepted type. */
@@ -259,7 +269,10 @@ function findRows(file: ReviewFile, requests: readonly RowRequest[], budget: Rel
     }
     const consider = (list: RowRequest[] | undefined): void => {
       for (const request of list ?? []) {
-        if (!request.accept.includes(type)) request.mismatched = true;
+        const accepted = request.anchor
+          ? rowMatchesAnchor(type, found.oldLine, found.newLine, request.anchor)
+          : request.accept.includes(type);
+        if (!accepted) request.mismatched = true;
         else if ((request.count += 1) === 1) request.row = found;
       }
     };
@@ -280,11 +293,11 @@ function sideRows(side: CommentAnchor['side']): readonly RowType[] {
   return side === 'old' ? OLD_ROWS : side === 'new' ? NEW_ROWS : CONTEXT_ROWS;
 }
 
-/** The request locating the row a placed anchor names in its own file. */
+/** The request locating the rows a placed anchor names in its own file,
+ * as saving names them (patchRows' rowMatchesAnchor). */
 function sourceRequest(anchor: CommentAnchor): RowRequest {
-  if (anchor.side === 'old') return { by: 'old', value: anchor.oldLine ?? 0, accept: OLD_ROWS, row: null, mismatched: false, count: 0 };
-  if (anchor.side === 'new') return { by: 'new', value: anchor.newLine ?? 0, accept: NEW_ROWS, row: null, mismatched: false, count: 0 };
-  return { by: 'new', value: anchor.newLine ?? 0, accept: CONTEXT_ROWS, row: null, mismatched: false, count: 0 };
+  const neu = anchor.newLine || 0;
+  return { by: neu > 0 ? 'new' : 'old', value: neu > 0 ? neu : anchor.oldLine || 0, accept: [], anchor, row: null, mismatched: false, count: 0 };
 }
 
 // Git abbreviates ids to a length that grows with the repository: one id
@@ -327,11 +340,12 @@ function targetRequest(proof: EditorProof, side: CommentAnchor['side'], identity
   return null;
 }
 
-/** The anchor a proven row gives an editor of `side`; LEFT stays LEFT. */
+/** The anchor a row gives an editor of `side`: an unchanged row's both
+ * numbers, a deleted row's old one, an added row's new one. */
 function anchorAt(filePath: string, side: CommentAnchor['side'], selectedText: string, row: FoundRow): CommentAnchor {
+  if (row.type === 'context') return { filePath, side, oldLine: row.oldLine, newLine: row.newLine, selectedText };
   if (side === 'old') return { filePath, side, oldLine: row.oldLine, selectedText };
-  if (side === 'new') return { filePath, side, newLine: row.newLine, selectedText };
-  return { filePath, side, oldLine: row.oldLine, newLine: row.newLine, selectedText };
+  return { filePath, side, newLine: row.newLine, selectedText };
 }
 
 function rowText(row: Pick<FoundRow, 'type'>, raw: string): string {
@@ -344,39 +358,84 @@ function sideLine(side: CommentAnchor['side'], oldLine: number, newLine: number)
 }
 
 /**
- * The row a detached editor renders after, by presentation only: the one
- * row on its side whose text equals its text (when `texts` can be read),
- * else the row with its line number on that side, else the nearest one by
- * that number. -1 when the file has no row on its side.
+ * The rows detached editors of one file render after, by presentation
+ * only, from the rows one walk recorded: the one row on an editor's side
+ * whose text equals its text (when `text` can be read), else the first row
+ * with its line number on that side, else the nearest one by that number
+ * (the earlier on a tie). -1 when the file has no row on its side. One
+ * pass over the rows serves every editor; the number rules look up a
+ * sorted index.
  */
-function suggestRow(table: RowTable, side: CommentAnchor['side'], line: number, selectedText: string, text: ((lineIndex: number) => string) | null): number {
-  const accept = sideRows(side).map((type) => ROW_TYPES.indexOf(type));
-  let same = -1;
-  let sameCount = 0;
-  let exact = -1;
-  let nearest = -1;
-  let distance = Infinity;
-  for (let at = 0; at < table.length; at += 1) {
-    if (!accept.includes(table.type[at])) continue;
-    const number = sideLine(side, table.oldLine[at], table.newLine[at]);
-    if (text && rowText({ type: ROW_TYPES[table.type[at]] }, text(table.lineIndex[at])) === selectedText) {
-      sameCount += 1;
-      same = at;
+function suggestRows(table: RowTable, targets: readonly RelocationTarget[], text: ((lineIndex: number) => string) | null): number[] {
+  const out = targets.map(() => -1);
+  const sides = [...new Set(targets.map((target) => target.side))];
+  const accepts = new Map(sides.map((side) => [side, sideRows(side).map((type) => ROW_TYPES.indexOf(type))]));
+  // The text rule: every row read once, against every editor's text.
+  if (text) {
+    const wanted = new Map<string, number[]>();
+    targets.forEach((target, index) => {
+      const list = wanted.get(target.selectedText) ?? [];
+      list.push(index);
+      wanted.set(target.selectedText, list);
+    });
+    const found = targets.map(() => ({ at: -1, count: 0 }));
+    for (let at = 0; at < table.length; at += 1) {
+      const type = ROW_TYPES[table.type[at]];
+      const list = wanted.get(rowText({ type }, text(table.lineIndex[at])));
+      if (!list) continue;
+      for (const index of list) {
+        if (!accepts.get(targets[index].side)!.includes(table.type[at])) continue;
+        found[index].count += 1;
+        found[index].at = at;
+      }
     }
-    if (exact < 0 && number === line) exact = at;
-    const off = Math.abs(number - line);
-    if (off < distance) {
-      distance = off;
-      nearest = at;
-    }
+    found.forEach((one, index) => {
+      if (one.count === 1) out[index] = one.at;
+    });
   }
-  if (sameCount === 1) return same;
-  return exact >= 0 ? exact : nearest;
+  // The number rules: each side's rows sorted by number, row order kept
+  // among equal numbers.
+  for (const side of sides) {
+    const accept = accepts.get(side)!;
+    const rows: number[] = [];
+    for (let at = 0; at < table.length; at += 1) if (accept.includes(table.type[at])) rows.push(at);
+    const number = (at: number): number => sideLine(side, table.oldLine[at], table.newLine[at]);
+    rows.sort((a, b) => number(a) - number(b) || a - b);
+    targets.forEach((target, index) => {
+      if (target.side !== side || out[index] >= 0 || rows.length === 0) return;
+      let low = 0;
+      let high = rows.length;
+      while (low < high) {
+        const mid = (low + high) >> 1;
+        if (number(rows[mid]) < target.line) low = mid + 1;
+        else high = mid;
+      }
+      const above = low < rows.length ? rows[low] : -1;
+      if (above >= 0 && number(above) === target.line) {
+        out[index] = above;
+        return;
+      }
+      // The nearest below: the first row of its number.
+      let below = low > 0 ? low - 1 : -1;
+      while (below > 0 && number(rows[below - 1]) === number(rows[below])) below -= 1;
+      const under = below >= 0 ? rows[below] : -1;
+      if (under < 0) out[index] = above;
+      else if (above < 0) out[index] = under;
+      else {
+        const offBelow = target.line - number(under);
+        const offAbove = number(above) - target.line;
+        out[index] = offBelow < offAbove || (offBelow === offAbove && under < above) ? under : above;
+      }
+    });
+  }
+  return out;
 }
 
 /**
- * Places each target in `files`, a new diff of the same subject. Placed
- * targets are first proven in the file they are on, which must still be
+ * Places each target in `files`, a new diff of the same subject. Whether a
+ * target's file is in the diff is decided first and spends no budget: a
+ * target whose file is not is `file-gone` whatever else happens. Placed
+ * targets are then proven in the file they are on, which must still be
  * readable. Every outcome is decided; a spent budget or an unreadable file
  * detaches the targets not yet placed. A detached target in a file of the
  * diff gets a suggested row. Throws RelocationCancelled when `cancelled`
@@ -391,10 +450,10 @@ export async function relocateEditors<K>(
   const out = new Map<K, RelocationOutcome>();
   const proofs = new Map<K, EditorProof>();
   const identities = new Map<ReviewFile, Promise<FileIdentity>>();
-  const identityOf = (file: ReviewFile): Promise<FileIdentity> => {
+  const identityOf = (file: ReviewFile, spend: RelocationBudget = budget): Promise<FileIdentity> => {
     let identity = identities.get(file);
     if (!identity) {
-      identity = fileIdentity(file, budget);
+      identity = fileIdentity(file, spend);
       identities.set(file, identity);
     }
     return identity;
@@ -402,9 +461,34 @@ export async function relocateEditors<K>(
   const check = (): void => {
     if (cancelled()) throw new RelocationCancelled();
   };
+
+  // Each target's file in the new diff, by path or by the path a rename
+  // came from. Reading the renamed files' headers is not spent.
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const fileOf = new Map<K, ReviewFile>();
+  let renamed: Map<string, ReviewFile> | null = null;
+  for (const [key, target] of targets) {
+    let file = byPath.get(target.filePath);
+    if (!file) {
+      if (renamed === null) {
+        renamed = new Map();
+        for (const candidate of files) {
+          if (candidate.kind !== 'renamed') continue;
+          const from = (await identityOf(candidate, RelocationBudget.unlimited())).oldPath;
+          check();
+          if (from !== null) renamed.set(from, candidate);
+        }
+      }
+      file = renamed.get(target.filePath);
+    }
+    if (file) fileOf.set(key, file);
+    else out.set(key, { filePath: target.filePath, anchor: null, proof: target.proof, reason: 'file-gone', suggested: null });
+  }
   const detachRest = (): void => {
     for (const [key, target] of targets) {
-      if (!out.has(key)) out.set(key, { filePath: target.filePath, anchor: null, proof: proofs.get(key) ?? target.proof, reason: 'line-changed', suggested: null });
+      if (out.has(key)) continue;
+      const file = fileOf.get(key)!;
+      out.set(key, { filePath: file.path, anchor: null, proof: proofs.get(key) ?? target.proof, reason: 'line-changed', suggested: null });
     }
   };
 
@@ -428,39 +512,31 @@ export async function relocateEditors<K>(
         // No row in the loaded file: an expansion supplied it. A merged
         // file can repeat a coordinate across its sections: which row the
         // anchor named is unknown.
-        if (!row || identity.lines === 'none' || requests[index].count > 1) proofs.set(targetKey, NO_PROOF);
+        if (!row || identity.lines === 'none' || !namesOneRow(requests[index].count)) proofs.set(targetKey, NO_PROOF);
         else if (identity.lines === 'section') proofs.set(targetKey, key === null ? NO_PROOF : { kind: 'section', key, lineIndex: row.lineIndex });
         else proofs.set(targetKey, { kind: 'blob', oldBlob: identity.oldBlob, newBlob: identity.newBlob, oldLine: row.oldLine, newLine: row.newLine, context: row.type === 'context' });
       });
     }
 
-    // Find each target's file in the new diff, by path or by the path a
-    // rename came from.
-    const byPath = new Map(files.map((file) => [file.path, file]));
-    let renamed: Map<string, ReviewFile> | null = null;
+    // A target whose file is gone keeps what proves its line, so a later
+    // diff with its file places it again.
+    for (const [key, outcome] of out) {
+      const proof = proofs.get(key);
+      if (proof) out.set(key, { ...outcome, proof });
+    }
+
     const byTarget = new Map<ReviewFile, K[]>();
-    for (const [key, target] of targets) {
-      let file = byPath.get(target.filePath);
-      if (!file) {
-        if (renamed === null) {
-          renamed = new Map();
-          for (const candidate of files) {
-            if (candidate.kind !== 'renamed') continue;
-            const from = (await identityOf(candidate)).oldPath;
-            check();
-            if (from !== null) renamed.set(from, candidate);
-          }
-        }
-        file = renamed.get(target.filePath);
-      }
+    for (const [key] of targets) {
+      const file = fileOf.get(key);
+      if (!file) continue;
       const proof = proofs.get(key)!;
-      if (!file) out.set(key, { filePath: target.filePath, anchor: null, proof, reason: 'file-gone', suggested: null });
-      else if (proof.kind === 'file') out.set(key, { filePath: file.path, anchor: { filePath: file.path, side: 'file', selectedText: '' }, proof, suggested: null });
+      if (proof.kind === 'file') out.set(key, { filePath: file.path, anchor: { filePath: file.path, side: 'file', selectedText: '' }, proof, suggested: null });
       else byTarget.set(file, [...(byTarget.get(file) ?? []), key]);
     }
 
-    // Locate the proven lines: one walk per file, then the text of the
-    // rows found, for the guard.
+    // Locate the proven lines: one walk per file, which also records its
+    // rows for the suggestions; then the text of the rows found, for the
+    // guard.
     for (const [file, keys] of byTarget) {
       const identity = await identityOf(file);
       check();
@@ -485,13 +561,14 @@ export async function relocateEditors<K>(
         if (!request || request.mismatched && !request.row) return detach('line-changed');
         const row = request.row;
         if (!row) return detach('not-in-diff');
+        if (!namesOneRow(request.count)) return detach('line-changed');
         if (!target.guard || !sameGuard(target.guard, lineGuard(rowText(row, texts.get(row.lineIndex) ?? '')))) return detach('line-changed');
         const next: EditorProof = proof.kind === 'section'
           ? proof
           : { kind: 'blob', oldBlob: identity.oldBlob, newBlob: identity.newBlob, oldLine: row.oldLine, newLine: row.newLine, context: row.type === 'context' };
         out.set(targetKey, { filePath: file.path, anchor: anchorAt(file.path, target.side, target.selectedText, row), proof: next, suggested: null });
       });
-      if (detached.length > 0) await suggestRows(file, table, detached, targets, out, budget);
+      if (detached.length > 0) await suggest(file, table, detached, targets, out, budget);
       check();
     }
   } catch (err) {
@@ -502,10 +579,11 @@ export async function relocateEditors<K>(
   return out;
 }
 
-// Gives the detached targets of `file` their suggested rows. Text is read
-// for the text rule only when the whole file fits the budget; the rows
-// suggested are read for their quote.
-async function suggestRows<K>(
+// Gives the detached targets of `file` their suggested rows. The text rule
+// reads the file's text only within the text cap and the budget, so its
+// residency wait is bounded; otherwise the number rules decide and only
+// the rows suggested are read, for their quote.
+async function suggest<K>(
   file: ReviewFile,
   table: RowTable,
   keys: readonly K[],
@@ -513,26 +591,15 @@ async function suggestRows<K>(
   out: Map<K, RelocationOutcome>,
   budget: RelocationBudget,
 ): Promise<void> {
-  const byText = budget.trySpend(table.length);
-  const pick = (text: ((lineIndex: number) => string) | null): number[] =>
-    keys.map((key) => {
-      const target = targets.get(key)!;
-      return suggestRow(table, target.side, target.line, target.selectedText, text);
-    });
-  let rows: number[];
-  let quotes: Map<number, string>;
-  if (byText) {
-    [rows, quotes] = await file.body.whenResident(() => {
-      const read = (lineIndex: number): string => file.body.text(lineIndex);
-      const picked = pick(read);
-      return [picked, new Map(picked.filter((at) => at >= 0).map((at) => [at, read(table.lineIndex[at])]))] as const;
-    });
-  } else {
-    rows = pick(null);
-    const found = rows.filter((at) => at >= 0);
-    const ranges = found.flatMap((at) => file.body.slice(table.lineIndex[at], table.lineIndex[at] + 1));
-    quotes = await whenResident(ranges, () => new Map(found.map((at) => [at, file.body.text(table.lineIndex[at])])));
-  }
+  const list = keys.map((key) => targets.get(key)!);
+  const body = file.body;
+  const byText = body.lineCount <= SUGGEST_TEXT_MAX_ROWS && body.textLength <= SUGGEST_TEXT_MAX_BYTES && budget.trySpend(table.length, body.textLength);
+  const rows = byText
+    ? await body.whenResident(() => suggestRows(table, list, (lineIndex) => body.text(lineIndex)))
+    : suggestRows(table, list, null);
+  const found = rows.filter((at) => at >= 0);
+  const ranges = found.flatMap((at) => body.slice(table.lineIndex[at], table.lineIndex[at] + 1));
+  const quotes = await whenResident(ranges, () => new Map(found.map((at) => [at, body.text(table.lineIndex[at])])));
   keys.forEach((key, index) => {
     const at = rows[index];
     const outcome = out.get(key)!;

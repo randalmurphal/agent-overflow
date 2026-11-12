@@ -215,18 +215,22 @@ describe('reviewPane store', () => {
       line: 7,
       side: 'right',
     });
-    expect(reviewLineCommentForDraft(draft({ side: 'old', oldLine: 5, newLine: undefined }))).toEqual({
+    expect(reviewLineCommentForDraft(draft({ side: 'old', oldLine: 5, newLine: 0 }))).toEqual({
       path: 'src/app.ts',
       body: 'comment',
       line: 5,
       side: 'left',
     });
-    expect(reviewLineCommentForDraft(draft({ side: 'context', oldLine: 3, newLine: 3 }))).toEqual({
-      path: 'src/app.ts',
-      body: 'comment',
-      line: 3,
-      side: 'right',
-    });
+    // An unchanged line, from the unified row or either half: both numbers.
+    for (const side of ['context', 'old', 'new'] as const) {
+      expect(reviewLineCommentForDraft(draft({ side, oldLine: 3, newLine: 4 }))).toEqual({
+        path: 'src/app.ts',
+        body: 'comment',
+        line: 4,
+        oldLine: 3,
+        side: 'right',
+      });
+    }
     expect(reviewLineCommentForDraft(draft({ side: 'file', oldLine: undefined, newLine: undefined }))).toEqual({
       path: 'src/app.ts',
       body: 'comment',
@@ -4737,7 +4741,7 @@ describe('reviewPane store — open new-comment editors', () => {
     const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
     const id = state.openDraftEditor(anchor)!;
     expect(id).toBeTruthy();
-    expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor, suggested: null, armed: false }]);
+    expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
     state.setDraftBody(id, 'half-typed');
     expect(state.draftBodyFor(id)).toBe('half-typed');
     expect(state.consumeDraftEditorFocus(id)).toBe(true);
@@ -4824,7 +4828,7 @@ describe('reviewPane store — open new-comment editors', () => {
     it('keeps an editor on its line when its file did not change', async () => {
       const other = changed('1111111..2222222', '@@ -1,1 +1,1 @@', ['-x', '+y'], 'src/other.ts');
       const { state, create, id } = await editorThen(`${HEAD_A}\n${other}`);
-      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false }]);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
       await state.createComment(id, 'Guard this.');
       expect(create.mock.calls[0]?.[1]).toMatchObject({ newLine: 3, selectedText: '  report();' });
     });
@@ -4843,33 +4847,33 @@ describe('reviewPane store — open new-comment editors', () => {
       await waitLoaded(state);
 
       expect(state.openEditors.map((editor) => [editor.id, editor.anchor])).toEqual([
-        [left, { filePath: 'src/app.ts', side: 'old', oldLine: 3, selectedText: ' keep 3' }],
-        [right, { filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: ' keep 3' }],
+        [left, { filePath: 'src/app.ts', side: 'old', oldLine: 3, newLine: 4, selectedText: ' keep 3' }],
+        [right, { filePath: 'src/app.ts', side: 'new', oldLine: 3, newLine: 4, selectedText: ' keep 3' }],
       ]);
       expect([state.draftBodyFor(left), state.draftBodyFor(right)]).toEqual(['Left.', 'Right.']);
       await state.createComment(left, 'Left.');
       await state.createComment(right, 'Right.');
-      expect((create.mock.calls as [string, DiffReviewComment][]).map(([, input]) => [input.side, input.oldLine, input.newLine])).toEqual([['old', 3, undefined], ['new', undefined, 4]]);
+      expect((create.mock.calls as [string, DiffReviewComment][]).map(([, input]) => [input.side, input.oldLine, input.newLine])).toEqual([['old', 3, 4], ['new', 3, 4]]);
     });
 
     it('keeps its editors and their lines across the whitespace toggle', async () => {
       const { state, id } = await editorThen(HEAD_A);
       await state.setIgnoreWhitespace(true);
       await waitLoaded(state);
-      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false }]);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
       expect(state.draftBodyFor(id)).toBe('Guard this.');
     });
 
     it('keeps the editor of a reverted file to copy from, and places it again when the file comes back', async () => {
       const { state, id } = await editorThen('');
       expect(state.files).toEqual([]);
-      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'gone', anchor: null, suggested: null, armed: false }]);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'gone', anchor: null, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
       expect(state.draftBodyFor(id)).toBe('Guard this.');
 
       setReviewDiffMock('OpenWorkspaceDiff', async () => HEAD_A);
       await state.reload();
       await waitLoaded(state);
-      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false }]);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
     });
 
     it('re-entering the scope on screen keeps the editor and its text', async () => {
@@ -4878,6 +4882,27 @@ describe('reviewPane store — open new-comment editors', () => {
       await waitLoaded(state);
       expect(state.openEditors.map((editor) => editor.id)).toEqual([id]);
       expect(state.draftBodyFor(id)).toBe('Guard this.');
+    });
+
+    it('renders every editor of the diff once, in its file or the group, whatever placed it', async () => {
+      const other = changed('1111111..2222222', '@@ -1,1 +1,1 @@', ['-x', '+y'], 'src/other.ts');
+      const moved = changed('aaaaaaa..ddddddd', '@@ -1,2 +1,9 @@', [' top', '+inserted', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom']);
+      for (const [label, next, budget] of [
+        ['same', HEAD_A, null], ['moved', moved, null], ['file left', other, null], ['empty', '', null],
+        ['file left, budget spent', other, 1], ['moved, budget spent', `${moved}\n${other}`, 1],
+      ] as const) {
+        __resetReviewPaneStateForTest();
+        const restore = budget === null ? () => {} : __setRelocationBudgetForTest(budget);
+        try {
+          const { state, id } = await editorThen(next);
+          const built = buildReviewRows({ files: state.files, viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: state.openEditors });
+          expect(built.rowKeys.filter((key) => key === `d:${id}`), label).toHaveLength(1);
+          const editor = state.openEditors[0]!;
+          expect(editor.state === 'gone', label).toBe(!state.files.some((file) => file.path === editor.filePath));
+        } finally {
+          restore();
+        }
+      }
     });
 
     it('detaches what the relocation budget does not reach and still shows the diff', async () => {
@@ -4914,15 +4939,43 @@ describe('reviewPane store — open new-comment editors', () => {
 
     it('shows after the row its text is on, which saves nothing until the reader takes it', async () => {
       const { state, create, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
-      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'detached', anchor: null, suggested: { filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: '  report();' }, armed: false }]);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'detached', anchor: null, suggested: { filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: '  report();' }, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
       await expect(state.createComment(id, 'Guard this.')).rejects.toEqual(refused('detached'));
       expect(create).not.toHaveBeenCalled();
 
-      expect(state.useSuggestedLine(id)).toBe(true);
-      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: '  report();' }, suggested: null, armed: false }]);
+      expect(state.useSuggestedLine(id, state.openEditors[0]!)).toBe(true);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: '  report();' }, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
       expect(state.draftBodyFor(id)).toBe('Guard this.');
       await state.createComment(id, 'Guard this.');
       expect(create.mock.calls[0]?.[1]).toMatchObject({ newLine: 4, side: 'new', selectedText: '  report();', body: 'Guard this.' });
+    });
+
+    it('takes the suggestion the reader saw, never one a reload made since', async () => {
+      const { state, id, setPatch } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      const seen = state.openEditors[0]!;
+      expect(seen.suggested).toMatchObject({ newLine: 4 });
+      // A reload lands between the press and its activation: two lines
+      // above now, so the suggestion is another row.
+      setPatch(`${changed('aaaaaaa..eeeeeee', '@@ -1,2 +1,10 @@', [' top', '+inserted', '+inserted 2', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom'])}\n${OTHER}`);
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors[0]!.suggested).toMatchObject({ newLine: 5 });
+      expect(state.useSuggestedLine(id, seen)).toBe(false);
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'detached', anchor: null });
+      expect(state.useSuggestedLine(id, state.openEditors[0]!)).toBe(true);
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'placed', anchor: { newLine: 5 } });
+    });
+
+    it('takes a pick only in the diff the reader made it in', async () => {
+      const { state, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      state.moveEditor(id);
+      const pressedIn = state.openEditors[0]!.generation;
+      await state.reload();
+      await waitLoaded(state);
+      const two = { filePath: 'src/other.ts', side: 'new' as const, newLine: 2, selectedText: 'two' };
+      expect(state.openDraftEditor(two, pressedIn)).toBeNull();
+      expect(state.openEditors.map((editor) => [editor.id, editor.state])).toEqual([[id, 'detached']]);
+      expect(state.openDraftEditor(two, state.openEditors[0]!.generation)).not.toBeNull();
     });
 
     it('moves to the line the reader picks next, in its file or another, with its text', async () => {
@@ -4933,7 +4986,7 @@ describe('reviewPane store — open new-comment editors', () => {
       expect(state.openDraftEditor({ filePath: 'src/other.ts', side: 'new', newLine: 2, selectedText: 'two' })).toBe(id);
       expect(state.armedEditorId).toBeNull();
       expect(state.consumeDraftEditorFocus(id)).toBe(true);
-      expect(state.openEditors).toEqual([{ id, filePath: 'src/other.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/other.ts', side: 'new', newLine: 2, selectedText: 'two' }, suggested: null, armed: false }]);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/other.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/other.ts', side: 'new', newLine: 2, selectedText: 'two' }, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
       expect(state.draftBodyFor(id)).toBe('Guard this.');
       await state.createComment(id, 'Guard this.');
       expect(create.mock.calls[0]?.[1]).toMatchObject({ filePath: 'src/other.ts', newLine: 2, selectedText: 'two' });
@@ -4984,7 +5037,7 @@ describe('reviewPane store — open new-comment editors', () => {
 
       __resetReviewPaneStateForTest();
       const second = await detachedAfter(`${MOVED}\n${OTHER}`);
-      second.state.useSuggestedLine(second.id);
+      second.state.useSuggestedLine(second.id, second.state.openEditors[0]!);
       second.setPatch(`${HEAD}\n${OTHER}`);
       await second.state.reload();
       await waitLoaded(second.state);
@@ -4994,7 +5047,7 @@ describe('reviewPane store — open new-comment editors', () => {
 
     it('is gone when its file leaves the diff, and comes back to its line with the file', async () => {
       const { state, id, setPatch } = await detachedAfter(OTHER);
-      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'gone', anchor: null, suggested: null, armed: false }]);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'gone', anchor: null, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
       state.moveEditor(id);
       expect(state.armedEditorId).toBeNull();
       setPatch(`${HEAD}\n${OTHER}`);
@@ -5142,7 +5195,7 @@ describe('reviewPane store — open new-comment editors', () => {
 
       await state.reload();
       await waitLoaded(state);
-      expect(state.openEditors).toEqual([{ id, filePath: 'x.go', side: 'new', state: 'placed', anchor: nine, suggested: null, armed: false }]);
+      expect(state.openEditors).toEqual([{ id, filePath: 'x.go', side: 'new', state: 'placed', anchor: nine, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
 
       // A third edit of the file: its first section's ids are unchanged,
       // and prove nothing of the whole.
@@ -5154,6 +5207,24 @@ describe('reviewPane store — open new-comment editors', () => {
       expect(create).not.toHaveBeenCalled();
     });
 
+    it('saves no comment on a line number two rows of the file share, and lets the editor move', async () => {
+      // Line 1 changed twice in one turn, a to b and then b to c: the two
+      // added rows both have new line 1, and a saved line cannot say which.
+      editsWith(() => [editSection('1111111..2222222', 1, 'a', 'b'), editSection('2222222..3333333', 1, 'b', 'c')].join('\n'));
+      const { state, create } = await workspaceWith(() => '');
+      await state.setScope('edits');
+      await waitLoaded(state);
+      const file = state.files[0]!;
+      const onC = Array.from({ length: file.body.lineCount }, (_, index) => index).find((index) => file.body.text(index) === '+c')!;
+      const id = state.openDraftEditor({ filePath: 'x.go', side: 'new', newLine: 1, selectedText: 'c', lineIndex: onC })!;
+      expect(id).toBeTruthy();
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'placed', repeated: true, occurrence: 1 });
+      await expect(state.createComment(id, 'On c.')).rejects.toEqual(refused('repeated'));
+      expect(create).not.toHaveBeenCalled();
+      state.moveEditor(id);
+      expect(state.armedEditorId).toBe(id);
+    });
+
     it('keeps a placed editor of a section with no index line through a reload of the same bytes', async () => {
       editsWith(() => editSection(null, 3, 'a', 'b'));
       const { state } = await workspaceWith(() => '');
@@ -5163,7 +5234,7 @@ describe('reviewPane store — open new-comment editors', () => {
       const id = state.openDraftEditor(three)!;
       await state.reload();
       await waitLoaded(state);
-      expect(state.openEditors).toEqual([{ id, filePath: 'x.go', side: 'new', state: 'placed', anchor: three, suggested: null, armed: false }]);
+      expect(state.openEditors).toEqual([{ id, filePath: 'x.go', side: 'new', state: 'placed', anchor: three, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
     });
   });
 
@@ -5225,7 +5296,33 @@ describe('reviewPane store — open new-comment editors of the PR on screen', ()
     expect(state.openDraftEditor(line)).toBeNull();
   });
 
-  it('saves both halves of a split context row as drafts the PR review submits, LEFT and RIGHT', async () => {
+  it('excludes a saved draft with one number on an unchanged line from the review, as before', async () => {
+    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: [], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    try {
+      installPRMocks();
+      setReviewDiffMock('OpenPRDiff', async () => ['diff --git a/src/app.ts b/src/app.ts', 'index 1111111..2222222 100644', '--- a/src/app.ts', '+++ b/src/app.ts', '@@ -1,3 +1,4 @@', ' keep 1', '-old 2', '+new 2', '+added', ' keep 3'].join('\n'));
+      const stored = [
+        { ...draft({ id: 'left-only', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'old', selectedText: 'keep 3', body: 'Left.' }), oldLine: 3, newLine: undefined },
+        { ...draft({ id: 'right-only', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'new', selectedText: 'keep 3', body: 'Right.' }), oldLine: undefined, newLine: 4 },
+        { ...draft({ id: 'added', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'new', selectedText: 'added', body: 'Added.' }), oldLine: undefined, newLine: 3 },
+      ];
+      setBindingMock('ListDiffReviewComments', async (_thread: string, scope: string) => (scope === 'pr' ? stored.map((row) => ({ ...row })) : []));
+      setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
+      const submit = getBindingMock('SubmitPRReview')!;
+      const state = reviewStateForPane('pane-1', prSubject());
+      await waitLoaded(state);
+      await state.setScope('pr');
+      await waitLoaded(state);
+      await vi.waitFor(() => expect(state.drafts).toHaveLength(3));
+      expect([...state.orphanedDraftIds()].sort()).toEqual(['left-only', 'right-only']);
+      await state.submitPRReview();
+      expect(submit.mock.calls[0]?.[1]).toMatchObject({ comments: [{ path: 'src/app.ts', body: 'Added.', line: 3, side: 'right' }] });
+    } finally {
+      __setTransportHelloForTest(null);
+    }
+  });
+
+  it('saves both halves of a split context row with both numbers, and the review posts them as the unchanged line', async () => {
     __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: [], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
     try {
       installPRMocks();
@@ -5262,7 +5359,8 @@ describe('reviewPane store — open new-comment editors of the PR on screen', ()
       const right = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: ' keep 3' })!;
       await state.createComment(left, 'Left half.');
       await state.createComment(right, 'Right half.');
-      expect(state.drafts.map((comment) => [comment.side, comment.oldLine, comment.newLine])).toEqual([['old', 3, undefined], ['new', undefined, 4]]);
+      // An unchanged line carries both numbers, whichever half was used.
+      expect(state.drafts.map((comment) => [comment.side, comment.oldLine, comment.newLine])).toEqual([['old', 3, 4], ['new', 3, 4]]);
       expect(state.orphanedDraftIds().size).toBe(0);
       // Each renders on its row, not under the file header.
       const built = buildReviewRows({ files: state.files, viewMode: 'split', collapsedPaths: new Set(), drafts: state.drafts, openEditors: [] });
@@ -5272,8 +5370,8 @@ describe('reviewPane store — open new-comment editors of the PR on screen', ()
       await state.submitPRReview();
       expect(submit.mock.calls[0]?.[1]).toMatchObject({
         comments: [
-          { path: 'src/app.ts', body: 'Left half.', line: 3, side: 'left' },
-          { path: 'src/app.ts', body: 'Right half.', line: 4, side: 'right' },
+          { path: 'src/app.ts', body: 'Left half.', line: 4, oldLine: 3, side: 'right' },
+          { path: 'src/app.ts', body: 'Right half.', line: 4, oldLine: 3, side: 'right' },
         ],
       });
     } finally {

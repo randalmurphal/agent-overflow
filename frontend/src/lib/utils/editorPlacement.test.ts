@@ -33,7 +33,8 @@ function fileOf(patch: string, path = PATH): ReviewFile {
   return file;
 }
 
-const budget = (): RelocationBudget => new RelocationBudget(1_000_000, 60_000);
+// Rows and bytes enough for every test file.
+const budget = (): RelocationBudget => new RelocationBudget(1_000_000, 100_000_000);
 const never = (): boolean => false;
 
 function placedOn(file: ReviewFile, anchor: CommentAnchor, text: string): RelocationTarget {
@@ -140,12 +141,11 @@ describe('relocateEditors', () => {
     const after = fileOf(section({ index: '1111111..3333333', hunk: '@@ -1,3 +1,4 @@', lines: [' keep 1', '-old 2', '+new 2', '+more', ' keep 3'] }));
     const keep3: CommentAnchor = { filePath: PATH, side: 'context', oldLine: 3, newLine: 3 };
     expect((await placeOne(placedOn(before, keep3, ' keep 3'), [after])).anchor).toMatchObject({ side: 'context', oldLine: 3, newLine: 4 });
-    // The right half of the same row follows it too, and stays RIGHT.
-    const right: CommentAnchor = { filePath: PATH, side: 'new', newLine: 3 };
-    expect((await placeOne(placedOn(before, right, ' keep 3'), [after])).anchor).toEqual({ filePath: PATH, side: 'new', newLine: 4, selectedText: ' keep 3' });
-    // The left half stays LEFT on its old line.
-    const left: CommentAnchor = { filePath: PATH, side: 'old', oldLine: 3 };
-    expect((await placeOne(placedOn(before, left, ' keep 3'), [after])).anchor).toEqual({ filePath: PATH, side: 'old', oldLine: 3, selectedText: ' keep 3' });
+    // Either half of the same row follows it too, with both numbers.
+    const right: CommentAnchor = { filePath: PATH, side: 'new', oldLine: 3, newLine: 3 };
+    expect((await placeOne(placedOn(before, right, ' keep 3'), [after])).anchor).toEqual({ filePath: PATH, side: 'new', oldLine: 3, newLine: 4, selectedText: ' keep 3' });
+    const left: CommentAnchor = { filePath: PATH, side: 'old', oldLine: 3, newLine: 3 };
+    expect((await placeOne(placedOn(before, left, ' keep 3'), [after])).anchor).toEqual({ filePath: PATH, side: 'old', oldLine: 3, newLine: 4, selectedText: ' keep 3' });
   });
 
   it('never places a right-side editor on a row its old number now deletes', async () => {
@@ -153,12 +153,13 @@ describe('relocateEditors', () => {
     const after = fileOf(section({ index: '1111111..4444444', hunk: '@@ -1,3 +1,2 @@', lines: [' keep 1', '-old 2', '+new 2', '-keep 3'] }));
     for (const anchor of [
       { filePath: PATH, side: 'context', oldLine: 3, newLine: 3 },
-      { filePath: PATH, side: 'new', newLine: 3 },
+      { filePath: PATH, side: 'new', oldLine: 3, newLine: 3 },
     ] as CommentAnchor[]) {
       expect(await placeOne(placedOn(before, anchor, ' keep 3'), [after]), anchor.side).toMatchObject({ anchor: null, reason: 'line-changed' });
     }
-    // A left-half editor names the old line, which the base still has.
-    const left: CommentAnchor = { filePath: PATH, side: 'old', oldLine: 3 };
+    // A left-half editor names the old line, which the base still has:
+    // deleted now.
+    const left: CommentAnchor = { filePath: PATH, side: 'old', oldLine: 3, newLine: 3 };
     expect((await placeOne(placedOn(before, left, ' keep 3'), [after])).anchor).toEqual({ filePath: PATH, side: 'old', oldLine: 3, selectedText: ' keep 3' });
   });
 
@@ -269,7 +270,7 @@ describe('relocateEditors', () => {
     const out = await relocateEditors(
       new Map([['e', placedOn(fileOf(BASE_TO_A), report, '  report();')]]),
       [fileOf(BASE_TO_A)],
-      new RelocationBudget(2, 60_000),
+      new RelocationBudget(2, 100_000_000),
       never,
     );
     expect(out.get('e')).toMatchObject({ anchor: null, reason: 'line-changed' });
@@ -328,21 +329,83 @@ describe('relocateEditors', () => {
       }
       const file = fileOf(moved);
       const text = vi.spyOn(file.body, 'text');
-      const out = await relocateEditors(new Map([['e', placedOn(fileOf(BASE_TO_A), report, '  report();')]]), [file], new Tight(1_000_000, 60_000), never);
+      const out = await relocateEditors(new Map([['e', placedOn(fileOf(BASE_TO_A), report, '  report();')]]), [file], new Tight(1_000_000, 100_000_000), never);
       expect(out.get('e')?.suggested).toMatchObject({ newLine: 3, selectedText: 'if (primary) {' });
       // The header and the suggested row; no row read for the text rule.
       expect(text.mock.calls.length).toBeLessThanOrEqual(5);
     });
 
     it('spends only what fits', () => {
-      const budget = new RelocationBudget(10, 60_000);
+      const budget = new RelocationBudget(10, 100);
       expect(budget.trySpend(11)).toBe(false);
-      expect(budget.trySpend(10)).toBe(true);
+      expect(budget.trySpend(5, 101)).toBe(false);
+      expect(budget.trySpend(10, 100)).toBe(true);
       expect(budget.trySpend(1)).toBe(false);
+      expect(budget.trySpend(0, 1)).toBe(false);
     });
 
     it('has none for a file gone', async () => {
       expect((await placeOne(placedOn(fileOf(BASE_TO_A), report, '  report();'), [])).suggested).toBeNull();
+    });
+
+    // A file of `rows` added lines `line N`, and a version of it with one
+    // line inserted on top, so every line moved.
+    function longFile(rows: number, shift: number): ReviewFile {
+      const lines = Array.from({ length: rows }, (_, index) => `+line ${index + 1}`);
+      const top = Array.from({ length: shift }, (_, index) => `+inserted ${index + 1}`);
+      return fileOf(section({ index: `0000000..${String(shift).padStart(7, '1')}`, meta: ['new file mode 100644'], hunk: `@@ -0,0 +1,${rows + shift} @@`, lines: [...top, ...lines] }));
+    }
+
+    function editorsOn(file: ReviewFile, count: number): Map<string, RelocationTarget> {
+      return new Map(Array.from({ length: count }, (_, index) => {
+        const line = index * 7 + 1;
+        return [`e${index}`, placedOn(file, { filePath: PATH, side: 'new', newLine: line }, `line ${line}`)] as const;
+      }));
+    }
+
+    it('serves every editor of a file from one pass over its rows', async () => {
+      const after = longFile(500, 1);
+      const text = vi.spyOn(after.body, 'text');
+      const out = await relocateEditors(editorsOn(longFile(500, 0), 10), [after], budget(), never);
+      // Each moved down one row, found by its text.
+      expect([...out.values()].map((outcome) => outcome.suggested?.newLine)).toEqual(Array.from({ length: 10 }, (_, index) => index * 7 + 2));
+      // One read of each row for the text rule, not one per editor.
+      expect(text.mock.calls.length).toBeLessThanOrEqual(after.body.lineCount + 20);
+    });
+
+    it('reads no text and awaits no residency for the text rule over its cap', async () => {
+      // Past the text rule's cap of 20 000 rows.
+      const after = longFile(20_010, 1);
+      const text = vi.spyOn(after.body, 'text');
+      const resident = vi.spyOn(after.body, 'whenResident');
+      const out = await relocateEditors(editorsOn(longFile(20_010, 0), 3), [after], budget(), never);
+      // The number rule: the row with its old number.
+      expect([...out.values()].map((outcome) => outcome.suggested?.newLine)).toEqual([1, 8, 15]);
+      expect(resident).not.toHaveBeenCalled();
+      // The header lines and the three suggested rows.
+      expect(text.mock.calls.length).toBeLessThanOrEqual(5 + 3);
+    });
+
+    it('decides by rows and bytes, never the clock, the same every run', async () => {
+      const now = vi.spyOn(performance, 'now');
+      const run = () => relocateEditors(editorsOn(longFile(300, 0), 5), [longFile(300, 1)], new RelocationBudget(1_000, 1_000_000), never);
+      const first = await run();
+      expect(await run()).toEqual(first);
+      expect(now).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the file an editor is in', () => {
+    it('is gone when its file left the diff, even with the budget spent before the lookup', async () => {
+      const file = fileOf(BASE_TO_A);
+      const other = fileOf(section({ path: 'src/other.ts', hunk: '@@ -1,1 +1,1 @@', lines: ['-x', '+y'] }), 'src/other.ts');
+      const out = await relocateEditors(new Map([['e', placedOn(file, report, '  report();')]]), [other], new RelocationBudget(1, 1), never);
+      expect(out.get('e')).toMatchObject({ filePath: PATH, anchor: null, reason: 'file-gone', suggested: null });
+    });
+
+    it('is in the diff when its file is, even with the budget spent', async () => {
+      const out = await relocateEditors(new Map([['e', placedOn(fileOf(BASE_TO_A), report, '  report();')]]), [fileOf(BASE_TO_A)], new RelocationBudget(1, 1), never);
+      expect(out.get('e')).toMatchObject({ anchor: null, reason: 'line-changed' });
     });
   });
 });

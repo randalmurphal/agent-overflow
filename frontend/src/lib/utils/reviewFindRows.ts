@@ -168,20 +168,17 @@ function commentLines(file: ReviewFile, content: ReviewFindLocateContent): Map<s
     if (row.kind === 'pr-thread') return row.thread.comments.map((comment) => findThreadCommentKey(row.thread.id, reviewCommentKey(comment)));
     return [];
   });
-  const byAnchor = new Map(inserts);
-  for (const key of keysOf(byAnchor.get(0) ?? [])) out.set(key, -1);
-  byAnchor.delete(0);
+  for (const key of keysOf(inserts.takeHead())) out.set(key, -1);
   const walker = new RowWalker(file);
   let last = -1;
-  while (walker.next() && byAnchor.size > 0) {
+  while (inserts.size > 0 && walker.next()) {
     if (walker.type === 'gap') continue;
     last = walker.lineIndex;
-    const bucket = byAnchor.get(walker.anchorLine());
-    if (!bucket) continue;
-    for (const key of keysOf(bucket)) out.set(key, walker.lineIndex);
-    byAnchor.delete(walker.anchorLine());
+    const bucket = inserts.take(walker.type, walker.oldLine, walker.newLine);
+    if (bucket) for (const key of keysOf(bucket)) out.set(key, walker.lineIndex);
   }
-  for (const bucket of byAnchor.values()) for (const key of keysOf(bucket)) out.set(key, last);
+  // Left over only when the walk reached the last row.
+  for (const key of keysOf(inserts.takeRest())) out.set(key, last);
   return out;
 }
 
