@@ -98,7 +98,7 @@ async function sectionKey(file: ReviewFile, budget: RelocationBudget): Promise<s
   return await file.body.whenResident(() => file.body.contentKey());
 }
 
-/** Relocation's shared allowance: rows walked and bytes of text read.
+/** Relocation's shared allowance: lines walked and bytes of text read.
  * Spent past either, the editors not yet proven are detached and the
  * diff shows. It never reads the clock, so placement is the same every
  * run. */
@@ -207,27 +207,28 @@ function tableRow(table: RowTable, at: number): FoundRow {
 }
 
 /** One walk of a file's rows answering every request of it and, when
- * `record`, recording its rows. Reads no text. */
+ * `record`, recording its rows. Reads no text. The walk is charged by the
+ * file's line count before anything is sized by it, so a file past the
+ * allowance allocates no table and is not walked. */
 function findRows(file: ReviewFile, requests: readonly RowRequest[], budget: RelocationBudget, record = false): RowTable | null {
+  budget.spend(file.body.lineCount);
   const byOld = new Map<number, RowRequest[]>();
   const byNew = new Map<number, RowRequest[]>();
   const byIndex = new Map<number, RowRequest[]>();
   for (const request of requests) {
     const map = request.by === 'old' ? byOld : request.by === 'new' ? byNew : byIndex;
-    const list = map.get(request.value) ?? [];
-    list.push(request);
-    map.set(request.value, list);
+    const list = map.get(request.value);
+    if (list) list.push(request);
+    else map.set(request.value, [request]);
   }
   let table: RowTable | null = null;
   if (record) {
-    const capacity = Math.max(16, file.body.lineCount);
+    // A row is a line of the file: the line count bounds the rows.
+    const capacity = file.body.lineCount;
     table = { length: 0, type: new Uint8Array(capacity), oldLine: new Int32Array(capacity), newLine: new Int32Array(capacity), lineIndex: new Int32Array(capacity) };
   }
   const walker = new RowWalker(file);
-  let walked = 0;
   while (walker.next()) {
-    walked += 1;
-    if ((walked & 1023) === 0) budget.spend(1024);
     const type = walker.type;
     if (type === 'gap' || type === 'marker') continue;
     const found: FoundRow = { type, oldLine: walker.oldLine, newLine: walker.newLine, lineIndex: walker.lineIndex };
@@ -252,7 +253,6 @@ function findRows(file: ReviewFile, requests: readonly RowRequest[], budget: Rel
     if (found.newLine > 0) consider(byNew.get(found.newLine));
     consider(byIndex.get(found.lineIndex));
   }
-  budget.spend(walked & 1023);
   return table;
 }
 
@@ -343,27 +343,39 @@ function suggestRows(table: RowTable, targets: readonly RelocationTarget[], text
   const sides = [...new Set(targets.map((target) => target.side))];
   const accepts = new Map(sides.map((side) => [side, sideRows(side).map((type) => ROW_TYPES.indexOf(type))]));
   // The text rule: every row read once, against every editor's text.
+  // Editors of one text and side get one answer, so a row costs one check
+  // per side its text is wanted on, however many editors share the text.
   if (text) {
-    const wanted = new Map<string, number[]>();
+    interface TextGroup { accept: readonly number[]; side: CommentAnchor['side']; at: number; count: number; members: number[] }
+    const wanted = new Map<string, TextGroup[]>();
     targets.forEach((target, index) => {
-      const list = wanted.get(target.selectedText) ?? [];
-      list.push(index);
-      wanted.set(target.selectedText, list);
+      let groups = wanted.get(target.selectedText);
+      if (!groups) {
+        groups = [];
+        wanted.set(target.selectedText, groups);
+      }
+      let group = groups.find((one) => one.side === target.side);
+      if (!group) {
+        group = { accept: accepts.get(target.side)!, side: target.side, at: -1, count: 0, members: [] };
+        groups.push(group);
+      }
+      group.members.push(index);
     });
-    const found = targets.map(() => ({ at: -1, count: 0 }));
     for (let at = 0; at < table.length; at += 1) {
       const type = ROW_TYPES[table.type[at]];
-      const list = wanted.get(rowText({ type }, text(table.lineIndex[at])));
-      if (!list) continue;
-      for (const index of list) {
-        if (!accepts.get(targets[index].side)!.includes(table.type[at])) continue;
-        found[index].count += 1;
-        found[index].at = at;
+      const groups = wanted.get(rowText({ type }, text(table.lineIndex[at])));
+      if (!groups) continue;
+      for (const group of groups) {
+        if (!group.accept.includes(table.type[at])) continue;
+        group.count += 1;
+        group.at = at;
       }
     }
-    found.forEach((one, index) => {
-      if (one.count === 1) out[index] = one.at;
-    });
+    for (const groups of wanted.values()) {
+      for (const group of groups) {
+        if (group.count === 1) for (const index of group.members) out[index] = group.at;
+      }
+    }
   }
   // The number rules: each side's rows sorted by number, row order kept
   // among equal numbers.
@@ -401,6 +413,13 @@ function suggestRows(table: RowTable, targets: readonly RelocationTarget[], text
     });
   }
   return out;
+}
+
+/** Adds `key` to its file's list in place: one list per file, never copied. */
+function groupInto<K>(groups: Map<ReviewFile, K[]>, file: ReviewFile, key: K): void {
+  const list = groups.get(file);
+  if (list) list.push(key);
+  else groups.set(file, [key]);
 }
 
 /**
@@ -467,7 +486,7 @@ export async function relocateEditors<K>(
     const bySource = new Map<ReviewFile, K[]>();
     for (const [key, target] of targets) {
       if (target.side === 'file') proofs.set(key, { kind: 'file' });
-      else if (target.source) bySource.set(target.source.file, [...(bySource.get(target.source.file) ?? []), key]);
+      else if (target.source) groupInto(bySource, target.source.file, key);
       else proofs.set(key, target.proof);
     }
     for (const [file, keys] of bySource) {
@@ -500,7 +519,7 @@ export async function relocateEditors<K>(
       if (!file) continue;
       const proof = proofs.get(key)!;
       if (proof.kind === 'file') out.set(key, { filePath: file.path, anchor: { filePath: file.path, side: 'file', selectedText: '' }, proof, suggested: null });
-      else byTarget.set(file, [...(byTarget.get(file) ?? []), key]);
+      else groupInto(byTarget, file, key);
     }
 
     // Locate the proven lines: one walk per file, which also records its

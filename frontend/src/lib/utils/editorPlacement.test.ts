@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   fileIdentity,
   lineGuard,
+  RELOCATION_BUDGET_BYTES,
+  RELOCATION_BUDGET_ROWS,
   RelocationBudget,
   RelocationCancelled,
   relocateEditors,
   type EditorProof,
+  type RelocationOutcome,
   type RelocationTarget,
 } from './editorPlacement';
 import { keptText, parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
@@ -288,6 +291,116 @@ describe('relocateEditors', () => {
     const target = placedOn(file, { filePath: PATH, side: 'file' }, '');
     expect((await placeOne(target, [fileOf(BASE_TO_A)])).anchor).toEqual({ filePath: PATH, side: 'file', selectedText: '' });
     expect(await placeOne(target, [])).toMatchObject({ anchor: null, reason: 'file-gone' });
+  });
+
+  describe('the work it does', () => {
+    // A file of `rows` added lines, all `text` or `line N`, as blob `blob`.
+    function added(path: string, rows: number, blob: string, text?: string): ReviewFile {
+      const lines = Array.from({ length: rows }, (_, index) => `+${text ?? `line ${index + 1}`}`);
+      return fileOf(section({ path, index: `0000000..${blob}`, meta: ['new file mode 100644'], hunk: `@@ -0,0 +1,${rows} @@`, lines }), path);
+    }
+
+    function editorsOn(file: ReviewFile, count: number, text?: string): Map<string, RelocationTarget> {
+      return new Map(Array.from({ length: count }, (_, index) => {
+        const line = index + 1;
+        return [`${file.path}:${line}`, placedOn(file, { filePath: file.path, side: 'new', newLine: line }, text ?? `line ${line}`)] as const;
+      }));
+    }
+
+    // The lengths every Uint8Array and Int32Array is constructed with.
+    function typedArrayLengths(): { lengths: number[]; restore: () => void } {
+      const lengths: number[] = [];
+      for (const name of ['Uint8Array', 'Int32Array'] as const) {
+        const real = globalThis[name];
+        vi.stubGlobal(name, new Proxy(real, {
+          construct(target, args, newTarget) {
+            if (typeof args[0] === 'number') lengths.push(args[0]);
+            return Reflect.construct(target, args, newTarget) as object;
+          },
+        }));
+      }
+      return { lengths, restore: () => vi.unstubAllGlobals() };
+    }
+
+    it('allocates no row table and walks no row of a file past the allowance, and detaches its editors', async () => {
+      const next = fileOf(BASE_TO_A);
+      Object.defineProperty(next.body, 'lineCount', { value: 10_000_000 });
+      const kind = vi.spyOn(next.body, 'kind');
+      const spy = typedArrayLengths();
+      let out: Map<string, RelocationOutcome>;
+      try {
+        out = await relocateEditors(new Map([['e', placedOn(fileOf(BASE_TO_A), report, '  report();')]]), [next], new RelocationBudget(RELOCATION_BUDGET_ROWS, RELOCATION_BUDGET_BYTES), never);
+      } finally {
+        spy.restore();
+      }
+      expect(out.get('e')).toMatchObject({ filePath: PATH, anchor: null, reason: 'line-changed', suggested: null });
+      expect(Math.max(0, ...spy.lengths)).toBeLessThanOrEqual(RELOCATION_BUDGET_ROWS);
+      // The header scan of fileIdentity only.
+      expect(kind.mock.calls.length).toBeLessThan(10);
+    });
+
+    it('spends one allowance across the editors of every file', async () => {
+      const rows = 1_000;
+      const a = added('src/a.ts', rows, '1111111');
+      const b = added('src/b.ts', rows, '2222222');
+      const lines = a.body.lineCount;
+      // Room for both files' source walks, one new walk and its row read,
+      // and half a file more: each file alone fits, both do not.
+      const allowance = 3 * lines + 1 + lines / 2;
+      const both = new Map([...editorsOn(a, 1), ...editorsOn(b, 1)]);
+      const out = await relocateEditors(both, [added('src/a.ts', rows, '1111111'), added('src/b.ts', rows, '2222222')], new RelocationBudget(allowance, 100_000_000), never);
+      expect([...out.values()].map((outcome) => outcome.anchor?.newLine ?? outcome.reason)).toEqual([1, 'line-changed']);
+      const alone = await relocateEditors(editorsOn(b, 1), [added('src/b.ts', rows, '2222222')], new RelocationBudget(allowance, 100_000_000), never);
+      expect([...alone.values()].map((outcome) => outcome.anchor?.newLine)).toEqual([1]);
+    });
+
+    it('groups many editors of one file without copying their list per editor', async () => {
+      const count = 2_000;
+      const file = added(PATH, count, '1111111');
+      const targets = editorsOn(file, count);
+      const next = added(PATH, count, '1111111');
+      // Copying a growing list steps an array iterator once per element.
+      // A plain counter: a spy records its calls through array iterators.
+      const iterators = Object.getPrototypeOf([][Symbol.iterator]()) as { next: (...args: unknown[]) => unknown };
+      const real = iterators.next;
+      let steps = 0;
+      iterators.next = function (this: unknown, ...args: unknown[]) {
+        steps += 1;
+        return real.apply(this, args);
+      };
+      let out: Map<string, RelocationOutcome>;
+      try {
+        out = await relocateEditors(targets, [next], budget(), never);
+      } finally {
+        iterators.next = real;
+      }
+      expect([...out.values()].every((outcome) => outcome.anchor !== null)).toBe(true);
+      expect(steps).toBeLessThan(50 * count);
+    });
+
+    it('costs a row of the text rule one check, however many detached editors share its text', async () => {
+      const editors = 300;
+      const rows = 3_000;
+      const targets = editorsOn(added(PATH, editors, '1111111', 'same'), editors, 'same');
+      // Another version of the file: every editor detaches, and its text
+      // is on every row, so the number rule decides.
+      const next = added(PATH, rows, '2222222', 'same');
+      // Each check asks whether a row's type is one the side accepts.
+      const real = Array.prototype.includes;
+      let checks = 0;
+      Array.prototype.includes = function (this: unknown[], ...args: Parameters<typeof real>) {
+        checks += 1;
+        return real.apply(this, args);
+      };
+      let out: Map<string, RelocationOutcome>;
+      try {
+        out = await relocateEditors(targets, [next], budget(), never);
+      } finally {
+        Array.prototype.includes = real;
+      }
+      expect([...out.values()].map((outcome) => outcome.suggested?.newLine)).toEqual(Array.from({ length: editors }, (_, index) => index + 1));
+      expect(checks).toBeLessThan(10 * (rows + editors));
+    });
   });
 
   describe('the suggested row of a detached editor', () => {
