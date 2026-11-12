@@ -448,7 +448,9 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 			if srv == nil {
 				return "", errors.New("transport: not started")
 			}
-			return srv.MintPageTicket()
+			// The ticket of the backend's own window (transport
+			// MintWindowTicket).
+			return srv.MintWindowTicket()
 		},
 		loadGeometry: loadPersistedWindowGeometry,
 		persistGeometry: func(geometry windowgeom.Geometry) {

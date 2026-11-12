@@ -243,8 +243,10 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
+	// The only write before the review exists: its error decides
+	// whether the review may have posted.
 	if err := postGitHubReview(ctx, client, ref, body); err != nil {
-		return SubmitReviewResult{}, err
+		return SubmitReviewResult{}, submitWriteError(err)
 	}
 	out := SubmitReviewResult{PostedReview: true}
 	for _, comment := range fileComments {
@@ -253,7 +255,7 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 			return out, err
 		}
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: pulls + "/comments", Body: body}, nil); err != nil {
-			return out, &PartialSubmitError{PostedReview: true, PostedFileComments: out.PostedFileComments, FailedPath: comment.Path, Err: err}
+			return out, &PartialSubmitError{PostedReview: true, PostedFileComments: out.PostedFileComments, FailedPath: comment.Path, Unconfirmed: !forgeapi.WriteNotApplied(err), Err: err}
 		}
 		out.PostedFileComments++
 	}

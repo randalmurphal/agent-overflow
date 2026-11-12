@@ -70,8 +70,30 @@ func TestGitLabDraftNotesCreateDeleteAndPublish(t *testing.T) {
 		t.Fatalf("pending after delete = %v, want the same-text draft 77 kept", got)
 	}
 
+	listed := func() []int64 {
+		t.Helper()
+		got := glabGET(t, srv, "gitlab.com", mr+"/draft_notes?per_page=100")
+		var drafts []struct {
+			ID int64 `json:"id"`
+		}
+		if got.status != http.StatusOK || json.Unmarshal([]byte(got.body), &drafts) != nil {
+			t.Fatalf("list = %+v", got)
+		}
+		var ids []int64
+		for _, draft := range drafts {
+			ids = append(ids, draft.ID)
+		}
+		return ids
+	}
+	if got := listed(); !slices.Equal(got, []int64{77, line}) {
+		t.Fatalf("listed = %v, want the viewer's pending drafts", got)
+	}
+
 	if got := glabSend(t, srv, "POST", mr+"/draft_notes/bulk_publish", ""); got.status != http.StatusNoContent {
 		t.Fatalf("publish = %+v", got)
+	}
+	if got := listed(); len(got) != 0 {
+		t.Fatalf("listed after publish = %v, want none", got)
 	}
 	if got := draftIDs(t, e); !slices.Equal(got, []int64{78}) {
 		t.Fatalf("pending after publish = %v, want only another author's", got)

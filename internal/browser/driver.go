@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"regexp"
 
@@ -58,6 +59,26 @@ type engineSiteData interface {
 // dispatch runs synchronously there and the teardown takes milliseconds.
 type engineUIThread interface {
 	OnUIThread() bool
+}
+
+// engineAppFocus is implemented by an engine whose page views share the
+// app's window and its one keyboard focus (WebKitGTK, WKWebView). FocusApp
+// gives that focus to the app's own webview. The Manager calls it for every
+// chord it claims, inside KeyChord on the UI thread, so the handoff lands
+// before the next key and before the chord is dispatched (keyChord). The
+// launcher-hosted WebView2 claims in its own process and hands focus there.
+type engineAppFocus interface {
+	FocusApp() error
+}
+
+// focusReleaseError reads a native engine's answer to hiding or closing a
+// page view (paneHost): 1 the view held keyboard focus and gave it to the
+// app, 0 it held none, -1 it held focus and the app could not take it.
+func focusReleaseError(released int) error {
+	if released < 0 {
+		return errors.New("browser: the page held keyboard focus and the app has no webview to take it")
+	}
+	return nil
 }
 
 // engineAccelerators is implemented by an engine whose key-chord gate runs
@@ -373,10 +394,11 @@ type engineEvents struct {
 	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord,
 	// or a bare Escape, was pressed while the page's native view held
 	// keyboard focus — does AO own it? True means the engine swallows the
-	// event and AO dispatches the chord; false means the page keeps it. A
-	// bare Escape is always the page's; press is what the engine knows of
-	// it besides the chord. It runs on the engine's UI thread, so the answer
-	// must be a set lookup and nothing that waits.
+	// event and AO dispatches the chord, keyboard focus already handed to
+	// the app (engineAppFocus); false means the page keeps it, and its
+	// focus. A bare Escape is always the page's; press is what the engine
+	// knows of it besides the chord. It runs on the engine's UI thread, so
+	// the answer must be a set lookup and nothing that waits.
 	KeyChord func(handle string, pressed keybindings.Accelerator, press KeyPress) bool
 }
 

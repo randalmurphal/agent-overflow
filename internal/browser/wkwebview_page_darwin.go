@@ -414,8 +414,8 @@ var _ pageFind = (*wkPage)(nil)
 func (p *wkPage) FindMode() string { return FindModeBar }
 
 // FindStart searches from the top: WKWebView searches from the selection, so
-// the selection is dropped first, in the page and its same-origin frames,
-// from an isolated world. WKFindResult has no count.
+// the selection is dropped first, from an isolated world
+// (webkitClearSelectionScript). WKFindResult has no count.
 func (p *wkPage) FindStart(ctx context.Context, query string) (findResult, error) {
 	if _, err := p.evalIn(ctx, webkitFindWorld, webkitClearSelectionScript); err != nil {
 		return findResult{}, err
@@ -437,9 +437,11 @@ func (p *wkPage) FindStep(ctx context.Context, backwards bool) (findResult, erro
 	return p.find(ctx, query, backwards)
 }
 
-// FindStop drops the selection that marks the match, in the page and its
-// same-origin frames, from an isolated world; a match selected in a
-// cross-origin frame stays selected.
+// FindStop drops the selection that marks the match, from an isolated
+// world (webkitClearSelectionScript): frames window.frames reaches in the
+// call, and every frame told to clear, down from the top, and not waited
+// for. If WebKit refuses the frame script (ao_add_find_frame_script), a
+// frame the call cannot reach keeps its selection.
 func (p *wkPage) FindStop(ctx context.Context) error {
 	p.mu.Lock()
 	p.findQuery = ""

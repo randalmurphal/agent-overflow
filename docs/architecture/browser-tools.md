@@ -137,15 +137,49 @@ so AO's chords have to be taken back at the engine:
   WebKitGTK view, and WebView2's `AcceleratorKeyPressed` in the launcher, which
   matches in its own process against the set the backend ships in an
   `accelerators` directive and answers with an `accelerator` report.
-- A bound chord is swallowed by the engine and reaches the frontend as an
-  `accelerator` event on `browser:companion-state`, carrying the BOUND
-  spelling (Shift glyph variants are normalized by the match). The store
-  focuses the thread's browser companion and replays the chord as a window
-  keydown, so `when` gates, rebinds and the palette all behave as if the SPA
-  had been focused. A bound chord whose `when` fails there is a no-op — the
-  page never gets it back, which is the price of answering synchronously.
-  DOM focus left in the SPA stays put; it gates nothing because the document
-  has no keyboard focus, which the command context's `terminalFocus` reads.
+- A bound chord is swallowed by the engine and hands keyboard focus to the
+  app's webview inside the key event, before the next key and before the
+  chord is routed: the Manager does it for every chord it claims
+  (`keyChord`, through `engineAppFocus` on WebKitGTK and WKWebView), and the
+  launcher does it where it claims for WebView2 (`acceleratorPressed`,
+  focusing its window, whose WebView2 controller takes the focus), only
+  while that window is in the foreground. A chord AO does not claim, and a
+  bare Escape, leave focus in the page. No command focuses anything for
+  this; the command puts DOM focus where it wants it (the find bar's input,
+  the palette), and the keys typed next reach it.
+- A page that is not visible never holds keyboard focus. Each way a pane
+  stops showing a page (a tab switch, the pane closing, a compact screen
+  change, the companion hidden) is the engine's hide of that page, and the
+  hide, like the close of a page, gives focus the page held to the app's
+  webview through the same code as a claimed chord's handoff
+  (`ao_wk_focus_app`, `ao_wkv_focus_app`, and the launcher's
+  `releaseFocus`). Showing a page takes no focus.
+- Only the host's own window mounts a pane (`BrowserCompanionPaneAttach`
+  refuses any other connection; see transport.md, the host-window cookie):
+  the native view lives in that window. A browser tab on the host offers
+  and opens no pane, as a connected browser does. Both openers, a state
+  push (which the chip's show produces) and the reconcile on a thread
+  mount, go through `openBrowserCompanion`, which asks
+  `canUseNativeBrowser`; a mod-clicked link asks it before minting a
+  page, and no layout restore or companion stash reopens a browser pane.
+  A thread's pages are presented in one mount, its earliest attached live
+  one (`presenterLocked`), until that mount detaches; the presentation,
+  the pages' size, and the routed chord and Escape all name it.
+- The chord then reaches the frontend as an `accelerator` event on
+  `browser:companion-state`, carrying the BOUND spelling (Shift glyph
+  variants are normalized by the match) and the presenting mount
+  (`mount`). Every host client receives the event, and only the one holding
+  that mount replays it; a chord in a page no pane shows is dropped. An
+  `escape` event carries the mount too, and closes only that client's find
+  bar. The
+  store focuses the thread's
+  browser companion and replays the chord as a window keydown, so `when`
+  gates, rebinds and the palette all behave as if the SPA had been focused.
+  A bound chord whose `when` fails there is a no-op — the page never gets it
+  back, which is the price of answering synchronously. The replay leaves
+  DOM focus where the SPA last had it, so a surface the chord opens returns
+  focus there when it closes: focus stays in the app, and the page gets it
+  back from a click.
 - A bare Escape is never AO's in the page: WebKitGTK and WKWebView offer it
   to the gate, which always lets it through, and while a pane shows the
   page the Manager announces each press as an `escape` event (thread and
@@ -296,9 +330,27 @@ store's alone; the backend holds only what the engine holds.
   match. On both engines that clearing (`webkitClearSelectionScript`) runs
   in an isolated script world (`webkitFindWorld`), so a page's own
   `getSelection` or `removeAllRanges` never reaches it, over the page and
-  each same-origin frame on its own; a match selected in a cross-origin
-  frame stays selected, and any other failure fails the stop, which stays
-  owed.
+  each same-origin frame on its own, and any failure there fails the stop,
+  which stays owed. Frames are not enumerated, since `window.frames` misses
+  an iframe in a shadow root: `webkitFindFrameScript`, installed in every
+  frame at document start in the same world, announces each frame to its
+  parent, which keeps its own direct children (bounded, deduplicated,
+  pruned when used). The stop then posts a clear to each announced child of
+  the top frame, and a frame obeys a clear only from its parent, clearing
+  itself and passing it on to its own children, so a clear only travels
+  down and no frame can clear the page above or beside it; the top frame
+  obeys none. The listener is a capture-phase listener added before any page
+  script, so a page cannot swallow the message first, and the page never
+  sees the find's messages. A document regenerated with `document.open`
+  runs the script again in the same window; each run replaces its listener
+  and announces again, so the window keeps one listener and its children.
+  The console capture also runs again: it wraps the console's methods only
+  on its first run in a window, since the console and its wrappers outlive
+  `document.open`, and each run re-adds only its error and
+  unhandledrejection listeners. Nothing waits for a frame, so a frame cannot
+  fail the stop, and a frame that runs no script (sandboxed without
+  `allow-scripts`) keeps its selection. WebView2's own find bar has no
+  selection housekeeping of AO's to fix.
 - Hosted WebView2 ("engine") opens the engine's own find bar
   (`ICoreWebView2Find` with the default dialog left on), seeded with the
   SPA's selection or else the page's, and moves keyboard focus into the page.

@@ -22,6 +22,7 @@ import (
 // § Authorization and caller state).
 var callerBoundMethods = map[string]string{
 	"ListActivityRunMembers":    "store read",
+	"GetPRReviewSubmitOutcome":  "in-memory attempt record",
 	"ListItemsAfterCursor":      "store read",
 	"ListItemsBeforeCursor":     "store read",
 	"ListThreadSliceAround":     "store read",

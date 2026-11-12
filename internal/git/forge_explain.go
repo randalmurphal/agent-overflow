@@ -108,6 +108,7 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	var graphQL *forgeapi.GraphQLError
 	var status *forgeapi.StatusError
 	var kept *BranchKeptError
+	var refused *forgeapi.RefusalError
 	switch {
 	case errors.As(err, &kept):
 		reason := trimSentence(kept.Err.Error())
@@ -119,6 +120,8 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 		return wrap(ForgeErrorSetup, setupSentence(setup, labels))
 	case errors.As(err, &limited):
 		return wrap(ForgeErrorRateLimited, limited.Error())
+	case errors.As(err, &refused):
+		return wrap(refusalSentence(refused, labels, ref, action, name))
 	case errors.As(err, &transient), errors.Is(err, context.DeadlineExceeded):
 		return wrap(ForgeErrorTransient, fmt.Sprintf("%s could not be reached. Check the connection and try again.", labels.host(ref.Host)))
 	case errors.As(err, &forbidden):
@@ -149,6 +152,17 @@ type forgeLabelSet struct {
 	binary       string
 	numberPrefix string
 	publicHost   string
+}
+
+// refusalSentence explains a write the forge refused with a 401 whose
+// recovery failed: nothing was done, and what to do about the login.
+func refusalSentence(refused *forgeapi.RefusalError, labels forgeLabelSet, ref RepoReference, action ForgeAction, name string) (string, string) {
+	reason := trimSentence(refused.Err.Error())
+	if refused.Step == forgeapi.RefusalStepProbe {
+		return ForgeErrorTransient, fmt.Sprintf("%s refused to %s %s (HTTP 401), so nothing was changed, and checking the `%s` login failed: %s. Try again in a moment.", labels.name, action, name, labels.binary, reason)
+	}
+	host := firstNonEmpty(ref.Host, labels.publicHost)
+	return ForgeErrorSetup, fmt.Sprintf("%s refused the `%s` login's token (HTTP 401), so it did not %s %s, and reading the login again failed: %s. Run `%s auth status --hostname %s` to check the login, then try again.", labels.name, labels.binary, action, name, reason, labels.binary, host)
 }
 
 func forgeLabels(forge string) forgeLabelSet {

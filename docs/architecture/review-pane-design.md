@@ -252,8 +252,23 @@ polling.
   row). Drafts batch across files; one submit action with target picker:
   - *Linked agent*: extends the existing `SendDiffReviewComments` saga.
   - *The PR*: `SubmitReview` with Comment / Approve / Request changes.
+    On a backend with capability `pr-review-drafts.v1`, `SubmitPRReview`
+    takes the draft ids, posts their stored text and marks the posted
+    ones sent in the same call, one submit per PR at a time
+    (`internal/app/app_pr_review_submit.go` owns the contract). An older
+    backend gets the comments and the pane marks them after.
   Drafts clear only on confirmed success; failures surface in the pane and
-  keep drafts (errors are user-facing state).
+  keep drafts (errors are user-facing state). Only the backend says what a
+  submit did: its answer, or after a lost answer its record of the
+  attempt (`GetPRReviewSubmitOutcome`, by the attempt id each press of
+  Send mints). The pane never infers it from drafts reading as sent.
+  "Not posted" needs proof: the request never left the process, or the
+  forge refused it in full with a 4xx (`forgeapi.WriteNotApplied`).
+  Anything else is unconfirmed: the drafts stay drafts and the pane says
+  the review may already be on the PR. A GitLab publish whose answer was
+  lost is settled by reading the pending draft notes. A review that was
+  not posted, or is unconfirmed, keeps its summary and verdict in the
+  send strip, which stays while either is set.
 - **Agent context rule (deterministic, no toggle).** If the target thread's
   workspace is the diff source (commenting on that agent's own live work),
   keep today's lean prompt. The agent sees the diff in-turn. Otherwise

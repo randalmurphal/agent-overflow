@@ -760,6 +760,7 @@ export const SaveAttachment = dispatch('SaveAttachment');
 export const SaveForgeAttachment = dispatch('SaveForgeAttachment');
 export const ListPRReviewThreads = dispatch('ListPRReviewThreads');
 export const SubmitPRReview = dispatch('SubmitPRReview');
+export const GetPRReviewSubmitOutcome = dispatch('GetPRReviewSubmitOutcome');
 export const ReplyToPRThread = dispatch('ReplyToPRThread');
 export const SetPRThreadResolved = dispatch('SetPRThreadResolved');
 export const ApprovePR = dispatch('ApprovePR');

@@ -21,6 +21,11 @@
 // Returns 1 on success, 0 when the window has no child to wrap.
 int ao_wk_host_attach(void *gtk_window);
 
+// ao_wk_set_find_frame_script keeps the script every view then created gets
+// in every frame at document start, in the named isolated world: the find's
+// per-frame selection clearing (webkitFindFrameScript). The first call wins.
+void ao_wk_set_find_frame_script(const char *script, const char *world);
+
 // ao_wk_on_main_thread reports whether the caller is the GTK thread: the one
 // ao_wk_host_attach ran on, the one every call here runs on, and the one Wails
 // blocks while services shut down. The Manager asks it to choose an inline
@@ -52,8 +57,10 @@ void ao_wk_host_present(void *view, double x, double y, double width,
                         double clip_width, double clip_height, double vw,
                         double vh, double scale);
 
-// ao_wk_host_hide ends a presentation; the caller parks the view next.
-void ao_wk_host_hide(void *view);
+// ao_wk_host_hide ends a presentation and parks the view at slot. A view
+// that held keyboard focus hands it to the SPA's webview: it answers 1 when
+// it did, -1 when the view held focus and the handoff failed, 0 otherwise.
+int ao_wk_host_hide(void *view, int slot);
 
 // ao_wk_host_presented reports whether this view is presented, which is what
 // decides whether a dialog, picker, or context menu is shown or answered.
@@ -83,7 +90,9 @@ void *ao_wk_view_new(void *session, uint64_t page_id, const char *user_script,
 void ao_wk_view_adopt(void *view, uint64_t page_id, const char *user_script,
                       const char *console_handler);
 
-void ao_wk_view_close(void *view);
+// ao_wk_view_close closes the view, handing keyboard focus it held to the
+// SPA's webview, and answers as ao_wk_host_hide does.
+int ao_wk_view_close(void *view);
 // ao_wk_view_set_background sets the view's base color (opaque), which is what
 // the page paints over and what shows where it has not painted yet.
 void ao_wk_view_set_background(void *view, double red, double green, double blue);
@@ -139,6 +148,24 @@ void ao_wk_view_find_finish(void *view);
 // -1 for a view without one. It reaches AO's gate, not the page: GTK 4
 // cannot make a real input event. The native smoke's door into the gate.
 int ao_wk_view_offer_escape(void *view, int ctrl, int release);
+
+// ao_wk_view_offer_ctrl_key delivers one Control press of the key whose
+// character is unicode to the view's key controller, as
+// ao_wk_view_offer_escape does, and answers the same way.
+int ao_wk_view_offer_ctrl_key(void *view, unsigned int unicode);
+
+// ao_wk_focus_app gives keyboard focus to the Wails SPA's webview, the
+// handoff of a claimed chord, and answers 1 when GTK made it the window's
+// focus widget, 0 without one.
+int ao_wk_focus_app(void);
+
+// For the native smoke: ao_wk_view_grab_focus gives the view keyboard
+// focus; ao_wk_focus_holder answers which widget the view's window has as
+// its focus widget: 1 the view (or inside it), 2 the SPA's webview, 3 any
+// other, 0 none; ao_wk_window_active whether that window is active.
+void ao_wk_view_grab_focus(void *view);
+int ao_wk_focus_holder(void *view);
+int ao_wk_window_active(void *view);
 
 // ao_wk_view_has_input_method answers whether the view has an input method
 // context, the one the key gate reads a composition from.

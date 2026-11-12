@@ -347,6 +347,16 @@ type SubmitPRReviewResult struct {
 	// forge's raw text.
 	PartialFailure     string `json:"partialFailure,omitempty"`
 	PartialFailureKind string `json:"partialFailureKind,omitempty"`
+	// SentDraftIDs are the named drafts a draft submit posted and marked
+	// sent; EditedDraftIDs the ones it posted that changed meanwhile and
+	// stay drafts. Both empty for a submit without drafts.
+	SentDraftIDs   []string `json:"sentDraftIds,omitempty"`
+	EditedDraftIDs []string `json:"editedDraftIds,omitempty"`
+	// Posted is a draft submit's own fact that the forge took a review
+	// from it; Unconfirmed that the forge did not say whether it did. Both
+	// false on every answer of a submit without drafts.
+	Posted      bool `json:"posted,omitempty"`
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
 }
 
 // mapSubmitPRReviewResult turns a submit's result into the wire answer. A
@@ -370,23 +380,13 @@ func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, r
 		if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, action, partial.Err)); ok {
 			mapped.PartialFailure, mapped.PartialFailureKind = explained.Message, explained.Kind
 		}
+		if partial.Unconfirmed {
+			mapped.PartialFailure = "The forge did not confirm it, so it may already be on the PR; check the PR before sending it again. " + mapped.PartialFailure
+			mapped.PartialFailureKind = "unconfirmed"
+		}
 		return mapped, nil
 	}
 	return SubmitPRReviewResult{}, err
-}
-
-//ao:scope git:operate
-//ao:route selected
-func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review gitops.SubmitReviewRequest) (SubmitPRReviewResult, error) {
-	if a.shuttingDown.Load() {
-		return SubmitPRReviewResult{}, ErrShuttingDown
-	}
-	if err := pr.Validate(); err != nil {
-		return SubmitPRReviewResult{}, err
-	}
-	result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, review)
-	mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
-	return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
 }
 
 //ao:scope git:operate

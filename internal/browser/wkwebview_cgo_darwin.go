@@ -14,6 +14,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -389,14 +390,34 @@ func wkLookupProfile(id uint64) *wkProfile {
 // The Go-typed surface the rest of the engine uses
 // ---------------------------------------------------------------------------
 
+// wkFocusApp hands keyboard focus to the SPA's webview.
+func wkFocusApp() error {
+	ok := false
+	if !wkDo(func() { ok = C.ao_wkv_focus_app() == 1 }) {
+		return errWKUnavailable
+	}
+	if !ok {
+		return fmt.Errorf("browser: the desktop window's app webview did not take keyboard focus")
+	}
+	return nil
+}
+
 // wkAttachHost adds AO's clipping park view beneath the Wails window's own
 // subviews. The SPA webview is untouched: unlike GTK4, AppKit lets a second
 // view join an existing content view without any reparenting surgery.
 func wkAttachHost(window unsafe.Pointer) error {
 	ok := false
-	if !wkDo(func() { ok = C.ao_wkv_host_attach(window) == 1 }) {
+	// The glue copies both strings. A dispatch that did not run in time may
+	// still run, so they are freed only after it did.
+	script, world := C.CString(webkitFindFrameScript), C.CString(webkitFindWorld)
+	if !wkDo(func() {
+		ok = C.ao_wkv_host_attach(window) == 1
+		C.ao_wkv_set_find_frame_script(script, world)
+	}) {
 		return errWKUnavailable
 	}
+	C.free(unsafe.Pointer(script))
+	C.free(unsafe.Pointer(world))
 	if !ok {
 		return fmt.Errorf("browser: the desktop window has no content view to host the browser pane in")
 	}
@@ -426,11 +447,14 @@ func wkPresentView(view wkView, placement PanePlacement) error {
 	})
 }
 
+// wkHideView parks the view. A view that held keyboard focus gives it to the
+// SPA's webview; the error says when that handoff failed.
 func wkHideView(view wkView, slot int) error {
-	return view.do(func(view unsafe.Pointer) {
-		C.ao_wkv_host_hide(view)
-		C.ao_wkv_host_park(view, C.int(slot))
-	})
+	released := 0
+	if err := view.do(func(view unsafe.Pointer) { released = int(C.ao_wkv_host_hide(view, C.int(slot))) }); err != nil {
+		return err
+	}
+	return focusReleaseError(released)
 }
 
 // Every C string below is allocated INSIDE its dispatch closure and freed
@@ -524,8 +548,14 @@ func wkAdoptView(view unsafe.Pointer, pageID, profileID uint64, userScript, cons
 	return nil
 }
 
+// wkCloseView closes the view, giving keyboard focus it held to the SPA's
+// webview. No caller can act on a failed handoff, so it is logged here.
 func wkCloseView(view unsafe.Pointer) {
-	wkDo(func() { C.ao_wkv_view_close(view) })
+	released := 0
+	wkDo(func() { released = int(C.ao_wkv_view_close(view)) })
+	if err := focusReleaseError(released); err != nil {
+		log.Printf("browser: close a page: %v", err)
+	}
 }
 
 func wkSetViewSize(view wkView, width, height int) error {

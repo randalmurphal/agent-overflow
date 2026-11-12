@@ -1917,9 +1917,24 @@ func TestGitHubMergeMutationsTransitionThePull(t *testing.T) {
 	if got := graphQL(t, srv, "github.com", "DisableAutoMerge", map[string]any{"pullRequestID": node}); !strings.Contains(got.body, "not enabled") {
 		t.Fatalf("a second disarm = %s", got.body)
 	}
-	// Review line comments are not implemented; an unknown pull is not found.
-	if got := httpRequest(t, srv, "POST", "github.com", "/github/rest/repos/acme/merge/pulls/2/reviews", `{"event":"COMMENT","body":"x","comments":[{"path":"a.go","line":1,"body":"y"}]}`, nil); got.status != 404 || !lastInvocation(t, e).Unhandled {
-		t.Fatalf("a review with comments = %+v", got)
+	// A review's line comments open the viewer's threads; one without a
+	// side is GitHub's 422 and opens none, and an unknown property is
+	// unhandled. An unknown pull is not found.
+	reviews := "/github/rest/repos/acme/merge/pulls/2/reviews"
+	if got := httpRequest(t, srv, "POST", "github.com", reviews, `{"event":"COMMENT","comments":[{"path":"a.go","line":1,"body":"no side"}]}`, nil); got.status != 422 || lastInvocation(t, e).Unhandled {
+		t.Fatalf("a comment without a side = %+v", got)
+	}
+	if got := httpRequest(t, srv, "POST", "github.com", reviews, `{"event":"COMMENT","comments":[{"path":"a.go","line":1,"side":"RIGHT","body":"y","position":1}]}`, nil); got.status != 404 || !lastInvocation(t, e).Unhandled {
+		t.Fatalf("a comment with a position = %+v", got)
+	}
+	if got := httpRequest(t, srv, "POST", "github.com", reviews, `{"event":"COMMENT","comments":[{"path":"a.go","line":4,"side":"LEFT","start_line":2,"start_side":"LEFT","body":"range"}]}`, nil); got.status != 200 {
+		t.Fatalf("a review with a line comment = %+v", got)
+	}
+	threads := graphQL(t, srv, "github.com", "PRTick", map[string]any{
+		"owner": "acme", "name": "merge", "number": 2, "wantDetail": false, "wantThreads": true, "wantEvents": false, "wantChecks": false,
+	}).body
+	if !strings.Contains(threads, `"range"`) || strings.Contains(threads, `"no side"`) || !strings.Contains(threads, `"LEFT"`) {
+		t.Fatalf("threads after the review = %s", threads)
 	}
 	if got := graphQL(t, srv, "github.com", "MarkPRReady", map[string]any{"pullRequestID": "PR_nope"}); !strings.Contains(got.body, "NOT_FOUND") || lastInvocation(t, e).Unhandled {
 		t.Fatalf("an unknown pull = %s", got.body)
