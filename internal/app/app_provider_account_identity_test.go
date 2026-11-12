@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 )
@@ -219,16 +220,20 @@ func TestExternalClaudeLoginReconcilesMetadataAndLiveSessions(t *testing.T) {
 		Liveness:             newSessionLiveness(time.Now()),
 	})
 
+	// The probe still reports the previous login, as a stale oauthAccount
+	// record does; the new credential's token is what names second.
 	binary := writeProbeMockBinary(
 		t,
-		`{"email":"second@example.com","subscriptionType":"Claude Max","tokenSource":"oauth","apiProvider":"firstParty"}`,
+		`{"email":"first@example.com","subscriptionType":"Claude Max","tokenSource":"oauth","apiProvider":"firstParty"}`,
 	)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
 	if err := providerCredentialsForTest(t, app).WriteNativeCredentialForTest(
 		string(provider.Claude),
-		[]byte(`{"claudeAiOauth":{"accessToken":"second"}}`),
+		[]byte(`{"claudeAiOauth":{"accessToken":"`+
+			claudefake.AccessToken("second@example.com", "org-second", "1")+
+			`","scopes":["user:inference","user:profile"]}}`),
 	); err != nil {
 		t.Fatal(err)
 	}

@@ -28,8 +28,12 @@ and the resolved file, size and mtime still match.
 
 Claude credentials and `oauthAccount` are separate. AO may retire
 `oauthAccount` before replacing the canonical credential, but never writes a
-new identity. The CLI repopulates it. An empty identity immediately after a
-switch is unknown, not evidence of sign-out.
+new identity. The CLI repopulates it asynchronously, so the record can
+describe a different login than the credential beside it, and AO never
+matches a credential on it or on the probe answer read from it. A Claude
+credential's identity is the OAuth profile answer for its own access token
+(`claude.ProbeProfile`); without that answer it is not attributed. An empty
+identity immediately after a switch is unknown, not evidence of sign-out.
 
 Identity matching is `(email, organization)` and belongs in
 `identity_match.go`. Organization names are descriptive only. Same-email

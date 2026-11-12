@@ -213,6 +213,17 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	//
 	// The usable verdict is the bytes: the husk check above, then the retry
 	// below, which asks the server about the credential we actually hold.
+	//
+	// The probe's own account object is read from the shared oauthAccount
+	// record and can describe a different login than the bytes; the identity
+	// checked is the one the API gives for the refreshed credential. Without
+	// that answer the rotation is not attributed here: it stays in the
+	// canonical store, and the changed fingerprint sends the next
+	// reconciliation to identify it.
+	info, identifyErr := m.identifyClaudeCredential(info, refreshed.Bytes())
+	if identifyErr != nil {
+		return provider.RateLimitsSnapshot{}, nil, identifyErr
+	}
 	if err := m.assertSelectedClaudeIdentity(selection, info); err != nil {
 		// The one case whose rotation is not ours to keep: an external
 		// `claude login` landed a DIFFERENT account's pair in the canonical

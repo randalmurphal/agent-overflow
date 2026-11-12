@@ -22,6 +22,19 @@ const MOCK_CLAUDE_CODE = 'mock-auth-code';
 // A sign-in spawns the mock's login process and probes the home it wrote.
 export const SIGNIN_STEP_MS = 20_000;
 
+// The organization mock Claude logins land on (cmd/ao-mockprovider/login.go).
+export const MOCK_CLAUDE_ORG_ID = 'mock-org-uuid';
+
+/**
+ * An access token the isolated profile endpoint answers as `email` on
+ * `orgId`: the grammar internal/provider/claude/claudefake spells. AO
+ * identifies a Claude credential by its token, not by the config record
+ * beside it, so a seeded login must carry its identity here.
+ */
+export function mockClaudeAccessToken(email: string, orgId: string, nonce: string): string {
+  return `mock-profile:${email}:${orgId}:${nonce}`;
+}
+
 /**
  * A native Claude login already on the machine, as Claude Code leaves one:
  * the credential, and the account record the CLI reports its identity from.
@@ -37,7 +50,7 @@ export async function seedNativeClaudeLogin(
   await writeFile(
     path.join(home!, '.claude', '.credentials.json'),
     JSON.stringify({ claudeAiOauth: {
-      accessToken: 'native-access-token',
+      accessToken: mockClaudeAccessToken(email, MOCK_CLAUDE_ORG_ID, 'native'),
       refreshToken: 'native-refresh-token',
       expiresAt: Math.min(sessionEndsAt, Date.now() + 8 * 3600_000),
       refreshTokenExpiresAt: sessionEndsAt,
@@ -50,8 +63,8 @@ export async function seedNativeClaudeLogin(
     path.join(home!, '.claude.json'),
     JSON.stringify({ oauthAccount: {
       emailAddress: email,
-      organizationUuid: 'mock-org-uuid',
-      organizationName: 'Mock Org',
+      organizationUuid: MOCK_CLAUDE_ORG_ID,
+      organizationName: `Org ${MOCK_CLAUDE_ORG_ID}`,
     } }),
     { mode: 0o600 },
   );

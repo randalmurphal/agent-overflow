@@ -15,6 +15,7 @@ import { expect, test } from '@playwright/test';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { claudeScenario, claudeUsageResult, emit, seedAgentThread, startMock, textLines } from './agent-visibility-helpers.js';
+import { MOCK_CLAUDE_ORG_ID, mockClaudeAccessToken } from './provider-account-helpers.js';
 
 interface ManagedProviderAccount {
   id: string;
@@ -42,7 +43,7 @@ test('a login past its refresh deadline with a live access token reads as workin
   await writeFile(
     path.join(home!, '.claude', '.credentials.json'),
     JSON.stringify({ claudeAiOauth: {
-      accessToken: 'live-access-token',
+      accessToken: mockClaudeAccessToken('mock@agent-overflow.test', MOCK_CLAUDE_ORG_ID, 'live'),
       refreshToken: 'refresh-token',
       expiresAt: accessExpiresAt,
       refreshTokenExpiresAt: now - 2 * 3600_000,

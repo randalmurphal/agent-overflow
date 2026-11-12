@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/settings"
 )
 
@@ -270,7 +272,29 @@ func TestProbeClaudeRateLimits_StopsWhenExternalAccountIdentityFails(t *testing.
 func newUsageTestServer(handler http.Handler) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.Handle("GET /api/oauth/usage", handler)
+	mux.HandleFunc("GET /api/oauth/profile", serveFakeClaudeProfile)
 	return httptest.NewServer(mux)
+}
+
+// serveFakeClaudeProfile answers the profile request beside the usage one as
+// claudefake does: from the identity its bearer spells.
+func serveFakeClaudeProfile(w http.ResponseWriter, r *http.Request) {
+	resp, err := claudefake.ServeProfile(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	body, err := io.ReadAll(resp.Body)
+	if closeErr := resp.Body.Close(); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(body)
 }
 
 // redirectRoundTripper rewrites every outbound request to point at the
