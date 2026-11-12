@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
@@ -13,8 +13,11 @@ import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
 import { terminalFindKey } from './terminalFind.svelte';
 import { setResolvedThemeForTest } from '../../../test/mocks/resolvedThemeMock.svelte';
+import PaneFindBar from '../panes/PaneFindBar.svelte';
 import {
+  getPaneFind,
   getPaneFindProvider,
+  isPaneFindOpen,
   openPaneFind,
   registerPaneFindProvider,
   resetPaneFindForTest,
@@ -90,11 +93,27 @@ const mocks = vi.hoisted(() => {
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
       this.keyEventHandler = handler;
     }
-    write(data: Uint8Array | string): void {
+    // Real xterm parses writes on a later task and calls `parsed` after
+    // every earlier write; the fake keeps that order. An empty write only
+    // waits for the writes before it, so it records nothing but its parse.
+    write(data: Uint8Array | string, parsed?: () => void): void {
       const text = typeof data === 'string' ? data : decoder.decode(data);
       if (throwOn.has(text)) throw new Error(`xterm write failed: ${text}`);
-      writes.push(text);
-      timeline.push(`write:${text}`);
+      if (text !== '') {
+        writes.push(text);
+        timeline.push(`write:${text}`);
+      }
+      if (parsed) {
+        setTimeout(() => {
+          // An earlier test's terminal parses into nobody's timeline.
+          if (lastTerminal === this) timeline.push('parsed');
+          parsed();
+        });
+      }
+    }
+    reset(): void {}
+    onSelectionChange(): { dispose(): void } {
+      return { dispose(): void {} };
     }
     resize(columns: number, rows: number): void {
       resizes.push([columns, rows]);
@@ -128,6 +147,10 @@ const mocks = vi.hoisted(() => {
   // The search addon the body's find drives. Records its calls on the shared
   // timeline so a test can order them against the xterm's own.
   class FakeSearchAddon {
+    // The members terminalSearch.ts adapts.
+    _updateMatches(): void {}
+    _lineCache = { value: { _destroyLinesCache(): void {} } };
+    clearActiveDecoration(): void {}
     resultListeners = new Set<(event: { resultIndex: number; resultCount: number }) => void>();
     findPrevious(term: string): boolean {
       timeline.push(`findPrevious:${term}`);
@@ -415,7 +438,7 @@ describe('TerminalBody find', () => {
     await tick();
   }
 
-  it('registers under its find key once the replay is written, and searches an open query there', async () => {
+  it('registers under its find key once the replay and drained output are parsed, and searches an open query there', async () => {
     const key = findKeyFor('t-find');
     // The bar was open with a query when the previous body for this tab went.
     const release = registerPaneFindProvider(key, { noun: 'terminal', result: { count: 0, current: -1, pending: false }, search: () => {}, clear: () => {} });
@@ -423,21 +446,33 @@ describe('TerminalBody find', () => {
     setPaneFindQuery(key, 'needle');
     release();
 
-    const { resolveReplay } = await mountWithPendingReplay('t-find');
+    const { handle, resolveReplay } = await mountWithPendingReplay('t-find');
+    handle.appendOutput('t-find', enc('LIVE'), 1);
     expect(getPaneFindProvider(key)).toBeNull();
     resolveReplay({ data: btoa('REPLAY'), fromSequence: 0, throughSequence: 0 });
     await settle();
+    // Written, not yet parsed: a search now would find an empty buffer.
+    expect(mocks.timeline).toEqual(['resize:80x24', 'write:REPLAY', 'write:LIVE']);
+    expect(getPaneFindProvider(key)).toBeNull();
 
-    expect(getPaneFindProvider(key)?.noun).toBe('terminal');
-    expect(mocks.timeline).toEqual(['resize:80x24', 'write:REPLAY', 'findPrevious:needle']);
+    await vi.waitFor(() => expect(getPaneFindProvider(key)?.noun).toBe('terminal'));
+    expect(mocks.timeline).toEqual(['resize:80x24', 'write:REPLAY', 'write:LIVE', 'parsed', 'findPrevious:needle']);
     expect(getPaneFindProvider(key)?.result).toMatchObject({ count: 1, current: 0 });
+  });
+
+  it('registers after the fit when hydrate wrote nothing', async () => {
+    const key = findKeyFor('t-find-empty');
+    const { resolveReplay } = await mountWithPendingReplay('t-find-empty');
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await vi.waitFor(() => expect(getPaneFindProvider(key)?.noun).toBe('terminal'));
+    expect(mocks.timeline).not.toContain('parsed');
   });
 
   it('repaints its matches when the theme changes', async () => {
     const key = findKeyFor('t-find-theme');
     const { resolveReplay } = await mountWithPendingReplay('t-find-theme');
     resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
-    await settle();
+    await vi.waitFor(() => expect(getPaneFindProvider(key)).not.toBeNull());
     openPaneFind(key);
     setPaneFindQuery(key, 'needle');
     mocks.timeline.length = 0;
@@ -454,7 +489,7 @@ describe('TerminalBody find', () => {
     const key = findKeyFor('t-find-2');
     const { resolveReplay } = await mountWithPendingReplay('t-find-2');
     resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
-    await settle();
+    await vi.waitFor(() => expect(getPaneFindProvider(key)).not.toBeNull());
     openPaneFind(key);
     setPaneFindQuery(key, 'needle');
     mocks.timeline.length = 0;
@@ -1145,5 +1180,130 @@ describe('TerminalBody compact key row', () => {
 
     expect(document.activeElement).toBe(term.textarea);
     expect(mocks.WriteTerminal).toHaveBeenCalledWith('t-row-focus', encodeTerminalInput('/'));
+  });
+});
+
+// Keyboard focus in the terminal's find bar: nothing the reader does reaches
+// the PTY. The bar is the shared one, mounted beside the body as the surface
+// mounts it.
+describe('TerminalBody with its find bar focused', () => {
+  const readText = vi.fn(async () => '');
+
+  beforeEach(() => {
+    mocks.GetTerminalReplay.mockReset();
+    mocks.WriteTerminal.mockReset();
+    mocks.WriteTerminal.mockResolvedValue(undefined);
+    vi.mocked(eventEscapesTerminalToCommand).mockReset();
+    vi.mocked(eventEscapesTerminalToCommand).mockReturnValue(false);
+    readText.mockReset();
+    readText.mockResolvedValue('');
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      value: { readText },
+      configurable: true,
+      writable: true,
+    });
+    resetPaneFindForTest();
+  });
+
+  afterEach(() => {
+    cleanup();
+    setCompactLayoutForTest(false);
+    resetPaneFindForTest();
+  });
+
+  async function mountWithBar(id: string, compact: boolean) {
+    setCompactLayoutForTest(compact);
+    const findKey = findKeyFor(id);
+    const { resolveReplay } = await mountWithPendingReplay(id);
+    render(PaneFindBar, {
+      props: { paneId: findKey, title: 'Terminal', fallbackFocus: () => mocks.getLastTerminal()?.textarea ?? null },
+    });
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await vi.waitFor(() => expect(getPaneFindProvider(findKey)).not.toBeNull());
+    openPaneFind(findKey);
+    await tick();
+    const input = screen.getByTestId('pane-find-input') as HTMLInputElement;
+    expect(document.activeElement).toBe(input);
+    mocks.WriteTerminal.mockClear();
+    return { findKey, input, term: mocks.getLastTerminal()! };
+  }
+
+  function key(id: string): HTMLButtonElement {
+    return screen.getByTestId(`terminal-key-${id}`) as HTMLButtonElement;
+  }
+
+  async function flushWrites(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+  }
+
+  it('the key row types characters into the query and Esc closes the bar, writing nothing', async () => {
+    const { findKey, input, term } = await mountWithBar('t-bar-keys', true);
+    await fireEvent.input(input, { target: { value: 'ab' } });
+    input.setSelectionRange(1, 1);
+    key('slash').click();
+    await flushWrites();
+    expect(input.value).toBe('a/b');
+    input.setSelectionRange(2, 2);
+    key('tilde').click();
+    await flushWrites();
+    expect(input.value).toBe('a/~b');
+    expect(getPaneFind(findKey)?.query).toBe('a/~b');
+    expect(document.activeElement).toBe(input);
+
+    for (const id of ['tab', 'up', 'down', 'left', 'right', 'ctrl']) {
+      expect(key(id).getAttribute('aria-disabled')).toBe('true');
+      key(id).click();
+    }
+    await flushWrites();
+    expect(input.value).toBe('a/~b');
+    expect(key('ctrl').getAttribute('aria-pressed')).toBe('false');
+    expect(key('esc').getAttribute('aria-disabled')).toBe('false');
+
+    key('esc').click();
+    await flushWrites();
+    await tick();
+    expect(isPaneFindOpen(findKey)).toBe(false);
+    expect(mocks.WriteTerminal).not.toHaveBeenCalled();
+    // Focus returns to the terminal, and the row is the terminal's again.
+    expect(document.activeElement).toBe(term.textarea);
+    expect(key('up').getAttribute('aria-disabled')).toBe('false');
+    key('esc').click();
+    await flushWrites();
+    expect(mocks.WriteTerminal).toHaveBeenCalledWith('t-bar-keys', encodeTerminalInput('\x1b'));
+  });
+
+  it('the key row\'s Paste pastes into the query, not the PTY', async () => {
+    readText.mockResolvedValue('clip');
+    const { findKey, input, term } = await mountWithBar('t-bar-paste', true);
+    key('paste').click();
+    await vi.waitFor(() => expect(input.value).toBe('clip'));
+    expect(getPaneFind(findKey)?.query).toBe('clip');
+    expect(term.pastes).toEqual([]);
+    expect(mocks.WriteTerminal).not.toHaveBeenCalled();
+  });
+
+  it('drops a paste chord whose clipboard read finishes after focus moved to the bar', async () => {
+    let answer!: (text: string) => void;
+    readText.mockReturnValue(new Promise<string>((resolve) => { answer = resolve; }));
+    const { input, term } = await mountWithBar('t-bar-chord', false);
+    term.textarea!.focus();
+    term.keyEventHandler!({
+      type: 'keydown', key: 'v', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false,
+      preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    } as unknown as KeyboardEvent);
+    input.focus();
+    answer('rm -rf ~');
+    await flushWrites();
+    expect(term.pastes).toEqual([]);
+  });
+
+  it('keeps the program\'s own replies flowing while the bar holds focus', async () => {
+    const { term } = await mountWithBar('t-bar-reply', false);
+    // xterm answers a cursor-position query through onData.
+    term.dataHandler!('\x1b[5;1R');
+    await flushWrites();
+    expect(mocks.WriteTerminal).toHaveBeenCalledWith('t-bar-reply', encodeTerminalInput('\x1b[5;1R'));
   });
 });

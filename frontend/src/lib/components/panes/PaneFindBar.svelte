@@ -1,3 +1,18 @@
+<script module lang="ts">
+  import { PANE_FIND_BAR_ATTR } from '../../utils/paneFindSeed';
+
+  /** Types `text` at the caret of the find input that holds focus, as the
+   * keyboard would. False when no find input does. */
+  export function insertIntoFocusedFindInput(text: string): boolean {
+    const input = document.activeElement;
+    if (!(input instanceof HTMLInputElement) || !input.closest(`[${PANE_FIND_BAR_ATTR}]`)) return false;
+    const end = input.value.length;
+    input.setRangeText(text, input.selectionStart ?? end, input.selectionEnd ?? end, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  }
+</script>
+
 <script lang="ts">
   // The find bar every pane kind shares. Mounted directly under the pane's
   // header, full pane width, in the flow, so it pushes the content down
@@ -26,12 +41,12 @@
     getPaneFind,
     getPaneFindProvider,
     isSteppingFind,
+    setPaneFindBarFocused,
     setPaneFindQuery,
     stepPaneFind,
     takePaneFindReturnFocus,
   } from '../../stores/paneFind.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
-  import { PANE_FIND_BAR_ATTR } from '../../utils/paneFindSeed';
   import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
   import { errString } from '../../utils/errors';
 
@@ -135,6 +150,24 @@
     });
   }
 
+  // Reports whether keyboard focus is inside the bar, so a surface beneath
+  // it (the terminal) knows its keys are the bar's.
+  // Untracked: focus leaves while Svelte removes the bar, inside its block.
+  function trackFocus(node: HTMLElement): () => void {
+    const key = paneId;
+    const report = (focused: boolean) => untrack(() => setPaneFindBarFocused(key, focused));
+    // Focus moving inside the bar leaves and re-enters it in one turn.
+    const onIn = () => report(true);
+    const onOut = () => report(false);
+    node.addEventListener('focusin', onIn);
+    node.addEventListener('focusout', onOut);
+    return () => {
+      node.removeEventListener('focusin', onIn);
+      node.removeEventListener('focusout', onOut);
+      report(false);
+    };
+  }
+
   // An Escape that ends an IME composition belongs to the composition.
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape' && isImeComposingEvent(event)) event.stopPropagation();
@@ -151,6 +184,7 @@
     data-find-mode={stepping ? 'step' : 'filter'}
     class="flex h-8 compact:h-10 shrink-0 items-center gap-0.5 border-b border-border-subtle bg-surface-1 pl-3 pr-1.5"
     onkeydown={handleKeydown}
+    {@attach trackFocus}
   >
     <Icon icon={Search} size={13} class="shrink-0 text-fg-subtle" />
     <input

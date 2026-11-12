@@ -8,10 +8,16 @@
 //   wrap.
 // - Matches are counted in buffer order up to the addon's highlight limit,
 //   reported as capped.
-// - New output or a resize while a query is set makes the addon search again
-//   once writes pause; until its answer the result is pending, so the bar
-//   marks the count it shows as updating.
-// - `clear` removes the decorations and the match selection.
+// - Every buffer change while a query is set (`onBufferChange`) re-searches
+//   once changes pause, and at least once a second under sustained output,
+//   without scrolling. Until then the result is pending, so the bar marks
+//   the count it shows as updating.
+// - Find owns only the selection its own search made. A re-search keeps
+//   that match selected and leaves no selection where there was none. While
+//   the reader holds a selection of their own it waits, pending, until that
+//   selection goes or the reader steps or types a query.
+// - `clear` removes the decorations, and the selection only while it is
+//   find's.
 
 import type { IDisposable, IEvent } from '@xterm/xterm';
 import type {
@@ -27,6 +33,7 @@ import {
 } from '../../stores/paneFind.svelte';
 import { getResolvedTheme } from '../../stores/themeMode.svelte';
 import { getXtermFindDecorations } from './terminalTheme';
+import { createRefreshScheduler } from '../../utils/refreshScheduler';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 import { errString } from '../../utils/errors';
 
@@ -38,25 +45,40 @@ export function terminalFindKey(paneId: string, terminalID: string): string {
 
 /** Matches the addon decorates and counts; a count at it is capped. */
 export const TERMINAL_FIND_HIGHLIGHT_LIMIT = 1000;
+/** Quiet time after a buffer change before the re-search. */
+export const TERMINAL_FIND_REFRESH_DELAY_MS = 200;
+/** The longest sustained output defers a re-search. */
+export const TERMINAL_FIND_REFRESH_MAX_WAIT_MS = 1000;
 
-/** The slice of the search addon the provider drives. */
+/** The search addon as `loadTerminalSearch` adapts it. */
 export interface TerminalFindSearch {
+  /** Selects and scrolls to the match after the selection. */
   findNext(term: string, options?: ISearchOptions): boolean;
+  /** Selects and scrolls to the match before the selection, else the newest. */
   findPrevious(term: string, options?: ISearchOptions): boolean;
+  /** `findPrevious` without scrolling, for a re-search. */
+  recount(term: string, options?: ISearchOptions): boolean;
   clearDecorations(): void;
+  clearActiveDecoration(): void;
   readonly onDidChangeResults: IEvent<ISearchResultChangeEvent>;
 }
 
 /** The slice of the xterm the provider reads. */
 export interface TerminalFindTerminal {
+  hasSelection(): boolean;
   clearSelection(): void;
-  readonly onWriteParsed: IEvent<void>;
-  readonly onResize: IEvent<{ cols: number; rows: number }>;
+  readonly onSelectionChange: IEvent<void>;
 }
 
-export interface TerminalFindOptions {
+/** What a surface's built terminal hands its find (`BuiltTerminal`). */
+export interface TerminalFindSource {
   term: TerminalFindTerminal;
   search: TerminalFindSearch;
+  /** Every change to the searched buffer. */
+  onBufferChange(listener: () => void): IDisposable;
+}
+
+export interface TerminalFindOptions extends TerminalFindSource {
   /** The match grounds for the current theme. */
   decorations(): ISearchDecorationOptions;
 }
@@ -66,7 +88,7 @@ export interface TerminalFind extends PaneFindProvider {
   previous(): void;
   /** Repaints the matches with the current `decorations()`. */
   restyle(): void;
-  /** Drops the addon and terminal listeners. */
+  /** Drops the timers and the addon and terminal listeners. */
   dispose(): void;
 }
 
@@ -82,17 +104,14 @@ export interface TerminalFindRegistration {
 /**
  * Builds the find of a surface's xterm, painted from the app theme, and
  * registers it under `key` (a layout pane id or `terminalFindKey`).
- * Register once the replay is written, so an open bar's query searches the
- * restored buffer.
+ * Register once the replay is parsed (its write's callback), so an open
+ * bar's query searches the restored buffer and brings its match into view.
  */
-export function registerTerminalFind(
-  key: string,
-  term: TerminalFindTerminal,
-  search: TerminalFindSearch,
-): TerminalFindRegistration {
+export function registerTerminalFind(key: string, source: TerminalFindSource): TerminalFindRegistration {
   const find = createTerminalFind({
-    term,
-    search,
+    term: source.term,
+    search: source.search,
+    onBufferChange: source.onBufferChange,
     decorations: () => getXtermFindDecorations(getResolvedTheme()),
   });
   const unregister = registerPaneFindProvider(key, find);
@@ -112,6 +131,10 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
   let current = $state(-1);
   let pending = $state(false);
   let error = $state<string | null>(null);
+  // The selection is the match find's own search made.
+  let ownsSelection = false;
+  // Inside a call of find's: the selection changes are its own.
+  let selecting = false;
 
   const result: PaneFindResult = {
     get count() { return count; },
@@ -135,43 +158,90 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
     return { caseSensitive: false, decorations: options.decorations() };
   }
 
-  // The addon reports through `onDidChangeResults`, synchronously inside
-  // the call; a throw is the bar's error until a later call succeeds.
-  function run(find: (needle: string) => void): void {
+  function quietly(change: () => void): void {
+    selecting = true;
     try {
-      find(query);
-      error = null;
-    } catch (err) {
-      reset();
-      error = errString(err);
-      console.warn('terminal find failed', error);
-      reportFrontendDiagnostic('terminal find failed', error);
+      change();
+    } finally {
+      selecting = false;
     }
   }
 
+  // The addon reports through `onDidChangeResults`, synchronously inside
+  // the call; a throw is the bar's error until a later call succeeds.
+  function run(find: (needle: string) => boolean): void {
+    quietly(() => {
+      try {
+        ownsSelection = find(query) && term.hasSelection();
+        error = null;
+      } catch (err) {
+        ownsSelection = false;
+        reset();
+        error = errString(err);
+        console.warn('terminal find failed', error);
+        reportFrontendDiagnostic('terminal find failed', error);
+      }
+    });
+  }
+
+  function refresh(): void {
+    if (!query || error !== null) return;
+    if (!ownsSelection && term.hasSelection()) return;
+    const kept = ownsSelection;
+    // The addon repaints only for a new term; dropping its decorations
+    // makes the same term new. It searches from the selection, so find's
+    // match stays the current one.
+    search.clearDecorations();
+    run((needle) => search.recount(needle, searchOptions()));
+    if (!kept) {
+      quietly(() => {
+        term.clearSelection();
+        search.clearActiveDecoration();
+      });
+      ownsSelection = false;
+      current = -1;
+    }
+    pending = false;
+  }
+
+  const refresher = createRefreshScheduler({
+    name: 'terminal find',
+    delayMs: TERMINAL_FIND_REFRESH_DELAY_MS,
+    maxWaitMs: TERMINAL_FIND_REFRESH_MAX_WAIT_MS,
+    run: () => refresh(),
+  });
+
   const listeners: IDisposable[] = [
     search.onDidChangeResults((event) => {
-      // A re-search the addon scheduled before `clear` answers after it.
       if (!query) return;
       count = event.resultCount;
       current = event.resultIndex;
       pending = false;
     }),
-    term.onWriteParsed(() => markStale()),
-    term.onResize(() => markStale()),
+    options.onBufferChange(() => {
+      if (!query || error !== null) return;
+      pending = true;
+      refresher.request();
+    }),
+    term.onSelectionChange(() => {
+      if (selecting) return;
+      ownsSelection = false;
+      // The reader's selection went: a re-search held for it may run.
+      if (pending && !term.hasSelection()) refresher.request();
+    }),
   ];
-
-  function markStale(): void {
-    if (query && error === null) pending = true;
-  }
 
   function clear(): void {
     const hadQuery = query !== '';
     query = '';
     reset();
+    refresher.reset();
     if (!hadQuery) return;
-    search.clearDecorations();
-    term.clearSelection();
+    quietly(() => {
+      search.clearDecorations();
+      if (ownsSelection) term.clearSelection();
+    });
+    ownsSelection = false;
   }
 
   return {
@@ -186,8 +256,9 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
       }
       query = next;
       pending = false;
+      refresher.reset();
       // The addon starts from its selection; none starts at the newest match.
-      term.clearSelection();
+      quietly(() => term.clearSelection());
       run((needle) => search.findPrevious(needle, searchOptions()));
     },
     next(): void {
@@ -198,13 +269,14 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
     },
     restyle(): void {
       if (!query || error !== null) return;
-      // The addon repaints only for a new term; dropping its decorations
-      // makes the same term new. The selection keeps the current match.
-      search.clearDecorations();
-      run((needle) => search.findPrevious(needle, searchOptions()));
+      // Held like any re-search while the reader holds a selection.
+      pending = true;
+      refresher.reset();
+      refresh();
     },
     clear,
     dispose(): void {
+      refresher.dispose();
       for (const listener of listeners) listener.dispose();
       listeners.length = 0;
     },

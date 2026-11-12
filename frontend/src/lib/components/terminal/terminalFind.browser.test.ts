@@ -2,7 +2,8 @@
 // way every terminal surface builds them (terminalXterm.buildTerminal), in
 // real Chromium: the active match is selected, scrolled into view and
 // decorated with the theme's match grounds; steps wrap; the count follows
-// new output; a close removes it all; a full-screen program's screen is all
+// every change to the buffer; a selection the reader made is never moved or
+// cleared; a close removes the rest; a full-screen program's screen is all
 // there is to search.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Terminal } from '@xterm/xterm';
@@ -75,7 +76,7 @@ beforeEach(async () => {
   term = built.term;
   const lines = Array.from({ length: LINES }, (_, i) => (NEEDLE_ROWS.includes(i) ? `row ${i} has the Needle in it` : `row ${i}`));
   await write(lines.join('\r\n'));
-  registration = registerTerminalFind(KEY, term, built.search);
+  registration = registerTerminalFind(KEY, built);
   expect(openPaneFind(KEY)).toBe(true);
 });
 
@@ -136,13 +137,60 @@ describe('terminal find on a real xterm', () => {
     expect(term.hasSelection()).toBe(false);
   });
 
-  it('the count follows new output, pending until the addon searches again', async () => {
+  it('the count follows new output, pending until the re-search, which keeps its match where it is', async () => {
     setPaneFindQuery(KEY, 'needle');
     expect(result().count).toBe(2);
+    // The reader follows the output, away from the match.
+    term.scrollToBottom();
     await write('\r\nnew output with a needle');
     expect(result()).toMatchObject({ count: 2, pending: true });
+    const top = term.buffer.active.viewportY;
+    expect(inView(NEEDLE_ROWS[1])).toBe(false);
     await vi.waitFor(() => expect(result()).toMatchObject({ count: 3, pending: false }), { timeout: 2000 });
+    expect(result().current).toBe(1);
+    expect(term.getSelectionPosition()?.start.y).toBe(NEEDLE_ROWS[1]);
+    expect(term.buffer.active.viewportY).toBe(top);
   });
+
+  it('never moves or clears a selection the reader made, through output and a close', async () => {
+    setPaneFindQuery(KEY, 'needle');
+    term.select(0, 5, 5);
+    await write('\r\nnew output with a needle');
+    // Past the addon's own 200ms re-search, which would select a match.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(term.getSelection()).toBe('row 5');
+    expect(result()).toMatchObject({ count: 2, pending: true });
+    closePaneFind(KEY);
+    expect(term.getSelection()).toBe('row 5');
+  });
+
+  it('re-searches once the reader\'s selection goes, leaving none', async () => {
+    setPaneFindQuery(KEY, 'needle');
+    term.select(0, 5, 5);
+    await write('\r\nnew output with a needle');
+    term.clearSelection();
+    await vi.waitFor(() => expect(result()).toMatchObject({ count: 3, current: -1, pending: false }), { timeout: 2000 });
+    expect(term.hasSelection()).toBe(false);
+  });
+
+  // Every way the buffer changes re-counts: the ones that are not output
+  // (Terminal: Clear's clear(), reset(), a resize) and the ones output
+  // carries (a full reset, scrollback trimming).
+  for (const [name, change, expected] of [
+    ['clear()', async () => term.clear(), 0],
+    ['reset()', async () => term.reset(), 0],
+    ['a full reset (RIS)', () => write('\x1bc'), 0],
+    ['scrollback trimming', () => write('\r\nfiller'.repeat(4100)), 0],
+    ['a resize', async () => term.resize(30, 10), 2],
+  ] as const) {
+    it(`re-counts after ${name}`, async () => {
+      setPaneFindQuery(KEY, 'needle');
+      expect(result().count).toBe(2);
+      await change();
+      expect(result().pending).toBe(true);
+      await vi.waitFor(() => expect(result()).toMatchObject({ count: expected, pending: false }), { timeout: 3000 });
+    });
+  }
 
   it('a close clears the decorations and the selection, and later output searches nothing', async () => {
     setPaneFindQuery(KEY, 'needle');

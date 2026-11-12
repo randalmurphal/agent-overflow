@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import TakeControlTerminal from './TakeControlTerminal.svelte';
 import { encodeTerminalInput } from '../../types/terminal';
 import { isPaneFindOpen, resetPaneFindForTest } from '../../stores/paneFind.svelte';
+import { getTerminalFocused } from '../terminal/terminalStore.svelte';
 import { setResolvedThemeForTest } from '../../../test/mocks/resolvedThemeMock.svelte';
 
 // xterm can't render under happy-dom, and these tests need to observe the exact
@@ -59,8 +60,22 @@ const mocks = vi.hoisted(() => {
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
       this.keyEventHandler = handler;
     }
-    write(data: Uint8Array | string): void {
-      writes.push(typeof data === 'string' ? data : decoder.decode(data));
+    // Parsed on a later task, in order, as real xterm does; an empty write
+    // only waits for the writes before it.
+    write(data: Uint8Array | string, parsed?: () => void): void {
+      const text = typeof data === 'string' ? data : decoder.decode(data);
+      if (text !== '') writes.push(text);
+      if (parsed) {
+        setTimeout(() => {
+          searches.push('parsed');
+          parsed();
+        });
+      }
+    }
+    clear(): void {}
+    reset(): void {}
+    onSelectionChange(): { dispose(): void } {
+      return { dispose: (): void => {} };
     }
     resize(cols: number, rows: number): void {
       resizes.push([cols, rows]);
@@ -81,6 +96,10 @@ const mocks = vi.hoisted(() => {
   // The search addon the mirror's find drives; records the terms it is asked.
   const searches: string[] = [];
   class FakeSearchAddon {
+    // The members terminalSearch.ts adapts.
+    _updateMatches(): void {}
+    _lineCache = { value: { _destroyLinesCache(): void {} } };
+    clearActiveDecoration(): void {}
     listener: ((event: { resultIndex: number; resultCount: number }) => void) | null = null;
     findPrevious(term: string): boolean {
       searches.push(`previous:${term}`);
@@ -120,7 +139,6 @@ const mocks = vi.hoisted(() => {
     ProviderTerminalSetControl: vi.fn(async () => {}),
     ProviderTerminalDetach: vi.fn(async () => {}),
     wailsEventOn: vi.fn(),
-    notifyTerminalFocus: vi.fn(),
     addToast: vi.fn(),
     addErrorToast: vi.fn(),
   };
@@ -153,9 +171,6 @@ vi.mock('../terminal/terminalTheme', async (importOriginal) => ({
 // A theme a test can flip, to drive the palette effect.
 vi.mock('../../stores/themeMode.svelte', async () => ({
   getResolvedTheme: (await import('../../../test/mocks/resolvedThemeMock.svelte')).getResolvedThemeMock,
-}));
-vi.mock('../terminal/terminalStore.svelte', () => ({
-  notifyTerminalFocus: mocks.notifyTerminalFocus,
 }));
 vi.mock('../../stores/wailsEvents', () => ({ wailsEventOn: mocks.wailsEventOn }));
 vi.mock('../../stores/bindings', () => ({
@@ -552,14 +567,21 @@ describe('<TakeControlTerminal>', () => {
     });
     expect(queryByTestId('take-control-find')).toBeNull();
     const button = await findByTestId('take-control-find');
+    // The find (and its button) arrive once the replay frame is parsed.
+    expect(mocks.searches).toEqual(['parsed']);
     expect(button.getAttribute('title')).toBe('Find in Terminal');
     await fireEvent.click(button);
 
     const input = (await findByTestId('pane-find-input')) as HTMLInputElement;
     await waitFor(() => expect(document.activeElement).toBe(input));
+    // Focus in the bar is focus in the mirror, as in the xterm.
+    expect(getTerminalFocused('tc-find')).toBe(true);
+    mocks.getLastTerminal()!.textarea!.focus();
+    expect(getTerminalFocused('tc-find')).toBe(true);
+    input.focus();
     expect(input.placeholder).toBe('Find in terminal');
     await fireEvent.input(input, { target: { value: 'needle' } });
-    expect(mocks.searches).toEqual(['previous:needle']);
+    expect(mocks.searches).toEqual(['parsed', 'previous:needle']);
     await waitFor(() => expect(getByTestId('pane-find-count').textContent?.trim()).toBe('1/2'));
     await fireEvent.keyDown(input, { key: 'Enter' });
     expect(mocks.searches.at(-1)).toBe('next:needle');

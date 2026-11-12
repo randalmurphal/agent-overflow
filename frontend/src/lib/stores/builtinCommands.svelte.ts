@@ -35,7 +35,7 @@ import {
   syncThreadReply,
 } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
-import { closePaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
+import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
 import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
 import { closeFocusedBrowserTab } from './browserCompanion.svelte';
@@ -1219,14 +1219,18 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
   const flags: CommandFlags = {
     paletteOpen: false,
     terminalOpen: pane?.showTerminal ?? false,
-    // terminalFocus mirrors whether THIS pane's xterm element has DOM focus.
-    // The TerminalBody component bumps the per-pane registry on focus/blur
-    // events. With no pane there's no terminal to gate against, so false —
+    // terminalFocus: THIS pane's xterm has DOM focus, so its keys are the
+    // shell's. The pane's terminal focus (getTerminalFocused) includes the
+    // terminal's find bar, but keys typed there reach no shell, so a focused
+    // bar leaves app chords their usual meaning. With no pane there's no
+    // terminal to gate against, so false —
     // never fall through to "any terminal anywhere is focused", which would
     // suppress an unrelated pane's chords. A document without keyboard focus
     // has no focused terminal, whatever DOM focus it kept: a chord the
     // browser pane's native view replays arrives that way.
-    terminalFocus: pane ? getTerminalFocused(pane.paneId) && documentHasFocus() : false,
+    terminalFocus: pane
+      ? getTerminalFocused(pane.paneId) && !hasPaneFindBarFocus() && documentHasFocus()
+      : false,
     approvalPending: pane ? pane.pendingApprovals.length > 0 : false,
     anyModalOpen: false,
     hasActiveThread: thread !== null,

@@ -10,6 +10,7 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TerminalSurface from './TerminalSurface.svelte';
 import {
+  getTerminalFocused,
   getThreadTerminalState,
   resetThreadTerminalStatesForTest,
   terminalStateKeyForPane,
@@ -134,7 +135,13 @@ describe('TerminalSurface find', () => {
     const surface = getByTestId('terminal-surface');
     const bar = getByTestId('pane-find-bar');
     expect(surface.contains(bar)).toBe(true);
-    expect(bar.nextElementSibling).toBe(getByTestId('stub-terminal-body-t1'));
+    expect(bar.parentElement?.nextElementSibling).toBe(getByTestId('stub-terminal-body-t1'));
+    // Focus in the bar is focus in the pane's terminal.
+    expect(getTerminalFocused(PANE)).toBe(true);
+    getByTestId('stub-terminal-input-t1').focus();
+    expect(getTerminalFocused(PANE)).toBe(false);
+    input.focus();
+    expect(getTerminalFocused(PANE)).toBe(true);
 
     await fireEvent.input(input, { target: { value: 'needle' } });
     expect(terminalFindCalls).toEqual(['t1:search:needle']);

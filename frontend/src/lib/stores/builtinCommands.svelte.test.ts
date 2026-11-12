@@ -55,6 +55,7 @@ import {
   paneFindRegionKey,
   registerPaneFindProvider,
   resetPaneFindForTest,
+  setPaneFindBarFocused,
   type PaneFindProvider,
 } from './paneFind.svelte';
 import { dispatchKey, eventMatchesKeybindingCommand, resetKeybindingsStore, setKeybindingsForTest } from './keybindings.svelte';
@@ -1239,6 +1240,23 @@ describe('find.in-pane command', () => {
         // Nor does the escape predicate let the chord out of the xterm.
         expect(TERMINAL_ESCAPE_COMMAND_IDS.has('find.in-pane')).toBe(false);
       } finally {
+        notifyTerminalFocus(pane.paneId, false);
+      }
+    });
+
+    it('gives ctrl+f back to find from the terminal\'s focused bar, which is terminal focus but no shell', () => {
+      const { pane, tab, key, ctx } = terminalPane();
+      openPaneFind(tab);
+      // The bar's input holds focus: the pane's terminal has focus.
+      notifyTerminalFocus(pane.paneId, true);
+      setPaneFindBarFocused(tab, true);
+      try {
+        expect(ctx().flags.terminalFocus).toBe(false);
+        const request = getPaneFind(tab)!.focusRequest;
+        expect(key({ key: 'f', code: 'KeyF', ctrlKey: true })).toBe(true);
+        expect(getPaneFind(tab)!.focusRequest).toBe(request + 1);
+      } finally {
+        setPaneFindBarFocused(tab, false);
         notifyTerminalFocus(pane.paneId, false);
       }
     });

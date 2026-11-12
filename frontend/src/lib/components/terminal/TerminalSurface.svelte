@@ -22,6 +22,7 @@
   import {
     getThreadTerminalState,
     registerTerminalSurface,
+    terminalFocusRegion,
     terminalStateKeyForPane,
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
@@ -303,7 +304,10 @@
   {#if handle.activeTerminalID}
     {@const findKey = terminalFindKey(surface.paneId, handle.activeTerminalID)}
     {#key handle.activeTerminalID}
-      <PaneFindBar paneId={findKey} title="Terminal" fallbackFocus={() => bodyEl?.focusTarget() ?? null} />
+      <!-- Focus in the find bar is focus in the terminal (terminalFocusRegion). -->
+      <div class="contents" {@attach terminalFocusRegion(surface.paneId)}>
+        <PaneFindBar paneId={findKey} title="Terminal" fallbackFocus={() => bodyEl?.focusTarget() ?? null} />
+      </div>
       <TerminalBody
         bind:this={bodyEl}
         {handle}

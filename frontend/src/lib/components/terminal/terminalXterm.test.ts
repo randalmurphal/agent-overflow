@@ -9,9 +9,25 @@ const mocks = vi.hoisted(() => {
     linkHandlers,
     FakeTerminal: class {
       unicode = { activeVersion: '6' };
+      // The buffer events a test fires, and what clear() and reset() did.
+      writeParsed: Array<() => void> = [];
+      resized: Array<() => void> = [];
+      calls: string[] = [];
       loadAddon(): void {}
       open(): void {}
       attachCustomKeyEventHandler(): void {}
+      onWriteParsed(listener: () => void): void {
+        this.writeParsed.push(listener);
+      }
+      onResize(listener: () => void): void {
+        this.resized.push(listener);
+      }
+      clear(): void {
+        this.calls.push('clear');
+      }
+      reset(): void {
+        this.calls.push('reset');
+      }
       dispose(): void {}
     },
     FakeWebLinksAddon: class {
@@ -94,5 +110,36 @@ describe('buildTerminal web links', () => {
       window.open = originalOpen;
       resetRunMode();
     }
+  });
+});
+
+// One notification of every buffer change, whoever makes it. Writes carry a
+// full reset, the alternate screen and scrollback trimming; the browser test
+// (terminalFind.browser.test.ts) runs each against a real xterm.
+describe('buildTerminal onBufferChange', () => {
+  type Fake = InstanceType<typeof mocks.FakeTerminal>;
+
+  it('fires after parsed writes, resizes, clear() and reset(), until disposed', () => {
+    const built = buildTerminal(document.createElement('div'), { onInput: () => {} });
+    const fake = built.term as unknown as Fake;
+    const seen: string[] = [];
+    let cause = '';
+    const subscription = built.onBufferChange(() => seen.push(cause));
+
+    cause = 'write';
+    for (const listener of fake.writeParsed) listener();
+    cause = 'resize';
+    for (const listener of fake.resized) listener();
+    cause = 'clear';
+    built.term.clear();
+    cause = 'reset';
+    built.term.reset();
+    expect(seen).toEqual(['write', 'resize', 'clear', 'reset']);
+    // The wrapped calls still do their own work.
+    expect(fake.calls).toEqual(['clear', 'reset']);
+
+    subscription.dispose();
+    built.term.clear();
+    expect(seen).toHaveLength(4);
   });
 });

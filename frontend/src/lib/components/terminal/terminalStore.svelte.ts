@@ -480,19 +480,45 @@ function evictEmptyTerminalStates(): void {
   }
 }
 
-// Module-level terminal-focus registry, keyed by paneId. The keybindings
-// dispatcher reads `getTerminalFocused(paneId)` via makeCommandContext to gate
-// a specific pane's `terminalFocus`-scoped chords. TerminalBody
-// registers/deregisters via `notifyTerminalFocus(paneId, focused)` — the
-// per-pane count tolerates multiple mounts (e.g. keyed remount when swapping
-// the active tab) without flipping that pane's flag prematurely. Keying by pane
-// is what keeps two terminal panes independent: focusing one must not suppress
-// the other pane's `!terminalFocus` chords. Entries are deleted at count zero so
-// the map only holds panes that currently have a focused terminal.
+// Module-level terminal-focus registry, keyed by paneId. A pane's terminal has
+// focus while keyboard focus is inside its surface: the xterm, or the find
+// bar above it. Every element of the surface that can hold focus is a region
+// (`terminalFocusRegion`) that reports through `notifyTerminalFocus(paneId,
+// focused)`; the per-pane count tolerates several regions and keyed remounts
+// (swapping the active tab) without flipping the flag prematurely. Keying by
+// pane keeps two terminal panes independent. Entries are deleted at count
+// zero so the map only holds panes that currently have a focused terminal.
+// The keybinding context's `terminalFocus` is narrower: keys reach the shell
+// only from the xterm (makeCommandContext).
 const focusedTerminalsByPane = new Map<string, number>();
 
+/** Whether keyboard focus is inside the pane's terminal surface. */
 export function getTerminalFocused(paneId: string): boolean {
   return (focusedTerminalsByPane.get(paneId) ?? 0) > 0;
+}
+
+/** Counts focus inside `node` as the pane's terminal focus while it is
+ * attached. */
+export function terminalFocusRegion(paneId: string): (node: HTMLElement) => () => void {
+  return (node) => {
+    let counted = false;
+    const set = (focused: boolean) => {
+      if (counted === focused) return;
+      counted = focused;
+      notifyTerminalFocus(paneId, focused);
+    };
+    // Focus moving inside the region leaves and re-enters it in one turn.
+    const onIn = () => set(true);
+    const onOut = () => set(false);
+    node.addEventListener('focusin', onIn);
+    node.addEventListener('focusout', onOut);
+    if (node.contains(document.activeElement)) set(true);
+    return () => {
+      node.removeEventListener('focusin', onIn);
+      node.removeEventListener('focusout', onOut);
+      set(false);
+    };
+  };
 }
 
 export function notifyTerminalFocus(paneId: string, focused: boolean): void {

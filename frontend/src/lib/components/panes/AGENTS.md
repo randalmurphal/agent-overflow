@@ -27,8 +27,9 @@ is the drag handle. Open, close and placement belong to
 Every pane kind with find mounts `PaneFindBar.svelte` directly under its
 header, in the flow, keyed by its layout pane id (a companion's own id, not
 its source's), and registers a `PaneFindProvider` for that id while its body
-is mounted (`stores/paneFind.svelte.ts`). The store owns open, query and
-focus return; the provider owns matching, stepping and clearing. Escape
+is mounted (`stores/paneFind.svelte.ts`). The store owns open, query,
+focus return and which bar holds keyboard focus (`isPaneFindBarFocused`);
+the provider owns matching, stepping and clearing. Escape
 belongs to the `find.close` command, never the bar. A bar's `fallbackFocus`
 must be focusable by script (a scroller takes `tabindex="-1"`); the bar
 checks that focus landed and reports a fallback that refused it. Paint

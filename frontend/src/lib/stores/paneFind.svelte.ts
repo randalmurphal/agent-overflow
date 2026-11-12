@@ -368,6 +368,25 @@ export function closePaneFind(paneId: string): void {
   providers.get(paneId)?.clear();
 }
 
+// The find key whose bar holds keyboard focus, else null.
+let focusedBar = $state<string | null>(null);
+
+/** The bar of `key` gained or lost keyboard focus (PaneFindBar). */
+export function setPaneFindBarFocused(key: string, focused: boolean): void {
+  if (focused) focusedBar = key;
+  else if (focusedBar === key) focusedBar = null;
+}
+
+/** Whether the bar of `key` holds keyboard focus. Reactive. */
+export function isPaneFindBarFocused(key: string): boolean {
+  return focusedBar === key;
+}
+
+/** Whether any find bar holds keyboard focus. Reactive. */
+export function hasPaneFindBarFocus(): boolean {
+  return focusedBar !== null;
+}
+
 /** Takes the focus the bar should return to after a close. */
 export function takePaneFindReturnFocus(paneId: string): HTMLElement | null {
   const state = states.get(paneId);
@@ -384,4 +403,5 @@ export function resetPaneFindForTest(): void {
   regions.clear();
   regionElements.clear();
   nestedSurfaces.clear();
+  focusedBar = null;
 }

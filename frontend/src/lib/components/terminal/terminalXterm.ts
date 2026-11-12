@@ -14,7 +14,8 @@
 //     tab chords bubble to the window handler.
 //   - Right-click: copy the selection if there is one, otherwise paste (the
 //     VS Code `copyPaste` behavior), instead of the webview's context menu.
-//   - The search addon behind the surface's find bar.
+//   - The search addon behind the surface's find bar, and the one
+//     notification of every change to the buffer it searches.
 //
 // Keeping this in one place means the two surfaces can't drift on glyph
 // rendering or key handling. The only thing the caller owns is where input
@@ -23,10 +24,11 @@
 // `term.onData(onInput)` for the main keystroke stream — so a single gate (e.g.
 // the take-control read-only lease) governs both paths. Paste goes through
 // `term.paste`, which emits onData, so the same gate covers it.
+// `acceptsPaste` refuses a paste whose clipboard read finished after
+// keyboard focus left for the surface's find bar.
 
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type IDisposable } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { SearchAddon } from '@xterm/addon-search';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
@@ -43,7 +45,8 @@ import { errString } from '../../utils/errors';
 import { clipboardChordFor, isFontZoomChord } from './terminalKeys';
 import { isMacPlatform } from '../../utils/platform';
 import { isCompactLayout } from '../../stores/layoutMode.svelte';
-import { TERMINAL_FIND_HIGHLIGHT_LIMIT } from './terminalFind.svelte';
+import type { TerminalFindSearch } from './terminalFind.svelte';
+import { loadTerminalSearch } from './terminalSearch';
 
 const isMac = isMacPlatform();
 
@@ -59,6 +62,24 @@ export interface BuildTerminalOptions {
   // caller; buildTerminal just consults it. Optional — omit for surfaces with
   // no teardown race.
   isDisposed?: () => boolean;
+  // False while a paste must not reach the terminal. Checked when the
+  // clipboard answers.
+  acceptsPaste?: () => boolean;
+}
+
+export interface BuiltTerminal {
+  term: Terminal;
+  fit: FitAddon;
+  search: TerminalFindSearch;
+  /**
+   * Fires after every change to the buffer: parsed output (which covers a
+   * full reset, the alternate screen and scrollback trimming), a resize,
+   * `clear()` and `reset()`.
+   */
+  onBufferChange(listener: () => void): IDisposable;
+  paste: () => void;
+  /** The clipboard text, for a paste that goes elsewhere (the find bar). */
+  readClipboard: () => Promise<string>;
 }
 
 // Build the xterm instance with its addons attached to the mount node. Extracted
@@ -72,8 +93,8 @@ export interface BuildTerminalOptions {
 // decorations need `allowProposedApi`.
 export function buildTerminal(
   mount: HTMLDivElement,
-  { onInput, isDisposed }: BuildTerminalOptions,
-): { term: Terminal; fit: FitAddon; search: SearchAddon; paste: () => void } {
+  { onInput, isDisposed, acceptsPaste }: BuildTerminalOptions,
+): BuiltTerminal {
   const terminal = new Terminal({
     convertEol: false,
     cursorBlink: true,
@@ -110,9 +131,31 @@ export function buildTerminal(
   // document-level link delegate uses, which validates http(s) and picks
   // the host binding or window.open by run mode.
   terminal.loadAddon(new WebLinksAddon((_event, uri) => void handleExternalURL(uri)));
-  const searchAddon = new SearchAddon({ highlightLimit: TERMINAL_FIND_HIGHLIGHT_LIMIT });
-  terminal.loadAddon(searchAddon);
+  const search = loadTerminalSearch(terminal);
   terminal.open(mount);
+
+  // `clear()` and `reset()` change the buffer without a write, so they
+  // announce themselves here, whoever calls them.
+  const bufferListeners = new Set<() => void>();
+  function bufferChanged(): void {
+    for (const listener of bufferListeners) listener();
+  }
+  terminal.onWriteParsed(bufferChanged);
+  terminal.onResize(bufferChanged);
+  const clear = terminal.clear.bind(terminal);
+  terminal.clear = () => {
+    clear();
+    bufferChanged();
+  };
+  const reset = terminal.reset.bind(terminal);
+  terminal.reset = () => {
+    reset();
+    bufferChanged();
+  };
+  function onBufferChange(listener: () => void): IDisposable {
+    bufferListeners.add(listener);
+    return { dispose: () => bufferListeners.delete(listener) };
+  }
 
   // Copy the selection and drop the highlight, so the next Ctrl+C / right-
   // click is a SIGINT / paste again rather than a second copy. The highlight
@@ -147,7 +190,7 @@ export function buildTerminal(
       .then((text) => {
         // The surface may have unmounted while the clipboard read was in
         // flight; never write into a disposed xterm.
-        if (text && !isDisposed?.()) terminal.paste(text);
+        if (text && !isDisposed?.() && (acceptsPaste?.() ?? true)) terminal.paste(text);
       })
       .catch((err) => {
         console.error('terminal: clipboard paste failed', err);
@@ -253,5 +296,12 @@ export function buildTerminal(
     );
   }
 
-  return { term: terminal, fit: fitAddon, search: searchAddon, paste: pasteClipboard };
+  return {
+    term: terminal,
+    fit: fitAddon,
+    search,
+    onBufferChange,
+    paste: pasteClipboard,
+    readClipboard: readClipboardText,
+  };
 }
