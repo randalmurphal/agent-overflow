@@ -128,6 +128,8 @@ async function openNewComment(): Promise<void> {
   });
   add.click();
   await vi.waitFor(() => expect(q('[data-testid="review-draft-editor"] textarea')).not.toBeNull());
+  // The box opened by the reader takes focus.
+  await vi.waitFor(() => expect(document.activeElement).toBe(q('[data-testid="review-draft-editor"] textarea')));
 }
 
 function editor(): HTMLTextAreaElement | null {
@@ -365,7 +367,7 @@ describe('open comment editors across a row unmount', () => {
     expect(editing()!.value).toBe('saved body');
   });
 
-  it('keep a new comment with its line when a reload moves it, and say so when its line is gone', async () => {
+  it('keep a new comment on its line through a reload of the same diff, and in place when its file changed', async () => {
     let lines = patch();
     setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/repo' }));
     setBindingMock('GetGitStatus', async () => ({}));
@@ -380,18 +382,20 @@ describe('open comment editors across a row unmount', () => {
     const review = reviewStateForPane(ctx.paneId, reviewSubjectForPane(ctx)!);
     const opened = review.openEditors[0]!;
 
-    // The agent adds a line at the top: the editor follows its line.
+    // The same diff again: the editor stays on its line.
+    q<HTMLButtonElement>('[data-testid="review-reload"]')!.click();
+    await vi.waitFor(() => expect(review.loading).toBe(false));
+    await frames(4);
+    expect(review.openEditors).toEqual([opened]);
+    expect(editor()?.value).toBe('kept new');
+    expect(q('[data-testid="review-draft-editor-note"]')).toBeNull();
+
+    // The agent adds a line at the top: nothing proves which line is the
+    // one it was on. The text stays in the file, and nothing saves it
+    // until the reader takes a line.
     lines = lines.replace(`@@ -0,0 +1,${LINES} @@\n`, `@@ -0,0 +1,${LINES + 1} @@\n+inserted\n`);
     q<HTMLButtonElement>('[data-testid="review-reload"]')!.click();
-    await vi.waitFor(() => expect(review.openEditors[0]?.newLine).toBe(opened.newLine! + 1));
-    await frames(4);
-    expect(editor()?.value).toBe('kept new');
-    expect(q('[data-testid="review-draft-editor-line-changed"]')).toBeNull();
-
-    // Then rewrites every line: the text stays, and nothing saves it.
-    lines = lines.replace(/\n\+line /g, '\n+row ');
-    q<HTMLButtonElement>('[data-testid="review-reload"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="review-draft-editor-line-changed"]')).not.toBeNull());
+    await vi.waitFor(() => expect(q('[data-testid="review-draft-editor-note"]')?.textContent).toContain('The file changed under this comment.'));
     expect(editor()?.value).toBe('kept new');
     const add = button(q('[data-testid="review-draft-editor"]')!, 'Add comment');
     expect(add.disabled).toBe(true);

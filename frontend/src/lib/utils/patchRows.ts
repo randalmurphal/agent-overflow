@@ -475,10 +475,13 @@ export interface RowAnchor {
   newLine?: number;
 }
 
+// An `old` anchor names a deleted line or the left half of a context
+// line (split view), a `new` anchor an added line or the right half; both
+// keep posting on their side (LEFT oldLine, RIGHT newLine).
 function walkerMatches(walker: RowWalker, anchor: RowAnchor): boolean {
   if (walker.type === 'gap') return false;
-  if (anchor.side === 'old') return walker.type === 'del' && walker.oldLine === anchor.oldLine;
-  if (anchor.side === 'new') return walker.type === 'add' && walker.newLine === anchor.newLine;
+  if (anchor.side === 'old') return (walker.type === 'del' || walker.type === 'context') && walker.oldLine === anchor.oldLine;
+  if (anchor.side === 'new') return (walker.type === 'add' || walker.type === 'context') && walker.newLine === anchor.newLine;
   if (anchor.side === 'context') return walker.oldLine === anchor.oldLine && walker.newLine === anchor.newLine;
   return false;
 }
@@ -494,67 +497,62 @@ export function anchorRow(file: ReviewFile, anchor: RowAnchor): number {
 }
 
 /**
- * Where an anchor's line is in `file` now, found by its text: the anchor
- * itself when the row it names still holds `selectedText`, else the one
- * row of its side that does, or null when none or several do. An `old`
- * or `new` anchor can sit on a context row (split view), so those sides
- * look at context rows too. Reads line text: the caller holds the file's
- * text resident (`whenResident`).
- */
-export function relocateAnchor<T extends RowAnchor & { selectedText: string }>(file: ReviewFile, anchor: T): T | null {
-  if (anchor.side === 'file') return anchor;
-  const walker = new RowWalker(file);
-  let found: T | null = null;
-  let matches = 0;
-  while (walker.next()) {
-    const type = walker.type;
-    if (type === 'gap' || type === 'marker') continue;
-    if (anchor.side === 'old' ? type === 'add' : anchor.side === 'new' ? type === 'del' : type !== 'context') continue;
-    const text = file.body.text(walker.lineIndex);
-    if ((type === 'context' ? text : text.slice(1)) !== anchor.selectedText) continue;
-    const at: T = anchor.side === 'old'
-      ? { ...anchor, oldLine: walker.oldLine }
-      : anchor.side === 'new'
-        ? { ...anchor, newLine: walker.newLine }
-        : { ...anchor, oldLine: walker.oldLine, newLine: walker.newLine };
-    if (at.oldLine === anchor.oldLine && at.newLine === anchor.newLine) return anchor;
-    matches += 1;
-    found = at;
-  }
-  return matches === 1 ? found : null;
-}
-
-/**
  * The anchor lines of a file's rows, by side, for membership checks of
- * many anchors against one file (PR threads). `context` maps a context
- * row's new line to its old line.
+ * many anchors against one file (PR threads, drafts). `context` maps a
+ * context row's new line to its old line, `contextOld` its old line to its
+ * new line.
  */
 export interface AnchorLines {
   old: Set<number>;
   new: Set<number>;
   context: Map<number, number>;
+  contextOld: Map<number, number>;
 }
 
 export function anchorLines(file: ReviewFile): AnchorLines {
-  const out: AnchorLines = { old: new Set(), new: new Set(), context: new Map() };
+  const out: AnchorLines = { old: new Set(), new: new Set(), context: new Map(), contextOld: new Map() };
   const walker = new RowWalker(file);
   while (walker.next()) {
     if (walker.type === 'del') out.old.add(walker.oldLine);
     else if (walker.type === 'add') out.new.add(walker.newLine);
     else if (walker.type === 'context' || walker.type === 'marker') {
       if (!out.context.has(walker.newLine)) out.context.set(walker.newLine, walker.oldLine);
+      if (walker.type === 'context' && !out.contextOld.has(walker.oldLine)) out.contextOld.set(walker.oldLine, walker.newLine);
     }
   }
   return out;
 }
 
+/** Whether `anchor` names a row of the file, as `anchorRow` decides. */
 export function anchorLinesMatch(lines: AnchorLines, anchor: RowAnchor): boolean {
-  if (anchor.side === 'old') return anchor.oldLine !== undefined && lines.old.has(anchor.oldLine);
-  if (anchor.side === 'new') return anchor.newLine !== undefined && lines.new.has(anchor.newLine);
+  if (anchor.side === 'old') {
+    return anchor.oldLine !== undefined && (lines.old.has(anchor.oldLine) || lines.contextOld.has(anchor.oldLine));
+  }
+  if (anchor.side === 'new') {
+    return anchor.newLine !== undefined && (lines.new.has(anchor.newLine) || lines.context.has(anchor.newLine));
+  }
   if (anchor.side === 'context') {
     return anchor.newLine !== undefined && lines.context.get(anchor.newLine) === anchor.oldLine;
   }
   return false;
+}
+
+/** The line the row-model buckets an anchor's inserts under: the line
+ * `RowWalker.anchorLine` reports for the row it names. An `old` anchor on
+ * a context row's left half is keyed by that row's new line. 0 for a file
+ * anchor, and for a line-anchor whose row is not in the file (the inserts
+ * flush after the file's rows). */
+export function anchorInsertLine(lines: AnchorLines | null, anchor: RowAnchor): number {
+  if (anchor.side === 'file') return 0;
+  if (anchor.side === 'old') {
+    const oldLine = anchor.oldLine ?? 0;
+    if (lines && !lines.old.has(oldLine)) {
+      const newLine = lines.contextOld.get(oldLine);
+      if (newLine !== undefined) return newLine || oldLine;
+    }
+    return oldLine;
+  }
+  return anchor.newLine || anchor.oldLine || 0;
 }
 
 /**

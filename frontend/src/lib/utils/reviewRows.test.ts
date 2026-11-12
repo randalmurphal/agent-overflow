@@ -17,7 +17,9 @@ import {
   BlockRowsCache,
   buildReviewRows,
   reviewRowEstimate,
+  REVIEW_GONE_GROUP_ROW_KEY,
   type CommentAnchor,
+  type EditorRow,
   type ReviewLeadRow,
   type ReviewRow,
 } from './reviewRows';
@@ -32,6 +34,32 @@ function addedPatch(path: string, count: number): string {
     `+++ b/${path}`,
     `@@ -0,0 +1,${count} @@`,
     ...lines,
+  ].join('\n');
+}
+
+function editorOn(id: string, anchor: CommentAnchor): EditorRow {
+  return { id, filePath: anchor.filePath, side: anchor.side, state: 'placed', anchor, suggested: null, armed: false };
+}
+
+function detachedEditor(id: string, filePath: string, suggested: CommentAnchor | null = null): EditorRow {
+  return { id, filePath, side: 'new', state: 'detached', anchor: null, suggested, armed: false };
+}
+
+function goneEditor(id: string, filePath: string): EditorRow {
+  return { id, filePath, side: 'new', state: 'gone', anchor: null, suggested: null, armed: false };
+}
+
+function contextPatch(path: string): string {
+  return [
+    `diff --git a/${path} b/${path}`,
+    'index 1111111..2222222 100644',
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    '@@ -1,3 +1,3 @@',
+    ' keep 1',
+    '-old 2',
+    '+new 2',
+    ' keep 3',
   ].join('\n');
 }
 
@@ -99,26 +127,83 @@ describe('buildReviewRows', () => {
     expect(new Set(result.rowKeys).size).toBe(result.rowKeys.length);
   });
 
-  it('puts an editor whose line changed under its file header, apart from a new editor on the same numbers', () => {
+  it('puts a detached editor after its suggested row, under the header with none, and keys every editor by its id', () => {
     const files = parseReviewFiles(addedPatch('src/file.ts', 12));
-    const changed: CommentAnchor = { filePath: 'src/file.ts', side: 'new', newLine: 10, lineChanged: true };
-    const fresh: CommentAnchor = { filePath: 'src/file.ts', side: 'new', newLine: 10 };
+    const line: CommentAnchor = { filePath: 'src/file.ts', side: 'new', newLine: 10 };
     const result = buildReviewRows({
       files,
       viewMode: 'stacked',
       collapsedPaths: new Set(),
       drafts: [],
-      openEditors: [changed, fresh],
+      openEditors: [detachedEditor('e0', 'src/file.ts'), detachedEditor('e1', 'src/file.ts', line), editorOn('e2', line), editorOn('e3', line)],
     });
 
-    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'draft-editor', 'line-block', 'draft-editor', 'line-block', 'surface-end']);
-    expect(result.rowKeys[1]).toBe('d:src/file.ts:new:0:10:changed');
-    expect(result.rowKeys[3]).toBe('d:src/file.ts:new:0:10');
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'draft-editor', 'line-block', 'draft-editor', 'draft-editor', 'draft-editor', 'line-block', 'surface-end']);
+    expect(result.rowKeys.filter((key) => key.startsWith('d:'))).toEqual(['d:e0', 'd:e1', 'd:e2', 'd:e3']);
+    expect(new Set(result.rowKeys).size).toBe(result.rowKeys.length);
+  });
+
+  it('groups only the editors whose file is not in the diff, after the lead row, and hides those of a filtered file', () => {
+    const files = parseReviewFiles(addedPatch('src/file.ts', 3));
+    const editors = [
+      goneEditor('gone', 'src/removed.ts'),
+      editorOn('hidden', { filePath: 'src/filtered.ts', side: 'new', newLine: 1 }),
+      detachedEditor('hidden-too', 'src/filtered.ts'),
+      editorOn('here', { filePath: 'src/file.ts', side: 'new', newLine: 2 }),
+    ];
+    const result = buildReviewRows({ files, viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: editors, overview: 'overview' });
+
+    expect(result.rows.map((row) => row.kind)).toEqual([
+      'overview', 'gone-group', 'draft-editor', 'file-header', 'line-block', 'draft-editor', 'line-block', 'surface-end',
+    ]);
+    expect(result.rowKeys.slice(1, 3)).toEqual([REVIEW_GONE_GROUP_ROW_KEY, 'd:gone']);
+    expect(result.rows[1]).toMatchObject({ kind: 'gone-group', count: 1, fileIndex: -1 });
+    expect(result.fileOfRow.slice(0, 3)).toEqual([-1, -1, -1]);
+    expect(result.rowKeys.filter((key) => key.startsWith('d:'))).toEqual(['d:gone', 'd:here']);
+  });
+
+  it('renders a gone editor once, in the group, even if its path is in the files', () => {
+    const files = parseReviewFiles(addedPatch('src/file.ts', 3));
+    const result = buildReviewRows({ files, viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: [goneEditor('gone', 'src/file.ts')] });
+    expect(result.rowKeys.filter((key) => key === 'd:gone')).toHaveLength(1);
+    expect(result.rows.map((row) => row.kind).slice(0, 2)).toEqual(['gone-group', 'draft-editor']);
+  });
+
+  it('shows the group with no files at all', () => {
+    const result = buildReviewRows({ files: [], viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: [goneEditor('gone', 'src/a.ts')] });
+    expect(result.rows.map((row) => row.kind)).toEqual(['gone-group', 'draft-editor']);
+  });
+
+  it('hides every editor of a collapsed file with its body', () => {
+    const files = parseReviewFiles(addedPatch('src/file.ts', 3));
+    const result = buildReviewRows({
+      files,
+      viewMode: 'stacked',
+      collapsedPaths: new Set(['src/file.ts']),
+      drafts: [],
+      openEditors: [detachedEditor('lost', 'src/file.ts'), editorOn('placed', { filePath: 'src/file.ts', side: 'new', newLine: 2 })],
+    });
+    expect(result.rowKeys).toEqual(['h:src/file.ts', 'end']);
+  });
+
+  it('places a split view\'s left-half editor on a context row after that row', () => {
+    const files = parseReviewFiles(contextPatch('src/file.ts'));
+    const result = buildReviewRows({
+      files,
+      viewMode: 'split',
+      collapsedPaths: new Set(),
+      drafts: [],
+      openEditors: [editorOn('left', { filePath: 'src/file.ts', side: 'old', oldLine: 3 })],
+    });
+    const at = result.rows.findIndex((row) => row.kind === 'draft-editor');
+    const before = result.rows[at - 1];
+    if (before?.kind !== 'line-block') throw new Error('no line block before the editor');
+    expect(new BlockRowsCache().get(files[0], before).rows.at(-1)).toMatchObject({ oldLine: 3, newLine: 3 });
   });
 
   it('ends a line block at anchors and inserts comment/editor rows immediately after it', () => {
     const files = parseReviewFiles(addedPatch('src/file.ts', 12));
-    const editor: CommentAnchor = { filePath: 'src/file.ts', side: 'new', newLine: 10 };
+    const editor = editorOn('e1', { filePath: 'src/file.ts', side: 'new', newLine: 10 });
     const result = buildReviewRows({
       files,
       viewMode: 'stacked',
@@ -140,7 +225,7 @@ describe('buildReviewRows', () => {
       [11, 2],
     ]);
     expect(result.rowKeys[2]).toBe('t:draft-7');
-    expect(result.rowKeys[3]).toBe('d:src/file.ts:new:0:10');
+    expect(result.rowKeys[3]).toBe('d:e1');
     expect(new Set(result.rowKeys).size).toBe(result.rowKeys.length);
   });
 
@@ -253,6 +338,21 @@ describe('buildReviewRows', () => {
     const row = result.rows[2];
     expect(row.kind).toBe('pr-thread');
     if (row.kind === 'pr-thread') expect(row.orphaned).toBe(false);
+  });
+
+  it('places a PR thread on either side of a context line on that line, as its jump does', () => {
+    const files = parseReviewFiles(contextPatch('src/file.ts'));
+    const result = buildReviewRows({
+      files,
+      viewMode: 'stacked',
+      collapsedPaths: new Set(),
+      drafts: [],
+      openEditors: [],
+      prThreads: [prThread({ id: 'right-3', line: 3, side: 'right' }), prThread({ id: 'left-3', line: 3, side: 'left' })],
+      expandedPRThreadIds: new Set(),
+    });
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'line-block', 'pr-thread', 'pr-thread', 'line-block', 'surface-end']);
+    for (const row of result.rows) if (row.kind === 'pr-thread') expect(row.orphaned, row.thread.id).toBe(false);
   });
 
   it('groups unanchored PR threads under the file header; an outdated one on a matching line stays inline', () => {
@@ -447,7 +547,7 @@ describe('reviewRowEstimate', () => {
       viewMode: 'stacked',
       collapsedPaths: new Set(),
       drafts: [draft({ id: 'draft-1', newLine: 1 })],
-      openEditors: [{ filePath: 'src/file.ts', side: 'new', newLine: 2 }],
+      openEditors: [editorOn('e1', { filePath: 'src/file.ts', side: 'new', newLine: 2 })],
     });
 
     const plain = reviewRowEstimate(result, false);

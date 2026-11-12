@@ -104,7 +104,7 @@ const heldText = new FinalizationRegistry<{ bytes: number; pinned: number }>((he
 // What a chunk's text costs: V8 holds a string with any character past
 // Latin-1 at two bytes per character.
 function textBytes(text: string): number {
-  return /[^\x00-\xff]/.test(text) ? text.length * 2 : text.length;
+  return /[\u0100-\uffff]/.test(text) ? text.length * 2 : text.length;
 }
 
 /**
@@ -1002,6 +1002,10 @@ export interface ReviewFile extends DiffFileSummary {
   newSideTotal?: number;
   /** Skip hunk-gap rows (see PatchFile.suppressGaps). */
   suppressGaps?: boolean;
+  /** How many edit sections of one path the Edits scope joined into this
+   * file. Over 1, its first section's index line does not describe it
+   * (utils/editorPlacement.ts). */
+  mergedSections?: number;
 }
 
 /** A review file over a parsed PatchFile (conflict pseudo-files). */

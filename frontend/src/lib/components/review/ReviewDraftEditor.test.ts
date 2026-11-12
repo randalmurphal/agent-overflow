@@ -1,17 +1,17 @@
 import { fireEvent, render } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import ReviewDraftEditor from './ReviewDraftEditor.svelte';
-import type { CommentAnchor } from '../../utils/reviewRows';
+import type { EditorRow } from '../../utils/reviewRows';
 
-const anchor: CommentAnchor = { filePath: 'src/a.ts', newLine: 5, side: 'new' };
+const editor: EditorRow = { id: 'e1', filePath: 'src/a.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/a.ts', newLine: 5, side: 'new' }, suggested: null, armed: false };
+const suggested = { filePath: 'src/a.ts', newLine: 6, side: 'new' as const, selectedText: 'x' };
 
 function setup() {
   const onSubmit = vi.fn();
   const onCancel = vi.fn();
-  // `anchor` is a reserved Svelte mount option, so props must be nested.
   const view = render(ReviewDraftEditor, {
     props: {
-      anchor,
+      editor,
       body: 'draft text',
       onBodyChange: vi.fn(),
       onCancel,
@@ -26,13 +26,13 @@ describe('<ReviewDraftEditor> keyboard submit', () => {
   it('submits on Ctrl+Enter', async () => {
     const { onSubmit, textarea } = setup();
     await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
-    expect(onSubmit).toHaveBeenCalledWith(anchor, 'draft text');
+    expect(onSubmit).toHaveBeenCalledWith('e1', 'draft text');
   });
 
   it('submits on Cmd+Enter (macOS)', async () => {
     const { onSubmit, textarea } = setup();
     await fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
-    expect(onSubmit).toHaveBeenCalledWith(anchor, 'draft text');
+    expect(onSubmit).toHaveBeenCalledWith('e1', 'draft text');
   });
 
   it('does not submit on plain Enter', async () => {
@@ -44,34 +44,78 @@ describe('<ReviewDraftEditor> keyboard submit', () => {
   it('cancels on Escape', async () => {
     const { onCancel, textarea } = setup();
     await fireEvent.keyDown(textarea, { key: 'Escape' });
-    expect(onCancel).toHaveBeenCalledWith(anchor);
+    expect(onCancel).toHaveBeenCalledWith('e1');
   });
 });
 
-describe('<ReviewDraftEditor> whose line changed', () => {
-  it('says so, keeps the text and cannot be saved', async () => {
+function renderEditor(row: EditorRow, handlers: Partial<Record<'onSubmit' | 'onCancel' | 'onUseLine' | 'onMove' | 'onCancelMove', (...args: string[]) => void>> = {}) {
+  const props = {
+    editor: row,
+    body: 'draft text',
+    onBodyChange: vi.fn(),
+    onCancel: handlers.onCancel ?? vi.fn(),
+    onSubmit: handlers.onSubmit ?? vi.fn(),
+    onUseLine: handlers.onUseLine ?? vi.fn(),
+    onMove: handlers.onMove ?? vi.fn(),
+    onCancelMove: handlers.onCancelMove ?? vi.fn(),
+  };
+  const view = render(ReviewDraftEditor, { props });
+  return { view, textarea: view.container.querySelector('textarea')!, props };
+}
+
+describe('<ReviewDraftEditor> whose file changed', () => {
+  it('says so, offers the suggested line or a move, and cannot be saved', async () => {
     const onSubmit = vi.fn();
-    const view = render(ReviewDraftEditor, {
-      props: {
-        anchor: { ...anchor, lineChanged: true },
-        body: 'draft text',
-        onBodyChange: vi.fn(),
-        onCancel: vi.fn(),
-        onSubmit,
-      },
-    });
-    const textarea = view.container.querySelector('textarea')!;
+    const onUseLine = vi.fn();
+    const onMove = vi.fn();
+    const { view, textarea } = renderEditor({ ...editor, state: 'detached', anchor: null, suggested }, { onSubmit, onUseLine, onMove });
     expect(textarea.value).toBe('draft text');
-    expect(view.getByTestId('review-draft-editor-line-changed').textContent).toContain('The line this comment was on (line 5) changed.');
+    expect(view.getByTestId('review-draft-editor-note').textContent).toContain('The file changed under this comment.');
     expect((view.getByRole('button', { name: 'Add comment' }) as HTMLButtonElement).disabled).toBe(true);
     await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
     expect(onSubmit).not.toHaveBeenCalled();
+    await fireEvent.click(view.getByRole('button', { name: 'Use this line' }));
+    expect(onUseLine).toHaveBeenCalledWith('e1');
+    expect(document.activeElement).toBe(textarea);
+    await fireEvent.click(view.getByRole('button', { name: 'Move' }));
+    expect(onMove).toHaveBeenCalledWith('e1');
   });
 
-  it('shows no note on a line that did not change', () => {
-    const view = render(ReviewDraftEditor, {
-      props: { anchor, body: 'draft text', onBodyChange: vi.fn(), onCancel: vi.fn(), onSubmit: vi.fn() },
-    });
-    expect(view.queryByTestId('review-draft-editor-line-changed')).toBeNull();
+  it('asks for a line while armed; Cancel and Escape cancel the move, not the comment', async () => {
+    const onCancelMove = vi.fn();
+    const onCancel = vi.fn();
+    const { view, textarea } = renderEditor({ ...editor, state: 'detached', anchor: null, suggested, armed: true }, { onCancelMove, onCancel });
+    expect(view.getByTestId('review-draft-editor-note').textContent).toContain('Choose a line for this comment.');
+    expect(view.queryByRole('button', { name: 'Add comment' })).toBeNull();
+    await fireEvent.click(view.getByRole('button', { name: 'Cancel' }));
+    await fireEvent.keyDown(textarea, { key: 'Escape' });
+    expect(onCancelMove).toHaveBeenCalledTimes(2);
+    expect(onCancel).not.toHaveBeenCalled();
   });
+
+  it('shows no note on a placed editor', () => {
+    const { view } = renderEditor(editor);
+    expect(view.queryByTestId('review-draft-editor-note')).toBeNull();
+  });
+});
+
+describe('<ReviewDraftEditor> whose file is not in the diff', () => {
+  it('shows its path and text, and offers Copy text and Discard only', async () => {
+    const onCancel = vi.fn();
+    const { view, textarea } = renderEditor({ ...editor, state: 'gone', anchor: null }, { onCancel });
+    expect(view.getByTestId('review-draft-editor-path').textContent).toBe('src/a.ts');
+    expect(textarea.value).toBe('draft text');
+    expect(view.getByTestId('review-draft-editor-note').textContent).toContain('This file is no longer in the diff.');
+    expect(view.getAllByRole('button').map((button) => button.textContent?.trim())).toEqual(['Copy text', 'Discard']);
+    await fireEvent.click(view.getByRole('button', { name: 'Discard' }));
+    expect(onCancel).toHaveBeenCalledWith('e1');
+  });
+});
+
+it('never says unplaced or detached', () => {
+  for (const row of [editor, { ...editor, state: 'detached' as const, anchor: null, suggested }, { ...editor, state: 'detached' as const, anchor: null, suggested, armed: true }, { ...editor, state: 'gone' as const, anchor: null }]) {
+    const { view } = renderEditor(row);
+    expect(view.container.textContent?.toLowerCase()).not.toMatch(/unplaced|detached/);
+    view.unmount();
+  }
 });

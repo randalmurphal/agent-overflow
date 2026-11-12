@@ -331,14 +331,44 @@ polling.
   attachment chips carry `data-find-skip`, so they are neither counted nor
   painted.
 
+## Open new-comment editors
+
+An open new-comment box (an editor with an id, its text, focus and row
+keyed by that id) is on its line only while exact identity proves it:
+the file version its line was proven in (git's blob id of the posting
+side, or the byte-identical file section when the patch names no blob)
+is the version the new diff shows (`utils/editorPlacement.ts`). Text
+never proves a line. The contract the reader sees:
+
+- Proven same line: nothing visible happens; the box moves with its line.
+- Not proven: the box stays in its file, in place on screen with its
+  focus, caret and text, after a suggested row (the one row on its side
+  with its text, else the row with its line number, else the nearest).
+  It says "The file changed under this comment." and offers "Use this
+  line" (the row shown, as if opened there now) and "Move" (the next line
+  the reader opens a comment on takes the box; Cancel, Escape and Back
+  disarm it). It cannot be saved until then, and returns to its line by
+  itself when a later diff proves it, unless the reader chose one.
+- An editor shows wherever its file shows: a collapsed file or one the
+  type or test filter hides hides it, with its text kept.
+- Only an editor whose file is not in the loaded diff shows in the group
+  "Comments on files not in this diff", with its path, its text, "This
+  file is no longer in the diff.", "Copy text" and "Discard"; it returns
+  to its file when a later diff has it again.
+
+A save is checked synchronously against the diff on screen (its subject,
+source and head, committed with its files), never against the controls'
+subject while another loads. Rows an expansion supplied carry no version
+proof: an editor on one saves in the load it was opened in and is not
+proven at the next. Verified expansions would need a backend change.
+
 ## Edge Cases
 
 - **PR head moves mid-review:** poll detects a new head SHA → non-blocking
   "PR updated, reload" banner. Drafts stay anchored to the old SHA (valid
   for the API); after reload, drafts whose lines vanished are flagged
-  orphaned, never silently dropped. An open new comment follows its
-  line's text; with no one line to follow it keeps its text and cannot
-  be saved.
+  orphaned, never silently dropped. An open new comment's box follows the
+  reload as described under "Open new-comment editors" below.
 - **Resolved threads:** rendered collapsed at their anchors, toggleable.
   Outdated is a marker, not a state: an outdated thread keeps its resolve
   state, stays at its anchor while the diff still has the line, and

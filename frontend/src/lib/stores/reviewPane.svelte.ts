@@ -143,8 +143,22 @@ import {
 } from '../utils/diffContextExpansion';
 import type { DiffGap } from '../utils/patchFiles';
 import { PatchTextLost, reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
-import { relocateAnchor } from '../utils/patchRows';
-import { anchorKey, type CommentAnchor } from '../utils/reviewRows';
+import { anchorRow } from '../utils/patchRows';
+import { anchorKey, type CommentAnchor, type EditorRow, type EditorState } from '../utils/reviewRows';
+import {
+  EDITOR_QUOTE_MAX_BYTES,
+  lineGuard,
+  RELOCATION_BUDGET_MS,
+  RELOCATION_BUDGET_ROWS,
+  RelocationBudget,
+  RelocationCancelled,
+  relocateEditors,
+  type DetachReason,
+  type EditorProof,
+  type LineGuard,
+  type RelocationOutcome,
+  type RelocationTarget,
+} from '../utils/editorPlacement';
 import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { ReviewSectionId } from './reviewSectionSizes.svelte';
 import { REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
@@ -206,7 +220,8 @@ export interface ReviewPaneState {
   readonly files: ReviewFile[];
   readonly comments: readonly DiffReviewComment[];
   readonly drafts: readonly DiffReviewComment[];
-  readonly openEditors: readonly CommentAnchor[];
+  /** The open new-comment editors of the diff on screen. */
+  readonly openEditors: readonly ReviewEditor[];
   /** Commits the branch/PR carries (newest first); empty outside those
    * scopes and for non-git workspaces. Feeds the commit selector. */
   readonly commits: readonly BranchCommit[];
@@ -354,14 +369,30 @@ export interface ReviewPaneState {
   reload(opts?: ReadIntent): Promise<void>;
   consumePendingJumpFilePath(): void;
   consumePendingJumpRowKey(): void;
-  openDraftEditor(anchor: CommentAnchor): void;
-  closeDraftEditor(anchor: CommentAnchor): void;
+  /** Opens an editor on a line of the diff on screen, or focuses the one
+   * already open on it; with an editor armed (moveEditor), moves that one
+   * to the line instead. Returns its id; null when the diff on screen is
+   * not the subject the controls name, or has no such line. */
+  openDraftEditor(anchor: CommentAnchor): string | null;
+  /** Discards an open editor and its text. */
+  closeDraftEditor(editorId: string): void;
+  /** Places a detached editor on its suggested row, as if it were opened
+   * there now. False when that row is not on screen. */
+  useSuggestedLine(editorId: string): boolean;
+  /** Arms a detached editor: the next line openDraftEditor names takes it
+   * and its text. Arming one disarms any other. */
+  moveEditor(editorId: string): void;
+  cancelEditorMove(): void;
+  /** The editor a picked line will take, if any. */
+  readonly armedEditorId: string | null;
   /** Store-backed editor text — survives virtualizer row unmounts. */
-  draftBodyFor(anchor: CommentAnchor): string;
-  setDraftBody(anchor: CommentAnchor, body: string): void;
+  draftBodyFor(editorId: string): string;
+  setDraftBody(editorId: string, body: string): void;
   /** True exactly once after openDraftEditor, for the mount autofocus. */
-  consumeDraftEditorFocus(anchor: CommentAnchor): boolean;
-  createComment(anchor: CommentAnchor, body: string): Promise<void>;
+  consumeDraftEditorFocus(editorId: string): boolean;
+  /** Saves an open editor's comment. Rejects with ReviewCommentRefused
+   * when nothing proves its line is the one it was opened on. */
+  createComment(editorId: string, body: string): Promise<void>;
   /** The unsaved text of a draft open in its editor, or null when it is
    * not being edited; store-backed like `draftBodyFor`. */
   draftEditBodyFor(commentId: string): string | null;
@@ -601,8 +632,88 @@ export interface PinnedReviewPR {
   readonly backend: BackendKey;
 }
 
-// createComment's refusal of an anchor whose line changed under it.
-const REVIEW_LINE_CHANGED = 'The line this comment was on changed. Copy the comment and add it on the line again.';
+/** An open new-comment editor of the review (utils/editorPlacement.ts). */
+export type ReviewEditor = EditorRow;
+
+/** Why createComment did not save: the editor belongs to another diff,
+ * has no proven line, was proven against a diff no longer on screen, or
+ * quotes a line longer than a comment may. */
+export class ReviewCommentRefused extends Error {
+  constructor(readonly reason: 'subject' | 'detached' | 'stale' | 'too-long', message: string) {
+    super(message);
+    this.name = 'ReviewCommentRefused';
+  }
+}
+
+const REVIEW_EDITOR_DETACHED = 'The file changed under this comment.';
+const REVIEW_EDITOR_GONE = 'This file is no longer in the diff.';
+const REVIEW_EDITOR_OTHER_DIFF = 'This comment was opened on another diff.';
+const REVIEW_EDITOR_CLOSED = 'This comment editor is closed.';
+const REVIEW_QUOTE_TOO_LONG = 'This line is too long to comment on.';
+
+/** An open editor, replaced (never changed in place) on every change, so
+ * work across an await can tell whether it still stands. */
+interface EditorRecord {
+  /** Minted when it opens: keys its text, focus and row. */
+  readonly id: string;
+  /** The subject of the diff it was opened on (reviewSubjectKey). */
+  readonly subject: string;
+  readonly filePath: string;
+  readonly side: CommentAnchor['side'];
+  readonly state: EditorState;
+  /** Placed: the line it saves on. */
+  readonly anchor: CommentAnchor | null;
+  /** Detached: the row it shows after; proves nothing. */
+  readonly suggested: CommentAnchor | null;
+  /** Its last line number on its side, for the suggested row. */
+  readonly line: number;
+  /** Why it is detached or gone. */
+  readonly reason: DetachReason | null;
+  /** The line's text, saved as the comment's quote; empty when it is
+   * longer than a comment may quote (quoteTooLong). */
+  readonly selectedText: string;
+  readonly quoteTooLong: boolean;
+  /** Null for a file comment. */
+  readonly guard: LineGuard | null;
+  /** Detached: what last proved its line. Placed: derived when needed. */
+  readonly proof: EditorProof;
+  /** Placed: the shown file and the loaded file its line was found in. */
+  readonly shownFile: ReviewFile | null;
+  readonly baseFile: ReviewFile | null;
+}
+
+function anchorSideLine(anchor: CommentAnchor): number {
+  return (anchor.side === 'old' ? anchor.oldLine : anchor.newLine) ?? 0;
+}
+
+/** What a diff is about: everything that sends a comment somewhere else.
+ * The workspace and thread are the review state's own. */
+function reviewSubjectKey(parts: { scope: ReviewScope; baseBranch: string | null; commit: string | null; edit: string | null; pr: string }): string {
+  return [parts.scope, parts.baseBranch ?? '', parts.commit ?? '', parts.edit ?? '', parts.pr].join('\u0000');
+}
+
+/** The diff on screen, committed with its files: comments open and save
+ * against it, never against the controls' subject while another loads. */
+interface ShownDiff {
+  readonly subject: string;
+  readonly scope: ReviewScope;
+  readonly sourceKey: string;
+  readonly commitSha: string | undefined;
+}
+
+function utf8Bytes(text: string): number {
+  if (text.length > EDITOR_QUOTE_MAX_BYTES) return text.length;
+  return new TextEncoder().encode(text).length;
+}
+
+/** Relocation's allowance; tests narrow it. */
+const relocationBudget = { rows: RELOCATION_BUDGET_ROWS, ms: RELOCATION_BUDGET_MS };
+export function __setRelocationBudgetForTest(rows: number, ms = RELOCATION_BUDGET_MS): () => void {
+  const before = { ...relocationBudget };
+  relocationBudget.rows = rows;
+  relocationBudget.ms = ms;
+  return () => Object.assign(relocationBudget, before);
+}
 
 // The backend's SubmitPRReview posts named drafts and marks them itself
 // (internal/app/app_pr_review_submit.go).
@@ -881,11 +992,15 @@ export function createReviewPaneState(
   // known yet (resolveLostSubmit); a press of Send asks again instead of
   // posting.
   let openSubmit: SubmitAttempt | null = $state.raw(null);
-  let openEditors: CommentAnchor[] = $state([]);
+  let openEditors: EditorRecord[] = $state.raw([]);
   // Draft-editor text lives HERE, not in the row component: editor rows
   // are virtualized, so scrolling one out of the render window unmounts
-  // it — row-local state would silently drop the user's typed text.
+  // it — row-local state would silently drop the user's typed text. By
+  // editor id.
   const draftBodies = new SvelteMap<string, string>();
+  let shown: ShownDiff | null = $state.raw(null);
+  // The editor a picked line takes ("Move").
+  let armedEditorId: string | null = $state(null);
   // The same for a saved draft open in its editor, by comment id, under
   // the comment source the draft belongs to. Anchors do not key it, so a
   // new view of the same subject (whitespace, a commit, an edit) keeps
@@ -901,7 +1016,7 @@ export function createReviewPaneState(
   // One-shot focus request, set on user-initiated open and consumed by
   // the editor's mount effect. Without it, an editor row remounting as
   // it re-enters the render buffer would steal focus mid-scroll.
-  let pendingEditorFocusKey: string | null = null;
+  let pendingEditorFocusId: string | null = null;
   let collapsedPaths: SvelteSet<string> = $state(new SvelteSet<string>());
   // Explicit user collapse/expand choices, by path. Reloads re-derive
   // the DEFAULT collapse set from the fresh patch but must not undo
@@ -1072,7 +1187,10 @@ export function createReviewPaneState(
   // the reader has not seen is refused by the forge, not merged blind.
   // Never the live head: the actions are withheld until a diff is loaded.
   const mergeHeadSHA = $derived(loadedPRHeadSHA);
-  const sourceKey = $derived.by(() => {
+  const sourceKey = $derived.by(() => sourceKeyFor(prRef));
+  // The comment source of the selection under the PR `pr`: the controls'
+  // (`sourceKey`) or, at a load's commit, the PR that load was for.
+  function sourceKeyFor(pr: PRRef | null): string {
     if (scope === 'edits') {
       // An edit payload is immutable, so its id is the stable identity;
       // a whole-turn view keys by the turn (its edit set only grows
@@ -1087,13 +1205,25 @@ export function createReviewPaneState(
       // stable identity, in both branch and pr scope.
       return `commit:${selectedCommitSHA}`;
     }
-    if (scope === 'pr' && prRef) {
+    if (scope === 'pr' && pr) {
       // Stable across PR head movement: drafts must survive pushes; each
       // draft's commitSha records the head SHA it was anchored to.
-      return prSourceKey(prRef);
+      return prSourceKey(pr);
     }
     return patchKey;
-  });
+  }
+  // The subject the controls name; a load commits the subject it resolved.
+  const requestedSubject = $derived(reviewSubjectKey({
+    scope,
+    baseBranch: scope === 'branch' ? baseBranch : null,
+    commit: selectedCommitSHA,
+    edit: scope === 'edits' ? editSelectionKey(selectedEdit) : null,
+    pr: scope === 'pr' && prRef ? computerPRKey(prRef) : '',
+  }));
+  // The open editors of the diff on screen, as the rows place them.
+  const shownEditors: readonly ReviewEditor[] = $derived(shown === null ? [] : openEditors
+    .filter((editor) => editor.subject === shown?.subject)
+    .map(({ id, filePath, side, state, anchor, suggested }) => ({ id, filePath, side, state, anchor, suggested, armed: id === armedEditorId })));
   // One gap-suppressed copy per loaded file, so a file keeps its identity
   // across rebuilds of the overlay below.
   const suppressedFiles = new WeakMap<ReviewFile, ReviewFile>();
@@ -1472,11 +1602,8 @@ export function createReviewPaneState(
       selectedCommitSHA = null;
       selectedEdit = null;
     }
-    if (subjectChanged) {
-      openEditors = [];
-      draftBodies.clear();
-      draftEditBodies.clear();
-    }
+    if (subjectChanged) draftEditBodies.clear();
+    keepEditorsOf(requestedSubject);
     collapseOverrides.clear();
     if (threadId !== null) persistScope(threadId, scope, baseBranch);
     await reload({ userInitiated: opts?.userInitiated });
@@ -1487,8 +1614,7 @@ export function createReviewPaneState(
     navigationSeq++;
     retireDiffSubject();
     selectedCommitSHA = sha;
-    openEditors = [];
-    draftBodies.clear();
+    keepEditorsOf(requestedSubject);
     collapseOverrides.clear();
     await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
@@ -1503,9 +1629,8 @@ export function createReviewPaneState(
     // from the patch text has to be rebuilt: parsed files, the px-pinned
     // row geometry, and the highlight-span cache (keyed by line content).
     // `selectionOnly` keeps it to the diff call — the commit/edit lists
-    // and the PR subscription describe the same subject either way.
-    openEditors = [];
-    draftBodies.clear();
+    // and the PR subscription describe the same subject either way. Open
+    // editors stay: the reload places each on its line again.
     // Collapse overrides deliberately SURVIVE, unlike selectCommit/selectEdit:
     // those switch which change is under review, whereas this shows the same
     // change with less noise. A file the user opened stays open.
@@ -1518,8 +1643,7 @@ export function createReviewPaneState(
     navigationSeq++;
     retireDiffSubject();
     selectedEdit = next;
-    openEditors = [];
-    draftBodies.clear();
+    keepEditorsOf(requestedSubject);
     collapseOverrides.clear();
     await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
@@ -1529,6 +1653,8 @@ export function createReviewPaneState(
   function retireDiffSubject(): void {
     revealedPaths.clear();
     loadedFiles = [];
+    shown = null;
+    armedEditorId = null;
     showRead(null);
     patchKey = '';
     clearContextExpansions();
@@ -1629,14 +1755,27 @@ export function createReviewPaneState(
       const arrival: Arrival = { loaded, applied: false };
       const read = await readPatch(seq, arrival);
       if (!read) return;
+      // The subject this diff is, by the selection the load resolved.
+      const committed = committedSubject(loaded, loadingPRKey);
+      const placements = await placeOpenEditors(seq, committed, read.files);
+      if (seq !== loadSeq || disposed) {
+        if (read.read !== shownRead) read.read?.dispose();
+        return;
+      }
       // Everything the complete diff decides lands in this synchronous
       // step, so no frame shows its files with another load's collapse
-      // state, patch key or head.
+      // state, patch key, head, subject or editor lines.
       showFiles(arrival, read.files);
       showRead(read.read);
       patchKey = read.patchKey;
       shownIgnoreWhitespace = requestedIgnoreWhitespace;
-      void relocateOpenEditors(seq);
+      shown = {
+        subject: committed,
+        scope,
+        sourceKey: sourceKeyFor(loadingPRRef),
+        commitSha: selectedCommitSHA ?? (scope === 'pr' ? loaded.prRevision?.headSHA : undefined),
+      };
+      applyPlacements(committed, placements);
       // Fresh defaults for the new patch, with the user's explicit
       // collapse/expand choices layered back on top.
       const nextCollapsed = new SvelteSet<string>();
@@ -1681,8 +1820,6 @@ export function createReviewPaneState(
         return;
       }
       if (!nextSourceKey) {
-        openEditors = [];
-        draftBodies.clear();
         setActiveDiffReviewSource(threadId, null);
         error = null;
         return;
@@ -1715,8 +1852,6 @@ export function createReviewPaneState(
       loadedFiles = [];
       showRead(null);
       patchKey = '';
-      openEditors = [];
-      draftBodies.clear();
       collapsedPaths = new SvelteSet<string>();
       if (threadId !== null) setActiveDiffReviewSource(threadId, null);
     } finally {
@@ -1747,14 +1882,6 @@ export function createReviewPaneState(
       commits = loaded.commits ?? [];
       edits = loaded.edits ?? [];
       editTurnLabels = loaded.editTurnLabels ?? new Map();
-      const selectionChanged = (loaded.selectedEdit !== undefined && editSelectionKey(loaded.selectedEdit) !== editSelectionKey(selectedEdit))
-        || (loaded.selectedCommitSHA !== undefined && loaded.selectedCommitSHA !== selectedCommitSHA);
-      if (selectionChanged) {
-        // Another change is under review: its editors go, as selectEdit's
-        // and selectCommit's do.
-        openEditors = [];
-        draftBodies.clear();
-      }
       if (loaded.selectedEdit !== undefined) selectedEdit = loaded.selectedEdit;
       if (loaded.selectedCommitSHA !== undefined) selectedCommitSHA = loaded.selectedCommitSHA;
       clearContextExpansions();
@@ -2022,102 +2149,231 @@ export function createReviewPaneState(
     }
   }
 
-  // A reload can move or remove the lines open new-comment editors name.
-  // Each follows its line's text (relocateAnchor) into the new diff; one
-  // whose line is gone, or now one of several with that text, keeps its
-  // text in an editor marked lineChanged, which cannot be saved.
-  async function relocateOpenEditors(seq: number): Promise<void> {
-    const checked = openEditors.filter((editor) => editor.side !== 'file' && !editor.lineChanged);
-    if (checked.length === 0) return;
-    const shown = files;
-    const moves = new Map<string, CommentAnchor>();
-    try {
-      for (const editor of checked) {
-        const file = shown.find((candidate) => candidate.path === editor.filePath);
-        const probe = editor.selectedText === undefined ? null : { ...editor, selectedText: editor.selectedText };
-        const next = file && probe ? await file.body.whenResident(() => relocateAnchor(file, probe)) : null;
-        if (next !== probe) moves.set(anchorKey(editor), next ?? { ...editor, lineChanged: true });
-      }
-    } catch (err) {
-      // Lost text reloads the diff (showRead), which checks again; until
-      // then createComment refuses a line whose text changed.
-      if (!(err instanceof PatchTextLost)) reportFrontendDiagnostic('review diff: open comment editors could not follow their lines', String(err));
-      return;
-    }
-    if (seq !== loadSeq || disposed || moves.size === 0) return;
-    // Two editors cannot share a line: one that would land where another
-    // open editor is, or goes, keeps its text as changed instead.
-    const taken = new Set(openEditors.filter((editor) => !moves.has(anchorKey(editor))).map(anchorKey));
-    const bodies = new Map<string, string>();
-    const focusKey = pendingEditorFocusKey;
-    const next = openEditors.map((editor) => {
-      const key = anchorKey(editor);
-      let moved = moves.get(key);
-      if (!moved) return editor;
-      if (taken.has(anchorKey(moved))) moved = { ...editor, lineChanged: true };
-      const movedKey = anchorKey(moved);
-      taken.add(movedKey);
-      const body = draftBodies.get(key);
-      if (body !== undefined) bodies.set(movedKey, body);
-      draftBodies.delete(key);
-      if (focusKey === key) pendingEditorFocusKey = movedKey;
-      return moved;
+  // The subject of a diff a load is committing, by the selection the load
+  // resolved (it can replace the one the controls asked for).
+  function committedSubject(loaded: LoadedPatch, prKeyOfLoad: string | null): string {
+    const commit = loaded.selectedCommitSHA !== undefined ? loaded.selectedCommitSHA : selectedCommitSHA;
+    const edit = loaded.selectedEdit !== undefined ? loaded.selectedEdit : selectedEdit;
+    return reviewSubjectKey({
+      scope,
+      baseBranch: scope === 'branch' ? baseBranch : null,
+      commit,
+      edit: scope === 'edits' ? editSelectionKey(edit) : null,
+      pr: scope === 'pr' ? prKeyOfLoad ?? '' : '',
     });
-    for (const [key, body] of bodies) draftBodies.set(key, body);
-    openEditors = next;
   }
 
-  // Whether an anchor's line still holds the text it was opened on, so a
-  // comment saved on it lands on that line.
-  async function anchorHoldsItsLine(anchor: CommentAnchor): Promise<boolean> {
-    if (anchor.lineChanged) return false;
-    if (anchor.side === 'file' || anchor.selectedText === undefined) return true;
-    const file = files.find((candidate) => candidate.path === anchor.filePath);
-    if (!file) return false;
-    const probe = { ...anchor, selectedText: anchor.selectedText };
-    return await file.body.whenResident(() => relocateAnchor(file, probe)) === probe;
+  // Drops the editors of every other subject, with their text.
+  function keepEditorsOf(subject: string): void {
+    const kept = openEditors.filter((editor) => editor.subject === subject);
+    if (kept.length === openEditors.length) return;
+    const live = new Set(kept.map((editor) => editor.id));
+    for (const id of draftBodies.keys()) {
+      if (!live.has(id)) draftBodies.delete(id);
+    }
+    if (pendingEditorFocusId !== null && !live.has(pendingEditorFocusId)) pendingEditorFocusId = null;
+    if (armedEditorId !== null && !live.has(armedEditorId)) armedEditorId = null;
+    openEditors = kept;
   }
 
-  function openDraftEditor(anchor: CommentAnchor): void {
-    const key = anchorKey(anchor);
-    pendingEditorFocusKey = key;
-    if (openEditors.some((editor) => anchorKey(editor) === key)) return;
-    openEditors = [...openEditors, anchor];
+  function replaceEditor(from: EditorRecord, to: EditorRecord): void {
+    if (openEditors.includes(from)) openEditors = openEditors.map((editor) => (editor === from ? to : editor));
   }
 
-  function closeDraftEditor(anchor: CommentAnchor): void {
-    const key = anchorKey(anchor);
-    openEditors = openEditors.filter((editor) => anchorKey(editor) !== key);
-    draftBodies.delete(key);
-    if (pendingEditorFocusKey === key) pendingEditorFocusKey = null;
+  // The editor with no proven line: detached in a file of the diff, gone
+  // when the file is not in it.
+  function detached(editor: EditorRecord, reason: DetachReason, suggested: CommentAnchor | null = null): EditorRecord {
+    return { ...editor, state: reason === 'file-gone' ? 'gone' : 'detached', anchor: null, suggested, reason, shownFile: null, baseFile: null };
   }
 
-  async function createComment(anchor: CommentAnchor, body: string): Promise<void> {
-    const trimmed = body.trim();
-    if (!sourceKey || !trimmed) return;
+  // Places the open editors of `subject` in `next`, the diff a load is
+  // about to commit, while the diff on screen can still be read. Runs only
+  // when such editors exist; never fails the load.
+  async function placeOpenEditors(seq: number, subject: string, next: readonly ReviewFile[]): Promise<Map<EditorRecord, RelocationOutcome> | null> {
+    const editors = openEditors.filter((editor) => editor.subject === subject);
+    if (editors.length === 0) return null;
+    const targets = new Map<EditorRecord, RelocationTarget>();
+    for (const editor of editors) {
+      targets.set(editor, {
+        filePath: editor.filePath,
+        side: editor.side,
+        selectedText: editor.selectedText,
+        guard: editor.guard,
+        source: editor.anchor !== null && editor.baseFile !== null ? { file: editor.baseFile, anchor: editor.anchor } : null,
+        proof: editor.proof,
+        line: editor.line,
+      });
+    }
     try {
-      if (!await anchorHoldsItsLine(anchor)) throw new Error(REVIEW_LINE_CHANGED);
+      return await relocateEditors(targets, next, new RelocationBudget(relocationBudget.rows, relocationBudget.ms), () => seq !== loadSeq || disposed);
+    } catch (err) {
+      if (err instanceof RelocationCancelled) return null;
+      if (!(err instanceof PatchTextLost)) reportFrontendDiagnostic('review diff: open comment editors could not be placed', String(err));
+      return new Map(editors.map((editor) => [editor, { filePath: editor.filePath, anchor: null, proof: editor.proof, reason: 'line-changed', suggested: null }]));
+    }
+  }
+
+  // Applies placements in the commit step, which also disarms a Move. An
+  // editor of the subject with no placement was opened on the previous
+  // diff while they were worked out: nothing proves its line in this one.
+  function applyPlacements(subject: string, placements: Map<EditorRecord, RelocationOutcome> | null): void {
+    armedEditorId = null;
+    keepEditorsOf(subject);
+    if (openEditors.length === 0) return;
+    openEditors = openEditors.map((editor) => {
+      const outcome = placements?.get(editor);
+      if (!outcome) {
+        if (editor.state !== 'placed') return editor;
+        return detached(editor, files.some((file) => file.path === editor.filePath) ? 'line-changed' : 'file-gone');
+      }
+      const moved = { ...editor, filePath: outcome.filePath, proof: outcome.proof };
+      const shownFile = outcome.anchor ? files.find((file) => file.path === outcome.filePath) ?? null : null;
+      const baseFile = outcome.anchor ? loadedFiles.find((file) => file.path === outcome.filePath) ?? null : null;
+      if (!outcome.anchor || !shownFile || !baseFile) return detached(moved, outcome.reason ?? 'line-changed', outcome.suggested);
+      return { ...moved, state: 'placed', anchor: outcome.anchor, suggested: null, reason: null, line: anchorSideLine(outcome.anchor), shownFile, baseFile };
+    });
+  }
+
+  // A new editor on `anchor` of the diff on screen, or null when that diff
+  // is not the subject the controls name or has no such line.
+  function newEditor(anchor: CommentAnchor, id: string = randomId()): EditorRecord | null {
+    const bundle = shown;
+    if (bundle === null || bundle.subject !== requestedSubject) return null;
+    const shownFile = files.find((file) => file.path === anchor.filePath);
+    const baseFile = loadedFiles.find((file) => file.path === anchor.filePath);
+    if (!shownFile || !baseFile) return null;
+    if (anchor.side !== 'file' && anchorRow(shownFile, anchor) < 0) return null;
+    const quote = anchor.selectedText ?? '';
+    const quoteTooLong = utf8Bytes(quote) > EDITOR_QUOTE_MAX_BYTES;
+    return {
+      id,
+      subject: bundle.subject,
+      filePath: anchor.filePath,
+      side: anchor.side,
+      state: 'placed',
+      anchor: { ...anchor, selectedText: quoteTooLong ? '' : quote },
+      suggested: null,
+      line: anchorSideLine(anchor),
+      reason: null,
+      selectedText: quoteTooLong ? '' : quote,
+      quoteTooLong,
+      guard: anchor.side === 'file' ? null : lineGuard(quote),
+      proof: { kind: 'none' },
+      shownFile,
+      baseFile,
+    };
+  }
+
+  function placedEditorOn(anchor: CommentAnchor): EditorRecord | undefined {
+    const key = anchorKey(anchor);
+    return openEditors.find((editor) => editor.subject === shown?.subject && editor.anchor !== null && anchorKey(editor.anchor) === key);
+  }
+
+  // Puts `editor` on `anchor` with its id and text, as if opened there now.
+  function attachEditor(editor: EditorRecord, anchor: CommentAnchor): boolean {
+    const placed = newEditor(anchor, editor.id);
+    if (!placed) return false;
+    replaceEditor(editor, placed);
+    if (armedEditorId === editor.id) armedEditorId = null;
+    return true;
+  }
+
+  function openDraftEditor(anchor: CommentAnchor): string | null {
+    const armed = armedEditorId === null ? undefined : openEditors.find((editor) => editor.id === armedEditorId);
+    if (armed) {
+      if (!attachEditor(armed, anchor)) return null;
+      pendingEditorFocusId = armed.id;
+      return armed.id;
+    }
+    const existing = placedEditorOn(anchor);
+    if (existing && shown?.subject === requestedSubject) {
+      pendingEditorFocusId = existing.id;
+      return existing.id;
+    }
+    const editor = newEditor(anchor);
+    if (!editor) return null;
+    pendingEditorFocusId = editor.id;
+    openEditors = [...openEditors, editor];
+    return editor.id;
+  }
+
+  function useSuggestedLine(editorId: string): boolean {
+    const editor = openEditors.find((candidate) => candidate.id === editorId);
+    if (!editor || editor.state !== 'detached' || !editor.suggested) return false;
+    return attachEditor(editor, editor.suggested);
+  }
+
+  function moveEditor(editorId: string): void {
+    const editor = openEditors.find((candidate) => candidate.id === editorId);
+    if (editor?.state === 'detached' && editor.subject === shown?.subject) armedEditorId = editorId;
+  }
+
+  function cancelEditorMove(): void {
+    armedEditorId = null;
+  }
+
+  function closeDraftEditor(editorId: string): void {
+    openEditors = openEditors.filter((editor) => editor.id !== editorId);
+    draftBodies.delete(editorId);
+    if (pendingEditorFocusId === editorId) pendingEditorFocusId = null;
+    if (armedEditorId === editorId) armedEditorId = null;
+  }
+
+  // The line `editor` saves on, checked against the diff on screen with
+  // no await: the editor belongs to it, its line is proven in it, and the
+  // row is there. A file shown since through an expansion of the same
+  // loaded file is checked again; anything else detaches the editor.
+  function saveableAnchor(editor: EditorRecord | null, bundle: ShownDiff): CommentAnchor {
+    if (!editor) throw new ReviewCommentRefused('detached', REVIEW_EDITOR_CLOSED);
+    if (editor.subject !== bundle.subject) throw new ReviewCommentRefused('subject', REVIEW_EDITOR_OTHER_DIFF);
+    if (editor.quoteTooLong) throw new ReviewCommentRefused('too-long', REVIEW_QUOTE_TOO_LONG);
+    if (editor.state !== 'placed' || editor.anchor === null) {
+      throw new ReviewCommentRefused('detached', editor.state === 'gone' ? REVIEW_EDITOR_GONE : REVIEW_EDITOR_DETACHED);
+    }
+    const file = files.find((candidate) => candidate.path === editor.filePath);
+    if (!file) {
+      replaceEditor(editor, detached(editor, 'file-gone'));
+      throw new ReviewCommentRefused('detached', REVIEW_EDITOR_GONE);
+    }
+    if (editor.side === 'file') return editor.anchor;
+    const sameLoad = loadedFiles.find((candidate) => candidate.path === editor.filePath) === editor.baseFile;
+    if ((file !== editor.shownFile && !sameLoad) || anchorRow(file, editor.anchor) < 0) {
+      replaceEditor(editor, detached(editor, 'line-changed'));
+      throw new ReviewCommentRefused('stale', REVIEW_EDITOR_DETACHED);
+    }
+    if (file !== editor.shownFile) replaceEditor(editor, { ...editor, shownFile: file });
+    return editor.anchor;
+  }
+
+  async function createComment(editorId: string, body: string): Promise<void> {
+    const trimmed = body.trim();
+    const bundle = shown;
+    if (!bundle?.sourceKey || !trimmed) return;
+    const editor = openEditors.find((candidate) => candidate.id === editorId) ?? null;
+    try {
+      const anchor = saveableAnchor(editor, bundle);
       const input = {
-        scope,
-        sourceKey,
-        commitSha: selectedCommitSHA ?? (scope === 'pr' ? loadedPRHeadSHA : undefined),
+        scope: bundle.scope,
+        sourceKey: bundle.sourceKey,
+        commitSha: bundle.commitSha,
         filePath: anchor.filePath,
         oldLine: anchor.oldLine,
         newLine: anchor.newLine,
         side: anchor.side,
-        selectedText: anchor.selectedText ?? '',
+        selectedText: editor?.selectedText ?? '',
         body: trimmed,
       };
       if (pinnedDrafts !== null) {
         if (!canDraftComments) throw new Error('Comment on the whole pull request: pick All commits.');
         await createPRDiffReviewComment(pinnedDrafts, input);
-        closeDraftEditor(anchor);
+        closeDraftEditor(editorId);
         error = null;
         return;
       }
-      await createDiffReviewComment(commentThreadId(), input);
-      closeDraftEditor(anchor);
-      setActiveDiffReviewSource(commentThreadId(), scope, sourceKey);
+      const thread = commentThreadId();
+      await createDiffReviewComment(thread, input);
+      closeDraftEditor(editorId);
+      setActiveDiffReviewSource(thread, bundle.scope, bundle.sourceKey);
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -2940,7 +3196,8 @@ export function createReviewPaneState(
     get files() { return files; },
     get comments() { return comments; },
     get drafts() { return drafts; },
-    get openEditors() { return openEditors; },
+    get openEditors() { return shownEditors; },
+    get armedEditorId() { return armedEditorId; },
     get commits() { return commits; },
     get selectedCommitSHA() { return selectedCommitSHA; },
     get edits() { return edits; },
@@ -3031,15 +3288,18 @@ export function createReviewPaneState(
     },
     openDraftEditor,
     closeDraftEditor,
-    draftBodyFor(anchor: CommentAnchor): string {
-      return draftBodies.get(anchorKey(anchor)) ?? '';
+    useSuggestedLine,
+    moveEditor,
+    cancelEditorMove,
+    draftBodyFor(editorId: string): string {
+      return draftBodies.get(editorId) ?? '';
     },
-    setDraftBody(anchor: CommentAnchor, body: string): void {
-      draftBodies.set(anchorKey(anchor), body);
+    setDraftBody(editorId: string, body: string): void {
+      if (openEditors.some((editor) => editor.id === editorId)) draftBodies.set(editorId, body);
     },
-    consumeDraftEditorFocus(anchor: CommentAnchor): boolean {
-      if (pendingEditorFocusKey !== anchorKey(anchor)) return false;
-      pendingEditorFocusKey = null;
+    consumeDraftEditorFocus(editorId: string): boolean {
+      if (pendingEditorFocusId !== editorId) return false;
+      pendingEditorFocusId = null;
       return true;
     },
     createComment,

@@ -373,7 +373,9 @@ export class EditFileMerge {
   }
 
   private merge(group: EditFileGroup): void {
-    group.file = reviewFileFromPatchFile(mergePatchFilesByPath(group.sections.map(patchFileFromReviewFile))[0]);
+    const file = reviewFileFromPatchFile(mergePatchFilesByPath(group.sections.map(patchFileFromReviewFile))[0]);
+    file.mergedSections = group.sections.length;
+    group.file = file;
     this.pending.delete(group);
   }
 }

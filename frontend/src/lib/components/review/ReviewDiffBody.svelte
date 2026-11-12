@@ -33,6 +33,7 @@
     REVIEW_OVERVIEW_ROW_KEY,
     reviewRowEstimate,
     type CommentAnchor,
+    type EditorRow,
     type ReviewLeadRow,
     type ReviewRow,
   } from '../../utils/reviewRows';
@@ -75,12 +76,12 @@
     collapsedPaths: ReadonlySet<string>;
     onToggleCollapsed: (path: string) => void;
     drafts?: readonly DiffReviewComment[];
-    openEditors?: readonly CommentAnchor[];
+    openEditors?: readonly EditorRow[];
     prThreads?: readonly ReviewThread[];
     expandedPRThreadIds?: ReadonlySet<string>;
     /** Renders draft-editor rows. Required whenever `openEditors` is
      * non-empty; absent, those rows render nothing. */
-    draftEditor?: Snippet<[anchor: CommentAnchor]>;
+    draftEditor?: Snippet<[editor: EditorRow]>;
     /** Renders comment-thread rows. Required whenever `drafts` is
      * non-empty; absent, those rows render nothing. `pulse` is the
      * row-key jump that landed on the row (utils/reviewJumpPulse), 0
@@ -158,6 +159,15 @@
     buildReviewRows({ files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds, overview: overview === undefined ? undefined : overviewLead }),
   );
   const builtEstimate = $derived(reviewRowEstimate(built, wordWrap));
+  // The rows detached editors suggest, by file.
+  const targetsByPath = $derived.by(() => {
+    const out = new Map<string, CommentAnchor[]>();
+    for (const editor of openEditors) {
+      if (editor.state !== 'detached' || !editor.suggested) continue;
+      out.set(editor.filePath, [...(out.get(editor.filePath) ?? []), editor.suggested]);
+    }
+    return out;
+  });
   // The rows of the blocks this surface renders, for the files it shows.
   const blockRows = new BlockRowsCache();
   $effect.pre(() => {
@@ -322,6 +332,36 @@
   let prevPrThreads: readonly ReviewThread[] = prThreads;
   // svelte-ignore state_referenced_locally
   let prevScrollKey = scrollKey;
+  // The rows on screen, and the focused comment editor among them with its
+  // offset from the viewport top, read before a rebuild reaches the list:
+  // a reload keeps that editor where it was rather than the line above.
+  let focusedEditor: { id: string; top: number } | null = null;
+  function editorTop(id: string): number | null {
+    const el = scrollEl;
+    const node = el?.querySelector(`[data-review-editor-id="${CSS.escape(id)}"]`);
+    return el && node ? node.getBoundingClientRect().top - el.getBoundingClientRect().top : null;
+  }
+  $effect.pre(() => {
+    void built;
+    untrack(() => {
+      focusedEditor = null;
+      const el = scrollEl;
+      const active = typeof document === 'undefined' ? null : document.activeElement;
+      const node = active instanceof Element && el?.contains(active) ? active.closest('[data-review-editor-id]') : null;
+      const id = node?.getAttribute('data-review-editor-id');
+      const top = id ? editorTop(id) : null;
+      if (id && top !== null) focusedEditor = { id, top };
+    });
+  });
+  // Scrolls the focused editor back to where it was; false when it is not
+  // rendered now.
+  function restoreFocusedEditor(keep: { id: string; top: number }): boolean {
+    const el = scrollEl;
+    const top = editorTop(keep.id);
+    if (!el || top === null) return false;
+    if (top !== keep.top) scroll.applyScrollTarget(Math.max(0, el.scrollTop + top - keep.top));
+    return true;
+  }
   $effect(() => {
     void built;
     untrack(() => {
@@ -330,7 +370,11 @@
       prevFiles = files;
       prevPrThreads = prThreads;
       prevScrollKey = scrollKey;
-      if (contentChanged && !keyChanged && readingAnchor) restoreAnchor(readingAnchor);
+      const keep = focusedEditor;
+      focusedEditor = null;
+      if (contentChanged && !keyChanged && keep && restoreFocusedEditor(keep)) {
+        // The focused editor holds its place.
+      } else if (contentChanged && !keyChanged && readingAnchor) restoreAnchor(readingAnchor);
       const offset = scrollEl?.scrollTop ?? 0;
       updateSticky(offset);
       captureAnchor(offset);
@@ -493,6 +537,7 @@
           <ReviewDiffRow
             {row}
             file={files[row.fileIndex]}
+            targets={row.kind === 'line-block' ? targetsByPath.get(files[row.fileIndex]?.path ?? '') : undefined}
             {blockRows}
             collapsed={collapsedPaths.has(files[row.fileIndex]?.path ?? '')}
             {onToggleCollapsed}

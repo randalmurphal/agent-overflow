@@ -10,6 +10,7 @@ import { projectTurnStarted } from './threadStatuses.svelte';
 import { CI_SECTION_INLINE_MAX_BYTES } from './ciSubject.svelte';
 import {
   __resetReviewPaneStateForTest,
+  __setRelocationBudgetForTest,
   disposeReviewStateForPane,
   openReviewCompanion,
   reviewSubjectForPane,
@@ -566,183 +567,6 @@ describe('reviewPane store', () => {
       sourceKey,
     });
     expect(state.comments.map((comment) => comment.id)).toEqual(['comment-1']);
-  });
-
-  it('createComment success closes the draft editor', async () => {
-    const patch = patchFor('src/app.ts', 1);
-    const sourceKey = diffSourceKey(patch);
-    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
-    setBindingMock('CreateDiffReviewComment', async () => draft({ sourceKey, body: 'Looks good.' }));
-    setBindingMock('ListDiffReviewComments', async () => [draft({ sourceKey, body: 'Looks good.' })]);
-
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
-    state.openDraftEditor(anchor);
-    expect(state.openEditors).toHaveLength(1);
-
-    await state.createComment(anchor, 'Looks good.');
-
-    expect(state.openEditors).toHaveLength(0);
-    expect(state.drafts.map((comment) => comment.body)).toEqual(['Looks good.']);
-  });
-
-  it('createComment failure keeps the editor open and sets error', async () => {
-    const patch = patchFor('src/app.ts', 1);
-    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
-    setBindingMock('CreateDiffReviewComment', async () => {
-      throw new Error('create failed');
-    });
-
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
-    state.openDraftEditor(anchor);
-
-    await expect(state.createComment(anchor, 'Body')).rejects.toThrow('create failed');
-
-    expect(state.openEditors).toHaveLength(1);
-    expect(state.error).toBe('create failed');
-  });
-
-  it('keeps draft-editor text in the store and focuses exactly once per open', async () => {
-    const patch = patchFor('src/app.ts', 1);
-    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
-
-    state.openDraftEditor(anchor);
-    state.setDraftBody(anchor, 'half-typed comment');
-    // The row component reads back through the store, so a virtualizer
-    // unmount/remount cycle (which drops all row-local state) keeps the
-    // user's text.
-    expect(state.draftBodyFor(anchor)).toBe('half-typed comment');
-
-    // Focus is consumed by the first mount only; a remount at the render
-    // buffer's edge must not steal focus.
-    expect(state.consumeDraftEditorFocus(anchor)).toBe(true);
-    expect(state.consumeDraftEditorFocus(anchor)).toBe(false);
-
-    state.closeDraftEditor(anchor);
-    state.openDraftEditor(anchor);
-    expect(state.draftBodyFor(anchor)).toBe('');
-    expect(state.consumeDraftEditorFocus(anchor)).toBe(true);
-
-    state.setDraftBody(anchor, 'stale text');
-    await state.setScope('branch');
-    expect(state.draftBodyFor(anchor)).toBe('');
-  });
-
-  describe('an open new-comment editor across a refresh', () => {
-    function fileOf(lines: readonly string[]): string {
-      return [
-        'diff --git a/src/app.ts b/src/app.ts',
-        'new file mode 100644',
-        'index 0000000..1111111',
-        '--- /dev/null',
-        '+++ b/src/app.ts',
-        `@@ -0,0 +1,${lines.length} @@`,
-        ...lines.map((line) => `+${line}`),
-      ].join('\n');
-    }
-    const beta = { filePath: 'src/app.ts', side: 'new' as const, newLine: 2, selectedText: 'beta' };
-
-    // The pane shows alpha/beta/gamma with an editor open on beta; then
-    // the agent rewrites the file and the pane reloads.
-    async function editorThenRefresh(after: readonly string[]) {
-      let lines: readonly string[] = ['alpha', 'beta', 'gamma'];
-      setReviewDiffMock('OpenWorkspaceDiff', async () => fileOf(lines));
-      const create = setBindingMock('CreateDiffReviewComment', async (_thread: string, input: { sourceKey: string; newLine?: number }) =>
-        draft({ sourceKey: input.sourceKey, newLine: input.newLine, body: 'Guard this.' }));
-      const state = reviewStateForPane('pane-1', subjectFor());
-      await waitLoaded(state);
-      state.openDraftEditor(beta);
-      state.setDraftBody(beta, 'Guard this.');
-      lines = after;
-      await state.reload();
-      await waitLoaded(state);
-      return { state, create };
-    }
-
-    it('moves with its line when the agent adds lines above it', async () => {
-      const { state, create } = await editorThenRefresh(['inserted', 'alpha', 'beta', 'gamma']);
-
-      await vi.waitFor(() => expect(state.openEditors).toEqual([{ ...beta, newLine: 3 }]));
-      const editor = state.openEditors[0];
-      expect(state.draftBodyFor(editor)).toBe('Guard this.');
-      await state.createComment(editor, state.draftBodyFor(editor));
-      expect(create.mock.calls[0]?.[1]).toMatchObject({ newLine: 3, selectedText: 'beta', body: 'Guard this.' });
-    });
-
-    it('keeps its text but cannot save when its line is gone', async () => {
-      const { state, create } = await editorThenRefresh(['alpha', 'gamma']);
-
-      await vi.waitFor(() => expect(state.openEditors[0]?.lineChanged).toBe(true));
-      const editor = state.openEditors[0];
-      expect(state.draftBodyFor(editor)).toBe('Guard this.');
-      await expect(state.createComment(editor, state.draftBodyFor(editor))).rejects.toThrow('line');
-      expect(create).not.toHaveBeenCalled();
-    });
-
-    it('keeps its text but cannot save when its line is no longer one line', async () => {
-      const { state, create } = await editorThenRefresh(['beta', 'alpha', 'gamma', 'beta']);
-
-      await vi.waitFor(() => expect(state.openEditors[0]?.lineChanged).toBe(true));
-      expect(state.draftBodyFor(state.openEditors[0])).toBe('Guard this.');
-      await expect(state.createComment(state.openEditors[0], 'Guard this.')).rejects.toThrow('line');
-      expect(create).not.toHaveBeenCalled();
-    });
-
-    it('stays where it is when its line did not change', async () => {
-      const { state, create } = await editorThenRefresh(['alpha', 'beta', 'gamma', 'delta']);
-
-      expect(state.openEditors).toEqual([beta]);
-      await state.createComment(beta, 'Guard this.');
-      expect(create.mock.calls[0]?.[1]).toMatchObject({ newLine: 2 });
-    });
-
-    it('never saves an anchor whose line no longer holds its text', async () => {
-      const { state, create } = await editorThenRefresh(['alpha', 'gamma', 'beta']);
-
-      // The row's old anchor, saved before (or without) the editor moving.
-      await expect(state.createComment(beta, 'Guard this.')).rejects.toThrow('line');
-      expect(create).not.toHaveBeenCalled();
-    });
-
-    it('moves two editors on neighbouring lines together, each with its own text', async () => {
-      let lines: readonly string[] = ['alpha', 'beta', 'gamma'];
-      setReviewDiffMock('OpenWorkspaceDiff', async () => fileOf(lines));
-      const state = reviewStateForPane('pane-1', subjectFor());
-      await waitLoaded(state);
-      const gamma = { filePath: 'src/app.ts', side: 'new' as const, newLine: 3, selectedText: 'gamma' };
-      state.openDraftEditor(beta);
-      state.setDraftBody(beta, 'On beta.');
-      state.openDraftEditor(gamma);
-      state.setDraftBody(gamma, 'On gamma.');
-
-      lines = ['inserted', 'alpha', 'beta', 'gamma'];
-      await state.reload();
-      await waitLoaded(state);
-
-      await vi.waitFor(() => expect(state.openEditors).toEqual([{ ...beta, newLine: 3 }, { ...gamma, newLine: 4 }]));
-      expect(state.draftBodyFor(state.openEditors[0])).toBe('On beta.');
-      expect(state.draftBodyFor(state.openEditors[1])).toBe('On gamma.');
-    });
-
-    it('keeps its text when the review re-enters the scope it is on', async () => {
-      setReviewDiffMock('OpenWorkspaceDiff', async () => fileOf(['alpha', 'beta', 'gamma']));
-      const state = reviewStateForPane('pane-1', subjectFor());
-      await waitLoaded(state);
-      state.openDraftEditor(beta);
-      state.setDraftBody(beta, 'Guard this.');
-
-      await state.setScope('workspace');
-      await waitLoaded(state);
-
-      expect(state.openEditors).toEqual([beta]);
-      expect(state.draftBodyFor(beta)).toBe('Guard this.');
-    });
   });
 
   it('sendComments no-ops while a turn is active', async () => {
@@ -3471,20 +3295,20 @@ describe('reviewPane store — edits scope', () => {
     const state = await openReviewCompanion('pane-1', subjectFor(), { editItemId: 'tool:2a' });
     await waitLoaded(state!);
     const anchor = { filePath: 'x.go', side: 'new' as const, newLine: 6, selectedText: 'new' };
-    state!.openDraftEditor(anchor);
-    state!.setDraftBody(anchor, 'Guard this.');
+    const id = state!.openDraftEditor(anchor)!;
+    state!.setDraftBody(id, 'Guard this.');
 
     expect(await openReviewCompanion('pane-1', subjectFor(), { editItemId: 'tool:2a' })).toBe(state);
     await waitLoaded(state!);
     expect(state!.selectedEditKey).toBe('item:tool:2a');
-    expect(state!.openEditors).toEqual([anchor]);
-    expect(state!.draftBodyFor(anchor)).toBe('Guard this.');
+    expect(state!.openEditors.map((editor) => [editor.id, editor.anchor])).toEqual([[id, anchor]]);
+    expect(state!.draftBodyFor(id)).toBe('Guard this.');
 
     await openReviewCompanion('pane-1', subjectFor(), { editItemId: 'tool:1' });
     await waitLoaded(state!);
     expect(state!.selectedEditKey).toBe('item:tool:1');
     expect(state!.openEditors).toEqual([]);
-    expect(state!.draftBodyFor(anchor)).toBe('');
+    expect(state!.draftBodyFor(id)).toBe('');
   });
 
   it('selection changes reuse the loaded list (fast path)', async () => {
@@ -4868,5 +4692,592 @@ describe('reviewPane store — the conflict view\'s permit follows the mounted p
 
     await state.openConflictView();
     expect(heads(conflicts)).toEqual([['sha-a', true], ['sha-b', true]]);
+  });
+});
+
+describe('reviewPane store — open new-comment editors', () => {
+  // A modified file of the workspace diff: `index` names its blob ids.
+  function changed(index: string, hunk: string, lines: readonly string[], path = 'src/app.ts'): string {
+    return [
+      `diff --git a/${path} b/${path}`,
+      `index ${index} 100644`,
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      hunk,
+      ...lines,
+    ].join('\n');
+  }
+
+  // Comments as the backend holds them: created from the input, listed
+  // back by scope and source.
+  function commentsBackend() {
+    const rows: DiffReviewComment[] = [];
+    const create = setBindingMock('CreateDiffReviewComment', async (threadId: string, input: Partial<DiffReviewComment> & { sourceKey: string; scope: DiffReviewComment['scope'] }) => {
+      const row = { ...draft({ ...input, id: `c-${rows.length + 1}`, threadId }), oldLine: input.oldLine, newLine: input.newLine };
+      rows.push(row);
+      return row;
+    });
+    setBindingMock('ListDiffReviewComments', async (_thread: string, scope: string, sourceKey: string) =>
+      rows.filter((row) => row.scope === scope && row.sourceKey === sourceKey).map((row) => ({ ...row })));
+    return { rows, create };
+  }
+
+  async function workspaceWith(patch: () => string) {
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch());
+    const backend = commentsBackend();
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    return { state, ...backend };
+  }
+
+  const refused = (reason: string) => expect.objectContaining({ name: 'ReviewCommentRefused', reason });
+
+  it('keys an editor\'s text, focus and save by its id', async () => {
+    const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 2));
+    const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
+    const id = state.openDraftEditor(anchor)!;
+    expect(id).toBeTruthy();
+    expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor, suggested: null, armed: false }]);
+    state.setDraftBody(id, 'half-typed');
+    expect(state.draftBodyFor(id)).toBe('half-typed');
+    expect(state.consumeDraftEditorFocus(id)).toBe(true);
+    expect(state.consumeDraftEditorFocus(id)).toBe(false);
+    // The line already has an editor: it is focused, not doubled.
+    expect(state.openDraftEditor(anchor)).toBe(id);
+    expect(state.consumeDraftEditorFocus(id)).toBe(true);
+    expect(state.openEditors).toHaveLength(1);
+
+    await state.createComment(id, 'Looks good.');
+    expect(create.mock.calls[0]?.[1]).toMatchObject({ scope: 'workspace', newLine: 1, side: 'new', selectedText: 'line 1', body: 'Looks good.' });
+    expect(state.openEditors).toEqual([]);
+    expect(state.draftBodyFor(id)).toBe('');
+    expect(state.drafts.map((comment) => comment.body)).toEqual(['Looks good.']);
+
+    const next = state.openDraftEditor(anchor)!;
+    state.setDraftBody(next, 'other subject');
+    await state.setScope('branch');
+    expect(state.draftBodyFor(next)).toBe('');
+  });
+
+  it('keeps a failed save\'s editor open with the error', async () => {
+    const { state } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    setBindingMock('CreateDiffReviewComment', async () => {
+      throw new Error('create failed');
+    });
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
+    await expect(state.createComment(id, 'Body')).rejects.toThrow('create failed');
+    expect(state.openEditors.map((editor) => editor.id)).toEqual([id]);
+    expect(state.error).toBe('create failed');
+  });
+
+  it('opens no editor on a line the diff does not have, and refuses a quote longer than a comment may hold', async () => {
+    const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    expect(state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 9, selectedText: 'x' })).toBeNull();
+    expect(state.openDraftEditor({ filePath: 'src/gone.ts', side: 'file' })).toBeNull();
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'é'.repeat(5000) })!;
+    await expect(state.createComment(id, 'Body')).rejects.toEqual(refused('too-long'));
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('saves a file comment while its file is in the diff', async () => {
+    const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'file' })!;
+    await state.createComment(id, 'About the whole file.');
+    expect(create.mock.calls[0]?.[1]).toMatchObject({ filePath: 'src/app.ts', side: 'file', selectedText: '', body: 'About the whole file.' });
+  });
+
+  describe('across a reload', () => {
+    // The old head adds a primary and a fallback handler between two
+    // unchanged base lines.
+    const HEAD_A = changed('aaaaaaa..bbbbbbb', '@@ -1,2 +1,8 @@', [' top', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom']);
+    const report = { filePath: 'src/app.ts', side: 'new' as const, newLine: 3, selectedText: '  report();' };
+
+    async function editorThen(after: string, anchor = report) {
+      let patch = HEAD_A;
+      const loaded = await workspaceWith(() => patch);
+      const id = loaded.state.openDraftEditor(anchor)!;
+      loaded.state.setDraftBody(id, 'Guard this.');
+      patch = after;
+      await loaded.state.reload();
+      await waitLoaded(loaded.state);
+      return { ...loaded, id };
+    }
+
+    it('does not follow the primary handler\'s text onto the fallback handler', async () => {
+      // The primary block goes and the fallback now reports: the base is
+      // unchanged and `report();` is on one row each time.
+      const { state, create, id } = await editorThen(changed('aaaaaaa..ccccccc', '@@ -1,2 +1,5 @@', [' top', '+if (fallback) {', '+  report();', '+}', ' bottom']));
+      expect(state.openEditors).toMatchObject([{ id, filePath: 'src/app.ts', side: 'new', state: 'detached', anchor: null }]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+      await expect(state.createComment(id, 'Guard this.')).rejects.toEqual(refused('detached'));
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('detaches an added line\'s editor when lines are added above it', async () => {
+      const { state, create, id } = await editorThen(changed('aaaaaaa..ddddddd', '@@ -1,2 +1,9 @@', [' top', '+inserted', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom']));
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'detached', anchor: null });
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+      await expect(state.createComment(id, 'x')).rejects.toEqual(refused('detached'));
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('keeps an editor on its line when its file did not change', async () => {
+      const other = changed('1111111..2222222', '@@ -1,1 +1,1 @@', ['-x', '+y'], 'src/other.ts');
+      const { state, create, id } = await editorThen(`${HEAD_A}\n${other}`);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false }]);
+      await state.createComment(id, 'Guard this.');
+      expect(create.mock.calls[0]?.[1]).toMatchObject({ newLine: 3, selectedText: '  report();' });
+    });
+
+    it('follows an unchanged line by its base version; its split halves keep their sides', async () => {
+      const before = changed('1111111..2222222', '@@ -1,3 +1,3 @@', [' keep 1', '-old 2', '+new 2', ' keep 3']);
+      const after = changed('1111111..3333333', '@@ -1,3 +1,4 @@', [' keep 1', '-old 2', '+new 2', '+more', ' keep 3']);
+      let patch = before;
+      const { state, create } = await workspaceWith(() => patch);
+      const left = state.openDraftEditor({ filePath: 'src/app.ts', side: 'old', oldLine: 3, selectedText: ' keep 3' })!;
+      const right = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 3, selectedText: ' keep 3' })!;
+      state.setDraftBody(left, 'Left.');
+      state.setDraftBody(right, 'Right.');
+      patch = after;
+      await state.reload();
+      await waitLoaded(state);
+
+      expect(state.openEditors.map((editor) => [editor.id, editor.anchor])).toEqual([
+        [left, { filePath: 'src/app.ts', side: 'old', oldLine: 3, selectedText: ' keep 3' }],
+        [right, { filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: ' keep 3' }],
+      ]);
+      expect([state.draftBodyFor(left), state.draftBodyFor(right)]).toEqual(['Left.', 'Right.']);
+      await state.createComment(left, 'Left.');
+      await state.createComment(right, 'Right.');
+      expect((create.mock.calls as [string, DiffReviewComment][]).map(([, input]) => [input.side, input.oldLine, input.newLine])).toEqual([['old', 3, undefined], ['new', undefined, 4]]);
+    });
+
+    it('keeps its editors and their lines across the whitespace toggle', async () => {
+      const { state, id } = await editorThen(HEAD_A);
+      await state.setIgnoreWhitespace(true);
+      await waitLoaded(state);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false }]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+    });
+
+    it('keeps the editor of a reverted file to copy from, and places it again when the file comes back', async () => {
+      const { state, id } = await editorThen('');
+      expect(state.files).toEqual([]);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'gone', anchor: null, suggested: null, armed: false }]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+
+      setReviewDiffMock('OpenWorkspaceDiff', async () => HEAD_A);
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false }]);
+    });
+
+    it('re-entering the scope on screen keeps the editor and its text', async () => {
+      const { state, id } = await editorThen(HEAD_A);
+      await state.setScope('workspace');
+      await waitLoaded(state);
+      expect(state.openEditors.map((editor) => editor.id)).toEqual([id]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+    });
+
+    it('detaches what the relocation budget does not reach and still shows the diff', async () => {
+      const restore = __setRelocationBudgetForTest(1);
+      try {
+        const other = changed('1111111..2222222', '@@ -1,1 +1,1 @@', ['-x', '+y'], 'src/other.ts');
+        const { state, id } = await editorThen(`${HEAD_A}\n${other}`);
+        expect(state.files.map((file) => file.path)).toEqual(['src/app.ts', 'src/other.ts']);
+        expect(state.openEditors).toMatchObject([{ id, filePath: 'src/app.ts', side: 'new', state: 'detached', anchor: null }]);
+        expect(state.error).toBeNull();
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  describe('detached by a change to their file', () => {
+    const HEAD = changed('aaaaaaa..bbbbbbb', '@@ -1,2 +1,8 @@', [' top', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom']);
+    // One line inserted above: `report();` is one row lower.
+    const MOVED = changed('aaaaaaa..ddddddd', '@@ -1,2 +1,9 @@', [' top', '+inserted', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom']);
+    const OTHER = changed('1111111..2222222', '@@ -1,1 +1,2 @@', [' one', '+two'], 'src/other.ts');
+    const report = { filePath: 'src/app.ts', side: 'new' as const, newLine: 3, selectedText: '  report();' };
+
+    async function detachedAfter(next: string) {
+      let patch = `${HEAD}\n${OTHER}`;
+      const loaded = await workspaceWith(() => patch);
+      const id = loaded.state.openDraftEditor(report)!;
+      loaded.state.setDraftBody(id, 'Guard this.');
+      patch = next;
+      await loaded.state.reload();
+      await waitLoaded(loaded.state);
+      return { ...loaded, id, setPatch: (text: string) => { patch = text; } };
+    }
+
+    it('shows after the row its text is on, which saves nothing until the reader takes it', async () => {
+      const { state, create, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'detached', anchor: null, suggested: { filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: '  report();' }, armed: false }]);
+      await expect(state.createComment(id, 'Guard this.')).rejects.toEqual(refused('detached'));
+      expect(create).not.toHaveBeenCalled();
+
+      expect(state.useSuggestedLine(id)).toBe(true);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: '  report();' }, suggested: null, armed: false }]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+      await state.createComment(id, 'Guard this.');
+      expect(create.mock.calls[0]?.[1]).toMatchObject({ newLine: 4, side: 'new', selectedText: '  report();', body: 'Guard this.' });
+    });
+
+    it('moves to the line the reader picks next, in its file or another, with its text', async () => {
+      const { state, create, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      state.moveEditor(id);
+      expect(state.armedEditorId).toBe(id);
+      expect(state.openEditors[0]?.armed).toBe(true);
+      expect(state.openDraftEditor({ filePath: 'src/other.ts', side: 'new', newLine: 2, selectedText: 'two' })).toBe(id);
+      expect(state.armedEditorId).toBeNull();
+      expect(state.consumeDraftEditorFocus(id)).toBe(true);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/other.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/other.ts', side: 'new', newLine: 2, selectedText: 'two' }, suggested: null, armed: false }]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+      await state.createComment(id, 'Guard this.');
+      expect(create.mock.calls[0]?.[1]).toMatchObject({ filePath: 'src/other.ts', newLine: 2, selectedText: 'two' });
+    });
+
+    it('moves within its file; a line with no row leaves it armed', async () => {
+      const { state, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      state.moveEditor(id);
+      expect(state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 99, selectedText: 'x' })).toBeNull();
+      expect(state.armedEditorId).toBe(id);
+      expect(state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 7, selectedText: '  retry();' })).toBe(id);
+      expect(state.openEditors[0]).toMatchObject({ state: 'placed', anchor: { newLine: 7 } });
+      expect(state.openEditors).toHaveLength(1);
+    });
+
+    it('arms one editor at a time, and a cancel, a reload, a subject change or a discard disarms', async () => {
+      const { state, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      // A second detached editor, by the same change to its file.
+      state.moveEditor(id);
+      state.cancelEditorMove();
+      expect(state.armedEditorId).toBeNull();
+      state.moveEditor(id);
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.armedEditorId).toBeNull();
+      state.moveEditor(id);
+      state.closeDraftEditor(id);
+      expect(state.armedEditorId).toBeNull();
+      // Placed editors cannot be armed.
+      const placed = state.openDraftEditor({ filePath: 'src/other.ts', side: 'new', newLine: 2, selectedText: 'two' })!;
+      state.moveEditor(placed);
+      expect(state.armedEditorId).toBeNull();
+    });
+
+    it('disarms on a subject change', async () => {
+      const { state, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      state.moveEditor(id);
+      await state.setScope('branch');
+      expect(state.armedEditorId).toBeNull();
+    });
+
+    it('goes back to its line by itself when a later diff proves it, unless the reader chose one', async () => {
+      const first = await detachedAfter(`${MOVED}\n${OTHER}`);
+      first.setPatch(`${HEAD}\n${OTHER}`);
+      await first.state.reload();
+      await waitLoaded(first.state);
+      expect(first.state.openEditors[0]).toMatchObject({ id: first.id, state: 'placed', anchor: report });
+
+      __resetReviewPaneStateForTest();
+      const second = await detachedAfter(`${MOVED}\n${OTHER}`);
+      second.state.useSuggestedLine(second.id);
+      second.setPatch(`${HEAD}\n${OTHER}`);
+      await second.state.reload();
+      await waitLoaded(second.state);
+      // The reader's line (4 of MOVED) is not proven in HEAD's other blob.
+      expect(second.state.openEditors[0]).toMatchObject({ id: second.id, state: 'detached' });
+    });
+
+    it('is gone when its file leaves the diff, and comes back to its line with the file', async () => {
+      const { state, id, setPatch } = await detachedAfter(OTHER);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'gone', anchor: null, suggested: null, armed: false }]);
+      state.moveEditor(id);
+      expect(state.armedEditorId).toBeNull();
+      setPatch(`${HEAD}\n${OTHER}`);
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'placed', anchor: report });
+    });
+  });
+
+  describe('on rows an expansion supplied', () => {
+    // Lines 1..9 sit in the leading gap of each file.
+    const gapped = (path: string) => changed('1111111..2222222', '@@ -10,2 +10,2 @@', [' ctx', '-old', '+new'], path);
+    const patch = `${gapped('src/a.ts')}\n${gapped('src/b.ts')}`;
+
+    function contextLines() {
+      return setBindingMock('GetDiffContextLines', async (_ws, req) => {
+        const { startLine, endLine } = req as { startLine: number; endLine: number };
+        return { lines: Array.from({ length: endLine - startLine + 1 }, (_, i) => `src ${startLine + i}`), startLine, eof: false, totalLines: 0 };
+      });
+    }
+
+    const leadingGap = (file: ReviewFile | undefined) => rowsOf(file!).find((row) => row.gap)!.gap!;
+
+    it('saves one in the load it was opened in, and detaches it at the next', async () => {
+      contextLines();
+      const { state, create } = await workspaceWith(() => patch);
+      await state.expandDiffContext('src/a.ts', leadingGap(state.files[0]), 'all');
+      const one = { filePath: 'src/a.ts', side: 'context' as const, oldLine: 1, newLine: 1, selectedText: ' src 1' };
+      const saved = state.openDraftEditor(one)!;
+      await state.createComment(saved, 'In this load.');
+      expect(create.mock.calls[0]?.[1]).toMatchObject({ side: 'context', oldLine: 1, newLine: 1 });
+
+      const kept = state.openDraftEditor(one)!;
+      await state.reload();
+      await waitLoaded(state);
+      // No version proves a row an expansion supplied (editorPlacement's
+      // unit tests show no proof is recorded for it).
+      expect(state.openEditors).toMatchObject([{ id: kept, filePath: 'src/a.ts', side: 'context', state: 'detached', anchor: null }]);
+      await state.expandDiffContext('src/a.ts', leadingGap(state.files[0]), 'all');
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors[0]).toMatchObject({ state: 'detached', anchor: null });
+    });
+
+    it('lets an editor in one file save after another file expands, and after its own file does', async () => {
+      contextLines();
+      const { state, create } = await workspaceWith(() => patch);
+      const onA = state.openDraftEditor({ filePath: 'src/a.ts', side: 'new', newLine: 11, selectedText: 'new' })!;
+      await state.expandDiffContext('src/b.ts', leadingGap(state.files[1]), 'all');
+      await state.createComment(onA, 'After B expanded.');
+      const again = state.openDraftEditor({ filePath: 'src/a.ts', side: 'new', newLine: 11, selectedText: 'new' })!;
+      await state.expandDiffContext('src/a.ts', leadingGap(state.files[0]), 'all');
+      await state.createComment(again, 'After A expanded.');
+      expect((create.mock.calls as [string, DiffReviewComment][]).map(([, input]) => [input.filePath, input.newLine, input.body])).toEqual([
+        ['src/a.ts', 11, 'After B expanded.'],
+        ['src/a.ts', 11, 'After A expanded.'],
+      ]);
+    });
+  });
+
+  describe('while their placement waits on evicted text', () => {
+    afterEach(() => {
+      __resetReviewPaneStateForTest();
+      setPatchTextBudgetForTest(null);
+    });
+
+    it('neither resurrects an editor discarded during the wait nor places one opened during it', async () => {
+      const patch = [patchFor('src/a.ts', 3), patchFor('src/b.ts', 3), patchFor('src/c.ts', 3)].join('\n');
+      setPatchTextBudgetForTest(100);
+      let hold: Promise<void> | null = null;
+      let release!: () => void;
+      let heldReads = 0;
+      let opened = 0;
+      const chunkAt = (offset: number) => {
+        const next = Math.min(patch.length, offset + 40);
+        return { data: patch.slice(offset, next), offset, nextOffset: next, eof: next === patch.length };
+      };
+      setBindingMock('OpenWorkspaceDiff', async () => ({ id: `diff-${++opened}`, chunk: chunkAt(0), headSha: '' }));
+      setBindingMock('ReadReviewDiff', async (handle: string, offset: number) => {
+        // The diff on screen reads its evicted header again for the proof.
+        if (handle === 'diff-1' && hold) {
+          heldReads += 1;
+          await hold;
+        }
+        return chunkAt(offset);
+      });
+      setBindingMock('ReleaseReviewDiff', async () => undefined);
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      const line = (path: string) => ({ filePath: path, side: 'new' as const, newLine: 2, selectedText: 'line 2' });
+      const discarded = state.openDraftEditor(line('src/c.ts'))!;
+      const kept = state.openDraftEditor(line('src/b.ts'))!;
+      state.setDraftBody(discarded, 'Gone.');
+
+      hold = new Promise<void>((resolve) => { release = resolve; });
+      const reloading = state.reload();
+      await vi.waitFor(() => expect(heldReads).toBeGreaterThan(0));
+      state.closeDraftEditor(discarded);
+      const late = state.openDraftEditor(line('src/a.ts'))!;
+      hold = null;
+      release();
+      await reloading;
+      await waitLoaded(state);
+
+      expect(state.openEditors.map((editor) => [editor.id, editor.anchor?.newLine ?? null, editor.state])).toEqual([
+        [kept, 2, 'placed'],
+        [late, null, 'detached'],
+      ]);
+      expect(state.draftBodyFor(discarded)).toBe('');
+      expect(state.files.map((file) => file.path)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    });
+  });
+
+  describe('of the Edits scope', () => {
+    function editSection(index: string | null, start: number, from: string, to: string): string {
+      return [
+        'diff --git a/x.go b/x.go',
+        ...(index ? [`index ${index} 100644`] : []),
+        '--- a/x.go',
+        '+++ b/x.go',
+        `@@ -${start},1 +${start},1 @@`,
+        `-${from}`,
+        `+${to}`,
+      ].join('\n');
+    }
+
+    function editsWith(turnPatch: () => string) {
+      setBindingMock('ListThreadEditDiffs', async () => ({
+        entries: [{ itemId: 'tool:1', payloadId: 'pl-1', turnIndex: 1, title: 'Edited x.go', paths: ['x.go'], insertions: 2, deletions: 2, createdAt: 1 }],
+        turnLabels: [{ turnIndex: 1, label: 'edit' }],
+      }));
+      setReviewDiffMock('OpenTurnEditsDiff', async () => turnPatch());
+      setBindingMock('VerifyEditDiffs', async () => ({ expandablePaths: [] }));
+    }
+
+    it('keeps a placed editor of a merged turn file through a reload of the same bytes, and detaches it when another edit joins', async () => {
+      let turn = [editSection('1111111..2222222', 3, 'a', 'b'), editSection('2222222..3333333', 9, 'c', 'd')].join('\n');
+      editsWith(() => turn);
+      const { state, create } = await workspaceWith(() => '');
+      await state.setScope('edits');
+      await waitLoaded(state);
+      expect(state.files.map((file) => [file.path, file.mergedSections])).toEqual([['x.go', 2]]);
+      const nine = { filePath: 'x.go', side: 'new' as const, newLine: 9, selectedText: 'd' };
+      const id = state.openDraftEditor(nine)!;
+
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors).toEqual([{ id, filePath: 'x.go', side: 'new', state: 'placed', anchor: nine, suggested: null, armed: false }]);
+
+      // A third edit of the file: its first section's ids are unchanged,
+      // and prove nothing of the whole.
+      turn = [editSection('1111111..2222222', 3, 'a', 'b'), editSection('2222222..3333333', 9, 'c', 'd'), editSection('3333333..4444444', 20, 'e', 'f')].join('\n');
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'detached', anchor: null });
+      await expect(state.createComment(id, 'x')).rejects.toEqual(refused('detached'));
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('keeps a placed editor of a section with no index line through a reload of the same bytes', async () => {
+      editsWith(() => editSection(null, 3, 'a', 'b'));
+      const { state } = await workspaceWith(() => '');
+      await state.setScope('edits');
+      await waitLoaded(state);
+      const three = { filePath: 'x.go', side: 'new' as const, newLine: 3, selectedText: 'b' };
+      const id = state.openDraftEditor(three)!;
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors).toEqual([{ id, filePath: 'x.go', side: 'new', state: 'placed', anchor: three, suggested: null, armed: false }]);
+    });
+  });
+
+  it('commits the subject the load resolved, not the one asked for', async () => {
+    setBindingMock('ListBranchCommits', async () => [{ sha: 'commit-a', subject: 'change' }]);
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('src/app.ts', 1));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('branch');
+    await waitLoaded(state);
+    // A commit the list does not have: the load shows the whole branch.
+    await state.selectCommit('commit-gone');
+    await waitLoaded(state);
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })).not.toBeNull();
+  });
+});
+
+describe('reviewPane store — open new-comment editors of the PR on screen', () => {
+  it('opens and saves against the diff on screen while the controls name another PR, and after its load fails', async () => {
+    seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/5', openPrNumber: 5 });
+    installPRMocks();
+    setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
+      id: `sub-${pr.Number}`,
+      prKey: `github:owner/repo:${pr.Number}`,
+      detail: prDetailStub({ number: pr.Number, headSHA: pr.Number === 5 ? 'sha-a' : 'sha-z' }),
+      threads: [],
+      headSHA: pr.Number === 5 ? 'sha-a' : 'sha-z',
+    }));
+    const create = setBindingMock('CreateDiffReviewComment', async (_thread: string, input: Partial<DiffReviewComment>) => draft(input));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await waitLoaded(state);
+    const line = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
+    const onFive = state.openDraftEditor(line)!;
+    expect(onFive).toBeTruthy();
+
+    // The workspace's PR is now #7; its diff is loading.
+    seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/7', openPrNumber: 7 });
+    let failDiff!: (err: Error) => void;
+    setReviewDiffMock('OpenPRDiff', () => new Promise<string>((_resolve, reject) => { failDiff = reject; }));
+    const reloading = state.reload();
+    await vi.waitFor(() => {
+      expect(state.prRef?.number).toBe(7);
+      expect(failDiff).toBeTypeOf('function');
+    });
+    expect(state.openDraftEditor({ ...line, newLine: 2, selectedText: 'line 2' })).toBeNull();
+    await state.createComment(onFive, 'On #5.');
+    expect(create.mock.calls[0]?.[1]).toMatchObject({ scope: 'pr', sourceKey: PR_SOURCE_KEY, commitSha: 'sha-a', newLine: 1 });
+
+    failDiff(new Error('fetch pull request diff: HTTP 502'));
+    await reloading;
+    await waitLoaded(state);
+    expect(state.error).toContain('HTTP 502');
+    expect(state.prRef?.number).toBe(7);
+    expect(state.files.map((file) => file.path)).toEqual(['src/app.ts']);
+    expect(state.openDraftEditor({ ...line, newLine: 3, selectedText: 'line 3' })).toBeNull();
+    expect(state.openDraftEditor(line)).toBeNull();
+  });
+
+  it('saves both halves of a split context row as drafts the PR review submits, LEFT and RIGHT', async () => {
+    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: [], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    try {
+      installPRMocks();
+      setReviewDiffMock('OpenPRDiff', async () => [
+        'diff --git a/src/app.ts b/src/app.ts',
+        'index 1111111..2222222 100644',
+        '--- a/src/app.ts',
+        '+++ b/src/app.ts',
+        '@@ -1,3 +1,4 @@',
+        ' keep 1',
+        '-old 2',
+        '+new 2',
+        '+added',
+        ' keep 3',
+      ].join('\n'));
+      const rows: DiffReviewComment[] = [];
+      setBindingMock('CreateDiffReviewComment', async (_thread: string, input: Partial<DiffReviewComment>) => {
+        const row = { ...draft({ ...input, id: `c-${rows.length + 1}` }), oldLine: input.oldLine, newLine: input.newLine };
+        rows.push(row);
+        return row;
+      });
+      setBindingMock('ListDiffReviewComments', async (_thread: string, scope: string, sourceKey: string) =>
+        rows.filter((row) => row.scope === scope && row.sourceKey === sourceKey && row.status === 'draft').map((row) => ({ ...row })));
+      setBindingMock('MarkDiffReviewCommentsSent', async (_t: string, _s: string, _k: string, ids: string[]) => {
+        for (const row of rows) if (ids.includes(row.id)) row.status = 'sent';
+      });
+      const submit = getBindingMock('SubmitPRReview')!;
+      const state = reviewStateForPane('pane-1', prSubject());
+      await waitLoaded(state);
+      await state.setScope('pr');
+      await waitLoaded(state);
+
+      const left = state.openDraftEditor({ filePath: 'src/app.ts', side: 'old', oldLine: 3, selectedText: ' keep 3' })!;
+      const right = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: ' keep 3' })!;
+      await state.createComment(left, 'Left half.');
+      await state.createComment(right, 'Right half.');
+      expect(state.drafts.map((comment) => [comment.side, comment.oldLine, comment.newLine])).toEqual([['old', 3, undefined], ['new', undefined, 4]]);
+      expect(state.orphanedDraftIds().size).toBe(0);
+      // Each renders on its row, not under the file header.
+      const built = buildReviewRows({ files: state.files, viewMode: 'split', collapsedPaths: new Set(), drafts: state.drafts, openEditors: [] });
+      const threadAt = built.rows.findIndex((row) => row.kind === 'comment-thread');
+      expect(built.rows[threadAt - 1]?.kind).toBe('line-block');
+
+      await state.submitPRReview();
+      expect(submit.mock.calls[0]?.[1]).toMatchObject({
+        comments: [
+          { path: 'src/app.ts', body: 'Left half.', line: 3, side: 'left' },
+          { path: 'src/app.ts', body: 'Right half.', line: 4, side: 'right' },
+        ],
+      });
+    } finally {
+      __setTransportHelloForTest(null);
+    }
   });
 });

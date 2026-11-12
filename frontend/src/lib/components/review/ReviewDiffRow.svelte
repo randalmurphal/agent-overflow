@@ -7,7 +7,7 @@
   import type { PaintedSpans, PatchScopeContext } from '../../utils/diffSpanCache.svelte';
   import type { DiffGap } from '../../utils/patchFiles';
   import type { ReviewFile } from '../../utils/patchStore';
-  import { REVIEW_SURFACE_END_PX, type BlockRowsCache, type CommentAnchor, type ReviewRow } from '../../utils/reviewRows';
+  import { REVIEW_SURFACE_END_PX, type BlockRowsCache, type CommentAnchor, type EditorRow, type ReviewRow } from '../../utils/reviewRows';
 
   // One row of ReviewDiffBody's list (utils/reviewRows.ts kinds). The body
   // owns the list, scrolling and the jump pulse; a row only renders.
@@ -25,8 +25,10 @@
     wordWrap: boolean;
     /** The jump that landed on this row (utils/reviewJumpPulse); 0 for none. */
     pulse: number;
+    /** Rows of this file a detached editor suggests, marked as targets. */
+    targets?: readonly CommentAnchor[];
     overview?: Snippet;
-    draftEditor?: Snippet<[anchor: CommentAnchor]>;
+    draftEditor?: Snippet<[editor: EditorRow]>;
     commentThread?: Snippet<[threadKey: string, anchor: CommentAnchor, pulse: number]>;
     prThread?: Snippet<[thread: ReviewThread, anchor: CommentAnchor, collapsed: boolean, orphaned: boolean, pulse: number]>;
     onAddComment?: (anchor: CommentAnchor) => void;
@@ -35,7 +37,7 @@
   }
 
   let {
-    row, file, blockRows, collapsed, onToggleCollapsed, spanOwner, spanContext, painted, wordWrap, pulse,
+    row, file, blockRows, collapsed, onToggleCollapsed, spanOwner, spanContext, painted, wordWrap, pulse, targets,
     overview, draftEditor, commentThread, prThread, onAddComment, onExpandFold, onExpandGap,
   }: Props = $props();
 
@@ -51,6 +53,15 @@
 
 {#if row.kind === 'overview'}
   {@render overview?.()}
+{:else if row.kind === 'gone-group'}
+  <!-- Editors whose file is not in the diff: kept to copy or discard. -->
+  <div class="mx-[var(--review-slab-inset)] mt-2 rounded-t-[var(--radius-control)] border-x border-t border-border-subtle bg-surface-1 px-3 py-1.5 text-[0.6875rem] font-medium text-fg-muted" data-testid="review-gone-editors">
+    Comments on files not in this diff
+  </div>
+{:else if row.kind === 'draft-editor' && row.fileIndex < 0}
+  <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
+    {@render draftEditor?.(row.editor)}
+  </div>
 {:else if !file}
   <!-- Build/props raced; the next flush re-renders coherent rows. -->
 {:else if row.kind === 'file-header'}
@@ -78,6 +89,7 @@
     {painted}
     {wordWrap}
     gutterCh={gutterChars(file)}
+    {targets}
     {onAddComment}
     {onExpandFold}
     {onExpandGap}
@@ -87,7 +99,7 @@
        continuous behind the inserted rows (the page behind is darker
        surface-0). -->
   <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
-    {@render draftEditor?.(row.anchor)}
+    {@render draftEditor?.(row.editor)}
   </div>
 {:else if row.kind === 'comment-thread'}
   <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">

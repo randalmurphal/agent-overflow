@@ -106,7 +106,8 @@
   let rail: ReviewRail | undefined = $state();
   onDestroy(registerPaneBackStep(hostPaneId, () => {
     if (!review) return false;
-    if (review.ciLogView) review.closeCILogView();
+    if (review.armedEditorId !== null) review.cancelEditorMove();
+    else if (review.ciLogView) review.closeCILogView();
     else if (review.conflictView) review.closeConflictView();
     else if (rail && treeVisible && isCompactLayout()) toggleTree();
     else return false;
@@ -156,6 +157,9 @@
     if (path === undefined) return -1;
     return (review?.files ?? []).findIndex((file) => file.path === path);
   });
+  // Open comment editors keep the diff list mounted through an empty,
+  // failed or loading diff: their text is the user's.
+  const editorsKept = $derived((review?.openEditors.length ?? 0) > 0);
   const diffStats = $derived({
     files: diffFiles.length,
     additions: diffFiles.reduce((sum, file) => sum + file.additions, 0),
@@ -221,6 +225,19 @@
   // the companion registry never holds one, so this leaves it alone.
   onDestroy(() => {
     if (review) disposeReviewStateForPane(sourcePaneId, review);
+  });
+
+  // Escape anywhere in the pane cancels a Move waiting for its line.
+  $effect(() => {
+    const root = rootEl;
+    if (!root) return;
+    const onKeydown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented || review?.armedEditorId == null) return;
+      event.preventDefault();
+      review.cancelEditorMove();
+    };
+    root.addEventListener('keydown', onKeydown);
+    return () => root.removeEventListener('keydown', onKeydown);
   });
 
   function toggleTree(): void {
@@ -357,14 +374,14 @@
           />
         </div>
       {/if}
-    {:else if review.loading && review.files.length === 0}
+    {:else if review.loading && review.files.length === 0 && !editorsKept}
       <div class="px-4 py-3 text-xs text-fg-muted">Loading…</div>
-    {:else if review.files.length === 0 && review.awaitingPR}
+    {:else if review.files.length === 0 && review.awaitingPR && !editorsKept}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-awaiting-pr">Waiting for the {forgeLabels(review.prRef?.forge).longSingular.toLowerCase()}…</div>
-    {:else if review.files.length === 0 && review.error}
+    {:else if review.files.length === 0 && review.error && !editorsKept}
       <!-- Nothing loaded: the banner above says why. An empty diff is not
            what the load found. -->
-    {:else if review.files.length === 0 && !overviewShown}
+    {:else if review.files.length === 0 && !overviewShown && !editorsKept}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-empty">No changed files.</div>
     {:else}
       <!-- Relative: on the phone the open rail lays over the diff. The
@@ -432,14 +449,17 @@
               <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-filter-empty">No files match the filter.</div>
             {/if}
           {/snippet}
-          {#snippet draftEditor(anchor)}
+          {#snippet draftEditor(editor)}
             <ReviewDraftEditor
-              {anchor}
-              body={review?.draftBodyFor(anchor) ?? ''}
-              onBodyChange={(nextAnchor, body) => review?.setDraftBody(nextAnchor, body)}
-              onCancel={(nextAnchor) => review?.closeDraftEditor(nextAnchor)}
-              onSubmit={(nextAnchor, body) => review?.createComment(nextAnchor, body)}
-              consumeFocus={(nextAnchor) => review?.consumeDraftEditorFocus(nextAnchor) ?? false}
+              {editor}
+              body={review?.draftBodyFor(editor.id) ?? ''}
+              onBodyChange={(editorId, body) => review?.setDraftBody(editorId, body)}
+              onCancel={(editorId) => review?.closeDraftEditor(editorId)}
+              onSubmit={(editorId, body) => review?.createComment(editorId, body)}
+              consumeFocus={(editorId) => review?.consumeDraftEditorFocus(editorId) ?? false}
+              onUseLine={(editorId) => review?.useSuggestedLine(editorId)}
+              onMove={(editorId) => review?.moveEditor(editorId)}
+              onCancelMove={() => review?.cancelEditorMove()}
             />
           {/snippet}
           {#snippet commentThread(threadKey, _anchor, pulse)}

@@ -10,12 +10,14 @@ import {
   type PatchFile,
 } from './patchFiles';
 import {
+  anchorInsertLine,
+  anchorLines,
+  anchorLinesMatch,
   anchorRow,
   displayRowCount,
   FILE_START,
   materializeRows,
   nearestLineRow,
-  relocateAnchor,
   RowWalker,
   rowStartAt,
   splitRowCount,
@@ -305,36 +307,52 @@ describe('conflict pseudo-files', () => {
   });
 });
 
-describe('relocateAnchor', () => {
-  function fileOf(lines: readonly string[]): ReviewFile {
-    return parseReviewFiles([
-      'diff --git a/src/app.ts b/src/app.ts',
-      'index 1111111..2222222 100644',
-      '--- a/src/app.ts',
-      '+++ b/src/app.ts',
-      `@@ -1,3 +1,${lines.length} @@`,
-      ...lines,
-    ].join('\n'))[0];
-  }
-  const added = { side: 'new' as const, newLine: 2, selectedText: 'beta' };
+describe('split-view halves of a context row', () => {
+  // Old 1..3, new 1..3: 1 and 3 unchanged, 2 replaced.
+  const file = parseReviewFiles([
+    'diff --git a/src/app.ts b/src/app.ts',
+    'index 1111111..2222222 100644',
+    '--- a/src/app.ts',
+    '+++ b/src/app.ts',
+    '@@ -1,3 +1,4 @@',
+    ' alpha',
+    '-beta',
+    '+beta two',
+    '+inserted',
+    ' gamma',
+  ].join('\n'))[0];
 
-  it('keeps the anchor itself while its row holds its text, duplicates elsewhere or not', () => {
-    expect(relocateAnchor(fileOf([' alpha', '+beta', ' gamma', '+beta']), added)).toBe(added);
+  it('finds a left or right half on the context row, as on a changed row', () => {
+    const gamma = anchorRow(file, { side: 'context', oldLine: 3, newLine: 4 });
+    expect(gamma).toBeGreaterThan(0);
+    expect(anchorRow(file, { side: 'old', oldLine: 3 })).toBe(gamma);
+    expect(anchorRow(file, { side: 'new', newLine: 4 })).toBe(gamma);
+    expect(anchorRow(file, { side: 'old', oldLine: 2 })).toBeGreaterThan(0);
+    expect(anchorRow(file, { side: 'old', oldLine: 4 })).toBe(-1);
   });
 
-  it('follows the one row of its side that holds its text', () => {
-    expect(relocateAnchor(fileOf([' alpha', '+inserted', '+beta', ' gamma']), added)).toEqual({ ...added, newLine: 3 });
-    const removed = { side: 'old' as const, oldLine: 2, selectedText: 'old beta' };
-    expect(relocateAnchor(fileOf(['-inserted', ' alpha', '-old beta', ' gamma']), removed)).toEqual({ ...removed, oldLine: 3 });
-    const context = { side: 'context' as const, oldLine: 1, newLine: 1, selectedText: ' alpha' };
-    expect(relocateAnchor(fileOf(['+inserted', ' alpha', ' gamma']), context)).toEqual({ ...context, newLine: 2 });
+  it('agrees with the membership check saved drafts use', () => {
+    const lines = anchorLines(file);
+    for (const anchor of [
+      { side: 'old' as const, oldLine: 3 },
+      { side: 'new' as const, newLine: 4 },
+      { side: 'old' as const, oldLine: 2 },
+      { side: 'new' as const, newLine: 3 },
+      { side: 'context' as const, oldLine: 1, newLine: 1 },
+      { side: 'old' as const, oldLine: 4 },
+      { side: 'new' as const, newLine: 5 },
+      { side: 'context' as const, oldLine: 3, newLine: 3 },
+    ]) {
+      expect(anchorLinesMatch(lines, anchor), JSON.stringify(anchor)).toBe(anchorRow(file, anchor) >= 0);
+    }
   });
 
-  it('finds nothing when no row, or several, hold its text', () => {
-    expect(relocateAnchor(fileOf([' alpha', ' gamma']), added)).toBeNull();
-    expect(relocateAnchor(fileOf(['+beta', ' alpha', '+beta']), added)).toBeNull();
-    // A deleted row with the text is the old side, not this anchor's.
-    expect(relocateAnchor(fileOf(['-beta', ' alpha']), added)).toBeNull();
+  it('keys a left half by its row\'s new line, as the walk does', () => {
+    const lines = anchorLines(file);
+    expect(anchorInsertLine(lines, { side: 'old', oldLine: 3 })).toBe(4);
+    expect(anchorInsertLine(lines, { side: 'old', oldLine: 2 })).toBe(2);
+    expect(anchorInsertLine(lines, { side: 'new', newLine: 4 })).toBe(4);
+    expect(anchorInsertLine(null, { side: 'file' })).toBe(0);
   });
 });
 

@@ -99,7 +99,7 @@ describe('resolveReviewFindHit', () => {
     const base = diffContent(PATCHES.base);
     const resolved = await expectResolves(base, base);
     expect([...resolved.keys()]).toEqual([
-      id('src/a.test.ts', pc('p1', '1'), '0:0'), id('src/a.test.ts', pc('p1', '2'), '0:0'), id('src/a.test.ts', 'c10:10'), id('src/a.test.ts', 'd11'), id('src/a.test.ts', 'a11'),
+      id('src/a.test.ts', 'c10:10'), id('src/a.test.ts', pc('p1', '1'), '0:0'), id('src/a.test.ts', pc('p1', '2'), '0:0'), id('src/a.test.ts', 'd11'), id('src/a.test.ts', 'a11'),
       id('src/b.ts', 'c100:100'), id('src/b.ts', 'dc:d1'),
     ]);
     expect(at(resolved.get(id('src/b.ts', 'c100:100')))).toEqual({ fileIndex: 1, rowKey: 'l:4:src/b.ts', ordinal: 0, place: { kind: 'line', lineIndex: 4 } });

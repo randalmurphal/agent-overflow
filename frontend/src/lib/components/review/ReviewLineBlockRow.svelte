@@ -48,6 +48,8 @@
     wordWrap: boolean;
     /** Line-number gutter width in ch, per file (max line number). */
     gutterCh: number;
+    /** Rows a detached comment editor suggests ("Use this line"). */
+    targets?: readonly CommentAnchor[];
     onAddComment?: (anchor: CommentAnchor) => void;
     /** Conflict view only: expands the fold row's hidden lines. */
     onExpandFold?: (path: string, foldId: number) => void;
@@ -55,7 +57,21 @@
     onExpandGap?: (path: string, gap: DiffGap, dir: ExpandDirection) => void;
   }
 
-  let { rows, splitRows, file, path, spanOwner, spanContext = null, painted = null, wordWrap, gutterCh, onAddComment, onExpandFold, onExpandGap }: Props = $props();
+  let { rows, splitRows, file, path, spanOwner, spanContext = null, painted = null, wordWrap, gutterCh, targets, onAddComment, onExpandFold, onExpandGap }: Props = $props();
+
+  // Whether `row` (or its `half` in split view) is a suggested row: the
+  // row the anchor names, by the rules of patchRows' anchorRow.
+  function isTarget(row: PatchDisplayRow, half: 'old' | 'new' | null): boolean {
+    if (!targets || targets.length === 0) return false;
+    return targets.some((target) => {
+      if (target.side === 'old') return half !== 'new' && row.side !== 'new' && row.oldLine === target.oldLine;
+      if (target.side === 'new') return half !== 'old' && row.side !== 'old' && row.newLine === target.newLine;
+      if (target.side === 'context') return half !== 'old' && row.side === 'context' && row.oldLine === target.oldLine && row.newLine === target.newLine;
+      return false;
+    });
+  }
+  // The tree's selected-row wash.
+  const TARGET_CLASS = 'before:bg-accent/15';
 
   $effect(() => {
     // Generation dependency: an eviction (LRU pressure, same-thread
@@ -244,14 +260,14 @@
         {@render gapRow(pair.left.gap)}
       {:else}
       <div class={lineClass} style:height={wordWrap ? undefined : lineHeight}>
-        <div class="group relative flex w-1/2 min-w-0 before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/40'}">
+        <div class="group relative flex w-1/2 min-w-0 before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/40'} {pair.left && isTarget(pair.left, 'old') ? TARGET_CLASS : ''}" data-review-target={pair.left && isTarget(pair.left, 'old') ? '' : undefined}>
           {#if pair.left}
             {@render actionCell(pair.left, sideAnchor(pair.left, 'old'), 'old-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}">{@render gutter(pair.left.oldLine)}</span>
             <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={leftFindKey(pair.left, pair.right)}><DiffLineContent line={pair.left.line} spans={getSpansForReviewLine(file, pair.left.lineIndex ?? -1, pair.left.line, spanContext, painted)} intraline={pair.left.intraline ?? null} /></span>
           {/if}
         </div>
-        <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'}">
+        <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'} {pair.right && isTarget(pair.right, 'new') ? TARGET_CLASS : ''}" data-review-target={pair.right && isTarget(pair.right, 'new') ? '' : undefined}>
           {#if pair.right}
             {@render actionCell(pair.right, sideAnchor(pair.right, 'new'), 'new-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}">{@render gutter(pair.right.newLine)}</span>
@@ -269,8 +285,9 @@
         {@render gapRow(row.gap)}
       {:else}
         <div
-          class="group relative {lineClass} {lineTintClass(row.line.type)} before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04]"
+          class="group relative {lineClass} {lineTintClass(row.line.type)} before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {isTarget(row, null) ? TARGET_CLASS : ''}"
           style:height={wordWrap ? undefined : lineHeight}
+          data-review-target={isTarget(row, null) ? '' : undefined}
         >
           {@render actionCell(row, stackedAnchor(row), 'line')}
           <span class="flex shrink-0 {gutterTintClass(row.line.type)}">

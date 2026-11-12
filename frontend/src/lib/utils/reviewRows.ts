@@ -5,6 +5,7 @@ import {
   type SplitDisplayRow,
 } from './patchFiles';
 import {
+  anchorInsertLine,
   anchorLines,
   anchorLinesMatch,
   materializeRows,
@@ -49,11 +50,34 @@ export interface CommentAnchor {
   newLine?: number;
   side: DiffReviewComment['side'];
   selectedText?: string;
-  /** An open editor whose line a reload moved out from under it with no
-   * one line to follow (relocateAnchor): it keeps its text under the file
-   * header and cannot be saved. */
-  lineChanged?: true;
 }
+
+/**
+ * Where an open new-comment editor is (stores/reviewPane.svelte.ts):
+ * `placed` on its proven line; `detached` in its file after a suggested
+ * row, until the reader picks a line; `gone` when its file is not in the
+ * loaded diff, in the pane-level group.
+ */
+export type EditorState = 'placed' | 'detached' | 'gone';
+
+/** An open new-comment editor as the rows place it. */
+export interface EditorRow {
+  /** Minted when the editor opens: keys its text, focus and row. */
+  readonly id: string;
+  readonly filePath: string;
+  readonly side: CommentAnchor['side'];
+  readonly state: EditorState;
+  /** Placed: the line it saves on. */
+  readonly anchor: CommentAnchor | null;
+  /** Detached: the row it renders after and "Use this line" takes. It
+   * proves nothing; null when the file has no row on its side. */
+  readonly suggested: CommentAnchor | null;
+  /** Detached and armed: the next line picked takes it ("Move"). */
+  readonly armed: boolean;
+}
+
+/** The row key of the group of editors whose file is not in the diff. */
+export const REVIEW_GONE_GROUP_ROW_KEY = 'gone-editors';
 
 export type ReviewRow =
   /** The lead row before the first file (fileIndex -1): it scrolls with
@@ -61,7 +85,11 @@ export type ReviewRow =
   | { kind: 'overview'; fileIndex: -1; lead: ReviewLeadRow }
   | { kind: 'file-header'; fileIndex: number; path: string }
   | LineBlockRow
-  | { kind: 'draft-editor'; fileIndex: number; anchor: CommentAnchor }
+  /** A new-comment editor: in its file (fileIndex), or in the group of
+   * editors whose file is not in the diff (fileIndex -1). */
+  | { kind: 'draft-editor'; fileIndex: number; editor: EditorRow }
+  /** The head of that group (fileIndex -1). */
+  | { kind: 'gone-group'; fileIndex: -1; count: number }
   | { kind: 'comment-thread'; fileIndex: number; threadKey: string; anchor: CommentAnchor }
   | { kind: 'pr-thread'; fileIndex: number; thread: ReviewThread; anchor: CommentAnchor; collapsed: boolean; orphaned: boolean }
   | { kind: 'surface-end'; fileIndex: number };
@@ -86,7 +114,7 @@ export interface ReviewRowsInput {
   viewMode: 'stacked' | 'split';
   collapsedPaths: ReadonlySet<string>;
   drafts: readonly DiffReviewComment[];
-  openEditors: readonly CommentAnchor[];
+  openEditors: readonly EditorRow[];
   prThreads?: readonly ReviewThread[];
   expandedPRThreadIds?: ReadonlySet<string>;
   /** Lead the list with the PR overview or a commit card. */
@@ -104,7 +132,8 @@ export interface ReviewRowsResult {
  * draft editor. */
 export type InsertRow =
   | { kind: 'comment-thread'; threadKey: string; anchor: CommentAnchor }
-  | { kind: 'draft-editor'; anchor: CommentAnchor }
+  /** `order`: the editor's place among the open editors. */
+  | { kind: 'draft-editor'; editor: EditorRow; order: number }
   | { kind: 'pr-thread'; thread: ReviewThread; anchor: CommentAnchor; collapsed: boolean; orphaned: boolean };
 
 export function buildReviewRows(input: ReviewRowsInput): ReviewRowsResult {
@@ -132,6 +161,14 @@ export function buildReviewRows(input: ReviewRowsInput): ReviewRowsResult {
       input.overview === 'commit' ? REVIEW_COMMIT_CARD_ROW_KEY : REVIEW_OVERVIEW_ROW_KEY,
       -1,
     );
+  }
+
+  // Editors whose file is not in the diff lead the files, under the
+  // group's head. An editor of a file the filter hides is hidden with it.
+  const grouped = input.openEditors.filter((editor) => editor.state === 'gone');
+  if (grouped.length > 0) {
+    push({ kind: 'gone-group', fileIndex: -1, count: grouped.length }, REVIEW_GONE_GROUP_ROW_KEY, -1);
+    for (const editor of grouped) push({ kind: 'draft-editor', fileIndex: -1, editor }, `d:${editor.id}`, -1);
   }
 
   for (let fileIndex = 0; fileIndex < input.files.length; fileIndex += 1) {
@@ -193,7 +230,7 @@ export function reviewRowEstimate(result: ReviewRowsResult, wordWrap: boolean): 
 export function reviewInsertsByFile(
   files: readonly ReviewFile[],
   drafts: readonly DiffReviewComment[],
-  openEditors: readonly CommentAnchor[],
+  openEditors: readonly EditorRow[],
   prThreads: readonly ReviewThread[],
   expandedPRThreadIds: ReadonlySet<string>,
 ): Map<string, Map<number, InsertRow[]>> {
@@ -220,22 +257,32 @@ export function reviewInsertsByFile(
     byFile.set(filePath, byLine);
   }
 
+  // An `old` anchor may name a context row's left half, which the walk
+  // keys by its new line: only those need the file's lines.
+  const insertLine = (anchor: CommentAnchor): number =>
+    anchorInsertLine(anchor.side === 'old' ? linesOf(anchor.filePath) : null, anchor);
+
   for (const comment of drafts) {
     if (comment.status !== 'draft') continue;
     const anchor = commentAnchor(comment);
-    add(comment.filePath, anchorLine(anchor), {
+    add(comment.filePath, insertLine(anchor), {
       kind: 'comment-thread',
       threadKey: comment.id,
       anchor,
     });
   }
 
-  for (const anchor of openEditors) {
-    add(anchor.filePath, anchorLine(anchor), {
+  // A detached editor follows its suggested row (under the header when it
+  // has none); a gone one is the row model's group, not a file's insert.
+  openEditors.forEach((editor, order) => {
+    if (editor.state === 'gone' || !filesByPath.has(editor.filePath)) return;
+    const at = editor.state === 'placed' ? editor.anchor : editor.suggested;
+    add(editor.filePath, at === null ? 0 : insertLine(at), {
       kind: 'draft-editor',
-      anchor,
+      editor,
+      order,
     });
-  }
+  });
 
   for (const thread of prThreads) {
     const anchor = prThreadAnchor(thread);
@@ -246,7 +293,7 @@ export function reviewInsertsByFile(
     // the position through pushes); one whose line is gone sits under the
     // file header. Only settled threads start folded.
     const orphaned = !anchored;
-    add(anchor.filePath, orphaned ? 0 : anchorLine(anchor), {
+    add(anchor.filePath, orphaned ? 0 : anchorInsertLine(lines, anchor), {
       kind: 'pr-thread',
       thread,
       anchor,
@@ -536,8 +583,8 @@ function pushInsert(
   push({
     kind: 'draft-editor',
     fileIndex,
-    anchor: insert.anchor,
-  }, `d:${anchorKey(insert.anchor)}`, fileIndex);
+    editor: insert.editor,
+  }, `d:${insert.editor.id}`, fileIndex);
 }
 
 /** Where a PR thread sits in the diff: its file and line, or its file. */
@@ -560,14 +607,9 @@ function commentAnchor(comment: DiffReviewComment): CommentAnchor {
   };
 }
 
-function anchorLine(anchor: Pick<CommentAnchor, 'oldLine' | 'newLine' | 'side' | 'lineChanged'>): number {
-  if (anchor.side === 'file' || anchor.lineChanged) return 0;
-  if (anchor.side === 'old') return anchor.oldLine || 0;
-  return anchor.newLine || anchor.oldLine || 0;
-}
-
+/** The line an anchor names, for finding an editor already open on it. */
 export function anchorKey(anchor: CommentAnchor): string {
-  return `${anchor.filePath}:${anchor.side}:${anchor.oldLine || 0}:${anchor.newLine || 0}${anchor.lineChanged ? ':changed' : ''}`;
+  return `${anchor.filePath}:${anchor.side}:${anchor.oldLine || 0}:${anchor.newLine || 0}`;
 }
 
 function compareInsertRows(a: InsertRow, b: InsertRow): number {
@@ -579,5 +621,5 @@ function compareInsertRows(a: InsertRow, b: InsertRow): number {
 function insertKey(row: InsertRow): string {
   if (row.kind === 'comment-thread') return `0:${row.threadKey}`;
   if (row.kind === 'pr-thread') return `1:${row.thread.id}`;
-  return `2:${anchorKey(row.anchor)}`;
+  return `2:${String(row.order).padStart(8, '0')}`;
 }
