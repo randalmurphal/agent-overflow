@@ -47,7 +47,7 @@
   import Button from '../primitives/Button.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
-  import { registerTerminalFind, type TerminalFindRegistration } from '../terminal/terminalFind.svelte';
+  import { TERMINAL_FIND_OVERLAY_CLASS, registerTerminalFind, type TerminalFindRegistration } from '../terminal/terminalFind.svelte';
   import { isPaneFindBarFocused, openPaneFind } from '../../stores/paneFind.svelte';
 
   let { paneId, threadId }: { paneId: string; threadId: string } = $props();
@@ -375,21 +375,24 @@
     {/if}
   </div>
 
-  <!-- Focus in the find bar is focus in the terminal (terminalFocusRegion). -->
-  <div class="contents" {@attach terminalFocusRegion(paneId)}>
-    <PaneFindBar {paneId} title="Claude TUI terminal" fallbackFocus={() => term?.textarea ?? null} />
-  </div>
-
   {#if attachError}
     <div class="flex flex-1 min-h-0 items-center justify-center px-4 text-center text-sm text-error">
       Could not attach to the Claude TUI session: {attachError}
     </div>
   {:else}
-    <div
-      bind:this={mountEl}
-      class="flex-1 min-h-0 bg-terminal-bg"
-      data-testid="take-control-mount"
-      {@attach terminalFocusRegion(paneId)}
-    ></div>
+    <div class="relative flex flex-1 min-h-0 min-w-0 flex-col" data-terminal-find-host>
+      <div
+        bind:this={mountEl}
+        class="flex-1 min-h-0 bg-terminal-bg"
+        data-testid="take-control-mount"
+        {@attach terminalFocusRegion(paneId)}
+      ></div>
+      <!-- The bar floats over the grid, so opening it changes neither the
+           mirror's rows nor the PTY's size. Focus in it is focus in the
+           terminal (terminalFocusRegion). -->
+      <div class={TERMINAL_FIND_OVERLAY_CLASS} data-terminal-find-overlay {@attach terminalFocusRegion(paneId)}>
+        <PaneFindBar {paneId} title="Claude TUI terminal" floating fallbackFocus={() => term?.textarea ?? null} />
+      </div>
+    </div>
   {/if}
 </div>

@@ -30,18 +30,28 @@ test('the terminal finds from its button, and ctrl+f stays the shell\'s', async 
     await expect.poll(() => replayOf(host, threadId)).toMatch(/\^F/);
     await expect(page.getByTestId('pane-find-bar')).toHaveCount(0);
 
+    // The PTY's size, which opening and closing find must not change.
+    const ptySize = async () => {
+      const [shell] = await host.rpc<Array<{ rows: number; cols: number }>>('ListTerminals', threadId);
+      return { rows: shell.rows, cols: shell.cols };
+    };
+    const sized = await ptySize();
     await page.getByTestId('terminal-find').click();
     const bar = drawer(page).getByTestId('pane-find-bar');
     await expect(bar).toBeVisible();
     const input = bar.getByTestId('pane-find-input');
     await expect(input).toBeFocused();
     await expect(input).toHaveAttribute('placeholder', 'Find in terminal');
-    // Between the tab strip and the terminal.
+    // Floating over the terminal's top right, below the tab strip, without
+    // moving or resizing the terminal.
     const barBox = (await bar.boundingBox())!;
     const tabBox = (await terminalTabs(page).first().boundingBox())!;
     const termBox = (await drawer(page).locator('.xterm').boundingBox())!;
     expect(barBox.y).toBeGreaterThan(tabBox.y);
-    expect(termBox.y).toBeGreaterThanOrEqual(barBox.y + barBox.height - 1);
+    expect(barBox.y).toBeGreaterThanOrEqual(termBox.y);
+    expect(barBox.x + barBox.width).toBeLessThanOrEqual(termBox.x + termBox.width + 1);
+    expect(barBox.width).toBeLessThan(termBox.width);
+    expect(await ptySize()).toEqual(sized);
 
     await page.keyboard.type(QUERY);
     const count = bar.getByTestId('pane-find-count');
@@ -62,6 +72,7 @@ test('the terminal finds from its button, and ctrl+f stays the shell\'s', async 
     await page.keyboard.press('Escape');
     await expect(bar).toHaveCount(0);
     await expect(terminalInput(page)).toBeFocused();
+    expect(await ptySize()).toEqual(sized);
     await expect.poll(() => decorations(page).count()).toBe(0);
 
     // A second tab has its own find; the first tab's comes back with it.

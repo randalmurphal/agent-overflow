@@ -74,6 +74,14 @@ export interface BuiltTerminal {
    * `clear()` and `reset()`.
    */
   onBufferChange(listener: () => void): IDisposable;
+  /**
+   * Fires just before a resize that changes the columns, whose reflow
+   * disposes markers itself. Find drops its decorations here
+   * (terminalFind.svelte.ts).
+   */
+  onBeforeReflow(listener: () => void): IDisposable;
+  /** Viewport rows the surface's find bar overlay covers, from the top. */
+  obscuredRows(): number;
   paste: () => void;
   /** The clipboard text, for a paste that goes elsewhere (the find bar). */
   readClipboard: () => Promise<string>;
@@ -130,13 +138,20 @@ export function buildTerminal(
   terminal.open(mount);
 
   // `clear()` and `reset()` change the buffer without a write, so they
-  // announce themselves here, whoever calls them.
+  // announce themselves here, whoever calls them. A column change (the
+  // fit's resize included) also announces itself before its reflow.
   const bufferListeners = new Set<() => void>();
+  const reflowListeners = new Set<() => void>();
   function bufferChanged(): void {
     for (const listener of bufferListeners) listener();
   }
   terminal.onWriteParsed(bufferChanged);
   terminal.onResize(bufferChanged);
+  const resize = terminal.resize.bind(terminal);
+  terminal.resize = (columns: number, rows: number) => {
+    if (columns !== terminal.cols) for (const listener of reflowListeners) listener();
+    resize(columns, rows);
+  };
   const clear = terminal.clear.bind(terminal);
   terminal.clear = () => {
     clear();
@@ -147,9 +162,21 @@ export function buildTerminal(
     reset();
     bufferChanged();
   };
-  function onBufferChange(listener: () => void): IDisposable {
-    bufferListeners.add(listener);
-    return { dispose: () => bufferListeners.delete(listener) };
+  function listen(listeners: Set<() => void>, listener: () => void): IDisposable {
+    listeners.add(listener);
+    return { dispose: () => listeners.delete(listener) };
+  }
+
+  // The surface floats its find bar over the top of the grid
+  // (data-terminal-find-overlay inside data-terminal-find-host).
+  function obscuredRows(): number {
+    const overlay = mount.closest('[data-terminal-find-host]')?.querySelector('[data-terminal-find-overlay]');
+    const screen = terminal.element?.querySelector('.xterm-screen');
+    if (!overlay || !screen || terminal.rows === 0) return 0;
+    const bar = overlay.getBoundingClientRect();
+    const grid = screen.getBoundingClientRect();
+    if (bar.height === 0) return 0;
+    return Math.max(0, Math.ceil((bar.bottom - grid.top) / (grid.height / terminal.rows)));
   }
 
   // Copy the selection and drop the highlight, so the next Ctrl+C / right-
@@ -294,7 +321,9 @@ export function buildTerminal(
   return {
     term: terminal,
     fit: fitAddon,
-    onBufferChange,
+    onBufferChange: (listener) => listen(bufferListeners, listener),
+    onBeforeReflow: (listener) => listen(reflowListeners, listener),
+    obscuredRows,
     paste: pasteClipboard,
     readClipboard: readClipboardText,
   };

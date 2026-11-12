@@ -73,6 +73,29 @@ function cellsOf(
   return matches;
 }
 
+// The text of the logical line on rows `start` to `end` (exclusive), and
+// each row's end column.
+function lineText(buffer: IBuffer, start: number, end: number, cell: IBufferCell): { text: string; ends: number[] } {
+  const ends: number[] = [];
+  let text = '';
+  for (let row = start; row < end; row += 1) {
+    const stop = rowEnd(buffer, row, cell);
+    ends.push(stop);
+    text += buffer.getLine(row)!.translateToString(row === end - 1, 0, stop);
+  }
+  return { text, ends };
+}
+
+/** The logical line holding `row`: its first row, the row after its last,
+ * and the length of its text. */
+export function terminalLineAt(buffer: IBuffer, row: number): { start: number; end: number; length: number } {
+  let start = row;
+  while (start > 0 && buffer.getLine(start)?.isWrapped) start -= 1;
+  let end = row + 1;
+  while (end < buffer.length && buffer.getLine(end)?.isWrapped) end += 1;
+  return { start, end, length: lineText(buffer, start, end, buffer.getNullCell()).text.length };
+}
+
 /**
  * The matches of `needle` (folded, `findNeedle`) in `buffer`, in buffer
  * order: the newest `limit` of them, scanning up from the bottom.
@@ -84,13 +107,7 @@ export function scanTerminalBuffer(buffer: IBuffer, needle: string, limit: numbe
   for (let end = buffer.length; end > 0 && found.length < limit;) {
     let start = end - 1;
     while (start > 0 && buffer.getLine(start)?.isWrapped) start -= 1;
-    const ends: number[] = [];
-    let text = '';
-    for (let row = start; row < end; row += 1) {
-      const stop = rowEnd(buffer, row, cell);
-      ends.push(stop);
-      text += buffer.getLine(row)!.translateToString(row === end - 1, 0, stop);
-    }
+    const { text, ends } = lineText(buffer, start, end, cell);
     const offsets: number[] = [];
     forEachFindMatch(foldFindText(text), needle, (at) => offsets.push(at));
     const kept = offsets.slice(Math.max(0, offsets.length - (limit - found.length)));

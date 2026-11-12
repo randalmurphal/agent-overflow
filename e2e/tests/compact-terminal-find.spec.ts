@@ -5,7 +5,7 @@
 // bar first and leaves the terminal open, whether focus is in the bar or
 // back in the terminal; the next Back closes the terminal. Desktop
 // coverage: terminal-find.spec.ts. The key row while find has focus is the
-// second test.
+// second test; its Paste, through the real clipboard, the third.
 import { expect, test } from './fixtures.js';
 import { terminalInput } from './terminal-thread-lifetime-flow.js';
 import { QUERY, drawer, openDrawerThread, printTangos, replayOf } from './terminal-find-flow.js';
@@ -100,6 +100,41 @@ test('the key row types into the find query, never the shell, while find has foc
     await key('slash').click();
     await expect.poll(after).toContain('/');
     expect(await after()).not.toMatch(/[-~]|printf/);
+  } finally {
+    await setup.host.close();
+  }
+});
+
+// The key row's Paste reads the real clipboard: into the query while find
+// has focus, and into the shell once the terminal has it back.
+test('the key row pastes into the find query, never the shell, while find has focus', async ({ page }) => {
+  test.setTimeout(120_000);
+  const setup = await openDrawerThread(page, 'Phone terminal find paste');
+  try {
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin });
+    await printTangos(page, setup);
+    const after = async () => (await replayOf(setup.host, setup.threadId)).split('tango-z').at(-1)!;
+    await page.evaluate(() => navigator.clipboard.writeText('tango-'));
+
+    await page.getByTestId('terminal-find').click();
+    const bar = drawer(page).getByTestId('pane-find-bar');
+    const input = bar.getByTestId('pane-find-input');
+    await expect(input).toBeFocused();
+    const paste = page.getByTestId('terminal-key-paste');
+    await paste.click();
+    await expect(input).toHaveValue(QUERY);
+    await expect(input).toBeFocused();
+    await expect(bar.getByTestId('pane-find-count')).toHaveText('3/3');
+    expect(await after()).not.toContain('tango');
+
+    await page.getByTestId('terminal-key-esc').click();
+    await expect(bar).toHaveCount(0);
+    await expect(terminalInput(page)).toBeFocused();
+    expect(await after()).not.toContain('tango');
+    // The same tap with the terminal focused reaches the shell: the
+    // clipboard is real, so the query's paste is a routing result.
+    await paste.click();
+    await expect.poll(after).toContain('tango-');
   } finally {
     await setup.host.close();
   }

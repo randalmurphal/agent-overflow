@@ -29,7 +29,7 @@
   import TerminalTabStrip from './TerminalTabStrip.svelte';
   import TerminalBody from './TerminalBody.svelte';
   import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
-  import { terminalFindKey } from './terminalFind.svelte';
+  import { TERMINAL_FIND_OVERLAY_CLASS, terminalFindKey } from './terminalFind.svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { paneFindSurface } from '../panes/paneFindRegion';
   import { dropPaneFind, hasPaneFindProvider, openPaneFind } from '../../stores/paneFind.svelte';
@@ -305,17 +305,21 @@
   {#if handle.activeTerminalID}
     {@const findKey = terminalFindKey(surface.paneId, handle.activeTerminalID)}
     {#key handle.activeTerminalID}
-      <!-- Focus in the find bar is focus in the terminal (terminalFocusRegion). -->
-      <div class="contents" {@attach terminalFocusRegion(surface.paneId)}>
-        <PaneFindBar paneId={findKey} title="Terminal" fallbackFocus={() => bodyEl?.focusTarget() ?? null} />
+      <div class="relative flex flex-1 min-h-0 min-w-0 flex-col" data-terminal-find-host>
+        <TerminalBody
+          bind:this={bodyEl}
+          {handle}
+          terminalID={handle.activeTerminalID}
+          paneId={surface.paneId}
+          {findKey}
+        />
+        <!-- The bar floats over the grid, so opening it changes neither the
+             terminal's rows nor the PTY's size. Focus in it is focus in the
+             terminal (terminalFocusRegion). -->
+        <div class={TERMINAL_FIND_OVERLAY_CLASS} data-terminal-find-overlay {@attach terminalFocusRegion(surface.paneId)}>
+          <PaneFindBar paneId={findKey} title="Terminal" floating fallbackFocus={() => bodyEl?.focusTarget() ?? null} />
+        </div>
       </div>
-      <TerminalBody
-        bind:this={bodyEl}
-        {handle}
-        terminalID={handle.activeTerminalID}
-        paneId={surface.paneId}
-        {findKey}
-      />
     {/key}
   {:else}
     <div class="flex-1 min-h-0 flex items-center justify-center text-fg-muted text-sm">

@@ -9,15 +9,27 @@
 // - The newest TERMINAL_FIND_MATCH_LIMIT matches are counted and painted; a
 //   count at it is capped.
 // - The active match is remembered by a marker on the first row of its
-//   logical line plus its offset in that line's text. Markers follow reflow
-//   and scrollback trimming, so a re-search after any change finds the same
-//   match, or the nearest one after it when it is gone (the newest when none
-//   follows).
+//   logical line plus its offset in that line's text, and by a marker on the
+//   first row of the next line plus its distance from the line's end.
+//   Reflow keeps both; trimming that takes the line's first rows leaves the
+//   second. A re-search after any change finds the same match, or the
+//   nearest one after it when it is gone (the newest when none follows).
+// - Find owns every decoration it registers and disposes it before its
+//   marker: xterm 6 clears a marker's row before telling its decorations,
+//   and a decoration whose row is out of order then stays registered for
+//   the terminal's life. A reflow disposes markers out of order, so the
+//   paint is dropped before a column-changing resize (`onBeforeReflow`), and
+//   re-searched after.
 // - Every buffer change while a query is set (`onBufferChange`) re-searches
 //   once changes pause, and at least once a second under sustained output.
 //   Until then the result is pending, so the bar marks the count it shows
 //   as updating. A re-search never scrolls; a query change and a step bring
 //   the active match into view.
+// - A switch to or from a full-screen program (the alternate screen) drops
+//   the paint at once: xterm paints a decoration by its row on whichever
+//   screen is active.
+// - A step reveals the active match below the rows the find bar covers
+//   (`obscuredRows`), as far as scrolling can.
 
 import type { IDecoration, IDisposable, IMarker, Terminal } from '@xterm/xterm';
 import {
@@ -28,7 +40,7 @@ import {
 } from '../../stores/paneFind.svelte';
 import { getResolvedTheme } from '../../stores/themeMode.svelte';
 import { getXtermFindColors, type TerminalFindColors } from './terminalTheme';
-import { scanTerminalBuffer, type TerminalMatch, type TerminalMatchCells } from './terminalFindScan';
+import { scanTerminalBuffer, terminalLineAt, type TerminalMatch, type TerminalMatchCells } from './terminalFindScan';
 import { findNeedle } from '../../utils/findMatch';
 import { createRefreshScheduler } from '../../utils/refreshScheduler';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
@@ -46,6 +58,10 @@ export const TERMINAL_FIND_MATCH_LIMIT = 1000;
 export const TERMINAL_FIND_REFRESH_DELAY_MS = 200;
 /** The longest sustained output defers a re-search. */
 export const TERMINAL_FIND_REFRESH_MAX_WAIT_MS = 1000;
+/** The find bar's place over a terminal surface's grid: top right on
+ * desktop, the full width under compact. Empty while the bar is closed, so
+ * it takes no pointer events then. */
+export const TERMINAL_FIND_OVERLAY_CLASS = 'absolute top-1 right-2 z-10 w-[min(26rem,calc(100%-1rem))] compact:left-1 compact:right-1 compact:w-auto';
 /** Class names on the rendered match decorations. */
 export const TERMINAL_FIND_MATCH_CLASS = 'terminal-find-match';
 export const TERMINAL_FIND_ACTIVE_CLASS = 'terminal-find-active';
@@ -59,6 +75,10 @@ export interface TerminalFindSource {
   term: TerminalFindTerminal;
   /** Every change to the searched buffer. */
   onBufferChange(listener: () => void): IDisposable;
+  /** Just before a column-changing resize, whose reflow disposes markers. */
+  onBeforeReflow(listener: () => void): IDisposable;
+  /** Rows at the top of the viewport the find bar covers. */
+  obscuredRows?(): number;
 }
 
 export interface TerminalFindOptions extends TerminalFindSource {
@@ -94,6 +114,8 @@ export function registerTerminalFind(key: string, source: TerminalFindSource): T
   const find = createTerminalFind({
     term: source.term,
     onBufferChange: source.onBufferChange,
+    onBeforeReflow: source.onBeforeReflow,
+    obscuredRows: source.obscuredRows,
     colors: () => getXtermFindColors(getResolvedTheme()),
   });
   const unregister = registerPaneFindProvider(key, find);
@@ -107,8 +129,14 @@ export function registerTerminalFind(key: string, source: TerminalFindSource): T
 }
 
 interface Anchor {
-  marker: IMarker;
+  /** On the first row of the match's logical line, with the match's
+   * offset in the line's text. */
+  line: IMarker;
   offset: number;
+  /** On the first row of the next logical line, with the match's distance
+   * from the end of its line's text; null for the buffer's last line. */
+  next: IMarker | null;
+  tail: number;
   buffer: string;
 }
 
@@ -121,9 +149,12 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
   let pending = $state(false);
   let error = $state<string | null>(null);
   let matches: TerminalMatch[] = [];
-  // One marker per painted row; disposing it disposes its decorations.
+  // One marker per painted row, disposed after its decorations.
   let rowMarkers = new Map<number, IMarker>();
+  // Each match's paint, by index; the active match has only its own.
+  let matchPaint: IDecoration[][] = [];
   let active: IDecoration[] = [];
+  let activeAt = -1;
   let colors: TerminalFindColors = {};
   let anchor: Anchor | null = null;
 
@@ -155,30 +186,70 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
     return decoration;
   }
 
-  function unpaintActive(): void {
-    for (const decoration of active) decoration.dispose();
-    active = [];
+  function paint(cells: readonly TerminalMatchCells[], background: string | undefined, className: string): IDecoration[] {
+    const painted: IDecoration[] = [];
+    for (const part of cells) {
+      const decoration = decorate(part, background, className);
+      if (decoration) painted.push(decoration);
+    }
+    return painted;
   }
 
   function unpaint(): void {
-    unpaintActive();
+    for (const decorations of matchPaint) for (const decoration of decorations) decoration.dispose();
+    for (const decoration of active) decoration.dispose();
     for (const marker of rowMarkers.values()) marker.dispose();
     rowMarkers = new Map();
+    matchPaint = [];
+    active = [];
+    activeAt = -1;
   }
 
+  // xterm lets a later decoration on a row lose to an earlier one, so the
+  // active match never sits over its own match paint: the two swap.
   function paintActive(): void {
-    unpaintActive();
-    for (const cells of matches[current]?.cells ?? []) {
-      const decoration = decorate(cells, colors.current, TERMINAL_FIND_ACTIVE_CLASS);
-      if (decoration) active.push(decoration);
-    }
+    for (const decoration of active) decoration.dispose();
+    active = [];
+    if (matches[activeAt]) matchPaint[activeAt] = paint(matches[activeAt].cells, colors.match, TERMINAL_FIND_MATCH_CLASS);
+    activeAt = -1;
+    const match = matches[current];
+    if (!match) return;
+    for (const decoration of matchPaint[current] ?? []) decoration.dispose();
+    matchPaint[current] = [];
+    active = paint(match.cells, colors.current, TERMINAL_FIND_ACTIVE_CLASS);
+    activeAt = current;
+  }
+
+  function dropAnchor(): void {
+    anchor?.line.dispose();
+    anchor?.next?.dispose();
+    anchor = null;
   }
 
   function setAnchor(): void {
     const match = matches[current];
     if (!match) return;
-    anchor?.marker.dispose();
-    anchor = { marker: markerAt(match.line), offset: match.offset, buffer: term.buffer.active.type };
+    dropAnchor();
+    const buffer = term.buffer.active;
+    const line = terminalLineAt(buffer, match.line);
+    anchor = {
+      line: markerAt(match.line),
+      offset: match.offset,
+      next: line.end < buffer.length ? markerAt(line.end) : null,
+      tail: line.length - match.offset,
+      buffer: buffer.type,
+    };
+  }
+
+  // Where the anchored match is now: its line's first row and its offset
+  // there, or null when its text is gone.
+  function anchorPlace(held: Anchor): { line: number; offset: number } | null {
+    if (!held.line.isDisposed) return { line: held.line.line, offset: held.offset };
+    if (!held.next || held.next.isDisposed || held.next.line < 1) return null;
+    // Trimming took the line's first rows: count back from its end.
+    const line = terminalLineAt(term.buffer.active, held.next.line - 1);
+    const offset = line.length - held.tail;
+    return offset >= 0 ? { line: line.start, offset } : null;
   }
 
   // The active match after a re-scan: the anchored one, else the nearest
@@ -186,10 +257,9 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
   function anchored(): number {
     if (matches.length === 0) return -1;
     if (!anchor || anchor.buffer !== term.buffer.active.type) return matches.length - 1;
-    if (anchor.marker.isDisposed) return 0;
-    const { line } = anchor.marker;
-    const { offset } = anchor;
-    const at = matches.findIndex((match) => match.line > line || (match.line === line && match.offset >= offset));
+    const place = anchorPlace(anchor);
+    if (!place) return 0;
+    const at = matches.findIndex((match) => match.line > place.line || (match.line === place.line && match.offset >= place.offset));
     return at >= 0 ? at : matches.length - 1;
   }
 
@@ -197,9 +267,7 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
     unpaint();
     colors = options.colors();
     matches = scanTerminalBuffer(term.buffer.active, needle, TERMINAL_FIND_MATCH_LIMIT);
-    for (const match of matches) {
-      for (const cells of match.cells) decorate(cells, colors.match, TERMINAL_FIND_MATCH_CLASS);
-    }
+    matchPaint = matches.map((match) => paint(match.cells, colors.match, TERMINAL_FIND_MATCH_CLASS));
     count = matches.length;
     pending = false;
   }
@@ -208,7 +276,8 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
     const row = matches[current]?.cells[0]?.row;
     if (row === undefined) return;
     const top = term.buffer.active.viewportY;
-    if (row < top || row >= top + term.rows) term.scrollLines(row - top - Math.floor(term.rows / 2));
+    const covered = Math.min(Math.max(0, options.obscuredRows?.() ?? 0), term.rows - 1);
+    if (row < top + covered || row >= top + term.rows) term.scrollLines(row - top - Math.floor((term.rows + covered) / 2));
   }
 
   // A throw is the bar's error until a later call succeeds.
@@ -267,6 +336,21 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
       pending = true;
       refresher.request();
     }),
+    // xterm paints a decoration by its marker's row on whichever screen is
+    // active, so a switch to or from a full-screen program would show the
+    // other screen's matches on unrelated text until the re-search.
+    term.buffer.onBufferChange(() => {
+      if (!query || error !== null) return;
+      unpaint();
+      pending = true;
+      refresher.request();
+    }),
+    options.onBeforeReflow(() => {
+      if (!query || error !== null) return;
+      unpaint();
+      pending = true;
+      refresher.request();
+    }),
   ];
 
   function clear(): void {
@@ -274,8 +358,7 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
     needle = '';
     refresher.reset();
     unpaint();
-    anchor?.marker.dispose();
-    anchor = null;
+    dropAnchor();
     matches = [];
     count = 0;
     current = -1;
@@ -296,8 +379,7 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
       query = next;
       needle = findNeedle(next);
       refresher.reset();
-      anchor?.marker.dispose();
-      anchor = null;
+      dropAnchor();
       guarded(() => {
         scan();
         current = matches.length - 1;

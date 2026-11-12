@@ -131,11 +131,13 @@ describe('TerminalSurface find', () => {
     const input = getByTestId('pane-find-input') as HTMLInputElement;
     expect(document.activeElement).toBe(input);
     expect(input.placeholder).toBe('Find in terminal');
-    // The bar sits between the tab strip and the terminal.
+    // The bar floats over the terminal, after it in the same host.
     const surface = getByTestId('terminal-surface');
     const bar = getByTestId('pane-find-bar');
     expect(surface.contains(bar)).toBe(true);
-    expect(bar.parentElement?.nextElementSibling).toBe(getByTestId('stub-terminal-body-t1'));
+    const overlay = bar.closest('[data-terminal-find-overlay]')!;
+    expect(overlay.classList.contains('absolute')).toBe(true);
+    expect(overlay.previousElementSibling).toBe(getByTestId('stub-terminal-body-t1'));
     // Focus in the bar is focus in the pane's terminal.
     expect(getTerminalFocused(PANE)).toBe(true);
     getByTestId('stub-terminal-input-t1').focus();

@@ -61,9 +61,12 @@
      * `tabindex="-1"`); one that is not is reported.
      */
     fallbackFocus: () => HTMLElement | null;
+    /** Drawn as a floating panel over the content (the terminal) rather
+     * than a strip in the flow. */
+    floating?: boolean;
   }
 
-  let { paneId, title, fallbackFocus }: Props = $props();
+  let { paneId, title, fallbackFocus, floating = false }: Props = $props();
 
   let find = $derived(getPaneFind(paneId));
   let provider = $derived(getPaneFindProvider(paneId));
@@ -182,7 +185,7 @@
     {...{ [PANE_FIND_BAR_ATTR]: '' }}
     data-testid="pane-find-bar"
     data-find-mode={stepping ? 'step' : 'filter'}
-    class="flex h-8 compact:h-10 shrink-0 items-center gap-0.5 border-b border-border-subtle bg-surface-1 pl-3 pr-1.5"
+    class="flex h-8 compact:h-10 shrink-0 items-center gap-0.5 border-border-subtle bg-surface-1 pl-3 pr-1.5 {floating ? 'rounded-md border shadow-menu' : 'border-b'}"
     onkeydown={handleKeydown}
     {@attach trackFocus}
   >

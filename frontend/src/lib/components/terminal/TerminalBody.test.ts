@@ -130,7 +130,7 @@ const mocks = vi.hoisted(() => {
           return trim ? slice.trimEnd() : slice;
         },
       };
-      return { active: { type: 'normal', length: 1, baseY: 0, cursorY: 0, viewportY: 0, getNullCell: () => cell, getLine: (row: number) => (row === 0 ? line : undefined) } };
+      return { active: { type: 'normal', length: 1, baseY: 0, cursorY: 0, viewportY: 0, getNullCell: () => cell, getLine: (row: number) => (row === 0 ? line : undefined) }, onBufferChange: () => ({ dispose(): void {} }) };
     }
     registerMarker() {
       const owned: Array<() => void> = [];
@@ -470,8 +470,8 @@ describe('TerminalBody find', () => {
     expect(getPaneFindProvider(key)).toBeNull();
 
     await vi.waitFor(() => expect(getPaneFindProvider(key)?.noun).toBe('terminal'));
-    // The match, then the active match over it.
-    expect(mocks.timeline).toEqual(['resize:80x24', 'write:REPLAY', 'write:LIVE', 'parsed', 'decorate', 'decorate']);
+    // The match, then the active match in its place.
+    expect(mocks.timeline).toEqual(['resize:80x24', 'write:REPLAY', 'write:LIVE', 'parsed', 'decorate', 'undecorate', 'decorate']);
     expect(getPaneFindProvider(key)?.result).toMatchObject({ count: 1, current: 0 });
   });
 
@@ -494,7 +494,7 @@ describe('TerminalBody find', () => {
     try {
       setResolvedThemeForTest('light');
       await settle();
-      expect(mocks.timeline).toEqual(['undecorate', 'undecorate', 'decorate', 'decorate']);
+      expect(mocks.timeline).toEqual(['undecorate', 'decorate', 'undecorate', 'decorate']);
     } finally {
       setResolvedThemeForTest('dark');
     }
@@ -511,7 +511,7 @@ describe('TerminalBody find', () => {
 
     cleanup();
 
-    expect(mocks.timeline).toEqual(['undecorate', 'undecorate', 'dispose']);
+    expect(mocks.timeline).toEqual(['undecorate', 'dispose']);
     expect(getPaneFindProvider(key)).toBeNull();
   });
 });

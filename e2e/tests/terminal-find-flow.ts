@@ -66,5 +66,5 @@ export function drawer(page: Page) {
 }
 
 export function decorations(page: Page) {
-  return drawer(page).locator('.terminal-find-match');
+  return drawer(page).locator('.terminal-find-match, .terminal-find-active');
 }

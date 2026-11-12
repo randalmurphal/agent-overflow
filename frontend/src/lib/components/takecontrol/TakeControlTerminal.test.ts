@@ -92,7 +92,7 @@ const mocks = vi.hoisted(() => {
           return trim ? slice.trimEnd() : slice;
         },
       };
-      return { active: { type: 'normal', length: 1, baseY: 0, cursorY: 0, viewportY: 0, getNullCell: () => cell, getLine: (row: number) => (row === 0 ? line : undefined) } };
+      return { active: { type: 'normal', length: 1, baseY: 0, cursorY: 0, viewportY: 0, getNullCell: () => cell, getLine: (row: number) => (row === 0 ? line : undefined) }, onBufferChange: () => ({ dispose(): void {} }) };
     }
     registerMarker() {
       const owned: Array<() => void> = [];
@@ -589,6 +589,12 @@ describe('<TakeControlTerminal>', () => {
 
     const input = (await findByTestId('pane-find-input')) as HTMLInputElement;
     await waitFor(() => expect(document.activeElement).toBe(input));
+    // The bar floats over the mirror, beside its mount in the same host, so
+    // the grid and the PTY keep their size (geometry:
+    // TerminalSurface.find.browser.test.ts, same overlay class).
+    const overlay = getByTestId('pane-find-bar').closest('[data-terminal-find-overlay]')!;
+    expect(overlay.classList.contains('absolute')).toBe(true);
+    expect(overlay.previousElementSibling).toBe(getByTestId('take-control-mount'));
     // Focus in the bar is focus in the mirror, as in the xterm.
     expect(getTerminalFocused('tc-find')).toBe(true);
     mocks.getLastTerminal()!.textarea!.focus();
@@ -596,16 +602,17 @@ describe('<TakeControlTerminal>', () => {
     input.focus();
     expect(input.placeholder).toBe('Find in terminal');
     await fireEvent.input(input, { target: { value: 'needle' } });
-    // Two matches, then the newest active.
-    expect(mocks.searches).toEqual(['parsed', 'decorate', 'decorate', 'decorate']);
+    // Two matches, then the newest active in its place.
+    expect(mocks.searches).toEqual(['parsed', 'decorate', 'decorate', 'undecorate', 'decorate']);
     await waitFor(() => expect(getByTestId('pane-find-count').textContent?.trim()).toBe('2/2'));
     await fireEvent.keyDown(input, { key: 'Enter' });
-    expect(mocks.searches.slice(-2)).toEqual(['undecorate', 'decorate']);
+    // The two matches swap grounds.
+    expect(mocks.searches.slice(-4)).toEqual(['undecorate', 'decorate', 'undecorate', 'decorate']);
     await waitFor(() => expect(getByTestId('pane-find-count').textContent?.trim()).toBe('1/2'));
 
     await fireEvent.click(getByTestId('pane-find-close'));
     expect(queryByTestId('pane-find-bar')).toBeNull();
-    expect(mocks.searches.slice(-3)).toEqual(['undecorate', 'undecorate', 'undecorate']);
+    expect(mocks.searches.slice(-2)).toEqual(['undecorate', 'undecorate']);
     await waitFor(() => expect(document.activeElement).toBe(mocks.getLastTerminal()!.textarea));
     expect(isPaneFindOpen('tc-find')).toBe(false);
 
@@ -614,7 +621,7 @@ describe('<TakeControlTerminal>', () => {
     mocks.searches.length = 0;
     try {
       setResolvedThemeForTest('light');
-      const repaint = ['undecorate', 'undecorate', 'undecorate', 'decorate', 'decorate', 'decorate'];
+      const repaint = ['undecorate', 'undecorate', 'decorate', 'decorate', 'undecorate', 'decorate'];
       await waitFor(() => expect(mocks.searches).toEqual(repaint));
       setResolvedThemeForTest('dark');
       await waitFor(() => expect(mocks.searches).toEqual([...repaint, ...repaint]));
@@ -624,7 +631,7 @@ describe('<TakeControlTerminal>', () => {
     mocks.searches.length = 0;
     unmount();
     // The unmount clears its matches.
-    expect(mocks.searches).toEqual(['undecorate', 'undecorate', 'undecorate']);
+    expect(mocks.searches).toEqual(['undecorate', 'undecorate']);
     resetPaneFindForTest();
   });
 });

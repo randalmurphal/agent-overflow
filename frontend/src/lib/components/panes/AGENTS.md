@@ -25,7 +25,8 @@ is the drag handle. Open, close and placement belong to
 ## Find
 
 Every pane kind with find mounts `PaneFindBar.svelte` directly under its
-header, in the flow, keyed by its layout pane id (a companion's own id, not
+header, in the flow (a terminal floats it over the grid instead, `floating`,
+so opening it never resizes the PTY), keyed by its layout pane id (a companion's own id, not
 its source's), and registers a `PaneFindProvider` for that id while its body
 is mounted (`stores/paneFind.svelte.ts`). The store owns open, query,
 focus return and which bar holds keyboard focus (`isPaneFindBarFocused`);

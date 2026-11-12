@@ -38,6 +38,8 @@ interface Painted {
 /** A terminal of one-cell characters, `rows` high, from the top. */
 function fakeTerminal(lines: string[], rows = 24) {
   const bufferListeners = new Set<() => void>();
+  const screenListeners = new Set<() => void>();
+  const rewriteListeners = new Set<() => void>();
   const painted: Painted[] = [];
   const scrolls: number[] = [];
   let failure: Error | null = null;
@@ -69,6 +71,10 @@ function fakeTerminal(lines: string[], rows = 24) {
         viewportY: 0,
         getNullCell: () => cell,
         getLine: (row: number) => (row < lines.length ? line(lines[row]) : undefined),
+      },
+      onBufferChange(listener: () => void): IDisposable {
+        screenListeners.add(listener);
+        return { dispose: () => screenListeners.delete(listener) };
       },
     },
     registerMarker(offset: number) {
@@ -105,13 +111,21 @@ function fakeTerminal(lines: string[], rows = 24) {
         bufferListeners.add(listener);
         return { dispose: () => bufferListeners.delete(listener) };
       },
+      onBeforeReflow(listener: () => void): IDisposable {
+        rewriteListeners.add(listener);
+        return { dispose: () => rewriteListeners.delete(listener) };
+      },
     },
     /** The live paint: [row, x, width, background]. */
     live: () => painted.filter((p) => !p.disposed).map((p) => [p.row, p.x, p.width, p.background]),
     paintedCount: () => painted.length,
     changed: () => { for (const listener of bufferListeners) listener(); },
+    /** xterm switches screens (a full-screen program starts or ends). */
+    switchScreen: () => { for (const listener of screenListeners) listener(); },
+    /** A column-changing resize is about to reflow. */
+    rewrite: () => { for (const listener of rewriteListeners) listener(); },
     fail(err: Error | null) { failure = err; },
-    listenerCount: () => bufferListeners.size,
+    listenerCount: () => bufferListeners.size + screenListeners.size + rewriteListeners.size,
   };
 }
 
@@ -139,10 +153,10 @@ describe('createTerminalFind', () => {
     const { fake, find } = setup();
     find.search('  Needle ');
     expect(find.result).toMatchObject({ count: 3, current: 2, pending: false, capped: false, error: null });
+    // The active match carries only its own ground.
     expect(fake.live()).toEqual([
       [1, 4, 6, '#111111'],
       [3, 6, 6, '#111111'],
-      [3, 13, 6, '#111111'],
       [3, 13, 6, '#222222'],
     ]);
   });
@@ -169,7 +183,8 @@ describe('createTerminalFind', () => {
     find.search('needle');
     find.next();
     expect(find.result.current).toBe(0);
-    expect(fake.live().filter((p) => p[3] === '#222222')).toEqual([[1, 4, 6, '#222222']]);
+    // The stepped-from match has its match ground back.
+    expect(fake.live().filter((p) => p[0] === 1 || p[1] === 13)).toEqual([[3, 13, 6, '#111111'], [1, 4, 6, '#222222']]);
     find.previous();
     expect(find.result.current).toBe(2);
     find.previous();
@@ -196,7 +211,7 @@ describe('createTerminalFind', () => {
     find.search('e');
     expect(find.result).toMatchObject({ count: TERMINAL_FIND_MATCH_LIMIT, current: TERMINAL_FIND_MATCH_LIMIT - 1, capped: true });
     const live = fake.live();
-    expect(live.length).toBe(TERMINAL_FIND_MATCH_LIMIT + 1);
+    expect(live.length).toBe(TERMINAL_FIND_MATCH_LIMIT);
     // The newest five of the line of ten, and nothing above it.
     expect(live.filter((p) => p[0] === 1).map((p) => p[1])).toEqual([5, 6, 7, 8, 9]);
     expect(live.filter((p) => p[0] === 0)).toEqual([]);
@@ -247,7 +262,6 @@ describe('createTerminalFind', () => {
     find.restyle();
     expect(find.result).toMatchObject({ current: 0, pending: false });
     expect(fake.live()).toEqual([
-      [1, 4, 6, '#333333'],
       [3, 6, 6, '#333333'],
       [3, 13, 6, '#333333'],
       [1, 4, 6, '#444444'],
@@ -257,7 +271,7 @@ describe('createTerminalFind', () => {
   it('dispose drops its listener and its paint', () => {
     const { fake, find } = setup();
     find.search('needle');
-    expect(fake.listenerCount()).toBe(1);
+    expect(fake.listenerCount()).toBe(3);
     find.dispose();
     expect(fake.listenerCount()).toBe(0);
     expect(fake.live()).toEqual([]);
@@ -297,6 +311,28 @@ describe('createTerminalFind re-search', () => {
     await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_DELAY_MS);
     expect(find.result).toMatchObject({ count: 4, current: 2, pending: false });
     expect(fake.live().filter((p) => p[3] === '#222222')).toEqual([[3, 13, 6, '#222222']]);
+  });
+
+  it('a switch of screens clears the paint at once and re-searches the new one', async () => {
+    const { fake, find } = setup();
+    find.search('needle');
+    expect(fake.live().length).toBe(3);
+    fake.switchScreen();
+    expect(fake.live()).toEqual([]);
+    expect(find.result).toMatchObject({ count: 3, pending: true });
+    await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_DELAY_MS);
+    expect(find.result).toMatchObject({ count: 3, pending: false });
+    expect(fake.live().length).toBe(3);
+  });
+
+  it('drops the paint before a reflow, and re-searches after', async () => {
+    const { fake, find } = setup();
+    find.search('needle');
+    fake.rewrite();
+    expect(fake.live()).toEqual([]);
+    expect(find.result).toMatchObject({ count: 3, pending: true });
+    await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_DELAY_MS);
+    expect(fake.live().length).toBe(3);
   });
 
   it('re-searches at least once a second under sustained buffer changes', async () => {
