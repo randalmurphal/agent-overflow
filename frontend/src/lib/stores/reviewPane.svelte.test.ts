@@ -4922,6 +4922,41 @@ describe('reviewPane store — open new-comment editors', () => {
       }
     });
 
+    it('detaches an editor in a file longer than the row allowance, sizing nothing by that file, and still shows the diff', async () => {
+      const restore = __setRelocationBudgetForTest(1_000);
+      const rows = 5_000;
+      const big = ['diff --git a/src/app.ts b/src/app.ts', 'index aaaaaaa..eeeeeee 100644', '--- a/src/app.ts', '+++ b/src/app.ts', `@@ -1,2 +1,${rows} @@`, ...Array.from({ length: rows }, (_, index) => `+line ${index}`)].join('\n');
+      // Every row-table length the relocation could ask for; the parser
+      // grows its own arrays by powers of two.
+      const lengths: number[] = [];
+      try {
+        let patch = HEAD_A;
+        const { state } = await workspaceWith(() => patch);
+        const id = state.openDraftEditor(report)!;
+        patch = big;
+        for (const name of ['Uint8Array', 'Int32Array'] as const) {
+          vi.stubGlobal(name, new Proxy(globalThis[name], {
+            construct(target, args, newTarget) {
+              if (typeof args[0] === 'number') lengths.push(args[0]);
+              return Reflect.construct(target, args, newTarget) as object;
+            },
+          }));
+        }
+        try {
+          await state.reload();
+          await waitLoaded(state);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+        expect(state.files.map((file) => file.body.lineCount)).toEqual([rows + 5]);
+        expect(state.openEditors).toMatchObject([{ id, filePath: 'src/app.ts', state: 'detached', anchor: null }]);
+        expect(state.error).toBeNull();
+        expect(lengths).not.toContain(rows + 5);
+      } finally {
+        restore();
+      }
+    });
+
     // A tripwire: JS cannot see whether a string is a slice holding its
     // chunk alive, only whether it went through the copy.
     it('copies the quote an editor keeps', async () => {
