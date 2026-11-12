@@ -125,6 +125,18 @@ function levelFor(value: number, q1: number, q2: number, q3: number): HeatmapLev
   return 4;
 }
 
+/** Local midnight of the grid's first Sunday: the earliest instant
+ *  `buildHeatmapGrid(_, nowMs, weeks)` renders. It changes only when
+ *  `nowMs` enters a new week, so a query bounded by it keeps the same
+ *  window across refreshes. */
+export function heatmapWindowStartMs(nowMs: number, weeks = 26): number {
+  return firstWeekSundayOf(nowMs, weeks).getTime();
+}
+
+function firstWeekSundayOf(nowMs: number, weeks: number): Date {
+  return addDays(sundayOf(startOfLocalDay(nowMs)), -7 * (weeks - 1));
+}
+
 /**
  * Builds the heatmap column grid from raw per-day buckets.
  *
@@ -141,8 +153,7 @@ export function buildHeatmapGrid(
   weeks = 26,
 ): HeatmapColumn[] {
   const today = startOfLocalDay(nowMs);
-  const currentWeekSunday = sundayOf(today);
-  const firstWeekSunday = addDays(currentWeekSunday, -7 * (weeks - 1));
+  const firstWeekSunday = firstWeekSundayOf(nowMs, weeks);
 
   const byDate = new Map<string, UsageDayBucket>();
   for (const b of buckets) byDate.set(b.bucket, b);

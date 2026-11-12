@@ -12,7 +12,7 @@
   import { formatTokens } from '../../utils/format';
   import { formatUsageCostOrNull } from '../../utils/usageDisplay';
   import UsageHeatmapGrid from './UsageHeatmapGrid.svelte';
-  import { buildHeatmapGrid, type HeatmapColumn, type HeatmapCell, type UsageDayBucket } from './heatmapGrid';
+  import { buildHeatmapGrid, heatmapWindowStartMs, type HeatmapColumn, type HeatmapCell, type UsageDayBucket } from './heatmapGrid';
 
   interface Props {
     /** '' = all providers, else 'claude' | 'codex'. */
@@ -45,10 +45,12 @@
     // and reruns; 100% CPU with the modal open).
     const nowMs = Date.now();
     queryNowMs = nowMs;
-    const fromMillis = nowMs - HEATMAP_WEEKS * 7 * 24 * 60 * 60 * 1000;
+    // Bounded by the grid's first local midnight, not a rolling instant:
+    // createUsageStats treats a changed query as a new one and clears the
+    // grid before refetching, so a per-refresh bound blanks every cell.
     return new UsageQuery({
       groupBy: 'day',
-      fromMillis,
+      fromMillis: heatmapWindowStartMs(nowMs, HEATMAP_WEEKS),
       provider: currentProvider,
       projectId: currentProjectId,
       tzOffsetMinutes,
