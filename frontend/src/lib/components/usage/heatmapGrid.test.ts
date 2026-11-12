@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildHeatmapGrid, computeQuartiles, type UsageDayBucket } from './heatmapGrid';
+import { buildHeatmapGrid, computeQuartiles, heatmapWindowStartMs, type UsageDayBucket } from './heatmapGrid';
 
 // Fixed reference "now": Friday, July 3 2026 (matches this session's
 // current date). Its Sunday-start week runs Sun 2026-06-28 ..
@@ -37,6 +37,22 @@ describe('computeQuartiles', () => {
     const sorted = computeQuartiles([1, 2, 3, 4, 5]);
     const shuffled = computeQuartiles([4, 1, 5, 2, 3]);
     expect(shuffled).toEqual(sorted);
+  });
+});
+
+describe('heatmapWindowStartMs', () => {
+  it('is local midnight of the first rendered column', () => {
+    const columns = buildHeatmapGrid([], NOW, 26);
+    expect(heatmapWindowStartMs(NOW, 26)).toBe(new Date(`${columns[0].weekStartKey}T00:00:00`).getTime());
+  });
+
+  it('holds for the whole week and advances on Sunday', () => {
+    const sunday = new Date(2026, 5, 28, 0, 0, 0).getTime();
+    const saturdayLate = new Date(2026, 6, 4, 23, 59, 59).getTime();
+    const nextSunday = new Date(2026, 6, 5, 0, 0, 0).getTime();
+    expect(heatmapWindowStartMs(sunday)).toBe(heatmapWindowStartMs(NOW));
+    expect(heatmapWindowStartMs(saturdayLate)).toBe(heatmapWindowStartMs(NOW));
+    expect(heatmapWindowStartMs(nextSunday)).toBe(new Date(2026, 0, 11).getTime());
   });
 });
 
