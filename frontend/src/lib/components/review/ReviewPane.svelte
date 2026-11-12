@@ -458,7 +458,7 @@
               onCancel={(editorId) => review?.closeDraftEditor(editorId)}
               onSubmit={(editorId, body) => review?.createComment(editorId, body)}
               consumeFocus={(editorId) => review?.consumeDraftEditorFocus(editorId) ?? false}
-              onUseLine={(editorId, seen) => review?.useSuggestedLine(editorId, seen)}
+              onUseLine={(editorId, seen) => review?.useSuggestedLine(editorId, seen) ?? false}
               onMove={(editorId) => review?.moveEditor(editorId)}
               onCancelMove={() => review?.cancelEditorMove()}
             />

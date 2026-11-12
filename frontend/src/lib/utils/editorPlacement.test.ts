@@ -62,26 +62,26 @@ const BASE_TO_A = section({
 });
 
 describe('fileIdentity', () => {
-  it('reads the ids of the index line, a zero id as none', async () => {
-    expect(await fileIdentity(fileOf(BASE_TO_A), budget())).toEqual({ oldBlob: 'aaaaaaa', newBlob: 'bbbbbbb', oldPath: null, lines: 'blob' });
+  it('reads the ids of the index line, a zero id as none', () => {
+    expect(fileIdentity(fileOf(BASE_TO_A))).toEqual({ oldBlob: 'aaaaaaa', newBlob: 'bbbbbbb', oldPath: null, lines: 'blob' });
     const added = fileOf(section({ index: '0000000..1111111', meta: ['new file mode 100644'], hunk: '@@ -0,0 +1,1 @@', lines: ['+x'] }));
-    expect(await fileIdentity(added, budget())).toMatchObject({ oldBlob: null, newBlob: '1111111', lines: 'blob' });
+    expect(fileIdentity(added)).toMatchObject({ oldBlob: null, newBlob: '1111111', lines: 'blob' });
   });
 
-  it('proves no lines for a submodule or a binary section', async () => {
+  it('proves no lines for a submodule or a binary section', () => {
     const gitlink = fileOf(section({ index: 'abcdef0..1234567', hunk: '@@ -1 +1 @@', lines: ['-Subproject commit abcdef0', '+Subproject commit 1234567'] }).replace('100644', '160000'));
-    expect((await fileIdentity(gitlink, budget())).lines).toBe('none');
+    expect(fileIdentity(gitlink).lines).toBe('none');
     const binary = parseReviewFiles([
       `diff --git a/img.png b/img.png`,
       'index 1111111..2222222 100644',
       'Binary files a/img.png and b/img.png differ',
     ].join('\n'))[0];
-    expect((await fileIdentity(binary, budget())).lines).toBe('none');
+    expect(fileIdentity(binary).lines).toBe('none');
   });
 
-  it('proves a section with no index line, and a merged one, by its bytes alone', async () => {
+  it('proves a section with no index line, and a merged one, by its bytes alone', () => {
     const noIndex = fileOf(section({ index: null, hunk: '@@ -1,1 +1,1 @@', lines: ['-a', '+b'] }));
-    expect((await fileIdentity(noIndex, budget())).lines).toBe('section');
+    expect(fileIdentity(noIndex).lines).toBe('section');
     // Two edits of one path joined: the first section's ids describe
     // neither the second nor the whole.
     const merged = reviewFileFromPatchFile(mergePatchFilesByPath(parsePatchFiles([
@@ -89,20 +89,20 @@ describe('fileIdentity', () => {
       section({ index: '2222222..3333333', hunk: '@@ -9,1 +9,1 @@', lines: ['-c', '+d'] }),
     ].join('\n')))[0]);
     // The merge keeps the first section's header.
-    expect((await fileIdentity(merged, budget())).lines).toBe('blob');
+    expect(fileIdentity(merged).lines).toBe('blob');
     const flagged = { ...merged, mergedSections: 2 };
-    expect((await fileIdentity(flagged, budget())).lines).toBe('section');
+    expect(fileIdentity(flagged).lines).toBe('section');
   });
 
-  it('reads the leading metadata and no line after it', async () => {
+  it('reads no text: the parser recorded the header, and the scan reads row kinds up to the first hunk', () => {
     const file = fileOf(section({ hunk: '@@ -1,400 +1,400 @@', lines: Array.from({ length: 400 }, (_, index) => ` line ${index}`) }));
     const kind = vi.spyOn(file.body, 'kind');
     const text = vi.spyOn(file.body, 'text');
-    await fileIdentity(file, budget());
+    expect(fileIdentity(file)).toMatchObject({ oldBlob: '1111111', newBlob: '2222222', lines: 'blob' });
     // diff --git, index, ---, +++, then the hunk header ends the scan and
     // is checked to open a hunk.
     expect(kind.mock.calls.length).toBe(6);
-    expect(text.mock.calls.length).toBe(4);
+    expect(text).not.toHaveBeenCalled();
   });
 });
 
@@ -401,6 +401,43 @@ describe('relocateEditors', () => {
       const other = fileOf(section({ path: 'src/other.ts', hunk: '@@ -1,1 +1,1 @@', lines: ['-x', '+y'] }), 'src/other.ts');
       const out = await relocateEditors(new Map([['e', placedOn(file, report, '  report();')]]), [other], new RelocationBudget(1, 1), never);
       expect(out.get('e')).toMatchObject({ filePath: PATH, anchor: null, reason: 'file-gone', suggested: null });
+    });
+
+    // A reload in which `count` other files are renamed too, and the
+    // editor's file is renamed to src/moved.ts.
+    function renames(count: number): ReviewFile[] {
+      const renamed = (from: string, to: string, index: string): string => section({
+        path: to,
+        meta: ['similarity index 90%', `rename from ${from}`, `rename to ${to}`],
+        index,
+        hunk: '@@ -1,2 +1,2 @@',
+        lines: [' top', '-old', '+new'],
+      }).replace(`--- a/${to}`, `--- a/${from}`);
+      return parseReviewFiles([
+        ...Array.from({ length: count }, (_, index) => renamed(`src/f${index}.ts`, `src/g${index}.ts`, '3333333..4444444')),
+        renamed(PATH, 'src/moved.ts', 'aaaaaaa..9999999'),
+      ].join('\n'));
+    }
+
+    it('is found by the path its rename came from, reading nothing of the other renamed files', async () => {
+      const next = renames(50);
+      const others = next.filter((file) => file.path !== 'src/moved.ts');
+      const spies = others.flatMap((file) => [vi.spyOn(file.body, 'kind'), vi.spyOn(file.body, 'text'), vi.spyOn(file.body, 'whenResident'), vi.spyOn(file.body, 'slice')]);
+      const out = await relocateEditors(new Map([['e', placedOn(fileOf(BASE_TO_A), { filePath: PATH, side: 'context', oldLine: 1, newLine: 1 }, ' top')]]), next, budget(), never);
+      expect(out.get('e')).toMatchObject({ filePath: 'src/moved.ts', anchor: { filePath: 'src/moved.ts', side: 'context', oldLine: 1, newLine: 1 } });
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('decides within the budget with no text of the new diff readable, awaiting no read', async () => {
+      const next = renames(50);
+      const reads = next.flatMap((file) => [
+        vi.spyOn(file.body, 'text').mockImplementation(() => { throw new Error('evicted'); }),
+        vi.spyOn(file.body, 'whenResident'),
+        vi.spyOn(file.body, 'slice'),
+      ]);
+      const out = await relocateEditors(new Map([['e', placedOn(fileOf(BASE_TO_A), report, '  report();')]]), next, new RelocationBudget(1, 1), never);
+      expect(out.get('e')).toMatchObject({ filePath: 'src/moved.ts', anchor: null, reason: 'line-changed', suggested: null });
+      for (const spy of reads) expect(spy).not.toHaveBeenCalled();
     });
 
     it('is in the diff when its file is, even with the budget spent', async () => {

@@ -3,6 +3,7 @@
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { copyToClipboard } from '../../utils/clipboard';
   import { focusWhenShown } from '../../utils/focusWhenShown';
+  import { seenActivation } from '../../utils/seenActivation';
 
   // Stateless by design: the editor is a virtualized row, so scrolling
   // it out of the render window unmounts it. Text lives in the review
@@ -27,8 +28,9 @@
     onSubmit: (editorId: string, body: string) => Promise<void> | void;
     /** True exactly once after the user opened or moved this editor. */
     consumeFocus?: (editorId: string) => boolean;
-    /** "Use this line", with the suggestion the reader pressed on. */
-    onUseLine?: (editorId: string, seen: Pick<EditorRow, 'generation' | 'suggested'>) => void;
+    /** "Use this line", with the suggestion the reader pressed on; false
+     * when it was refused (the diff changed since). */
+    onUseLine?: (editorId: string, seen: Pick<EditorRow, 'generation' | 'suggested'>) => boolean;
     onMove?: (editorId: string) => void;
     onCancelMove?: () => void;
   }
@@ -52,10 +54,6 @@
   });
   $effect(() => () => cancelFocus?.());
 
-  // What "Use this line" was pressed on: a reload between the press and
-  // the click must not make it take another suggestion.
-  let pressed: Pick<EditorRow, 'generation' | 'suggested'> | null = null;
-
   async function submit(): Promise<void> {
     if (!canSubmit) return;
     submitting = true;
@@ -68,12 +66,16 @@
     }
   }
 
-  function useLine(): void {
-    const seen = pressed ?? { generation: editor.generation, suggested: editor.suggested };
-    pressed = null;
-    onUseLine?.(editor.id, seen);
-    textarea?.focus({ preventScroll: true });
-  }
+  // "Use this line" takes the suggestion it was pressed on: a reload
+  // between the press and the click must not make it take another. Taken,
+  // the text has focus; refused, the button keeps it, showing the new
+  // suggestion for the next press.
+  const useLine = seenActivation(
+    () => ({ generation: editor.generation, suggested: editor.suggested }),
+    (seen) => {
+      if (onUseLine?.(editor.id, seen)) textarea?.focus({ preventScroll: true });
+    },
+  );
 
   function onKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
@@ -101,6 +103,7 @@
   {/if}
   <textarea
     bind:this={textarea}
+    data-editor-control="text"
     value={body}
     rows="3"
     class="w-full resize-none rounded border border-border-subtle bg-surface-0 px-2 py-1.5 text-[0.75rem] leading-relaxed text-fg focus:border-accent/60 focus:outline-none"
@@ -110,37 +113,37 @@
   {#if editor.state === 'gone'}
     <div class="mt-2 flex items-center justify-end gap-2" data-testid="review-draft-editor-note">
       <p class="mr-auto min-w-0 text-[0.6875rem] text-fg-muted">This file is no longer in the diff.</p>
-      <button type="button" class={quietButton} onclick={(event) => { void copyToClipboard(body, event); }}>Copy text</button>
-      <button type="button" class={quietButton} onclick={() => onCancel(editor.id)}>Discard</button>
+      <button type="button" class={quietButton} data-editor-control="copy" onclick={(event) => { void copyToClipboard(body, event); }}>Copy text</button>
+      <button type="button" class={quietButton} data-editor-control="discard" onclick={() => onCancel(editor.id)}>Discard</button>
     </div>
   {:else}
     {#if editor.state === 'placed' && editor.repeated && !editor.armed}
       <div class="mt-2 flex items-center justify-end gap-2" data-testid="review-draft-editor-note">
         <p class="mr-auto min-w-0 text-[0.6875rem] text-fg-muted">This line appears more than once in this view, so a comment cannot be attached to it.</p>
-        <button type="button" class={quietButton} onclick={() => onMove?.(editor.id)}>Move</button>
+        <button type="button" class={quietButton} data-editor-control="move" onclick={() => onMove?.(editor.id)}>Move</button>
       </div>
     {:else if editor.state === 'detached' || editor.armed}
       <div class="mt-2 flex items-center justify-end gap-2" data-testid="review-draft-editor-note">
         {#if editor.armed}
           <p class="mr-auto min-w-0 text-[0.6875rem] text-fg-muted">Choose a line for this comment.</p>
-          <button type="button" class={quietButton} onclick={() => onCancelMove?.()}>Cancel</button>
+          <button type="button" class={quietButton} data-editor-control="cancel-move" onclick={() => onCancelMove?.()}>Cancel</button>
         {:else}
           <p class="mr-auto min-w-0 text-[0.6875rem] text-fg-muted">The file changed under this comment.</p>
           <button
             type="button"
             class={primaryButton}
+            data-editor-control="use-line"
             disabled={!editor.suggested}
-            onpointerdown={() => { pressed = { generation: editor.generation, suggested: editor.suggested }; }}
-            onclick={useLine}
+            {@attach useLine}
           >Use this line</button>
-          <button type="button" class={quietButton} onclick={() => onMove?.(editor.id)}>Move</button>
+          <button type="button" class={quietButton} data-editor-control="move" onclick={() => onMove?.(editor.id)}>Move</button>
         {/if}
       </div>
     {/if}
     {#if !editor.armed}
       <div class="mt-2 flex justify-end gap-2">
-        <button type="button" class={quietButton} onclick={() => onCancel(editor.id)}>Cancel</button>
-        <button type="button" class={primaryButton} disabled={!canSubmit} onclick={() => { void submit(); }}>Add comment</button>
+        <button type="button" class={quietButton} data-editor-control="cancel" onclick={() => onCancel(editor.id)}>Cancel</button>
+        <button type="button" class={primaryButton} data-editor-control="add" disabled={!canSubmit} onclick={() => { void submit(); }}>Add comment</button>
       </div>
     {/if}
   {/if}

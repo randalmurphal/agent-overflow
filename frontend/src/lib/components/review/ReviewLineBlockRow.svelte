@@ -10,6 +10,7 @@
   import type { ReviewFile } from '../../utils/patchStore';
   import { REVIEW_LINE_HEIGHT_PX } from '../../utils/reviewRows';
   import { findLineKey } from '../../utils/reviewFindScan';
+  import { seenActivation } from '../../utils/seenActivation';
 
   // One review line block (≤ REVIEW_LINE_BLOCK_MAX_LINES display rows).
   //
@@ -73,13 +74,11 @@
       && rowMatchesAnchor(ROW_TYPES[row.side], row.oldLine, row.newLine, target));
   }
 
-  // What the add button was pressed on: a reload between the press and
-  // the click must not open the comment on the row that replaced it.
-  let pressed: { anchor: EditorAnchor; generation: number | undefined } | null = null;
-  function addComment(anchor: EditorAnchor): void {
-    const at = pressed ?? { anchor, generation };
-    pressed = null;
-    onAddComment?.(at.anchor, at.generation);
+  // An add button acts on the row and diff it was pressed on: a reload
+  // between the press and the click must not open the comment on the row
+  // that replaced it.
+  function addComment(anchor: () => EditorAnchor) {
+    return seenActivation(() => ({ anchor: anchor(), generation }), (at) => onAddComment?.(at.anchor, at.generation));
   }
   // The tree's selected-row wash.
   const TARGET_CLASS = 'before:bg-accent/15';
@@ -170,8 +169,7 @@
         class="flex size-4 items-center justify-center rounded-[3px] bg-accent text-[0.6875rem] font-semibold leading-none text-accent-fg opacity-0 transition-opacity duration-75 group-hover:opacity-100 focus-visible:opacity-100 compact:opacity-100 hover:brightness-110 focus:outline-none"
         aria-label={`Add ${side} comment`}
         data-testid="review-add-comment"
-        onpointerdown={() => { pressed = { anchor, generation }; }}
-        onclick={() => addComment(anchor)}
+        {@attach addComment(() => anchor)}
       >
         +
       </button>

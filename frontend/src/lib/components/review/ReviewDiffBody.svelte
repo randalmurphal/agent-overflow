@@ -337,13 +337,16 @@
   let prevPrThreads: readonly ReviewThread[] = prThreads;
   // svelte-ignore state_referenced_locally
   let prevScrollKey = scrollKey;
-  // The focused comment editor, with its offset from the viewport top and
-  // its caret, read before a rebuild reaches the list: a reload keeps that
-  // editor where it was on screen rather than the line above, even when
-  // its row moved out of the rows the list holds (which unmounts it).
+  // The focused comment editor, with its offset from the viewport top, the
+  // control in it that has focus and the caret, read before a rebuild
+  // reaches the list: a reload keeps that editor where it was on screen
+  // rather than the line above, even when its row moved out of the rows the
+  // list holds (which unmounts it).
   interface FocusedEditor {
     id: string;
     top: number;
+    /** The focused control's key in the editor (data-editor-control). */
+    control: string | null;
     selection: [number, number, 'forward' | 'backward' | 'none'] | null;
   }
   let focusedEditor: FocusedEditor | null = null;
@@ -369,13 +372,15 @@
       const selection = active instanceof HTMLTextAreaElement
         ? [active.selectionStart, active.selectionEnd, active.selectionDirection] as FocusedEditor['selection']
         : null;
-      focusedEditor = { id, top, selection };
+      focusedEditor = { id, top, control: active!.getAttribute('data-editor-control'), selection };
     });
   });
   // Puts the focused editor's row back at the offset the box had, by its
-  // index in the list (the row may not be mounted), then gives the box
-  // back its focus and caret when it shows and corrects by where it is
-  // measured. False when the editor has no row now.
+  // index in the list (the row may not be mounted), then focuses the same
+  // control of the box once it shows (the text with its caret): the element
+  // that kept focus, or the one a remount put in its place. Then the offset
+  // is corrected by where the box is measured. False when the editor has no
+  // row now.
   function restoreFocusedEditor(keep: FocusedEditor): boolean {
     const el = scrollEl;
     const ref = listRef;
@@ -384,8 +389,13 @@
     const top = editorTop(keep.id);
     if (top === null) ref.scrollToIndex(index, { offset: -keep.top });
     else if (top !== keep.top) scroll.applyScrollTarget(Math.max(0, el.scrollTop + top - keep.top));
+    const control = (): HTMLElement | null => {
+      const node = editorNode(keep.id);
+      const same = keep.control ? node?.querySelector<HTMLElement>(`[data-editor-control="${CSS.escape(keep.control)}"]:not(:disabled)`) : null;
+      return same ?? node?.querySelector('textarea') ?? null;
+    };
     refocus?.();
-    refocus = focusWhenShown(() => editorNode(keep.id)?.querySelector('textarea'), (area) => {
+    refocus = focusWhenShown(control, (area) => {
       if (keep.selection && area instanceof HTMLTextAreaElement) area.setSelectionRange(...keep.selection);
       const now = editorTop(keep.id);
       if (now !== null && now !== keep.top) scroll.applyScrollTarget(Math.max(0, el.scrollTop + now - keep.top));

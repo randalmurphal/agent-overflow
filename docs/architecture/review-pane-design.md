@@ -367,6 +367,13 @@ as that line: GitHub on the right at its new number, GitLab with
 `old_line` and `new_line` both set; a draft saved before this with one
 number there still shows on its line and is left out of the review.
 
+A gutter add button and "Use this line" act on the row, suggestion and
+diff that were on screen when the press began (`utils/seenActivation.ts`):
+a press begun before a reload is refused, and the next press works. A
+refresh leaves focus on the editor control that had it. An editor whose
+file a reload renamed finds it by the `rename from` path the parser
+recorded, reading no file's text.
+
 A save is checked synchronously against the diff on screen (its subject,
 source and head, committed with its files), never against the controls'
 subject while another loads. Rows an expansion supplied carry no version

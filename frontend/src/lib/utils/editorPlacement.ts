@@ -1,5 +1,5 @@
 import { namesOneRow, rowMatchesAnchor, RowWalker, type RowType } from './patchRows';
-import { LINE_HUNK, LINE_META, whenResident, type BodySegment, type ReviewFile } from './patchStore';
+import { LINE_HUNK, LINE_META, whenResident, type ReviewFile } from './patchStore';
 import type { CommentAnchor } from './reviewRows';
 
 // Which line of a reloaded diff an open new-comment editor is on. A line
@@ -72,48 +72,25 @@ export interface FileIdentity {
   readonly lines: 'blob' | 'section' | 'none';
 }
 
-const ZERO_ID = /^0+$/;
-const INDEX_LINE = /^index ([0-9a-f]+)\.\.([0-9a-f]+)(?: ([0-7]+))?$/;
-const MODE_LINE = /^(?:new file|deleted file|old|new) mode ([0-7]+)$/;
-const SUBMODULE_MODE = '160000';
-
-/** Reads a file's section header: the text of the metadata lines that
- * lead its body, and nothing after them. */
-export async function fileIdentity(file: ReviewFile, budget: RelocationBudget): Promise<FileIdentity> {
+/** What a file's section header proves, from what the parser read of it
+ * (ReviewFile.header) and the kinds of its rows: no text, no wait. */
+export function fileIdentity(file: ReviewFile): FileIdentity {
   const body = file.body;
-  const meta: number[] = [];
-  for (let index = 0; index < body.lineCount && body.kind(index) === LINE_META; index += 1) meta.push(index);
-  budget.spend(meta.length);
+  const header = file.header;
+  const oldPath = header?.oldPath ?? null;
+  let meta = 0;
+  while (meta < body.lineCount && body.kind(meta) === LINE_META) meta += 1;
   // Text after the header that does not open a hunk (`Binary files …
   // differ`, a binary patch) has no line numbers to prove.
-  let noLines = body.hasMarkers || (meta.length < body.lineCount && body.kind(meta.length) !== LINE_HUNK);
-  const ranges: BodySegment[] = meta.flatMap((index) => body.slice(index, index + 1));
-  const texts = await whenResident(ranges, () => meta.map((index) => body.text(index)));
-  let sections = 0;
-  let oldBlob: string | null = null;
-  let newBlob: string | null = null;
-  let indexed = false;
-  let oldPath: string | null = null;
-  for (const text of texts) {
-    if (text.startsWith('diff --git ')) sections += 1;
-    else if (text.startsWith('rename from ')) oldPath = text.slice('rename from '.length);
-    const index = INDEX_LINE.exec(text);
-    if (index) {
-      indexed = true;
-      oldBlob = ZERO_ID.test(index[1]) ? null : index[1];
-      newBlob = ZERO_ID.test(index[2]) ? null : index[2];
-      if (index[3] === SUBMODULE_MODE) noLines = true;
-    }
-    if (MODE_LINE.exec(text)?.[1] === SUBMODULE_MODE) noLines = true;
-  }
+  const noLines = body.hasMarkers || (meta < body.lineCount && body.kind(meta) !== LINE_HUNK) || header?.submodule === true;
   if (noLines) return { oldBlob: null, newBlob: null, oldPath, lines: 'none' };
   // A section merged from several (an Edits file) or with no index line
   // proves only its own bytes: its first section's ids describe none of
   // the rest.
-  if ((file.mergedSections ?? 1) > 1 || sections > 1 || !indexed || (oldBlob === null && newBlob === null)) {
+  if (!header || (file.mergedSections ?? 1) > 1 || header.sections > 1 || !header.indexed || (header.oldBlob === null && header.newBlob === null)) {
     return { oldBlob: null, newBlob: null, oldPath, lines: 'section' };
   }
-  return { oldBlob, newBlob, oldPath, lines: 'blob' };
+  return { oldBlob: header.oldBlob, newBlob: header.newBlob, oldPath, lines: 'blob' };
 }
 
 async function sectionKey(file: ReviewFile, budget: RelocationBudget): Promise<string | null> {
@@ -127,11 +104,6 @@ async function sectionKey(file: ReviewFile, budget: RelocationBudget): Promise<s
  * run. */
 export class RelocationBudget {
   constructor(private rows: number, private bytes: number) {}
-
-  /** No allowance limit: reading a header to find a file is not spent. */
-  static unlimited(): RelocationBudget {
-    return new RelocationBudget(Infinity, Infinity);
-  }
 
   spend(rows: number, bytes = 0): void {
     this.rows -= rows;
@@ -449,11 +421,11 @@ export async function relocateEditors<K>(
 ): Promise<Map<K, RelocationOutcome>> {
   const out = new Map<K, RelocationOutcome>();
   const proofs = new Map<K, EditorProof>();
-  const identities = new Map<ReviewFile, Promise<FileIdentity>>();
-  const identityOf = (file: ReviewFile, spend: RelocationBudget = budget): Promise<FileIdentity> => {
+  const identities = new Map<ReviewFile, FileIdentity>();
+  const identityOf = (file: ReviewFile): FileIdentity => {
     let identity = identities.get(file);
     if (!identity) {
-      identity = fileIdentity(file, spend);
+      identity = fileIdentity(file);
       identities.set(file, identity);
     }
     return identity;
@@ -463,7 +435,7 @@ export async function relocateEditors<K>(
   };
 
   // Each target's file in the new diff, by path or by the path a rename
-  // came from. Reading the renamed files' headers is not spent.
+  // came from, as the parser recorded it: a lookup that reads nothing.
   const byPath = new Map(files.map((file) => [file.path, file]));
   const fileOf = new Map<K, ReviewFile>();
   let renamed: Map<string, ReviewFile> | null = null;
@@ -473,10 +445,8 @@ export async function relocateEditors<K>(
       if (renamed === null) {
         renamed = new Map();
         for (const candidate of files) {
-          if (candidate.kind !== 'renamed') continue;
-          const from = (await identityOf(candidate, RelocationBudget.unlimited())).oldPath;
-          check();
-          if (from !== null) renamed.set(from, candidate);
+          const from = candidate.header?.oldPath;
+          if (from) renamed.set(from, candidate);
         }
       }
       file = renamed.get(target.filePath);
@@ -503,8 +473,7 @@ export async function relocateEditors<K>(
     for (const [file, keys] of bySource) {
       const requests = keys.map((key) => sourceRequest(targets.get(key)!.source!.anchor));
       findRows(file, requests, budget);
-      const identity = await identityOf(file);
-      check();
+      const identity = identityOf(file);
       const key = identity.lines === 'section' ? await sectionKey(file, budget) : null;
       check();
       keys.forEach((targetKey, index) => {
@@ -538,14 +507,14 @@ export async function relocateEditors<K>(
     // rows for the suggestions; then the text of the rows found, for the
     // guard.
     for (const [file, keys] of byTarget) {
-      const identity = await identityOf(file);
-      check();
+      const identity = identityOf(file);
       const needsKey = identity.lines === 'section' && keys.some((key) => proofs.get(key)!.kind === 'section');
       const key = needsKey ? await sectionKey(file, budget) : null;
       check();
       const requests = keys.map((targetKey) => targetRequest(proofs.get(targetKey)!, targets.get(targetKey)!.side, identity, key));
       const table = findRows(file, requests.filter((request) => request !== null), budget, true)!;
       const located = requests.flatMap((request) => (request?.row ? [request.row.lineIndex] : []));
+      budget.spend(located.length);
       const ranges = located.flatMap((index) => file.body.slice(index, index + 1));
       const texts = await whenResident(ranges, () => new Map(located.map((index) => [index, file.body.text(index)])));
       check();
@@ -598,6 +567,7 @@ async function suggest<K>(
     ? await body.whenResident(() => suggestRows(table, list, (lineIndex) => body.text(lineIndex)))
     : suggestRows(table, list, null);
   const found = rows.filter((at) => at >= 0);
+  budget.spend(found.length);
   const ranges = found.flatMap((at) => body.slice(table.lineIndex[at], table.lineIndex[at] + 1));
   const quotes = await whenResident(ranges, () => new Map(found.map((at) => [at, body.text(table.lineIndex[at])])));
   keys.forEach((key, index) => {

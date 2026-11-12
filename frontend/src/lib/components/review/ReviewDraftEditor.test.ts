@@ -48,7 +48,7 @@ describe('<ReviewDraftEditor> keyboard submit', () => {
   });
 });
 
-function renderEditor(row: EditorRow, handlers: Partial<Record<'onSubmit' | 'onCancel' | 'onUseLine' | 'onMove' | 'onCancelMove', (...args: any[]) => void>> = {}) {
+function renderEditor(row: EditorRow, handlers: Partial<Record<'onSubmit' | 'onCancel' | 'onUseLine' | 'onMove' | 'onCancelMove', (...args: any[]) => any>> = {}) {
   const props = {
     editor: row,
     body: 'draft text',
@@ -66,7 +66,7 @@ function renderEditor(row: EditorRow, handlers: Partial<Record<'onSubmit' | 'onC
 describe('<ReviewDraftEditor> whose file changed', () => {
   it('says so, offers the suggested line or a move, and cannot be saved', async () => {
     const onSubmit = vi.fn();
-    const onUseLine = vi.fn();
+    const onUseLine = vi.fn(() => true);
     const onMove = vi.fn();
     const { view, textarea } = renderEditor({ ...editor, state: 'detached', anchor: null, suggested }, { onSubmit, onUseLine, onMove });
     expect(textarea.value).toBe('draft text');
@@ -102,6 +102,15 @@ describe('<ReviewDraftEditor> whose file changed', () => {
     await view.rerender({ editor: { ...editor, state: 'detached', anchor: null, suggested: later, generation: 2 } });
     await fireEvent.click(view.getByRole('button', { name: 'Use this line' }));
     expect(onUseLine).toHaveBeenCalledWith('e1', { generation: 1, suggested });
+  });
+
+  it('keeps focus on "Use this line" when the line is refused', async () => {
+    const { view, textarea } = renderEditor({ ...editor, state: 'detached', anchor: null, suggested }, { onUseLine: () => false });
+    const button = view.getByRole('button', { name: 'Use this line' });
+    button.focus();
+    await fireEvent.click(button);
+    expect(document.activeElement).toBe(button);
+    expect(document.activeElement).not.toBe(textarea);
   });
 
   it('shows no note on a placed editor', () => {

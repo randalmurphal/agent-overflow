@@ -5126,12 +5126,15 @@ describe('reviewPane store — open new-comment editors', () => {
         return { data: patch.slice(offset, next), offset, nextOffset: next, eof: next === patch.length };
       };
       setBindingMock('OpenWorkspaceDiff', async () => ({ id: `diff-${++opened}`, chunk: chunkAt(0), headSha: '' }));
+      let furthest = 0;
       setBindingMock('ReadReviewDiff', async (handle: string, offset: number) => {
-        // The diff on screen reads its evicted header again for the proof.
-        if (handle === 'diff-1' && hold) {
+        // The reloaded diff reads its evicted text again for the editors'
+        // rows.
+        if (handle === 'diff-2' && hold && offset < furthest) {
           heldReads += 1;
           await hold;
         }
+        if (handle === 'diff-2') furthest = Math.max(furthest, offset + 40);
         return chunkAt(offset);
       });
       setBindingMock('ReleaseReviewDiff', async () => undefined);
@@ -5158,6 +5161,81 @@ describe('reviewPane store — open new-comment editors', () => {
       ]);
       expect(state.draftBodyFor(discarded)).toBe('');
       expect(state.files.map((file) => file.path)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    });
+
+    // A diff of `src/a.ts` and `count` other files, then a reload in which
+    // every one of them is renamed. Its text is held to 100 bytes, so each
+    // file's text is evicted as the next arrives; `reread` lists the byte
+    // offsets the new diff's text is read again at.
+    async function renamedWithEvictedText(count: number) {
+      const others = Array.from({ length: count }, (_, index) => `src/f${index}.ts`);
+      const before = [patchFor('src/a.ts', 3), ...others.map((path) => patchFor(path, 3))].join('\n');
+      const renamed = (from: string, to: string): string => [
+        `diff --git a/${from} b/${to}`,
+        'similarity index 90%',
+        `rename from ${from}`,
+        `rename to ${to}`,
+        'index 1111111..2222222 100644',
+        `--- a/${from}`,
+        `+++ b/${to}`,
+        '@@ -1,3 +1,3 @@',
+        ' line 1',
+        '-line 2',
+        '+line two',
+        ' line 3',
+      ].join('\n');
+      const first = renamed('src/a.ts', 'src/moved.ts');
+      const after = [first, ...others.map((path) => renamed(path, path.replace('/f', '/g')))].join('\n');
+      setPatchTextBudgetForTest(100);
+      let current = before;
+      let opened = 0;
+      const reread: number[] = [];
+      const furthest = new Map<string, number>();
+      const chunkAt = (patch: string, offset: number) => {
+        const next = Math.min(patch.length, offset + 40);
+        return { data: patch.slice(offset, next), offset, nextOffset: next, eof: next === patch.length };
+      };
+      const texts = new Map<string, string>();
+      setBindingMock('OpenWorkspaceDiff', async () => {
+        const handle = `diff-${++opened}`;
+        texts.set(handle, current);
+        furthest.set(handle, 40);
+        return { id: handle, chunk: chunkAt(current, 0), headSha: '' };
+      });
+      setBindingMock('ReadReviewDiff', async (handle: string, offset: number) => {
+        if (offset < furthest.get(handle)!) {
+          if (handle !== 'diff-1') reread.push(offset);
+        } else furthest.set(handle, offset + 40);
+        return chunkAt(texts.get(handle)!, offset);
+      });
+      setBindingMock('ReleaseReviewDiff', async () => undefined);
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      const id = state.openDraftEditor({ filePath: 'src/a.ts', side: 'new', newLine: 2, selectedText: 'line 2' })!;
+      current = after;
+      await state.reload();
+      await waitLoaded(state);
+      return { state, id, reread, firstLength: first.length, count };
+    }
+
+    it('finds a renamed editor\'s file by the path it came from, reading no other renamed file again', async () => {
+      const { state, id, reread, firstLength, count } = await renamedWithEvictedText(40);
+      expect(state.files).toHaveLength(count + 1);
+      expect(state.openEditors).toMatchObject([{ id, filePath: 'src/moved.ts', state: 'detached' }]);
+      // Only the editor's own file is read again: its rows, for the suggestion.
+      expect(reread.every((offset) => offset < firstLength)).toBe(true);
+    });
+
+    it('publishes the diff with the relocation budget spent and every renamed file\'s text evicted', async () => {
+      const restore = __setRelocationBudgetForTest(1, 1);
+      try {
+        const { state, id, reread, count } = await renamedWithEvictedText(40);
+        expect(state.files).toHaveLength(count + 1);
+        expect(state.openEditors).toMatchObject([{ id, filePath: 'src/moved.ts', state: 'detached', anchor: null }]);
+        expect(reread).toEqual([]);
+      } finally {
+        restore();
+      }
     });
   });
 

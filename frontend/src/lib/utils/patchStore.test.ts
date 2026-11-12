@@ -286,6 +286,42 @@ describe('PatchParser', () => {
     expect(parser.sourceKey()).toBe('');
   });
 
+  it('records what each header says as it parses, at every chunking, and the same as a PatchFile of it', () => {
+    const patch = [
+      'diff --git a/src/old.ts b/src/new.ts',
+      'similarity index 90%',
+      'rename from src/old.ts',
+      'rename to src/new.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/old.ts',
+      '+++ b/src/new.ts',
+      '@@ -1,1 +1,1 @@',
+      '-rename from not/a/header',
+      '+index 3333333..4444444 100644',
+      'diff --git a/lib b/lib',
+      'index abcdef0..1234567 160000',
+      '--- a/lib',
+      '+++ b/lib',
+      '@@ -1 +1 @@',
+      '-Subproject commit abcdef0',
+      '+Subproject commit 1234567',
+      'diff --git a/added.ts b/added.ts',
+      'new file mode 100644',
+      'index 0000000..5555555',
+      '--- /dev/null',
+      '+++ b/added.ts',
+      '@@ -0,0 +1 @@',
+      '+x',
+    ].join('\n');
+    const expected = [
+      { sections: 1, oldPath: 'src/old.ts', indexed: true, oldBlob: '1111111', newBlob: '2222222', submodule: false },
+      { sections: 1, oldPath: null, indexed: true, oldBlob: 'abcdef0', newBlob: '1234567', submodule: true },
+      { sections: 1, oldPath: null, indexed: true, oldBlob: null, newBlob: '5555555', submodule: false },
+    ];
+    for (const size of [1, 7, 64, 10_000]) expect(parseInChunks(patch, () => size).files.map((file) => file.header)).toEqual(expected);
+    expect(parsePatchFiles(patch).map((file) => reviewFileFromPatchFile(file).header)).toEqual(expected);
+  });
+
   it('holds one copy of the text and a few bytes per line', () => {
     const patch = randomPatch(7).repeat(50);
     const { parser } = parseInChunks(patch, () => 4096);
