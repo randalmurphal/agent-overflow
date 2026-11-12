@@ -257,7 +257,57 @@ func TestBrowserCompanionPaneDetachUnbindsItsConnectionTie(t *testing.T) {
 		unsubscribe: app.BrowserCompanionPaneDetach,
 		key:         companionPaneCleanupKey,
 		live:        func(id string) bool { return manager.SetPaneRect(id, appbrowser.PaneRect{}) == nil },
+		principal:   transport.ConnPrincipal{HostWindow: true},
 	})
+}
+
+// Only the host's own window mounts a browser pane: the native view lives
+// there. A connection that is not it (a browser tab on this machine with the
+// same launch credential) is refused and mounts nothing; an in-process
+// caller is the host.
+func TestBrowserCompanionPaneAttachIsTheHostWindowsAlone(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-host-window")
+	access, err := app.browserAccess(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.NewPage(t.Context(), access); err != nil {
+		t.Fatalf("open page: %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		ctx   func() context.Context
+		mount bool
+	}{
+		{"the host window", func() context.Context {
+			ctx, _ := transport.WithConnState(t.Context(), transport.ConnPrincipal{HostWindow: true})
+			return ctx
+		}, true},
+		{"another client with the launch credential", func() context.Context {
+			ctx, _ := transport.WithConnState(t.Context(), transport.ConnPrincipal{})
+			return ctx
+		}, false},
+		{"an in-process caller", func() context.Context { return t.Context() }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pane, err := app.BrowserCompanionPaneAttach(tc.ctx(), thread.ID)
+			if !tc.mount {
+				if !errors.Is(err, errBrowserPaneNotHostWindow) || pane.ID != "" {
+					t.Fatalf("attach = %+v, %v; want the host-window refusal", pane, err)
+				}
+				return
+			}
+			if err != nil || pane.ID == "" {
+				t.Fatalf("attach = %+v, %v", pane, err)
+			}
+			manager.DetachPane(pane.ID)
+		})
+	}
 }
 
 func TestDeleteThreadReleasesItsBrowserPagesAndToolToggles(t *testing.T) {
@@ -839,7 +889,7 @@ func TestBrowserFindRunAfterItsConnectionClosedIsEndedByTheCleanup(t *testing.T)
 	if _, err := app.BrowserCompanionDo(t.Context(), thread.ID, BrowserCompanionAction{Kind: "show", PageID: pageID}); err != nil {
 		t.Fatal(err)
 	}
-	ctx, conn := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	ctx, conn := transport.WithConnState(context.Background(), transport.ConnPrincipal{HostWindow: true})
 	mount, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -446,11 +447,14 @@ func wkPresentView(view wkView, placement PanePlacement) error {
 	})
 }
 
+// wkHideView parks the view. A view that held keyboard focus gives it to the
+// SPA's webview; the error says when that handoff failed.
 func wkHideView(view wkView, slot int) error {
-	return view.do(func(view unsafe.Pointer) {
-		C.ao_wkv_host_hide(view)
-		C.ao_wkv_host_park(view, C.int(slot))
-	})
+	released := 0
+	if err := view.do(func(view unsafe.Pointer) { released = int(C.ao_wkv_host_hide(view, C.int(slot))) }); err != nil {
+		return err
+	}
+	return focusReleaseError(released)
 }
 
 // Every C string below is allocated INSIDE its dispatch closure and freed
@@ -544,8 +548,14 @@ func wkAdoptView(view unsafe.Pointer, pageID, profileID uint64, userScript, cons
 	return nil
 }
 
+// wkCloseView closes the view, giving keyboard focus it held to the SPA's
+// webview. No caller can act on a failed handoff, so it is logged here.
 func wkCloseView(view unsafe.Pointer) {
-	wkDo(func() { C.ao_wkv_view_close(view) })
+	released := 0
+	wkDo(func() { released = int(C.ao_wkv_view_close(view)) })
+	if err := focusReleaseError(released); err != nil {
+		log.Printf("browser: close a page: %v", err)
+	}
 }
 
 func wkSetViewSize(view wkView, width, height int) error {

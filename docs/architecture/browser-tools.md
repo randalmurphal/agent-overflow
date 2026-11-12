@@ -147,9 +147,32 @@ so AO's chords have to be taken back at the engine:
   bare Escape, leave focus in the page. No command focuses anything for
   this; the command puts DOM focus where it wants it (the find bar's input,
   the palette), and the keys typed next reach it.
+- A page that is not visible never holds keyboard focus. Each way a pane
+  stops showing a page (a tab switch, the pane closing, a compact screen
+  change, the companion hidden) is the engine's hide of that page, and the
+  hide, like the close of a page, gives focus the page held to the app's
+  webview through the same code as a claimed chord's handoff
+  (`ao_wk_focus_app`, `ao_wkv_focus_app`, and the launcher's
+  `releaseFocus`). Showing a page takes no focus.
+- Only the host's own window mounts a pane (`BrowserCompanionPaneAttach`
+  refuses any other connection; see transport.md, the host-window cookie):
+  the native view lives in that window. A browser tab on the host offers
+  and opens no pane, as a connected browser does. Both openers, a state
+  push (which the chip's show produces) and the reconcile on a thread
+  mount, go through `openBrowserCompanion`, which asks
+  `canUseNativeBrowser`; a mod-clicked link asks it before minting a
+  page, and no layout restore or companion stash reopens a browser pane.
+  A thread's pages are presented in one mount, its earliest attached live
+  one (`presenterLocked`), until that mount detaches; the presentation,
+  the pages' size, and the routed chord and Escape all name it.
 - The chord then reaches the frontend as an `accelerator` event on
   `browser:companion-state`, carrying the BOUND spelling (Shift glyph
-  variants are normalized by the match). The store focuses the thread's
+  variants are normalized by the match) and the presenting mount
+  (`mount`). Every host client receives the event, and only the one holding
+  that mount replays it; a chord in a page no pane shows is dropped. An
+  `escape` event carries the mount too, and closes only that client's find
+  bar. The
+  store focuses the thread's
   browser companion and replays the chord as a window keydown, so `when`
   gates, rebinds and the palette all behave as if the SPA had been focused.
   A bound chord whose `when` fails there is a no-op — the page never gets it

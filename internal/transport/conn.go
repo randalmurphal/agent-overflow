@@ -132,6 +132,9 @@ type connProfile struct {
 	// ordinary case for the local webview afterwards — and such a
 	// connection is not tracked by the live-session registry.
 	sessionID string
+	// hostWindow records whether the peer is the host's own window
+	// (Server.hostWindow).
+	hostWindow bool
 }
 
 // connSettings carries the server-config knobs runConnHandler needs.
@@ -323,8 +326,9 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// Handlers that scope durable state read the session first and fall
 	// back to the screen, which is why neither may be dropped here.
 	connCtx, state := WithConnState(connCtx, ConnPrincipal{
-		Client:    profile.client,
-		SessionID: profile.sessionID,
+		Client:     profile.client,
+		SessionID:  profile.sessionID,
+		HostWindow: profile.hostWindow,
 	})
 	// Teardown, in order: stop event delivery and cancel every call the
 	// moment the caller is gone, join the calls and loops so nothing still

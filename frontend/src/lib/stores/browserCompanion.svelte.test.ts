@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyBrowserCompanionState,
+  attachBrowserCompanion,
   browserCompanionAct,
+  canUseNativeBrowser,
   hydrateBrowserCompanionState,
   closeFocusedBrowserTab,
   reconcileBrowserCompanionForPane,
   resetBrowserCompanionForTest,
+  setBrowserPaneMountForTest,
 } from './browserCompanion.svelte';
 import { BROWSER_FIND_DEBOUNCE_MS, createBrowserFind } from './browserFind.svelte';
-import { companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { createPane, focusPane, getFocusedPaneId, getPane, resetPanesForTest } from './panes.svelte';
 import { makeCommandContext } from './builtinCommands.svelte';
@@ -21,6 +24,7 @@ import { noteThread, forgetBackendEntities } from '../transport/entityIndex';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import * as runMode from '../transport/runMode';
 import { setCompactLayoutForTest } from './layoutMode.svelte';
+import { setHostWindowFromBootstrap } from '../transport/pageHost';
 
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
@@ -52,6 +56,70 @@ describe('browser companion state routing', () => {
 
     applyBrowserCompanionState({ kind: 'state', threadId: 'thread-browser', pages: [] });
     expect(companionForSource('main', 'browser')).toBeNull();
+  });
+
+  // A browser tab on the host holds the window's grants but not its native
+  // view: it offers no pane and opens none from a push, as a connected
+  // browser, and its pane source refuses without asking the backend.
+  describe('in a page that is not the host window', () => {
+    beforeEach(() => setHostWindowFromBootstrap(false));
+    afterEach(() => setHostWindowFromBootstrap(true));
+
+    it('offers, opens and attaches no native pane', async () => {
+      expect(canUseNativeBrowser('thread-browser')).toBe(false);
+      applyBrowserCompanionState({
+        kind: 'state',
+        threadId: 'thread-browser',
+        activePageId: 'page-1',
+        visible: true,
+        pages: [page('file:///repo/demo.html', 'Demo')],
+      });
+      expect(companionForSource('main', 'browser')).toBeNull();
+      const attach = vi.fn(async () => ({ id: 'mount-1', state: {} }));
+      setBindingMock('BrowserCompanionPaneAttach', attach);
+      const attachment = attachBrowserCompanion('thread-browser');
+      await vi.waitFor(() => expect(attachment.error).toContain('native browser pane is unavailable'));
+      attachment.release();
+      expect(attach).not.toHaveBeenCalled();
+      setHostWindowFromBootstrap(true);
+      expect(canUseNativeBrowser('thread-browser')).toBe(true);
+    });
+
+    it('opens no pane when the thread is shown again after a switch away', () => {
+      applyBrowserCompanionState({
+        kind: 'state',
+        threadId: 'thread-browser',
+        activePageId: 'page-1',
+        visible: true,
+        pages: [page('file:///repo/demo.html', 'Demo')],
+      });
+      expect(companionForSource('main', 'browser')).toBeNull();
+      for (let round = 0; round < 2; round += 1) {
+        getPane('main')!.replaceThread(makeThread({ id: 'other-thread' }));
+        reconcileBrowserCompanionForPane('main', 'other-thread');
+        getPane('main')!.replaceThread(makeThread({ id: 'thread-browser' }));
+        reconcileBrowserCompanionForPane('main', 'thread-browser');
+        expect(companionForSource('main', 'browser')).toBeNull();
+      }
+    });
+  });
+
+  it('reopens the pane in the host window when the thread is shown again after a switch away', () => {
+    applyBrowserCompanionState({
+      kind: 'state',
+      threadId: 'thread-browser',
+      activePageId: 'page-1',
+      visible: true,
+      pages: [page('file:///repo/demo.html', 'Demo')],
+    });
+    expect(companionForSource('main', 'browser')?.kind).toBe('browser');
+    closeCompanion('browser-main');
+    getPane('main')!.replaceThread(makeThread({ id: 'other-thread' }));
+    reconcileBrowserCompanionForPane('main', 'other-thread');
+    expect(companionForSource('main', 'browser')).toBeNull();
+    getPane('main')!.replaceThread(makeThread({ id: 'thread-browser' }));
+    reconcileBrowserCompanionForPane('main', 'thread-browser');
+    expect(companionForSource('main', 'browser')?.kind).toBe('browser');
   });
 
   // The companion is a native view on the host; the compact screen never
@@ -285,6 +353,7 @@ describe('accelerators from the native page view', () => {
       visible: true,
       pages: [{ id: 'page-1', url: 'https://example.com', title: 'Example', canGoBack: false, canGoForward: false }],
     });
+    setBrowserPaneMountForTest('thread-browser', 'mount-1');
   });
 
   it('focuses the companion and replays the chord as a window keydown', () => {
@@ -296,6 +365,7 @@ describe('accelerators from the native page view', () => {
       applyBrowserCompanionState({
         kind: 'accelerator',
         threadId: 'thread-browser',
+        mount: 'mount-1',
         accelerator: { key: 'w', meta: true },
       });
     } finally {
@@ -323,6 +393,7 @@ describe('accelerators from the native page view', () => {
       applyBrowserCompanionState({
         kind: 'accelerator',
         threadId: 'thread-browser',
+        mount: 'mount-1',
         accelerator: { key: 'f', ctrl: true },
       });
       expect(focusedAtReplay).toBe(composer);
@@ -348,6 +419,7 @@ describe('accelerators from the native page view', () => {
       applyBrowserCompanionState({
         kind: 'accelerator',
         threadId: 'thread-browser',
+        mount: 'mount-1',
         accelerator: { key: 'w', ctrl: true },
       });
       expect(during).toBe(false);
@@ -388,12 +460,44 @@ describe('accelerators from the native page view', () => {
     }
   });
 
+  // Every host client receives the event; a client whose pane mount did not
+  // show the page, or that holds none, replays nothing.
+  it.each([
+    ['another client\'s mount', 'mount-2'],
+    ['no mount named', undefined],
+  ])('does not replay a chord routed to %s', (_name, mount) => {
+    const seen: KeyboardEvent[] = [];
+    const listener = (event: KeyboardEvent) => seen.push(event);
+    window.addEventListener('keydown', listener);
+    try {
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser', mount, accelerator: { key: 'w', ctrl: true } });
+    } finally {
+      window.removeEventListener('keydown', listener);
+    }
+    expect(seen).toEqual([]);
+    expect(getFocusedPaneId()).not.toBe('browser-main');
+  });
+
+  it('does not replay a chord in a client with no pane mounted', () => {
+    resetBrowserCompanionForTest();
+    const seen: KeyboardEvent[] = [];
+    const listener = (event: KeyboardEvent) => seen.push(event);
+    window.addEventListener('keydown', listener);
+    try {
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser', mount: 'mount-1', accelerator: { key: 'w', ctrl: true } });
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser', accelerator: { key: 'w', ctrl: true } });
+    } finally {
+      window.removeEventListener('keydown', listener);
+    }
+    expect(seen).toEqual([]);
+  });
+
   it('is inert without a chord', () => {
     const seen: KeyboardEvent[] = [];
     const listener = (event: KeyboardEvent) => seen.push(event);
     window.addEventListener('keydown', listener);
     try {
-      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser' });
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser', mount: 'mount-1' });
     } finally {
       window.removeEventListener('keydown', listener);
     }
