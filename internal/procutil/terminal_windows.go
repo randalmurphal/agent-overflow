@@ -19,5 +19,5 @@ func (t *Terminal) Read([]byte) (int, error)  { return 0, errNoTerminal }
 func (t *Terminal) Write([]byte) (int, error) { return 0, errNoTerminal }
 func (t *Terminal) Close() error              { return nil }
 
-func (t *Terminal) command([]string) ([]string, error) { return nil, errNoTerminal }
-func (t *Terminal) attach(*exec.Cmd)                   {}
+func (t *Terminal) command([]string, string) ([]string, error) { return nil, errNoTerminal }
+func (t *Terminal) attach(*exec.Cmd)                           {}
