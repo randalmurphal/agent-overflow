@@ -18,6 +18,8 @@
 // dragend without a preceding drop — so dropTargetId is cleared on
 // dragend regardless of outcome.
 
+export const PROJECT_DRAG_MIME = 'application/x-agent-overflow-project';
+
 let draggingId: string | null = $state(null);
 let dropTargetId: string | null = $state(null);
 let dropPosition: 'before' | 'after' | null = $state(null);
@@ -38,10 +40,10 @@ export function beginProjectDrag(id: string, event: DragEvent): void {
   if (!event.dataTransfer) return;
   draggingId = id;
   event.dataTransfer.effectAllowed = 'move';
-  // dataTransfer.setData is required to make the drag operation valid
-  // in some browsers; the payload itself isn't used (we read draggingId
-  // from module state).
-  event.dataTransfer.setData('text/plain', id);
+  // Some browsers start no drag without data. Its own type, never plain
+  // text, which every text field would take as a drop; the payload is not
+  // read (draggingId is module state).
+  event.dataTransfer.setData(PROJECT_DRAG_MIME, id);
 }
 
 /**

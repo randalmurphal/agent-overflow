@@ -6,6 +6,7 @@ import {
   getDraggingProjectId,
   getDropPosition,
   getDropTargetProjectId,
+  PROJECT_DRAG_MIME,
   updateDropTarget,
 } from './projectDnd.svelte';
 
@@ -52,6 +53,14 @@ describe('projectDnd store', () => {
     it('records the dragging id', () => {
       beginProjectDrag('p-a', makeDragEvent());
       expect(getDraggingProjectId()).toBe('p-a');
+    });
+
+    it('carries its own data type, never plain text a text field would take', () => {
+      const types: string[] = [];
+      const event = makeDragEvent();
+      (event.dataTransfer as unknown as { setData: (type: string) => void }).setData = (type) => { types.push(type); };
+      beginProjectDrag('p-a', event);
+      expect(types).toEqual([PROJECT_DRAG_MIME]);
     });
 
     it('does nothing when the event has no dataTransfer', () => {

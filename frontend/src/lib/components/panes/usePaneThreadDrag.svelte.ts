@@ -9,8 +9,15 @@
 // drag protocol becomes unit-testable through a single public surface.
 //
 // A slot is an edge of a layout block (a pane with its companions): the
-// pointer's half of the block it is over picks the nearer edge. The
-// indicator is a bar on that seam plus the half that chose it.
+// pointer's x picks the block it is over and the nearer of its two edges,
+// whatever element it is over. The indicator is a bar on that seam plus
+// the half that chose it.
+//
+// While one of these drags is over the strip it is `shielding`: PaneHost
+// covers the panes with an element outside the strip's scroller, so the
+// drag is never over pane content. The browser scrolls a scrollable
+// element a drag is held near the edge of, and a pane's own drop handlers
+// would see the drag; neither can happen through the shield.
 //
 // The DataTransfer answers nothing during dragover, so the payloads come
 // from `threadDragPayloadForEvent` / `toolDragPayloadForEvent`, which fall
@@ -23,7 +30,6 @@ import {
   revealPane,
 } from '../../stores/panes.svelte';
 import {
-  isCompanionKind,
   movePaneLayoutItemToIndex,
   paneBlockRangeAt,
   type PaneLayoutItem,
@@ -45,6 +51,9 @@ import { edgeAutoScrollVelocity } from './edgeAutoScroll';
 export const PANE_DROP_SEAM_PX = 4;
 
 export interface PaneThreadDragOptions {
+  /** The strip's root: the scroller and the shield are inside it. */
+  getStripEl(): HTMLElement | undefined;
+  /** The scroller whose children are the pane sections. */
   getHostEl(): HTMLElement | undefined;
   getLayoutItems(): PaneLayoutItem[];
 }
@@ -54,11 +63,6 @@ export interface PaneDropIndicator {
   seamLeft: number;
   /** The half of the block under the pointer; `seam` is the side its bar is on. */
   lit: { left: number; width: number; seam: 'left' | 'right' } | null;
-}
-
-interface SlotNeighbours {
-  before: string | null;
-  after: string | null;
 }
 
 /** A horizontal run in viewport pixels. */
@@ -79,18 +83,10 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   let duplicateDropPaneId = $state<string | null>(null);
   let dropTarget = $state<PaneDropTarget | null>(null);
   let dropIndicator = $state.raw<PaneDropIndicator | null>(null);
-
-  // The panes either side of `dropTarget` when it was resolved: a drop that
-  // resolves no slot of its own falls back to it only while they stand.
-  let dropAnchor: SlotNeighbours | null = null;
+  let shielding = $state(false);
 
   let autoScrollFrame: number | null = null;
   let autoScrollVelocity = 0;
-
-  function neighboursOf(insertIndex: number): SlotNeighbours {
-    const items = options.getLayoutItems();
-    return { before: items[insertIndex - 1]?.paneId ?? null, after: items[insertIndex]?.paneId ?? null };
-  }
 
   function sameIndicator(a: PaneDropIndicator | null, b: PaneDropIndicator | null): boolean {
     if (!a || !b) return a === b;
@@ -122,25 +118,22 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   function showDrop(resolved: ResolvedDrop | null): void {
     const target = resolved?.target ?? null;
     if (target?.kind !== dropTarget?.kind || target?.insertIndex !== dropTarget?.insertIndex) dropTarget = target;
-    dropAnchor = target ? neighboursOf(target.insertIndex) : null;
     const indicator = resolved ? indicatorFor(resolved) : null;
     if (!sameIndicator(indicator, dropIndicator)) dropIndicator = indicator;
   }
 
-  // A drop resolves its slot from its own event against the layout as it is
-  // now; the last dragover's slot answers only when the event resolves none
-  // and the panes it was computed between are still its neighbours.
+  // A drop resolves its slot from its own event against the layout as it
+  // is now, never from the last dragover: the pointer can move, and the
+  // layout change, without one.
   function dropSlot(event: DragEvent): PaneDropTarget | null {
-    const resolved = resolveDrop(event)?.target ?? null;
-    if (resolved || !dropTarget || !dropAnchor) return resolved;
-    const now = neighboursOf(dropTarget.insertIndex);
-    return now.before === dropAnchor.before && now.after === dropAnchor.after ? dropTarget : null;
+    return resolveDrop(event)?.target ?? null;
   }
 
   // Every sidebar drag ends here, wherever it ends: a dragend at its source
   // (a drop, Escape, a drop outside the window) or a drop that bubbles to
   // the document. A source that unmounted mid-drag gets no dragend; leaving
-  // the strip (onHostDragLeave) still clears the preview then.
+  // the strip, or the next pointer event over it (onShieldRelease), clears
+  // the strip's state then.
   function onDocumentDragEnd(): void {
     draggingPaneId = null;
     clearDropState();
@@ -158,15 +151,6 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     return event.dataTransfer?.types.includes(TOOL_PANE_DRAG_MIME) ?? false;
   }
 
-  // Pane sections and gap wrappers are the strip's own children; content
-  // inside a pane can carry a pane id of its own (a header title).
-  function stripChildOf(node: EventTarget | null): HTMLElement | null {
-    const host = options.getHostEl();
-    let el = node instanceof Element ? node : node instanceof Node ? node.parentElement : null;
-    while (el && el.parentElement !== host) el = el.parentElement;
-    return el instanceof HTMLElement ? el : null;
-  }
-
   function paneExtent(paneId: string): Extent | null {
     const host = options.getHostEl();
     if (!host) return null;
@@ -181,44 +165,25 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
 
   // Companions glue to their source, so the slots around any pane of a
   // block are the block's edges: the pointer's half of the block picks one.
-  function besideBlock(items: PaneLayoutItem[], range: { start: number; end: number }, clientX: number): ResolvedDrop | null {
-    const first = paneExtent(items[range.start].paneId);
-    const last = paneExtent(items[range.end].paneId);
-    if (!first || !last) return null;
-    const middle = (first.left + last.right) / 2;
-    if (clientX > middle) {
-      return { target: { kind: 'pane-right', insertIndex: range.end + 1 }, seam: last.right, lit: { left: middle, right: last.right } };
-    }
-    return { target: { kind: 'pane-left', insertIndex: range.start }, seam: first.left, lit: { left: first.left, right: middle } };
-  }
-
-  function atEnd(items: PaneLayoutItem[]): ResolvedDrop | null {
-    const last = paneExtent(items[items.length - 1].paneId);
-    return last && { target: { kind: 'end', insertIndex: items.length }, seam: last.right, lit: null };
-  }
-
   function resolveDrop(event: DragEvent): ResolvedDrop | null {
     const items = options.getLayoutItems();
     if (items.length === 0) return { target: { kind: 'empty', insertIndex: 0 }, seam: null, lit: null };
-    const child = stripChildOf(event.target);
-    if (child?.dataset.paneGapIndex) {
-      const insertIndex = Number(child.dataset.paneGapIndex);
-      if (!Number.isInteger(insertIndex) || insertIndex < 1) return null;
-      // The end handle carries the gap index past the last pane.
-      if (insertIndex >= items.length) return atEnd(items);
-      // The gap between a source and its companion is not a slot.
-      const range = paneBlockRangeAt(items, insertIndex);
-      if (range.start < insertIndex) return besideBlock(items, range, event.clientX);
-      const next = paneExtent(items[insertIndex].paneId);
-      return next && { target: { kind: 'gap', insertIndex }, seam: next.left, lit: null };
+    const x = event.clientX;
+    for (let start = 0; start < items.length; ) {
+      const { end } = paneBlockRangeAt(items, start);
+      const first = paneExtent(items[start].paneId);
+      const last = paneExtent(items[end].paneId);
+      if (!first || !last) return null;
+      if (x < last.right) {
+        const middle = (first.left + last.right) / 2;
+        return x > middle
+          ? { target: { kind: 'pane-right', insertIndex: end + 1 }, seam: last.right, lit: { left: middle, right: last.right } }
+          : { target: { kind: 'pane-left', insertIndex: start }, seam: first.left, lit: { left: first.left, right: middle } };
+      }
+      if (end === items.length - 1) return { target: { kind: 'end', insertIndex: items.length }, seam: last.right, lit: null };
+      start = end + 1;
     }
-    if (child?.dataset.paneId) {
-      const index = items.findIndex((item) => item.paneId === child.dataset.paneId);
-      return index < 0 ? null : besideBlock(items, paneBlockRangeAt(items, index), event.clientX);
-    }
-    // The strip's own background, right of the last pane.
-    const last = paneExtent(items[items.length - 1].paneId);
-    return last && event.clientX >= last.right ? atEnd(items) : null;
+    return null;
   }
 
   function updateThreadDropTarget(event: DragEvent): void {
@@ -288,6 +253,7 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
 
   function clearDropState(): void {
     duplicateDropPaneId = null;
+    shielding = false;
     showDrop(null);
     stopDragAutoScroll();
   }
@@ -326,15 +292,13 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   function onPaneDragStart(event: DragEvent, paneId: string): void {
     draggingPaneId = paneId;
     event.dataTransfer?.setData(PANE_REORDER_DRAG_MIME, paneId);
-    if (event.dataTransfer) {
-      event.dataTransfer.setData('text/plain', paneId);
-      event.dataTransfer.effectAllowed = 'move';
-    }
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
   }
 
   function onHostDragOver(event: DragEvent): void {
     if (isThreadDrag(event)) {
       event.preventDefault();
+      shielding = true;
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
       updateThreadDropTarget(event);
       updateDragAutoScroll(event.clientX);
@@ -342,6 +306,7 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     }
     if (isToolDrag(event)) {
       event.preventDefault();
+      shielding = true;
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
       updateToolDropTarget(event);
       updateDragAutoScroll(event.clientX);
@@ -349,6 +314,7 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     }
     if (draggingPaneId) {
       event.preventDefault();
+      shielding = true;
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
       updateReorderDropTarget(event, draggingPaneId);
       updateDragAutoScroll(event.clientX);
@@ -376,27 +342,28 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     if (isThreadDrag(event)) void handleThreadDrop(event);
     else if (isToolDrag(event)) handleToolDrop(event);
     else {
+      // Any other drag (dragged text, a file) is not the strip's: it goes
+      // to whatever inside a pane takes it.
       const paneId = draggingPaneId ?? event.dataTransfer?.getData(PANE_REORDER_DRAG_MIME);
       if (paneId) handleReorderDrop(event, paneId);
-      // Dragged text or a link is none of the strip's drags: a thread or
-      // tool pane refuses it, a companion's own fields take it.
-      else if (overLeadPane(event)) event.preventDefault();
     }
   }
 
-  function overLeadPane(event: DragEvent): boolean {
-    const paneId = stripChildOf(event.target)?.dataset.paneId;
-    const item = paneId ? options.getLayoutItems().find((candidate) => candidate.paneId === paneId) : undefined;
-    return item !== undefined && !isCompanionKind(item.kind);
+  // A dragleave bubbles from every element the pointer leaves, the pane
+  // content the shield has just covered included. The drag left the strip
+  // when the pointer is outside the strip's box; `relatedTarget` cannot
+  // say, since WebKit leaves it null.
+  function onHostDragLeave(event: DragEvent): void {
+    const box = options.getStripEl()?.getBoundingClientRect();
+    if (box && event.clientX >= box.left && event.clientX < box.right && event.clientY >= box.top && event.clientY < box.bottom) return;
+    clearDropState();
   }
 
-  // A dragleave bubbles from every child the pointer leaves; the drag left
-  // the strip only when it enters nothing inside it. A cancel and a drop
-  // outside the window leave with no related target.
-  function onHostDragLeave(event: DragEvent): void {
-    const next = event.relatedTarget;
-    const host = options.getHostEl();
-    if (next instanceof Node && host?.contains(next)) return;
+  // The shield covers the strip. A drag that leaves it left the strip, for
+  // the window or for a surface above the strip. A pointer event reaches it
+  // only when no drag is in flight: the drag ended with no dragend or drop
+  // the document heard, as when its source unmounted mid-drag.
+  function onShieldRelease(): void {
     clearDropState();
   }
 
@@ -419,11 +386,15 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     get dropIndicator() {
       return dropIndicator;
     },
+    get shielding() {
+      return shielding;
+    },
     onPaneDragStart,
     onHostDragOver,
     onPaneDragEnd,
     onHostDrop,
     onHostDragLeave,
+    onShieldRelease,
     destroy,
   };
 }

@@ -1,9 +1,11 @@
 // A sidebar drag over the pane strip ends in one place, in real Chromium:
 // the strip drops its preview and edge auto-scroll when the drag leaves it
-// (from any child, by the dragleave's relatedTarget) and when the drag ends
-// anywhere (a dragend or drop the strip's controller hears on the document),
-// which also clears the sidebar's in-flight payload records. A cancel
-// (Escape) and a drop outside the window leave with no related target.
+// (from any child, by where the pointer is, since WebKit names no related
+// target) and when the drag ends anywhere (a dragend or drop the strip's
+// controller hears on the document), which also clears the sidebar's
+// in-flight payload records. The shield over the strip takes itself down
+// when the drag leaves it and on a pointer event, which reaches it only
+// after a drag that ended unheard.
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
@@ -94,7 +96,7 @@ it('clears the preview and stops edge auto-scroll when the drag leaves the strip
   await hoverChild('a', right - 4);
   const start = strip().scrollLeft;
   await waitFor(() => strip().scrollLeft > start, 'edge auto-scroll under way');
-  fire(childOf('a'), 'dragleave', { dataTransfer: toolTransfer(), relatedTarget: outside });
+  fire(childOf('a'), 'dragleave', { dataTransfer: toolTransfer(), clientX: 50 });
   await raf();
   expect(preview()).toBeNull();
   const stopped = strip().scrollLeft;
@@ -104,18 +106,44 @@ it('clears the preview and stops edge auto-scroll when the drag leaves the strip
   expect(toolDragPayloadForEvent(silent)).toEqual({ kind: 'pulls' });
 });
 
+function shield(): HTMLElement | null {
+  return host.querySelector('[data-testid="pane-drag-shield"]');
+}
+
 it('keeps the preview while the drag moves between children of the strip', async () => {
   await hoverChild('a');
-  fire(childOf('a'), 'dragleave', { dataTransfer: toolTransfer(), relatedTarget: childOf('b') });
+  fire(childOf('a'), 'dragleave', { dataTransfer: toolTransfer(), clientX: 300, relatedTarget: null });
   await raf();
   expect(preview()).not.toBeNull();
+  expect(shield()).not.toBeNull();
 });
 
-it('clears on a leave with no related target: a cancel, or a drop outside the window', async () => {
+it('covers every pane while the drag is over the strip, and uncovers them when it leaves the shield', async () => {
   await hoverChild('a');
-  fire(childOf('a'), 'dragleave', { dataTransfer: toolTransfer(), relatedTarget: null });
+  await waitFor(() => shield() !== null, 'the shield');
+  // The shield is what the pointer is over, across the strip's visible width.
+  const box = host.getBoundingClientRect();
+  const right = Math.min(box.right, window.innerWidth);
+  expect(right - box.left).toBeGreaterThan(40);
+  for (const x of [box.left + 10, (box.left + right) / 2, right - 10]) {
+    expect(document.elementFromPoint(x, 20)).toBe(shield());
+  }
+  fire(shield()!, 'dragleave', { dataTransfer: toolTransfer(), clientX: 300, relatedTarget: null });
   await raf();
+  expect(shield()).toBeNull();
   expect(preview()).toBeNull();
+  expect(host.contains(document.elementFromPoint(box.left + 10, 20))).toBe(true);
+});
+
+it('takes the shield down on a pointer event, which no drag in flight delivers', async () => {
+  for (const type of ['pointermove', 'pointerdown']) {
+    await hoverChild('a');
+    await waitFor(() => shield() !== null, 'the shield');
+    shield()!.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: 300, clientY: 100 }));
+    await raf();
+    expect(shield(), type).toBeNull();
+    expect(preview(), type).toBeNull();
+  }
 });
 
 it('clears its state and both sidebar records when the drag ends anywhere', async () => {

@@ -909,7 +909,7 @@ describe('PaneHost under compact', () => {
     const rendered = render(PaneHost);
     await tick();
     const host = rendered.getByTestId('pane-host');
-    expect(host.classList.contains('compact-screen-thread')).toBe(true);
+    expect(rendered.getByTestId('pane-strip').classList.contains('compact-screen-thread')).toBe(true);
     expect(host.hasAttribute('inert')).toBe(true);
     revealPane('main');
     await tick();

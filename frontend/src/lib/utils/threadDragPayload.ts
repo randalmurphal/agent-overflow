@@ -18,7 +18,7 @@ export interface ThreadDragPayload {
   groupId?: string;
 }
 
-export type PaneDropKind = 'pane-left' | 'pane-right' | 'gap' | 'end' | 'empty';
+export type PaneDropKind = 'pane-left' | 'pane-right' | 'end' | 'empty';
 
 /** A slot in the pane strip: the index a placed pane takes. */
 export interface PaneDropTarget {

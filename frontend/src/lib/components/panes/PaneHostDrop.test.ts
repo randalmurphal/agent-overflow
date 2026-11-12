@@ -158,6 +158,8 @@ describe('PaneHost drag and drop', () => {
     Object.defineProperty(dragStartEvent, 'dataTransfer', { value: dataTransfer });
     await fireEvent(leftTitle, dragStartEvent);
     expect(dataTransfer.getData(PANE_REORDER_DRAG_MIME)).toBe('left');
+    // Plain text would make every text field a drop target for the pane.
+    expect(dataTransfer.getData('text/plain')).toBe('');
     expect(dataTransfer.effectAllowed).toBe('move');
     const dragOverEvent = new Event('dragover', { bubbles: true, cancelable: true }) as DragEvent;
     Object.defineProperty(dragOverEvent, 'dataTransfer', { value: dataTransfer });
@@ -210,10 +212,8 @@ describe('PaneHost drag and drop', () => {
     expect(cancelFrame).toHaveBeenCalledWith(latestFrameHandle);
   });
 
-  it('drop on a pane left half inserts before the target', async () => {
-    const dragged = makeThread({ id: 'drag-left', title: 'Dragged Left' });
-    prependThread(dragged);
-    installThreadSwitchMocks(dragged);
+  // Two thread panes, 0..500 and 500..1000.
+  function renderTwoPanes() {
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
     setPaneLayoutItemsForTest([
@@ -221,17 +221,29 @@ describe('PaneHost drag and drop', () => {
       { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
     const rendered = render(PaneHost);
-    const rightPane = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
-    if (!rightPane) throw new Error('expected right pane');
-    stubRect(rightPane, 500, 500);
+    const pane = (paneId: string): HTMLElement => {
+      const el = rendered.container.querySelector<HTMLElement>(`[data-testid="pane-host"] > [data-pane-id="${paneId}"]`);
+      if (!el) throw new Error(`expected pane ${paneId}`);
+      return el;
+    };
+    stubRect(pane('left'), 0, 500);
+    stubRect(pane('right'), 500, 500);
+    return { rendered, pane };
+  }
+
+  it('drop on a pane left half inserts before the target', async () => {
+    const dragged = makeThread({ id: 'drag-left', title: 'Dragged Left' });
+    prependThread(dragged);
+    installThreadSwitchMocks(dragged);
+    const { pane } = renderTwoPanes();
 
     const dataTransfer = threadDataTransfer(dragged.id);
     // The sidebar's in-flight record, as the source row leaves it. A pane
     // drop must clear it like every other drop target: the row may have
     // unmounted mid-drag, in which case no dragend ever will.
     beginThreadRowDrag({ threadId: dragged.id, title: dragged.title, projectId: dragged.projectId ?? '' });
-    await fireEvent.dragOver(rightPane, { dataTransfer, clientX: 550 });
-    await fireEvent.drop(rightPane, { dataTransfer, clientX: 550 });
+    await dispatchDrag(pane('right'), 'dragover', dataTransfer, 550);
+    await dispatchDrag(pane('right'), 'drop', dataTransfer, 550);
 
     await waitFor(() => {
       const createdPaneId = paneIdForThread(dragged.id);
@@ -296,20 +308,11 @@ describe('PaneHost drag and drop', () => {
     const dragged = makeThread({ id: 'drag-right', title: 'Dragged Right' });
     prependThread(dragged);
     installThreadSwitchMocks(dragged);
-    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
-    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
-    setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
-    ]);
-    const rendered = render(PaneHost);
-    const leftPane = rendered.container.querySelector<HTMLElement>('[data-pane-id="left"]');
-    if (!leftPane) throw new Error('expected left pane');
-    stubRect(leftPane, -500, 500);
+    const { pane } = renderTwoPanes();
 
     const dataTransfer = threadDataTransfer(dragged.id);
-    await dispatchDrag(leftPane, 'dragover', dataTransfer, 1);
-    await dispatchDrag(leftPane, 'drop', dataTransfer, 1);
+    await dispatchDrag(pane('left'), 'dragover', dataTransfer, 450);
+    await dispatchDrag(pane('left'), 'drop', dataTransfer, 450);
 
     await waitFor(() => {
       const createdPaneId = paneIdForThread(dragged.id);
@@ -434,23 +437,110 @@ describe('PaneHost drag and drop', () => {
     });
   });
 
-  it('shows a bar and no lit half on a gap between two blocks', async () => {
-    const dragged = makeThread({ id: 'drag-gap-seam', title: 'Gap Seam' });
+  it('resolves the slot from where the pointer is, whatever element the drag is over', async () => {
+    const dragged = makeThread({ id: 'drag-anywhere', title: 'Anywhere' });
     prependThread(dragged);
-    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
-    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
-    setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
-    ]);
-    const rendered = render(PaneHost);
-    const gap = rendered.container.querySelector<HTMLElement>('[data-pane-gap-index="1"]');
-    if (!gap) throw new Error('expected gap');
+    const { rendered, pane } = renderTwoPanes();
+    const dataTransfer = threadDataTransfer(dragged.id);
+    const seam = () => rendered.getByTestId('pane-drop-seam');
+    const divider = rendered.container.querySelector<HTMLElement>('[data-pane-gap-index="1"]');
+    if (!divider) throw new Error('expected the divider');
 
-    await dispatchDrag(gap, 'dragover', threadDataTransfer(dragged.id), 500);
-
-    expect(rendered.getByTestId('pane-drop-seam')).toHaveAttribute('data-drop-kind', 'gap');
+    // Over the left pane, the divider and the strip itself: the pointer's x decides.
+    for (const over of [pane('left'), divider, rendered.getByTestId('pane-strip')]) {
+      await dispatchDrag(over, 'dragover', dataTransfer, 100);
+      expect(seam()).toHaveAttribute('data-insert-index', '0');
+      await dispatchDrag(over, 'dragover', dataTransfer, 499);
+      expect(seam()).toHaveAttribute('data-insert-index', '1');
+      await dispatchDrag(over, 'dragover', dataTransfer, 501);
+      expect(seam()).toHaveAttribute('data-insert-index', '1');
+      await dispatchDrag(over, 'dragover', dataTransfer, 900);
+      expect(seam()).toHaveAttribute('data-insert-index', '2');
+    }
+    // Past the last pane is the append slot, a bar alone.
+    await dispatchDrag(rendered.getByTestId('pane-strip'), 'dragover', dataTransfer, 1000);
+    expect(seam()).toHaveAttribute('data-drop-kind', 'end');
+    expect(seam()).toHaveAttribute('data-insert-index', '2');
     expect(rendered.queryByTestId('pane-drop-half')).toBeNull();
+  });
+
+  it('covers the panes while a placing drag is over the strip, and takes the drop there', async () => {
+    const dragged = makeThread({ id: 'drag-shield', title: 'Shielded' });
+    prependThread(dragged);
+    installThreadSwitchMocks(dragged);
+    const { rendered, pane } = renderTwoPanes();
+    const dataTransfer = threadDataTransfer(dragged.id);
+    const shield = () => rendered.queryByTestId('pane-drag-shield');
+    expect(shield()).toBeNull();
+
+    await dispatchDrag(pane('right'), 'dragover', dataTransfer, 900);
+    await tick();
+    const raised = shield();
+    expect(raised).not.toBeNull();
+    // Outside the scroller, so nothing it covers can be scrolled by the drag.
+    expect(rendered.getByTestId('pane-host').contains(raised)).toBe(false);
+    expect(rendered.getByTestId('pane-strip').contains(raised)).toBe(true);
+
+    // The content the pointer left hands over to the shield, with no
+    // related target (WebKit): the pointer is still inside the strip.
+    const stripEl = rendered.getByTestId('pane-strip');
+    stripEl.getBoundingClientRect = () => new DOMRect(0, 0, 1000, 600);
+    const leave = (el: Element, clientX: number): void => {
+      const event = new Event('dragleave', { bubbles: true }) as DragEvent;
+      Object.defineProperty(event, 'clientX', { value: clientX });
+      Object.defineProperty(event, 'clientY', { value: 300 });
+      el.dispatchEvent(event);
+    };
+    leave(pane('right'), 900);
+    await tick();
+    expect(shield()).toBe(raised);
+    expect(rendered.getByTestId('pane-drop-seam')).toHaveAttribute('data-insert-index', '2');
+
+    // Before the shield is under the pointer, the drag can leave the strip
+    // from the content: the pointer is outside the strip's box.
+    leave(pane('right'), 1200);
+    await tick();
+    expect(shield()).toBeNull();
+    expect(rendered.queryByTestId('pane-drop-seam')).toBeNull();
+
+    // Leaving the shield is leaving the strip, wherever the pointer is: a
+    // surface above the strip took the drag.
+    const raise = async (): Promise<HTMLElement> => {
+      await dispatchDrag(pane('left'), 'dragover', dataTransfer, 100);
+      await tick();
+      expect(shield()).not.toBeNull();
+      return shield()!;
+    };
+    leave(await raise(), 400);
+    await tick();
+    expect(shield()).toBeNull();
+
+    // A pointer event reaches the shield only when no drag is in flight.
+    await fireEvent.pointerMove(await raise());
+    await tick();
+    expect(shield()).toBeNull();
+    expect(rendered.queryByTestId('pane-drop-seam')).toBeNull();
+    await fireEvent.pointerDown(await raise());
+    await tick();
+    expect(shield()).toBeNull();
+
+    await raise();
+    await dispatchDrag(shield()!, 'drop', dataTransfer, 100);
+    await waitFor(() => {
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([paneIdForThread(dragged.id), 'left', 'right']);
+    });
+    expect(shield()).toBeNull();
+  });
+
+  it('raises no shield for a drag that places no pane', async () => {
+    const { rendered, pane } = renderTwoPanes();
+    const text = { types: ['text/plain'], getData: () => '' } as unknown as DataTransfer;
+
+    await dispatchDrag(pane('right'), 'dragover', text, 900);
+    await tick();
+
+    expect(rendered.queryByTestId('pane-drag-shield')).toBeNull();
+    expect(rendered.queryByTestId('pane-drop-seam')).toBeNull();
   });
 
   it('outlines the empty strip while a thread hovers it', async () => {
@@ -556,7 +646,7 @@ describe('PaneHost drag and drop', () => {
     expect(layoutOrder()).toEqual(['b', 'review-b', 'a', 'c']);
   });
 
-  it('refuses a drop that is none of the strip\'s drags over a thread pane, and leaves a companion\'s alone', async () => {
+  it('leaves a drop that is none of its drags to the pane it lands in', async () => {
     const { pane } = renderSourceBlock();
     const foreignDrop = (el: HTMLElement): boolean => {
       const event = new Event('drop', { bubbles: true, cancelable: true }) as DragEvent;
@@ -565,33 +655,10 @@ describe('PaneHost drag and drop', () => {
       return event.defaultPrevented;
     };
 
-    expect(foreignDrop(pane('source'))).toBe(true);
+    // Dragged text reaches a composer or any other field unrefused.
+    expect(foreignDrop(pane('source'))).toBe(false);
     expect(foreignDrop(pane('review-source'))).toBe(false);
     expect(layoutOrder()).toEqual(['source', 'review-source']);
-  });
-
-  it('drop on a gap inserts at the gap index', async () => {
-    const dragged = makeThread({ id: 'drag-gap', title: 'Dragged Gap' });
-    prependThread(dragged);
-    installThreadSwitchMocks(dragged);
-    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
-    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
-    setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
-    ]);
-    const rendered = render(PaneHost);
-    const gap = rendered.container.querySelector<HTMLElement>('[data-pane-gap-index="1"]');
-    if (!gap) throw new Error('expected gap');
-
-    const dataTransfer = threadDataTransfer(dragged.id);
-    await fireEvent.dragOver(gap, { dataTransfer, clientX: 500 });
-    await fireEvent.drop(gap, { dataTransfer, clientX: 500 });
-
-    await waitFor(() => {
-      const createdPaneId = paneIdForThread(dragged.id);
-      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', createdPaneId, 'right']);
-    });
   });
 
   it('drop on the right end-cap appends', async () => {
