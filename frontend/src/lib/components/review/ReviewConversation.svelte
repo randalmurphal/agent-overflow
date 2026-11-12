@@ -164,7 +164,9 @@
             <span class="truncate font-semibold text-fg">{authorDisplayName({ authorLogin: entry.event.actorLogin, authorName: entry.event.actorName })}</span>
             <span class="shrink-0 rounded-full px-1.5 py-px text-[0.6875rem] {READINESS_PILL_CLASS[reviewEventTone(entry.event.kind)]}">{reviewEventLabel(entry.event.kind)}</span>
             {#if entry.event.ref}
-              <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{abbreviateEventRef(entry.event.ref)}</span>
+              <!-- A name can be a branch or a list of reviewers of any
+                   length: it wraps inside the row. -->
+              <span class="min-w-0 break-words font-mono text-[0.6875rem] text-fg-muted" data-testid="review-conversation-event-ref">{abbreviateEventRef(entry.event.ref)}</span>
             {/if}
             {#if verdictTime(entry.event.at)}
               <span class="shrink-0 text-fg-subtle">· {verdictTime(entry.event.at)}</span>

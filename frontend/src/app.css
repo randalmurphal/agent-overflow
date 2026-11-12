@@ -530,6 +530,11 @@ pre, code, kbd, samp, .ansi-body {
   background: transparent;
 }
 
+/* Where both bars meet. Unstyled, the browser paints it opaque white. */
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /*
  * Pane scroll surfaces: the chat timeline, the discussion channel, and
  * the activity-run clip (MessageTimeline.svelte, ChannelView.svelte,
