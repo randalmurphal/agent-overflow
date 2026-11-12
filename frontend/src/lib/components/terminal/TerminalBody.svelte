@@ -318,7 +318,7 @@
     destroyed = true;
     dataDisposable?.dispose();
     dataDisposable = null;
-    // Before the xterm goes: the release clears the provider's decorations.
+    // Before the xterm goes: the release clears the provider's paint.
     find?.release();
     find = null;
     detachXterm?.();
@@ -357,7 +357,7 @@
 </script>
 
 <div class="flex-1 min-h-0 flex flex-col bg-terminal-bg" data-testid={`terminal-body-${terminalID}`}>
-  <div bind:this={mountEl} class="flex-1 min-h-0 bg-terminal-bg" {@attach terminalFocusRegion(paneId)}></div>
+  <div bind:this={mountEl} class="relative flex-1 min-h-0 bg-terminal-bg" {@attach terminalFocusRegion(paneId)}></div>
   {#if compact}
     <TerminalKeyRow onKey={pressKeyRow} {ctrlArmed} onToggleCtrl={toggleStickyCtrl} onPaste={pasteKeyRow} {findFocused} />
   {/if}

@@ -45,8 +45,19 @@ import { errString } from '../../utils/errors';
 import { clipboardChordFor, isFontZoomChord } from './terminalKeys';
 import { isMacPlatform } from '../../utils/platform';
 import { isCompactLayout } from '../../stores/layoutMode.svelte';
+import { createTerminalFindLayer, type TerminalFindLayer } from './terminalFindLayer';
 
 const isMac = isMacPlatform();
+
+/** Viewport cells under the find bar: the top `rows` rows, columns `from`
+ * through `to`. */
+export interface TerminalObscured {
+  rows: number;
+  from: number;
+  to: number;
+}
+
+const NOTHING_OBSCURED: TerminalObscured = { rows: 0, from: 0, to: -1 };
 
 export interface BuildTerminalOptions {
   // Receives input the widget produces internally (the Shift+Enter newline).
@@ -74,14 +85,12 @@ export interface BuiltTerminal {
    * `clear()` and `reset()`.
    */
   onBufferChange(listener: () => void): IDisposable;
-  /**
-   * Fires just before a resize that changes the columns, whose reflow
-   * disposes markers itself. Find drops its decorations here
-   * (terminalFind.svelte.ts).
-   */
-  onBeforeReflow(listener: () => void): IDisposable;
-  /** Viewport rows the surface's find bar overlay covers, from the top. */
-  obscuredRows(): number;
+  /** The cells the surface's find bar overlay covers. */
+  obscured(): TerminalObscured;
+  /** Fires when the find bar overlay's size changes, opening included. */
+  onObscuredChange(listener: () => void): IDisposable;
+  /** Find's paint over the grid (terminalFindLayer.ts). */
+  findLayer: TerminalFindLayer;
   paste: () => void;
   /** The clipboard text, for a paste that goes elsewhere (the find bar). */
   readClipboard: () => Promise<string>;
@@ -93,8 +102,8 @@ export interface BuiltTerminal {
 // handling.
 // `paste` is the clipboard-to-PTY route the widget's own chord and right-click
 // use, exposed so the compact key row (which has neither) offers the same
-// action with the same failure toast. Find's match decorations
-// (terminalFind.svelte.ts) need `allowProposedApi`.
+// action with the same failure toast. The Unicode 11 width tables
+// (`terminal.unicode`) need `allowProposedApi`.
 export function buildTerminal(
   mount: HTMLDivElement,
   { onInput, isDisposed, acceptsPaste }: BuildTerminalOptions,
@@ -138,20 +147,13 @@ export function buildTerminal(
   terminal.open(mount);
 
   // `clear()` and `reset()` change the buffer without a write, so they
-  // announce themselves here, whoever calls them. A column change (the
-  // fit's resize included) also announces itself before its reflow.
+  // announce themselves here, whoever calls them.
   const bufferListeners = new Set<() => void>();
-  const reflowListeners = new Set<() => void>();
   function bufferChanged(): void {
     for (const listener of bufferListeners) listener();
   }
   terminal.onWriteParsed(bufferChanged);
   terminal.onResize(bufferChanged);
-  const resize = terminal.resize.bind(terminal);
-  terminal.resize = (columns: number, rows: number) => {
-    if (columns !== terminal.cols) for (const listener of reflowListeners) listener();
-    resize(columns, rows);
-  };
   const clear = terminal.clear.bind(terminal);
   terminal.clear = () => {
     clear();
@@ -169,14 +171,28 @@ export function buildTerminal(
 
   // The surface floats its find bar over the top of the grid
   // (data-terminal-find-overlay inside data-terminal-find-host).
-  function obscuredRows(): number {
-    const overlay = mount.closest('[data-terminal-find-host]')?.querySelector('[data-terminal-find-overlay]');
+  function findOverlay(): Element | null {
+    return mount.closest('[data-terminal-find-host]')?.querySelector('[data-terminal-find-overlay]') ?? null;
+  }
+  function obscured(): TerminalObscured {
+    const overlay = findOverlay();
     const screen = terminal.element?.querySelector('.xterm-screen');
-    if (!overlay || !screen || terminal.rows === 0) return 0;
+    if (!overlay || !screen || terminal.rows === 0 || terminal.cols === 0) return NOTHING_OBSCURED;
     const bar = overlay.getBoundingClientRect();
     const grid = screen.getBoundingClientRect();
-    if (bar.height === 0) return 0;
-    return Math.max(0, Math.ceil((bar.bottom - grid.top) / (grid.height / terminal.rows)));
+    if (bar.height === 0 || bar.width === 0) return NOTHING_OBSCURED;
+    const cellWidth = grid.width / terminal.cols;
+    const rows = Math.min(terminal.rows, Math.max(0, Math.ceil((bar.bottom - grid.top) / (grid.height / terminal.rows))));
+    const from = Math.max(0, Math.floor((bar.left - grid.left) / cellWidth));
+    const to = Math.min(terminal.cols - 1, Math.ceil((bar.right - grid.left) / cellWidth) - 1);
+    return to < from ? NOTHING_OBSCURED : { rows, from, to };
+  }
+  function onObscuredChange(listener: () => void): IDisposable {
+    const overlay = findOverlay();
+    if (!overlay) return { dispose: () => {} };
+    const observer = new ResizeObserver(() => listener());
+    observer.observe(overlay);
+    return { dispose: () => observer.disconnect() };
   }
 
   // Copy the selection and drop the highlight, so the next Ctrl+C / right-
@@ -322,8 +338,9 @@ export function buildTerminal(
     term: terminal,
     fit: fitAddon,
     onBufferChange: (listener) => listen(bufferListeners, listener),
-    onBeforeReflow: (listener) => listen(reflowListeners, listener),
-    obscuredRows,
+    obscured,
+    onObscuredChange,
+    findLayer: createTerminalFindLayer(mount, terminal),
     paste: pasteClipboard,
     readClipboard: readClipboardText,
   };

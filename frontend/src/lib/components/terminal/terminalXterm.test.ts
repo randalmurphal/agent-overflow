@@ -22,11 +22,6 @@ const mocks = vi.hoisted(() => {
       onResize(listener: () => void): void {
         this.resized.push(listener);
       }
-      cols = 80;
-      resize(cols: number, rows: number): void {
-        this.calls.push(`resize:${cols}x${rows}`);
-        this.cols = cols;
-      }
       clear(): void {
         this.calls.push('clear');
       }
@@ -148,16 +143,4 @@ describe('buildTerminal onBufferChange', () => {
     expect(seen).toHaveLength(4);
   });
 
-  it('announces a column change before its resize, and a rows-only resize not at all', () => {
-    const built = buildTerminal(document.createElement('div'), { onInput: () => {} });
-    const fake = built.term as unknown as Fake;
-    const subscription = built.onBeforeReflow(() => fake.calls.push('before'));
-    built.term.resize(80, 30);
-    built.term.resize(100, 30);
-    expect(fake.calls).toEqual(['resize:80x30', 'before', 'resize:100x30']);
-    subscription.dispose();
-    built.term.resize(90, 30);
-    expect(fake.calls.at(-1)).toBe('resize:90x30');
-    expect(fake.calls.at(-2)).toBe('resize:100x30');
-  });
 });

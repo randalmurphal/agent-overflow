@@ -65,6 +65,6 @@ export function drawer(page: Page) {
   return page.getByTestId('terminal-drawer');
 }
 
-export function decorations(page: Page) {
+export function findRectangles(page: Page) {
   return drawer(page).locator('.terminal-find-match, .terminal-find-active');
 }

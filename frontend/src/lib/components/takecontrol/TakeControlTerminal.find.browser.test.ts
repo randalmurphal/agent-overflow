@@ -22,10 +22,11 @@ vi.mock('../terminal/terminalXterm', async (importOriginal) => {
 });
 
 import TakeControlTerminal from './TakeControlTerminal.svelte';
-import { closePaneFind, getPaneFindProvider, resetPaneFindForTest } from '../../stores/paneFind.svelte';
+import { closePaneFind, getPaneFindProvider, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 
 const PANE = 'tc-overlay';
+const NEEDLE_ROW = 40;
 
 let component: ReturnType<typeof mount> | null = null;
 
@@ -45,7 +46,8 @@ beforeEach(async () => {
     threadID: 'thread-overlay',
     summary: { cols: 80, rows: 24 },
   }));
-  const lines = Array.from({ length: 60 }, (_, i) => `row ${i} of the provider`);
+  // The needle sits under the desktop bar's columns.
+  const lines = Array.from({ length: 60 }, (_, i) => (i === NEEDLE_ROW ? `row ${i} ${'.'.repeat(70)} needle` : `row ${i} of the provider`));
   setBindingMock('ProviderTerminalReplay', async () => ({ data: base64(lines.join('\r\n')), fromSequence: 0, throughSequence: 1 }));
   setBindingMock('ProviderTerminalResize', async () => {});
   setBindingMock('ProviderTerminalInput', async () => {});
@@ -98,4 +100,27 @@ it('opening and closing find keeps the grid, the provider PTY size and the reade
   expect(document.querySelector('[data-testid="pane-find-bar"]')).toBeNull();
   expect({ rows: xterm.rows, cols: xterm.cols, calls: resizes.mock.calls.length }).toEqual(before);
   expect({ text: xterm.getSelection(), at: xterm.getSelectionPosition() }).toEqual(selected);
+});
+
+it('reopening find with its saved query scrolls the match the bar would cover clear of it', async () => {
+  // Codex's sequence: search, close, put the match on the top row, reopen.
+  const xterm = captured.term!;
+  const openFind = () => document.querySelector<HTMLElement>('[data-testid="take-control-find"]')!.click();
+  openFind();
+  await tick();
+  setPaneFindQuery(PANE, 'needle');
+  closePaneFind(PANE);
+  await tick();
+  xterm.scrollToLine(NEEDLE_ROW);
+  await frames();
+  expect(xterm.buffer.active.viewportY).toBe(NEEDLE_ROW);
+  openFind();
+  await tick();
+  await frames();
+  expect(getPaneFindProvider(PANE)!.result).toMatchObject({ count: 1, current: 0 });
+  const bar = document.querySelector<HTMLElement>('[data-testid="pane-find-bar"]')!.getBoundingClientRect();
+  const grid = document.querySelector<HTMLElement>('.xterm-screen')!.getBoundingClientRect();
+  const offset = NEEDLE_ROW - xterm.buffer.active.viewportY;
+  expect(offset).toBeLessThan(xterm.rows);
+  expect(grid.top + offset * (grid.height / xterm.rows)).toBeGreaterThanOrEqual(bar.bottom);
 });

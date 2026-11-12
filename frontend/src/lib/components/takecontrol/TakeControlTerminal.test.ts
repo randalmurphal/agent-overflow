@@ -75,7 +75,7 @@ const mocks = vi.hoisted(() => {
     clear(): void {}
     reset(): void {}
     // The buffer find scans (terminalFind.svelte.ts): one row of text.
-    // Its decorations log on searches, each disposal once.
+    // Its paint logs on searches (`onRender`).
     bufferText = 'needle needle';
     get buffer() {
       const text = this.bufferText;
@@ -95,27 +95,26 @@ const mocks = vi.hoisted(() => {
       return { active: { type: 'normal', length: 1, baseY: 0, cursorY: 0, viewportY: 0, getNullCell: () => cell, getLine: (row: number) => (row === 0 ? line : undefined) }, onBufferChange: () => ({ dispose(): void {} }) };
     }
     registerMarker() {
-      const owned: Array<() => void> = [];
       return {
         line: 0,
         isDisposed: false,
-        owned,
         dispose(): void {
           this.isDisposed = true;
-          for (const dispose of owned.splice(0)) dispose();
         },
       };
     }
-    registerDecoration({ marker }: { marker: { owned: Array<() => void> } }) {
-      searches.push('decorate');
+    // Find's layer (terminalFindLayer.ts) listens to renders while it has
+    // matches to paint.
+    onRender(): { dispose(): void } {
+      searches.push('paint');
       let live = true;
-      const dispose = (): void => {
-        if (!live) return;
-        live = false;
-        searches.push('undecorate');
+      return {
+        dispose(): void {
+          if (!live) return;
+          live = false;
+          searches.push('unpaint');
+        },
       };
-      marker.owned.push(dispose);
-      return { onRender: () => ({ dispose(): void {} }), dispose };
     }
     scrollLines(): void {}
     resize(cols: number, rows: number): void {
@@ -602,17 +601,14 @@ describe('<TakeControlTerminal>', () => {
     input.focus();
     expect(input.placeholder).toBe('Find in terminal');
     await fireEvent.input(input, { target: { value: 'needle' } });
-    // Two matches, then the newest active in its place.
-    expect(mocks.searches).toEqual(['parsed', 'decorate', 'decorate', 'undecorate', 'decorate']);
+    expect(mocks.searches).toEqual(['parsed', 'paint']);
     await waitFor(() => expect(getByTestId('pane-find-count').textContent?.trim()).toBe('2/2'));
     await fireEvent.keyDown(input, { key: 'Enter' });
-    // The two matches swap grounds.
-    expect(mocks.searches.slice(-4)).toEqual(['undecorate', 'decorate', 'undecorate', 'decorate']);
     await waitFor(() => expect(getByTestId('pane-find-count').textContent?.trim()).toBe('1/2'));
 
     await fireEvent.click(getByTestId('pane-find-close'));
     expect(queryByTestId('pane-find-bar')).toBeNull();
-    expect(mocks.searches.slice(-2)).toEqual(['undecorate', 'undecorate']);
+    expect(mocks.searches.slice(-1)).toEqual(['unpaint']);
     await waitFor(() => expect(document.activeElement).toBe(mocks.getLastTerminal()!.textarea));
     expect(isPaneFindOpen('tc-find')).toBe(false);
 
@@ -621,7 +617,7 @@ describe('<TakeControlTerminal>', () => {
     mocks.searches.length = 0;
     try {
       setResolvedThemeForTest('light');
-      const repaint = ['undecorate', 'undecorate', 'decorate', 'decorate', 'undecorate', 'decorate'];
+      const repaint = ['unpaint', 'paint'];
       await waitFor(() => expect(mocks.searches).toEqual(repaint));
       setResolvedThemeForTest('dark');
       await waitFor(() => expect(mocks.searches).toEqual([...repaint, ...repaint]));
@@ -631,7 +627,7 @@ describe('<TakeControlTerminal>', () => {
     mocks.searches.length = 0;
     unmount();
     // The unmount clears its matches.
-    expect(mocks.searches).toEqual(['undecorate', 'undecorate']);
+    expect(mocks.searches).toEqual(['unpaint']);
     resetPaneFindForTest();
   });
 });

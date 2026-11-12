@@ -7,7 +7,8 @@ import type { Terminal } from '@xterm/xterm';
 import '../../../app.css';
 import TerminalBody from './TerminalBody.svelte';
 import { createThreadTerminalState } from './terminalStore.svelte';
-import { TERMINAL_FIND_ACTIVE_CLASS, terminalFindKey } from './terminalFind.svelte';
+import { terminalFindKey } from './terminalFind.svelte';
+import { TERMINAL_FIND_ACTIVE_CLASS } from './terminalFindLayer';
 import {
   getPaneFindProvider,
   openPaneFind,

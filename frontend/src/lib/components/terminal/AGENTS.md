@@ -41,30 +41,38 @@ terminal escape chord. `terminalFindScan.ts` matches each logical line
 (wrapped rows joined) by `utils/findMatch.ts` through xterm's public buffer
 API, over the 4000 lines of scrollback the terminal keeps, and under a
 full-screen program (alternate screen) the visible screen only. The newest
-1000 matches are counted and painted as decorations.
+1000 matches are counted and painted.
+
+Find paints on its own layer over the grid (`terminalFindLayer.ts`), never
+with xterm decorations: xterm 6 leaves a decoration registered for the
+terminal's life when the parser disposes its marker out of row order, and
+`TerminalFindTerminal` has no `registerDecoration`. The layer draws a
+translucent rectangle per run of matched cells from a marker on its row,
+after each paint and each xterm render, with a node only per rectangle in
+view, and takes no pointer events. The active match is drawn once, in the
+current ground.
 
 Find never reads or writes the terminal selection; it is the reader's. Both
 surfaces float the bar over the grid (`TERMINAL_FIND_OVERLAY_CLASS` inside
 `data-terminal-find-host`), so opening and closing it changes neither the
 rows nor the PTY size, either of which would drop the selection or signal
-the program; a step scrolls the active match clear of the rows the bar
-covers (`obscuredRows`). The active match is anchored twice, by its line's
-first row plus its offset and by the next line's first row plus its
-distance from the line's end, so it survives reflow and trimming of its
-line's first rows. The active match carries only its own ground: xterm
-lets a decoration registered later on a row lose to an earlier one. Re-searches run from `onBufferChange`, the one
-notification `buildTerminal` sends for output, resizes, `clear()` and
-`reset()`, through the refresh scheduler: never scan per write. A re-search
-reads only the rows from the bottom up to the 1000th match, makes at most
-1000 match decorations, the active one and a marker per painted row, and
-disposes everything the previous scan made (`terminalFind.browser.test.ts`
-counts it). xterm 6 can leave a decoration registered when its marker is
-disposed first, so find disposes its decorations before their markers and
-drops them before a column-changing resize, whose reflow disposes markers
-out of order (`onBeforeReflow`), and on a screen switch, since xterm paints
-a decoration by row on whichever screen is active. Register find only after the replay
-is parsed (the write callback) and a frame after the grid is fitted to it,
-or the restored match leaves the view.
+the program. A query change and a step scroll the active match clear of the
+cells the bar covers (`obscured`), and so does a change to the bar's size
+(`onObscuredChange`), since the bar mounts after a reopen's search. With a
+buffer too short to scroll, a match on the rows under the bar stays under
+it. The active match is anchored twice, by its line's first row plus its
+offset and by the next line's first row plus its distance from the line's
+end, so it survives reflow and trimming of its line's first rows.
+Re-searches run from `onBufferChange`, the one notification `buildTerminal`
+sends for output, resizes, `clear()` and `reset()`, through the refresh
+scheduler: never scan per write. A re-search reads only the rows from the
+bottom up to the 1000th match, makes a marker per painted row and two
+anchors, and disposes everything the previous scan made
+(`terminalFind.browser.test.ts` counts it). A screen switch drops the paint
+at once, since the layer draws by row on whichever screen is active.
+Register find only after the replay is parsed (the write callback) and a
+frame after the grid is fitted to it, or the restored match leaves the
+view.
 
 Extend the `FakeTerminal` in `TerminalBody.test.ts` for component tests. Reset
 `setCompactLayoutForTest` after every test that changes it.

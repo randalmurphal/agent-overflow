@@ -1,7 +1,8 @@
 // The find provider of one xterm (stores/paneFind.svelte.ts). It scans the
-// buffer itself (terminalFindScan.ts) and paints matches with xterm
-// decorations. It never reads or writes the terminal selection: that is
-// the reader's, for copying, and a drag in progress stays theirs.
+// buffer itself (terminalFindScan.ts) and paints matches on the surface's
+// layer over the grid (terminalFindLayer.ts), never with xterm decorations.
+// It never reads or writes the terminal selection: that is the reader's,
+// for copying, and a drag in progress stays theirs.
 //
 // - The match rule is the app's (utils/findMatch.ts) over each logical line.
 //   Each query change starts at the newest match (the bottom of the buffer);
@@ -14,24 +15,21 @@
 //   Reflow keeps both; trimming that takes the line's first rows leaves the
 //   second. A re-search after any change finds the same match, or the
 //   nearest one after it when it is gone (the newest when none follows).
-// - Find owns every decoration it registers and disposes it before its
-//   marker: xterm 6 clears a marker's row before telling its decorations,
-//   and a decoration whose row is out of order then stays registered for
-//   the terminal's life. A reflow disposes markers out of order, so the
-//   paint is dropped before a column-changing resize (`onBeforeReflow`), and
-//   re-searched after.
+// - Each painted row has a marker, so the paint follows its rows as output
+//   moves them, until the re-search.
 // - Every buffer change while a query is set (`onBufferChange`) re-searches
 //   once changes pause, and at least once a second under sustained output.
 //   Until then the result is pending, so the bar marks the count it shows
 //   as updating. A re-search never scrolls; a query change and a step bring
 //   the active match into view.
 // - A switch to or from a full-screen program (the alternate screen) drops
-//   the paint at once: xterm paints a decoration by its row on whichever
-//   screen is active.
-// - A step reveals the active match below the rows the find bar covers
-//   (`obscuredRows`), as far as scrolling can.
+//   the paint at once: the layer draws by row on whichever screen is active.
+// - A query change and a step reveal the active match clear of the cells
+//   the find bar covers (`obscured`), as far as scrolling can, and so does
+//   a change to the bar's size (`onObscuredChange`) for a match it covers:
+//   the bar mounts after a reopen's search.
 
-import type { IDecoration, IDisposable, IMarker, Terminal } from '@xterm/xterm';
+import type { IDisposable, IMarker, Terminal } from '@xterm/xterm';
 import {
   paneFindRegionKey,
   registerPaneFindProvider,
@@ -40,7 +38,9 @@ import {
 } from '../../stores/paneFind.svelte';
 import { getResolvedTheme } from '../../stores/themeMode.svelte';
 import { getXtermFindColors, type TerminalFindColors } from './terminalTheme';
-import { scanTerminalBuffer, terminalLineAt, type TerminalMatch, type TerminalMatchCells } from './terminalFindScan';
+import { scanTerminalBuffer, terminalLineAt, type TerminalMatch } from './terminalFindScan';
+import type { TerminalFindLayer, TerminalFindRun } from './terminalFindLayer';
+import type { TerminalObscured } from './terminalXterm';
 import { findNeedle } from '../../utils/findMatch';
 import { createRefreshScheduler } from '../../utils/refreshScheduler';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
@@ -62,23 +62,22 @@ export const TERMINAL_FIND_REFRESH_MAX_WAIT_MS = 1000;
  * desktop, the full width under compact. Empty while the bar is closed, so
  * it takes no pointer events then. */
 export const TERMINAL_FIND_OVERLAY_CLASS = 'absolute top-1 right-2 z-10 w-[min(26rem,calc(100%-1rem))] compact:left-1 compact:right-1 compact:w-auto';
-/** Class names on the rendered match decorations. */
-export const TERMINAL_FIND_MATCH_CLASS = 'terminal-find-match';
-export const TERMINAL_FIND_ACTIVE_CLASS = 'terminal-find-active';
-
 /** The slice of the xterm the provider uses. No selection member: find
- * leaves the selection alone. */
-export type TerminalFindTerminal = Pick<Terminal, 'buffer' | 'rows' | 'registerMarker' | 'registerDecoration' | 'scrollLines'>;
+ * leaves the selection alone; no decoration member: find paints on its
+ * own layer. */
+export type TerminalFindTerminal = Pick<Terminal, 'buffer' | 'rows' | 'registerMarker' | 'scrollLines'>;
 
 /** What a surface's built terminal hands its find (`BuiltTerminal`). */
 export interface TerminalFindSource {
   term: TerminalFindTerminal;
   /** Every change to the searched buffer. */
   onBufferChange(listener: () => void): IDisposable;
-  /** Just before a column-changing resize, whose reflow disposes markers. */
-  onBeforeReflow(listener: () => void): IDisposable;
-  /** Rows at the top of the viewport the find bar covers. */
-  obscuredRows?(): number;
+  /** Draws the matches over the grid. */
+  findLayer: TerminalFindLayer;
+  /** The viewport cells the find bar covers. */
+  obscured?(): TerminalObscured;
+  /** Fires when the find bar's size changes. */
+  onObscuredChange?(listener: () => void): IDisposable;
 }
 
 export interface TerminalFindOptions extends TerminalFindSource {
@@ -114,8 +113,9 @@ export function registerTerminalFind(key: string, source: TerminalFindSource): T
   const find = createTerminalFind({
     term: source.term,
     onBufferChange: source.onBufferChange,
-    onBeforeReflow: source.onBeforeReflow,
-    obscuredRows: source.obscuredRows,
+    findLayer: source.findLayer,
+    obscured: source.obscured,
+    onObscuredChange: source.onObscuredChange,
     colors: () => getXtermFindColors(getResolvedTheme()),
   });
   const unregister = registerPaneFindProvider(key, find);
@@ -149,12 +149,10 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
   let pending = $state(false);
   let error = $state<string | null>(null);
   let matches: TerminalMatch[] = [];
-  // One marker per painted row, disposed after its decorations.
+  // One marker per painted row.
   let rowMarkers = new Map<number, IMarker>();
-  // Each match's paint, by index; the active match has only its own.
-  let matchPaint: IDecoration[][] = [];
-  let active: IDecoration[] = [];
-  let activeAt = -1;
+  // Each match's runs, by index.
+  let runs: TerminalFindRun[][] = [];
   let colors: TerminalFindColors = {};
   let anchor: Anchor | null = null;
 
@@ -175,49 +173,26 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
     return term.registerMarker(row - buffer.baseY - buffer.cursorY);
   }
 
-  function decorate(cells: TerminalMatchCells, background: string | undefined, className: string): IDecoration | undefined {
-    let marker = rowMarkers.get(cells.row);
-    if (!marker) {
-      marker = markerAt(cells.row);
-      rowMarkers.set(cells.row, marker);
-    }
-    const decoration = term.registerDecoration({ marker, x: cells.x, width: cells.width, backgroundColor: background, layer: 'bottom' });
-    decoration?.onRender((element) => element.classList.add(className));
-    return decoration;
-  }
-
-  function paint(cells: readonly TerminalMatchCells[], background: string | undefined, className: string): IDecoration[] {
-    const painted: IDecoration[] = [];
-    for (const part of cells) {
-      const decoration = decorate(part, background, className);
-      if (decoration) painted.push(decoration);
-    }
-    return painted;
+  function runsOf(match: TerminalMatch): TerminalFindRun[] {
+    return match.cells.map((cells) => {
+      let marker = rowMarkers.get(cells.row);
+      if (!marker) {
+        marker = markerAt(cells.row);
+        rowMarkers.set(cells.row, marker);
+      }
+      return { marker, x: cells.x, width: cells.width };
+    });
   }
 
   function unpaint(): void {
-    for (const decorations of matchPaint) for (const decoration of decorations) decoration.dispose();
-    for (const decoration of active) decoration.dispose();
+    options.findLayer.clear();
     for (const marker of rowMarkers.values()) marker.dispose();
     rowMarkers = new Map();
-    matchPaint = [];
-    active = [];
-    activeAt = -1;
+    runs = [];
   }
 
-  // xterm lets a later decoration on a row lose to an earlier one, so the
-  // active match never sits over its own match paint: the two swap.
-  function paintActive(): void {
-    for (const decoration of active) decoration.dispose();
-    active = [];
-    if (matches[activeAt]) matchPaint[activeAt] = paint(matches[activeAt].cells, colors.match, TERMINAL_FIND_MATCH_CLASS);
-    activeAt = -1;
-    const match = matches[current];
-    if (!match) return;
-    for (const decoration of matchPaint[current] ?? []) decoration.dispose();
-    matchPaint[current] = [];
-    active = paint(match.cells, colors.current, TERMINAL_FIND_ACTIVE_CLASS);
-    activeAt = current;
+  function paint(): void {
+    options.findLayer.paint(runs, current, colors);
   }
 
   function dropAnchor(): void {
@@ -267,17 +242,24 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
     unpaint();
     colors = options.colors();
     matches = scanTerminalBuffer(term.buffer.active, needle, TERMINAL_FIND_MATCH_LIMIT);
-    matchPaint = matches.map((match) => paint(match.cells, colors.match, TERMINAL_FIND_MATCH_CLASS));
+    runs = matches.map(runsOf);
     count = matches.length;
     pending = false;
   }
 
-  function reveal(): void {
-    const row = matches[current]?.cells[0]?.row;
-    if (row === undefined) return;
+  // Scrolls the active match into view below the find bar's rows when it is
+  // out of view or (`coveredOnly`) when the bar covers any of its cells.
+  function reveal(coveredOnly = false): void {
+    const live = (runs[current] ?? []).filter((run) => !run.marker.isDisposed);
+    if (live.length === 0) return;
     const top = term.buffer.active.viewportY;
-    const covered = Math.min(Math.max(0, options.obscuredRows?.() ?? 0), term.rows - 1);
-    if (row < top + covered || row >= top + term.rows) term.scrollLines(row - top - Math.floor((term.rows + covered) / 2));
+    const bar = options.obscured?.() ?? { rows: 0, from: 0, to: -1 };
+    const covered = Math.min(bar.rows, term.rows - 1);
+    const row = live[0].marker.line;
+    const outside = row < top || row >= top + term.rows;
+    const hidden = live.some((run) => run.marker.line - top >= 0 && run.marker.line - top < covered
+      && run.x <= bar.to && run.x + run.width - 1 >= bar.from);
+    if (hidden || (outside && !coveredOnly)) term.scrollLines(row - top - Math.floor((term.rows + covered) / 2));
   }
 
   // A throw is the bar's error until a later call succeeds.
@@ -303,7 +285,7 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
       scan();
       current = anchored();
       setAnchor();
-      paintActive();
+      paint();
     });
   }
 
@@ -318,7 +300,7 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
       if (matches.length === 0) return;
       current = current < 0 ? (delta > 0 ? 0 : matches.length - 1) : (current + delta + matches.length) % matches.length;
       setAnchor();
-      paintActive();
+      paint();
       reveal();
     });
   }
@@ -336,22 +318,23 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
       pending = true;
       refresher.request();
     }),
-    // xterm paints a decoration by its marker's row on whichever screen is
-    // active, so a switch to or from a full-screen program would show the
-    // other screen's matches on unrelated text until the re-search.
+    // The layer draws by row on whichever screen is active, so a switch to
+    // or from a full-screen program would show the other screen's matches
+    // on unrelated text until the re-search.
     term.buffer.onBufferChange(() => {
       if (!query || error !== null) return;
       unpaint();
       pending = true;
       refresher.request();
     }),
-    options.onBeforeReflow(() => {
-      if (!query || error !== null) return;
-      unpaint();
-      pending = true;
-      refresher.request();
-    }),
   ];
+  // The bar mounts after the search a reopen runs, and changes size with
+  // the layout: a match it now covers moves clear of it.
+  if (options.onObscuredChange) {
+    listeners.push(options.onObscuredChange(() => {
+      if (query && error === null) reveal(true);
+    }));
+  }
 
   function clear(): void {
     query = '';
@@ -384,7 +367,7 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
         scan();
         current = matches.length - 1;
         setAnchor();
-        paintActive();
+        paint();
         reveal();
       });
     },

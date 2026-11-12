@@ -162,7 +162,6 @@ export default defineConfig({
             '@lucide/svelte/icons/arrow-up-down',
             '@lucide/svelte/icons/folder-git-2',
             '@lucide/svelte/icons/list-filter',
-            '@lucide/svelte/icons/hand',
           ],
           entries: [
             'src/**/*.browser.{test,spec}.{ts,js}',

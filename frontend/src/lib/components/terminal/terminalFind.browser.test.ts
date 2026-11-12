@@ -7,16 +7,15 @@
 // and a drag in progress are never touched, and the work a re-search does
 // at full scrollback.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { IBuffer, IBufferLine, IDecoration, IMarker, Terminal } from '@xterm/xterm';
+import type { IBuffer, IBufferLine, IDisposable, IMarker, Terminal } from '@xterm/xterm';
 import { page } from 'vitest/browser';
 import '../../../app.css';
 import { applyThemeClass } from '../../utils/theme';
 import { applyTheme, resetThemeApplyForTest } from '../../theme/themeApply.svelte';
 import { buildTerminal, type BuiltTerminal } from './terminalXterm';
 import { getXtermFindColors, getXtermTheme, resetXtermThemeCache } from './terminalTheme';
+import { TERMINAL_FIND_ACTIVE_CLASS, TERMINAL_FIND_MATCH_CLASS } from './terminalFindLayer';
 import {
-  TERMINAL_FIND_ACTIVE_CLASS,
-  TERMINAL_FIND_MATCH_CLASS,
   TERMINAL_FIND_MATCH_LIMIT,
   createTerminalFind,
   registerTerminalFind,
@@ -75,18 +74,41 @@ function cellSize(): { width: number; height: number } {
   return { width: screen.width / term.cols, height: screen.height / term.rows };
 }
 
-/** The painted decorations of `kind` on `row`, which must be on screen, in cells. */
+function rectangles(): HTMLElement[] {
+  return [...mount.querySelectorAll<HTMLElement>(`.${TERMINAL_FIND_MATCH_CLASS}, .${TERMINAL_FIND_ACTIVE_CLASS}`)];
+}
+
+/** The rectangles of `kind` on `row`, which must be on screen, in cells.
+ * Each must sit exactly on cell edges. */
 function painted(row: number, kind: string): Array<{ x: number; width: number }> {
   const cell = cellSize();
+  const grid = mount.querySelector<HTMLElement>('.xterm-screen')!.getBoundingClientRect();
   const offset = row - term.buffer.active.viewportY;
-  return [...mount.querySelectorAll<HTMLElement>(`.${kind}`)]
-    .filter((el) => el.style.display !== 'none' && Math.round(parseFloat(el.style.top) / cell.height) === offset)
-    .map((el) => ({ x: Math.round((parseFloat(el.style.left) || 0) / cell.width), width: Math.round(parseFloat(el.style.width) / cell.width) }))
-    .sort((a, b) => a.x - b.x);
+  const found: Array<{ x: number; width: number }> = [];
+  for (const el of mount.querySelectorAll<HTMLElement>(`.${kind}`)) {
+    const box = el.getBoundingClientRect();
+    const y = (box.top - grid.top) / cell.height;
+    const x = (box.left - grid.left) / cell.width;
+    const width = box.width / cell.width;
+    for (const value of [y, x, width]) expect(Math.abs(value - Math.round(value))).toBeLessThan(0.01);
+    expect(box.height).toBeCloseTo(cell.height, 2);
+    if (Math.round(y) === offset) found.push({ x: Math.round(x), width: Math.round(width) });
+  }
+  return found.sort((a, b) => a.x - b.x);
 }
 
 function paintedCount(): number {
-  return [...mount.querySelectorAll<HTMLElement>(`.${TERMINAL_FIND_MATCH_CLASS}, .${TERMINAL_FIND_ACTIVE_CLASS}`)].filter((el) => el.style.display !== 'none').length;
+  return rectangles().length;
+}
+
+/** Waits for xterm's next render, which redraws the layer. */
+function rendered(): Promise<void> {
+  return new Promise((resolve) => {
+    const once = term.onRender(() => {
+      once.dispose();
+      resolve();
+    });
+  });
 }
 
 /** Scrolls `row` into view and waits for it to render. */
@@ -105,7 +127,8 @@ function needleLines(): string {
 
 async function build(width = 640): Promise<void> {
   mount = document.createElement('div');
-  mount.style.cssText = `width:${width}px;height:200px`;
+  // As the surfaces' mounts: the layer fills it.
+  mount.style.cssText = `position:relative;width:${width}px;height:200px`;
   document.body.appendChild(mount);
   built = buildTerminal(mount, { onInput: () => {} });
   term = built.term;
@@ -326,13 +349,16 @@ describe('terminal find on a real xterm', () => {
     await vi.waitFor(() => expect(result()).toMatchObject({ count: 2, current: 1, pending: false }), { timeout: 2000 });
   });
 
-  it('paints with the theme\'s match grounds in both modes', () => {
+  it('paints with the theme\'s match grounds in both modes, translucent over the text', () => {
     const dark = getXtermFindColors('dark');
     applyMode('light');
     const light = getXtermFindColors('light');
     for (const grounds of [dark, light]) {
-      expect(grounds.match).toMatch(/^#[0-9a-f]{6}$/);
-      expect(grounds.current).toMatch(/^#[0-9a-f]{6}$/);
+      for (const color of [grounds.match, grounds.current]) {
+        const alpha = Number(/^rgba\(\d+, \d+, \d+, ([\d.]+)\)$/.exec(color ?? '')?.[1]);
+        expect(alpha).toBeGreaterThan(0);
+        expect(alpha).toBeLessThanOrEqual(0.45);
+      }
       expect(grounds.current).not.toBe(grounds.match);
     }
     expect(light.match).not.toBe(dark.match);
@@ -411,8 +437,22 @@ describe('terminal find text on a real xterm', () => {
   });
 });
 
+/** `color` (`rgba()`) over the dark terminal ground, as the page shows it. */
+function tinted(color: string | undefined): string {
+  const [r, g, b, a] = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/.exec(color ?? '')!.slice(1).map(Number);
+  const under = groundHex().slice(1).match(/../g)!.map((part) => parseInt(part, 16));
+  return `#${[r, g, b].map((v, i) => Math.round(v * a + under[i] * (1 - a)).toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** Whether two `#rrggbb` colors differ by at most the compositor's rounding. */
+function near(shown: string, expected: string): boolean {
+  const channels = (hex: string) => hex.slice(1).match(/../g)!.map((part) => parseInt(part, 16));
+  const [a, b] = [channels(shown), channels(expected)];
+  return a.every((v, i) => Math.abs(v - b[i]) <= 2);
+}
+
 /** Each cell's most common color as the page shows it, from a screenshot
- * of the mount: the ground the renderer painted under the glyph. */
+ * of the mount: the ground under the glyph, tinted by find's layer. */
 async function groundsShown(): Promise<(col: number, row: number) => string> {
   await frames();
   const image = new Image();
@@ -440,6 +480,19 @@ async function groundsShown(): Promise<(col: number, row: number) => string> {
   };
 }
 
+/** Each cell's ground as the page shows it, named: `current` and `match`
+ * for find's two tints over the dark ground, `ground` for none, else the
+ * hex read. */
+async function shadesShown(): Promise<(col: number, row: number) => string> {
+  const shown = await groundsShown();
+  const colors = getXtermFindColors('dark');
+  const named: Array<[string, string]> = [['current', tinted(colors.current)], ['match', tinted(colors.match)], ['ground', groundHex()]];
+  return (col, row) => {
+    const hex = shown(col, row);
+    return named.find(([, expected]) => near(hex, expected))?.[0] ?? hex;
+  };
+}
+
 describe('terminal find on the alternate screen, as the renderer paints it', () => {
   beforeEach(async () => {
     await build();
@@ -450,46 +503,41 @@ describe('terminal find on the alternate screen, as the renderer paints it', () 
     // The production renderer: WebGL draws the cells; there are no DOM rows.
     expect(mount.querySelector('.xterm-screen canvas')).not.toBeNull();
     expect(mount.querySelector('.xterm-rows')).toBeNull();
-    const colors = getXtermFindColors('dark');
-    // The theme names the ground as rgb(); the screenshot reads hex.
-    const [r, g, b] = getXtermTheme('dark').background!.match(/\d+/g)!.map(Number);
-    const ground = `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
-    expect(colors.match).toMatch(/^#[0-9a-f]{6}$/);
 
     await write('normal row\r\n   normal needle');
     register();
     setPaneFindQuery(KEY, 'needle');
-    let shown = await groundsShown();
-    expect(shown(10, 1)).toBe(colors.current);
-    expect(shown(0, 1)).toBe(ground);
+    let shown = await shadesShown();
+    expect(shown(10, 1)).toBe('current');
+    expect(shown(0, 1)).toBe('ground');
 
     // A full-screen program draws two matches; the normal screen's match
     // cell (row 1, column 10) is plain text there.
     await write('\x1b[?1049h\x1b[H\x1b[2Jalt screen\r\nneedle one is here\r\nand needle two');
-    shown = await groundsShown();
-    expect(shown(10, 1)).toBe(ground);
+    shown = await shadesShown();
+    expect(shown(10, 1)).toBe('ground');
     await vi.waitFor(() => expect(result()).toMatchObject({ count: 2, current: 1, pending: false }), { timeout: 2000 });
-    shown = await groundsShown();
-    expect(shown(0, 1)).toBe(colors.match);
-    expect(shown(5, 1)).toBe(colors.match);
-    expect(shown(4, 2)).toBe(colors.current);
-    expect(shown(9, 2)).toBe(colors.current);
-    expect(shown(10, 1)).toBe(ground);
+    shown = await shadesShown();
+    expect(shown(0, 1)).toBe('match');
+    expect(shown(5, 1)).toBe('match');
+    expect(shown(4, 2)).toBe('current');
+    expect(shown(9, 2)).toBe('current');
+    expect(shown(10, 1)).toBe('ground');
     // Stepping moves the active ground on the program's screen.
     stepPaneFind(KEY, 1);
-    shown = await groundsShown();
-    expect(shown(0, 1)).toBe(colors.current);
-    expect(shown(4, 2)).toBe(colors.match);
+    shown = await shadesShown();
+    expect(shown(0, 1)).toBe('current');
+    expect(shown(4, 2)).toBe('match');
 
     // Leaving it, none of its highlights stays on the normal screen.
     await write('\x1b[?1049l');
-    shown = await groundsShown();
-    expect(shown(0, 1)).toBe(ground);
-    expect(shown(4, 2)).toBe(ground);
+    shown = await shadesShown();
+    expect(shown(0, 1)).toBe('ground');
+    expect(shown(4, 2)).toBe('ground');
     await vi.waitFor(() => expect(result()).toMatchObject({ count: 1, current: 0, pending: false }), { timeout: 2000 });
-    shown = await groundsShown();
-    expect(shown(10, 1)).toBe(colors.current);
-    expect(shown(0, 1)).toBe(ground);
+    shown = await shadesShown();
+    expect(shown(10, 1)).toBe('current');
+    expect(shown(0, 1)).toBe('ground');
   });
 });
 
@@ -506,17 +554,17 @@ describe('terminal find grounds through steps, as the renderer paints them', () 
   });
 
   it('paints only the active match in the current ground, after the search, every step either way and a re-search', async () => {
-    const colors = getXtermFindColors('dark');
     // Three matches on screen: rows 1, 3 and 5 at column 2.
     await write(['zero', '  needle a', 'two', '  needle b', 'four', '  needle c'].join('\r\n'));
     register();
     setPaneFindQuery(KEY, 'needle');
     const expectActive = async (active: number) => {
-      const shown = await groundsShown();
+      const shown = await shadesShown();
       for (const [index, row] of [1, 3, 5].entries()) {
-        for (const col of [2, 7]) expect(shown(col, row)).toBe(index === active ? colors.current : colors.match);
+        for (const col of [2, 7]) expect(shown(col, row)).toBe(index === active ? 'current' : 'match');
       }
-      expect(shown(0, 1)).toBe(groundHex());
+      expect(shown(0, 1)).toBe('ground');
+      expect(shown(8, 1)).toBe('ground');
     };
     await expectActive(2);
     for (const [delta, active] of [[1, 0], [1, 1], [1, 2], [-1, 1], [-1, 0], [-1, 2]] as const) {
@@ -531,8 +579,8 @@ describe('terminal find grounds through steps, as the renderer paints them', () 
   });
 });
 
-/** Entries in xterm's decoration service, ours included. A test reaches
- * xterm internals here: nothing public counts registered decorations. */
+/** Entries in xterm's decoration service, which find must never add to. A
+ * test reaches xterm internals here: nothing public counts them. */
 function serviceDecorations(): number {
   const core = (term as unknown as { _core: { _decorationService: { decorations: Iterable<unknown> } } })._core;
   return [...core._decorationService.decorations].length;
@@ -581,63 +629,243 @@ describe('terminal find anchors and paint lifetime on a real xterm', () => {
     await vi.waitFor(() => expect(result()).toMatchObject({ count: 2, current: 1, pending: false }), { timeout: 2000 });
   });
 
-  it('leaves no decoration registered in xterm across reflows, re-searches, trimming, clear, reset and screen switches', async () => {
-    const baseline = serviceDecorations();
+  // Codex's sequences: a program clears and redraws its screen, or deletes
+  // a middle line, while find is open on matches over several rows; xterm
+  // disposes those rows' markers inside the parser.
+  for (const [name, change] of [
+    ['a clear and redraw (CSI 2 J)', `\x1b[2J\x1b[H${Array.from({ length: 8 }, (_, i) => `redrawn ${i} needle`).join('\r\n')}`],
+    ['a deleted middle line (CSI M)', '\x1b[4;1H\x1b[M\x1b[6;1H\x1b[2M'],
+  ] as const) {
+    for (const screen of ['normal', 'alternate'] as const) {
+      it(`leaves no decoration registered in xterm after ${name} on the ${screen} screen`, async () => {
+        const baseline = serviceDecorations();
+        if (screen === 'alternate') await write('\x1b[?1049h\x1b[H');
+        await write(Array.from({ length: 8 }, (_, i) => `line ${i} needle ${'.'.repeat(i)} needle`).join('\r\n'));
+        register();
+        setPaneFindQuery(KEY, 'needle');
+        expect(result().count).toBe(16);
+        stepPaneFind(KEY, -1);
+        await write(change);
+        expect(serviceDecorations()).toBe(baseline);
+        await vi.waitFor(() => expect(result().pending).toBe(false), { timeout: 2000 });
+        stepPaneFind(KEY, 1);
+        expect(paintedCount()).toBeGreaterThan(0);
+        closePaneFind(KEY);
+        expect(serviceDecorations()).toBe(baseline);
+      });
+    }
+  }
+
+  it('registers no decoration in xterm for the terminal\'s life: searches, steps, re-searches, resizes, trimming, clear, reset, redraws, deleted lines, screen switches and a close', async () => {
+    // Nothing else in the terminal registers one.
+    expect(serviceDecorations()).toBe(0);
     // A match on each line's first row and one on its continuation row:
     // each 120-character line wraps at 80.
     await write(Array.from({ length: 30 }, (_, i) => `${String(i).padStart(3, '0')} needle ${'.'.repeat(80)} needle ${'.'.repeat(15)}`).join('\r\n'));
     register();
     setPaneFindQuery(KEY, 'needle');
     expect(result().count).toBe(60);
-    expect(serviceDecorations() - baseline).toBe(60);
+    await frames();
+    expect(paintedCount()).toBeGreaterThan(0);
+    const none = () => expect(serviceDecorations()).toBe(0);
+    none();
     const settled = () => vi.waitFor(() => expect(result().pending).toBe(false), { timeout: 2000 });
+    stepPaneFind(KEY, 1);
+    stepPaneFind(KEY, -1);
+    none();
     for (let cycle = 0; cycle < 3; cycle += 1) {
       term.resize(140, 10);
       await settled();
-      expect(serviceDecorations() - baseline).toBe(60);
+      none();
       term.resize(60, 10);
       await settled();
-      expect(serviceDecorations() - baseline).toBe(60);
+      none();
       registration!.restyle();
-      expect(serviceDecorations() - baseline).toBe(60);
+      none();
     }
     term.resize(80, 10);
     await settled();
+    await write('\x1b[2J\x1b[Hneedle\r\nneedle\r\nneedle\x1b[2;1H\x1b[M');
+    none();
+    await settled();
+    none();
     // Trimming every match away.
     await write('\r\nfiller'.repeat(4100));
     await settled();
     expect(result().count).toBe(0);
-    expect(serviceDecorations()).toBe(baseline);
+    none();
     await write('\r\nneedle\r\n');
     await settled();
-    expect(serviceDecorations() - baseline).toBe(1);
     term.clear();
     await settled();
-    expect(serviceDecorations()).toBe(baseline);
+    none();
     await write('\r\nneedle');
     await settled();
     term.reset();
     await settled();
-    expect(serviceDecorations()).toBe(baseline);
-    await write('\r\nneedle\x1b[?1049h\x1b[Halt needle');
+    none();
+    await write('\r\nneedle\x1b[?1049h\x1b[Halt needle\r\nneedle\x1b[1;1H\x1b[M');
     await settled();
-    expect(result().count).toBe(1);
-    expect(serviceDecorations() - baseline).toBe(1);
+    none();
     await write('\x1b[?1049l');
     await settled();
     expect(result().count).toBe(1);
-    expect(serviceDecorations() - baseline).toBe(1);
+    none();
     closePaneFind(KEY);
-    expect(serviceDecorations()).toBe(baseline);
+    none();
   });
 });
 
+describe('terminal find\'s layer on a real xterm', () => {
+  beforeEach(async () => {
+    await build();
+    term.resize(80, 10);
+  });
+
+  it('a line inserted or deleted above moves the rectangles with their rows before the re-search, and a deleted row\'s go', async () => {
+    await write(['zero', 'one needle', 'two', 'three needle', 'four needle'].join('\r\n'));
+    register();
+    setPaneFindQuery(KEY, 'needle');
+    await frames();
+    expect(painted(1, TERMINAL_FIND_MATCH_CLASS)).toEqual([{ x: 4, width: 6 }]);
+    expect(painted(3, TERMINAL_FIND_MATCH_CLASS)).toEqual([{ x: 6, width: 6 }]);
+    expect(painted(4, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 5, width: 6 }]);
+    // A line inserted at row 0 (CSI L) moves every row down one.
+    const drawn = rendered();
+    await write('\x1b[1;1H\x1b[L');
+    await drawn;
+    expect(result().pending).toBe(true);
+    expect(painted(1, TERMINAL_FIND_MATCH_CLASS)).toEqual([]);
+    expect(painted(2, TERMINAL_FIND_MATCH_CLASS)).toEqual([{ x: 4, width: 6 }]);
+    expect(painted(4, TERMINAL_FIND_MATCH_CLASS)).toEqual([{ x: 6, width: 6 }]);
+    expect(painted(5, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 5, width: 6 }]);
+    // Deleting row 2 (CSI M) disposes its marker: its rectangle goes, and
+    // the rows below move up.
+    const again = rendered();
+    await write('\x1b[3;1H\x1b[M');
+    await again;
+    expect(result().pending).toBe(true);
+    expect(paintedCount()).toBe(2);
+    expect(painted(2, TERMINAL_FIND_MATCH_CLASS)).toEqual([]);
+    expect(painted(3, TERMINAL_FIND_MATCH_CLASS)).toEqual([{ x: 6, width: 6 }]);
+    expect(painted(4, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 5, width: 6 }]);
+  });
+
+  it('a scroll moves the rectangles in the render that shows it', async () => {
+    await write(needleLines());
+    register();
+    setPaneFindQuery(KEY, 'needle');
+    await frames();
+    const row = NEEDLE_ROWS[1];
+    expect(painted(row, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 16, width: 6 }]);
+    for (const amount of [-3, 2, 1]) {
+      const drawn = rendered();
+      term.scrollLines(amount);
+      await drawn;
+      expect(inView(row)).toBe(true);
+      expect(painted(row, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 16, width: 6 }]);
+    }
+    // Scrolled out of view, it is not drawn.
+    const away = rendered();
+    term.scrollToLine(NEEDLE_ROWS[0] - 5);
+    await away;
+    expect(paintedCount()).toBe(1);
+    expect(painted(NEEDLE_ROWS[0], TERMINAL_FIND_MATCH_CLASS)).toEqual([{ x: 15, width: 6 }]);
+  });
+
+  it('a column change draws nothing until the re-search paints the reflowed rows', async () => {
+    await write('zero\r\none needle');
+    register();
+    setPaneFindQuery(KEY, 'needle');
+    await frames();
+    expect(paintedCount()).toBe(1);
+    const drawn = rendered();
+    term.resize(60, 10);
+    await drawn;
+    expect(result().pending).toBe(true);
+    expect(paintedCount()).toBe(0);
+    await vi.waitFor(() => expect(result().pending).toBe(false), { timeout: 2000 });
+    expect(painted(1, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 4, width: 6 }]);
+  });
+
+  it('a close and a release remove the layer and stop listening to renders', async () => {
+    const subscriptions = new Set<IDisposable>();
+    const onRender = term.onRender;
+    Object.defineProperty(term, 'onRender', {
+      configurable: true,
+      value: (listener: Parameters<Terminal['onRender']>[0]) => {
+        const subscription = onRender(listener);
+        const tracked = { dispose: () => { subscriptions.delete(tracked); subscription.dispose(); } };
+        subscriptions.add(tracked);
+        return tracked;
+      },
+    });
+    await write(needleLines());
+    register();
+    setPaneFindQuery(KEY, 'needle');
+    expect(mount.querySelectorAll('[data-terminal-find-layer]')).toHaveLength(1);
+    expect(subscriptions.size).toBe(1);
+    // Steps and re-searches keep one layer and one listener.
+    stepPaneFind(KEY, 1);
+    registration!.restyle();
+    expect(mount.querySelectorAll('[data-terminal-find-layer]')).toHaveLength(1);
+    expect(subscriptions.size).toBe(1);
+    closePaneFind(KEY);
+    expect(mount.querySelector('[data-terminal-find-layer]')).toBeNull();
+    expect(subscriptions.size).toBe(0);
+    openPaneFind(KEY);
+    setPaneFindQuery(KEY, 'needle');
+    expect(subscriptions.size).toBe(1);
+    registration!.release();
+    registration = null;
+    expect(mount.querySelector('[data-terminal-find-layer]')).toBeNull();
+    expect(subscriptions.size).toBe(0);
+  });
+
+  for (const renderer of ['WebGL', 'DOM'] as const) {
+    it(`a drag that starts on a highlighted cell selects, and typing reaches the terminal, under the ${renderer} renderer`, async () => {
+      const typed: string[] = [];
+      term.onData((data) => typed.push(data));
+      await write(['zero', 'one needle here', 'two'].join('\r\n'));
+      register();
+      setPaneFindQuery(KEY, 'needle');
+      if (renderer === 'DOM') {
+        // A lost WebGL context falls back to the DOM renderer
+        // (buildTerminal), whose rows sit under the layer.
+        const canvas = [...mount.querySelectorAll('canvas')].find((c) => c.getContext('webgl2'))!;
+        canvas.getContext('webgl2')!.getExtension('WEBGL_lose_context')!.loseContext();
+        await vi.waitFor(() => expect(mount.querySelector('.xterm-rows')).not.toBeNull(), { timeout: 6000 });
+      }
+      await frames();
+      expect(painted(1, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 4, width: 6 }]);
+      await dragAcrossTheActiveMatch();
+      expect(term.getSelection()).toBe('needle');
+      term.input('x');
+      expect(typed).toEqual(['x']);
+    });
+  }
+
+  async function dragAcrossTheActiveMatch(): Promise<void> {
+    const box = mount.querySelector<HTMLElement>(`.${TERMINAL_FIND_ACTIVE_CLASS}`)!.getBoundingClientRect();
+    const cell = cellSize();
+    const start = { clientX: box.left + cell.width / 2, clientY: box.top + cell.height / 2 };
+    const end = { clientX: box.left + 6.5 * cell.width, clientY: start.clientY };
+    // What the page hit-tests at the rectangle is xterm's, not the layer's.
+    const target = document.elementFromPoint(start.clientX, start.clientY)!;
+    expect(target.closest('[data-terminal-find-layer]')).toBeNull();
+    expect(mount.querySelector('.xterm')!.contains(target)).toBe(true);
+    target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, detail: 1, ...start }));
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, ...end }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, ...end }));
+  }
+});
+
 /** `term` as the provider sees it, counting what the scan reads and
- * tracking every marker and decoration it makes until disposed. */
+ * tracking every marker it makes until disposed. */
 function countedTerminal(real: Terminal) {
   const reads = { lines: 0, texts: 0 };
-  const made = { markers: 0, decorations: 0 };
-  const live = { markers: new Set<IMarker>(), decorations: new Set<IDecoration>() };
+  const made = { markers: 0 };
+  const live = { markers: new Set<IMarker>() };
   const bound = <T extends object>(target: T, prop: string | symbol): unknown => {
     const value = Reflect.get(target, prop);
     return typeof value === 'function' ? value.bind(target) : value;
@@ -676,15 +904,6 @@ function countedTerminal(real: Terminal) {
       marker.onDispose(() => live.markers.delete(marker));
       return marker;
     },
-    registerDecoration(options) {
-      const decoration = real.registerDecoration(options);
-      if (decoration) {
-        made.decorations += 1;
-        live.decorations.add(decoration);
-        decoration.onDispose(() => live.decorations.delete(decoration));
-      }
-      return decoration;
-    },
     scrollLines: (amount) => real.scrollLines(amount),
   };
   return {
@@ -696,13 +915,13 @@ function countedTerminal(real: Terminal) {
       reads.lines = 0;
       reads.texts = 0;
       made.markers = 0;
-      made.decorations = 0;
     },
   };
 }
 
-// What a re-search costs is the rows it reads and the markers and
-// decorations it makes; both are bounded here, at full scrollback.
+// What a re-search costs is the rows it reads and the markers it makes;
+// what a draw costs is a node per rectangle in view. All are bounded here,
+// at full scrollback.
 describe('terminal find work at full scrollback', () => {
   let find: TerminalFind;
   let counted: ReturnType<typeof countedTerminal>;
@@ -714,7 +933,7 @@ describe('terminal find work at full scrollback', () => {
     // reach the limit only near its top; every line has sixty dashes.
     await write(Array.from({ length: 4100 }, (_, i) => (i % 4 === 0 ? `${i} needle ${'-'.repeat(60)}` : `${i} ${'-'.repeat(68)}`)).join('\r\n'));
     counted = countedTerminal(term);
-    find = createTerminalFind({ term: counted.term, onBufferChange: built.onBufferChange, onBeforeReflow: built.onBeforeReflow, colors: () => getXtermFindColors('dark') });
+    find = createTerminalFind({ term: counted.term, onBufferChange: built.onBufferChange, findLayer: built.findLayer, colors: () => getXtermFindColors('dark') });
   });
 
   afterEach(() => {
@@ -740,24 +959,58 @@ describe('terminal find work at full scrollback', () => {
     expect(counted.reads.texts).toBe(term.buffer.active.length);
   });
 
-  it('paints at most the limit plus the active match, a marker a row, and leaves nothing of the previous scan', () => {
+  it('makes a marker a painted row and the two anchors, and leaves nothing of the previous scan', () => {
     find.search('needle');
     expect(find.result).toMatchObject({ count: TERMINAL_FIND_MATCH_LIMIT, capped: true });
-    const first = { markers: new Set(counted.live.markers), decorations: new Set(counted.live.decorations) };
+    const first = new Set(counted.live.markers);
     for (let i = 0; i < 5; i += 1) {
       counted.reset();
       find.restyle();
-      expect(counted.made.decorations).toBe(TERMINAL_FIND_MATCH_LIMIT + 1);
-      // One marker per painted row, and the active match's two anchors.
       expect(counted.made.markers).toBe(TERMINAL_FIND_MATCH_LIMIT + 2);
-      // The active match's own match ground is disposed for its active one.
-      expect(counted.live.decorations.size).toBe(TERMINAL_FIND_MATCH_LIMIT);
       expect(counted.live.markers.size).toBe(TERMINAL_FIND_MATCH_LIMIT + 2);
     }
-    for (const marker of first.markers) expect(counted.live.markers.has(marker)).toBe(false);
-    for (const decoration of first.decorations) expect(counted.live.decorations.has(decoration)).toBe(false);
+    for (const marker of first) expect(counted.live.markers.has(marker)).toBe(false);
     find.clear();
     expect(counted.live.markers.size).toBe(0);
-    expect(counted.live.decorations.size).toBe(0);
+  });
+
+  // The painted dashes on rows in view: the newest thousand, from the bottom.
+  function dashesInView(): number {
+    const buffer = term.buffer.active;
+    let left = TERMINAL_FIND_MATCH_LIMIT;
+    let shown = 0;
+    for (let row = buffer.length - 1; row >= 0 && left > 0; row -= 1) {
+      const here = Math.min(left, (buffer.getLine(row)!.translateToString(true).match(/-/g) ?? []).length);
+      left -= here;
+      if (inView(row)) shown += here;
+    }
+    return shown;
+  }
+
+  it('draws a node only for each rectangle on a row in view, at the limit', async () => {
+    // A thousand one-cell matches, all on the bottom 17 rows, in view.
+    find.search('-');
+    expect(find.result.count).toBe(TERMINAL_FIND_MATCH_LIMIT);
+    await frames();
+    expect(dashesInView()).toBe(TERMINAL_FIND_MATCH_LIMIT);
+    expect(paintedCount()).toBe(TERMINAL_FIND_MATCH_LIMIT);
+    // Six rows up, six of those rows leave the view, and their nodes go.
+    const drawn = rendered();
+    term.scrollLines(-6);
+    await drawn;
+    expect(dashesInView()).toBeLessThan(TERMINAL_FIND_MATCH_LIMIT - 300);
+    expect(paintedCount()).toBe(dashesInView());
+    // Every fourth line's needle, at the limit: the view shows six.
+    find.search('needle');
+    expect(find.result.count).toBe(TERMINAL_FIND_MATCH_LIMIT);
+    const top = rendered();
+    term.scrollToTop();
+    await top;
+    // The top of the buffer is above the newest thousand needles.
+    expect(paintedCount()).toBe(0);
+    const bottom = rendered();
+    term.scrollToBottom();
+    await bottom;
+    expect(paintedCount()).toBe(6);
   });
 });

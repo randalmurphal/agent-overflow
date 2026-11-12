@@ -86,19 +86,19 @@ function withAlpha(concrete: string | undefined, alpha: number): string | undefi
 }
 
 /**
- * A translucent token painted on the terminal ground, as `#rrggbb`: the
- * xterm decoration grounds take no alpha.
+ * Find's grounds draw over the glyphs (terminalFindLayer.ts), so their
+ * alpha is capped to keep the text readable whatever a theme sets.
  */
-function flatOnGround(concrete: string | undefined, ground: string | undefined): string | undefined {
-  const top = rgbChannels(concrete);
-  const under = rgbChannels(ground);
-  if (!top || !under) return undefined;
-  const mix = (a: number, b: number): string =>
-    Math.round(a * top.a + b * (1 - top.a)).toString(16).padStart(2, '0');
-  return `#${mix(top.r, under.r)}${mix(top.g, under.g)}${mix(top.b, under.b)}`;
+const FIND_OVER_TEXT_MAX_ALPHA = 0.45;
+
+function overText(concrete: string | undefined): string | undefined {
+  const channels = rgbChannels(concrete);
+  if (!channels) return undefined;
+  return withAlpha(concrete, Math.min(channels.a, FIND_OVER_TEXT_MAX_ALPHA));
 }
 
-/** The find match grounds; unset when the palette is unresolved. */
+/** The find match grounds, as `rgba()`; unset when the palette is
+ * unresolved. */
 export interface TerminalFindColors {
   match?: string;
   current?: string;
@@ -129,11 +129,10 @@ function buildPalette(): { palette: XtermPalette; resolvedAny: boolean } {
   set('selectionInactiveBackground', withAlpha(colors[ACCENT], SELECTION_INACTIVE_ALPHA));
   for (const [key, token] of ANSI_SLOTS) set(key, colors[token]);
 
-  // The find-bar match grounds every other pane paints, flattened onto this
-  // terminal's ground (decorations take only #RRGGBB).
+  // The find-bar match grounds every other pane paints.
   const find: TerminalFindColors = {
-    match: flatOnGround(colors[FIND_MATCH], background),
-    current: flatOnGround(colors[FIND_MATCH_CURRENT], background),
+    match: overText(colors[FIND_MATCH]),
+    current: overText(colors[FIND_MATCH_CURRENT]),
   };
 
   return { palette: { theme: theme as ITheme, find }, resolvedAny: Object.keys(theme).length > 0 };

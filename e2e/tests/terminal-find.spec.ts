@@ -12,7 +12,7 @@
 // TerminalSurface.find.test.ts, terminalFind.browser.test.ts.
 import { expect, test } from './fixtures.js';
 import { terminalInput, terminalTabs } from './terminal-thread-lifetime-flow.js';
-import { QUERY, decorations, drawer, openDrawerThread, printTangos, replayOf, runInShell } from './terminal-find-flow.js';
+import { QUERY, drawer, findRectangles, openDrawerThread, printTangos, replayOf, runInShell } from './terminal-find-flow.js';
 
 test('the terminal finds from its button, and ctrl+f stays the shell\'s', async ({ page }) => {
   test.setTimeout(120_000);
@@ -56,9 +56,12 @@ test('the terminal finds from its button, and ctrl+f stays the shell\'s', async 
     await page.keyboard.type(QUERY);
     const count = bar.getByTestId('pane-find-count');
     await expect(count).toHaveText('3/3');
-    await expect.poll(() => decorations(page).count()).toBeGreaterThanOrEqual(3);
+    // The three printed lines in view, the newest active.
+    await expect(drawer(page).locator('.terminal-find-active')).toHaveCount(1);
+    await expect.poll(() => drawer(page).locator('.terminal-find-match').count()).toBeGreaterThanOrEqual(2);
     await page.keyboard.press('Enter');
     await expect(count).toHaveText('1/3');
+    await expect(drawer(page).locator('.terminal-find-active')).toHaveCount(1);
     await page.keyboard.press('Shift+Enter');
     await expect(count).toHaveText('3/3');
 
@@ -73,7 +76,7 @@ test('the terminal finds from its button, and ctrl+f stays the shell\'s', async 
     await expect(bar).toHaveCount(0);
     await expect(terminalInput(page)).toBeFocused();
     expect(await ptySize()).toEqual(sized);
-    await expect.poll(() => decorations(page).count()).toBe(0);
+    await expect.poll(() => findRectangles(page).count()).toBe(0);
 
     // A second tab has its own find; the first tab's comes back with it.
     await page.getByTestId('terminal-find').click();
@@ -82,7 +85,7 @@ test('the terminal finds from its button, and ctrl+f stays the shell\'s', async 
     await page.getByTestId('terminal-open').click();
     await expect(terminalTabs(page)).toHaveCount(2);
     await expect(drawer(page).getByTestId('pane-find-bar')).toHaveCount(0);
-    await expect.poll(() => decorations(page).count()).toBe(0);
+    await expect.poll(() => findRectangles(page).count()).toBe(0);
     await terminalTabs(page).first().click();
     await expect(bar).toBeVisible();
     await expect(input).toHaveValue(QUERY);
@@ -100,7 +103,7 @@ test('the terminal finds from its button, and ctrl+f stays the shell\'s', async 
     await expect(bar).toBeVisible();
     await expect(input).toHaveValue(QUERY);
     await expect(count).toHaveText(/^\s*\d\/4$/);
-    await expect.poll(() => decorations(page).count()).toBeGreaterThan(0);
+    await expect.poll(() => findRectangles(page).count()).toBeGreaterThan(0);
   } finally {
     await setup.host.close();
   }

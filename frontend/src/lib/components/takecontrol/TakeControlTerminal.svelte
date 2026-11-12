@@ -383,7 +383,7 @@
     <div class="relative flex flex-1 min-h-0 min-w-0 flex-col" data-terminal-find-host>
       <div
         bind:this={mountEl}
-        class="flex-1 min-h-0 bg-terminal-bg"
+        class="relative flex-1 min-h-0 bg-terminal-bg"
         data-testid="take-control-mount"
         {@attach terminalFocusRegion(paneId)}
       ></div>
