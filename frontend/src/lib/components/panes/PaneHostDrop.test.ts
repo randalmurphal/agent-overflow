@@ -369,6 +369,51 @@ describe('PaneHost drag and drop', () => {
     expect(rendered.queryByTestId('pane-drop-half')).toBeNull();
   });
 
+  it('resolves a slot when the pointer is over an SVG icon inside a pane', async () => {
+    const dragged = makeThread({ id: 'drag-svg', title: 'Dragged SVG' });
+    prependThread(dragged);
+    installThreadSwitchMocks(dragged);
+    const { rendered, pane } = renderSourceBlock();
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    icon.append(path);
+    pane('review-source').append(icon);
+    const dataTransfer = threadDataTransfer(dragged.id);
+
+    path.dispatchEvent(Object.defineProperties(new Event('dragover', { bubbles: true, cancelable: true }), {
+      dataTransfer: { value: dataTransfer },
+      clientX: { value: 900 },
+    }));
+    await tick();
+    expect(rendered.getByTestId('pane-drop-seam')).toHaveAttribute('data-insert-index', '2');
+
+    path.dispatchEvent(Object.defineProperties(new Event('drop', { bubbles: true, cancelable: true }), {
+      dataTransfer: { value: dataTransfer },
+      clientX: { value: 900 },
+    }));
+    await waitFor(() => {
+      expect(layoutOrder()).toEqual(['source', 'review-source', paneIdForThread(dragged.id)]);
+    });
+  });
+
+  it('keeps the lit half and the bar inside a block of odd width', async () => {
+    const dragged = makeThread({ id: 'drag-odd', title: 'Dragged Odd' });
+    prependThread(dragged);
+    registerPaneForTest('only', createThreadPane({ paneId: 'only' }));
+    setPaneLayoutItemsForTest([{ id: 'only-item', paneId: 'only', kind: 'thread', widthPx: 1 }]);
+    const rendered = render(PaneHost);
+    const only = rendered.container.querySelector<HTMLElement>('[data-testid="pane-host"] > [data-pane-id="only"]');
+    if (!only) throw new Error('expected the pane');
+    stubRect(only, 0, 1001);
+
+    await dispatchDrag(only, 'dragover', threadDataTransfer(dragged.id), 750);
+
+    const half = rendered.getByTestId('pane-drop-half');
+    expect(parseFloat(half.style.left) + parseFloat(half.style.width)).toBe(1001);
+    const seam = rendered.getByTestId('pane-drop-seam');
+    expect(parseFloat(seam.style.left) + parseFloat(seam.style.width)).toBe(1001);
+  });
+
   it('treats the gap between a source and its companion as part of the block', async () => {
     const dragged = makeThread({ id: 'drag-block-gap', title: 'Dragged Block Gap' });
     prependThread(dragged);

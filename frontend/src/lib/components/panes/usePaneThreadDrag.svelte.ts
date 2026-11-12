@@ -98,20 +98,22 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     return !a.lit || !b.lit || (a.lit.left === b.lit.left && a.lit.width === b.lit.width && a.lit.seam === b.lit.seam);
   }
 
-  // The seam bar is clamped inside the strip's content so the first and
-  // last seams stay whole and the bar never widens the scroll range.
+  // The bar is held between the strip's left edge and its last pane's
+  // right edge, and the lit half keeps its measured edges unrounded, so the
+  // first and last seams stay whole and neither adds scroll range.
   function indicatorFor(resolved: ResolvedDrop): PaneDropIndicator | null {
     const host = options.getHostEl();
-    if (!host || resolved.seam === null) return null;
+    const lastPaneId = options.getLayoutItems().at(-1)?.paneId;
+    const end = lastPaneId ? paneExtent(lastPaneId) : null;
+    if (!host || !end || resolved.seam === null) return null;
     const origin = host.getBoundingClientRect().left + host.clientLeft - host.scrollLeft;
-    const maxLeft = Math.max(0, host.scrollWidth - PANE_DROP_SEAM_PX);
-    const seamLeft = Math.min(maxLeft, Math.max(0, Math.round(resolved.seam - origin - PANE_DROP_SEAM_PX / 2)));
+    const maxLeft = Math.max(0, end.right - origin - PANE_DROP_SEAM_PX);
     const lit = resolved.lit;
     return {
-      seamLeft,
+      seamLeft: Math.min(maxLeft, Math.max(0, resolved.seam - origin - PANE_DROP_SEAM_PX / 2)),
       lit: lit && {
-        left: Math.round(lit.left - origin),
-        width: Math.round(lit.right - lit.left),
+        left: lit.left - origin,
+        width: lit.right - lit.left,
         seam: resolved.seam <= lit.left ? 'left' : 'right',
       },
     };
@@ -160,9 +162,9 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   // inside a pane can carry a pane id of its own (a header title).
   function stripChildOf(node: EventTarget | null): HTMLElement | null {
     const host = options.getHostEl();
-    let el = node instanceof HTMLElement ? node : null;
+    let el = node instanceof Element ? node : node instanceof Node ? node.parentElement : null;
     while (el && el.parentElement !== host) el = el.parentElement;
-    return el;
+    return el instanceof HTMLElement ? el : null;
   }
 
   function paneExtent(paneId: string): Extent | null {
