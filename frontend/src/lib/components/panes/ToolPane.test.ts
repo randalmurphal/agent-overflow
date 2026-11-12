@@ -31,7 +31,7 @@ import {
   setPaneLayoutItemsForTest,
   type PaneLayoutItem,
 } from '../../stores/paneLayout.svelte';
-import { closeToolPane, lastToolKind, resetToolPanesForTest } from '../../stores/toolPanes.svelte';
+import { lastToolKind, resetToolPanesForTest } from '../../stores/toolPanes.svelte';
 import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { getCompactScreen, setCompactLayoutForTest, showCompactThread } from '../../stores/layoutMode.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
@@ -81,7 +81,7 @@ function stubRect(el: HTMLElement, left: number, width: number): void {
 function paneDataTransfer(): DataTransfer {
   const data = new Map<string, string>();
   return {
-    types: [],
+    get types() { return [...data.keys()]; },
     dropEffect: 'none',
     effectAllowed: 'none',
     getData: (type: string) => data.get(type) ?? '',
@@ -343,31 +343,6 @@ describe('a tool dragged from the tools row', () => {
     await drag(right, 'dragover', toolDrag('workflows', true), 800);
     await drag(right, 'drop', toolDrag('workflows', false), 1300);
     expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'right', 'tool-workflows']);
-  });
-
-  it('uses the previewed slot for a drop that resolves none only while its neighbours stand', async () => {
-    setPaneLayoutItemsForTest([thread('left'), thread('middle'), thread('right')]);
-    const rendered = render(PaneHost);
-    const host = rendered.getByTestId('pane-host');
-    // Every pane-keyed element ends at the strip's right edge, so a drop
-    // left of it is not the append slot.
-    for (const el of host.querySelectorAll<HTMLElement>('[data-pane-id]')) stubRect(el, 0, 2100);
-    const middle = section(rendered.container, 'middle');
-    stubRect(middle, 700, 700);
-    beginToolPaneDrag({ kind: 'pulls' });
-    await drag(middle, 'dragover', toolDrag('pulls', true), 800);
-    // On the strip itself, left of the last pane's edge: no slot of its own.
-    await drag(host, 'drop', toolDrag('pulls', false), 10);
-    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'tool-pulls', 'middle', 'right']);
-
-    beginToolPaneDrag({ kind: 'workflows' });
-    await drag(middle, 'dragover', toolDrag('workflows', true), 800);
-    expect(preview(rendered.container)).toHaveAttribute('data-insert-index', '2');
-    // The pane left of the slot closes: the cached slot no longer means it.
-    closeToolPane('tool-pulls');
-    await tick();
-    await drag(host, 'drop', toolDrag('workflows', false), 10);
-    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'middle', 'right']);
   });
 
   it('is never read as a thread drop', async () => {

@@ -27,6 +27,8 @@ entity stores. `Sidebar.svelte` owns the top-level render boundary;
 A drag carries one thread. Use `utils/threadDragPayload.ts` and include its
 project and current group. During `dragover`, read the in-process drag record
 because browsers do not expose `DataTransfer` payloads consistently.
+A sidebar drag sets its own data type only, never `text/plain`: plain text
+makes every text field a drop target for the row.
 
 Clear the record on every drop target as well as `dragend`; the source row may
 unmount before `dragend`. Groups accept same-project threads not already in the

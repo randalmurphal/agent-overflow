@@ -358,7 +358,6 @@
     };
     e.dataTransfer.effectAllowed = 'copyMove';
     e.dataTransfer.setData(THREAD_ROW_DRAG_MIME, encodeThreadDragPayload(payload));
-    e.dataTransfer.setData('text/plain', thread.id);
     // The group drop targets read this during dragover, where the
     // DataTransfer is in protected mode and hands back nothing.
     beginThreadRowDrag(payload);

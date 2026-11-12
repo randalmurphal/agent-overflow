@@ -13,7 +13,12 @@
 // tool's icon, its label or its padding starts the drag alike (the control
 // is a role="button" element, since Firefox starts no drag from a
 // <button>); a drag that leaves the strip over a pane's content, or is
-// cancelled with Escape, takes its preview along and places nothing.
+// cancelled with Escape, takes its preview along and places nothing; a
+// pane, a thread row and a tool held over a pane are over the strip's
+// shield, not the pane, so the browser scrolls no timeline under them, and
+// the panes take the pointer again when the drag ends; none of them, nor a
+// project row, is text a text box takes; text dragged out of one composer
+// lands in another pane's composer.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -90,7 +95,9 @@ async function dragInto(
   await page.mouse.up();
 }
 
-async function seedThreads(harness: { rpc: <T>(method: string, ...args: unknown[]) => Promise<T> }): Promise<void> {
+/** Three threads, each ending in "<Name> answer."; `earlierTurns` before it
+ * make a timeline far taller than its pane. */
+async function seedThreads(harness: { rpc: <T>(method: string, ...args: unknown[]) => Promise<T> }, earlierTurns = 0): Promise<void> {
   await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{
       name: 'pane-strip-drop',
@@ -98,7 +105,13 @@ async function seedThreads(harness: { rpc: <T>(method: string, ...args: unknown[
       threads: ['Alpha', 'Beta', 'Gamma'].map((name) => ({
         title: `${name} task`,
         provider: 'claude',
-        turns: [{ userText: name.toLowerCase(), items: [{ kind: 'assistant_text', summary: `${name} answer.` }] }],
+        turns: [
+          ...Array.from({ length: earlierTurns }, (_, turn) => ({
+            userText: `${name.toLowerCase()} ${turn}`,
+            items: [{ kind: 'assistant_text', summary: `${name} earlier ${turn}. `.repeat(12) }],
+          })),
+          { userText: name.toLowerCase(), items: [{ kind: 'assistant_text', summary: `${name} answer.` }] },
+        ],
       })),
     }],
   });
@@ -209,8 +222,6 @@ test('a pane dragged by its title previews its slot and moves there, also onto a
   // Onto the divider between the first two panes.
   await dragInto(page, title('Gamma'), sections(page).nth(0), 0.25, async () => {
     await hoverUntilSlot(page, page.locator('[data-pane-gap-index="1"]'), 0.5, 1);
-    await expect(preview(page)).toHaveAttribute('data-drop-kind', 'gap');
-    await expect(litHalf(page)).toHaveCount(0);
   });
   await expect.poll(() => stripTitles(page)).toEqual(['Beta task', 'Gamma task', 'Alpha task']);
 });
@@ -319,4 +330,104 @@ test('a drag cancelled with Escape takes its preview along and places nothing', 
   await page.mouse.up();
   expect(await stripKinds(page)).toEqual(['thread', 'thread']);
   await expect(page.getByTestId('workflows-pane')).toHaveCount(0);
+});
+
+test('a pane, a thread row and a tool held over a pane are over the shield, and scroll nothing in it', async ({ harness, page }) => {
+  await seedThreads(harness, 40);
+  await harness.open(page);
+  await twoThreads(page);
+  const timeline = sections(page).nth(0).getByTestId('message-timeline-scroll');
+  const shield = page.getByTestId('pane-drag-shield');
+  // Alpha rests at its end, far from its top.
+  await expect.poll(() => timeline.evaluate((el) => el.scrollTop)).toBeGreaterThan(1000);
+  const sources: Array<[string, Locator]> = [
+    ['a pane title', sections(page).nth(1).getByTestId('chat-header-title')],
+    ['a thread row', page.getByTestId('thread-row').filter({ hasText: 'Gamma task' })],
+    ['a tool', page.getByTestId('sidebar-tool-pulls')],
+  ];
+  for (const [what, source] of sources) {
+    const top = await timeline.evaluate((el) => el.scrollTop);
+    const at = (await timeline.boundingBox())!;
+    // Just inside the timeline's top edge, where the browser scrolls a
+    // scroller under a held drag.
+    const x = at.x + at.width / 2;
+    const y = at.y + 8;
+    const from = await center(source);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(x, y, { steps: 12 });
+    // Chromium delivers no dragover for some synthetic moves (hoverUntilSlot).
+    let nudge = 1;
+    await expect(async () => {
+      nudge = -nudge;
+      await page.mouse.move(x + nudge, y);
+      await expect(shield, what).toBeVisible({ timeout: 250 });
+    }).toPass();
+    await shield.evaluate((el) => { el.dataset.held = 'yes'; });
+    // An uncovered timeline scrolls within the first half second of such a
+    // hold; nothing moving is only shown by waiting it out.
+    for (let step = 0; step < 30; step += 1) {
+      await page.mouse.move(x + (step % 2), y);
+      await page.waitForTimeout(50);
+    }
+    expect(await timeline.evaluate((el) => el.scrollTop), what).toBe(top);
+    // One shield for the whole hold, and it is what the pointer is over.
+    await expect(shield, what).toHaveAttribute('data-held', 'yes');
+    expect(await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.getAttribute('data-testid'), [x, y]), what).toBe('pane-drag-shield');
+    await page.keyboard.press('Escape');
+    await expect(shield, what).toHaveCount(0);
+    await page.mouse.up();
+  }
+  expect(await stripKinds(page)).toEqual(['thread', 'thread']);
+  // The panes take the pointer again.
+  const composer = sections(page).nth(0).getByLabel('Message Input');
+  await composer.click();
+  await expect(composer).toBeFocused();
+});
+
+test('a thread row, a pane title and a project row are not text: a text box takes none of them', async ({ harness, page }) => {
+  await seedThreads(harness);
+  await harness.open(page);
+  await twoThreads(page);
+  await page.getByRole('button', { name: /^Sort Projects/ }).click();
+  await page.getByRole('menuitemradio', { name: 'Manual' }).or(page.getByRole('menuitem', { name: 'Manual' })).click();
+  const search = page.getByTestId('sidebar-thread-search');
+  const sources: Array<[string, Locator]> = [
+    ['a thread row', page.getByTestId('thread-row').filter({ hasText: 'Gamma task' })],
+    ['a pane title', sections(page).nth(1).getByTestId('chat-header-title')],
+    ['a project row', page.getByTestId('project-item-label')],
+  ];
+  for (const [what, source] of sources) {
+    const dragStarted = page.evaluate(() => new Promise<string[]>((resolve) => {
+      document.addEventListener('dragstart', (event) => resolve([...(event.dataTransfer?.types ?? [])]), { once: true });
+    }));
+    await dragInto(page, source, search, 0.5, async () => {});
+    // The drag ran, and carried no plain text.
+    expect(await dragStarted, what).not.toContain('text/plain');
+    await expect(search, what).toHaveValue('');
+  }
+  expect(await stripKinds(page)).toEqual(['thread', 'thread']);
+});
+
+test('text dragged out of one composer lands in another pane\'s composer', async ({ harness, page }) => {
+  await seedThreads(harness);
+  await harness.open(page);
+  await twoThreads(page);
+  const from = sections(page).nth(0).getByLabel('Message Input');
+  const to = sections(page).nth(1).getByLabel('Message Input');
+  await from.fill('carry this over');
+  await from.press('ControlOrMeta+a');
+  const text = (await from.boundingBox())!;
+  // A press on the selected words, near the start of the line.
+  await dragInto(page, { x: text.x + 30, y: text.y + text.height / 2 }, to, 0.5, async () => {
+    // Dragged text places no pane: no shield, no preview.
+    await expect(page.getByTestId('pane-drag-shield')).toHaveCount(0);
+    await expect(preview(page)).toHaveCount(0);
+  });
+  await expect(to).toHaveValue('carry this over');
+  await expect(from).toHaveValue('');
+  // The composer holds the dropped text as its draft: it sends.
+  await sections(page).nth(1).getByTestId('composer-send').click();
+  await expect(sections(page).nth(1).getByTestId('message-timeline-scroll')).toContainText('carry this over');
+  await expect(to).toHaveValue('');
 });

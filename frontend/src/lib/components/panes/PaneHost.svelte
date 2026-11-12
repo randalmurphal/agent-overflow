@@ -18,6 +18,7 @@
   import { compactShownPaneId, getCompactScreen, isCompactLayout, noteCompactPaneShown } from '../../stores/layoutMode.svelte';
   import PaneDivider from './PaneDivider.svelte';
   import { measurePane } from './measurePane';
+  import { airspaceSurface } from '../../utils/paneAirspace.svelte';
   import { createPaneThreadDrag, PANE_DROP_SEAM_PX } from './usePaneThreadDrag.svelte';
 
   const PANE_SELECTOR = '[data-pane-id]';
@@ -41,6 +42,7 @@
         .map((item) => item.sourcePaneId as string),
     ),
   );
+  let stripEl: HTMLDivElement | undefined = $state(undefined);
   let hostEl: HTMLDivElement | undefined = $state(undefined);
   // The sections' offsets and the strip width they were measured at, one
   // snapshot: every offset in it holds for `width`, so a reader at another
@@ -62,6 +64,7 @@
   }
 
   const drag = createPaneThreadDrag({
+    getStripEl: () => stripEl,
     getHostEl: () => hostEl,
     getLayoutItems: () => layoutItems,
   });
@@ -504,15 +507,20 @@
      so they slide behind the sidebar with their trigger instead of painting
      over it. See utils/popoverOwnership.ts#resolvePopoverClipBoundary. -->
 <div
-  bind:this={hostEl}
-  class="compact-screen compact-screen-thread relative flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden compact:overflow-x-hidden"
-  inert={threadInert}
-  data-popover-clip-boundary
-  data-testid="pane-host"
+  bind:this={stripEl}
+  class="compact-screen compact-screen-thread relative flex flex-1 min-w-0 min-h-0"
+  data-testid="pane-strip"
   ondragover={drag.onHostDragOver}
   ondrop={drag.onHostDrop}
   ondragleave={drag.onHostDragLeave}
   ondragend={drag.onPaneDragEnd}
+>
+<div
+  bind:this={hostEl}
+  class="relative flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden compact:overflow-x-hidden"
+  inert={threadInert}
+  data-popover-clip-boundary
+  data-testid="pane-host"
 >
   {#if layoutItems.length === 0}
     <section
@@ -712,4 +720,20 @@
       ></div>
     {/if}
   {/if}
+</div>
+<!-- Takes a pane-placing drag off the panes while it is over the strip
+     (usePaneThreadDrag `shielding`). Outside the scroller, so the drag is
+     over nothing the browser can scroll. An airspace surface, so a native
+     browser view, which paints above the page, yields to it. -->
+{#if drag.shielding}
+  <div
+    class="absolute inset-0 z-50"
+    role="presentation"
+    data-testid="pane-drag-shield"
+    use:airspaceSurface
+    ondragleave={drag.onShieldDragLeave}
+    onpointermove={drag.onShieldPointer}
+    onpointerdown={drag.onShieldPointer}
+  ></div>
+{/if}
 </div>

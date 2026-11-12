@@ -394,7 +394,9 @@ describe('<ThreadRow> drag source', () => {
 
     await fireEvent.dragStart(row, { dataTransfer });
 
-    expect(dataTransfer.types).toContain(THREAD_ROW_DRAG_MIME);
+    // Its own type alone: plain text would make every text field a drop
+    // target for the row.
+    expect(dataTransfer.types).toEqual([THREAD_ROW_DRAG_MIME]);
     // Project and current group ride along: a group drop target refuses a
     // cross-project thread, and the ungroup drop needs to know what the
     // thread left.

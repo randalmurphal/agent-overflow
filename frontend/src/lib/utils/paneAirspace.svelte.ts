@@ -25,8 +25,8 @@ export function registerAirspaceSurface(el: HTMLElement): () => void {
 
 /**
  * Svelte action form: `use:airspaceSurface` on an overlay primitive's painted
- * root. The overlay primitives own the call sites; feature components never
- * register themselves.
+ * root. The overlay primitives and the pane strip's drag shield own the call
+ * sites; feature components never register themselves.
  */
 export function airspaceSurface(el: HTMLElement): { destroy: () => void } {
   const release = registerAirspaceSurface(el);
