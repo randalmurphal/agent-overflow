@@ -78,8 +78,10 @@ func ProbeProfile(ctx context.Context, httpClient *http.Client, credential []byt
 	if err != nil {
 		return Profile{}, fmt.Errorf("claude: profile request: %w", err)
 	}
-	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if closeErr := resp.Body.Close(); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
 	if err != nil {
 		return Profile{}, fmt.Errorf("claude: read profile response: %w", err)
 	}
