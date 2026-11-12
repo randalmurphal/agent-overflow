@@ -14,7 +14,9 @@
 // turns the latter off and on; the conversation
 // refresh sits on the Conversation header and re-reads the threads; an
 // outdated open thread stays unresolved, counted and resolvable with the
-// outdated marker on its card.
+// outdated marker on its card; an event naming sixteen requested reviewers
+// or a long branch wraps inside its row, so the Conversation section never
+// scrolls sideways.
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page } from '@playwright/test';
 
@@ -34,6 +36,10 @@ export interface LayoutSurface {
 
 const TITLE = 'Layout thread';
 const MR_NUMBER = 4323;
+
+// More names than one line of the section holds on either layout.
+const REVIEWERS = Array.from({ length: 16 }, (_, index) => `reviewer_${String(index + 1).padStart(2, '0')}_login`);
+const LONG_BRANCH = 'PLAT-2805-subnet-list-import-edops-category-network-location-and-its-follow-up-work-for-the-next-release';
 
 const STAGES = ['pre-build', 'test', 'unit-tests', 'report', 'build-images', 'tag-images', 'container-scan', 'build_packages', 'cleanup'];
 
@@ -101,6 +107,10 @@ function repo(): ForgeRepo {
           },
         ],
         reviews: [{ author: 'rmurphy', authorName: 'Randy Murphy', state: 'APPROVED', submittedAt: '2026-10-18T16:00:00Z' }],
+        events: [
+          { kind: 'review_requested', actor: 'sabossedgh', actorName: 'Sawmon Abossedgh', at: '2026-10-15T15:00:00Z', ref: REVIEWERS.join(',') },
+          { kind: 'base_changed', actor: 'sabossedgh', actorName: 'Sawmon Abossedgh', at: '2026-10-15T15:05:00Z', ref: LONG_BRANCH, text: 'develop' },
+        ],
         ci: {
           id: 7_700,
           jobs: STAGES.map((stage, index) => ({ id: 7_701 + index, name: stage, stage, status: 'success' as const, log: `${stage} ok\n` })),
@@ -320,6 +330,31 @@ export function reviewLayoutFlow({ compact }: LayoutSurface): void {
     await expect(review.locator('[data-testid="review-conversation-thread"][data-thread-id="T_open"]')).not.toHaveAttribute('data-outdated', 'true');
     await outdated.scrollIntoViewIfNeeded();
     await paneShot('outdated');
+
+    // An event's names wrap inside its row: every reviewer and the whole
+    // branch are on screen and the section has nothing to scroll sideways.
+    const feed = review.getByTestId('review-conversation');
+    const eventRef = (kind: string) =>
+      feed.locator(`[data-testid="review-conversation-event"][data-kind="${kind}"]`).getByTestId('review-conversation-event-ref');
+    await expect(eventRef('review_requested')).toHaveText(REVIEWERS.join(', '));
+    await expect(eventRef('base_changed')).toHaveText(LONG_BRANCH);
+    await eventRef('review_requested').scrollIntoViewIfNeeded();
+    for (const kind of ['review_requested', 'base_changed']) {
+      const fit = await eventRef(kind).evaluate((el) => {
+        const section = el.closest('[data-testid="review-conversation"]')!.parentElement!;
+        const sectionBox = section.getBoundingClientRect();
+        const box = el.getBoundingClientRect();
+        return {
+          sideways: section.scrollWidth - section.clientWidth,
+          inside: box.left >= sectionBox.left && box.right <= sectionBox.left + section.clientLeft + section.clientWidth,
+          lines: Math.round(box.height / parseFloat(getComputedStyle(el).lineHeight)),
+        };
+      });
+      expect(fit.sideways, `${kind}: the section scrolls sideways`).toBe(0);
+      expect(fit.inside, `${kind}: the names end inside the section`).toBe(true);
+      expect(fit.lines, `${kind}: the names wrap`).toBeGreaterThan(1);
+    }
+    await paneShot('event-names');
 
     // The conversation refresh is on the Conversation header and re-reads
     // the threads without touching the diff.
