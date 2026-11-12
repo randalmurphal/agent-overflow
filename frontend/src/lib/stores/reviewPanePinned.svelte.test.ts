@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import { resetAppStorageForTest } from './appStorage';
-import { __resetReviewPaneStateForTest, reviewStateForPane, type ReviewPaneState } from './reviewPane.svelte';
+import { __resetReviewPaneStateForTest, reviewStateForPane, type CommentAnchor, type ReviewPaneState } from './reviewPane.svelte';
 import {
   __pinnedReviewStatesForTest,
   __resetPinnedReviewStatesForTest,
@@ -117,6 +117,13 @@ function installPRMocks(): PRMocks {
   setBindingMock('UpdateThreadBranch', async () => []);
   const drafts = installPRDraftsFake();
   return { subscribe, unsubscribe, diff, routed, drafts };
+}
+
+// Opens an editor on `anchor` of the diff on screen and saves `body` in it.
+async function commentOn(state: ReviewPaneState, anchor: CommentAnchor, body: string): Promise<void> {
+  const id = state.openDraftEditor(anchor);
+  if (id === null) throw new Error(`no line for ${JSON.stringify(anchor)}`);
+  await state.createComment(id, body);
 }
 
 function pinned(number: number, backend = HOME_BACKEND, owner = OWNER): ReviewPaneState {
@@ -232,6 +239,68 @@ describe('a pinned review', () => {
     await expect(state.setScope('edits')).rejects.toThrow();
     expect(state.scope).toBe('pr');
     expect(Object.keys(localStorage).filter((key) => key.includes('reviewScope'))).toEqual([]);
+  });
+
+  it('keeps an open new-comment editor on its line when the PR head moves and its file did not change', async () => {
+    installPRMocks();
+    const state = pinned(5);
+    await waitLoaded(state);
+    const two = { filePath: 'src/app.ts', side: 'new' as const, newLine: 2, selectedText: 'line 2' };
+    const id = state.openDraftEditor(two)!;
+    state.setDraftBody(id, 'Guard this.');
+
+    // A push changes another file; src/app.ts is the same blob.
+    setReviewDiffMock('OpenPRDiff', async () => [
+      patchFor('src/app.ts', 3),
+      'diff --git a/src/other.ts b/src/other.ts',
+      'new file mode 100644',
+      'index 0000000..3333333',
+      '--- /dev/null',
+      '+++ b/src/other.ts',
+      '@@ -0,0 +1,1 @@',
+      '+other',
+    ].join('\n'));
+    applyPRUpdatedEvent({ prKey: prKey(ref(5)), detail: detail(5, { headSHA: 'sha-5b' }), threads: [], headSHA: 'sha-5b', seq: 2 });
+    await tick();
+    await state.reload();
+    await waitLoaded(state);
+
+    expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: two, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+    expect(state.draftBodyFor(id)).toBe('Guard this.');
+    await state.createComment(id, 'Guard this.');
+    expect(state.drafts.map((comment) => [comment.newLine, comment.selectedText, comment.commitSha])).toEqual([[2, 'line 2', 'sha-5b']]);
+  });
+
+  it('detaches an open new-comment editor when a push changes its file, keeping its text', async () => {
+    installPRMocks();
+    const state = pinned(5);
+    await waitLoaded(state);
+    const two = { filePath: 'src/app.ts', side: 'new' as const, newLine: 2, selectedText: 'line 2' };
+    const id = state.openDraftEditor(two)!;
+    state.setDraftBody(id, 'Guard this.');
+
+    // A push adds a line above it: another blob of the file.
+    setReviewDiffMock('OpenPRDiff', async () => [
+      'diff --git a/src/app.ts b/src/app.ts',
+      'new file mode 100644',
+      'index 0000000..2222222',
+      '--- /dev/null',
+      '+++ b/src/app.ts',
+      '@@ -0,0 +1,4 @@',
+      '+line 0',
+      '+line 1',
+      '+line 2',
+      '+line 3',
+    ].join('\n'));
+    applyPRUpdatedEvent({ prKey: prKey(ref(5)), detail: detail(5, { headSHA: 'sha-5b' }), threads: [], headSHA: 'sha-5b', seq: 2 });
+    await tick();
+    await state.reload();
+    await waitLoaded(state);
+
+    expect(state.openEditors).toMatchObject([{ id, filePath: 'src/app.ts', side: 'new', state: 'detached', anchor: null }]);
+    expect(state.draftBodyFor(id)).toBe('Guard this.');
+    await expect(state.createComment(id, 'Guard this.')).rejects.toMatchObject({ name: 'ReviewCommentRefused', reason: 'detached' });
+    expect(state.drafts).toEqual([]);
   });
 
   it('keeps the PR it was opened on after the forge reports it merged', async () => {
@@ -358,7 +427,7 @@ describe('pinned routing and grants', () => {
     expect(routed).toEqual(['laptop']);
     expect(state.backend).toBe('laptop');
     expect(state.commentsGranted).toBe(true);
-    await state.createComment({ filePath: 'src/app.ts', newLine: 2, side: 'new', selectedText: 'line 2' }, 'here');
+    await commentOn(state, { filePath: 'src/app.ts', newLine: 2, side: 'new', selectedText: 'line 2' }, 'here');
     expect(new Set(drafts.routed)).toEqual(new Set(['laptop']));
     revokeBackendScopes('laptop');
   });
@@ -387,7 +456,7 @@ describe('pinned comments and actions', () => {
     await waitLoaded(state);
     expect(state.canDraftComments).toBe(true);
 
-    await state.createComment(anchor, '  needs a test  ');
+    await commentOn(state, anchor, '  needs a test  ');
     expect(create).not.toHaveBeenCalled();
     expect(fake.create).toHaveBeenCalledWith(
       { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
@@ -456,7 +525,7 @@ describe('pinned comments and actions', () => {
       const { submit, ask } = draftBackend(fake, { lose: 'after' });
       const state = pinned(5);
       await waitLoaded(state);
-      await state.createComment(anchor, 'needs a test');
+      await commentOn(state, anchor, 'needs a test');
       state.setSummaryBody('overall');
 
       await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
@@ -474,7 +543,7 @@ describe('pinned comments and actions', () => {
       draftBackend(fake, { unmarked: true });
       const state = pinned(5);
       await waitLoaded(state);
-      await state.createComment(anchor, 'needs a test');
+      await commentOn(state, anchor, 'needs a test');
       state.setSummaryBody('from tab B');
       state.setVerdict('request-changes');
 
@@ -490,7 +559,7 @@ describe('pinned comments and actions', () => {
       const { submit } = draftBackend(fake, { lose: 'after' });
       const state = pinned(5);
       await waitLoaded(state);
-      await state.createComment(anchor, 'needs a test');
+      await commentOn(state, anchor, 'needs a test');
       state.setSummaryBody('from tab B');
       state.setVerdict('request-changes');
       // Tab A sent them first.
@@ -511,7 +580,7 @@ describe('pinned comments and actions', () => {
       const { submit } = draftBackend(fake, { unconfirmed: true });
       const state = pinned(5);
       await waitLoaded(state);
-      await state.createComment(anchor, 'needs a test');
+      await commentOn(state, anchor, 'needs a test');
       state.setSummaryBody('overall');
       state.setVerdict('approve');
 
@@ -530,7 +599,7 @@ describe('pinned comments and actions', () => {
       draftBackend(fake, { lose: 'never' });
       const state = pinned(5);
       await waitLoaded(state);
-      await state.createComment(anchor, 'needs a test');
+      await commentOn(state, anchor, 'needs a test');
       state.setSummaryBody('overall');
 
       await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
@@ -545,7 +614,7 @@ describe('pinned comments and actions', () => {
     const { drafts: fake } = installPRMocks();
     const state = pinned(5);
     await waitLoaded(state);
-    await state.createComment(anchor, 'look here');
+    await commentOn(state, anchor, 'look here');
     const thread = await state.sendDraftsToThread('thread-9');
     expect(thread).toEqual({ id: 'thread-9' });
     const [wire, threadId, scope, sourceKey, ids, input] = fake.send.mock.calls[0]!;
@@ -573,7 +642,7 @@ describe('pinned comments and actions', () => {
     installPRMocks();
     const five = pinned(5);
     await waitLoaded(five);
-    await five.createComment(anchor, 'keep me');
+    await commentOn(five, anchor, 'keep me');
     await waitLoaded(pinned(6));
     await waitLoaded(pinned(7));
     expect(__pinnedReviewStatesForTest(OWNER)).not.toContain(five);
@@ -592,14 +661,14 @@ describe('pinned comments and actions', () => {
     const send = setBindingMock('SendDiffReviewComments', async () => ({}));
     const state = pinned(5);
     await waitLoaded(state);
-    await state.createComment(anchor, 'on the head diff');
+    await commentOn(state, anchor, 'on the head diff');
     await expect(state.sendComments()).rejects.toThrow('This review has no chat to send to.');
     expect(send).not.toHaveBeenCalled();
 
     await state.selectCommit(sha);
     expect(state.canDraftComments).toBe(false);
     expect(state.drafts).toEqual([]);
-    await expect(state.createComment(anchor, 'on the commit')).rejects.toThrow('pick All commits');
+    await expect(commentOn(state, anchor, 'on the commit')).rejects.toThrow('pick All commits');
     await state.selectCommit(null);
     expect(state.drafts.map((comment) => comment.body)).toEqual(['on the head diff']);
   });

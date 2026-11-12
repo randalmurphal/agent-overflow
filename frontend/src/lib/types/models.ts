@@ -725,6 +725,8 @@ export interface ReviewLineComment {
   path: string;
   body: string;
   line?: number;
+  /** An unchanged line's old number; `line` is its new one (side right). */
+  oldLine?: number;
   side: string;
   startLine?: number;
 }

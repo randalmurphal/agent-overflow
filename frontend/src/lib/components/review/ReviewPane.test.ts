@@ -4,7 +4,7 @@ import ReviewPane from './ReviewPane.svelte';
 import ReviewConversationCommits from './ReviewConversationCommits.svelte';
 import type { PanelContext } from '../../stores/panelContext.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
-import { __resetReviewPaneStateForTest, type ReviewPaneState } from '../../stores/reviewPane.svelte';
+import { __resetReviewPaneStateForTest, reviewStateForPane, reviewSubjectForPane, type ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { CIPipeline, DiffReviewComment, DiffReviewCommentInput, PRDetail, ReviewThread, Thread } from '../../types/models';
@@ -17,6 +17,7 @@ import { resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
 import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
+import { stepPaneBack } from '../../stores/paneBackSteps';
 
 // The view toggles (whitespace, wrap, split) are checkbox rows of the
 // toolbar's "..." menu, which closes on every pick: open it, find the row.
@@ -137,6 +138,116 @@ beforeEach(() => {
   setBindingMock('UpdateDiffReviewComment', async () => ({}));
   setBindingMock('DeleteDiffReviewComment', async () => undefined);
   setBindingMock('SendDiffReviewComments', async () => ({}));
+});
+
+describe('<ReviewPane> open new-comment editors whose line is not shown', () => {
+  const filePatch = (path: string, index = '1111111..2222222', added = 'new') => [
+    `diff --git a/${path} b/${path}`,
+    `index ${index} 100644`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    '@@ -1 +1,2 @@',
+    '-old',
+    `+${added}`,
+    '+tail',
+  ].join('\n');
+
+  beforeEach(() => {
+    setBindingMock('HighlightSchemaVersion', async () => 'test-schema');
+    setBindingMock('HighlightClassNames', async () => ['none']);
+    setBindingMock('HighlightPatch', async () => ({ lines: [] }));
+    setBindingMock('HighlightPatchWithContext', async () => ({ lines: [] }));
+  });
+
+  // The diff rows sit in a grid the role queries do not reach into.
+  function buttonNamed(view: { container: HTMLElement }, name: string): HTMLButtonElement {
+    const found = [...view.container.querySelectorAll('button')].find((button) => button.textContent?.trim() === name);
+    if (!found) throw new Error(`no button ${name}`);
+    return found;
+  }
+
+  async function withEditorOn(path: string, patchText: () => string) {
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patchText());
+    const ctx = makeCtx();
+    const view = render(ReviewPane, { ctx });
+    await waitFor(() => expect(view.getAllByTestId('review-file-header').length).toBeGreaterThan(0));
+    const review = reviewStateForPane(ctx.paneId, reviewSubjectForPane(ctx)!);
+    const id = review.openDraftEditor({ filePath: path, side: 'new', newLine: 1, selectedText: 'new' })!;
+    review.setDraftBody(id, 'Keep me.');
+    await waitFor(() => expect(view.getAllByTestId('review-draft-editor')).toHaveLength(1));
+    const texts = () => view.queryAllByTestId('review-draft-editor').map((node) => node.querySelector('textarea')!.value);
+    return { view, review, id, texts, paneId: ctx.paneId };
+  }
+
+  it('hides the editor of a file the type or test filter hides, with its text kept', async () => {
+    const { view, texts } = await withEditorOn('src/app.test.ts', () => [filePatch('src/app.ts'), filePatch('src/app.test.ts')].join('\n'));
+    if (view.queryByTestId('review-tree-filter-diff') === null) await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    await fireEvent.click(view.getByTestId('review-tree-hide-tests'));
+    await waitFor(() => expect(view.getAllByTestId('review-file-header').map((node) => node.getAttribute('data-path'))).toEqual(['src/app.ts']));
+    expect(texts()).toEqual([]);
+    expect(view.queryByTestId('review-gone-editors')).toBeNull();
+    await fireEvent.click(view.getByTestId('review-tree-hide-tests'));
+    await waitFor(() => expect(texts()).toEqual(['Keep me.']));
+  });
+
+  it('groups the editor of the last changed file once it is reverted, to copy or discard', async () => {
+    let patchText = filePatch('src/app.ts');
+    const { view, review, texts } = await withEditorOn('src/app.ts', () => patchText);
+    patchText = '';
+    await review.reload();
+    await waitFor(() => expect(view.getByTestId('review-gone-editors').textContent).toContain('Comments on files not in this diff'));
+    expect(view.queryAllByTestId('review-file-header')).toHaveLength(0);
+    expect(texts()).toEqual(['Keep me.']);
+    expect(view.getByTestId('review-draft-editor-path').textContent).toBe('src/app.ts');
+    expect(view.getByTestId('review-draft-editor-note').textContent).toContain('This file is no longer in the diff.');
+    await fireEvent.click(buttonNamed(view, 'Discard'));
+    await waitFor(() => expect(view.queryByTestId('review-gone-editors')).toBeNull());
+    expect(review.openEditors).toEqual([]);
+  });
+
+  it('keeps a detached editor in its file after the suggested row, marked, and hides it with a collapsed body', async () => {
+    let patchText = filePatch('src/app.ts');
+    const { view, review, texts } = await withEditorOn('src/app.ts', () => patchText);
+    patchText = filePatch('src/app.ts', '1111111..3333333', 'newer');
+    await review.reload();
+    await waitFor(() => expect(view.getByTestId('review-draft-editor-note').textContent).toContain('The file changed under this comment.'));
+    expect(view.container.querySelectorAll('[data-review-target]')).toHaveLength(1);
+    expect(view.container.querySelector('[data-review-target]')!.textContent).toContain('newer');
+    expect(buttonNamed(view, 'Add comment').disabled).toBe(true);
+    expect(view.container.textContent?.toLowerCase()).not.toMatch(/unplaced|detached/);
+    await fireEvent.click(view.getAllByTestId('review-file-header-path')[0]!);
+    expect(view.queryAllByTestId('review-line-block')).toHaveLength(0);
+    expect(texts()).toEqual([]);
+    await fireEvent.click(view.getAllByTestId('review-file-header-path')[0]!);
+    await waitFor(() => expect(texts()).toEqual(['Keep me.']));
+    await fireEvent.click(buttonNamed(view, 'Use this line'));
+    await waitFor(() => expect(view.queryByTestId('review-draft-editor-note')).toBeNull());
+    expect(view.container.querySelectorAll('[data-review-target]')).toHaveLength(0);
+    expect(buttonNamed(view, 'Add comment').disabled).toBe(false);
+  });
+
+  it('arms a move; Escape in the pane or a line pick ends it', async () => {
+    let patchText = filePatch('src/app.ts');
+    const { view, review, id, paneId } = await withEditorOn('src/app.ts', () => patchText);
+    patchText = filePatch('src/app.ts', '1111111..3333333', 'newer');
+    await review.reload();
+    await waitFor(() => expect(buttonNamed(view, 'Move')).toBeInTheDocument());
+    await fireEvent.click(buttonNamed(view, 'Move'));
+    await waitFor(() => expect(view.getByTestId('review-draft-editor-note').textContent).toContain('Choose a line for this comment.'));
+    await fireEvent.keyDown(view.getByTestId('review-scroll'), { key: 'Escape' });
+    await waitFor(() => expect(review.armedEditorId).toBeNull());
+    // Back cancels the move before anything else it would do.
+    await fireEvent.click(await waitFor(() => buttonNamed(view, 'Move')));
+    expect(review.armedEditorId).toBe(id);
+    expect(stepPaneBack(paneId)).toBe(true);
+    expect(review.armedEditorId).toBeNull();
+    expect(review.openEditors).toHaveLength(1);
+    await fireEvent.click(await waitFor(() => buttonNamed(view, 'Move')));
+    const adds = view.getAllByTestId('review-add-comment');
+    await fireEvent.click(adds[adds.length - 1]!);
+    await waitFor(() => expect(review.openEditors).toMatchObject([{ id, state: 'placed', anchor: { newLine: 2 } }]));
+    expect(view.getAllByTestId('review-draft-editor')).toHaveLength(1);
+  });
 });
 
 describe('<ReviewPane>', () => {

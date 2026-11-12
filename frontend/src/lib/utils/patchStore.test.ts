@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { conflictPatchFile } from './conflictFile';
 import { diffSourceKey } from './diffSourceKey';
 import { contentKey } from './fnv1a';
@@ -10,6 +10,10 @@ import {
   type PatchFile,
 } from './patchFiles';
 import {
+  anchorLines,
+  anchorRows,
+  completeAnchor,
+  anchorLinesMatch,
   anchorRow,
   displayRowCount,
   FILE_START,
@@ -19,7 +23,7 @@ import {
   rowStartAt,
   splitRowCount,
 } from './patchRows';
-import { PatchParser, parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
+import { keptText, PatchParser, parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
 
 // The compact store must describe every patch exactly as parsePatchFiles +
 // buildPatchDisplayRows do: same files, same lines, same rows, same row ids,
@@ -282,6 +286,82 @@ describe('PatchParser', () => {
     expect(parser.sourceKey()).toBe('');
   });
 
+  it('records what each header says as it parses, at every chunking, and the same as a PatchFile of it', () => {
+    const patch = [
+      'diff --git a/src/old.ts b/src/new.ts',
+      'similarity index 90%',
+      'rename from src/old.ts',
+      'rename to src/new.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/old.ts',
+      '+++ b/src/new.ts',
+      '@@ -1,1 +1,1 @@',
+      '-rename from not/a/header',
+      '+index 3333333..4444444 100644',
+      'diff --git a/lib b/lib',
+      'index abcdef0..1234567 160000',
+      '--- a/lib',
+      '+++ b/lib',
+      '@@ -1 +1 @@',
+      '-Subproject commit abcdef0',
+      '+Subproject commit 1234567',
+      'diff --git a/added.ts b/added.ts',
+      'new file mode 100644',
+      'index 0000000..5555555',
+      '--- /dev/null',
+      '+++ b/added.ts',
+      '@@ -0,0 +1 @@',
+      '+x',
+    ].join('\n');
+    const expected = [
+      { sections: 1, oldPath: 'src/old.ts', indexed: true, oldBlob: '1111111', newBlob: '2222222', submodule: false },
+      { sections: 1, oldPath: null, indexed: true, oldBlob: 'abcdef0', newBlob: '1234567', submodule: true },
+      { sections: 1, oldPath: null, indexed: true, oldBlob: null, newBlob: '5555555', submodule: false },
+    ];
+    for (const size of [1, 7, 64, 10_000]) expect(parseInChunks(patch, () => size).files.map((file) => file.header)).toEqual(expected);
+    expect(parsePatchFiles(patch).map((file) => reviewFileFromPatchFile(file).header)).toEqual(expected);
+  });
+
+  // A tripwire: JS cannot see whether a string is a slice holding its
+  // chunk alive, only whether it went through the copy.
+  it('copies every string a file keeps from the patch\'s chunks', () => {
+    const own = vi.spyOn(keptText, 'own').mockImplementation((text) => `owned:${text}`);
+    try {
+      const files = parseReviewFiles([
+        'diff --git a/src/old.ts b/src/new.ts',
+        'rename from src/old.ts',
+        'rename to src/new.ts',
+        'index 1111111..2222222 100644',
+        '--- a/src/old.ts',
+        '+++ b/src/new.ts',
+        '@@ -1 +1 @@',
+        '-a',
+        '+b',
+        'diff --git a/link b/link',
+        'deleted file mode 120000',
+        'index 3333333..0000000',
+        '--- a/link',
+        '+++ /dev/null',
+        '@@ -1 +0,0 @@',
+        '-target',
+        'diff --git a/link b/link',
+        'new file mode 100644',
+        'index 0000000..4444444',
+        '--- /dev/null',
+        '+++ b/link',
+        '@@ -0,0 +1 @@',
+        '+file',
+      ].join('\n'));
+      expect(files.map((file) => [file.path, file.header?.oldPath ?? null, file.header?.oldBlob ?? null, file.header?.newBlob ?? null])).toEqual([
+        ['owned:src/new.ts', 'owned:src/old.ts', 'owned:1111111', 'owned:2222222'],
+        // A type change: one file, its deleted section's header.
+        ['owned:link', null, 'owned:3333333', null],
+      ]);
+    } finally {
+      own.mockRestore();
+    }
+  });
+
   it('holds one copy of the text and a few bytes per line', () => {
     const patch = randomPatch(7).repeat(50);
     const { parser } = parseInChunks(patch, () => 4096);
@@ -301,6 +381,68 @@ describe('conflict pseudo-files', () => {
       const parsed = conflictPatchFile('c.txt', content, { baseLabel: 'main', headLabel: 'pr', expandedFolds, notes: ['CONFLICT (content): c.txt'] });
       expectSameFile(reviewFileFromPatchFile(parsed), parsed);
     }
+  });
+});
+
+describe('split-view halves of a context row', () => {
+  // Old 1..3, new 1..3: 1 and 3 unchanged, 2 replaced.
+  const file = parseReviewFiles([
+    'diff --git a/src/app.ts b/src/app.ts',
+    'index 1111111..2222222 100644',
+    '--- a/src/app.ts',
+    '+++ b/src/app.ts',
+    '@@ -1,3 +1,4 @@',
+    ' alpha',
+    '-beta',
+    '+beta two',
+    '+inserted',
+    ' gamma',
+  ].join('\n'))[0];
+
+  it('names the context row from either half with both numbers; one number names it only for a forge thread', () => {
+    const gamma = anchorRow(file, { side: 'context', oldLine: 3, newLine: 4 });
+    expect(gamma).toBeGreaterThan(0);
+    expect(anchorRow(file, { side: 'old', oldLine: 3, newLine: 4 })).toBe(gamma);
+    expect(anchorRow(file, { side: 'new', oldLine: 3, newLine: 4 })).toBe(gamma);
+    // A saved draft with one number on an unchanged line names no row.
+    expect(anchorRow(file, { side: 'old', oldLine: 3 })).toBe(-1);
+    expect(anchorRow(file, { side: 'new', newLine: 4 })).toBe(-1);
+    expect(anchorRow(file, { side: 'old', oldLine: 3 }, true)).toBe(gamma);
+    expect(anchorRow(file, { side: 'new', newLine: 4 }, true)).toBe(gamma);
+    expect(anchorRow(file, { side: 'old', oldLine: 2 })).toBeGreaterThan(0);
+    expect(anchorRow(file, { side: 'old', oldLine: 4 }, true)).toBe(-1);
+  });
+
+  it('completes a half to both numbers, and leaves a changed line as it is', () => {
+    expect(completeAnchor(file, { side: 'old' as const, oldLine: 3 })).toEqual({ side: 'old', oldLine: 3, newLine: 4 });
+    expect(completeAnchor(file, { side: 'new' as const, newLine: 4 })).toEqual({ side: 'new', oldLine: 3, newLine: 4 });
+    expect(completeAnchor(file, { side: 'old' as const, oldLine: 2 })).toEqual({ side: 'old', oldLine: 2 });
+    expect(completeAnchor(file, { side: 'new' as const, newLine: 9 })).toEqual({ side: 'new', newLine: 9 });
+  });
+
+  it('agrees with the membership check, strict and loose', () => {
+    const lines = anchorLines(file);
+    for (const anchor of [
+      { side: 'old' as const, oldLine: 3 },
+      { side: 'new' as const, newLine: 4 },
+      { side: 'old' as const, oldLine: 3, newLine: 4 },
+      { side: 'new' as const, oldLine: 3, newLine: 4 },
+      { side: 'old' as const, oldLine: 2 },
+      { side: 'new' as const, newLine: 3 },
+      { side: 'context' as const, oldLine: 1, newLine: 1 },
+      { side: 'old' as const, oldLine: 4 },
+      { side: 'new' as const, newLine: 5 },
+      { side: 'context' as const, oldLine: 3, newLine: 3 },
+    ]) {
+      for (const loose of [false, true]) {
+        expect(anchorLinesMatch(lines, anchor, loose), `${JSON.stringify(anchor)} ${loose}`).toBe(anchorRow(file, anchor, loose) >= 0);
+      }
+    }
+  });
+
+  it('counts the rows an anchor names and the place of the one at a line', () => {
+    expect(anchorRows(file, { side: 'old', oldLine: 3, newLine: 4 })).toMatchObject({ count: 1, occurrence: 0, context: true });
+    expect(anchorRows(file, { side: 'new', newLine: 9 })).toMatchObject({ count: 0, row: -1 });
   });
 });
 

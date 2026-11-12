@@ -128,7 +128,16 @@ PR stores; components own presentation and interaction.
   review state (`draftBodyFor`, `draftEditBodyFor`, `replyBodyFor`,
   `replyOpen`) until it is saved or cancelled. Closing a reply (Cancel,
   Escape, Back) keeps its text for the next open; only a sent reply
-  clears it.
+  clears it. A reload of the same subject keeps every open editor. A new
+  comment's editor stays on its line only by exact identity
+  (`utils/editorPlacement.ts`); otherwise it is detached: in place in
+  its file after a suggested row, with "Use this line" and "Move", and
+  `createComment` refuses it. Only an editor whose file is not in the
+  loaded diff shows in the pane-level group, to copy or discard; a
+  collapsed or filtered file hides its editors with it. The contract is
+  in [review pane design](../../../../../docs/architecture/review-pane-design.md#open-new-comment-editors).
+  Rows an expansion supplied carry no version proof; verified expansions
+  are a backend change and out of scope here.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.
 
 Review mutations reconcile from authoritative responses and show partial or

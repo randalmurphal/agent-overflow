@@ -344,8 +344,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
         return false;
       };
 
-      if (await emitInserts(fileInserts?.get(0), -1)) return true;
-      fileInserts?.delete(0);
+      if (await emitInserts(fileInserts?.takeHead(), -1)) return true;
 
       const body = file.body;
       const folds = body.hasMarkers ? (content.foldLines?.(path) ?? null) : null;
@@ -381,16 +380,10 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
           const text = (await lineText(file, lineIndex)).slice(1);
           if (await emitText(text, file, { kind: 'line', tag: findRowTag(walker) }, lineSpot)) return true;
         }
-        const anchor = walker.anchorLine();
-        const bucket = fileInserts?.get(anchor);
-        if (bucket?.length) {
-          if (await emitInserts(bucket, lineIndex)) return true;
-          fileInserts?.delete(anchor);
-        }
+        const bucket = fileInserts?.take(walker.type, walker.oldLine, walker.newLine);
+        if (bucket && await emitInserts(bucket, lineIndex)) return true;
       }
-      for (const bucket of fileInserts?.values() ?? []) {
-        if (await emitInserts(bucket, lastLine)) return true;
-      }
+      if (await emitInserts(fileInserts?.takeRest(), lastLine)) return true;
     }
   } catch (err) {
     if (err instanceof StopScan) return false;

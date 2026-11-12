@@ -1345,10 +1345,17 @@ export class ReviewEvent {
     }
 }
 
+/**
+ * ReviewLineComment is one comment of a review: a file comment, or a line
+ * on the left (Line is its old number) or the right (its new number). An
+ * unchanged line is on the right with its old number in OldLine, which
+ * GitLab needs beside the new one.
+ */
 export class ReviewLineComment {
     "path": string;
     "body": string;
     "line"?: number | null;
+    "oldLine"?: number | null;
     "side": string;
     "startLine"?: number | null;
 

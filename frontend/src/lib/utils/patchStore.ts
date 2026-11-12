@@ -104,7 +104,7 @@ const heldText = new FinalizationRegistry<{ bytes: number; pinned: number }>((he
 // What a chunk's text costs: V8 holds a string with any character past
 // Latin-1 at two bytes per character.
 function textBytes(text: string): number {
-  return /[^\x00-\xff]/.test(text) ? text.length * 2 : text.length;
+  return /[\u0100-\uffff]/.test(text) ? text.length * 2 : text.length;
 }
 
 /**
@@ -116,6 +116,11 @@ function textBytes(text: string): number {
 export function ownText(text: string): string {
   return (' ' + text).slice(1);
 }
+
+/** Copies (ownText) the text a parsed file or an open editor keeps from a
+ * store's chunks. An object so a test can see each kept string pass
+ * through it. */
+export const keptText = { own: ownText };
 
 /**
  * The lines of one patch, stored as the chunks they arrived in.
@@ -813,6 +818,12 @@ export class PatchBody {
     return store.text(line);
   }
 
+  /** A line's length in UTF-16 units, known without its text. */
+  lineLength(index: number): number {
+    const { store, line } = this.locate(index);
+    return store.lineEnd(line) - store.lineStart(line);
+  }
+
   /** Whether a line's text is resident. */
   residentLine(index: number): boolean {
     const { store, line } = this.locate(index);
@@ -1002,6 +1013,52 @@ export interface ReviewFile extends DiffFileSummary {
   newSideTotal?: number;
   /** Skip hunk-gap rows (see PatchFile.suppressGaps). */
   suppressGaps?: boolean;
+  /** How many edit sections of one path the Edits scope joined into this
+   * file. Over 1, its first section's index line does not describe it
+   * (utils/editorPlacement.ts). */
+  mergedSections?: number;
+  /** What the metadata lines leading its body say, read as they were
+   * parsed, so a reader of them needs none of its text. Absent: no
+   * leading metadata. */
+  header?: PatchHeader;
+}
+
+/** What a file's leading metadata lines say (utils/editorPlacement.ts). */
+export interface PatchHeader {
+  /** `diff --git` lines: over 1 only for sections joined into one. */
+  sections: number;
+  /** `rename from`: the path the file had before. */
+  oldPath: string | null;
+  /** Whether an `index` line names the sides' blob ids. */
+  indexed: boolean;
+  /** The `index` line's ids; a zero id is none. */
+  oldBlob: string | null;
+  newBlob: string | null;
+  /** A mode line or the `index` line gives a gitlink's mode. */
+  submodule: boolean;
+}
+
+const ZERO_ID = /^0+$/;
+const INDEX_LINE = /^index ([0-9a-f]+)\.\.([0-9a-f]+)(?: ([0-7]+))?$/;
+const MODE_LINE = /^(?:new file|deleted file|old|new) mode ([0-7]+)$/;
+const SUBMODULE_MODE = '160000';
+
+function emptyHeader(): PatchHeader {
+  return { sections: 0, oldPath: null, indexed: false, oldBlob: null, newBlob: null, submodule: false };
+}
+
+/** Records one leading metadata line in `header`. */
+function readHeaderLine(header: PatchHeader, text: string): void {
+  if (text.startsWith('diff --git ')) header.sections += 1;
+  else if (text.startsWith('rename from ')) header.oldPath = keptText.own(text.slice('rename from '.length));
+  const index = INDEX_LINE.exec(text);
+  if (index) {
+    header.indexed = true;
+    header.oldBlob = ZERO_ID.test(index[1]) ? null : keptText.own(index[1]);
+    header.newBlob = ZERO_ID.test(index[2]) ? null : keptText.own(index[2]);
+    if (index[3] === SUBMODULE_MODE) header.submodule = true;
+  }
+  if (MODE_LINE.exec(text)?.[1] === SUBMODULE_MODE) header.submodule = true;
 }
 
 /** A review file over a parsed PatchFile (conflict pseudo-files). */
@@ -1013,6 +1070,9 @@ export function reviewFileFromPatchFile(file: PatchFile): ReviewFile {
     deletions: file.deletions,
     body: PatchBody.fromPatchLines(file.lines),
   };
+  const header = emptyHeader();
+  for (let index = 0; index < file.lines.length && file.lines[index].type === 'meta'; index += 1) readHeaderLine(header, file.lines[index].content);
+  if (file.lines.length > 0 && file.lines[0].type === 'meta') out.header = header;
   if (file.conflicts !== undefined) out.conflicts = file.conflicts;
   if (file.conflictLabel !== undefined) out.conflictLabel = file.conflictLabel;
   if (file.newSideTotal !== undefined) out.newSideTotal = file.newSideTotal;
@@ -1044,6 +1104,9 @@ interface Section {
   end: number;
   /** First hunk header, or -1. */
   firstHunk: number;
+  header: PatchHeader;
+  /** Whether every line so far is metadata: the header is still open. */
+  leading: boolean;
 }
 
 /**
@@ -1108,7 +1171,8 @@ export class PatchParser {
     const kind = this.body.next(text, offset, length);
     if (startsAt(text, offset, length, 'diff --git ')) {
       this.finishSection(line);
-      const parts = text.slice(offset, offset + length).split(/\s+/);
+      const header = text.slice(offset, offset + length);
+      const parts = header.split(/\s+/);
       this.current = {
         path: cleanPath(parts[3] ?? ''),
         kind: 'modified',
@@ -1117,7 +1181,10 @@ export class PatchParser {
         start: line,
         end: line,
         firstHunk: -1,
+        header: emptyHeader(),
+        leading: true,
       };
+      readHeaderLine(this.current.header, header);
       store.setKind(line, LINE_META);
       return;
     }
@@ -1156,9 +1223,12 @@ export class PatchParser {
     } else if (kind !== HUNK_OUTSIDE || PATCH_META_PREFIXES.some((prefix) => startsAt(text, offset, length, prefix))) {
       // A malformed hunk header, the no-newline marker, or a file header.
       store.setKind(line, LINE_META);
+      if (current?.leading) readHeaderLine(current.header, text.slice(offset, offset + length));
+      return;
     } else {
       store.setKind(line, LINE_CONTEXT);
     }
+    if (current) current.leading = false;
   }
 
   // Sections finish while a chunk is being indexed, so their files are
@@ -1194,11 +1264,12 @@ export class PatchParser {
 
   private sectionFile(section: Section): ReviewFile {
     return {
-      path: section.path,
+      path: keptText.own(section.path),
       kind: section.kind,
       additions: section.additions,
       deletions: section.deletions,
       body: new PatchBody([{ store: this.store, start: section.start, end: section.end }]),
+      header: section.header,
     };
   }
 
@@ -1209,12 +1280,14 @@ export class PatchParser {
     const segments: BodySegment[] = [{ store: this.store, start: deleted.start, end: deleted.end }];
     if (added.firstHunk >= 0) segments.push({ store: this.store, start: added.firstHunk, end: added.end });
     return {
-      path: deleted.path,
+      path: keptText.own(deleted.path),
       kind: 'modified',
       additions: deleted.additions + added.additions,
       deletions: deleted.deletions + added.deletions,
       body: new PatchBody(segments),
       suppressGaps: true,
+      // The created section's header is dropped with its block.
+      header: deleted.header,
     };
   }
 }

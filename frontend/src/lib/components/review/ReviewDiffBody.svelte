@@ -25,6 +25,8 @@
   import { reviewDiffKeydown, type ReviewDiffKeysHost } from './reviewDiffKeys';
   import { elementAtEdge } from '../../utils/findReadingEdge';
   import { reportReaderNavigation } from '../../utils/scroll/readerInput';
+  import { focusWhenShown } from '../../utils/focusWhenShown';
+  import type { EditorAnchor } from '../../stores/reviewPane.svelte';
   import {
     BlockRowsCache,
     buildReviewRows,
@@ -33,6 +35,7 @@
     REVIEW_OVERVIEW_ROW_KEY,
     reviewRowEstimate,
     type CommentAnchor,
+    type EditorRow,
     type ReviewLeadRow,
     type ReviewRow,
   } from '../../utils/reviewRows';
@@ -75,12 +78,12 @@
     collapsedPaths: ReadonlySet<string>;
     onToggleCollapsed: (path: string) => void;
     drafts?: readonly DiffReviewComment[];
-    openEditors?: readonly CommentAnchor[];
+    openEditors?: readonly EditorRow[];
     prThreads?: readonly ReviewThread[];
     expandedPRThreadIds?: ReadonlySet<string>;
     /** Renders draft-editor rows. Required whenever `openEditors` is
      * non-empty; absent, those rows render nothing. */
-    draftEditor?: Snippet<[anchor: CommentAnchor]>;
+    draftEditor?: Snippet<[editor: EditorRow]>;
     /** Renders comment-thread rows. Required whenever `drafts` is
      * non-empty; absent, those rows render nothing. `pulse` is the
      * row-key jump that landed on the row (utils/reviewJumpPulse), 0
@@ -101,7 +104,9 @@
      * top, for the title bar's peek controls. A commit card has no peek
      * controls and never reports. */
     onOverviewOffChange?: (off: boolean) => void;
-    onAddComment?: (anchor: CommentAnchor) => void;
+    /** The diff on screen (ShownDiff.generation), for a pick's check. */
+    generation?: number;
+    onAddComment?: (anchor: EditorAnchor, generation?: number) => void;
     /** Conflict view only: expands a fold row's hidden lines. */
     onExpandFold?: (path: string, foldId: number) => void;
     /** Diff view only: fetches a hunk gap's hidden context lines. */
@@ -142,6 +147,7 @@
     overviewLead = 'overview',
     empty,
     onOverviewOffChange,
+    generation,
     onAddComment,
     onExpandFold,
     onExpandGap,
@@ -158,6 +164,15 @@
     buildReviewRows({ files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds, overview: overview === undefined ? undefined : overviewLead }),
   );
   const builtEstimate = $derived(reviewRowEstimate(built, wordWrap));
+  // The rows detached editors suggest, by file.
+  const targetsByPath = $derived.by(() => {
+    const out = new Map<string, CommentAnchor[]>();
+    for (const editor of openEditors) {
+      if (editor.state !== 'detached' || !editor.suggested) continue;
+      out.set(editor.filePath, [...(out.get(editor.filePath) ?? []), editor.suggested]);
+    }
+    return out;
+  });
   // The rows of the blocks this surface renders, for the files it shows.
   const blockRows = new BlockRowsCache();
   $effect.pre(() => {
@@ -322,6 +337,72 @@
   let prevPrThreads: readonly ReviewThread[] = prThreads;
   // svelte-ignore state_referenced_locally
   let prevScrollKey = scrollKey;
+  // The focused comment editor, with its offset from the viewport top, the
+  // control in it that has focus and the caret, read before a rebuild
+  // reaches the list: a reload keeps that editor where it was on screen
+  // rather than the line above, even when its row moved out of the rows the
+  // list holds (which unmounts it).
+  interface FocusedEditor {
+    id: string;
+    top: number;
+    /** The focused control's key in the editor (data-editor-control). */
+    control: string | null;
+    selection: [number, number, 'forward' | 'backward' | 'none'] | null;
+  }
+  let focusedEditor: FocusedEditor | null = null;
+  let refocus: (() => void) | null = null;
+  function editorNode(id: string): Element | null {
+    return scrollEl?.querySelector(`[data-review-editor-id="${CSS.escape(id)}"]`) ?? null;
+  }
+  function editorTop(id: string): number | null {
+    const el = scrollEl;
+    const node = editorNode(id);
+    return el && node ? node.getBoundingClientRect().top - el.getBoundingClientRect().top : null;
+  }
+  $effect.pre(() => {
+    void built;
+    untrack(() => {
+      focusedEditor = null;
+      const el = scrollEl;
+      const active = typeof document === 'undefined' ? null : document.activeElement;
+      const node = active instanceof Element && el?.contains(active) ? active.closest('[data-review-editor-id]') : null;
+      const id = node?.getAttribute('data-review-editor-id');
+      const top = id ? editorTop(id) : null;
+      if (!id || top === null) return;
+      const selection = active instanceof HTMLTextAreaElement
+        ? [active.selectionStart, active.selectionEnd, active.selectionDirection] as FocusedEditor['selection']
+        : null;
+      focusedEditor = { id, top, control: active!.getAttribute('data-editor-control'), selection };
+    });
+  });
+  // Puts the focused editor's row back at the offset the box had, by its
+  // index in the list (the row may not be mounted), then focuses the same
+  // control of the box once it shows (the text with its caret): the element
+  // that kept focus, or the one a remount put in its place. Then the offset
+  // is corrected by where the box is measured. False when the editor has no
+  // row now.
+  function restoreFocusedEditor(keep: FocusedEditor): boolean {
+    const el = scrollEl;
+    const ref = listRef;
+    const index = built.rowKeys.indexOf(`d:${keep.id}`);
+    if (!el || !ref || index < 0) return false;
+    const top = editorTop(keep.id);
+    if (top === null) ref.scrollToIndex(index, { offset: -keep.top });
+    else if (top !== keep.top) scroll.applyScrollTarget(Math.max(0, el.scrollTop + top - keep.top));
+    const control = (): HTMLElement | null => {
+      const node = editorNode(keep.id);
+      const same = keep.control ? node?.querySelector<HTMLElement>(`[data-editor-control="${CSS.escape(keep.control)}"]:not(:disabled)`) : null;
+      return same ?? node?.querySelector('textarea') ?? null;
+    };
+    refocus?.();
+    refocus = focusWhenShown(control, (area) => {
+      if (keep.selection && area instanceof HTMLTextAreaElement) area.setSelectionRange(...keep.selection);
+      const now = editorTop(keep.id);
+      if (now !== null && now !== keep.top) scroll.applyScrollTarget(Math.max(0, el.scrollTop + now - keep.top));
+    });
+    return true;
+  }
+  $effect(() => () => refocus?.());
   $effect(() => {
     void built;
     untrack(() => {
@@ -330,7 +411,11 @@
       prevFiles = files;
       prevPrThreads = prThreads;
       prevScrollKey = scrollKey;
-      if (contentChanged && !keyChanged && readingAnchor) restoreAnchor(readingAnchor);
+      const keep = focusedEditor;
+      focusedEditor = null;
+      if (contentChanged && !keyChanged && keep && restoreFocusedEditor(keep)) {
+        // The focused editor holds its place.
+      } else if (contentChanged && !keyChanged && readingAnchor) restoreAnchor(readingAnchor);
       const offset = scrollEl?.scrollTop ?? 0;
       updateSticky(offset);
       captureAnchor(offset);
@@ -493,6 +578,7 @@
           <ReviewDiffRow
             {row}
             file={files[row.fileIndex]}
+            targets={row.kind === 'line-block' ? targetsByPath.get(files[row.fileIndex]?.path ?? '') : undefined}
             {blockRows}
             collapsed={collapsedPaths.has(files[row.fileIndex]?.path ?? '')}
             {onToggleCollapsed}
@@ -505,6 +591,7 @@
             {draftEditor}
             {commentThread}
             {prThread}
+            {generation}
             {onAddComment}
             {onExpandFold}
             {onExpandGap}

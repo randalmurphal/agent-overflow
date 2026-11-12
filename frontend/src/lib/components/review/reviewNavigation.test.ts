@@ -29,7 +29,7 @@ const SURFACES: Surface[] = [
     file: 'ReviewDiffBody.svelte',
     reporters: ['navigateToIndex'],
     findOwn: ['revealFindPlace', 'scrollFindBy'],
-    keepsPlace: ['restoreAnchor', 'restoreTop'],
+    keepsPlace: ['restoreAnchor', 'restoreFocusedEditor', 'restoreTop'],
     exports: ['findReadingPosition', 'revealFindPlace', 'scrollFindBy'],
   },
   {

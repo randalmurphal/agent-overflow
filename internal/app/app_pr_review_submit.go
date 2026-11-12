@@ -389,15 +389,21 @@ func postedReviewDraftsOf(drafts []store.DiffReviewComment, result SubmitPRRevie
 }
 
 // reviewLineCommentForDraft is a draft as the forge's review comment: a
-// file comment, or a line on the old (left) or new (right) side.
+// file comment; an unchanged line, which a draft on either half or the
+// unified row saves with both numbers, on the right at its new number with
+// its old number beside it; a deleted line on the left at its old number;
+// an added line on the right at its new number. A context draft missing a
+// number is not sent.
 func reviewLineCommentForDraft(draft store.DiffReviewComment) (gitops.ReviewLineComment, bool) {
 	line := func(n int) *int { return &n }
 	switch {
 	case draft.Side == "file":
 		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Side: "file"}, true
+	case draft.OldLine > 0 && draft.NewLine > 0:
+		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Line: line(draft.NewLine), OldLine: line(draft.OldLine), Side: "right"}, true
 	case draft.Side == "old" && draft.OldLine > 0:
 		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Line: line(draft.OldLine), Side: "left"}, true
-	case (draft.Side == "new" || draft.Side == "context") && draft.NewLine > 0:
+	case draft.Side == "new" && draft.NewLine > 0:
 		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Line: line(draft.NewLine), Side: "right"}, true
 	}
 	return gitops.ReviewLineComment{}, false

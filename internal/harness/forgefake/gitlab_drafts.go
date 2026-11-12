@@ -61,6 +61,9 @@ func glabDraftCreate(e *Engine, c *call, m []string) response {
 		switch {
 		case pos.PositionType == "file" && pos.OldLine == nil && pos.NewLine == nil && pos.LineRange == nil:
 			draft.Side = "file"
+		case pos.PositionType == "text" && pos.OldLine != nil && pos.NewLine != nil && pos.LineRange == nil:
+			// An unchanged line: GitLab names it by both numbers.
+			draft.Side, draft.Line, draft.OldLine = "right", pos.NewLine, pos.OldLine
 		case pos.PositionType == "text" && (pos.OldLine == nil) != (pos.NewLine == nil):
 			draft.Side, draft.Line = "right", pos.NewLine
 			if pos.OldLine != nil {
@@ -167,7 +170,7 @@ func glabDraftPublish(e *Engine, c *call, m []string) response {
 			continue
 		}
 		p.Threads = append(p.Threads, Thread{
-			ID: e.ids.sha(), Path: draft.Path, Line: draft.Line, StartLine: draft.StartLine, Side: draft.Side,
+			ID: e.ids.sha(), Path: draft.Path, Line: draft.Line, StartLine: draft.StartLine, OldLine: draft.OldLine, Side: draft.Side,
 			Comments: []Comment{comment},
 		})
 	}

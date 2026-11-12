@@ -137,12 +137,13 @@ describe('scanReviewFind', () => {
       ['pc:p2:1', 0],
       ['l:5:src/needle.ts', 0],
       ['l:6:src/needle.ts', 0],
+      // New line 2 is the added row (line 7), not the deleted row before it.
+      ['l:7:src/needle.ts', 0],
+      ['l:7:src/needle.ts', 1],
       ['dc:d1', 0],
       ['pc:p1:1', 0],
       ['pc:p1:3', 0],
       ['pc:p1:3', 1],
-      ['l:7:src/needle.ts', 0],
-      ['l:7:src/needle.ts', 1],
       ['l:6:b.ts', 0],
     ]);
     expect(hits.find((hit) => hit.rowKey === 'pc:p1:1')?.place).toEqual({ kind: 'thread', threadId: 'p1' });
