@@ -37,6 +37,9 @@ type GroupCommand struct {
 	// stops the whole group. A worktree setup command or a workflow tool
 	// command may start a service that is meant to outlive it.
 	KeepLeftovers bool
+	// Terminal, when set, is the command's controlling terminal. Stdin and
+	// Output are unchanged. The caller closes it after Wait returns.
+	Terminal *Terminal
 	// kill replaces KillConfiguredGroup in a test that needs a group no
 	// signal ends.
 	kill func(*exec.Cmd) error
@@ -128,13 +131,23 @@ func StartGroup(ctx context.Context, command GroupCommand) (*Group, error) {
 	if group.kill == nil {
 		group.kill = KillConfiguredGroup
 	}
-	cmd := exec.Command(command.Argv[0], command.Argv[1:]...)
+	argv := command.Argv
+	if command.Terminal != nil {
+		var err error
+		if argv, err = command.Terminal.command(argv, command.Dir); err != nil {
+			return nil, err
+		}
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = command.Dir
 	cmd.Env = command.Env
 	ConfigureGroup(cmd)
 	// os/exec refuses a Cancel hook without CommandContext, and Wait drives
 	// cancellation itself so SIGTERM can precede the group kill.
 	cmd.Cancel = nil
+	if command.Terminal != nil {
+		command.Terminal.attach(cmd)
+	}
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		return nil, err

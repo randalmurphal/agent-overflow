@@ -1,6 +1,6 @@
 # Process helpers
 
-This package owns four utilities:
+This package owns five utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
   child process group using the platform implementation. On Unix,
@@ -39,6 +39,17 @@ This package owns four utilities:
   `GroupOutcome.OutputErr` folds `PipeErr` and `OutputHeld` (as
   `ErrOutputHeld`) into one error for a caller that fails a command whose
   output was cut.
+- `Terminal` (`OpenTerminal`, Unix only) is a pty that `GroupCommand.Terminal`
+  makes the command's controlling terminal, for programs that prompt on
+  `/dev/tty`. Stdin and `Output` are unchanged. The command starts through a
+  `/bin/sh` shim that ignores SIGHUP and closes the inherited descriptor:
+  the kernel hangs up the terminal's foreground group when the session
+  leader exits, which would end leftovers before `Wait` counts them. The
+  command's processes therefore start with SIGHUP ignored. An executable
+  that is not found is still a start error; an exec failure after that is
+  the shim's exit status. The caller closes the `Terminal` after `Wait`
+  returns. `PollableMaster` makes a read of a pty master end on `Close` on
+  Linux; elsewhere the read ends when no process holds the terminal.
 
 Call `ConfigureGroup` before starting the command and pass the same command to
 `KillConfiguredGroup`. These APIs do not verify process identity or establish
