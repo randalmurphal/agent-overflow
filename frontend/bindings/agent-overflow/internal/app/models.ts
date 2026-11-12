@@ -6612,6 +6612,39 @@ export class ServiceUpdateStatus {
 }
 
 /**
+ * ShellCommandAnswer is one line typed into a running command's terminal.
+ */
+export class ShellCommandAnswer {
+    "runId": string;
+
+    /**
+     * Text is the line without its newline. It can be a password: it goes to
+     * the command and is recorded nowhere.
+     */
+    "text": string;
+
+    /** Creates a new ShellCommandAnswer instance. */
+    constructor($$source: Partial<ShellCommandAnswer> = {}) {
+        if (!("runId" in $$source)) {
+            this["runId"] = "";
+        }
+        if (!("text" in $$source)) {
+            this["text"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ShellCommandAnswer instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ShellCommandAnswer {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ShellCommandAnswer($$parsedSource as Partial<ShellCommandAnswer>);
+    }
+}
+
+/**
  * ShellCommandRequest starts one composer shell command.
  */
 export class ShellCommandRequest {
@@ -6661,6 +6694,14 @@ export class ShellCommandRun {
      */
     "outputTruncated"?: boolean;
     "startedAt": number;
+
+    /**
+     * Terminal is the end of what the command wrote to its own terminal (a
+     * prompt), with the sequence of the last `terminal` frame. It is not
+     * output and is never sent to the agent.
+     */
+    "terminal"?: string;
+    "terminalSeq"?: number;
 
     /** Creates a new ShellCommandRun instance. */
     constructor($$source: Partial<ShellCommandRun> = {}) {

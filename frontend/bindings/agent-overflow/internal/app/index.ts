@@ -148,6 +148,7 @@ export {
     SendMessageOptions,
     SendsPendingAnswer,
     ServiceUpdateStatus,
+    ShellCommandAnswer,
     ShellCommandRequest,
     ShellCommandRun,
     ShellOutputPage,

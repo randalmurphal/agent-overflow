@@ -60,6 +60,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "AgentRemoteStart", ID: 1273975760, Scope: "terminal:operate", Route: "selected", Remote: true},                    // main.App.AgentRemoteStart
 	{Name: "AgentRemoteStatus", ID: 1365876070, Scope: "terminal:operate", Route: "selected"},                                 // main.App.AgentRemoteStatus
 	{Name: "AllowPreviewPort", ID: 4007046465, Scope: "access:admin", Route: "selected", Remote: true},                        // main.App.AllowPreviewPort
+	{Name: "AnswerThreadShellCommand", ID: 2190095592, Scope: "terminal:operate", Route: "thread"},                            // main.App.AnswerThreadShellCommand
 	{Name: "AppendLiveDictation", ID: 2562809680, Scope: "threads:operate", Route: "selected"},                                // main.App.AppendLiveDictation
 	{Name: "AppendUIRenderTraceBatch", ID: 2157691816, Scope: "host", Route: "home"},                                          // main.App.AppendUIRenderTraceBatch
 	{Name: "ApprovePR", ID: 580543372, Scope: "git:operate", Route: "selected"},                                               // main.App.ApprovePR

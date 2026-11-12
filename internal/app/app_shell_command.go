@@ -51,25 +51,42 @@ type ShellCommandRun struct {
 	// OutputTruncated reports that Output is the end of a longer stream.
 	OutputTruncated bool  `json:"outputTruncated,omitempty"`
 	StartedAt       int64 `json:"startedAt"`
+	// Terminal is the end of what the command wrote to its own terminal (a
+	// prompt), with the sequence of the last `terminal` frame. It is not
+	// output and is never sent to the agent.
+	Terminal    string `json:"terminal,omitempty"`
+	TerminalSeq uint64 `json:"terminalSeq,omitempty"`
+}
+
+// ShellCommandAnswer is one line typed into a running command's terminal.
+type ShellCommandAnswer struct {
+	RunID string `json:"runId"`
+	// Text is the line without its newline. It can be a password: it goes to
+	// the command and is recorded nowhere.
+	Text string `json:"text"`
 }
 
 // ShellCommandEvent is one frame on the `shell:command` channel. Phase is
-// `started`, `output` or `finished`. Output frames carry a per-run Seq that
-// starts at 1; a client that has applied a snapshot drops frames at or below
-// the snapshot's OutputSeq. A finished frame's State is `sent`, `stopped` or
-// `failed`, and Error is set on `failed`.
+// `started`, `output`, `terminal` or `finished`. Output frames carry a per-run
+// Seq that starts at 1; a client that has applied a snapshot drops frames at
+// or below the snapshot's OutputSeq. A terminal frame carries the whole text
+// the command's terminal shows and a TerminalSeq of its own; the newest wins.
+// A finished frame's State is `sent`, `stopped` or `failed`, and Error is set
+// on `failed`.
 type ShellCommandEvent struct {
-	Phase      string `json:"phase"`
-	ThreadID   string `json:"threadId"`
-	RunID      string `json:"runId"`
-	Command    string `json:"command,omitempty"`
-	Seq        uint64 `json:"seq,omitempty"`
-	Chunk      string `json:"chunk,omitempty"`
-	State      string `json:"state,omitempty"`
-	Error      string `json:"error,omitempty"`
-	ExitCode   int    `json:"exitCode"`
-	StartedAt  int64  `json:"startedAt,omitempty"`
-	FinishedAt int64  `json:"finishedAt,omitempty"`
+	Phase       string `json:"phase"`
+	ThreadID    string `json:"threadId"`
+	RunID       string `json:"runId"`
+	Command     string `json:"command,omitempty"`
+	Seq         uint64 `json:"seq,omitempty"`
+	Chunk       string `json:"chunk,omitempty"`
+	Terminal    string `json:"terminal,omitempty"`
+	TerminalSeq uint64 `json:"terminalSeq,omitempty"`
+	State       string `json:"state,omitempty"`
+	Error       string `json:"error,omitempty"`
+	ExitCode    int    `json:"exitCode"`
+	StartedAt   int64  `json:"startedAt,omitempty"`
+	FinishedAt  int64  `json:"finishedAt,omitempty"`
 }
 
 // ShellOutputPage is one bounded read of a shell output attachment, with the
@@ -100,7 +117,8 @@ func (a *App) initShellCommands(dataDir string) error {
 func (a *App) emitShellCommandEvent(event shellrun.Event) {
 	a.emitEvent(eventchan.ShellCommand, ShellCommandEvent{
 		Phase: event.Phase, ThreadID: event.ThreadID, RunID: event.RunID, Command: event.Command,
-		Seq: event.Seq, Chunk: event.Chunk, State: event.State, Error: event.Error,
+		Seq: event.Seq, Chunk: event.Chunk, Terminal: event.Terminal, TerminalSeq: event.TerminalSeq,
+		State: event.State, Error: event.Error,
 		ExitCode: event.ExitCode, StartedAt: event.StartedAt, FinishedAt: event.FinishedAt,
 	})
 }
@@ -109,7 +127,7 @@ func projectShellCommandRun(state shellrun.RunState) ShellCommandRun {
 	return ShellCommandRun{
 		ThreadID: state.ThreadID, RunID: state.RunID, Command: state.Command, State: state.State,
 		Output: state.Output, OutputSeq: state.OutputSeq, OutputTruncated: state.OutputTruncated,
-		StartedAt: state.StartedAt,
+		StartedAt: state.StartedAt, Terminal: state.Terminal, TerminalSeq: state.TerminalSeq,
 	}
 }
 
@@ -195,6 +213,21 @@ func (a *App) StopThreadShellCommand(threadID, runID string) error {
 		return shellrun.ErrNotRunning
 	}
 	return a.shellCommands.StopRun(threadID, runID)
+}
+
+// AnswerThreadShellCommand types one line into the running command's
+// terminal, to answer a prompt the command wrote there (sudo's or ssh's for a
+// password). The line reaches the command only: it is not output, it is not
+// sent to the agent, and it is not logged.
+//
+// LocalOnly: this is input to an arbitrary local command.
+//
+//ao:scope terminal:operate
+func (a *App) AnswerThreadShellCommand(threadID string, answer ShellCommandAnswer) error {
+	if a.shellCommands == nil {
+		return shellrun.ErrNotRunning
+	}
+	return a.shellCommands.Answer(threadID, answer.RunID, answer.Text)
 }
 
 // GetThreadShellCommands returns the thread's running command, if any, with
