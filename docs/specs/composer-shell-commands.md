@@ -28,7 +28,9 @@ the bound methods and what a result becomes.
   and the same autonomy check as a send. A terminal thread is refused.
 - The command runs as `$SHELL -c <command>` (`/bin/sh` when unset) in the
   thread's workspace, with the app's environment minus AppImage launch
-  variables and `AO_*`, stdin closed, no PTY, and a fresh shell each time.
+  variables and `AO_*`, stdin closed, output on a pipe, and a fresh shell
+  each time. Its controlling terminal is a private pty used only for
+  [prompts](#prompts).
 - One command runs per thread. A second start returns `shellrun.ErrBusy`.
 - The run id is client-minted and is the send id of the resulting message. A
   repeated request is answered from the running command, the message it
@@ -55,13 +57,39 @@ the bound methods and what a result becomes.
 - A running command holds back an app update, and keeps an empty draft
   thread from being deleted.
 
+## Prompts
+
+A program that asks on its controlling terminal (sudo, ssh, git credentials)
+is answered from the run card.
+
+- Each run gets a pty as its controlling terminal (`procutil.Terminal`).
+  Stdin stays closed and output stays on the pipe, so the terminal carries
+  only what a program opens `/dev/tty` to write or read. A run whose pty
+  cannot be opened fails before the command starts.
+- What the command writes there is not output: it is in no `output` frame,
+  not in the attachment and not in the message. The service keeps its last
+  4 KiB, which includes the echo of an answer when the program left echo on.
+- `AnswerThreadShellCommand` (`terminal:operate`) types one line and a
+  newline into the terminal of the named running run: at most 512 bytes, no
+  control characters. The text is written to the pty and held nowhere. No
+  error, log, frame or stored row carries it. The call is not idempotent
+  and is not an entry of `RETRY_ON_TRANSIENT_CLOSE`. Thread tools have no
+  such call, so an agent can neither read a prompt nor answer one.
+- Each run is a new terminal session, so sudo asks on every command.
+- A program that reads its answer from stdin (`[Y/n]`) still reads end of
+  file.
+
 ## Stream
 
-`shell:command` carries `started`, `output` and `finished` frames, gated on
-`terminal:operate`. Output frames are coalesced on a newline, 8 KiB or
+`shell:command` carries `started`, `output`, `terminal` and `finished`
+frames, gated on `terminal:operate`. A `terminal` frame carries the whole
+retained text of the command's terminal and a per-run `terminalSeq`, so the
+newest replaces what a client holds; the first write is sent at once and
+writes within the next 100 ms go out together. None follows `finished`. Output frames are coalesced on a newline, 8 KiB or
 100 ms, end on a rune boundary, and carry a per-run sequence from 1.
-`GetThreadShellCommands` is the snapshot: the running command and the end of
-its output with the sequence it reflects. `GetThreadLiveState` names the
+`GetThreadShellCommands` is the snapshot: the running command, the end of
+its output with the sequence it reflects, and the terminal text with its
+sequence. `GetThreadLiveState` names the
 running run id without output, so a client that mounts mid-run reads the
 snapshot and a client holding a run the backend no longer has drops it.
 
@@ -117,6 +145,14 @@ the prompt it is.
 - A running command is a card above the composer with its last six lines,
   the elapsed time and Stop. Nothing is added to the timeline until it
   exits. Stop and Dismiss hand focus to the composer.
+- While the command's terminal waits on an open line, as a prompt leaves it
+  (`shellTerminalPrompt`), the card shows the whole command, the last three
+  lines of the terminal under "The command is asking:" and a masked field.
+  Enter or Send answers. The field is emptied before the call is made and
+  its text never enters a draft or a store. Show reveals the text until it
+  is sent. The field takes focus from the composer or from nothing when a
+  prompt appears, and hands it to the composer when the prompt is answered
+  or the run ends.
 - The message's row is a command block: the command, how it ended, the
   duration and the preview. Opening it reads the output in 256 KiB pages
   (`ReadShellAttachmentOutput`, `threads:read`). Whether it is open is the
@@ -132,5 +168,6 @@ the prompt it is.
 
 `e2e/tests/composer-shell-command.spec.ts` covers the flow against the real
 backend: the wire block, the live card, reload during a run, Stop, a
-command queued mid-turn, a command as the first message of a new thread
-and Run on a code block.
+command queued mid-turn, a command as the first message of a new thread,
+Run on a code block, and a prompt answered from the card whose answer
+reaches the command and neither the page nor the agent.

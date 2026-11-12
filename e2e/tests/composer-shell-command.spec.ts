@@ -8,8 +8,9 @@
 // in its own `!` record, the live card hands over to the timeline row, a
 // reload during a run finds it again, Stop sends nothing, a command run
 // mid-turn waits in the send queue, a command is the first message of a new
-// thread, and Run appears on shell fences only, inside a surface that may
-// run them.
+// thread, Run appears on shell fences only, inside a surface that may run
+// them, and a prompt on the command's terminal is answered from the card
+// with an answer that reaches the command and nothing else.
 import type { Page, TestInfo } from '@playwright/test';
 import type { HarnessApp, HarnessMockEventData } from '../src/harness-app.js';
 import { expect, test, type SeedResult } from './fixtures.js';
@@ -360,4 +361,72 @@ test('Run on a shell code block runs the block and sends its output', async ({ h
   await expect(page.getByText('The block printed its line.')).toBeVisible();
   // The composer was not involved: nothing was typed into it.
   await expect(input).toHaveValue('');
+});
+
+test('a prompt on the command\'s terminal is answered from the card and the answer reaches only the command', async ({
+  harness,
+  page,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeTurnsScenario('shell-command-prompt', [
+      [emit([...textLines('msg-reply', 'It read an answer of 21 characters.'), RESULT_LINE])],
+    ]),
+  });
+  const threadId = await seedAgentThread(harness, 'shell-command-prompt', 'Shell command prompt');
+  await openThread(harness, page, 'Shell command prompt');
+  await startMock(harness, threadId);
+
+  // What sudo does: echo off, a prompt on the terminal, a line read from
+  // it, and a line break once it is read.
+  const command = [
+    'stty -echo < /dev/tty',
+    "printf 'Password: ' > /dev/tty",
+    'IFS= read -r pw < /dev/tty',
+    'stty echo < /dev/tty',
+    'echo > /dev/tty',
+    'sleep 1',
+    'echo "length=${#pw}"',
+  ].join('; ');
+  const secret = 'correct horse battery';
+  const delivered = nextUserInput(harness, '<bash-input>');
+  const input = page.getByLabel('Message Input');
+  await input.fill(`!${command}`);
+  await input.press('Enter');
+
+  // The card shows the whole command and the prompt, and the masked field
+  // has taken focus from the composer. The prompt is not output.
+  const card = page.getByTestId('shell-run-card');
+  const answer = card.getByTestId('shell-run-answer');
+  await expect(card.getByTestId('shell-run-prompt')).toContainText('The command is asking:');
+  await expect(card.getByTestId('shell-run-prompt')).toContainText('Password:');
+  await expect(answer).toHaveAttribute('type', 'password');
+  await expect(answer).toBeFocused();
+  await expect(card.getByTestId('shell-run-output')).toHaveCount(0);
+  await shoot(page, testInfo, 'prompt');
+
+  await page.keyboard.type(secret);
+  await expect(input).toHaveValue('');
+  await page.keyboard.press('Enter');
+
+  // Answered: the terminal ended its line, so the field is gone while the
+  // command runs on, and focus is back in the composer.
+  await expect(answer).toHaveCount(0);
+  await expect(card).toHaveAttribute('data-state', 'running');
+  await expect(input).toBeFocused();
+
+  // The command read all of it. The agent reads the output and no prompt.
+  expect((await delivered).report.input).toBe(
+    `<bash-input>${command}</bash-input>\n<bash-stdout>length=21</bash-stdout><bash-stderr></bash-stderr>`,
+  );
+  const block = page.getByTestId('shell-command-block');
+  await expect(block.getByTestId('shell-command-output')).toContainText('length=21');
+  await expect(card).toHaveCount(0);
+  await expect(page.getByText('It read an answer of 21 characters.')).toBeVisible();
+
+  // The answer is in no row, nowhere on the page and in no saved draft.
+  expect(JSON.stringify(await listItems(harness, threadId))).not.toContain(secret);
+  expect(await page.content()).not.toContain(secret);
+  const saved = await page.evaluate(() => JSON.stringify([{ ...localStorage }, { ...sessionStorage }]));
+  expect(saved).not.toContain(secret);
 });
