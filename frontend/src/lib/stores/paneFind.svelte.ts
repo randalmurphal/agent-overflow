@@ -8,7 +8,9 @@
 // has its own provider, state and bar; the commands act on the pane's
 // target region (`paneFindTarget`): the one on screen when only one is,
 // else the one last focused or clicked, else the declared initial one.
-// State (open, query, the focus to return) outlives a body remount, so a
+// A nested surface with keys of its own (the thread terminal,
+// `declarePaneFindSurface`) takes the commands while it holds the pane's
+// last focus or press. State (open, query, the focus to return) outlives a body remount, so a
 // thread switch or a reopened bar keeps the query. It is dropped when the
 // pane leaves the layout, whatever body it last showed.
 
@@ -156,10 +158,51 @@ export function paneFindRegionElement(key: string): HTMLElement | null {
   return regionElements.get(key) ?? null;
 }
 
+// ---- Nested surfaces ----------------------------------------------------------
+
+interface NestedSurface {
+  key: () => string | null;
+  /** The reader last focused or pressed inside the surface, of the pane. */
+  active: boolean;
+}
+
+const nestedSurfaces = new SvelteMap<string, NestedSurface>();
+
+export interface PaneFindSurface {
+  /** Focus or a press landed in the pane: inside the surface or not. */
+  setActive(active: boolean): void;
+  release(): void;
+}
+
+/**
+ * Declares a find surface nested in the pane's body (the thread terminal)
+ * whose find has keys of its own (`key()`, null for none). The pane's find
+ * commands act on it while it holds the pane's last focus or press, or
+ * while the pane registers no provider of its own. A later declaration for
+ * the same pane replaces this one.
+ */
+export function declarePaneFindSurface(paneId: string, key: () => string | null, active: boolean): PaneFindSurface {
+  const entry: NestedSurface = $state({ key, active });
+  nestedSurfaces.set(paneId, entry);
+  return {
+    setActive(next) {
+      if (entry.active !== next) entry.active = next;
+    },
+    release() {
+      if (nestedSurfaces.get(paneId) === entry) nestedSurfaces.delete(paneId);
+    },
+  };
+}
+
 /** The find key the commands act on for a layout pane: the pane itself,
- * or its target region. Reactive. */
+ * its active nested surface's, or its target region. Reactive. */
 export function paneFindTarget(paneId: string | null): string | null {
   if (paneId === null) return null;
+  const nested = nestedSurfaces.get(paneId);
+  if (nested && (nested.active || !providers.has(paneId))) {
+    const key = nested.key();
+    if (key !== null) return key;
+  }
   const entry = regions.get(paneId);
   if (!entry) return paneId;
   const region = entry.shown?.() ?? entry.active ?? entry.initial;
@@ -221,8 +264,18 @@ onPaneLayoutItemsRemoved((paneIds) => {
   const removed = new Set(paneIds);
   for (const key of states.keys()) if (removed.has(paneOfFindKey(key))) states.delete(key);
   for (const key of readSlots.keys()) if (removed.has(paneOfFindKey(key))) readSlots.delete(key);
-  for (const paneId of removed) regions.delete(paneId);
+  for (const paneId of removed) {
+    regions.delete(paneId);
+    nestedSurfaces.delete(paneId);
+  }
 });
+
+/** Drops one find key's state and reads, for a surface that ended before
+ * its pane (a closed terminal tab). */
+export function dropPaneFind(key: string): void {
+  states.delete(key);
+  readSlots.delete(key);
+}
 
 /** Registers `provider` for the layout pane; returns its release. */
 export function registerPaneFindProvider(paneId: string, provider: PaneFindProvider): () => void {
@@ -315,6 +368,25 @@ export function closePaneFind(paneId: string): void {
   providers.get(paneId)?.clear();
 }
 
+// The find key whose bar holds keyboard focus, else null.
+let focusedBar = $state<string | null>(null);
+
+/** The bar of `key` gained or lost keyboard focus (PaneFindBar). */
+export function setPaneFindBarFocused(key: string, focused: boolean): void {
+  if (focused) focusedBar = key;
+  else if (focusedBar === key) focusedBar = null;
+}
+
+/** Whether the bar of `key` holds keyboard focus. Reactive. */
+export function isPaneFindBarFocused(key: string): boolean {
+  return focusedBar === key;
+}
+
+/** Whether any find bar holds keyboard focus. Reactive. */
+export function hasPaneFindBarFocus(): boolean {
+  return focusedBar !== null;
+}
+
 /** Takes the focus the bar should return to after a close. */
 export function takePaneFindReturnFocus(paneId: string): HTMLElement | null {
   const state = states.get(paneId);
@@ -330,4 +402,6 @@ export function resetPaneFindForTest(): void {
   readSlots.clear();
   regions.clear();
   regionElements.clear();
+  nestedSurfaces.clear();
+  focusedBar = null;
 }

@@ -13,6 +13,11 @@
    * dismisses on every tap. `tabindex="-1"` keeps the buttons out of the tab
    * order and the pointerdown preventDefault stops the browser's
    * focus-on-mousedown before it happens.
+   *
+   * While the terminal's find bar holds focus the host sends nothing to the
+   * PTY: Esc closes the bar, the character keys and Paste type into the
+   * query, and the keys with no meaning there (Tab, Ctrl, the arrows) are
+   * disabled.
    */
   interface Props {
     /** Deliver these bytes as terminal input. */
@@ -25,30 +30,34 @@
      *  right-click paste is off under compact (a long press must not
      *  paste), so this key is the layout's only paste. */
     onPaste: () => void;
+    /** The terminal's find bar holds focus. */
+    findFocused?: boolean;
   }
 
-  let { onKey, ctrlArmed, onToggleCtrl, onPaste }: Props = $props();
+  let { onKey, ctrlArmed, onToggleCtrl, onPaste, findFocused = false }: Props = $props();
 
   interface KeyDef {
     id: string;
     label: string;
     name: string;
     data: string;
+    /** Meaningful in a find query: Esc closes it, a character types. */
+    findKey?: true;
   }
 
   // Module-constant in spirit: the row never varies, so the array is built once
   // per instance and never re-derived.
   const KEYS: readonly KeyDef[] = [
-    { id: 'esc', label: 'Esc', name: 'Escape', data: '\x1b' },
+    { id: 'esc', label: 'Esc', name: 'Escape', data: '\x1b', findKey: true },
     { id: 'tab', label: 'Tab', name: 'Tab', data: '\t' },
     { id: 'up', label: '↑', name: 'Up arrow', data: '\x1b[A' },
     { id: 'down', label: '↓', name: 'Down arrow', data: '\x1b[B' },
     { id: 'left', label: '←', name: 'Left arrow', data: '\x1b[D' },
     { id: 'right', label: '→', name: 'Right arrow', data: '\x1b[C' },
-    { id: 'dash', label: '-', name: 'Hyphen', data: '-' },
-    { id: 'slash', label: '/', name: 'Slash', data: '/' },
-    { id: 'pipe', label: '|', name: 'Pipe', data: '|' },
-    { id: 'tilde', label: '~', name: 'Tilde', data: '~' },
+    { id: 'dash', label: '-', name: 'Hyphen', data: '-', findKey: true },
+    { id: 'slash', label: '/', name: 'Slash', data: '/', findKey: true },
+    { id: 'pipe', label: '|', name: 'Pipe', data: '|', findKey: true },
+    { id: 'tilde', label: '~', name: 'Tilde', data: '~', findKey: true },
   ];
 
   // Ctrl is rendered between Tab and the arrows, so the row splits here rather
@@ -57,14 +66,20 @@
 
   const BUTTON_CLASS =
     'h-10 min-w-10 px-3 shrink-0 rounded border font-mono text-xs leading-none ' +
-    'select-none';
+    'select-none aria-disabled:opacity-40';
 
-  function press(data: string): void {
-    onKey(data);
+  function press(key: KeyDef): void {
+    if (findFocused && !key.findKey) return;
+    onKey(key.data);
   }
 
-  // Suppress the browser's focus-on-pointerdown so the xterm textarea keeps
-  // focus (and the soft keyboard stays up) across a key-row tap.
+  function toggleCtrl(): void {
+    if (!findFocused) onToggleCtrl();
+  }
+
+  // Suppress the browser's focus-on-pointerdown so the xterm textarea (or the
+  // find input) keeps focus, and the soft keyboard stays up, across a tap.
+  // The keys are aria-disabled, not disabled, so a tap on one still lands here.
   function keepTerminalFocus(event: PointerEvent): void {
     event.preventDefault();
   }
@@ -83,8 +98,9 @@
       class="{BUTTON_CLASS} bg-surface-2 border-border text-text-secondary"
       data-testid={`terminal-key-${key.id}`}
       aria-label={key.name}
+      aria-disabled={findFocused && !key.findKey}
       onpointerdown={keepTerminalFocus}
-      onclick={() => press(key.data)}>{key.label}</button
+      onclick={() => press(key)}>{key.label}</button
     >
   {/each}
 
@@ -99,8 +115,9 @@
     data-testid="terminal-key-ctrl"
     aria-label="Control modifier"
     aria-pressed={ctrlArmed}
+    aria-disabled={findFocused}
     onpointerdown={keepTerminalFocus}
-    onclick={onToggleCtrl}>Ctrl</button
+    onclick={toggleCtrl}>Ctrl</button
   >
 
   {#each KEYS.slice(BEFORE_CTRL) as key (key.id)}
@@ -110,8 +127,9 @@
       class="{BUTTON_CLASS} bg-surface-2 border-border text-text-secondary"
       data-testid={`terminal-key-${key.id}`}
       aria-label={key.name}
+      aria-disabled={findFocused && !key.findKey}
       onpointerdown={keepTerminalFocus}
-      onclick={() => press(key.data)}>{key.label}</button
+      onclick={() => press(key)}>{key.label}</button
     >
   {/each}
 

@@ -54,11 +54,15 @@ const ANSI_SLOTS: readonly (readonly [keyof ITheme, string])[] = [
 const TERMINAL_BG = '--terminal-bg';
 const TEXT_PRIMARY = '--text-primary';
 const ACCENT = '--accent';
+const FIND_MATCH = '--find-match';
+const FIND_MATCH_CURRENT = '--find-match-current';
 
 const TOKENS: readonly string[] = [
   TERMINAL_BG,
   TEXT_PRIMARY,
   ACCENT,
+  FIND_MATCH,
+  FIND_MATCH_CURRENT,
   ...ANSI_SLOTS.map(([, token]) => token),
 ];
 
@@ -81,7 +85,31 @@ function withAlpha(concrete: string | undefined, alpha: number): string | undefi
   return `rgba(${channels.r}, ${channels.g}, ${channels.b}, ${alpha})`;
 }
 
-function buildTheme(): { theme: ITheme; resolvedAny: boolean } {
+/**
+ * Find's grounds draw over the glyphs (terminalFindLayer.ts), so their
+ * alpha is capped to keep the text readable whatever a theme sets.
+ */
+const FIND_OVER_TEXT_MAX_ALPHA = 0.45;
+
+function overText(concrete: string | undefined): string | undefined {
+  const channels = rgbChannels(concrete);
+  if (!channels) return undefined;
+  return withAlpha(concrete, Math.min(channels.a, FIND_OVER_TEXT_MAX_ALPHA));
+}
+
+/** The find match grounds, as `rgba()`; unset when the palette is
+ * unresolved. */
+export interface TerminalFindColors {
+  match?: string;
+  current?: string;
+}
+
+interface XtermPalette {
+  theme: ITheme;
+  find: TerminalFindColors;
+}
+
+function buildPalette(): { palette: XtermPalette; resolvedAny: boolean } {
   const colors = readTokenColors(TOKENS);
   const theme: Record<string, string> = {};
   const set = (key: string, value: string | undefined): void => {
@@ -101,7 +129,13 @@ function buildTheme(): { theme: ITheme; resolvedAny: boolean } {
   set('selectionInactiveBackground', withAlpha(colors[ACCENT], SELECTION_INACTIVE_ALPHA));
   for (const [key, token] of ANSI_SLOTS) set(key, colors[token]);
 
-  return { theme: theme as ITheme, resolvedAny: Object.keys(theme).length > 0 };
+  // The find-bar match grounds every other pane paints.
+  const find: TerminalFindColors = {
+    match: overText(colors[FIND_MATCH]),
+    current: overText(colors[FIND_MATCH_CURRENT]),
+  };
+
+  return { palette: { theme: theme as ITheme, find }, resolvedAny: Object.keys(theme).length > 0 };
 }
 
 // Memoized for the CURRENT `mode|paletteIdentity` and nothing else. Two
@@ -121,13 +155,34 @@ function buildTheme(): { theme: ITheme; resolvedAny: boolean } {
 // and the identity is whatever is applied — so a miss means the previous entry
 // is unreachable, and the miss path drops it before it stores the new one.
 let cachedIdentity: string | undefined;
-let cachedTheme: ITheme | undefined;
+let cachedPalette: XtermPalette | undefined;
 
 let warnedUnresolved = false;
 
 /** The cache key a consumer's effect must track: mode plus palette identity. */
 export function xtermPaletteIdentity(mode: ResolvedTheme): string {
   return `${mode}|${getThemePaletteIdentity()}`;
+}
+
+function getXtermPalette(mode: ResolvedTheme): XtermPalette {
+  const identity = xtermPaletteIdentity(mode);
+  if (cachedPalette && cachedIdentity === identity) return cachedPalette;
+  // A miss retires the previous palette before anything replaces it, so the
+  // cache holds at most one entry whether or not the rebuild below succeeds.
+  cachedIdentity = undefined;
+  cachedPalette = undefined;
+
+  const { palette, resolvedAny } = buildPalette();
+  if (!resolvedAny) {
+    if (!warnedUnresolved) {
+      warnedUnresolved = true;
+      console.warn('terminal palette unresolved; xterm falls back to its built-in colors');
+    }
+    return palette;
+  }
+  cachedIdentity = identity;
+  cachedPalette = palette;
+  return palette;
 }
 
 /**
@@ -141,24 +196,16 @@ export function xtermPaletteIdentity(mode: ResolvedTheme): string {
  * surface for the rest of the session.
  */
 export function getXtermTheme(mode: ResolvedTheme): ITheme {
-  const identity = xtermPaletteIdentity(mode);
-  if (cachedTheme && cachedIdentity === identity) return cachedTheme;
-  // A miss retires the previous palette before anything replaces it, so the
-  // cache holds at most one entry whether or not the rebuild below succeeds.
-  cachedIdentity = undefined;
-  cachedTheme = undefined;
+  return getXtermPalette(mode).theme;
+}
 
-  const { theme, resolvedAny } = buildTheme();
-  if (!resolvedAny) {
-    if (!warnedUnresolved) {
-      warnedUnresolved = true;
-      console.warn('terminal palette unresolved; xterm falls back to its built-in colors');
-    }
-    return theme;
-  }
-  cachedIdentity = identity;
-  cachedTheme = theme;
-  return theme;
+/**
+ * Terminal find's match and current-match grounds for the mode stamped on
+ * the document, from the same probe and cache as `getXtermTheme`.
+ * Unresolved, it names no ground and the matches are not painted.
+ */
+export function getXtermFindColors(mode: ResolvedTheme): TerminalFindColors {
+  return getXtermPalette(mode).find;
 }
 
 /**
@@ -169,6 +216,6 @@ export function getXtermTheme(mode: ResolvedTheme): ITheme {
  */
 export function resetXtermThemeCache(): void {
   cachedIdentity = undefined;
-  cachedTheme = undefined;
+  cachedPalette = undefined;
   warnedUnresolved = false;
 }

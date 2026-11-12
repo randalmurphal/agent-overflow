@@ -12,9 +12,12 @@ import App from '../../App.svelte';
 import '../../lib/components/terminal/ThreadTerminalDrawer.svelte';
 import type { Thread } from '../../lib/types/models';
 import type {
+  TerminalExitEventPayload,
   TerminalHandle,
   TerminalSessionSummary,
 } from '../../lib/types/terminal';
+import { applyTerminalExit } from '../../lib/stores/eventsTerminal';
+import { findPaneComposer } from '../../lib/components/panes/paneComposerFocus';
 import { setBindingMock } from '../mocks/bindings-app';
 import {
   getTerminalFocused,
@@ -317,6 +320,50 @@ describe('App integration — terminal drawer', () => {
     // timers so those macrotasks resolve.
     await waitFor(() => {
       expect(getTerminalFocused('main')).toBe(true);
+    });
+  });
+
+  // Focus in the terminal's find bar is focus in the terminal: each way the
+  // focused tab or drawer goes moves focus where it would from the xterm.
+  describe('with the find input focused', () => {
+    async function openTwoTabsWithFind() {
+      const rendered = await mountWithActiveThread();
+      setBindingMock('ListTerminals', async () => [summary('tab-a'), summary('tab-b')]);
+      pressModJ();
+      await waitForTerminalDrawer(rendered);
+      // The last tab is active, and the open focuses it.
+      await waitFor(() => expect(getTerminalFocused('main')).toBe(true));
+      await waitFor(() => expect(rendered.getByTestId('terminal-tab-tab-b').getAttribute('aria-selected')).toBe('true'));
+      // The button shows once the tab's find has registered.
+      await fireEvent.click(await waitFor(() => rendered.getByTestId('terminal-find')));
+      await waitFor(() => expect(document.activeElement).toBe(rendered.getByTestId('pane-find-input')));
+      expect(getTerminalFocused('main')).toBe(true);
+      return rendered;
+    }
+
+    function focusIsIn(element: HTMLElement): boolean {
+      return element.contains(document.activeElement);
+    }
+
+    it('the tab\'s shell exiting moves focus into the sibling tab', async () => {
+      const rendered = await openTwoTabsWithFind();
+      applyTerminalExit({ threadID: 'thread-1', terminalID: 'tab-b', code: 0, reason: '' } satisfies TerminalExitEventPayload);
+      await waitFor(() => expect(focusIsIn(rendered.getByTestId('terminal-body-tab-a'))).toBe(true));
+      expect(getTerminalFocused('main')).toBe(true);
+    });
+
+    it('the user closing the tab moves focus into the sibling tab', async () => {
+      const rendered = await openTwoTabsWithFind();
+      await fireEvent.click(rendered.getByTestId('terminal-tab-close-tab-b'));
+      await waitFor(() => expect(focusIsIn(rendered.getByTestId('terminal-body-tab-a'))).toBe(true));
+    });
+
+    it('hiding the drawer moves focus to the composer', async () => {
+      const rendered = await openTwoTabsWithFind();
+      pressModJOn(rendered.getByTestId('pane-find-input'));
+      await waitFor(() => expect(rendered.queryByTestId('terminal-drawer')).toBeNull());
+      await waitFor(() => expect(document.activeElement).toBe(findPaneComposer('main')));
+      expect(getTerminalFocused('main')).toBe(false);
     });
   });
 });

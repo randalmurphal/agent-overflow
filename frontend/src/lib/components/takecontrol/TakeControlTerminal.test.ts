@@ -3,6 +3,9 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import TakeControlTerminal from './TakeControlTerminal.svelte';
 import { encodeTerminalInput } from '../../types/terminal';
+import { isPaneFindOpen, resetPaneFindForTest } from '../../stores/paneFind.svelte';
+import { getTerminalFocused } from '../terminal/terminalStore.svelte';
+import { setResolvedThemeForTest } from '../../../test/mocks/resolvedThemeMock.svelte';
 
 // xterm can't render under happy-dom, and these tests need to observe the exact
 // sequence of write() calls (to prove the replay/live dedup), so swap in a fake
@@ -13,6 +16,9 @@ const mocks = vi.hoisted(() => {
   const resizes: Array<[number, number]> = [];
   const decoder = new TextDecoder();
   let lastTerminal: FakeTerminal | null = null;
+  const track = (terminal: FakeTerminal): void => {
+    lastTerminal = terminal;
+  };
   class FakeTerminal {
     options: Record<string, unknown> = {};
     dataHandler: ((data: string) => void) | null = null;
@@ -23,10 +29,21 @@ const mocks = vi.hoisted(() => {
     unicode = { activeVersion: '6' };
     constructor(options: Record<string, unknown> = {}) {
       this.options = { ...options };
-      lastTerminal = this;
+      track(this);
     }
+    textarea: HTMLTextAreaElement | null = null;
     loadAddon(): void {}
-    open(): void {}
+    open(mount?: HTMLElement): void {
+      if (!mount) return;
+      this.textarea = mount.ownerDocument.createElement('textarea');
+      mount.appendChild(this.textarea);
+    }
+    onWriteParsed(): { dispose(): void } {
+      return { dispose: (): void => {} };
+    }
+    onResize(): { dispose(): void } {
+      return { dispose: (): void => {} };
+    }
     hasSelection(): boolean {
       return false;
     }
@@ -43,9 +60,63 @@ const mocks = vi.hoisted(() => {
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
       this.keyEventHandler = handler;
     }
-    write(data: Uint8Array | string): void {
-      writes.push(typeof data === 'string' ? data : decoder.decode(data));
+    // Parsed on a later task, in order, as real xterm does; an empty write
+    // only waits for the writes before it.
+    write(data: Uint8Array | string, parsed?: () => void): void {
+      const text = typeof data === 'string' ? data : decoder.decode(data);
+      if (text !== '') writes.push(text);
+      if (parsed) {
+        setTimeout(() => {
+          searches.push('parsed');
+          parsed();
+        });
+      }
     }
+    clear(): void {}
+    reset(): void {}
+    // The buffer find scans (terminalFind.svelte.ts): one row of text.
+    // Its paint logs on searches (`onRender`).
+    bufferText = 'needle needle';
+    get buffer() {
+      const text = this.bufferText;
+      const cell = { chars: '', getWidth: (): number => 1, getChars(): string { return this.chars; } };
+      const line = {
+        isWrapped: false,
+        length: 80,
+        getCell(x: number) {
+          cell.chars = text[x] ?? '';
+          return cell;
+        },
+        translateToString(trim?: boolean, start = 0, end = 80): string {
+          const slice = text.padEnd(80).slice(start, end);
+          return trim ? slice.trimEnd() : slice;
+        },
+      };
+      return { active: { type: 'normal', length: 1, baseY: 0, cursorY: 0, viewportY: 0, getNullCell: () => cell, getLine: (row: number) => (row === 0 ? line : undefined) }, onBufferChange: () => ({ dispose(): void {} }) };
+    }
+    registerMarker() {
+      return {
+        line: 0,
+        isDisposed: false,
+        dispose(): void {
+          this.isDisposed = true;
+        },
+      };
+    }
+    // Find's layer (terminalFindLayer.ts) listens to renders while it has
+    // matches to paint.
+    onRender(): { dispose(): void } {
+      searches.push('paint');
+      let live = true;
+      return {
+        dispose(): void {
+          if (!live) return;
+          live = false;
+          searches.push('unpaint');
+        },
+      };
+    }
+    scrollLines(): void {}
     resize(cols: number, rows: number): void {
       resizes.push([cols, rows]);
     }
@@ -62,9 +133,12 @@ const mocks = vi.hoisted(() => {
       return 80;
     }
   }
+  // What the parse and the mirror's find did, in order.
+  const searches: string[] = [];
   return {
     writes,
     resizes,
+    searches,
     FakeTerminal,
     getLastTerminal: (): FakeTerminal | null => lastTerminal,
     // Reset between tests so a test waiting on `getLastTerminal()` observes its
@@ -80,7 +154,6 @@ const mocks = vi.hoisted(() => {
     ProviderTerminalSetControl: vi.fn(async () => {}),
     ProviderTerminalDetach: vi.fn(async () => {}),
     wailsEventOn: vi.fn(),
-    notifyTerminalFocus: vi.fn(),
     addToast: vi.fn(),
     addErrorToast: vi.fn(),
   };
@@ -109,9 +182,9 @@ vi.mock('../terminal/terminalTheme', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../terminal/terminalTheme')>()),
   getXtermTheme: () => ({}),
 }));
-vi.mock('../../stores/themeMode.svelte', () => ({ getResolvedTheme: () => 'dark' }));
-vi.mock('../terminal/terminalStore.svelte', () => ({
-  notifyTerminalFocus: mocks.notifyTerminalFocus,
+// A theme a test can flip, to drive the palette effect.
+vi.mock('../../stores/themeMode.svelte', async () => ({
+  getResolvedTheme: (await import('../../../test/mocks/resolvedThemeMock.svelte')).getResolvedThemeMock,
 }));
 vi.mock('../../stores/wailsEvents', () => ({ wailsEventOn: mocks.wailsEventOn }));
 vi.mock('../../stores/bindings', () => ({
@@ -489,11 +562,72 @@ describe('<TakeControlTerminal>', () => {
   it('surfaces an attach failure instead of mounting a terminal', async () => {
     mocks.ProviderTerminalAttach.mockRejectedValue(new Error('no live session'));
 
-    const { findByText } = render(TakeControlTerminal, {
+    const { findByText, queryByTestId } = render(TakeControlTerminal, {
       props: { paneId: 'tc-1', threadId: 'thread-1' },
     });
 
     expect(await findByText(/Could not attach/i)).toBeTruthy();
     expect(mocks.ProviderTerminalReplay).not.toHaveBeenCalled();
+    expect(queryByTestId('take-control-find')).toBeNull();
+  });
+
+  it('finds in the mirror from its button, under this pane, and a close returns focus to the mirror', async () => {
+    resetPaneFindForTest();
+    mocks.searches.length = 0;
+    mocks.ProviderTerminalReplay.mockResolvedValue({ data: b64('FRAME'), fromSequence: 0, throughSequence: 0 });
+
+    const { findByTestId, getByTestId, queryByTestId, unmount } = render(TakeControlTerminal, {
+      props: { paneId: 'tc-find', threadId: 'thread-1' },
+    });
+    expect(queryByTestId('take-control-find')).toBeNull();
+    const button = await findByTestId('take-control-find');
+    // The find (and its button) arrive once the replay frame is parsed.
+    expect(mocks.searches).toEqual(['parsed']);
+    expect(button.getAttribute('title')).toBe('Find in Terminal');
+    await fireEvent.click(button);
+
+    const input = (await findByTestId('pane-find-input')) as HTMLInputElement;
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    // The bar floats over the mirror, beside its mount in the same host, so
+    // the grid and the PTY keep their size (geometry:
+    // TerminalSurface.find.browser.test.ts, same overlay class).
+    const overlay = getByTestId('pane-find-bar').closest('[data-terminal-find-overlay]')!;
+    expect(overlay.classList.contains('absolute')).toBe(true);
+    expect(overlay.previousElementSibling).toBe(getByTestId('take-control-mount'));
+    // Focus in the bar is focus in the mirror, as in the xterm.
+    expect(getTerminalFocused('tc-find')).toBe(true);
+    mocks.getLastTerminal()!.textarea!.focus();
+    expect(getTerminalFocused('tc-find')).toBe(true);
+    input.focus();
+    expect(input.placeholder).toBe('Find in terminal');
+    await fireEvent.input(input, { target: { value: 'needle' } });
+    expect(mocks.searches).toEqual(['parsed', 'paint']);
+    await waitFor(() => expect(getByTestId('pane-find-count').textContent?.trim()).toBe('2/2'));
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(getByTestId('pane-find-count').textContent?.trim()).toBe('1/2'));
+
+    await fireEvent.click(getByTestId('pane-find-close'));
+    expect(queryByTestId('pane-find-bar')).toBeNull();
+    expect(mocks.searches.slice(-1)).toEqual(['unpaint']);
+    await waitFor(() => expect(document.activeElement).toBe(mocks.getLastTerminal()!.textarea));
+    expect(isPaneFindOpen('tc-find')).toBe(false);
+
+    // A theme change repaints the open query's matches.
+    await fireEvent.click(getByTestId('take-control-find'));
+    mocks.searches.length = 0;
+    try {
+      setResolvedThemeForTest('light');
+      const repaint = ['unpaint', 'paint'];
+      await waitFor(() => expect(mocks.searches).toEqual(repaint));
+      setResolvedThemeForTest('dark');
+      await waitFor(() => expect(mocks.searches).toEqual([...repaint, ...repaint]));
+    } finally {
+      setResolvedThemeForTest('dark');
+    }
+    mocks.searches.length = 0;
+    unmount();
+    // The unmount clears its matches.
+    expect(mocks.searches).toEqual(['unpaint']);
+    resetPaneFindForTest();
   });
 });

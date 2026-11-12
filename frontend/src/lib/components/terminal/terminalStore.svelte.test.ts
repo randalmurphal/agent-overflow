@@ -8,6 +8,7 @@ import {
   PENDING_OUTPUT_LIMITS,
   resetThreadTerminalStatesForTest,
   resetTerminalFocusForTest,
+  terminalFocusRegion,
   TERMINAL_DRAWER_LIMITS,
   trimPendingOutput,
 } from './terminalStore.svelte';
@@ -368,6 +369,41 @@ describe('terminal focus registry', () => {
     notifyTerminalFocus('pane-a', false);
     expect(getTerminalFocused('pane-a')).toBe(false);
     expect(getTerminalFocused('pane-b')).toBe(true);
+  });
+
+  // A region is each focusable part of a terminal surface: the xterm, its
+  // find bar.
+  describe('terminalFocusRegion', () => {
+    function region() {
+      const node = document.createElement('div');
+      const input = document.createElement('input');
+      const other = document.createElement('input');
+      node.appendChild(input);
+      document.body.append(node, other);
+      return { node, input, other };
+    }
+
+    it('counts focus inside it, including focus already there when it attaches', () => {
+      const { node, input, other } = region();
+      input.focus();
+      const release = terminalFocusRegion(PANE)(node);
+      expect(getTerminalFocused(PANE)).toBe(true);
+      other.focus();
+      expect(getTerminalFocused(PANE)).toBe(false);
+      input.focus();
+      expect(getTerminalFocused(PANE)).toBe(true);
+      release();
+      document.body.replaceChildren();
+    });
+
+    it('releases its count when it detaches with focus still inside', () => {
+      const { node, input } = region();
+      const release = terminalFocusRegion(PANE)(node);
+      input.focus();
+      release();
+      expect(getTerminalFocused(PANE)).toBe(false);
+      document.body.replaceChildren();
+    });
   });
 });
 

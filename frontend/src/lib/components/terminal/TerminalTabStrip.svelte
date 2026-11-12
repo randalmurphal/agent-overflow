@@ -5,6 +5,9 @@
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
+  import Icon from '../primitives/Icon.svelte';
+  import Search from '@lucide/svelte/icons/search';
 
   interface Props {
     backend: BackendKey;
@@ -16,6 +19,9 @@
      *  Omitted when the host doesn't wire it; the ↻ button is hidden then,
      *  as it is whenever there are no tabs to refresh. */
     onRefresh?: () => void;
+    /** Open the active terminal's find bar. Hidden with no tabs. The only
+     *  find entry inside a focused terminal: mod+f there is the shell's. */
+    onFind?: () => void;
     /** Collapse the bottom drawer. Omitted in a full terminal pane, where
      *  there is nothing to collapse into — the ▾ button is hidden then. */
     onCollapse?: () => void;
@@ -25,7 +31,7 @@
     workspacePath?: string;
   }
 
-  let { backend, handle, onOpen, onClose, onSelect, onRefresh, onCollapse, workspacePath }: Props =
+  let { backend, handle, onOpen, onClose, onSelect, onRefresh, onFind, onCollapse, workspacePath }: Props =
     $props();
 
   function labelFor(shell: string): string {
@@ -161,6 +167,13 @@
     onclick={onOpen}
     aria-label="Open New Terminal"
   >+</button>
+  {#if onFind && handle.tabs.length > 0}
+    <div class="mr-1 flex items-center">
+      <IconButton size="sm" label="Find in Terminal" testId="terminal-find" onClick={() => onFind?.()}>
+        {#snippet children()}<Icon icon={Search} size={13} />{/snippet}
+      </IconButton>
+    </div>
+  {/if}
   {#if onRefresh && handle.tabs.length > 0}
     <!-- Repaint the active terminal. Nudges the PTY winsize (rows blip +
          restore) so the provider's TUI reconciles a corrupted frame; the

@@ -25,10 +25,12 @@ is the drag handle. Open, close and placement belong to
 ## Find
 
 Every pane kind with find mounts `PaneFindBar.svelte` directly under its
-header, in the flow, keyed by its layout pane id (a companion's own id, not
+header, in the flow (a terminal floats it instead, `floating`, so opening
+it never resizes the PTY: [terminal guide](../terminal/AGENTS.md#find)), keyed by its layout pane id (a companion's own id, not
 its source's), and registers a `PaneFindProvider` for that id while its body
-is mounted (`stores/paneFind.svelte.ts`). The store owns open, query and
-focus return; the provider owns matching, stepping and clearing. Escape
+is mounted (`stores/paneFind.svelte.ts`). The store owns open, query,
+focus return and which bar holds keyboard focus (`isPaneFindBarFocused`);
+the provider owns matching, stepping and clearing. Escape
 belongs to the `find.close` command, never the bar. A bar's `fallbackFocus`
 must be focusable by script (a scroller takes `tabindex="-1"`); the bar
 checks that focus landed and reports a fallback that refused it. Paint
@@ -52,8 +54,13 @@ read may replace. A provider that cannot count reports `count: null`,
 and one with `openNative` opens its engine's own find UI instead of the bar,
 which never reads as open, so its Escape stays the engine's
 ([browser-tools.md](../../../../../docs/architecture/browser-tools.md#find)).
-Terminal and discussion panes have no provider yet, so mod+f falls through
-there.
+The thread terminal, in a drawer or a terminal pane, is a nested find
+surface (`declarePaneFindSurface`, attached with `paneFindSurface`): each
+tab has its own provider, bar and state, and the pane's find commands act on
+the active tab's while the pane's last focus or press was inside the
+terminal, or while the pane has no provider of its own. A closed tab's
+state goes with it (`dropPaneFind`). Discussion panes have no provider
+yet, so mod+f falls through there.
 
 A pane whose body holds a list beside a detail declares find regions
 (`declarePaneFindRegions`) and keys each region's provider, bar, reads
@@ -69,7 +76,8 @@ region. A list region's provider is a filter: it has no `next` or
 `previous`, the bar shows the matching row count and Enter calls
 `focusFirst`, and its query narrows the rows in the page's store so every
 count follows one source. Every find, filter and highlighter matches by
-`utils/findMatch.ts`. The Pull requests page
+`utils/findMatch.ts`, terminal find included
+([terminal guide](../terminal/AGENTS.md#find)). The Pull requests page
 (`pulls/pullsPaneFind.svelte.ts`) and Workflows home
 (`workflows/workflowsPaneFind.svelte.ts`) filter this way.
 

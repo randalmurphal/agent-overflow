@@ -5,6 +5,8 @@ import {
   activatePaneFindRegion,
   closePaneFind,
   declarePaneFindRegions,
+  declarePaneFindSurface,
+  dropPaneFind,
   focusFirstPaneFindResult,
   getPaneFind,
   hasPaneFindProvider,
@@ -406,6 +408,84 @@ describe('pane find regions', () => {
     expect(paneFindRegionElement(detail)).toBeNull();
     release();
     expect(paneFindRegionElement(list)).toBeNull();
+  });
+});
+
+describe('a nested find surface', () => {
+  const tab1 = paneFindRegionKey('a', 'terminal:t1');
+  const tab2 = paneFindRegionKey('a', 'terminal:t2');
+
+  it('takes the pane\'s commands only while it holds the pane\'s last focus or press', () => {
+    registerPaneFindProvider('a', provider());
+    const surface = declarePaneFindSurface('a', () => tab1, false);
+    expect(paneFindTarget('a')).toBe('a');
+    surface.setActive(true);
+    expect(paneFindTarget('a')).toBe(tab1);
+    surface.setActive(false);
+    expect(paneFindTarget('a')).toBe('a');
+    expect(paneFindTarget('b')).toBe('b');
+  });
+
+  it('takes them whenever the pane has no provider of its own', () => {
+    declarePaneFindSurface('a', () => tab1, false);
+    expect(paneFindTarget('a')).toBe(tab1);
+    const release = registerPaneFindProvider('a', provider());
+    expect(paneFindTarget('a')).toBe('a');
+    release();
+    expect(paneFindTarget('a')).toBe(tab1);
+  });
+
+  it('follows its key, and a surface with no key leaves the pane its own', () => {
+    let key: string | null = tab1;
+    declarePaneFindSurface('a', () => key, true);
+    expect(paneFindTarget('a')).toBe(tab1);
+    key = tab2;
+    expect(paneFindTarget('a')).toBe(tab2);
+    key = null;
+    expect(paneFindTarget('a')).toBe('a');
+  });
+
+  it('opens, reads as open and closes the active surface\'s bar, not the pane\'s', () => {
+    const own = provider();
+    const nested = provider();
+    registerPaneFindProvider('a', own);
+    registerPaneFindProvider(tab1, nested);
+    openPaneFind('a');
+    const surface = declarePaneFindSurface('a', () => tab1, true);
+    expect(isPaneFindOpen(paneFindTarget('a'))).toBe(false);
+    openPaneFind(paneFindTarget('a')!);
+    expect(isPaneFindOpen(paneFindTarget('a'))).toBe(true);
+    closePaneFind(paneFindTarget('a')!);
+    expect(nested.clear).toHaveBeenCalledTimes(1);
+    expect(own.clear).not.toHaveBeenCalled();
+    surface.setActive(false);
+    expect(isPaneFindOpen(paneFindTarget('a'))).toBe(true);
+  });
+
+  it('a stale release does not drop a newer declaration, and the layout removal drops it', () => {
+    const stale = declarePaneFindSurface('a', () => tab1, true);
+    declarePaneFindSurface('a', () => tab2, true);
+    stale.release();
+    expect(paneFindTarget('a')).toBe(tab2);
+    stale.setActive(false);
+    expect(paneFindTarget('a')).toBe(tab2);
+    removePaneLayoutItem('a', { persist: false });
+    expect(paneFindTarget('a')).toBe('a');
+  });
+
+  it('drops one key\'s state and reads, leaving its siblings', async () => {
+    registerPaneFindProvider(tab1, provider());
+    registerPaneFindProvider(tab2, provider());
+    openPaneFind(tab1);
+    setPaneFindQuery(tab1, 'gone');
+    openPaneFind(tab2);
+    const ran: string[] = [];
+    paneFindReads(tab1).request(() => new Promise<void>(() => { ran.push('stuck'); }));
+    dropPaneFind(tab1);
+    expect(getPaneFind(tab1)).toBeNull();
+    expect(getPaneFind(tab2)?.open).toBe(true);
+    paneFindReads(tab1).request(async () => { ran.push('fresh'); });
+    expect(ran).toEqual(['stuck', 'fresh']);
   });
 });
 
