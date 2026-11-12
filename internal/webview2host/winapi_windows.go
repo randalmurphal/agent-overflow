@@ -24,7 +24,41 @@ var (
 	procGetKeyState    = user32.NewProc("GetKeyState")
 	procGetForeground  = user32.NewProc("GetForegroundWindow")
 	procSetFocus       = user32.NewProc("SetFocus")
+	procGUIThreadInfo  = user32.NewProc("GetGUIThreadInfo")
+	procIsChild        = user32.NewProc("IsChild")
 )
+
+// guiThreadInfo is GUITHREADINFO.
+type guiThreadInfo struct {
+	cbSize        uint32
+	flags         uint32
+	hwndActive    uintptr
+	hwndFocus     uintptr
+	hwndCapture   uintptr
+	hwndMenuOwner uintptr
+	hwndMoveSize  uintptr
+	hwndCaret     uintptr
+	rcCaret       rect
+}
+
+// focusWithin answers whether the foreground thread's keyboard focus window
+// is hwnd or one of its descendants. It asks the foreground thread because a
+// page's focused window belongs to the WebView2 browser process, whose input
+// the launcher's thread may not share.
+func focusWithin(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	info := guiThreadInfo{cbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
+	if ok, _, _ := procGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info))); ok == 0 || info.hwndFocus == 0 {
+		return false
+	}
+	if info.hwndFocus == hwnd {
+		return true
+	}
+	child, _, _ := procIsChild.Call(hwnd, info.hwndFocus)
+	return child != 0
+}
 
 // focusWindow gives hwnd keyboard focus, only while it is the foreground
 // window: SetFocus on a window that is not would activate it, and AO never

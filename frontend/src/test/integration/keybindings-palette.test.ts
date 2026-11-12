@@ -488,14 +488,14 @@ describe('App integration — keybindings + palette', () => {
     composer.focus();
     expect(document.activeElement).toBe(composer);
 
-    applyBrowserCompanionState({ kind: 'accelerator', threadId: thread.id, accelerator: chord('f') } as never);
+    applyBrowserCompanionState({ kind: 'accelerator', threadId: thread.id, mount: 'mount-1', accelerator: chord('f') } as never);
     const findInput = await waitFor(() => rendered.getByTestId('pane-find-input'));
     await waitFor(() => expect(document.activeElement).toBe(findInput));
     await fireEvent.keyDown(findInput, { key: 'Escape' });
     await waitFor(() => expect(rendered.queryByTestId('pane-find-bar')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(composer));
 
-    applyBrowserCompanionState({ kind: 'accelerator', threadId: thread.id, accelerator: chord('k') } as never);
+    applyBrowserCompanionState({ kind: 'accelerator', threadId: thread.id, mount: 'mount-1', accelerator: chord('k') } as never);
     await waitFor(() => expect(rendered.getByTestId('command-palette-input')).toBeInTheDocument());
     const list = document.querySelector<HTMLElement>('#palette-listbox');
     await waitFor(() => expect(document.activeElement).toBe(list));

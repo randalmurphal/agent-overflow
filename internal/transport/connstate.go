@@ -60,6 +60,11 @@ type ConnPrincipal struct {
 	// SessionID is the durable session this connection presented, empty
 	// when it named none — every launch-credential client today.
 	SessionID string
+	// HostWindow is whether the connection is the host's own window, the
+	// one client that can show the native views the host owns
+	// (Server.hostWindow). A browser tab on this machine holding the same
+	// launch credential is not.
+	HostWindow bool
 }
 
 // callerProofKey addresses the per-CALL proof, which is deliberately not on
@@ -130,6 +135,15 @@ func (c *ConnState) SessionID() string {
 		return ""
 	}
 	return c.principal.SessionID
+}
+
+// HostWindow reports whether the connection is the host's own window. A
+// nil state is an in-process caller, which is the host itself.
+func (c *ConnState) HostWindow() bool {
+	if c == nil {
+		return true
+	}
+	return c.principal.HostWindow
 }
 
 // ClientFromContext is the one-liner handlers use: the identity of the screen

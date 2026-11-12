@@ -118,6 +118,9 @@ type paneMount struct {
 	threadID string
 	rect     PaneRect
 	hasRect  bool
+	// seq is the mount's place in attach order, which decides between two
+	// mounts that could both present the thread's page (presenterLocked).
+	seq uint64
 	// findSeq is the sequence of the newest find start the Manager took
 	// from this mount (admitFindStart).
 	findSeq uint64
@@ -265,25 +268,41 @@ func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator, press
 }
 
 // emitEscape announces a bare Escape pressed in a page a pane shows, as a
-// Kind "escape" event naming the thread and the page.
+// Kind "escape" event naming the thread, the page and the presenting mount,
+// whose client's find bar it closes.
 func (m *Manager) emitEscape(handle string) {
 	m.mu.Lock()
 	p := m.pageByHandleLocked(handle)
+	mount := ""
+	if p != nil {
+		mount, _, _ = m.presenterLocked(p.owner)
+	}
 	m.mu.Unlock()
-	if p == nil || !m.pageShown(p.owner, p.id) {
+	if p == nil || mount == "" || !m.pageShown(p.owner, p.id) {
 		return
 	}
-	m.emit(CompanionEvent{Kind: "escape", ThreadID: p.owner, PageID: p.id})
+	m.emit(CompanionEvent{Kind: "escape", ThreadID: p.owner, PageID: p.id, Mount: mount})
 }
 
+// emitAccelerator routes a claimed chord to the pane mount showing the page,
+// so that only the client holding the mount replays it. A page no pane shows
+// has nobody to act for, and its chord is dropped.
 func (m *Manager) emitAccelerator(handle string, bound keybindings.Accelerator) {
 	m.mu.Lock()
 	p := m.pageByHandleLocked(handle)
+	mount := ""
+	if p != nil && m.presentedPageLocked(p.owner) == p.id {
+		mount, _, _ = m.presenterLocked(p.owner)
+	}
 	m.mu.Unlock()
 	if p == nil {
 		return
 	}
-	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: p.owner, Accelerator: &bound})
+	if mount == "" {
+		log.Printf("browser: drop the chord %+v pressed in page %s: no pane shows the page", bound, p.id)
+		return
+	}
+	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: p.owner, Mount: mount, Accelerator: &bound})
 }
 
 // AcceleratorsChanged tells an engine that matches chords out of process
@@ -349,23 +368,25 @@ func (m *Manager) AttachPane(access Access) (CompanionSubscription, error) {
 		m.mu.Unlock()
 		return CompanionSubscription{}, fmt.Errorf("browser: too many mounted browser panes")
 	}
-	m.panes[id] = paneMount{threadID: access.ThreadID}
+	m.paneSeq++
+	m.panes[id] = paneMount{threadID: access.ThreadID, seq: m.paneSeq}
 	m.mu.Unlock()
 	return CompanionSubscription{ID: id, State: state}, nil
 }
 
 // DetachPane releases one pane mount. The presentation sync runs so an engine
 // with a presented native view hides it rather than painting over whatever
-// replaced the pane. A mount that remains for the thread (a diagnostic mount
-// released while the UI's pane stays) hands the pages back its own size.
+// replaced the pane. A mount that remains for the thread becomes the
+// presenter if this one was it (presenterLocked) and hands the pages its
+// own size.
 func (m *Manager) DetachPane(id string) {
 	m.mu.Lock()
 	mount, ok := m.panes[id]
 	resize := false
 	if ok {
 		delete(m.panes, id)
-		for _, other := range m.panes {
-			if other.threadID == mount.threadID && other.hasRect {
+		if next, _, _ := m.presenterLocked(mount.threadID); next != "" {
+			if other := m.panes[next]; other.hasRect {
 				resize = m.notePaneSizeLocked(other.threadID, other.rect)
 			}
 		}
@@ -425,8 +446,10 @@ func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
 		m.panes[strings.TrimSpace(id)] = mount
 		// The size is tracked whether or not the rect is paintable: a drag
 		// hides the view and the page must already be at the new size when
-		// the drop shows it again.
-		resize = m.notePaneSizeLocked(mount.threadID, rect)
+		// the drop shows it again. Only the presenter's rect sizes the pages.
+		if presenter, _, _ := m.presenterLocked(mount.threadID); presenter == strings.TrimSpace(id) {
+			resize = m.notePaneSizeLocked(mount.threadID, rect)
+		}
 	}
 	m.mu.Unlock()
 	if !ok {
@@ -439,23 +462,34 @@ func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
 	return nil
 }
 
-// shownPaneRectLocked answers the host rect of a mounted pane of the thread
-// that can show a page: visible, and neither empty nor clipped away. The
-// caller holds m.mu.
-func (m *Manager) shownPaneRectLocked(threadID string) (PaneRect, bool) {
-	var rect PaneRect
-	shown := false
-	for _, mount := range m.panes {
-		if mount.threadID != threadID || !mount.hasRect {
-			continue
-		}
-		if mount.rect.Visible && mount.rect.Width >= 1 && mount.rect.Height >= 1 &&
-			mount.rect.ClipWidth >= 1 && mount.rect.ClipHeight >= 1 {
-			shown = true
-			rect = mount.rect
+// paneCanShow reports whether a mount's rect can show a page: reported,
+// visible, and neither empty nor clipped away.
+func paneCanShow(mount paneMount) bool {
+	return mount.hasRect && mount.rect.Visible && mount.rect.Width >= 1 && mount.rect.Height >= 1 &&
+		mount.rect.ClipWidth >= 1 && mount.rect.ClipHeight >= 1
+}
+
+// presenterLocked answers the one mount the thread's pages are presented in,
+// its rect, and whether that rect can show a page now. A native view is
+// placed at exactly one rect, so every reader asks this one rule and none
+// chooses for itself: the presentation, the pages' size, a routed chord and
+// a routed Escape. The presenter is the thread's earliest attached live
+// mount. Attach order only grows, so the role stays with a mount until it
+// detaches, through a hidden or off-screen spell (a drag, a compact screen),
+// and a mount attached later never takes it. Only a mount the host window
+// attached exists here (BrowserCompanionPaneAttach). The caller holds m.mu.
+func (m *Manager) presenterLocked(threadID string) (string, PaneRect, bool) {
+	id := ""
+	var mount paneMount
+	for candidate, other := range m.panes {
+		if other.threadID == threadID && (id == "" || other.seq < mount.seq) {
+			id, mount = candidate, other
 		}
 	}
-	return rect, shown
+	if id == "" {
+		return "", PaneRect{}, false
+	}
+	return id, mount.rect, paneCanShow(mount)
 }
 
 // presentedPageLocked answers the page a mounted pane shows: the thread's
@@ -466,7 +500,7 @@ func (m *Manager) presentedPageLocked(threadID string) string {
 	if !ok || !session.Visible {
 		return ""
 	}
-	rect, shown := m.shownPaneRectLocked(threadID)
+	_, rect, shown := m.presenterLocked(threadID)
 	if !shown {
 		return ""
 	}
@@ -555,7 +589,7 @@ func (m *Manager) presentPanes(threadID string) {
 	host, ok := m.engine.(paneHost)
 	m.mu.Lock()
 	session, hasSession := m.sessions[threadID]
-	rect, shown := m.shownPaneRectLocked(threadID)
+	_, rect, shown := m.presenterLocked(threadID)
 	visible := hasSession && session.Visible && shown
 	var pages []*managedPage
 	var active *managedPage

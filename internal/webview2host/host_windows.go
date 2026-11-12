@@ -235,13 +235,13 @@ func (h *Host) Apply(directive Directive) {
 			// capture would wait for a frame that never comes (spike
 			// 2026-09-14). Only the unclipped fallback, with no container
 			// to hide, has to hide the controller itself.
+			held := focusWithin(page.raiseTarget())
 			if page.container != 0 {
 				showWindow(page.container, false)
-				return
-			}
-			if err := page.controller.putIsVisible(false); err != nil {
+			} else if err := page.controller.putIsVisible(false); err != nil {
 				h.config.Logf("browser host: page %s hide: %v", page.id, err)
 			}
+			h.releaseFocus(page, held)
 		})
 	case OpDevTools:
 		h.withPage(directive.PageID, func(page *hostPage) {
@@ -384,6 +384,7 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 				page.controller2 = nil
 			}
 			if page.controller != nil {
+				held := focusWithin(page.raiseTarget())
 				if err := page.controller.close(); err != nil {
 					h.config.Logf("browser host: close page %s: %v", page.id, err)
 				}
@@ -393,6 +394,7 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 				// is an invisible window eating every click over its rectangle.
 				destroyWindow(page.container)
 				page.container = 0
+				h.releaseFocus(page, held)
 			}
 			// A container with no controller is the parent of an asynchronous
 			// create still in flight. Its completion owns both the controller

@@ -123,7 +123,7 @@ interface Intent {
 
 interface LiveFind {
   ended(state: BrowserFindState): void;
-  escaped(pageId: string): void;
+  escaped(pageId: string, mount: string): void;
 }
 
 const live = new Map<string, Set<LiveFind>>();
@@ -140,7 +140,7 @@ export function applyBrowserFindEvent(event: BrowserCompanionEvent): void {
   const finds = live.get(event.threadId);
   if (!finds) return;
   if (event.kind === 'escape') {
-    for (const find of finds) find.escaped(event.pageId ?? '');
+    for (const find of finds) find.escaped(event.pageId ?? '', event.mount ?? '');
     return;
   }
   const state = event.find;
@@ -319,8 +319,10 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
    * an engine's own find UI keeps the Escape, whatever the store kept open
    * from a provider before it.
    */
-  function escaped(pageId: string): void {
-    if (mode !== 'bar' || pageId !== options.pageId()) return;
+  // An Escape closes the bar of the one client whose pane mount shows the
+  // page; every host client receives it.
+  function escaped(pageId: string, mount: string): void {
+    if (mode !== 'bar' || pageId !== options.pageId() || mount === '' || mount !== options.mount()) return;
     if (isPaneFindOpen(options.paneId)) options.closeBar();
   }
 

@@ -54,6 +54,10 @@ type Bootstrap struct {
 	// binary can serve a harness without a frontend rebuild. Never a
 	// capability: it announces a mode, it does not grant one.
 	Harness bool `json:"harness,omitempty"`
+	// HostWindow says the page is the host's own window
+	// (Server.hostWindow): the one client that can show the native views
+	// it owns, such as the browser pane.
+	HostWindow bool `json:"hostWindow,omitempty"`
 	// PageMarker is a per-instance marker carried by the harness page URL.
 	// CDP consumers require it in addition to the origin, so another page on
 	// the same debugger endpoint cannot be mistaken for this instance.
@@ -1654,6 +1658,11 @@ func (s *Server) WebviewPageURL() string {
 // per-load delivery).
 func (s *Server) MintPageTicket() (string, error) { return s.cred.MintPageTicket() }
 
+// MintWindowTicket hands out a page ticket for a document in the window
+// this backend's own process shows, which marks that document's
+// connections as the host window (Credential.MintWindowTicket).
+func (s *Server) MintWindowTicket() (string, error) { return s.cred.MintWindowTicket() }
+
 // decoratePageURL applies the boot's extra page-URL parameters, if it
 // supplied any. The empty base passes through, since every caller
 // already reads "" as "no page to open yet".
@@ -1804,7 +1813,9 @@ func (s *Server) writeWebviewPageURL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "page url unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	ticket, err := s.cred.MintPageTicket()
+	// The caller owns the window it loads this into (the Windows
+	// launcher), so the document is the host window.
+	ticket, err := s.cred.MintWindowTicket()
 	if err != nil {
 		log.Printf("transport: page url: mint page ticket: %v", err)
 		http.Error(w, "page url unavailable", http.StatusServiceUnavailable)
@@ -1839,7 +1850,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	// the readiness and startup-failure paths below, where issuing the
 	// cookie is exactly right: the credential was good, the backend just
 	// is not serving yet, and the retry should not need another ticket.
-	pageAuthed := s.cred.Exchange(w, r)
+	pageAuthed, windowAuthed := s.cred.Exchange(w, r)
 	if !pageAuthed {
 		// The page credential is not the only door: a durable session —
 		// a paired device presenting its credential header, or a session
@@ -1930,6 +1941,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		// the client posture cannot disagree with LocalOnly enforcement.
 		Remote:            !loopback.PeerAddress(r.RemoteAddr),
 		Harness:           s.cfg.Harness,
+		HostWindow:        s.hostWindow(r, pageAuthed, windowAuthed),
 		PageMarker:        s.cfg.PageMarker,
 		BackendID:         backendID,
 		BackendName:       s.backendName(),
@@ -1938,6 +1950,27 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		Backends:          attached,
 		Routes:            routes,
 	})
+}
+
+// hostWindow reports whether a request comes from the host's own window:
+// a loopback peer holding the page credential and the host-window cookie,
+// or buying both with a window ticket (Credential.MintWindowTicket). A
+// harness has no window of its own, and the pages it opens stand in for it.
+func (s *Server) hostWindow(r *http.Request, pageAuthed, windowAuthed bool) bool {
+	if !pageAuthed || !loopback.PeerAddress(r.RemoteAddr) {
+		return false
+	}
+	return windowAuthed || s.cfg.Harness
+}
+
+// hostWindowPeer answers hostWindow for a WebSocket upgrade from what the
+// request presents. The origin is checked here as well as by the upgrade:
+// the cookies are read, and another port's document is sent them too.
+func (s *Server) hostWindowPeer(r *http.Request) bool {
+	if !OriginAllowed(r, s.currentOriginPatterns()) {
+		return false
+	}
+	return s.hostWindow(r, s.cred.Authenticate(r), s.cred.HostWindow(r))
 }
 
 // sessionAdmitsRequest reports whether the request presents a durable
@@ -2249,7 +2282,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		// Read from the pre-upgrade request: websocket.Conn does not
 		// re-expose the handshake URL, and the identity has to be in place
 		// before the first RPC is dispatched.
-		client: ParseClientIdentity(r.URL.Query()),
+		client:     ParseClientIdentity(r.URL.Query()),
+		hostWindow: s.hostWindowPeer(r),
 	}
 
 	backendID := ""

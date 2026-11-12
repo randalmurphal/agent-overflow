@@ -423,10 +423,31 @@ void ao_wk_host_present(void *view, double x, double y, double width,
   gtk_widget_queue_allocate(w);
 }
 
-void ao_wk_host_hide(void *view) {
-  // Presentation ends when the caller parks the host; nothing to undo here
-  // beyond the offset and scale, which park resets.
-  (void)view;
+// ao_view_holds_focus answers whether the window's focus widget is the view
+// or inside it.
+static int ao_view_holds_focus(GtkWidget *view) {
+  GtkRoot *root = gtk_widget_get_root(view);
+  GtkWidget *focus = root == NULL ? NULL : gtk_root_get_focus(root);
+  return focus != NULL && (focus == view || gtk_widget_is_ancestor(focus, view));
+}
+
+// ao_release_focus ends a page's hold on keyboard focus when the page stops
+// being visible. A parked view stays mapped in the 1x1 clip and would go on
+// taking every key unseen; a closed one leaves the window with no focus
+// widget. Either way the focus goes to the SPA's webview, as a claimed
+// chord's does (ao_wk_focus_app).
+static int ao_release_focus(int held) {
+  if (!held) {
+    return 0;
+  }
+  return ao_wk_focus_app() ? 1 : -1;
+}
+
+int ao_wk_host_hide(void *view, int slot) {
+  // Presentation ends with the park, which resets the offset and scale.
+  int held = ao_view_holds_focus(GTK_WIDGET(view));
+  ao_wk_host_park(view, slot);
+  return ao_release_focus(held);
 }
 
 // ao_wk_host_presented is read off the WIDGET TREE, never a pointer: a view is
@@ -1020,16 +1041,18 @@ void ao_wk_view_adopt(void *view, uint64_t page_id, const char *user_script,
   ao_connect_view(WEBKIT_WEB_VIEW(view), page_id, user_script, console_handler);
 }
 
-void ao_wk_view_close(void *view) {
+int ao_wk_view_close(void *view) {
   if (view == NULL) {
-    return;
+    return 0;
   }
   GtkWidget *w = GTK_WIDGET(view);
+  int held = ao_view_holds_focus(w);
   // The host leaves the tree and is dropped first; its dispose unparents the
   // view, which the engine's own reference keeps alive for the close.
   ao_host_forget(w);
   webkit_web_view_try_close(WEBKIT_WEB_VIEW(view));
   g_object_unref(G_OBJECT(view));
+  return ao_release_focus(held);
 }
 
 // ao_wk_view_set_background paints the page's base color — what shows wherever

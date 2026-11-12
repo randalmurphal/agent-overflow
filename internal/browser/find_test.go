@@ -81,6 +81,16 @@ func newFindFixtureWith(t *testing.T, address string, configure func(*Manager)) 
 	return f
 }
 
+// place reports the fixture's pane on screen, so it presents the thread's
+// active page while the companion is shown.
+func (f *findFixture) place(t *testing.T) {
+	t.Helper()
+	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
+	if err := f.manager.SetPaneRect(f.mount, rect); err != nil {
+		t.Fatalf("place the pane: %v", err)
+	}
+}
+
 // attach mounts a pane for the thread, as the browser pane does.
 func (f *findFixture) attach(t *testing.T) {
 	t.Helper()
@@ -671,6 +681,12 @@ func TestFindNeverClaimsAPagesBareEscape(t *testing.T) {
 		t.Fatal("an unbound Ctrl+Escape was taken")
 	}
 	f.manager.accelerators = func() keybindings.AcceleratorSet { return keybindings.AcceleratorSet{ctrl: {}} }
+	// A chord is routed to the pane showing its page.
+	show := true
+	if _, err := f.manager.Visibility(t.Context(), f.access, &show, f.pageID); err != nil {
+		t.Fatal(err)
+	}
+	f.place(t)
 	if !f.manager.keyChord(handle, ctrl, KeyPress{}) {
 		t.Fatal("a bound Ctrl+Escape did not go through the accelerator gate")
 	}

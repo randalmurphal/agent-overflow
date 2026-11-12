@@ -88,8 +88,8 @@ function ended(session: number, page = 'page-1', identity: Partial<BrowserFindSt
   }));
 }
 
-function escaped(page = 'page-1', threadId = 'thread'): void {
-  applyBrowserFindEvent(new BrowserCompanionEvent({ kind: 'escape', threadId, pageId: page }));
+function escaped(page = 'page-1', threadId = 'thread', at = 'mount-1'): void {
+  applyBrowserFindEvent(new BrowserCompanionEvent({ kind: 'escape', threadId, pageId: page, mount: at }));
 }
 
 async function settle(ms = BROWSER_FIND_DEBOUNCE_MS): Promise<void> {
@@ -787,6 +787,9 @@ describe('browser find escape', () => {
     openPaneFind(PANE);
     escaped('page-2');
     escaped('page-1', 'another-thread');
+    // Another client's mount presents the page, or none was named.
+    escaped('page-1', 'thread', 'mount-2');
+    escaped('page-1', 'thread', '');
     expect(bar.closeBar).not.toHaveBeenCalled();
     expect(isPaneFindOpen(PANE)).toBe(true);
     bar.unmount();
