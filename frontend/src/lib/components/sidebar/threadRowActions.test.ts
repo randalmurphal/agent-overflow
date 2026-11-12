@@ -18,6 +18,9 @@ import {
 import type { Thread } from '../../types/models';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { getPinnedBackend } from '../../transport/backends';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 
 function makeCtx(thread: Partial<Thread>): ThreadActionCtx {
   const t: Thread = {
@@ -159,6 +162,31 @@ describe('deleteThreadAction', () => {
     expect(order).toEqual([`remove ${worktree}`, 'delete, sibling at /tmp/work']);
     expect(siblingPane.thread?.worktreePath).toBe('');
     expect(siblingPane.thread?.branch).toBe('main');
+  });
+
+  it('removes the worktree on the computer the thread lives on', async () => {
+    stageBackend();
+    try {
+      noteThread('thread-1', 'laptop');
+      const worktree = '/tmp/work-wt/laptop';
+      const targets: Array<string | null> = [];
+      setBindingMock('StopSession', async () => {});
+      setBindingMock('RemoveOtherWorktree', async () => {
+        targets.push(getPinnedBackend());
+        return { workspace: { workspacePath: '/tmp/work', worktreePath: '', branch: 'main' }, reattached: [] };
+      });
+      const deleted = setBindingMock('DeleteThread', async () => {});
+      const ctx = makeCtx({ projectId: 'project-laptop', workspacePath: worktree, worktreePath: worktree });
+
+      await deleteThreadAction(ctx);
+
+      expect(ctx.reportError).not.toHaveBeenCalled();
+      expect(targets).toEqual(['laptop']);
+      expect(deleted).toHaveBeenCalledWith('thread-1');
+    } finally {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+    }
   });
 });
 

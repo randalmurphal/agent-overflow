@@ -31,7 +31,7 @@ import {
   updateThreadTitle,
 } from '../../stores/threads.svelte';
 import { closePanesShowingThread } from '../../stores/panes.svelte';
-import { removeWorktreeAt } from '../../stores/worktreeRemoval.svelte';
+import { removeWorktreeAt, threadWorktreeOwner } from '../../stores/worktreeRemoval.svelte';
 import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import { expandProject } from '../../stores/sidebar.svelte';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
@@ -125,10 +125,11 @@ export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    const worktree = threadWorktreeOwner(ctx.thread);
     await StopSession(ctx.thread.id).catch((err) => {
       console.error('Failed to stop session before delete:', err);
     });
-    if (ctx.thread.worktreePath) await removeWorktreeAt(ctx.thread.projectId, ctx.thread.worktreePath);
+    if (worktree) await removeWorktreeAt(worktree);
     await DeleteThread(ctx.thread.id);
     removeThread(ctx.thread.id);
     closePanesShowingThread(ctx.thread.id);

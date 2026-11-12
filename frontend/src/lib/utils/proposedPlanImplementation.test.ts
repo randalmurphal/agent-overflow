@@ -141,4 +141,22 @@ describe('rollback of a failed seed from a source in a worktree', () => {
       expect(removeAttached).not.toHaveBeenCalled();
     } finally { quiet.mockRestore(); clearWorktreeIntent('plan-wt-source'); source.clear(); }
   });
+
+  it('removes the cut worktree on the computer the new thread was created on', async () => {
+    const { source, removed } = seedFailing('/repo-wt/child');
+    setThreadEnvMode(source.thread!, 'new-worktree');
+    noteThread('plan-wt-source', 'remote-mac');
+    const targets: Array<string | null> = [];
+    setBindingMock('RemoveOtherWorktree', async (_ws: unknown, path: string) => {
+      targets.push(takePinnedBackend());
+      removed.push(path);
+      return { workspace: { workspacePath: '/repo', worktreePath: '', branch: 'main' }, reattached: [] };
+    });
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await implementProposedPlanInNewThread(source, { threadId: 'plan-wt-source', itemId: 'plan', payloadId: 'payload' })).toBe(false);
+      expect(removed).toEqual(['/repo-wt/child']);
+      expect(targets).toEqual(['remote-mac']);
+    } finally { quiet.mockRestore(); forgetThread('plan-wt-source'); clearWorktreeIntent('plan-wt-source'); source.clear(); }
+  });
 });

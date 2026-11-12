@@ -190,7 +190,7 @@ export async function implementProposedPlanInNewThread(
       // Only the worktree cut for the new thread is its to remove. One it
       // inherited is the source thread's checkout.
       if (cutWorktreePath) {
-        await removeWorktreeAt(created.projectId, cutWorktreePath)
+        await removeWorktreeAt({ backend, projectId, worktreePath: cutWorktreePath })
           .catch((cleanupErr) => {
             console.error('Failed to clean up orphan implementation worktree:', cleanupErr);
           });

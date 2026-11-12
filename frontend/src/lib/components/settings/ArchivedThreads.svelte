@@ -14,6 +14,7 @@
   import { closePanesShowingThread } from '../../stores/panes.svelte';
   import {
     removeWorktreeAt,
+    threadWorktreeOwner,
     TerminalsClosingNote,
     terminalsClosingNoteForThreadDelete,
     withTerminalsNote,
@@ -64,10 +65,11 @@
 
   async function handleDelete(thread: Thread): Promise<void> {
     try {
+      const worktree = threadWorktreeOwner(thread);
       await StopSession(thread.id).catch((err) => {
         console.error('Failed to stop session before delete:', err);
       });
-      if (thread.worktreePath) await removeWorktreeAt(thread.projectId, thread.worktreePath);
+      if (worktree) await removeWorktreeAt(worktree);
       await DeleteThread(thread.id);
       archivedThreads = archivedThreads.filter((t) => t.id !== thread.id);
       closePanesShowingThread(thread.id);

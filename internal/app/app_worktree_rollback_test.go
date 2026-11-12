@@ -62,3 +62,41 @@ func TestCutRollbackByPathSparesTheWorktreeTheChildMovedTo(t *testing.T) {
 		t.Fatalf("source thread moved to %q, want %q", stored.WorktreePath, sourceWorktree)
 	}
 }
+
+// Deleting an archived thread whose project is archived too removes its
+// worktree through the project root, then the thread.
+func TestRemoveWorktreeOfArchivedThreadInArchivedProject(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	repo := initMainGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature")
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread := testThread("archived-worktree")
+	thread.ProjectID, thread.WorkspacePath = project.ID, repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	attached, err := app.AttachThreadWorktree(thread.ID, "feature")
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if err := app.ArchiveThread(thread.ID); err != nil {
+		t.Fatalf("archive thread: %v", err)
+	}
+	if err := app.ArchiveProject(project.ID); err != nil {
+		t.Fatalf("archive project: %v", err)
+	}
+
+	if _, err := app.RemoveOtherWorktree(WorkspaceRef{ProjectID: project.ID}, attached.WorktreePath, false); err != nil {
+		t.Fatalf("remove worktree of archived project: %v", err)
+	}
+	if _, err := os.Stat(attached.WorktreePath); !os.IsNotExist(err) {
+		t.Fatalf("worktree %s survived: %v", attached.WorktreePath, err)
+	}
+	if err := app.DeleteThread(thread.ID); err != nil {
+		t.Fatalf("delete thread: %v", err)
+	}
+}
