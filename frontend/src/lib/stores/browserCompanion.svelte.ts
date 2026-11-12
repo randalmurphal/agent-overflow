@@ -2,6 +2,7 @@ import { threadBackend } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { requireEntityBackend } from '../transport/backends';
 import { isFrontendOnly } from '../transport/runMode';
+import { isHostWindow } from '../transport/pageHost';
 import {
   BrowserCompanionAction,
   BrowserCompanionDo,
@@ -49,13 +50,15 @@ const liveStates = createKeyedSignalRegistry<BrowserCompanionEvent | null>(null)
 const hydratedThreads = new Set<string>();
 
 /**
- * Whether THIS page can host the thread's native browser pane: on the
- * host, in a full app, and the thread lives on the home backend. The chat
- * header's chip, the entity source and the hydration read all ask this one
- * question, so a chip never offers a pane the source would refuse.
+ * Whether THIS page can host the thread's native browser pane: the host's
+ * own window, which the native view lives in (a browser tab on the host
+ * shows what a connected browser shows), in a full app, and the thread
+ * lives on the home backend. The chat header's chip, the entity source and
+ * the hydration read all ask this one question, so a chip never offers a
+ * pane the source would refuse.
  */
 export function canUseNativeBrowser(threadId: string): boolean {
-  if (!hasScope('host') || isFrontendOnly()) return false;
+  if (!hasScope('host') || !isHostWindow() || isFrontendOnly()) return false;
   try {
     return requireEntityBackend(threadBackend(threadId)) === HOME_BACKEND;
   } catch {
@@ -158,7 +161,9 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
   if (sourcePaneId) {
     const existing = companionForSource(sourcePaneId, 'browser');
     if ((event.pages?.length ?? 0) > 0 && event.visible === true) {
-      if (!existing && !isCompactLayout()) openCompanion(sourcePaneId, 'browser');
+      // A page that cannot host the native view (a browser tab on the host)
+      // receives the state but opens nothing, as a connected browser.
+      if (!existing && !isCompactLayout() && canUseNativeBrowser(event.threadId)) openCompanion(sourcePaneId, 'browser');
     } else if (existing) {
       closeCompanion(existing.paneId);
     }

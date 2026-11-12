@@ -154,11 +154,20 @@ so AO's chords have to be taken back at the engine:
   webview through the same code as a claimed chord's handoff
   (`ao_wk_focus_app`, `ao_wkv_focus_app`, and the launcher's
   `releaseFocus`). Showing a page takes no focus.
+- Only the host's own window mounts a pane (`BrowserCompanionPaneAttach`
+  refuses any other connection; see transport.md, the host-window cookie):
+  the native view lives in that window. A browser tab on the host offers
+  and opens no pane, as a connected browser does (`canUseNativeBrowser`).
+  A thread's pages are presented in one mount, its earliest attached live
+  one (`presenterLocked`), until that mount detaches; the presentation,
+  the pages' size, and the routed chord and Escape all name it.
 - The chord then reaches the frontend as an `accelerator` event on
   `browser:companion-state`, carrying the BOUND spelling (Shift glyph
-  variants are normalized by the match) and the pane mount showing the page
+  variants are normalized by the match) and the presenting mount
   (`mount`). Every host client receives the event, and only the one holding
-  that mount replays it; a chord in a page no pane shows is dropped. The
+  that mount replays it; a chord in a page no pane shows is dropped. An
+  `escape` event carries the mount too, and closes only that client's find
+  bar. The
   store focuses the thread's
   browser companion and replays the chord as a window keydown, so `when`
   gates, rebinds and the palette all behave as if the SPA had been focused.

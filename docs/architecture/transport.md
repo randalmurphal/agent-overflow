@@ -100,6 +100,15 @@ mints a ticket after `WindowRuntimeReady` and injects it through
 provides fresh URLs or separate URL/ticket values to authenticated native
 clients that need another navigation.
 
+A window host mints a window ticket (`MintWindowTicket`: the desktop
+window's injection and the `/pageurl?host=webview` answer). Its exchange
+also sets the `ao_window_<port>` cookie, and a loopback page or socket
+carrying it is the host window (`Bootstrap.HostWindow`,
+`ConnState.HostWindow`): the one client that shows the native views the
+host owns. A browser tab on the same machine holds the same launch
+credential and is not. This is an identity, not an authority. A harness
+has no window, so its pages count as the host window.
+
 Page tickets and session-bound WebSocket tickets use the shared single-use
 ticket implementation. A page ticket has no subject or deadline. A WebSocket
 ticket names a durable session and has a short lifetime.

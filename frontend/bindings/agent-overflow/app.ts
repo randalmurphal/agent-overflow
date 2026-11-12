@@ -457,6 +457,12 @@ export function BrowserCompanionFind(threadID: string, action: app$0.BrowserFind
  * a paintable rect exists, so connection cleanup guarantees a dead UI can
  * never leave a browser view painted over a window that no longer renders
  * the pane under it.
+ * 
+ * Only the host's own window may mount one: the native view lives in that
+ * window, so a pane in another client holding the launch credential, such
+ * as a browser tab on this machine, would be a mount nothing can be shown
+ * in. That client shows what a connected browser shows
+ * (transport.ConnState.HostWindow; the SPA's canUseNativeBrowser).
  */
 export function BrowserCompanionPaneAttach(threadID: string): $CancellablePromise<browser$0.CompanionSubscription> {
     return $Call.ByID(205254296, threadID).then(($result: any) => {

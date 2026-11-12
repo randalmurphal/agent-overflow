@@ -38,6 +38,7 @@ import { __resetWorkspaceChangeLockForTest } from '../lib/stores/workspaceChange
 import { __resetReplicaForTest } from '../lib/replica';
 import { __resetBackendIdentityForTest } from '../lib/transport/backendIdentity';
 import { setPageGrantsFromBootstrap } from '../lib/transport/scopes';
+import { setHostWindowFromBootstrap } from '../lib/transport/pageHost';
 import { resetBuildVariantPage } from './helpers/buildVariant';
 import { resetStagedBackends } from './helpers/backends';
 import { resetTelemetryFooterShapesForTest } from '../lib/stores/telemetryFooterShape.svelte';
@@ -242,6 +243,7 @@ beforeEach(() => {
   // disable every gated surface in every test. Pin the manifest answer the
   // embedded webview actually gets (loopback ⇒ the owner's own screen, every
   // scope); a test exercising a narrower session sets its own.
+  setHostWindowFromBootstrap(true);
   setPageGrantsFromBootstrap(false);
   // Entity-keyed git status is a module-level singleton shared by every
   // pane, so it outlives a test. Reset after the transport pin, which

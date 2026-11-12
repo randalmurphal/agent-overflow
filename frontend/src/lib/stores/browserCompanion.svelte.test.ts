@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyBrowserCompanionState,
+  attachBrowserCompanion,
   browserCompanionAct,
+  canUseNativeBrowser,
   hydrateBrowserCompanionState,
   closeFocusedBrowserTab,
   reconcileBrowserCompanionForPane,
@@ -22,6 +24,7 @@ import { noteThread, forgetBackendEntities } from '../transport/entityIndex';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import * as runMode from '../transport/runMode';
 import { setCompactLayoutForTest } from './layoutMode.svelte';
+import { setHostWindowFromBootstrap } from '../transport/pageHost';
 
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
@@ -53,6 +56,34 @@ describe('browser companion state routing', () => {
 
     applyBrowserCompanionState({ kind: 'state', threadId: 'thread-browser', pages: [] });
     expect(companionForSource('main', 'browser')).toBeNull();
+  });
+
+  // A browser tab on the host holds the window's grants but not its native
+  // view: it offers no pane and opens none from a push, as a connected
+  // browser, and its pane source refuses without asking the backend.
+  describe('in a page that is not the host window', () => {
+    beforeEach(() => setHostWindowFromBootstrap(false));
+    afterEach(() => setHostWindowFromBootstrap(true));
+
+    it('offers, opens and attaches no native pane', async () => {
+      expect(canUseNativeBrowser('thread-browser')).toBe(false);
+      applyBrowserCompanionState({
+        kind: 'state',
+        threadId: 'thread-browser',
+        activePageId: 'page-1',
+        visible: true,
+        pages: [page('file:///repo/demo.html', 'Demo')],
+      });
+      expect(companionForSource('main', 'browser')).toBeNull();
+      const attach = vi.fn(async () => ({ id: 'mount-1', state: {} }));
+      setBindingMock('BrowserCompanionPaneAttach', attach);
+      const attachment = attachBrowserCompanion('thread-browser');
+      await vi.waitFor(() => expect(attachment.error).toContain('native browser pane is unavailable'));
+      attachment.release();
+      expect(attach).not.toHaveBeenCalled();
+      setHostWindowFromBootstrap(true);
+      expect(canUseNativeBrowser('thread-browser')).toBe(true);
+    });
   });
 
   // The companion is a native view on the host; the compact screen never

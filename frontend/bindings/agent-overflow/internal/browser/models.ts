@@ -47,9 +47,9 @@ export class CompanionEvent {
     "accelerator"?: keybindings$0.Accelerator | null;
 
     /**
-     * Mount rides a Kind "accelerator" event: the pane mount (AttachPane)
-     * showing the page the chord was pressed in. The event reaches every
-     * host client, and only the one holding that mount replays the chord.
+     * Mount rides a Kind "accelerator" or "escape" event: the pane mount
+     * (AttachPane) the thread's pages are presented in. The event reaches
+     * every host client, and only the one holding that mount acts on it.
      */
     "mount"?: string;
 

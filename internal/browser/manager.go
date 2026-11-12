@@ -109,7 +109,9 @@ type Manager struct {
 	idleTimer *time.Timer
 	eventSink func(CompanionEvent)
 	panes     map[string]paneMount
-	sessions  map[string]SessionInfo
+	// paneSeq numbers pane mounts in attach order (paneMount.seq).
+	paneSeq  uint64
+	sessions map[string]SessionInfo
 	// viewportSyncs serializes viewport application per thread (viewport.go).
 	viewportSyncs map[string]*viewportSync
 	// presenting holds, per thread, whether a presentation pass runs and

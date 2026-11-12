@@ -58,11 +58,20 @@ func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.Companion
 // never leave a browser view painted over a window that no longer renders
 // the pane under it.
 //
+// Only the host's own window may mount one: the native view lives in that
+// window, so a pane in another client holding the launch credential, such
+// as a browser tab on this machine, would be a mount nothing can be shown
+// in. That client shows what a connected browser shows
+// (transport.ConnState.HostWindow; the SPA's canUseNativeBrowser).
+//
 //ao:scope host
 //ao:route home
 func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (appbrowser.CompanionSubscription, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser manager unavailable")
+	}
+	if !transport.ConnStateFromContext(ctx).HostWindow() {
+		return appbrowser.CompanionSubscription{}, errBrowserPaneNotHostWindow
 	}
 	access, err := a.browserAccess(threadID)
 	if err != nil {
@@ -92,6 +101,8 @@ func (a *App) BrowserCompanionPaneDetach(ctx context.Context, paneID string) err
 }
 
 func companionPaneCleanupKey(id string) string { return "companion-pane:" + id }
+
+var errBrowserPaneNotHostWindow = errors.New("browser: the browser pane shows only in this computer's app window")
 
 // BrowserCompanionPaneRect reports where the mounted pane's host rect sits,
 // coalesced to one call per changed frame by the frontend.
