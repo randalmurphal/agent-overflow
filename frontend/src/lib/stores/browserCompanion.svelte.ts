@@ -53,9 +53,9 @@ const hydratedThreads = new Set<string>();
  * Whether THIS page can host the thread's native browser pane: the host's
  * own window, which the native view lives in (a browser tab on the host
  * shows what a connected browser shows), in a full app, and the thread
- * lives on the home backend. The chat header's chip, the entity source and
- * the hydration read all ask this one question, so a chip never offers a
- * pane the source would refuse.
+ * lives on the home backend. The chat header's chip, the opener, a
+ * mod-clicked link, the entity source and the hydration read all ask this
+ * one question, so nothing offers or opens a pane the source would refuse.
  */
 export function canUseNativeBrowser(threadId: string): boolean {
   if (!hasScope('host') || !isHostWindow() || isFrontendOnly()) return false;
@@ -64,6 +64,24 @@ export function canUseNativeBrowser(threadId: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The only opener of a browser companion. The state push and the pane
+ * reconcile on a thread mount call it, and through the push so do the
+ * chip's show, a mod-clicked link and startup hydration. Browser
+ * companions are never persisted or stashed, so no layout restore
+ * reopens one. It opens nothing
+ * in a page that cannot host the native view (canUseNativeBrowser), which
+ * records the state as a connected browser does, and nothing under
+ * compact: opening ends in revealPane, which would pull a phone off its
+ * thread list for a native view the compact screen never shows
+ * (docs/specs/remote-access.md, "Hidden on the phone").
+ */
+function openBrowserCompanion(sourcePaneId: string, threadId: string): void {
+  if (isCompactLayout() || !canUseNativeBrowser(threadId)) return;
+  if (companionForSource(sourcePaneId, 'browser')) return;
+  openCompanion(sourcePaneId, 'browser');
 }
 
 function emptyView(state: BrowserCompanionEvent): BrowserCompanionView {
@@ -151,19 +169,14 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
   hydratedThreads.add(event.threadId);
   if ((event.pages?.length ?? 0) > 0) liveStates.set(event.threadId, event);
   else liveStates.drop(event.threadId);
-  // Opening ends in revealPane, which under compact forces the thread screen
-  // forward. The pane is the host's native view and the compact screen never
-  // shows it (docs/specs/remote-access.md, "Hidden on the phone"), so a
-  // state push must not pull a phone off its thread list for it. Closing
-  // still runs: a companion opened on the desktop survives a resize into
-  // compact, and its last page closing still has to take it down.
+  // Closing runs on every client: a companion opened on the desktop survives
+  // a resize into compact, and its last page closing still has to take it
+  // down.
   const sourcePaneId = sourcePaneIdForThread(event.threadId);
   if (sourcePaneId) {
     const existing = companionForSource(sourcePaneId, 'browser');
     if ((event.pages?.length ?? 0) > 0 && event.visible === true) {
-      // A page that cannot host the native view (a browser tab on the host)
-      // receives the state but opens nothing, as a connected browser.
-      if (!existing && !isCompactLayout() && canUseNativeBrowser(event.threadId)) openCompanion(sourcePaneId, 'browser');
+      openBrowserCompanion(sourcePaneId, event.threadId);
     } else if (existing) {
       closeCompanion(existing.paneId);
     }
@@ -349,16 +362,8 @@ export function hydrateBrowserCompanionState(threadId: string): void {
 
 export function reconcileBrowserCompanionForPane(paneId: string, threadId: string): void {
   hydrateBrowserCompanionState(threadId);
-  // Same rule as the state push above: a thread mounting under compact
-  // lands on the thread, never on a browser pane the screen cannot show.
-  if (isCompactLayout()) return;
-  if (
-    liveStates.get(threadId)?.visible === true &&
-    (liveStates.get(threadId)?.pages?.length ?? 0) > 0 &&
-    !companionForSource(paneId, 'browser')
-  ) {
-    openCompanion(paneId, 'browser');
-  }
+  const state = liveStates.get(threadId);
+  if (state?.visible === true && (state.pages?.length ?? 0) > 0) openBrowserCompanion(paneId, threadId);
 }
 
 addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);

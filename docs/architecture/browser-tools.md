@@ -157,7 +157,11 @@ so AO's chords have to be taken back at the engine:
 - Only the host's own window mounts a pane (`BrowserCompanionPaneAttach`
   refuses any other connection; see transport.md, the host-window cookie):
   the native view lives in that window. A browser tab on the host offers
-  and opens no pane, as a connected browser does (`canUseNativeBrowser`).
+  and opens no pane, as a connected browser does. Both openers, a state
+  push (which the chip's show produces) and the reconcile on a thread
+  mount, go through `openBrowserCompanion`, which asks
+  `canUseNativeBrowser`; a mod-clicked link asks it before minting a
+  page, and no layout restore or companion stash reopens a browser pane.
   A thread's pages are presented in one mount, its earliest attached live
   one (`presenterLocked`), until that mount detaches; the presentation,
   the pages' size, and the routed chord and Escape all name it.

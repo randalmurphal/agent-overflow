@@ -42,6 +42,7 @@ import {
   resetAppStorageForTest,
 } from './appStorage';
 import { installPaneMocks, makeItem } from '../../test/helpers/chat';
+import { setHostWindowFromBootstrap } from '../transport/pageHost';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
 const LEGACY_KEY = 'agentOverflowPaneLayout';
@@ -328,6 +329,32 @@ describe('pane layout persistence', () => {
     expect(persistedPaneLayout()).toEqual(makeSavedLayout([
       { paneId: 'left', threadId: 'left-thread', widthPx: 660 },
     ], 'left'));
+  });
+
+  // A saved layout written by an older build, or edited by hand, may name a
+  // browser companion. Restore drops it on every client, so a page that
+  // cannot host the native view never shows the pane's unavailable state.
+  it('restores no browser companion a saved layout names, in a page that is not the host window', async () => {
+    const left = makeThread({ id: 'left-thread' });
+    await installUIStateMock({
+      version: 3,
+      panes: [
+        { paneId: 'left', kind: 'thread', threadId: left.id, widthPx: 660 },
+        { paneId: 'browser-left', kind: 'browser', sourcePaneId: 'left', widthPx: 660 },
+      ],
+      focusedPaneId: 'browser-left',
+    });
+    installPaneMocks();
+    setHostWindowFromBootstrap(false);
+    try {
+      await loadPersistedPaneLayout([left]);
+    } finally {
+      setHostWindowFromBootstrap(true);
+    }
+
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left']);
+    expect(getCompanionPane('browser-left')).toBeNull();
+    expect(getFocusedPaneId()).toBe('left');
   });
 
   it('rejects a persisted THREAD pane whose id is shaped like a side chat companion id', async () => {

@@ -11,7 +11,7 @@ import {
   setBrowserPaneMountForTest,
 } from './browserCompanion.svelte';
 import { BROWSER_FIND_DEBOUNCE_MS, createBrowserFind } from './browserFind.svelte';
-import { companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { createPane, focusPane, getFocusedPaneId, getPane, resetPanesForTest } from './panes.svelte';
 import { makeCommandContext } from './builtinCommands.svelte';
@@ -84,6 +84,42 @@ describe('browser companion state routing', () => {
       setHostWindowFromBootstrap(true);
       expect(canUseNativeBrowser('thread-browser')).toBe(true);
     });
+
+    it('opens no pane when the thread is shown again after a switch away', () => {
+      applyBrowserCompanionState({
+        kind: 'state',
+        threadId: 'thread-browser',
+        activePageId: 'page-1',
+        visible: true,
+        pages: [page('file:///repo/demo.html', 'Demo')],
+      });
+      expect(companionForSource('main', 'browser')).toBeNull();
+      for (let round = 0; round < 2; round += 1) {
+        getPane('main')!.replaceThread(makeThread({ id: 'other-thread' }));
+        reconcileBrowserCompanionForPane('main', 'other-thread');
+        getPane('main')!.replaceThread(makeThread({ id: 'thread-browser' }));
+        reconcileBrowserCompanionForPane('main', 'thread-browser');
+        expect(companionForSource('main', 'browser')).toBeNull();
+      }
+    });
+  });
+
+  it('reopens the pane in the host window when the thread is shown again after a switch away', () => {
+    applyBrowserCompanionState({
+      kind: 'state',
+      threadId: 'thread-browser',
+      activePageId: 'page-1',
+      visible: true,
+      pages: [page('file:///repo/demo.html', 'Demo')],
+    });
+    expect(companionForSource('main', 'browser')?.kind).toBe('browser');
+    closeCompanion('browser-main');
+    getPane('main')!.replaceThread(makeThread({ id: 'other-thread' }));
+    reconcileBrowserCompanionForPane('main', 'other-thread');
+    expect(companionForSource('main', 'browser')).toBeNull();
+    getPane('main')!.replaceThread(makeThread({ id: 'thread-browser' }));
+    reconcileBrowserCompanionForPane('main', 'thread-browser');
+    expect(companionForSource('main', 'browser')?.kind).toBe('browser');
   });
 
   // The companion is a native view on the host; the compact screen never

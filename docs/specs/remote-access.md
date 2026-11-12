@@ -1484,11 +1484,12 @@ that port on the reader's own machine), middle-click included, and only
 so a link is plain rather than wrongly inert before the machine has
 spoken; a pushed frame outranks a read in flight. One deviation from
 "mod+click ... when the page holds `host`": the companion browser is
-the THREAD's machine's engine, so the gesture is gated on
-`threadActsHere` (thread on the page's own machine AND `host` held);
-with `host` alone it would mint a page in an engine this window cannot
-paint. `previewRouted` is that predicate's negation, stated once in
-`attachedBackends.svelte.ts`. Settings → Remote access lists attributed ports
+the THREAD's machine's engine, shown only in the host's own window, so
+the gesture is gated on `canUseNativeBrowser` (thread on the page's own
+machine, `host` held, and the page is the host window); with `host`
+alone it would mint a page in an engine this window cannot paint.
+`previewRouted` is the negation of `threadActsHere`, its first two
+halves, stated once in `attachedBackends.svelte.ts`. Settings → Remote access lists attributed ports
 as a sentence ("Shared while vite runs it") with no control, because
 `DisallowPreviewPort` edits only the persisted set. **Headless engine**
 (`internal/browser`): as specified; the launch argv never contains
