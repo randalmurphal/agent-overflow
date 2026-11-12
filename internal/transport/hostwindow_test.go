@@ -145,7 +145,11 @@ func (f *hostWindowFixture) amHostWindow(t *testing.T, url string, header http.H
 
 func decodeHostWindow(t *testing.T, resp *http.Response) bool {
 	t.Helper()
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close the bootstrap body: %v", err)
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("bootstrap = %d", resp.StatusCode)
 	}

@@ -260,14 +260,15 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 			t.Fatalf("set the companion visible %v: %v", on, err)
 		}
 	}
+	// title is the page's title as the engine last reported it, read without
+	// asking the page while it navigates.
 	title := func(t *testing.T, access Access, id string) string {
 		t.Helper()
-		value, _, err := manager.Evaluate(ctx, access, id, `document.title`, nil)
+		p, _, err := manager.lookupOwnedPage(access, id)
 		if err != nil {
-			t.Fatalf("read the title: %v", err)
+			t.Fatalf("look the page up: %v", err)
 		}
-		s, _ := value.(string)
-		return s
+		return p.cachedInfo().Title
 	}
 
 	t.Run("hide while an input is focused, then show", func(t *testing.T) {
