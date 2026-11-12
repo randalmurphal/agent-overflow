@@ -5,7 +5,6 @@ import {
   CreateThread,
   DeleteThread,
   GetPayloadData,
-  GitRemoveWorktree,
   SaveDraft,
   SendMessageWithOptions,
 } from '../stores/bindings';
@@ -32,10 +31,7 @@ import {
   prepareThreadWorktreeIntent,
   type WorktreePrepareCallbacks,
 } from '../stores/worktreeIntentMaterialize';
-import {
-  syncRemovedWorktreeThreads,
-  type WorktreeRemovalResult,
-} from '../stores/worktreeRemoval.svelte';
+import { removeWorktreeAt } from '../stores/worktreeRemoval.svelte';
 
 const IMPLEMENT_PROMPT = 'Implement the plan.';
 
@@ -130,7 +126,7 @@ export async function implementProposedPlanInNewThread(
     const draftContent = buildPlanImplementationPrompt(planMarkdown);
     const sourceIntent = worktreeIntentForThread(sourceThread);
 
-    const mark = threadRowFrameMark();
+    let mark = threadRowFrameMark();
     let created = (await withBackendTarget(backend, () => CreateThread({
       projectId,
       provider: sourceThread.provider,
@@ -148,9 +144,14 @@ export async function implementProposedPlanInNewThread(
       branch: sourceThread.branch ?? '',
     }))) as Thread;
 
+    // The worktree this operation cut, by the path the cut answered with. A
+    // rollback removes exactly that path: the child's attachment can change
+    // under another client before the rollback runs.
+    let cutWorktreePath = '';
     try {
       // The child owns every mutation from the start. This preserves LOCAL
       // carry semantics because its workspace was seeded from the source.
+      const materializeMark = threadRowFrameMark();
       const materialized = await materializeWorktreeIntentOnThread({
         targetThread: created,
         intent: sourceIntent,
@@ -160,6 +161,13 @@ export async function implementProposedPlanInNewThread(
       });
       if (materialized) {
         created = materialized;
+        // The materialization's reply is newer than every frame that
+        // arrived before it started, the creation echo included.
+        mark = materializeMark;
+        if (materialized.worktreePath
+          && !sameNormalizedPath(materialized.worktreePath, sourceThread.worktreePath ?? '')) {
+          cutWorktreePath = materialized.worktreePath;
+        }
       }
     } catch (worktreeErr) {
       await DeleteThread(created.id).catch((cleanupErr) => {
@@ -179,14 +187,10 @@ export async function implementProposedPlanInNewThread(
     try {
       await SaveDraft(created.id, draftContent, [], [], sourceRef);
     } catch (saveErr) {
-      // Only a worktree cut for the new thread is its to remove. One it
+      // Only the worktree cut for the new thread is its to remove. One it
       // inherited is the source thread's checkout.
-      const cutForThread = !!created.worktreePath
-        && !sameNormalizedPath(created.worktreePath, sourceThread.worktreePath ?? '');
-      if (cutForThread) {
-        const removalMark = threadRowFrameMark();
-        await GitRemoveWorktree(created.id)
-          .then((removal) => syncRemovedWorktreeThreads(removal as WorktreeRemovalResult, removalMark))
+      if (cutWorktreePath) {
+        await removeWorktreeAt({ backend, projectId, worktreePath: cutWorktreePath })
           .catch((cleanupErr) => {
             console.error('Failed to clean up orphan implementation worktree:', cleanupErr);
           });

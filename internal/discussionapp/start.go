@@ -111,6 +111,11 @@ func (s *Service) createRuntime(st *store.Store, parent store.Thread, plans []di
 	if err := st.UpdateThread(parent); err != nil {
 		return store.Channel{}, s.cleanupSetup(st, channel.ID, started, created, err)
 	}
+	// ensureCanStart refused a parent already in discussion mode, so this
+	// write always changed the row.
+	if s.events != nil {
+		s.events.ThreadUpdated(parent.ID)
+	}
 	s.emitState(channel.ID)
 	return channel, nil
 }

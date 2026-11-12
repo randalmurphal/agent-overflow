@@ -7,6 +7,7 @@ import (
 	"agent-overflow/internal/discussionapp"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // ListDiscussions returns persisted discussion definitions for the given scope.
@@ -264,6 +265,10 @@ func (e appDiscussionEvents) State(state discussionapp.State) {
 
 func (e appDiscussionEvents) Error(threadID, message string) {
 	e.app.emitWireErrorToThread(threadID, message)
+}
+
+func (e appDiscussionEvents) ThreadUpdated(threadID string) {
+	e.app.announceThread(triage.ThreadActionFull, threadID)
 }
 
 func projectChannelState(state discussionapp.State) ChannelStatePayload {

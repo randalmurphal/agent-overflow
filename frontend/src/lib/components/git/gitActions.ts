@@ -78,9 +78,9 @@ export function menuPushEnabled(status: GitStatus): boolean {
 /**
  * Removing the pane's own worktree is still a workspace action — the
  * directory is the subject — so it takes the same ref, plus the path being
- * removed. `GitRemoveWorktree(threadID)` remains for the thread-centric
- * callers (sidebar row, archived thread, proposed-plan implementation),
- * where the subject really is "the worktree THIS thread is attached to".
+ * removed. Thread deletes and the plan rollback also remove by path
+ * (`removeWorktreeAt`), the one they confirmed or cut, because the thread's
+ * attachment can change before the removal runs.
  */
 export interface RemoveWorktreeCtx extends GitActionCtx {
   worktreePath: string;

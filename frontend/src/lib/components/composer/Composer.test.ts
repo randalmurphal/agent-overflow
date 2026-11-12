@@ -1890,7 +1890,7 @@ describe('<Composer>', () => {
     setBindingMock('SaveDraft', async () => {
       throw new Error('disk full');
     });
-    const removeWorktree = setBindingMock('GitRemoveWorktree', async () => {});
+    const removeWorktree = setBindingMock('RemoveOtherWorktree', async () => ({ workspace: {}, reattached: [] }));
     const deleted = setBindingMock('DeleteThread', async () => {});
 
     const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
@@ -1899,7 +1899,7 @@ describe('<Composer>', () => {
     await fireEvent.click(await findByText('Implement in new thread'));
 
     await waitFor(() => {
-      expect(removeWorktree).toHaveBeenCalledWith('thread-2');
+      expect(removeWorktree).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: '' }, '/tmp/wt-feature', false);
       expect(deleted).toHaveBeenCalledWith('thread-2');
     });
     expect(removeWorktree.mock.invocationCallOrder[0]).toBeLessThan(

@@ -1,14 +1,18 @@
 // What every caller of a worktree removal shares: applying the rows the
 // removal answered with, and telling the person which terminals it closes.
-import { GitWorktreeStatus, type WorktreeStatus } from './bindings';
+import { GitWorktreeStatus, RemoveOtherWorktree, type WorktreeStatus } from './bindings';
 import { syncThreadReply } from './panes.svelte';
+import { threadRowFrameMark } from './threadRowFrames';
 import { threadHasScope } from '../transport/entityScopes';
+import { requireEntityBackend, withBackendTarget } from '../transport/backends';
+import type { BackendKey } from '../transport/backendKey';
+import { threadOwner } from '../transport/threadOwner';
 import type { GitWorkspaceState, WorkspaceRef } from '../types/git';
 import type { Thread } from '../types/models';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
 import { sameNormalizedPath } from '../utils/path';
-import { workspaceRefForThread } from '../utils/workspaceKey';
+import { workspaceRefForProject } from '../utils/workspaceKey';
 
 /** What `RemoveOtherWorktree` and `GitRemoveWorktree` answer (app.WorktreeRemoval). */
 export interface WorktreeRemovalResult {
@@ -28,6 +32,41 @@ export function syncRemovedWorktreeThreads(removal: WorktreeRemovalResult | null
   for (const thread of removal?.reattached ?? []) syncThreadReply(thread, mark);
 }
 
+/**
+ * A worktree's whole identity: the computer it is on, its project there and
+ * its path. A cleanup captures it before its first await from the thing the
+ * user acted on, never from an index that may no longer hold it: an archived
+ * project is not in the project index, and another client can move the
+ * thread to a different worktree first.
+ */
+export interface WorktreeOwner {
+  backend: BackendKey;
+  projectId: string;
+  worktreePath: string;
+}
+
+/**
+ * The worktree `thread` is attached to, on the computer thread routing
+ * sends its calls to, or null when it has none. Throws when that computer
+ * is unknown, so the caller stops before removing or deleting anything.
+ */
+export function threadWorktreeOwner(thread: Pick<Thread, 'id' | 'projectId' | 'worktreePath'>): WorktreeOwner | null {
+  const worktreePath = thread.worktreePath ?? '';
+  if (!worktreePath) return null;
+  const projectId = thread.projectId?.trim() ?? '';
+  if (!projectId) throw new Error(`Cannot remove worktree ${worktreePath}: it names no project.`);
+  return { backend: requireEntityBackend(threadOwner(thread.id)), projectId, worktreePath };
+}
+
+/** Removes the worktree `owner` names, on its computer, and applies the rows it moved. */
+export async function removeWorktreeAt(owner: WorktreeOwner): Promise<void> {
+  const ws = workspaceRefForProject(owner.projectId, '');
+  if (!ws) throw new Error(`Cannot remove worktree ${owner.worktreePath}: it names no project.`);
+  const mark = threadRowFrameMark();
+  const removal = await withBackendTarget(owner.backend, () => RemoveOtherWorktree(ws, owner.worktreePath, false));
+  syncRemovedWorktreeThreads(removal as WorktreeRemovalResult, mark);
+}
+
 /** The confirmation line for the terminals a removal closes, or '' for none. */
 export function terminalsClosingNote(count: number | null | undefined): string {
   if (!count || count <= 0) return '';
@@ -41,9 +80,10 @@ export function withTerminalsNote(description: string, note: string): string {
 
 // A count that cannot be read is reported and left out of the note: the
 // confirmation still works, it just cannot say what it does not know.
-async function worktreeTerminalCount(ws: WorkspaceRef, worktreePath: string): Promise<number> {
+async function worktreeTerminalCount(ws: WorkspaceRef, worktreePath: string, backend?: BackendKey): Promise<number> {
   try {
-    const status = (await GitWorktreeStatus(ws, worktreePath)) as WorktreeStatus;
+    const read = () => GitWorktreeStatus(ws, worktreePath);
+    const status = (await (backend === undefined ? read() : withBackendTarget(backend, read))) as WorktreeStatus;
     return status.terminals ?? 0;
   } catch (err) {
     reportFrontendDiagnostic('worktree terminal count unavailable for a removal confirmation', userFacingError(err));
@@ -58,20 +98,30 @@ export async function terminalsClosingNoteForWorktree(ws: WorkspaceRef, worktree
 
 /**
  * The confirmation line for deleting these threads: each one on a worktree
- * removes it, closing the terminals opened in it. Each worktree counts once.
+ * removes it, closing the terminals opened in it. Each worktree counts once,
+ * read from the computer the removal will run on.
  */
 export async function terminalsClosingNoteForThreadDelete(threads: readonly Thread[]): Promise<string> {
-  const owners: { thread: Thread; path: string }[] = [];
+  const owners: WorktreeOwner[] = [];
   for (const thread of threads) {
-    const path = thread.worktreePath ?? '';
-    if (!path) continue;
+    if (!thread.worktreePath) continue;
     if (!threadHasScope('git:operate', thread.id, thread.projectId)) continue;
-    if (owners.some((other) => other.thread.projectId === thread.projectId && sameNormalizedPath(other.path, path))) continue;
-    owners.push({ thread, path });
+    let owner: WorktreeOwner | null;
+    try {
+      owner = threadWorktreeOwner(thread);
+    } catch (err) {
+      reportFrontendDiagnostic('worktree terminal count unavailable for a removal confirmation', userFacingError(err));
+      continue;
+    }
+    if (!owner) continue;
+    const { backend, projectId, worktreePath } = owner;
+    if (owners.some((other) => other.backend === backend && other.projectId === projectId
+      && sameNormalizedPath(other.worktreePath, worktreePath))) continue;
+    owners.push(owner);
   }
-  const counts = await Promise.all(owners.map(({ thread, path }) => {
-    const ws = workspaceRefForThread(thread);
-    return ws ? worktreeTerminalCount(ws, path) : Promise.resolve(0);
+  const counts = await Promise.all(owners.map(({ backend, projectId, worktreePath }) => {
+    const ws = workspaceRefForProject(projectId, '');
+    return ws ? worktreeTerminalCount(ws, worktreePath, backend) : Promise.resolve(0);
   }));
   return terminalsClosingNote(counts.reduce((sum, n) => sum + n, 0));
 }

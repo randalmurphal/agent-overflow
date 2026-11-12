@@ -133,6 +133,7 @@ func (a *App) startSessionNow(threadID string) error {
 		if err := a.store.UpdateThread(sanitized); err != nil {
 			return fmt.Errorf("start session: persist live model settings: %w", err)
 		}
+		a.announceThread(triage.ThreadActionFull, threadID)
 		t = sanitized
 	}
 	// An imported Claude branch that is not its transcript's active branch
