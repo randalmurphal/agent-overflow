@@ -182,6 +182,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetPRCILogLines", ID: 1435724188, Scope: "git:operate", Route: "selected"},                                        // main.App.GetPRCILogLines
 	{Name: "GetPRDetail", ID: 2443547196, Scope: "git:operate", Route: "selected"},                                            // main.App.GetPRDetail
 	{Name: "GetPRMergeConflicts", ID: 106351482, Scope: "git:operate", Route: "workspace"},                                    // main.App.GetPRMergeConflicts
+	{Name: "GetPRReviewSubmitOutcome", ID: 4070778679, Scope: "git:operate", Route: "selected", CallerBound: true},            // main.App.GetPRReviewSubmitOutcome
 	{Name: "GetPayloadChunk", ID: 73280836, Scope: "threads:read", Route: "thread"},                                           // main.App.GetPayloadChunk
 	{Name: "GetPayloadData", ID: 3448919335, Scope: "threads:read", Route: "thread"},                                          // main.App.GetPayloadData
 	{Name: "GetPayloadPatchSpans", ID: 3582798556, Scope: "threads:read", Route: "thread"},                                    // main.App.GetPayloadPatchSpans

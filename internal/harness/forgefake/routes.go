@@ -74,6 +74,7 @@ var gitlabAPI = []apiRoute{
 	{name: "glab api job trace", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/trace$`), flags: []string{"hostname", "if-none-match", "range"}, run: glabJobTrace},
 	{name: "glab api upload", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/uploads/([0-9a-f]{32})/([^/?]+)$`), flags: []string{"hostname"}, run: glabUpload},
 	{name: "glab api approve", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approve$`), flags: []string{"hostname"}, run: glabApprove},
+	{name: "glab api list draft notes", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/draft_notes(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabDraftList},
 	{name: "glab api create draft note", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/draft_notes$`), flags: []string{"hostname"}, run: glabDraftCreate},
 	{name: "glab api delete draft note", method: "DELETE", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/draft_notes/(\d+)$`), flags: []string{"hostname"}, run: glabDraftDelete},
 	{name: "glab api publish draft notes", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/draft_notes/bulk_publish$`), flags: []string{"hostname"}, run: glabDraftPublish},

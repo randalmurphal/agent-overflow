@@ -53,6 +53,12 @@ func TestExplainForgeErrorSentences(t *testing.T) {
 			ForgeErrorTransient, []string{"could not be reached"}},
 		{"own approval", ActionApprove, &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Message: "Can not approve your own pull request"}}},
 			ForgeErrorRefused, []string{"You cannot approve your own pull request."}},
+		{"refused, then the login re-read failed", ActionReview, &forgeapi.RefusalError{Refusal: &forgeapi.StatusError{Method: "POST", Status: http.StatusUnauthorized}, Step: forgeapi.RefusalStepCredential, Err: &forgeapi.TransientError{Err: errors.New("keyring locked")}},
+			ForgeErrorSetup, []string{"GitLab refused the `glab` login's token (HTTP 401), so it did not review team/app!42", "keyring locked", "glab auth status --hostname gitlab.example.com"}},
+		{"refused, then the re-read found no login", ActionReview, &forgeapi.RefusalError{Refusal: &forgeapi.StatusError{Method: "POST", Status: http.StatusUnauthorized}, Step: forgeapi.RefusalStepCredential, Err: &forgeapi.SetupError{Forge: "gitlab", Binary: "glab", Kind: forgeapi.SetupMissing, Message: "glab is not installed."}},
+			ForgeErrorSetup, []string{"glab is not installed."}},
+		{"refused, then the login check failed", ActionMerge, &forgeapi.RefusalError{Refusal: &forgeapi.StatusError{Method: "PUT", Status: http.StatusUnauthorized}, Step: forgeapi.RefusalStepProbe, Err: &forgeapi.StatusError{Method: "GET", Status: http.StatusBadGateway}},
+			ForgeErrorTransient, []string{"GitLab refused to merge team/app!42 (HTTP 401), so nothing was changed", "checking the `glab` login failed", "Try again in a moment."}},
 		{"other", ActionReply, errors.New("decode body: unexpected EOF"),
 			ForgeErrorForge, []string{"GitLab did not reply on team/app!42: decode body: unexpected EOF"}},
 	}

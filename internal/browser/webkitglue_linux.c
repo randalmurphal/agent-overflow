@@ -955,6 +955,18 @@ void ao_wk_view_find_finish(void *view) {
   }
 }
 
+// The find's frame script (webkitFindFrameScript), set once with the host;
+// every view gets it in the find's isolated world.
+static char *ao_find_frame_script = NULL;
+static char *ao_find_world = NULL;
+
+void ao_wk_set_find_frame_script(const char *script, const char *world) {
+  if (ao_find_frame_script == NULL) {
+    ao_find_frame_script = g_strdup(script);
+    ao_find_world = g_strdup(world);
+  }
+}
+
 static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *user_script,
                             const char *console_handler) {
   g_object_set_data(G_OBJECT(view), AO_PAGE_KEY, GSIZE_TO_POINTER((gsize)page_id));
@@ -983,6 +995,16 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
         WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
     webkit_user_content_manager_add_script(ucm, script);
     webkit_user_script_unref(script);
+    // A popup shares its opener's content manager (related-view), which
+    // already carries the frame script.
+    if (ao_find_frame_script != NULL && g_object_get_data(G_OBJECT(ucm), "ao-find-frames") == NULL) {
+      g_object_set_data(G_OBJECT(ucm), "ao-find-frames", GINT_TO_POINTER(1));
+      WebKitUserScript *frames = webkit_user_script_new_for_world(
+          ao_find_frame_script, WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+          WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, ao_find_world, NULL, NULL);
+      webkit_user_content_manager_add_script(ucm, frames);
+      webkit_user_script_unref(frames);
+    }
   }
 
   g_signal_connect(view, "notify::title", G_CALLBACK(ao_notify_info), NULL);

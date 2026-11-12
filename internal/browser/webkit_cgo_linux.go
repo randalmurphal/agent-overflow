@@ -386,9 +386,17 @@ func webkitLookupProfile(id uint64) *webkitProfile {
 // added beneath it. The SPA survives the reparent without a reload.
 func webkitAttachHost(window unsafe.Pointer) error {
 	ok := false
-	if !gtkDo(func() { ok = C.ao_wk_host_attach(window) == 1 }) {
+	// The glue copies both strings. A dispatch that did not run in time may
+	// still run, so they are freed only after it did.
+	script, world := C.CString(webkitFindFrameScript), C.CString(webkitFindWorld)
+	if !gtkDo(func() {
+		ok = C.ao_wk_host_attach(window) == 1
+		C.ao_wk_set_find_frame_script(script, world)
+	}) {
 		return errGTKUnavailable
 	}
+	C.free(unsafe.Pointer(script))
+	C.free(unsafe.Pointer(world))
 	if !ok {
 		return fmt.Errorf("browser: the desktop window has no webview to host the browser pane beside")
 	}

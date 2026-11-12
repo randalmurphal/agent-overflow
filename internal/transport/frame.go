@@ -101,6 +101,13 @@ const CapabilityFlushSettlement = "flush-settlement.v1"
 // a client offers no find for its threads.
 const CapabilityThreadFind = "thread-find.v1"
 
+// CapabilityPRReviewDrafts names SubmitPRReview's draft submit: a request
+// naming stored drafts posts them from the store and marks the ones the
+// forge received sent in the same call, one submit per PR at a time. A
+// client reading a backend without it posts the comments itself and marks
+// them sent with a second call.
+const CapabilityPRReviewDrafts = "pr-review-drafts.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -117,6 +124,7 @@ var serverCapabilities = []string{
 	CapabilitySendsPending,
 	CapabilityFlushSettlement,
 	CapabilityThreadFind,
+	CapabilityPRReviewDrafts,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

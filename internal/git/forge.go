@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/forgeattach"
 )
 
@@ -270,12 +271,37 @@ type SubmitReviewResult struct {
 }
 
 // PartialSubmitError reports that the primary review landed but a later
-// provider-specific follow-up call failed.
+// provider-specific follow-up call failed. Unconfirmed is a follow-up the
+// forge may have applied all the same (forgeapi.WriteNotApplied could not
+// prove it did not).
 type PartialSubmitError struct {
 	PostedReview       bool
 	PostedFileComments int
 	FailedPath         string
+	Unconfirmed        bool
 	Err                error
+}
+
+// UnconfirmedSubmitError is a review submit the forge may have applied:
+// its write failed in a way that does not prove the forge refused it (a
+// reset or timeout after sending, a body cut short, a 5xx). A caller must
+// not read it as nothing posted, nor as posted. Every other SubmitReview
+// error posted nothing.
+type UnconfirmedSubmitError struct{ Err error }
+
+func (e *UnconfirmedSubmitError) Error() string {
+	return fmt.Sprintf("the forge did not confirm the review: %v", e.Err)
+}
+
+func (e *UnconfirmedSubmitError) Unwrap() error { return e.Err }
+
+// submitWriteError is the SubmitReview error of a write that failed: as
+// it is when the forge did not apply it, else unconfirmed.
+func submitWriteError(err error) error {
+	if forgeapi.WriteNotApplied(err) {
+		return err
+	}
+	return &UnconfirmedSubmitError{Err: err}
 }
 
 func (e *PartialSubmitError) Error() string {

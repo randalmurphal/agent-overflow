@@ -143,6 +143,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1435724188: 'selected', // GetPRCILogLines
 	2443547196: 'selected', // GetPRDetail
 	106351482: 'workspace', // GetPRMergeConflicts
+	4070778679: 'selected', // GetPRReviewSubmitOutcome
 	73280836: 'thread', // GetPayloadChunk
 	3448919335: 'thread', // GetPayloadData
 	3582798556: 'thread', // GetPayloadPatchSpans

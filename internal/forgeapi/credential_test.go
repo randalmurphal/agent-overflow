@@ -321,13 +321,25 @@ func TestConcurrentRefusedMutationsProbeOutsideTheirSlots(t *testing.T) {
 
 // The probe tells a refusal from a dead login only when it is answered:
 // a probe that fails any other way returns its own error, which the
-// caller retries, never "log in again".
+// caller retries, never "log in again". Whatever the probe did, the
+// mutation's 401 stands: the error proves the write was not applied.
 func TestMutationProbeFailureIsNotADeadLogin(t *testing.T) {
 	t.Parallel()
 	notSetup := func(t *testing.T, err error) {
 		t.Helper()
 		if _, setup := errors.AsType[*SetupError](err); setup {
 			t.Fatalf("a failed probe read as a dead login: %v", err)
+		}
+	}
+	// refused checks a failed probe's error keeps the mutation's 401.
+	refused := func(t *testing.T, err error) {
+		t.Helper()
+		refusal, ok := errors.AsType[*RefusalError](err)
+		if !ok || refusal.Step != RefusalStepProbe {
+			t.Fatalf("err = %v; want a probe RefusalError", err)
+		}
+		if status, ok := errors.AsType[*StatusError](refusal.Refusal); !ok || status.Status != http.StatusUnauthorized || !strings.Contains(status.URL, "/merge") {
+			t.Fatalf("refusal = %v; want the mutation's 401", refusal.Refusal)
 		}
 	}
 	cases := []struct {
@@ -368,6 +380,7 @@ func TestMutationProbeFailureIsNotADeadLogin(t *testing.T) {
 				if _, ok := errors.AsType[*RateLimitedError](err); !ok {
 					t.Fatalf("err = %T %v, want *RateLimitedError", err, err)
 				}
+				refused(t, err)
 			}},
 		{name: "probe 503 is the forge failing",
 			user: func(w http.ResponseWriter, _ *http.Request, _ chan<- struct{}) {
@@ -378,6 +391,7 @@ func TestMutationProbeFailureIsNotADeadLogin(t *testing.T) {
 				if status, ok := errors.AsType[*StatusError](err); !ok || status.Status != http.StatusServiceUnavailable || !strings.HasSuffix(status.URL, "/user") {
 					t.Fatalf("err = %v, want the probe's 503", err)
 				}
+				refused(t, err)
 			}},
 		{name: "probe timeout is transient", timeout: 300 * time.Millisecond,
 			user: func(_ http.ResponseWriter, r *http.Request, _ chan<- struct{}) { <-r.Context().Done() },
@@ -386,6 +400,7 @@ func TestMutationProbeFailureIsNotADeadLogin(t *testing.T) {
 				if _, ok := errors.AsType[*TransientError](err); !ok {
 					t.Fatalf("err = %T %v, want *TransientError", err, err)
 				}
+				refused(t, err)
 			}},
 		{name: "probe canceled is the cancellation", cancel: true,
 			user: func(_ http.ResponseWriter, r *http.Request, arrived chan<- struct{}) {
@@ -397,6 +412,7 @@ func TestMutationProbeFailureIsNotADeadLogin(t *testing.T) {
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("err = %v, want the cancellation", err)
 				}
+				refused(t, err)
 			}},
 	}
 	for _, tc := range cases {
@@ -429,6 +445,9 @@ func TestMutationProbeFailureIsNotADeadLogin(t *testing.T) {
 			}
 			_, err := gl.Do(ctx, Request{Method: http.MethodPut, Path: "projects/1/merge_requests/2/merge", Body: map[string]any{"sha": "abc"}, Timeout: tc.timeout})
 			tc.check(t, err)
+			if !WriteNotApplied(err) {
+				t.Fatalf("err = %v; want it to prove the merge was not applied", err)
+			}
 			if merges.Load() != 2 || probes.Load() != 1 {
 				t.Fatalf("merge attempts %d (want 2), probes %d (want 1)", merges.Load(), probes.Load())
 			}

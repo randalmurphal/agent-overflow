@@ -30,6 +30,11 @@ int ao_wkv_on_main_thread(void);
 // Returns 1 on success, 0 when the window has no content view.
 int ao_wkv_host_attach(void *ns_window);
 
+// ao_wkv_set_find_frame_script keeps the script every view then created gets
+// in every frame at document start, in the named content world: the find's
+// per-frame selection clearing (webkitFindFrameScript). The first call wins.
+void ao_wkv_set_find_frame_script(const char *script, const char *world);
+
 // ao_wkv_focus_app makes the Wails SPA's webview its window's first
 // responder, the handoff of a claimed chord, and answers 1 when AppKit
 // accepted it, 0 otherwise.
