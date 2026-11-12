@@ -66,7 +66,7 @@ function childOf(paneId: string): HTMLElement {
 }
 
 function preview(): HTMLElement | null {
-  return host.querySelector('[data-testid="pane-thread-drop-preview"]');
+  return host.querySelector('[data-testid="pane-drop-seam"]');
 }
 
 function toolTransfer(): DataTransfer {
