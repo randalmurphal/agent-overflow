@@ -1,14 +1,19 @@
 // Dragging from the sidebar into the pane strip (docs/specs/pull-requests.md,
 // "Tools row"), with real Chromium drag events, whose DataTransfer answers
 // nothing during dragover: a thread row shows the drop preview while it
-// hovers and opens as a new pane at the slot; a tools-row button shows the
-// same preview and places its tool at the slot, between two panes or at the
-// end, replacing nothing; an open tool dragged elsewhere moves there, with
-// no preview over its own slot, and is focused; a press on a tool's icon,
-// its label or its padding starts the drag alike (the control is a
-// role="button" element, since Firefox starts no drag from a <button>); a
-// drag that leaves the strip over a pane's content, or is cancelled with
-// Escape, takes its preview along and places nothing.
+// hovers and opens as a new pane at the slot; the preview is a bar on the
+// seam the pane lands in plus the lit half of the pane under the pointer,
+// so the two halves of a pane read differently among panes of one width,
+// and the first and last seams stay whole inside the strip; a tools-row
+// button shows the same preview and places its tool at the slot, between
+// two panes or at the end, replacing nothing; an open tool dragged
+// elsewhere moves there, with no preview over its own slot, and is focused;
+// a pane dragged by its title shows the same preview, none over the slot
+// it holds, and moves to a pane's far half or a divider; a press on a
+// tool's icon, its label or its padding starts the drag alike (the control
+// is a role="button" element, since Firefox starts no drag from a
+// <button>); a drag that leaves the strip over a pane's content, or is
+// cancelled with Escape, takes its preview along and places nothing.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -25,7 +30,39 @@ async function focusedKind(page: Page): Promise<string> {
 }
 
 function preview(page: Page): Locator {
-  return page.getByTestId('pane-thread-drop-preview');
+  return page.getByTestId('pane-drop-seam');
+}
+
+function litHalf(page: Page): Locator {
+  return page.getByTestId('pane-drop-half');
+}
+
+async function box(locator: Locator): Promise<{ left: number; right: number; width: number }> {
+  const rect = await locator.boundingBox();
+  if (!rect) throw new Error('expected a laid-out element');
+  return { left: rect.x, right: rect.x + rect.width, width: rect.width };
+}
+
+/** With a drag in flight, hold the pointer at `fraction` across `target`
+ * until the preview names `insertIndex`. Chromium delivers no dragover for
+ * some synthetic moves, the last of a run included, so the pointer steps a
+ * pixel either way until one arrives. */
+async function hoverUntilSlot(page: Page, target: Locator, fraction: number, insertIndex: number): Promise<void> {
+  const rect = await target.boundingBox();
+  if (!rect) throw new Error('expected a laid-out drop target');
+  const x = rect.x + rect.width * fraction;
+  const y = rect.y + rect.height / 2;
+  await page.mouse.move(x, y, { steps: 6 });
+  let nudge = 1;
+  await expect(async () => {
+    nudge = -nudge;
+    await page.mouse.move(x + nudge, y);
+    await expect(preview(page)).toHaveAttribute('data-insert-index', String(insertIndex), { timeout: 250 });
+  }).toPass();
+}
+
+async function stripTitles(page: Page): Promise<string[]> {
+  return await sections(page).evaluateAll((els) => els.map((el) => el.querySelector('[data-testid="chat-header-title"]')?.textContent?.trim() ?? ''));
 }
 
 async function center(locator: Locator): Promise<{ x: number; y: number }> {
@@ -97,6 +134,87 @@ test('a thread row previews its slot while it hovers the strip and opens there',
   await expect(sections(page).nth(1)).toContainText('Gamma task');
 });
 
+test('the preview is a bar on the seam and the lit half of the pane, different for each half', async ({ harness, page }) => {
+  await seedThreads(harness);
+  await harness.open(page);
+  await twoThreads(page);
+  await page.getByTestId('sidebar-tool-pulls').click({ modifiers: ['ControlOrMeta'] });
+  await expect(page.getByTestId('pulls-pane')).toBeVisible();
+  const host = await box(page.getByTestId('pane-host'));
+  const [first, middle, last] = [await box(sections(page).nth(0)), await box(sections(page).nth(1)), await box(sections(page).nth(2))];
+  // Three panes of one width: the case an outline as wide as a pane cannot tell apart.
+  expect(Math.abs(first.width - middle.width)).toBeLessThanOrEqual(2);
+  expect(Math.abs(last.width - middle.width)).toBeLessThanOrEqual(2);
+
+  const seamCenter = async (): Promise<number> => {
+    const seam = await box(preview(page));
+    expect(seam.width).toBe(4);
+    return (seam.left + seam.right) / 2;
+  };
+  const gamma = page.getByTestId('thread-row').filter({ hasText: 'Gamma task' });
+  await dragInto(page, gamma, sections(page).nth(1), 0.25, async () => {
+    // Left half of the middle pane: the seam between the first two.
+    await expect(preview(page)).toHaveAttribute('data-insert-index', '1');
+    expect(Math.abs(await seamCenter() - middle.left)).toBeLessThanOrEqual(1);
+    await expect(litHalf(page)).toHaveAttribute('data-seam-side', 'left');
+    let lit = await box(litHalf(page));
+    expect(Math.abs(lit.left - middle.left)).toBeLessThanOrEqual(1);
+    expect(Math.abs(lit.width - middle.width / 2)).toBeLessThanOrEqual(1);
+
+    // Right half of the same pane: the seam on its other side.
+    await hoverUntilSlot(page, sections(page).nth(1), 0.75, 2);
+    expect(Math.abs(await seamCenter() - middle.right)).toBeLessThanOrEqual(1);
+    await expect(litHalf(page)).toHaveAttribute('data-seam-side', 'right');
+    lit = await box(litHalf(page));
+    expect(Math.abs(lit.right - middle.right)).toBeLessThanOrEqual(1);
+    expect(Math.abs(lit.width - middle.width / 2)).toBeLessThanOrEqual(1);
+
+    // The strip's two outer seams keep their whole bar inside the strip.
+    await hoverUntilSlot(page, sections(page).nth(0), 0.25, 0);
+    expect((await box(preview(page))).left).toBeGreaterThanOrEqual(host.left);
+    expect((await box(preview(page))).left).toBeLessThanOrEqual(host.left + 1);
+    await hoverUntilSlot(page, sections(page).nth(2), 0.75, 3);
+    expect((await box(preview(page))).right).toBeLessThanOrEqual(host.right);
+    expect((await box(preview(page))).right).toBeGreaterThanOrEqual(last.right - 4);
+    // The bar adds nothing to scroll to.
+    expect(await page.getByTestId('pane-host').evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
+
+    await hoverUntilSlot(page, sections(page).nth(1), 0.75, 2);
+  });
+  await expect(page.getByText('Gamma answer.')).toBeVisible();
+  await expect(preview(page)).toHaveCount(0);
+  await expect(litHalf(page)).toHaveCount(0);
+  expect(await stripKinds(page)).toEqual(['thread', 'thread', 'thread', 'pulls']);
+  await expect(sections(page).nth(2)).toContainText('Gamma task');
+});
+
+test('a pane dragged by its title previews its slot and moves there, also onto a divider', async ({ harness, page }) => {
+  await seedThreads(harness);
+  await harness.open(page);
+  await twoThreads(page);
+  await page.getByTestId('thread-row').filter({ hasText: 'Gamma task' }).click({ modifiers: ['ControlOrMeta'] });
+  await expect(page.getByText('Gamma answer.')).toBeVisible();
+  expect(await stripTitles(page)).toEqual(['Alpha task', 'Beta task', 'Gamma task']);
+  const title = (name: string): Locator => page.locator('section[data-pane-id]').filter({ hasText: `${name} answer.` }).getByTestId('chat-header-title');
+
+  await dragInto(page, title('Alpha'), sections(page).nth(1), 0.25, async () => {
+    // Beta's near half is the slot Alpha already holds.
+    await expect(preview(page)).toHaveCount(0);
+    await hoverUntilSlot(page, sections(page).nth(1), 0.75, 2);
+    await expect(litHalf(page)).toHaveAttribute('data-seam-side', 'right');
+  });
+  await expect.poll(() => stripTitles(page)).toEqual(['Beta task', 'Alpha task', 'Gamma task']);
+  await expect(preview(page)).toHaveCount(0);
+
+  // Onto the divider between the first two panes.
+  await dragInto(page, title('Gamma'), sections(page).nth(0), 0.25, async () => {
+    await hoverUntilSlot(page, page.locator('[data-pane-gap-index="1"]'), 0.5, 1);
+    await expect(preview(page)).toHaveAttribute('data-drop-kind', 'gap');
+    await expect(litHalf(page)).toHaveCount(0);
+  });
+  await expect.poll(() => stripTitles(page)).toEqual(['Beta task', 'Gamma task', 'Alpha task']);
+});
+
 test('a tool dropped between two panes or at the end takes that slot, replacing nothing', async ({ harness, page }) => {
   await seedThreads(harness);
   await harness.open(page);
@@ -140,9 +258,6 @@ test('an open tool dragged elsewhere moves there, with no preview over its own s
     const first = await sections(page).nth(0).boundingBox();
     await page.mouse.move(first!.x + first!.width * 0.25, first!.y + first!.height / 2, { steps: 8 });
     await expect(preview(page)).toHaveAttribute('data-insert-index', '0');
-    // The preview is the moved pane's own width, not a new pane's.
-    const pullsWidth = (await page.locator('section[data-pane-kind="pulls"]').boundingBox())!.width;
-    expect(Math.abs((await preview(page).boundingBox())!.width - pullsWidth)).toBeLessThanOrEqual(2);
   });
   await expect.poll(() => stripKinds(page)).toEqual(['pulls', 'thread', 'thread']);
   expect(await focusedKind(page)).toBe('pulls');

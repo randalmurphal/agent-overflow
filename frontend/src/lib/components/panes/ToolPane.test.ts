@@ -264,7 +264,7 @@ describe('a tool dragged from the tools row', () => {
   }
 
   function preview(container: HTMLElement): HTMLElement | null {
-    return container.querySelector<HTMLElement>('[data-testid="pane-thread-drop-preview"]');
+    return container.querySelector<HTMLElement>('[data-testid="pane-drop-seam"]');
   }
 
   it('previews the slot during a silent dragover and places the tool there, replacing nothing', async () => {

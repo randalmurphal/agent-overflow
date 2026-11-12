@@ -13,12 +13,12 @@
   } from '../../stores/panes.svelte';
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
   import { getPaneLayoutItems, isCompanionKind, isToolKind } from '../../stores/paneLayout.svelte';
-  import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
+  import { setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import { REVEAL_PANE_EVENT } from '../../stores/eventNames';
   import { compactShownPaneId, getCompactScreen, isCompactLayout, noteCompactPaneShown } from '../../stores/layoutMode.svelte';
   import PaneDivider from './PaneDivider.svelte';
   import { measurePane } from './measurePane';
-  import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
+  import { createPaneThreadDrag, PANE_DROP_SEAM_PX } from './usePaneThreadDrag.svelte';
 
   const PANE_SELECTOR = '[data-pane-id]';
   type PaneRevealAlignment = 'start' | 'end';
@@ -42,14 +42,12 @@
     ),
   );
   let hostEl: HTMLDivElement | undefined = $state(undefined);
-  let scrollLeft = $state(0);
-  let scrollClientWidth = $state(0);
   // The sections' offsets and the strip width they were measured at, one
   // snapshot: every offset in it holds for `width`, so a reader at another
   // width (a scroll delivered between a resize and the host's observer)
   // can tell it is stale. Not reactive: consumed imperatively by the
-  // drag/drop preview math and the compact measurement, and offset churn
-  // during resize drags would only feed GC.
+  // compact measurement, and offset churn during resize drags would only
+  // feed GC.
   interface StripGeometry {
     width: number;
     offsets: Map<string, number>;
@@ -63,30 +61,9 @@
     return null;
   }
 
-  function paneOffsetLeftFallback(paneId: string): number {
-    return paneElementById(paneId)?.offsetLeft ?? 0;
-  }
-
-  function paneMeasuredWidth(paneId: string): number {
-    const cached = getPaneWidth(paneId);
-    if (cached > 0) return cached;
-    return paneElementById(paneId)?.getBoundingClientRect().width ?? 0;
-  }
-
   const drag = createPaneThreadDrag({
     getHostEl: () => hostEl,
     getLayoutItems: () => layoutItems,
-    getMinPaneWidth: () => minPaneWidth,
-    getScrollLeft: () => scrollLeft,
-    setScrollLeft: (value) => {
-      scrollLeft = value;
-    },
-    getScrollClientWidth: () => scrollClientWidth,
-    getPaneOffsetLeft: (paneId) => {
-      const cached = stripGeometry.offsets.get(paneId);
-      return cached !== undefined ? cached : paneOffsetLeftFallback(paneId);
-    },
-    getPaneMeasuredWidth: paneMeasuredWidth,
   });
 
   // A pane's own observer saw it move or resize: republish the whole
@@ -125,8 +102,6 @@
     const nextScrollLeft = clampStripScrollLeft(el, el.scrollLeft);
     if (nextScrollLeft !== el.scrollLeft) el.scrollLeft = nextScrollLeft;
     const appliedScrollLeft = el.scrollLeft;
-    scrollLeft = appliedScrollLeft;
-    scrollClientWidth = el.clientWidth;
 
     // A structural change can move the pane an active reveal is targeting
     // even when the old numeric destination remains legal. Re-resolve from
@@ -161,7 +136,6 @@
     const el = hostEl;
     if (!el) return;
     const publishScrollPosition = (): void => {
-      scrollLeft = el.scrollLeft;
       measureCompactShownPane();
     };
     // A horizontal wheel/trackpad gesture over the strip is user scroll
@@ -479,7 +453,6 @@
     const target = paneRevealTarget(paneEl, el.scrollLeft);
     if (target === null) return;
     el.scrollLeft = clampStripScrollLeft(el, target.left);
-    scrollLeft = el.scrollLeft;
   }
 
   function scrollPaneIntoView(paneEl: HTMLElement): void {
@@ -543,8 +516,12 @@
 >
   {#if layoutItems.length === 0}
     <section
-      class="flex h-full min-w-full flex-1 items-center justify-center bg-transparent px-8"
+      class={[
+        'flex h-full min-w-full flex-1 items-center justify-center px-8',
+        drag.dropTarget ? 'bg-accent/10 ring-2 ring-accent/70 ring-inset' : 'bg-transparent',
+      ].join(' ')}
       data-testid="pane-host-empty"
+      data-drop-kind={drag.dropTarget?.kind}
     >
       <p class="text-sm text-fg-muted">Select a thread or create a new one to get started.</p>
     </section>
@@ -635,8 +612,6 @@
           data-pane-focused={focusedPaneId === item.paneId}
           onpointerdown={() => handlePanePointerDown(item.paneId)}
           onfocusin={() => handlePaneFocusIn(item.paneId)}
-          ondrop={(event) => drag.onPaneDrop(event, item.paneId)}
-          ondragend={drag.onPaneDragEnd}
         >
           <ToolPane
             paneId={item.paneId}
@@ -667,8 +642,6 @@
             data-pane-paired={paired}
             onpointerdown={() => handlePanePointerDown(item.paneId)}
             onfocusin={() => handlePaneFocusIn(item.paneId)}
-            ondrop={(event) => drag.onPaneDrop(event, item.paneId)}
-            ondragend={drag.onPaneDragEnd}
           >
             <RenderBoundary label="This thread pane" testId="pane-render-error">
               <ChatView {pane} onPaneDragStart={(event) => drag.onPaneDragStart(event, item.paneId)} />
@@ -715,12 +688,25 @@
         />
       </div>
     {/if}
-    {#if drag.dropTarget}
+    <!-- Where a dragged thread, tool or pane lands: a bar on the seam, and
+         the half of the block under the pointer that chose it, fading away
+         from the bar. -->
+    {#if drag.dropTarget && drag.dropIndicator}
+      {@const lit = drag.dropIndicator.lit}
+      {#if lit}
+        <div
+          class="pointer-events-none absolute top-0 bottom-0 z-40 from-accent/25 to-accent/0 {lit.seam === 'left' ? 'bg-linear-to-r' : 'bg-linear-to-l'}"
+          style:left={`${lit.left}px`}
+          style:width={`${lit.width}px`}
+          data-testid="pane-drop-half"
+          data-seam-side={lit.seam}
+        ></div>
+      {/if}
       <div
-        class="pointer-events-none absolute top-0 bottom-0 z-40 rounded-[var(--radius-field)] border-2 border-accent/70 bg-accent/10"
-        style:left={`${drag.dropPreviewLeft}px`}
-        style:width={`${drag.dropPreviewWidth}px`}
-        data-testid="pane-thread-drop-preview"
+        class="pointer-events-none absolute top-0 bottom-0 z-40 rounded-full bg-accent"
+        style:left={`${drag.dropIndicator.seamLeft}px`}
+        style:width={`${PANE_DROP_SEAM_PX}px`}
+        data-testid="pane-drop-seam"
         data-drop-kind={drag.dropTarget.kind}
         data-insert-index={drag.dropTarget.insertIndex}
       ></div>
