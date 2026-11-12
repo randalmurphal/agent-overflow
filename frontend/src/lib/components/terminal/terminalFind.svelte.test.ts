@@ -73,13 +73,23 @@ function fakeAddon() {
     clearActiveDecoration: () => { calls.push({ op: 'clearActiveDecoration' }); },
     onDidChangeResults: results.event,
   };
+  const resizes = emitter<{ cols: number; rows: number }>();
+  // Where 'match' sits: the only match position the fake knows.
+  const MATCH = { start: { x: 16, y: 250 }, end: { x: 22, y: 250 } };
   const term: TerminalFindTerminal = {
+    cols: 80,
     hasSelection: () => selection !== '',
+    getSelectionPosition: () => (selection === 'match' ? MATCH : selection ? { start: { x: 0, y: 5 }, end: { x: 5, y: 5 } } : undefined),
+    select: (column, row, length) => {
+      calls.push({ op: `select:${column},${row},${length}` });
+      select('match');
+    },
     clearSelection: () => {
       calls.push({ op: 'clearSelection' });
       select('');
     },
     onSelectionChange: selectionChanges.event,
+    onResize: resizes.event,
   };
   return {
     search,
@@ -92,10 +102,16 @@ function fakeAddon() {
     selection: () => selection,
     /** The reader selects text, or clears their selection with ''. */
     userSelects: (text: string) => select(text === '' ? '' : 'user'),
+    /** A change of rows, inside which xterm drops the selection. */
+    resizeRows: () => {
+      resizes.fire({ cols: 80, rows: 10 });
+      select('');
+      bufferChanges.fire();
+    },
     answer(resultIndex: number, resultCount: number) { answer = { resultIndex, resultCount }; },
     fail(err: Error | null) { failure = err; },
     ops: () => calls.map((c) => c.op),
-    listenerCount: () => results.size + bufferChanges.size + selectionChanges.size,
+    listenerCount: () => results.size + bufferChanges.size + selectionChanges.size + resizes.size,
   };
 }
 
@@ -243,7 +259,7 @@ describe('createTerminalFind', () => {
 
   it('dispose drops every listener', () => {
     const { addon, find } = setup();
-    expect(addon.listenerCount()).toBe(3);
+    expect(addon.listenerCount()).toBe(4);
     find.dispose();
     expect(addon.listenerCount()).toBe(0);
   });
@@ -331,6 +347,32 @@ describe('createTerminalFind re-search', () => {
     addon.calls.length = 0;
     find.clear();
     expect(addon.ops()).toEqual(['clearDecorations', 'clearSelection']);
+  });
+
+  it('selects its match again after a change of rows dropped it', async () => {
+    const { addon, find } = setup();
+    addon.answer(1, 2);
+    find.search('needle');
+    addon.calls.length = 0;
+    addon.resizeRows();
+    expect(addon.selection()).toBe('');
+    await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_DELAY_MS);
+    expect(addon.ops()).toEqual(['select:16,250,6', 'clearDecorations', 'recount']);
+    expect(addon.selection()).toBe('match');
+    expect(find.result).toMatchObject({ count: 2, current: 1, pending: false });
+  });
+
+  it('a reader selection after the resize wins over the held match', async () => {
+    const { addon, find } = setup();
+    addon.answer(1, 2);
+    find.search('needle');
+    addon.resizeRows();
+    await Promise.resolve();
+    addon.userSelects('some output');
+    addon.calls.length = 0;
+    await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_MAX_WAIT_MS);
+    expect(addon.calls).toEqual([]);
+    expect(addon.selection()).toBe('user');
   });
 
   it('a clear cancels a scheduled re-search', async () => {

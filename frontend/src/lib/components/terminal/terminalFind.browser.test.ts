@@ -164,6 +164,16 @@ describe('terminal find on a real xterm', () => {
     expect(term.getSelection()).toBe('row 5');
   });
 
+  it('keeps the current match through a change of rows, which drops xterm\'s selection', async () => {
+    setPaneFindQuery(KEY, 'needle');
+    stepPaneFind(KEY, 1);
+    expect(result().current).toBe(0);
+    term.resize(term.cols, 10);
+    expect(term.hasSelection()).toBe(false);
+    await vi.waitFor(() => expect(result()).toMatchObject({ count: 2, current: 0, pending: false }), { timeout: 2000 });
+    expect(term.getSelectionPosition()?.start.y).toBe(NEEDLE_ROWS[0]);
+  });
+
   it('re-searches once the reader\'s selection goes, leaving none', async () => {
     setPaneFindQuery(KEY, 'needle');
     term.select(0, 5, 5);

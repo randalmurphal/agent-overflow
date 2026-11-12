@@ -32,7 +32,7 @@
   import { terminalFindKey } from './terminalFind.svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { paneFindSurface } from '../panes/paneFindRegion';
-  import { dropPaneFind, openPaneFind } from '../../stores/paneFind.svelte';
+  import { dropPaneFind, hasPaneFindProvider, openPaneFind } from '../../stores/paneFind.svelte';
 
   interface Props {
     surface: ThreadTerminalSurfaceContext;
@@ -194,8 +194,9 @@
   // Each tab has its own find (terminalFind.svelte.ts). The pane's find
   // commands reach the active tab's through the surface declaration; the
   // tab strip's button is the keyboard-free entry, since mod+f inside the
-  // xterm belongs to the shell. A close from the bar returns focus to the
-  // terminal (the bar's fallback focus).
+  // xterm belongs to the shell. It shows once the active tab's find has
+  // registered. A close from the bar returns focus to the terminal (the
+  // bar's fallback focus).
   function activeFindKey(): string | null {
     const terminalID = handle.activeTerminalID;
     return terminalID ? terminalFindKey(surface.paneId, terminalID) : null;
@@ -296,7 +297,7 @@
     onClose={closeTerminal}
     onSelect={selectTerminal}
     onRefresh={refreshActiveTerminal}
-    onFind={openFind}
+    onFind={hasPaneFindProvider(activeFindKey()) ? openFind : undefined}
     onCollapse={collapsible ? collapseDrawer : undefined}
     workspacePath={surface.workspacePath}
   />

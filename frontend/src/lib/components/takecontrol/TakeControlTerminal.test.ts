@@ -74,6 +74,10 @@ const mocks = vi.hoisted(() => {
     }
     clear(): void {}
     reset(): void {}
+    getSelectionPosition(): undefined {
+      return undefined;
+    }
+    select(): void {}
     onSelectionChange(): { dispose(): void } {
       return { dispose: (): void => {} };
     }

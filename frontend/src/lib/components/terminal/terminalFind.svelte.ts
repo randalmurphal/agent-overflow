@@ -16,10 +16,13 @@
 //   that match selected and leaves no selection where there was none. While
 //   the reader holds a selection of their own it waits, pending, until that
 //   selection goes or the reader steps or types a query.
+// - xterm drops the selection when the rows change (the bar opening, a
+//   drawer resize). Find's match is not the reader's to lose that way: the
+//   re-search selects it again where it was.
 // - `clear` removes the decorations, and the selection only while it is
 //   find's.
 
-import type { IDisposable, IEvent } from '@xterm/xterm';
+import type { IBufferRange, IDisposable, IEvent } from '@xterm/xterm';
 import type {
   ISearchDecorationOptions,
   ISearchOptions,
@@ -65,9 +68,14 @@ export interface TerminalFindSearch {
 
 /** The slice of the xterm the provider reads. */
 export interface TerminalFindTerminal {
+  readonly cols: number;
   hasSelection(): boolean;
+  getSelectionPosition(): IBufferRange | undefined;
+  select(column: number, row: number, length: number): void;
   clearSelection(): void;
   readonly onSelectionChange: IEvent<void>;
+  /** Fires inside a resize, before xterm drops the selection for it. */
+  readonly onResize: IEvent<{ cols: number; rows: number }>;
 }
 
 /** What a surface's built terminal hands its find (`BuiltTerminal`). */
@@ -135,6 +143,10 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
   let ownsSelection = false;
   // Inside a call of find's: the selection changes are its own.
   let selecting = false;
+  // Inside a resize, whose selection drop is xterm's, not the reader's.
+  let resizing = false;
+  // Find's match as it was when a resize dropped it.
+  let heldMatch: IBufferRange | undefined;
 
   const result: PaneFindResult = {
     get count() { return count; },
@@ -172,6 +184,7 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
   function run(find: (needle: string) => boolean): void {
     quietly(() => {
       try {
+        heldMatch = undefined;
         ownsSelection = find(query) && term.hasSelection();
         error = null;
       } catch (err) {
@@ -188,6 +201,10 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
     if (!query || error !== null) return;
     if (!ownsSelection && term.hasSelection()) return;
     const kept = ownsSelection;
+    const held = heldMatch;
+    if (kept && held && !term.hasSelection()) {
+      quietly(() => term.select(held.start.x, held.start.y, (held.end.y - held.start.y) * term.cols + held.end.x - held.start.x));
+    }
     // The addon repaints only for a new term; dropping its decorations
     // makes the same term new. It searches from the selection, so find's
     // match stays the current one.
@@ -223,8 +240,14 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
       pending = true;
       refresher.request();
     }),
+    term.onResize(() => {
+      if (!ownsSelection) return;
+      heldMatch = term.getSelectionPosition() ?? heldMatch;
+      resizing = true;
+      queueMicrotask(() => { resizing = false; });
+    }),
     term.onSelectionChange(() => {
-      if (selecting) return;
+      if (selecting || resizing) return;
       ownsSelection = false;
       // The reader's selection went: a re-search held for it may run.
       if (pending && !term.hasSelection()) refresher.request();
@@ -234,6 +257,7 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
   function clear(): void {
     const hadQuery = query !== '';
     query = '';
+    heldMatch = undefined;
     reset();
     refresher.reset();
     if (!hadQuery) return;

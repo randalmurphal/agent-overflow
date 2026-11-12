@@ -64,8 +64,13 @@ test('the key row types into the find query, never the shell, while find has foc
   const setup = await openDrawerThread(page, 'Phone terminal find keys');
   try {
     await printTangos(page, setup);
-    const before = await replayOf(setup.host, setup.threadId);
     const key = (id: string) => page.getByTestId(`terminal-key-${id}`);
+    // What the shell printed after the tangos, without its prompts. The bar
+    // resizes the terminal, so the shell may redraw its prompt; anything
+    // typed echoes after it (Up recalls the printf line).
+    const after = async () => (await replayOf(setup.host, setup.threadId))
+      .split('tango-z').at(-1)!
+      .replace(/sh-[\d.]+\$/g, '');
 
     await page.getByTestId('terminal-find').click();
     const bar = drawer(page).getByTestId('pane-find-bar');
@@ -78,7 +83,8 @@ test('the key row types into the find query, never the shell, while find has foc
     await expect(bar.getByTestId('pane-find-count')).toHaveText('3/3');
     for (const id of ['up', 'tab', 'ctrl']) {
       await expect(key(id)).toHaveAttribute('aria-disabled', 'true');
-      await key(id).click();
+      // Playwright waits on aria-disabled; the tap still lands on a phone.
+      await key(id).click({ force: true });
     }
     await expect(input).toHaveValue(QUERY);
     await expect(input).toBeFocused();
@@ -86,12 +92,14 @@ test('the key row types into the find query, never the shell, while find has foc
     await key('esc').click();
     await expect(bar).toHaveCount(0);
     await expect(terminalInput(page)).toBeFocused();
-    // The shell saw none of it: nothing echoed after its prompt.
-    expect(await replayOf(setup.host, setup.threadId)).toBe(before);
+    // The shell saw none of it: no character, no recalled line.
+    const quiet = await after();
+    expect(quiet).not.toMatch(/[-~/]|tango|printf/);
 
     await expect(key('slash')).toHaveAttribute('aria-disabled', 'false');
     await key('slash').click();
-    await expect.poll(() => replayOf(setup.host, setup.threadId)).toBe(`${before}/`);
+    await expect.poll(after).toContain('/');
+    expect(await after()).not.toMatch(/[-~]|printf/);
   } finally {
     await setup.host.close();
   }

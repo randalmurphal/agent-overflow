@@ -334,7 +334,8 @@ describe('App integration — terminal drawer', () => {
       // The last tab is active, and the open focuses it.
       await waitFor(() => expect(getTerminalFocused('main')).toBe(true));
       await waitFor(() => expect(rendered.getByTestId('terminal-tab-tab-b').getAttribute('aria-selected')).toBe('true'));
-      await fireEvent.click(rendered.getByTestId('terminal-find'));
+      // The button shows once the tab's find has registered.
+      await fireEvent.click(await waitFor(() => rendered.getByTestId('terminal-find')));
       await waitFor(() => expect(document.activeElement).toBe(rendered.getByTestId('pane-find-input')));
       expect(getTerminalFocused('main')).toBe(true);
       return rendered;

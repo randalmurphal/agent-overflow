@@ -48,7 +48,8 @@ notification `buildTerminal` sends for output, resizes, `clear()` and
 after the replay is parsed (the write callback) and a frame after the grid is
 fitted to it, or the restored match leaves the view. Find owns
 only the selection its search made: a re-search keeps it, and waits while the
-reader holds a selection of their own.
+reader holds a selection of their own. A change of rows drops xterm's
+selection; the re-search selects find's match again.
 
 Extend the `FakeTerminal` in `TerminalBody.test.ts` for component tests. Reset
 `setCompactLayoutForTest` after every test that changes it.
