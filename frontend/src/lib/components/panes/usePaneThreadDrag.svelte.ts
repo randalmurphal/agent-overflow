@@ -132,8 +132,8 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   // Every sidebar drag ends here, wherever it ends: a dragend at its source
   // (a drop, Escape, a drop outside the window) or a drop that bubbles to
   // the document. A source that unmounted mid-drag gets no dragend; leaving
-  // the strip, or the next pointer event over it (onShieldRelease), clears
-  // the strip's state then.
+  // the strip clears the preview then, and the next pointer event over the
+  // strip (onShieldPointer) ends the drag.
   function onDocumentDragEnd(): void {
     draggingPaneId = null;
     clearDropState();
@@ -145,6 +145,10 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
 
   function isThreadDrag(event: DragEvent): boolean {
     return event.dataTransfer?.types.includes(THREAD_ROW_DRAG_MIME) ?? false;
+  }
+
+  function isPaneDrag(event: DragEvent): boolean {
+    return event.dataTransfer?.types.includes(PANE_REORDER_DRAG_MIME) ?? false;
   }
 
   function isToolDrag(event: DragEvent): boolean {
@@ -312,7 +316,9 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
       updateDragAutoScroll(event.clientX);
       return;
     }
-    if (draggingPaneId) {
+    // The drag's own type as well as the pane the strip saw start: a pane
+    // drag that ended unheard must not claim the next drag.
+    if (draggingPaneId && isPaneDrag(event)) {
       event.preventDefault();
       shielding = true;
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
@@ -341,12 +347,12 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   function onHostDrop(event: DragEvent): void {
     if (isThreadDrag(event)) void handleThreadDrop(event);
     else if (isToolDrag(event)) handleToolDrop(event);
-    else {
-      // Any other drag (dragged text, a file) is not the strip's: it goes
-      // to whatever inside a pane takes it.
+    else if (isPaneDrag(event)) {
       const paneId = draggingPaneId ?? event.dataTransfer?.getData(PANE_REORDER_DRAG_MIME);
       if (paneId) handleReorderDrop(event, paneId);
     }
+    // Any other drag (dragged text, a file) is not the strip's: it goes to
+    // whatever inside a pane takes it.
   }
 
   // A dragleave bubbles from every element the pointer leaves, the pane
@@ -359,12 +365,17 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     clearDropState();
   }
 
-  // The shield covers the strip. A drag that leaves it left the strip, for
-  // the window or for a surface above the strip. A pointer event reaches it
-  // only when no drag is in flight: the drag ended with no dragend or drop
-  // the document heard, as when its source unmounted mid-drag.
-  function onShieldRelease(): void {
+  // The shield covers the strip, so a drag that leaves it left the strip,
+  // for the window or for a surface above the strip. The drag goes on.
+  function onShieldDragLeave(): void {
     clearDropState();
+  }
+
+  // A pointer event reaches the shield only when no drag is in flight: the
+  // drag ended with no dragend or drop the document heard, as when its
+  // source unmounted mid-drag.
+  function onShieldPointer(): void {
+    onDocumentDragEnd();
   }
 
   function destroy(): void {
@@ -394,7 +405,8 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     onPaneDragEnd,
     onHostDrop,
     onHostDragLeave,
-    onShieldRelease,
+    onShieldDragLeave,
+    onShieldPointer,
     destroy,
   };
 }

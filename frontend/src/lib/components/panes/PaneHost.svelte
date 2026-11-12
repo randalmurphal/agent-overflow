@@ -18,6 +18,7 @@
   import { compactShownPaneId, getCompactScreen, isCompactLayout, noteCompactPaneShown } from '../../stores/layoutMode.svelte';
   import PaneDivider from './PaneDivider.svelte';
   import { measurePane } from './measurePane';
+  import { airspaceSurface } from '../../utils/paneAirspace.svelte';
   import { createPaneThreadDrag, PANE_DROP_SEAM_PX } from './usePaneThreadDrag.svelte';
 
   const PANE_SELECTOR = '[data-pane-id]';
@@ -722,15 +723,17 @@
 </div>
 <!-- Takes a pane-placing drag off the panes while it is over the strip
      (usePaneThreadDrag `shielding`). Outside the scroller, so the drag is
-     over nothing the browser can scroll. -->
+     over nothing the browser can scroll. An airspace surface, so a native
+     browser view, which paints above the page, yields to it. -->
 {#if drag.shielding}
   <div
     class="absolute inset-0 z-50"
     role="presentation"
     data-testid="pane-drag-shield"
-    ondragleave={drag.onShieldRelease}
-    onpointermove={drag.onShieldRelease}
-    onpointerdown={drag.onShieldRelease}
+    use:airspaceSurface
+    ondragleave={drag.onShieldDragLeave}
+    onpointermove={drag.onShieldPointer}
+    onpointerdown={drag.onShieldPointer}
   ></div>
 {/if}
 </div>

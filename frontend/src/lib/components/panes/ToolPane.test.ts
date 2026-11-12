@@ -81,7 +81,7 @@ function stubRect(el: HTMLElement, left: number, width: number): void {
 function paneDataTransfer(): DataTransfer {
   const data = new Map<string, string>();
   return {
-    types: [],
+    get types() { return [...data.keys()]; },
     dropEffect: 'none',
     effectAllowed: 'none',
     getData: (type: string) => data.get(type) ?? '',

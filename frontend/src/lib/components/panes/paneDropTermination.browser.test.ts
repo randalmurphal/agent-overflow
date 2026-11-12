@@ -143,6 +143,8 @@ it('takes the shield down on a pointer event, which no drag in flight delivers',
     await raf();
     expect(shield(), type).toBeNull();
     expect(preview(), type).toBeNull();
+    // No drag is in flight: the sidebar's record goes too.
+    expect(toolDragPayloadForEvent(silent), type).toBeNull();
   }
 });
 

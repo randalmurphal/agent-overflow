@@ -30,6 +30,7 @@ import {
 import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { installThreadSwitchMocks, makeThread } from '../../../test/helpers/chat';
 import { prependThread } from '../../stores/threads.svelte';
+import { airspaceSurfaces } from '../../utils/paneAirspace.svelte';
 import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
   beginThreadRowDrag,
@@ -86,7 +87,7 @@ describe('PaneHost drag and drop', () => {
     let dropEffect = 'none';
     let effectAllowed = 'none';
     return {
-      types: [],
+      get types() { return [...data.keys()]; },
       get dropEffect() { return dropEffect; },
       set dropEffect(value: string) { dropEffect = value; },
       get effectAllowed() { return effectAllowed; },
@@ -477,6 +478,8 @@ describe('PaneHost drag and drop', () => {
     await tick();
     const raised = shield();
     expect(raised).not.toBeNull();
+    // A native browser view paints above the page: it yields to the shield.
+    expect(airspaceSurfaces()).toEqual([raised]);
     // Outside the scroller, so nothing it covers can be scrolled by the drag.
     expect(rendered.getByTestId('pane-host').contains(raised)).toBe(false);
     expect(rendered.getByTestId('pane-strip').contains(raised)).toBe(true);
@@ -501,6 +504,7 @@ describe('PaneHost drag and drop', () => {
     leave(pane('right'), 1200);
     await tick();
     expect(shield()).toBeNull();
+    expect(airspaceSurfaces()).toEqual([]);
     expect(rendered.queryByTestId('pane-drop-seam')).toBeNull();
 
     // Leaving the shield is leaving the strip, wherever the pointer is: a
@@ -659,6 +663,48 @@ describe('PaneHost drag and drop', () => {
     expect(foreignDrop(pane('source'))).toBe(false);
     expect(foreignDrop(pane('review-source'))).toBe(false);
     expect(layoutOrder()).toEqual(['source', 'review-source']);
+  });
+
+  it('claims only a drag that carries a pane: one that ended unheard leaves the next drag alone', async () => {
+    // The title's drag started and no dragend followed: its source went away mid-drag.
+    const { rendered, pane } = await startReorder('a');
+    const text = { types: ['text/plain'], getData: () => '' } as unknown as DataTransfer;
+
+    await dispatchDrag(pane('b'), 'dragover', text, 900);
+    await tick();
+    expect(rendered.queryByTestId('pane-drag-shield')).toBeNull();
+    expect(rendered.queryByTestId('pane-drop-seam')).toBeNull();
+
+    const drop = new Event('drop', { bubbles: true, cancelable: true }) as DragEvent;
+    Object.defineProperty(drop, 'dataTransfer', { value: text });
+    Object.defineProperty(drop, 'clientX', { value: 900 });
+    pane('b').dispatchEvent(drop);
+    expect(drop.defaultPrevented).toBe(false);
+    expect(layoutOrder()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('ends the pane drag on a pointer event over the shield, not when the drag leaves it', async () => {
+    const { rendered, pane, dataTransfer } = await startReorder('a');
+    const shield = () => rendered.queryByTestId('pane-drag-shield');
+    const hover = async (): Promise<void> => {
+      await dispatchDrag(pane('b'), 'dragover', dataTransfer, 900);
+      await tick();
+      expect(shield()).not.toBeNull();
+    };
+    await hover();
+    expect(pane('a').className).toContain('opacity-55');
+
+    // The drag left the strip and is still in flight: its pane stays dimmed.
+    await fireEvent.dragLeave(shield()!);
+    await tick();
+    expect(shield()).toBeNull();
+    expect(pane('a').className).toContain('opacity-55');
+
+    await hover();
+    await fireEvent.pointerMove(shield()!);
+    await tick();
+    expect(shield()).toBeNull();
+    expect(pane('a').className).not.toContain('opacity-55');
   });
 
   it('drop on the right end-cap appends', async () => {
