@@ -1,14 +1,15 @@
 // What every caller of a worktree removal shares: applying the rows the
 // removal answered with, and telling the person which terminals it closes.
-import { GitWorktreeStatus, type WorktreeStatus } from './bindings';
+import { GitWorktreeStatus, RemoveOtherWorktree, type WorktreeStatus } from './bindings';
 import { syncThreadReply } from './panes.svelte';
+import { threadRowFrameMark } from './threadRowFrames';
 import { threadHasScope } from '../transport/entityScopes';
 import type { GitWorkspaceState, WorkspaceRef } from '../types/git';
 import type { Thread } from '../types/models';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
 import { sameNormalizedPath } from '../utils/path';
-import { workspaceRefForThread } from '../utils/workspaceKey';
+import { workspaceRefForProject, workspaceRefForThread } from '../utils/workspaceKey';
 
 /** What `RemoveOtherWorktree` and `GitRemoveWorktree` answer (app.WorktreeRemoval). */
 export interface WorktreeRemovalResult {
@@ -26,6 +27,19 @@ export interface WorktreeRemovalResult {
  */
 export function syncRemovedWorktreeThreads(removal: WorktreeRemovalResult | null | undefined, mark: number): void {
   for (const thread of removal?.reattached ?? []) syncThreadReply(thread, mark);
+}
+
+/**
+ * Removes the project worktree at `worktreePath` and applies the rows it
+ * moved. A cleanup names the path it confirmed or cut, never "whatever this
+ * thread is attached to now": another client can move the thread first, and
+ * resolving its attachment would then remove a worktree nobody asked about.
+ */
+export async function removeWorktreeAt(projectId: string | undefined, worktreePath: string): Promise<void> {
+  const ws = workspaceRefForProject(projectId, '');
+  if (!ws) throw new Error(`Cannot remove worktree ${worktreePath}: it names no project.`);
+  const mark = threadRowFrameMark();
+  syncRemovedWorktreeThreads((await RemoveOtherWorktree(ws, worktreePath, false)) as WorktreeRemovalResult, mark);
 }
 
 /** The confirmation line for the terminals a removal closes, or '' for none. */

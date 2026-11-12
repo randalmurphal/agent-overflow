@@ -340,6 +340,9 @@ type Config struct {
 	// Test knob, like KeepaliveInterval: only a harness boot sets it
 	// (diagenv.HarnessTiming).
 	WatermarkInterval time.Duration
+	// CoalesceWindow overrides DefaultCoalesceWindow. Zero defaults to it.
+	// Test knob, like KeepaliveInterval.
+	CoalesceWindow time.Duration
 
 	// SessionRecheckInterval is how often an established connection
 	// re-asks whether the session it named is still live
@@ -2293,6 +2296,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		keepaliveInterval: s.cfg.KeepaliveInterval,
 		pongTimeout:       s.cfg.KeepalivePongTimeout,
 		watermarkInterval: s.cfg.WatermarkInterval,
+		coalesceWindow:    s.cfg.CoalesceWindow,
 		sessionConns:      s.sessionConns,
 		sessions:          s.cfg.Sessions,
 		stepUpProof:       s.cfg.StepUpProof,

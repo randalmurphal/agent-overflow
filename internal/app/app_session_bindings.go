@@ -250,6 +250,8 @@ func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {
 	if err := a.store.UpdateThread(sanitized); err != nil {
 		return store.Thread{}, err
 	}
+	// The model fields changed (SameModelFields above), and clients show them.
+	a.announceThread(triage.ThreadActionFull, threadID)
 	return sanitized, nil
 }
 

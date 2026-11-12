@@ -30,13 +30,13 @@ describe('<ArchivedThreads> delete of a thread on a worktree', () => {
 
   it('says how many terminals close and applies the rows the removal moved', async () => {
     const worktree = '/tmp/wt/archived';
-    const archived = makeThread({ id: 'archived-on-wt', archived: true, workspacePath: worktree, worktreePath: worktree });
+    const archived = makeThread({ id: 'archived-on-wt', archived: true, projectId: 'project-1', workspacePath: worktree, worktreePath: worktree });
     const sibling = makeThread({ id: 'sibling-on-wt', workspacePath: worktree, worktreePath: worktree, branch: 'feature' });
     const siblingPane = await buildPane(sibling, [], 'pane-sibling');
     setBindingMock('ListArchivedThreads', async () => [archived]);
     setBindingMock('GitWorktreeStatus', async () => ({ path: worktree, terminals: 1 }));
     setBindingMock('StopSession', async () => {});
-    setBindingMock('GitRemoveWorktree', async () => ({
+    const removed = setBindingMock('RemoveOtherWorktree', async () => ({
       workspace: { workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' },
       reattached: [{ ...sibling, workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' }],
     }));
@@ -48,6 +48,7 @@ describe('<ArchivedThreads> delete of a thread on a worktree', () => {
     await fireEvent.click(getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(deleted).toHaveBeenCalledWith('archived-on-wt'));
+    expect(removed).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: '' }, worktree, false);
     expect(siblingPane.thread?.worktreePath).toBe('');
     expect(siblingPane.thread?.branch).toBe('main');
   });

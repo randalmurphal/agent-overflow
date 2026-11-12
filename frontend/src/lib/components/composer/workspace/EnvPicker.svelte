@@ -37,6 +37,7 @@
   import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
+  import { workspaceRefForProject } from '../../../utils/workspaceKey';
   import { pathBasename } from '../../../utils/pathDisplay';
   import {
     clearWorktreeIntent,
@@ -151,7 +152,10 @@
   let refreshHeld = false;
 
   async function refreshWorktreeList(token: RefreshToken): Promise<void> {
-    const ws = workspace;
+    // The list is the project's, so it is read from the project root. The
+    // pane's own workspace can name a worktree a removal just deleted until
+    // its row catches up, and the backend refuses a path that is gone.
+    const ws = workspaceRefForProject(workspace?.projectId, '');
     if (!ws) return;
     if (removing) {
       refreshHeld = true;

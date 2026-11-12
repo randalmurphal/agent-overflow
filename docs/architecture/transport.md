@@ -437,7 +437,12 @@ Every connection coalesces events over a small bounded window to reduce webview
 message overhead. A single event keeps its ordinary frame shape; multiple
 events use `type:"batch"`. Non-loopback connections may also negotiate
 permessage-deflate. Coalescing preserves channel sequence order and respects
-the configured event-count bound.
+the configured event-count bound. An RPC reply goes through the connection's
+event pump, which first writes every event already queued for that
+connection, so an event a method emitted before returning reaches the client
+before its reply; item deltas a background lease is merging stay held. Carried sockets (`/ws/backend/<id>`) and a phone's own
+sockets are single ordered streams and keep that order; replay frames carry
+older ring events and are reconciled by sequence, not by reply order.
 
 Each connection caps its in-flight RPC handlers. Reaching the cap refuses the
 frame immediately with `client_overloaded` instead of parking the read loop:

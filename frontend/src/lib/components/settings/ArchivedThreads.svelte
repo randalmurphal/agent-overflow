@@ -6,7 +6,6 @@
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import {
     DeleteThread,
-    GitRemoveWorktree,
     ListArchivedThreads,
     StopSession,
     UnarchiveThread,
@@ -14,11 +13,10 @@
   import { prependThreadReply } from '../../stores/threads.svelte';
   import { closePanesShowingThread } from '../../stores/panes.svelte';
   import {
-    syncRemovedWorktreeThreads,
+    removeWorktreeAt,
     TerminalsClosingNote,
     terminalsClosingNoteForThreadDelete,
     withTerminalsNote,
-    type WorktreeRemovalResult,
   } from '../../stores/worktreeRemoval.svelte';
   import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
@@ -69,10 +67,7 @@
       await StopSession(thread.id).catch((err) => {
         console.error('Failed to stop session before delete:', err);
       });
-      if (thread.worktreePath) {
-        const mark = threadRowFrameMark();
-        syncRemovedWorktreeThreads((await GitRemoveWorktree(thread.id)) as WorktreeRemovalResult, mark);
-      }
+      if (thread.worktreePath) await removeWorktreeAt(thread.projectId, thread.worktreePath);
       await DeleteThread(thread.id);
       archivedThreads = archivedThreads.filter((t) => t.id !== thread.id);
       closePanesShowingThread(thread.id);
