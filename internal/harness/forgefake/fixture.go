@@ -214,10 +214,12 @@ type Pull struct {
 // or "file", or a conversation comment when Path is empty.
 type DraftNote struct {
 	// ID is generated when omitted.
-	ID        int64  `json:"id,omitempty"`
-	Author    string `json:"author"`
-	Note      string `json:"note"`
-	Path      string `json:"path,omitempty"`
+	ID     int64  `json:"id,omitempty"`
+	Author string `json:"author"`
+	Note   string `json:"note"`
+	Path   string `json:"path,omitempty"`
+	// OldPath is a renamed file's old path (see Thread).
+	OldPath   string `json:"oldPath,omitempty"`
 	Line      *int   `json:"line,omitempty"`
 	StartLine *int   `json:"startLine,omitempty"`
 	// OldLine is an unchanged line's old number beside Line (see Thread).
@@ -335,6 +337,9 @@ type Thread struct {
 	// omitted.
 	ID   string `json:"id,omitempty"`
 	Path string `json:"path"`
+	// OldPath is a renamed file's path before the change (GitLab
+	// old_path); empty is Path.
+	OldPath string `json:"oldPath,omitempty"`
 	// Line and StartLine are nil for a file-level thread.
 	Line      *int `json:"line,omitempty"`
 	StartLine *int `json:"startLine,omitempty"`

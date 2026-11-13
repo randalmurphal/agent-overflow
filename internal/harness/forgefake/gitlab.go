@@ -336,7 +336,7 @@ func gitlabDiscussions(p *Pull) []map[string]any {
 			"base_sha":      p.BaseSHA,
 			"start_sha":     p.StartSHA,
 			"head_sha":      headSHA,
-			"old_path":      thread.Path,
+			"old_path":      defaultString(thread.OldPath, thread.Path),
 			"new_path":      thread.Path,
 			"position_type": "text",
 			"old_line":      nil,

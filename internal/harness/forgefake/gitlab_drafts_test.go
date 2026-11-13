@@ -13,6 +13,7 @@ const draftFixture = `{
   "viewer": "octo",
   "repos": [{"forge": "gitlab", "project": "grp/drafts", "pulls": [
     {"number": 4, "title": "Drafts", "headSha": "4444444444444444444444444444444444444444",
+     "diff": "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,4 @@\n a\n b\n c\n+d\n",
      "draftNotes": [{"id": 77, "author": "octo", "note": "LGTM"}, {"id": 78, "author": "someone", "note": "theirs"}]}
   ]}]
 }`

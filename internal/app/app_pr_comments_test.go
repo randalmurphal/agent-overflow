@@ -20,7 +20,7 @@ import (
 // author's on main.go line 2, and, unless gone, nothing else.
 func (c *reviewSubmitCase) seedTheirThread(t *testing.T, gone bool) {
 	t.Helper()
-	pull := forgefake.Pull{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open"}
+	pull := forgefake.Pull{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open", Diff: reviewTestDiff}
 	if !gone {
 		line := 2
 		pull.Threads = []forgefake.Thread{{ID: map[string]string{"github": "PRRT_theirs", "gitlab": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}[c.pr.Forge], Path: "main.go", Line: &line, Side: "right",
@@ -375,7 +375,7 @@ func TestSubmitPRReviewGitLabHeldRepliesKeepTheirDiscussion(t *testing.T) {
 	line := 2
 	seed := func(threads ...forgefake.Thread) {
 		t.Helper()
-		pull := forgefake.Pull{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open", Threads: threads}
+		pull := forgefake.Pull{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open", Threads: threads, Diff: reviewTestDiff}
 		if _, err := c.engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: "gitlab", Project: "acme/widgets", Pulls: []forgefake.Pull{pull}}}}); err != nil {
 			t.Fatal(err)
 		}

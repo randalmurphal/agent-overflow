@@ -286,6 +286,8 @@ func TestGitLabPostLineComment(t *testing.T) {
 		switch {
 		case call.Method == http.MethodGet && call.Path == mr:
 			return forgeAPIAnswer{Body: strings.ReplaceAll(gitlabTestMR(7, 0), "head2", "abc1234")}
+		case call.Method == http.MethodGet && call.Path == mr+"/diffs?per_page=100":
+			return gitlabTestDiffsAnswer()
 		case call.Method == http.MethodPost && call.Path == mr+"/discussions":
 			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":"d1"}`}
 		case call.Method == http.MethodPost && call.Path == mr+"/notes":
@@ -300,8 +302,8 @@ func TestGitLabPostLineComment(t *testing.T) {
 	}
 	code := fmt.Sprintf("%x", sha1.Sum([]byte("a.go")))
 	want := `{"body":"range","position":{"base_sha":"base","start_sha":"start","head_sha":"abc1234","old_path":"a.go","new_path":"a.go","position_type":"text","new_line":6,` +
-		`"line_range":{"start":{"line_code":"` + code + `_3_4","old_line":3,"new_line":4},"end":{"line_code":"` + code + `_0_6","type":"new","new_line":6}}}}`
-	if sent := calls.all(); len(sent) != 2 || string(sent[1].Body) != want {
+		`"line_range":{"start":{"line_code":"` + code + `_3_4","old_line":3,"new_line":4},"end":{"line_code":"` + code + `_4_6","type":"new","new_line":6}}}}`
+	if sent := calls.all(); len(sent) != 3 || string(sent[2].Body) != want {
 		t.Fatalf("requests = %v, body = %s\nwant %s", calls.ops(), sent[len(sent)-1].Body, want)
 	}
 	err = core.PostPRLineComment(t.Context(), gitlabTestRef(7), "abc0000", ReviewLineComment{Path: "a.go", Body: "x", Line: &end, Side: "right"})
@@ -311,7 +313,7 @@ func TestGitLabPostLineComment(t *testing.T) {
 	if explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(gitlabTestRef(7), ActionComment, err)); explained == nil || explained.Kind != ForgeErrorStaleHead {
 		t.Fatalf("moved head sentence = %+v", explained)
 	}
-	if got := calls.ops(); len(got) != 3 || got[2] != "GET "+mr {
+	if got := calls.ops(); len(got) != 4 || got[3] != "GET "+mr {
 		t.Fatalf("a comment on a moved head was posted: %v", got)
 	}
 	if err := core.PostPRComment(t.Context(), gitlabTestRef(7), "overall"); err != nil {

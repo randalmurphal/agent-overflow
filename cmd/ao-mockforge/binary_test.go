@@ -1289,6 +1289,7 @@ func TestGitHubSubmitReviewLineCommentsThroughTheAppsForgeCode(t *testing.T) {
 func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 	fixture := gitlabMergeFixture("running")
 	fixture.Repos[0].Pulls[0].DraftNotes = []forgefake.DraftNote{{ID: 9001, Author: "alice", Note: "LGTM"}}
+	fixture.Repos[0].Pulls[0].Diff = commentDiff
 	r := newRig(t, fixture)
 	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
 	ctx := forgeapi.WithInteractive(t.Context())

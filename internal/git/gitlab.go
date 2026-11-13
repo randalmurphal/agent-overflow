@@ -721,9 +721,15 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 			}
 		}
 	}
+	var files map[string]gitlabDiffFile
+	if paths := gitlabPositionedPaths(notes); len(paths) > 0 {
+		if files, err = readGitLabDiffFiles(ctx, client, ref, paths); err != nil {
+			return SubmitReviewResult{}, err
+		}
+	}
 	bodies := make([]gitlabDraftNoteIn, 0, len(notes))
 	for _, note := range notes {
-		body, err := gitlabDraftNoteBody(note, diffRefs)
+		body, err := gitlabDraftNoteBody(note, diffRefs, files)
 		if err != nil {
 			return SubmitReviewResult{}, err
 		}
@@ -968,7 +974,7 @@ func (e *DraftsLeftError) Error() string {
 
 func (e *DraftsLeftError) Unwrap() error { return e.Err }
 
-func gitlabDraftNoteBody(comment ReviewLineComment, refs *PRDiffRefs) (gitlabDraftNoteIn, error) {
+func gitlabDraftNoteBody(comment ReviewLineComment, refs *PRDiffRefs, files map[string]gitlabDiffFile) (gitlabDraftNoteIn, error) {
 	payload := gitlabDraftNoteIn{Note: comment.Body}
 	if strings.TrimSpace(payload.Note) == "" {
 		return gitlabDraftNoteIn{}, errors.New("draft note body is required")
@@ -983,7 +989,7 @@ func gitlabDraftNoteBody(comment ReviewLineComment, refs *PRDiffRefs) (gitlabDra
 		payload.InReplyToDiscussionID = reply.ThreadID
 		return payload, nil
 	}
-	position, err := gitlabPositionForComment(comment, refs)
+	position, err := gitlabPositionForComment(comment, refs, files)
 	if err != nil {
 		return gitlabDraftNoteIn{}, err
 	}
@@ -991,16 +997,22 @@ func gitlabDraftNoteBody(comment ReviewLineComment, refs *PRDiffRefs) (gitlabDra
 	return payload, nil
 }
 
-func gitlabPositionForComment(comment ReviewLineComment, refs *PRDiffRefs) (*gitlabPositionRaw, error) {
+// gitlabPositionForComment is comment's position on the merge request's
+// diff (refs), its file and lines resolved in files (readGitLabDiffFiles).
+func gitlabPositionForComment(comment ReviewLineComment, refs *PRDiffRefs, files map[string]gitlabDiffFile) (*gitlabPositionRaw, error) {
 	if strings.TrimSpace(comment.Path) == "" {
 		return nil, errors.New("draft note path is required")
+	}
+	file, ok := files[comment.Path]
+	if !ok {
+		return nil, fmt.Errorf("%s is not in the merge request's diff", comment.Path)
 	}
 	position := &gitlabPositionRaw{
 		BaseSHA:  refs.BaseSHA,
 		HeadSHA:  refs.HeadSHA,
 		StartSHA: refs.StartSHA,
-		OldPath:  comment.Path,
-		NewPath:  comment.Path,
+		OldPath:  file.oldPath,
+		NewPath:  file.newPath,
 	}
 	if strings.EqualFold(comment.Side, "file") {
 		position.PositionType = "file"
@@ -1010,13 +1022,13 @@ func gitlabPositionForComment(comment ReviewLineComment, refs *PRDiffRefs) (*git
 	if comment.Line == nil {
 		return nil, fmt.Errorf("draft note for %s is missing a line", comment.Path)
 	}
-	end, err := gitlabLinePoint(comment.Path, *comment.Line, derefInt(comment.OldLine), comment.Side)
+	end, err := file.point(*comment.Line, derefInt(comment.OldLine), comment.Side)
 	if err != nil {
 		return nil, err
 	}
 	position.OldLine, position.NewLine = end.OldLine, end.NewLine
 	if start := comment.Start; start != nil {
-		first, err := gitlabLinePoint(comment.Path, start.Line, start.OldLine, start.Side)
+		first, err := file.point(start.Line, start.OldLine, start.Side)
 		if err != nil {
 			return nil, err
 		}
@@ -1030,31 +1042,6 @@ func derefInt(n *int) int {
 		return 0
 	}
 	return *n
-}
-
-// gitlabLinePoint is one line of the diff as GitLab names it: a removed
-// line by its old number (type old), an added line by its new number
-// (type new), an unchanged line on the right by both (no type,
-// https://docs.gitlab.com/api/discussions/#create-a-new-thread-in-the-merge-request-diff).
-// Its line code is sha1(path)_old_new with 0 for the number a changed
-// line lacks, as GitLab writes it.
-func gitlabLinePoint(path string, line, oldLine int, side string) (gitlabLineRangePoint, error) {
-	if line <= 0 || oldLine < 0 {
-		return gitlabLineRangePoint{}, fmt.Errorf("draft note for %s names line %d", path, line)
-	}
-	switch strings.ToLower(strings.TrimSpace(side)) {
-	case "left", "old":
-		if oldLine != 0 {
-			return gitlabLineRangePoint{}, fmt.Errorf("draft note for %s names an unchanged line on the left", path)
-		}
-		return gitlabLineRangePoint{LineCode: gitlabLineCode(path, line, 0), Type: "old", OldLine: &line}, nil
-	case "right", "new", "":
-		if oldLine > 0 {
-			return gitlabLineRangePoint{LineCode: gitlabLineCode(path, oldLine, line), OldLine: &oldLine, NewLine: &line}, nil
-		}
-		return gitlabLineRangePoint{LineCode: gitlabLineCode(path, 0, line), Type: "new", NewLine: &line}, nil
-	}
-	return gitlabLineRangePoint{}, fmt.Errorf("draft note for %s has invalid side %q", path, side)
 }
 
 func gitlabLineCode(path string, oldLine, newLine int) string {

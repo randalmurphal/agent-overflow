@@ -10,11 +10,20 @@ import (
 	"agent-overflow/internal/harness/forgefake"
 )
 
-// commentFixture adds to a merge fixture's first pull a review thread and a
-// conversation comment of another author's, which the viewer may neither
-// edit nor delete.
+// commentDiff is the diff commentFixture's pull changes: a.go adds lines
+// 3 to 8, b.go removes its old line 2, c.go changes its only line, and
+// old.go is renamed new.go with its line 2 replaced.
+const commentDiff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,8 @@\n o1\n o2\n+n3\n+n4\n+n5\n+n6\n+n7\n+n8\n" +
+	"diff --git a/b.go b/b.go\n--- a/b.go\n+++ b/b.go\n@@ -1,3 +1,2 @@\n x\n-y\n z\n" +
+	"diff --git a/c.go b/c.go\n--- a/c.go\n+++ b/c.go\n@@ -1 +1 @@\n-a\n+b\n" +
+	"diff --git a/old.go b/new.go\nsimilarity index 80%\nrename from old.go\nrename to new.go\n--- a/old.go\n+++ b/new.go\n@@ -1,3 +1,3 @@\n k\n-gone\n+came\n k2\n"
+
+// commentFixture adds to a merge fixture's first pull commentDiff, a
+// review thread and a conversation comment of another author's, which the
+// viewer may neither edit nor delete.
 func commentFixture(fixture forgefake.Fixture) forgefake.Fixture {
 	p := &fixture.Repos[0].Pulls[0]
+	p.Diff = commentDiff
 	p.Threads = []forgefake.Thread{{Path: "a.go", Line: intPtr(4), Side: "right", Comments: []forgefake.Comment{{Author: "octo", Body: "theirs"}}}}
 	p.Comments = []forgefake.Comment{{Author: "octo", Body: "their note"}}
 	return fixture
@@ -316,4 +325,36 @@ func TestGitHubCommentWritesStayOnTheirPR(t *testing.T) {
 		t.Fatal("a write named by another PR changed its comment")
 	}
 	expectAllHandled(t, r)
+}
+
+// A GitLab comment on a renamed file names both its paths, on either side
+// and across them, posted now and held in a review, and reads back on the
+// file's new path.
+func TestGitLabCommentsOnARenamedFileThroughTheAppsForgeCode(t *testing.T) {
+	r := newRig(t, commentFixture(gitlabMergeFixture("success")))
+	ctx := forgeapi.WithInteractive(t.Context())
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	two, three := 2, 3
+	for _, comment := range []gitops.ReviewLineComment{
+		{Path: "new.go", Body: "on the removed line", Line: &two, Side: "left"},
+		{Path: "new.go", Body: "on the added line", Line: &two, Side: "right"},
+		{Path: "new.go", Body: "on the renamed file", Side: "file"},
+	} {
+		if err := r.core.PostPRLineComment(ctx, ref, strings.Repeat("4", 40), comment); err != nil {
+			t.Fatalf("PostPRLineComment %q: %v", comment.Body, err)
+		}
+	}
+	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Comments: []gitops.ReviewLineComment{
+		{Path: "new.go", Body: "held across the change", Line: &three, OldLine: &three, Side: "right", Start: &gitops.ReviewLineStart{Line: 2, Side: "right"}},
+	}}
+	if _, err := r.core.SubmitReview(ctx, ref, review); err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+	expectAllHandled(t, r)
+	read := mergeRead(t, r, ref)
+	for _, body := range []string{"on the removed line", "on the added line", "on the renamed file", "held across the change"} {
+		if thread := threadByBody(read, body); thread == nil || thread.Path != "new.go" {
+			t.Fatalf("%q = %+v", body, thread)
+		}
+	}
 }

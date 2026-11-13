@@ -1,7 +1,6 @@
 package forgefake
 
 import (
-	"crypto/sha1"
 	"fmt"
 	"net/http"
 	"slices"
@@ -17,20 +16,24 @@ import (
 
 // gitlabAnchor is where a position puts a note, as a Thread records it.
 type gitlabAnchor struct {
-	Path                     string
+	// Path is the file's new path, OldPath its old one.
+	Path, OldPath            string
 	Side                     string
 	Line, StartLine, OldLine *int
 }
 
-// gitlabPositionAnchor reads a position: a file, or a line with an
-// optional line_range whose points carry their line codes. A position
-// GitLab refuses is its 400; one the fake does not model, or a line code
-// that is not the path's, is unhandled.
-func gitlabPositionAnchor(pos *gitlabDraftPositionIn) (gitlabAnchor, response, bool) {
-	if pos.OldPath != pos.NewPath || pos.NewPath == "" {
-		return gitlabAnchor{}, unhandled("position names old_path %q and new_path %q; the fake models one path", pos.OldPath, pos.NewPath), false
+// gitlabPositionAnchor reads a position against the pull's diff: a file,
+// or a line with an optional line_range whose points carry their line
+// codes. The file must be in the diff by both its paths and the line on
+// it, or GitLab refuses it with a 400; a position the fake does not model,
+// or a point whose line code or type is not the one GitLab's diff gives
+// it, is unhandled.
+func gitlabPositionAnchor(p *Pull, pos *gitlabDraftPositionIn) (gitlabAnchor, response, bool) {
+	file, ok := gitlabDiffFileOf(p, pos.NewPath)
+	if !ok || file.oldPath != pos.OldPath {
+		return gitlabAnchor{}, gitlabPositionInvalid(), false
 	}
-	anchor := gitlabAnchor{Path: pos.NewPath}
+	anchor := gitlabAnchor{Path: pos.NewPath, OldPath: pos.OldPath}
 	switch {
 	case pos.PositionType == "file" && pos.OldLine == nil && pos.NewLine == nil && pos.LineRange == nil:
 		anchor.Side = "file"
@@ -45,11 +48,14 @@ func gitlabPositionAnchor(pos *gitlabDraftPositionIn) (gitlabAnchor, response, b
 	default:
 		anchor.Side, anchor.Line = "right", pos.NewLine
 	}
+	if _, _, ok := file.cursors(pos.OldLine, pos.NewLine); !ok {
+		return gitlabAnchor{}, gitlabPositionInvalid(), false
+	}
 	if pos.LineRange == nil {
 		return anchor, response{}, true
 	}
 	for _, point := range []gitlabDraftLinePoint{pos.LineRange.Start, pos.LineRange.End} {
-		if reason := gitlabPointDrift(pos.NewPath, point); reason != "" {
+		if reason := gitlabPointDrift(file, point); reason != "" {
 			return gitlabAnchor{}, unhandled("line_range: %s", reason), false
 		}
 	}
@@ -69,24 +75,21 @@ func gitlabPositionAnchor(pos *gitlabDraftPositionIn) (gitlabAnchor, response, b
 }
 
 // gitlabPointDrift is why a line_range point is not one GitLab's diff
-// would name: its line code is sha1(path)_old_new, 0 for the half it is
-// not on, and its type is "new" for an added line, "old" for a removed
-// one and absent for an unchanged one.
-func gitlabPointDrift(path string, point gitlabDraftLinePoint) string {
-	value := func(n *int) int {
-		if n == nil {
-			return 0
-		}
-		return *n
-	}
-	want := fmt.Sprintf("%x_%d_%d", sha1.Sum([]byte(path)), value(point.OldLine), value(point.NewLine))
-	if point.LineCode != want {
-		return fmt.Sprintf("line_code %q, want %q", point.LineCode, want)
-	}
-	wantType := map[[2]bool]string{{false, true}: "new", {true, false}: "old", {true, true}: ""}[[2]bool{point.OldLine != nil, point.NewLine != nil}]
+// would name: a line of the file's diff, its line code sha1(new path) and
+// the diff's two cursors at that line, its type "new" for an added line,
+// "old" for a removed one and absent for an unchanged one.
+func gitlabPointDrift(file gitlabDiffFile, point gitlabDraftLinePoint) string {
 	if point.OldLine == nil && point.NewLine == nil {
 		return "a point names no line"
 	}
+	oldCursor, newCursor, ok := file.cursors(point.OldLine, point.NewLine)
+	if !ok {
+		return "a point names a line the diff does not have"
+	}
+	if want := file.lineCode(oldCursor, newCursor); point.LineCode != want {
+		return fmt.Sprintf("line_code %q, want %q", point.LineCode, want)
+	}
+	wantType := map[[2]bool]string{{false, true}: "new", {true, false}: "old", {true, true}: ""}[[2]bool{point.OldLine != nil, point.NewLine != nil}]
 	if point.Type != wantType {
 		return fmt.Sprintf("type %q, want %q", point.Type, wantType)
 	}
@@ -136,12 +139,12 @@ func glabCreateDiscussion(e *Engine, c *call, m []string) response {
 	if pos.BaseSHA != p.BaseSHA || pos.StartSHA != p.StartSHA || pos.HeadSHA != p.HeadSHA {
 		return glabStatus(http.StatusBadRequest, "Note {:position=>[\"is invalid\"]}")
 	}
-	anchor, fail, ok := gitlabPositionAnchor(pos)
+	anchor, fail, ok := gitlabPositionAnchor(p, pos)
 	if !ok {
 		return fail
 	}
 	comment := Comment{ID: e.ids.next(), Author: e.viewer, Body: in.Body, CreatedAt: glabNow()}
-	thread := Thread{ID: e.ids.sha(), Path: anchor.Path, Side: anchor.Side, Line: anchor.Line, StartLine: anchor.StartLine, OldLine: anchor.OldLine, Comments: []Comment{comment}}
+	thread := Thread{ID: e.ids.sha(), Path: anchor.Path, OldPath: anchor.OldPath, Side: anchor.Side, Line: anchor.Line, StartLine: anchor.StartLine, OldLine: anchor.OldLine, Comments: []Comment{comment}}
 	p.Threads = append(p.Threads, thread)
 	return glabCreated(map[string]any{"id": thread.ID, "individual_note": false, "notes": []map[string]any{gitlabNote(comment, map[string]any{"type": "DiffNote"})}})
 }

@@ -420,7 +420,14 @@ export async function publishPullRequest(
   git(workspace, 'update-ref', 'refs/remotes/origin/main', baseSha);
   git(workspace, 'update-ref', 'refs/remotes/origin/feature', headSha);
 
-  const seeded: ForgeRepo = { ...repo, pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha, startSha: baseSha }, ...rest] };
+  // A GitLab position names lines by the merge request's diff, which the
+  // fake answers from the pull's `diff`: the pushed change, unless the spec
+  // seeds its own. A GitHub pull needs none for its comments.
+  const diff = pull.diff ?? (repo.forge === 'gitlab' ? git(workspace, 'diff', '-M', '--no-color', baseSha, headSha) + '\n' : undefined);
+  const seeded: ForgeRepo = {
+    ...repo,
+    pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha, startSha: baseSha, ...(diff === undefined ? {} : { diff }) }, ...rest],
+  };
   await seedForge(harness, [seeded]);
   git(workspace, 'config', 'core.gitProxy', proxy);
   git(workspace, 'remote', 'add', 'origin', `git://${FORGE_HOST[repo.forge]}/${repo.project}.git`);

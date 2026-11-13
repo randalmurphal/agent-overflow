@@ -313,11 +313,24 @@ is its decimal id and its URL the merge request's page at `#note_<id>`.
 
 | Comment action | GitLab requests |
 |---|---|
-| `PostLineComment` | 1 merge request read, then 1 `POST .../discussions` with `{body, position}` against its `diff_refs`; a head other than the caller's is `*HeadMovedError` (kind `stale_head`) before the post. A range's `line_range` points carry `line_code` (`sha1(path)_old_new`, 0 for the missing number) and `type` (`new`, `old`, or none for an unchanged line) |
+| `PostLineComment` | 1 merge request read, then the diffs read below, then 1 `POST .../discussions` with `{body, position}` against its `diff_refs`; a head other than the caller's is `*HeadMovedError` (kind `stale_head`) before the post |
 | `PostPRComment` | 1 `POST .../notes` |
 | `ReplyToThread` | 1 `POST .../discussions/D/notes`; a 404 is `*ReplyThreadGoneError` |
 | `EditComment`, `DeleteComment` | 1 `PUT` (`{body}`) or `DELETE .../discussions/D/notes/N` |
-| `SubmitReview` | 1 `POST .../draft_notes` per comment, then `bulk_publish`. With held replies, 1 discussions read before (a discussion that is gone fails the submit with `*ReplyThreadGoneError` before any draft; each reply's draft carries `in_reply_to_discussion_id` and `resolve_discussion` set to its discussion's state, since publishing a reply without it reopens a resolved discussion) and 1 after the publish (GitLab drops a reply whose discussion went in between and answers success, so a reply that is not a new note of its discussion is a `*PartialSubmitError` naming its thread, `UnpostedReplies` its ordinal). A 400 on a reply's draft is the discussion gone when `GET .../discussions/D` answers 404 |
+| `SubmitReview` | The diffs read below when a comment is positioned, 1 `POST .../draft_notes` per comment, then `bulk_publish`. With held replies, 1 discussions read before (a discussion that is gone fails the submit with `*ReplyThreadGoneError` before any draft; each reply's draft carries `in_reply_to_discussion_id` and `resolve_discussion` set to its discussion's state, since publishing a reply without it reopens a resolved discussion) and 1 after the publish (GitLab drops a reply whose discussion went in between and answers success, so a reply that is not a new note of its discussion is a `*PartialSubmitError` naming its thread, `UnpostedReplies` its ordinal). A 400 on a reply's draft is the discussion gone when `GET .../discussions/D` answers 404 |
+
+A position names its file by `old_path` and `new_path` and, in a
+`line_range`, each end by a `line_code` of `sha1(new_path)` and the old
+and new cursor of the diff at that line (an added line's old cursor is
+the next old line, a removed line's new cursor the next new line) with
+`type` `new`, `old`, or none for an unchanged line. The caller names a
+file by one path and a line by its own numbers, so a positioned write
+first reads `GET .../merge_requests/:iid/diffs?per_page=100`
+(`readGitLabDiffFiles`, `internal/git/gitlab_diff.go`; pages until every
+named file is found, at most 30) and takes both paths and both cursors
+from it. A file or line that diff lacks, or a file GitLab collapsed or
+found too large for lines, fails the write before anything is posted. An
+unchanged line outside every hunk keeps the offset of the gap it is in.
 
 Git status looks up a branch's open PR (`lookupOpenPR`,
 `internal/git/status_pr_cache.go`). The forges' head-branch filters also

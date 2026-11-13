@@ -38,7 +38,11 @@ func (f *gitlabForge) PostLineComment(ctx context.Context, ref PRReference, head
 	if have := mr.headSHA(); !strings.EqualFold(have, headSHA) {
 		return &HeadMovedError{Want: headSHA, Have: have}
 	}
-	position, err := gitlabPositionForComment(comment, mr.diffRefs())
+	files, err := readGitLabDiffFiles(ctx, client, ref, []string{comment.Path})
+	if err != nil {
+		return err
+	}
+	position, err := gitlabPositionForComment(comment, mr.diffRefs(), files)
 	if err != nil {
 		return err
 	}
