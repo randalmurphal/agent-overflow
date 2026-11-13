@@ -172,6 +172,52 @@ base's rulesets (`allowedMergeMethods`).
   ruling (2026-10-13) reacts to: the thread moves to Base and the pane
   stays on the merged PR's snapshot until closed.
 
+### Sending and managing comments
+
+On a backend with capability `pr-comment-actions.v1`, in the PR scope
+with All commits picked, on both surfaces and both forges:
+
+- Send now or hold. A new comment's editor offers "Comment now" and "Add
+  draft", a reply's "Reply now" and "Add draft". The primary is the "now"
+  action while the pane holds no drafts for the PR and "Add draft" once it
+  holds one; Ctrl/Cmd+Enter runs the primary and Ctrl/Cmd+Shift+Enter the
+  other, and the placeholder names only the primary's chord. A held reply
+  is a draft (`side: reply`, the thread and its first comment's id): it
+  lists at its thread's foot with its own Edit and Delete, counts in the
+  send strip, and goes with the batch, to the PR as a reply on its thread
+  or to an agent quoting the thread (`DiffReviewPRContextEntry.thread`).
+  Reply on a thread that holds some edits the newest. A held reply whose
+  thread is gone lists in the Conversation and is left out of the review.
+  Local scopes, the single-commit view and older backends keep a single
+  "Add comment" (a draft) and "Reply" (now).
+- Edit and delete a sent comment where the forge allows it
+  (`viewerCanEdit`, `viewerCanDelete`), from icons at the right end of its
+  header, revealed on hover and always shown on compact, never moving the
+  header's text. Delete asks in place (`Delete?  Yes  Cancel`). "edited"
+  shows when the forge says when the body was edited (GitHub
+  `lastEditedAt`; GitLab notes do not say).
+- A range by Shift+click on another line's "+" while a comment's editor
+  is open: the spanned rows are tinted, the editor sits after the last
+  one, its header reads `Lines 12–18` with a control back to one line.
+  A range stays in one file, on one half of the diff (an unchanged line
+  is on both; a deleted line to an added one is refused), on lines the
+  loaded diff has (not an expansion's) and inside one hunk; a refusal
+  says which on the editor and leaves the editor on its line. A thread
+  the forge reports with a start line shows the same label and tint.
+- One "Comment…" field at the end of the Conversation feed posts a
+  comment on the PR itself, now; it shows in the feed even after the feed
+  froze.
+
+A write posted now (`PostPRLineComment`, `ReplyToPRThread`,
+`PostPRComment`, `EditPRComment`, `DeletePRComment`) answers
+`PRActionResult`; its editor stays pending until the pane applies the
+frame at the answer's seq, the backend restarts or the pump fails, and
+closes at once on seq 0. A failure keeps the text and shows the forge's
+sentence on the editor. Posting now is withheld, with the reason as the
+control's hover text, under the merge actions' gates and when
+`git:operate` is not granted. Open editors' text lives in the review
+state, so it survives its row unmounting, and find skips an open edit.
+
 ### Forge events in the feed
 
 `PRRead.Events` carries `ReviewEvent{Kind, ActorLogin, ActorName, At,
@@ -431,3 +477,9 @@ mounted rows stay bounded over thousands, a list at its top stays there
 when its rows move, a chosen sort opens from the top, and the Pipelines
 list reports the rows on screen as it scrolls, changes and hides. `tool-panes.spec.ts`, `workflows-pane.spec.ts` and their
 compact twins cover the tools row and the pane kinds.
+`review-comment-actions.spec.ts` drives the comment actions on both
+forges: a line comment, a reply and a PR comment posted now after one
+refusal that keeps the text, a draft and a held reply submitted as one
+review, an edit, a reply's delete and a thread's only comment's delete,
+a range over unchanged and added lines, and a held reply sent to the
+agent quoting its thread.
