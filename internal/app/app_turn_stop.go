@@ -61,6 +61,17 @@ func stopByThread(title, threadID, computer string) turnStop {
 	}
 }
 
+// stoppingComputerName names a paired computer whose thread is stopping a
+// turn here, the way this computer names it everywhere else. The name that
+// computer reports for itself is not used. Pairing is directional, so a
+// computer this one cannot reach back is named only as another computer.
+func (a *App) stoppingComputerName(computerID string) string {
+	if name, _ := a.threadTools().threadToolsBackendName(computerID); name != "" {
+		return name
+	}
+	return "another computer"
+}
+
 // valid reports whether the stop names who is stopping the turn on both
 // surfaces it reaches.
 func (s turnStop) valid() bool { return s.label != "" && s.cause != "" }

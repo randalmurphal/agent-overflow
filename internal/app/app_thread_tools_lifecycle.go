@@ -76,7 +76,7 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 		// cancel was running, or it reached the provider before the receipt
 		// moved to `running`. Either way a turn is starting from it, and
 		// stopping that turn is what the cancel promised.
-		return a.interruptDispatchedRequest(ctx, receipt.TargetThreadID, threadRequestSendID(token), receiptCanceller(receipt))
+		return a.interruptDispatchedRequest(ctx, receipt.TargetThreadID, threadRequestSendID(token), a.receiptCanceller(receipt))
 	case store.ThreadReceiptRunning:
 		index, ok := threadRequestTurnIndex(receipt.TargetThreadID, receipt.TurnID)
 		if !ok {
@@ -98,7 +98,7 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 		if found && turn.CompletedAt != nil {
 			return threadtools.EffectNothing, nil
 		}
-		return a.interruptRequestTurn(ctx, receipt.TargetThreadID, index, receiptCanceller(receipt))
+		return a.interruptRequestTurn(ctx, receipt.TargetThreadID, index, a.receiptCanceller(receipt))
 	}
 	return threadtools.EffectNothing, nil
 }
@@ -106,10 +106,10 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 // receiptCanceller is the stop of a request cancelled by its own sender.
 // The request itself is already settled cancelled; the cause reaches any
 // other request the same turn was answering.
-func receiptCanceller(receipt store.ThreadRequestReceipt) turnStop {
+func (a *App) receiptCanceller(receipt store.ThreadRequestReceipt) turnStop {
 	computer := ""
 	if receipt.OwnerDeviceID != threadReceiptLocalOwner {
-		computer = receipt.SourceComputerName
+		computer = a.stoppingComputerName(receipt.SourceComputerID)
 	}
 	return stopByThread(receipt.SourceThreadTitle, receipt.SourceThreadID, computer)
 }

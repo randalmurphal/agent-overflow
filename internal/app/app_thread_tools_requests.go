@@ -873,7 +873,7 @@ func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threa
 		return "", threadNotYoursToInterrupt(threadID)
 	}
 	caller := origin.caller
-	return t.interruptRunningThread(ctx, thread.ID, stopByThread(caller.Title, caller.ThreadID, caller.ComputerName))
+	return t.interruptRunningThread(ctx, thread.ID, stopByThread(caller.Title, caller.ThreadID, t.app.stoppingComputerName(caller.ComputerID)))
 }
 
 // threadNotYoursToInterrupt is the refusal both lineage checks give. The
