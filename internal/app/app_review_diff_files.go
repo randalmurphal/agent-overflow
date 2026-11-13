@@ -521,7 +521,9 @@ func (a *App) startReviewDiffPin(ctx context.Context, record *reviewDiffRecord, 
 			log.Printf("review diff: pin worktree blobs: %v", err)
 			failure = "git could not list them"
 		}
-		a.reviewDiffFiles.settle(record, sides.Pin(), blobs, truncated, failure)
+		// Records this one pushed out are stopped after it settled; none is
+		// this pin, so joining them cannot wait on itself.
+		stopReviewDiffRecords(a.reviewDiffFiles.settle(record, sides.Pin(), blobs, truncated, failure)...)
 	}()
 }
 

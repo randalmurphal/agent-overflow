@@ -64,9 +64,12 @@ strict as a diff id: it belongs to the connection that opened it, a read
 rechecks the scope the open required, and the owner's teardown, the
 record's eviction, the harness reset and shutdown cancel and join its
 pin, which then publishes nothing. The store holds at most 64 records,
-least recently used first out, counted from reservation; a settling pin
-past 5000 paths, or past 20000 paths or 8 MiB of names across all
-records, fails with a sentence (`app_review_diff_records.go`).
+least recently used first out, counted from reservation, and at most
+20000 paths and 8 MiB of names across all records: a settling pin that
+needs room evicts least recently used records, never itself, until it
+fits. Only a pin past 5000 paths or 8 MiB of names on its own fails with a
+sentence (`app_review_diff_records.go`); an evicted record's reads answer
+`review_diff_files_gone`.
 
 `GetReviewDiffFileSizes` (up to 100 files) and `GetReviewDiffImage` (one
 file, both sides) take the workspace, the handle and each file's `path`

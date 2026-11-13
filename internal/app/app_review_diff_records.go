@@ -22,11 +22,12 @@ import (
 // returns its handle at once; pinning settles it in the background, and a
 // file read waits for that.
 
-// Bounds of the record store: at most maxReviewDiffRecords records, the
-// least recently used first out, counted from reservation; a settling pin
-// binds at most maxPinnedWorktreeBlobs paths, and all records together at
-// most maxReviewDiffRecordBindings paths and maxReviewDiffRecordPathBytes
-// of their names; a pin past either fails with a sentence.
+// Bounds of the record store: at most maxReviewDiffRecords records,
+// counted from reservation, and maxReviewDiffRecordBindings paths and
+// maxReviewDiffRecordPathBytes of their names across all records; the
+// least recently used records go first to keep a new one within them. A
+// pin binding more than maxPinnedWorktreeBlobs paths, or more than the
+// name budget on its own, fails with a sentence.
 const (
 	maxReviewDiffRecords         = 64
 	maxPinnedWorktreeBlobs       = 5000
@@ -101,26 +102,39 @@ func (r *reviewDiffRecords) reserve(workspace string, owner *transport.ConnState
 }
 
 // settle publishes a pin's outcome on its record, unless the record was
-// removed meanwhile: then it publishes nothing.
-func (r *reviewDiffRecords) settle(record *reviewDiffRecord, pin gitdiff.Pin, blobs []gitdiff.WorktreeBlob, truncated bool, failure string) {
+// removed meanwhile: then it publishes nothing. A record that needs path
+// or name budget makes room by evicting the least recently used other
+// records, as the count bound does; evicted are those records, still to
+// be stopped outside the lock. Only a record past a per-record bound on
+// its own fails.
+func (r *reviewDiffRecords) settle(record *reviewDiffRecord, pin gitdiff.Pin, blobs []gitdiff.WorktreeBlob, truncated bool, failure string) (evicted []*reviewDiffRecord) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.byID[record.id] != record {
-		return
-	}
-	if failure == "" && truncated {
-		failure = fmt.Sprintf("it changes more than %d files", maxPinnedWorktreeBlobs)
+		return nil
 	}
 	pathBytes := 0
 	for _, blob := range blobs {
 		pathBytes += len(blob.Path)
 	}
-	if failure == "" && (r.bindings+len(blobs) > maxReviewDiffRecordBindings || r.pathBytes+pathBytes > maxReviewDiffRecordPathBytes) {
-		failure = "the open review diffs hold too many files; close one and reload this diff"
+	switch {
+	case failure != "":
+	case truncated:
+		failure = fmt.Sprintf("it changes more than %d files", maxPinnedWorktreeBlobs)
+	case pathBytes > maxReviewDiffRecordPathBytes:
+		failure = fmt.Sprintf("its file names exceed %d MiB", maxReviewDiffRecordPathBytes>>20)
 	}
 	if failure != "" {
 		record.failure = failure
-		return
+		return nil
+	}
+	for element := r.lru.Back(); element != nil &&
+		(r.bindings+len(blobs) > maxReviewDiffRecordBindings || r.pathBytes+pathBytes > maxReviewDiffRecordPathBytes); {
+		previous := element.Prev()
+		if victim := element.Value.(*reviewDiffRecord); victim != record {
+			evicted = append(evicted, r.removeLocked(victim))
+		}
+		element = previous
 	}
 	record.pin = pin
 	if pin.New == "" {
@@ -132,6 +146,7 @@ func (r *reviewDiffRecords) settle(record *reviewDiffRecord, pin gitdiff.Pin, bl
 		r.bindings += len(blobs)
 		r.pathBytes += pathBytes
 	}
+	return evicted
 }
 
 // get answers the record under id when owner holds it and it was opened
