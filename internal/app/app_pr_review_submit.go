@@ -120,8 +120,8 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 		return SubmitPRReviewResult{}, err
 	}
 	if review.AttemptID != "" {
-		attempt, repeated := a.reviewAttempts.begin(review.AttemptID, pr.Key())
-		if repeated && attempt.prKey != pr.Key() {
+		attempt, repeated := a.reviewAttempts.begin(review.AttemptID, pr.Identity())
+		if repeated && attempt.prKey != pr.Identity() {
 			return SubmitPRReviewResult{}, fmt.Errorf("submit PR review: attempt %s was a submit to another PR", review.AttemptID)
 		}
 		if repeated {
@@ -132,7 +132,7 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 	// Every submit to the PR holds its lock, whatever the request's shape:
 	// on GitLab one submit's publish takes the draft notes another is
 	// still creating.
-	unlock, err := a.reviewSubmitLocks().LockCtx(ctx, pr.Key())
+	unlock, err := a.reviewSubmitLocks().LockCtx(ctx, pr.Identity())
 	if err != nil {
 		return SubmitPRReviewResult{}, err
 	}
@@ -233,7 +233,7 @@ func (a *App) GetPRReviewSubmitOutcome(ctx context.Context, pr gitops.PRReferenc
 	if err := pr.Validate(); err != nil {
 		return PRReviewSubmitOutcome{}, err
 	}
-	attempt, forgotten := a.reviewAttempts.find(attemptID, pr.Key())
+	attempt, forgotten := a.reviewAttempts.find(attemptID, pr.Identity())
 	if forgotten {
 		return PRReviewSubmitOutcome{State: "forgotten"}, nil
 	}

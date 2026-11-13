@@ -121,7 +121,7 @@ func (a *App) runPRManage(ctx context.Context, pr gitops.PRReference, action git
 	if err := a.admitPRAction(pr); err != nil {
 		return PRActionResult{}, err
 	}
-	release, err := a.prManage.acquire(ctx, prUpdateKey(pr))
+	release, err := a.prManage.acquire(ctx, pr.Identity())
 	if err != nil {
 		return PRActionResult{}, err
 	}
@@ -136,6 +136,9 @@ func (a *App) runPRManage(ctx context.Context, pr gitops.PRReference, action git
 type prManageLocks struct {
 	mu      sync.Mutex
 	entries map[string]*prManageLock
+	// woke, when set, runs once a caller's wait ended, before its context
+	// is checked again: a test's way to end the context at that moment.
+	woke func()
 }
 
 type prManageLock struct {
@@ -144,8 +147,13 @@ type prManageLock struct {
 }
 
 // acquire takes key's lock, or fails with ctx's error; release gives it
-// back and forgets the entry once nobody holds or awaits it.
+// back and forgets the entry once nobody holds or awaits it. A context
+// that ended takes no lock, also when it ended as the slot came free:
+// the wait can wake on either, so the context is checked after it too.
 func (l *prManageLocks) acquire(ctx context.Context, key string) (release func(), err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	l.mu.Lock()
 	if l.entries == nil {
 		l.entries = map[string]*prManageLock{}
@@ -171,6 +179,14 @@ func (l *prManageLocks) acquire(ctx context.Context, key string) (release func()
 		leave()
 		return nil, ctx.Err()
 	}
+	if l.woke != nil {
+		l.woke()
+	}
+	if err := ctx.Err(); err != nil {
+		<-entry.slot
+		leave()
+		return nil, err
+	}
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -178,6 +194,16 @@ func (l *prManageLocks) acquire(ctx context.Context, key string) (release func()
 			leave()
 		})
 	}, nil
+}
+
+// users is how many callers hold or await key's lock.
+func (l *prManageLocks) users(key string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if entry := l.entries[key]; entry != nil {
+		return entry.users
+	}
+	return 0
 }
 
 // size is the number of PRs with a held or awaited lock.

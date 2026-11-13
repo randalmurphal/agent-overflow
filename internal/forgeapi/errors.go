@@ -250,16 +250,8 @@ func (e *GraphQLError) Refused() bool {
 	if len(e.Data) == 0 {
 		return true
 	}
-	var fields map[string]json.RawMessage
-	if string(e.Data) != "null" {
-		if err := json.Unmarshal(e.Data, &fields); err != nil {
-			return false
-		}
-	}
-	for _, value := range fields {
-		if string(value) != "null" {
-			return false
-		}
+	if e.ProducedData() {
+		return false
 	}
 	for _, p := range e.Problems {
 		if !githubRefusalTypes[p.Type] && !strings.HasPrefix(p.Message, gitlabNoPermission) {
@@ -267,6 +259,25 @@ func (e *GraphQLError) Refused() bool {
 		}
 	}
 	return true
+}
+
+// ProducedData reports whether the answer's data holds anything: a data
+// entry that is not null and has a field that is not null, or that is
+// not an object at all. An operation that produced data ran.
+func (e *GraphQLError) ProducedData() bool {
+	if len(e.Data) == 0 || string(e.Data) == "null" {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(e.Data, &fields); err != nil {
+		return true
+	}
+	for _, value := range fields {
+		if string(value) != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *GraphQLError) Error() string {
@@ -288,6 +299,10 @@ type RateLimitedError struct {
 	Pool    string
 	Until   time.Time
 	Reserve bool
+	// GraphQL is the answer's envelope when the refusal was a GraphQL
+	// answer with errors, so a write's outcome can read whether its
+	// operation produced data (WriteNotApplied).
+	GraphQL *GraphQLError
 }
 
 // RateLimitRelease answers whether the refusal kept the reserve and when
@@ -356,7 +371,13 @@ type answer struct {
 func classify(a answer) classified {
 	rate := parseRateLimit(a.header, a.pool)
 	if until, limited := rateLimitedUntil(a, rate); limited {
-		return classified{outcome: outcomeRateLimited, err: &RateLimitedError{Host: a.host, Pool: a.pool, Until: until}}
+		limitedErr := &RateLimitedError{Host: a.host, Pool: a.pool, Until: until}
+		if a.graphQL && a.status >= 200 && a.status <= 299 {
+			if env, ok := parseGraphQLEnvelope(a.body); ok && len(env.Errors) > 0 {
+				limitedErr.GraphQL = &GraphQLError{Problems: env.Errors, Data: env.Data}
+			}
+		}
+		return classified{outcome: outcomeRateLimited, err: limitedErr}
 	}
 	statusErr := func() *StatusError {
 		body := a.body
