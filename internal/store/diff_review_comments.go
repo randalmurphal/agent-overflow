@@ -102,9 +102,28 @@ type DiffReviewPRContext struct {
 	Comments []DiffReviewPRContextEntry `json:"comments"`
 }
 
+// DiffReviewPRContextEntry is what a send adds to one draft for the agent:
+// the hunk it is on, or for a held reply the thread it answers.
 type DiffReviewPRContextEntry struct {
-	CommentID   string `json:"commentId"`
-	HunkExcerpt string `json:"hunkExcerpt"`
+	CommentID   string                   `json:"commentId"`
+	HunkExcerpt string                   `json:"hunkExcerpt"`
+	Thread      *DiffReviewThreadContext `json:"thread,omitempty"`
+}
+
+// DiffReviewThreadContext is the forge thread a held reply answers, as the
+// pane showed it: its file and lines (none for a conversation thread) and
+// its comments in order.
+type DiffReviewThreadContext struct {
+	Path      string                    `json:"path,omitempty"`
+	Line      int                       `json:"line,omitempty"`
+	StartLine int                       `json:"startLine,omitempty"`
+	Comments  []DiffReviewThreadComment `json:"comments"`
+}
+
+// DiffReviewThreadComment is one comment of a thread a reply answers.
+type DiffReviewThreadComment struct {
+	Author string `json:"author"`
+	Body   string `json:"body"`
 }
 
 // DiffReviewOwner is who diff review comments belong to: a thread, or a PR

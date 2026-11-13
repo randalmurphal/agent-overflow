@@ -110,3 +110,39 @@ func TestIDsOfReturnsEmptySliceNotNil(t *testing.T) {
 		t.Fatalf("expected empty, got %v", got)
 	}
 }
+
+// A range names its first and last line on the half both are on.
+func TestBuildPromptRendersRanges(t *testing.T) {
+	prompt := BuildPrompt([]store.DiffReviewComment{
+		{FilePath: "app.ts", Side: "new", NewLine: 18, StartNewLine: 12, Body: "Split this block."},
+		{FilePath: "old.ts", Side: "context", OldLine: 9, NewLine: 11, StartOldLine: 4, Body: "From the removed lines."},
+	})
+	want := "app.ts:12-18:\ncomment: Split this block.\n\n" +
+		"old.ts:4-9:\ncomment: From the removed lines."
+	if prompt != want {
+		t.Fatalf("prompt mismatch\n  got:\n%s\n  want:\n%s", prompt, want)
+	}
+}
+
+// A held reply comes with the thread it answers: its file and lines and
+// every comment; without the thread it names the thread's id.
+func TestBuildPromptRendersHeldRepliesWithTheirThread(t *testing.T) {
+	comments := []store.DiffReviewComment{
+		{ID: "r1", FilePath: "app.ts", Side: "reply", ReplyThreadID: "PRRT_1", Body: "Done in the next push."},
+		{ID: "r2", Side: "reply", ReplyThreadID: "d2", Body: "Agreed."},
+		{ID: "r3", FilePath: "lib.ts", Side: "reply", ReplyThreadID: "PRRT_3", Body: "No context."},
+	}
+	prompt := BuildPromptWithPRContext(comments, &store.DiffReviewPRContext{Number: 3, Comments: []store.DiffReviewPRContextEntry{
+		{CommentID: "r1", Thread: &store.DiffReviewThreadContext{Path: "app.ts", Line: 20, StartLine: 18, Comments: []store.DiffReviewThreadComment{
+			{Author: "alice", Body: "Why loop twice?\nOnce is enough."}, {Author: "bob", Body: "+1"},
+		}}},
+		{CommentID: "r2", Thread: &store.DiffReviewThreadContext{Comments: []store.DiffReviewThreadComment{{Author: "carol", Body: "Ship it?"}}}},
+	}})
+	want := "PR #3\n\n" +
+		"app.ts:18-20: reply to this thread\n> alice: Why loop twice?\n> Once is enough.\n> bob: +1\ncomment: Done in the next push.\n\n" +
+		"PR conversation: reply to this thread\n> carol: Ship it?\ncomment: Agreed.\n\n" +
+		"lib.ts: reply to thread PRRT_3\ncomment: No context."
+	if prompt != want {
+		t.Fatalf("prompt mismatch\n  got:\n%s\n  want:\n%s", prompt, want)
+	}
+}
