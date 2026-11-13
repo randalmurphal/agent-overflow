@@ -275,8 +275,15 @@ polling.
   (fresh thread, or any PR scope), the prompt includes per-comment anchored
   hunk excerpts plus the diff source reference (PR number/URL or checkpoint
   range) so the agent can fetch the rest itself via `gh`/`git`.
-- **Replies send immediately.** They are conversational, not a review
-  pass; batching applies to fresh line comments only. A thread's actions
+- **Send now or hold.** With `pr-comment-actions.v1` in the PR scope, a
+  new comment and a reply each post now or are held as a draft, the
+  primary following whether the pane holds drafts; a held reply is a
+  draft of its thread and goes with the batch. The gates, the reply
+  composers and the held replies are `stores/reviewCommentActions.svelte.ts`;
+  writes posted now settle by the pump's seq
+  (`stores/reviewCommentWrites.svelte.ts`). The product
+  contract is in [Pull requests](../specs/pull-requests.md#sending-and-managing-comments).
+  Elsewhere a reply posts now and a line comment is a draft. A thread's actions
   sit at its foot as on the forges: a reply field that opens the composer,
   **Copy** (the location and every comment as text, for pasting into an
   agent composer) and **Resolve** / **Unresolve**.
@@ -379,6 +386,21 @@ source and head, committed with its files), never against the controls'
 subject while another loads. Rows an expansion supplied carry no version
 proof: an editor on one saves in the load it was opened in and is not
 proven at the next. Verified expansions would need a backend change.
+
+A range editor is a new-comment editor placed at the range's last line;
+its first line and origin are part of its record and kept only while the
+editor stays on the same anchor, so a relocation drops it back to one
+line. `utils/reviewRange.ts` checks a span against the file as loaded,
+before expansion.
+
+The other open editors are virtualized rows too, and their text and open
+state live in the review state the same way: a sent comment's edit and
+its delete confirm, keyed by thread and comment id, and the
+Conversation's PR comment field (`sentComments`), a reply's composer
+(`replyBodyFor`, `replyOpen`) and a held reply's edit (a draft's,
+`draftEditBodyFor`). Each write's pending state and error are keyed the
+same way (`commentWriteKey`), so a remounted row shows them. Find skips
+a sent comment open in its editor as it skips an open draft.
 
 ## Edge Cases
 

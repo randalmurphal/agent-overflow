@@ -103,7 +103,7 @@ function prThread(overrides: Partial<ReviewThread> = {}): ReviewThread {
     isResolvable: overrides.isResolvable ?? true,
     isResolved: overrides.isResolved ?? false,
     isOutdated: overrides.isOutdated ?? false,
-    comments: overrides.comments ?? [{ authorLogin: 'alice', body: 'Please fix', createdAt: 'now', databaseID: 1 }],
+    comments: overrides.comments ?? [{ authorLogin: 'alice', body: 'Please fix', createdAt: 'now', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
   };
 }
 

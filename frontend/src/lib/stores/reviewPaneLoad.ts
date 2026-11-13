@@ -428,9 +428,10 @@ export function reviewLineCommentForDraft(comment: DiffReviewComment): ReviewLin
 
 export function draftAnchorExists(files: readonly ReviewFile[], comment: DiffReviewComment): boolean {
   if (comment.side === 'file') return files.some((file) => file.path === comment.filePath);
+  if (comment.side === 'reply') return false;
   const file = files.find((candidate) => candidate.path === comment.filePath);
   if (!file) return false;
-  return anchorRow(file, comment) >= 0;
+  return anchorRow(file, { side: comment.side, oldLine: comment.oldLine, newLine: comment.newLine }) >= 0;
 }
 
 function isLockfileish(path: string): boolean {

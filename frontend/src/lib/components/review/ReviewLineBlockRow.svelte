@@ -11,6 +11,7 @@
   import { REVIEW_LINE_HEIGHT_PX } from '../../utils/reviewRows';
   import { findLineKey } from '../../utils/reviewFindScan';
   import { seenActivation } from '../../utils/seenActivation';
+  import { rowInRange, type LineRange } from '../../utils/reviewRange';
 
   // One review line block (≤ REVIEW_LINE_BLOCK_MAX_LINES display rows).
   //
@@ -56,13 +57,18 @@
      * pick is valid only there. */
     generation?: number;
     onAddComment?: (anchor: EditorAnchor, generation?: number) => void;
+    /** Shift+click on a line's add button: span the open editor to it. */
+    onExtendRange?: (anchor: EditorAnchor, generation?: number) => void;
+    /** The line ranges of this file the diff tints (open range editors,
+     * range drafts, open forge threads that span lines). */
+    ranges?: readonly LineRange[];
     /** Conflict view only: expands the fold row's hidden lines. */
     onExpandFold?: (path: string, foldId: number) => void;
     /** Diff view only: fetches a hunk gap's hidden context lines. */
     onExpandGap?: (path: string, gap: DiffGap, dir: ExpandDirection) => void;
   }
 
-  let { rows, splitRows, file, path, spanOwner, spanContext = null, painted = null, wordWrap, gutterCh, targets, generation, onAddComment, onExpandFold, onExpandGap }: Props = $props();
+  let { rows, splitRows, file, path, spanOwner, spanContext = null, painted = null, wordWrap, gutterCh, targets, generation, onAddComment, onExtendRange, ranges, onExpandFold, onExpandGap }: Props = $props();
 
   const ROW_TYPES: Record<PatchDisplayRow['side'], RowType> = { old: 'del', new: 'add', context: 'context' };
 
@@ -77,9 +83,20 @@
   // An add button acts on the row and diff it was pressed on: a reload
   // between the press and the click must not open the comment on the row
   // that replaced it.
+  // With Shift held it spans the open editor to the row instead.
   function addComment(anchor: () => EditorAnchor) {
-    return seenActivation(() => ({ anchor: anchor(), generation }), (at) => onAddComment?.(at.anchor, at.generation));
+    return seenActivation(() => ({ anchor: anchor(), generation }), (at, click) => {
+      if (click.shiftKey && onExtendRange) onExtendRange(at.anchor, at.generation);
+      else onAddComment?.(at.anchor, at.generation);
+    });
   }
+
+  // Whether a row (or its half in split view) is inside a tinted range.
+  function inRange(row: PatchDisplayRow, half: 'old' | 'new' | null): boolean {
+    if (!ranges || ranges.length === 0) return false;
+    return ranges.some((range) => rowInRange(row.oldLine, row.newLine, half, range));
+  }
+  const RANGE_CLASS = "after:pointer-events-none after:absolute after:inset-0 after:bg-accent/15 after:content-['']";
   // The tree's selected-row wash.
   const TARGET_CLASS = 'before:bg-accent/15';
 
@@ -168,6 +185,7 @@
         type="button"
         class="flex size-4 items-center justify-center rounded-[3px] bg-accent text-[0.6875rem] font-semibold leading-none text-accent-fg opacity-0 transition-opacity duration-75 group-hover:opacity-100 focus-visible:opacity-100 compact:opacity-100 hover:brightness-110 focus:outline-none"
         aria-label={`Add ${side} comment`}
+        title={onExtendRange ? 'Add a comment (Shift+click to span the open comment to this line)' : undefined}
         data-testid="review-add-comment"
         {@attach addComment(() => anchor)}
       >
@@ -274,14 +292,14 @@
         {@render gapRow(pair.left.gap)}
       {:else}
       <div class={lineClass} style:height={wordWrap ? undefined : lineHeight}>
-        <div class="group relative flex w-1/2 min-w-0 before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/40'} {pair.left && isTarget(pair.left, 'old') ? TARGET_CLASS : ''}" data-review-target={pair.left && isTarget(pair.left, 'old') ? '' : undefined}>
+        <div class="group relative flex w-1/2 min-w-0 before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/40'} {pair.left && isTarget(pair.left, 'old') ? TARGET_CLASS : ''} {pair.left && inRange(pair.left, 'old') ? RANGE_CLASS : ''}" data-review-range={pair.left && inRange(pair.left, 'old') ? '' : undefined} data-review-target={pair.left && isTarget(pair.left, 'old') ? '' : undefined}>
           {#if pair.left}
             {@render actionCell(pair.left, sideAnchor(pair.left, 'old'), 'old-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}">{@render gutter(pair.left.oldLine)}</span>
             <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={leftFindKey(pair.left, pair.right)}><DiffLineContent line={pair.left.line} spans={getSpansForReviewLine(file, pair.left.lineIndex ?? -1, pair.left.line, spanContext, painted)} intraline={pair.left.intraline ?? null} /></span>
           {/if}
         </div>
-        <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'} {pair.right && isTarget(pair.right, 'new') ? TARGET_CLASS : ''}" data-review-target={pair.right && isTarget(pair.right, 'new') ? '' : undefined}>
+        <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'} {pair.right && isTarget(pair.right, 'new') ? TARGET_CLASS : ''} {pair.right && inRange(pair.right, 'new') ? RANGE_CLASS : ''}" data-review-range={pair.right && inRange(pair.right, 'new') ? '' : undefined} data-review-target={pair.right && isTarget(pair.right, 'new') ? '' : undefined}>
           {#if pair.right}
             {@render actionCell(pair.right, sideAnchor(pair.right, 'new'), 'new-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}">{@render gutter(pair.right.newLine)}</span>
@@ -299,9 +317,10 @@
         {@render gapRow(row.gap)}
       {:else}
         <div
-          class="group relative {lineClass} {lineTintClass(row.line.type)} before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {isTarget(row, null) ? TARGET_CLASS : ''}"
+          class="group relative {lineClass} {lineTintClass(row.line.type)} before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {isTarget(row, null) ? TARGET_CLASS : ''} {inRange(row, null) ? RANGE_CLASS : ''}"
           style:height={wordWrap ? undefined : lineHeight}
           data-review-target={isTarget(row, null) ? '' : undefined}
+          data-review-range={inRange(row, null) ? '' : undefined}
         >
           {@render actionCell(row, stackedAnchor(row), 'line')}
           <span class="flex shrink-0 {gutterTintClass(row.line.type)}">

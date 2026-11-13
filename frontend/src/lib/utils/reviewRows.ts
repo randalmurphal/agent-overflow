@@ -1,4 +1,4 @@
-import type { DiffReviewComment, ReviewThread } from '../types/models';
+import type { DiffReviewComment, DiffReviewLineSide, ReviewThread } from '../types/models';
 import {
   buildSplitDisplayRows,
   type PatchDisplayRow,
@@ -14,6 +14,7 @@ import {
   type RowStart,
 } from './patchRows';
 import { reportFrontendDiagnostic } from './frontendErrorCapture';
+import type { LineRange } from './reviewRange';
 import { patchMemory, patchTextVersion } from './patchMemory.svelte';
 import { PatchTextLost, type ReviewFile } from './patchStore';
 import type { RowEstimate } from './virtual/types';
@@ -48,7 +49,7 @@ export interface CommentAnchor {
   filePath: string;
   oldLine?: number;
   newLine?: number;
-  side: DiffReviewComment['side'];
+  side: DiffReviewLineSide;
   selectedText?: string;
 }
 
@@ -82,6 +83,11 @@ export interface EditorRow {
   /** The diff on screen it was placed in (`ShownDiff.generation`): an
    * action the reader took on it is valid only there. */
   readonly generation: number;
+  /** Placed on a range (shift+click): the lines it spans, its `anchor`
+   * the last of them. Absent for one line. */
+  readonly range?: LineRange;
+  /** Why the last shift+click did not make a range. */
+  readonly rangeRefusal?: string;
 }
 
 /** The row key of the group of editors whose file is not in the diff. */
@@ -266,8 +272,9 @@ export function reviewInsertsByFile(
   // flushed after the file's rows. A draft saved before unchanged lines
   // carried both numbers names its row by one, as a forge thread does; it
   // shows there, and the review leaves it out (draftAnchorExists).
+  // A held reply renders at the foot of its thread, not on a line.
   for (const comment of drafts) {
-    if (comment.status !== 'draft') continue;
+    if (comment.status !== 'draft' || comment.side === 'reply') continue;
     const anchor = commentAnchor(comment);
     slotsOf(comment.filePath).add({ kind: 'comment-thread', threadKey: comment.id, anchor }, anchor, true);
   }
@@ -581,7 +588,7 @@ function commentAnchor(comment: DiffReviewComment): CommentAnchor {
     filePath: comment.filePath,
     oldLine: comment.oldLine,
     newLine: comment.newLine,
-    side: comment.side,
+    side: comment.side === 'reply' ? 'file' : comment.side,
     selectedText: comment.selectedText,
   };
 }

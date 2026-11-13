@@ -51,7 +51,7 @@ func (a *App) CreatePRDiffReviewComment(pr gitops.PRReference, input store.DiffR
 	}
 	created, err := a.store.CreateDiffReviewComment(newDiffReviewComment(owner, input))
 	if err != nil {
-		return store.DiffReviewComment{}, fmt.Errorf("create PR diff review comment: %w", err)
+		return store.DiffReviewComment{}, createDraftError("create PR diff review comment", err)
 	}
 	return created, nil
 }
@@ -122,6 +122,9 @@ func (a *App) SendPRDiffReviewComments(ctx context.Context, pr gitops.PRReferenc
 	owner, err := prReviewOwner(pr)
 	if err != nil {
 		return store.Thread{}, err
+	}
+	if err := input.PR.Validate(); err != nil {
+		return store.Thread{}, fmt.Errorf("send diff review comments: %w", err)
 	}
 	scope, err = store.NormalizeDiffReviewScope(scope)
 	if err != nil {

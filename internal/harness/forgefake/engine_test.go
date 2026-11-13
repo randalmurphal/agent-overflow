@@ -1021,17 +1021,17 @@ func TestHTTPRefusals(t *testing.T) {
 			t.Errorf("%s = %d, want an unhandled 404", path, got.status)
 		}
 	}
-	// GitLab's discussion writes have no handler: a request for one is
+	// GitLab's discussion resolve has no handler: a request for one is
 	// unhandled, not answered as if it changed something. So is a write
 	// whose body carries a parameter its handler does not implement.
 	if got := httpRequest(t, srv, "POST", "gitlab.com", "/gitlab/api/v4/projects/grp%2Fsub%2Ftool/merge_requests/3/approve", `{"sha":"x","approval_password":"p"}`, nil); got.status != 404 || !lastInvocation(t, e).Unhandled {
 		t.Errorf("approve with an unimplemented parameter = %d, want an unhandled 404", got.status)
 	}
-	for _, write := range [][2]string{
-		{"POST", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc/notes"},
-		{"PUT", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc"},
+	for _, write := range [][3]string{
+		{"POST", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc/notes", `{"body":"x","created_at":"2026-01-01T00:00:00Z"}`},
+		{"PUT", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc", `{}`},
 	} {
-		if got := httpRequest(t, srv, write[0], "gitlab.com", "/gitlab/api/v4/"+write[1], `{}`, nil); got.status != 404 || !lastInvocation(t, e).Unhandled {
+		if got := httpRequest(t, srv, write[0], "gitlab.com", "/gitlab/api/v4/"+write[1], write[2], nil); got.status != 404 || !lastInvocation(t, e).Unhandled {
 			t.Errorf("%s %s = %d, want an unhandled 404", write[0], write[1], got.status)
 		}
 	}
@@ -2135,6 +2135,92 @@ func TestGitLabMergeRoutesTransitionTheMergeRequest(t *testing.T) {
 	}
 	if got := glabGET(t, srv, "gitlab.com", "user"); !strings.Contains(got.body, `"username":"octo"`) {
 		t.Fatalf("user = %+v", got)
+	}
+}
+
+// A held refusal is recorded when its request arrives and answered only
+// once released; Reset releases it too.
+func TestHeldRefusalAnswersOnRelease(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	const approve = "projects/grp%2Fmerge/merge_requests/2/approve"
+	body := `{"sha":"3333333333333333333333333333333333333333"}`
+	if err := e.ReleaseRefusal(Release{Route: "glab api approve"}); err == nil {
+		t.Fatal("a release with nothing held was accepted")
+	}
+	if err := e.SetRefusal(Refusal{Route: "glab api approve", Status: 409, Body: json.RawMessage(`{"message":"held"}`), Times: 1, Hold: true}); err != nil {
+		t.Fatal(err)
+	}
+	answered := make(chan httpAnswer, 1)
+	go func() { answered <- glabSend(t, srv, "POST", approve, body) }()
+	recorded := func() bool {
+		log := e.Invocations(0).Invocations
+		return len(log) > 0 && log[len(log)-1].Route == "glab api approve"
+	}
+	for deadline := time.Now().Add(5 * time.Second); !recorded(); {
+		if time.Now().After(deadline) {
+			t.Fatal("the held request was not recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case got := <-answered:
+		t.Fatalf("a held refusal answered before its release: %+v", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := e.ReleaseRefusal(Release{Route: "glab api approve"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-answered; got.status != http.StatusConflict || got.body != `{"message":"held"}` {
+		t.Fatalf("released = %+v", got)
+	}
+	if err := e.SetRefusal(Refusal{Route: "glab api approve", Status: 409, Hold: true}); err != nil {
+		t.Fatal(err)
+	}
+	go func() { answered <- glabSend(t, srv, "POST", approve, body) }()
+	time.Sleep(100 * time.Millisecond)
+	e.Reset()
+	if got := <-answered; got.status != http.StatusConflict {
+		t.Fatalf("held across Reset = %+v", got)
+	}
+}
+
+// A release that drops closes the held request with no reply: the answer
+// is lost.
+func TestHeldRefusalDroppedLosesTheAnswer(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	if err := e.SetRefusal(Refusal{Route: "glab api approve", Status: 409, Times: 1, Hold: true}); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), "POST", srv.URL+"/gitlab/api/v4/projects/grp%2Fmerge/merge_requests/2/approve", strings.NewReader(`{"sha":"3333333333333333333333333333333333333333"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "gitlab.com"
+	req.Header.Set("Private-Token", testAPIToken)
+	lost := make(chan error, 1)
+	go func() {
+		resp, err := srv.Client().Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			err = fmt.Errorf("answered %d", resp.StatusCode)
+			lost <- err
+			return
+		}
+		lost <- nil
+	}()
+	for deadline := time.Now().Add(5 * time.Second); len(e.Invocations(0).Invocations) == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the held request was not recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := e.ReleaseRefusal(Release{Route: "glab api approve", Drop: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-lost; err != nil {
+		t.Fatalf("a dropped answer was %v", err)
 	}
 }
 

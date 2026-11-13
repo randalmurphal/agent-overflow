@@ -1,7 +1,12 @@
 import { captureError, type CapturedError } from './errorReports.svelte';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
-export interface ToastAction { label: string; run: () => void }
+export interface ToastAction {
+  label: string;
+  run: () => void;
+  /** The toast stays up after the action runs (a copy); otherwise it closes. */
+  keep?: boolean;
+}
 
 interface Toast {
   id: string;
@@ -11,6 +16,8 @@ interface Toast {
   action?: ToastAction;
   /** The error behind an error toast, for its details and copy actions. */
   captured?: CapturedError;
+  /** Text shown whole and selectable under the message. */
+  text?: string;
 }
 
 let nextId = 0;
@@ -46,6 +53,17 @@ export function addErrorToast(
   action?: ToastAction,
 ): string {
   return addToast('error', message, duration, action, captureError(err, { context: message }));
+}
+
+/**
+ * Turns a toast still on screen into one that stays until dismissed and
+ * shows `text` whole and selectable under `message`, without its action:
+ * the only copy of something the reader typed, when the clipboard cannot
+ * take it. A toast already dismissed stays dismissed.
+ */
+export function showToastText(id: string, message: string, text: string): void {
+  holdToast(id);
+  toasts = toasts.map((toast) => toast.id === id ? { ...toast, message, text, duration: 0, action: undefined } : toast);
 }
 
 // An actionable failure may remain until retried or explicitly dismissed.

@@ -437,7 +437,19 @@ export interface DiffReviewPRContext {
 export interface DiffReviewPRContextEntry {
   commentId: string;
   hunkExcerpt: string;
+  /** A held reply's thread as the pane showed it, quoted to the agent. */
+  thread?: DiffReviewThreadContext;
 }
+
+export interface DiffReviewThreadContext {
+  path?: string;
+  line?: number;
+  startLine?: number;
+  comments: { author: string; body: string }[];
+}
+
+/** Where a line comment sits; a held reply (`reply`) has no line. */
+export type DiffReviewLineSide = "file" | "old" | "new" | "context";
 
 export interface DiffReviewComment {
   id: string;
@@ -449,7 +461,15 @@ export interface DiffReviewComment {
   status: "draft" | "sent" | "resolved";
   oldLine?: number;
   newLine?: number;
-  side: "file" | "old" | "new" | "context";
+  side: DiffReviewLineSide | "reply";
+  /** A range's first line, as oldLine/newLine give its last; 0 or absent
+   * for one line. */
+  startOldLine?: number;
+  startNewLine?: number;
+  /** A held reply (side `reply`, pr scope): the forge thread it answers
+   * and that thread's first comment's database id. */
+  replyThreadId?: string;
+  replyRootId?: number;
   selectedText: string;
   body: string;
   sentAt?: number;
@@ -466,6 +486,10 @@ export interface DiffReviewCommentInput {
   oldLine?: number;
   newLine?: number;
   side: DiffReviewComment["side"];
+  startOldLine?: number;
+  startNewLine?: number;
+  replyThreadId?: string;
+  replyRootId?: number;
   selectedText: string;
   body: string;
 }
@@ -838,6 +862,9 @@ export interface ReviewThread {
   originalLine?: number | null;
   originalStartLine?: number | null;
   side: string;
+  /** The half startLine is on ("left" or "right"); differs from side when a
+   * range starts on a removed line and ends on an unchanged or added one. */
+  startSide?: string;
   /** False for flat conversation comments with no resolve state. */
   isResolvable: boolean;
   isResolved: boolean;
@@ -846,12 +873,20 @@ export interface ReviewThread {
 }
 
 export interface ReviewComment {
+  /** What an edit or a delete names (CommentTarget.commentId). */
+  id: string;
   authorLogin: string;
   authorName?: string;
   body: string;
   createdAt: string;
+  /** When the forge says the body was last edited; GitHub only. */
+  editedAt?: string;
   databaseID: number;
   replyTo?: { id: string; databaseID: number };
+  /** The forge's answer for the signed-in viewer. */
+  viewerCanEdit: boolean;
+  viewerCanDelete: boolean;
+  url?: string;
 }
 
 export interface ReviewLineComment {
@@ -867,7 +902,11 @@ export interface ReviewLineComment {
 export interface SubmitPRReviewResult {
   postedReview: boolean;
   postedFileComments: number;
+  /** Held replies GitHub posted after the review. */
+  postedReplies?: number;
   partialFailurePath?: string;
+  /** The thread of a held reply that failed after the review posted. */
+  partialFailureThreadId?: string;
   partialFailure?: string;
   partialFailureKind?: string;
   /** A draft submit's drafts marked sent, and the ones posted with text

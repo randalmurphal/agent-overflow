@@ -29,7 +29,7 @@ import (
 //ao:scope git:operate
 //ao:route selected
 func (a *App) EditPR(ctx context.Context, pr gitops.PRReference, edit gitops.PREdit) (PRActionResult, error) {
-	return a.runPRManage(ctx, pr, gitops.ActionEdit, func(ctx context.Context) error {
+	return a.runPRManage(ctx, pr, gitops.ActionEditPR, func(ctx context.Context) error {
 		return a.gitCore().EditPR(ctx, pr, edit)
 	})
 }

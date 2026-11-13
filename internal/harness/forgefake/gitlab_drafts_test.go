@@ -13,6 +13,7 @@ const draftFixture = `{
   "viewer": "octo",
   "repos": [{"forge": "gitlab", "project": "grp/drafts", "pulls": [
     {"number": 4, "title": "Drafts", "headSha": "4444444444444444444444444444444444444444",
+     "diff": "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,4 @@\n a\n b\n c\n+d\n",
      "draftNotes": [{"id": 77, "author": "octo", "note": "LGTM"}, {"id": 78, "author": "someone", "note": "theirs"}]}
   ]}]
 }`
@@ -103,7 +104,7 @@ func TestGitLabDraftNotesCreateDeleteAndPublish(t *testing.T) {
 		t.Fatalf("discussions after publish = %s", discussions.body)
 	}
 
-	if got := glabSend(t, srv, "POST", mr+"/draft_notes", `{"note":"x","resolve_discussion":true}`); got.status != http.StatusNotFound || !lastInvocation(t, e).Unhandled {
+	if got := glabSend(t, srv, "POST", mr+"/draft_notes", `{"note":"x","commit_id":"abc"}`); got.status != http.StatusNotFound || !lastInvocation(t, e).Unhandled {
 		t.Fatalf("create with an unimplemented parameter = %+v, want unhandled", got)
 	}
 	if got := glabSend(t, srv, "POST", mr+"/draft_notes", `{"note":" "}`); got.status != http.StatusBadRequest {

@@ -31,6 +31,9 @@ import (
 type PRActionResult struct {
 	Seq     uint64              `json:"seq"`
 	Outcome gitops.MergeOutcome `json:"outcome"`
+	// CommentID is the comment PostPRComment created, as ReviewComment.ID
+	// names it; empty for every other action and when the forge named none.
+	CommentID string `json:"commentId,omitempty"`
 }
 
 //ao:scope git:operate
@@ -115,9 +118,9 @@ func (a *App) admitPRAction(pr gitops.PRReference) error {
 // for the user, a success asks the PR's pump (when one is live) to poll
 // the snapshot now and answers with the pump's sequence after that poll.
 // A merge whose branch delete failed changed the PR, and a management
-// change the forge may have applied (git.UnconfirmedWriteError) or
-// applied in part (git.PartialWriteError) may have,
-// so each refreshes too; neither is sent again. The poll's own failure
+// change or comment the forge may have applied (git.UnconfirmedWriteError)
+// or applied in part (git.PartialWriteError) may have, so each refreshes
+// too; neither is sent again. The poll's own failure
 // does not fail the action: the forge accepted it, and the pump reports
 // its read failure on its own channel, where the pane shows it.
 func (a *App) settlePRAction(ctx context.Context, pr gitops.PRReference, action gitops.ForgeAction, err error) (PRActionResult, error) {
@@ -136,7 +139,10 @@ func (a *App) settlePRAction(ctx context.Context, pr gitops.PRReference, action 
 // refreshPRSnapshot polls a live pump's snapshot at once, for the caller
 // whose action changed the PR, and reports the pump's sequence once the
 // poll ran. No pump (no pane is watching) means nothing to refresh and
-// sequence zero.
+// sequence zero; so does a refresh that did not run or whose poll failed
+// (a failure frame, or a transient one held back for its retry): no frame
+// shows the change, the caller settles on the write the forge accepted,
+// and the pump's failure tells the pane it is stale.
 func (a *App) refreshPRSnapshot(ctx context.Context, pr gitops.PRReference) uint64 {
 	a.prUpdates.mu.Lock()
 	pump := a.livePRUpdatePumpLocked(prUpdateKey(pr))
@@ -144,10 +150,16 @@ func (a *App) refreshPRSnapshot(ctx context.Context, pr gitops.PRReference) uint
 	if pump == nil {
 		return 0
 	}
-	if err := a.requestPump(ctx, &pump.pumpCore, &prPumpRequest{snapshot: true}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, context.Canceled) {
-		log.Printf("pr updates: refresh after action failed for pr=%s: %v", prUpdateKey(pr), err)
+	if err := a.requestPump(ctx, &pump.pumpCore, &prPumpRequest{snapshot: true}); err != nil {
+		if !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, context.Canceled) {
+			log.Printf("pr updates: refresh after action failed for pr=%s: %v", prUpdateKey(pr), err)
+		}
+		return 0
 	}
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
+	if pump.fail.failing() || pump.graced {
+		return 0
+	}
 	return pump.seq
 }

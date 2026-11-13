@@ -1738,6 +1738,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: reviewClaimRowsMigrationVersion, Name: "review_claim_rows", SQL: reviewClaimRowsV145SQL},
 	{Version: prListSnapshotMigrationVersion, Name: "pr_list_snapshot", SQL: prListSnapshotV146SQL},
 	{Version: attachmentShellMigrationVersion, Name: "attachment_shell", SQL: attachmentShellV147SQL},
+	{Version: reviewRangesRepliesMigrationVersion, Name: "review_ranges_replies", SQL: reviewRangesRepliesV148SQL, Rebuild: true},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

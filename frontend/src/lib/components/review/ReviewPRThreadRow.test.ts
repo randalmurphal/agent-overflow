@@ -12,7 +12,7 @@ const thread: ReviewThread = {
   isResolvable: true,
   isResolved: false,
   isOutdated: false,
-  comments: [{ authorLogin: 'alice', body: 'first comment', createdAt: '2026-01-01', databaseID: 1 }],
+  comments: [{ authorLogin: 'alice', body: 'first comment', createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
 };
 
 const anchor: CommentAnchor = { filePath: 'src/a.ts', newLine: 5, side: 'new' };
@@ -71,9 +71,9 @@ describe('<ReviewPRThreadRow> card', () => {
     ...thread,
     isResolved: true,
     comments: [
-      { authorLogin: 'alice', body: BODY, createdAt: '2026-01-01', databaseID: 1 },
-      { authorLogin: 'bob', body: 'Reply one.', createdAt: '2026-01-02', databaseID: 2 },
-      { authorLogin: 'carol', body: 'Reply two.', createdAt: '2026-01-03', databaseID: 3 },
+      { authorLogin: 'alice', body: BODY, createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false },
+      { authorLogin: 'bob', body: 'Reply one.', createdAt: '2026-01-02', databaseID: 2, id: `n${2}`, viewerCanEdit: false, viewerCanDelete: false },
+      { authorLogin: 'carol', body: 'Reply two.', createdAt: '2026-01-03', databaseID: 3, id: `n${3}`, viewerCanEdit: false, viewerCanDelete: false },
     ],
   };
 

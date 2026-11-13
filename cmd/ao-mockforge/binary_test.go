@@ -808,28 +808,18 @@ func TestCreatePROpensOneTheAppThenFinds(t *testing.T) {
 	}
 }
 
+// GitLab's discussion resolve is a call the fake does not implement: the
+// app's error carries the fake's report of the request.
 func TestUnimplementedInvocationSurfacesItsArgvToTheApp(t *testing.T) {
-	fixture := githubFixture()
-	fixture.Repos = append(fixture.Repos, gitlabFixture().Repos...)
-	r := newRig(t, fixture)
-	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}
-	err := r.core.ReplyToThread(t.Context(), ref, "", 99, "Body")
-	if err == nil || !strings.Contains(err.Error(), "unhandled http request") || !strings.Contains(err.Error(), "POST repos/acme/widgets/pulls/7/comments/99/replies") {
-		t.Fatalf("GitHub ReplyToThread error = %v, want the fake's unhandled report with the request", err)
-	}
+	r := newRig(t, gitlabFixture())
 	mr := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp/sub", Repo: "tool", Number: 3}
-	err = r.core.ReplyToThread(t.Context(), mr, "abc", 0, "Body")
-	if err == nil || !strings.Contains(err.Error(), "unhandled http request") || !strings.Contains(err.Error(), "POST projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc/notes") {
-		t.Fatalf("GitLab ReplyToThread error = %v, want the fake's unhandled report with the request", err)
+	err := r.core.SetThreadResolved(t.Context(), mr, "abc", true)
+	if err == nil || !strings.Contains(err.Error(), "unhandled http request") || !strings.Contains(err.Error(), "PUT projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc") {
+		t.Fatalf("GitLab SetThreadResolved error = %v, want the fake's unhandled report with the request", err)
 	}
 	log := r.engine.Invocations(0).Invocations
-	if len(log) != 2 {
+	if len(log) != 1 || !log[0].Unhandled || log[0].Via != forgefake.ViaHTTP || log[0].Method != "PUT" || log[0].Forge != "gitlab" {
 		t.Fatalf("recorded %+v", log)
-	}
-	for i, forge := range []string{"github", "gitlab"} {
-		if inv := log[i]; !inv.Unhandled || inv.Via != forgefake.ViaHTTP || inv.Method != "POST" || inv.Forge != forge {
-			t.Fatalf("recorded %+v", log)
-		}
 	}
 }
 
@@ -1269,7 +1259,7 @@ func TestGitHubSubmitReviewLineCommentsThroughTheAppsForgeCode(t *testing.T) {
 	right, left, start := 3, 7, 5
 	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Two notes", Comments: []gitops.ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &right, Side: "right"},
-		{Path: "b.go", Body: "range", Line: &left, StartLine: &start, Side: "left"},
+		{Path: "b.go", Body: "range", Line: &left, Start: &gitops.ReviewLineStart{Line: start, Side: "left"}, Side: "left"},
 	}}
 	if _, err := r.core.SubmitReview(forgeapi.WithInteractive(t.Context()), ref, review); err != nil {
 		t.Fatalf("SubmitReview: %v", err)
@@ -1301,6 +1291,7 @@ func TestGitHubSubmitReviewLineCommentsThroughTheAppsForgeCode(t *testing.T) {
 func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 	fixture := gitlabMergeFixture("running")
 	fixture.Repos[0].Pulls[0].DraftNotes = []forgefake.DraftNote{{ID: 9001, Author: "alice", Note: "LGTM"}}
+	fixture.Repos[0].Pulls[0].Diff = commentDiff
 	r := newRig(t, fixture)
 	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
 	ctx := forgeapi.WithInteractive(t.Context())

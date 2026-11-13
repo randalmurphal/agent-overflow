@@ -33,12 +33,18 @@ type reviewSubmitCase struct {
 // publishRoute is the route that makes a review visible on each forge.
 var publishRoute = map[string]string{"gitlab": "glab api publish draft notes", "github": "gh api pull reviews"}
 
+// reviewTestDiff is the pull's diff the review cases comment on: main.go
+// adds new lines 3 and 5 to 8, keeps new line 4 as old line 3, and removes
+// old line 9. GitLab positions resolve against it.
+const reviewTestDiff = "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n" +
+	"@@ -1,10 +1,14 @@\n o1\n o2\n+n3\n o3\n+n5\n+n6\n+n7\n+n8\n o4\n o5\n o6\n o7\n o8\n-o9\n o10\n"
+
 func newReviewSubmitCase(t *testing.T, forge string) *reviewSubmitCase {
 	t.Helper()
 	app, path := newTestAppWithStorePath(t)
 	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
 	if _, err := engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: forge, Project: "acme/widgets", Pulls: []forgefake.Pull{
-		{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open"},
+		{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open", Diff: reviewTestDiff},
 	}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +333,7 @@ func TestSubmitPRReviewGitLabSubmitsOfOneMergeRequestDoNotInterleave(t *testing.
 	t.Parallel()
 	c := newReviewSubmitCase(t, "gitlab")
 	threadDraft := c.draft(t, true, 3, "From the thread.")
-	prDraft := c.draft(t, false, 4, "From the page.")
+	prDraft := c.draft(t, false, 6, "From the page.")
 	created := func() int {
 		n := 0
 		for _, inv := range c.engine.Invocations(0).Invocations {
@@ -427,7 +433,7 @@ func TestSubmitPRReviewGitLabSubmitsOfBothShapesDoNotInterleave(t *testing.T) {
 			t.Parallel()
 			c := newReviewSubmitCase(t, "gitlab")
 			stored := c.draft(t, false, 3, "From the page.")
-			line := 4
+			line := 6
 			legacy := SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Older client", Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "From an older client.", Line: &line, Side: "right"}}}
 			first, second := legacy, c.request(false, stored)
 			if !legacyFirst {
@@ -488,7 +494,7 @@ func TestSubmitPRReviewLeavesADraftEditedWhileItPosts(t *testing.T) {
 	t.Parallel()
 	c := newReviewSubmitCase(t, "gitlab")
 	edited := c.draft(t, false, 3, "Guard this.")
-	kept := c.draft(t, false, 4, "And this.")
+	kept := c.draft(t, false, 6, "And this.")
 	entered, release := c.gate.hold()
 	defer release()
 	done := make(chan struct{})

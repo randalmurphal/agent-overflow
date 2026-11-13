@@ -108,6 +108,13 @@ const CapabilityThreadFind = "thread-find.v1"
 // them sent with a second call.
 const CapabilityPRReviewDrafts = "pr-review-drafts.v1"
 
+// CapabilityPRCommentActions names the review pane's comment actions:
+// PostPRLineComment, PostPRComment, EditPRComment and DeletePRComment,
+// ReplyToPRThread answering PRActionResult, and drafts that carry a line
+// range or are a held reply to a thread. A client reading a backend
+// without it offers no comment now, hold, range, edit or delete.
+const CapabilityPRCommentActions = "pr-comment-actions.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -125,6 +132,7 @@ var serverCapabilities = []string{
 	CapabilityFlushSettlement,
 	CapabilityThreadFind,
 	CapabilityPRReviewDrafts,
+	CapabilityPRCommentActions,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

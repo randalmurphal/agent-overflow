@@ -87,6 +87,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1303317790: 'thread', // DeleteDiffReviewComment
 	302062730: 'selected', // DeleteDiscussion
 	3876094070: 'thread', // DeleteEmptyDraftThread
+	559991881: 'selected', // DeletePRComment
 	4163354052: 'selected', // DeletePRDiffReviewComment
 	151243274: 'home', // DeletePasskey
 	3379369923: 'project', // DeleteProject
@@ -106,6 +107,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	115027584: 'home', // DownloadUpdate
 	1579042384: 'selected', // EditOpenAIKeyFile
 	679416267: 'selected', // EditPR
+	1171217596: 'selected', // EditPRComment
 	1594348919: 'selected', // FetchForgeAttachment
 	2178028847: 'selected', // FinishDictation
 	3774452621: 'selected', // FinishLiveDictation
@@ -306,6 +308,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3436727647: 'selected', // PairAgentComputer
 	1748405812: 'thread', // PinThread
 	1315440605: 'selected', // PostChannelMessage
+	3141095494: 'selected', // PostPRComment
+	1583250136: 'selected', // PostPRLineComment
 	2870364785: 'thread', // PrepareThreadWorktree
 	2105157519: 'home', // PreviewNotificationSound
 	1313986574: 'home', // ProbeClaudeAccount

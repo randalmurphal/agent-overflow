@@ -626,7 +626,7 @@ func TestGitLabManagePartialAndInconclusiveBatches(t *testing.T) {
 	}
 	err = r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "zed"}}})
 	got = explained(t, ref, gitops.ActionReviewers, err)
-	if _, unsure := errors.AsType[*gitops.UnconfirmedWriteError](err); !unsure || got.Kind != gitops.ForgeErrorTransient || strings.Contains(got.Message, "refused") {
+	if _, unsure := errors.AsType[*gitops.UnconfirmedWriteError](err); !unsure || got.Kind != gitops.ForgeErrorUnconfirmed || strings.Contains(got.Message, "refused") {
 		t.Fatalf("an addition the answer cannot show = %v (%+v)", err, got)
 	}
 	var full []any
@@ -686,7 +686,7 @@ func TestGitLabManageOnAnOlderServerThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatalf("a reporter's flags = %+v", c)
 	}
 	title := "Hijack"
-	if got := explained(t, ref, gitops.ActionEdit, r.core.EditPR(ctx, ref, gitops.PREdit{Title: &title})); got.Kind != gitops.ForgeErrorForbidden && got.Kind != gitops.ForgeErrorRefused {
+	if got := explained(t, ref, gitops.ActionEditPR, r.core.EditPR(ctx, ref, gitops.PREdit{Title: &title})); got.Kind != gitops.ForgeErrorForbidden && got.Kind != gitops.ForgeErrorRefused {
 		t.Fatalf("a reporter's edit = %+v", got)
 	}
 	if mergeRead(t, r, ref).Detail.Title != "Tidy" {

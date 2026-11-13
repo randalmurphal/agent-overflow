@@ -61,6 +61,22 @@ describe('<Toast> error reports', () => {
     expect(getToasts()).toHaveLength(0);
   });
 
+  // An action closes its toast, unless it keeps it (a copy, which the
+  // reader may want to repeat).
+  it('closes on its action unless the action keeps it', async () => {
+    const closes = vi.fn();
+    const keeps = vi.fn();
+    addToast('info', 'Undo the move', 0, { label: 'Undo', run: closes });
+    addErrorToast('Your comment was not sent.', new Error('refused'), 0, { label: 'Copy text', run: keeps, keep: true });
+    const { getByText } = render(Toast);
+    await fireEvent.click(getByText('Undo'));
+    await fireEvent.click(getByText('Copy text'));
+    await fireEvent.click(getByText('Copy text'));
+    expect(closes).toHaveBeenCalledTimes(1);
+    expect(keeps).toHaveBeenCalledTimes(2);
+    expect(getToasts().map((toast) => toast.message)).toEqual(['Your comment was not sent.']);
+  });
+
   it('waits while the pointer is on it', async () => {
     vi.useFakeTimers();
     addErrorToast('Could not save', new Error('disk full'), 1000);

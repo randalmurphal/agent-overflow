@@ -88,7 +88,7 @@ func TestGitLabPeopleChangeWritesInOrder(t *testing.T) {
 			}
 			_, partial := errors.AsType[*PartialWriteError](err)
 			explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(ref, ActionReviewers, err))
-			if partial != tc.partial || explained == nil || !strings.HasPrefix(explained.Message, tc.want) || (explained.Kind == ForgeErrorTransient) == tc.refused {
+			if partial != tc.partial || explained == nil || !strings.HasPrefix(explained.Message, tc.want) || (explained.Kind == ForgeErrorUnconfirmed) == tc.refused {
 				t.Fatalf("err = %v, explained %+v; want partial %v, refused %v, %q", err, explained, tc.partial, tc.refused, tc.want)
 			}
 			if !tc.refused && strings.Contains(strings.ToLower(explained.Message), "try again") {
@@ -146,7 +146,7 @@ func TestGitLabSetBatchOutcomes(t *testing.T) {
 			err := core.SetPRPeople(t.Context(), ref, true, tc.change)
 			_, partial := errors.AsType[*PartialWriteError](err)
 			explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(ref, ActionReviewers, err))
-			if partial != tc.partial || explained == nil || !strings.HasPrefix(explained.Message, tc.want) || (explained.Kind != ForgeErrorTransient) != tc.sure {
+			if partial != tc.partial || explained == nil || !strings.HasPrefix(explained.Message, tc.want) || (explained.Kind != ForgeErrorUnconfirmed) != tc.sure {
 				t.Fatalf("err = %v, explained %+v; want partial %v, sure %v, %q", err, explained, tc.partial, tc.sure, tc.want)
 			}
 		})

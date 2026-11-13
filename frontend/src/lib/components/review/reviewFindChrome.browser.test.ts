@@ -57,8 +57,8 @@ const minutesAgo = new Date(Date.now() - 5 * 60_000).toISOString();
 const THREAD: ReviewThread = {
   id: 'p1', path: 'src/a.ts', line: 41, side: 'right', isResolvable: true, isResolved: false, isOutdated: false,
   comments: [
-    { authorLogin: 'priya', authorName: 'Priya Rao', body: 'alpha first', createdAt: minutesAgo, databaseID: 1 },
-    { authorLogin: 'review-bot[bot]', body: 'alpha second', createdAt: minutesAgo, databaseID: 2 },
+    { authorLogin: 'priya', authorName: 'Priya Rao', body: 'alpha first', createdAt: minutesAgo, databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false },
+    { authorLogin: 'review-bot[bot]', body: 'alpha second', createdAt: minutesAgo, databaseID: 2, id: `n${2}`, viewerCanEdit: false, viewerCanDelete: false },
   ],
 };
 

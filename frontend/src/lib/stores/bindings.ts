@@ -558,6 +558,13 @@ export {
   GetPRReviewSubmitOutcome,
   ReplyToPRThread,
   SetPRThreadResolved,
+  // The comment actions (docs/specs/pull-requests.md): a comment posted
+  // now on a line or on the PR itself, and an edit or delete of a sent
+  // one. Each success has the PR's pump poll at once.
+  PostPRLineComment,
+  PostPRComment,
+  EditPRComment,
+  DeletePRComment,
   // The Merge section's actions (docs/specs/pull-requests.md): each is the
   // user's own, and a success has the PR's pump poll at once.
   ApprovePR,

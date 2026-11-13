@@ -16,10 +16,11 @@ function activates(event: KeyboardEvent): boolean {
  * pointer released anywhere or Space or Enter released with no click on
  * it after, or the control losing focus. A click with no activation
  * (assistive technology, a programmatic click) runs with `read()` at the
- * click: nothing was seen before it. The capture is the control's own; no state
+ * click: nothing was seen before it. `run` also gets the click, for its
+ * modifier keys. The capture is the control's own; no state
  * is shared between controls.
  */
-export function seenActivation<T>(read: () => T, run: (seen: T) => void): Attachment<HTMLElement> {
+export function seenActivation<T>(read: () => T, run: (seen: T, click: MouseEvent) => void): Attachment<HTMLElement> {
   return (node) => {
     let seen: { value: T } | null = null;
     // Which activation a deferred retire belongs to.
@@ -59,10 +60,10 @@ export function seenActivation<T>(read: () => T, run: (seen: T) => void): Attach
       if (event.repeat && seen) return;
       start();
     };
-    const onClick = (): void => {
+    const onClick = (event: MouseEvent): void => {
       const value = seen ? seen.value : read();
       retire();
-      run(value);
+      run(value, event);
     };
 
     node.addEventListener('pointerdown', onPointerDown);

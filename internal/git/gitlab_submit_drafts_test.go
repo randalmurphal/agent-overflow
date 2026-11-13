@@ -41,6 +41,8 @@ func (f *gitlabDraftForge) answer(t *testing.T, mr string) func(call forgeAPICal
 		switch {
 		case key == "GET "+mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+		case key == "GET "+mr+"/diffs?per_page=100":
+			return gitlabTestDiffsAnswer()
 		case key == "POST "+mr+"/draft_notes":
 			f.creates++
 			if f.creates == f.failAt && !f.failAtUnconfirmed {
@@ -102,7 +104,7 @@ func (f *gitlabDraftForge) pendingIDs() []int64 {
 func TestGitLabSubmitReviewFailureRemovesTheDraftsItCreated(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
-	line, other := 4, 9
+	line, other := 3, 5
 	// The user's own pending reply reads exactly like this submit's summary.
 	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "LGTM", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
@@ -137,7 +139,7 @@ func TestGitLabSubmitReviewFailureRemovesTheDraftsItCreated(t *testing.T) {
 func TestGitLabSubmitReviewReportsDraftsItCouldNotRemove(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
-	line := 4
+	line := 3
 	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "Summary", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 	}}
@@ -162,7 +164,7 @@ func TestGitLabSubmitReviewReportsDraftsItCouldNotRemove(t *testing.T) {
 func TestGitLabSubmitReviewUnconfirmedCreateMayLeaveADraft(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
-	line := 4
+	line := 3
 	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "Summary", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 	}}

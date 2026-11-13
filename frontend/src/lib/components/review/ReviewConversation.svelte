@@ -4,6 +4,8 @@
   import ReviewAvatar from './ReviewAvatar.svelte';
   import ReviewConversationCommits from './ReviewConversationCommits.svelte';
   import ReviewConversationThread from './ReviewConversationThread.svelte';
+  import ReviewHeldReplies from './ReviewHeldReplies.svelte';
+  import ReviewPRCommentField from './ReviewPRCommentField.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import { relativeTime } from '../../utils/format';
   import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
@@ -19,6 +21,8 @@
   // vertical rail so the sequence reads at a glance; the avatar sits on
   // the rail and the card beside it. The store owns the feed and freezes
   // its order once shown; new arrivals wait behind the header's chip.
+  // Under the feed: held replies whose thread is gone (kept, to delete or
+  // keep out of the review) and the one "Comment…" field.
 
   interface Props {
     review: ReviewPaneState;
@@ -184,5 +188,16 @@
 
   {#if review.conversationFeed.length === 0}
     <div class="px-1 py-1 text-fg-muted">No conversation yet.</div>
+  {/if}
+
+  {#if review.orphanedReplyDrafts.length > 0}
+    <div class="mt-4 overflow-hidden rounded-[var(--radius-control)] border border-dashed border-border-strong" data-testid="review-orphaned-replies">
+      <p class="px-3 pt-2 text-[0.6875rem] text-fg-muted">Draft replies to threads that are gone</p>
+      <ReviewHeldReplies {review} replies={review.orphanedReplyDrafts} />
+    </div>
+  {/if}
+
+  {#if review.sentCommentActions}
+    <ReviewPRCommentField {review} />
   {/if}
 </div>

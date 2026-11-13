@@ -126,6 +126,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteDiffReviewComment", ID: 1303317790, Scope: "threads:operate", Route: "thread"},                              // main.App.DeleteDiffReviewComment
 	{Name: "DeleteDiscussion", ID: 302062730, Scope: "threads:operate", Route: "selected"},                                    // main.App.DeleteDiscussion
 	{Name: "DeleteEmptyDraftThread", ID: 3876094070, Scope: "threads:operate", Route: "thread"},                               // main.App.DeleteEmptyDraftThread
+	{Name: "DeletePRComment", ID: 559991881, Scope: "git:operate", Route: "selected"},                                         // main.App.DeletePRComment
 	{Name: "DeletePRDiffReviewComment", ID: 4163354052, Scope: "git:operate", Route: "selected"},                              // main.App.DeletePRDiffReviewComment
 	{Name: "DeletePasskey", ID: 151243274, Scope: "access:admin", Route: "home"},                                              // main.App.DeletePasskey
 	{Name: "DeleteProject", ID: 3379369923, Scope: "threads:operate", Route: "project"},                                       // main.App.DeleteProject
@@ -145,6 +146,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host", Route: "home"},                                                     // main.App.DownloadUpdate
 	{Name: "EditOpenAIKeyFile", ID: 1579042384, Scope: "host", Route: "selected"},                                             // main.App.EditOpenAIKeyFile
 	{Name: "EditPR", ID: 679416267, Scope: "git:operate", Route: "selected"},                                                  // main.App.EditPR
+	{Name: "EditPRComment", ID: 1171217596, Scope: "git:operate", Route: "selected"},                                          // main.App.EditPRComment
 	{Name: "FetchForgeAttachment", ID: 1594348919, Scope: "git:operate", Route: "selected"},                                   // main.App.FetchForgeAttachment
 	{Name: "FinishDictation", ID: 2178028847, Scope: "threads:operate", Route: "selected"},                                    // main.App.FinishDictation
 	{Name: "FinishLiveDictation", ID: 3774452621, Scope: "threads:operate", Route: "selected"},                                // main.App.FinishLiveDictation
@@ -345,6 +347,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "PairAgentComputer", ID: 3436727647, Scope: "access:admin", Route: "selected", StepUp: true, Remote: true},         // main.App.PairAgentComputer
 	{Name: "PinThread", ID: 1748405812, Scope: "threads:operate", Route: "thread"},                                            // main.App.PinThread
 	{Name: "PostChannelMessage", ID: 1315440605, Scope: "threads:operate", Route: "selected"},                                 // main.App.PostChannelMessage
+	{Name: "PostPRComment", ID: 3141095494, Scope: "git:operate", Route: "selected"},                                          // main.App.PostPRComment
+	{Name: "PostPRLineComment", ID: 1583250136, Scope: "git:operate", Route: "selected"},                                      // main.App.PostPRLineComment
 	{Name: "PrepareThreadWorktree", ID: 2870364785, Scope: "git:operate", Route: "thread"},                                    // main.App.PrepareThreadWorktree
 	{Name: "PreviewNotificationSound", ID: 2105157519, Scope: "host", Route: "home"},                                          // main.App.PreviewNotificationSound
 	{Name: "ProbeClaudeAccount", ID: 1313986574, Scope: "access:admin", Route: "home"},                                        // main.App.ProbeClaudeAccount

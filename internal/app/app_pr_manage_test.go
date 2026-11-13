@@ -192,7 +192,7 @@ func TestPRManageLocksRefuseAnEndedContext(t *testing.T) {
 	}
 	var app App
 	wrote := false
-	if _, err := app.runPRManage(canceled, testGitLabPR, gitops.ActionEdit, func(context.Context) error { wrote = true; return nil }); !errors.Is(err, context.Canceled) || wrote {
+	if _, err := app.runPRManage(canceled, testGitLabPR, gitops.ActionEditPR, func(context.Context) error { wrote = true; return nil }); !errors.Is(err, context.Canceled) || wrote {
 		t.Fatalf("a canceled management call = %v, wrote %v", err, wrote)
 	}
 }

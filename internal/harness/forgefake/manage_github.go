@@ -68,20 +68,6 @@ func githubOwnerType(r *Repo) string {
 	return "User"
 }
 
-// ghRESTPull resolves the pull a REST route names.
-func (e *Engine) ghRESTPull(c *call, m []string) (*Repo, *Pull, response, bool) {
-	r := e.repoOn("github", c.http.host, m[1])
-	if r == nil {
-		return nil, nil, ghHTTPNotFound(), false
-	}
-	number, _ := strconv.Atoi(m[2])
-	p := r.pull(number)
-	if p == nil {
-		return nil, nil, ghHTTPNotFound(), false
-	}
-	return r, p, response{}, true
-}
-
 // ghRequestedReviewers answers POST and DELETE
 // `repos/O/R/pulls/N/requested_reviewers` with `{reviewers,
 // team_reviewers}`. A request needs triage access (403), names
@@ -96,9 +82,9 @@ func ghRequestedReviewers(e *Engine, c *call, m []string) response {
 	if err := decodeRESTBody(c, &in, false); err != nil {
 		return unhandled("%v", err)
 	}
-	r, p, fail, ok := e.ghRESTPull(c, m)
+	r, p, ok := e.ghRESTPull(c, m[1], m[2])
 	if !ok {
-		return fail
+		return ghHTTPNotFound()
 	}
 	owner, _, _ := strings.Cut(r.Project, "/")
 	if !e.mayTriage(r, p) {
@@ -161,9 +147,9 @@ func ghAssignees(e *Engine, c *call, m []string) response {
 	if err := decodeRESTBody(c, &in, false); err != nil {
 		return unhandled("%v", err)
 	}
-	r, p, fail, ok := e.ghRESTPull(c, m)
+	r, p, ok := e.ghRESTPull(c, m[1], m[2])
 	if !ok {
-		return fail
+		return ghHTTPNotFound()
 	}
 	adding := c.flag("method") == http.MethodPost
 	if e.mayAssign(r, p) {

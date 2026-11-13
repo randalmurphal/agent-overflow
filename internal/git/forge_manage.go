@@ -325,11 +325,12 @@ func ValidateMergeMessageMethod(method string) error {
 	return nil
 }
 
-// UnconfirmedWriteError is a management write the forge may have
-// applied: it failed in a way forgeapi.WriteNotApplied cannot rule out (a
-// reset or timeout after sending, a 5xx, a body cut short, an error
-// beside data). A caller does not send it again; it refreshes and lets
-// the forge's answer show what happened.
+// UnconfirmedWriteError is a write the forge may have applied (a
+// management change, a comment or reply): it failed in a way
+// forgeapi.WriteNotApplied cannot rule out (a reset or timeout after
+// sending, a 5xx, a body cut short, an error beside data). A caller does
+// not send it again; it refreshes and lets the forge's answer show what
+// happened.
 type UnconfirmedWriteError struct {
 	Err error
 }

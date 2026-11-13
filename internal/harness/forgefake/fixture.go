@@ -241,15 +241,25 @@ type Pull struct {
 // or "file", or a conversation comment when Path is empty.
 type DraftNote struct {
 	// ID is generated when omitted.
-	ID        int64  `json:"id,omitempty"`
-	Author    string `json:"author"`
-	Note      string `json:"note"`
-	Path      string `json:"path,omitempty"`
+	ID     int64  `json:"id,omitempty"`
+	Author string `json:"author"`
+	Note   string `json:"note"`
+	Path   string `json:"path,omitempty"`
+	// OldPath is a renamed file's old path (see Thread).
+	OldPath   string `json:"oldPath,omitempty"`
 	Line      *int   `json:"line,omitempty"`
 	StartLine *int   `json:"startLine,omitempty"`
 	// OldLine is an unchanged line's old number beside Line (see Thread).
-	OldLine *int   `json:"oldLine,omitempty"`
-	Side    string `json:"side,omitempty"`
+	OldLine *int `json:"oldLine,omitempty"`
+	// StartPoint is a range's first line (see Thread).
+	StartPoint *LinePoint `json:"startPoint,omitempty"`
+	Side       string     `json:"side,omitempty"`
+	// InReplyTo is the discussion a draft reply answers; publishing adds
+	// the note to it. It has no path or line.
+	InReplyTo string `json:"inReplyTo,omitempty"`
+	// ResolveDiscussion is the reply's resolve_discussion: publishing
+	// resolves its discussion when set and reopens it otherwise.
+	ResolveDiscussion bool `json:"resolveDiscussion,omitempty"`
 }
 
 // Readiness is the merge box state a pull carries beyond its reviews, CI,
@@ -334,6 +344,29 @@ type Comment struct {
 	AuthorName string `json:"authorName,omitempty"`
 	Body       string `json:"body"`
 	CreatedAt  string `json:"createdAt,omitempty"`
+	// EditedAt is when the body was last edited, RFC 3339 (GitHub
+	// lastEditedAt; GitLab's REST notes do not report it, and answer it as
+	// updated_at). An edit sets it. Whether the viewer may edit or delete
+	// the comment follows from Author and the viewer's role: on GitHub the
+	// author or WRITE and above edit and delete; on GitLab the author
+	// edits, and the author or a maintainer or owner deletes.
+	EditedAt string `json:"editedAt,omitempty"`
+	// Replies are the further notes of a GitLab conversation comment's
+	// discussion; a reply to one adds them. GitHub conversation comments
+	// have none.
+	Replies []Comment `json:"replies,omitempty"`
+	// discussion is the id of the GitLab discussion this comment leads
+	// once its first note was deleted; empty, it is the comment's own.
+	discussion string
+}
+
+// LinePoint is one line of a GitLab diff as a line_range names it: Type
+// "old" a removed line by OldLine, "new" an added line by NewLine, empty
+// an unchanged line by both.
+type LinePoint struct {
+	Type    string `json:"type,omitempty"`
+	OldLine *int   `json:"oldLine,omitempty"`
+	NewLine *int   `json:"newLine,omitempty"`
 }
 
 // Thread is one review thread.
@@ -342,12 +375,20 @@ type Thread struct {
 	// omitted.
 	ID   string `json:"id,omitempty"`
 	Path string `json:"path"`
+	// OldPath is a renamed file's path before the change (GitLab
+	// old_path); empty is Path.
+	OldPath string `json:"oldPath,omitempty"`
 	// Line and StartLine are nil for a file-level thread.
 	Line      *int `json:"line,omitempty"`
 	StartLine *int `json:"startLine,omitempty"`
 	// OldLine is an unchanged line's old number beside Line, its new one
 	// (GitLab positions name both); nil otherwise.
 	OldLine *int `json:"oldLine,omitempty"`
+	// StartPoint is a range's first line as its position named it, which
+	// may lie on the other half from Line (a removed line through an
+	// unchanged or added one). Nil names StartLine on Side. GitHub answers
+	// a removed one (Type "old") as startDiffSide LEFT.
+	StartPoint *LinePoint `json:"startPoint,omitempty"`
 	// Side is "right" (default), "left" or "file".
 	Side     string    `json:"side,omitempty"`
 	Resolved bool      `json:"resolved,omitempty"`
@@ -750,6 +791,9 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		if err := p.Comments[i].normalize(p.Author, p.AuthorName, ids); err != nil {
 			return fmt.Errorf("comments[%d]: %w", i, err)
 		}
+		if forge != "gitlab" && len(p.Comments[i].Replies) > 0 {
+			return fmt.Errorf("comments[%d]: a GitHub conversation comment has no replies", i)
+		}
 	}
 	for i := range p.Threads {
 		thread := &p.Threads[i]
@@ -778,8 +822,11 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		if draft.Author == "" || draft.Note == "" {
 			return fmt.Errorf("draftNotes[%d]: author and note are required", i)
 		}
+		if draft.InReplyTo != "" && (draft.Path != "" || draft.Line != nil || draft.Side != "") {
+			return fmt.Errorf("draftNotes[%d]: a reply has no path, line or side", i)
+		}
 		if draft.Path != "" {
-			probe := Thread{Path: draft.Path, Line: draft.Line, StartLine: draft.StartLine, OldLine: draft.OldLine, Side: draft.Side, ID: "-", Comments: []Comment{{Author: draft.Author, Body: draft.Note}}}
+			probe := Thread{Path: draft.Path, Line: draft.Line, StartLine: draft.StartLine, StartPoint: draft.StartPoint, OldLine: draft.OldLine, Side: draft.Side, ID: "-", Comments: []Comment{{Author: draft.Author, Body: draft.Note}}}
 			if err := probe.normalize(forge, draft.Author, "", ids); err != nil {
 				return fmt.Errorf("draftNotes[%d]: %w", i, err)
 			}
@@ -980,6 +1027,14 @@ func (c *Comment) normalize(author, authorName string, ids *idSource) error {
 		c.Author, c.AuthorName = author, authorName
 	}
 	c.CreatedAt = defaultString(c.CreatedAt, "2026-01-01T00:00:00Z")
+	for i := range c.Replies {
+		if len(c.Replies[i].Replies) > 0 {
+			return fmt.Errorf("replies[%d]: a reply has no replies", i)
+		}
+		if err := c.Replies[i].normalize(author, authorName, ids); err != nil {
+			return fmt.Errorf("replies[%d]: %w", i, err)
+		}
+	}
 	return nil
 }
 
@@ -1004,8 +1059,11 @@ func (t *Thread) normalize(forge, author, authorName string, ids *idSource) erro
 	if t.Side != "file" && t.Line == nil {
 		return errors.New("a line thread needs line")
 	}
-	if t.OldLine != nil && (t.Side != "right" || t.StartLine != nil) {
-		return errors.New("oldLine names an unchanged line: a right-side thread on one line")
+	if t.OldLine != nil && t.Side != "right" {
+		return errors.New("oldLine names an unchanged line: a right-side thread")
+	}
+	if t.StartPoint != nil && t.StartLine == nil {
+		return errors.New("startPoint names a range's first line: give startLine too")
 	}
 	if t.ID == "" {
 		if forge == "github" {
@@ -1015,6 +1073,9 @@ func (t *Thread) normalize(forge, author, authorName string, ids *idSource) erro
 		}
 	}
 	for i := range t.Comments {
+		if len(t.Comments[i].Replies) > 0 {
+			return fmt.Errorf("comments[%d]: a thread's replies are its comments", i)
+		}
 		if err := t.Comments[i].normalize(author, authorName, ids); err != nil {
 			return fmt.Errorf("comments[%d]: %w", i, err)
 		}

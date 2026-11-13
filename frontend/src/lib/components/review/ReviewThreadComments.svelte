@@ -1,18 +1,22 @@
 <script lang="ts">
-  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import ReviewAvatar from './ReviewAvatar.svelte';
-  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
+  import ReviewSentCommentActions from './ReviewSentCommentActions.svelte';
+  import ReviewSentCommentBody from './ReviewSentCommentBody.svelte';
+  import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import { relativeTime } from '../../utils/format';
   import { visibleBody } from '../../utils/reviewComments';
   import { findThreadCommentKey, reviewCommentKey } from '../../utils/reviewFindScan';
   import { authorDisplayName, isBotLogin } from '../../utils/reviewIdentity';
+  import { CONFIRM_HIDES } from '../../utils/reviewThreadStyle';
   import type { ReviewThread } from '../../types/models';
 
   // One PR thread's comment bodies, shared by the inline diff strip
   // (ReviewPRThreadRow) and the conversation card
   // (ReviewConversationThread) so the two surfaces cannot drift. Each
   // comment is an avatar, the author's name and login, the time, then
-  // the body. The thread's actions live in ReviewThreadFooter.
+  // the body. A comment the viewer may change has Edit and Delete at the
+  // right end of its header (ReviewSentCommentActions). The thread's
+  // actions live in ReviewThreadFooter.
   //
   // Bodies render with `embeddedHtml`: forge comments are authored against
   // GitHub/GitLab's HTML subset (collapsible <details> prompts, badge
@@ -28,9 +32,11 @@
     avatarSize?: number;
     /** Mark each body for the diff's find (utils/reviewFindScan.ts). */
     findKeys?: boolean;
+    /** The review whose comment actions these comments offer. */
+    review?: Pick<ReviewPaneState, 'sentComments' | 'sentCommentActions' | 'nowWithheldReason'> | null;
   }
 
-  let { thread, skipFirst = false, avatarSize = 22, findKeys = false }: Props = $props();
+  let { thread, skipFirst = false, avatarSize = 22, findKeys = false, review = null }: Props = $props();
 
   function commentTime(createdAt: string): string {
     const ms = Date.parse(createdAt);
@@ -40,26 +46,37 @@
 
 {#each skipFirst ? thread.comments.slice(1) : thread.comments as comment (`${comment.databaseID}:${comment.createdAt}`)}
   {@const shown = visibleBody(comment.body)}
-  {#if shown !== ''}
+  {#if shown !== '' || review?.sentComments.editBodyFor(thread, comment) != null}
     <div
-      class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2.5 border-t border-border-subtle px-3.5 py-3"
+      class="group/comment grid grid-cols-[auto_minmax(0,1fr)] gap-x-2.5 border-t border-border-subtle px-3.5 py-3"
       style:grid-template-columns="{avatarSize}px minmax(0, 1fr)"
       data-testid="review-thread-comment"
     >
       <ReviewAvatar login={comment.authorLogin} name={comment.authorName} size={avatarSize} />
-      <div class="flex min-w-0 items-center gap-1.5 text-[0.75rem]" style:min-height="{avatarSize}px">
+      <div class="group/head flex min-w-0 items-center gap-1.5 text-[0.75rem]" style:min-height="{avatarSize}px" data-testid="review-comment-header">
         <span class="truncate font-semibold text-fg">{authorDisplayName(comment)}</span>
         {#if isBotLogin(comment.authorLogin)}
           <span class="shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1 text-[0.625rem] leading-4 text-fg-muted">bot</span>
         {/if}
         {#if comment.authorName}
-          <span class="min-w-0 truncate text-fg-subtle" title="@{comment.authorLogin}">@{comment.authorLogin}</span>
+          <span class="min-w-0 truncate text-fg-subtle {CONFIRM_HIDES}" title="@{comment.authorLogin}">@{comment.authorLogin}</span>
         {/if}
-        <span class="shrink-0 text-fg-subtle">· {commentTime(comment.createdAt)}</span>
+        <span class="shrink-0 text-fg-subtle {CONFIRM_HIDES}">· {commentTime(comment.createdAt)}</span>
+        {#if comment.editedAt}
+          <span class="shrink-0 text-fg-subtle {CONFIRM_HIDES}" title="Edited {commentTime(comment.editedAt)}" data-testid="review-comment-edited">edited</span>
+        {/if}
+        <span class="min-w-0 flex-1"></span>
+        {#if review}
+          <ReviewSentCommentActions {review} {thread} {comment} />
+        {/if}
       </div>
-      <div class="col-start-2 mt-1" data-find-key={findKeys ? findThreadCommentKey(thread.id, reviewCommentKey(comment)) : undefined}>
-        <ChatMarkdown source={shown} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
-      </div>
+      <ReviewSentCommentBody
+        {review}
+        {thread}
+        {comment}
+        class="col-start-2 mt-1"
+        findKey={findKeys ? findThreadCommentKey(thread?.id ?? '', reviewCommentKey(comment)) : undefined}
+      />
     </div>
   {/if}
 {/each}

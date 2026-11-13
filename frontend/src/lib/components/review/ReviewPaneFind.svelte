@@ -43,7 +43,7 @@
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
   import { visibleBody } from '../../utils/reviewComments';
   import { readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
-  import { findDraftKey, findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
+  import { findDraftKey, findThreadCommentKey, findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
   import {
     findHitAtOrBelow,
     placeReviewFindHit,
@@ -121,12 +121,19 @@
     });
   }
 
-  // The drafts open in their editor, mounted or not: the store keeps an
-  // open edit across a row unmount, and its saved body is not on screen.
+  // The drafts and sent comments open in their editor, mounted or not:
+  // the store keeps an open edit across a row unmount, and the body it
+  // replaces is not on screen.
   function readEditing(): Set<string> {
     return untrack(() => {
       if (view !== 'diff') return new Set<string>();
-      return new Set(review.drafts.filter((draft) => review.draftEditBodyFor(draft.id) !== null).map((draft) => findDraftKey(draft.id)));
+      const out = new Set(review.drafts.filter((draft) => review.draftEditBodyFor(draft.id) !== null).map((draft) => findDraftKey(draft.id)));
+      for (const thread of review.prThreads) {
+        for (const comment of thread.comments) {
+          if (review.sentComments.editBodyFor(thread, comment) !== null) out.add(findThreadCommentKey(thread.id, reviewCommentKey(comment)));
+        }
+      }
+      return out;
     });
   }
 
@@ -353,13 +360,15 @@
   // flight until that content shows; a match not present now is not
   // shown: the answer is false, and it stays owed.
   async function openDiffHit(hit: ReviewFindHit): Promise<boolean> {
-    if ((await presentDiff(hit)).kind !== 'present') return false;
+    const first = await presentDiff(hit);
+    if (first.kind !== 'present') return false;
     const conflicts = untrack(() => view) === 'conflicts';
     if (conflicts && review.conflictCollapsedPaths.has(hit.path)) await review.toggleConflictCollapsed(hit.path);
     else if (!conflicts && review.collapsedPaths.has(hit.path)) review.toggleCollapsed(hit.path);
-    const at = hit.at;
-    if (at.kind === 'thread') {
-      const thread = review.prThreads.find((t) => t.id === at.threadId);
+    // A thread's comment, or a held reply at its foot: a settled thread opens.
+    const place = first.at.place;
+    if (place.kind === 'thread') {
+      const thread = review.prThreads.find((t) => t.id === place.threadId);
       if (thread?.isResolved && !review.expandedPRThreadIds.has(thread.id)) review.togglePRThread(thread.id);
     }
     await tick();
@@ -380,9 +389,9 @@
     if (resolved.kind !== 'present' || resolved.at.place.kind === 'fold') return false;
     const conflicts = untrack(() => view) === 'conflicts';
     if ((conflicts ? review.conflictCollapsedPaths : review.collapsedPaths).has(hit.path)) return false;
-    const at = hit.at;
-    if (at.kind !== 'thread') return true;
-    const thread = review.prThreads.find((t) => t.id === at.threadId);
+    const place = resolved.at.place;
+    if (place.kind !== 'thread') return true;
+    const thread = review.prThreads.find((t) => t.id === place.threadId);
     return !thread?.isResolved || review.expandedPRThreadIds.has(thread.id);
   }
 

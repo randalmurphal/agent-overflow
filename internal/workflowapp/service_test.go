@@ -315,6 +315,18 @@ func TestPRMessagesQuoteUntrustedDataAndKeepTheClosingFence(t *testing.T) {
 	if !strings.Contains(outdated, "Line: 41\n") || !strings.Contains(outdated, "Outdated: true\n") {
 		t.Fatalf("outdated thread does not name the line it was written at:\n%s", outdated)
 	}
+
+	// A range from a removed line names the half its start is on; one on
+	// a single half does not.
+	start, end := 3, 6
+	crossing := PRReviewCommentsMessage("https://github.com/owner/repo/pull/9", ref, []gitops.ReviewThread{{
+		ID: "thread-3", Path: "main.go", StartLine: &start, Line: &end, Side: "right", StartSide: "left", Comments: comments[:1],
+	}, {
+		ID: "thread-4", Path: "main.go", StartLine: &start, Line: &end, Side: "right", StartSide: "right", Comments: comments[:1],
+	}})
+	if !strings.Contains(crossing, "Side: \"right\"\nStart side: \"left\"\nLine: 3-6\n") || strings.Count(crossing, "Start side:") != 1 {
+		t.Fatalf("crossing range does not name its start's half once:\n%s", crossing)
+	}
 }
 
 func TestDispositionStateRejectsCalledAndRunningRuns(t *testing.T) {

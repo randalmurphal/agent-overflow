@@ -228,11 +228,11 @@ func TestExplainUnconfirmedWrite(t *testing.T) {
 		t.Fatalf("explained twice = %v", again)
 	}
 	unsure, _ := errors.AsType[*ForgeActionError](ExplainForgeError(ref, ActionReviewers, &PartialWriteError{Done: "removed bob from the reviewers", Next: "adding carol", Err: &UnconfirmedWriteError{Err: cause}}))
-	if unsure == nil || unsure.Kind != ForgeErrorTransient || unsure.Message != "Removed bob from the reviewers of grp/sub/app!2; adding carol may have applied. The pane shows what GitLab did." {
+	if unsure == nil || unsure.Kind != ForgeErrorUnconfirmed || unsure.Message != "Removed bob from the reviewers of grp/sub/app!2; adding carol may have applied. The pane shows what GitLab did." {
 		t.Fatalf("partial, second unconfirmed = %+v", unsure)
 	}
 	whole, _ := errors.AsType[*ForgeActionError](ExplainForgeError(ref, ActionClose, &UnconfirmedWriteError{Err: errors.New("EOF")}))
-	if whole == nil || whole.Kind != ForgeErrorTransient || !strings.HasPrefix(whole.Message, "GitLab did not confirm the request to close grp/sub/app!2") {
+	if whole == nil || whole.Kind != ForgeErrorUnconfirmed || !strings.HasPrefix(whole.Message, "GitLab did not confirm the request to close grp/sub/app!2") {
 		t.Fatalf("unconfirmed = %+v", whole)
 	}
 }

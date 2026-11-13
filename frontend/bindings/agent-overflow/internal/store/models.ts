@@ -642,6 +642,22 @@ export class DiffReviewComment {
     "oldLine"?: number;
     "newLine"?: number;
     "side": string;
+
+    /**
+     * StartOldLine and StartNewLine are the first line of a range, as
+     * OldLine and NewLine give its last; both 0 for one line.
+     */
+    "startOldLine"?: number;
+    "startNewLine"?: number;
+
+    /**
+     * ReplyThreadID makes the draft a held reply to that forge thread
+     * (side "reply", pr scope), and ReplyRootID is the thread's first
+     * comment's database id, which GitHub posts a reply under. FilePath is
+     * the thread's file, empty for a conversation thread.
+     */
+    "replyThreadId"?: string;
+    "replyRootId"?: number;
     "selectedText": string;
     "body": string;
     "sentAt"?: number;
@@ -697,6 +713,11 @@ export class DiffReviewComment {
     }
 }
 
+/**
+ * DiffReviewCommentInput is a new draft: a line (Side old, new or
+ * context), a range (StartOldLine and StartNewLine its first line), a file
+ * (Side file), or a held reply (ReplyThreadID, Side reply).
+ */
 export class DiffReviewCommentInput {
     "scope": string;
     "sourceKey": string;
@@ -705,6 +726,10 @@ export class DiffReviewCommentInput {
     "oldLine"?: number;
     "newLine"?: number;
     "side": string;
+    "startOldLine"?: number;
+    "startNewLine"?: number;
+    "replyThreadId"?: string;
+    "replyRootId"?: number;
     "selectedText": string;
     "body": string;
 
@@ -795,9 +820,14 @@ export class DiffReviewPRContext {
     }
 }
 
+/**
+ * DiffReviewPRContextEntry is what a send adds to one draft for the agent:
+ * the hunk it is on, or for a held reply the thread it answers.
+ */
 export class DiffReviewPRContextEntry {
     "commentId": string;
     "hunkExcerpt": string;
+    "thread"?: DiffReviewThreadContext | null;
 
     /** Creates a new DiffReviewPRContextEntry instance. */
     constructor($$source: Partial<DiffReviewPRContextEntry> = {}) {
@@ -815,7 +845,11 @@ export class DiffReviewPRContextEntry {
      * Creates a new DiffReviewPRContextEntry instance from a string or object.
      */
     static createFrom($$source: any = {}): DiffReviewPRContextEntry {
+        const $$createField2_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("thread" in $$parsedSource) {
+            $$parsedSource["thread"] = $$createField2_0($$parsedSource["thread"]);
+        }
         return new DiffReviewPRContextEntry($$parsedSource as Partial<DiffReviewPRContextEntry>);
     }
 }
@@ -848,12 +882,73 @@ export class DiffReviewSourceRef {
      * Creates a new DiffReviewSourceRef instance from a string or object.
      */
     static createFrom($$source: any = {}): DiffReviewSourceRef {
-        const $$createField4_0 = $$createType12;
+        const $$createField4_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
             $$parsedSource["pr"] = $$createField4_0($$parsedSource["pr"]);
         }
         return new DiffReviewSourceRef($$parsedSource as Partial<DiffReviewSourceRef>);
+    }
+}
+
+/**
+ * DiffReviewThreadComment is one comment of a thread a reply answers.
+ */
+export class DiffReviewThreadComment {
+    "author": string;
+    "body": string;
+
+    /** Creates a new DiffReviewThreadComment instance. */
+    constructor($$source: Partial<DiffReviewThreadComment> = {}) {
+        if (!("author" in $$source)) {
+            this["author"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiffReviewThreadComment instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DiffReviewThreadComment {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DiffReviewThreadComment($$parsedSource as Partial<DiffReviewThreadComment>);
+    }
+}
+
+/**
+ * DiffReviewThreadContext is the forge thread a held reply answers, as the
+ * pane showed it: its file and lines (none for a conversation thread) and
+ * its comments in order.
+ */
+export class DiffReviewThreadContext {
+    "path"?: string;
+    "line"?: number;
+    "startLine"?: number;
+    "comments": DiffReviewThreadComment[];
+
+    /** Creates a new DiffReviewThreadContext instance. */
+    constructor($$source: Partial<DiffReviewThreadContext> = {}) {
+        if (!("comments" in $$source)) {
+            this["comments"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiffReviewThreadContext instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DiffReviewThreadContext {
+        const $$createField3_0 = $$createType16;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("comments" in $$parsedSource) {
+            $$parsedSource["comments"] = $$createField3_0($$parsedSource["comments"]);
+        }
+        return new DiffReviewThreadContext($$parsedSource as Partial<DiffReviewThreadContext>);
     }
 }
 
@@ -905,8 +1000,8 @@ export class DiscussionDefinition {
      * Creates a new DiscussionDefinition instance from a string or object.
      */
     static createFrom($$source: any = {}): DiscussionDefinition {
-        const $$createField5_0 = $$createType14;
-        const $$createField6_0 = $$createType15;
+        const $$createField5_0 = $$createType18;
+        const $$createField6_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("participants" in $$parsedSource) {
             $$parsedSource["participants"] = $$createField5_0($$parsedSource["participants"]);
@@ -1170,7 +1265,7 @@ export class Item {
      * Creates a new Item instance from a string or object.
      */
     static createFrom($$source: any = {}): Item {
-        const $$createField0_0 = $$createType16;
+        const $$createField0_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("completionLaunch" in $$parsedSource) {
             $$parsedSource["completionLaunch"] = $$createField0_0($$parsedSource["completionLaunch"]);
@@ -1259,11 +1354,11 @@ export class PagedItems {
      * Creates a new PagedItems instance from a string or object.
      */
     static createFrom($$source: any = {}): PagedItems {
-        const $$createField0_0 = $$createType18;
+        const $$createField0_0 = $$createType22;
         const $$createField1_0 = $$createType1;
-        const $$createField2_0 = $$createType19;
-        const $$createField3_0 = $$createType20;
-        const $$createField4_0 = $$createType20;
+        const $$createField2_0 = $$createType23;
+        const $$createField3_0 = $$createType24;
+        const $$createField4_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("scope" in $$parsedSource) {
             $$parsedSource["scope"] = $$createField0_0($$parsedSource["scope"]);
@@ -1399,7 +1494,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType21;
+        const $$createField0_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -1900,7 +1995,7 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField36_0 = $$createType22;
+        const $$createField36_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
             $$parsedSource["origin"] = $$createField36_0($$parsedSource["origin"]);
@@ -2197,8 +2292,8 @@ export class TimelineDigestContext {
      * Creates a new TimelineDigestContext instance from a string or object.
      */
     static createFrom($$source: any = {}): TimelineDigestContext {
-        const $$createField0_0 = $$createType23;
-        const $$createField1_0 = $$createType23;
+        const $$createField0_0 = $$createType27;
+        const $$createField1_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("after" in $$parsedSource) {
             $$parsedSource["after"] = $$createField0_0($$parsedSource["after"]);
@@ -2239,8 +2334,8 @@ export class TimelineScopeContext {
     static createFrom($$source: any = {}): TimelineScopeContext {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
-        const $$createField2_0 = $$createType16;
-        const $$createField3_0 = $$createType25;
+        const $$createField2_0 = $$createType20;
+        const $$createField3_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("root" in $$parsedSource) {
             $$parsedSource["root"] = $$createField0_0($$parsedSource["root"]);
@@ -2799,18 +2894,22 @@ const $$createType7 = $Create.Nullable($$createType6);
 const $$createType8 = AttachmentShell.createFrom;
 const $$createType9 = DiffReviewPRContextEntry.createFrom;
 const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = DiffReviewPRContext.createFrom;
+const $$createType11 = DiffReviewThreadContext.createFrom;
 const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = DiscussionParticipant.createFrom;
-const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = DiscussionSettings.createFrom;
-const $$createType16 = $Create.Nullable($$createType0);
-const $$createType17 = TimelineScopeContext.createFrom;
-const $$createType18 = $Create.Nullable($$createType17);
-const $$createType19 = $Create.Array($$createType2);
-const $$createType20 = TimelineCursor.createFrom;
-const $$createType21 = Project.createFrom;
-const $$createType22 = ThreadOrigin.createFrom;
-const $$createType23 = $Create.Nullable($$createType20);
-const $$createType24 = TimelineDigestContext.createFrom;
-const $$createType25 = $Create.Nullable($$createType24);
+const $$createType13 = DiffReviewPRContext.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = DiffReviewThreadComment.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = DiscussionParticipant.createFrom;
+const $$createType18 = $Create.Array($$createType17);
+const $$createType19 = DiscussionSettings.createFrom;
+const $$createType20 = $Create.Nullable($$createType0);
+const $$createType21 = TimelineScopeContext.createFrom;
+const $$createType22 = $Create.Nullable($$createType21);
+const $$createType23 = $Create.Array($$createType2);
+const $$createType24 = TimelineCursor.createFrom;
+const $$createType25 = Project.createFrom;
+const $$createType26 = ThreadOrigin.createFrom;
+const $$createType27 = $Create.Nullable($$createType24);
+const $$createType28 = TimelineDigestContext.createFrom;
+const $$createType29 = $Create.Nullable($$createType28);
