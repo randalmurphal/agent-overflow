@@ -145,7 +145,7 @@ import {
 } from '../utils/diffContextExpansion';
 import type { DiffGap } from '../utils/patchFiles';
 import { createReviewDiffMedia, type ReviewMediaHost } from './reviewDiffMedia.svelte';
-import type { DiffFilesTarget } from './reviewDiffFiles';
+import { DiffFilesHandle, type DiffFilesTarget } from './reviewDiffFiles';
 import { keptText, PatchTextLost, reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
 import { anchorRow, anchorRows, completeAnchor, namesOneRow } from '../utils/patchRows';
 import { anchorKey, type CommentAnchor, type EditorRow, type EditorState } from '../utils/reviewRows';
@@ -1985,7 +1985,7 @@ export function createReviewPaneState(
         ignoreWhitespace: requestedIgnoreWhitespace,
         headRange,
       };
-      media.setTarget(filesTarget(loaded), `${shown.generation}`);
+      media.setTarget(filesTarget(loaded, read.read), `${shown.generation}`);
       applyPlacements(committed, placements);
       // Fresh defaults for the new patch, with the user's explicit
       // collapse/expand choices layered back on top.
@@ -2221,19 +2221,23 @@ export function createReviewPaneState(
     return { scope, commitSHA: '', headSHA: '', workspace };
   }
 
-  // The diff a load opened, for its files' sizes and images: the source
-  // its Open call took, or the edit it replayed.
-  function filesTarget(loaded: LoadedPatch): DiffFilesTarget | null {
-    if (loaded.filesSource) return { kind: 'git', backend, workspace, opened: { source: loaded.filesSource, unavailable: null } };
-    if (scope !== 'edits' || threadId === null || !selectedEdit) return null;
-    return {
-      kind: 'edits',
-      backend,
-      threadId,
-      editPayloadId: selectedEdit.kind === 'item' ? selectedEdit.payloadId : '',
-      editTurnIndex: selectedEdit.kind === 'turn' ? selectedEdit.turnIndex : -1,
-      verifyPatch: (file) => file.body.whenResident(() => filePatchText(file)),
-    };
+  // The diff a load opened, for its files' sizes and images: the handle
+  // its open answered (one open of one diff: the media drops it with the
+  // generation), or the edit it replayed.
+  function filesTarget(loaded: LoadedPatch, read: ReviewDiffRead | null): DiffFilesTarget | null {
+    if (scope === 'edits') {
+      if (threadId === null || !selectedEdit) return null;
+      return {
+        kind: 'edits',
+        backend,
+        threadId,
+        editPayloadId: selectedEdit.kind === 'item' ? selectedEdit.payloadId : '',
+        editTurnIndex: selectedEdit.kind === 'turn' ? selectedEdit.turnIndex : -1,
+      };
+    }
+    const patch = loaded.patch;
+    if (!read || !patch) return null;
+    return { kind: 'git', backend, workspace, files: new DiffFilesHandle(read.files, () => patch.reopenFiles()) };
   }
 
   // One file's patch text, serialized from its merged lines — the ONLY

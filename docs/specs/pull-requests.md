@@ -576,8 +576,11 @@ it leaves (the media cache's budget). Any other binary file, or an image
 the backend cannot serve, shows `Binary files differ` with both sizes and,
 when the backend says why, its sentence. A refused read says why on the
 row: Retry when the backend was busy, `Reload diff` when the file changed
-since the diff was read; a diff whose files cannot be read says so once
-for the pane. A text SVG keeps its text diff, with one `Rendered` toggle
+since the diff was read, and only the sentence when the diff's files
+cannot be read at all. The reads name the handle the diff's open
+answered; one the server no longer holds (evicted, or a reconnect) is
+reopened once and the read made once more, and a diff no longer on
+screen is never reopened. A text SVG keeps its text diff, with one `Rendered` toggle
 in its header that shows it as an image (always an `<img>`, never
 inline).
 

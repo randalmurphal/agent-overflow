@@ -75,7 +75,7 @@ function shotsDir(testInfo: TestInfo): (name: string) => string {
   return (name) => (dir ? `${dir}/${testInfo.project.name}-${name}.png` : testInfo.outputPath(`${testInfo.project.name}-${name}.png`));
 }
 
-async function openReview(page: Page, forge: Forge, compact: boolean): Promise<Locator> {
+export async function openReview(page: Page, forge: Forge, compact: boolean): Promise<Locator> {
   const row = page.getByTestId('thread-row').filter({ hasText: TITLE });
   if (!compact) {
     await row.click();
@@ -123,7 +123,7 @@ async function shownPaths(review: Locator): Promise<string[]> {
 
 /** Opens `path` from the file tree, as a reader does, and answers
  * `target` (a row of that file) once it is mounted and settled on screen. */
-async function reach(review: Locator, path: string, target: Locator, compact: boolean): Promise<Locator> {
+export async function reach(review: Locator, path: string, target: Locator, compact: boolean): Promise<Locator> {
   const rail = review.getByTestId('review-rail');
   if ((await rail.getAttribute('data-open')) !== 'true') {
     const toggle = rail.getByTestId('review-tree-toggle');
@@ -347,7 +347,7 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
   }
 }
 
-async function seed(harness: HarnessApp, forge: Forge): Promise<{ project: string; headSha: string }> {
+export async function seed(harness: HarnessApp, forge: Forge): Promise<{ project: string; headSha: string }> {
   const seeded = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{
       name: `reading-${randomBytes(4).toString('hex')}`,

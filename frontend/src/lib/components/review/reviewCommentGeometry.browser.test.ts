@@ -133,7 +133,7 @@ describe('the submit failure banner', () => {
     + 'GitLab did not publish the reply: its discussion is gone. The approval did not go through either: GitLab refused the approval because the merge request changed since it was loaded.';
 
   it('wraps the whole sentence, clipping none of it', () => {
-    const review = { error: null, submitError: SENTENCE, conflictsError: null, prUpdateError: null, prUpdateFailure: null, prStale: false, loading: false, scope: 'pr', prRef: null, mediaHost: { media: { unavailable: null } }, files: [] } as unknown as ReviewPaneState;
+    const review = { error: null, submitError: SENTENCE, conflictsError: null, prUpdateError: null, prUpdateFailure: null, prStale: false, loading: false, scope: 'pr', prRef: null } as unknown as ReviewPaneState;
     app = mount(ReviewPaneBanners, { target, props: { review, branchesError: null } });
     flushSync();
     const banner = target.querySelector<HTMLElement>('[data-testid="review-submit-error"]')!;

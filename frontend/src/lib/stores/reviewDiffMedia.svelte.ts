@@ -70,8 +70,6 @@ export interface ReviewDiffMedia {
   sizes(path: string): SizesState | null;
   /** Whether this diff can read sizes at all. */
   readonly readsSizes: boolean;
-  /** Why none of this diff's files can be read, said once by the pane. */
-  readonly unavailable: string | null;
   /** The image row of `file`, loading its bytes until released. */
   image(file: ReviewFile, sides: readonly ImageSideName[]): ImageHandle;
   /** The pixel size a side's image decoded at, for its caption. */
@@ -97,7 +95,6 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
   let scopeKey = '';
   let generation = 0;
   let readsSizes = $state(false);
-  let unavailable = $state<string | null>(null);
   const sizesByPath = new SvelteMap<string, SizesState>();
   const factsByPath = new Map<string, AnswerFacts>();
   const pixelsByKey = new SvelteMap<string, { width: number; height: number }>();
@@ -164,9 +161,11 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
       const diff = target;
       releaseBlobs();
       if (!diff) return;
-      // The pane says why once (`unavailable`).
-      if (diffFilesUnavailable(diff)) {
-        state = { kind: 'binary', reason: null, action: null, sizes: null };
+      // No handle (the open could not pin the diff's files): the slot
+      // says why; nothing is read.
+      const unpinned = diffFilesUnavailable(diff);
+      if (unpinned) {
+        state = { kind: 'binary', reason: unpinned, action: null, sizes: null };
         return;
       }
       // One read per mount serves both sides' first fetch.
@@ -249,14 +248,16 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
   const media: ReviewDiffMedia = {
     setTarget(next, key) {
       if (key === scopeKey && next !== null && target !== null) {
+        if (target.kind === 'git' && target !== next) target.files.close();
         target = next;
         return;
       }
       generation += 1;
+      // The diff on screen before is gone: its handle reopens no more.
+      if (target?.kind === 'git' && target !== next) target.files.close();
       target = next;
       scopeKey = key;
       readsSizes = next !== null && diffFilesReadSizes(next);
-      unavailable = next === null ? null : diffFilesUnavailable(next);
       sizesByPath.clear();
       factsByPath.clear();
       pixelsByKey.clear();
@@ -272,7 +273,6 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
     },
     sizes: (path) => sizesByPath.get(path) ?? null,
     get readsSizes() { return readsSizes; },
-    get unavailable() { return unavailable; },
     image,
     pixels: (path, side) => pixelsByKey.get(`${side}\u0000${path}`) ?? null,
     rememberPixels(path, side, width, height) {

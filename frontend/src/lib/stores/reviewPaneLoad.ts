@@ -35,7 +35,6 @@ import { patchFileFromReviewFile, reviewFileFromPatchFile, whenResident, type Re
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { prRevision, type PRRevision } from '../utils/prRevision';
-import type { GitDiffSource } from './reviewDiffFiles';
 import { resolveCommitSelection, type CommitSelection } from '../utils/commitRange';
 
 /** Whether the diff for this selection comes from `internal/gitdiff`, the
@@ -105,9 +104,6 @@ export interface LoadedPatch {
   /** pr scope: the revision the diff and commit list were computed at.
    * The pane keeps its head as the anchor `prStale` is measured from. */
   prRevision?: PRRevision;
-  /** The diff its Open call read, in the terms its files' sizes and
-   * images are read by (stores/reviewDiffFiles.ts); absent for edits. */
-  filesSource?: GitDiffSource;
 }
 
 /** The edits-scope selection reload should aim for: a freshly pinned
@@ -256,11 +252,10 @@ export async function loadPatch(
       return {
         patch, commits, selectedCommitSHA: selection?.last ?? null, selectedCommits: selection,
         commitSelectionLost: lost, prRevision: revision,
-        filesSource: { scope: 'pr', revision, ...(selection ? { firstSha: selection.first, lastSha: selection.last } : {}) },
       };
     }
     case 'workspace':
-      return { patch: diff(() => OpenWorkspaceDiff(workspace, ignoreWhitespace)), filesSource: { scope: 'workspace' } };
+      return { patch: diff(() => OpenWorkspaceDiff(workspace, ignoreWhitespace)) };
     case 'edits': {
       if (threadId === null) throw new Error(EDITS_NEEDS_THREAD);
       let entries = existing?.edits;
@@ -289,20 +284,19 @@ export async function loadPatch(
     }
     case 'branch': {
       const branch = baseBranch?.trim() || await defaultBaseBranch(workspace);
-      const filesSource = (commitSHA: string | null): GitDiffSource => (commitSHA ? { scope: 'commit', commitSha: commitSHA } : { scope: 'branch', baseBranch: branch });
       const branchDiff = (commitSHA: string | null) => commitSHA
         ? diff(() => OpenCommitDiff(workspace, commitSHA, ignoreWhitespace))
         : diff(() => OpenBranchBaseDiff(workspace, branch, ignoreWhitespace));
       if (existing) {
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
-        return { patch: branchDiff(commitSHA), commits: existing.commits, selectedCommitSHA: commitSHA, filesSource: filesSource(commitSHA) };
+        return { patch: branchDiff(commitSHA), commits: existing.commits, selectedCommitSHA: commitSHA };
       }
       if (selectedCommitSHA) {
         // Sequenced: the selection must be validated against the fresh
         // list before deciding which diff to fetch.
         const commits = ((await ListBranchCommits(workspace, branch)) ?? []) as BranchCommit[];
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
-        return { patch: branchDiff(commitSHA), commits, selectedCommitSHA: commitSHA, filesSource: filesSource(commitSHA) };
+        return { patch: branchDiff(commitSHA), commits, selectedCommitSHA: commitSHA };
       }
       // The diff opens while the commit list loads.
       const patch = branchDiff(null).start();
@@ -313,7 +307,7 @@ export async function loadPatch(
         patch.abandon();
         throw err;
       }
-      return { patch, commits, selectedCommitSHA: null, filesSource: filesSource(null) };
+      return { patch, commits, selectedCommitSHA: null };
     }
   }
 }
