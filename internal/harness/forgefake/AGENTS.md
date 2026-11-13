@@ -333,7 +333,7 @@ and then drops or truncates the response.
   suggestion(s) to 1 file(s)" with a `Co-authored-by` trailer for the
   note's author at `<login>@example.com`) to the pull's head repository's
   origin, which the harness created (`HarnessForgeOrigin`,
-  `<data root>/forge-origin/<project>.git`, which `publishPullRequest`
+  `<data root>/forge-origin-*/<project>.git`, which `publishPullRequest`
   pushes to), moving the head branch and the pull's head ref, and the
   pull's new head is that commit; a pull whose head repository has no
   origin the harness created there, or whose origin lacks its head, gets

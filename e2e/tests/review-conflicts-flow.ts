@@ -19,6 +19,7 @@ import type { Locator, Page } from '@playwright/test';
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   expectEveryForgeCallHandled,
+  forgeOrigin,
   openPullRequestReview,
   publishPullRequest,
   seedForge,
@@ -36,7 +37,7 @@ function gitIn(harness: HarnessApp) {
  * workspace never sees. */
 export async function pushToOriginMain(harness: HarnessApp, repo: ForgeRepo, content: string): Promise<string> {
   const git = gitIn(harness);
-  const bare = path.join(harness.bootstrap.dataRoot, 'forge-origin', `${repo.project}.git`);
+  const bare = (await forgeOrigin(harness, repo.project)).path;
   const scratch = await mkdtemp(path.join(harness.bootstrap.dataRoot, 'pusher-'));
   git(scratch, 'clone', '--quiet', '--branch', 'main', bare, '.');
   await writeFile(path.join(scratch, 'shared.txt'), content);

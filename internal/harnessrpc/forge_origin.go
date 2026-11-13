@@ -15,28 +15,38 @@ import (
 	"agent-overflow/internal/harness/forgefake"
 )
 
-// The fake forge's origin repositories: bare repositories under
-// <data root>/forge-origin that the harness creates (HarnessForgeOrigin)
-// and the e2e helpers push a pull's head to (e2e/tests/forge-helpers.ts,
-// publishPullRequest), which the workspace's git proxy serves as the
-// forge's origin. A commit the fake makes on a pull whose head
-// repository is one of them (an applied suggestion) is written there as a
-// real commit on the head branch and the pull's head ref, so the app can
-// fetch the head the forge reports.
+// The fake forge's origin repositories: bare repositories the harness
+// creates (HarnessForgeOrigin) and the e2e helpers push a pull's head to
+// (e2e/tests/forge-helpers.ts, publishPullRequest), which the
+// workspace's git proxy serves as the forge's origin. A commit the fake
+// makes on a pull whose head repository is one of them (an applied
+// suggestion) is written there as a real commit on the head branch and
+// the pull's head ref, so the app can fetch the head the forge reports.
 //
-// The harness writes only to a repository it created in this process:
-// the path, symlinks evaluated, must be the one it registered, inside the
-// origin root, a bare repository by git's own answers, with no
-// alternates, and git runs with an environment nothing outside can
-// redirect. Anything else is refused and the fake keeps its generated
-// sha. A component replaced between the check and the write is not
-// guarded against.
+// Two rules keep that write inside the test's own repositories:
+//
+//   - Every directory from the origin root down to an origin is one this
+//     process created by exclusive creation: the root is a fresh
+//     directory under the canonical data root the boot validated, made
+//     on the first HarnessForgeOrigin, and nothing found on disk is ever
+//     adopted as a root or an origin.
+//   - Immediately before a write, the origin's path and its whole tree
+//     are plain (forgeOriginPlain): no symbolic link and nothing but
+//     directories and regular files at any depth.
+//
+// Beside them, git must answer that the origin is a bare repository whose
+// common directory is itself, it has no alternates, and git runs with no
+// inherited GIT_ variable. Anything else is refused and the fake keeps
+// its generated sha.
 
-// forgeOriginRoot is where the harness keeps the fake forge's origin
-// repositories.
-func forgeOriginRoot(dataRoot string) string {
-	return filepath.Join(dataRoot, "forge-origin")
-}
+// forgeOriginRootPattern names the origin root under the data root, one
+// per harness process.
+const forgeOriginRootPattern = "forge-origin-*"
+
+// forgeOriginMaxEntries bounds the walk of one origin before a write. A
+// test origin is a few pushed branches: tens of entries, a few hundred
+// with loose objects. One past it is refused.
+const forgeOriginMaxEntries = 10_000
 
 // forgePullHeadRef is the ref a forge keeps a pull's head under.
 func forgePullHeadRef(forge string, number int) string {
@@ -46,20 +56,30 @@ func forgePullHeadRef(forge string, number int) string {
 	return fmt.Sprintf("refs/pull/%d/head", number)
 }
 
-// forgeOrigins are the origin repositories under root that this harness
-// created, by canonical path.
+// forgeOrigins are the origin repositories this harness created.
 type forgeOrigins struct {
-	root string
+	// dataRoot is the canonical data root the boot validated.
+	dataRoot string
 
 	mu sync.Mutex
-	// canonical is root with symlinks evaluated, set when the first
-	// origin is created.
-	canonical string
-	created   map[string]bool
+	// root is the origin root this process created, "" until the first
+	// origin.
+	root string
+	// dirs are the directories under root this process created, origins
+	// and their parents; origins the origin directories among them.
+	dirs    map[string]bool
+	origins map[string]bool
 }
 
-func newForgeOrigins(root string) *forgeOrigins {
-	return &forgeOrigins{root: root, created: map[string]bool{}}
+func newForgeOrigins(dataRoot string) *forgeOrigins {
+	return &forgeOrigins{dataRoot: dataRoot, dirs: map[string]bool{}, origins: map[string]bool{}}
+}
+
+// ForgeOrigin is a created origin: the origin root, which the e2e git
+// proxy serves, and the repository's path under it.
+type ForgeOrigin struct {
+	Root string `json:"root"`
+	Path string `json:"path"`
 }
 
 // projectSegments splits a forge project path ("grp/sub/tool") into its
@@ -76,121 +96,133 @@ func projectSegments(project string) ([]string, error) {
 }
 
 // create makes the bare origin repository of project, its HEAD on main
-// as a forge's default branch, and registers it, answering its path. Creating one it made again answers the same path;
-// any other directory already at the path, or a segment that is a
-// symbolic link or a file, is refused.
-func (o *forgeOrigins) create(project string) (string, error) {
+// as a forge's default branch, and registers it. Every directory it
+// makes is made by exclusive creation; one already on disk that this
+// process did not make is refused. Creating an origin again answers the
+// same one.
+func (o *forgeOrigins) create(project string) (ForgeOrigin, error) {
 	segments, err := projectSegments(project)
 	if err != nil {
-		return "", err
+		return ForgeOrigin{}, err
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if err := os.MkdirAll(o.root, 0o755); err != nil {
-		return "", fmt.Errorf("create the forge origin root: %w", err)
+	if o.root == "" {
+		root, err := os.MkdirTemp(o.dataRoot, forgeOriginRootPattern)
+		if err != nil {
+			return ForgeOrigin{}, fmt.Errorf("create the forge origin root: %w", err)
+		}
+		o.root = root
 	}
-	canonical, err := filepath.EvalSymlinks(o.root)
-	if err != nil {
-		return "", fmt.Errorf("resolve the forge origin root: %w", err)
-	}
-	if o.canonical == "" {
-		o.canonical = canonical
-	} else if canonical != o.canonical {
-		return "", fmt.Errorf("the forge origin root %s now resolves to %s, not %s", o.root, canonical, o.canonical)
-	}
-	dir, existed := canonical, false
+	dir := o.root
 	for _, s := range segments {
 		dir = filepath.Join(dir, s)
-		info, err := os.Lstat(dir)
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			if err := os.Mkdir(dir, 0o755); err != nil {
-				return "", fmt.Errorf("create forge origin %s: %w", project, err)
-			}
-			existed = false
-		case err != nil:
-			return "", fmt.Errorf("create forge origin %s: %w", project, err)
-		case !info.IsDir():
-			return "", fmt.Errorf("forge origin %s: %s is not a directory", project, dir)
-		default:
-			existed = true
+		if o.dirs[dir] {
+			continue
 		}
-	}
-	if existed {
-		if o.created[dir] {
-			return dir, nil
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			return ForgeOrigin{}, fmt.Errorf("create forge origin %s: %w", project, err)
 		}
-		return "", fmt.Errorf("forge origin %s: %s exists and is not one this harness created", project, dir)
+		o.dirs[dir] = true
 	}
-	if _, err := forgeOriginGit(dir, canonical, "", "", "init", "--bare", "--quiet", "--initial-branch=main"); err != nil {
-		return "", err
+	if !o.origins[dir] {
+		if _, err := forgeOriginGit(dir, o.root, "", "", "init", "--bare", "--quiet", "--initial-branch=main"); err != nil {
+			return ForgeOrigin{}, err
+		}
+		o.origins[dir] = true
 	}
-	o.created[dir] = true
-	return dir, nil
+	return ForgeOrigin{Root: o.root, Path: dir}, nil
 }
 
-// errNoForgeOrigin is a pull whose head repository has no origin
-// directory: it is bound to none, which is no refusal.
+// errNoForgeOrigin is a pull whose head repository has no origin: it is
+// bound to none, which is no refusal.
 var errNoForgeOrigin = errors.New("no origin repository")
 
-// resolve answers the canonical path of project's origin when it is one
-// create made and still is: the path with symlinks evaluated is the one
-// registered and inside the root, it has no alternates, and git answers
-// that it is that bare repository.
+// resolve answers project's origin when this process created it and it
+// is still a plain bare repository (forgeOriginPlain, git's answers, no
+// alternates).
 func (o *forgeOrigins) resolve(project string) (dir, root string, err error) {
 	segments, err := projectSegments(project)
 	if err != nil {
 		return "", "", err
 	}
 	o.mu.Lock()
-	root = o.canonical
+	root = o.root
+	if root != "" {
+		dir = filepath.Join(append([]string{root}, segments...)...)
+	}
+	registered := dir != "" && o.origins[dir]
 	o.mu.Unlock()
-	path := filepath.Join(append([]string{o.root}, segments...)...)
-	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
-		return "", "", errNoForgeOrigin
+	if !registered {
+		if dir == "" {
+			return "", "", errNoForgeOrigin
+		}
+		if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+			return "", "", errNoForgeOrigin
+		}
+		return "", "", fmt.Errorf("%s is not an origin this harness created", dir)
 	}
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve %s: %w", path, err)
-	}
-	o.mu.Lock()
-	registered := o.created[real]
-	o.mu.Unlock()
-	if root == "" || !registered {
-		return "", "", fmt.Errorf("%s resolves to %s, which this harness did not create", path, real)
-	}
-	if want := filepath.Join(append([]string{root}, segments...)...); real != want {
-		return "", "", fmt.Errorf("%s resolves to %s, not %s", path, real, want)
-	}
-	if rel, err := filepath.Rel(root, real); err != nil || !filepath.IsLocal(rel) {
-		return "", "", fmt.Errorf("%s is outside the forge origin root %s", real, root)
-	}
-	if info, err := os.Lstat(real); err != nil || !info.IsDir() {
-		return "", "", fmt.Errorf("%s is not the directory this harness created", real)
+	if err := forgeOriginPlain(root, dir); err != nil {
+		return "", "", err
 	}
 	for _, name := range []string{"alternates", "http-alternates"} {
-		if _, err := os.Lstat(filepath.Join(real, "objects", "info", name)); !errors.Is(err, fs.ErrNotExist) {
-			return "", "", fmt.Errorf("%s has objects/info/%s", real, name)
+		if _, err := os.Lstat(filepath.Join(dir, "objects", "info", name)); !errors.Is(err, fs.ErrNotExist) {
+			return "", "", fmt.Errorf("%s has objects/info/%s", dir, name)
 		}
 	}
-	for _, check := range []struct{ args []string }{
-		{[]string{"rev-parse", "--is-bare-repository"}},
-		{[]string{"rev-parse", "--path-format=absolute", "--git-common-dir"}},
-		{[]string{"rev-parse", "--absolute-git-dir"}},
+	for _, check := range [][]string{
+		{"rev-parse", "--is-bare-repository"},
+		{"rev-parse", "--path-format=absolute", "--git-common-dir"},
 	} {
-		out, err := forgeOriginGit(real, root, "", "", check.args...)
+		out, err := forgeOriginGit(dir, root, "", "", check...)
 		if err != nil {
 			return "", "", err
 		}
-		want := real
-		if check.args[1] == "--is-bare-repository" {
+		want := dir
+		if check[1] == "--is-bare-repository" {
 			want = "true"
 		}
 		if out != want {
-			return "", "", fmt.Errorf("git %s in %s answered %q, want %q", strings.Join(check.args, " "), real, out, want)
+			return "", "", fmt.Errorf("git %s in %s answered %q, want %q", strings.Join(check, " "), dir, out, want)
 		}
 	}
-	return real, root, nil
+	return dir, root, nil
+}
+
+// forgeOriginPlain refuses dir unless every component from root down to
+// it is a directory and no symbolic link, and every entry under it, at
+// any depth, is a directory or a regular file and no symbolic link, at
+// most forgeOriginMaxEntries of them. Read with Lstat, so no walked path
+// resolves outside dir.
+func forgeOriginPlain(root, dir string) error {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return err
+	}
+	path := root
+	for _, s := range append([]string{"."}, strings.Split(rel, string(filepath.Separator))...) {
+		path = filepath.Join(path, s)
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsDir() {
+			return fmt.Errorf("%s is not a plain directory (%s)", path, info.Mode().Type())
+		}
+	}
+	entries := 0
+	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entries++; entries > forgeOriginMaxEntries {
+			return fmt.Errorf("%s holds more than %d entries", dir, forgeOriginMaxEntries)
+		}
+		if t := d.Type(); t != 0 && t != fs.ModeDir {
+			return fmt.Errorf("%s is not a plain file or directory (%s)", path, t)
+		}
+		return nil
+	})
 }
 
 // commit is forgefake.Options.Commit for the origins: "" when the pull's
@@ -203,6 +235,9 @@ func (o *forgeOrigins) commit(req forgefake.CommitRequest) (string, error) {
 	if req.Project == "" {
 		return "", nil
 	}
+	// The origin is checked here and written by the git runs below. A
+	// component replaced in between is not guarded against: only the
+	// test's own processes write under the origin root.
 	bare, root, err := o.resolve(req.Project)
 	if errors.Is(err, errNoForgeOrigin) {
 		return "", nil

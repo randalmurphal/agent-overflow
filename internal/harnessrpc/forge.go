@@ -46,14 +46,15 @@ func (h *Harness) HarnessForgeSeed(raw json.RawMessage) (forgefake.Fixture, erro
 }
 
 // HarnessForgeOrigin creates the bare origin repository of a forge
-// project ("acme/widgets", "grp/sub/tool") under <data root>/forge-origin
-// and answers its path, the one a spec pushes a pull's head to. A commit
-// the fake forge makes on a pull is written only to an origin created
-// here (forge_origin.go). Creating one again answers the same path; a
-// directory already there that this harness did not create is refused.
-func (h *Harness) HarnessForgeOrigin(project string) (string, error) {
+// project ("acme/widgets", "grp/sub/tool") and answers {root, path}: the
+// origin root, a directory this harness process created under the data
+// root (forge-origin-*), and the repository's path under it, the one a
+// spec pushes a pull's head to. A commit the fake forge makes on a pull
+// is written only to an origin created here (forge_origin.go). Creating
+// one again answers the same origin.
+func (h *Harness) HarnessForgeOrigin(project string) (ForgeOrigin, error) {
 	if h.origins == nil {
-		return "", errors.New("this harness has no data root for forge origins")
+		return ForgeOrigin{}, errors.New("this harness has no data root for forge origins")
 	}
 	return h.origins.create(project)
 }

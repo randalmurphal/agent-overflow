@@ -464,6 +464,17 @@ export async function seedThreadProject(harness: HarnessApp, title: string, pref
 }
 
 /**
+ * The bare origin repository of a forge `project`, created by the harness
+ * on the first call (`HarnessForgeOrigin`) and answered again after: the
+ * fake forge writes an applied suggestion's commit only to an origin the
+ * harness created. `root` is the directory of every origin of this
+ * harness process, which the git proxy serves.
+ */
+export async function forgeOrigin(harness: HarnessApp, project: string): Promise<{ root: string; path: string }> {
+  return harness.rpc<{ root: string; path: string }>('HarnessForgeOrigin', project);
+}
+
+/**
  * Publish the seeded `workspace` as `repo`'s first pull request and seed
  * the fake forge with `repo`. The workspace gets a `feature` branch one
  * commit ahead of `main` (the fixture's default head and base refs) that
@@ -485,11 +496,8 @@ export async function publishPullRequest(
   if (!pull) throw new Error(`publishPullRequest: ${repo.project} has no pull request to publish`);
   const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
-  const root = path.join(harness.bootstrap.dataRoot, 'forge-origin');
+  const { root, path: bare } = await forgeOrigin(harness, repo.project);
   const proxy = path.join(root, 'git-proxy.sh');
-  // The harness creates the origin: the fake forge writes an applied
-  // suggestion's commit only to an origin it created.
-  const bare = await harness.rpc<string>('HarnessForgeOrigin', repo.project);
   await writeFile(proxy, gitProxyScript(root), { mode: 0o755 });
 
   const baseSha = git(workspace, 'rev-parse', 'HEAD');
@@ -544,11 +552,8 @@ export async function publishBranch(
 ): Promise<void> {
   const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
-  const root = path.join(harness.bootstrap.dataRoot, 'forge-origin');
+  const { root, path: bare } = await forgeOrigin(harness, repo.project);
   const proxy = path.join(root, 'git-proxy.sh');
-  // The harness creates the origin: the fake forge writes an applied
-  // suggestion's commit only to an origin it created.
-  const bare = await harness.rpc<string>('HarnessForgeOrigin', repo.project);
   await writeFile(proxy, gitProxyScript(root), { mode: 0o755 });
   git(workspace, 'push', '--quiet', bare, 'main', branch);
 

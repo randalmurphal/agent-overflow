@@ -138,7 +138,7 @@ func New(config Config) *Harness {
 	h := &Harness{config: config, pageMarker: newHarnessPageMarker(), forgeToken: rand.Text()}
 	var commit func(forgefake.CommitRequest) (string, error)
 	if config.DataRoot != "" {
-		h.origins = newForgeOrigins(forgeOriginRoot(config.DataRoot))
+		h.origins = newForgeOrigins(config.DataRoot)
 		commit = h.origins.commit
 	}
 	h.forge = forgefake.New(forgefake.Options{OnInvocation: h.onForgeInvocation, APIToken: h.forgeToken, Commit: commit})

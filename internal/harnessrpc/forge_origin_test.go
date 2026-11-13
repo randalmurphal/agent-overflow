@@ -23,10 +23,11 @@ import (
 // answers a git runner on that repository and the head sha.
 func forgeOriginRepo(t *testing.T, origins *forgeOrigins, project, forge string, number int) (func(args ...string) string, string) {
 	t.Helper()
-	bare, err := origins.create(project)
+	origin, err := origins.create(project)
 	if err != nil {
 		t.Fatal(err)
 	}
+	bare := origin.Path
 	work := t.TempDir()
 	run := testGit(t)
 	run(work, "init", "--quiet", "-b", "main")
@@ -87,7 +88,7 @@ func forgeOriginPush(t *testing.T, work, bare, forge string, number int) (func(a
 // the repository lacks, gets none.
 func TestForgeOriginCommit(t *testing.T) {
 	t.Parallel()
-	origins := newForgeOrigins(filepath.Join(t.TempDir(), "forge-origin"))
+	origins := newForgeOrigins(t.TempDir())
 	commit := origins.commit
 	for _, forge := range []string{"github", "gitlab"} {
 		project := "acme/" + forge
@@ -226,27 +227,28 @@ func applyThroughTheFake(t *testing.T, origins *forgeOrigins, head string) (int,
 	return resp.StatusCode, mr.SHA
 }
 
-// The origin callback writes only to an origin the harness created: a
-// symlink in place of the origin or of a parent directory, a directory
-// it did not create, an origin with alternates, one whose git directory
-// is redirected (core.bare off, a commondir file, a gitdir file) and git
-// variables in the harness's environment each leave the other repository
-// byte for byte as it was, and the apply still answers, with a generated
-// head.
+// The origin callback writes only to a plain origin the harness created:
+// a symlink in place of the origin, a parent directory or any entry in it
+// (objects, refs, a branch ref, objects/pack, config), a directory it did
+// not create, an origin with alternates, and one whose git directory is
+// redirected (core.bare off, a commondir file, a gitdir file) each leave
+// the other repository byte for byte as it was, and the apply still
+// answers, with a generated head.
 func TestForgeOriginCommitWritesOnlyToItsOwnOrigins(t *testing.T) {
 	type rig struct {
 		origins *forgeOrigins
-		root    string // the origin root, as configured
+		root    string // the origin root the harness created
 		victim  string // the other repository, a bare one in the test's temp dir
 		head    string // the head both share
 	}
 	setup := func(t *testing.T) rig {
-		root := filepath.Join(t.TempDir(), "forge-origin")
-		origins := newForgeOrigins(root)
+		origins := newForgeOrigins(t.TempDir())
 		// The origin root exists and grp/s is the project under attack.
-		if _, err := origins.create("grp/other"); err != nil {
+		other, err := origins.create("grp/other")
+		if err != nil {
 			t.Fatal(err)
 		}
+		root := other.Root
 		victim := filepath.Join(t.TempDir(), "outside", "s.git")
 		if err := os.MkdirAll(victim, 0o755); err != nil {
 			t.Fatal(err)
@@ -260,12 +262,24 @@ func TestForgeOriginCommitWritesOnlyToItsOwnOrigins(t *testing.T) {
 	// own creates grp/s as the harness does and pushes the victim's
 	// history to it.
 	own := func(t *testing.T, r rig) string {
-		bare, err := r.origins.create("grp/s")
+		origin, err := r.origins.create("grp/s")
 		if err != nil {
 			t.Fatal(err)
 		}
-		testGit(t)(r.victim, "push", "--quiet", bare, "main", "feature")
-		return bare
+		testGit(t)(r.victim, "push", "--quiet", origin.Path, "main", "feature")
+		return origin.Path
+	}
+	// swap replaces name under the origin with a symlink to the same name
+	// in the victim.
+	swap := func(t *testing.T, r rig, name string) string {
+		bare := own(t, r)
+		if err := os.RemoveAll(filepath.Join(bare, name)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(r.victim, name), filepath.Join(bare, name)); err != nil {
+			t.Fatal(err)
+		}
+		return r.victim
 	}
 	cases := map[string]func(t *testing.T, r rig) (watched string){
 		"a symlinked repository directory": func(t *testing.T, r rig) string {
@@ -301,8 +315,16 @@ func TestForgeOriginCommitWritesOnlyToItsOwnOrigins(t *testing.T) {
 			if err := os.Rename(r.victim, bare); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := r.origins.create("grp/s"); err == nil {
+				t.Fatal("create adopted a directory it did not make")
+			}
 			return bare
 		},
+		"objects replaced by a symlink":      func(t *testing.T, r rig) string { return swap(t, r, "objects") },
+		"refs replaced by a symlink":         func(t *testing.T, r rig) string { return swap(t, r, "refs") },
+		"a branch ref replaced by a symlink": func(t *testing.T, r rig) string { return swap(t, r, filepath.Join("refs", "heads", "feature")) },
+		"objects/pack replaced by a symlink": func(t *testing.T, r rig) string { return swap(t, r, filepath.Join("objects", "pack")) },
+		"config replaced by a symlink":       func(t *testing.T, r rig) string { return swap(t, r, "config") },
 		"an origin with alternates": func(t *testing.T, r rig) string {
 			bare := own(t, r)
 			if err := os.WriteFile(filepath.Join(bare, "objects", "info", "alternates"), []byte(filepath.Join(r.victim, "objects")+"\n"), 0o644); err != nil {
@@ -354,8 +376,7 @@ func TestForgeOriginCommitWritesOnlyToItsOwnOrigins(t *testing.T) {
 // commit to its own origin: the objects and refs land there and the
 // repository they name is untouched.
 func TestForgeOriginCommitIgnoresTheEnvironmentsGitVariables(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "forge-origin")
-	origins := newForgeOrigins(root)
+	origins := newForgeOrigins(t.TempDir())
 	victim := filepath.Join(t.TempDir(), "victim.git")
 	if err := os.MkdirAll(victim, 0o755); err != nil {
 		t.Fatal(err)
@@ -364,10 +385,11 @@ func TestForgeOriginCommitIgnoresTheEnvironmentsGitVariables(t *testing.T) {
 	work := t.TempDir()
 	testGit(t)(work, "init", "--quiet", "-b", "main")
 	_, head := forgeOriginPush(t, work, victim, "gitlab", 3)
-	bare, err := origins.create("grp/s")
+	origin, err := origins.create("grp/s")
 	if err != nil {
 		t.Fatal(err)
 	}
+	bare := origin.Path
 	testGit(t)(victim, "push", "--quiet", bare, "main", "feature")
 	before := treeDigest(t, victim)
 	t.Setenv("GIT_DIR", victim)
@@ -382,5 +404,37 @@ func TestForgeOriginCommitIgnoresTheEnvironmentsGitVariables(t *testing.T) {
 	}
 	if got := testGit(t)(bare, "rev-parse", "refs/heads/feature"); got != sha {
 		t.Fatalf("the origin's feature = %s, want the commit %s", got, sha)
+	}
+}
+
+// The origin root is a directory the harness process creates under the
+// data root, never one it finds: a symlink planted where a fixed root
+// name would be, aimed at another directory, is not followed, and the
+// origins and the commit land under the data root.
+func TestForgeOriginRootIsCreatedNotFound(t *testing.T) {
+	t.Parallel()
+	dataRoot, outside := t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dataRoot, "forge-origin")); err != nil {
+		t.Fatal(err)
+	}
+	before := treeDigest(t, outside)
+	origins := newForgeOrigins(dataRoot)
+	git, head := forgeOriginRepo(t, origins, "grp/s", "gitlab", 3)
+	origin, err := origins.create("grp/s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(origin.Root) != dataRoot || filepath.Dir(filepath.Dir(origin.Path)) != origin.Root {
+		t.Fatalf("origin = %+v, want a new root directly under %s", origin, dataRoot)
+	}
+	if info, err := os.Lstat(origin.Root); err != nil || !info.IsDir() {
+		t.Fatalf("root %s: %v, %v", origin.Root, info, err)
+	}
+	status, sha := applyThroughTheFake(t, origins, head)
+	if status != http.StatusOK || git("rev-parse", "refs/heads/feature") != sha {
+		t.Fatalf("apply = %d, %s; the origin's feature is %s", status, sha, git("rev-parse", "refs/heads/feature"))
+	}
+	if after := treeDigest(t, outside); !maps.Equal(before, after) {
+		t.Fatalf("%s was written: %v", outside, after)
 	}
 }
