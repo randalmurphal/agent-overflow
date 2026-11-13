@@ -223,9 +223,12 @@ write is pending. A write that fails after its pane's review state was
 disposed has no editor left, so it gets one toast that stays until
 dismissed, with a `Copy text` action that copies the comment's whole text
 and leaves the toast up: "Your comment on <where> was not sent.
-<sentence>", or for an unconfirmed write (`forge_unconfirmed`) "Your
-comment on <where> was not confirmed. <sentence>", whose sentence says
-it may have been posted and what to check. <where> is the file and line or range,
+<sentence>", or for a write that may have landed "Your comment on
+<where> was not confirmed. <sentence>": one the forge did not confirm
+(`forge_unconfirmed`, whose sentence says what to check) or one whose
+answer was lost to a dropped connection or a timeout (which reads the
+same way in an open editor). When the clipboard refuses the copy, the
+toast is replaced by one that shows the text itself, selectable. <where> is the file and line or range,
 the thread's place, or "the pull request"; an edit reads "Your edit to
 the comment on <where>". Nothing is kept: the PR's review opened again
 has fresh editors. A write that succeeds after its pane went changes

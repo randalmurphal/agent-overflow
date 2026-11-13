@@ -2,7 +2,8 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { untrack } from 'svelte';
 import { peekPRSeq } from './prReviewStore.svelte';
 import { DeletePRComment, EditPRComment, PostPRComment } from './bindings';
-import { addErrorToast } from './toast.svelte';
+import { addErrorToast, addTextToast, removeToast } from './toast.svelte';
+import { isTransportClassError } from './transportStatus.svelte';
 import { TransportError } from '../transport/wsClient';
 import { copyToClipboard } from '../utils/clipboard';
 import { withBackendTarget } from '../transport/backends';
@@ -128,14 +129,30 @@ function userFacingError(err: unknown): string {
   return 'The forge did not take this comment.';
 }
 
+// A write whose answer never arrived (the connection dropped, or the call
+// timed out) may have gone through, as one the forge did not confirm may.
+const ANSWER_LOST = 'The connection dropped before the answer arrived, so this may have gone through. Check the pull request before sending it again.';
+
+/** What a failed write reads as, and whether it may have landed anyway. */
+function writeFailure(err: unknown): { unconfirmed: boolean; sentence: string } {
+  if (isTransportClassError(err)) return { unconfirmed: true, sentence: ANSWER_LOST };
+  return { unconfirmed: err instanceof TransportError && err.code === 'forge_unconfirmed', sentence: userFacingError(err) };
+}
+
 // The one toast for a write that failed after its pane went: held until
 // dismissed, with the text to copy. An unconfirmed write may be on the PR,
-// so it never reads as not sent; the forge's sentence says what to check.
+// so it never reads as not sent; its sentence says what to check. When the
+// clipboard refuses, the toast shows the text itself instead.
 function toastLostWrite(text: CommentWriteText, err: unknown): void {
-  const sentence = userFacingError(err);
-  const outcome = err instanceof TransportError && err.code === 'forge_unconfirmed' ? 'was not confirmed' : 'was not sent';
-  const message = `${text.subject} ${outcome}. ${sentence}`;
-  addErrorToast(message, err, 0, { label: 'Copy text', keep: true, run: () => { void copyToClipboard(text.body); } });
+  const failure = writeFailure(err);
+  const message = `${text.subject} ${failure.unconfirmed ? 'was not confirmed' : 'was not sent'}. ${failure.sentence}`;
+  const id = addErrorToast(message, err, 0, { label: 'Copy text', keep: true, run: () => {
+    void copyToClipboard(text.body).then((copied) => {
+      if (copied) return;
+      removeToast(id);
+      addTextToast(`${message} The text could not be copied, so it is below.`, text.body);
+    });
+  } });
 }
 
 export function createCommentWrites(host: CommentWritesHost): CommentWrites {
@@ -196,7 +213,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       // An older backend's reply answers nothing: read as no pump.
       seq = (await withBackendTarget(host.backend, () => call(ref)))?.seq ?? 0;
     } catch (err) {
-      if (!disposed) errors.set(key, userFacingError(err));
+      if (!disposed) errors.set(key, writeFailure(err).sentence);
       else if (text) toastLostWrite(text, err);
       return false;
     } finally {

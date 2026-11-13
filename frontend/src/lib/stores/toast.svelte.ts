@@ -16,6 +16,8 @@ interface Toast {
   action?: ToastAction;
   /** The error behind an error toast, for its details and copy actions. */
   captured?: CapturedError;
+  /** Text shown whole and selectable under the message. */
+  text?: string;
 }
 
 let nextId = 0;
@@ -51,6 +53,17 @@ export function addErrorToast(
   action?: ToastAction,
 ): string {
   return addToast('error', message, duration, action, captureError(err, { context: message }));
+}
+
+/**
+ * An error toast that stays until dismissed and shows `text` whole and
+ * selectable under its message: the only copy of something the reader
+ * typed, when the clipboard cannot take it.
+ */
+export function addTextToast(message: string, text: string): string {
+  const id = `toast-${++nextId}`;
+  toasts = [...toasts, { id, type: 'error', message, duration: 0, text }];
+  return id;
 }
 
 // An actionable failure may remain until retried or explicitly dismissed.

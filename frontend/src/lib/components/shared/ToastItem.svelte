@@ -54,7 +54,10 @@
       <Icon {icon} size={14} strokeWidth={2} class="opacity-90" />
     </span>
     <div class="min-w-0 flex-1 leading-snug">
-      <span class="break-words {expanded ? '' : 'line-clamp-3'}" data-testid="toast-message">{toast.message}</span>
+      <span class="break-words {expanded || toast.text !== undefined ? '' : 'line-clamp-3'}" data-testid="toast-message">{toast.message}</span>
+      {#if toast.text !== undefined}
+        <pre class="mt-1.5 max-h-48 overflow-auto rounded-md bg-fg/5 px-2 py-1.5 font-sans text-[0.75rem] leading-snug whitespace-pre-wrap break-words select-text text-text-primary" data-testid="toast-text">{toast.text}</pre>
+      {/if}
       {#if toast.action}
         <Button size="xs" variant="ghost" class="mt-1" onclick={() => {
           if (!toast.action?.keep) removeToast(toast.id);

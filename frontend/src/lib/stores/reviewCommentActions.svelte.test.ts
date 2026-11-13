@@ -871,6 +871,43 @@ describe('a write that fails after its pane is gone', () => {
     }
   });
 
+  it('shows the text itself when the clipboard refuses', async () => {
+    const writeText = vi.fn(async (_text: string) => { throw new DOMException('denied', 'NotAllowedError'); });
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { writes } = await inFlight();
+      disposePRReviewStates('tools-1');
+      writes[0].reject(refused());
+      await settle();
+      const view = render(Toast);
+      await fireEvent.click(view.getByText('Copy text'));
+      await settle();
+      expect(messages()).toEqual([`Your comment on src/a.ts:11–12 was not sent. ${REFUSED} The text could not be copied, so it is below.`]);
+      expect(view.getByTestId('toast-text').textContent).toBe('Rename these.');
+      expect(view.queryByText('Copy text')).toBeNull();
+      view.unmount();
+    } finally {
+      logged.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // A dropped connection or a timed-out call may have gone through.
+  it('reads a lost answer as not confirmed, in an open editor and in the toast', async () => {
+    const LOST = 'The connection dropped before the answer arrived, so this may have gone through. Check the pull request before sending it again.';
+    const lost = () => new TransportError('timeout', 'The call timed out.');
+    const { state, writes, id } = await inFlight();
+    writes[0].reject(lost());
+    await settle();
+    expect(getToasts()).toEqual([]);
+    expect(state.commentWriteError(commentWriteKey.editor(id))).toBe(LOST);
+    disposePRReviewStates('tools-1');
+    writes[2].reject(lost());
+    await settle();
+    expect(messages()).toEqual([`Your comment on the pull request was not confirmed. ${LOST}`]);
+  });
+
   it('shows in its editor, with no toast, while its pane is open', async () => {
     const { state, writes, id } = await inFlight();
     for (const write of writes) write.reject(refused());
