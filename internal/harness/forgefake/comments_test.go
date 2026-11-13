@@ -11,7 +11,7 @@ import (
 const commentsFixture = `{
   "viewer": "octo",
   "repos": [
-    {"forge": "github", "project": "acme/c", "pulls": [{"number": 1, "title": "C", "author": "someone", "headSha": "1111111111111111111111111111111111111111",
+    {"forge": "github", "project": "acme/c", "merge": {"permission": "TRIAGE"}, "pulls": [{"number": 1, "title": "C", "author": "someone", "headSha": "1111111111111111111111111111111111111111",
       "threads": [{"id": "PRRT_t", "path": "a.go", "line": 3, "side": "right", "comments": [{"id": 50, "author": "someone", "body": "theirs"}]}]}]},
     {"forge": "gitlab", "project": "grp/c", "pulls": [{"number": 2, "title": "C", "author": "someone", "headSha": "2222222222222222222222222222222222222222", "baseSha": "3333333333333333333333333333333333333333",
       "diff": "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,9 @@\n o1\n o2\n o3\n+n4\n+n5\n+n6\n+n7\n+n8\n+n9\ndiff --git a/old.go b/new.go\nsimilarity index 80%\nrename from old.go\nrename to new.go\n--- a/old.go\n+++ b/new.go\n@@ -1,3 +1,3 @@\n k\n-gone\n+came\n k2\n",
@@ -39,7 +39,8 @@ func commentsEngine(t *testing.T) (*Engine, func(method, host, path, body string
 
 // GitHub's comment routes refuse what GitHub refuses and change nothing:
 // a commit other than the head, a reply under a comment that is not a
-// thread's first, and an edit of another author's comment.
+// thread's first, and an edit of another author's comment by a viewer
+// without write access.
 func TestGitHubCommentRoutesRefuseAsGitHubDoes(t *testing.T) {
 	t.Parallel()
 	e, send := commentsEngine(t)
@@ -65,6 +66,56 @@ func TestGitHubCommentRoutesRefuseAsGitHubDoes(t *testing.T) {
 	p := e.repoOn("github", "github.com", "acme/c").pull(1)
 	if len(p.Threads) != 1 || len(p.Threads[0].Comments) != 1 || p.Threads[0].Comments[0].Body != "theirs" || p.Threads[0].Comments[0].EditedAt != "" {
 		t.Fatalf("threads after the refusals = %+v", p.Threads)
+	}
+}
+
+// On GitHub the author or anyone with write access may edit and delete a
+// comment: the read says so (viewerCanUpdate, viewerCanDelete) and the
+// mutations follow it, by role, for another author's comment.
+func TestGitHubCommentEditAndDeleteFollowWriteAccess(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		role  string
+		allow bool
+	}{{"READ", false}, {"TRIAGE", false}, {"WRITE", true}, {"MAINTAIN", true}, {"ADMIN", true}} {
+		t.Run(tc.role, func(t *testing.T) {
+			t.Parallel()
+			e := New(Options{APIToken: testAPIToken})
+			fixture := strings.Replace(commentsFixture, `"permission": "TRIAGE"`, fmt.Sprintf(`"permission": %q`, tc.role), 1)
+			if _, err := seedJSON(e, fixture); err != nil {
+				t.Fatalf("Seed: %v", err)
+			}
+			e.mu.Lock()
+			r := e.repoOn("github", "github.com", "acme/c")
+			theirs := r.pull(1).Threads[0].Comments[0]
+			fields := e.githubCommentViewerFields(r, theirs, "u")
+			mine := e.githubCommentViewerFields(r, Comment{Author: "OCTO"}, "u")
+			e.mu.Unlock()
+			if fields["viewerCanUpdate"] != tc.allow || fields["viewerCanDelete"] != tc.allow {
+				t.Fatalf("another author's comment reads %v", fields)
+			}
+			if mine["viewerCanUpdate"] != true || mine["viewerCanDelete"] != true {
+				t.Fatalf("the viewer's own comment reads %v", mine)
+			}
+			srv := testServer(t, e)
+			graphql := func(operation, declared string, variables map[string]any) httpAnswer {
+				body := mustJSON(t, map[string]any{"query": "mutation " + operation + declared + " { x }", "operationName": operation, "variables": variables})
+				return httpRequest(t, srv, "POST", "github.com", "/github/graphql", body, http.Header{"Authorization": {"Bearer " + testAPIToken}})
+			}
+			edit := graphql("UpdateReviewComment", "($id: ID!, $body: String!)", map[string]any{"id": "PRRC_ao50", "body": "edited"})
+			if strings.Contains(edit.body, "FORBIDDEN") == tc.allow {
+				t.Fatalf("edit = %+v, want allowed %v", edit, tc.allow)
+			}
+			remove := graphql("DeleteReviewComment", "($id: ID!)", map[string]any{"id": "PRRC_ao50"})
+			if strings.Contains(remove.body, "FORBIDDEN") == tc.allow {
+				t.Fatalf("delete = %+v, want allowed %v", remove, tc.allow)
+			}
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if threads := len(r.pull(1).Threads); (threads == 0) != tc.allow {
+				t.Fatalf("threads after the delete = %d, want the only comment's thread gone %v", threads, tc.allow)
+			}
+		})
 	}
 }
 

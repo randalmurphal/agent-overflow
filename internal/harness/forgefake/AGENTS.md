@@ -144,7 +144,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | `POST repos/O/R/pulls/N/comments` with `{body, commit_id, path, line?, side?, start_line?, start_side?, subject_type?}` (`gh api pull comments`) | PostPRLineComment: a thread of the viewer's on a line, a range (one side) or a file (`subject_type: "file"`); a `commit_id` other than the head is a 422 (the fake models no older commit) |
 | GitHub | `POST repos/O/R/pulls/N/comments/ID/replies`, `POST repos/O/R/issues/N/comments` with `{body}` (`gh api pull comment reply`, `gh api issue comments`) | ReplyToPRThread and SubmitReview's held replies (404 unless ID is a thread's first comment), PostPRComment (a conversation comment) |
 | GitHub | GraphQL `CommentOwner(id)` | EditPRComment and DeletePRComment: the comment's type and the pull request and repository it is on; an id no repository on the host has is a `NOT_FOUND` |
-| GitHub | GraphQL `UpdateReviewComment`, `UpdateIssueComment(id, body)`, `DeleteReviewComment`, `DeleteIssueComment(id)` | EditPRComment and DeletePRComment by node id (`PRRC_ao<id>`, `IC_ao<id>`): the author may edit (sets `editedAt`), the author or a MAINTAIN or ADMIN viewer may delete, else `FORBIDDEN`; a thread whose only comment goes is deleted with it |
+| GitHub | GraphQL `UpdateReviewComment`, `UpdateIssueComment(id, body)`, `DeleteReviewComment`, `DeleteIssueComment(id)` | EditPRComment and DeletePRComment by node id (`PRRC_ao<id>`, `IC_ao<id>`): the author or a WRITE, MAINTAIN or ADMIN viewer may edit (sets `editedAt`) and delete, else `FORBIDDEN`; a thread whose only comment goes is deleted with it |
 | GitHub | `DELETE repos/O/R/git/refs/heads/B` (`gh api delete branch`) | the head branch delete after a merge: 204, then 422 "Reference does not exist" |
 | GitHub | GraphQL `SetThreadResolved(threadID, resolved)` | SetThreadResolved (flips the seeded thread) |
 | GitHub | GraphQL `PullsSearch(query, after)` | project PR list: `search` over `is:pr is:open repo:O/R` (any other query is unhandled), the repository's open pulls newest first in pages of 100, beside the viewer, each with its last 10 `comments` and submitted `reviews`, its opinionated reviews (state, `viewerDidAuthor`), the first 100 review threads' `isResolved` with `pageInfo`, and the base's `refUpdateRule` (its `requiredApprovingReviewCount` alone) and `rules` as PRTick answers them; a repository not on the host answers GitHub's search refusal (null `search` beside an error) |
@@ -248,11 +248,12 @@ and then drops or truncates the response.
   page and drops them after, so a page comes back short and still names
   the next, as GitLab's does.
 - Who may edit or delete a comment follows from its `author` and the
-  viewer's role: on GitHub the author edits and the author, MAINTAIN or
-  ADMIN deletes (answered as `viewerCanUpdate` and `viewerCanDelete`); on
+  viewer's role: on GitHub the author or WRITE and above edits and
+  deletes (answered as `viewerCanUpdate` and `viewerCanDelete`); on
   GitLab, whose notes carry no permission, the author or a maintainer or
-  owner edits and deletes. Seed a comment of another author's, with the
-  repository's default role, for one the viewer may not edit. A
+  owner edits and deletes. Seed a comment of another author's, with a
+  GitHub role below WRITE or GitLab's default role, for one the viewer
+  may not edit. A
   comment's `editedAt` is GitHub's `lastEditedAt` and GitLab's
   `updated_at`. A GitLab conversation comment's `replies` are the rest of
   its discussion.

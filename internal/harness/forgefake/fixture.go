@@ -324,9 +324,9 @@ type Comment struct {
 	// EditedAt is when the body was last edited, RFC 3339 (GitHub
 	// lastEditedAt; GitLab's REST notes do not report it, and answer it as
 	// updated_at). An edit sets it. Whether the viewer may edit or delete
-	// the comment follows from Author: GitHub and GitLab let the author
-	// edit, and the author or a maintainer (GitHub MAINTAIN or ADMIN,
-	// GitLab maintainer or owner) delete.
+	// the comment follows from Author and the viewer's role: on GitHub the
+	// author or WRITE and above edit and delete; on GitLab the author
+	// edits, and the author or a maintainer or owner deletes.
 	EditedAt string `json:"editedAt,omitempty"`
 	// Replies are the further notes of a GitLab conversation comment's
 	// discussion; a reply to one adds them. GitHub conversation comments

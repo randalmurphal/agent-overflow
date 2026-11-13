@@ -233,8 +233,9 @@ for (const forge of ['github', 'gitlab'] as const) {
     try {
       const card = thread(review, 'Why start at one?');
       const mine = card.getByTestId('review-thread-comment').filter({ hasText: 'Counting starts there.' });
-      // Another user's comment offers neither.
-      await expect(card.locator('[data-testid="review-comment-edit"]')).toHaveCount(1);
+      // GitHub lets a viewer with write access (the fixture's default)
+      // edit another user's comment; GitLab only its author.
+      await expect(card.locator('[data-testid="review-comment-edit"]')).toHaveCount(forge === 'github' ? 2 : 1);
       await mine.hover();
       await mine.getByTestId('review-comment-edit').click();
       // The open edit holds the text in its field, so find it by the card.

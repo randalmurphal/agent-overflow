@@ -10,8 +10,9 @@ import (
 
 // GitHub's comment actions: review comments and replies posted on their
 // own and conversation (issue) comments over REST, edits and deletes as
-// GraphQL mutations on a comment's node id. A comment's author may edit
-// it; its author, a maintainer or an admin may delete it, as on GitHub.
+// GraphQL mutations on a comment's node id. A comment's author, or a
+// viewer with write access to the repository, may edit and delete it, as
+// on GitHub.
 
 // githubCommentViewerFields answers `lastEditedAt url viewerCanUpdate
 // viewerCanDelete` for one comment at url.
@@ -19,17 +20,15 @@ func (e *Engine) githubCommentViewerFields(r *Repo, comment Comment, url string)
 	return map[string]any{
 		"lastEditedAt":    nullable(comment.EditedAt),
 		"url":             url,
-		"viewerCanUpdate": e.githubMayEdit(comment),
-		"viewerCanDelete": e.githubMayDelete(r, comment),
+		"viewerCanUpdate": e.githubMayChange(r, comment),
+		"viewerCanDelete": e.githubMayChange(r, comment),
 	}
 }
 
-func (e *Engine) githubMayEdit(comment Comment) bool {
-	return strings.EqualFold(comment.Author, e.viewer)
-}
-
-func (e *Engine) githubMayDelete(r *Repo, comment Comment) bool {
-	return e.githubMayEdit(comment) || githubRoles[r.Merge.Permission] >= githubRoles["MAINTAIN"]
+// githubMayChange is whether the viewer may edit or delete the comment:
+// its author, or WRITE or above on the repository.
+func (e *Engine) githubMayChange(r *Repo, comment Comment) bool {
+	return strings.EqualFold(comment.Author, e.viewer) || githubRoles[r.Merge.Permission] >= githubRoles["WRITE"]
 }
 
 // githubCommentByNode finds a comment by node id among the GitHub
@@ -110,11 +109,7 @@ func ghCommentMutation(e *Engine, c *call, v graphQLVars, field, operation strin
 		comments = &p.Threads[thread].Comments
 	}
 	comment := &(*comments)[at]
-	allowed := e.githubMayDelete(r, *comment)
-	if update {
-		allowed = e.githubMayEdit(*comment)
-	}
-	if !allowed {
+	if !e.githubMayChange(r, *comment) {
 		return graphQLMutationError(field, "FORBIDDEN", fmt.Sprintf("%s does not have the correct permissions to execute `%s`", e.viewer, operation))
 	}
 	if !update {
