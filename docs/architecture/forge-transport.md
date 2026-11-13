@@ -723,10 +723,11 @@ the thread before sending it again"), never with a retry. A GraphQL error answer
 refusal (`forgeapi.WriteNotApplied`) only when the answer had no data or
 the mutation's field was null, its data decoded, and every error is a
 known refusal: GitHub `FORBIDDEN`, `NOT_FOUND`, `UNPROCESSABLE` or
-`INSUFFICIENT_SCOPES`, a validation error before execution (no `data`), or
-GitLab's permission answer. A rate-limited GraphQL answer is a refusal
-only while its operation produced no data: data beside the rate limit
-means the operation ran. A people or label change removes first, then
+`INSUFFICIENT_SCOPES` or `RATE_LIMITED`, a validation error before
+execution (no `data`), or GitLab's permission answer. The quota header
+never decides whether a write ran: a rate-limited answer is a refusal only
+as a 403 or 429, or as a GraphQL answer refused by those rules, so an
+execution error beside a spent quota is unconfirmed. A people or label change removes first, then
 adds, one write per non-empty side; a failure of the second write is a
 `git.PartialWriteError` that names what the first did and whether the
 second was refused ("removed X; adding Y was refused: ...") or may have

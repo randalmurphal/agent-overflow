@@ -234,7 +234,11 @@ const gitlabNoPermission = "The resource that you are attempting to access does 
 
 // githubRefusalTypes are the GitHub error types a mutation answers when it
 // refused before acting.
-var githubRefusalTypes = map[string]bool{"FORBIDDEN": true, "NOT_FOUND": true, "UNPROCESSABLE": true, "INSUFFICIENT_SCOPES": true}
+var githubRefusalTypes = map[string]bool{"FORBIDDEN": true, "NOT_FOUND": true, "UNPROCESSABLE": true, "INSUFFICIENT_SCOPES": true, githubRateLimited: true}
+
+// githubRateLimited is the GitHub error type of a request refused for its
+// rate limit.
+const githubRateLimited = "RATE_LIMITED"
 
 // Refused reports whether the answer proves its operation changed
 // nothing: its data decoded, and either the envelope had no data entry
@@ -299,6 +303,9 @@ type RateLimitedError struct {
 	Pool    string
 	Until   time.Time
 	Reserve bool
+	// Status is the forge's HTTP status for a refusal it answered; zero
+	// for the Service's own refusal before sending.
+	Status int
 	// GraphQL is the answer's envelope when the refusal was a GraphQL
 	// answer with errors, so a write's outcome can read whether its
 	// operation produced data (WriteNotApplied).
@@ -371,7 +378,7 @@ type answer struct {
 func classify(a answer) classified {
 	rate := parseRateLimit(a.header, a.pool)
 	if until, limited := rateLimitedUntil(a, rate); limited {
-		limitedErr := &RateLimitedError{Host: a.host, Pool: a.pool, Until: until}
+		limitedErr := &RateLimitedError{Host: a.host, Pool: a.pool, Until: until, Status: a.status}
 		if a.graphQL && a.status >= 200 && a.status <= 299 {
 			if env, ok := parseGraphQLEnvelope(a.body); ok && len(env.Errors) > 0 {
 				limitedErr.GraphQL = &GraphQLError{Problems: env.Errors, Data: env.Data}
@@ -422,7 +429,7 @@ func rateLimitedUntil(a answer, rate *RateLimit) (time.Time, bool) {
 		if env, ok := parseGraphQLEnvelope(a.body); ok && len(env.Errors) > 0 {
 			limited = remainingZero(a.header)
 			for _, p := range env.Errors {
-				if p.Type == "RATE_LIMITED" {
+				if p.Type == githubRateLimited {
 					limited = true
 				}
 			}
