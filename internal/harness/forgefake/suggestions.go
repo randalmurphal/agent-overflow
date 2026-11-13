@@ -82,9 +82,10 @@ func gitlabNoteSuggestions(p *Pull, thread *Thread, comment Comment) []map[strin
 	return out
 }
 
-// commitFile writes content to path on p's head branch: a new head sha,
-// and every line thread on path whose lines the change touched becomes
-// outdated.
+// commitFile writes content to path on p's head branch: a new head sha;
+// every line thread on path whose lines the change touched becomes
+// outdated, one wholly below them moves by the change's line delta, and
+// one above them stays.
 func (e *Engine) commitFile(p *Pull, path, content string) string {
 	before := fileLines(p.Files[path])
 	after := fileLines(content)
@@ -108,7 +109,16 @@ func (e *Engine) commitFile(p *Pull, path, content string) string {
 		}
 		// Changed lines are first+1 .. lastBefore (1-based); a pure insert
 		// touches the line it lands before.
-		if start <= max(lastBefore, first+1) && *thread.Line >= first+1 {
+		switch {
+		case start > max(lastBefore, first+1):
+			delta := lastAfter - lastBefore
+			line := *thread.Line + delta
+			thread.Line = &line
+			if thread.StartLine != nil {
+				startLine := *thread.StartLine + delta
+				thread.StartLine = &startLine
+			}
+		case *thread.Line >= first+1:
 			thread.Outdated = true
 		}
 	}

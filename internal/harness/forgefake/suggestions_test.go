@@ -344,3 +344,77 @@ func TestReactionsOnThreadAndConversationComments(t *testing.T) {
 		t.Fatalf("GitLab conversation notes = %+v", gl.pull(1).Comments[0])
 	}
 }
+
+// A commit leaves a thread above the lines it changed, outdates one
+// touching them and moves one wholly below them by its line delta, for a
+// commit that grows the file and one that shrinks it; a second
+// suggestion below the first then applies on its moved lines.
+func TestCommitMovesTheThreadsBelowIt(t *testing.T) {
+	t.Parallel()
+	const file = "l1\nl2\nl3\nl4\nl5\nl6\n"
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"viewer": "octo", "repos": [
+	  {"forge": "github", "project": "acme/m", "pulls": [{"number": 1, "title": "T", "headRef": "f", "headSha": "1111111111111111111111111111111111111111",
+	    "files": {"a.go": "l1\nl2\nl3\nl4\nl5\nl6\n"},
+	    "threads": [
+	      {"id": "PRRT_above", "path": "a.go", "line": 1, "comments": [{"id": 81, "author": "x", "body": "x"}]},
+	      {"id": "PRRT_touch", "path": "a.go", "line": 3, "comments": [{"id": 83, "author": "x", "body": "x"}]},
+	      {"id": "PRRT_below", "path": "a.go", "startLine": 5, "line": 6, "comments": [{"id": 85, "author": "x", "body": "x"}]}]}]},
+	  {"forge": "gitlab", "project": "grp/m", "pulls": [{"number": 1, "title": "T", "headSha": "2222222222222222222222222222222222222222",
+	    "files": {"a.go": "l1\nl2\nl3\nl4\nl5\nl6\n"},
+	    "threads": [
+	      {"id": "above", "path": "a.go", "line": 1, "comments": [{"id": 91, "author": "x", "body": "x"}]},
+	      {"id": "touch", "path": "a.go", "line": 3, "comments": [{"id": 93, "author": "x", "body": "`+"```suggestion\\nA\\nB\\nC\\n```"+`"}]},
+	      {"id": "below", "path": "a.go", "startLine": 5, "line": 6, "comments": [{"id": 95, "author": "x", "body": "`+"```suggestion\\nL56\\n```"+`"}]}]}]}]}`); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	srv := testServer(t, e)
+	lines := func(th Thread) [2]int {
+		start := *th.Line
+		if th.StartLine != nil {
+			start = *th.StartLine
+		}
+		return [2]int{start, *th.Line}
+	}
+	check := func(name string, p *Pull, below [2]int) {
+		t.Helper()
+		above, touch, moved := p.Threads[0], p.Threads[1], p.Threads[2]
+		if above.Outdated || lines(above) != [2]int{1, 1} || !touch.Outdated || moved.Outdated || lines(moved) != below {
+			t.Fatalf("%s: above %v %v, touching outdated %v, below %v %v (want %v)", name, lines(above), above.Outdated, touch.Outdated, lines(moved), moved.Outdated, below)
+		}
+	}
+
+	// GitHub, shrinking: line 3 deleted.
+	commit := gql(t, "mutation", "SuggestionCommit", "($repository: String!, $branch: String!, $expectedHeadOid: GitObjectID!, $headline: String!, $body: String, $path: String!, $contents: Base64String!)",
+		map[string]any{"repository": "acme/m", "branch": "f", "expectedHeadOid": "1111111111111111111111111111111111111111", "headline": "h", "path": "a.go",
+			"contents": base64.StdEncoding.EncodeToString([]byte("l1\nl2\nl4\nl5\nl6\n"))})
+	if got := httpRequest(t, srv, "POST", "github.com", "/github/graphql", commit, http.Header{"Authorization": {"Bearer " + testAPIToken}}); strings.Contains(got.body, "errors") {
+		t.Fatalf("commit = %s", got.body)
+	}
+	e.mu.Lock()
+	check("GitHub shrinking", e.repoOn("github", "github.com", "acme/m").pull(1), [2]int{4, 5})
+	e.mu.Unlock()
+
+	// GitLab, growing: line 3 becomes three lines; then the suggestion
+	// below applies on its moved lines.
+	apply := func(id string) {
+		t.Helper()
+		if got := httpRequest(t, srv, "PUT", "gitlab.com", "/gitlab/api/v4/suggestions/"+id+"/apply", "", http.Header{"Private-Token": {testAPIToken}}); got.status != 200 {
+			t.Fatalf("apply %s = %+v", id, got)
+		}
+	}
+	apply("93000")
+	e.mu.Lock()
+	p := e.repoOn("gitlab", "gitlab.com", "grp/m").pull(1)
+	check("GitLab growing", p, [2]int{7, 8})
+	if p.Files["a.go"] != "l1\nl2\nA\nB\nC\nl4\nl5\nl6\n" {
+		t.Fatalf("after the first apply = %q", p.Files["a.go"])
+	}
+	e.mu.Unlock()
+	apply("95000")
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if got := p.Files["a.go"]; got != "l1\nl2\nA\nB\nC\nl4\nL56\n" {
+		t.Fatalf("after the second apply = %q (from %q)", got, file)
+	}
+}
