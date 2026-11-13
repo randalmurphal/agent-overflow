@@ -108,8 +108,10 @@ the same way against one watermark per pipeline key, seeded by the result,
 with the frames of its join replayed in sequence order; the frontend never
 polls it. Both feed the CI entry under one CI key and register their follow,
 refresh and action calls and their applied CI sequence in `ciHandles.ts`.
-A CI action (`ciActions.svelte.ts`) is pending per CI key until that
-sequence reaches the one the action answered with, as a merge action is.
+A CI action (`ciActions.svelte.ts`) is held under the run identities the
+backend reserves for it and reads as pending on every CI key whose
+pipeline shows one; it is pending until the initiating key's sequence
+reaches the one the action answered with, as a merge action is.
 `pr:ci_log` frames carry a followed job's whole log state, its index and
 never its text, so the newest by sequence wins; the follow set lives on the
 subscription handle, so it is restated after every subscribe and after a

@@ -202,7 +202,7 @@ export function onCIPipelineApplied(observer: CIPipelineObserver): () => void {
 }
 
 function notifyPipelineApplied(key: string, pipeline: CIPipeline): void {
-  for (const observer of [...pipelineObservers]) observer(key, pipeline);
+  for (const observer of pipelineObservers) observer(key, pipeline);
 }
 
 function logState(wire: PRCILogWireState): PRCILogState {

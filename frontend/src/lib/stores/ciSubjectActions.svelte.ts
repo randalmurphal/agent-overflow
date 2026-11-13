@@ -1,12 +1,14 @@
 // One CI subject's actions as its surfaces read them: the job and
 // pipeline actions the read's flags show, the one pending on the
-// pipeline, and the artifact downloads (ciActions.svelte.ts owns the
-// pending rule). The CI subject state builds one per surface over its
+// pipeline from whichever surface started it, and the artifact downloads
+// (ciActions.svelte.ts owns the pending rule). The CI subject state builds one per surface over its
 // subject, so the review pane and the Pipelines tab run the same code.
 
 import { SaveCIArtifacts } from './bindings';
 import {
   ciArtifactsDownloading,
+  ciRunIdentities,
+  dropCIActionsOf,
   ciArtifactsTarget,
   ciJobActionKinds,
   ciJobHasArtifacts,
@@ -58,10 +60,18 @@ export interface CIActionsView {
   saveArtifacts(job: CIJob | null): Promise<CIArtifactsSavedView | null>;
 }
 
+/** The view as its CI subject state holds it. */
+export interface OwnedCIActionsView extends CIActionsView {
+  /** Drops the actions this view started that are still pending. */
+  dispose(): void;
+}
+
 export interface CIActionsContext {
   readonly key: string | null;
   readonly backend: BackendKey | null;
   readonly repo: RepoReferenceWire | null;
+  /** The repository's key (repoKey); null with no subject. */
+  readonly repoKey: string | null;
   readonly pipeline: CIPipeline | null;
 }
 
@@ -80,9 +90,11 @@ export function ciArtifactRunIds(pipeline: CIPipeline | null): string[] {
 export function createCIActionsView(
   context: () => CIActionsContext,
   onSaved: (job: CIJob | null, saved: CIArtifactsSavedView) => void,
-): CIActionsView {
+): OwnedCIActionsView {
+  const owner = Symbol('ci-actions');
   const at = $derived(context());
-  const pending = $derived(peekCIAction(at.key));
+  const shown = $derived(at.backend !== null && at.repoKey !== null ? ciRunIdentities(at.backend, at.repoKey, at.pipeline) : []);
+  const pending = $derived(peekCIAction(at.key, shown));
 
   return {
     get pending() { return pending; },
@@ -101,9 +113,10 @@ export function createCIActionsView(
     },
 
     async run(kind, job) {
-      const { key, backend } = at;
-      if (key === null || backend === null) return false;
-      return runCIAction(key, backend, kind, job?.id ?? null);
+      const { key, backend, repoKey, pipeline } = at;
+      if (key === null || backend === null || repoKey === null) return false;
+      const reserves = ciRunIdentities(backend, repoKey, pipeline, job);
+      return runCIAction({ key, owner, shown, reserves, backend }, kind, job?.id ?? null);
     },
 
     async saveArtifacts(job) {
@@ -123,6 +136,10 @@ export function createCIActionsView(
         addErrorToast(errString(err), err);
         return null;
       }
+    },
+
+    dispose() {
+      dropCIActionsOf(owner);
     },
   };
 }

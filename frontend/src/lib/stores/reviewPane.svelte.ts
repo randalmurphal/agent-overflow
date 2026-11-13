@@ -1539,7 +1539,7 @@ export function createReviewPaneState(
     paintedSpans.clear();
     conflictPaintedSpans.clear();
     resetConflictView();
-    closeCILogView();
+    ci.dispose();
     releasePR();
   }
 

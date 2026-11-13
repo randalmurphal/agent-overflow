@@ -19,10 +19,12 @@
 // shows in place of the CI until it clears.
 //
 // A retry replaces a job with a new one under a new id. A log open on the
-// old job follows it: when a pipeline applied under the log's key holds a
-// job in the same stage with the same name, the same GitHub run, and a
-// higher id (`findCIJobRetry`), the log moves to
-// the highest such job and says so (`logRetriedFrom`).
+// old job follows it when a pipeline applied under the log's key no longer
+// holds the job, is the pipeline the job belonged to (the GitLab pipeline
+// id the log recorded at open, or the job's GitHub run), and holds exactly
+// one job in the same stage with the same name and a higher id
+// (`findCIJobRetry`). The log moves to that job and says so
+// (`logRetriedFrom`). Otherwise the log keeps the job captured at open.
 
 import { SvelteSet } from 'svelte/reactivity';
 import { SavePRCIJobLog, SavePRCIJobLogSection, SearchPRCILog } from './bindings';
@@ -78,6 +80,9 @@ export interface CILogOpen {
   readonly subject: CISubject;
   readonly stageName: string;
   readonly job: CIJob & { id: string };
+  /** The id of the pipeline the job belonged to when the log opened; ''
+   * for a PR's GitHub checks, whose jobs carry their run. */
+  readonly pipelineId: string;
   /** The job this log was opened on, when it followed that job's retry. */
   readonly retriedFrom: string | null;
 }
@@ -173,6 +178,7 @@ export function createCISubjectState(subject: () => CISubject | null, options: C
       key,
       backend: current?.backend ?? null,
       repo: current ? repoReferenceWire(subjectRepo(current)) : null,
+      repoKey: current ? repoKey(subjectRepo(current)) : null,
       pipeline: ci.pipeline,
     }),
     (job, saved) => {
@@ -190,7 +196,7 @@ export function createCISubjectState(subject: () => CISubject | null, options: C
     stopFollowingRetries ??= onCIPipelineApplied((at, pipeline) => {
       const open = opened;
       if (!open || open.key !== at) return;
-      const retry = findCIJobRetry(pipeline, open.stageName, open.job);
+      const retry = findCIJobRetry(pipeline, open.pipelineId, open.stageName, open.job);
       if (!retry?.job.id) return;
       opened = {
         ...open,
@@ -275,7 +281,7 @@ export function createCISubjectState(subject: () => CISubject | null, options: C
       const jobId = job.id;
       if (!at || !key || !job.logsAvailable || !jobId) return;
       if (opened && opened.key !== key) closeLogView();
-      opened = { key, subject: at, stageName, job: { ...job, id: jobId }, retriedFrom: null };
+      opened = { key, subject: at, stageName, job: { ...job, id: jobId }, pipelineId: ci.pipeline?.id ?? '', retriedFrom: null };
       localError = null;
       savedPath = null;
       openSections.clear();
@@ -365,7 +371,10 @@ export function createCISubjectState(subject: () => CISubject | null, options: C
       localError = message;
     },
 
-    dispose: closeLogView,
+    dispose() {
+      closeLogView();
+      actions.dispose();
+    },
   };
 }
 
@@ -378,26 +387,29 @@ function findCIJob(pipeline: CIPipeline | null, jobId: string): { stageName: str
 }
 
 /**
- * The job that took over from `old` after a retry: in the stage named
- * `stageName`, the one with old's name (and, for a GitHub job, old's
- * workflow run) and the highest numeric id above old's; null when none
- * has. Both forges give a retry a new, higher id and keep its name and
- * stage; a GitHub re-run is a new attempt of the same run, and a PR can
- * hold two runs of one workflow.
+ * The job that took over from `old`, a job of the stage `stageName` in
+ * the pipeline `oldPipelineId` names, in `pipeline`, the read applied
+ * since; null when it cannot tell. It follows only when every one of
+ * these holds: old is no longer in the read; the read is old's own
+ * pipeline (GitLab: the same pipeline id; GitHub: a job of old's
+ * workflow run, which a re-run keeps); and exactly one job of the same
+ * stage and name has an id above old's. A new commit's pipeline, or two
+ * jobs that share a name, is not a retry. git.FindCIJobRetry is the same
+ * rule.
  */
-export function findCIJobRetry(pipeline: CIPipeline | null, stageName: string, old: CIJob): { stageName: string; job: CIJob } | null {
+export function findCIJobRetry(pipeline: CIPipeline | null, oldPipelineId: string, stageName: string, old: CIJob): { stageName: string; job: CIJob } | null {
   const oldId = numericId(old.id);
-  if (oldId === null) return null;
+  if (oldId === null || !pipeline || findCIJob(pipeline, old.id ?? '') !== null) return null;
+  if (!old.runId && (!pipeline.id || pipeline.id !== oldPipelineId)) return null;
   let found: { stageName: string; job: CIJob } | null = null;
-  let foundId = oldId;
-  for (const stage of pipeline?.stages ?? []) {
+  for (const stage of pipeline.stages) {
     if (stage.name !== stageName) continue;
     for (const job of stage.jobs) {
       const id = numericId(job.id);
-      if (id === null || job.name !== old.name || id <= foundId) continue;
+      if (id === null || job.name !== old.name || id <= oldId) continue;
       if (old.runId && job.runId !== old.runId) continue;
+      if (found !== null) return null;
       found = { stageName: stage.name, job };
-      foundId = id;
     }
   }
   return found;
