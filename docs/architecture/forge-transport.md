@@ -838,10 +838,17 @@ A suggestion is a fenced code block whose info string's first word is
 block parse): only one at the top level of the body counts, so a fence
 in a blockquote, a list item or an HTML block (a `<!-- -->` comment, a
 `<details>` block before its blank line) is not one, and neither is a
-fence the body never closes. GitLab's `suggestion:-N+M` widens the replaced lines (N
+fence the body never closes. Each block carries the 0-based lines, in
+the body split on "\n", of its opening and closing fences (`StartLine`,
+`EndLine`), and each `CommentSuggestion` its block's
+(`BodyStartLine`, `BodyEndLine`, set when `BodyPlaced`): always on
+GitHub; on GitLab, whose suggestions come from the API, only when the
+note's body holds as many blocks as GitLab reports suggestions, block i
+being suggestion i. Positions are not part of the digest. GitLab's `suggestion:-N+M` widens the replaced lines (N
 and M at most 100); GitHub has no such header, so a widened block reads
 as no suggestion there. `ParseCommentSuggestions` is the same parser for
-an editor's preview.
+an editor's preview, for a body of at most 1,000,000 characters
+(GitLab's note limit, the larger forge's).
 
 `ReviewComment.Suggestions` is one `CommentSuggestion` per block in body
 order, each with a `Digest`: the SHA-256 of the forge, the replaced

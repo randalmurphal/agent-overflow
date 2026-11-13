@@ -317,7 +317,19 @@ and then drops or truncates the response.
   path executable, a symbolic link (its `files` entry the target), a
   submodule or a directory (these two with no `files` entry). A commit
   outdates the line threads on the lines it changed and moves those
-  wholly below them by its line delta. A GitLab note's suggestions are derived from
+  wholly below them by its line delta. A commit goes through
+  `Options.Commit`: the harness (`internal/harnessrpc/forge_origin.go`)
+  writes it as a real commit (the file set on the head, its mode kept,
+  the message: GitHub's from the mutation, GitLab's "Apply 1
+  suggestion(s) to 1 file(s)" with a `Co-authored-by` trailer for the
+  note's author at `<login>@example.com`) to the bare repository the e2e
+  helpers publish the pull's head repository to
+  (`<data root>/forge-origin/<project>.git`, `publishPullRequest`),
+  moving the head branch and the pull's head ref, and the pull's new head
+  is that commit; a pull whose head repository is not there, or lacks
+  its head, gets a generated sha. A GitLab note's suggestions keep the
+  `from_content` they had when written: a commit fixes each note's
+  replaced text before it changes the files, and an edit reads it again. A GitLab note's suggestions are derived from
   its body (`internal/mdsuggest`) against its thread's lines in `files`
   (widened by a `-N+M` header), with id note id times 1000 plus the
   block's index, `from_content` from the file, appliable while the pull
