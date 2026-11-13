@@ -8,7 +8,7 @@
   import { NO_GROUPS } from '../../stores/threadGroups.svelte';
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import ProjectItem from './ProjectItem.svelte';
-  import { disambiguatedProjectLabels } from '../../utils/pathDisplay';
+  import { disambiguatedPathLabels } from '../../utils/pathDisplay';
   import type { ProjectNewThreadHandler, ProjectNewTerminalHandler } from './projectNewThread';
 
   interface Props {
@@ -42,7 +42,7 @@
   const NO_THREADS: Thread[] = [];
 
   let orderedIds = $derived(projects.map((p) => p.project.id));
-  let labels = $derived(disambiguatedProjectLabels(projects.map((p) => p.project)));
+  let labels = $derived(disambiguatedPathLabels(projects.map((p) => p.project)));
 </script>
 
 {#if projects.length === 0}

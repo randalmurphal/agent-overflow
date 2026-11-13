@@ -61,12 +61,12 @@
     updateDropTarget,
   } from '../../stores/projectDnd.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
-  import { formatProjectLabel, type ProjectLabel } from '../../utils/pathDisplay';
+  import { formatPathLabel, type PathLabel } from '../../utils/pathDisplay';
 
   interface Props {
     project: ProjectWithCounts;
     /** Disambiguation within the containing list's visible projects. */
-    displayLabel?: ProjectLabel;
+    displayLabel?: PathLabel;
     threads: Thread[];
     /** The project's groups, already search-filtered by ProjectsSection. */
     groups?: readonly ThreadGroup[];
@@ -527,7 +527,7 @@
 
 <ProjectContextMenu
   {project}
-  labelText={formatProjectLabel(label)}
+  labelText={formatPathLabel(label)}
   onNewThread={() => onNewThread?.(project.project.id, { openInNewPane: false })}
   onNewTerminal={() => onNewTerminal?.(project.project.id)}
   anchor={headerEl}
