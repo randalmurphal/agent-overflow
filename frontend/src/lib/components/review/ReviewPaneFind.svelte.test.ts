@@ -204,7 +204,7 @@ describe('review find over the diff', () => {
     // Its suggestion is not matched either.
     const hidden = thread('p2', 'resolved zq here\n\n```suggestion\nconst zq = 1;\n```', true);
     const review = {
-      drafts: [], prThreads: [shown, hidden], shownPRThreads: [shown], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(['p2']),
+      shownDrafts: [], mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [shown, hidden], shownPRThreads: [shown], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(['p2']),
       draftEditBodyFor: () => null, sentComments: { editing: new Set<string>(), editBodyFor: () => null },
     } as unknown as ReviewPaneState;
     const list = { findReadingPosition: () => null, revealFindPlace: () => true, scrollFindBy: () => {} };
