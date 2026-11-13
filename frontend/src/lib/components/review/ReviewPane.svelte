@@ -277,12 +277,15 @@
   const lineLinkTarget = $derived.by(() => {
     const forge = review?.prRef?.forge;
     const url = review?.prDetail?.url ?? '';
-    if (review?.scope !== 'pr' || review.selectedCommitSHA !== null || !url || (forge !== 'github' && forge !== 'gitlab')) return null;
-    return { forge, url } as const;
+    // The commit the diff's new side shows: a picked commit or run's
+    // newest, else the head the diff was read at.
+    const commit = review?.selectedCommitSHA ?? review?.prHeadSHA ?? '';
+    if (review?.scope !== 'pr' || !url || !commit || (forge !== 'github' && forge !== 'gitlab')) return null;
+    return { forge, url, commit } as const;
   });
-  function openLineMenu(event: MouseEvent, path: string, lineIndex: number): void {
+  function openLineMenu(event: MouseEvent, path: string, lineIndex: number): boolean {
     const file = diffFiles.find((candidate) => candidate.path === path);
-    if (file) lineMenu?.open(event, file, lineIndex);
+    return file ? (lineMenu?.open(event, file, lineIndex) ?? false) : false;
   }
 
   function commentById(commentId: string): DiffReviewComment | null {
@@ -558,7 +561,7 @@
       </div>
     {/if}
     {#if lineLinkTarget}
-      <ReviewLineMenu bind:this={lineMenu} forge={lineLinkTarget.forge} prUrl={lineLinkTarget.url} />
+      <ReviewLineMenu bind:this={lineMenu} forge={lineLinkTarget.forge} prUrl={lineLinkTarget.url} commit={lineLinkTarget.commit} />
     {/if}
     {#if !review.conflictView && review.sendStripShown}
       <ReviewSendStrip {review} />

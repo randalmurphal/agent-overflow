@@ -47,7 +47,7 @@
     mediaHost?: ReviewMediaHost;
     /** The view mode (split puts two images in two columns). */
     split?: boolean;
-    onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => void;
+    onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => boolean;
     /** The line ranges a file's rows tint. */
     rangesFor?: (path: string) => readonly LineRange[];
     onExpandFold?: (path: string, foldId: number) => void;

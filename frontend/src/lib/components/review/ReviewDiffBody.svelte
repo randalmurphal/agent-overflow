@@ -120,7 +120,7 @@
      * conflict view), binary files show git's line about them. */
     mediaHost?: ReviewMediaHost;
     /** A line's number gutter menu (Copy link to line). */
-    onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => void;
+    onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => boolean;
     /** The line ranges a file's rows tint. */
     rangesFor?: (path: string) => readonly LineRange[];
     /** Conflict view only: expands a fold row's hidden lines. */

@@ -1,26 +1,19 @@
 import { RowWalker } from './patchRows';
 import type { ReviewFile } from './patchStore';
-import { hexDigest } from './hexDigest';
 
-// "Copy link to line" in a pull request's diff: the address of the line on
-// the forge's own diff page. Neither format is in the forge's
-// documentation; both are what the forges' pages put in their address bar,
-// so a wrong one only fails to scroll.
-//
-// GitHub: `<pr url>/files#diff-<sha256 hex of the path><L|R><line>`, L
-// with a removed line's old number, R with an added or unchanged line's
-// new number. A renamed file hashes its new path.
-//
-// GitLab: `<mr url>/diffs#<sha1 hex of the path>_<old>_<new>`, GitLab's
-// line code. An unchanged line has its two numbers; an added line its new
-// number and the old side's counter at that point (the number the next
-// old line would have), a removed line its old number and the new side's
-// counter.
+// "Copy link to line" in a pull request's diff. Neither forge documents an
+// address for a line of a PR's diff page, so the link is to the file at
+// the commit the diff's new side shows. GitHub documents `#L<line>` on a
+// file's address
+// (docs.github.com, "Creating a permanent link to a code snippet"), so its
+// link names the line: `<repo>/blob/<commit>/<path>#L<line>`. GitLab
+// documents line permalinks without their address, so its link is the
+// file: `<project>/-/blob/<commit>/<path>`. A removed line has no place
+// at that commit and gets no link.
 
 export type LineLinkForge = 'github' | 'gitlab';
 
-/** A line as the forge's anchor names it: its kind and both sides'
- * positions (the counter for the side it is not on). */
+/** A row's kind and its two sides' numbers. */
 export interface LinePosition {
   kind: 'add' | 'del' | 'context';
   oldLine: number;
@@ -49,12 +42,28 @@ export function linePositionAt(file: ReviewFile, lineIndex: number): LinePositio
   return null;
 }
 
-/** The forge's address of a line of `path` in the PR at `prUrl`. */
-export async function lineLink(forge: LineLinkForge, prUrl: string, path: string, at: LinePosition): Promise<string> {
-  const base = prUrl.replace(/\/+$/, '');
-  if (forge === 'github') {
-    const side = at.kind === 'del' ? `L${at.oldLine}` : `R${at.newLine}`;
-    return `${base}/files#diff-${await hexDigest('SHA-256', path)}${side}`;
-  }
-  return `${base}/diffs#${await hexDigest('SHA-1', path)}_${at.oldLine}_${at.newLine}`;
+const REPO_OF_PR: Record<LineLinkForge, RegExp> = {
+  github: /^(https?:\/\/[^?#]+?)\/pull\/\d+\/?$/,
+  gitlab: /^(https?:\/\/[^?#]+?)\/-\/merge_requests\/\d+\/?$/,
+};
+
+/** What the menu item says the link names. */
+export function lineLinkLabel(forge: LineLinkForge): string {
+  return forge === 'github' ? 'Copy link to line' : 'Copy link to file';
+}
+
+/**
+ * The forge's address of the line `at` of `path` (its new path) at
+ * `commit`, in the repository of the PR at `prUrl`. Null for a removed
+ * line. Throws when `prUrl` is not a PR's address on that forge.
+ */
+export function lineLink(forge: LineLinkForge, prUrl: string, path: string, at: LinePosition, commit: string): string | null {
+  if (at.kind === 'del') return null;
+  const repo = REPO_OF_PR[forge].exec(prUrl)?.[1];
+  if (!repo) throw new Error(`Not a ${forge === 'github' ? 'pull request' : 'merge request'} address: ${prUrl}`);
+  if (!/^[0-9a-f]{7,64}$/i.test(commit)) throw new Error(`Not a commit: ${commit}`);
+  const file = path.split('/').map(encodeURIComponent).join('/');
+  return forge === 'github'
+    ? `${repo}/blob/${commit}/${file}#L${at.newLine}`
+    : `${repo}/-/blob/${commit}/${file}`;
 }

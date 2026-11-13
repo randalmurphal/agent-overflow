@@ -65,7 +65,7 @@
     lineComment?: LineCommentGate;
     /** A right-click (a long press on compact) on a line's number gutter:
      * the line's menu. Absent, the gutter has none. */
-    onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => void;
+    onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => boolean;
     /** The line ranges of this file the diff tints (open range editors,
      * range drafts, open forge threads that span lines). */
     ranges?: readonly LineRange[];
@@ -174,8 +174,7 @@
   // the pane offers one; elsewhere the native menu stays.
   function openLineMenu(event: MouseEvent, row: PatchDisplayRow | null): void {
     if (!onLineMenu || !row || row.lineIndex === undefined || row.pending) return;
-    event.preventDefault();
-    onLineMenu(event, path, row.lineIndex);
+    if (onLineMenu(event, path, row.lineIndex)) event.preventDefault();
   }
 
   function gapLabel(gap: DiffGap): string {
