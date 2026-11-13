@@ -323,7 +323,7 @@ const (
 // octal digits read as a decimal number (100644), whichever the answer
 // is; the two never collide for the modes Git writes.
 func gitTreeMode(mode int) int {
-	if octal, err := strconv.ParseInt(strconv.Itoa(mode), 8, 64); err == nil {
+	if octal, err := strconv.ParseInt(strconv.Itoa(mode), 8, 32); err == nil {
 		switch int(octal) {
 		case gitModeFile, gitModeExecutable, gitModeSymlink, gitModeSubmodule, gitModeTree:
 			return int(octal)

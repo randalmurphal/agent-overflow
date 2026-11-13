@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"agent-overflow/internal/gitenv"
 	"agent-overflow/internal/harness/forgefake"
 )
 
@@ -334,8 +335,9 @@ func forgeOriginGit(dir, root, index, stdin string, args ...string) (string, err
 // every inherited GIT_ variable is dropped (GIT_OBJECT_DIRECTORY,
 // GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_COMMON_DIR, GIT_CONFIG_*, ...),
 // discovery stops at the origin root, replace refs are ignored, no system
-// or global configuration is read, and the identity is fixed, as the
-// forge commits. index is the index file, "" for none.
+// or global configuration is read, no credential prompt can open, and the
+// identity is fixed, as the forge commits. index is the index file, ""
+// for none.
 func forgeOriginGitEnv(dir, root, index string) []string {
 	env := []string{}
 	for _, kv := range os.Environ() {
@@ -357,5 +359,5 @@ func forgeOriginGitEnv(dir, root, index string) []string {
 	if index != "" {
 		env = append(env, "GIT_INDEX_FILE="+index)
 	}
-	return env
+	return gitenv.NonInteractive(env)
 }
