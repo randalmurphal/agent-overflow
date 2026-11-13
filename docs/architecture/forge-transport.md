@@ -293,8 +293,8 @@ is cached as an unknown viewer), `Threads` and `Events` its discussions
 (`per_page=100`, paged by `X-Next-Page`, positions normalized against
 `diff_refs.head_sha`; one read serves both, system notes are the events),
 `Events` also the resource state events (`resource_state_events?per_page=100`,
-at most 3 pages: every page while they fit, else the newest 3 by
-`X-Total-Pages`): GitLab records a close, a reopen (`opened`, or
+at most 3 requests: every page while they fit; past them page 1 and the
+last two by `X-Total-Pages`, or the first 3 without it): GitLab records a close, a reopen (`opened`, or
 `reopened` on some servers) and a merge as these rather than as notes,
 and the merge request's `merged_at`/`closed_at` stand in for a merge or
 close without one. A failed state events read leaves the events without
@@ -734,7 +734,11 @@ re-request), `MergeRequestUpdateInput`'s `overrideRequestedChanges`
 `MergeRequestSetAssigneesInput` and `MergeRequestSetLabelsInput` (each
 gates its control; a host without it offers none and refuses the write).
 The answer, either way, is cached per host for 10 minutes; a failed probe
-is not cached and makes the read unavailable. A host with the override is
+is not cached and makes the read unavailable. Concurrent cold reads of a
+host share one probe, which runs past the caller that started it, each
+waiting bounded by its own context. A harness reset forgets the answers
+with the adapters' other per-host and per-project memory
+(`Core.ResetForgeCaches`). A host with the override is
 read with `PRManageChecks`, which adds `mergeabilityChecks`: the
 `REQUESTED_CHANGES` check failing is what blocks (elsewhere the
 `detailed_merge_status` `requested_changes`), and the check passing while

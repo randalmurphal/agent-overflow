@@ -43,6 +43,8 @@ type gitlabForge struct {
 	pipelineTags gitlabPipelineTags
 	// schemas is each host's management schema (gitlab_manage.go).
 	schemas gitlabCache[gitlabSchema]
+	// probes is the schema probe in flight per host (gitlab_manage.go).
+	probes gitlabSchemaProbes
 	// stateEventRetries holds the merge requests whose state events read
 	// failed, until it is due again (gitlab_manage.go).
 	stateEventRetries gitlabStateEventRetries

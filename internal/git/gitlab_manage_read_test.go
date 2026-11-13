@@ -1,6 +1,8 @@
 package git
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"slices"
 	"strconv"
@@ -76,8 +78,9 @@ func TestGitLabManageReadFailureHidesOnlyTheControls(t *testing.T) {
 	}
 }
 
-// The state events read pages oldest first: within the bound every
-// page, past it the newest pages by X-Total-Pages. A reopen is "opened"
+// The state events read is at most three requests, oldest first: every
+// page within the bound; past it, by X-Total-Pages, page 1 and the last
+// two; without a total, the first three. A reopen is "opened"
 // in the state events API and "reopened" on some servers.
 func TestGitLabStateEventsReadTheNewestPages(t *testing.T) {
 	t.Parallel()
@@ -97,10 +100,14 @@ func TestGitLabStateEventsReadTheNewestPages(t *testing.T) {
 		}, []string{"state:1 closed", "state:2 reopened"}, []string{"per_page=100", "page=2&per_page=100"}},
 		{"past the bound", map[string]forgeAPIAnswer{
 			"per_page=100":        {Body: page(1, "closed"), Header: http.Header{"X-Total-Pages": {"5"}}},
-			"page=3&per_page=100": {Body: page(3, "opened")},
-			"page=4&per_page=100": {Body: page(4, "closed")},
+			"page=4&per_page=100": {Body: page(4, "opened")},
 			"page=5&per_page=100": {Body: page(5, "merged")},
-		}, []string{"state:3 reopened", "state:4 closed", "state:5 merged"}, []string{"per_page=100", "page=3&per_page=100", "page=4&per_page=100", "page=5&per_page=100"}},
+		}, []string{"state:1 closed", "state:4 reopened", "state:5 merged"}, []string{"per_page=100", "page=4&per_page=100", "page=5&per_page=100"}},
+		{"past the bound, without a total", map[string]forgeAPIAnswer{
+			"per_page=100":        {Body: page(1, "closed"), Header: http.Header{"X-Next-Page": {"2"}}},
+			"page=2&per_page=100": {Body: page(2, "opened"), Header: http.Header{"X-Next-Page": {"3"}}},
+			"page=3&per_page=100": {Body: page(3, "closed"), Header: http.Header{"X-Next-Page": {"4"}}},
+		}, []string{"state:1 closed", "state:2 reopened", "state:3 closed"}, []string{"per_page=100", "page=2&per_page=100", "page=3&per_page=100"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -402,5 +409,143 @@ func TestResetForgeCachesReachesEveryAdapterCache(t *testing.T) {
 	if project || viewer || approval || cancel || schema || gl.routes.get("k") || !due || len(known) != 0 || permission || artifacts {
 		t.Fatalf("kept: project %v viewer %v approval %v cancel %v schema %v route %v backoff %v tags %v permission %v artifacts %v",
 			project, viewer, approval, cancel, schema, gl.routes.get("k"), !due, known, permission, artifacts)
+	}
+}
+
+// Two cold reads of one host share one schema probe; a waiter whose
+// context ends gets its own error while the probe answers the other.
+func TestGitLabColdReadsShareOneSchemaProbe(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	started := make(chan struct{}, 4)
+	core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		if call.Op == "PRManageSchema" {
+			started <- struct{}{}
+			<-release
+			return forgeAPIAnswer{Body: gitlabSchemaAll}, true
+		}
+		if call.Op == "PRManageChecks" {
+			return forgeAPIAnswer{Body: `{"data":{"project":{"mergeRequest":{"userPermissions":{"updateMergeRequest":true,"adminMergeRequest":true},` +
+				`"reviewers":{"nodes":[]},"assignees":{"nodes":[]},"labels":{"nodes":[]},"mergeabilityChecks":[]}}}}`}, true
+		}
+		return forgeAPIAnswer{}, false
+	})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	// Runs before the server's own cleanup, which waits for its handlers.
+	t.Cleanup(unblock)
+	f := core.forges["gitlab"].(*gitlabForge)
+	client, err := core.gitlabAPI(testForgeHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		schema gitlabSchema
+		err    error
+	}
+	first := make(chan answer, 1)
+	go func() {
+		schema, err := f.manageSchema(t.Context(), client, testForgeHost)
+		first <- answer{schema, err}
+	}()
+	<-started
+	ctx, cancel := context.WithCancel(t.Context())
+	second := make(chan answer, 1)
+	go func() {
+		schema, err := f.manageSchema(ctx, client, testForgeHost)
+		second <- answer{schema, err}
+	}()
+	third := make(chan answer, 1)
+	go func() {
+		schema, err := f.manageSchema(t.Context(), client, testForgeHost)
+		third <- answer{schema, err}
+	}()
+	waitFor(t, func() bool { return f.probes.waiters(testForgeHost) >= 3 })
+	cancel()
+	if got := within(t, second); !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("a waiter whose context ended = %+v", got)
+	}
+	unblock()
+	for _, got := range []answer{within(t, first), within(t, third)} {
+		if got.err != nil || !got.schema.setReviewers {
+			t.Fatalf("a waiter = %+v", got)
+		}
+	}
+	if n := countOp(calls, "PRManageSchema"); n != 1 {
+		t.Fatalf("probes = %d, want one for the three", n)
+	}
+}
+
+// The probe outlives the caller that started it: its waiters get the
+// answer when that caller gives up.
+func TestGitLabSchemaProbeOutlivesItsFirstCaller(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+	core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		if call.Op == "PRManageSchema" {
+			started <- struct{}{}
+			<-release
+			return forgeAPIAnswer{Body: gitlabSchemaAll}, true
+		}
+		return forgeAPIAnswer{}, false
+	})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	// Runs before the server's own cleanup, which waits for its handlers.
+	t.Cleanup(unblock)
+	f := core.forges["gitlab"].(*gitlabForge)
+	client, err := core.gitlabAPI(testForgeHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	first := make(chan error, 1)
+	go func() {
+		_, err := f.manageSchema(ctx, client, testForgeHost)
+		first <- err
+	}()
+	<-started
+	second := make(chan error, 1)
+	go func() {
+		_, err := f.manageSchema(t.Context(), client, testForgeHost)
+		second <- err
+	}()
+	waitFor(t, func() bool { return f.probes.waiters(testForgeHost) >= 2 })
+	cancel()
+	if err := within(t, first); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the first caller = %v", err)
+	}
+	unblock()
+	if err := within(t, second); err != nil {
+		t.Fatalf("the waiter after the first gave up = %v", err)
+	}
+	if n := countOp(calls, "PRManageSchema"); n != 1 {
+		t.Fatalf("probes = %d", n)
+	}
+}
+
+// waitFor waits up to ten seconds for done.
+func waitFor(t *testing.T, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !done() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// within receives from ch, failing after ten seconds.
+func within[V any](t *testing.T, ch <-chan V) V {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for an answer")
+		var zero V
+		return zero
 	}
 }

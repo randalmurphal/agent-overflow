@@ -83,11 +83,82 @@ func (t *gitlabInputType) has(field string) bool {
 }
 
 // manageSchema is the host's schema answer: cached, else probed and
-// cached (an answer either way; a failed probe is not cached).
+// cached (an answer either way; a failed probe is not cached). Concurrent
+// cold reads of one host share one probe, which runs past the caller that
+// started it; each waits for it bounded by its own context.
 func (f *gitlabForge) manageSchema(ctx context.Context, client *forgeapi.Client, host string) (gitlabSchema, error) {
 	if known, ok := f.schemas.get(host, f.core.nowFn()); ok {
 		return known, nil
 	}
+	return f.probes.do(ctx, host, func(ctx context.Context) (gitlabSchema, error) {
+		return f.probeSchema(ctx, client, host)
+	})
+}
+
+// gitlabSchemaProbes is the schema probe in flight per host.
+type gitlabSchemaProbes struct {
+	mu      sync.Mutex
+	flights map[string]*gitlabSchemaProbe
+}
+
+type gitlabSchemaProbe struct {
+	done    chan struct{}
+	schema  gitlabSchema
+	err     error
+	waiters int
+}
+
+// do answers host's probe: the one in flight, else one probe starts on
+// ctx's values without its cancellation. A waiter whose context ends
+// returns its error; the probe goes on for the others.
+func (p *gitlabSchemaProbes) do(ctx context.Context, host string, probe func(context.Context) (gitlabSchema, error)) (gitlabSchema, error) {
+	if err := ctx.Err(); err != nil {
+		return gitlabSchema{}, err
+	}
+	p.mu.Lock()
+	if p.flights == nil {
+		p.flights = map[string]*gitlabSchemaProbe{}
+	}
+	flight := p.flights[host]
+	if flight == nil {
+		flight = &gitlabSchemaProbe{done: make(chan struct{})}
+		p.flights[host] = flight
+		go func() {
+			schema, err := probe(context.WithoutCancel(ctx))
+			p.mu.Lock()
+			flight.schema, flight.err = schema, err
+			delete(p.flights, host)
+			p.mu.Unlock()
+			close(flight.done)
+		}()
+	}
+	flight.waiters++
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		flight.waiters--
+		p.mu.Unlock()
+	}()
+	select {
+	case <-flight.done:
+		return flight.schema, flight.err
+	case <-ctx.Done():
+		return gitlabSchema{}, ctx.Err()
+	}
+}
+
+// waiters is how many callers wait on host's probe in flight.
+func (p *gitlabSchemaProbes) waiters(host string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if flight := p.flights[host]; flight != nil {
+		return flight.waiters
+	}
+	return 0
+}
+
+// probeSchema sends the PRManageSchema probe and caches its answer.
+func (f *gitlabForge) probeSchema(ctx context.Context, client *forgeapi.Client, host string) (gitlabSchema, error) {
 	var raw struct {
 		Rereview *struct {
 			Name string `json:"name"`
@@ -261,8 +332,8 @@ func (m gitlabManage) apply(detail *PRDetail) {
 	}
 }
 
-// gitlabStateEventsMaxPages bounds a state events read: past it the
-// newest pages are read.
+// gitlabStateEventsMaxPages bounds a state events read's requests: past
+// it, page 1 and the newest pages.
 const gitlabStateEventsMaxPages = 3
 
 // gitlabStateEventRaw is one resource state event: GitLab records a
@@ -275,9 +346,9 @@ type gitlabStateEventRaw struct {
 }
 
 // readGitLabStateEvents reads the merge request's state events, oldest
-// first as GitLab lists them: every page when they fit
-// gitlabStateEventsMaxPages, else the last that many pages (by
-// X-Total-Pages; without it, the first that many).
+// first as GitLab lists them, in at most gitlabStateEventsMaxPages
+// requests: every page when they fit; past them page 1 and the last
+// pages (by X-Total-Pages; without it, the first pages).
 func readGitLabStateEvents(ctx context.Context, client *forgeapi.Client, ref PRReference) ([]gitlabStateEventRaw, error) {
 	read := func(page int) ([]gitlabStateEventRaw, *forgeapi.Response, error) {
 		query := url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}}
@@ -300,8 +371,7 @@ func readGitLabStateEvents(ctx context.Context, client *forgeapi.Client, ref PRR
 	}
 	page := 1
 	if total, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("X-Total-Pages"))); err == nil && total > gitlabStateEventsMaxPages {
-		out = nil
-		for p := total - gitlabStateEventsMaxPages + 1; p <= total; p++ {
+		for p := total - gitlabStateEventsMaxPages + 2; p <= total; p++ {
 			events, _, err := read(p)
 			if err != nil {
 				return nil, err
