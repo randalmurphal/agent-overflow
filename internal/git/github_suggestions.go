@@ -10,10 +10,11 @@ import (
 	"strings"
 
 	"agent-overflow/internal/forgeapi"
+	"agent-overflow/internal/mdsuggest"
 )
 
 // GitHub's suggestions. GitHub reports none of its own: the read parses
-// each review thread comment's body (ParseSuggestions) and anchors its
+// each review thread comment's body (mdsuggest.Parse) and anchors its
 // blocks on the thread's new-side lines; the replaced text is not read
 // (it would take each thread's diffHunk into the one tick request), so
 // From is left unknown. GitHub has no apply endpoint: the apply reads the
@@ -23,9 +24,9 @@ import (
 
 // githubSuggestionBlocks are the blocks GitHub renders as suggestions:
 // the ones without GitLab's -N+M header, which GitHub reads as code.
-func githubSuggestionBlocks(body string) []ParsedSuggestion {
-	var out []ParsedSuggestion
-	for _, block := range ParseSuggestions(body) {
+func githubSuggestionBlocks(body string) []mdsuggest.Block {
+	var out []mdsuggest.Block
+	for _, block := range mdsuggest.Parse(body) {
 		if !block.Widened {
 			out = append(out, block)
 		}

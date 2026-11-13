@@ -78,6 +78,11 @@ var githubGraphQL = []graphQLOp{
 	{kind: "mutation", name: "UpdateIssueComment", required: []string{"id", "body"}, run: ghUpdateIssueComment},
 	{kind: "mutation", name: "DeleteReviewComment", required: []string{"id"}, run: ghDeleteReviewComment},
 	{kind: "mutation", name: "DeleteIssueComment", required: []string{"id"}, run: ghDeleteIssueComment},
+	{kind: "query", name: "SuggestionTarget", required: []string{"threadID", "commentID"}, run: ghSuggestionTarget},
+	{kind: "mutation", name: "SuggestionCommit", required: []string{"repository", "branch", "expectedHeadOid", "headline", "path", "contents"}, optional: []string{"body"}, run: ghSuggestionCommit},
+	{kind: "query", name: "ReactionTarget", required: []string{"id"}, run: ghReactionTarget},
+	{kind: "mutation", name: "AddReaction", required: []string{"subjectID", "content"}, run: ghReaction(true)},
+	{kind: "mutation", name: "RemoveReaction", required: []string{"subjectID", "content"}, run: ghReaction(false)},
 }
 
 // graphQLRequest is the body of a POST to /github/graphql.
@@ -304,6 +309,8 @@ func ghPRTick(e *Engine, c *call, v graphQLVars) response {
 		pull["commits"] = map[string]any{"nodes": []map[string]any{{"commit": map[string]any{"id": githubCommitNodeID(r, p), "oid": p.HeadSHA, "statusCheckRollup": rollup}}}}
 	}
 	if wantThreads {
+		pull["state"] = strings.ToUpper(p.State)
+		pull["viewerCanApplySuggestion"] = p.State == "open" && e.mayPush(r, p)
 		pull["reviewThreads"] = graphQLConnection(e.githubThreadNodes(r, p), 0, githubGraphQLPageSize)
 		pull["comments"] = graphQLConnection(e.githubCommentNodes(r, p), 0, githubGraphQLPageSize)
 	}
@@ -694,6 +701,7 @@ func (e *Engine) githubThreadCommentNodes(r *Repo, p *Pull, thread *Thread) []ma
 			"replyTo":    replyTo,
 		}
 		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#discussion_r%d", githubPullURL(r, p), comment.ID)))
+		node["reactionGroups"] = e.githubReactionGroups(comment)
 		out = append(out, node)
 	}
 	return out
@@ -711,6 +719,7 @@ func (e *Engine) githubCommentNodes(r *Repo, p *Pull) []map[string]any {
 			"isMinimized": false,
 		}
 		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#issuecomment-%d", githubPullURL(r, p), comment.ID)))
+		node["reactionGroups"] = e.githubReactionGroups(comment)
 		out = append(out, node)
 	}
 	return out

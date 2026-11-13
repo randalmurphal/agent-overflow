@@ -173,6 +173,11 @@ type Pull struct {
 	// Diff is the PR's unified diff. The file and line counts the PR reads
 	// report are derived from it.
 	Diff string `json:"diff,omitempty"`
+	// Files are the head branch's file contents by path at HeadSHA: what a
+	// GitHub contents read answers, what a GitLab suggestion's
+	// from_content is read from, and what an applied suggestion rewrites
+	// (suggestions.go). A path absent here is not on the head branch.
+	Files map[string]string `json:"files,omitempty"`
 	// Mergeable is "clean" (default), "conflicts" or "checking".
 	Mergeable string `json:"mergeable,omitempty"`
 	// Comments are PR-level conversation comments (GitHub issue comments,
@@ -351,6 +356,11 @@ type Comment struct {
 	// author or WRITE and above edit and delete; on GitLab the author
 	// edits, and the author or a maintainer or owner deletes.
 	EditedAt string `json:"editedAt,omitempty"`
+	// Reactions are the comment's reactions, one per user and name
+	// (reactions.go). AppliedSuggestions are the indexes of a GitLab
+	// note's suggestions already applied.
+	Reactions          []Reaction `json:"reactions,omitempty"`
+	AppliedSuggestions []int      `json:"appliedSuggestions,omitempty"`
 	// Replies are the further notes of a GitLab conversation comment's
 	// discussion; a reply to one adds them. GitHub conversation comments
 	// have none.
@@ -848,6 +858,9 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		case slices.ContainsFunc(p.Reviews, func(r Review) bool { return same(r.Author) }):
 			return fmt.Errorf("changeRequests[%d]: %q also approved", i, login)
 		}
+	}
+	if err := p.normalizeReactions(forge, ids); err != nil {
+		return err
 	}
 	if p.CI != nil {
 		if err := p.CI.normalize(ids); err != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/mdsuggest"
 )
 
 // The review pane's suggestion and reaction actions. Each runs as a
@@ -45,18 +46,18 @@ func (a *App) SetPRCommentReaction(ctx context.Context, pr gitops.PRReference, t
 const commentBodyMaxBytes = 1 << 20
 
 // ParseCommentSuggestions reads the suggestion blocks of a comment body as
-// the read does (gitops.ParseSuggestions), for an editor's preview. It
+// the read does (mdsuggest.Parse), for an editor's preview. It
 // reads nothing else and changes nothing.
 //
 //ao:scope git:operate
 //ao:route home
-func (a *App) ParseCommentSuggestions(body string) ([]gitops.ParsedSuggestion, error) {
+func (a *App) ParseCommentSuggestions(body string) ([]mdsuggest.Block, error) {
 	if len(body) > commentBodyMaxBytes {
 		return nil, fmt.Errorf("a comment body is at most %d bytes", commentBodyMaxBytes)
 	}
-	out := gitops.ParseSuggestions(body)
+	out := mdsuggest.Parse(body)
 	if out == nil {
-		out = []gitops.ParsedSuggestion{}
+		out = []mdsuggest.Block{}
 	}
 	return out, nil
 }
