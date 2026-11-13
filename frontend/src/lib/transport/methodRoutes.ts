@@ -47,6 +47,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	535837959: 'home', // BrowserCompanionRevealPageFile
 	1485125416: 'home', // BrowserCompanionThreadState
 	2848608143: 'home', // BrowserHostReport
+	4161987710: 'selected', // BypassPRRequestedChanges
 	2608316491: 'home', // CancelDevicePairing
 	1562772056: 'selected', // CancelDictation
 	3365706830: 'selected', // CancelLiveDictation
@@ -100,10 +101,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1061100039: 'selected', // DisallowPreviewPort
 	2309612888: 'selected', // DiscardUnpreparedThreadTransfer
 	4113468152: 'home', // DiscoverComputers
+	1185171749: 'selected', // DismissPRReview
 	1317713039: 'thread', // DismissSessionBanner
 	41472159: 'thread', // DismissThreadWorktreeSetup
 	115027584: 'home', // DownloadUpdate
 	1579042384: 'selected', // EditOpenAIKeyFile
+	679416267: 'selected', // EditPR
 	1171217596: 'selected', // EditPRComment
 	1594348919: 'selected', // FetchForgeAttachment
 	2178028847: 'selected', // FinishDictation
@@ -147,6 +150,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1435724188: 'selected', // GetPRCILogLines
 	2443547196: 'selected', // GetPRDetail
 	106351482: 'workspace', // GetPRMergeConflicts
+	276106990: 'selected', // GetPRMergeMessage
 	4070778679: 'selected', // GetPRReviewSubmitOutcome
 	73280836: 'thread', // GetPayloadChunk
 	3448919335: 'thread', // GetPayloadData
@@ -371,6 +375,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	314214419: 'home', // ReportUpdateInstallStatus
 	3093237072: 'selected', // RequestServiceUpdate
 	2045178958: 'home', // RequestWebviewMemoryTrim
+	2068518611: 'selected', // RerequestPRReview
 	2775767393: 'home', // ResetKeybindings
 	1887984285: 'home', // ResizeTerminal
 	1919237704: 'thread', // RespondToApproval
@@ -397,6 +402,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1281545488: 'selected', // SavePRCIJobLogSection
 	3576148797: 'thread', // SavePayloadToFile
 	349857499: 'selected', // SearchPRCILog
+	173160885: 'selected', // SearchPRCandidates
 	1414650511: 'thread', // SearchThreadItems
 	3644945077: 'all', // SearchThreadMessages
 	1822896830: 'thread', // SearchTimelineItems
@@ -413,8 +419,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2755315818: 'home', // SetDeviceName
 	3655340267: 'selected', // SetEditorSettings
 	3915514446: 'home', // SetNetworkSettings
+	1016620183: 'selected', // SetPRAssignees
 	1675722685: 'home', // SetPRCILogFollows
+	2026774950: 'selected', // SetPRLabels
 	2324570575: 'home', // SetPRListActive
+	960122143: 'selected', // SetPRReviewers
+	3486078714: 'selected', // SetPRState
 	2594833485: 'selected', // SetPRThreadResolved
 	1078249699: 'home', // SetPRUpdatesActive
 	1113626255: 'home', // SetPipelineActive

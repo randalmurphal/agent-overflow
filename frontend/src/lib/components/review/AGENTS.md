@@ -46,7 +46,7 @@ PR stores; components own presentation and interaction.
   names a different line once the held range moves.
 - Preserve line identity across refreshes so open threads, selections, and
   measured rows do not move unnecessarily.
-- The PR overview (`ReviewOverview`: Merge, Description and Conversation)
+- The PR overview (`ReviewOverview`: Merge, Details, Description and Conversation)
   is the diff list's first row (`kind: 'overview'`, key
   `REVIEW_OVERVIEW_ROW_KEY`) for every PR, measured like any row and
   unmounted when far below, so section open state, section scroll offsets
@@ -101,6 +101,14 @@ PR stores; components own presentation and interaction.
   CI with its pipeline actions menu and refresh inside the wrapping chip
   row. The CI actions contract is in
   [pull requests](../../../../../docs/specs/pull-requests.md#ci-actions).
+  The management controls (title and description editors, Details and
+  its pickers, the title bar's `⋯`, Dismiss, Bypass and the commit
+  message editor) hold their text, the merge method and the pending
+  action in `stores/prManage.svelte.ts`, captured for the PR they opened
+  on and discarded when the pane's PR changes; Details is collapsed by
+  default and an open picker applies on any close, the pane's included.
+  The contract is in
+  [pull requests](../../../../../docs/specs/pull-requests.md#managing-a-pr).
 - A jump to a row inside a file lands under the sticky file bar: scroll it
   with `offset: -REVIEW_FILE_HEADER_BAR_PX`.
 - A jump to a thread pulses the destination card once and leaves nothing

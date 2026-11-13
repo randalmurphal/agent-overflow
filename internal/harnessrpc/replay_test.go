@@ -253,6 +253,10 @@ func TestHarnessResetClearsHarnessState(t *testing.T) {
 	if host.droppedImages != 1 {
 		t.Fatalf("reset dropped review diff images %d times, want 1", host.droppedImages)
 	}
+	// What the forge adapters remember of the cleared fixture goes too.
+	if host.forgeCachesReset != 1 {
+		t.Fatalf("forge caches reset %d times, want once", host.forgeCachesReset)
+	}
 	// The aborted recording released its slot: a new one can start.
 	if _, err := h.HarnessRecordStart("fresh", "thread-r"); err != nil {
 		t.Fatalf("HarnessRecordStart after reset: %v", err)

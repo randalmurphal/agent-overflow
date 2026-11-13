@@ -58,17 +58,18 @@ const (
 		`merged mergedAt mergedBy { ` + githubActorAs + ` } closedAt viewerDidAuthor isCrossRepository ` +
 		`viewerCanEnableAutoMerge viewerCanDisableAutoMerge ` +
 		`autoMergeRequest { enabledAt mergeMethod enabledBy { ` + githubActorAs + ` } } ` +
-		`latestOpinionatedReviews(first: 100) { nodes { id state viewerDidAuthor authorCanPushToRepository ` + githubActor + ` } } ` +
+		`latestOpinionatedReviews(first: 100) { nodes { id state viewerDidAuthor authorCanPushToRepository commit { oid } ` + githubActor + ` } } ` +
 		`threadStates: reviewThreads(first: 100) { ` + githubPageInfoFields + ` nodes { isResolved } } ` +
 		`baseRef { refUpdateRule { requiredApprovingReviewCount requiredStatusCheckContexts requiresCodeOwnerReviews requiresConversationResolution } ` +
 		`rules(first: 100) { nodes { type parameters { __typename ` +
 		`... on PullRequestParameters { requiredApprovingReviewCount requireCodeOwnerReview requiredReviewThreadResolution allowedMergeMethods } ` +
-		`... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }`
+		`... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } } ` +
+		githubManageFields
 	// githubRepositoryMergeFields is the repository half of the detail:
 	// the merge methods and settings the Merge menu offers.
 	// viewerPermission is selected beside it on every tick, since the CI
 	// actions read it too.
-	githubRepositoryMergeFields = `mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed deleteBranchOnMerge autoMergeAllowed viewerDefaultMergeMethod`
+	githubRepositoryMergeFields = `mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed deleteBranchOnMerge autoMergeAllowed viewerDefaultMergeMethod owner { __typename }`
 	// githubTimelineItemTypes are the timeline items the Conversation feed
 	// shows as forge events (github_readiness.go maps them).
 	githubTimelineItemTypes = `PULL_REQUEST_REVIEW, REVIEW_DISMISSED_EVENT, MERGED_EVENT, CLOSED_EVENT, REOPENED_EVENT, ` +
@@ -324,6 +325,7 @@ type githubPullRaw struct {
 	Comments      githubCommentsRaw `json:"comments"`
 	TimelineItems githubTimelineRaw `json:"timelineItems"`
 	githubPullMergeRaw
+	githubPullManageRaw
 }
 
 // githubTickRaw is PRTick's data.
@@ -372,12 +374,18 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	vars["wantEvents"] = want.Events
 	vars["wantChecks"] = want.Detail || want.CI
 	var raw githubTickRaw
+	// An error confined to the management selections leaves the rest of
+	// the read standing; the detail says the controls are unavailable.
+	var manageErr error
 	if _, err := client.GraphQL(ctx, "PRTick", githubPRTickQuery, vars, &raw); err != nil {
-		return PRRead{}, err
+		if !want.Detail || !githubManageOnly(err) {
+			return PRRead{}, err
+		}
+		manageErr = err
 	}
 	pull, err := raw.pull(ref)
 	if err != nil {
-		return PRRead{}, err
+		return PRRead{}, errors.Join(manageErr, err)
 	}
 	var checks []CheckStatus
 	var contexts []githubContextRaw
@@ -402,6 +410,11 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		}
 		out.Detail.Readiness = merge.readiness()
 		out.Detail.Merge = merge.options(out.Detail.Readiness)
+		out.Detail.Manage = merge.manage()
+		if manageErr != nil {
+			out.Detail.Manage = emptyManage()
+			out.Detail.Manage.Unavailable = manageUnavailableSentence(ref, manageErr)
+		}
 		if pull.Merged || strings.EqualFold(pull.State, "MERGED") {
 			out.Detail.MergedAt = pull.MergedAt
 			if pull.MergedBy != nil {

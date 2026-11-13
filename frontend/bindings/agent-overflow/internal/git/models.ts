@@ -411,6 +411,37 @@ export class CIStep {
     }
 }
 
+/**
+ * ChangeRequest is one review that requested changes and blocks the
+ * merge, on a BlockerChangesRequested row: ReviewID is the GitHub review
+ * node id DismissPRReview takes.
+ */
+export class ChangeRequest {
+    "reviewId": string;
+    "authorLogin": string;
+    "authorName"?: string;
+
+    /** Creates a new ChangeRequest instance. */
+    constructor($$source: Partial<ChangeRequest> = {}) {
+        if (!("reviewId" in $$source)) {
+            this["reviewId"] = "";
+        }
+        if (!("authorLogin" in $$source)) {
+            this["authorLogin"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ChangeRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ChangeRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ChangeRequest($$parsedSource as Partial<ChangeRequest>);
+    }
+}
+
 export class CheckStatus {
     "kind": string;
     "name": string;
@@ -707,6 +738,16 @@ export class MergeBlocker {
     "detail"?: string;
     "url"?: string;
 
+    /**
+     * A BlockerChangesRequested row carries what its fix needs: on GitHub
+     * the reviews to dismiss (ChangeRequests), on GitLab whether the
+     * viewer may bypass them (Bypassable). A settled row of that kind
+     * with Bypassed is requested changes GitLab reports overridden.
+     */
+    "changeRequests"?: ChangeRequest[];
+    "bypassable"?: boolean;
+    "bypassed"?: boolean;
+
     /** Creates a new MergeBlocker instance. */
     constructor($$source: Partial<MergeBlocker> = {}) {
         if (!("kind" in $$source)) {
@@ -723,8 +764,41 @@ export class MergeBlocker {
      * Creates a new MergeBlocker instance from a string or object.
      */
     static createFrom($$source: any = {}): MergeBlocker {
+        const $$createField4_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("changeRequests" in $$parsedSource) {
+            $$parsedSource["changeRequests"] = $$createField4_0($$parsedSource["changeRequests"]);
+        }
         return new MergeBlocker($$parsedSource as Partial<MergeBlocker>);
+    }
+}
+
+/**
+ * MergeMessage is a merge commit's message: its title (the first line)
+ * and body.
+ */
+export class MergeMessage {
+    "title": string;
+    "body": string;
+
+    /** Creates a new MergeMessage instance. */
+    constructor($$source: Partial<MergeMessage> = {}) {
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeMessage instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeMessage {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new MergeMessage($$parsedSource as Partial<MergeMessage>);
     }
 }
 
@@ -806,7 +880,7 @@ export class MergeOptions {
      */
     static createFrom($$source: any = {}): MergeOptions {
         const $$createField0_0 = $$createType0;
-        const $$createField4_0 = $$createType12;
+        const $$createField4_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("methods" in $$parsedSource) {
             $$parsedSource["methods"] = $$createField0_0($$parsedSource["methods"]);
@@ -895,9 +969,9 @@ export class MergeReadiness {
      * Creates a new MergeReadiness instance from a string or object.
      */
     static createFrom($$source: any = {}): MergeReadiness {
-        const $$createField1_0 = $$createType14;
-        const $$createField2_0 = $$createType14;
-        const $$createField3_0 = $$createType15;
+        const $$createField1_0 = $$createType16;
+        const $$createField2_0 = $$createType16;
+        const $$createField3_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("blockers" in $$parsedSource) {
             $$parsedSource["blockers"] = $$createField1_0($$parsedSource["blockers"]);
@@ -924,6 +998,13 @@ export class MergeRequest {
     "deleteBranch": boolean;
     "autoMerge": boolean;
 
+    /**
+     * CommitMessage is the commit message the user edited, sent with a
+     * merge or an auto-merge of a method that writes a commit; nil leaves
+     * the forge's default.
+     */
+    "commitMessage"?: MergeMessage | null;
+
     /** Creates a new MergeRequest instance. */
     constructor($$source: Partial<MergeRequest> = {}) {
         if (!("method" in $$source)) {
@@ -946,8 +1027,54 @@ export class MergeRequest {
      * Creates a new MergeRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): MergeRequest {
+        const $$createField4_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("commitMessage" in $$parsedSource) {
+            $$parsedSource["commitMessage"] = $$createField4_0($$parsedSource["commitMessage"]);
+        }
         return new MergeRequest($$parsedSource as Partial<MergeRequest>);
+    }
+}
+
+/**
+ * PRCandidates is one picker search: the first candidatePageSize people
+ * (users, and GitHub teams for reviewers when the login can read them)
+ * or labels matching the query, and More when the forge has more.
+ */
+export class PRCandidates {
+    "people": PRPerson[];
+    "labels": PRLabel[];
+    "more": boolean;
+
+    /** Creates a new PRCandidates instance. */
+    constructor($$source: Partial<PRCandidates> = {}) {
+        if (!("people" in $$source)) {
+            this["people"] = [];
+        }
+        if (!("labels" in $$source)) {
+            this["labels"] = [];
+        }
+        if (!("more" in $$source)) {
+            this["more"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRCandidates instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRCandidates {
+        const $$createField0_0 = $$createType21;
+        const $$createField1_0 = $$createType23;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("people" in $$parsedSource) {
+            $$parsedSource["people"] = $$createField0_0($$parsedSource["people"]);
+        }
+        if ("labels" in $$parsedSource) {
+            $$parsedSource["labels"] = $$createField1_0($$parsedSource["labels"]);
+        }
+        return new PRCandidates($$parsedSource as Partial<PRCandidates>);
     }
 }
 
@@ -1000,6 +1127,12 @@ export class PRDetail {
     "mergedAt"?: string;
     "mergedBy"?: string;
     "closedAt"?: string;
+
+    /**
+     * Manage is the Details section and the management capabilities
+     * (forge_manage.go).
+     */
+    "manage": PRManage;
 
     /** Creates a new PRDetail instance. */
     constructor($$source: Partial<PRDetail> = {}) {
@@ -1066,6 +1199,9 @@ export class PRDetail {
         if (!("merge" in $$source)) {
             this["merge"] = (new MergeOptions());
         }
+        if (!("manage" in $$source)) {
+            this["manage"] = (new PRManage());
+        }
 
         Object.assign(this, $$source);
     }
@@ -1074,11 +1210,12 @@ export class PRDetail {
      * Creates a new PRDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): PRDetail {
-        const $$createField17_0 = $$createType17;
-        const $$createField18_0 = $$createType18;
-        const $$createField20_0 = $$createType20;
-        const $$createField21_0 = $$createType21;
-        const $$createField22_0 = $$createType22;
+        const $$createField17_0 = $$createType25;
+        const $$createField18_0 = $$createType26;
+        const $$createField20_0 = $$createType28;
+        const $$createField21_0 = $$createType29;
+        const $$createField22_0 = $$createType30;
+        const $$createField26_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
             $$parsedSource["latestReviews"] = $$createField17_0($$parsedSource["latestReviews"]);
@@ -1094,6 +1231,9 @@ export class PRDetail {
         }
         if ("merge" in $$parsedSource) {
             $$parsedSource["merge"] = $$createField22_0($$parsedSource["merge"]);
+        }
+        if ("manage" in $$parsedSource) {
+            $$parsedSource["manage"] = $$createField26_0($$parsedSource["manage"]);
         }
         return new PRDetail($$parsedSource as Partial<PRDetail>);
     }
@@ -1125,6 +1265,98 @@ export class PRDiffRefs {
     static createFrom($$source: any = {}): PRDiffRefs {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new PRDiffRefs($$parsedSource as Partial<PRDiffRefs>);
+    }
+}
+
+/**
+ * PREdit is a title or description edit; nil leaves a field as it is.
+ * A description edit names ExpectedDescription, the description the
+ * editor opened with: the forge adapter re-reads the description and
+ * refuses with ErrDescriptionChanged when it differs (line endings
+ * aside), since neither forge's API takes a precondition on it.
+ */
+export class PREdit {
+    "title"?: string | null;
+    "description"?: string | null;
+    "expectedDescription"?: string | null;
+
+    /** Creates a new PREdit instance. */
+    constructor($$source: Partial<PREdit> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PREdit instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PREdit {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PREdit($$parsedSource as Partial<PREdit>);
+    }
+}
+
+/**
+ * PRLabel is one label. ID is its global id (a GitHub node id, a GitLab
+ * label gid), which label writes address it by on both forges. Color is
+ * "#rrggbb", empty when the forge gave none.
+ */
+export class PRLabel {
+    "id"?: string;
+    "name": string;
+    "color"?: string;
+
+    /** Creates a new PRLabel instance. */
+    constructor($$source: Partial<PRLabel> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRLabel instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRLabel {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRLabel($$parsedSource as Partial<PRLabel>);
+    }
+}
+
+/**
+ * PRLabelChange removes, then adds, labels, one write per side, each
+ * label by its ID.
+ */
+export class PRLabelChange {
+    "add": PRLabel[];
+    "remove": PRLabel[];
+
+    /** Creates a new PRLabelChange instance. */
+    constructor($$source: Partial<PRLabelChange> = {}) {
+        if (!("add" in $$source)) {
+            this["add"] = [];
+        }
+        if (!("remove" in $$source)) {
+            this["remove"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRLabelChange instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRLabelChange {
+        const $$createField0_0 = $$createType23;
+        const $$createField1_0 = $$createType23;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("add" in $$parsedSource) {
+            $$parsedSource["add"] = $$createField0_0($$parsedSource["add"]);
+        }
+        if ("remove" in $$parsedSource) {
+            $$parsedSource["remove"] = $$createField1_0($$parsedSource["remove"]);
+        }
+        return new PRLabelChange($$parsedSource as Partial<PRLabelChange>);
     }
 }
 
@@ -1175,6 +1407,204 @@ export class PRListReview {
     static createFrom($$source: any = {}): PRListReview {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new PRListReview($$parsedSource as Partial<PRListReview>);
+    }
+}
+
+/**
+ * PRManage is what the review pane's Details section shows and which
+ * management controls it offers, read with the detail. Unavailable is
+ * the sentence saying the read failed: the lists are then empty and
+ * every Can flag false, and the rest of the detail stands.
+ */
+export class PRManage {
+    "reviewers": PRReviewer[];
+    "assignees": PRPerson[];
+    "labels": PRLabel[];
+    "can": PRManageCan;
+    "unavailable"?: string;
+
+    /** Creates a new PRManage instance. */
+    constructor($$source: Partial<PRManage> = {}) {
+        if (!("reviewers" in $$source)) {
+            this["reviewers"] = [];
+        }
+        if (!("assignees" in $$source)) {
+            this["assignees"] = [];
+        }
+        if (!("labels" in $$source)) {
+            this["labels"] = [];
+        }
+        if (!("can" in $$source)) {
+            this["can"] = (new PRManageCan());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRManage instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRManage {
+        const $$createField0_0 = $$createType33;
+        const $$createField1_0 = $$createType21;
+        const $$createField2_0 = $$createType23;
+        const $$createField3_0 = $$createType34;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("reviewers" in $$parsedSource) {
+            $$parsedSource["reviewers"] = $$createField0_0($$parsedSource["reviewers"]);
+        }
+        if ("assignees" in $$parsedSource) {
+            $$parsedSource["assignees"] = $$createField1_0($$parsedSource["assignees"]);
+        }
+        if ("labels" in $$parsedSource) {
+            $$parsedSource["labels"] = $$createField2_0($$parsedSource["labels"]);
+        }
+        if ("can" in $$parsedSource) {
+            $$parsedSource["can"] = $$createField3_0($$parsedSource["can"]);
+        }
+        return new PRManage($$parsedSource as Partial<PRManage>);
+    }
+}
+
+/**
+ * PRManageCan is what the forge says the viewer may do, one flag per
+ * control; a false flag hides the control. Each comes from the forge's
+ * own answer (GitHub viewerCan* and viewerPermission, GitLab
+ * userPermissions and user.can_merge) and applies to the PR's current
+ * state (Close only while open, Reopen only while closed, ConvertToDraft
+ * only on an open PR that is not a draft). Rerequest also needs the
+ * server's re-review mutation, Bypass GitLab's override (both read from
+ * its schema). ReviewerTeams is whether reviewer search can offer teams:
+ * GitHub organizations only.
+ */
+export class PRManageCan {
+    "editTitle": boolean;
+    "editDescription": boolean;
+    "reviewers": boolean;
+    "assignees": boolean;
+    "labels": boolean;
+    "close": boolean;
+    "reopen": boolean;
+    "convertToDraft": boolean;
+    "rerequest": boolean;
+    "dismiss": boolean;
+    "bypass": boolean;
+    "reviewerTeams": boolean;
+
+    /** Creates a new PRManageCan instance. */
+    constructor($$source: Partial<PRManageCan> = {}) {
+        if (!("editTitle" in $$source)) {
+            this["editTitle"] = false;
+        }
+        if (!("editDescription" in $$source)) {
+            this["editDescription"] = false;
+        }
+        if (!("reviewers" in $$source)) {
+            this["reviewers"] = false;
+        }
+        if (!("assignees" in $$source)) {
+            this["assignees"] = false;
+        }
+        if (!("labels" in $$source)) {
+            this["labels"] = false;
+        }
+        if (!("close" in $$source)) {
+            this["close"] = false;
+        }
+        if (!("reopen" in $$source)) {
+            this["reopen"] = false;
+        }
+        if (!("convertToDraft" in $$source)) {
+            this["convertToDraft"] = false;
+        }
+        if (!("rerequest" in $$source)) {
+            this["rerequest"] = false;
+        }
+        if (!("dismiss" in $$source)) {
+            this["dismiss"] = false;
+        }
+        if (!("bypass" in $$source)) {
+            this["bypass"] = false;
+        }
+        if (!("reviewerTeams" in $$source)) {
+            this["reviewerTeams"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRManageCan instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRManageCan {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRManageCan($$parsedSource as Partial<PRManageCan>);
+    }
+}
+
+/**
+ * PRPeopleChange removes, then adds, reviewers or assignees, one write
+ * per side. A GitHub team (reviewers only) is a PRPerson with Team.
+ */
+export class PRPeopleChange {
+    "add": PRPerson[];
+    "remove": PRPerson[];
+
+    /** Creates a new PRPeopleChange instance. */
+    constructor($$source: Partial<PRPeopleChange> = {}) {
+        if (!("add" in $$source)) {
+            this["add"] = [];
+        }
+        if (!("remove" in $$source)) {
+            this["remove"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRPeopleChange instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRPeopleChange {
+        const $$createField0_0 = $$createType21;
+        const $$createField1_0 = $$createType21;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("add" in $$parsedSource) {
+            $$parsedSource["add"] = $$createField0_0($$parsedSource["add"]);
+        }
+        if ("remove" in $$parsedSource) {
+            $$parsedSource["remove"] = $$createField1_0($$parsedSource["remove"]);
+        }
+        return new PRPeopleChange($$parsedSource as Partial<PRPeopleChange>);
+    }
+}
+
+/**
+ * PRPerson is a user, or on GitHub a team (Team, Login its
+ * "org/slug"). Both forges address people by Login; ID is GitLab's
+ * numeric user id, which its re-review mutation alone takes.
+ */
+export class PRPerson {
+    "login": string;
+    "name"?: string;
+    "id"?: string;
+    "team"?: boolean;
+
+    /** Creates a new PRPerson instance. */
+    constructor($$source: Partial<PRPerson> = {}) {
+        if (!("login" in $$source)) {
+            this["login"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRPerson instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRPerson {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRPerson($$parsedSource as Partial<PRPerson>);
     }
 }
 
@@ -1231,6 +1661,41 @@ export class PRReference {
     static createFrom($$source: any = {}): PRReference {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new PRReference($$parsedSource as Partial<PRReference>);
+    }
+}
+
+/**
+ * PRReviewer is one reviewer and where their review stands: State is
+ * ReviewerApproved, ReviewerChangesRequested, ReviewerCommented or
+ * ReviewerPending (asked and not reviewed since). Stale is a GitHub
+ * review on a commit older than the head.
+ */
+export class PRReviewer {
+    "login": string;
+    "name"?: string;
+    "id"?: string;
+    "team"?: boolean;
+    "state": string;
+    "stale"?: boolean;
+
+    /** Creates a new PRReviewer instance. */
+    constructor($$source: Partial<PRReviewer> = {}) {
+        if (!("login" in $$source)) {
+            this["login"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRReviewer instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRReviewer {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRReviewer($$parsedSource as Partial<PRReviewer>);
     }
 }
 
@@ -1511,7 +1976,7 @@ export class ReviewComment {
      * Creates a new ReviewComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewComment {
-        const $$createField7_0 = $$createType24;
+        const $$createField7_0 = $$createType36;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replyTo" in $$parsedSource) {
             $$parsedSource["replyTo"] = $$createField7_0($$parsedSource["replyTo"]);
@@ -1610,8 +2075,8 @@ export class ReviewLineComment {
      * Creates a new ReviewLineComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewLineComment {
-        const $$createField5_0 = $$createType26;
-        const $$createField6_0 = $$createType28;
+        const $$createField5_0 = $$createType38;
+        const $$createField6_0 = $$createType40;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("start" in $$parsedSource) {
             $$parsedSource["start"] = $$createField5_0($$parsedSource["start"]);
@@ -1755,7 +2220,7 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField11_0 = $$createType30;
+        const $$createField11_0 = $$createType42;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField11_0($$parsedSource["comments"]);
@@ -1844,23 +2309,35 @@ const $$createType7 = CIJob.createFrom;
 const $$createType8 = $Create.Array($$createType7);
 const $$createType9 = CheckStatus.createFrom;
 const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = AutoMergeRequest.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = MergeBlocker.createFrom;
-const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = ApprovalCount.createFrom;
-const $$createType16 = ReviewVerdict.createFrom;
-const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = CheckSummary.createFrom;
-const $$createType19 = PRDiffRefs.createFrom;
-const $$createType20 = $Create.Nullable($$createType19);
-const $$createType21 = MergeReadiness.createFrom;
-const $$createType22 = MergeOptions.createFrom;
-const $$createType23 = ReviewReplyTo.createFrom;
-const $$createType24 = $Create.Nullable($$createType23);
-const $$createType25 = ReviewLineStart.createFrom;
-const $$createType26 = $Create.Nullable($$createType25);
-const $$createType27 = ReviewThreadReply.createFrom;
+const $$createType11 = ChangeRequest.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = AutoMergeRequest.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = MergeBlocker.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = ApprovalCount.createFrom;
+const $$createType18 = MergeMessage.createFrom;
+const $$createType19 = $Create.Nullable($$createType18);
+const $$createType20 = PRPerson.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = PRLabel.createFrom;
+const $$createType23 = $Create.Array($$createType22);
+const $$createType24 = ReviewVerdict.createFrom;
+const $$createType25 = $Create.Array($$createType24);
+const $$createType26 = CheckSummary.createFrom;
+const $$createType27 = PRDiffRefs.createFrom;
 const $$createType28 = $Create.Nullable($$createType27);
-const $$createType29 = ReviewComment.createFrom;
-const $$createType30 = $Create.Array($$createType29);
+const $$createType29 = MergeReadiness.createFrom;
+const $$createType30 = MergeOptions.createFrom;
+const $$createType31 = PRManage.createFrom;
+const $$createType32 = PRReviewer.createFrom;
+const $$createType33 = $Create.Array($$createType32);
+const $$createType34 = PRManageCan.createFrom;
+const $$createType35 = ReviewReplyTo.createFrom;
+const $$createType36 = $Create.Nullable($$createType35);
+const $$createType37 = ReviewLineStart.createFrom;
+const $$createType38 = $Create.Nullable($$createType37);
+const $$createType39 = ReviewThreadReply.createFrom;
+const $$createType40 = $Create.Nullable($$createType39);
+const $$createType41 = ReviewComment.createFrom;
+const $$createType42 = $Create.Array($$createType41);

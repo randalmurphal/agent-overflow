@@ -352,6 +352,19 @@ func NewCore(opts ...CoreOption) *Core {
 	return core
 }
 
+// ResetForgeCaches forgets everything the forge adapters remember of a
+// host, project or repository: merge settings, viewers, schema answers,
+// route memory, CI capabilities and the state events backoff. For a
+// harness reset, whose next fixture can contradict any of it; its
+// callers stop the reads that use them first.
+func (c *Core) ResetForgeCaches() {
+	for _, forge := range c.forges {
+		if r, ok := forge.(interface{ resetCaches() }); ok {
+			r.resetCaches()
+		}
+	}
+}
+
 // forgeFor returns the Forge for cwd's detected origin remote. Returns
 // nullForge when the origin is missing or the host is not a supported
 // forge — every nullForge operation returns ErrUnsupportedForge so

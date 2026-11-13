@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // RepoReference identifies a repository on a forge host: a PRReference
@@ -36,6 +37,13 @@ func (r RepoReference) Key() string {
 		return fmt.Sprintf("%s:%s", r.Forge, r.Project())
 	}
 	return fmt.Sprintf("%s@%s:%s", r.Forge, r.Host, r.Project())
+}
+
+// Identity is the repository's identity as the forge resolves it: Key with
+// the host, owner or namespace path and name lowercased (PRReference.Identity).
+func (r RepoReference) Identity() string {
+	r.Host, r.Namespace, r.Repo = strings.ToLower(r.Host), strings.ToLower(r.Namespace), strings.ToLower(r.Repo)
+	return r.Key()
 }
 
 // Validate reports whether r names a repository a forge operation can

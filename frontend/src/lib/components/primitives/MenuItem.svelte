@@ -111,9 +111,12 @@
 
   function handleKeydown(e: KeyboardEvent): void {
     // Enter / Space activate the item. Arrow nav is handled by the
-    // parent Menu — this handler only claims the activation keys.
+    // parent Menu — this handler only claims the activation keys. A
+    // held key's repeat never activates: the press that opened the menu
+    // and moved focus here keeps repeating into the item.
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
+      if (e.repeat) return;
       activate();
     }
   }

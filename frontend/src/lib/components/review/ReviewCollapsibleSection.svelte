@@ -20,9 +20,12 @@
     trailing?: Snippet;
     children: Snippet;
     testid?: string;
+    /** The header's toggle, for a control that must hand focus back when
+     * its own button leaves. */
+    toggle?: HTMLButtonElement;
   }
 
-  let { label, open, onToggle, badge, trailing, children, testid }: Props = $props();
+  let { label, open, onToggle, badge, trailing, children, testid, toggle = $bindable() }: Props = $props();
 </script>
 
 <section
@@ -34,8 +37,9 @@
        worth of width, so on a narrow pane the trailing controls (buttons,
        the stepper) drop to their own line under the label and pill, and
        the label never truncates. -->
-  <div class="flex min-h-9 flex-wrap items-center gap-x-2 gap-y-1 pr-2">
+  <div class="group/section flex min-h-9 flex-wrap items-center gap-x-2 gap-y-1 pr-2">
     <button
+      bind:this={toggle}
       type="button"
       class="flex h-9 min-w-0 flex-1 basis-[14rem] items-center gap-2 px-2.5 text-left text-xs font-semibold text-fg compact:select-none"
       aria-expanded={open}

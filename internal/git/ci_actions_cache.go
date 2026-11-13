@@ -97,6 +97,13 @@ func (c *ciCapabilityCache[V]) drop(prefix string) {
 	}
 }
 
+// clear forgets every entry.
+func (c *ciCapabilityCache[V]) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = nil
+}
+
 func (c *ciCapabilityCache[V]) store(key string, entry ciCapabilityEntry[V]) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

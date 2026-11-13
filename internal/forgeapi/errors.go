@@ -218,11 +218,70 @@ type GraphQLProblem struct {
 }
 
 // GraphQLError is a GraphQL response whose envelope carries errors. Data
-// is the envelope's data beside them, possibly partial or null; the
-// caller decides what partial data it accepts.
+// is the envelope's data beside them, possibly partial or null, and nil
+// when the envelope had no data entry; the caller decides what partial
+// data it accepts. Undecoded is a Data that did not decode into the
+// caller's value (Client.GraphQL joins the decode error beside it).
 type GraphQLError struct {
-	Problems []GraphQLProblem
-	Data     json.RawMessage
+	Problems  []GraphQLProblem
+	Data      json.RawMessage
+	Undecoded bool
+}
+
+// gitlabNoPermission is GitLab's answer to a mutation the viewer may not
+// run or on a resource it cannot see, which GitLab raises before acting.
+const gitlabNoPermission = "The resource that you are attempting to access does not exist or you don't have permission to perform this action"
+
+// githubRefusalTypes are the GitHub error types a mutation answers when it
+// refused before acting.
+var githubRefusalTypes = map[string]bool{"FORBIDDEN": true, "NOT_FOUND": true, "UNPROCESSABLE": true, "INSUFFICIENT_SCOPES": true, githubRateLimited: true}
+
+// githubRateLimited is the GitHub error type of a request refused for its
+// rate limit.
+const githubRateLimited = "RATE_LIMITED"
+
+// Refused reports whether the answer proves its operation changed
+// nothing: its data decoded, and either the envelope had no data entry
+// (the GraphQL spec's errors raised before execution: a document or its
+// variables failed validation), or every field of its data is null and
+// every error is a known refusal (a GitHub refusal type, GitLab's
+// permission answer). Anything else, data beside the errors or an error
+// of another kind (an internal error, a timeout), cannot say.
+func (e *GraphQLError) Refused() bool {
+	if e.Undecoded || len(e.Problems) == 0 {
+		return false
+	}
+	if len(e.Data) == 0 {
+		return true
+	}
+	if e.ProducedData() {
+		return false
+	}
+	for _, p := range e.Problems {
+		if !githubRefusalTypes[p.Type] && !strings.HasPrefix(p.Message, gitlabNoPermission) {
+			return false
+		}
+	}
+	return true
+}
+
+// ProducedData reports whether the answer's data holds anything: a data
+// entry that is not null and has a field that is not null, or that is
+// not an object at all. An operation that produced data ran.
+func (e *GraphQLError) ProducedData() bool {
+	if len(e.Data) == 0 || string(e.Data) == "null" {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(e.Data, &fields); err != nil {
+		return true
+	}
+	for _, value := range fields {
+		if string(value) != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *GraphQLError) Error() string {
@@ -244,6 +303,13 @@ type RateLimitedError struct {
 	Pool    string
 	Until   time.Time
 	Reserve bool
+	// Status is the forge's HTTP status for a refusal it answered; zero
+	// for the Service's own refusal before sending.
+	Status int
+	// GraphQL is the answer's envelope when the refusal was a GraphQL
+	// answer with errors, so a write's outcome can read whether its
+	// operation produced data (WriteNotApplied).
+	GraphQL *GraphQLError
 }
 
 // RateLimitRelease answers whether the refusal kept the reserve and when
@@ -312,7 +378,13 @@ type answer struct {
 func classify(a answer) classified {
 	rate := parseRateLimit(a.header, a.pool)
 	if until, limited := rateLimitedUntil(a, rate); limited {
-		return classified{outcome: outcomeRateLimited, err: &RateLimitedError{Host: a.host, Pool: a.pool, Until: until}}
+		limitedErr := &RateLimitedError{Host: a.host, Pool: a.pool, Until: until, Status: a.status}
+		if a.graphQL && a.status >= 200 && a.status <= 299 {
+			if env, ok := parseGraphQLEnvelope(a.body); ok && len(env.Errors) > 0 {
+				limitedErr.GraphQL = &GraphQLError{Problems: env.Errors, Data: env.Data}
+			}
+		}
+		return classified{outcome: outcomeRateLimited, err: limitedErr}
 	}
 	statusErr := func() *StatusError {
 		body := a.body
@@ -357,7 +429,7 @@ func rateLimitedUntil(a answer, rate *RateLimit) (time.Time, bool) {
 		if env, ok := parseGraphQLEnvelope(a.body); ok && len(env.Errors) > 0 {
 			limited = remainingZero(a.header)
 			for _, p := range env.Errors {
-				if p.Type == "RATE_LIMITED" {
+				if p.Type == githubRateLimited {
 					limited = true
 				}
 			}

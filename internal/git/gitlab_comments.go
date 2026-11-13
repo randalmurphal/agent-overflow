@@ -93,7 +93,7 @@ func (f *gitlabForge) EditComment(ctx context.Context, ref PRReference, target C
 		ID int64 `json:"id"`
 	}
 	if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPut, Path: path, Body: map[string]string{"body": body}}, &note); err != nil {
-		return err
+		return writeOutcome(err)
 	}
 	if strconv.FormatInt(note.ID, 10) != target.CommentID {
 		return fmt.Errorf("GitLab answered note %d for an edit of note %s", note.ID, target.CommentID)
@@ -111,5 +111,5 @@ func (f *gitlabForge) DeleteComment(ctx context.Context, ref PRReference, target
 		return err
 	}
 	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodDelete, Path: path}, nil)
-	return err
+	return writeOutcome(err)
 }

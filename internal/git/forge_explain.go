@@ -48,8 +48,10 @@ const (
 	ForgeErrorStaleHead   = "stale_head"
 	ForgeErrorRefused     = "refused"
 	ForgeErrorForge       = "forge"
-	// ForgeErrorUnconfirmed is a comment posted now whose answer was lost:
-	// it may be on the PR.
+	// ForgeErrorUnconfirmed is a write whose answer did not say whether
+	// the forge applied it (UnconfirmedWriteError, a PartialWriteError
+	// whose next step did not confirm): it may have, so it is not sent
+	// again.
 	ForgeErrorUnconfirmed = "unconfirmed"
 )
 
@@ -67,9 +69,23 @@ const (
 	ActionReview    ForgeAction = "review"
 	ActionReply     ForgeAction = "reply on"
 	ActionResolve   ForgeAction = "resolve a thread on"
-	ActionComment   ForgeAction = "comment on"
-	ActionEdit      ForgeAction = "edit a comment on"
-	ActionDelete    ForgeAction = "delete a comment on"
+	// The comment actions (forge_comments.go).
+	ActionComment ForgeAction = "comment on"
+	ActionEdit    ForgeAction = "edit a comment on"
+	ActionDelete  ForgeAction = "delete a comment on"
+	// The management actions (forge_manage.go).
+	ActionEditPR    ForgeAction = "edit"
+	ActionReviewers ForgeAction = "change the reviewers of"
+	ActionAssignees ForgeAction = "change the assignees of"
+	ActionLabels    ForgeAction = "change the labels of"
+	ActionClose     ForgeAction = "close"
+	ActionReopen    ForgeAction = "reopen"
+	ActionToDraft   ForgeAction = "convert to draft"
+	ActionRerequest ForgeAction = "re-request a review on"
+	ActionDismiss   ForgeAction = "dismiss a review on"
+	ActionBypass    ForgeAction = "bypass the requested changes on"
+	ActionSearch    ForgeAction = "search"
+	ActionMergeText ForgeAction = "read the default commit message of"
 )
 
 // ExplainForgeError turns err, from a forge call about ref, into a
@@ -93,8 +109,15 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	if err == nil {
 		return nil
 	}
+	// An explained error is final, unless it is the cause inside a write
+	// whose outcome the explanation has to word (unconfirmed, partial).
+	outcome := func(err error) bool {
+		_, unconfirmed := errors.AsType[*UnconfirmedWriteError](err)
+		_, partial := errors.AsType[*PartialWriteError](err)
+		return unconfirmed || partial
+	}
 	var explained *ForgeActionError
-	if errors.As(err, &explained) {
+	if errors.As(err, &explained) && (!outcome(err) || outcome(explained)) {
 		return err
 	}
 	labels := forgeLabels(ref.Forge)
@@ -107,6 +130,20 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	wrap := func(kind, message string) error {
 		return &ForgeActionError{Kind: kind, Message: message, Err: err}
 	}
+	if partial, ok := errors.AsType[*PartialWriteError](err); ok {
+		if partial.Unconfirmed() {
+			return wrap(ForgeErrorUnconfirmed, fmt.Sprintf("%s of %s; %s may have applied. The pane shows what %s did.", capitalize(partial.Done), name, partial.Next, labels.name))
+		}
+		var cause *ForgeActionError
+		errors.As(explainForgeError(ref, name, action, partial.Err), &cause)
+		return wrap(cause.Kind, fmt.Sprintf("%s of %s; %s was refused: %s", capitalize(partial.Done), name, partial.Next, cause.Message))
+	}
+	if _, ok := errors.AsType[*UnconfirmedWriteError](err); ok {
+		if action == ActionComment || action == ActionReply {
+			return wrap(ForgeErrorUnconfirmed, fmt.Sprintf("%s may have posted this comment. Check the thread before sending it again.", labels.name))
+		}
+		return wrap(ForgeErrorUnconfirmed, fmt.Sprintf("%s did not confirm the request to %s %s, so it may have been applied. The pane shows what %s did.", labels.name, action, name, labels.name))
+	}
 	var setup *forgeapi.SetupError
 	var limited *forgeapi.RateLimitedError
 	var transient *forgeapi.TransientError
@@ -118,10 +155,7 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	var moved *HeadMovedError
 	var gone *ReplyThreadGoneError
 	var elsewhere *CommentNotOnPRError
-	var unconfirmed *UnconfirmedCommentError
 	switch {
-	case errors.As(err, &unconfirmed):
-		return wrap(ForgeErrorUnconfirmed, fmt.Sprintf("%s may have posted this comment. Check the thread before sending it again.", labels.name))
 	case errors.As(err, &elsewhere):
 		return wrap(ForgeErrorNotFound, fmt.Sprintf("That comment is not on %s, so it was not changed.", name))
 	case errors.As(err, &moved):

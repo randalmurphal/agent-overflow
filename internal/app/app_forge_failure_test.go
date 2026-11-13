@@ -352,9 +352,10 @@ func isolatedForgeCore(t *testing.T, app *App, handler http.Handler) {
 func TestPRUpdateGitLabNotModifiedTickIsQuiet(t *testing.T) {
 	t.Parallel()
 	bodies := map[string]string{
-		"/merge_requests/12":             `{"iid":12,"title":"Fix","state":"opened","source_branch":"feat","target_branch":"main","sha":"head-a","author":{"username":"dev"}}`,
-		"/merge_requests/12/approvals":   `{"approved_by":[]}`,
-		"/merge_requests/12/discussions": `[]`,
+		"/merge_requests/12":                       `{"iid":12,"title":"Fix","state":"opened","source_branch":"feat","target_branch":"main","sha":"head-a","author":{"username":"dev"}}`,
+		"/merge_requests/12/approvals":             `{"approved_by":[]}`,
+		"/merge_requests/12/discussions":           `[]`,
+		"/merge_requests/12/resource_state_events": `[]`,
 	}
 	var mu sync.Mutex
 	type seen struct{ path, inm string }
@@ -373,6 +374,14 @@ func TestPRUpdateGitLabNotModifiedTickIsQuiet(t *testing.T) {
 			userReads.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"username":"dev"}`))
+			return
+		}
+		// The management read is GraphQL, which GitLab answers without
+		// an ETag; its unchanged answer adds no update.
+		if strings.HasSuffix(r.URL.Path, "/api/graphql") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"project":{"mergeRequest":{"userPermissions":{"updateMergeRequest":true,"adminMergeRequest":true},` +
+				`"reviewers":{"nodes":[]},"assignees":{"nodes":[]},"labels":{"nodes":[]}}},"rereview":null,"updateInput":{"inputFields":[]}}}`))
 			return
 		}
 		i := strings.Index(r.URL.Path, "/merge_requests/")

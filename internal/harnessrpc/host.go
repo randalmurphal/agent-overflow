@@ -60,6 +60,9 @@ type Host interface {
 	RecoverOrphanedBackgroundTasks() error
 	ClearUIState() error
 	ResetSessionImporter()
+	// ResetForgeCaches forgets what the forge adapters remember of each
+	// host and project, which the next fixture can contradict.
+	ResetForgeCaches()
 	// PauseMergedPRCleanup stops the merged pull request cleanup, joins it
 	// and drops its in-memory state; resume starts it again from nothing.
 	PauseMergedPRCleanup() (resume func())

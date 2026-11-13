@@ -69,6 +69,10 @@ var githubAPI = []apiRoute{
 	{name: "gh api issue comments", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/issues/(\d+)/comments$`), flags: []string{"hostname"}, run: ghIssueComment},
 	{name: "gh api delete branch", method: "DELETE", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/git/refs/heads/(.+)$`), flags: []string{"hostname"}, run: ghDeleteBranch},
 	{name: "gh api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"hostname"}, run: forgeUser},
+	{name: "gh api request reviewers", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/requested_reviewers$`), flags: []string{"hostname"}, run: ghRequestedReviewers},
+	{name: "gh api remove reviewers", method: "DELETE", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/requested_reviewers$`), flags: []string{"hostname"}, run: ghRequestedReviewers},
+	{name: "gh api add assignees", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/issues/(\d+)/assignees$`), flags: []string{"hostname"}, run: ghAssignees},
+	{name: "gh api remove assignees", method: "DELETE", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/issues/(\d+)/assignees$`), flags: []string{"hostname"}, run: ghAssignees},
 }
 
 var gitlabAPI = []apiRoute{
@@ -106,6 +110,8 @@ var gitlabAPI = []apiRoute{
 	{name: "glab api update merge request", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname"}, run: glabUpdateMR},
 	{name: "glab api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"hostname"}, run: forgeUser},
 	{name: "glab api user events", method: "GET", pattern: regexp.MustCompile(`^users/(\d+)/events(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabUserEvents},
+	{name: "glab api project users", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/users(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabProjectUsers},
+	{name: "glab api state events", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/resource_state_events(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabStateEvents},
 }
 
 // api dispatches a REST request, mapped by httpCall onto its endpoint,

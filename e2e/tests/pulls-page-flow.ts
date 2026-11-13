@@ -540,6 +540,19 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
   });
 }
 
+// The reads of one PR: its detail tick (GitHub), and GitLab's merge
+// request, approvals, discussions, management read (with the
+// mergeability checks on a host that has the override) and state events.
+const PER_PR_ROUTES = [
+  'gh graphql PRTick',
+  'glab api merge request',
+  'glab api approvals',
+  'glab api discussions',
+  'glab graphql PRManage',
+  'glab graphql PRManageChecks',
+  'glab api state events',
+];
+
 /**
  * The page's forge reads so far, as sorted `<route> <target>` strings: the
  * list reads by repository, the other requests of a project read by
@@ -561,8 +574,8 @@ async function pullRequestReads(harness: HarnessApp): Promise<{ lists: string[];
       details.add(`${call.route} ${String(call.variables?.fullPath)}`);
     } else if (call.route === 'glab api user events') {
       details.add(call.route);
-    } else if (['gh graphql PRTick', 'glab api merge request', 'glab api approvals', 'glab api discussions'].includes(call.route)) {
-      perPR.add(`${call.route} ${String(call.variables?.number ?? call.path.replace(/^projects\/[^/]+\/merge_requests\/(\d+).*$/, '$1'))}`);
+    } else if (PER_PR_ROUTES.includes(call.route)) {
+      perPR.add(`${call.route} ${String(call.variables?.number ?? call.variables?.iid ?? call.path.replace(/^projects\/[^/]+\/merge_requests\/(\d+).*$/, '$1'))}`);
     }
   }
   return { lists: [...lists].sort(), details: [...details].sort(), perPR: [...perPR].sort() };

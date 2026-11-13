@@ -19,6 +19,12 @@ export async function longPress(page: Page, target: Locator, opens: Locator): Pr
   if (!box) throw new Error('long-press target is not visible');
   const x = box.x + box.width / 2;
   const y = box.y + box.height / 2;
+  // The hit test a tap waits for: nothing (a toast, a strip) is over the
+  // point the finger lands on.
+  await expect.poll(() => target.evaluate((el, point) => {
+    const hit = document.elementFromPoint(point.x, point.y);
+    return hit !== null && (el === hit || el.contains(hit));
+  }, { x, y }), { message: 'the long-press point is covered' }).toBe(true);
   const cdp = await page.context().newCDPSession(page);
   try {
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });

@@ -309,7 +309,7 @@ func TestSubmitPRReviewOverlappingSubmitsPostOnce(t *testing.T) {
 		// The second is waiting on the first, or (without the lock) at the
 		// forge already.
 		deadline := time.Now().Add(10 * time.Second)
-		for c.app.reviewSubmitLocks().Refs(c.pr.Key()) < 2 && c.published() == 0 && time.Now().Before(deadline) {
+		for c.app.reviewSubmitLocks().Refs(c.pr.Identity()) < 2 && c.published() == 0 && time.Now().Before(deadline) {
 			time.Sleep(5 * time.Millisecond)
 		}
 		release()
@@ -357,7 +357,7 @@ func TestSubmitPRReviewGitLabSubmitsOfOneMergeRequestDoNotInterleave(t *testing.
 		second <- err
 	}()
 	deadline := time.Now().Add(10 * time.Second)
-	for c.app.reviewSubmitLocks().Refs(c.pr.Key()) < 2 && created() <= 2 && time.Now().Before(deadline) {
+	for c.app.reviewSubmitLocks().Refs(c.pr.Identity()) < 2 && created() <= 2 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	// The first's summary and comment; the second's wait for its publish.
@@ -374,6 +374,53 @@ func TestSubmitPRReviewGitLabSubmitsOfOneMergeRequestDoNotInterleave(t *testing.
 	if n := c.published(); n != 2 {
 		t.Fatalf("published %d reviews, want 2", n)
 	}
+}
+
+// The PR's lock is its identity, not its spelling: a submit naming the
+// merge request with its path cased otherwise waits for the first's
+// publish too, as GitLab resolves both to one merge request.
+func TestSubmitPRReviewGitLabSpellingsOfOneMergeRequestDoNotInterleave(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "gitlab")
+	draft := c.draft(t, true, 3, "From the thread.")
+	shouted := c.pr
+	shouted.Namespace, shouted.Repo = strings.ToUpper(shouted.Namespace), strings.ToUpper(shouted.Repo)
+	created := func() int {
+		n := 0
+		for _, inv := range c.engine.Invocations(0).Invocations {
+			if inv.Route == "glab api create draft note" {
+				n++
+			}
+		}
+		return n
+	}
+	entered, release := c.gate.hold()
+	defer release()
+	first := make(chan error, 1)
+	go func() {
+		_, err := c.submit(c.request(true, draft))
+		first <- err
+	}()
+	<-entered
+	line := 4
+	second := make(chan error, 1)
+	go func() {
+		_, err := c.app.SubmitPRReview(context.Background(), shouted, SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment,
+			Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "Shouted.", Line: &line, Side: "right"}}})
+		second <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for c.app.reviewSubmitLocks().Refs(c.pr.Identity()) < 2 && created() <= 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := created(); n != 2 {
+		t.Fatalf("%d draft notes created while the first published, want 2", n)
+	}
+	release()
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	<-second
 }
 
 // A submit without draft ids (an older client) holds the PR's lock too:
@@ -415,10 +462,10 @@ func TestSubmitPRReviewGitLabSubmitsOfBothShapesDoNotInterleave(t *testing.T) {
 				secondDone <- err
 			}()
 			deadline := time.Now().Add(10 * time.Second)
-			for c.app.reviewSubmitLocks().Refs(c.pr.Key()) < 2 && created() <= 2 && time.Now().Before(deadline) {
+			for c.app.reviewSubmitLocks().Refs(c.pr.Identity()) < 2 && created() <= 2 && time.Now().Before(deadline) {
 				time.Sleep(5 * time.Millisecond)
 			}
-			if n := c.app.reviewSubmitLocks().Refs(c.pr.Key()); n != 2 {
+			if n := c.app.reviewSubmitLocks().Refs(c.pr.Identity()); n != 2 {
 				t.Fatalf("%d submits on the lock while the first published, want 2 (the second waiting)", n)
 			}
 			if n := created(); n != 2 {

@@ -97,6 +97,9 @@ type Forge interface {
 	// The CI actions: retry, cancel, run a manual job, artifacts
 	// (ci_actions.go).
 	ForgeCIActor
+	// The management actions: title, description, reviewers, assignees,
+	// labels, state, reviews (forge_manage.go).
+	ForgeManager
 }
 
 // PRReadParts names the parts of a PR one ReadPR decodes. Events are the
@@ -183,6 +186,9 @@ type PRDetail struct {
 	MergedAt  string         `json:"mergedAt,omitempty"`
 	MergedBy  string         `json:"mergedBy,omitempty"`
 	ClosedAt  string         `json:"closedAt,omitempty"`
+	// Manage is the Details section and the management capabilities
+	// (forge_manage.go).
+	Manage PRManage `json:"manage"`
 }
 
 type PRDiffRefs struct {
@@ -456,6 +462,16 @@ func (r PRReference) Key() string {
 		return fmt.Sprintf("%s:%s:%d", r.Forge, r.Project(), r.Number)
 	}
 	return fmt.Sprintf("%s@%s:%s:%d", r.Forge, r.Host, r.Project(), r.Number)
+}
+
+// Identity is the PR's identity as the forge resolves it: Key with the
+// host, owner or namespace path and repository lowercased, since GitHub
+// and GitLab both resolve them case-insensitively. Two references with
+// one Identity name the same PR however the user spelled it; a lock or
+// other guard of a write keys on it, while entity keys stay Key.
+func (r PRReference) Identity() string {
+	r.Host, r.Namespace, r.Repo = strings.ToLower(r.Host), strings.ToLower(r.Namespace), strings.ToLower(r.Repo)
+	return r.Key()
 }
 
 // Validate reports whether r names a PR a forge operation can address: a
