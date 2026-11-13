@@ -26,7 +26,12 @@ func (c *reviewSubmitCase) seedTheirThread(t *testing.T, gone bool) {
 		pull.Threads = []forgefake.Thread{{ID: map[string]string{"github": "PRRT_theirs", "gitlab": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}[c.pr.Forge], Path: "main.go", Line: &line, Side: "right",
 			Comments: []forgefake.Comment{{ID: 501, Author: "octo", Body: "theirs"}}}}
 	}
-	if _, err := c.engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: c.pr.Forge, Project: "acme/widgets", Pulls: []forgefake.Pull{pull}}}}); err != nil {
+	repo := forgefake.Repo{Forge: c.pr.Forge, Project: "acme/widgets", Pulls: []forgefake.Pull{pull}}
+	if c.pr.Forge == "github" {
+		// Below write access, which may edit and delete others' comments.
+		repo.Merge = &forgefake.RepoMerge{Permission: "TRIAGE"}
+	}
+	if _, err := c.engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{repo}}); err != nil {
 		t.Fatal(err)
 	}
 }

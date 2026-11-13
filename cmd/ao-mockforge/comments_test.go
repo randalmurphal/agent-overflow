@@ -20,8 +20,12 @@ const commentDiff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +
 
 // commentFixture adds to a merge fixture's first pull commentDiff, a
 // review thread and a conversation comment of another author's, which the
-// viewer may neither edit nor delete.
+// viewer may neither edit nor delete: on GitHub, where write access may,
+// the viewer is TRIAGE.
 func commentFixture(fixture forgefake.Fixture) forgefake.Fixture {
+	if fixture.Repos[0].Forge == "github" {
+		fixture.Repos[0].Merge.Permission = "TRIAGE"
+	}
 	p := &fixture.Repos[0].Pulls[0]
 	p.Diff = commentDiff
 	p.Threads = []forgefake.Thread{{Path: "a.go", Line: intPtr(4), Side: "right", Comments: []forgefake.Comment{{Author: "octo", Body: "theirs"}}}}
@@ -176,11 +180,11 @@ func TestCommentActionsThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
-// A maintainer may delete another author's comment on both forges; on
-// GitLab a maintainer may edit it too ("Edit comments posted by other
-// users" is Maintainer and Owner), and the read says so for every note
-// from the viewer's cached project role, while GitHub answers its own
-// viewerCanUpdate.
+// A maintainer may edit and delete another author's comment on both
+// forges (GitHub: write access and above; GitLab: "Edit comments posted
+// by other users" is Maintainer and Owner), and the read says so: GitLab
+// for every note from the viewer's cached project role, GitHub in its own
+// viewerCanUpdate and viewerCanDelete.
 func TestMaintainersDeleteOthersCommentsThroughTheAppsForgeCode(t *testing.T) {
 	for _, tc := range []struct {
 		fixture forgefake.Fixture
@@ -188,7 +192,7 @@ func TestMaintainersDeleteOthersCommentsThroughTheAppsForgeCode(t *testing.T) {
 		ref     gitops.PRReference
 		mayEdit bool
 	}{
-		{githubMergeFixture("success"), "MAINTAIN", gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}, false},
+		{githubMergeFixture("success"), "MAINTAIN", gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}, true},
 		{gitlabMergeFixture("success"), "maintainer", gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}, true},
 	} {
 		t.Run(tc.ref.Forge, func(t *testing.T) {
