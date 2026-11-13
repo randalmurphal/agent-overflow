@@ -526,6 +526,104 @@ export class CheckSummary {
 }
 
 /**
+ * CommentReaction is one reaction group on a comment: its Name (the
+ * shared vocabulary, or a GitLab award emoji's own name), how many
+ * reacted, whether the viewer did, and who, when the read already has
+ * them (GitLab; GitHub's would cost a connection per comment, so it
+ * leaves Users empty).
+ */
+export class CommentReaction {
+    "name": string;
+    "count": number;
+    "viewerReacted": boolean;
+    "users"?: string[];
+
+    /** Creates a new CommentReaction instance. */
+    constructor($$source: Partial<CommentReaction> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("count" in $$source)) {
+            this["count"] = 0;
+        }
+        if (!("viewerReacted" in $$source)) {
+            this["viewerReacted"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommentReaction instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommentReaction {
+        const $$createField3_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("users" in $$parsedSource) {
+            $$parsedSource["users"] = $$createField3_0($$parsedSource["users"]);
+        }
+        return new CommentReaction($$parsedSource as Partial<CommentReaction>);
+    }
+}
+
+/**
+ * CommentSuggestion is one suggestion block of a comment, in body order
+ * (Index). StartLine and EndLine are the new-side lines it replaces,
+ * zero when the anchor names none on the new side (an old-side line, a
+ * file, an outdated GitHub thread). From is the replaced text when the
+ * read proves it (FromKnown: GitLab's from_content), else absent and
+ * the client shows the additions alone; To is the replacement. ID is
+ * GitLab's suggestion id, which the apply names; GitHub's apply names
+ * Index. Appliable is the forge's answer (GitLab's appliable, with the
+ * developer role its suggestions API requires) or the adapter's own from
+ * the read (GitHub: the PR is open, the thread current, unresolved and
+ * on the new side, and viewerCanApplySuggestion). Applied is GitLab's;
+ * GitHub does not say.
+ */
+export class CommentSuggestion {
+    "index": number;
+    "id"?: string;
+    "startLine"?: number;
+    "endLine"?: number;
+    "from"?: string[];
+    "fromKnown"?: boolean;
+    "to": string[];
+    "appliable": boolean;
+    "applied"?: boolean;
+
+    /** Creates a new CommentSuggestion instance. */
+    constructor($$source: Partial<CommentSuggestion> = {}) {
+        if (!("index" in $$source)) {
+            this["index"] = 0;
+        }
+        if (!("to" in $$source)) {
+            this["to"] = [];
+        }
+        if (!("appliable" in $$source)) {
+            this["appliable"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommentSuggestion instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommentSuggestion {
+        const $$createField4_0 = $$createType0;
+        const $$createField6_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("from" in $$parsedSource) {
+            $$parsedSource["from"] = $$createField4_0($$parsedSource["from"]);
+        }
+        if ("to" in $$parsedSource) {
+            $$parsedSource["to"] = $$createField6_0($$parsedSource["to"]);
+        }
+        return new CommentSuggestion($$parsedSource as Partial<CommentSuggestion>);
+    }
+}
+
+/**
  * CommentTarget names one sent comment: ThreadID is its thread's
  * ReviewThread.ID and CommentID its ReviewComment.ID. A GitHub
  * conversation comment's thread ID is its own ID (ReviewThread).
@@ -1929,8 +2027,10 @@ export class RepoReference {
  * EditedAt is when the forge says the body was last edited (GitHub's
  * lastEditedAt), empty when it was not or the forge does not say (GitLab's
  * REST notes do not: their updated_at also moves on a resolve). URL is the
- * comment on the forge's web UI when the read carries it: GitHub's url,
- * GitLab's merge request page at the note's anchor.
+ * comment on the forge's web UI, which the client copies as the comment's
+ * link: GitHub's url, GitLab's merge request page at #note_<id>.
+ * Suggestions are the comment's suggestion blocks and Reactions its
+ * reaction groups with a count above zero (forge_suggestions.go).
  */
 export class ReviewComment {
     "id": string;
@@ -1944,6 +2044,8 @@ export class ReviewComment {
     "viewerCanEdit": boolean;
     "viewerCanDelete": boolean;
     "url"?: string;
+    "suggestions"?: CommentSuggestion[];
+    "reactions"?: CommentReaction[];
 
     /** Creates a new ReviewComment instance. */
     constructor($$source: Partial<ReviewComment> = {}) {
@@ -1977,9 +2079,17 @@ export class ReviewComment {
      */
     static createFrom($$source: any = {}): ReviewComment {
         const $$createField7_0 = $$createType36;
+        const $$createField11_0 = $$createType38;
+        const $$createField12_0 = $$createType40;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replyTo" in $$parsedSource) {
             $$parsedSource["replyTo"] = $$createField7_0($$parsedSource["replyTo"]);
+        }
+        if ("suggestions" in $$parsedSource) {
+            $$parsedSource["suggestions"] = $$createField11_0($$parsedSource["suggestions"]);
+        }
+        if ("reactions" in $$parsedSource) {
+            $$parsedSource["reactions"] = $$createField12_0($$parsedSource["reactions"]);
         }
         return new ReviewComment($$parsedSource as Partial<ReviewComment>);
     }
@@ -2075,8 +2185,8 @@ export class ReviewLineComment {
      * Creates a new ReviewLineComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewLineComment {
-        const $$createField5_0 = $$createType38;
-        const $$createField6_0 = $$createType40;
+        const $$createField5_0 = $$createType42;
+        const $$createField6_0 = $$createType44;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("start" in $$parsedSource) {
             $$parsedSource["start"] = $$createField5_0($$parsedSource["start"]);
@@ -2220,7 +2330,7 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField11_0 = $$createType42;
+        const $$createField11_0 = $$createType46;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField11_0($$parsedSource["comments"]);
@@ -2297,6 +2407,47 @@ export class ReviewVerdict {
     }
 }
 
+/**
+ * SuggestionApply names one suggestion to apply: the comment it is in
+ * (Target), its Index in that comment's suggestions, GitLab's suggestion
+ * ID, and HeadSHA, the head the caller's pane loaded. A head that moved
+ * is refused (*HeadMovedError) before anything is written; GitHub's
+ * commit also names it as its expectedHeadOid.
+ */
+export class SuggestionApply {
+    "target": CommentTarget;
+    "index": number;
+    "suggestionId"?: string;
+    "headSha": string;
+
+    /** Creates a new SuggestionApply instance. */
+    constructor($$source: Partial<SuggestionApply> = {}) {
+        if (!("target" in $$source)) {
+            this["target"] = (new CommentTarget());
+        }
+        if (!("index" in $$source)) {
+            this["index"] = 0;
+        }
+        if (!("headSha" in $$source)) {
+            this["headSha"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SuggestionApply instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SuggestionApply {
+        const $$createField0_0 = $$createType47;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("target" in $$parsedSource) {
+            $$parsedSource["target"] = $$createField0_0($$parsedSource["target"]);
+        }
+        return new SuggestionApply($$parsedSource as Partial<SuggestionApply>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
 const $$createType1 = CIStep.createFrom;
@@ -2335,9 +2486,14 @@ const $$createType33 = $Create.Array($$createType32);
 const $$createType34 = PRManageCan.createFrom;
 const $$createType35 = ReviewReplyTo.createFrom;
 const $$createType36 = $Create.Nullable($$createType35);
-const $$createType37 = ReviewLineStart.createFrom;
-const $$createType38 = $Create.Nullable($$createType37);
-const $$createType39 = ReviewThreadReply.createFrom;
-const $$createType40 = $Create.Nullable($$createType39);
-const $$createType41 = ReviewComment.createFrom;
-const $$createType42 = $Create.Array($$createType41);
+const $$createType37 = CommentSuggestion.createFrom;
+const $$createType38 = $Create.Array($$createType37);
+const $$createType39 = CommentReaction.createFrom;
+const $$createType40 = $Create.Array($$createType39);
+const $$createType41 = ReviewLineStart.createFrom;
+const $$createType42 = $Create.Nullable($$createType41);
+const $$createType43 = ReviewThreadReply.createFrom;
+const $$createType44 = $Create.Nullable($$createType43);
+const $$createType45 = ReviewComment.createFrom;
+const $$createType46 = $Create.Array($$createType45);
+const $$createType47 = CommentTarget.createFrom;

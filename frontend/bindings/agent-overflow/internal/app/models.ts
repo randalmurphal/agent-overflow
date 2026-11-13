@@ -4597,6 +4597,12 @@ export class PRUpdateSubscriptionResult {
     "detail": git$0.PRDetail;
     "threads": git$0.ReviewThread[];
     "events": git$0.ReviewEvent[];
+
+    /**
+     * ReactionsUnavailable is the sentence saying the threads carry no
+     * reactions because their read failed (gitops.PRRead).
+     */
+    "reactionsUnavailable"?: string;
     "headSHA": string;
     "error": string;
     "errorKind": string;
@@ -4677,7 +4683,7 @@ export class PRUpdateSubscriptionResult {
         const $$createField2_0 = $$createType72;
         const $$createField3_0 = $$createType74;
         const $$createField4_0 = $$createType76;
-        const $$createField11_0 = $$createType78;
+        const $$createField12_0 = $$createType78;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("detail" in $$parsedSource) {
             $$parsedSource["detail"] = $$createField2_0($$parsedSource["detail"]);
@@ -4689,7 +4695,7 @@ export class PRUpdateSubscriptionResult {
             $$parsedSource["events"] = $$createField4_0($$parsedSource["events"]);
         }
         if ("ci" in $$parsedSource) {
-            $$parsedSource["ci"] = $$createField11_0($$parsedSource["ci"]);
+            $$parsedSource["ci"] = $$createField12_0($$parsedSource["ci"]);
         }
         return new PRUpdateSubscriptionResult($$parsedSource as Partial<PRUpdateSubscriptionResult>);
     }

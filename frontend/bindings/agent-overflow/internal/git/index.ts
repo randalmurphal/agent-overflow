@@ -16,6 +16,8 @@ export {
     ChangeRequest,
     CheckStatus,
     CheckSummary,
+    CommentReaction,
+    CommentSuggestion,
     CommentTarget,
     GitActionResult,
     GitBranch,
@@ -51,5 +53,6 @@ export {
     ReviewReplyTo,
     ReviewThread,
     ReviewThreadReply,
-    ReviewVerdict
+    ReviewVerdict,
+    SuggestionApply
 } from "./models.js";

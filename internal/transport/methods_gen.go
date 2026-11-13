@@ -63,6 +63,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "AnswerThreadShellCommand", ID: 2190095592, Scope: "terminal:operate", Route: "thread"},                            // main.App.AnswerThreadShellCommand
 	{Name: "AppendLiveDictation", ID: 2562809680, Scope: "threads:operate", Route: "selected"},                                // main.App.AppendLiveDictation
 	{Name: "AppendUIRenderTraceBatch", ID: 2157691816, Scope: "host", Route: "home"},                                          // main.App.AppendUIRenderTraceBatch
+	{Name: "ApplyPRSuggestion", ID: 4291100369, Scope: "git:operate", Route: "selected"},                                      // main.App.ApplyPRSuggestion
 	{Name: "ApprovePR", ID: 580543372, Scope: "git:operate", Route: "selected"},                                               // main.App.ApprovePR
 	{Name: "ArchiveProject", ID: 1352159878, Scope: "threads:operate", Route: "project"},                                      // main.App.ArchiveProject
 	{Name: "ArchiveThread", ID: 3655608409, Scope: "threads:operate", Route: "thread"},                                        // main.App.ArchiveThread
@@ -345,6 +346,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "OpenTurnEditsDiff", ID: 4078889536, Scope: "threads:read", Route: "thread", CallerBound: true},                    // main.App.OpenTurnEditsDiff
 	{Name: "OpenWorkspaceDiff", ID: 3558532873, Scope: "files:read", Route: "workspace"},                                      // main.App.OpenWorkspaceDiff
 	{Name: "PairAgentComputer", ID: 3436727647, Scope: "access:admin", Route: "selected", StepUp: true, Remote: true},         // main.App.PairAgentComputer
+	{Name: "ParseCommentSuggestions", ID: 3277517862, Scope: "git:operate", Route: "home"},                                    // main.App.ParseCommentSuggestions
 	{Name: "PinThread", ID: 1748405812, Scope: "threads:operate", Route: "thread"},                                            // main.App.PinThread
 	{Name: "PostChannelMessage", ID: 1315440605, Scope: "threads:operate", Route: "selected"},                                 // main.App.PostChannelMessage
 	{Name: "PostPRComment", ID: 3141095494, Scope: "git:operate", Route: "selected"},                                          // main.App.PostPRComment
@@ -457,6 +459,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetNetworkSettings", ID: 3915514446, Scope: "settings:write", Route: "home", StepUp: true},                        // main.App.SetNetworkSettings
 	{Name: "SetPRAssignees", ID: 1016620183, Scope: "git:operate", Route: "selected"},                                         // main.App.SetPRAssignees
 	{Name: "SetPRCILogFollows", ID: 1675722685, Scope: "git:operate", Route: "home"},                                          // main.App.SetPRCILogFollows
+	{Name: "SetPRCommentReaction", ID: 2698361133, Scope: "git:operate", Route: "selected"},                                   // main.App.SetPRCommentReaction
 	{Name: "SetPRLabels", ID: 2026774950, Scope: "git:operate", Route: "selected"},                                            // main.App.SetPRLabels
 	{Name: "SetPRListActive", ID: 2324570575, Scope: "git:operate", Route: "home"},                                            // main.App.SetPRListActive
 	{Name: "SetPRReviewers", ID: 960122143, Scope: "git:operate", Route: "selected"},                                          // main.App.SetPRReviewers
