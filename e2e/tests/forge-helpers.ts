@@ -487,10 +487,10 @@ export async function publishPullRequest(
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
   const root = path.join(harness.bootstrap.dataRoot, 'forge-origin');
   const proxy = path.join(root, 'git-proxy.sh');
-  const bare = path.join(root, `${repo.project}.git`);
-  await mkdir(bare, { recursive: true });
+  // The harness creates the origin: the fake forge writes an applied
+  // suggestion's commit only to an origin it created.
+  const bare = await harness.rpc<string>('HarnessForgeOrigin', repo.project);
   await writeFile(proxy, gitProxyScript(root), { mode: 0o755 });
-  git(bare, 'init', '--bare', '--quiet');
 
   const baseSha = git(workspace, 'rev-parse', 'HEAD');
   git(workspace, 'checkout', '--quiet', '-b', 'feature');
@@ -546,10 +546,10 @@ export async function publishBranch(
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
   const root = path.join(harness.bootstrap.dataRoot, 'forge-origin');
   const proxy = path.join(root, 'git-proxy.sh');
-  const bare = path.join(root, `${repo.project}.git`);
-  await mkdir(bare, { recursive: true });
+  // The harness creates the origin: the fake forge writes an applied
+  // suggestion's commit only to an origin it created.
+  const bare = await harness.rpc<string>('HarnessForgeOrigin', repo.project);
   await writeFile(proxy, gitProxyScript(root), { mode: 0o755 });
-  git(bare, 'init', '--bare', '--quiet');
   git(workspace, 'push', '--quiet', bare, 'main', branch);
 
   await seedForge(harness, [repo]);

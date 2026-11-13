@@ -79,6 +79,9 @@ type Harness struct {
 	forge      *forgefake.Engine
 	forgeToken string
 	forgeAPI   *ForgeAPIServer // set once by StartForgeAPI
+	// origins are the fake forge's origin repositories this harness
+	// created (forge_origin.go); nil without a data root.
+	origins *forgeOrigins
 	// soakAutopilot latches how the --autopilot arming went. Empty means
 	// this boot has no autopilot at all; see soakAutopilotState.
 	soakAutopilot string
@@ -135,7 +138,8 @@ func New(config Config) *Harness {
 	h := &Harness{config: config, pageMarker: newHarnessPageMarker(), forgeToken: rand.Text()}
 	var commit func(forgefake.CommitRequest) (string, error)
 	if config.DataRoot != "" {
-		commit = forgeOriginCommit(forgeOriginRoot(config.DataRoot))
+		h.origins = newForgeOrigins(forgeOriginRoot(config.DataRoot))
+		commit = h.origins.commit
 	}
 	h.forge = forgefake.New(forgefake.Options{OnInvocation: h.onForgeInvocation, APIToken: h.forgeToken, Commit: commit})
 	return h

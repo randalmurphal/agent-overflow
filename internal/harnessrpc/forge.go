@@ -45,6 +45,19 @@ func (h *Harness) HarnessForgeSeed(raw json.RawMessage) (forgefake.Fixture, erro
 	return seeded, nil
 }
 
+// HarnessForgeOrigin creates the bare origin repository of a forge
+// project ("acme/widgets", "grp/sub/tool") under <data root>/forge-origin
+// and answers its path, the one a spec pushes a pull's head to. A commit
+// the fake forge makes on a pull is written only to an origin created
+// here (forge_origin.go). Creating one again answers the same path; a
+// directory already there that this harness did not create is refused.
+func (h *Harness) HarnessForgeOrigin(project string) (string, error) {
+	if h.origins == nil {
+		return "", errors.New("this harness has no data root for forge origins")
+	}
+	return h.origins.create(project)
+}
+
 // HarnessForgeInvocations returns every recorded gh or glab invocation
 // with a sequence number above since: argv, cwd, stdin, the route that
 // answered (or unhandled) and the exit status.
