@@ -525,6 +525,124 @@ func TestGitLabSchemaProbeOutlivesItsFirstCaller(t *testing.T) {
 	}
 }
 
+// A reset forgets a schema probe still in flight: a read after it probes
+// again rather than joining the old probe, and the old probe's answer,
+// arriving after the reset, is never cached. The old fixture answers the
+// bare schema, the new one every field.
+func TestGitLabResetForgetsASchemaProbeInFlight(t *testing.T) {
+	t.Parallel()
+	for _, readBeforeRelease := range []bool{false, true} {
+		t.Run(map[bool]string{false: "released, then read", true: "read, then released"}[readBeforeRelease], func(t *testing.T) {
+			t.Parallel()
+			release := make(chan struct{})
+			started := make(chan struct{}, 1)
+			var mu sync.Mutex
+			probes := 0
+			core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+				if call.Op != "PRManageSchema" {
+					return forgeAPIAnswer{}, false
+				}
+				mu.Lock()
+				probes++
+				first := probes == 1
+				mu.Unlock()
+				if !first {
+					return forgeAPIAnswer{Body: gitlabSchemaAll}, true
+				}
+				started <- struct{}{}
+				<-release
+				return forgeAPIAnswer{Body: gitlabSchemaBare}, true
+			})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			// Runs before the server's own cleanup, which waits for its handlers.
+			t.Cleanup(unblock)
+			f := core.forges["gitlab"].(*gitlabForge)
+			client, err := core.gitlabAPI(testForgeHost)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			first := make(chan error, 1)
+			go func() {
+				_, err := f.manageSchema(ctx, client, testForgeHost)
+				first <- err
+			}()
+			<-started
+			f.probes.mu.Lock()
+			old := f.probes.flights[testForgeHost]
+			f.probes.mu.Unlock()
+			cancel()
+			if err := within(t, first); !errors.Is(err, context.Canceled) {
+				t.Fatalf("the old fixture's caller = %v", err)
+			}
+
+			core.ResetForgeCaches()
+
+			read := func() gitlabSchema {
+				t.Helper()
+				answer := make(chan gitlabSchema, 1)
+				go func() {
+					schema, err := f.manageSchema(t.Context(), client, testForgeHost)
+					if err != nil {
+						t.Error(err)
+					}
+					answer <- schema
+				}()
+				return within(t, answer)
+			}
+			if readBeforeRelease {
+				if got := read(); !got.setReviewers {
+					t.Fatalf("a read after the reset joined the old probe: %+v", got)
+				}
+			}
+			unblock()
+			within(t, (<-chan struct{})(old.done))
+			if got, _ := f.schemas.get(testForgeHost, time.Now()); !got.setReviewers && readBeforeRelease {
+				t.Fatalf("the old probe's answer replaced the new one: %+v", got)
+			}
+			if got := read(); !got.setReviewers {
+				t.Fatalf("the read after the old probe answered = %+v, want the new fixture's", got)
+			}
+			if n := countOp(calls, "PRManageSchema"); n != 2 {
+				t.Fatalf("probes = %d, want the old one and one after the reset", n)
+			}
+		})
+	}
+}
+
+// A caller that missed the cache before a probe finished and joins after
+// it finds no flight and leads one; the leader rechecks the cache and
+// sends no second probe.
+func TestGitLabSchemaProbeLeaderRechecksTheCache(t *testing.T) {
+	t.Parallel()
+	core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		if call.Op == "PRManageSchema" {
+			return forgeAPIAnswer{Body: gitlabSchemaAll}, true
+		}
+		return forgeAPIAnswer{}, false
+	})
+	f := core.forges["gitlab"].(*gitlabForge)
+	client, err := core.gitlabAPI(testForgeHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.manageSchema(t.Context(), client, testForgeHost); err != nil {
+		t.Fatal(err)
+	}
+	// The late caller's miss happened before that probe stored; it joins now.
+	cached := func() (gitlabSchema, bool) { return f.schemas.get(testForgeHost, time.Now()) }
+	schema, err := f.probes.join(t.Context(), testForgeHost, cached, func(ctx context.Context) (gitlabSchema, error) {
+		return f.probeSchema(ctx, client)
+	}, func(gitlabSchema) { t.Error("a cached answer was stored again") })
+	if err != nil || !schema.setReviewers {
+		t.Fatalf("the late caller = %+v, %v", schema, err)
+	}
+	if n := countOp(calls, "PRManageSchema"); n != 1 {
+		t.Fatalf("probes = %d, want one", n)
+	}
+}
+
 // waitFor waits up to ten seconds for done.
 func waitFor(t *testing.T, done func() bool) {
 	t.Helper()

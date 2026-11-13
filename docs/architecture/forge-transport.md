@@ -804,9 +804,10 @@ gates its control; a host without it offers none and refuses the write).
 The answer, either way, is cached per host for 10 minutes; a failed probe
 is not cached and makes the read unavailable. Concurrent cold reads of a
 host share one probe, which runs past the caller that started it, each
-waiting bounded by its own context. A harness reset forgets the answers
-with the adapters' other per-host and per-project memory
-(`Core.ResetForgeCaches`). A host with the override is
+waiting bounded by its own context; the probe's leader rechecks the cache
+before sending. A harness reset forgets the answers with the adapters'
+other per-host and per-project memory (`Core.ResetForgeCaches`), and a
+probe in flight across it is never joined after it and never cached. A host with the override is
 read with `PRManageChecks`, which adds `mergeabilityChecks`: the
 `REQUESTED_CHANGES` check failing is what blocks (elsewhere the
 `detailed_merge_status` `requested_changes`), and the check passing while
