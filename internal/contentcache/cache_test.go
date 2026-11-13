@@ -182,6 +182,25 @@ func TestCacheRemoveDropsOneEntryByID(t *testing.T) {
 
 // Pins the character class the routes' path segment and the frontend's
 // transfer-URL check both admit.
+func TestCacheClearDropsEveryEntry(t *testing.T) {
+	cache, _ := newTestCache(100, time.Hour)
+	a := put(t, cache, "a", 10)
+	b := put(t, cache, "b", 20)
+	cache.Clear()
+	for _, gone := range []Entry[[]byte]{a, b} {
+		if _, ok := cache.Get(gone.ID); ok {
+			t.Errorf("%s still resolves by id after Clear", gone.Key)
+		}
+		if _, ok := cache.Lookup(gone.Key); ok {
+			t.Errorf("%s still resolves by key after Clear", gone.Key)
+		}
+	}
+	if got := cache.Bytes(); got != 0 {
+		t.Errorf("Bytes() = %d after Clear, want 0", got)
+	}
+	put(t, cache, "a", 100)
+}
+
 func TestCacheIDsAreURLSafe(t *testing.T) {
 	cache, _ := newTestCache(1_000_000, time.Hour)
 	safe := regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)

@@ -170,56 +170,33 @@ func parseCommitLog(stdout string) ([]Commit, error) {
 	return commits, nil
 }
 
-// OpenCommitDiff opens the patch a single commit introduced: against its
-// first parent for regular and merge commits, against the empty tree for a
-// root commit. The SHA must be hex — it always comes from a commit list
-// this package produced or a forge API response, never free-form user
-// input.
+// OpenCommitDiff opens the patch a single commit introduced (CommitSides).
 func OpenCommitDiff(ctx context.Context, workspace, sha string, opts Options) (*Diff, error) {
-	sha = strings.TrimSpace(sha)
-	if !commitSHAPattern.MatchString(sha) {
-		return nil, fmt.Errorf("gitdiff: invalid commit sha %q", sha)
-	}
-	parents, _, _, err := runGit(ctx, workspace, nil, false, "rev-list", "--parents", "-n", "1", sha)
+	sides, err := CommitSides(ctx, workspace, sha)
 	if err != nil {
-		return nil, fmt.Errorf("gitdiff: resolve parents of %s: %w", sha, err)
+		return nil, err
 	}
-	hashes := strings.Fields(parents)
-	if len(hashes) == 0 {
-		return nil, fmt.Errorf("gitdiff: rev-list returned nothing for %s", sha)
+	return sides.OpenDiff(opts), nil
+}
+
+// OpenCommitRangeDiff opens the patch of a contiguous run of a pull
+// request's commits (CommitRangeSides).
+func OpenCommitRangeDiff(ctx context.Context, workspace, base, head, first, last string, opts Options) (*Diff, error) {
+	sides, err := CommitRangeSides(ctx, workspace, base, head, first, last)
+	if err != nil {
+		return nil, err
 	}
-	if len(hashes) > 1 {
-		// First-parent diff: for merge commits this matches how GitHub
-		// and GitLab render a commit's changes.
-		return newDiff(workspace, nil, nil, opts.gitArgs("diff", hashes[1], hashes[0], "--")), nil
-	}
-	return newDiff(workspace, nil, nil,
-		opts.gitArgs("diff-tree", "--root", "--no-commit-id", hashes[0], "--")), nil
+	return sides.OpenDiff(opts), nil
 }
 
 // OpenMergeBaseDiff opens the three-dot patch from the merge base of base
-// and head to head, the diff a pull request from head onto base shows. base
-// is a revision (a remote-tracking branch); head must be a commit OID. Both
-// must already exist locally.
+// and head to head (MergeBaseSides).
 func OpenMergeBaseDiff(ctx context.Context, workspace, base, head string, opts Options) (*Diff, error) {
-	base = strings.TrimSpace(base)
-	if err := validateRefArg(base, "base ref"); err != nil {
-		return nil, err
-	}
-	head = strings.TrimSpace(head)
-	if !commitSHAPattern.MatchString(head) {
-		return nil, fmt.Errorf("gitdiff: invalid head %q", head)
-	}
-	headOID, _, _, err := runGit(ctx, workspace, nil, false, "rev-parse", "--verify", head+"^{commit}")
-	if err != nil {
-		return nil, fmt.Errorf("gitdiff: resolve head %s: %w", head, err)
-	}
-	headOID = strings.TrimSpace(headOID)
-	mergeBase, err := mergeBaseOID(ctx, workspace, base, headOID)
+	sides, err := MergeBaseSides(ctx, workspace, base, head)
 	if err != nil {
 		return nil, err
 	}
-	return newDiff(workspace, nil, nil, opts.gitArgs("diff", mergeBase, headOID, "--")), nil
+	return sides.OpenDiff(opts), nil
 }
 
 // ShowFileAtCommit returns the full content of path as of the given
