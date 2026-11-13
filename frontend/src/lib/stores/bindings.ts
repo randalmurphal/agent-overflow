@@ -566,6 +566,20 @@ export {
   CancelPRAutoMerge,
   UpdatePRBranch,
   MarkPRReady,
+  // Managing the PR (stores/prManage.svelte.ts): its text, people, labels,
+  // state and reviews, each confirmed by the pump as the merge actions
+  // are, and the two reads outside the tick (a picker's search, the
+  // default merge commit message).
+  EditPR,
+  SetPRReviewers,
+  SetPRAssignees,
+  SetPRLabels,
+  SetPRState,
+  RerequestPRReview,
+  DismissPRReview,
+  BypassPRRequestedChanges,
+  SearchPRCandidates,
+  GetPRMergeMessage,
   SubscribePRUpdates,
   UnsubscribePRUpdates,
   SetPRUpdatesActive,

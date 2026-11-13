@@ -512,6 +512,92 @@ export interface PRDetail {
   mergedAt?: string;
   mergedBy?: string;
   closedAt?: string;
+  /** The Details section and the management controls (git.PRManage);
+   *  absent from an older backend, which offers none of them. */
+  manage?: PRManage;
+}
+
+/** Mirrors git.PRManage. */
+export interface PRManage {
+  reviewers: PRReviewer[];
+  assignees: PRPerson[];
+  labels: PRLabel[];
+  can: PRManageCan;
+}
+
+/** Mirrors git.PRManageCan: one flag per control, from the forge's answer. */
+export interface PRManageCan {
+  editTitle: boolean;
+  editDescription: boolean;
+  reviewers: boolean;
+  assignees: boolean;
+  labels: boolean;
+  close: boolean;
+  reopen: boolean;
+  convertToDraft: boolean;
+  rerequest: boolean;
+  dismiss: boolean;
+  bypass: boolean;
+  reviewerTeams: boolean;
+}
+
+/** A user, or on GitHub a team (`login` "org/slug"); `id` is GitLab's user id. */
+export interface PRPerson {
+  login: string;
+  name?: string;
+  id?: string;
+  team?: boolean;
+}
+
+/** APPROVED, CHANGES_REQUESTED, COMMENTED or PENDING. */
+export interface PRReviewer extends PRPerson {
+  state: string;
+  /** GitHub: the review is on an older commit than the head. */
+  stale?: boolean;
+}
+
+/** GitHub addresses a label by `id`, GitLab by `name`. `color` is "#rrggbb". */
+export interface PRLabel {
+  id?: string;
+  name: string;
+  color?: string;
+}
+
+/** EditPR's change; `expectedDescription` goes with `description` only. */
+export interface PREdit {
+  title?: string;
+  description?: string;
+  expectedDescription?: string;
+}
+
+export interface PRPeopleChange {
+  add: PRPerson[];
+  remove: PRPerson[];
+}
+
+export interface PRLabelChange {
+  add: PRLabel[];
+  remove: PRLabel[];
+}
+
+/** One picker search's first page; `more` when the forge has more. */
+export interface PRCandidates {
+  people: PRPerson[];
+  labels: PRLabel[];
+  more: boolean;
+}
+
+/** A merge commit's title and body (git.MergeMessage). */
+export interface MergeMessage {
+  title: string;
+  body: string;
+}
+
+/** A GitHub review that requested changes and blocks the merge. */
+export interface ChangeRequest {
+  reviewId: string;
+  authorLogin: string;
+  authorName?: string;
 }
 
 /** The merge's state and its conditions; mirrors git.MergeReadiness. */
@@ -532,6 +618,12 @@ export interface MergeBlocker {
   text: string;
   detail?: string;
   url?: string;
+  /** changes_requested, GitHub: the reviews DismissPRReview can dismiss. */
+  changeRequests?: ChangeRequest[];
+  /** changes_requested, GitLab: BypassPRRequestedChanges is offered. */
+  bypassable?: boolean;
+  /** A settled changes_requested row: the requested changes were bypassed. */
+  bypassed?: boolean;
 }
 
 /** Mirrors git.MergeOptions: methods the project allows (default first). */
@@ -580,6 +672,8 @@ export interface MergeRequest {
   headSHA: string;
   deleteBranch: boolean;
   autoMerge: boolean;
+  /** An edited commit message; omitted, the forge's default applies. */
+  commitMessage?: MergeMessage;
 }
 
 export interface MergeOutcome {

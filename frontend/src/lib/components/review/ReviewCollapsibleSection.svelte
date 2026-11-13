@@ -34,7 +34,7 @@
        worth of width, so on a narrow pane the trailing controls (buttons,
        the stepper) drop to their own line under the label and pill, and
        the label never truncates. -->
-  <div class="flex min-h-9 flex-wrap items-center gap-x-2 gap-y-1 pr-2">
+  <div class="group/section flex min-h-9 flex-wrap items-center gap-x-2 gap-y-1 pr-2">
     <button
       type="button"
       class="flex h-9 min-w-0 flex-1 basis-[14rem] items-center gap-2 px-2.5 text-left text-xs font-semibold text-fg compact:select-none"

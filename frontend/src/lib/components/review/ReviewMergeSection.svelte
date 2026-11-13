@@ -7,7 +7,12 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
   import ReviewCollapsibleSection from './ReviewCollapsibleSection.svelte';
+  import ReviewDismissPopover from './ReviewDismissPopover.svelte';
+  import ReviewMergeMessageEditor from './ReviewMergeMessageEditor.svelte';
   import ReviewResizableBody from './ReviewResizableBody.svelte';
+  import { tick } from 'svelte';
+  import { PR_MANAGE_ACTION_LABEL } from '../../stores/prManage.svelte';
+  import { canBypass, dismissibleChangeRequests, methodHasCommitMessage } from '../../utils/prManage';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import { OpenExternalURL } from '../../stores/bindings';
   import { relativeTime } from '../../utils/format';
@@ -68,6 +73,40 @@
   const approvePending = $derived(pending === 'approve' || pending === 'unapprove');
   // "Merge now" names what it waits for while blocked.
   const blockedSummary = $derived(blockers.map((blocker) => blocker.text).join(' · '));
+
+  // The management actions this section hosts: the changes_requested
+  // row's Dismiss (GitHub) and Bypass (GitLab), and the commit message.
+  const manage = $derived(review.manage);
+  const manageBlocked = $derived(manage.blockedReason);
+  const message = $derived(manage.mergeMessage);
+  const offerMessage = $derived(!!detail.manage && methodHasCommitMessage(method));
+  const showMessage = $derived(showMerge && armed === null && offerMessage && message.open);
+  const dismissAnchors: Record<string, HTMLElement | undefined> = $state({});
+  const dismissing = $derived(manage.dismissDraft);
+  const dismissFor = $derived.by(() => {
+    const id = dismissing?.reviewId;
+    if (!id) return null;
+    for (const blocker of blockers) {
+      const entry = blocker.changeRequests?.find((each) => each.reviewId === id);
+      if (entry) return entry;
+    }
+    return null;
+  });
+
+  function commitMessage() {
+    return showMessage ? message.messageFor(method) : undefined;
+  }
+
+  function openMessage(): void {
+    menuOpen = false;
+    review.setMergeOpen(true);
+    message.openFor(method);
+  }
+
+  async function messageClosed(): Promise<void> {
+    await tick();
+    triggerEl?.focus({ preventScroll: true });
+  }
 
   let menuOpen = $state(false);
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
@@ -282,7 +321,32 @@
           {#if action}
             <Button variant="ghost" size="xs" class={actionClass} testId={action.testid} disabled={action.merge ? busy : false} onclick={action.run}>{action.label}</Button>
           {/if}
+          {#if canBypass(detail, blocker)}
+            <Button
+              variant="ghost"
+              size="xs"
+              class="{actionClass} min-w-16"
+              testId="review-merge-row-bypass"
+              loading={manage.pending?.kind === 'bypass'}
+              disabled={busy || manageBlocked !== null}
+              title={withheld ?? manageBlocked ?? 'Merge without the requested changes being addressed'}
+              onclick={() => { void manage.bypass(); }}
+            >Bypass</Button>
+          {/if}
+          {#if dismissibleChangeRequests(detail, blocker).length === 1}
+            {@const entry = dismissibleChangeRequests(detail, blocker)[0]}
+            {@render dismissButton(entry.reviewId, authorDisplayName({ authorLogin: entry.authorLogin, authorName: entry.authorName }))}
+          {/if}
         </div>
+        {#if dismissibleChangeRequests(detail, blocker).length > 1}
+          {#each dismissibleChangeRequests(detail, blocker) as entry (entry.reviewId)}
+            {@const who = authorDisplayName({ authorLogin: entry.authorLogin, authorName: entry.authorName })}
+            <div class="{rowClass} pl-7" data-testid="review-merge-change-request" data-review={entry.reviewId}>
+              <span class="min-w-0 flex-1 truncate text-fg-muted">{who} requested changes</span>
+              {@render dismissButton(entry.reviewId, who)}
+            </div>
+          {/each}
+        {/if}
       {/each}
       {#each settled as row, index (`s:${row.kind}:${index}`)}
         <div class={rowClass} data-testid="review-merge-settled" data-kind={row.kind}>
@@ -318,7 +382,32 @@
       {/if}
     </div>
   </ReviewResizableBody>
+  {#if showMessage}
+    <ReviewMergeMessageEditor {message} merging={mergePending} onClosed={() => { void messageClosed(); }} />
+  {/if}
 </ReviewCollapsibleSection>
+
+{#snippet dismissButton(reviewId: string, who: string)}
+  {@const pendingHere = manage.pending?.kind === 'dismiss' && manage.pending.target === reviewId}
+  <span bind:this={dismissAnchors[reviewId]} class="inline-flex shrink-0">
+  <Button
+    variant="ghost"
+    size="xs"
+    class="min-w-16"
+    testId="review-merge-row-dismiss"
+    loading={pendingHere}
+    disabled={busy || (manageBlocked !== null && !pendingHere)}
+    title={pendingHere ? `${PR_MANAGE_ACTION_LABEL.dismiss}…` : (withheld ?? manageBlocked ?? `Dismiss ${who}'s review`)}
+    onclick={() => manage.openDismiss(reviewId)}
+  >
+    Dismiss
+  </Button>
+  </span>
+{/snippet}
+
+{#if dismissing && dismissFor}
+  <ReviewDismissPopover {manage} anchor={dismissAnchors[dismissing.reviewId]} reviewer={authorDisplayName({ authorLogin: dismissFor.authorLogin, authorName: dismissFor.authorName })} />
+{/if}
 
 {#if showMerge}
   <Popover anchor={triggerEl} open={menuOpen} onClose={closeMenu} placement="bottom-end" role="none">
@@ -330,7 +419,7 @@
             description={index === 0 ? 'project default' : undefined}
             checked={candidate === method}
             testId="review-merge-method-{candidate}"
-            onSelect={() => { pickedMethod = candidate; }}
+            onSelect={() => { pickedMethod = candidate; message.methodChanged(candidate); }}
           />
         {/each}
         {#if merge?.deleteBranchOffered}
@@ -349,7 +438,7 @@
           description={canMergeNow ? undefined : armed ? 'auto-merge is set' : blockedSummary || undefined}
           disabled={!canMergeNow}
           testId="review-merge-now"
-          onSelect={() => pickAndClose(() => { void review.mergePR({ method, deleteBranch, autoMerge: false }); })}
+          onSelect={() => pickAndClose(() => { void review.mergePR({ method, deleteBranch, autoMerge: false, commitMessage: commitMessage() }); })}
         />
         {#if armed}
           <MenuItem
@@ -364,7 +453,16 @@
             description={mergeState === 'ready' ? 'already ready' : !merge?.autoMergeAvailable ? 'not available here' : deleteBranch && review.prRef?.forge === 'github' ? 'GitHub keeps the branch' : undefined}
             disabled={!canAutoMerge}
             testId="review-merge-auto"
-            onSelect={() => pickAndClose(() => { void review.mergePR({ method, deleteBranch, autoMerge: true }); })}
+            onSelect={() => pickAndClose(() => { void review.mergePR({ method, deleteBranch, autoMerge: true, commitMessage: commitMessage() }); })}
+          />
+        {/if}
+        {#if offerMessage && !armed}
+          <MenuDivider />
+          <MenuItem
+            label="Edit commit message…"
+            description={message.open ? (message.edited ? 'edited' : 'default') : undefined}
+            testId="review-merge-edit-message"
+            onSelect={openMessage}
           />
         {/if}
       </div>

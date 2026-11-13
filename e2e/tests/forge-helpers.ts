@@ -99,6 +99,20 @@ export interface ForgePull {
   closedBy?: string;
   /** GitHub timeline items or GitLab system notes besides the reviews. */
   events?: ForgeEvent[];
+  /** GitLab: the reviewers (each one of `reviewers`) who requested changes. */
+  changeRequests?: string[];
+  /** GitHub: teams asked to review, "owner/slug". */
+  teamReviewers?: string[];
+  /** Logins of the repository's `members`. */
+  assignees?: string[];
+  /** Names of the repository's `labels`. */
+  labels?: string[];
+  /** What the viewer may do here, each derived from the role and authorship when omitted. */
+  viewer?: { update?: boolean; label?: boolean; triage?: boolean; admin?: boolean };
+  /** GitLab: close, reopen and merge events (resource state events). */
+  stateEvents?: { id?: number; state: 'closed' | 'reopened' | 'merged'; actor?: string; at?: string }[];
+  /** GitLab: the requested changes were bypassed. */
+  changesOverridden?: boolean;
 }
 
 /** A pull's merge box (forgefake Readiness). */
@@ -264,6 +278,16 @@ export interface ForgeRepo {
   deletedBranches?: string[];
   /** GitLab: the viewer's events here are dropped from an events page after it is selected, as GitLab drops hidden ones. */
   eventsHidden?: boolean;
+  /** Who can be asked to review and be assigned; `id` is GitLab's user id, generated when omitted. */
+  members?: { login: string; name?: string; id?: number }[];
+  /** GitHub: an organization's teams (`organization`), and a token whose teams search is refused. */
+  teams?: { slug: string; name?: string }[];
+  organization?: boolean;
+  teamsRefused?: boolean;
+  /** The repository's labels; color "#rrggbb". */
+  labels?: { name: string; color?: string; id?: string }[];
+  /** GitLab: what an older server lacks. */
+  serverLacks?: ('rereview' | 'overrideRequestedChanges')[];
 }
 
 interface ForgeInvocationCommon {
@@ -301,6 +325,8 @@ export interface ForgeHTTPInvocation extends ForgeInvocationCommon {
   path: string;
   operation?: string;
   variables?: Record<string, unknown>;
+  /** A REST write's JSON body. */
+  body?: unknown;
   status: number;
   detail?: string;
 }
