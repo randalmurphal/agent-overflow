@@ -300,7 +300,7 @@ func newTestRunner(t *testing.T, host *fakeHost, dataStore *store.Store, profile
 		// home is what it resolves against rather than whatever $HOME says.
 		host.claudeProjectsDir = sessionfork.ProjectsDirForHome(isolation.Home)
 	}
-	return New(host, dataStore, t.TempDir(), profiles, func(context.Context, string) error { return nil })
+	return New(host, dataStore, t.TempDir(), profiles, func(context.Context, string, Interrupt) error { return nil })
 }
 
 // newTestStore clones the package's migrated template. Several runner paths

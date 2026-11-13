@@ -59,7 +59,7 @@ type InterruptAndRevertResult struct {
 // conversation rolled back, timeline truncated, composer draft
 // restored, `user_message:reverted` event emitted). When the predicate
 // does not match the method falls back to a plain interrupt
-// (provider Interrupt + triage.MarkUserInterrupt) so the caller can
+// (provider Interrupt + triage.MarkInterrupt) so the caller can
 // roll back any optimistic UI it applied.
 //
 // The frontend pre-checks its local predicate before calling so it
@@ -120,7 +120,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		}
 	}
 	if sess, ok := a.sessionManager().get(threadID); ok {
-		if err := a.refuseBackgroundKill(threadID, sess, personalStop(confirmedAgents)); err != nil {
+		if err := a.refuseBackgroundKill(threadID, sess, stopByUser(confirmedAgents).consent); err != nil {
 			return InterruptAndRevertResult{}, err
 		}
 	}
@@ -129,7 +129,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		// follow-up intent. Fall back to plain interrupt semantics so
 		// the user's Stop click still takes effect. The caller will
 		// undo any optimistic timeline / composer state.
-		if err := a.runPlainInterruptLocked(threadID); err != nil {
+		if err := a.runPlainInterruptLocked(threadID, stopByUser(confirmedAgents)); err != nil {
 			return InterruptAndRevertResult{Reverted: false, Reason: reason}, err
 		}
 		return InterruptAndRevertResult{Reverted: false, Reason: reason}, nil
@@ -151,6 +151,9 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		a.triage.MarkTurnReverted(threadID)
 		markedReverted = true
 	}
+	// The reverted turn ends however the provider ends it; a request it was
+	// answering was stopped by the user either way.
+	a.recordTurnStop(threadID, userItem.TurnIndex, stopByUser(confirmedAgents))
 
 	// Codex thread/revert owns active-turn shutdown and the history cut as one
 	// server-side operation. Sending turn/interrupt first splits that operation
@@ -167,6 +170,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 						if markedReverted {
 							a.triage.ClearTurnReverted(threadID)
 						}
+						a.dropTurnStop(threadID, userItem.TurnIndex)
 						return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: provider interrupt: %w", err)
 					}
 					// Headless Claude: the session stop below ends the turn
@@ -256,7 +260,10 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 // fallback branch of InterruptAndRevertIfClean. Caller holds the
 // thread lock. Tolerant of "no session" so a Stop click on a stale
 // thread is a no-op rather than an error.
-func (a *App) runPlainInterruptLocked(threadID string) error {
+func (a *App) runPlainInterruptLocked(threadID string, stop turnStop) error {
+	if !stop.valid() {
+		return fmt.Errorf("interrupt turn %s: no stop cause", threadID)
+	}
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		// No session — nothing to interrupt, nothing to revert.
@@ -275,7 +282,9 @@ func (a *App) runPlainInterruptLocked(threadID string) error {
 		interruptedTurn = a.triage.InterruptTurnIndex(threadID)
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
+	a.recordTurnStop(threadID, interruptedTurn, stop)
 	if err := providerSess.Interrupt(context.Background()); err != nil {
+		a.dropTurnStop(threadID, interruptedTurn)
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
@@ -284,8 +293,8 @@ func (a *App) runPlainInterruptLocked(threadID string) error {
 	if a.triage != nil {
 		// Pre-ack sampled turn + token fence, same as InterruptTurn
 		// (round-11, C11-1 / CT11-1).
-		if _, err := a.triage.MarkUserInterrupt(threadID, interruptedTurn, stampToken); err != nil {
-			log.Printf("app: interrupt-and-revert: plain fallback: mark user interrupt: %v", err)
+		if _, err := a.triage.MarkInterrupt(threadID, interruptedTurn, stampToken, stop.label); err != nil {
+			log.Printf("app: interrupt-and-revert: plain fallback: mark interrupt: %v", err)
 			a.emitErrorToThread(threadID, fmt.Sprintf("The turn stopped, but recording the stop failed: %v", err))
 		}
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)

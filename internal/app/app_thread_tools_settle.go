@@ -187,7 +187,7 @@ func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequ
 	case turn.StopReason == "interrupted":
 		return store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptInterrupted,
-			Answer:     []byte("The turn was interrupted before it answered."),
+			Answer:     []byte(a.turnStopCause(threadID, turn.TurnIndex)),
 			AnswerKind: store.ThreadAnswerError,
 			SettledAt:  settledAt,
 		}, nil

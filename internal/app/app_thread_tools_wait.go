@@ -40,6 +40,10 @@ type threadRequestState struct {
 	// and no query. Written only where a receipt enters and leaves
 	// `running`, so it cannot claim a receipt the store does not have.
 	running map[string]map[string]struct{}
+	// stops is who stopped a turn on a thread in running, for the requests
+	// that turn answers (app_turn_stop.go). It leaves with the thread's
+	// last running receipt.
+	stops map[string]recordedTurnStop
 	// settleLocks serializes everything that can settle or deliver one
 	// token, so a settlement and a timing-out wait never both deliver the
 	// answer and never neither.
@@ -262,6 +266,7 @@ func (a *App) forgetReceiptRunning(threadID, token string) {
 	delete(tokens, token)
 	if len(tokens) == 0 {
 		delete(a.threadRequests.running, threadID)
+		delete(a.threadRequests.stops, threadID)
 	}
 }
 

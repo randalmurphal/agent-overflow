@@ -699,9 +699,9 @@ func TestSyntheticTruncatedTurnCompleteSettlesCodexWireTurnID(t *testing.T) {
 	}
 }
 
-// TestMarkUserInterrupt_ThenTurnCompleteThenLateText pins the
+// TestMarkInterrupt_ThenTurnCompleteThenLateText pins the
 // user-Esc + late-text race: the user hits Esc mid-stream
-// (MarkUserInterrupt does NOT clear the open turn), the wire's real
+// (MarkInterrupt does NOT clear the open turn), the wire's real
 // EventTurnComplete arrives next (clearOpenTurn fires), and a late
 // text delta arrives AFTER the turn-close. Without the architectural
 // fix the counter is wiped at clearOpenTurn and the late delta would
@@ -713,7 +713,7 @@ func TestSyntheticTruncatedTurnCompleteSettlesCodexWireTurnID(t *testing.T) {
 // text:0:1 (counter wiped to 0, +1) and overwrites the second pre-Esc
 // row. With the fix the counter survives at 1, the late delta lands
 // at text:0:2.
-func TestMarkUserInterrupt_ThenTurnCompleteThenLateText(t *testing.T) {
+func TestMarkInterrupt_ThenTurnCompleteThenLateText(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 

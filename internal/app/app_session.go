@@ -849,10 +849,10 @@ type SendMessageOptions struct {
 // a cancellation, because "cancelled" there is indistinguishable from
 // "delivered".
 //
-// It never refuses on live background agents: its callers, a workflow
-// takeover and an agent request's cancel, are not a person's Stop.
-func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
-	_, err := a.interruptTurnAtIndex(ctx, threadID, anyOpenTurn, nil)
+// Its callers, the workflow runner and an agent's cancel, pass a stop with
+// no consent, so live background agents never refuse it.
+func (a *App) interruptTurnCtx(ctx context.Context, threadID string, stop turnStop) error {
+	_, err := a.interruptTurnAtIndex(ctx, threadID, anyOpenTurn, stop)
 	return err
 }
 
@@ -867,13 +867,18 @@ const anyOpenTurn = -1
 // whatever is running. It reports whether the interrupt was sent, so a caller
 // that must say what it stopped does not have to guess.
 //
-// A person's Stop passes its consent: the call returns a
+// stop names who is stopping the turn, recorded for the requests it
+// answers. The user's Stop carries its consent: the call returns a
 // backgroundKillRefusal while the interrupt would kill a live background
-// agent the consent does not cover. Nil is an interrupt that is not a
-// person's Stop, which is never refused. The check runs before the
-// parked-call cancels below and again under the thread action lock, where an
-// agent launched after the first check is still seen before the interrupt.
-func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectTurnIndex int, consent *agentKillConsent) (bool, error) {
+// agent the consent does not cover. Any other stop is never refused. The
+// check runs before the parked-call cancels below and again under the thread
+// action lock, where an agent launched after the first check is still seen
+// before the interrupt.
+func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectTurnIndex int, stop turnStop) (bool, error) {
+	if !stop.valid() {
+		return false, fmt.Errorf("interrupt turn %s: no stop cause", threadID)
+	}
+	consent := stop.consent
 	if a.shuttingDown.Load() {
 		return false, ErrShuttingDown
 	}
@@ -971,6 +976,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		}
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
+	a.recordTurnStop(threadID, interruptedTurn, stop)
 	if expectTurnIndex != anyOpenTurn {
 		cancelParked()
 	}
@@ -982,12 +988,14 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		interruptErr = providerSess.Interrupt(context.Background())
 	}
 	if interruptErr != nil {
+		a.dropTurnStop(threadID, interruptedTurn)
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
 		return false, interruptErr
 	}
 	if !interruptSent {
+		a.dropTurnStop(threadID, interruptedTurn)
 		// The intent entered before a same-session revert and therefore names
 		// the history that operation already discarded. Do not synthesize a
 		// second user interrupt in triage for the reloaded thread.
@@ -1001,10 +1009,10 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		// consumed during the ack wait may have opened its own turn, and
 		// the stopped bookkeeping belongs on the turn the user cut
 		// (round-11, C11-1).
-		if _, err := a.triage.MarkUserInterrupt(threadID, interruptedTurn, stampToken); err != nil {
+		if _, err := a.triage.MarkInterrupt(threadID, interruptedTurn, stampToken, stop.label); err != nil {
 			// The provider stopped; the thread's record of the stop did
 			// not land, so its rows can still read as running.
-			log.Printf("app: interrupt turn: mark user interrupt: %v", err)
+			log.Printf("app: interrupt turn: mark interrupt: %v", err)
 			a.emitErrorToThread(threadID, fmt.Sprintf("The turn stopped, but recording the stop failed: %v", err))
 		}
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)

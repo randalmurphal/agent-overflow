@@ -27,7 +27,7 @@ func newStopHarness(t *testing.T) (*observeHarness, chan string) {
 	h := newObserveHarness(t, string(provider.Codex))
 	h.runner.StopSendWait = 20 * time.Millisecond
 	interrupted := make(chan string, 4)
-	h.runner.interrupt = func(_ context.Context, threadID string) error {
+	h.runner.interrupt = func(_ context.Context, threadID string, _ Interrupt) error {
 		interrupted <- threadID
 		return nil
 	}
