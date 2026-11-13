@@ -129,6 +129,19 @@ func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSour
 	)
 }
 
+// interruptTurnForWorkflow is the workflow runner's stop: the user taking a
+// thread over from its workflow, or the workflow ending an attempt.
+func (a *App) interruptTurnForWorkflow(ctx context.Context, threadID string, why workflowhost.Interrupt) error {
+	switch why {
+	case workflowhost.InterruptForTakeover:
+		return a.interruptTurnCtx(ctx, threadID, stopForTakeover())
+	case workflowhost.InterruptStoppedAttempt:
+		return a.interruptTurnCtx(ctx, threadID, stopByWorkflow())
+	default:
+		return fmt.Errorf("interrupt turn %s: unknown workflow interrupt %d", threadID, why)
+	}
+}
+
 // WorkflowArtifact is one app-managed file deliverable copied from a phase
 // workspace. Files are discovered from the deterministic per-item directory.
 type WorkflowArtifact struct {

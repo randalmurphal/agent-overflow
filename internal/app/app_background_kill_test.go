@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/workflowhost"
 )
 
 // A Claude interrupt kills every running or parked async agent and the
@@ -456,7 +457,7 @@ func TestUngatedInterruptsStopWithAgentsLive(t *testing.T) {
 	cases := map[string]func(*agentKillFixture) error{
 		// interruptTurnForWorkflow is what the workflow runner is constructed with.
 		"workflow takeover": func(f *agentKillFixture) error {
-			return f.app.interruptTurnForWorkflow(context.Background(), f.thread.ID)
+			return f.app.interruptTurnForWorkflow(context.Background(), f.thread.ID, workflowhost.InterruptForTakeover)
 		},
 		"thread tools cancel": func(f *agentKillFixture) error {
 			_, err := f.app.threadTools().interruptRunningThread(context.Background(), f.thread.ID, stopByThread("Lead", "lead-id", ""))

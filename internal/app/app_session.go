@@ -849,17 +849,11 @@ type SendMessageOptions struct {
 // a cancellation, because "cancelled" there is indistinguishable from
 // "delivered".
 //
-// Its callers, a workflow takeover and an agent's cancel, are not the
-// user's Stop, so stop carries no consent and live background agents never
-// refuse it.
+// Its callers, the workflow runner and an agent's cancel, pass a stop with
+// no consent, so live background agents never refuse it.
 func (a *App) interruptTurnCtx(ctx context.Context, threadID string, stop turnStop) error {
 	_, err := a.interruptTurnAtIndex(ctx, threadID, anyOpenTurn, stop)
 	return err
-}
-
-// interruptTurnForWorkflow is the workflow runner's takeover stop.
-func (a *App) interruptTurnForWorkflow(ctx context.Context, threadID string) error {
-	return a.interruptTurnCtx(ctx, threadID, stopByWorkflow())
 }
 
 // anyOpenTurn is the turn fence of an interrupt that means whatever the
@@ -881,7 +875,7 @@ const anyOpenTurn = -1
 // action lock, where an agent launched after the first check is still seen
 // before the interrupt.
 func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectTurnIndex int, stop turnStop) (bool, error) {
-	if stop.cause == "" {
+	if !stop.valid() {
 		return false, fmt.Errorf("interrupt turn %s: no stop cause", threadID)
 	}
 	consent := stop.consent
@@ -1015,10 +1009,10 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		// consumed during the ack wait may have opened its own turn, and
 		// the stopped bookkeeping belongs on the turn the user cut
 		// (round-11, C11-1).
-		if _, err := a.triage.MarkUserInterrupt(threadID, interruptedTurn, stampToken); err != nil {
+		if _, err := a.triage.MarkInterrupt(threadID, interruptedTurn, stampToken, stop.label); err != nil {
 			// The provider stopped; the thread's record of the stop did
 			// not land, so its rows can still read as running.
-			log.Printf("app: interrupt turn: mark user interrupt: %v", err)
+			log.Printf("app: interrupt turn: mark interrupt: %v", err)
 			a.emitErrorToThread(threadID, fmt.Sprintf("The turn stopped, but recording the stop failed: %v", err))
 		}
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)

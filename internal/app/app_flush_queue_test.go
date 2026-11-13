@@ -1653,12 +1653,12 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 	})
 	interruptedTurn := app.triage.OpenTurnIndex(thread.ID)
 	stampToken := app.triage.MarkFlushSendsInterrupted(thread.ID, interruptedTurn)
-	stoppedID, err := app.triage.MarkUserInterrupt(thread.ID, interruptedTurn, stampToken)
+	stoppedID, err := app.triage.MarkInterrupt(thread.ID, interruptedTurn, stampToken, triage.StoppedByUser)
 	if err != nil {
-		t.Fatalf("MarkUserInterrupt: %v", err)
+		t.Fatalf("MarkInterrupt: %v", err)
 	}
 	if stoppedID == "" {
-		t.Fatal("MarkUserInterrupt returned empty ID")
+		t.Fatal("MarkInterrupt returned empty ID")
 	}
 
 	// "Stopped by user" should be at a higher item_index than the flush rows.

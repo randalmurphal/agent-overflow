@@ -780,9 +780,11 @@ What settles a request, in order:
 4. `thread_cancel` by token settles `cancelled`. A turn stopped some
    other way settles `interrupted` with its cause as the text, and the
    wake states it: the user's Stop, another thread's `thread_cancel`
-   (named), a workflow takeover, a restart of the responder's computer,
+   (named), the user taking the thread over from its workflow, the
+   workflow ending its attempt, a restart of the responder's computer,
    or the thread moving to another computer. Every interrupt names who
-   is stopping the turn, recorded before the interrupt is sent.
+   is stopping the turn, recorded before the interrupt is sent; the
+   stopped thread's timeline row names the same stopper.
 
 A request settles once and its wake fires once, plus one more for a
 late reply. Every settlement and late reply bumps the request's

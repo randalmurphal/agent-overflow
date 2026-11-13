@@ -27,6 +27,7 @@ import (
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
+	"agent-overflow/internal/workflowhost"
 	"github.com/google/uuid"
 )
 
@@ -910,7 +911,7 @@ func TestThreadRequestWaitEndsWhenTheCallersTurnIsInterrupted(t *testing.T) {
 	}()
 	waitUntil(t, 10*time.Second, func() bool { return f.app.requestWaitActive(ack.Token) })
 
-	if err := f.app.interruptTurnForWorkflow(t.Context(), f.caller.ID); err != nil {
+	if err := f.app.interruptTurnForWorkflow(t.Context(), f.caller.ID, workflowhost.InterruptStoppedAttempt); err != nil {
 		t.Fatalf("interruptTurnForWorkflow: %v", err)
 	}
 	select {

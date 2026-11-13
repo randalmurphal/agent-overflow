@@ -59,7 +59,7 @@ type InterruptAndRevertResult struct {
 // conversation rolled back, timeline truncated, composer draft
 // restored, `user_message:reverted` event emitted). When the predicate
 // does not match the method falls back to a plain interrupt
-// (provider Interrupt + triage.MarkUserInterrupt) so the caller can
+// (provider Interrupt + triage.MarkInterrupt) so the caller can
 // roll back any optimistic UI it applied.
 //
 // The frontend pre-checks its local predicate before calling so it
@@ -261,6 +261,9 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 // thread lock. Tolerant of "no session" so a Stop click on a stale
 // thread is a no-op rather than an error.
 func (a *App) runPlainInterruptLocked(threadID string, stop turnStop) error {
+	if !stop.valid() {
+		return fmt.Errorf("interrupt turn %s: no stop cause", threadID)
+	}
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		// No session — nothing to interrupt, nothing to revert.
@@ -290,8 +293,8 @@ func (a *App) runPlainInterruptLocked(threadID string, stop turnStop) error {
 	if a.triage != nil {
 		// Pre-ack sampled turn + token fence, same as InterruptTurn
 		// (round-11, C11-1 / CT11-1).
-		if _, err := a.triage.MarkUserInterrupt(threadID, interruptedTurn, stampToken); err != nil {
-			log.Printf("app: interrupt-and-revert: plain fallback: mark user interrupt: %v", err)
+		if _, err := a.triage.MarkInterrupt(threadID, interruptedTurn, stampToken, stop.label); err != nil {
+			log.Printf("app: interrupt-and-revert: plain fallback: mark interrupt: %v", err)
 			a.emitErrorToThread(threadID, fmt.Sprintf("The turn stopped, but recording the stop failed: %v", err))
 		}
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)

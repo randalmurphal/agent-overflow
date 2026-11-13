@@ -12,22 +12,26 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/workflowhost"
 )
 
-// Whoever stops a requested turn is who the caller's wake names: the
-// interrupted state alone cannot tell the user's Stop from an agent's cancel
-// or a workflow's takeover, so each stop records its cause.
+// Whoever stops a requested turn is who the caller's wake and the stopped
+// thread's timeline name: the interrupted state alone cannot tell the user's
+// Stop from an agent's cancel or a workflow's takeover, so each stop records
+// its cause.
 func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name string
-		stop func(f *requestFixture, threadID string) error
-		want func(f *requestFixture) string
+		name  string
+		stop  func(f *requestFixture, threadID string) error
+		want  func(f *requestFixture) string
+		label func(f *requestFixture) string
 	}{
 		{
-			name: "the user's Stop",
-			stop: func(f *requestFixture, threadID string) error { return f.app.InterruptTurn(threadID, nil) },
-			want: func(*requestFixture) string { return "was interrupted: The user stopped its turn before it answered." },
+			name:  "the user's Stop",
+			stop:  func(f *requestFixture, threadID string) error { return f.app.InterruptTurn(threadID, nil) },
+			want:  func(*requestFixture) string { return "was interrupted: The user stopped its turn before it answered." },
+			label: func(*requestFixture) string { return "Stopped by user" },
 		},
 		{
 			name: "another thread's thread_cancel",
@@ -38,15 +42,27 @@ func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 			want: func(f *requestFixture) string {
 				return fmt.Sprintf("was interrupted: %q (%s) stopped its turn with thread_cancel before it answered.", f.caller.Title, f.caller.ID)
 			},
+			label: func(f *requestFixture) string { return fmt.Sprintf("Stopped by thread %q", f.caller.Title) },
 		},
 		{
-			name: "a workflow takeover",
+			name: "the user taking the thread over from its workflow",
 			stop: func(f *requestFixture, threadID string) error {
-				return f.app.interruptTurnForWorkflow(context.Background(), threadID)
+				return f.app.interruptTurnForWorkflow(context.Background(), threadID, workflowhost.InterruptForTakeover)
 			},
 			want: func(*requestFixture) string {
-				return "was interrupted: A workflow took over the thread before it answered."
+				return "was interrupted: The user took the thread over from its workflow before it answered."
 			},
+			label: func(*requestFixture) string { return "Stopped by user" },
+		},
+		{
+			name: "its workflow ending the attempt",
+			stop: func(f *requestFixture, threadID string) error {
+				return f.app.interruptTurnForWorkflow(context.Background(), threadID, workflowhost.InterruptStoppedAttempt)
+			},
+			want: func(*requestFixture) string {
+				return "was interrupted: Its workflow stopped the turn before it answered."
+			},
+			label: func(*requestFixture) string { return "Stopped by its workflow" },
 		},
 	}
 	for _, testCase := range cases {
@@ -84,6 +100,20 @@ func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 			if want := testCase.want(f); !strings.Contains(message, want) {
 				t.Errorf("wake = %q, want it to contain %q", message, want)
 			}
+			var stopRows []string
+			items, err := f.app.store.ListItems(ack.ThreadID)
+			if err != nil {
+				t.Fatalf("ListItems: %v", err)
+			}
+			for _, item := range items {
+				if item.Kind == "error" && strings.HasPrefix(item.Summary, "Stopped by") {
+					stopRows = append(stopRows, item.Summary)
+				}
+			}
+			if want := testCase.label(f); len(stopRows) != 1 || stopRows[0] != want {
+				t.Errorf("stop rows in the stopped thread = %q, want [%q]", stopRows, want)
+			}
+
 			// The stop leaves with the thread's last open request.
 			waitUntil(t, 10*time.Second, func() bool { return !f.app.holdsTurnStop(ack.ThreadID) })
 		})
@@ -177,8 +207,16 @@ func TestTurnStopRecordLifecycle(t *testing.T) {
 func TestInterruptWithoutACauseIsRefused(t *testing.T) {
 	t.Parallel()
 	app := &App{}
-	if _, err := app.interruptTurnAtIndex(context.Background(), "thread", anyOpenTurn, turnStop{}); err == nil || !strings.Contains(err.Error(), "no stop cause") {
-		t.Fatalf("err = %v, want the missing cause refused", err)
+	for _, stop := range []turnStop{{}, {cause: "c"}, {label: "l"}} {
+		if _, err := app.interruptTurnAtIndex(context.Background(), "thread", anyOpenTurn, stop); err == nil || !strings.Contains(err.Error(), "no stop cause") {
+			t.Errorf("interruptTurnAtIndex(%+v): err = %v, want the missing cause refused", stop, err)
+		}
+		if err := app.runPlainInterruptLocked("thread", stop); err == nil || !strings.Contains(err.Error(), "no stop cause") {
+			t.Errorf("runPlainInterruptLocked(%+v): err = %v, want the missing cause refused", stop, err)
+		}
+	}
+	if err := app.interruptTurnForWorkflow(context.Background(), "thread", 0); err == nil || !strings.Contains(err.Error(), "unknown workflow interrupt") {
+		t.Errorf("interruptTurnForWorkflow(0): err = %v, want it refused", err)
 	}
 }
 

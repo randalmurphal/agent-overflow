@@ -1513,7 +1513,7 @@ func TestInterruptCreatesStoppedSystemError(t *testing.T) {
 // This guard exists inside triage.flipTurnItemsErrored
 // (`if item.IsBackground && item.Kind == itemKindToolCall { continue }`)
 // and has unit coverage at the triage level; this app-level test pins
-// the full InterruptTurn → MarkUserInterrupt → store flip chain for
+// the full InterruptTurn → MarkInterrupt → store flip chain for
 // BOTH providers (Claude and Codex) so a future refactor doesn't break
 // the exemption on one path while keeping it on the other.
 func TestInterrupt_LeavesBackgroundTasksRunning(t *testing.T) {

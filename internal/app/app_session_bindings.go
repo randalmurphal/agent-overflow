@@ -121,7 +121,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 //
 // Spec: on user interrupt, any streaming items on the current turn are
 // flipped to errored with a " — stopped" suffix, and a system `error`
-// row with Summary "Stopped by user" is appended. This happens AFTER
+// row with Summary triage.StoppedByUser is appended. This happens AFTER
 // the provider interrupt signal is sent so the UI gets a consistent
 // "signal sent, now here's the record" ordering. If the triage
 // bookkeeping fails we log — the provider interrupt already fired, so

@@ -140,7 +140,7 @@ func interruptThroughHeldStart(t *testing.T, router *Router, threadID string, he
 func requireStoppedByUserRow(t *testing.T, st *store.Store, threadID, errID string, turnIndex int) {
 	t.Helper()
 	if errID == "" {
-		t.Fatal("MarkUserInterrupt wrote no error row")
+		t.Fatal("MarkInterrupt wrote no error row")
 	}
 	row, ok, err := st.GetThreadItem(threadID, errID)
 	if err != nil || !ok {
@@ -187,7 +187,7 @@ func requireInterruptWritesNothing(t *testing.T, router *Router, st *store.Store
 		t.Fatalf("InterruptTurnIndex = %d, want -1", got)
 	}
 	if errID, err := markUserInterruptForTest(router, threadID); err != nil || errID != "" {
-		t.Fatalf("MarkUserInterrupt = %q, %v; want no row", errID, err)
+		t.Fatalf("MarkInterrupt = %q, %v; want no row", errID, err)
 	}
 	after, err := st.ListItems(threadID)
 	if err != nil {
@@ -214,7 +214,7 @@ func TestInterruptTurnIndex_WaitsOutTurnStartGap(t *testing.T) {
 
 	res := interruptThroughHeldStart(t, router, "t1", held)
 	if res.err != nil {
-		t.Fatalf("MarkUserInterrupt: %v", res.err)
+		t.Fatalf("MarkInterrupt: %v", res.err)
 	}
 	requireStoppedByUserRow(t, st, "t1", res.errID, 1)
 	requireMarkerSurvivesLaterError(t, router, st, "t1", res.errID, 1)
@@ -245,7 +245,7 @@ func TestInterruptTurnIndex_LiveRevertReusedIndexIsCut(t *testing.T) {
 	held := holdTurnStart(t, router, turnStartEvent("t1", 1), false)
 	res := interruptThroughHeldStart(t, router, "t1", held)
 	if res.err != nil {
-		t.Fatalf("MarkUserInterrupt: %v", res.err)
+		t.Fatalf("MarkInterrupt: %v", res.err)
 	}
 	requireStoppedByUserRow(t, st, "t1", res.errID, 1)
 }
@@ -268,7 +268,7 @@ func TestInterruptTurnIndex_WaitsOutStartOfEchoOpenedTurn(t *testing.T) {
 	held := holdTurnStart(t, router, evt, false)
 	res := interruptThroughHeldStart(t, router, "t1", held)
 	if res.err != nil {
-		t.Fatalf("MarkUserInterrupt: %v", res.err)
+		t.Fatalf("MarkInterrupt: %v", res.err)
 	}
 	requireStoppedByUserRow(t, st, "t1", res.errID, 1)
 	requireMarkerSurvivesLaterError(t, router, st, "t1", res.errID, 1)
@@ -360,7 +360,7 @@ func TestInterruptTurnIndex_WaitsOutNextStartBegunBeforeWaiterResumes(t *testing
 		t.Fatal("interrupt still waiting after start N+1 returned")
 	}
 	if res.err != nil {
-		t.Fatalf("MarkUserInterrupt: %v", res.err)
+		t.Fatalf("MarkInterrupt: %v", res.err)
 	}
 	requireStoppedByUserRow(t, st, "t1", res.errID, 2)
 	requireMarkerSurvivesLaterError(t, router, st, "t1", res.errID, 2)
@@ -491,9 +491,9 @@ func TestInterruptTurnIndex_DeadActiveRowAfterFailedSettleIsNotCut(t *testing.T)
 	// Positive control: the store still takes the marker when given the
 	// turn, so the -1 sample alone kept it out.
 	tok := router.MarkFlushSendsInterrupted("t1", 1)
-	errID, err := router.MarkUserInterrupt("t1", 1, tok)
+	errID, err := router.MarkInterrupt("t1", 1, tok, StoppedByUser)
 	if err != nil {
-		t.Fatalf("MarkUserInterrupt control: %v", err)
+		t.Fatalf("MarkInterrupt control: %v", err)
 	}
 	requireStoppedByUserRow(t, st, "t1", errID, 1)
 }
@@ -516,7 +516,43 @@ func TestInterruptTurnIndex_OpenTurnWinsOverRow(t *testing.T) {
 	}
 	errID, err := markUserInterruptForTest(router, "t1")
 	if err != nil {
-		t.Fatalf("MarkUserInterrupt: %v", err)
+		t.Fatalf("MarkInterrupt: %v", err)
 	}
 	requireStoppedByUserRow(t, st, "t1", errID, 1)
+}
+
+// The stop row names who stopped the turn, so a call that names nobody is
+// refused before it writes anything.
+func TestMarkInterruptWritesTheNamedStopAndRefusesNone(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	tok := router.MarkFlushSendsInterrupted("t1", 1)
+	if _, err := router.MarkInterrupt("t1", 1, tok, ""); err == nil {
+		t.Fatal("an interrupt with no stop summary was marked")
+	}
+	errID, err := router.MarkInterrupt("t1", 1, tok, `Stopped by thread "Lead"`)
+	if err != nil {
+		t.Fatalf("MarkInterrupt: %v", err)
+	}
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var summaries []string
+	for _, item := range items {
+		if item.Kind == ItemKindError {
+			summaries = append(summaries, item.Summary)
+			if item.ID != errID {
+				t.Errorf("stop row %s, want %s", item.ID, errID)
+			}
+		}
+	}
+	if len(summaries) != 1 || summaries[0] != `Stopped by thread "Lead"` {
+		t.Fatalf("stop rows = %q, want the named stop alone", summaries)
+	}
 }
