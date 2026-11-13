@@ -307,7 +307,7 @@ describe('review find over the real list', () => {
     props.commentThread = draftRows(() => props.drafts) as typeof props.commentThread;
     await settle(scrollEl);
     const review = {
-      drafts: [draft], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+      drafts: [draft], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
       toggleCollapsed: () => {}, togglePRThread: () => {}, draftEditBodyFor,
     } as unknown as ReviewPaneState;
     const host = mounted.at(-1)!.host;
@@ -371,7 +371,7 @@ describe('review find over the real list', () => {
     const findProps = rawProps({
       findKey: 'pane-fold', title: 'Review', view: 'conflicts' as const, files, root: mounted.at(-1)!.host as HTMLElement | undefined,
       review: {
-        drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+        drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
         conflictCollapsedPaths: new Set<string>(),
         conflictFoldLines: (path: string) => folds.get(path) ?? null,
         expandConflictFold: (path: string, foldId: number) => {
@@ -417,7 +417,7 @@ describe('review find over the real list', () => {
     const findProps = rawProps({
       findKey: 'pane-load', title: 'Review', view: 'diff' as const, files, root: mounted.at(-1)!.host as HTMLElement | undefined,
       review: {
-        drafts: [], prThreads: [], expandedPRThreadIds: new Set<string>(),
+        drafts: [], prThreads: [], shownPRThreads: [], expandedPRThreadIds: new Set<string>(),
         get collapsedPaths() { return collapsed; },
         // Opening the file loads it: the files are read again.
         toggleCollapsed: (at: string) => {
@@ -500,7 +500,7 @@ describe('review find over the real list', () => {
       props: {
         findKey: `pane-wide-${view}`, title: 'Review', view, files, root: host,
         review: {
-          drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+          drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
           conflictCollapsedPaths: new Set<string>(), conflictFoldLines: () => null,
         } as unknown as ReviewPaneState,
         diff: () => body as never, log: () => undefined,
@@ -537,7 +537,7 @@ describe('review find over the real list', () => {
     props.files = files;
     await settle(scrollEl);
     const review = rawProps({
-      drafts: [] as DiffReviewComment[], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+      drafts: [] as DiffReviewComment[], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
       wordWrap: false,
     });
     const findProps = rawProps({
@@ -632,7 +632,7 @@ describe('review find over the real list', () => {
     const findProps = rawProps({
       findKey: 'pane-recount', title: 'Review', view: 'diff' as const, files, root: host as HTMLElement | undefined,
       review: {
-        drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: false,
+        drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: false,
       } as unknown as ReviewPaneState,
       diff: () => body as never, log: () => undefined,
     });
@@ -712,7 +712,7 @@ describe('review find over the real list', () => {
     props.commentThread = draftRows(() => props.drafts) as typeof props.commentThread;
     await settle(scrollEl);
     const review = rawProps({
-      drafts, prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+      drafts, prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
       toggleCollapsed: () => {}, togglePRThread: () => {}, draftEditBodyFor,
     });
     const finder = mount(ReviewPaneFind, {
@@ -767,7 +767,7 @@ describe('review find over the real list', () => {
     const findProps = rawProps({
       findKey: 'pane-edit', title: 'Review', view: 'diff' as const, files: props.files, root: host as HTMLElement | undefined,
       review: {
-        drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: false,
+        drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: false,
       } as unknown as ReviewPaneState,
       diff: () => body as never, log: () => undefined,
     });
@@ -846,7 +846,7 @@ describe('review find over the real list', () => {
     await settle(scrollEl);
     const findProps = rawProps({
       findKey: 'pane-hide', title: 'Review', view: 'diff' as const, files: all as readonly ReviewFile[], root: mounted.at(-1)!.host as HTMLElement | undefined,
-      review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
+      review: { drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
       diff: () => body as never, log: () => undefined,
     });
     const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
@@ -899,7 +899,7 @@ describe('review find over the real list', () => {
     await settle(scrollEl);
     const findProps = rawProps({
       findKey: 'pane-lost', title: 'Review', view: 'diff' as const, files: files as readonly ReviewFile[], root: mounted.at(-1)!.host as HTMLElement | undefined,
-      review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
+      review: { drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
       diff: () => body as never, log: () => undefined,
     });
     const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
@@ -942,7 +942,7 @@ describe('review find over the real list', () => {
     const { props, scrollEl, body } = await mountBody(onePatch('src/wrap.ts', '@@ -1,3000 +1,3000 @@', lines), true);
     const findProps = rawProps({
       findKey: 'pane-wrap', title: 'Review', view: 'diff' as const, files: props.files, root: mounted.at(-1)!.host as HTMLElement | undefined,
-      review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: true } as unknown as ReviewPaneState,
+      review: { drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: true } as unknown as ReviewPaneState,
       diff: () => body as never, log: () => undefined,
     });
     const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
@@ -988,7 +988,7 @@ describe('review find over the real list', () => {
       target: document.body,
       props: {
         findKey: key, title: 'Review', view: 'diff', files, root: host,
-        review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
+        review: { drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
         diff: () => body as never, log: () => undefined,
       },
     });
@@ -1046,7 +1046,7 @@ describe('review find over the real list', () => {
     };
     const findProps = rawProps({
       findKey: 'pane-move', title: 'Review', view: 'diff' as const, files: files as readonly ReviewFile[], root: mounted.at(-1)!.host as HTMLElement | undefined,
-      review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: true } as unknown as ReviewPaneState,
+      review: { drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: true } as unknown as ReviewPaneState,
       diff: () => list as never, log: () => undefined,
     });
     const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
@@ -1096,7 +1096,7 @@ describe('review find over the real list', () => {
       target: document.body,
       props: {
         findKey: 'pane-hidden', title: 'Review', view: 'diff', files: props.files, root: host,
-        review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
+        review: { drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
         diff: () => body as never, log: () => undefined,
       },
     });
@@ -1144,7 +1144,7 @@ describe('review find over the real list', () => {
       target: document.body,
       props: {
         findKey: 'pane-pick', title: 'Review', view: 'diff', files, root: mounted.at(-1)!.host,
-        review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
+        review: { drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
         diff: () => body as never, log: () => undefined,
       },
     });
@@ -1194,7 +1194,7 @@ describe('review find over the real list', () => {
     await settle(scrollEl);
     const findProps = rawProps({
       findKey: 'pane-gap', title: 'Review', view: 'diff' as const, files: files as readonly ReviewFile[], root: host as HTMLElement | undefined,
-      review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: false } as unknown as ReviewPaneState,
+      review: { drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: false } as unknown as ReviewPaneState,
       diff: () => body as never, log: () => undefined,
     });
     const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });

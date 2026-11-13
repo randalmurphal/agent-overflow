@@ -119,7 +119,7 @@ describe('review find over the diff', () => {
       },
       scrollFindBy: () => {},
     };
-    const review = { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState;
+    const review = { drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState;
     const root = document.createElement('div');
     document.body.append(root);
     const { rerender } = render(ReviewPaneFind, {
@@ -170,7 +170,7 @@ describe('review find over the diff', () => {
       scrollFindBy: () => {},
     };
     const review = {
-      drafts: [reply], prThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: expanded, togglePRThread,
+      drafts: [reply], prThreads: [thread], shownPRThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: expanded, togglePRThread,
       draftEditBodyFor: () => null, sentComments: { editing: new Set<string>(), editBodyFor: () => null },
     } as unknown as ReviewPaneState;
     const root = document.createElement('div');

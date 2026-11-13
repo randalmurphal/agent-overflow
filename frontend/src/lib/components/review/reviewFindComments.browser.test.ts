@@ -117,7 +117,7 @@ describe('review find over a draft open in its editor', () => {
     const thread = render(ReviewCommentThread, { target: host, props });
     const files = parseReviewFiles(PATCH);
     const review = {
-      drafts: [DRAFT], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+      drafts: [DRAFT], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
       draftEditBodyFor: (id: string) => (id === DRAFT.id ? props.editBody : null),
     } as unknown as ReviewPaneState;
     render(ReviewPaneFind, {
@@ -160,7 +160,7 @@ describe('review find over a comment its projection misreads', () => {
     render(ReviewThreadComments, { target: host, props: { thread: THREAD, findKeys: true } });
     await waitFor(() => expect(host.querySelectorAll('[data-find-key^="pc:"]').length).toBe(3));
     const review = {
-      drafts: [], prThreads: [THREAD], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS,
+      drafts: [], prThreads: [THREAD], shownPRThreads: [THREAD], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS,
     } as unknown as ReviewPaneState;
     const files = parseReviewFiles(PATCH);
     onTestFinished(() => files[0].body.segments[0].store.dispose());
@@ -217,7 +217,7 @@ describe('review find\'s current comment match across a recount held open', () =
     await waitFor(() => expect(host.querySelectorAll('[data-find-key^="pc:"]').length).toBe(3));
     const files = [...parseReviewFiles(PATCH), ...parseReviewFiles(BIG)];
     onTestFinished(() => { for (const file of files) file.body.segments[0].store.dispose(); });
-    const review = rawProps({ drafts: [] as DiffReviewComment[], prThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS });
+    const review = rawProps({ drafts: [] as DiffReviewComment[], prThreads: [thread], shownPRThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS });
     render(ReviewPaneFind, {
       target: document.body,
       props: {
@@ -240,6 +240,7 @@ describe('review find\'s current comment match across a recount held open', () =
     await waitFor(() => expect(current('pane-held-delete')).toMatchObject({ text: 'needle', node: 'needle third' }));
     const rest: ReviewThread = { ...thread, comments: comments.slice(1) };
     review.prThreads = [rest];
+    review.shownPRThreads = [rest];
     await shown.rerender({ thread: rest, findKeys: true });
     flushSync();
     for (let i = 0; i < 4; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));

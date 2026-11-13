@@ -34,7 +34,8 @@ function detail(): PRDetail {
     url: 'https://github.com/owner/repo/pull/5', additions: 1, deletions: 0, changedFiles: 1,
     viewerIsAuthor: false, reviewDecision: '', latestReviews: [],
     checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
-    mergeability: 'clean',
+    mergeability: 'clean', readiness: { state: 'ready', blockers: [], settled: [] },
+    merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
   };
 }
 

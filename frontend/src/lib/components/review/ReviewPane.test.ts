@@ -1466,6 +1466,8 @@ async function renderPRScope(ci: CIPipeline | null = null) {
   }));
   setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setBindingMock('ListPRReviewThreads', async () => []);
+  // The toolbar's and the banners' reloads re-read the threads.
+  setBindingMock('GetPRDetail', async () => prDetailFor('sha-a'));
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
   seedSourcePanePR();
   const view = render(ReviewPane, {
