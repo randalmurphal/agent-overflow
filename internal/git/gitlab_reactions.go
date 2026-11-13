@@ -73,14 +73,31 @@ type gitlabNoteReactions struct {
 // request, bounded by gitlabCacheMax (the oldest read goes), with the
 // read in flight per key (concurrent cold reads share it) and the
 // failures waiting for their retry.
+//
+// Every invalidation of a key (the viewer's reaction write) and every
+// clear (Core.ResetForgeCaches) starts a new generation. A read records
+// what it learned (store, failed, a host that lacks the field) only in
+// the generation it started in, and a read started in an older one is
+// not joined, so nothing read before an invalidation or a reset outlives
+// it.
 type gitlabReactionMemory struct {
 	mu       sync.Mutex
 	reads    map[string]gitlabNoteReactions
 	flights  map[string]*gitlabReactionFlight
 	failures map[string]gitlabStateEventsRetry
+	// epoch counts clears; gens counts each key's invalidations.
+	epoch uint64
+	gens  map[string]uint64
+}
+
+// gitlabReactionGen is the generation a read started in.
+type gitlabReactionGen struct {
+	key        string
+	epoch, gen uint64
 }
 
 type gitlabReactionFlight struct {
+	gen    gitlabReactionGen
 	done   chan struct{}
 	result gitlabNoteReactions
 	err    error
@@ -89,14 +106,37 @@ type gitlabReactionFlight struct {
 func (m *gitlabReactionMemory) clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.reads, m.failures = nil, nil
+	m.reads, m.failures, m.flights, m.gens = nil, nil, nil, nil
+	m.epoch++
 }
 
-// invalidate drops key's read, so the next one asks the forge.
+// invalidate drops key's read and starts its next generation, so the
+// next read asks the forge and no read in flight is kept.
 func (m *gitlabReactionMemory) invalidate(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.reads, key)
+	delete(m.flights, key)
+	if m.gens == nil {
+		m.gens = map[string]uint64{}
+	}
+	m.gens[key]++
+}
+
+func (m *gitlabReactionMemory) generationLocked(key string) gitlabReactionGen {
+	return gitlabReactionGen{key: key, epoch: m.epoch, gen: m.gens[key]}
+}
+
+// ifCurrent runs record under the memory's lock when gen is still
+// current, and reports whether it ran.
+func (m *gitlabReactionMemory) ifCurrent(gen gitlabReactionGen, record func()) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.generationLocked(gen.key) != gen {
+		return false
+	}
+	record()
+	return true
 }
 
 // fresh is key's read when it covers stamp and is younger than
@@ -119,9 +159,14 @@ func (m *gitlabReactionMemory) waiting(key string, now time.Time) (gitlabStateEv
 	return retry, ok && now.Before(retry.due)
 }
 
-func (m *gitlabReactionMemory) store(key string, read gitlabNoteReactions) {
+// store keeps read for gen's key while gen is current.
+func (m *gitlabReactionMemory) store(gen gitlabReactionGen, read gitlabNoteReactions) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.generationLocked(gen.key) != gen {
+		return
+	}
+	key := gen.key
 	delete(m.failures, key)
 	if m.reads == nil {
 		m.reads = map[string]gitlabNoteReactions{}
@@ -138,10 +183,18 @@ func (m *gitlabReactionMemory) store(key string, read gitlabNoteReactions) {
 	m.reads[key] = read
 }
 
-// failed records key's failure and returns its count.
-func (m *gitlabReactionMemory) failed(key string, due func(failures int) time.Time) gitlabStateEventsRetry {
+// failed records the failure of gen's key while gen is current and
+// returns its count (one past the recorded count when gen is not).
+func (m *gitlabReactionMemory) failed(gen gitlabReactionGen, due func(failures int) time.Time) gitlabStateEventsRetry {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	key := gen.key
+	if m.generationLocked(key) != gen {
+		retry := m.failures[key]
+		retry.failures++
+		retry.due = due(retry.failures)
+		return retry
+	}
 	if m.failures == nil {
 		m.failures = map[string]gitlabStateEventsRetry{}
 	}
@@ -158,22 +211,27 @@ func (m *gitlabReactionMemory) failed(key string, due func(failures int) time.Ti
 	return retry
 }
 
-// do runs read for key, or joins the one in flight; it runs past the
-// caller that started it, each waiter bounded by its own context.
-func (m *gitlabReactionMemory) do(ctx context.Context, key string, read func(context.Context) (gitlabNoteReactions, error)) (gitlabNoteReactions, error) {
+// do runs read for key, or joins the one in flight (an invalidation or a
+// clear drops it, so it is always of key's current generation); it runs past the caller that started it, each waiter
+// bounded by its own context. It answers the generation the read
+// started in, which store and failed record against.
+func (m *gitlabReactionMemory) do(ctx context.Context, key string, read func(context.Context) (gitlabNoteReactions, error)) (gitlabNoteReactions, gitlabReactionGen, error) {
 	m.mu.Lock()
 	if m.flights == nil {
 		m.flights = map[string]*gitlabReactionFlight{}
 	}
+	gen := m.generationLocked(key)
 	flight := m.flights[key]
 	if flight == nil {
-		flight = &gitlabReactionFlight{done: make(chan struct{})}
+		flight = &gitlabReactionFlight{gen: gen, done: make(chan struct{})}
 		m.flights[key] = flight
 		go func() {
 			result, err := read(context.WithoutCancel(ctx))
 			m.mu.Lock()
 			flight.result, flight.err = result, err
-			delete(m.flights, key)
+			if m.flights[key] == flight {
+				delete(m.flights, key)
+			}
 			m.mu.Unlock()
 			close(flight.done)
 		}()
@@ -181,9 +239,9 @@ func (m *gitlabReactionMemory) do(ctx context.Context, key string, read func(con
 	m.mu.Unlock()
 	select {
 	case <-flight.done:
-		return flight.result, flight.err
+		return flight.result, flight.gen, flight.err
 	case <-ctx.Done():
-		return gitlabNoteReactions{}, ctx.Err()
+		return gitlabNoteReactions{}, flight.gen, ctx.Err()
 	}
 }
 
@@ -229,7 +287,8 @@ func (f *gitlabForge) fillReactions(ctx context.Context, client *forgeapi.Client
 		if _, waiting := f.reactions.waiting(key, now); waiting {
 			return unavailable
 		}
-		read, err = f.reactions.do(ctx, key, func(ctx context.Context) (gitlabNoteReactions, error) {
+		var gen gitlabReactionGen
+		read, gen, err = f.reactions.do(ctx, key, func(ctx context.Context) (gitlabNoteReactions, error) {
 			return readGitLabNoteReactions(ctx, client, ref)
 		})
 		if err != nil {
@@ -237,16 +296,16 @@ func (f *gitlabForge) fillReactions(ctx context.Context, client *forgeapi.Client
 				return unavailable
 			}
 			if gitlabLacksAwardEmoji(err) {
-				f.noNoteAwardEmoji.put(strings.ToLower(ref.Host), true, f.core.nowFn())
+				f.reactions.ifCurrent(gen, func() { f.noNoteAwardEmoji.put(strings.ToLower(ref.Host), true, f.core.nowFn()) })
 				log.Printf("gitlab: %s has no Note.awardEmoji; reactions are not read there for %s: %v", ref.Host, gitlabCacheTTL, err)
 				return "Reactions are not shown: this GitLab server does not report them."
 			}
-			retry := f.reactions.failed(key, func(failures int) time.Time { return now.Add(f.core.prLookupErrorDelay(failures)) })
+			retry := f.reactions.failed(gen, func(failures int) time.Time { return now.Add(f.core.prLookupErrorDelay(failures)) })
 			log.Printf("gitlab: reactions of %s!%d on %s unavailable until %s (failure %d): %v", ref.Project(), ref.Number, ref.Host, retry.due.Format(time.RFC3339), retry.failures, err)
 			return unavailable
 		}
 		read.stamp, read.readAt = stamp, now
-		f.reactions.store(key, read)
+		f.reactions.store(gen, read)
 	}
 	viewer := f.viewerLogin(ctx, client, ref.Host)
 	for i := range threads {

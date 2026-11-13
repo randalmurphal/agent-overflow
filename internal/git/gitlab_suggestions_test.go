@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -150,11 +151,24 @@ func countOps(calls *forgeAPICalls, op string) int {
 // holds notes 1 and 2, answering MRNoteReactions through reactions.
 func gitlabReactionsCore(t *testing.T, reactions func() forgeAPIAnswer) (*Core, *forgeAPICalls, *atomic.Int64) {
 	t.Helper()
-	mr := gitlabTestProject + "/merge_requests/7"
 	var discussions atomic.Value
-	discussions.Store(`[{"id":"d","notes":[{"id":1,"body":"a","author":{"username":"rev"}},{"id":2,"body":"b","author":{"username":"me"}}]}]`)
+	discussions.Store(gitlabReactionsDiscussions)
+	return gitlabReactionsCoreWith(t, reactions, &discussions)
+}
+
+const gitlabReactionsDiscussions = `[{"id":"d","notes":[{"id":1,"body":"a","author":{"username":"rev"}},{"id":2,"body":"b","author":{"username":"me"}}]}]`
+
+// gitlabReactionsCoreWith is gitlabReactionsCore answering the
+// discussions discussions holds, and the viewer's award on note 1.
+func gitlabReactionsCoreWith(t *testing.T, reactions func() forgeAPIAnswer, discussions *atomic.Value) (*Core, *forgeAPICalls, *atomic.Int64) {
+	t.Helper()
+	mr := gitlabTestProject + "/merge_requests/7"
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
+		case call.Method == http.MethodGet && call.Path == mr+"/notes/1/award_emoji?per_page=100":
+			return forgeAPIAnswer{Body: `[]`}
+		case call.Method == http.MethodPost && call.Path == mr+"/notes/1/award_emoji":
+			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":80,"name":"heart","user":{"username":"me"}}`}
 		case call.Path == mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 		case strings.HasPrefix(call.Path, mr+"/discussions?"):
@@ -348,5 +362,259 @@ func TestGitLabReactionWrites(t *testing.T) {
 	postAnswer.Store(forgeAPIAnswer{Status: http.StatusBadGateway, Body: `{}`})
 	if err := core.SetPRCommentReaction(t.Context(), ref, target, "thumbsup", true); !unconfirmed(err) {
 		t.Fatalf("an unanswered award = %v", err)
+	}
+}
+
+// gitlabBlockedReactions answers MRNoteReactions with answer, holding the
+// first request until release closes, and signals started when it
+// arrives.
+func gitlabBlockedReactions(answer func() forgeAPIAnswer) (reactions func() forgeAPIAnswer, started, release chan struct{}) {
+	started, release = make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	return func() forgeAPIAnswer {
+		if first.CompareAndSwap(false, true) {
+			close(started)
+			<-release
+		}
+		return answer()
+	}, started, release
+}
+
+// A reactions read in flight across the viewer's reaction write, or
+// across ResetForgeCaches, is not kept, and a read after either does not
+// join it: the next read asks the forge.
+func TestGitLabReactionsReadAcrossAnInvalidation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		invalidate func(t *testing.T, core *Core)
+	}{
+		{"the viewer's reaction write", func(t *testing.T, core *Core) {
+			if err := core.SetPRCommentReaction(t.Context(), gitlabTestRef(7), CommentTarget{ThreadID: "d", CommentID: "1"}, "heart", true); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a reset", func(_ *testing.T, core *Core) { core.ResetForgeCaches() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reactions, started, release := gitlabBlockedReactions(func() forgeAPIAnswer {
+				return gitlabReactionsAnswer(gitlabNoteAwards("gid://gitlab/DiffNote/1", "rocket:rev"))
+			})
+			core, calls, _ := gitlabReactionsCore(t, reactions)
+			t.Cleanup(func() { releaseHeld(release) })
+			read := func() PRRead {
+				// Bounded, so a read that wrongly waits on the held one
+				// fails here instead of hanging.
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				out, err := core.ReadPR(ctx, gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
+				if err != nil {
+					t.Error(err)
+				}
+				return out
+			}
+			done := make(chan PRRead, 1)
+			go func() { done <- read() }()
+			<-started
+			tc.invalidate(t, core)
+			// A read after the invalidation starts its own request
+			// instead of joining the one in flight.
+			if after := read(); len(after.Threads[0].Comments[0].Reactions) != 1 || countOps(calls, "MRNoteReactions") != 2 {
+				t.Fatalf("a read after the invalidation joined the stale one: %d requests", countOps(calls, "MRNoteReactions"))
+			}
+			releaseHeld(release)
+			<-done
+			// The stale read finished last; it must not replace the read
+			// made after the invalidation, and nothing it learned is kept
+			// past the next change of generation.
+			before := countOps(calls, "MRNoteReactions")
+			read()
+			if n := countOps(calls, "MRNoteReactions"); n != before {
+				t.Fatalf("the current read was not kept: %d requests after %d", n, before)
+			}
+		})
+	}
+}
+
+// The same, for a read whose answer is stored: started before the
+// invalidation and finished after it, it is not kept.
+func TestGitLabReactionsStaleReadIsNotStored(t *testing.T) {
+	t.Parallel()
+	for _, reset := range []bool{false, true} {
+		reactions, started, release := gitlabBlockedReactions(func() forgeAPIAnswer { return gitlabReactionsAnswer() })
+		core, calls, _ := gitlabReactionsCore(t, reactions)
+		t.Cleanup(func() { releaseHeld(release) })
+		done := make(chan error, 1)
+		go func() {
+			_, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
+			done <- err
+		}()
+		<-started
+		if reset {
+			core.ResetForgeCaches()
+		} else if err := core.SetPRCommentReaction(t.Context(), gitlabTestRef(7), CommentTarget{ThreadID: "d", CommentID: "1"}, "heart", true); err != nil {
+			t.Fatal(err)
+		}
+		releaseHeld(release)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if _, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if n := countOps(calls, "MRNoteReactions"); n != 2 {
+			t.Fatalf("reset %t: the read in flight was kept (%d requests)", reset, n)
+		}
+	}
+}
+
+// A failure and a server without the field learned by a read that began
+// before a reset are not kept past it.
+func TestGitLabReactionsFailureAcrossAReset(t *testing.T) {
+	t.Parallel()
+	for name, answer := range map[string]forgeAPIAnswer{
+		"failure":       {Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`},
+		"lacking field": {Body: `{"errors":[{"message":"Field 'awardEmoji' doesn't exist on type 'Note'"}]}`},
+	} {
+		var calls atomic.Int32
+		reactions, started, release := gitlabBlockedReactions(func() forgeAPIAnswer {
+			if calls.Add(1) == 1 {
+				return answer
+			}
+			return gitlabReactionsAnswer()
+		})
+		core, ops, _ := gitlabReactionsCore(t, reactions)
+		t.Cleanup(func() { releaseHeld(release) })
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
+		}()
+		<-started
+		core.ResetForgeCaches()
+		releaseHeld(release)
+		<-done
+		read, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
+		if err != nil || read.ReactionsUnavailable != "" || countOps(ops, "MRNoteReactions") != 2 {
+			t.Fatalf("%s: kept past the reset: %q, %d requests, %v", name, read.ReactionsUnavailable, countOps(ops, "MRNoteReactions"), err)
+		}
+	}
+}
+
+// Two cold reads at once share one request.
+func TestGitLabReactionsConcurrentColdReadsShareOneRequest(t *testing.T) {
+	t.Parallel()
+	reactions, started, release := gitlabBlockedReactions(func() forgeAPIAnswer {
+		return gitlabReactionsAnswer(gitlabNoteAwards("gid://gitlab/DiffNote/1", "rocket:rev"))
+	})
+	core, calls, _ := gitlabReactionsCore(t, reactions)
+	t.Cleanup(func() { releaseHeld(release) })
+	results := make(chan PRRead, 2)
+	for range 2 {
+		go func() {
+			out, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
+			if err != nil {
+				t.Error(err)
+			}
+			results <- out
+		}()
+	}
+	<-started
+	// The second read reaches the flight while the first is held: wait
+	// until both reads made their discussions request.
+	deadline := time.Now().Add(5 * time.Second)
+	for countOps(calls, "GET "+gitlabTestProject+"/merge_requests/7/discussions?per_page=100") < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
+	releaseHeld(release)
+	for range 2 {
+		if out := <-results; len(out.Threads[0].Comments[0].Reactions) != 1 {
+			t.Fatalf("reactions = %+v", out.Threads[0].Comments[0].Reactions)
+		}
+	}
+	if n := countOps(calls, "MRNoteReactions"); n != 1 {
+		t.Fatalf("two cold reads made %d requests", n)
+	}
+}
+
+// A note added or removed is a new read even while the last one is
+// fresh.
+func TestGitLabReactionsReadAgainWhenTheNotesChange(t *testing.T) {
+	t.Parallel()
+	var discussions atomic.Value
+	discussions.Store(gitlabReactionsDiscussions)
+	core, calls, _ := gitlabReactionsCoreWith(t, func() forgeAPIAnswer { return gitlabReactionsAnswer() }, &discussions)
+	read := func() {
+		t.Helper()
+		if _, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read()
+	read()
+	discussions.Store(strings.Replace(gitlabReactionsDiscussions, `]}]`, `,{"id":3,"body":"c","author":{"username":"rev"}}]}]`, 1))
+	read()
+	if n := countOps(calls, "MRNoteReactions"); n != 2 {
+		t.Fatalf("a new note made %d reads, want 2", n)
+	}
+	discussions.Store(gitlabReactionsDiscussions)
+	read()
+	if n := countOps(calls, "MRNoteReactions"); n != 3 {
+		t.Fatalf("a removed note made %d reads, want 3", n)
+	}
+}
+
+// Past the read's bounds the reactions are partial and say so: a note
+// with more than one page of awards carries none, and notes past the
+// last page carry none.
+func TestGitLabReactionsTruncation(t *testing.T) {
+	t.Parallel()
+	hundred := make([]string, 100)
+	for i := range hundred {
+		hundred[i] = fmt.Sprintf("e%d:rev", i)
+	}
+	many := strings.Replace(gitlabNoteAwards("gid://gitlab/DiffNote/1", hundred...), `"hasNextPage":false`, `"hasNextPage":true`, 1)
+	core, _, _ := gitlabReactionsCore(t, func() forgeAPIAnswer {
+		return gitlabReactionsAnswer(many, gitlabNoteAwards("gid://gitlab/DiscussionNote/2", "eyes:rev"))
+	})
+	read, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
+	if err != nil || read.ReactionsUnavailable != "Reactions are not shown on comments with more than 100." ||
+		read.Threads[0].Comments[0].Reactions != nil || len(read.Threads[0].Comments[1].Reactions) != 1 {
+		t.Fatalf("a note with more than 100 awards = %q, %+v, %v", read.ReactionsUnavailable, read.Threads[0].Comments, err)
+	}
+
+	// 1000 notes in 10 pages and more after: the read stops there.
+	var page atomic.Int32
+	paged, calls, _ := gitlabReactionsCore(t, func() forgeAPIAnswer {
+		n := page.Add(1)
+		nodes := make([]string, 100)
+		for i := range nodes {
+			id := int(n-1)*100 + i + 1
+			awards := []string{}
+			if id == 2 {
+				awards = []string{"eyes:rev"}
+			}
+			nodes[i] = gitlabNoteAwards(fmt.Sprintf("gid://gitlab/Note/%d", id), awards...)
+		}
+		return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"project":{"mergeRequest":{"notes":{"pageInfo":{"hasNextPage":true,"endCursor":"c%d"},"nodes":[%s]}}}}}`, n, strings.Join(nodes, ","))}
+	})
+	read, err = paged.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
+	if err != nil || read.ReactionsUnavailable != "Reactions are shown on the first 1000 comments only." || len(read.Threads[0].Comments[1].Reactions) != 1 {
+		t.Fatalf("1000 notes and more = %q, %v", read.ReactionsUnavailable, err)
+	}
+	if n := countOps(calls, "MRNoteReactions"); n != gitlabReactionNotesMaxPages {
+		t.Fatalf("pages read = %d", n)
+	}
+}
+
+// releaseHeld releases the held reactions request once; a test that
+// fails while it is held still lets its server close.
+func releaseHeld(release chan struct{}) {
+	select {
+	case <-release:
+	default:
+		close(release)
 	}
 }
