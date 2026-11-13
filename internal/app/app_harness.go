@@ -275,6 +275,8 @@ func (h *harnessHost) ClearUIState() error {
 	return nil
 }
 
+func (h *harnessHost) ResetForgeCaches() { h.app.gitCore().ResetForgeCaches() }
+
 func (h *harnessHost) ResetSessionImporter() {
 	h.app.sessionImporter().Reset()
 }

@@ -293,3 +293,114 @@ func TestGitLabManageControlsFollowSchemaAndCheck(t *testing.T) {
 		})
 	}
 }
+
+// A harness reset forgets each host's schema answer and each merge
+// request's state events backoff: the next read probes again and reads
+// the state events at once.
+func TestResetForgeCachesForgetsSchemaAndBackoff(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	schema, eventsFail, eventReads := gitlabSchemaBare, true, 0
+	core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case call.Op == "PRManageSchema":
+			return forgeAPIAnswer{Body: schema}, true
+		case call.Op == "PRManageChecks":
+			return forgeAPIAnswer{Body: `{"data":{"project":{"mergeRequest":{"userPermissions":{"updateMergeRequest":true,"adminMergeRequest":true},` +
+				`"reviewers":{"nodes":[]},"assignees":{"nodes":[]},"labels":{"nodes":[]},"mergeabilityChecks":[]}}}}`}, true
+		case strings.Contains(call.Path, "/resource_state_events"):
+			eventReads++
+			if eventsFail {
+				return forgeAPIAnswer{Status: http.StatusInternalServerError, Body: `{"message":"500"}`}, true
+			}
+			return forgeAPIAnswer{Body: `[{"id":1,"user":{"username":"u"},"created_at":"t","state":"closed"}]`}, true
+		}
+		return forgeAPIAnswer{}, false
+	})
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	core.nowFn = func() time.Time { return now }
+	read := func() PRRead {
+		t.Helper()
+		out, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Detail: true, Events: true}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if got := read().Detail.Manage.Can; got.Reviewers || got.Rerequest {
+		t.Fatalf("a bare server's controls = %+v", got)
+	}
+	read()
+	mu.Lock()
+	schema, eventsFail = gitlabSchemaAll, false
+	reads := eventReads
+	mu.Unlock()
+	if probes := countOp(calls, "PRManageSchema"); probes != 1 || reads != 1 {
+		t.Fatalf("warm: %d probes, %d state events reads", probes, reads)
+	}
+	core.ResetForgeCaches()
+	got := read()
+	mu.Lock()
+	reads = eventReads
+	mu.Unlock()
+	if !got.Detail.Manage.Can.Reviewers || !got.Detail.Manage.Can.Rerequest || countOp(calls, "PRManageSchema") != 2 {
+		t.Fatalf("after the reset: controls %+v, %d probes", got.Detail.Manage.Can, countOp(calls, "PRManageSchema"))
+	}
+	closed := slices.ContainsFunc(got.Events, func(e ReviewEvent) bool { return e.ID == "state:1" })
+	if reads != 2 || !closed {
+		t.Fatalf("after the reset: %d state events reads, close shown %v", reads, closed)
+	}
+	// The project's merge settings and the viewer are read again too.
+	paths := gitlabPaths(calls)
+	if n, v := countPrefix(paths, "GET "+gitlabTestProject), countPrefix(paths, "GET user"); n != 2 || v != 2 {
+		t.Fatalf("project reads %d, viewer reads %d over a reset, want 2 each", n, v)
+	}
+}
+
+func countOp(calls *forgeAPICalls, op string) int {
+	n := 0
+	for _, call := range calls.all() {
+		if call.Op == op {
+			n++
+		}
+	}
+	return n
+}
+
+// ResetForgeCaches reaches every cache of both adapters.
+func TestResetForgeCachesReachesEveryAdapterCache(t *testing.T) {
+	t.Parallel()
+	core := NewCore()
+	now := time.Now()
+	gl := core.forges["gitlab"].(*gitlabForge)
+	gh := core.forges["github"].(*githubForge)
+	gl.projects.put("k", gitlabProjectSettings{}, now)
+	gl.viewers.put("k", gitlabViewer{}, now)
+	gl.noApprovalState.put("k", true, now)
+	gl.noCIJobCancelPermission.put("k", true, now)
+	gl.schemas.put("k", gitlabSchema{}, now)
+	gl.routes.remember("k")
+	gl.stateEventRetries.failed("k", gitlabStateEventsRetry{failures: 1, due: now.Add(time.Hour)})
+	state, start, _ := gl.pipelineTags.beginListing("k", []int64{1})
+	gl.pipelineTags.endListing("k", state, start, map[int64]bool{1: true})
+	gh.ciPermissions.put("k", CIAction(""), now.Add(time.Hour))
+	gh.ciArtifacts.put("k", true, now.Add(time.Hour))
+
+	core.ResetForgeCaches()
+
+	_, project := gl.projects.get("k", now)
+	_, viewer := gl.viewers.get("k", now)
+	_, approval := gl.noApprovalState.get("k", now)
+	_, cancel := gl.noCIJobCancelPermission.get("k", now)
+	_, schema := gl.schemas.get("k", now)
+	due, _ := gl.stateEventRetries.due("k", now)
+	_, _, known := gl.pipelineTags.beginListing("k", []int64{1})
+	_, _, permission := gh.ciPermissions.get("k", now)
+	_, _, artifacts := gh.ciArtifacts.get("k", now)
+	if project || viewer || approval || cancel || schema || gl.routes.get("k") || !due || len(known) != 0 || permission || artifacts {
+		t.Fatalf("kept: project %v viewer %v approval %v cancel %v schema %v route %v backoff %v tags %v permission %v artifacts %v",
+			project, viewer, approval, cancel, schema, gl.routes.get("k"), !due, known, permission, artifacts)
+	}
+}

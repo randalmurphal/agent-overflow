@@ -48,6 +48,19 @@ type gitlabForge struct {
 	stateEventRetries gitlabStateEventRetries
 }
 
+// resetCaches forgets what the adapter remembers of each host and
+// project (Core.ResetForgeCaches).
+func (f *gitlabForge) resetCaches() {
+	f.projects.clear()
+	f.viewers.clear()
+	f.noApprovalState.clear()
+	f.noCIJobCancelPermission.clear()
+	f.routes.clear()
+	f.pipelineTags.forget()
+	f.schemas.clear()
+	f.stateEventRetries.clear()
+}
+
 func (f *gitlabForge) ID() string         { return "gitlab" }
 func (f *gitlabForge) BinaryName() string { return "glab" }
 

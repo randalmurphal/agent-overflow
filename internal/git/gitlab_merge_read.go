@@ -86,6 +86,13 @@ func (c *gitlabCache[V]) get(key string, now time.Time) (V, bool) {
 	return entry.value, true
 }
 
+// clear forgets every entry.
+func (c *gitlabCache[V]) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = nil
+}
+
 func (c *gitlabCache[V]) put(key string, value V, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

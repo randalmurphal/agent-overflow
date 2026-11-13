@@ -26,6 +26,12 @@ type gitlabRouteMemory struct {
 	legacyCancel map[string]bool
 }
 
+func (m *gitlabRouteMemory) clear() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.legacyCancel = nil
+}
+
 func (m *gitlabRouteMemory) get(host string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -342,6 +342,12 @@ func (r *gitlabStateEventRetries) due(key string, now time.Time) (bool, int) {
 	return !ok || !now.Before(retry.due), retry.failures
 }
 
+func (r *gitlabStateEventRetries) clear() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entries = nil
+}
+
 func (r *gitlabStateEventRetries) succeeded(key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
