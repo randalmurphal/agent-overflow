@@ -4,9 +4,9 @@
 // commit, a non-image binary) on GitHub and GitLab. Covered: the commit list
 // the picker reads; a run of commits is the two-tree diff of its ends, and a
 // run covering the whole PR is refused; an image's sizes and both sides'
-// bytes arrive at the sides the open pinned (full object IDs on its answer),
-// over the single-use URL the webview fetches; an SVG answers sandboxed. The
-// UI that shows them is covered by its own specs.
+// bytes arrive at the sides the open pinned (held on the server under the
+// open's files handle), over the single-use URL the webview fetches; an SVG
+// answers sandboxed. The UI that shows them is covered by its own specs.
 
 import { randomBytes } from 'node:crypto';
 
@@ -15,8 +15,7 @@ import { expect, test, type SeedResult } from './fixtures.js';
 import { DIAGRAM_SVG, expectEveryForgeCallHandled, imagePullHistory, publishPullRequest, solidPNG } from './forge-helpers.js';
 
 interface Commit { sha: string; subject: string }
-interface Sides { old: string; new?: string }
-interface Opened { id: string; chunk: { data: string; nextOffset: number; eof: boolean }; sides?: Sides }
+interface Opened { id: string; chunk: { data: string; nextOffset: number; eof: boolean }; filesHandle?: string; sidesError?: string }
 interface ImageSide { exists: boolean; size: number; url?: string; mimeType?: string; overCap?: boolean; notImage?: boolean }
 interface Sizes { path: string; old: { exists: boolean; size: number }; new: { exists: boolean; size: number }; error?: string }
 
@@ -31,11 +30,11 @@ async function readPatch(harness: HarnessApp, opened: Opened): Promise<string> {
   return patch;
 }
 
-/** The sides an open pinned: two full object IDs for a PR's commits. */
-function pinned(opened: Opened): Sides {
-  expect(opened.sides?.old).toMatch(/^[0-9a-f]{40}$/);
-  expect(opened.sides?.new).toMatch(/^[0-9a-f]{40}$/);
-  return opened.sides!;
+/** The handle an open kept its pinned sides under. */
+function pinned(opened: Opened): string {
+  expect(opened.sidesError).toBeUndefined();
+  expect(opened.filesHandle).toBeTruthy();
+  return opened.filesHandle!;
 }
 
 for (const forge of ['github', 'gitlab'] as const) {
@@ -61,7 +60,7 @@ for (const forge of ['github', 'gitlab'] as const) {
     // restyle logo..merge: the logo change, old.png's delete and the merged
     // diagram; nothing the first or later commits did.
     const runOpened = await harness.rpc<Opened>('OpenPRCommitDiff', ws, pr, revision, restyle.sha, merge.sha, false, true);
-    const runSides = pinned(runOpened);
+    const runHandle = pinned(runOpened);
     const run = await readPatch(harness, runOpened);
     expect(run).toContain('b/logo.png');
     expect(run).toContain('a/old.png');
@@ -71,14 +70,14 @@ for (const forge of ['github', 'gitlab'] as const) {
     await expect(harness.rpc('OpenPRCommitDiff', ws, pr, revision, icon.sha, blob.sha, false, true)).rejects.toThrow(/covers every commit/);
     await expect(harness.rpc('OpenPRCommitDiff', ws, pr, revision, blob.sha, icon.sha, false, true)).rejects.toThrow(/out of order/);
 
-    const logo = await harness.rpc<{ old: ImageSide; new: ImageSide }>('GetReviewDiffImage', ws, runSides, { path: 'logo.png' });
+    const logo = await harness.rpc<{ old: ImageSide; new: ImageSide }>('GetReviewDiffImage', ws, runHandle, { path: 'logo.png' });
     for (const [side, want] of [[logo.old, solidPNG(16, 16, [200, 40, 40])], [logo.new, solidPNG(32, 32, [40, 200, 200])]] as const) {
       expect(side).toMatchObject({ exists: true, size: want.length, mimeType: 'image/png' });
       const response = await fetch(new URL(side.url!, harness.url));
       expect(response.status).toBe(200);
       expect(new Uint8Array(await response.arrayBuffer())).toEqual(want);
     }
-    const diagram = await harness.rpc<{ old: ImageSide; new: ImageSide }>('GetReviewDiffImage', ws, runSides, { path: 'diagram.svg' });
+    const diagram = await harness.rpc<{ old: ImageSide; new: ImageSide }>('GetReviewDiffImage', ws, runHandle, { path: 'diagram.svg' });
     expect(diagram.old).toEqual({ exists: false, size: 0 });
     const svg = await fetch(new URL(diagram.new.url!, harness.url));
     expect(await svg.text()).toBe(DIAGRAM_SVG);
@@ -88,10 +87,10 @@ for (const forge of ['github', 'gitlab'] as const) {
     // The whole PR: sizes for every binary file, a pure rename's sides
     // equal, a deleted file's new side absent, a non-image's bytes refused.
     const wholeOpened = await harness.rpc<Opened>('OpenPRDiff', ws, pr, revision, false, true);
-    const wholeSides = pinned(wholeOpened);
+    const wholeHandle = pinned(wholeOpened);
     const whole = await readPatch(harness, wholeOpened);
     expect(whole).toContain('b/img/moved.png');
-    const sizes = await harness.rpc<Sizes[]>('GetReviewDiffFileSizes', ws, wholeSides, [
+    const sizes = await harness.rpc<Sizes[]>('GetReviewDiffFileSizes', ws, wholeHandle, [
       { path: 'img/moved.png', oldPath: 'moved.png' },
       { path: 'old.png' },
       { path: 'data.bin' },
@@ -104,8 +103,10 @@ for (const forge of ['github', 'gitlab'] as const) {
       { path: 'data.bin', old: { exists: false, size: 0 }, new: { exists: true, size: 8 } },
       { path: 'img', old: { exists: false, size: 0 }, new: { exists: false, size: 0 }, error: 'img is not a file' },
     ]);
-    const data = await harness.rpc<{ new: ImageSide }>('GetReviewDiffImage', ws, wholeSides, { path: 'data.bin' });
+    const data = await harness.rpc<{ new: ImageSide }>('GetReviewDiffImage', ws, wholeHandle, { path: 'data.bin' });
     expect(data.new).toEqual({ exists: true, size: 8, notImage: true });
+    await expect(harness.rpc('GetReviewDiffImage', ws, 'no-such-handle', { path: 'data.bin' }))
+      .rejects.toThrow("This diff's files are no longer held; reload the diff.");
     await expectEveryForgeCallHandled(harness);
   });
 }

@@ -42,48 +42,71 @@ func SplitPatchFiles(patch string) []PatchFileSeed {
 
 	var out []PatchFileSeed
 	var cur []string
-	var body unidiff.Body
-	path := ""
-	finish := func() {
+	var paths PatchPaths
+	finish := func(path string) {
 		if len(cur) > 0 && path != "" {
 			out = append(out, PatchFileSeed{Path: path, Patch: strings.Join(cur, "\n")})
 		}
 		cur = nil
-		path = ""
 	}
-
 	for _, line := range lines {
-		if strings.HasPrefix(line, "diff --git ") {
-			finish()
-			parts := strings.Fields(line)
-			if len(parts) > 3 {
-				path = cleanPatchPath(parts[3])
-			}
-			cur = []string{line}
-			body = unidiff.Body{}
-			continue
+		if path, closed := paths.Line(line); closed {
+			finish(path)
 		}
-		if cur == nil {
-			continue
-		}
-		if body.Next(line) != unidiff.Outside {
+		if paths.open {
 			cur = append(cur, line)
-			continue
 		}
-		// Mirrors parsePatchFiles' unconditional assignment: a bogus
-		// empty "rename to" clears the path there too.
-		if rest, ok := strings.CutPrefix(line, "rename to "); ok {
-			path = cleanPatchPath(rest)
-		}
-		if rest, ok := strings.CutPrefix(line, "+++ "); ok {
-			if next := cleanPatchPath(rest); next != "" && next != "/dev/null" {
-				path = next
-			}
-		}
-		cur = append(cur, line)
 	}
-	finish()
+	if path, closed := paths.End(); closed {
+		finish(path)
+	}
 	return out
+}
+
+// PatchPaths follows a unified diff one line at a time and reports each
+// file's path as SplitPatchFiles keys it, holding only the current file's
+// path and hunk state, so a patch of any length can be scanned in pieces.
+type PatchPaths struct {
+	open bool
+	path string
+	body unidiff.Body
+}
+
+// Line takes the next line, without its newline, and answers the path of
+// the file it closes: closed is true when line opens another file and a
+// file was open (its path may be empty, which SplitPatchFiles drops).
+func (p *PatchPaths) Line(line string) (path string, closed bool) {
+	if strings.HasPrefix(line, "diff --git ") {
+		path, closed = p.path, p.open
+		p.open = true
+		p.path = ""
+		if parts := strings.Fields(line); len(parts) > 3 {
+			p.path = cleanPatchPath(parts[3])
+		}
+		p.body = unidiff.Body{}
+		return path, closed
+	}
+	if !p.open || p.body.Next(line) != unidiff.Outside {
+		return "", false
+	}
+	// Mirrors parsePatchFiles' unconditional assignment: a bogus empty
+	// "rename to" clears the path there too.
+	if rest, ok := strings.CutPrefix(line, "rename to "); ok {
+		p.path = cleanPatchPath(rest)
+	}
+	if rest, ok := strings.CutPrefix(line, "+++ "); ok {
+		if next := cleanPatchPath(rest); next != "" && next != "/dev/null" {
+			p.path = next
+		}
+	}
+	return "", false
+}
+
+// End answers the path of the file open at the end of the patch.
+func (p *PatchPaths) End() (path string, closed bool) {
+	path, closed = p.path, p.open
+	*p = PatchPaths{}
+	return path, closed
 }
 
 // cleanPatchPath mirrors the frontend's cleanPath: strip one leading

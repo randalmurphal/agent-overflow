@@ -476,7 +476,17 @@ func (a *App) editFileSnapshot(threadID string, req DiffContextRequest) (string,
 		}
 		return content, found
 	}
-	content, found, err := a.store.GetLatestTurnEditFileSnapshot(threadID, req.EditTurnIndex, req.Path)
+	// The turn's last edit of the path decides: an earlier edit's snapshot
+	// is not the file the turn left.
+	payloadID, found, err := a.lastTurnEditOfPath(context.Background(), threadID, req.EditTurnIndex, req.Path)
+	if err != nil {
+		log.Printf("app: find turn edit of %s/%d %s: %v", threadID, req.EditTurnIndex, req.Path, err)
+		return "", false
+	}
+	if !found {
+		return "", false
+	}
+	content, found, err := a.store.GetEditFileSnapshot(threadID, payloadID, req.Path)
 	if err != nil {
 		log.Printf("app: read turn edit file snapshot %s/%d %s: %v", threadID, req.EditTurnIndex, req.Path, err)
 		return "", false

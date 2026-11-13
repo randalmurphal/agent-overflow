@@ -281,6 +281,7 @@ func (h *harnessHost) ResetSessionImporter() {
 
 func (h *harnessHost) DropReviewDiffImages() {
 	h.app.reviewDiffImages().Clear()
+	h.app.reviewDiffFiles.clear()
 }
 
 func (h *harnessHost) DropRetainedEvents() {

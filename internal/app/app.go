@@ -342,6 +342,11 @@ type App struct {
 	// forgeAttachCache is.
 	reviewDiffImageOnce  sync.Once
 	reviewDiffImageStore *reviewimage.Store
+	// reviewDiffFiles remembers what each git-backed review diff open
+	// pinned, for its file reads (app_review_diff_records.go).
+	reviewDiffFiles reviewDiffRecords
+	// reviewDiffPinTimeout overrides reviewDiffPinTimeout in tests.
+	reviewDiffPinTimeout time.Duration
 	// ciLogStore is the CI job log cache (app_ci_logs.go), opened on
 	// first use for the reason forgeAttachCache is lazy.
 	ciLogOnce  sync.Once

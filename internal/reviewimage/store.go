@@ -25,6 +25,9 @@ import (
 // as it could wait.
 var ErrNoRoom = errors.New("too many review images are loading or being sent; try again")
 
+// ErrCleared is a load that finished after Clear: it published nothing.
+var ErrCleared = errors.New("the review images were cleared while this one loaded; try again")
+
 // Entry is one held image.
 type Entry struct {
 	// ID is what a ticketed URL names: 16 random bytes, unpadded base64url.
@@ -77,6 +80,9 @@ type Store struct {
 	byID  map[string]*entry
 	byKey map[string]*entry
 	loads map[string]*load
+	// gen counts Clear calls; a load publishes only into the generation
+	// it was admitted in.
+	gen uint64
 	// room is closed, and replaced, whenever bytes are released or an
 	// entry becomes evictable.
 	room chan struct{}
@@ -105,11 +111,37 @@ func (s *Store) Load(ctx context.Context, key string, size int64, fill func(buf 
 	if size <= 0 {
 		return Entry{}, errors.New("reviewimage: nothing to hold")
 	}
-	if size > s.budget {
-		return Entry{}, fmt.Errorf("reviewimage: %d bytes exceeds the %d byte budget", size, s.budget)
+	return s.LoadWithin(ctx, key, size, func(take func(n int64) ([]byte, error)) (string, error) {
+		buf, err := take(size)
+		if err != nil {
+			return "", err
+		}
+		return fill(buf)
+	})
+}
+
+// LoadWithin is Load for content whose size is known only once reading
+// starts: it reserves limit bytes before fill runs, and fill asks for its
+// buffer through take, which shrinks the reservation to the n bytes it
+// allocates (at most limit, once). From admission until it returns, the
+// load's reservation and buffer are released on every path, a panicking
+// fill's included (the panic continues). A load that finishes after Clear
+// publishes nothing and answers ErrCleared.
+func (s *Store) LoadWithin(ctx context.Context, key string, limit int64, fill func(take func(n int64) ([]byte, error)) (string, error)) (Entry, error) {
+	if limit <= 0 {
+		return Entry{}, errors.New("reviewimage: nothing to hold")
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.maxWait)
+	if limit > s.budget {
+		return Entry{}, fmt.Errorf("reviewimage: %d bytes exceeds the %d byte budget", limit, s.budget)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, s.maxWait)
 	defer cancel()
+	refused := func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return ErrNoRoom
+	}
 	s.mu.Lock()
 	for {
 		s.dropExpiredLocked()
@@ -123,48 +155,94 @@ func (s *Store) Load(ctx context.Context, key string, size int64, fill func(buf 
 			select {
 			case <-pending.done:
 				return pending.entry, pending.err
-			case <-ctx.Done():
-				return Entry{}, ErrNoRoom
+			case <-waitCtx.Done():
+				return Entry{}, refused()
 			}
 		}
-		if s.used+size <= s.budget || s.evictLocked(size) {
+		if s.used+limit <= s.budget || s.evictLocked(limit) {
 			break
 		}
 		room := s.room
 		s.mu.Unlock()
 		select {
 		case <-room:
-		case <-ctx.Done():
-			return Entry{}, ErrNoRoom
+		case <-waitCtx.Done():
+			return Entry{}, refused()
 		}
 		s.mu.Lock()
 	}
-	s.used += size
+	s.used += limit
+	reserved := limit
+	gen := s.gen
 	pending := &load{done: make(chan struct{})}
 	s.loads[key] = pending
 	s.mu.Unlock()
 
-	buf := s.alloc(size)
-	mime, err := fill(buf)
-	id := ""
-	if err == nil {
-		id, err = newID()
+	var buf []byte
+	settled := false
+	settle := func(mime string, fillErr error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.loads[key] == pending {
+			delete(s.loads, key)
+		}
+		if fillErr == nil && buf == nil {
+			fillErr = errors.New("reviewimage: the load took no buffer")
+		}
+		if fillErr == nil && s.gen != gen {
+			fillErr = ErrCleared
+		}
+		if fillErr != nil {
+			if buf != nil {
+				s.free(int64(len(buf)))
+			}
+			s.releaseLocked(reserved)
+			pending.err = fillErr
+		} else {
+			id, idErr := newID()
+			if idErr != nil {
+				s.free(int64(len(buf)))
+				s.releaseLocked(reserved)
+				pending.err = idErr
+			} else {
+				held := &entry{id: id, key: key, data: buf, mime: mime, storedAt: s.now(), listed: true}
+				held.elem = s.lru.PushFront(held)
+				s.byID[id] = held
+				s.byKey[key] = held
+				pending.entry = held.public()
+			}
+		}
+		settled = true
+		close(pending.done)
 	}
-
-	s.mu.Lock()
-	delete(s.loads, key)
-	if err != nil {
-		s.releaseLocked(size)
-		pending.err = err
-	} else {
-		held := &entry{id: id, key: key, data: buf, mime: mime, storedAt: s.now(), listed: true}
-		held.elem = s.lru.PushFront(held)
-		s.byID[id] = held
-		s.byKey[key] = held
-		pending.entry = held.public()
+	defer func() {
+		if !settled {
+			recovered := recover()
+			settle("", fmt.Errorf("reviewimage: load stopped: %v", recovered))
+			if recovered != nil {
+				panic(recovered)
+			}
+		}
+	}()
+	take := func(n int64) ([]byte, error) {
+		if buf != nil {
+			return nil, errors.New("reviewimage: the load already took its buffer")
+		}
+		if n <= 0 || n > limit {
+			return nil, fmt.Errorf("reviewimage: %d bytes is outside the load's 1..%d", n, limit)
+		}
+		s.mu.Lock()
+		if n < reserved {
+			s.used -= reserved - n
+			reserved = n
+			s.wakeLocked()
+		}
+		s.mu.Unlock()
+		buf = s.alloc(n)
+		return buf, nil
 	}
-	close(pending.done)
-	s.mu.Unlock()
+	mime, fillErr := fill(take)
+	settle(mime, fillErr)
 	return pending.entry, pending.err
 }
 
@@ -188,6 +266,10 @@ func (s *Store) Open(id string) (Content, bool) {
 func (s *Store) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.gen++
+	// A load in flight keeps its bytes charged until it returns, then
+	// publishes nothing; a load of the same key after Clear starts afresh.
+	s.loads = map[string]*load{}
 	for element := s.lru.Front(); element != nil; {
 		next := element.Next()
 		s.unlistLocked(element.Value.(*entry))
@@ -221,7 +303,7 @@ func (r *reader) Close() error {
 	switch {
 	case r.entry.readers > 0:
 	case !r.entry.listed:
-		r.store.releaseLocked(int64(len(r.entry.data)))
+		r.store.dropLocked(r.entry)
 	default:
 		// Still held, but evictable now: a waiting load may make room.
 		r.store.wakeLocked()
@@ -267,14 +349,20 @@ func (s *Store) unlistLocked(held *entry) {
 	}
 	held.listed = false
 	if held.readers == 0 {
-		s.releaseLocked(int64(len(held.data)))
+		s.dropLocked(held)
 	}
 }
 
+// releaseLocked returns n reserved bytes to the budget.
 func (s *Store) releaseLocked(n int64) {
 	s.used -= n
-	s.free(n)
 	s.wakeLocked()
+}
+
+// dropLocked lets go of an entry's bytes.
+func (s *Store) dropLocked(held *entry) {
+	s.free(int64(len(held.data)))
+	s.releaseLocked(int64(len(held.data)))
 }
 
 // wakeLocked tells every waiting load to look for room again.

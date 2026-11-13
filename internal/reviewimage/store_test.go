@@ -244,3 +244,150 @@ func TestLoadRefusesWhatCannotFit(t *testing.T) {
 		t.Fatal("a load over the budget was accepted")
 	}
 }
+
+// The reader guard: a competing load that finds no room leaves the entry a
+// response is reading listed, so it still opens before that reader closes.
+func TestAnEntryBeingReadStaysListedPastAFailedLoad(t *testing.T) {
+	t.Parallel()
+	store := newMetered(100, 20*time.Millisecond)
+	a, err := store.Load(context.Background(), "a", 70, fillWith(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := store.Open(a.ID)
+	if _, err := store.Load(context.Background(), "b", 70, fillWith(2)); !errors.Is(err, ErrNoRoom) {
+		t.Fatalf("b = %v, want ErrNoRoom", err)
+	}
+	second, ok := store.Open(a.ID)
+	if !ok {
+		t.Fatal("a no longer opens after a competing load failed")
+	}
+	_ = second.Close()
+	_ = first.Close()
+}
+
+// A waiting load whose caller leaves answers the caller's error at once,
+// not ErrNoRoom after the wait, and holds nothing.
+func TestCancelingAWaitingLoad(t *testing.T) {
+	t.Parallel()
+	store := newMetered(100, time.Minute)
+	a, _ := store.Load(context.Background(), "a", 70, fillWith(1))
+	content, _ := store.Open(a.ID)
+	defer func() { _ = content.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.Load(ctx, "b", 70, fillWith(2))
+		done <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a canceled load = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a canceled load kept waiting")
+	}
+	if store.Held() != 70 {
+		t.Fatalf("held %d, want only a", store.Held())
+	}
+}
+
+// A fill that panics releases its reservation, its buffer and its flight
+// before the panic goes on, so the next load of the key fills afresh.
+func TestAPanickingFillReleasesEverything(t *testing.T) {
+	t.Parallel()
+	store := newMetered(100, time.Second)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the panic did not reach the caller")
+			}
+		}()
+		_, _ = store.Load(context.Background(), "a", 60, func([]byte) (string, error) { panic("boom") })
+	}()
+	if store.Held() != 0 || store.live != 0 {
+		t.Fatalf("held %d, live %d after a panicking fill", store.Held(), store.live)
+	}
+	if _, err := store.Load(context.Background(), "a", 60, fillWith(1)); err != nil {
+		t.Fatalf("the next load of the key: %v", err)
+	}
+}
+
+// A load admitted before Clear and finishing after it publishes nothing:
+// its waiters and its caller get ErrCleared, its bytes are charged until
+// it returns, and a load of the key after Clear fills afresh.
+func TestALoadFinishingAfterClearPublishesNothing(t *testing.T) {
+	t.Parallel()
+	store := newMetered(100, time.Second)
+	started, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.Load(context.Background(), "a", 40, func(buf []byte) (string, error) {
+			close(started)
+			<-release
+			return "image/png", nil
+		})
+		done <- err
+	}()
+	<-started
+	store.Clear()
+	if store.Held() != 40 {
+		t.Fatalf("held %d during the cleared load, want its 40", store.Held())
+	}
+	fresh, err := store.Load(context.Background(), "a", 40, fillWith(3))
+	if err != nil {
+		t.Fatalf("a load after Clear: %v", err)
+	}
+	close(release)
+	if err := <-done; !errors.Is(err, ErrCleared) {
+		t.Fatalf("the cleared load = %v, want ErrCleared", err)
+	}
+	if store.Held() != 40 || store.live != 40 {
+		t.Fatalf("held %d, live %d, want only the fresh entry", store.Held(), store.live)
+	}
+	content, ok := store.Open(fresh.ID)
+	if !ok {
+		t.Fatal("the fresh entry does not open")
+	}
+	if data, _ := io.ReadAll(content); data[0] != 3 {
+		t.Fatalf("the key serves %d, want the fresh fill", data[0])
+	}
+	_ = content.Close()
+}
+
+// LoadWithin reserves its limit first, then only what the fill takes.
+func TestLoadWithinShrinksItsReservation(t *testing.T) {
+	t.Parallel()
+	store := newMetered(100, time.Second)
+	var during int64
+	entry, err := store.LoadWithin(context.Background(), "a", 90, func(take func(int64) ([]byte, error)) (string, error) {
+		during = store.Held()
+		if _, err := take(91); err == nil {
+			t.Error("a take past the limit was granted")
+		}
+		buf, err := take(10)
+		if err != nil {
+			return "", err
+		}
+		if _, err := take(10); err == nil {
+			t.Error("a second take was granted")
+		}
+		copy(buf, "0123456789")
+		return "image/svg+xml", nil
+	})
+	if err != nil || entry.Size != 10 {
+		t.Fatalf("entry %+v, err %v", entry, err)
+	}
+	if during != 90 || store.Held() != 10 || store.max != 10 {
+		t.Fatalf("held %d before take and %d after (allocated at most %d), want 90 then 10", during, store.Held(), store.max)
+	}
+	if _, err := store.LoadWithin(context.Background(), "b", 50, func(func(int64) ([]byte, error)) (string, error) { return "image/png", nil }); err == nil {
+		t.Fatal("a fill that took no buffer was held")
+	}
+	if store.Held() != 10 {
+		t.Fatalf("held %d after a fill that took nothing", store.Held())
+	}
+}

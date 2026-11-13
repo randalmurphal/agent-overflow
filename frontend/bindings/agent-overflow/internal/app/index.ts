@@ -153,8 +153,6 @@ export {
     ReviewDiffImage,
     ReviewDiffImageSide,
     ReviewDiffOpened,
-    ReviewDiffSides,
-    ReviewDiffWorktreeBlob,
     RunningBackgroundWork,
     SendDiffReviewCommentsInput,
     SendMessageOptions,

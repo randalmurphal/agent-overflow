@@ -1,6 +1,7 @@
 package gitdiff
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1" //nolint:gosec // git's object id, not a security hash
 	"crypto/sha256"
@@ -12,22 +13,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 
 	"agent-overflow/internal/procutil"
-	"agent-overflow/internal/workspacefiles"
-	"agent-overflow/internal/workspacepath"
 )
 
 // Pin is what pins a diff's two sides for reads after the diff is closed:
 // full object IDs of a commit or a tree. New is empty when the new side is
 // the working tree, which no object pins; the diff's WorktreeBlobs pin its
-// changed files instead.
+// changed files instead. A Pin comes from Sides.Pin, never from a client.
 type Pin struct {
-	Old string `json:"old"`
-	New string `json:"new"`
+	Old string
+	New string
 }
 
 // Pin answers the sides' pin. A worktree snapshot's tree lives only in its
@@ -39,18 +37,39 @@ func (s *Sides) Pin() Pin {
 	return Pin{Old: s.old, New: s.new}
 }
 
-// WorktreeBlob pins one changed file of a working-tree side: its path and
-// the blob ID and size the snapshot recorded for it.
-type WorktreeBlob struct {
-	Path string `json:"path"`
-	Blob string `json:"blob"`
-	Size int64  `json:"size"`
+// Workspace answers the repository the sides were opened in.
+func (s *Sides) Workspace() string { return s.workspace }
+
+// OpenedSides reopens sides an earlier open pinned, for file reads.
+func OpenedSides(workspace string, pin Pin) *Sides {
+	return &Sides{workspace: workspace, old: pin.Old, new: pin.New, worktree: pin.New == ""}
 }
 
-// WorktreeBlobs lists the regular files the diff changes on its
-// working-tree side, from the snapshot the patch is read from, at most
-// limit of them; truncated reports that more were left out. Sides whose
-// new side is not the working tree answer nothing.
+// WorktreeBlob pins one path a working-tree side changes, as the
+// snapshot recorded it: Mode is git's mode there (000000 when the path is
+// gone), and for a regular file Blob and Size are its blob ID and size.
+// The snapshot hashes a changed file's bytes as they are on disk, without
+// filters (stageWorktreeNoFilters), so Blob is BlobID of those bytes.
+type WorktreeBlob struct {
+	Path string
+	Mode string
+	Blob string
+	Size int64
+}
+
+// IsFile reports whether the path is a regular file on the working-tree
+// side.
+func (b WorktreeBlob) IsFile() bool { return isFileMode(b.Mode) }
+
+// maxRawToken bounds one NUL-separated token of `git diff --raw -z`: a
+// record's metadata or one path.
+const maxRawToken = 64 << 10
+
+// WorktreeBlobs lists the paths the diff changes on its working-tree
+// side, from the snapshot the patch is read from, at most limit of them;
+// truncated reports that more were left out. git's output
+// is parsed as it arrives and git is stopped at the bound. Sides whose new
+// side is not the working tree answer nothing.
 func (s *Sides) WorktreeBlobs(ctx context.Context, limit int) (blobs []WorktreeBlob, truncated bool, err error) {
 	if !s.worktree || s.new == "" {
 		return nil, false, nil
@@ -60,83 +79,133 @@ func (s *Sides) WorktreeBlobs(ctx context.Context, limit int) (blobs []WorktreeB
 	if s.paths != nil {
 		args = append(append([]string{"--literal-pathspecs"}, args...), s.paths...)
 	}
-	stdout, _, _, err := runGit(ctx, s.workspace, s.env, false, args...)
-	if err != nil {
-		return nil, false, fmt.Errorf("gitdiff: list worktree blobs: %w", err)
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	records := &rawRecords{limit: limit, stop: stop}
+	cmd := exec.CommandContext(runCtx, "git", args...)
+	cmd.Dir = s.workspace
+	cmd.Env = gitEnv(s.env)
+	errOut := &boundedBuffer{limit: maxStreamStderrBytes}
+	runErr := procutil.RunDrained(runCtx, cmd, records, errOut, gitPipeWaitDelay)
+	switch {
+	case records.err != nil:
+		return nil, false, records.err
+	case records.truncated:
+		// git was stopped on purpose; its exit says nothing.
+	case ctx.Err() != nil:
+		return nil, false, fmt.Errorf("gitdiff: list worktree blobs: %w", ctx.Err())
+	default:
+		if _, err := gitResult(runCtx, runErr, false, cmd.Args[1:], errOut.String()); err != nil {
+			return nil, false, fmt.Errorf("gitdiff: list worktree blobs: %w", err)
+		}
+		if len(records.partial) > 0 || records.haveMeta {
+			return nil, false, errors.New("gitdiff: list worktree blobs: truncated raw output")
+		}
 	}
-	tokens := strings.Split(strings.TrimSuffix(stdout, "\x00"), "\x00")
+	blobs = records.blobs
+	if len(blobs) == 0 {
+		return blobs, records.truncated, nil
+	}
 	var oids []string
-	for i := 0; i+1 < len(tokens); i += 2 {
-		fields := strings.Fields(tokens[i])
-		if len(fields) != 5 {
-			return nil, false, fmt.Errorf("gitdiff: malformed raw record %q", tokens[i])
+	for _, blob := range blobs {
+		if blob.IsFile() {
+			oids = append(oids, blob.Blob)
 		}
-		if !isFileMode(fields[1]) {
-			continue
-		}
-		if len(blobs) == limit {
-			truncated = true
-			break
-		}
-		blobs = append(blobs, WorktreeBlob{Path: tokens[i+1], Blob: fields[3]})
-		oids = append(oids, fields[3])
 	}
 	if len(oids) == 0 {
-		return blobs, truncated, nil
+		return blobs, records.truncated, nil
 	}
 	sizes, err := objectSizes(ctx, s.workspace, s.env, oids)
 	if err != nil {
 		return nil, false, err
 	}
 	for i := range blobs {
-		blobs[i].Size = sizes[blobs[i].Blob]
+		if blobs[i].IsFile() {
+			blobs[i].Size = sizes[blobs[i].Blob]
+		}
 	}
-	return blobs, truncated, nil
+	return blobs, records.truncated, nil
 }
 
-var fullOIDPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+// rawRecords parses `git diff --raw -z` as git writes it, keeping at most
+// limit records and one partial token; at the record past
+// limit it calls stop and drops the rest.
+type rawRecords struct {
+	limit     int
+	stop      func()
+	partial   []byte
+	meta      string
+	haveMeta  bool
+	blobs     []WorktreeBlob
+	truncated bool
+	err       error
+}
+
+func (r *rawRecords) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 && !r.truncated && r.err == nil {
+		end := bytes.IndexByte(p, 0)
+		if end < 0 {
+			if len(r.partial)+len(p) > maxRawToken {
+				r.fail(fmt.Errorf("gitdiff: raw record token exceeds %d bytes", maxRawToken))
+				break
+			}
+			r.partial = append(r.partial, p...)
+			break
+		}
+		token := string(r.partial) + string(p[:end])
+		r.partial = r.partial[:0]
+		p = p[end+1:]
+		r.token(token)
+	}
+	return n, nil
+}
+
+func (r *rawRecords) token(token string) {
+	if !r.haveMeta {
+		r.meta, r.haveMeta = token, true
+		return
+	}
+	r.haveMeta = false
+	fields := strings.Fields(r.meta)
+	if len(fields) != 5 || !strings.HasPrefix(fields[0], ":") {
+		r.fail(fmt.Errorf("gitdiff: malformed raw record %q", r.meta))
+		return
+	}
+	if len(r.blobs) == r.limit {
+		r.truncated = true
+		r.stop()
+		return
+	}
+	r.blobs = append(r.blobs, WorktreeBlob{Path: token, Mode: fields[1], Blob: fields[3]})
+}
+
+func (r *rawRecords) fail(err error) {
+	r.err = err
+	r.stop()
+}
 
 // IsFullOID reports whether s is a full SHA-1 or SHA-256 object ID.
-func IsFullOID(s string) bool { return fullOIDPattern.MatchString(s) }
-
-// PinnedSides reopens a diff's pinned sides in workspace for file reads,
-// without a snapshot. Each pinned ID must be a full ID of a commit or a
-// tree in this repository.
-func PinnedSides(ctx context.Context, workspace string, pin Pin) (*Sides, error) {
-	ids := []string{pin.Old}
-	if pin.New != "" {
-		ids = append(ids, pin.New)
+func IsFullOID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
 	}
-	for _, id := range ids {
-		if !IsFullOID(id) {
-			return nil, fmt.Errorf("gitdiff: %q is not a full object ID", id)
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
 		}
 	}
-	stdout, _, _, err := runGitWithStdin(ctx, workspace, nil, []byte(strings.Join(ids, "\n")+"\n"), false,
-		"cat-file", "--batch-check=%(objecttype)")
-	if err != nil {
-		return nil, fmt.Errorf("gitdiff: check pinned sides: %w", err)
-	}
-	types := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
-	if len(types) != len(ids) {
-		return nil, fmt.Errorf("gitdiff: check pinned sides: %d answers for %d objects", len(types), len(ids))
-	}
-	for i, kind := range types {
-		if kind != "commit" && kind != "tree" {
-			return nil, fmt.Errorf("gitdiff: %s is not a commit or a tree in this repository", ids[i])
-		}
-	}
-	return &Sides{workspace: workspace, old: pin.Old, new: pin.New, worktree: pin.New == ""}, nil
+	return true
 }
 
-// Entry is one path on one side of pinned sides.
+// Entry is one path on one committed side.
 type Entry struct {
 	Exists bool
 	// Mode is git's octal mode: 100644 or 100755 for a file, 120000 for a
 	// symlink, 160000 for a submodule, 040000 for a directory.
 	Mode string
-	// OID is the blob ID; empty for a working-tree file, whose ID is known
-	// only by reading it.
+	// OID is the object ID; empty for a directory implied by a deeper
+	// entry (treeEntries).
 	OID  string
 	Size int64
 }
@@ -150,24 +219,32 @@ func isFileMode(mode string) bool { return mode == "100644" || mode == "100755" 
 const (
 	MaxEntryPaths     = 200
 	MaxEntryPathBytes = 64 << 10
+	maxPathBytes      = 4096
 )
 
-// CleanPath validates one path a caller names on a side: relative, inside
-// the repository, no NUL, no trailing separator. It answers the form git
-// prints.
+// CleanPath validates one repository path as git prints it, unchanged:
+// relative, '/'-separated, no empty, "." or ".." segment, no backslash and
+// no NUL. Leading and trailing spaces are part of a name.
 func CleanPath(path string) (string, error) {
-	if path == "" || strings.ContainsRune(path, 0) || strings.HasSuffix(path, "/") {
-		return "", fmt.Errorf("gitdiff: invalid path %q", path)
+	switch {
+	case path == "":
+		return "", errors.New("gitdiff: empty path")
+	case len(path) > maxPathBytes:
+		return "", fmt.Errorf("gitdiff: path exceeds %d bytes", maxPathBytes)
+	case strings.ContainsRune(path, 0):
+		return "", fmt.Errorf("gitdiff: invalid path %q: NUL", path)
+	case strings.ContainsRune(path, '\\'):
+		return "", fmt.Errorf("gitdiff: invalid path %q: separators are '/'", path)
 	}
-	clean, err := workspacepath.NormalizeRelative(path)
-	if err != nil {
-		return "", fmt.Errorf("gitdiff: invalid path %q: %w", path, err)
+	for _, segment := range strings.Split(path, "/") {
+		switch segment {
+		case "":
+			return "", fmt.Errorf("gitdiff: invalid path %q: empty segment", path)
+		case ".", "..":
+			return "", fmt.Errorf("gitdiff: invalid path %q: %q segment", path, segment)
+		}
 	}
-	clean = filepath.ToSlash(clean)
-	if clean != path {
-		return "", fmt.Errorf("gitdiff: path %q is not in its canonical form %q", path, clean)
-	}
-	return clean, nil
+	return path, nil
 }
 
 // OldEntries answers each path's entry on the old side.
@@ -175,69 +252,14 @@ func (s *Sides) OldEntries(ctx context.Context, paths []string) (map[string]Entr
 	return s.treeEntries(ctx, s.old, paths)
 }
 
-// NewEntries answers each path's entry on the new side: from its tree, or
-// from the working tree, where a path reached through a symlinked
-// directory, or leading outside the workspace, is refused.
+// NewEntries answers each path's entry on a committed new side. A
+// working-tree side has no entries to read: its files are the open's
+// WorktreeBlobs.
 func (s *Sides) NewEntries(ctx context.Context, paths []string) (map[string]Entry, error) {
-	if !s.worktree {
-		return s.treeEntries(ctx, s.new, paths)
+	if s.worktree {
+		return nil, errors.New("gitdiff: the new side is the working tree")
 	}
-	if err := checkEntryPaths(paths); err != nil {
-		return nil, err
-	}
-	entries := make(map[string]Entry, len(paths))
-	for _, path := range paths {
-		full, err := s.worktreePath(path)
-		if err != nil {
-			return nil, err
-		}
-		info, err := os.Lstat(full)
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			entries[path] = Entry{}
-		case err != nil:
-			return nil, fmt.Errorf("gitdiff: inspect %s: %w", path, err)
-		case info.Mode().IsRegular():
-			entries[path] = Entry{Exists: true, Mode: gitIndexMode(info.Mode()), Size: info.Size()}
-		default:
-			entries[path] = Entry{Exists: true, Mode: worktreeOtherMode(info.Mode())}
-		}
-	}
-	return entries, nil
-}
-
-func worktreeOtherMode(mode fs.FileMode) string {
-	switch {
-	case mode&fs.ModeSymlink != 0:
-		return "120000"
-	case mode.IsDir():
-		return "040000"
-	}
-	return "000000"
-}
-
-// worktreePath joins path to the workspace after checking its directory
-// resolves inside the workspace, so a symlinked directory cannot reach out.
-func (s *Sides) worktreePath(path string) (string, error) {
-	root, err := filepath.EvalSymlinks(s.workspace)
-	if err != nil {
-		return "", fmt.Errorf("gitdiff: resolve workspace: %w", err)
-	}
-	full := filepath.Join(s.workspace, filepath.FromSlash(path))
-	dir, err := filepath.EvalSymlinks(filepath.Dir(full))
-	if errors.Is(err, fs.ErrNotExist) {
-		return full, nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("gitdiff: resolve %s: %w", path, err)
-	}
-	if rel, err := filepath.Rel(root, dir); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("gitdiff: %s is outside the workspace", path)
-	}
-	if want := filepath.Join(root, filepath.Dir(filepath.FromSlash(path))); dir != want {
-		return "", fmt.Errorf("gitdiff: %s is reached through a symlink", path)
-	}
-	return filepath.Join(dir, filepath.Base(full)), nil
+	return s.treeEntries(ctx, s.new, paths)
 }
 
 func checkEntryPaths(paths []string) error {
@@ -380,9 +402,12 @@ func (w *fixedWriter) Write(p []byte) (int, error) {
 // longer the blob the diff pinned.
 var ErrChangedSinceRead = errors.New("the file changed since the diff was read")
 
-// ReadWorktreeFile fills buf with the working-tree file at path and
-// checks it is the pinned blob: exactly len(buf) bytes (the size the caller
-// reserved) whose git blob ID is blob. A file that is not that blob is
+// ReadWorktreeFile fills buf with the working-tree file at path and checks
+// it is the pinned blob: exactly len(buf) bytes (the blob's size) whose git
+// blob ID, over the bytes as they are on disk, is blob. The file is opened
+// through the workspace as a root, so neither a symlinked parent nor a
+// symlinked leaf can lead outside it whenever it was swapped in; its type
+// and size are read from the opened file. A file that is not that blob is
 // ErrChangedSinceRead.
 func (s *Sides) ReadWorktreeFile(path, blob string, buf []byte) error {
 	if !s.worktree {
@@ -391,18 +416,32 @@ func (s *Sides) ReadWorktreeFile(path, blob string, buf []byte) error {
 	if !IsFullOID(blob) {
 		return fmt.Errorf("gitdiff: %q is not a full object ID", blob)
 	}
-	full, err := s.worktreePath(path)
-	if err != nil {
+	if _, err := CleanPath(path); err != nil {
 		return err
 	}
-	if info, err := os.Lstat(full); err != nil || !info.Mode().IsRegular() {
+	root, err := os.OpenRoot(s.workspace)
+	if err != nil {
+		return fmt.Errorf("gitdiff: open workspace: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	if s.beforeWorktreeOpen != nil {
+		s.beforeWorktreeOpen(path)
+	}
+	file, err := root.Open(filepath.FromSlash(path))
+	if errors.Is(err, fs.ErrNotExist) {
 		return ErrChangedSinceRead
 	}
-	file, _, err := workspacefiles.OpenRegular(full)
 	if err != nil {
 		return fmt.Errorf("gitdiff: open %s: %w", path, err)
 	}
 	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("gitdiff: inspect %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || info.Size() != int64(len(buf)) {
+		return ErrChangedSinceRead
+	}
 	if _, err := io.ReadFull(file, buf); err != nil {
 		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
 			return ErrChangedSinceRead
@@ -416,6 +455,41 @@ func (s *Sides) ReadWorktreeFile(path, blob string, buf []byte) error {
 		return ErrChangedSinceRead
 	}
 	return nil
+}
+
+// HasFilter reports whether path has a `filter` attribute in the working
+// tree, so its bytes on disk are not the bytes git stores for it.
+func (s *Sides) HasFilter(ctx context.Context, path string) (bool, error) {
+	if _, err := CleanPath(path); err != nil {
+		return false, err
+	}
+	stdout, _, _, err := runGit(ctx, s.workspace, nil, false, "check-attr", "-z", "filter", "--", path)
+	if err != nil {
+		return false, fmt.Errorf("gitdiff: read attributes of %s: %w", path, err)
+	}
+	// <path> NUL filter NUL <value> NUL
+	fields := strings.Split(strings.TrimSuffix(stdout, "\x00"), "\x00")
+	if len(fields) != 3 {
+		return false, fmt.Errorf("gitdiff: malformed check-attr output %q", stdout)
+	}
+	switch fields[2] {
+	case "unspecified", "unset":
+		return false, nil
+	}
+	return true, nil
+}
+
+// lfsPointerPrefix opens every Git LFS pointer file
+// (https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md).
+const lfsPointerPrefix = "version https://git-lfs.github.com/spec/v1\n"
+
+// MaxLFSPointerBytes is the size a Git LFS pointer stays under.
+const MaxLFSPointerBytes = 1024
+
+// IsLFSPointer reports whether data is a Git LFS pointer: what a repository
+// stores for a file whose content lives on an LFS server.
+func IsLFSPointer(data []byte) bool {
+	return len(data) < MaxLFSPointerBytes && bytes.HasPrefix(data, []byte(lfsPointerPrefix))
 }
 
 // BlobID is git's object ID of a blob holding data, in the hash whose hex

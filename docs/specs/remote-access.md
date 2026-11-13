@@ -3428,7 +3428,8 @@ frame.**
   `GetEditDiffImage`, files:read): the bytes, at most 25 MiB a side,
   sit in their own store, whose 100 MiB budget also covers loads in
   flight and bodies still being sent (10 min, cleared by the harness
-  reset) ([review diff streaming](../architecture/review-diff-streaming.md#reading-a-diffs-files)).
+  reset); a read names only the open's server-held files handle and a
+  path ([review diff streaming](../architecture/review-diff-streaming.md#reading-a-diffs-files)).
   `SaveLocalImage` copies the original file to the host's Downloads
   directory.
 

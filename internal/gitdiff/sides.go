@@ -24,6 +24,9 @@ type Sides struct {
 	// paths limits the diff to these literal paths; nil is every path.
 	paths   []string
 	release func() error
+	// beforeWorktreeOpen, set only by tests, runs in ReadWorktreeFile
+	// after the path is checked and before the file is opened.
+	beforeWorktreeOpen func(path string)
 }
 
 // Close removes a worktree snapshot's temporary objects. Closing Sides that
