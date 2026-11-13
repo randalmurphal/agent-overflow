@@ -729,9 +729,14 @@ when the backend says why, its sentence. A refused read says why on the
 row: Retry when the backend was busy, `Reload diff` when the file changed
 since the diff was read, and only the sentence when the diff's files
 cannot be read at all. The reads name the handle the diff's open
-answered; one the server no longer holds (evicted, or a reconnect) is
-reopened once and the read made once more, and a diff no longer on
-screen is never reopened. A text SVG keeps its text diff, with one `Rendered` toggle
+answered, and the bytes are cached under it, so no other diff or pane
+shares them. The server forgets a handle when it evicts it or the
+connection that opened it ends. A diff of immutable revisions (the PR, a
+picked commit or run, a branch commit) is then opened once more for a new
+handle, before the next read when the connection ended; a diff that reads
+the working tree is not, and its rows offer `Reload diff` without
+reading. A diff no longer on screen is never reopened. Rows published
+while the diff still streams read under its open from the start. A text SVG keeps its text diff, with one `Rendered` toggle
 in its header that shows it as an image (always an `<img>`, never
 inline).
 

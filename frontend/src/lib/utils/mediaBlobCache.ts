@@ -72,6 +72,8 @@ interface CacheEntry {
   objectURL: string;
   bytes: number;
   retained: number;
+  /** Dropped by discardMediaBlobs while held: goes at its last release. */
+  discarded: boolean;
 }
 
 const entries = new Map<string, CacheEntry>();
@@ -101,6 +103,7 @@ export function acquireMediaBlob<V extends MediaBytes>(
       objectURL: '',
       bytes: 0,
       retained: 0,
+      discarded: false,
     };
     created.value = load().then(
       (resolved) => {
@@ -139,8 +142,28 @@ export function acquireMediaBlob<V extends MediaBytes>(
       if (released) return;
       released = true;
       held.retained = Math.max(0, held.retained - 1);
+      if (held.discarded && held.retained === 0 && entries.get(key) === held) drop(key, held);
     },
   };
+}
+
+/**
+ * Drops every entry whose key starts with `prefix`: its bytes can no
+ * longer be asked for by that key (the source that minted them is gone).
+ * An entry still held goes at its last release.
+ */
+export function discardMediaBlobs(prefix: string): void {
+  // Deleting the entry being visited is safe in a Map iteration.
+  for (const [key, entry] of entries) {
+    if (!key.startsWith(prefix)) continue;
+    if (entry.retained > 0) entry.discarded = true;
+    else drop(key, entry);
+  }
+}
+
+/** The keys the cache holds, least recently used first. */
+export function __mediaBlobCacheKeysForTest(): string[] {
+  return [...entries.keys()];
 }
 
 /**
@@ -181,10 +204,16 @@ function evict(): void {
   for (const [key, entry] of entries) {
     if (cachedBytes <= maxBytes && entries.size <= maxEntries) return;
     if (entry.retained > 0) continue;
-    entries.delete(key);
-    cachedBytes -= entry.bytes;
-    if (entry.objectURL) revoke(entry.objectURL);
+    drop(key, entry);
   }
+}
+
+function drop(key: string, entry: CacheEntry): void {
+  entries.delete(key);
+  cachedBytes -= entry.bytes;
+  if (entry.objectURL) revoke(entry.objectURL);
+  // Swallow a rejection nobody is awaiting any more.
+  void entry.value.catch(() => {});
 }
 
 function revoke(url: string): void {

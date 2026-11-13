@@ -3,7 +3,8 @@ import { flushSync, mount, unmount } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import '../../../app.css';
 import ReviewDiffBody from './ReviewDiffBody.svelte';
-import type { ImageHandle, ImageRowState, ImageSideName, ReviewDiffMedia, ReviewMediaHost } from '../../stores/reviewDiffMedia.svelte';
+import { createReviewDiffMedia, type ImageHandle, type ImageRowState, type ImageSideName, type ReviewDiffMedia, type ReviewMediaHost } from '../../stores/reviewDiffMedia.svelte';
+import { DiffFilesHandle } from '../../stores/reviewDiffFiles';
 import type { DiffReviewComment } from '../../types/models';
 import { parseReviewFiles, type ReviewFile } from '../../utils/patchStore';
 import { imageRowHeight } from '../../utils/reviewImageRows';
@@ -52,6 +53,7 @@ function fakeMedia() {
   const pixels = new SvelteMap<string, { width: number; height: number }>();
   const media: ReviewDiffMedia = {
     setTarget() {},
+    identity: 'test-open',
     requestSizes() {},
     sizes: () => null,
     readsSizes: false,
@@ -95,12 +97,14 @@ async function settle(scrollEl: HTMLElement): Promise<void> {
   }, 'stable review geometry');
 }
 
-async function mountImages(viewMode: 'stacked' | 'split') {
+async function mountImages(viewMode: 'stacked' | 'split', real?: ReviewDiffMedia) {
   const host = document.createElement('div');
   host.style.cssText = `position:fixed;top:0;left:0;width:900px;height:${VIEWPORT_PX}px;display:flex`;
   document.body.appendChild(host);
   const files = parseReviewFiles(PATCH);
-  const { media, handles } = fakeMedia();
+  const fake = fakeMedia();
+  const media = real ?? fake.media;
+  const handles = fake.handles;
   const mediaHost: ReviewMediaHost = { media, newSideOnly: false, renderedPaths: new Set(), toggleRendered() {}, reloadDiff() {} };
   const props = rawProps({
     subjectId: 'subject',
@@ -191,5 +195,23 @@ describe('a review diff\'s image row', () => {
     await settle(scrollEl);
     expect(scrollEl.scrollTop).toBe(before.scrollTop);
     expect(lines.map((line) => line.getBoundingClientRect().top)).toEqual(before.tops);
+  });
+
+  it('reads a row mounted before its open was attached once the open arrives', async () => {
+    const read = setBindingMock('GetReviewDiffImage', async () => ({
+      old: { exists: true, size: 30 * 1024 * 1024, overCap: true },
+      new: { exists: true, size: 30 * 1024 * 1024, overCap: true },
+      maxBytes: 25 * 1024 * 1024,
+    }));
+    const media = createReviewDiffMedia();
+    const { host } = await mountImages('stacked', media);
+    expect(host.querySelector('[data-testid="review-image-diff"]')).not.toBeNull();
+    expect(read).not.toHaveBeenCalled();
+    media.setTarget({ kind: 'git', backend: 'home', workspace: { projectId: 'p1', workspacePath: '' }, files: new DiffFilesHandle('files-1', null) });
+    flushSync();
+    await waitFor(() => host.querySelectorAll('[data-testid="review-image-over-cap"]').length === 2, 'the row read under the open');
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls[0][1]).toBe('files-1');
+    media.setTarget(null);
   });
 });

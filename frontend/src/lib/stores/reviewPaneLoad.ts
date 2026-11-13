@@ -229,7 +229,11 @@ export async function loadPatch(
 ): Promise<LoadedPatch> {
   const { workspace, threadId, backend } = subject;
   const selectedCommitSHA = selectedCommits?.last ?? null;
-  const diff = (open: ConstructorParameters<typeof ReviewDiffSource>[1]) => new ReviewDiffSource(backend, open);
+  // `pinned`: the open names only immutable revisions (ReviewDiffSource).
+  // These three are: a PR's recorded revision, a run of its commits by
+  // sha, and one commit by sha. The workspace and branch-base diffs read
+  // the working tree or resolve a branch, so they are not.
+  const diff = (open: ConstructorParameters<typeof ReviewDiffSource>[1], pinned = false) => new ReviewDiffSource(backend, open, pinned);
   switch (scope) {
     case 'pr': {
       // A selection-only reload stays at the revision its commit list was
@@ -247,8 +251,8 @@ export async function loadPatch(
       // rebase, an amend) falls back to the whole PR, and says so.
       const { selection, lost } = resolveCommitSelection(selectedCommits, commits);
       const patch = selection
-        ? diff(() => OpenPRCommitDiff(workspace, pr, revision, selection.first, selection.last, ignoreWhitespace, userInitiated))
-        : diff(() => OpenPRDiff(workspace, pr, revision, ignoreWhitespace, userInitiated));
+        ? diff(() => OpenPRCommitDiff(workspace, pr, revision, selection.first, selection.last, ignoreWhitespace, userInitiated), true)
+        : diff(() => OpenPRDiff(workspace, pr, revision, ignoreWhitespace, userInitiated), true);
       return {
         patch, commits, selectedCommitSHA: selection?.last ?? null, selectedCommits: selection,
         commitSelectionLost: lost, prRevision: revision,
@@ -285,7 +289,7 @@ export async function loadPatch(
     case 'branch': {
       const branch = baseBranch?.trim() || await defaultBaseBranch(workspace);
       const branchDiff = (commitSHA: string | null) => commitSHA
-        ? diff(() => OpenCommitDiff(workspace, commitSHA, ignoreWhitespace))
+        ? diff(() => OpenCommitDiff(workspace, commitSHA, ignoreWhitespace), true)
         : diff(() => OpenBranchBaseDiff(workspace, branch, ignoreWhitespace));
       if (existing) {
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);

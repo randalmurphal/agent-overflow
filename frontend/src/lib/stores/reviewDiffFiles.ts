@@ -14,35 +14,65 @@ import type { ReviewFile } from '../utils/patchStore';
 // here. A git diff's reads name the handle its open answered and the
 // file's paths; the client holds no object id.
 
-/** A git diff's file handle (the server's record of what its open
- * pinned), reopened once when the server no longer holds it: it was
- * evicted, or the connection that opened it ended (every handle of a
- * connection goes with it, so the first read after a reconnect reopens). It
- * belongs to one open of one diff: once that diff leaves the screen
- * (`close`), nothing reopens it. */
+/** A git diff's file handle: the server's record of what its open
+ * pinned. The server forgets it when it is evicted or the connection that
+ * opened it ends. An open of immutable revisions (`reopen` given) is
+ * opened once more for a new handle, which names the same bytes; any other
+ * open read the working tree, which may have moved since, so a forgotten
+ * handle stays gone and its rows offer reloading the diff. It belongs to
+ * one open of one diff: once that diff leaves the screen (`close`),
+ * nothing reopens it. */
 export class DiffFilesHandle {
   private reopening: Promise<string> | null = null;
   private closed = false;
+  /** The refusal that ended this handle for good, answered to every
+   * later read without asking the server. */
+  private ended: unknown = null;
+  /** A handle whose connection ended, reopened before its next read. */
+  private lapsed: string | null = null;
+  /** Runs with the handle a reopen replaced. */
+  onRenewed: ((stale: string) => void) | null = null;
 
   constructor(
     private opened: string,
-    /** Opens the same diff again for a new handle (the patch is not read). */
-    private readonly reopen: () => Promise<string>,
+    /** Opens the same immutable revisions again for a new handle (the
+     * patch is not read); null for an open that read the working tree. */
+    private readonly reopen: (() => Promise<string>) | null,
   ) {}
 
   get current(): string {
     return this.opened;
   }
 
-  /** The handle after `stale`'s: the one another read already reopened
-   * for, else one reopen shared by every read waiting on it. */
-  renew(stale: string): Promise<string> {
+  /** Whether a forgotten handle is opened again. */
+  get reopens(): boolean {
+    return this.reopen !== null;
+  }
+
+  /** The refusal every read of this handle answers now, if it ended. */
+  get endedBy(): unknown {
+    return this.ended;
+  }
+
+  /** `refusal` (gone) answered a read on `stale`: answers the handle to
+   * read again on, the one another read already reopened for or one
+   * reopen shared by every read waiting on it, or rejects with `refusal`
+   * when this handle is not reopened (or was already, and that one went
+   * too). */
+  renew(stale: string, refusal: unknown): Promise<string> {
     if (this.closed) return Promise.reject(new Error('The diff is no longer shown.'));
+    if (this.ended !== null) return Promise.reject(this.ended);
     if (this.opened !== stale) return Promise.resolve(this.opened);
-    this.reopening ??= this.reopen().then(
+    const reopen = this.reopen;
+    if (!reopen) {
+      this.ended = refusal;
+      return Promise.reject(refusal);
+    }
+    this.reopening ??= reopen().then(
       (next) => {
         this.opened = next;
         this.reopening = null;
+        this.onRenewed?.(stale);
         return next;
       },
       (err: unknown) => {
@@ -51,6 +81,31 @@ export class DiffFilesHandle {
       },
     );
     return this.reopening;
+  }
+
+  /** The reopened handle went too: this diff's files are not read again. */
+  end(refusal: unknown): void {
+    this.ended ??= refusal;
+  }
+
+  /** The connection that opened this handle ended, and the server drops
+   * every handle with its connection: the next read reopens first, or,
+   * for a handle that does not reopen, no read is made. */
+  connectionEnded(): void {
+    if (this.closed || this.ended !== null) return;
+    if (!this.reopen) this.ended = new TransportError(DIFF_FILES_GONE, FILES_GONE_SENTENCE);
+    else this.lapsed = this.opened;
+  }
+
+  /** The handle a read names: a lapsed one is reopened first, and a
+   * read that starts while a reopen is in flight waits for its handle. */
+  async readable(): Promise<string> {
+    if (this.lapsed === this.opened) {
+      const lapsed = this.lapsed;
+      this.lapsed = null;
+      return this.renew(lapsed, new TransportError(DIFF_FILES_GONE, FILES_GONE_SENTENCE));
+    }
+    return this.reopening ?? this.opened;
   }
 
   /** The diff left the screen. */
@@ -115,6 +170,9 @@ export const DIFF_FILE_SIZES_BATCH = 100;
  * whose files the server could not pin, which reopening would not change. */
 export const DIFF_FILES_GONE = 'review_diff_files_gone';
 export const DIFF_FILES_UNREADABLE = 'review_diff_files_unreadable';
+// The server's sentence for the gone refusal, said here when the client
+// knows the handle went with its connection without asking.
+const FILES_GONE_SENTENCE = 'This diff\'s files are no longer held; reload the diff.';
 
 function refusalCode(err: unknown): string | undefined {
   return err instanceof TransportError ? err.code : undefined;
@@ -155,13 +213,20 @@ function fileRef(file: ReviewFile) {
 // reopened once and the read made once more; a second refusal is the
 // caller's. Never more.
 async function onHandle<T>(target: Extract<DiffFilesTarget, { kind: 'git' }>, read: (handle: string) => Promise<T>): Promise<T> {
-  const first = target.files.current;
+  const files = target.files;
+  if (files.endedBy !== null) throw files.endedBy;
+  const first = await files.readable();
   try {
     return await withBackendTarget(target.backend, () => read(first));
   } catch (err) {
     if (refusalCode(err) !== DIFF_FILES_GONE) throw err;
-    const next = await target.files.renew(first);
-    return withBackendTarget(target.backend, () => read(next));
+    const next = await files.renew(first, err);
+    try {
+      return await withBackendTarget(target.backend, () => read(next));
+    } catch (again) {
+      if (refusalCode(again) === DIFF_FILES_GONE) files.end(again);
+      throw again;
+    }
   }
 }
 
@@ -204,8 +269,27 @@ export async function fetchDiffImageBytes(target: DiffFilesTarget, url: string):
   return (await transfer).fetchTicketedBytes(target.backend, url, 'Could not load image');
 }
 
-/** The media cache key of one side's bytes: the file in this diff
- * (`scopeKey` names the open), which no other diff's bytes share. */
-export function diffImageBlobKey(target: DiffFilesTarget, scopeKey: string, file: ReviewFile, side: 'old' | 'new'): string {
-  return JSON.stringify(['review-image', target.backend, scopeKey, file.path, side]);
+/** The identity of the open whose files `target` reads, as the media
+ * cache keys its bytes: the files handle (one per open, never reused) or
+ * the edit read. Two diffs, or two panes, never share one; a reopen mints
+ * a new one. */
+export function diffFilesIdentity(target: DiffFilesTarget): string {
+  return target.kind === 'git'
+    ? gitFilesIdentity(target.backend, target.files.current)
+    : JSON.stringify(['review-image', target.backend, 'edit', target.threadId, target.editPayloadId, target.editTurnIndex]);
+}
+
+/** The identity of a git diff's open by its files handle. */
+export function gitFilesIdentity(backend: BackendKey, handle: string): string {
+  return JSON.stringify(['review-image', backend, 'git', handle]);
+}
+
+/** The prefix of every cache key of the open `identity` names. */
+export function diffImageBlobPrefix(identity: string): string {
+  return identity.slice(0, -1) + ',';
+}
+
+/** The media cache key of one side's bytes in the open `target` is. */
+export function diffImageBlobKey(target: DiffFilesTarget, file: ReviewFile, side: 'old' | 'new'): string {
+  return diffImageBlobPrefix(diffFilesIdentity(target)) + JSON.stringify([file.path, side]).slice(1);
 }

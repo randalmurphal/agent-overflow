@@ -65,6 +65,11 @@ export class ReviewDiffSource {
   constructor(
     readonly backend: BackendKey,
     private readonly openDiff: () => Promise<ReviewDiffOpened>,
+    /** The open's inputs are immutable revisions (a PR revision, or
+     * commits by sha), so opening it again answers the same diff and its
+     * file handle names the same bytes. False for an open that reads the
+     * working tree or resolves a branch name. */
+    readonly revisionPinned = false,
   ) {}
 
   /** Sends the Open call now, so it overlaps the caller's other requests. */
@@ -135,6 +140,7 @@ export class ReviewDiffSource {
   /** Opens the diff again for a new file handle, reading none of its
    * patch (the server forgot the last one). */
   async reopenFiles(): Promise<string> {
+    if (!this.revisionPinned) throw new Error('This diff reads the working tree; reload it to read its files again.');
     const opened = await this.open();
     this.release(opened.id);
     return opened.filesHandle ?? '';

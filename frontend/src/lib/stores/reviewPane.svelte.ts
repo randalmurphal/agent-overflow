@@ -1671,7 +1671,7 @@ export function createReviewPaneState(
   function dispose(): void {
     disposed = true;
     prLineIndex.close();
-    media.setTarget(null, '');
+    media.setTarget(null);
     commentActions.dispose();
     showRead(null);
     disposePRRefWatch();
@@ -1878,7 +1878,7 @@ export function createReviewPaneState(
   function retireDiffSubject(): void {
     revealedPaths.clear();
     renderedSvgPaths.clear();
-    media.setTarget(null, '');
+    media.setTarget(null);
     loadedFiles = [];
     shown = null;
     armedEditorId = null;
@@ -2005,7 +2005,7 @@ export function createReviewPaneState(
         ignoreWhitespace: requestedIgnoreWhitespace,
         headRange,
       };
-      media.setTarget(filesTarget(loaded, read.read), `${shown.generation}`);
+      media.setTarget(read.target);
       applyPlacements(committed, placements);
       // Fresh defaults for the new patch, with the user's explicit
       // collapse/expand choices layered back on top.
@@ -2134,13 +2134,23 @@ export function createReviewPaneState(
   async function readPatch(
     seq: number,
     arrival: Arrival,
-  ): Promise<{ files: readonly ReviewFile[]; read: ReviewDiffRead | null; patchKey: string } | null> {
+  ): Promise<{ files: readonly ReviewFile[]; read: ReviewDiffRead | null; patchKey: string; target: DiffFilesTarget | null } | null> {
     const { patch, mergesPaths } = arrival.loaded;
-    if (patch === null) return { files: [], read: null, patchKey: '' };
+    if (patch === null) return { files: [], read: null, patchKey: '', target: null };
     const merge = mergesPaths ? new EditFileMerge() : null;
     const view = (sections: readonly ReviewFile[]): readonly ReviewFile[] => merge?.files(sections) ?? sections;
     const cancelled = (): boolean => seq !== loadSeq || disposed;
     const progressive = loadedFiles.length === 0;
+    // The open whose files this diff's rows read. Rows published while it
+    // streams (an empty pane) read under it from the first one; otherwise
+    // the rows on screen are another diff's, and it is attached with this
+    // diff's files when the read completes.
+    let target = editsTarget(arrival.loaded);
+    const attach = (next: DiffFilesTarget | null): void => {
+      target = next;
+      if (progressive && !cancelled()) media.setTarget(next);
+    };
+    attach(target);
     let sectionsShown = 0;
     let filesShown = 0;
     let publishedAt = 0;
@@ -2166,6 +2176,9 @@ export function createReviewPaneState(
       cancelled,
       onProgress,
       onOpened: (opened) => {
+        // A git diff's open answers its files handle; a retry's open
+        // answers a new one, with a new patch.
+        if (!arrival.loaded.selectedEdit) attach(gitTarget(patch, opened.filesHandle ?? ''));
         if (threadId !== null && opened.payloadIds?.length) {
           void seedEditPatchSpans(threadId, patch.backend, opened.payloadIds, cancelled);
         }
@@ -2187,7 +2200,7 @@ export function createReviewPaneState(
         return null;
       }
     }
-    return { files: view(read.parser.files), read, patchKey: read.parser.sourceKey() };
+    return { files: view(read.parser.files), read, patchKey: read.parser.sourceKey(), target };
   }
 
   if (!deferInitialLoad) void reload({ userInitiated: initialUserInitiated });
@@ -2241,23 +2254,28 @@ export function createReviewPaneState(
     return { scope, commitSHA: '', headSHA: '', workspace };
   }
 
-  // The diff a load opened, for its files' sizes and images: the handle
-  // its open answered (one open of one diff: the media drops it with the
-  // generation), or the edit it replayed.
-  function filesTarget(loaded: LoadedPatch, read: ReviewDiffRead | null): DiffFilesTarget | null {
-    if (scope === 'edits') {
-      if (threadId === null || !selectedEdit) return null;
-      return {
-        kind: 'edits',
-        backend,
-        threadId,
-        editPayloadId: selectedEdit.kind === 'item' ? selectedEdit.payloadId : '',
-        editTurnIndex: selectedEdit.kind === 'turn' ? selectedEdit.turnIndex : -1,
-      };
-    }
-    const patch = loaded.patch;
-    if (!read || !patch) return null;
-    return { kind: 'git', backend, workspace, files: new DiffFilesHandle(read.files, () => patch.reopenFiles()) };
+  // The open a load's rows read files through: a git diff's files handle
+  // (reopened when the server forgets it only for an open of immutable
+  // revisions, ReviewDiffSource.revisionPinned), or the edit it replayed.
+  function gitTarget(patch: ReviewDiffSource, handle: string): DiffFilesTarget {
+    return {
+      kind: 'git',
+      backend,
+      workspace,
+      files: new DiffFilesHandle(handle, patch.revisionPinned ? () => patch.reopenFiles() : null),
+    };
+  }
+
+  function editsTarget(loaded: LoadedPatch): DiffFilesTarget | null {
+    const edit = loaded.selectedEdit;
+    if (!edit || threadId === null) return null;
+    return {
+      kind: 'edits',
+      backend,
+      threadId,
+      editPayloadId: edit.kind === 'item' ? edit.payloadId : '',
+      editTurnIndex: edit.kind === 'turn' ? edit.turnIndex : -1,
+    };
   }
 
   // One file's patch text, serialized from its merged lines — the ONLY

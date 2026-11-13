@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __resetMediaBlobCacheForTest,
+  __mediaBlobCacheKeysForTest,
   __setMediaBlobCacheLimitsForTest,
   acquireMediaBlob,
+  discardMediaBlobs,
   rememberDecodedSize,
   type MediaBytes,
 } from './mediaBlobCache';
@@ -134,6 +136,25 @@ describe('the media blob cache', () => {
     expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:aa');
     b.release();
     c.release();
+  });
+
+  it('discards a prefix\'s entries at once, a held one at its last release, and no other', async () => {
+    const free = acquireMediaBlob('diff-1/a', async () => bytes('a1'));
+    await free.value;
+    free.release();
+    const held = acquireMediaBlob('diff-1/b', async () => bytes('b1'));
+    await held.value;
+    const other = acquireMediaBlob('diff-2/a', async () => bytes('a2'));
+    await other.value;
+    other.release();
+    discardMediaBlobs('diff-1/');
+    expect(__mediaBlobCacheKeysForTest()).toEqual(['diff-1/b', 'diff-2/a']);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a1');
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:b1');
+    held.release();
+    expect(__mediaBlobCacheKeysForTest()).toEqual(['diff-2/a']);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:b1');
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:a2');
   });
 
   it('remembers a decoded size only while the size is unknown', () => {

@@ -39,10 +39,13 @@
   const sides = $derived(imageSides(file, newSideOnly));
   let handle = $state<ImageHandle | null>(null);
   $effect(() => {
-    // One handle per file (and side set) while mounted.
+    // One handle per file (and side set) while mounted, under the open
+    // the media has attached: none yet reads nothing, and a new one (the
+    // open's answer, a reopen) reads again.
     const target = file;
     const wanted: readonly ImageSideName[] = sides;
     const owner = media;
+    if (owner.identity === null) return;
     if (!image || wanted.length === 0) {
       untrack(() => owner.requestSizes(target));
       return;

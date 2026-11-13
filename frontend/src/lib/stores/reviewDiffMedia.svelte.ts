@@ -1,7 +1,10 @@
 import { SvelteMap } from 'svelte/reactivity';
 import {
+  diffFilesIdentity,
   diffFilesReadSizes,
   diffImageBlobKey,
+  diffImageBlobPrefix,
+  gitFilesIdentity,
   diffReadFailure,
   DIFF_FILE_SIZES_BATCH,
   fetchDiffImageBytes,
@@ -13,8 +16,9 @@ import {
   type DiffImageAnswer,
   type DiffImageSide,
 } from './reviewDiffFiles';
-import { acquireMediaBlob, objectOrDataUrl, type MediaBytes, type MediaHandle } from '../utils/mediaBlobCache';
+import { acquireMediaBlob, discardMediaBlobs, objectOrDataUrl, type MediaBytes, type MediaHandle } from '../utils/mediaBlobCache';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { onBackendStatusChange } from './transportStatus.svelte';
 import type { ReviewFile } from '../utils/patchStore';
 
 // A review pane's binary and image files (docs/specs/pull-requests.md,
@@ -25,8 +29,11 @@ import type { ReviewFile } from '../utils/patchStore';
 // them while shown and evicts them after. What an answer said (sizes,
 // over the cap, not an image) is kept for the diff on screen, so a row
 // that scrolls back paints its captions at once and reads only the
-// bytes. Everything belongs to one diff: a new one (`setTarget` with a
-// new scope key) drops it, and an answer for an older one is dropped.
+// bytes. Everything belongs to one open of one diff: a new one
+// (`setTarget`) drops it and its cached bytes, and an answer for an older
+// one is dropped. A row reads while the open it belongs to is attached
+// (`identity`); it mounts again when that changes: the open's answer
+// arriving, or a reopen's new handle.
 
 export type ImageSideName = 'old' | 'new';
 
@@ -61,8 +68,12 @@ export type SizesState =
   | { kind: 'failed'; error: string };
 
 export interface ReviewDiffMedia {
-  /** The diff on screen; a new `scopeKey` drops what the last one held. */
-  setTarget(target: DiffFilesTarget | null, scopeKey: string): void;
+  /** The open whose files the rows read; a different one drops what the
+   * last one held. */
+  setTarget(target: DiffFilesTarget | null): void;
+  /** The attached open's identity (reactive): null until one is attached.
+   * A row reads only under one, and mounts again when it changes. */
+  readonly identity: string | null;
   /** Asks for a binary file's sizes (batched); no-op where sizes are not
    * read (edits) or already asked. */
   requestSizes(file: ReviewFile): void;
@@ -91,7 +102,7 @@ function message(err: unknown): string {
 
 export function createReviewDiffMedia(): ReviewDiffMedia {
   let target: DiffFilesTarget | null = null;
-  let scopeKey = '';
+  let identity = $state<string | null>(null);
   let generation = 0;
   let readsSizes = $state(false);
   const sizesByPath = new SvelteMap<string, SizesState>();
@@ -99,6 +110,8 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
   const pixelsByKey = new SvelteMap<string, { width: number; height: number }>();
   let pendingSizes: ReviewFile[] = [];
   let sizesQueued = false;
+  // A git open's handle lives as long as the connection that opened it.
+  let stopWatchingConnection: (() => void) | null = null;
 
   function flushSizes(): void {
     sizesQueued = false;
@@ -159,6 +172,7 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
       const asked = generation;
       const diff = target;
       releaseBlobs();
+      // No open attached yet: the row mounts again under one.
       if (!diff) return;
       // One read per mount serves both sides' first fetch.
       let fresh: Promise<DiffImageAnswer> | null = null;
@@ -189,7 +203,7 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
       state = { kind: 'image', sides: views, maxBytes: known.maxBytes };
       for (const view of views) {
         if (view.overCap) continue;
-        const handle = acquireMediaBlob(diffImageBlobKey(diff, scopeKey, file, view.side), async () => {
+        const handle = acquireMediaBlob(diffImageBlobKey(diff, file, view.side), async () => {
           // Each ticket is spent once: a fetch after its read reads again.
           const side = (await answer())[view.side];
           fresh = null;
@@ -238,23 +252,41 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
   }
 
   const media: ReviewDiffMedia = {
-    setTarget(next, key) {
-      if (key === scopeKey && next !== null && target !== null) {
-        if (target.kind === 'git' && target !== next) target.files.close();
-        target = next;
-        return;
-      }
+    setTarget(next) {
+      if (next === target) return;
       generation += 1;
-      // The diff on screen before is gone: its handle reopens no more.
-      if (target?.kind === 'git' && target !== next) target.files.close();
+      const before = target;
+      if (before) {
+        // The diff on screen before is gone: its handle reopens no more,
+        // and its bytes cannot be asked for again.
+        if (before.kind === 'git') {
+          before.files.close();
+          before.files.onRenewed = null;
+        }
+        discardMediaBlobs(diffImageBlobPrefix(diffFilesIdentity(before)));
+      }
       target = next;
-      scopeKey = key;
+      stopWatchingConnection?.();
+      stopWatchingConnection = null;
+      if (next?.kind === 'git') {
+        stopWatchingConnection = onBackendStatusChange((backend, status) => {
+          if (backend === next.backend && status.status !== 'connected') next.files.connectionEnded();
+        });
+        next.files.onRenewed = (stale) => {
+          if (target !== next) return;
+          // The forgotten handle's bytes go; the rows read on the new one.
+          discardMediaBlobs(diffImageBlobPrefix(gitFilesIdentity(next.backend, stale)));
+          identity = diffFilesIdentity(next);
+        };
+      }
+      identity = next ? diffFilesIdentity(next) : null;
       readsSizes = next !== null && diffFilesReadSizes(next);
       sizesByPath.clear();
       factsByPath.clear();
       pixelsByKey.clear();
       pendingSizes = [];
     },
+    get identity() { return identity; },
     requestSizes(file) {
       if (!target || !diffFilesReadSizes(target) || sizesByPath.has(file.path)) return;
       sizesByPath.set(file.path, { kind: 'loading' });

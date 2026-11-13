@@ -2736,7 +2736,7 @@ function installChunkedDiff(
   name: 'OpenWorkspaceDiff' | 'OpenBranchBaseDiff' | 'OpenPRDiff' | 'OpenTurnEditsDiff',
   patch: string,
   size: number,
-  opts: { id?: string; hold?: number; headSha?: string } = {},
+  opts: { id?: string; hold?: number; headSha?: string; filesHandle?: string } = {},
 ) {
   const id = opts.id ?? 'diff-1';
   const chunkAt = (offset: number) => {
@@ -2745,7 +2745,7 @@ function installChunkedDiff(
   };
   let unblock!: () => void;
   const held = new Promise<void>((resolve) => { unblock = resolve; });
-  const open = setBindingMock(name, async () => ({ id, chunk: chunkAt(0), headSha: opts.headSha ?? '' }));
+  const open = setBindingMock(name, async () => ({ id, chunk: chunkAt(0), headSha: opts.headSha ?? '', ...(opts.filesHandle ? { filesHandle: opts.filesHandle } : {}) }));
   const read = setBindingMock('ReadReviewDiff', async (handle: string, offset: number) => {
     if (handle !== id) throw new Error('review diff: not open');
     if (offset === opts.hold) await held;
@@ -2793,6 +2793,67 @@ describe('reviewPane store — streamed diffs', () => {
     expect(state.files.map((file) => file.path)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
     expect(state.sourceKey).toBe(diffSourceKey(patch));
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads an image and a binary file\'s sizes while the rest of the diff streams', async () => {
+    const binary = (path: string) => [
+      `diff --git a/${path} b/${path}`,
+      'index 1111111..2222222 100644',
+      `Binary files a/${path} and b/${path} differ`,
+    ].join('\n');
+    const streamed = [binary('img/logo.png'), binary('blob.bin'), patchFor('src/big.ts', 400)].join('\n');
+    // The first chunk ends inside src/big.ts; the next one is held.
+    const cut = streamed.indexOf('+line 10');
+    const { unblock } = installChunkedDiff('OpenWorkspaceDiff', streamed, cut, { hold: cut, filesHandle: 'files-1' });
+    const images = setBindingMock('GetReviewDiffImage', async () => ({
+      old: { exists: true, size: 30 * 1024 * 1024, overCap: true },
+      new: { exists: true, size: 30 * 1024 * 1024, overCap: true },
+      maxBytes: 25 * 1024 * 1024,
+    }));
+    const sizes = setBindingMock('GetReviewDiffFileSizes', async (_ws: unknown, _handle: string, list: Array<{ path: string }>) => (
+      list.map((file) => ({ path: file.path, old: { exists: true, size: 4 }, new: { exists: true, size: 8 } }))
+    ));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await vi.waitFor(() => {
+      expect(state.files.map((file) => file.path)).toEqual(['img/logo.png', 'blob.bin']);
+    });
+    expect(state.loading).toBe(true);
+    // The rows published mid-stream read under the open's handle.
+    const media = state.mediaHost.media;
+    expect(media.identity).toContain('"files-1"');
+    const [logo, blob] = state.files;
+    const row = media.image(logo, ['old', 'new']);
+    media.requestSizes(blob);
+    await vi.waitFor(() => {
+      expect(row.state.kind).toBe('image');
+      expect(media.sizes('blob.bin')).toMatchObject({ kind: 'ready' });
+    });
+    expect(state.loading).toBe(true);
+    expect(images.mock.calls[0][1]).toBe('files-1');
+    expect(sizes.mock.calls[0][1]).toBe('files-1');
+    unblock();
+    await waitLoaded(state);
+    // The completed diff keeps the open it streamed under.
+    expect(media.identity).toContain('"files-1"');
+    row.release();
+  });
+
+  it('never reopens a workspace diff whose files handle is gone: its row offers reloading the diff', async () => {
+    const logoPatch = ['diff --git a/img/logo.png b/img/logo.png', 'index 1111111..2222222 100644', 'Binary files a/img/logo.png and b/img/logo.png differ', ''].join('\n');
+    const { open } = installChunkedDiff('OpenWorkspaceDiff', logoPatch, logoPatch.length, { filesHandle: 'files-1' });
+    const images = setBindingMock('GetReviewDiffImage', async () => {
+      throw new TransportError('review_diff_files_gone', 'This diff\'s files are no longer held; reload the diff.');
+    });
+    setBindingMock('GetReviewDiffFileSizes', async () => []);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    const row = state.mediaHost.media.image(state.files[0], ['old', 'new']);
+    await vi.waitFor(() => {
+      expect(row.state).toMatchObject({ kind: 'binary', action: 'reload' });
+    });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(images).toHaveBeenCalledTimes(1);
+    row.release();
   });
 
   it('keeps the previous diff on screen until a reload completes', async () => {
