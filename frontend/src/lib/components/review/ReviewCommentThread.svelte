@@ -3,6 +3,8 @@
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import ReviewAvatar from './ReviewAvatar.svelte';
   import ReviewCommentEditorShell from './ReviewCommentEditorShell.svelte';
+  import type { SuggestionSource } from './ReviewCommentMarkdown.svelte';
+  import type { EditorPreviewControl } from '../../stores/reviewEditorPreview.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
   import type { DiffReviewComment } from '../../types/models';
   import { draftRange, rangeLabel } from '../../utils/reviewRange';
@@ -31,9 +33,13 @@
     /** Its body carries its find key: the diff's card does, the
      * Conversation's (which find does not search) does not. */
     findable?: boolean;
+    /** The edit's Preview toggle and where a previewed suggestion reads
+     * the lines it replaces. */
+    preview?: EditorPreviewControl | null;
+    previewSource?: SuggestionSource | null;
   }
 
-  let { comment, orphaned = false, editBody, onEditBodyChange, onUpdate, onDelete, pulse = 0, findable = true }: Props = $props();
+  let { comment, orphaned = false, editBody, onEditBodyChange, onUpdate, onDelete, pulse = 0, findable = true, preview = null, previewSource = null }: Props = $props();
   let busy = $state(false);
   const editing = $derived(editBody !== null);
   const canSave = $derived((editBody ?? '').trim().length > 0 && !busy);
@@ -116,6 +122,8 @@
           onBodyChange={(body) => onEditBodyChange(comment.id, body)}
           primary={{ label: 'Save', run: saveEdit, disabled: !canSave }}
           onCancel={cancelEdit}
+          {preview}
+          {previewSource}
           takeFocus={() => true}
         />
       {:else}

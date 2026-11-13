@@ -22,7 +22,9 @@
   // the rail and the card beside it. The store owns the feed and freezes
   // its order once shown; new arrivals wait behind the header's chip.
   // Under the feed: held replies whose thread is gone (kept, to delete or
-  // keep out of the review) and the one "Comment…" field.
+  // keep out of the review) and the one "Comment…" field. Above it, once,
+  // why the comments show no reactions when the forge's read of them
+  // failed.
 
   interface Props {
     review: ReviewPaneState;
@@ -116,6 +118,9 @@
 </script>
 
 <div bind:this={rootEl} class="relative px-3 py-3.5 text-xs" data-testid="review-conversation">
+  {#if review.reactionsUnavailable}
+    <p class="mb-3 text-[0.6875rem] text-fg-subtle" data-testid="review-reactions-unavailable">{review.reactionsUnavailable}</p>
+  {/if}
   {#if review.conversationFeed.length > 1}
     <!-- The rail: avatar discs are 28px wide from x=12, so their center
          is x=26; the line runs from the first disc to the last. -->

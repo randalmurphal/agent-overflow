@@ -27,6 +27,7 @@
   import { findThreadCommentKey, reviewCommentKey } from '../../utils/reviewFindScan';
   import type { ReviewThread } from '../../types/models';
   import type { CommentAnchor, ReviewPaneState } from '../../stores/reviewPane.svelte';
+  import { commentWriteKey } from '../../stores/reviewCommentWrites.svelte';
 
   // A PR review thread on the diff surface: the same card as the
   // Conversation feed (avatar, author, state edge and chip, the actions at
@@ -208,6 +209,8 @@
           {onResolve}
           hold={review?.canHoldReply ? { primary: review.primaryCommentAction, onHold: () => review?.holdPRThreadReply(thread) } : null}
           nowWithheld={review?.nowWithheldReason ?? null}
+          preview={review?.editorPreviews.control(commentWriteKey.reply(thread.id)) ?? null}
+          previewSource={replying ? (review?.suggestions.threadSource(thread) ?? null) : null}
         />
       {/if}
     </div>

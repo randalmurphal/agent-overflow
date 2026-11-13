@@ -12,6 +12,8 @@ import ReviewLineBlockRow from './ReviewLineBlockRow.svelte';
 import ReviewPaneBanners from './ReviewPaneBanners.svelte';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { createCommentWrites } from '../../stores/reviewCommentWrites.svelte';
+import { createReviewCommentExtras } from '../../stores/reviewCommentExtras.svelte';
+import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { parseReviewFiles } from '../../utils/patchStore';
 import { FILE_START, materializeRows } from '../../utils/patchRows';
@@ -23,6 +25,7 @@ const THREAD: ReviewThread = {
   comments: [{
     id: 'node-1', authorLogin: 'octocat', authorName: 'Mona Lisa Octocat', body: 'A comment with a body.', createdAt: '2026-01-01T00:00:00Z',
     editedAt: '2026-01-02T00:00:00Z', databaseID: 1, viewerCanEdit: true, viewerCanDelete: true,
+    url: 'https://github.com/o/r/pull/1#discussion_r1',
   }],
 };
 
@@ -43,6 +46,7 @@ afterEach(() => {
   if (app) unmount(app);
   app = undefined;
   target.remove();
+  __setTransportHelloForTest(null);
 });
 
 function textBoxes(): { left: number; right: number; top: number }[] {
@@ -67,9 +71,29 @@ describe('a sent comment\'s header actions', () => {
       refreshThreads: async () => {},
       showPostedComment: () => {},
     });
-    const review = { sentComments: writes, sentCommentActions: true, nowWithheldReason: null };
+    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: ['pr-comment-actions.v1', 'pr-suggestions-reactions.v1'], backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    const extras = createReviewCommentExtras({
+      backend: HOME_BACKEND,
+      ref: () => ({ forge: 'github', host: 'github.com', namespace: 'o', repo: 'r', number: 1 }),
+      identity: () => 'k',
+      entityKey: () => 'k',
+      launch: () => 'l',
+      updateFailing: () => false,
+      refreshThreads: async () => {},
+      onPR: () => true,
+      withheld: () => null,
+      loadedHeadSHA: () => 'abc1234',
+      diffIsCurrentHead: () => false,
+      files: () => [],
+      openEditorKeys: () => new Set(),
+      reactionsUnavailable: () => null,
+    });
+    const review = { sentComments: writes, sentCommentActions: true, nowWithheldReason: null, ...extras.state };
     app = mount(ReviewThreadComments, { target, props: { thread: THREAD, review } });
     flushSync();
+    // All four, in order, at the 340px a narrow companion gives a reply.
+    expect([...target.querySelectorAll('[data-testid="review-comment-actions"] button')].map((button) => button.getAttribute('aria-label')))
+      .toEqual(['Add reaction', 'Copy link', 'Edit', 'Delete']);
     const before = textBoxes();
     expect(before.length).toBeGreaterThanOrEqual(3);
     const icons = target.querySelector<HTMLElement>('[data-testid="review-comment-actions"] > span')!;
@@ -97,6 +121,7 @@ describe('a sent comment\'s header actions', () => {
     const time = [...target.querySelectorAll<HTMLElement>('[data-testid="review-comment-header"] > span')].find((span) => span.textContent!.startsWith('·'))!;
     expect(getComputedStyle(time).visibility).toBe('hidden');
     writes.dispose();
+    extras.dispose();
   });
 });
 

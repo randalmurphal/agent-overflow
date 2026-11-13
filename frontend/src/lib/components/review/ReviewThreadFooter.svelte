@@ -6,6 +6,8 @@
   import Icon from '../primitives/Icon.svelte';
   import ReviewCommentEditorShell, { type EditorAction } from './ReviewCommentEditorShell.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
+  import type { SuggestionSource } from './ReviewCommentMarkdown.svelte';
+  import type { EditorPreviewControl } from '../../stores/reviewEditorPreview.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
   import { threadClipboardText } from '../../utils/reviewComments';
@@ -42,6 +44,10 @@
     nowWithheld?: string | null;
     /** Absent for non-resolvable threads: no resolve control renders. */
     onResolve?: (resolved: boolean) => void;
+    /** The composer's Preview toggle and where a previewed suggestion
+     * reads the lines it replaces (the thread's). */
+    preview?: EditorPreviewControl | null;
+    previewSource?: SuggestionSource | null;
   }
 
   let {
@@ -59,6 +65,8 @@
     hold = null,
     nowWithheld = null,
     onResolve,
+    preview = null,
+    previewSource = null,
   }: Props = $props();
 
   let copied = $state(false);
@@ -132,6 +140,8 @@
       {error}
       takeFocus={() => true}
       leading={actions}
+      {preview}
+      {previewSource}
     />
   {:else}
     <div class="flex items-center gap-1.5">

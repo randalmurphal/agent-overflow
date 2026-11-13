@@ -35,12 +35,15 @@
   import type { DiffReviewComment } from '../../types/models';
   import type { PRRef } from '../../utils/prReference';
   import { countReviewComments, type CommentCounts } from '../../utils/reviewComments';
-  import type { ReviewLeadRow } from '../../utils/reviewRows';
+  import type { EditorRow, ReviewLeadRow } from '../../utils/reviewRows';
   import { filterReviewFiles } from '../../utils/reviewTree';
   import { forgeLabels } from '../../utils/forgeLabels';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
   import { commentWriteKey } from '../../stores/reviewCommentWrites.svelte';
+  import { EDITOR_PREVIEW_KEY } from '../../stores/reviewEditorPreview.svelte';
+  import type { SuggestionSource } from './ReviewCommentMarkdown.svelte';
+  import { draftNewSideSpan, editorNewSideSpan, readNewSideLines, type NewSideSpan } from '../../utils/suggestionLines';
 
   interface Props {
     /** A review companion beside a thread pane. */
@@ -258,6 +261,21 @@
     review?.consumePendingJumpFilePath();
   }
 
+  // Where a new comment's or a draft's suggestion reads the lines it
+  // replaces: its new-side line or range in the PR's current diff.
+  function spanSource(span: NewSideSpan | null): SuggestionSource | null {
+    return span ? (review?.suggestions.lineSource(span.path, span.from, span.to) ?? null) : null;
+  }
+  function editorSource(editor: EditorRow): SuggestionSource | null {
+    return spanSource(editorNewSideSpan(editor));
+  }
+  // `Suggest change` where the editor's lines are in the diff: it reads
+  // their text when pressed.
+  function suggestFor(editor: EditorRow): (() => Promise<string[] | null>) | null {
+    const source = editorSource(editor);
+    return source ? () => readNewSideLines(source.file, source.from, source.to) : null;
+  }
+
   function commentById(commentId: string): DiffReviewComment | null {
     return review?.comments.find((comment) => comment.id === commentId) ?? null;
   }
@@ -471,6 +489,9 @@
               onUseLine={(editorId, seen) => review?.useSuggestedLine(editorId, seen) ?? false}
               onMove={(editorId) => review?.moveEditor(editorId)}
               onCancelMove={() => review?.cancelEditorMove()}
+              preview={review?.editorPreviews.control(commentWriteKey.editor(editor.id)) ?? null}
+              previewSource={editorSource(editor)}
+              suggest={review?.canPostNow && review.suggestions.available ? suggestFor(editor) : null}
             />
           {/snippet}
           {#snippet commentThread(threadKey, _anchor, pulse)}
@@ -484,6 +505,8 @@
                 onEditBodyChange={(commentId, body) => review?.setDraftEditBody(commentId, body)}
                 onUpdate={(commentId, body) => review?.updateComment(commentId, body)}
                 onDelete={(commentId) => review?.deleteComment(commentId)}
+                preview={review?.editorPreviews.control(EDITOR_PREVIEW_KEY.draftEdit(comment.id)) ?? null}
+                previewSource={spanSource(draftNewSideSpan(comment))}
               />
             {/if}
           {/snippet}

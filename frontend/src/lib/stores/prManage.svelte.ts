@@ -131,12 +131,10 @@ export interface PRManageView {
 
   // The description editor.
   readonly descriptionDraft: string | null;
-  readonly descriptionPreview: boolean;
   readonly descriptionError: PRManageError | null;
   readonly descriptionSaving: boolean;
   openDescription(current: string): void;
   setDescriptionDraft(text: string): void;
-  setDescriptionPreview(preview: boolean): void;
   cancelDescription(): void;
   saveDescription(): Promise<void>;
 
@@ -290,7 +288,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
   const titleSaving = $derived(pending?.kind === 'edit_title');
   const titleDraft = $derived(title && title.on.key === host.identity && !(title.submitted && !titleSaving) ? title.text : null);
 
-  let description = $state<{ text: string; expected: string; preview: boolean; submitted: boolean; on: PRManageTarget } | null>(null);
+  let description = $state<{ text: string; expected: string; submitted: boolean; on: PRManageTarget } | null>(null);
   let descriptionError = $state<PRManageError | null>(null);
   const descriptionSaving = $derived(pending?.kind === 'edit_description');
   const descriptionOpen = $derived(description !== null && description.on.key === host.identity && !(description.submitted && !descriptionSaving));
@@ -426,20 +424,16 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     },
 
     get descriptionDraft() { return descriptionOpen ? (description?.text ?? '') : null; },
-    get descriptionPreview() { return descriptionOpen && !!description?.preview; },
     get descriptionError() { return descriptionError; },
     get descriptionSaving() { return descriptionSaving; },
     openDescription(current: string): void {
       const on = currentTarget();
       if (descriptionOpen || !on) return;
-      description = { text: current, expected: current, preview: false, submitted: false, on };
+      description = { text: current, expected: current, submitted: false, on };
       descriptionError = null;
     },
     setDescriptionDraft(text: string): void {
       if (description && !descriptionSaving) description = { ...description, text };
-    },
-    setDescriptionPreview(preview: boolean): void {
-      if (description) description = { ...description, preview };
     },
     cancelDescription(): void {
       if (descriptionSaving) return;

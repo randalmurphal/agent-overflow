@@ -1,15 +1,16 @@
 <script lang="ts">
-  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import Button from '../primitives/Button.svelte';
+  import ReviewEditorPreview from './ReviewEditorPreview.svelte';
   import ReviewManageError from './ReviewManageError.svelte';
+  import ReviewPreviewToggle from './ReviewPreviewToggle.svelte';
   import { SAVING_TITLE, type PRManageView } from '../../stores/prManage.svelte';
-  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
+  import type { EditorPreviewControl } from '../../stores/reviewEditorPreview.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { isMacPlatform } from '../../utils/platform';
 
-  // The Description section's editor: the raw body, a quiet Preview that
-  // renders it as the section does (ChatMarkdown's sanitized embedded
-  // mode), Save and Cancel. The text lives in the review state. A save
+  // The Description section's editor: the raw body, the editors' one
+  // Preview toggle in its button row (the body rendered as comments are,
+  // ChatMarkdown's sanitized embedded mode), Save and Cancel. The text lives in the review state. A save
   // names the description the editor opened with; the backend refuses
   // one that changed since, and the editor stays open with its sentence.
   // A pending save cannot be dismissed. Ctrl or Cmd+Enter saves, Escape
@@ -17,21 +18,27 @@
 
   interface Props {
     manage: PRManageView;
+    /** The editor's Preview, kept in the review state with the others. */
+    preview: EditorPreviewControl;
     /** The editor closed; focus goes back to the control that opened it. */
     onClosed: () => void;
   }
 
-  let { manage, onClosed }: Props = $props();
+  let { manage, preview, onClosed }: Props = $props();
 
   let textarea: HTMLTextAreaElement | undefined = $state(undefined);
   const saving = $derived(manage.descriptionSaving);
   const blocked = $derived(saving ? null : manage.blockedReason);
-  const preview = $derived(manage.descriptionPreview);
+  const previewing = $derived(preview.state);
+  // Focus goes to the text when the editor opens, not when preview ends
+  // (the toggle puts it back with the caret).
+  let focused = false;
   let root: HTMLDivElement | undefined = $state(undefined);
 
   $effect(() => {
     const field = textarea;
-    if (!field || preview) return;
+    if (!field || focused) return;
+    focused = true;
     field.focus({ preventScroll: true });
   });
 
@@ -67,35 +74,12 @@
 
   // The comment editors' placeholder names the save chord the same way.
   const placeholder = `Describe the change (${isMacPlatform() ? '⌘' : 'Ctrl'}+Enter to save)`;
-  const toggleClass = 'h-6 rounded-[var(--radius-field)] px-2 text-[0.6875rem] font-medium compact:h-8';
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div bind:this={root} class="flex flex-col gap-2 px-3 py-2.5" data-testid="review-description-editor" onkeydown={onKeydown}>
-  <div class="flex items-center gap-1" role="group" aria-label="Description editor view">
-    <button
-      type="button"
-      aria-pressed={!preview}
-      class="{toggleClass} {preview ? 'text-fg-muted hover:text-fg' : 'bg-surface-2 text-fg'}"
-      data-testid="review-description-write"
-      onclick={() => manage.setDescriptionPreview(false)}
-    >Write</button>
-    <button
-      type="button"
-      aria-pressed={preview}
-      class="{toggleClass} {preview ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
-      data-testid="review-description-preview"
-      onclick={() => manage.setDescriptionPreview(true)}
-    >Preview</button>
-  </div>
-  {#if preview}
-    <div class="min-h-24 rounded-[var(--radius-field)] border border-border-subtle px-2.5 py-2 text-xs text-fg" data-testid="review-description-preview-body">
-      {#if (manage.descriptionDraft ?? '').trim() === ''}
-        <span class="text-fg-subtle">Nothing to preview.</span>
-      {:else}
-        <ChatMarkdown source={manage.descriptionDraft ?? ''} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
-      {/if}
-    </div>
+  {#if previewing}
+    <ReviewEditorPreview body={manage.descriptionDraft ?? ''} height={previewing?.height ?? 0} testid="review-description-preview-body" />
   {:else}
     <textarea
       bind:this={textarea}
@@ -112,7 +96,9 @@
   {#if manage.descriptionError}
     <ReviewManageError error={manage.descriptionError} testid="review-description-error" />
   {/if}
-  <div class="flex items-center justify-end gap-1.5">
+  <div class="flex items-center gap-1.5">
+    <ReviewPreviewToggle control={preview} field={() => textarea} testid="review-description-preview" />
+    <span class="min-w-0 flex-1"></span>
     <Button
       variant="ghost"
       size="xs"

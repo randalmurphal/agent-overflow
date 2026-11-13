@@ -41,7 +41,7 @@
   import { createRefreshScheduler } from '../../utils/refreshScheduler';
   import { createMarkdownFindTextCache, type MarkdownFindText } from '../chat/markdown/markdownFindText';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
-  import { visibleBody } from '../../utils/reviewComments';
+  import { findableBody } from '../../utils/reviewComments';
   import { readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
   import { findDraftKey, findThreadCommentKey, findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
   import {
@@ -117,7 +117,7 @@
     return readCommentDetails(root, (rowKey) => {
       const at = findThreadCommentOfKey(rowKey);
       const comment = at ? review.prThreads.find((thread) => thread.id === at.threadId)?.comments.find((each) => reviewCommentKey(each) === at.comment) : undefined;
-      return comment ? commentTexts()(visibleBody(comment.body)).details : null;
+      return comment ? commentTexts()(findableBody(comment.body)).details : null;
     });
   }
 

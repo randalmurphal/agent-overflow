@@ -1,4 +1,7 @@
 <script lang="ts">
+  import ReviewEditorPreview from './ReviewEditorPreview.svelte';
+  import ReviewPreviewToggle from './ReviewPreviewToggle.svelte';
+  import { EDITOR_PREVIEW_KEY } from '../../stores/reviewEditorPreview.svelte';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 
   // The drafts' send strip: the count, the target (the linked agent or the
@@ -10,6 +13,9 @@
   }
 
   let { review }: Props = $props();
+
+  const preview = $derived(review.editorPreviews.control(EDITOR_PREVIEW_KEY.summary));
+  let summary: HTMLTextAreaElement | undefined = $state(undefined);
 </script>
 
 <section class="border-t border-border bg-surface-1/85 px-3 py-2" aria-label="Review comments" data-testid="review-send-strip">
@@ -62,12 +68,21 @@
           {nextVerdict === 'request-changes' ? 'Request changes' : nextVerdict[0].toUpperCase() + nextVerdict.slice(1)}
         </button>
       {/each}
+      <span class="min-w-0 flex-1"></span>
+      <ReviewPreviewToggle control={preview} field={() => summary} testid="review-summary-preview-toggle" />
     </div>
-    <textarea
-      class="mt-2 w-full resize-none rounded border border-border-subtle bg-surface-0 px-2 py-1.5 text-xs"
-      rows="2"
-      value={review.summaryBody}
-      oninput={(event) => review.setSummaryBody(event.currentTarget.value)}
-    ></textarea>
+    {#if preview.state}
+      <ReviewEditorPreview body={review.summaryBody} height={preview.state?.height ?? 0} class="mt-2" />
+    {:else}
+      <textarea
+        bind:this={summary}
+        class="mt-2 w-full resize-none rounded border border-border-subtle bg-surface-0 px-2 py-1.5 text-xs"
+        rows="2"
+        aria-label="Review summary"
+        data-testid="review-summary"
+        value={review.summaryBody}
+        oninput={(event) => review.setSummaryBody(event.currentTarget.value)}
+      ></textarea>
+    {/if}
   {/if}
 </section>

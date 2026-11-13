@@ -166,6 +166,8 @@ import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { ReviewSectionId } from './reviewSectionSizes.svelte';
 import { REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
 import { createReviewCommentActions, type ReviewCommentActionsState } from './reviewCommentActions.svelte';
+import { createReviewCommentExtras, type ReviewCommentExtrasState } from './reviewCommentExtras.svelte';
+import { EDITOR_PREVIEW_KEY } from './reviewEditorPreview.svelte';
 import { commentWriteKey } from './reviewCommentWrites.svelte';
 import { RANGE_REFUSAL_TEXT, rangesByFile, spanRange, type LineRange } from '../utils/reviewRange';
 
@@ -194,7 +196,7 @@ export interface MergePRChoice {
   commitMessage?: MergeMessage;
 }
 
-export interface ReviewPaneState extends ReviewCommentActionsState {
+export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommentExtrasState {
   /** Subject this state was created for — the registry's staleness check.
    *  Conversation/draft identity, ownership epoch and checkout. */
   readonly identity: string;
@@ -1436,6 +1438,38 @@ export function createReviewPaneState(
     showPostedComment: (commentId) => joinPostedComment(commentId),
   });
 
+  // Suggestions, reactions and the editors' Preview
+  // (reviewCommentExtras.svelte.ts). A suggestion's replaced text is read
+  // only from the PR's whole diff at its live head.
+  const openEditorKeys = $derived.by(() => {
+    const out = new Set<string>([EDITOR_PREVIEW_KEY.summary]);
+    for (const editor of openEditors) out.add(commentWriteKey.editor(editor.id));
+    for (const id of draftEditBodies.keys()) out.add(EDITOR_PREVIEW_KEY.draftEdit(id));
+    for (const thread of prThreads) {
+      if (commentActions.state.replyOpen(thread.id, 'diff') || commentActions.state.replyOpen(thread.id, 'conversation')) out.add(commentWriteKey.reply(thread.id));
+    }
+    for (const key of commentActions.writes.editing) out.add(`edit:${key}`);
+    if (commentActions.writes.prCommentOpen) out.add(commentWriteKey.prComment);
+    if (manage.descriptionDraft !== null) out.add(EDITOR_PREVIEW_KEY.description);
+    return out;
+  });
+  const extras = createReviewCommentExtras({
+    backend,
+    ref: () => (scope === 'pr' ? prRef : null),
+    identity: () => (prRef ? computerPRKey(prRef) : null),
+    entityKey: () => prEntityKey,
+    launch: () => backendLaunch,
+    updateFailing: () => prUpdateError !== null,
+    refreshThreads: () => refreshPRThreads(),
+    onPR: () => scope === 'pr' && prRef !== null,
+    withheld: () => commentActions.state.nowWithheldReason,
+    loadedHeadSHA: () => loadedPRHeadSHA,
+    diffIsCurrentHead: () => scope === 'pr' && selectedCommitSHA === null && loadedPRRevision !== null && !prStale,
+    files: () => loadedFiles,
+    openEditorKeys: () => openEditorKeys,
+    reactionsUnavailable: () => prSnapshot?.reactionsUnavailable ?? null,
+  });
+
   // The workspace's CURRENT open PR, read live from the shared git-status
   // store. Not memoized: a PR opened while this pane sat open must become
   // selectable, and one that merged must stop being offered.
@@ -1585,6 +1619,7 @@ export function createReviewPaneState(
   function dispose(): void {
     disposed = true;
     commentActions.dispose();
+    extras.dispose();
     showRead(null);
     disposePRRefWatch();
     disposePaintedRetention();
@@ -3556,11 +3591,12 @@ export function createReviewPaneState(
     },
     setIgnoreWhitespace,
     dispose,
-  } satisfies Omit<ReviewPaneState, keyof ReviewCommentActionsState>;
+  } satisfies Omit<ReviewPaneState, keyof ReviewCommentActionsState | keyof ReviewCommentExtrasState>;
   // Own properties, getters intact: a spread would read each getter once.
   return Object.defineProperties({} as ReviewPaneState, {
     ...Object.getOwnPropertyDescriptors(own),
     ...Object.getOwnPropertyDescriptors(commentActions.state),
+    ...Object.getOwnPropertyDescriptors(extras.state),
   });
 }
 

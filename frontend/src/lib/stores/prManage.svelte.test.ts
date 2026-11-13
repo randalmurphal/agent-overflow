@@ -183,14 +183,14 @@ describe('the description editor', () => {
     expect(view.descriptionError?.message).toBe(sentence);
   });
 
-  it('keeps the preview choice and the text in the state, and discards on cancel', () => {
+  it('keeps the text in the state, and discards it on cancel', () => {
     view.openDescription('Body');
-    view.setDescriptionPreview(true);
-    expect(view.descriptionPreview).toBe(true);
+    view.setDescriptionDraft('Mine');
+    expect(view.descriptionDraft).toBe('Mine');
     view.cancelDescription();
     expect(view.descriptionDraft).toBeNull();
     view.openDescription('Body');
-    expect(view.descriptionPreview).toBe(false);
+    expect(view.descriptionDraft).toBe('Body');
   });
 });
 

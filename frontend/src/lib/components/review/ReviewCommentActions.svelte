@@ -14,10 +14,16 @@
     /** Why it is disabled, as its hover text. */
     disabledLabel?: string;
     testid?: string;
+    /** It opens a popover (the host's `popover`, anchored to it). */
+    haspopup?: 'dialog' | 'menu';
+    /** Its popover is open: the icons stay shown while it is. */
+    expanded?: boolean;
   }
 </script>
 
 <script lang="ts">
+  import type { Snippet } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import ReviewIconButton from './ReviewIconButton.svelte';
 
   // A comment's actions at the right end of its header, revealed while the
@@ -38,9 +44,13 @@
      * ancestor), or a thread's first comment, whose header and body are
      * apart (a `data-first-comment` element inside `group/thread`). */
     reveal?: 'comment' | 'thread';
+    /** An action's popover, given the button it anchors to. */
+    popover?: Snippet<[anchor: (id: string) => HTMLButtonElement | undefined]>;
   }
 
-  let { actions, confirming, onConfirmingChange, pending = false, reveal = 'comment' }: Props = $props();
+  let { actions, confirming, onConfirmingChange, pending = false, reveal = 'comment', popover }: Props = $props();
+  const buttons = new SvelteMap<string, HTMLButtonElement>();
+  const held = $derived(actions.some((action) => action.expanded));
   const REVEAL = {
     comment: 'group-hover/comment:opacity-100',
     thread: 'group-has-[[data-first-comment]:hover]/thread:opacity-100',
@@ -59,12 +69,23 @@
 {#if actions.length > 0}
   <span class="relative flex shrink-0 items-center" data-testid="review-comment-actions" data-find-skip>
     <span
-      class="flex items-center opacity-0 transition-opacity duration-75 {REVEAL[reveal]} focus-within:opacity-100 compact:opacity-100 {asking ? 'invisible' : ''}"
+      class="flex items-center opacity-0 transition-opacity duration-75 {REVEAL[reveal]} focus-within:opacity-100 compact:opacity-100 {held ? 'opacity-100' : ''} {asking ? 'invisible' : ''}"
     >
       {#each actions as action (action.id)}
-        <ReviewIconButton icon={action.icon} label={action.label} disabled={action.disabled || pending} disabledLabel={action.disabledLabel} testid={action.testid} onclick={() => press(action)} />
+        <ReviewIconButton
+          icon={action.icon}
+          label={action.label}
+          disabled={action.disabled || pending}
+          disabledLabel={action.disabledLabel}
+          testid={action.testid}
+          haspopup={action.haspopup}
+          expanded={action.expanded}
+          bind:element={() => buttons.get(action.id), (element) => { if (element) buttons.set(action.id, element); else buttons.delete(action.id); }}
+          onclick={() => press(action)}
+        />
       {/each}
     </span>
+    {@render popover?.((id) => buttons.get(id))}
     {#if asking}
       <span
         class="absolute inset-y-0 right-0 flex items-center gap-1 whitespace-nowrap pl-2 text-[0.6875rem] text-fg"

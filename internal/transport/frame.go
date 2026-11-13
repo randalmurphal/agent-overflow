@@ -115,6 +115,13 @@ const CapabilityPRReviewDrafts = "pr-review-drafts.v1"
 // without it offers no comment now, hold, range, edit or delete.
 const CapabilityPRCommentActions = "pr-comment-actions.v1"
 
+// CapabilityPRSuggestionsReactions names the review pane's suggested
+// changes and reactions: ReviewComment's suggestions and reactions, the
+// PR read's reactionsUnavailable, ApplyPRSuggestion, SetPRCommentReaction
+// and ParseCommentSuggestions. A client reading a backend without it
+// offers no Apply, no reaction controls and no Suggest change.
+const CapabilityPRSuggestionsReactions = "pr-suggestions-reactions.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -133,6 +140,7 @@ var serverCapabilities = []string{
 	CapabilityThreadFind,
 	CapabilityPRReviewDrafts,
 	CapabilityPRCommentActions,
+	CapabilityPRSuggestionsReactions,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose
