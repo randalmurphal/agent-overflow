@@ -77,8 +77,12 @@ type Invocation struct {
 	// variables as sent.
 	Operation string          `json:"operation,omitempty"`
 	Variables json.RawMessage `json:"variables,omitempty"`
-	Status    int             `json:"status,omitempty"`
-	Detail    string          `json:"detail,omitempty"`
+	// Body is a REST write's JSON body (POST, PUT, PATCH, DELETE), so a
+	// spec can assert what the forge received; at most maxRecordedBody
+	// bytes, and none when it is not JSON.
+	Body   json.RawMessage `json:"body,omitempty"`
+	Status int             `json:"status,omitempty"`
+	Detail string          `json:"detail,omitempty"`
 }
 
 // Invocation variants.
@@ -109,9 +113,10 @@ func (inv Invocation) MarshalJSON() ([]byte, error) {
 			Path      string          `json:"path"`
 			Operation string          `json:"operation,omitempty"`
 			Variables json.RawMessage `json:"variables,omitempty"`
+			Body      json.RawMessage `json:"body,omitempty"`
 			Status    int             `json:"status"`
 			Detail    string          `json:"detail,omitempty"`
-		}{head, inv.Forge, inv.Host, inv.Method, inv.Path, inv.Operation, inv.Variables, inv.Status, inv.Detail})
+		}{head, inv.Forge, inv.Host, inv.Method, inv.Path, inv.Operation, inv.Variables, inv.Body, inv.Status, inv.Detail})
 	}
 	return json.Marshal(struct {
 		common

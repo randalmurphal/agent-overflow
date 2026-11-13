@@ -22,6 +22,11 @@ var gitlabGraphQL = []graphQLOp{
 	{kind: "query", name: "PullsReviewingApprovals", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("reviewer", gitlabApprovalsNode)},
 	{kind: "query", name: "PullsAuthoredApprovals", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("author", gitlabApprovalsNode)},
 	{kind: "query", name: "PipelineJobs", required: []string{"fullPath", "id"}, optional: []string{"after"}, run: glabPipelineJobs},
+	{kind: "query", name: "PRManage", required: []string{"fullPath", "iid"}, run: glabManage(false)},
+	{kind: "query", name: "PRManageChecks", required: []string{"fullPath", "iid"}, run: glabManage(true)},
+	{kind: "mutation", name: "PRRereview", required: []string{"projectPath", "iid", "userId"}, run: glabRereview},
+	{kind: "mutation", name: "PRBypassChanges", required: []string{"projectPath", "iid"}, run: glabBypassChanges},
+	{kind: "query", name: "PRMergeMessage", required: []string{"fullPath", "iid"}, run: glabMergeMessage},
 }
 
 // glabPullsRead answers project(fullPath) { mergeRequests(<filter>Username:
@@ -107,6 +112,8 @@ func gitlabReviewState(p *Pull, login string) string {
 		return "approved"
 	case slices.ContainsFunc(p.ChangeRequests, func(other string) bool { return strings.EqualFold(other, login) }):
 		return "requested_changes"
+	case containsFold(p.rerequested, login):
+		return "unreviewed"
 	case len(gitlabComments(p, login)) > 0:
 		return "reviewed"
 	}

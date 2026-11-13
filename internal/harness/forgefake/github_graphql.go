@@ -58,6 +58,19 @@ var githubGraphQL = []graphQLOp{
 	{kind: "mutation", name: "DismissReview", required: []string{"reviewID", "message"}, run: ghDismissReview},
 	{kind: "mutation", name: "UpdatePRBranch", required: []string{"pullRequestID", "expectedHeadOid"}, run: ghUpdatePRBranch},
 	{kind: "mutation", name: "MarkPRReady", required: []string{"pullRequestID"}, run: ghMarkPRReady},
+	{kind: "mutation", name: "MergePRMessage", required: []string{"pullRequestID", "method", "expectedHeadOid", "commitHeadline", "commitBody"}, run: ghWithMessage(ghMergePR)},
+	{kind: "mutation", name: "EnableAutoMergeMessage", required: []string{"pullRequestID", "method", "expectedHeadOid", "commitHeadline", "commitBody"}, run: ghWithMessage(ghEnableAutoMerge)},
+	{kind: "query", name: "PREditTarget", required: []string{"owner", "name", "number"}, run: ghPREditTarget},
+	{kind: "mutation", name: "EditPR", required: []string{"pullRequestID"}, optional: []string{"title", "body"}, run: ghEditPR},
+	{kind: "query", name: "PRLabelTarget", required: []string{"owner", "name", "number", "ids"}, run: ghPRLabelTarget},
+	{kind: "mutation", name: "AddLabels", required: []string{"labelableID", "labelIDs"}, run: ghChangeLabels(true)},
+	{kind: "mutation", name: "RemoveLabels", required: []string{"labelableID", "labelIDs"}, run: ghChangeLabels(false)},
+	{kind: "mutation", name: "ClosePR", required: []string{"pullRequestID"}, run: ghSetState("close")},
+	{kind: "mutation", name: "ReopenPR", required: []string{"pullRequestID"}, run: ghSetState("reopen")},
+	{kind: "mutation", name: "ConvertPRToDraft", required: []string{"pullRequestID"}, run: ghSetState("draft")},
+	{kind: "query", name: "SearchAssignable", required: []string{"owner", "name", "query", "withTeams"}, run: ghSearchAssignable},
+	{kind: "query", name: "SearchLabels", required: []string{"owner", "name", "query"}, run: ghSearchLabels},
+	{kind: "query", name: "PRMergeMessage", required: []string{"owner", "name", "number", "method"}, run: ghPRMergeMessage},
 }
 
 // graphQLRequest is the body of a POST to /github/graphql.
@@ -272,7 +285,9 @@ func ghPRTick(e *Engine, c *call, v graphQLVars) response {
 	repository := map[string]any{"pullRequest": pull, "viewerPermission": r.Merge.Permission}
 	if wantDetail {
 		maps.Copy(repository, githubRepositoryMerge(r))
+		repository["owner"] = map[string]any{"__typename": githubOwnerType(r)}
 		maps.Copy(pull, e.githubPullDetail(r, p))
+		maps.Copy(pull, e.githubManageDetail(r, p))
 	}
 	if wantChecks {
 		var rollup any

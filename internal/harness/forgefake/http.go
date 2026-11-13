@@ -38,6 +38,9 @@ const maxRequestBody = 1 << 20
 // that list it implement (conditional). Range is likewise a flag only
 // the job log routes implement, each the way its forge answers it. A pool under a rate limit
 // (SetRateLimit) answers as the forge does.
+// maxRecordedBody bounds the REST write body an invocation records.
+const maxRecordedBody = 64 << 10
+
 func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.EscapedPath(), "/")
 	inv := Invocation{Via: ViaHTTP, Method: r.Method, Path: path}
@@ -63,6 +66,8 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if c.graphQL != nil {
 		inv.Operation = c.graphQL.OperationName
 		inv.Variables = c.graphQL.Variables
+	} else if r.Method != http.MethodGet && len(body) <= maxRecordedBody && json.Valid(body) {
+		inv.Body = json.RawMessage(bytes.TrimSpace(body))
 	}
 	if mount == "absolute" {
 		host, _, _ := strings.Cut(rest, "/")
