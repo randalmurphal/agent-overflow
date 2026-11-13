@@ -908,6 +908,8 @@ export interface CommentSuggestion {
   to: string[];
   appliable: boolean;
   applied?: boolean;
+  /** The block's identity as loaded (64 hex); Apply passes it as read. */
+  digest?: string;
 }
 
 /** One reaction on a comment (gitops.CommentReaction): its GitLab award

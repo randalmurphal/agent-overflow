@@ -47,7 +47,7 @@ export interface ReviewCommentExtras {
 export function createReviewCommentExtras(host: ReviewCommentExtrasHost): ReviewCommentExtras {
   const ops = createForgeOps(host);
   const capable = (): boolean => getTransportHelloFor(host.backend)?.capabilities.includes(PR_SUGGESTIONS_REACTIONS) ?? false;
-  const reactions = createReviewReactions({ ops, capable, onPR: host.onPR, withheld: host.withheld });
+  const reactions = createReviewReactions({ ops, capable, onPR: host.onPR, withheld: host.withheld, unavailable: host.reactionsUnavailable });
   const suggestions = createReviewSuggestions({
     ops,
     capable,

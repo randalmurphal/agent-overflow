@@ -25,15 +25,15 @@
 <div class="my-1.5 overflow-hidden rounded-[var(--radius-field)] border border-border-subtle bg-surface-0" data-testid="review-suggestion" data-find-skip>
   <div class="py-0.5 font-mono text-[0.75rem] leading-5">
     {#each removed ?? [] as line}
-      <div class="flex {lineTintClass('del')}" data-testid="review-suggestion-removed">
+      <div class="flex {lineTintClass('del')}">
         <span class="w-5 shrink-0 select-none text-center {gutterTintClass('del')}">-</span>
-        <span class="min-w-0 flex-1 whitespace-pre-wrap break-all pr-2 text-fg">{line}</span>
+        <span class="min-w-0 flex-1 whitespace-pre-wrap break-all pr-2 text-fg" data-testid="review-suggestion-removed">{line}</span>
       </div>
     {/each}
     {#each added as line}
-      <div class="flex {lineTintClass('add')}" data-testid="review-suggestion-added">
+      <div class="flex {lineTintClass('add')}">
         <span class="w-5 shrink-0 select-none text-center {gutterTintClass('add')}">+</span>
-        <span class="min-w-0 flex-1 whitespace-pre-wrap break-all pr-2 text-fg">{line}</span>
+        <span class="min-w-0 flex-1 whitespace-pre-wrap break-all pr-2 text-fg" data-testid="review-suggestion-added">{line}</span>
       </div>
     {/each}
     {#if added.length === 0 && (removed?.length ?? 0) === 0}

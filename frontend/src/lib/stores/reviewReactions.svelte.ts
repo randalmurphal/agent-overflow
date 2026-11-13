@@ -15,8 +15,11 @@ import type { CommentReaction, ReviewComment, ReviewThread } from '../types/mode
 
 export interface ReviewReactions {
   /** The backend reads and writes reactions (pr-suggestions-reactions.v1)
-   * and the pane is on a PR. */
+   * and the pane is on a PR: the chips show. */
   readonly available: boolean;
+  /** Add reaction is offered: available, and the forge's reactions read
+   * answered (a reaction added while they cannot be read could not show). */
+  readonly canAdd: boolean;
   /** Why a reaction write is withheld now (the now writes' reason), or null. */
   readonly withheld: string | null;
   /** The reactions present on a comment, chip order (the forge's). */
@@ -37,6 +40,8 @@ export interface ReviewReactionsHost {
   capable(): boolean;
   onPR(): boolean;
   withheld(): string | null;
+  /** Why the comments carry no reactions now, or null. */
+  unavailable(): string | null;
 }
 
 const NO_REACTIONS: readonly CommentReaction[] = Object.freeze([]);
@@ -51,12 +56,14 @@ export function reactionOpKey(thread: ReviewThread, comment: ReviewComment, name
 
 export function createReviewReactions(host: ReviewReactionsHost): ReviewReactions {
   const available = $derived(host.capable() && host.onPR());
+  const canAdd = $derived(available && host.unavailable() === null);
   // The open popover, with the PR epoch it opened in: a PR change closes it.
   let picker = $state<{ key: string; epoch: number } | null>(null);
   const openPicker = $derived(picker !== null && picker.epoch === host.ops.epoch ? picker.key : null);
 
   return {
     get available() { return available; },
+    get canAdd() { return canAdd; },
     get withheld() { return host.withheld(); },
     reactionsOf: (comment) => (available ? comment.reactions ?? NO_REACTIONS : NO_REACTIONS),
     pending: (thread, comment, name) => host.ops.pending(reactionOpKey(thread, comment, name)),

@@ -23,7 +23,7 @@
 
   let { added, removedKnown = null, file = null, from = 0, to = 0, footer }: Props = $props();
 
-  let read = $state<{ file: ReviewFile; from: number; to: number; lines: string[] | null } | null>(null);
+  let read = $state.raw<{ file: ReviewFile; from: number; to: number; lines: string[] | null } | null>(null);
 
   $effect(() => {
     const source = file;
