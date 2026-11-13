@@ -75,8 +75,8 @@ func projectSegments(project string) ([]string, error) {
 	return segments, nil
 }
 
-// create makes the bare origin repository of project and registers it,
-// answering its path. Creating one it made again answers the same path;
+// create makes the bare origin repository of project, its HEAD on main
+// as a forge's default branch, and registers it, answering its path. Creating one it made again answers the same path;
 // any other directory already at the path, or a segment that is a
 // symbolic link or a file, is refused.
 func (o *forgeOrigins) create(project string) (string, error) {
@@ -122,7 +122,7 @@ func (o *forgeOrigins) create(project string) (string, error) {
 		}
 		return "", fmt.Errorf("forge origin %s: %s exists and is not one this harness created", project, dir)
 	}
-	if _, err := forgeOriginGit(dir, canonical, "", "", "init", "--bare", "--quiet"); err != nil {
+	if _, err := forgeOriginGit(dir, canonical, "", "", "init", "--bare", "--quiet", "--initial-branch=main"); err != nil {
 		return "", err
 	}
 	o.created[dir] = true

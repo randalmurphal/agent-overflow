@@ -92,6 +92,10 @@ func TestForgeOriginCommit(t *testing.T) {
 	for _, forge := range []string{"github", "gitlab"} {
 		project := "acme/" + forge
 		git, head := forgeOriginRepo(t, origins, project, forge, 7)
+		// A clone checks out main, as a forge's default branch.
+		if got := git("symbolic-ref", "HEAD"); got != "refs/heads/main" {
+			t.Fatalf("%s: the origin's HEAD = %s", forge, got)
+		}
 		req := forgefake.CommitRequest{Forge: forge, Project: project, Number: 7, Branch: "feature", Parent: head,
 			Path: "a.go", Content: "one\nTWO\nthree\n", Message: "Apply suggestion from code review\n\nCo-authored-by: Octo <1+octo@users.noreply.github.com>"}
 		sha, err := commit(req)
