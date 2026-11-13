@@ -97,7 +97,8 @@ func TestCommentActionsThroughTheAppsForgeCode(t *testing.T) {
 					t.Fatalf("PostPRLineComment %q: %v", comment.Body, err)
 				}
 			}
-			if err := r.core.PostPRComment(ctx, ref, "on the PR"); err != nil {
+			postedID, err := r.core.PostPRComment(ctx, ref, "on the PR")
+			if err != nil {
 				t.Fatalf("PostPRComment: %v", err)
 			}
 			if err := r.core.ReplyToThread(ctx, ref, theirs.ID, theirs.Comments[0].DatabaseID, "a reply"); err != nil {
@@ -123,6 +124,9 @@ func TestCommentActionsThroughTheAppsForgeCode(t *testing.T) {
 				t.Fatalf("removed line comment = %+v", removed)
 			case onFile == nil || onFile.Path != "c.go" || onFile.Line != nil:
 				t.Fatalf("file comment = %+v", onFile)
+			// The post names the comment as the read does.
+			case onPR == nil || postedID == "" || onPR.Comments[0].ID != postedID:
+				t.Fatalf("PR comment = %+v, answered id %q", onPR, postedID)
 			case onPR == nil || onPR.Path != "":
 				t.Fatalf("PR comment = %+v", onPR)
 			case threadByBody(read, "stale") != nil:
