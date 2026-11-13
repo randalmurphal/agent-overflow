@@ -48,6 +48,9 @@ const (
 	ForgeErrorStaleHead   = "stale_head"
 	ForgeErrorRefused     = "refused"
 	ForgeErrorForge       = "forge"
+	// ForgeErrorUnconfirmed is a comment posted now whose answer was lost:
+	// it may be on the PR.
+	ForgeErrorUnconfirmed = "unconfirmed"
 )
 
 // ForgeAction names what the caller was doing, for the sentence.
@@ -115,7 +118,10 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	var moved *HeadMovedError
 	var gone *ReplyThreadGoneError
 	var elsewhere *CommentNotOnPRError
+	var unconfirmed *UnconfirmedCommentError
 	switch {
+	case errors.As(err, &unconfirmed):
+		return wrap(ForgeErrorUnconfirmed, fmt.Sprintf("%s may have posted this comment. Check the thread before sending it again.", labels.name))
 	case errors.As(err, &elsewhere):
 		return wrap(ForgeErrorNotFound, fmt.Sprintf("That comment is not on %s, so it was not changed.", name))
 	case errors.As(err, &moved):

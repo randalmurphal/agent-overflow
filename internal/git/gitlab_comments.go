@@ -44,7 +44,7 @@ func (f *gitlabForge) PostLineComment(ctx context.Context, ref PRReference, head
 	}
 	request := forgeapi.Request{Method: http.MethodPost, Path: gitlabMRPath(ref) + "/discussions", Body: gitlabDiscussionIn{Body: comment.Body, Position: position}}
 	_, err = client.JSON(ctx, request, nil)
-	return err
+	return commentWriteError(err)
 }
 
 func (f *gitlabForge) PostPRComment(ctx context.Context, ref PRReference, body string) error {
@@ -53,7 +53,7 @@ func (f *gitlabForge) PostPRComment(ctx context.Context, ref PRReference, body s
 		return err
 	}
 	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: gitlabMRPath(ref) + "/notes", Body: map[string]string{"body": body}}, nil)
-	return err
+	return commentWriteError(err)
 }
 
 // gitlabNotePath is the REST path of one note in its discussion.

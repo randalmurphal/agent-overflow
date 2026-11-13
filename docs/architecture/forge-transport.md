@@ -728,7 +728,8 @@ the merge and comment actions) returns its forge failure
 through `git.ExplainForgeError`: one sentence naming the cause and the
 fix, carried as reviewed prose under the code `forge_<kind>` (`transient`,
 `rate_limited`, `setup`, `forbidden`, `not_found`, `stale_head`, `refused`,
-`forge`) with the forge's own error in the detail chain. The client shows
+`forge`, and `unconfirmed` for a comment or reply posted now whose answer
+was lost, after which the PR's pump polls) with the forge's own error in the detail chain. The client shows
 the sentence and keys its one action on the code (`forge_stale_head`
 offers Reload).
 

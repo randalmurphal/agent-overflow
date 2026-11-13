@@ -120,7 +120,12 @@ func (a *App) admitPRAction(pr gitops.PRReference) error {
 // pane shows it.
 func (a *App) settlePRAction(ctx context.Context, pr gitops.PRReference, action gitops.ForgeAction, err error) (PRActionResult, error) {
 	if err != nil {
-		if _, merged := errors.AsType[*gitops.BranchKeptError](err); merged {
+		// A merge that kept its branch changed the PR, and a comment the
+		// forge may have taken may have: the pump polls so every pane shows
+		// what the forge holds.
+		_, merged := errors.AsType[*gitops.BranchKeptError](err)
+		_, unconfirmed := errors.AsType[*gitops.UnconfirmedCommentError](err)
+		if merged || unconfirmed {
 			a.refreshPRSnapshot(ctx, pr)
 		}
 		return PRActionResult{}, gitops.ExplainForgeError(pr, action, err)

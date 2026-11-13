@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/forgefake"
@@ -286,4 +287,79 @@ func (c *reviewSubmitCase) replyDraft(t *testing.T, threadOwned bool, thread *gi
 		t.Fatal(err)
 	}
 	return created
+}
+
+// A comment posted now whose answer was lost may be on the forge: it is
+// its own failure (kind unconfirmed, a sentence that says check before
+// sending again), never the transient "try again", and the pump polls so
+// the pane shows what the forge holds. Nothing reposts it.
+func TestPRCommentCreatesWithALostAnswerAreUnconfirmed(t *testing.T) {
+	t.Parallel()
+	for _, forge := range []string{"github", "gitlab"} {
+		t.Run(forge, func(t *testing.T) {
+			t.Parallel()
+			c := newReviewSubmitCase(t, forge)
+			c.seedTheirThread(t, false)
+			stubPRCIFetch(c.app)
+			events := capturePRUpdates(t, c.app)
+			ctx := context.Background()
+			sub, err := c.app.SubscribePRUpdates(ctx, c.pr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = c.app.UnsubscribePRUpdates(context.Background(), sub.ID)
+				c.app.prUpdates.wg.Wait()
+			})
+			head := c.head(t)
+			theirs := threadWithBody(c.threads(t), "theirs")
+			suffix := map[string][3]string{
+				"github": {"/pulls/9/comments", "/issues/9/comments", "/replies"},
+				"gitlab": {"/discussions", "/notes", "/notes"},
+			}[forge]
+			for i, create := range []struct {
+				body string
+				post func() (PRActionResult, error)
+			}{
+				{"lost line", func() (PRActionResult, error) {
+					return c.app.PostPRLineComment(ctx, c.pr, PRLineCommentRequest{HeadSHA: head, FilePath: "main.go", Side: "new", NewLine: 3, Body: "lost line"})
+				}},
+				{"lost note", func() (PRActionResult, error) { return c.app.PostPRComment(ctx, c.pr, "lost note") }},
+				{"lost reply", func() (PRActionResult, error) {
+					return c.app.ReplyToPRThread(ctx, c.pr, theirs.ID, theirs.Comments[0].DatabaseID, "lost reply")
+				}},
+			} {
+				c.gate.mu.Lock()
+				c.gate.publish = suffix[i]
+				c.gate.mu.Unlock()
+				c.gate.lose("drop")
+				result, err := create.post()
+				explained, ok := errors.AsType[*gitops.ForgeActionError](err)
+				if !ok || explained.Kind != gitops.ForgeErrorUnconfirmed || !strings.Contains(explained.Message, "may have posted this comment. Check the thread before sending it again.") || result.Seq != 0 {
+					t.Fatalf("%s = %+v, %v", create.body, result, err)
+				}
+				for deadline := time.Now().Add(5 * time.Second); ; {
+					if frame := awaitPRUpdate(t, events, create.body); threadWithBody(frame.Threads, create.body) != nil {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("%s: no frame shows the comment the forge holds", create.body)
+					}
+				}
+			}
+			if n := strings.Count(strings.Join(bodiesOf(c.threads(t)), "\n"), "lost"); n != 3 {
+				t.Fatalf("the forge holds %d lost comments, want each once", n)
+			}
+		})
+	}
+}
+
+func bodiesOf(threads []gitops.ReviewThread) []string {
+	var out []string
+	for _, thread := range threads {
+		for _, comment := range thread.Comments {
+			out = append(out, comment.Body)
+		}
+	}
+	return out
 }

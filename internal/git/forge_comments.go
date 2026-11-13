@@ -1,6 +1,7 @@
 package git
 
 import (
+	"agent-overflow/internal/forgeapi"
 	"context"
 	"errors"
 	"fmt"
@@ -42,6 +43,29 @@ func (t CommentTarget) Validate() error {
 		return errors.New("a comment is named by its thread id and its comment id")
 	}
 	return nil
+}
+
+// UnconfirmedCommentError is a comment or reply posted now whose answer
+// did not say whether the forge took it (forgeapi.WriteNotApplied could
+// not prove it did not): it may be on the PR, so it is not posted again.
+type UnconfirmedCommentError struct {
+	Err error
+}
+
+func (e *UnconfirmedCommentError) Error() string {
+	return "the forge did not confirm the comment: " + e.Err.Error()
+}
+
+func (e *UnconfirmedCommentError) Unwrap() error { return e.Err }
+
+// commentWriteError is the error of the one request that creates a
+// comment: nil, a write the forge did not apply as it is, any other an
+// *UnconfirmedCommentError.
+func commentWriteError(err error) error {
+	if err == nil || forgeapi.WriteNotApplied(err) {
+		return err
+	}
+	return &UnconfirmedCommentError{Err: err}
 }
 
 // CommentNotOnPRError is an edit or delete refused before it reached the

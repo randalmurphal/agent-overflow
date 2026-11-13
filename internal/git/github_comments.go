@@ -59,7 +59,7 @@ func (f *githubForge) PostLineComment(ctx context.Context, ref PRReference, head
 		return err
 	}
 	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: githubPullPath(ref) + "/comments", Body: body}, nil)
-	return err
+	return commentWriteError(err)
 }
 
 func (f *githubForge) PostPRComment(ctx context.Context, ref PRReference, body string) error {
@@ -69,7 +69,7 @@ func (f *githubForge) PostPRComment(ctx context.Context, ref PRReference, body s
 	}
 	path := fmt.Sprintf("%s/issues/%d/comments", githubRepoPath(ref.Repository()), ref.Number)
 	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: path, Body: map[string]string{"body": body}}, nil)
-	return err
+	return commentWriteError(err)
 }
 
 // githubConversationTarget reports whether target is a conversation (issue)

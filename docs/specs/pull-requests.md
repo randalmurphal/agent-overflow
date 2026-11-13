@@ -251,6 +251,9 @@ and correlation id stay behind "Details". The sentences:
 | Not mergeable | "FORGE refused the merge: REASON." (GitLab 405/422 body, GitHub 405/422 message) |
 | Rules block | "FORGE blocks this merge: REASON." (GitHub 403 with a protection message, GitLab 401 on merge) |
 | Cannot approve | "You cannot approve your own merge request." / "You are not an eligible approver." |
+| Comment answer lost | "FORGE may have posted this comment. Check the thread before sending it again." (kind `unconfirmed`: a comment or reply posted now whose response did not say; the pane's next frame shows what the forge holds) |
+| Comment elsewhere | "That comment is not on PROJECT#N, so it was not changed." (kind `not_found`: an edit or delete naming a GitHub comment of another PR) |
+| Reply thread gone | "The thread this reply answers is no longer on PROJECT!N, so the reply was not posted." (kind `not_found`) |
 | Rate limited, network, 5xx | existing sentences |
 
 A write failure is a toast with the sentence, "Details", and a "Reload"

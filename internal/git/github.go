@@ -433,7 +433,7 @@ func (f *githubForge) ReplyToThread(ctx context.Context, ref PRReference, thread
 	if err != nil {
 		return err
 	}
-	return postGitHubReply(ctx, client, ref, ReviewThreadReply{ThreadID: threadID, RootDatabaseID: databaseID}, body)
+	return commentWriteError(postGitHubReply(ctx, client, ref, ReviewThreadReply{ThreadID: threadID, RootDatabaseID: databaseID}, body))
 }
 
 // githubSetThreadResolvedMutation runs resolveReviewThread or

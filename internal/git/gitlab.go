@@ -996,7 +996,7 @@ func (f *gitlabForge) ReplyToThread(ctx context.Context, ref PRReference, thread
 	if errors.Is(err, forgeapi.ErrNotFound) {
 		return &ReplyThreadGoneError{ThreadID: threadID, Err: err}
 	}
-	return err
+	return commentWriteError(err)
 }
 
 // SetThreadResolved resolves (or reopens) one MR discussion. A discussion
