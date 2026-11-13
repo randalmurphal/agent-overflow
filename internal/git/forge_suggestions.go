@@ -137,9 +137,10 @@ const SuggestionCommitHeadline = "Apply suggestion from code review"
 const suggestionFileMaxBytes = 1 << 20
 
 // SuggestionNotAppliedError refuses an apply before anything is written:
-// the comment holds no such suggestion, the thread is outdated or not on
-// the new side, the PR is not open, or the file cannot be rewritten (past
-// suggestionFileMaxBytes, binary, not UTF-8, or shorter than the anchor).
+// the thread is outdated, resolved or not on the new side, the PR is not
+// open, or the file cannot be rewritten (no regular file at the path,
+// past suggestionFileMaxBytes, binary, not UTF-8, not the blob its tree
+// entry names, or shorter than the anchor).
 // Reason completes "The suggestion was not applied: ...".
 type SuggestionNotAppliedError struct {
 	Reason string
