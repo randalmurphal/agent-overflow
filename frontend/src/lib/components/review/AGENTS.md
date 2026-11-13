@@ -153,9 +153,9 @@ PR stores; components own presentation and interaction.
   Every editor's Preview is `ReviewPreviewToggle` in its button row and
   `ReviewEditorPreview` in the box's place at the box's height, its
   state in `editorPreviews` under the editor's key. A sent comment's body
-  renders through `ReviewCommentMarkdown` (cut at the fence lines the
-  backend reports, never parsed here; fences as `ReviewSuggestionDiff`,
-  the reaction chips under it), and its actions are Add reaction, Copy
+  renders through `ReviewCommentMarkdown` (one document; the fences at
+  the lines the backend reports, never parsed here, claimed as
+  `ReviewSuggestionDiff`, the reaction chips under it), and its actions are Add reaction, Copy
   link, Edit, Delete in that order: hover icons on desktop, one `⋯` menu
   (and the long press) on compact. A
   reaction or Apply never shows before the forge's answer

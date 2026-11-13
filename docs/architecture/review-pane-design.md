@@ -294,11 +294,12 @@ polling.
   write by the PR and its chip or suggestion, settles it by the pump's
   seq as the posted writes do, and routes a failure to its surface, a
   held toast (`stores/lostWrite.ts`) or nowhere. A comment body renders
-  through `ReviewCommentMarkdown`, which cuts it at the fence lines the
-  backend reports (`utils/suggestionPieces.ts`; one parser,
-  `internal/mdsuggest`, also behind a preview's
-  `ParseCommentSuggestions`) so each fence is a
-  `ReviewSuggestionDiff`; the replaced lines come from the forge or the
+  through `ReviewCommentMarkdown` as one Markdown document: each fence
+  at the lines the backend reports (one parser, `internal/mdsuggest`,
+  also behind a preview's `ParseCommentSuggestions`) is marked in its
+  info string (`utils/suggestionMarks.ts`) and `ChatMarkdown`'s
+  `codeClaim` renders it as a `ReviewSuggestionDiff`; find skips the
+  marked fences through the same projection. The replaced lines come from the forge or the
   diff's resident text (`utils/suggestionLines.ts`). Each editor's
   Preview state (caret and box height) lives in
   `stores/reviewEditorPreview.svelte.ts`, keyed as the editor's text is.

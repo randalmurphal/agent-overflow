@@ -89,6 +89,9 @@ islands, footnote popovers, selection preservation, and streamed reveal.
 
 - Agent chat does not enable embedded HTML. Forge-authored review content may
   opt into the renderer's sanitized embedded-HTML mode.
+- A host renders some fenced blocks itself, in place, through `codeClaim`
+  (`markdown/codeClaim.ts`); a claimed block never retires to static
+  HTML, and find skips it through `markdownFindText`'s `claimsCode`.
 - Path and preview behavior is implemented as parser extensions so both compact
   static and component render paths make the same decision.
 - The streaming literal has one imperative DOM owner. Ownership transfers must

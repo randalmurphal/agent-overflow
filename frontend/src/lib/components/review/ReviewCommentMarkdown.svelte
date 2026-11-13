@@ -13,43 +13,42 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
+  import type { CodeClaim } from '../chat/markdown/codeClaim';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
-  import { layoutBody, type BodyRange } from '../../utils/suggestionPieces';
+  import { markSuggestionFences, suggestionMarkIndex, type PlacedBlock } from '../../utils/suggestionMarks';
 
-  // A comment body as the review pane renders it, sent or previewed: the
-  // markdown in ChatMarkdown's sanitized embedded mode, cut at the
-  // suggestion fences the backend placed (`ranges`), each block rendered
-  // in place by `block` as the diff it proposes. A body the blocks cannot
-  // all be placed in renders whole, its fences as code, and the blocks
-  // follow it (utils/suggestionPieces.ts).
+  // A comment body as the review pane renders it, sent or previewed: one
+  // Markdown document (ChatMarkdown's sanitized embedded mode), each
+  // suggestion fence the backend placed rendered in place by `block` as
+  // the diff it proposes, so `<details>`, footnotes and lists around it
+  // keep their structure. A block that is not placed, or whose fence no
+  // longer holds its lines, leaves the fence as code and renders after
+  // the body (utils/suggestionMarks.ts).
 
   interface Props {
-    /** The raw body, as the forge holds it: the ranges count its lines. */
+    /** The raw body, as the forge holds it: the blocks count its lines. */
     body: string;
-    ranges?: readonly (BodyRange | null)[];
-    /** Renders block `at` (an index into `ranges`). */
+    blocks?: readonly (PlacedBlock | null)[];
+    /** Renders block `at` (an index into `blocks`). */
     block?: Snippet<[number]>;
     class?: string;
   }
 
-  let { body, ranges = [], block, class: className = '' }: Props = $props();
+  let { body, blocks = [], block, class: className = '' }: Props = $props();
 
-  const layout = $derived(layoutBody(body, ranges));
+  const marked = $derived(markSuggestionFences(body, blocks));
+  const claim = $derived<CodeClaim | null>(blocks.length === 0 || !block ? null : {
+    claims: (token) => suggestionMarkIndex(token.lang ?? '') !== null,
+    render: claimed,
+  });
 </script>
 
-{#if layout.pieces.length === 1 && layout.pieces[0].kind === 'markdown' && layout.after.length === 0}
-  <ChatMarkdown source={layout.pieces[0].text} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose {className}" />
-{:else}
-  <div class={className}>
-    {#each layout.pieces as piece (piece.key)}
-      {#if piece.kind === 'markdown'}
-        <ChatMarkdown source={piece.text} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
-      {:else}
-        {@render block?.(piece.at)}
-      {/if}
-    {/each}
-    {#each layout.after as at (at)}
-      {@render block?.(at)}
-    {/each}
-  </div>
-{/if}
+{#snippet claimed(token: { lang?: string })}
+  {@const at = suggestionMarkIndex(token.lang ?? '')}
+  {#if at !== null}{@render block?.(at)}{/if}
+{/snippet}
+
+<ChatMarkdown source={marked.source} pathRefs={EMPTY_PATH_REFS} embeddedHtml codeClaim={claim} class="review-prose {className}" />
+{#each marked.after as at (at)}
+  {@render block?.(at)}
+{/each}

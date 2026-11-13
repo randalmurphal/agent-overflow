@@ -41,7 +41,7 @@
   import { createRefreshScheduler } from '../../utils/refreshScheduler';
   import { createMarkdownFindTextCache, type MarkdownFindText } from '../chat/markdown/markdownFindText';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
-  import { findableBody } from '../../utils/suggestionPieces';
+  import { findableBody, isSuggestionMark } from '../../utils/suggestionMarks';
   import { readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
   import { findDraftKey, findThreadCommentKey, findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
   import {
@@ -109,7 +109,7 @@
   let editing = new Set<string>();
 
   function commentTexts(): (source: string, open?: readonly boolean[]) => MarkdownFindText {
-    return (texts ??= createMarkdownFindTextCache({ embeddedHtml: true, forgeSource: readForgeSource?.() ?? null }));
+    return (texts ??= createMarkdownFindTextCache({ embeddedHtml: true, forgeSource: readForgeSource?.() ?? null, claimsCode: isSuggestionMark }));
   }
 
   function readDetails(): MountedCommentDetails {

@@ -251,10 +251,11 @@ scope, on both surfaces and both forges:
   Text the diff can no longer read inserts nothing and says so.
 - A suggestion reads as the small diff it proposes, in place of its
   fence (the body lines the backend places it on, `bodyStartLine` to
-  `bodyEndLine`), with the markdown around it rendered. When the backend
-  cannot place every suggestion of a comment (GitLab's do not match the
-  body's fences one to one), the body renders whole, its fences as code,
-  and the diffs follow it. The removed lines are the
+  `bodyEndLine`), inside the one rendered body, so a `<details>`,
+  list or footnote around it keeps its structure. A suggestion the
+  backend cannot place (GitLab's that do not match the body's fences one
+  to one), or whose fence there no longer holds its `to` lines, leaves
+  that fence as code and its diff follows the body. The removed lines are the
   forge's `from` when `fromKnown` (GitLab); on GitHub, the thread's lines
   from the diff the pane holds when that is the PR's whole diff at its
   live head and the thread is not outdated; otherwise the additions

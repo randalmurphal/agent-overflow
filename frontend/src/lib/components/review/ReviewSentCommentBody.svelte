@@ -7,7 +7,7 @@
   import { commentWriteKey } from '../../stores/reviewCommentWrites.svelte';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import { visibleBody } from '../../utils/reviewComments';
-  import { suggestionRanges } from '../../utils/suggestionPieces';
+  import { sentBlocks } from '../../utils/suggestionMarks';
   import type { CommentSuggestion, ReviewComment, ReviewThread } from '../../types/models';
 
   // A sent comment's body, or its edit: the raw body in the editor shell
@@ -63,7 +63,7 @@
     return { file: anchorSource.file, from, to: suggestion.endLine ?? from };
   }
   const blocks = $derived(comment.suggestions ?? []);
-  const ranges = $derived(suggestionRanges(blocks));
+  const placed = $derived(sentBlocks(blocks));
   function showFooter(suggestion: CommentSuggestion): boolean {
     if (!suggestions) return false;
     return suggestionStatus(thread, suggestion, suggestions.available) !== 'none' || suggestions.error(thread, comment, suggestion) !== null;
@@ -110,7 +110,7 @@
 {:else if shown !== ''}
   <div class={className}>
     <div data-find-key={findKey}>
-      <ReviewCommentMarkdown body={comment.body} {ranges} block={suggestionBlock} />
+      <ReviewCommentMarkdown body={comment.body} blocks={placed} block={suggestionBlock} />
     </div>
     {#if deleteError}
       <p class="mt-1 text-[0.6875rem] text-error" data-testid="review-comment-delete-error">{deleteError}</p>

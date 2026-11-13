@@ -48,7 +48,7 @@
 
   const current = $derived(answer !== null && answer.body === body ? answer : null);
   const blocks = $derived(current?.blocks ?? []);
-  const ranges = $derived(blocks.map((block) => ({ startLine: block.startLine, endLine: block.endLine })));
+  const placed = $derived(blocks.map((block) => ({ startLine: block.startLine, endLine: block.endLine, lines: block.lines })));
 
   // A widened GitLab block replaces lines past the anchor.
   function sourceFor(block: Block): SuggestionSource | null {
@@ -74,6 +74,6 @@
     {#if current?.error}
       <p class="mb-1.5 text-[0.6875rem] text-fg-subtle" data-testid="review-editor-preview-note">Suggestions are shown as code: {current.error}</p>
     {/if}
-    <ReviewCommentMarkdown {body} {ranges} block={suggestionBlock} />
+    <ReviewCommentMarkdown {body} blocks={placed} block={suggestionBlock} />
   {/if}
 </div>

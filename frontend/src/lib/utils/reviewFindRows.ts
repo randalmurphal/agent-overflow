@@ -21,7 +21,7 @@ import type { DiffReviewComment, ReviewThread } from '../types/models';
 import type { FindRun } from './findHighlights';
 import { RowWalker, splitRowCount } from './patchRows';
 import type { ReviewFile } from './patchStore';
-import { findableBody } from './suggestionPieces';
+import { findableBody } from './suggestionMarks';
 import {
   countFindMatches,
   findDraftKey,

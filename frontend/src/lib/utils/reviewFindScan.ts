@@ -35,7 +35,7 @@ import { findNeedle, foldFindText } from './findMatch';
 import type { FindRun } from './findHighlights';
 import { RowWalker } from './patchRows';
 import type { ReviewFile } from './patchStore';
-import { findableBody } from './suggestionPieces';
+import { findableBody } from './suggestionMarks';
 import { reviewInsertsByFile, type InsertRow } from './reviewRows';
 
 /** `data-find-key` of a file header's path. */
