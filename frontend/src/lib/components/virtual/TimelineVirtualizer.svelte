@@ -1195,6 +1195,12 @@
      * the baseline that lets convergence exclude the destination's own
      * GROWTH from later targets — see convergeIndexScroll. */
     destinationSizeBaseline: number;
+    /** The height from the destination's top to the end of the rows, at
+     * the first pass that found the target clamped by that end with every
+     * row in between measured; NaN until such a pass. The baseline that
+     * lets convergence keep later growth there out of the clamp. See
+     * convergeIndexScroll. */
+    tailExtentBaseline: number;
     passesLeft: number;
     settleTimer: ReturnType<typeof setTimeout> | undefined;
     settleFrame: number | undefined;
@@ -1296,8 +1302,9 @@
         return;
       }
     }
-    let target =
+    const clampedTarget =
       engine.targetOffsetFor(pending.index, pending.align, pending.extraOffset) + renderHeaderSize;
+    let target = clampedTarget;
     // An align-end target decomposes as offset(index) + size(index) −
     // viewport, so it moves for two reasons with different owners. Rows
     // ABOVE moving (ΔOffset — a fold's RO landing, an estimate
@@ -1319,6 +1326,28 @@
     if (pending.align === 'end' && Number.isFinite(pending.destinationSizeBaseline)) {
       const growth = engine.sizeAt(pending.index) - pending.destinationSizeBaseline;
       if (growth > 0) target -= growth;
+    }
+    // The end of the rows clamps a target that lies past it, so that
+    // target also moves when the rows from the destination on grow. While
+    // one of them is an estimate, that is the correction the passes exist
+    // for. Once all are measured it is live content (a log's next line, a
+    // row appended), no more the navigation's to follow than the align-end
+    // growth above: a view that had landed at the end moved with it.
+    // Growth past the first fully measured extent stays out of the clamp.
+    const total = engine.getTotalSize();
+    const viewport = engine.getViewportSize();
+    const tailExtent = total - engine.getItemOffset(pending.index);
+    if (Number.isFinite(pending.tailExtentBaseline)) {
+      // Whatever the growth: enough of it brings the target into reach.
+      const growth = tailExtent - pending.tailExtentBaseline;
+      if (growth > 0) {
+        target = Math.min(target, Math.max(0, total - viewport - growth) + renderHeaderSize);
+      }
+    } else if (
+      clampedTarget >= Math.max(0, total - viewport) + renderHeaderSize &&
+      measuredFrom(pending.index)
+    ) {
+      pending.tailExtentBaseline = tailExtent;
     }
     // An unchanged target needs no write once the last one landed. One the
     // browser clamped short is written again: a navigation issued in the
@@ -1358,6 +1387,13 @@
     pending.reached = Math.abs(landed - Math.max(0, target)) <= SCROLL_TAKEOVER_TOLERANCE_PX;
   }
 
+  function measuredFrom(index: number): boolean {
+    for (let at = index; at < prevKeys.length; at++) {
+      if (!engine.isMeasuredAt(at)) return false;
+    }
+    return true;
+  }
+
   export function scrollToIndex(
     index: number,
     opts: { align?: ScrollToIndexAlign; offset?: number } = {},
@@ -1377,6 +1413,7 @@
       expectedPosition: Number.NaN,
       reached: false,
       destinationSizeBaseline: Number.NaN,
+      tailExtentBaseline: Number.NaN,
       passesLeft: INDEX_SCROLL_MAX_PASSES,
       settleTimer: undefined,
       settleFrame: undefined,

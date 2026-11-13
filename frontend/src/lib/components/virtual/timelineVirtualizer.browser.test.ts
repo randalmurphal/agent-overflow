@@ -1536,6 +1536,61 @@ describe('scrollToIndex against the browser scroll range', () => {
 
     expect(Math.abs(rowCenterInViewport(scrollEl, 'new-10') - VIEWPORT_PX / 2)).toBeLessThanOrEqual(2);
   });
+
+  // A target past the list's end lands at the end. Content that arrives
+  // after that is not part of the navigation: a view that follows growth
+  // has an owner for it, and one that does not must stay where it landed.
+  // 40px leaves the target out of reach; 500px brings it within reach.
+  for (const growth of ['the destination row grows', 'a row below grows', 'rows are appended'] as const) {
+    for (const by of [40, 500]) {
+      it(`a navigation the list's end stopped short stays put when ${growth} by ${by}px`, async () => {
+        const { harness, scrollEl } = mountHarness({ estimate: { at: () => ROW_PX } });
+        await waitForStableGeometry(scrollEl, 'mount');
+        const handle = harness.handle()!;
+
+        // Two rows from the end: its start is 400px short of the viewport top.
+        handle.scrollToIndex(ROW_COUNT - 2, { align: 'start' });
+        await raf();
+        await raf();
+        const landed = scrollEl.scrollTop;
+        expect(landed).toBe(scrollEl.scrollHeight - scrollEl.clientHeight);
+        expect(handle.getItemOffset(ROW_COUNT - 2) - landed).toBe(400);
+
+        // Inside the navigation's settle window.
+        if (growth === 'the destination row grows') harness.resizeRow(`row-${ROW_COUNT - 2}`, ROW_PX + by);
+        else if (growth === 'a row below grows') harness.resizeRow(`row-${ROW_COUNT - 1}`, ROW_PX + by);
+        else harness.setRows([...harness.getRows(), { id: 'new-0', heightPx: by, label: 'New 0' }]);
+        await waitForStableGeometry(scrollEl, 'growth settle');
+
+        expect(scrollEl.scrollHeight - scrollEl.clientHeight).toBe(landed + by);
+        expect(scrollEl.scrollTop).toBe(landed);
+      });
+    }
+  }
+
+  it('a navigation stopped short by estimated rows reaches its row once they measure', async () => {
+    // The rows after the destination are estimates smaller than the rows
+    // they stand for, so the end the first write hits is not the list's.
+    const { harness, scrollEl } = mountHarness();
+    await waitForStableGeometry(scrollEl, 'mount');
+    scrollEl.scrollTop = 0;
+    await waitForStableGeometry(scrollEl, 'top');
+    const handle = harness.handle()!;
+
+    const appended = Array.from({ length: 8 }, (_, index) => ({
+      id: `new-${index}`,
+      heightPx: ROW_PX,
+      label: `New ${index}`,
+    }));
+    harness.setRows([...harness.getRows(), ...appended]);
+    await raf();
+    await raf();
+    handle.scrollToIndex(ROW_COUNT, { align: 'start' });
+    await waitForStableGeometry(scrollEl, 'index scroll settle');
+
+    const top = rowEl(scrollEl, 'new-0')!.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+    expect(Math.abs(top)).toBeLessThanOrEqual(1);
+  });
 });
 
 describe('scrollend synthesis', () => {
