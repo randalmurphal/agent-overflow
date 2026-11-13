@@ -274,7 +274,7 @@ how an edit or delete picks the issue comment mutation.
 | `PostLineComment` | 1 REST `POST repos/O/R/pulls/N/comments` (`commit_id` the caller's head, `path`, `line`/`side` with `start_line`/`start_side` for a range, or `subject_type: file`) |
 | `PostPRComment` | 1 REST `POST repos/O/R/issues/N/comments` |
 | `ReplyToThread` | 1 REST `POST repos/O/R/pulls/N/comments/ROOT/replies` under the thread's first comment; a 404 is `*ReplyThreadGoneError` |
-| `EditComment`, `DeleteComment` | 1 `UpdateReviewComment`/`UpdateIssueComment(id, body)` or `DeleteReviewComment`/`DeleteIssueComment(id)` on the comment's node id |
+| `EditComment`, `DeleteComment` | 1 `CommentOwner(id)` (`node { __typename, pullRequest { number, repository { nameWithOwner } } }`: a node id is global, so a comment that is not of the target's kind on the named PR is refused as `*CommentNotOnPRError`, kind `not_found`, before any write), then 1 `UpdateReviewComment`/`UpdateIssueComment(id, body)` or `DeleteReviewComment`/`DeleteIssueComment(id)` |
 | `SubmitReview` | 1 REST `POST .../reviews` with the line and range comments, then 1 `POST .../comments` per file comment and 1 `.../replies` per held reply, in order; a COMMENT review with no body and no line comments is skipped when follow-ups exist. A follow-up's failure after anything posted is a `*PartialSubmitError` naming the file (`FailedPath`) or the thread (`FailedThreadID`) |
 
 GitLab's `ReadPR` reads the merge request once
