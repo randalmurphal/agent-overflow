@@ -17,6 +17,7 @@ import { HOME_BACKEND } from '../../transport/backendKey';
 import type { PRDetail } from '../../types/models';
 import type { PRRef } from '../../utils/prReference';
 import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 import { installPRDraftsFake } from '../../../test/helpers/prDraftsFake';
 import { __diffSpanCacheStatsForTest, resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
 import { resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
@@ -86,7 +87,7 @@ beforeEach(() => {
   }));
   setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setReviewDiffMock('OpenPRDiff', async () => patch());
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setBindingMock('ListPRReviewThreads', async () => []);
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
   installPRDraftsFake();

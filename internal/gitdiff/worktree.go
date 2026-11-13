@@ -56,13 +56,11 @@ func headCommit(ctx context.Context, workspace string) (string, error) {
 // no HEAD the diff runs against the empty tree, so untracked files still
 // show. The snapshot lives in a directory under tempRoot until Close.
 func OpenWorktreeDiff(ctx context.Context, workspace, tempRoot string, opts Options) (*Diff, error) {
-	snapshot, err := CaptureWorktree(ctx, workspace, tempRoot)
+	sides, err := WorktreeSides(ctx, workspace, tempRoot)
 	if err != nil {
 		return nil, err
 	}
-	diff := snapshot.Diff(opts)
-	diff.release = snapshot.Close
-	return diff, nil
+	return sides.OpenDiff(opts), nil
 }
 
 // emptyTreeOID writes (into the temp object dir the env points at) and
@@ -85,25 +83,11 @@ func emptyTreeOID(ctx context.Context, workspace string, env []string) (string, 
 // committed changes, unstaged/staged changes, and untracked-not-ignored
 // files all share one patch stream.
 func OpenBranchBaseDiff(ctx context.Context, workspace, tempRoot, baseBranch string, opts Options) (*Diff, error) {
-	base, err := resolveBaseRef(ctx, workspace, baseBranch)
+	sides, err := BranchBaseSides(ctx, workspace, tempRoot, baseBranch)
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := captureSyntheticWorktreeTree(ctx, workspace, tempRoot)
-	if err != nil {
-		return nil, err
-	}
-	if snapshot.head == "" {
-		return nil, errors.Join(
-			fmt.Errorf("gitdiff: HEAD has no commit to measure against %s", base),
-			snapshot.release())
-	}
-	mergeBase, err := mergeBaseOID(ctx, workspace, base, snapshot.head)
-	if err != nil {
-		return nil, errors.Join(err, snapshot.release())
-	}
-	return newDiff(workspace, snapshot.env, snapshot.release,
-		opts.gitArgs("diff", mergeBase, snapshot.oid, "--")), nil
+	return sides.OpenDiff(opts), nil
 }
 
 func captureSyntheticWorktreeTree(ctx context.Context, workspace, tempRoot string) (syntheticWorktreeTree, error) {

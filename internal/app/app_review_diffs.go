@@ -47,8 +47,8 @@ func (a *App) OpenWorkspaceDiff(ctx context.Context, ws WorkspaceRef, ignoreWhit
 	if !gitdiff.IsGitRepository(ctx, workspace) {
 		return ReviewDiffOpened{Chunk: ReviewDiffChunk{EOF: true}}, nil
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, func(tempRoot string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenWorktreeDiff(ctx, workspace, tempRoot, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(tempRoot string) (*gitdiff.Sides, error) {
+		return gitdiff.WorktreeSides(ctx, workspace, tempRoot)
 	})
 }
 
@@ -73,8 +73,8 @@ func (a *App) OpenBranchBaseDiff(ctx context.Context, ws WorkspaceRef, baseBranc
 	if !gitdiff.IsGitRepository(ctx, workspace) {
 		return ReviewDiffOpened{Chunk: ReviewDiffChunk{EOF: true}}, nil
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, func(tempRoot string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenBranchBaseDiff(ctx, workspace, tempRoot, baseBranch, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(tempRoot string) (*gitdiff.Sides, error) {
+		return gitdiff.BranchBaseSides(ctx, workspace, tempRoot, baseBranch)
 	})
 }
 
@@ -82,28 +82,35 @@ func (a *App) OpenBranchBaseDiff(ctx context.Context, ws WorkspaceRef, baseBranc
 // per-commit selector.
 type BranchCommit = gitdiff.Commit
 
+// BranchCommitList is the review pane's per-commit selector: the newest
+// commits up to the cap, and the range's real total (null when it could
+// not be counted). The list is complete exactly when total equals the
+// number of commits.
+type BranchCommitList = gitdiff.CommitList
+
 // ListBranchCommits returns the commits a PR from the workspace HEAD
 // onto baseBranch would carry (`base..HEAD`, newest first). Empty for
 // non-git workspaces.
 //
 //ao:scope git:operate
-func (a *App) ListBranchCommits(ws WorkspaceRef, baseBranch string) ([]BranchCommit, error) {
+func (a *App) ListBranchCommits(ws WorkspaceRef, baseBranch string) (BranchCommitList, error) {
 	const action = "list branch commits"
 	if strings.TrimSpace(baseBranch) == "" {
-		return nil, fmt.Errorf("%s: base branch is required", action)
+		return BranchCommitList{}, fmt.Errorf("%s: base branch is required", action)
 	}
 	workspace, err := a.reviewWorkspace(action, ws)
 	if err != nil {
-		return nil, err
+		return BranchCommitList{}, err
 	}
 	if !gitdiff.IsGitRepository(context.Background(), workspace) {
-		return []BranchCommit{}, nil
+		none := 0
+		return BranchCommitList{Commits: []BranchCommit{}, Total: &none}, nil
 	}
-	commits, err := gitdiff.ListCommits(context.Background(), workspace, baseBranch)
+	list, err := gitdiff.ListCommits(context.Background(), workspace, baseBranch)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
+		return BranchCommitList{}, fmt.Errorf("%s: %w", action, err)
 	}
-	return commits, nil
+	return list, nil
 }
 
 // recentCommitLimit matches codex's own "Review a commit" picker
@@ -148,8 +155,8 @@ func (a *App) OpenCommitDiff(ctx context.Context, ws WorkspaceRef, sha string, i
 	if !gitdiff.IsGitRepository(ctx, workspace) {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: workspace is not a git repository", action)
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, func(string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenCommitDiff(ctx, workspace, sha, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
+		return gitdiff.CommitSides(ctx, workspace, sha)
 	})
 }
 
@@ -476,7 +483,17 @@ func (a *App) editFileSnapshot(threadID string, req DiffContextRequest) (string,
 		}
 		return content, found
 	}
-	content, found, err := a.store.GetLatestTurnEditFileSnapshot(threadID, req.EditTurnIndex, req.Path)
+	// The turn's last edit of the path decides: an earlier edit's snapshot
+	// is not the file the turn left.
+	payloadID, found, err := a.lastTurnEditOfPath(context.Background(), threadID, req.EditTurnIndex, req.Path)
+	if err != nil {
+		log.Printf("app: find turn edit of %s/%d %s: %v", threadID, req.EditTurnIndex, req.Path, err)
+		return "", false
+	}
+	if !found {
+		return "", false
+	}
+	content, found, err := a.store.GetEditFileSnapshot(threadID, payloadID, req.Path)
 	if err != nil {
 		log.Printf("app: read turn edit file snapshot %s/%d %s: %v", threadID, req.EditTurnIndex, req.Path, err)
 		return "", false

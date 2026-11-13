@@ -32,6 +32,7 @@
     buildReviewRows,
     REVIEW_FILE_GAP_PX,
     REVIEW_FILE_HEADER_BAR_PX,
+    REVIEW_COMMIT_CARD_ROW_KEY,
     REVIEW_OVERVIEW_ROW_KEY,
     reviewRowEstimate,
     type CommentAnchor,
@@ -41,6 +42,9 @@
   } from '../../utils/reviewRows';
   import type { RowEstimate } from '../../utils/virtual/types';
   import type { LineRange } from '../../utils/reviewRange';
+  import type { LineCommentGate } from '../../stores/reviewRangeComments';
+  import type { ReviewMediaHost } from '../../stores/reviewDiffMedia.svelte';
+  import { isSvgPath } from '../../utils/reviewImageRows';
 
   // The continuous virtualized review surface: every file's header +
   // line blocks + comment rows in ONE LongListVirtualizer, with a
@@ -110,6 +114,13 @@
     onAddComment?: (anchor: EditorAnchor, generation?: number) => void;
     /** Shift+click on a line's add button (a range comment). */
     onExtendRange?: (anchor: EditorAnchor, generation?: number) => void;
+    /** A head-ending commit run: what each line takes. */
+    lineComment?: LineCommentGate;
+    /** Binary files' images and sizes, and rendered SVGs. Absent (the
+     * conflict view), binary files show git's line about them. */
+    mediaHost?: ReviewMediaHost;
+    /** A line's number gutter menu (Copy link to line). */
+    onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => boolean;
     /** The line ranges a file's rows tint. */
     rangesFor?: (path: string) => readonly LineRange[];
     /** Conflict view only: expands a fold row's hidden lines. */
@@ -155,6 +166,9 @@
     generation,
     onAddComment,
     onExtendRange,
+    lineComment,
+    mediaHost,
+    onLineMenu,
     rangesFor,
     onExpandFold,
     onExpandGap,
@@ -168,7 +182,12 @@
   }: Props = $props();
 
   const built = $derived(
-    buildReviewRows({ files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds, overview: overview === undefined ? undefined : overviewLead }),
+    buildReviewRows({
+      files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds,
+      overview: overview === undefined ? undefined : overviewLead,
+      // Without a media host binary files keep git's line.
+      renderedPaths: mediaHost?.renderedPaths, newSideOnly: mediaHost?.newSideOnly, media: mediaHost !== undefined,
+    }),
   );
   const builtEstimate = $derived(reviewRowEstimate(built, wordWrap));
   // The rows detached editors suggest, by file.
@@ -463,9 +482,10 @@
     untrack(() => {
       onJumpRowConsumed?.();
       if (rowIndex < 0) return;
-      // The overview is a destination, not a find: no pulse, and it
-      // sits above every file so nothing overlays its top.
-      if (key === REVIEW_OVERVIEW_ROW_KEY) {
+      // The lead row (the overview, a commit's or run's card) is a
+      // destination, not a find: no pulse, and it sits above every file
+      // so nothing overlays its top.
+      if (key === REVIEW_OVERVIEW_ROW_KEY || key === REVIEW_COMMIT_CARD_ROW_KEY) {
         navigateToIndex(rowIndex);
         return;
       }
@@ -487,6 +507,16 @@
   function toggleStickyFile(): void {
     const file = stickyFile;
     if (file) onToggleCollapsed(file.path);
+  }
+
+  // The sticky bar's SVG toggle, as the header row's (ReviewDiffRow).
+  const stickyRendered = $derived.by(() => {
+    const file = stickyFile;
+    return mediaHost && file && isSvgPath(file.path) && !file.header?.binary ? mediaHost.renderedPaths.has(file.path) : undefined;
+  });
+  function toggleStickyRendered(): void {
+    const file = stickyFile;
+    if (file) mediaHost?.toggleRendered(file.path);
   }
 
   function jumpToStickyFile(): void {
@@ -553,6 +583,8 @@
         file={stickyFile}
         collapsed={collapsedPaths.has(stickyFile?.path ?? '')}
         onToggle={toggleStickyFile}
+        rendered={stickyRendered}
+        onToggleRendered={toggleStickyRendered}
         overlay
         onJump={jumpToStickyFile}
       />
@@ -601,6 +633,10 @@
             {generation}
             {onAddComment}
             {onExtendRange}
+            {lineComment}
+            {mediaHost}
+            split={viewMode === 'split'}
+            {onLineMenu}
             {rangesFor}
             {onExpandFold}
             {onExpandGap}

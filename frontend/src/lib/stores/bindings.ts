@@ -480,6 +480,11 @@ export {
   ListRecentCommits,
   GetDiffContextLines,
   GetEditDiffContextLines,
+  // A review diff file's sizes, and its image bytes behind a single-use URL
+  // (the local-image byte route, utils/mediaBlobCache.ts).
+  GetReviewDiffFileSizes,
+  GetReviewDiffImage,
+  GetEditDiffImage,
   VerifyEditDiffs,
   ListThreadEditDiffs,
   OpenEditDiff,

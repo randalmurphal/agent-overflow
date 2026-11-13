@@ -33,7 +33,7 @@ func prRevisionReads() []prRevisionRead {
 		}},
 		{"OpenPRCommitDiff", func(t *testing.T, app *App, ref WorkspaceRef, rev gitops.PRRevision, sha string, userInitiated bool) error {
 			ctx, _ := reviewDiffConn(t)
-			_, err := app.OpenPRCommitDiff(ctx, ref, prRef(), rev, sha, false, userInitiated)
+			_, err := app.OpenPRCommitDiff(ctx, ref, prRef(), rev, sha, sha, false, userInitiated)
 			return err
 		}},
 		{"GetPRMergeConflicts", func(_ *testing.T, app *App, ref WorkspaceRef, rev gitops.PRRevision, _ string, userInitiated bool) error {

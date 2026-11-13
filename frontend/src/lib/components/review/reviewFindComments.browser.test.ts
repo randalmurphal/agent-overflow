@@ -17,6 +17,9 @@ import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import type { ReviewFind } from '../../stores/reviewFind.svelte';
 
+// The diff shows every draft as drafted and no file as an image.
+const NO_MEDIA_HOST = { renderedPaths: new Set<string>() };
+
 // No sent comment open in its editor.
 const NO_SENT_EDITS = { editBodyFor: () => null };
 
@@ -117,7 +120,7 @@ describe('review find over a draft open in its editor', () => {
     const thread = render(ReviewCommentThread, { target: host, props });
     const files = parseReviewFiles(PATCH);
     const review = {
-      drafts: [DRAFT], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+      shownDrafts: [DRAFT], mediaHost: NO_MEDIA_HOST, drafts: [DRAFT], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
       draftEditBodyFor: (id: string) => (id === DRAFT.id ? props.editBody : null),
     } as unknown as ReviewPaneState;
     render(ReviewPaneFind, {
@@ -160,7 +163,7 @@ describe('review find over a comment its projection misreads', () => {
     render(ReviewThreadComments, { target: host, props: { thread: THREAD, findKeys: true } });
     await waitFor(() => expect(host.querySelectorAll('[data-find-key^="pc:"]').length).toBe(3));
     const review = {
-      drafts: [], prThreads: [THREAD], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS,
+      shownDrafts: [], mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [THREAD], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS,
     } as unknown as ReviewPaneState;
     const files = parseReviewFiles(PATCH);
     onTestFinished(() => files[0].body.segments[0].store.dispose());
@@ -217,7 +220,7 @@ describe('review find\'s current comment match across a recount held open', () =
     await waitFor(() => expect(host.querySelectorAll('[data-find-key^="pc:"]').length).toBe(3));
     const files = [...parseReviewFiles(PATCH), ...parseReviewFiles(BIG)];
     onTestFinished(() => { for (const file of files) file.body.segments[0].store.dispose(); });
-    const review = rawProps({ drafts: [] as DiffReviewComment[], prThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS });
+    const review = rawProps({ shownDrafts: [] as DiffReviewComment[], mediaHost: NO_MEDIA_HOST, drafts: [] as DiffReviewComment[], prThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS });
     render(ReviewPaneFind, {
       target: document.body,
       props: {

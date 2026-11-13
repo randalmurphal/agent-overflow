@@ -127,7 +127,7 @@ func (s *Server) handleForgeAttachmentDownload(w http.ResponseWriter, r *http.Re
 		case "image", "video", "audio":
 			h.Set("Content-Type", content.MimeType)
 			if content.MimeType == svgMIME {
-				h.Set("Content-Disposition", attachmentDisposition(content.Filename))
+				writeSVGHeaders(h, attachmentDisposition(content.Filename))
 			}
 		default:
 			// NEVER the payload's own type. This is the SPA origin, and the

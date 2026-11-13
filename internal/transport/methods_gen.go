@@ -175,6 +175,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetDiscussion", ID: 1924583939, Scope: "threads:read", Route: "selected"},                                         // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146, Scope: "threads:operate", Route: "thread"},                                              // main.App.GetDraft
 	{Name: "GetEditDiffContextLines", ID: 949275134, Scope: "files:read", Route: "thread"},                                    // main.App.GetEditDiffContextLines
+	{Name: "GetEditDiffImage", ID: 711021853, Scope: "files:read", Route: "thread"},                                           // main.App.GetEditDiffImage
 	{Name: "GetEditorSettings", ID: 1655853383, Scope: "settings:read", Route: "selected"},                                    // main.App.GetEditorSettings
 	{Name: "GetErrorLogLines", ID: 1581952506, Scope: "threads:operate", Route: "home"},                                       // main.App.GetErrorLogLines
 	{Name: "GetGitStatus", ID: 4123560639, Scope: "git:operate", Route: "workspace"},                                          // main.App.GetGitStatus
@@ -200,6 +201,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetPushSenderStatus", ID: 447579616, Scope: "access:admin", Route: "home"},                                        // main.App.GetPushSenderStatus
 	{Name: "GetQueueState", ID: 3079581691, Scope: "threads:operate", Route: "thread"},                                        // main.App.GetQueueState
 	{Name: "GetRateLimitsSnapshots", ID: 3325141610, Scope: "threads:read", Route: "home"},                                    // main.App.GetRateLimitsSnapshots
+	{Name: "GetReviewDiffFileSizes", ID: 2795814304, Scope: "files:read", Route: "workspace"},                                 // main.App.GetReviewDiffFileSizes
+	{Name: "GetReviewDiffImage", ID: 3506270873, Scope: "files:read", Route: "workspace"},                                     // main.App.GetReviewDiffImage
 	{Name: "GetSSHConnection", ID: 324671375, Scope: "host", Route: "home"},                                                   // main.App.GetSSHConnection
 	{Name: "GetServiceUpdateStatus", ID: 2230314013, Scope: "access:admin", Route: "selected"},                                // main.App.GetServiceUpdateStatus
 	{Name: "GetSettings", ID: 2554697378, Scope: "settings:read", Route: "home"},                                              // main.App.GetSettings

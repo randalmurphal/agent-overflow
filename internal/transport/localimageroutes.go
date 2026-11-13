@@ -89,16 +89,29 @@ func (s *Server) handleLocalImageDownload(w http.ResponseWriter, r *http.Request
 	s.serveTransferContent(w, r, content.Content, content.ModTime, func(h http.Header) {
 		h.Set("Content-Type", content.MimeType)
 		if content.MimeType == svgMIME {
-			h.Set("Content-Disposition", "attachment")
+			writeSVGHeaders(h, "attachment")
 		}
 	})
 }
 
 // svgMIME is the one image type that is also a document. Both image routes
-// answer it with an attachment disposition: a fetch reads the body either
-// way, but a navigation to an unspent URL then downloads it instead of
-// rendering a document at the SPA origin.
+// answer it with writeSVGHeaders.
 const svgMIME = "image/svg+xml"
+
+// svgContentSecurityPolicy replaces the SPA's policy on an SVG response: no
+// script, no fetch, no navigation, in a sandbox with an opaque origin.
+// Styles inside the SVG still apply when it is rendered as a document.
+const svgContentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+
+// writeSVGHeaders answers an SVG so it can only ever be an image at the SPA
+// origin. A fetch reads the body either way and an <img> never runs an
+// SVG's script; a navigation to an unspent URL downloads it (the
+// attachment disposition), and a client that renders it as a document
+// anyway runs it under svgContentSecurityPolicy.
+func writeSVGHeaders(h http.Header, disposition string) {
+	h.Set("Content-Disposition", disposition)
+	h.Set("Content-Security-Policy", svgContentSecurityPolicy)
+}
 
 // serveTransferContent streams one ticketed body: a transfer window sized
 // from its length, the security headers, no-store, the type headers the

@@ -177,6 +177,15 @@ func (c *Cache[V]) Remove(id string) {
 	}
 }
 
+// Clear drops every entry, so every id handed out before it misses.
+func (c *Cache[V]) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for element := c.order.Back(); element != nil; element = c.order.Back() {
+		c.removeLocked(element)
+	}
+}
+
 // Bytes reports the currently retained total, after reclaiming anything
 // expired. Tests and diagnostics only.
 func (c *Cache[V]) Bytes() int64 {

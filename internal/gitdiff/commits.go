@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Commit is one row of the review pane's per-commit selector.
@@ -21,9 +23,22 @@ type Commit struct {
 	AuthoredAt int64  `json:"authoredAt"`
 }
 
+// CommitList is a range's commits for the selector, newest first and
+// capped, and how many the range holds.
+type CommitList struct {
+	Commits []Commit `json:"commits"`
+	// Total is how many commits the range holds, counted without listing
+	// them; null when they could not be counted in time. The list is
+	// complete exactly when Total equals the number of Commits.
+	Total *int `json:"total"`
+}
+
 // maxListedCommits bounds the selector list; a branch this far off its
 // base is not being reviewed commit-by-commit anyway.
 const maxListedCommits = 300
+
+// commitCountWait bounds counting a range past the cap.
+const commitCountWait = 5 * time.Second
 
 var commitSHAPattern = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
 
@@ -42,24 +57,81 @@ const (
 // ListCommits returns the commits reachable from HEAD but not from
 // baseBranch (`base..HEAD`), newest first — the commit list a PR onto
 // baseBranch would carry. Capped at maxListedCommits.
-func ListCommits(ctx context.Context, workspace, baseBranch string) ([]Commit, error) {
+func ListCommits(ctx context.Context, workspace, baseBranch string) (CommitList, error) {
 	return ListCommitsRange(ctx, workspace, baseBranch, "HEAD")
 }
 
 // ListCommitsRange returns `base..head`, newest first, capped at
 // maxListedCommits. head must be "HEAD" or a hex SHA (a fetched PR head
 // OID); base is a picker branch name resolved via resolveBaseRef (so a
-// remote-only branch like "feature" works as "origin/feature").
-func ListCommitsRange(ctx context.Context, workspace, base, head string) ([]Commit, error) {
+// remote-only branch like "feature" works as "origin/feature"). Past the
+// cap the range is counted, within commitCountWait.
+func ListCommitsRange(ctx context.Context, workspace, base, head string) (CommitList, error) {
 	base, err := resolveBaseRef(ctx, workspace, base)
 	if err != nil {
-		return nil, err
+		return CommitList{}, err
 	}
 	head = strings.TrimSpace(head)
 	if head != "HEAD" && !commitSHAPattern.MatchString(head) {
-		return nil, fmt.Errorf("gitdiff: invalid head %q", head)
+		return CommitList{}, fmt.Errorf("gitdiff: invalid head %q", head)
 	}
-	return logCommitRange(ctx, workspace, base, head)
+	return listCommitRange(ctx, workspace, base, head, maxListedCommits, commitCountWait, nil)
+}
+
+// listCommitRange lists `base..head` up to limit commits and answers how
+// many it holds: the listed number when one more did not exist, else a
+// count of the range within countWait, or no total when that fails. Only
+// ctx ending fails the list. Both ends are resolved to commit ids once,
+// before listing, so the list and its count read one range however the
+// refs move between them. beforeCount, set only by tests, runs between
+// the list and the count.
+func listCommitRange(ctx context.Context, workspace, base, head string, limit int, countWait time.Duration, beforeCount func()) (CommitList, error) {
+	baseID, err := resolveRangeEnd(ctx, workspace, base)
+	if err != nil {
+		return CommitList{}, err
+	}
+	headID, err := resolveRangeEnd(ctx, workspace, head)
+	if err != nil {
+		return CommitList{}, err
+	}
+	rev := baseID + ".." + headID
+	commits, err := logRev(ctx, workspace, limit+1, rev)
+	if err != nil {
+		return CommitList{}, fmt.Errorf("gitdiff: log %s: %w", rev, err)
+	}
+	if len(commits) <= limit {
+		total := len(commits)
+		return CommitList{Commits: commits, Total: &total}, nil
+	}
+	list := CommitList{Commits: commits[:limit]}
+	if beforeCount != nil {
+		beforeCount()
+	}
+	countCtx, cancel := context.WithTimeout(ctx, countWait)
+	defer cancel()
+	out, _, _, err := runGit(countCtx, workspace, nil, false, "rev-list", "--count", rev, "--")
+	if err == nil {
+		var total int
+		if total, err = strconv.Atoi(strings.TrimSpace(out)); err == nil {
+			list.Total = &total
+			return list, nil
+		}
+	}
+	if ctx.Err() != nil {
+		return CommitList{}, fmt.Errorf("gitdiff: count %s: %w", rev, ctx.Err())
+	}
+	log.Printf("gitdiff: count %s: %v; the total is unknown", rev, err)
+	return list, nil
+}
+
+// resolveRangeEnd resolves a range end (a ref name resolveBaseRef chose,
+// "HEAD" or a hex SHA) to its full commit id.
+func resolveRangeEnd(ctx context.Context, workspace, rev string) (string, error) {
+	out, _, _, err := runGit(ctx, workspace, nil, false, "rev-parse", "--verify", "--end-of-options", rev+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("gitdiff: resolve %s: %w", rev, err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // ListBranchCommits returns the commits on `branch` that are not reachable from
@@ -170,56 +242,33 @@ func parseCommitLog(stdout string) ([]Commit, error) {
 	return commits, nil
 }
 
-// OpenCommitDiff opens the patch a single commit introduced: against its
-// first parent for regular and merge commits, against the empty tree for a
-// root commit. The SHA must be hex — it always comes from a commit list
-// this package produced or a forge API response, never free-form user
-// input.
+// OpenCommitDiff opens the patch a single commit introduced (CommitSides).
 func OpenCommitDiff(ctx context.Context, workspace, sha string, opts Options) (*Diff, error) {
-	sha = strings.TrimSpace(sha)
-	if !commitSHAPattern.MatchString(sha) {
-		return nil, fmt.Errorf("gitdiff: invalid commit sha %q", sha)
-	}
-	parents, _, _, err := runGit(ctx, workspace, nil, false, "rev-list", "--parents", "-n", "1", sha)
+	sides, err := CommitSides(ctx, workspace, sha)
 	if err != nil {
-		return nil, fmt.Errorf("gitdiff: resolve parents of %s: %w", sha, err)
+		return nil, err
 	}
-	hashes := strings.Fields(parents)
-	if len(hashes) == 0 {
-		return nil, fmt.Errorf("gitdiff: rev-list returned nothing for %s", sha)
+	return sides.OpenDiff(opts), nil
+}
+
+// OpenCommitRangeDiff opens the patch of a contiguous run of a pull
+// request's commits (CommitRangeSides).
+func OpenCommitRangeDiff(ctx context.Context, workspace, base, head, first, last string, opts Options) (*Diff, error) {
+	sides, err := CommitRangeSides(ctx, workspace, base, head, first, last)
+	if err != nil {
+		return nil, err
 	}
-	if len(hashes) > 1 {
-		// First-parent diff: for merge commits this matches how GitHub
-		// and GitLab render a commit's changes.
-		return newDiff(workspace, nil, nil, opts.gitArgs("diff", hashes[1], hashes[0], "--")), nil
-	}
-	return newDiff(workspace, nil, nil,
-		opts.gitArgs("diff-tree", "--root", "--no-commit-id", hashes[0], "--")), nil
+	return sides.OpenDiff(opts), nil
 }
 
 // OpenMergeBaseDiff opens the three-dot patch from the merge base of base
-// and head to head, the diff a pull request from head onto base shows. base
-// is a revision (a remote-tracking branch); head must be a commit OID. Both
-// must already exist locally.
+// and head to head (MergeBaseSides).
 func OpenMergeBaseDiff(ctx context.Context, workspace, base, head string, opts Options) (*Diff, error) {
-	base = strings.TrimSpace(base)
-	if err := validateRefArg(base, "base ref"); err != nil {
-		return nil, err
-	}
-	head = strings.TrimSpace(head)
-	if !commitSHAPattern.MatchString(head) {
-		return nil, fmt.Errorf("gitdiff: invalid head %q", head)
-	}
-	headOID, _, _, err := runGit(ctx, workspace, nil, false, "rev-parse", "--verify", head+"^{commit}")
-	if err != nil {
-		return nil, fmt.Errorf("gitdiff: resolve head %s: %w", head, err)
-	}
-	headOID = strings.TrimSpace(headOID)
-	mergeBase, err := mergeBaseOID(ctx, workspace, base, headOID)
+	sides, err := MergeBaseSides(ctx, workspace, base, head)
 	if err != nil {
 		return nil, err
 	}
-	return newDiff(workspace, nil, nil, opts.gitArgs("diff", mergeBase, headOID, "--")), nil
+	return sides.OpenDiff(opts), nil
 }
 
 // ShowFileAtCommit returns the full content of path as of the given
