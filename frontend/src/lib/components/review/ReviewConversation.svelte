@@ -19,10 +19,15 @@
   // (approvals, merges, draft flips, auto-merge) and commit pushes, the
   // forge's overview timeline made compact. Entries hang off one
   // vertical rail so the sequence reads at a glance; the avatar sits on
-  // the rail and the card beside it. The store owns the feed and freezes
-  // its order once shown; new arrivals wait behind the header's chip.
-  // Under the feed: held replies whose thread is gone (kept, to delete or
-  // keep out of the review) and the one "Comment…" field.
+  // the rail and the card beside it. The store owns the feed: an entry
+  // keeps its place and arrivals join at theirs. This component holds the
+  // reader's place: while the section is scrolled or focus is inside it,
+  // the entry at the top of the viewport stays put to the pixel across
+  // arrivals and growth above it (WebKit has no `overflow-anchor`, so the
+  // scroll is compensated here, for every engine alike). Under the feed:
+  // the count Hide resolved hides, held replies whose thread is gone
+  // (kept, to delete or keep out of the review) and the one "Comment…"
+  // field.
 
   interface Props {
     review: ReviewPaneState;
@@ -31,6 +36,139 @@
   let { review }: Props = $props();
 
   let rootEl: HTMLElement | undefined = $state();
+  let listEl: HTMLElement | undefined = $state();
+
+  // The section's scroll body (ReviewResizableBody) wraps this feed.
+  function scrollerOf(): HTMLElement | null {
+    return rootEl?.parentElement ?? null;
+  }
+
+  function entryOf(id: string): HTMLElement | null {
+    return listEl?.querySelector<HTMLElement>(`[data-feed-id="${CSS.escape(id)}"]`) ?? null;
+  }
+
+  // The reader's place is held while the section is scrolled or focus is
+  // inside it; at the top, arrivals simply push the cards down.
+  function placeHeld(scroller: HTMLElement): boolean {
+    return scroller.scrollTop > 0 || (!!rootEl && rootEl.contains(document.activeElement));
+  }
+
+  // The first entry whose bottom is below the viewport's top: entries are
+  // stacked in order, so a binary search finds it in a long feed.
+  function topEntry(scroller: HTMLElement): { id: string; offset: number } | null {
+    const items = listEl?.children;
+    if (!items || items.length === 0) return null;
+    const top = scroller.getBoundingClientRect().top;
+    let lo = 0;
+    let hi = items.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (items[mid].getBoundingClientRect().bottom > top) hi = mid;
+      else lo = mid + 1;
+    }
+    const el = items[lo] as HTMLElement;
+    const id = el.dataset.feedId;
+    return id ? { id, offset: el.getBoundingClientRect().top - top } : null;
+  }
+
+  // Until the remembered place is restored, the mount's own layout must
+  // not overwrite it.
+  let placed = false;
+
+  function recordPlace(scroller: HTMLElement): void {
+    review.setConversationAnchor(topEntry(scroller));
+    // The chip goes once its newest arrival has been in view.
+    const newest = review.conversationNewestArrivalId;
+    const el = newest ? entryOf(newest) : null;
+    if (!el) return;
+    const view = scroller.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+    if (rect.bottom > view.top && rect.top < view.bottom) review.acknowledgeConversationArrivals();
+  }
+
+  // Keep the anchored entry where it was on screen, then record where
+  // things stand. Runs after every feed change and every size change.
+  function holdPlace(): void {
+    const scroller = scrollerOf();
+    if (!scroller || !placed) return;
+    const anchor = review.conversationAnchor;
+    const el = anchor ? entryOf(anchor.id) : null;
+    if (anchor && el && placeHeld(scroller)) {
+      const drift = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.offset;
+      if (Math.abs(drift) >= 0.5) scroller.scrollTop += drift;
+    }
+    recordPlace(scroller);
+  }
+
+  // Scrolls the section alone (never the diff around it) so `el` is in
+  // view, the least distance.
+  function scrollEntryIntoView(scroller: HTMLElement, el: HTMLElement): void {
+    const view = scroller.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+    if (rect.top < view.top) scroller.scrollTop += rect.top - view.top;
+    else if (rect.bottom > view.bottom) scroller.scrollTop += Math.min(rect.bottom - view.bottom, rect.top - view.top);
+  }
+
+  // Restore the reading place once the cards have laid out (a markdown
+  // body reports its height a flush after mount): by entry, else by the
+  // remembered offset. A staged jump decides the place instead.
+  $effect(() => {
+    const scroller = scrollerOf();
+    if (!scroller) return;
+    let live = true;
+    void tick().then(() => {
+      if (!live || !scroller.isConnected) return;
+      if (!review.pendingConversationThreadId && !review.pendingConversationArrivalId) {
+        const anchor = review.conversationAnchor;
+        const el = anchor ? entryOf(anchor.id) : null;
+        if (anchor && el) {
+          scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.offset;
+        } else {
+          const offset = review.overviewSectionScrollTop('conversation');
+          if (offset > 0) scroller.scrollTop = offset;
+        }
+      }
+      placed = true;
+      holdPlace();
+    });
+    const onScroll = () => { if (placed) recordPlace(scroller); };
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      live = false;
+      placed = false;
+      scroller.removeEventListener('scroll', onScroll);
+    };
+  });
+
+  $effect(() => {
+    void review.conversationFeed;
+    untrack(holdPlace);
+  });
+
+  $effect(() => {
+    const list = listEl;
+    if (!list) return;
+    const observer = new ResizeObserver(() => holdPlace());
+    observer.observe(list);
+    return () => observer.disconnect();
+  });
+
+  $effect(() => review.attachConversationFocusProbe(() => !!rootEl && rootEl.contains(document.activeElement)));
+
+  // The chip's press, or the reader's own posted comment: bring the entry
+  // into view.
+  $effect(() => {
+    const target = review.pendingConversationArrivalId;
+    if (!target) return;
+    untrack(() => {
+      review.consumePendingConversationArrival();
+      void tick().then(() => {
+        const scroller = scrollerOf();
+        const el = entryOf(target);
+        if (scroller && el) scrollEntryIntoView(scroller, el);
+      });
+    });
+  });
 
   const diffPaths = $derived(new Set(review.files.map((file) => file.path)));
 
@@ -121,8 +259,9 @@
          is x=26; the line runs from the first disc to the last. -->
     <div class="pointer-events-none absolute bottom-7 left-[25.5px] top-7 w-px bg-border" aria-hidden="true"></div>
   {/if}
-  <div class="flex flex-col gap-4">
+  <div bind:this={listEl} class="flex flex-col gap-4">
     {#each review.conversationFeed as entry (entry.id)}
+      <div class="min-w-0" data-feed-id={entry.id}>
       {#if entry.kind === 'thread'}
         <ReviewConversationThread
           {review}
@@ -183,11 +322,25 @@
       {:else}
         <ReviewConversationCommits {review} author={entry.author} commits={entry.commits} />
       {/if}
+      </div>
     {/each}
   </div>
 
-  {#if review.conversationFeed.length === 0}
+  {#if review.conversationFeed.length === 0 && review.hiddenResolvedCount === 0}
     <div class="px-1 py-1 text-fg-muted">No conversation yet.</div>
+  {/if}
+
+  {#if review.hiddenResolvedCount > 0}
+    <!-- Pressed, it turns Hide resolved threads off. -->
+    <button
+      type="button"
+      class="{review.conversationFeed.length > 0 ? 'mt-3' : ''} rounded px-1 py-0.5 text-[0.6875rem] text-fg-subtle hover:text-fg compact:select-none"
+      title="Show resolved threads"
+      data-testid="review-conversation-hidden-resolved"
+      onclick={() => review.setHideResolved(false)}
+    >
+      {review.hiddenResolvedCount} resolved hidden
+    </button>
   {/if}
 
   {#if review.orphanedReplyDrafts.length > 0}

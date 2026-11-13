@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tick } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import { getToasts } from './toast.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import {
@@ -3932,7 +3932,7 @@ describe('reviewPane store — conversation section and resolve', () => {
       (entry.kind === 'thread' ? [entry.thread.id] : []));
   }
 
-  it('freezes ordering while open: arrivals wait behind the new chip, reveal folds them in', async () => {
+  it('holds the order while open: arrivals join at their place, no reveal needed', async () => {
     const resolvedEarly = convThread('t-resolved', {
       isResolved: true,
       comments: [{ authorLogin: 'bob', body: 'old', createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
@@ -3942,46 +3942,40 @@ describe('reviewPane store — conversation section and resolve', () => {
     });
     const state = await statePRWithThreads([resolvedEarly, openLater]);
 
-    // Closed by default; opening freezes the order in hand.
+    // Closed by default; opening shows the order in hand.
     expect(state.conversationOpen).toBe(false);
     expect(state.conversationFeed).toEqual([]);
     state.setConversationOpen(true);
-    expect(state.conversationFrozen).toBe(true);
     // Chronological, newest first; replies unfold by default only on the
     // unresolved thread.
     expect(feedThreadIds(state)).toEqual(['t-open', 't-resolved']);
     expect(state.conversationThreadExpanded('t-open')).toBe(true);
     expect(state.conversationThreadExpanded('t-resolved')).toBe(false);
 
-    // A thread arriving mid-read neither reorders nor appears; it counts.
+    // A thread arriving mid-read joins at its own time (2026-01-01, tie
+    // broken by id), neither reordering the rest nor waiting; the reader
+    // is at the top, so nothing counts as new.
     applyPRUpdatedEvent({
       prKey: PR_KEY,
       detail: prDetailStub(),
       threads: [resolvedEarly, openLater, convThread('t-arrived')],
       headSHA: 'sha-a',
     });
-    expect(feedThreadIds(state)).toEqual(['t-open', 't-resolved']);
-    expect(state.conversationNewCount).toBe(1);
-
-    state.revealNewConversationThreads();
-    expect(state.conversationNewCount).toBe(0);
-    // The arrival interleaves by its own time (2026-01-01, tie broken by
-    // id) rather than jumping the whole feed.
+    flushSync();
     expect(feedThreadIds(state)).toEqual(['t-open', 't-arrived', 't-resolved']);
+    expect(state.conversationNewCount).toBe(0);
+    expect(state.conversationThreadExpanded('t-arrived')).toBe(true);
 
-    // Closing forgets the frozen view; an explicit reopen freezes what is
-    // in hand.
+    // Closing forgets the view; a reopen shows what is in hand.
     state.setConversationOpen(false);
     expect(state.conversationFeed).toEqual([]);
-    expect(state.conversationFrozen).toBe(false);
     state.setConversationOpen(true);
-    expect(state.conversationFrozen).toBe(true);
     expect(feedThreadIds(state)).toEqual(['t-open', 't-arrived', 't-resolved']);
     expect(state.conversationNewCount).toBe(0);
     // Leaving pr scope drops the view but keeps the section open.
     await state.setScope('workspace');
     expect(state.conversationOpen).toBe(true);
-    expect(state.conversationFrozen).toBe(false);
+    expect(state.conversationFeed).toEqual([]);
   });
 
   it('interleaves verdicts and commit pushes chronologically, newest first', async () => {
@@ -4037,14 +4031,15 @@ describe('reviewPane store — conversation section and resolve', () => {
     expect(first?.kind === 'thread' && first.thread.isResolved).toBe(true);
     expect(state.conversationThreadExpanded('t-1')).toBe(true);
 
-    // ...even across a reveal (new arrivals fold in, open cards stay open).
+    // ...even as arrivals join (open cards stay open).
     applyPRUpdatedEvent({
       prKey: PR_KEY,
       detail: prDetailStub(),
       threads: [{ ...open, isResolved: true }, convThread('t-2')],
       headSHA: 'sha-a',
     });
-    state.revealNewConversationThreads();
+    flushSync();
+    expect(feedThreadIds(state)).toEqual(['t-1', 't-2']);
     expect(state.conversationThreadExpanded('t-1')).toBe(true);
   });
 

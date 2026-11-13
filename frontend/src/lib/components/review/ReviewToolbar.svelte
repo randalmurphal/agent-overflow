@@ -287,7 +287,7 @@
 
   <!-- View settings a reader sets once: off the toolbar so the row fits
        a phone, each a checkbox row that stays open-able while the diff
-       reloads under it. -->
+       reloads under it. Only a PR has threads to hide. -->
   <button
     bind:this={moreTriggerEl}
     type="button"
@@ -328,6 +328,15 @@
           testId="review-split-toggle"
           onSelect={() => pickViewOption(() => review?.setViewMode(review.viewMode === 'split' ? 'stacked' : 'split'))}
         />
+        {#if review.scope === 'pr'}
+          <MenuItem
+            label="Hide resolved threads"
+            checkbox
+            checked={review.hideResolved}
+            testId="review-hide-resolved-toggle"
+            onSelect={() => pickViewOption(() => review?.setHideResolved(!review.hideResolved))}
+          />
+        {/if}
       </Menu>
     {/if}
   </Popover>

@@ -166,6 +166,8 @@ import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { ReviewSectionId } from './reviewSectionSizes.svelte';
 import { REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
 import { createReviewCommentActions, type ReviewCommentActionsState } from './reviewCommentActions.svelte';
+import { createConversationFeed, type ConversationFeedAnchor } from './reviewConversationFeed.svelte';
+import { createHideResolved } from './reviewHideResolved.svelte';
 import { commentWriteKey } from './reviewCommentWrites.svelte';
 import { RANGE_REFUSAL_TEXT, rangesByFile, spanRange, type LineRange } from '../utils/reviewRange';
 
@@ -175,7 +177,7 @@ export type ReviewScope = DiffReviewScope;
  * thread's card, a verdict one-liner, a forge event one-liner (an
  * approval, a merge, a draft flip), or one contiguous run of pushed
  * commits by one author. Ids are prefixed per kind (`t:`/`v:`/`e:`/`c:`)
- * so the frozen-order capture can hold all four still at once. */
+ * so the held order can place all four at once. */
 export type ConversationFeedItem =
   | { kind: 'thread'; id: string; thread: ReviewThread }
   | { kind: 'verdict'; id: string; verdict: ReviewVerdict }
@@ -476,32 +478,50 @@ export interface ReviewPaneState extends ReviewCommentActionsState {
   stepUnresolvedThread(direction: 1 | -1, inOverview: boolean): void;
   // ------------------------------------------------------------------
   // The Conversation section: one chronological feed (newest first) of
-  // thread cards, review verdicts, and commit pushes. Ordering is FROZEN
-  // from the first time the section renders it: remote updates never
-  // reorder or hide what the reader is looking at. Entries that arrive
-  // after the freeze count into `conversationNewCount` and join only on
-  // reveal.
+  // thread cards, review verdicts, and commit pushes
+  // (reviewConversationFeed.svelte.ts). An entry keeps its place once
+  // shown and every arrival joins at its chronological place; one that
+  // joins while the reader's place is held counts into
+  // `conversationNewCount`, the chip that scrolls to it.
   // ------------------------------------------------------------------
   readonly conversationOpen: boolean;
   /** The whole feed — thread cards, verdicts, commit pushes — newest
-   * first: the frozen order once captured, the live order before (the
-   * section freezes it on first render). Empty while closed. */
+   * first in the held order, less the threads hidden as resolved. Empty
+   * while closed. */
   readonly conversationFeed: readonly ConversationFeedItem[];
-  /** Conversation entries (threads, verdicts, events; pushes are context,
-   * not conversation): the count the section header and the title bar show. */
+  /** Conversation entries shown (threads, verdicts, events; pushes are
+   * context, not conversation): the count the section header and the
+   * title bar show. */
   readonly conversationCount: number;
-  /** Whether the order is captured. */
-  readonly conversationFrozen: boolean;
-  /** Capture the current live order (the section's first render). */
-  freezeConversation(): void;
-  /** Feed entries that arrived after the frozen order was captured. */
+  /** Arrivals that joined while the reader's place was held. */
   readonly conversationNewCount: number;
+  /** The newest of those, which the chip scrolls to. */
+  readonly conversationNewestArrivalId: string | null;
+  /** The newest arrival was scrolled into view. */
+  acknowledgeConversationArrivals(): void;
+  /** The chip's press: scroll to the newest arrival, and the chip goes. */
+  showNewestConversationArrival(): void;
+  /** The feed entry the section should scroll into view; consumed by it. */
+  readonly pendingConversationArrivalId: string | null;
+  consumePendingConversationArrival(): void;
+  /** The mounted section answers whether focus is inside the feed. */
+  attachConversationFocusProbe(probe: () => boolean): () => void;
+  /** The entry at the top of the section's viewport, kept across the
+   * overview row unmounting so the reader's place is restored by entry. */
+  readonly conversationAnchor: ConversationFeedAnchor | null;
+  setConversationAnchor(anchor: ConversationFeedAnchor | null): void;
   /** Thread the section should scroll to; consumed by the section. */
   readonly pendingConversationThreadId: string | null;
   setConversationOpen(open: boolean): void;
-  /** Fold the arrived-since-capture entries in (fresh chronological
-   * order; reply folds already open stay open). */
-  revealNewConversationThreads(): void;
+  // "Hide resolved threads" (reviewHideResolved.svelte.ts): the feed and
+  // the diff's thread rows leave out the threads resolved when the view
+  // was last loaded.
+  readonly hideResolved: boolean;
+  setHideResolved(on: boolean): void;
+  /** Resolved threads hidden now: the feed's "N resolved hidden". */
+  readonly hiddenResolvedCount: number;
+  /** The PR's threads the view shows: the diff's thread rows and find. */
+  readonly shownPRThreads: readonly ReviewThread[];
   /** Whether a thread card's REPLIES are unfolded. The card's first
    * comment is always visible; settled threads fold replies by default. */
   conversationThreadExpanded(threadId: string): boolean;
@@ -511,8 +531,10 @@ export interface ReviewPaneState extends ReviewCommentActionsState {
   openConversationAt(threadId: string): void;
   consumePendingConversationThreadId(): void;
   /** PR scope: re-fetches detail + review threads WITHOUT reloading the
-   * diff. A moved head raises the stale banner like the poll pump. */
-  refreshPRThreads(): Promise<void>;
+   * diff. A moved head raises the stale banner like the poll pump.
+   * `explicit` for the reader's refresh: its answer shows everything it
+   * read, with no chip, and decides again what Hide resolved hides. */
+  refreshPRThreads(opts?: { explicit?: boolean }): Promise<void>;
   openConflictView(): Promise<void>;
   closeConflictView(): void;
   /** A pane rendering this state is mounted in layout pane `paneId`;
@@ -616,7 +638,6 @@ const MERGE_ACTION_LABEL: Record<MergeActionKind, string> = {
   update_branch: 'Update branch',
   mark_ready: 'Mark ready',
 };
-const EMPTY_CONVERSATION_FEED: readonly ConversationFeedItem[] = Object.freeze([]);
 
 // Same stability rule for the comment list a workspace-only pane reads.
 const EMPTY_COMMENTS: readonly DiffReviewComment[] = Object.freeze([]);
@@ -959,11 +980,6 @@ export function createReviewPaneState(
   let submitError: string | null = $state(null);
   const resolvingThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
   const resolveErrors = new SvelteMap<string, string>();
-  // The PR header's Conversation section. The order and the
-  // expanded-by-default set are CAPTURED, not derived: they must hold
-  // still while the reader is in the section, whatever the poll pump
-  // replaces underneath (see the interface comment).
-  let conversationOpen = $state(false);
   let descriptionOpen = $state(false);
   let mergeOpen = $state(false);
   // The merge action in flight, then (mergeAwait) the one whose success
@@ -979,9 +995,6 @@ export function createReviewPaneState(
   const backendLaunch = $derived(getTransportHelloFor(backend)?.launchId ?? '');
   const overviewScrollTops = new SvelteMap<ReviewSectionId, number>();
   let unresolvedCursor: string | null = $state(null);
-  let conversationOrder: readonly string[] = $state([]);
-  let conversationDefaultExpanded: ReadonlySet<string> = $state(new Set<string>());
-  const conversationExpandOverrides = new SvelteMap<string, boolean>();
   let pendingConversationThreadId: string | null = $state(null);
   let expandedPRThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
   let commits: BranchCommit[] = $state([]);
@@ -1105,8 +1118,8 @@ export function createReviewPaneState(
     mergeAction ?? (mergeAwait !== null && mergeAwait.key === prEntityKey && backendLaunch === mergeAwait.launch && peekPRSeq(prEntityKey) < mergeAwait.seq && prUpdateError === null ? mergeAwait.kind : null),
   );
   // The live feed universe: every thread, verdict, and commit push the
-  // section could show, chronological newest first. The frozen order is
-  // captured FROM this and projected back ONTO it, so content updates
+  // section could show, chronological newest first. The held order is
+  // built FROM this and projected back ONTO it, so content updates
   // (new replies, resolve flips) flow through while position holds.
   const conversationFeedSource = $derived.by<readonly { timeMs: number; item: ConversationFeedItem }[]>(() => {
     const out: { timeMs: number; item: ConversationFeedItem }[] = [];
@@ -1159,24 +1172,15 @@ export function createReviewPaneState(
     out.sort((a, b) => b.timeMs - a.timeMs || a.item.id.localeCompare(b.item.id));
     return out;
   });
-  // The frozen order projected onto the live universe; the live order
-  // itself until the section has rendered once and frozen it.
-  const conversationFeed = $derived.by<readonly ConversationFeedItem[]>(() => {
-    if (!conversationOpen) return EMPTY_CONVERSATION_FEED;
-    if (conversationOrder.length === 0) {
-      return conversationFeedSource.length === 0
-        ? EMPTY_CONVERSATION_FEED
-        : conversationFeedSource.map((entry) => entry.item);
-    }
-    const byId = new Map(conversationFeedSource.map((entry) => [entry.item.id, entry.item]));
-    const out: ConversationFeedItem[] = [];
-    for (const id of conversationOrder) {
-      const item = byId.get(id);
-      if (item) out.push(item);
-    }
-    return out;
+  const hideResolved = createHideResolved(() => prThreads);
+  const conversation = createConversationFeed({
+    source: () => conversationFeedSource,
+    subjectKey: () => prEntityKey,
+    scrolled: () => (overviewScrollTops.get('conversation') ?? 0) > 0,
+    hidden: (threadId) => hideResolved.isHidden(threadId),
   });
-  const conversationCount = $derived(conversationFeedSource.reduce((count, entry) => count + (entry.item.kind === 'commits' ? 0 : 1), 0));
+  const conversationCount = $derived(conversationFeedSource.reduce((count, entry) => count
+    + (entry.item.kind === 'commits' || (entry.item.kind === 'thread' && hideResolved.isHidden(entry.item.thread.id)) ? 0 : 1), 0));
   const unresolvedThreads = $derived.by<readonly ReviewThread[]>(() => {
     const out: ReviewThread[] = [];
     for (const entry of conversationFeedSource) {
@@ -1185,15 +1189,6 @@ export function createReviewPaneState(
       if (thread.isResolvable && !thread.isResolved) out.push(thread);
     }
     return out;
-  });
-  const conversationNewCount = $derived.by(() => {
-    if (!conversationOpen || conversationOrder.length === 0) return 0;
-    const known = new Set(conversationOrder);
-    let count = 0;
-    for (const entry of conversationFeedSource) {
-      if (!known.has(entry.item.id)) count += 1;
-    }
-    return count;
   });
   const conflictsState = $derived(peekPRConflicts(prEntityKey, workspace));
   // The loaded head, but only while it still describes the PR on screen.
@@ -1433,7 +1428,7 @@ export function createReviewPaneState(
       if (draftEditBodies.get(draft.id) === undefined) draftEditBodies.set(draft.id, { sourceKey, body: draft.body });
     },
     refreshThreads: () => refreshPRThreads(),
-    showPostedComment: (commentId) => joinPostedComment(commentId),
+    showPostedComment: (commentId) => conversation.joinPostedComment(commentId),
   });
 
   // The workspace's CURRENT open PR, read live from the shared git-status
@@ -1588,6 +1583,7 @@ export function createReviewPaneState(
     showRead(null);
     disposePRRefWatch();
     disposePaintedRetention();
+    conversation.dispose();
     paintedSpans.clear();
     conflictPaintedSpans.clear();
     resetConflictView();
@@ -1660,7 +1656,7 @@ export function createReviewPaneState(
     if (scopeChanged) {
       resetConflictView();
       closeCILogView();
-      // The frozen ordering describes the previous scope's threads.
+      // The held order describes the previous scope's threads.
       resetConversationView();
     }
     if (scope === 'pr' && nextScope !== 'pr') releasePR();
@@ -1761,6 +1757,9 @@ export function createReviewPaneState(
     // Files on screen when the load starts belong to this subject (a new
     // subject retires them first): a failed refresh leaves them up.
     const keepsShownFiles = loadedFiles.length > 0;
+    // The reader's reload of a PR on screen re-reads its threads too, and
+    // shows everything that read brought.
+    if (userInitiated && !opts?.selectionOnly && keepsShownFiles && scope === 'pr' && prRef) void refreshPRThreads({ explicit: true });
     const requestedIgnoreWhitespace = ignoreWhitespace;
     // The diff is computed at the shared snapshot's revision, so the
     // snapshot is awaited before the patch call. Attaching is what starts
@@ -1845,6 +1844,8 @@ export function createReviewPaneState(
       // state, patch key, head, subject or editor lines.
       showFiles(arrival, read.files);
       showRead(read.read);
+      // A load is a moment Hide resolved decides what it hides.
+      hideResolved.decide();
       patchKey = read.patchKey;
       shownIgnoreWhitespace = requestedIgnoreWhitespace;
       shown = {
@@ -2823,26 +2824,41 @@ export function createReviewPaneState(
   // A refresh asked for while one runs is owed, not dropped: the running
   // read may predate what the later ask wants to see (a merge failure
   // during a manual refresh). One read at a time; the owed one runs next.
+  // An explicit ask (the reader's refresh) spans every read until the
+  // owed ones are done: what lands meanwhile joins the feed without the
+  // chip, and its answer decides again what Hide resolved hides.
   let refreshPRDataOwed = false;
-  async function refreshPRThreads(): Promise<void> {
+  let explicitReadOwed = false;
+  async function refreshPRThreads(opts?: { explicit?: boolean }): Promise<void> {
     if (scope !== 'pr' || !prRef) return;
+    if (opts?.explicit && !explicitReadOwed) {
+      explicitReadOwed = true;
+      conversation.beginExplicitRead();
+    }
     if (refreshingPRData) {
       refreshPRDataOwed = true;
       return;
     }
     refreshingPRData = true;
+    let answered = false;
     try {
       do {
         refreshPRDataOwed = false;
-        await readPRThreads(prRef);
+        answered = await readPRThreads(prRef);
       } while (refreshPRDataOwed && !disposed && scope === 'pr' && prRef !== null);
     } finally {
       refreshPRDataOwed = false;
       refreshingPRData = false;
+      if (explicitReadOwed) {
+        explicitReadOwed = false;
+        conversation.endExplicitRead(answered && !disposed);
+        if (answered && !disposed) hideResolved.decide();
+      }
     }
   }
 
-  async function readPRThreads(ref: PRRef): Promise<void> {
+  // True when its answer was applied.
+  async function readPRThreads(ref: PRRef): Promise<boolean> {
     const key = computerPRKey(ref);
     try {
       const pr = prReferenceWire(ref);
@@ -2850,16 +2866,18 @@ export function createReviewPaneState(
         withBackendTarget(backend, () => GetPRDetail(pr)) as Promise<PRDetail>,
         withBackendTarget(backend, () => ListPRReviewThreads(pr)) as Promise<ReviewThread[] | null>,
       ]);
-      if (disposed || scope !== 'pr') return;
+      if (disposed || scope !== 'pr') return false;
       applyPRSnapshot(key, {
         detail: detail ?? null,
         threads: threads ?? [],
         headSHA: String(detail?.headSHA ?? ''),
       });
       error = null;
+      return prEntityKey === key;
     } catch (err) {
-      if (disposed) return;
+      if (disposed) return false;
       error = userFacingError(err);
+      return false;
     }
   }
 
@@ -2993,77 +3011,34 @@ export function createReviewPaneState(
   // Conversation section
   // ------------------------------------------------------------------
 
-  function threadSettled(thread: ReviewThread): boolean {
-    return thread.isResolvable && thread.isResolved;
-  }
-
-  // Captures the feed order (chronological, newest first) and the
-  // replies-unfolded-by-default set from the entries in hand.
-  // `preserveExpanded` keeps folds that were already open open — a reveal
-  // must not fold a thread's replies away because it was remotely
-  // resolved while the reader had them open.
-  // The viewer's own PR comment joins a frozen feed at its end, as it was
-  // posted from there; nothing else that arrived meanwhile does. It is the
-  // PR-level entry whose comment is the one the post's answer named. A
-  // feed not frozen yet shows it in its live order.
-  function joinPostedComment(commentId: string): void {
-    if (conversationOrder.length === 0) return;
-    const known = new Set(conversationOrder);
-    const mine = conversationFeedSource.find(({ item }) => item.kind === 'thread' && !known.has(item.id)
-      && !item.thread.isResolvable && item.thread.comments[0]?.id === commentId);
-    if (mine) conversationOrder = [...conversationOrder, mine.item.id];
-  }
-
-  function captureConversationOrder(preserveExpanded: boolean): void {
-    conversationOrder = conversationFeedSource.map((entry) => entry.item.id);
-    const expanded = new Set<string>();
-    const present = new Set<string>();
-    for (const entry of conversationFeedSource) {
-      if (entry.item.kind !== 'thread') continue;
-      present.add(entry.item.thread.id);
-      if (!threadSettled(entry.item.thread)) expanded.add(entry.item.thread.id);
-    }
-    if (preserveExpanded) {
-      for (const id of conversationDefaultExpanded) {
-        if (present.has(id)) expanded.add(id);
-      }
-    }
-    conversationDefaultExpanded = expanded;
-  }
-
-  // Forget the frozen view: a fresh visit is a fresh view, so the order
+  // Forget the view: a fresh visit is a fresh view, so the order
   // and the reply-fold defaults recompute and the previous visit's manual
   // choices go. The section's open state is the reader's and stays.
   function resetConversationView(): void {
-    conversationOrder = [];
-    conversationDefaultExpanded = new Set<string>();
-    conversationExpandOverrides.clear();
+    conversation.reset();
     pendingConversationThreadId = null;
     unresolvedCursor = null;
   }
 
   function setConversationOpen(open: boolean): void {
-    if (open === conversationOpen) return;
-    conversationOpen = open;
-    if (open) captureConversationOrder(false);
-    else resetConversationView();
-  }
-
-  function conversationThreadExpanded(prThreadId: string): boolean {
-    return conversationExpandOverrides.get(prThreadId) ?? conversationDefaultExpanded.has(prThreadId);
+    if (open === conversation.open) return;
+    conversation.setOpen(open);
+    if (!open) resetConversationView();
   }
 
   function openConversationAt(prThreadId: string): void {
+    // A thread Hide resolved hides is shown for the jump.
+    hideResolved.reveal(prThreadId);
     setConversationOpen(true);
-    // The target may still be behind the "N new" chip (it just arrived on
-    // a poll), or the order may not be frozen yet; capture so the jump
+    // The target may have just arrived on a poll; fold it in so the jump
     // has somewhere to land.
-    if (!conversationOrder.includes(`t:${prThreadId}`)) captureConversationOrder(true);
-    if (!conversationThreadExpanded(prThreadId)) conversationExpandOverrides.set(prThreadId, true);
+    conversation.sync();
+    conversation.expandThread(prThreadId);
     // The jump decides where the section is scrolled. A remembered
-    // reading offset is restored a tick after the overview row remounts
-    // (ReviewResizableBody), which would land on top of the jump's scroll.
+    // reading place is restored when the overview row remounts, which
+    // would land on top of the jump's scroll.
     overviewScrollTops.delete('conversation');
+    conversation.setAnchor(null);
     pendingConversationThreadId = prThreadId;
   }
 
@@ -3087,6 +3062,7 @@ export function createReviewPaneState(
     if (!thread.path) return;
     closeCILogView();
     closeConflictView();
+    hideResolved.reveal(thread.id);
     collapsedPaths.delete(thread.path);
     expandedPRThreadIds.add(thread.id);
     revealFile(thread.path);
@@ -3373,9 +3349,21 @@ export function createReviewPaneState(
     updatePRBranch,
     markPRReady,
     manage,
-    get conversationOpen() { return conversationOpen; },
-    get conversationFeed() { return conversationFeed; },
-    get conversationNewCount() { return conversationNewCount; },
+    get conversationOpen() { return conversation.open; },
+    get conversationFeed() { return conversation.feed; },
+    get conversationNewCount() { return conversation.newCount; },
+    get conversationNewestArrivalId() { return conversation.newestArrivalId; },
+    acknowledgeConversationArrivals: () => conversation.acknowledgeArrivals(),
+    showNewestConversationArrival: () => conversation.showNewestArrival(),
+    get pendingConversationArrivalId() { return conversation.pendingArrivalId; },
+    consumePendingConversationArrival: () => conversation.consumePendingArrival(),
+    attachConversationFocusProbe: (probe: () => boolean) => conversation.attachFocusProbe(probe),
+    get conversationAnchor() { return conversation.anchor; },
+    setConversationAnchor: (anchor: ConversationFeedAnchor | null) => conversation.setAnchor(anchor),
+    get hideResolved() { return hideResolved.on; },
+    setHideResolved: (on: boolean) => hideResolved.set(on),
+    get hiddenResolvedCount() { return hideResolved.hiddenCount; },
+    get shownPRThreads() { return hideResolved.shownThreads; },
     get pendingConversationThreadId() { return pendingConversationThreadId; },
     get prHeadSHA() { return loadedPRHeadSHA; },
     get prUpdateError() { return prUpdateError; },
@@ -3508,17 +3496,8 @@ export function createReviewPaneState(
     stepUnresolvedThread,
     setConversationOpen,
     get conversationCount() { return conversationCount; },
-    get conversationFrozen() { return conversationOrder.length > 0; },
-    freezeConversation(): void {
-      if (conversationOrder.length === 0) captureConversationOrder(false);
-    },
-    revealNewConversationThreads(): void {
-      captureConversationOrder(true);
-    },
-    conversationThreadExpanded,
-    toggleConversationThread(prThreadId: string): void {
-      conversationExpandOverrides.set(prThreadId, !conversationThreadExpanded(prThreadId));
-    },
+    conversationThreadExpanded: (prThreadId: string) => conversation.threadExpanded(prThreadId),
+    toggleConversationThread: (prThreadId: string) => conversation.toggleThread(prThreadId),
     openConversationAt,
     consumePendingConversationThreadId(): void {
       pendingConversationThreadId = null;

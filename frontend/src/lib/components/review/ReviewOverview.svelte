@@ -1,8 +1,10 @@
 <script lang="ts">
+  import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import Pencil from '@lucide/svelte/icons/pencil';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import { tick } from 'svelte';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
+  import Icon from '../primitives/Icon.svelte';
   import ReviewCollapsibleSection from './ReviewCollapsibleSection.svelte';
   import ReviewConversation from './ReviewConversation.svelte';
   import ReviewDescriptionEditor from './ReviewDescriptionEditor.svelte';
@@ -20,7 +22,7 @@
   // Description and Conversation sections. It scrolls off with the diff
   // like a page heading and is unmounted while the reader is far below,
   // so every piece of state a reader would notice losing (open sections,
-  // scroll offsets, the frozen feed) lives in the review store. Each
+  // scroll offsets, the feed's order) lives in the review store. Each
   // section fits its content up to a cap and is resizable from its
   // bottom edge; dragging replaces the cap with a remembered height.
 
@@ -49,14 +51,6 @@
     descriptionEditTrigger?.focus({ preventScroll: true });
   }
   const conversationTotal = $derived(review.conversationCount);
-
-  // The feed renders in live order until the section has shown it once;
-  // from then on the order holds and arrivals wait behind the chip.
-  $effect(() => {
-    if (review.conversationOpen && !review.conversationFrozen && review.conversationFeed.length > 0) {
-      review.freezeConversation();
-    }
-  });
 </script>
 
 <div class="flex flex-col gap-2.5 px-[var(--review-slab-inset)] pb-3 pt-2.5" data-testid="review-overview">
@@ -109,7 +103,8 @@
     </ReviewCollapsibleSection>
   {/if}
 
-  {#if conversationTotal > 0}
+  <!-- With every entry hidden as resolved the section stays, to say so. -->
+  {#if conversationTotal > 0 || review.hiddenResolvedCount > 0}
     <ReviewCollapsibleSection
       label="Conversation"
       open={review.conversationOpen}
@@ -120,14 +115,16 @@
         <span class="shrink-0 rounded-full bg-surface-2 px-1.5 py-px text-[0.625rem] font-normal tabular-nums text-fg-muted">{conversationTotal}</span>
       {/snippet}
       {#snippet trailing()}
+        <!-- Points at arrivals already in the feed, above the reader. -->
         {#if review.conversationOpen && review.conversationNewCount > 0}
           <button
             type="button"
-            class="shrink-0 rounded-full bg-accent/12 px-2 py-px text-[0.6875rem] tabular-nums text-accent hover:bg-accent/20"
-            title="Show threads that arrived while you were reading"
+            class="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-accent/12 px-2 py-px text-[0.6875rem] tabular-nums text-accent hover:bg-accent/20 compact:select-none"
+            title="Scroll to the newest activity"
             data-testid="review-conversation-new"
-            onclick={() => review.revealNewConversationThreads()}
+            onclick={() => review.showNewestConversationArrival()}
           >
+            <Icon icon={ArrowUp} size={11} strokeWidth={2} />
             {review.conversationNewCount} new
           </button>
         {/if}
@@ -149,16 +146,16 @@
           testid="review-refresh-comments"
           disabled={review.refreshingPRData}
           spinning={review.refreshingPRData}
-          onclick={() => { void review.refreshPRThreads(); }}
+          onclick={() => { void review.refreshPRThreads({ explicit: true }); }}
         />
       {/snippet}
       <!-- The default cap leaves the diff visible under the open section on
            a laptop screen; the resize handle replaces it the moment the
            user drags. -->
+      <!-- The feed restores its own reading place, by entry. -->
       <ReviewResizableBody
         section="conversation"
         fallbackClass="max-h-[min(38vh,22rem)]"
-        scrollTop={review.overviewSectionScrollTop('conversation')}
         onScrollTop={(px) => review.setOverviewSectionScrollTop('conversation', px)}
       >
         <ReviewConversation {review} />

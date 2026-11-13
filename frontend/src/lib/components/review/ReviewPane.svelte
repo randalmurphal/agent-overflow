@@ -433,7 +433,7 @@
           onToggleCollapsed={review.toggleCollapsed}
           drafts={review.drafts}
           openEditors={review.openEditors}
-          prThreads={review.prThreads}
+          prThreads={review.shownPRThreads}
           expandedPRThreadIds={review.expandedPRThreadIds}
           generation={review.shownGeneration}
           onAddComment={review.canDraftComments && review.commentsGranted ? (anchor, generation) => review?.openDraftEditor(anchor, generation) : undefined}
