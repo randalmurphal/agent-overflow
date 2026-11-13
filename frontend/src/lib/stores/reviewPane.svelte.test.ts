@@ -3081,6 +3081,60 @@ describe('collapse overrides across reloads', () => {
 });
 
 describe('comments-only PR refresh', () => {
+  describe('a failed read belongs to its PR in PR scope', () => {
+    async function failedOnPR5(): Promise<ReturnType<typeof reviewStateForPane>> {
+      installPRMocks();
+      setBindingMock('GetPRDetail', async () => prDetailStub());
+      const state = reviewStateForPane('pane-1', prSubject());
+      await waitLoaded(state);
+      await state.setScope('pr');
+      setBindingMock('ListPRReviewThreads', async () => { throw new Error('The threads did not load.'); });
+      await state.refreshPRThreads({ explicit: true });
+      expect(state.threadsError).toContain('threads did not load');
+      return state;
+    }
+
+    it('stays while the pane shows the PR, and its read clears it', async () => {
+      const state = await failedOnPR5();
+      await state.reload();
+      await flushPane();
+      expect(state.threadsError).toContain('threads did not load');
+      const list = setBindingMock('ListPRReviewThreads', async () => []);
+      await state.refreshPRThreads({ explicit: true });
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(state.threadsError).toBeNull();
+    });
+
+    it('goes with a change of scope, and a return does not bring it back', async () => {
+      const state = await failedOnPR5();
+      const leaving = state.setScope('workspace');
+      // Not shown outside PR scope, from the moment the scope changes.
+      expect(state.threadsError).toBeNull();
+      await leaving;
+      await flushPane();
+      expect(state.threadsError).toBeNull();
+      setBindingMock('ListPRReviewThreads', async () => []);
+      await state.setScope('pr');
+      await flushPane();
+      expect(state.threadsError).toBeNull();
+    });
+
+    it('goes with a change of PR', async () => {
+      const state = await failedOnPR5();
+      setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
+        id: `sub-${pr.Number}`, prKey: `github:owner/repo:${pr.Number}`, detail: prDetailStub({ number: pr.Number }), threads: [], headSHA: 'sha-a',
+      }));
+      seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/7', openPrNumber: 7 });
+      await vi.waitFor(() => expect(state.prRef?.number).toBe(7));
+      expect(state.threadsError).toBeNull();
+      // Back on #5 (its read failing still), the return's own read decides.
+      seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/5', openPrNumber: 5 });
+      await vi.waitFor(() => expect(state.prRef?.number).toBe(5));
+      await flushPane();
+      expect(state.threadsError).toBeNull();
+    });
+  });
+
   it('refreshes detail + threads without reloading the diff', async () => {
     installPRMocks();
     const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));

@@ -1113,9 +1113,11 @@ export function createReviewPaneState(
   let loading = $state(false);
   let error: string | null = $state(null);
   // The PR threads read's failure (the Conversation refresh, a reload's
-  // re-read, a write's re-read): shown beside the load's, cleared only by
-  // the read's own success.
-  let threadsError: string | null = $state(null);
+  // re-read, a write's re-read), kept with the PR it read: shown beside
+  // the load's only while the pane shows that PR in PR scope, cleared by
+  // the read's own success and dropped when the scope or PR changes (a
+  // return reads again and decides for itself).
+  let threadsError: { key: string; message: string } | null = $state(null);
   // Hunk-gap expansions, per file path. The map itself is plain state:
   // merges mutate entries in place and bump the version counter, which
   // is the sole reactive signal the `files` derived reads.
@@ -1641,6 +1643,10 @@ export function createReviewPaneState(
   const disposePRRefWatch = $effect.root(() => {
     // The screen moving (compact navigation) takes or releases the permit.
     $effect(() => syncConflictPermit());
+    $effect(() => {
+      // A threads read's failure belongs to the PR it read, in PR scope.
+      if (threadsError !== null && threadsError.key !== prEntityKey) threadsError = null;
+    });
     $effect(() => {
       const key = shownHeadRangeKey;
       untrack(() => {
@@ -3159,7 +3165,7 @@ export function createReviewPaneState(
       return prEntityKey === key;
     } catch (err) {
       if (disposed) return false;
-      threadsError = userFacingError(err);
+      threadsError = { key, message: userFacingError(err) };
       return false;
     }
   }
@@ -3629,7 +3635,7 @@ export function createReviewPaneState(
     get pendingJumpRowKey() { return pendingJumpRowKey; },
     get loading() { return loading; },
     get error() { return error; },
-    get threadsError() { return threadsError; },
+    get threadsError() { return threadsError !== null && threadsError.key === prEntityKey ? threadsError.message : null; },
     get sendingComments() { return sendingComments; },
     get sendStripShown() { return sendStripShown; },
     get prDetail() { return prSnapshot?.detail ?? null; },

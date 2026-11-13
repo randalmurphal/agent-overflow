@@ -619,7 +619,9 @@ describe('Hide resolved threads never hides a thread in use', () => {
     { name: 'a delete being confirmed', use: (state) => state.sentComments.setConfirmDelete(DONE, COMMENT, true) },
     { name: 'a delete in flight', use: (state) => { setBindingMock('DeletePRComment', never); void state.sentComments.deleteComment(DONE, COMMENT); } },
     { name: 'a delete waiting for its frame', use: async (state) => { setBindingMock('DeletePRComment', async () => ({ seq: 99 })); await state.sentComments.deleteComment(DONE, COMMENT); } },
-    { name: 'a failed delete', use: async (state) => { setBindingMock('DeletePRComment', refuse); await state.sentComments.deleteComment(DONE, COMMENT); } },
+    { name: 'a failed delete, its confirm still open', use: async (state) => { setBindingMock('DeletePRComment', refuse); state.sentComments.setConfirmDelete(DONE, COMMENT, true); await state.sentComments.deleteComment(DONE, COMMENT); } },
+    { name: 'a failed reply, its composer still open', use: async (state) => { setBindingMock('ReplyToPRThread', refuse); state.openReply(DONE.id, 'diff'); state.setReplyBody(DONE.id, 'Sent?'); await state.sendPRThreadReply(DONE); } },
+    { name: 'a failed edit, its editor still open', use: async (state) => { setBindingMock('EditPRComment', refuse); state.sentComments.setEditBody(DONE, COMMENT, 'Edited.'); await state.sentComments.saveEdit(DONE, COMMENT); } },
     { name: 'a reply being held as a draft', use: (state) => { state.setReplyBody(DONE.id, 'Held.'); void state.holdPRThreadReply(DONE); } },
     { name: 'a held draft reply', use: async (state) => { state.setReplyBody(DONE.id, 'Held.'); await state.holdPRThreadReply(DONE); state.setReplyBody(DONE.id, ''); } },
     { name: 'a resolve in flight', use: (state) => { setBindingMock('SetPRThreadResolved', never); void state.setPRThreadResolved(DONE, true); } },
@@ -645,6 +647,96 @@ describe('Hide resolved threads never hides a thread in use', () => {
       expect(state.shownPRThreads.map((each) => each.id)).toContain('t-done');
     });
   }
+
+  // A failure stored is a failure shown: dismissing its surface lets the
+  // thread hide at the next decision point.
+  async function hiddenAtNextDecision(state: ReviewPaneState): Promise<void> {
+    await state.refreshPRThreads({ explicit: true });
+    await settle();
+    expect(ids(state)).not.toContain('t-done');
+    expect(state.shownPRThreads.map((each) => each.id)).not.toContain('t-done');
+  }
+  const replyKey = `reply:${DONE.id}`;
+
+  it('a failed reply erased and closed lets go', async () => {
+    const state = await open([OLD, DONE, MID]);
+    setBindingMock('ReplyToPRThread', refuse);
+    state.openReply(DONE.id, 'conversation');
+    state.setReplyBody(DONE.id, 'Sent?');
+    await state.sendPRThreadReply(DONE);
+    expect(state.replyErrorFor(DONE.id)).toContain('refused');
+    state.setHideResolved(true);
+    expect(ids(state)).toContain('t-done');
+    state.setReplyBody(DONE.id, '');
+    expect(state.replyErrorFor(DONE.id)).toContain('refused');
+    state.closeReply(DONE.id, 'conversation');
+    expect(state.replyErrorFor(DONE.id)).toBeNull();
+    expect(state.commentWriteError(replyKey)).toBeNull();
+    await hiddenAtNextDecision(state);
+  });
+
+  it('a failed reply closed with its text kept keeps its failure for the reopen; erasing the text lets go', async () => {
+    const state = await open([OLD, DONE, MID]);
+    setBindingMock('ReplyToPRThread', refuse);
+    state.openReply(DONE.id, 'conversation');
+    state.setReplyBody(DONE.id, 'Sent?');
+    await state.sendPRThreadReply(DONE);
+    state.closeReply(DONE.id, 'conversation');
+    expect(state.replyErrorFor(DONE.id)).toContain('refused');
+    state.setHideResolved(true);
+    expect(ids(state)).toContain('t-done');
+    state.setReplyBody(DONE.id, '');
+    expect(state.replyErrorFor(DONE.id)).toBeNull();
+    await hiddenAtNextDecision(state);
+  });
+
+  it('a failed reply sent after all lets go', async () => {
+    const state = await open([OLD, DONE, MID]);
+    setBindingMock('ReplyToPRThread', refuse);
+    state.openReply(DONE.id, 'conversation');
+    state.setReplyBody(DONE.id, 'Sent?');
+    await state.sendPRThreadReply(DONE);
+    setBindingMock('ReplyToPRThread', async () => ({ seq: 0 }));
+    await state.sendPRThreadReply(DONE);
+    await settle();
+    expect(state.replyErrorFor(DONE.id)).toBeNull();
+    state.setHideResolved(true);
+    expect(ids(state)).not.toContain('t-done');
+  });
+
+  it('a failed reply held as a draft keeps no failure, and the draft disposed lets go', async () => {
+    const state = await open([OLD, DONE, MID]);
+    setBindingMock('ReplyToPRThread', refuse);
+    state.openReply(DONE.id, 'conversation');
+    state.setReplyBody(DONE.id, 'Sent?');
+    await state.sendPRThreadReply(DONE);
+    await state.holdPRThreadReply(DONE);
+    expect(state.drafts.map((draft) => draft.replyThreadId)).toEqual([DONE.id]);
+    expect(state.replyErrorFor(DONE.id)).toBeNull();
+    state.setHideResolved(true);
+    expect(ids(state)).toContain('t-done');
+    await state.deleteComment(state.drafts[0].id);
+    await hiddenAtNextDecision(state);
+  });
+
+  it('a failed edit or delete dismissed lets go', async () => {
+    const state = await open([OLD, DONE, MID]);
+    setBindingMock('EditPRComment', refuse);
+    setBindingMock('DeletePRComment', refuse);
+    state.sentComments.setEditBody(DONE, COMMENT, 'Edited.');
+    await state.sentComments.saveEdit(DONE, COMMENT);
+    state.sentComments.setConfirmDelete(DONE, COMMENT, true);
+    await state.sentComments.deleteComment(DONE, COMMENT);
+    expect(state.commentWriteError(`edit:${DONE.id}\u0000${COMMENT.id}`)).toContain('refused');
+    expect(state.commentWriteError(`delete:${DONE.id}\u0000${COMMENT.id}`)).toContain('refused');
+    state.setHideResolved(true);
+    expect(ids(state)).toContain('t-done');
+    state.sentComments.setEditBody(DONE, COMMENT, null);
+    state.sentComments.setConfirmDelete(DONE, COMMENT, false);
+    expect(state.commentWriteError(`edit:${DONE.id}\u0000${COMMENT.id}`)).toBeNull();
+    expect(state.commentWriteError(`delete:${DONE.id}\u0000${COMMENT.id}`)).toBeNull();
+    await hiddenAtNextDecision(state);
+  });
 
   it('a thread not in use is hidden by the same steps', async () => {
     const state = await open([OLD, DONE, MID]);

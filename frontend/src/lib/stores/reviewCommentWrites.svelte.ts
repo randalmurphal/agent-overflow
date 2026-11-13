@@ -109,9 +109,10 @@ export interface CommentWrites {
   setEditBody(thread: ReviewThread, comment: ReviewComment, body: string | null): void;
   /** The `threadId\0commentId` of every sent comment open in its editor. */
   readonly editing: ReadonlySet<string>;
-  /** Threads with a reply, edit or delete in flight, waiting for its
-   * frame or failed, a sent comment open in its editor, or a delete
-   * being confirmed. */
+  /** Threads with a reply, edit or delete in flight or waiting for its
+   * frame, a sent comment open in its editor, or a delete being
+   * confirmed. A failed write's surface is one of these or the reply's
+   * kept text, so its failure needs no entry of its own. */
   readonly activeThreads: ReadonlySet<string>;
   saveEdit(thread: ReviewThread, comment: ReviewComment): Promise<void>;
   confirmingDelete(thread: ReviewThread, comment: ReviewComment): boolean;
@@ -135,6 +136,12 @@ function sentKey(thread: ReviewThread, comment: ReviewComment): string {
 export function createCommentWrites(host: CommentWritesHost): CommentWrites {
   const inFlight = new SvelteSet<string>();
   const awaiting = new SvelteMap<string, Awaited>();
+  // A write's failure lives exactly as long as the surface that shows
+  // it: a reply's while its composer is open or its text kept
+  // (reviewCommentActions drops it otherwise, and when the reply is sent
+  // or held), an edit's while its editor is open, a delete's while its
+  // confirm is. Dismissing the surface clears it, so a failure stored is
+  // a failure shown.
   const errors = new SvelteMap<string, string>();
   const editBodies = new SvelteMap<string, string>();
   const confirming = new SvelteSet<string>();
@@ -165,7 +172,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
 
   const activeThreads = $derived.by<ReadonlySet<string>>(() => {
     const out = new Set<string>();
-    for (const keys of [inFlight, awaiting.keys(), errors.keys()]) {
+    for (const keys of [inFlight, awaiting.keys()]) {
       for (const key of keys) {
         const thread = threadOfWriteKey(key);
         if (thread !== null) out.add(thread);

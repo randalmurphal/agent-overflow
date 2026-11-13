@@ -192,11 +192,26 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     openReplies.delete(`conversation:${threadId}`);
   }
 
+  function forgetReplyFailure(threadId: string): void {
+    replyErrors.delete(threadId);
+    writes.clearError(commentWriteKey.reply(threadId));
+  }
+
+  // A reply's failure shows in its composer, so it lives as long as the
+  // composer could show it: gone once no composer is open and no text is
+  // kept to reopen one with.
+  function dropUnshownReplyFailure(threadId: string): void {
+    if (openReplies.has(`diff:${threadId}`) || openReplies.has(`conversation:${threadId}`)) return;
+    if ((replyBodies.get(threadId) ?? '').trim() !== '') return;
+    forgetReplyFailure(threadId);
+  }
+
   // The composer's text, once it is gone where it went: kept if the reader
-  // changed it meanwhile.
+  // changed it meanwhile. A failure of an earlier attempt goes with it.
   function sent(threadId: string, body: string): void {
     if ((replyBodies.get(threadId) ?? '').trim() === body) replyBodies.delete(threadId);
     closeEverywhere(threadId);
+    forgetReplyFailure(threadId);
   }
 
   const state: ReviewCommentActionsState = {
@@ -210,7 +225,10 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     sentComments: writes,
 
     replyBodyFor: (threadId) => replyBodies.get(threadId) ?? '',
-    setReplyBody(threadId, body) { replyBodies.set(threadId, body); },
+    setReplyBody(threadId, body) {
+      replyBodies.set(threadId, body);
+      dropUnshownReplyFailure(threadId);
+    },
     replyOpen: (threadId, surface) => openReplies.has(`${surface}:${threadId}`),
     openReply(threadId, surface) {
       const held = replyDrafts.get(threadId)?.at(-1);
@@ -221,6 +239,7 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
       // A reply being posted stays open, so a failure shows in it.
       if (writes.pending(commentWriteKey.reply(threadId))) return;
       openReplies.delete(`${surface}:${threadId}`);
+      dropUnshownReplyFailure(threadId);
     },
     // A reply posts now wherever the thread shows (a picked commit's too),
     // under the gates every now write has.

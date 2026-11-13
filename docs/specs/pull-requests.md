@@ -346,8 +346,10 @@ answer is reconciled with the frames that landed while it ran: a thread
 or comment that arrived by push during the read stays even when the
 answer, read earlier, lacks it. A field a frame changed during the read
 (a resolve, an edit) takes the answer's value until the next frame. A
-failed thread read shows its own banner with Retry; a diff load neither
-clears nor replaces it, and it never clears the diff load's error.
+failed thread read shows its own banner with Retry while the pane shows
+that PR in PR scope; a change of scope or PR drops it, a diff load
+neither clears nor replaces it, and it never clears the diff load's
+error.
 
 "Hide resolved threads" in the toolbar's view-options menu (shown in the
 PR scope) leaves resolved threads out of the feed and the diff's thread
