@@ -1,7 +1,12 @@
 import { captureError, type CapturedError } from './errorReports.svelte';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
-export interface ToastAction { label: string; run: () => void }
+export interface ToastAction {
+  label: string;
+  run: () => void;
+  /** The toast stays up after the action runs (a copy); otherwise it closes. */
+  keep?: boolean;
+}
 
 interface Toast {
   id: string;

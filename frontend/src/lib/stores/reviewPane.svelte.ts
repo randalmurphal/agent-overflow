@@ -165,7 +165,6 @@ import type { ReviewSectionId } from './reviewSectionSizes.svelte';
 import { REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
 import { createReviewCommentActions, type ReviewCommentActionsState } from './reviewCommentActions.svelte';
 import { commentWriteKey } from './reviewCommentWrites.svelte';
-import { failedLineWriteAt, releaseFailedWrite, type FailedWriteTarget } from './failedCommentWrites';
 import { RANGE_REFUSAL_TEXT, rangesByFile, spanRange, type LineRange } from '../utils/reviewRange';
 
 export type ReviewScope = DiffReviewScope;
@@ -2370,46 +2369,18 @@ export function createReviewPaneState(
       pendingEditorFocusId = armed.id;
       return armed.id;
     }
-    const opened = newEditor(anchor);
-    if (!opened) return null;
-    const existing = placedEditorOn(opened);
+    const editor = newEditor(anchor);
+    if (!editor) return null;
+    const existing = placedEditorOn(editor);
     if (existing) {
       pendingEditorFocusId = existing.id;
       lastEditorId = existing.id;
       return existing.id;
     }
-    const editor = adoptFailedLineWrite(opened);
     pendingEditorFocusId = editor.id;
     lastEditorId = editor.id;
     openEditors = [...openEditors, editor];
     return editor.id;
-  }
-
-  // A line comment the forge refused after its pane went (failedCommentWrites.ts)
-  // opens on its line, the last of its range or the first, with its text,
-  // its range where the diff still has it, and the forge's sentence.
-  const adoptedLineWrites = new Map<string, FailedWriteTarget>();
-  function adoptFailedLineWrite(editor: EditorRecord): EditorRecord {
-    if (!commentActions.state.canPostNow || editor.anchor === null) return editor;
-    const failed = failedLineWriteAt(prEntityKey, editor.anchor);
-    if (failed?.target.kind !== 'line') return editor;
-    adoptedLineWrites.set(editor.id, failed.target);
-    draftBodies.set(editor.id, failed.body);
-    commentActions.writes.showError(commentWriteKey.editor(editor.id), failed.error);
-    const { start, anchor: end } = failed.target;
-    const base = loadedFiles.find((file) => file.path === editor.filePath);
-    if (start === null || !base || !editor.shownFile) return editor;
-    const origin = editor.anchor;
-    const span = spanRange(base, origin, anchorKey(origin) === anchorKey(end) ? start : end);
-    if (span.kind !== 'range') return editor;
-    const placed = span.end === origin ? editor : newEditor(span.end, editor.id);
-    return placed ? { ...placed, rangeStart: span.start, rangeOrigin: origin, range: span.range } : editor;
-  }
-
-  function releaseLineWrite(editor: EditorRecord): void {
-    const target = adoptedLineWrites.get(editor.id) ?? (editor.anchor ? { kind: 'line' as const, anchor: editor.anchor, start: editor.rangeStart } : null);
-    adoptedLineWrites.delete(editor.id);
-    if (target) releaseFailedWrite(prEntityKey, target);
   }
 
   // The editor a shift+click spans: the one last opened, when it is placed
@@ -2466,8 +2437,6 @@ export function createReviewPaneState(
 
   function closeDraftEditor(editorId: string): void {
     if (commentActions.writes.pending(commentWriteKey.editor(editorId))) return;
-    const closing = openEditors.find((editor) => editor.id === editorId);
-    if (closing) releaseLineWrite(closing);
     openEditors = openEditors.filter((editor) => editor.id !== editorId);
     draftBodies.delete(editorId);
     if (pendingEditorFocusId === editorId) pendingEditorFocusId = null;
@@ -3452,10 +3421,7 @@ export function createReviewPaneState(
       return draftBodies.get(editorId) ?? '';
     },
     setDraftBody(editorId: string, body: string): void {
-      const editor = openEditors.find((candidate) => candidate.id === editorId);
-      if (!editor) return;
-      draftBodies.set(editorId, body);
-      if (body.trim() === '') releaseLineWrite(editor);
+      if (openEditors.some((editor) => editor.id === editorId)) draftBodies.set(editorId, body);
     },
     consumeDraftEditorFocus(editorId: string): boolean {
       if (pendingEditorFocusId !== editorId) return false;

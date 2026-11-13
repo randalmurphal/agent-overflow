@@ -2,8 +2,9 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { untrack } from 'svelte';
 import { peekPRSeq } from './prReviewStore.svelte';
 import { DeletePRComment, EditPRComment, PostPRComment } from './bindings';
-import { failedWriteFor, keepFailedWrite, releaseFailedWrite, type FailedWriteTarget } from './failedCommentWrites';
 import { addErrorToast } from './toast.svelte';
+import { TransportError } from '../transport/wsClient';
+import { copyToClipboard } from '../utils/clipboard';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
@@ -19,9 +20,9 @@ import type { ReviewComment, ReviewThread } from '../types/models';
 // and its text and shows the forge's one sentence in place. A write the
 // pane's gates withhold (`withheld`) makes no call.
 //
-// A write with text outlives its pane: one the forge refuses after the
-// review state was disposed says so in a toast and keeps its text and
-// sentence for the PR's next review state (failedCommentWrites.ts).
+// A write with text whose pane went while it was in flight, and that then
+// fails, has no editor left: one toast says so, stays until dismissed, and
+// copies the text. Nothing is kept for a later pane.
 //
 // Also the state of the sent-comment actions: the text of an open edit
 // (the row is virtualized, so it lives here like every other editor) and
@@ -55,14 +56,18 @@ interface Awaited {
   readonly onSettled: (shown: Promise<void>) => void;
 }
 
-/** A write's text and editor, kept if it fails after its pane is gone. */
-export interface CommentWriteKeep {
-  readonly target: FailedWriteTarget;
+/** A write's text, for the toast when it fails after its pane is gone. */
+export interface CommentWriteText {
   readonly body: string;
-  /** Where the comment was (failedCommentWrites.ts FailedWrite.where). */
-  readonly where: string;
-  /** The toast's first sentence: `Your comment on src/a.ts:12 did not post.` */
-  readonly failed: string;
+  /** Who and where: `Your comment on src/a.ts:12`. */
+  readonly subject: string;
+}
+
+/** `src/a.ts:12`, the place a thread names, or the pull request. */
+export function threadWhere(thread: Pick<ReviewThread, 'path' | 'line' | 'originalLine'>): string {
+  if (!thread.path) return 'the pull request';
+  const line = thread.line ?? thread.originalLine;
+  return line ? `${thread.path}:${line}` : thread.path;
 }
 
 /** What each write is keyed by, so its editor reads its state. */
@@ -81,18 +86,15 @@ export interface CommentWrites {
    * answer is on screen, or at once for a write with no seq to wait for,
    * whose answer is on screen when `shown` resolves (the threads' re-read).
    * `withheld` replaces the host's gate for a write that has its own.
-   * `keep` names the write's text and editor: an accepted write frees
-   * what was kept for that editor, and one refused after dispose is kept. */
+   * `text` is the write's text: one that fails after dispose is toasted. */
   run(
     key: string, call: (ref: PRRef) => Promise<{ seq: number } | null | undefined>, onSettled: (shown: Promise<void>) => void,
-    withheld?: string | null, keep?: CommentWriteKeep,
+    withheld?: string | null, text?: CommentWriteText,
   ): Promise<boolean>;
   /** In flight, or waiting for its frame. */
   pending(key: string): boolean;
   error(key: string): string | null;
   clearError(key: string): void;
-  /** Shows a sentence on a write's editor: a kept failure it adopted. */
-  showError(key: string, message: string): void;
 
   /** A sent comment open in its editor: the unsaved text, or null. */
   editBodyFor(thread: ReviewThread, comment: ReviewComment): string | null;
@@ -116,27 +118,25 @@ export interface CommentWrites {
   dispose(): void;
 }
 
-const PR_COMMENT_TARGET: FailedWriteTarget = { kind: 'pr-comment' };
-
-function editTarget(thread: ReviewThread, comment: ReviewComment): FailedWriteTarget {
-  return { kind: 'edit', threadId: thread.id, commentId: comment.id };
-}
-
 function sentKey(thread: ReviewThread, comment: ReviewComment): string {
   return `${thread.id}\u0000${comment.id}`;
-}
-
-/** `src/a.ts:12`, the place a thread names, or the conversation. */
-export function threadWhere(thread: Pick<ReviewThread, 'path' | 'line' | 'originalLine'>): string {
-  if (!thread.path) return 'the pull request';
-  const line = thread.line ?? thread.originalLine;
-  return line ? `${thread.path}:${line}` : thread.path;
 }
 
 function userFacingError(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
   return 'The forge did not take this comment.';
+}
+
+// The one toast for a write that failed after its pane went: held until
+// dismissed, with the text to copy. An unconfirmed write may be on the PR,
+// so it never reads as not sent and never asks for a resend.
+function toastLostWrite(text: CommentWriteText, err: unknown): void {
+  const sentence = userFacingError(err);
+  const message = err instanceof TransportError && err.code === 'forge_unconfirmed'
+    ? `${text.subject} may have been posted. ${sentence} Check the pull request before sending it again.`
+    : `${text.subject} was not sent. ${sentence}`;
+  addErrorToast(message, err, 0, { label: 'Copy text', keep: true, run: () => { void copyToClipboard(text.body); } });
 }
 
 export function createCommentWrites(host: CommentWritesHost): CommentWrites {
@@ -179,7 +179,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
     call: (ref: PRRef) => Promise<{ seq: number } | null | undefined>,
     onSettled: (shown: Promise<void>) => void,
     gate: string | null = host.withheld(),
-    keep?: CommentWriteKeep,
+    text?: CommentWriteText,
   ): Promise<boolean> {
     if (isPending(key)) return false;
     const ref = host.ref();
@@ -197,19 +197,12 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       // An older backend's reply answers nothing: read as no pump.
       seq = (await withBackendTarget(host.backend, () => call(ref)))?.seq ?? 0;
     } catch (err) {
-      const message = userFacingError(err);
-      if (!disposed) errors.set(key, message);
-      else if (keep) {
-        // No editor is left to show it: the toast says so, and the text
-        // waits for the PR's next review state.
-        keepFailedWrite(entity, { target: keep.target, body: keep.body, error: message, where: keep.where });
-        addErrorToast(`${keep.failed} ${message} Open it again to send it.`, err);
-      }
+      if (!disposed) errors.set(key, userFacingError(err));
+      else if (text) toastLostWrite(text, err);
       return false;
     } finally {
       inFlight.delete(key);
     }
-    if (keep) releaseFailedWrite(entity, keep.target);
     if (disposed) return true;
     if (seq <= 0) {
       // Nothing to wait for (no pump, or its refresh was not observed):
@@ -230,42 +223,29 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
     pending: isPending,
     error: (key) => errors.get(key) ?? null,
     clearError: (key) => { errors.delete(key); },
-    showError: (key, message) => { errors.set(key, message); },
 
     editBodyFor: (thread, comment) => editBodies.get(sentKey(thread, comment)) ?? null,
     setEditBody(thread, comment, body) {
       const key = sentKey(thread, comment);
-      const target = editTarget(thread, comment);
       if (body === null) {
         if (isPending(commentWriteKey.edit(thread.id, comment.id))) return;
         editBodies.delete(key);
         errors.delete(commentWriteKey.edit(thread.id, comment.id));
-        releaseFailedWrite(host.entityKey(), target);
-        return;
+      } else {
+        editBodies.set(key, body);
       }
-      // Opening the edit of a comment whose edit failed after its pane
-      // went shows that text and sentence.
-      const failed = editBodies.has(key) ? null : failedWriteFor(host.entityKey(), target);
-      if (failed) {
-        editBodies.set(key, failed.body);
-        errors.set(commentWriteKey.edit(thread.id, comment.id), failed.error);
-        return;
-      }
-      editBodies.set(key, body);
-      if (body.trim() === '') releaseFailedWrite(host.entityKey(), target);
     },
     get editing() { return new Set(editBodies.keys()); },
     async saveEdit(thread, comment) {
       const key = sentKey(thread, comment);
       const body = (editBodies.get(key) ?? '').trim();
       if (!body) return;
-      const where = threadWhere(thread);
       await run(
         commentWriteKey.edit(thread.id, comment.id),
         (ref) => EditPRComment(prReferenceWire(ref), { threadId: thread.id, commentId: comment.id }, body),
         () => { editBodies.delete(key); },
         undefined,
-        { target: editTarget(thread, comment), body, where, failed: `Your edit of the comment on ${where} did not save.` },
+        { body, subject: `Your edit to the comment on ${threadWhere(thread)}` },
       );
     },
     confirmingDelete: (thread, comment) => confirming.has(sentKey(thread, comment)),
@@ -285,31 +265,17 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
         () => {
           confirming.delete(key);
           editBodies.delete(key);
-          releaseFailedWrite(host.entityKey(), editTarget(thread, comment));
         },
       );
     },
 
     get prCommentBody() { return prCommentBody; },
-    setPRCommentBody(body) {
-      prCommentBody = body;
-      if (body.trim() === '') releaseFailedWrite(host.entityKey(), PR_COMMENT_TARGET);
-    },
+    setPRCommentBody(body) { prCommentBody = body; },
     get prCommentOpen() { return prCommentOpen; },
     setPRCommentOpen(open) {
       // A comment being posted stays open, so a failure shows in it.
       if (!open && isPending(commentWriteKey.prComment)) return;
       prCommentOpen = open;
-      if (!open) {
-        releaseFailedWrite(host.entityKey(), PR_COMMENT_TARGET);
-        return;
-      }
-      // One that failed after its pane went opens with its text and sentence.
-      const failed = prCommentBody.trim() === '' ? failedWriteFor(host.entityKey(), PR_COMMENT_TARGET) : null;
-      if (failed) {
-        prCommentBody = failed.body;
-        errors.set(commentWriteKey.prComment, failed.error);
-      }
     },
     async postPRComment() {
       const body = prCommentBody.trim();
@@ -325,7 +291,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
         if (prCommentBody.trim() === body) prCommentBody = '';
         prCommentOpen = false;
         void shown.then(() => { if (!disposed) host.showPostedComment(created); });
-      }, undefined, { target: PR_COMMENT_TARGET, body, where: 'the pull request', failed: 'Your comment on the pull request did not post.' });
+      }, undefined, { body, subject: 'Your comment on the pull request' });
     },
 
     dispose() {

@@ -11,8 +11,8 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { resetAppStorageForTest } from './appStorage';
 import { __resetReviewPaneStateForTest, type CommentAnchor, type ReviewPaneState } from './reviewPane.svelte';
 import { __resetPinnedReviewStatesForTest, disposePRReviewStates, reviewStateForPR, reviewSubjectForPR } from './reviewPanePinned.svelte';
-import { keptFailedWrites, resetFailedWrites } from './failedCommentWrites';
 import { getToasts, resetToastsForTest } from './toast.svelte';
+import Toast from '../components/shared/Toast.svelte';
 import { applyPRUpdatedEvent } from './prReviewStore.svelte';
 import { commentWriteKey } from './reviewCommentWrites.svelte';
 import { resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
@@ -122,7 +122,6 @@ beforeEach(() => {
   resetComposerDraftRegistryForTest();
   resetPanesForTest();
   resetToLocalPage();
-  resetFailedWrites();
   resetToastsForTest();
   hello();
   threads = [THREAD];
@@ -637,6 +636,7 @@ function deferred(method: string) {
   return {
     mock,
     refuse: () => calls.at(-1)!.reject(new TransportError('forge_unconfirmed', UNCONFIRMED)),
+    reject: (err: unknown) => calls.at(-1)!.reject(err),
     accept: () => calls.at(-1)!.resolve({ seq: 0 }),
   };
 }
@@ -790,15 +790,16 @@ describe('an editor whose write is pending', () => {
 });
 
 // A write in flight when its pane closes (Back or the pane's close
-// disposes the review state) and that the forge then refuses: a toast
-// names it, and the PR's next review state shows its text and sentence
-// when the same line, thread or comment opens.
+// disposes the review state) that then fails has no editor left: one held
+// toast says so, with the text to copy; nothing is kept for a later pane.
 describe('a write that fails after its pane is gone', () => {
-  async function failAfterClose() {
-    const line = deferred('PostPRLineComment');
-    const reply = deferred('ReplyToPRThread');
-    const post = deferred('PostPRComment');
-    const edit = deferred('EditPRComment');
+  const REFUSED = 'GitHub refused this comment: the line is not in the diff.';
+  const refused = () => new TransportError('forge_validation', REFUSED);
+  const unconfirmed = () => new TransportError('forge_unconfirmed', UNCONFIRMED);
+
+  // A range comment, a reply, a PR comment and an edit, all in flight.
+  async function inFlight() {
+    const writes = ['PostPRLineComment', 'ReplyToPRThread', 'PostPRComment', 'EditPRComment'].map(deferred);
     const state = await open();
     const id = editorWith(state, added11, 'Rename these.');
     expect(state.extendEditorRange(added12)).toBe(id);
@@ -813,84 +814,82 @@ describe('a write that fails after its pane is gone', () => {
     state.sentComments.setEditBody(THREAD, first, 'Edited.');
     void state.sentComments.saveEdit(THREAD, first);
     await settle();
-    disposePRReviewStates('tools-1');
-    for (const write of [line, reply, post, edit]) write.refuse();
-    await settle();
-    return { first };
+    return { state, writes, id };
   }
 
-  it('says so in a toast naming where it was, and the next review state of the PR adopts it', async () => {
-    const { first } = await failAfterClose();
-    expect(getToasts().map((toast) => toast.message)).toEqual(expect.arrayContaining([
-      `Your comment on src/a.ts:11–12 did not post. ${UNCONFIRMED} Open it again to send it.`,
-      `Your reply to the thread on src/a.ts:12 did not post. ${UNCONFIRMED} Open it again to send it.`,
-      `Your comment on the pull request did not post. ${UNCONFIRMED} Open it again to send it.`,
-      `Your edit of the comment on src/a.ts:12 did not save. ${UNCONFIRMED} Open it again to send it.`,
-    ]));
-    expect(keptFailedWrites()).toHaveLength(4);
+  // In the order they failed, which the test does not fix.
+  const messages = () => getToasts().map((toast) => toast.message).sort();
 
-    const again = await open();
-    // The range's last line opens it, with its range, text and sentence.
-    const id = again.openDraftEditor(added12)!;
-    expect(again.draftBodyFor(id)).toBe('Rename these.');
-    expect(again.commentWriteError(commentWriteKey.editor(id))).toBe(UNCONFIRMED);
-    expect(again.openEditors.find((each) => each.id === id)?.range).toMatchObject({ from: 11, to: 12 });
-    again.openReply(THREAD.id, 'conversation');
-    expect(again.replyBodyFor(THREAD.id)).toBe('Agreed.');
-    expect(again.replyErrorFor(THREAD.id)).toBe(UNCONFIRMED);
-    again.sentComments.setEditBody(THREAD, first, first.body);
-    expect(again.sentComments.editBodyFor(THREAD, first)).toBe('Edited.');
-    expect(again.commentWriteError(commentWriteKey.edit(THREAD.id, first.id))).toBe(UNCONFIRMED);
-    again.sentComments.setPRCommentOpen(true);
-    expect(again.sentComments.prCommentBody).toBe('Looks good.');
-    expect(again.commentWriteError(commentWriteKey.prComment)).toBe(UNCONFIRMED);
-    // Nothing else opened one: another line opens empty.
-    expect(again.draftBodyFor(again.openDraftEditor(context10)!)).toBe('');
-  });
-
-  it('is freed when its editor cancels or empties its text', async () => {
-    const { first } = await failAfterClose();
-    const again = await open();
-    // The range's first line opens it too.
-    const id = again.openDraftEditor(added11)!;
-    expect(again.draftBodyFor(id)).toBe('Rename these.');
-    again.closeDraftEditor(id);
-    again.openReply(THREAD.id, 'diff');
-    again.closeReply(THREAD.id, 'diff');
-    again.sentComments.setEditBody(THREAD, first, first.body);
-    again.sentComments.setEditBody(THREAD, first, null);
-    again.sentComments.setPRCommentOpen(true);
-    again.sentComments.setPRCommentBody('');
-    expect(keptFailedWrites()).toEqual([]);
+  it('says each was not sent, once each, held until dismissed', async () => {
+    const { writes } = await inFlight();
     disposePRReviewStates('tools-1');
-    const third = await open();
-    expect(third.draftBodyFor(third.openDraftEditor(added12)!)).toBe('');
-    third.openReply(THREAD.id, 'diff');
-    expect(third.replyBodyFor(THREAD.id)).toBe('');
-  });
-
-  it('is freed when its editor sends it', async () => {
-    await failAfterClose();
-    setBindingMock('ReplyToPRThread', async () => ({ seq: 0 }));
-    const again = await open();
-    again.openReply(THREAD.id, 'diff');
-    await again.sendPRThreadReply(THREAD);
-    expect(keptFailedWrites().map((write) => write.target.kind).sort()).toEqual(['edit', 'line', 'pr-comment']);
-  });
-
-  it('keeps nothing and says nothing when it goes through after its pane is gone', async () => {
-    const reply = deferred('ReplyToPRThread');
-    const state = await open();
-    state.openReply(THREAD.id, 'diff');
-    state.setReplyBody(THREAD.id, 'Agreed.');
-    void state.sendPRThreadReply(THREAD);
+    for (const write of writes) write.reject(refused());
     await settle();
+    expect(messages()).toEqual([
+      `Your comment on src/a.ts:11–12 was not sent. ${REFUSED}`,
+      `Your comment on src/a.ts:12 was not sent. ${REFUSED}`,
+      `Your comment on the pull request was not sent. ${REFUSED}`,
+      `Your edit to the comment on src/a.ts:12 was not sent. ${REFUSED}`,
+    ].sort());
+    for (const toast of getToasts()) {
+      expect(toast.duration).toBe(0);
+      expect(toast.action).toMatchObject({ label: 'Copy text', keep: true });
+    }
+  });
+
+  it('says an unconfirmed one may have been posted, and never asks for it again', async () => {
+    const { writes } = await inFlight();
     disposePRReviewStates('tools-1');
-    expect(reply.mock).toHaveBeenCalledTimes(1);
-    reply.accept();
+    for (const write of writes) write.reject(unconfirmed());
     await settle();
-    expect(keptFailedWrites()).toEqual([]);
+    const tail = `may have been posted. ${UNCONFIRMED} Check the pull request before sending it again.`;
+    expect(messages()).toEqual([
+      `Your comment on src/a.ts:11–12 ${tail}`,
+      `Your comment on src/a.ts:12 ${tail}`,
+      `Your comment on the pull request ${tail}`,
+      `Your edit to the comment on src/a.ts:12 ${tail}`,
+    ].sort());
+  });
+
+  it('copies the comment\'s whole text and stays up', async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    try {
+      const { writes } = await inFlight();
+      disposePRReviewStates('tools-1');
+      writes[0].reject(refused());
+      await settle();
+      const view = render(Toast);
+      const copy = view.getByText('Copy text');
+      await fireEvent.click(copy);
+      await settle();
+      expect(writeText).toHaveBeenCalledWith('Rename these.');
+      expect(messages()).toEqual([`Your comment on src/a.ts:11–12 was not sent. ${REFUSED}`]);
+      view.unmount();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('shows in its editor, with no toast, while its pane is open', async () => {
+    const { state, writes, id } = await inFlight();
+    for (const write of writes) write.reject(refused());
+    await settle();
     expect(getToasts()).toEqual([]);
+    expect(state.commentWriteError(commentWriteKey.editor(id))).toBe(REFUSED);
+  });
+
+  it('toasts nothing when it goes through, and keeps nothing for the next pane', async () => {
+    const { writes } = await inFlight();
+    disposePRReviewStates('tools-1');
+    writes[1].accept();
+    writes[0].reject(refused());
+    await settle();
+    expect(messages()).toEqual([`Your comment on src/a.ts:11–12 was not sent. ${REFUSED}`]);
+    const again = await open();
+    expect(again.draftBodyFor(again.openDraftEditor(added12)!)).toBe('');
+    again.openReply(THREAD.id, 'diff');
+    expect(again.replyBodyFor(THREAD.id)).toBe('');
   });
 });
 

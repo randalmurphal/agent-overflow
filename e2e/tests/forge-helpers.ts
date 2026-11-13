@@ -358,7 +358,8 @@ export async function setForgeRateLimit(
  * operation. `route` is a REST route's name (`glab api approve`) or
  * `gh graphql <operation>`. Nothing in the fixture changes; the request is
  * recorded under its route. With `hold` the request is recorded at once
- * and answered on `releaseForgeRoute`. HarnessReset clears it.
+ * and answered, or its answer lost, on `releaseForgeRoute`. HarnessReset
+ * clears it.
  */
 export async function refuseForgeRoute(
   harness: HarnessApp,
@@ -367,9 +368,10 @@ export async function refuseForgeRoute(
   await harness.rpc('HarnessForgeRefuse', refusal);
 }
 
-/** Answer the requests a held refusal on `route` is holding. */
-export async function releaseForgeRoute(harness: HarnessApp, route: string): Promise<void> {
-  await harness.rpc('HarnessForgeRelease', route);
+/** End a held refusal on `route`: its requests get the refusal, or with
+ * `drop` lose their answer (closed with no reply). */
+export async function releaseForgeRoute(harness: HarnessApp, route: string, drop = false): Promise<void> {
+  await harness.rpc('HarnessForgeRelease', { route, drop });
 }
 
 /** Clear a route's refusal. */

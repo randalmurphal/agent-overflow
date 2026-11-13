@@ -2,7 +2,6 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { PostPRLineComment, ReplyToPRThread } from './bindings';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { commentWriteKey, createCommentWrites, threadWhere, type CommentWrites } from './reviewCommentWrites.svelte';
-import { failedWriteFor, releaseFailedWrite, type FailedWriteTarget } from './failedCommentWrites';
 import type { BackendKey } from '../transport/backendKey';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { threadRange } from '../utils/reviewRange';
@@ -107,13 +106,20 @@ export interface ReviewCommentActions {
   readonly writes: CommentWrites;
   /** Posts a new comment's line (a range from `start`) now, keyed by its
    * editor; `onSettled` closes the editor once the answer is on screen.
-   * Throws where comments cannot post now. One the forge refuses after
-   * the pane is gone is kept for the PR's next review state
-   * (failedCommentWrites.ts). */
+   * Throws where comments cannot post now. */
   postLineComment(editorId: string, anchor: CommentAnchor, start: CommentAnchor | null, body: string, onSettled: () => void): Promise<void>;
   /** The thread an agent delivery quotes for a held reply, or undefined. */
   replyContext(comment: DiffReviewComment, threads: readonly ReviewThread[]): DiffReviewThreadContext | undefined;
   dispose(): void;
+}
+
+/** `src/a.ts:12`, `src/a.ts:10–12` for a range, or the file's path. */
+function lineWhere(anchor: CommentAnchor, start: CommentAnchor | null): string {
+  const lineOf = (at: CommentAnchor) => (at.side === 'old' ? at.oldLine : at.newLine) ?? 0;
+  const line = anchor.side === 'file' ? 0 : lineOf(anchor);
+  if (line === 0) return anchor.filePath;
+  const first = start ? lineOf(start) : 0;
+  return `${anchor.filePath}:${first > 0 && first !== line ? `${first}–` : ''}${line}`;
 }
 
 function userFacingError(err: unknown): string {
@@ -168,10 +174,6 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     showPostedComment: host.showPostedComment,
   });
 
-  function replyTarget(threadId: string): FailedWriteTarget {
-    return { kind: 'reply', threadId };
-  }
-
   function closeEverywhere(threadId: string): void {
     openReplies.delete(`diff:${threadId}`);
     openReplies.delete(`conversation:${threadId}`);
@@ -195,31 +197,17 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     sentComments: writes,
 
     replyBodyFor: (threadId) => replyBodies.get(threadId) ?? '',
-    setReplyBody(threadId, body) {
-      replyBodies.set(threadId, body);
-      if (body.trim() === '') releaseFailedWrite(host.entityKey(), replyTarget(threadId));
-    },
+    setReplyBody(threadId, body) { replyBodies.set(threadId, body); },
     replyOpen: (threadId, surface) => openReplies.has(`${surface}:${threadId}`),
     openReply(threadId, surface) {
       const held = replyDrafts.get(threadId)?.at(-1);
-      if (held) {
-        host.editDraft(held);
-        return;
-      }
-      openReplies.add(`${surface}:${threadId}`);
-      // A reply that failed after its pane went opens with its text and
-      // sentence.
-      const failed = (replyBodies.get(threadId) ?? '').trim() === '' ? failedWriteFor(host.entityKey(), replyTarget(threadId)) : null;
-      if (failed) {
-        replyBodies.set(threadId, failed.body);
-        writes.showError(commentWriteKey.reply(threadId), failed.error);
-      }
+      if (held) host.editDraft(held);
+      else openReplies.add(`${surface}:${threadId}`);
     },
     closeReply(threadId, surface) {
       // A reply being posted stays open, so a failure shows in it.
       if (writes.pending(commentWriteKey.reply(threadId))) return;
       openReplies.delete(`${surface}:${threadId}`);
-      releaseFailedWrite(host.entityKey(), replyTarget(threadId));
     },
     // A reply posts now wherever the thread shows (a picked commit's too),
     // under the gates every now write has.
@@ -232,16 +220,12 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
         return;
       }
       replyErrors.delete(thread.id);
-      const where = threadWhere(thread);
       await writes.run(
         commentWriteKey.reply(thread.id),
         (ref) => ReplyToPRThread(prReferenceWire(ref), thread.id, first.databaseID, body),
         () => sent(thread.id, body),
         nowWithheldReason,
-        {
-          target: replyTarget(thread.id), body, where,
-          failed: thread.path ? `Your reply to the thread on ${where} did not post.` : 'Your reply in the pull request\'s conversation did not post.',
-        },
+        { body, subject: `Your comment on ${threadWhere(thread)}` },
       );
     },
     // The held reply renders at the thread's foot and goes with the batch.
@@ -283,11 +267,8 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
         headSha: host.loadedHeadSHA(), filePath: anchor.filePath, side: anchor.side, oldLine: anchor.oldLine, newLine: anchor.newLine,
         startOldLine: start?.oldLine, startNewLine: start?.newLine, body,
       };
-      const line = anchor.side === 'file' ? 0 : (anchor.side === 'old' ? anchor.oldLine : anchor.newLine) ?? 0;
-      const first = start ? (anchor.side === 'old' ? start.oldLine : start.newLine) ?? 0 : 0;
-      const where = line === 0 ? anchor.filePath : `${anchor.filePath}:${first > 0 ? `${first}–` : ''}${line}`;
       await writes.run(commentWriteKey.editor(editorId), (ref) => PostPRLineComment(prReferenceWire(ref), request), onSettled, undefined, {
-        target: { kind: 'line', anchor, start }, body, where, failed: `Your comment on ${where} did not post.`,
+        body, subject: `Your comment on ${lineWhere(anchor, start)}`,
       });
     },
     // A held reply quotes the thread it answers, as the pane shows it. A

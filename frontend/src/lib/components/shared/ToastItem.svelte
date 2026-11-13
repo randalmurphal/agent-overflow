@@ -57,7 +57,7 @@
       <span class="break-words {expanded ? '' : 'line-clamp-3'}" data-testid="toast-message">{toast.message}</span>
       {#if toast.action}
         <Button size="xs" variant="ghost" class="mt-1" onclick={() => {
-          removeToast(toast.id);
+          if (!toast.action?.keep) removeToast(toast.id);
           toast.action?.run();
         }}>{toast.action.label}</Button>
       {/if}

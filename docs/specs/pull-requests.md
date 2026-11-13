@@ -219,14 +219,18 @@ A write posted now (`PostPRLineComment`, `ReplyToPRThread`,
 frame at the answer's seq, the backend restarts or the pump fails, and
 closes at once on seq 0. A failure keeps the text and shows the forge's
 sentence on the editor. Back and the pane's close are not blocked while a
-write is pending, and the write outlives its pane: one the forge refuses
-after the pane's review state was disposed says so in a toast naming the
-comment's place and the sentence, and its text and sentence are kept in
-memory for that PR (`stores/failedCommentWrites.ts`, at most 10, oldest
-dropped). The PR's next review state shows them in the editor when the
-same line, thread reply, comment edit or Comment field opens, and frees
-them when that editor sends, cancels or empties its text. One accepted
-after its pane went changes nothing. Posting now is withheld, with the reason as the
+write is pending. A write that fails after its pane's review state was
+disposed has no editor left, so it gets one toast that stays until
+dismissed, with a `Copy text` action that copies the comment's whole text
+and leaves the toast up: "Your comment on <where> was not sent.
+<sentence>", or for an unconfirmed write (`forge_unconfirmed`) "Your
+comment on <where> may have been posted. <sentence> Check the pull
+request before sending it again." <where> is the file and line or range,
+the thread's place, or "the pull request"; an edit reads "Your edit to
+the comment on <where>". Nothing is kept: the PR's review opened again
+has fresh editors. A write that succeeds after its pane went changes
+nothing, and one whose pane is still open fails in its editor, with no
+toast. Posting now is withheld, with the reason as the
 control's hover text, under the merge actions' gates and when
 `git:operate` is not granted. Open editors' text lives in the review
 state, so it survives its row unmounting, and find skips an open edit.
