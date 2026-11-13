@@ -75,7 +75,9 @@
           <Icon icon={GitFork} size={11} strokeWidth={1.75} />
         </span>
       {/if}
-      <span class="ml-auto shrink-0 pl-2 text-fg-subtle" data-testid="pull-age">{row.age}</span>
+      <!-- The age is of the time the list is sorted by; both times are its
+           hover text and what assistive tech reads. -->
+      <span class="ml-auto shrink-0 pl-2 text-fg-subtle" title={row.times} data-testid="pull-age"><span aria-hidden="true">{row.age}</span><span class="sr-only">{row.times}</span></span>
     </span>
     <span class="line-clamp-2 text-[0.8125rem] font-medium leading-[1.35] text-fg">{row.title}</span>
     <span class="flex min-w-0 flex-wrap items-center gap-x-3.5 gap-y-0.5 text-[0.6875rem] text-fg-muted">

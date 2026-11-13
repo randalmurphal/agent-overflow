@@ -1,13 +1,14 @@
 // The list find's match over each tab's rows, and its effect on the groups
 // and the Needs you count the Merge requests tab shows.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PRListItem, PRListSnapshot, ProjectPRList } from './bindings';
-import { groupRows, needsYouCount, pipelineRowMatches, pullRowMatches, type PullsListedRow } from './pullsPageRows';
-import { DEFAULT_MR_SORT, type MRFilters } from './pullsPageFilters.svelte';
-import type { PipelineRowView } from '../components/pulls/pipelineRowView';
+import { groupRows, needsYouCount, pipelineRowMatches, projectPullRow, pullRowMatches, type PullsListedRow } from './pullsPageRows';
+import { DEFAULT_MR_SORT, type MRFilters, type PullsSortKey } from './pullsPageFilters.svelte';
+import { pipelineTimesText, type PipelineRowView } from '../components/pulls/pipelineRowView';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { findNeedle } from '../utils/findMatch';
+import { formatCalendarDate, formatTimeOfDay } from '../utils/format';
 
 function item(number: number, overrides: Partial<PRListItem> = {}): PRListItem {
   return {
@@ -89,7 +90,7 @@ describe('a pipeline row matches', () => {
   const row: PipelineRowView = {
     key: 'k', id: '9002', status: 'failed', name: 'CI', ref: 'v3.9.2', refKind: 'tag', mrNumber: 0, forge: 'gitlab',
     sha: 'b3f0c2d4e5f60718293a4b5c6d7e8f9012345678', shortSHA: 'b3f0c2d', title: 'Release notes', projectName: 'Widgets',
-    age: '1h ago', url: '', stages: null, stagesError: null,
+    age: '1h ago', times: '', url: '', stages: null, stagesError: null,
   };
   const pipe = (query: string, view: PipelineRowView = row) => pipelineRowMatches(view, findNeedle(query));
 
@@ -150,5 +151,52 @@ describe('the find needle over the Merge requests tab', () => {
     expect(needsYouCount(snapshot, HOME_BACKEND, [])).toBe(2);
     expect(needsYouCount(snapshot, HOME_BACKEND, [], findNeedle('retry'))).toBe(1);
     expect(needsYouCount(snapshot, HOME_BACKEND, ['p2'], findNeedle('retry'))).toBe(0);
+  });
+});
+
+describe('a merge request row\'s time', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  // Opened Oct 1, updated Oct 11; read on Oct 12.
+  const row = listed(item(1, { createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-11T00:00:00Z' }));
+  const cases: [PullsSortKey, string][] = [
+    ['created', '11d'],
+    ['updated', '1d'],
+    ['title', '1d'],
+    ['author', '1d'],
+    ['attention', '1d'],
+  ];
+  it.each(cases)('under the %s sort is the age of %s', (key, age) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-12T00:00:00Z'));
+    expect(projectPullRow(row, HOME_BACKEND, key).age).toBe(age);
+  });
+
+  it('names both, absolute, whatever the sort', () => {
+    const created = Date.parse('2026-10-01T00:00:00Z');
+    const updated = Date.parse('2026-10-11T00:00:00Z');
+    const text = `Opened ${formatCalendarDate(created)} · Updated ${formatCalendarDate(updated)}, ${formatTimeOfDay(updated)}`;
+    for (const [key] of cases) expect(projectPullRow(row, HOME_BACKEND, key).times).toBe(text);
+  });
+
+  it('follows the list\'s sort through the groups', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-12T00:00:00Z'));
+    const snapshot = { projects: [project('p1', 'Widgets', [row.item])] } as PRListSnapshot;
+    const ages = (key: PullsSortKey) => groupRows(snapshot, HOME_BACKEND, { filter: 'all', projects: [], sort: { key, reversed: false } } as MRFilters)
+      .flatMap((group) => group.rows.map((view) => view.age));
+    expect(ages('created')).toEqual(['11d']);
+    expect(ages('updated')).toEqual(['1d']);
+  });
+});
+
+describe('a pipeline row\'s time', () => {
+  it('names its created and updated times, absolute', () => {
+    const created = Date.parse('2026-10-01T09:00:00Z');
+    const updated = Date.parse('2026-10-01T09:05:00Z');
+    expect(pipelineTimesText('2026-10-01T09:00:00Z', '2026-10-01T09:05:00Z')).toBe(
+      `Created ${formatCalendarDate(created)}, ${formatTimeOfDay(created)} · Updated ${formatCalendarDate(updated)}, ${formatTimeOfDay(updated)}`,
+    );
+    expect(pipelineTimesText('', '')).toBe('');
   });
 });
