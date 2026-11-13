@@ -297,3 +297,50 @@ func TestFileModesAreChecked(t *testing.T) {
 		t.Error("GitLab fileModes seeded")
 	}
 }
+
+// A reaction on a thread comment and on a conversation comment, on both
+// forges, lands on that comment: a pull with no conversation comments
+// and a thread comment past the first included.
+func TestReactionsOnThreadAndConversationComments(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"viewer": "octo", "repos": [
+	  {"forge": "github", "project": "acme/r", "pulls": [
+	    {"number": 1, "title": "T", "threads": [{"id": "PRRT_r", "path": "a.go", "line": 1, "comments": [{"id": 60, "author": "x", "body": "a"}, {"id": 61, "author": "x", "body": "b"}]}]},
+	    {"number": 2, "title": "C", "comments": [{"id": 62, "author": "x", "body": "c"}]}]},
+	  {"forge": "gitlab", "project": "grp/r", "pulls": [
+	    {"number": 1, "title": "T", "threads": [{"id": "d", "path": "a.go", "line": 1, "comments": [{"id": 70, "author": "x", "body": "a"}, {"id": 71, "author": "x", "body": "b"}]}],
+	     "comments": [{"id": 72, "author": "x", "body": "c", "replies": [{"id": 73, "author": "x", "body": "d"}]}]}]}]}`); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	srv := testServer(t, e)
+	github := func(id string) {
+		body := gql(t, "mutation", "AddReaction", "($subjectID: ID!, $content: ReactionContent!)", map[string]any{"subjectID": id, "content": "EYES"})
+		header := http.Header{"Authorization": {"Bearer " + testAPIToken}}
+		if got := httpRequest(t, srv, "POST", "github.com", "/github/graphql", body, header); got.status != 200 || strings.Contains(got.body, "errors") {
+			t.Fatalf("AddReaction %s = %+v", id, got)
+		}
+	}
+	github("PRRC_ao61")
+	github("IC_ao62")
+	for _, note := range []string{"71", "72", "73"} {
+		header := http.Header{"Private-Token": {testAPIToken}}
+		if got := httpRequest(t, srv, "POST", "gitlab.com", "/gitlab/api/v4/projects/grp%2Fr/merge_requests/1/notes/"+note+"/award_emoji", `{"name":"eyes"}`, header); got.status != http.StatusCreated {
+			t.Fatalf("award on note %s = %+v", note, got)
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	gh, gl := e.repoOn("github", "github.com", "acme/r"), e.repoOn("gitlab", "gitlab.com", "grp/r")
+	reacted := func(c Comment) bool { return len(c.Reactions) == 1 && c.Reactions[0].Name == "eyes" && c.Reactions[0].User == "octo" }
+	switch {
+	case !reacted(gh.pull(1).Threads[0].Comments[1]) || len(gh.pull(1).Threads[0].Comments[0].Reactions) != 0:
+		t.Fatalf("GitHub thread comments = %+v", gh.pull(1).Threads[0].Comments)
+	case !reacted(gh.pull(2).Comments[0]):
+		t.Fatalf("GitHub conversation comment = %+v", gh.pull(2).Comments[0])
+	case !reacted(gl.pull(1).Threads[0].Comments[1]) || len(gl.pull(1).Threads[0].Comments[0].Reactions) != 0:
+		t.Fatalf("GitLab thread notes = %+v", gl.pull(1).Threads[0].Comments)
+	case !reacted(gl.pull(1).Comments[0]) || !reacted(gl.pull(1).Comments[0].Replies[0]):
+		t.Fatalf("GitLab conversation notes = %+v", gl.pull(1).Comments[0])
+	}
+}
