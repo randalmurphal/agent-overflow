@@ -1,4 +1,4 @@
-package wsllauncher
+package platform
 
 import "strings"
 

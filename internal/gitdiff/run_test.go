@@ -40,6 +40,33 @@ func TestGitSucceedsWhenAChildHoldsAPipe(t *testing.T) {
 	}
 }
 
+// TestGitCannotAskForCredentials: every spawn path hands git the prompt
+// policy over whatever the user configured. A diff in a partial clone
+// fetches the objects it lacks, so a diff read is a network command too.
+func TestGitCannotAskForCredentials(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell alias is unix-only")
+	}
+	t.Setenv("GIT_TERMINAL_PROMPT", "1")
+	t.Setenv("GIT_ASKPASS", "/usr/lib/ssh/user-askpass")
+	t.Setenv("GCM_INTERACTIVE", "auto")
+	probe := []string{"-c", `alias.probe=!printf '%s|%s|%s' "$GIT_TERMINAL_PROMPT" "${GIT_ASKPASS-unset}" "$GCM_INTERACTIVE"`, "probe"}
+	const want = "0||never"
+
+	stdout, _, _, err := runGit(context.Background(), t.TempDir(), nil, false, probe...)
+	if err != nil || stdout != want {
+		t.Errorf("runGit: prompt environment %q, err %v; want %q", stdout, err, want)
+	}
+	stdout, _, _, err = runGitWithStdin(context.Background(), t.TempDir(), nil, nil, false, probe...)
+	if err != nil || stdout != want {
+		t.Errorf("runGitWithStdin: prompt environment %q, err %v; want %q", stdout, err, want)
+	}
+	patch, err := openAndRead(t, newDiff(t.TempDir(), nil, nil, probe), nil)
+	if err != nil || patch != want {
+		t.Errorf("stream: prompt environment %q, err %v; want %q", patch, err, want)
+	}
+}
+
 // TestGitReportsCancellationDespiteAllowedExit: a run the context ended is
 // an error even for a caller that accepts nonzero exits, and the error
 // carries the context's. A descendant that keeps writing holds the run

@@ -218,10 +218,13 @@ for (const forge of ['github', 'gitlab'] as const) {
       const editor = await openEditor(review, 'const half');
       await editor.locator('textarea').fill('Drop the half.');
       await editor.getByTestId('review-draft-editor-add').click();
+      const strip = review.getByTestId('review-send-strip');
+      // The reply box's two actions trade places when the first draft
+      // lands, so the draft is on the strip before the box is used.
+      await expect(strip).toContainText('1 draft');
       const composer = await openReply(review, 'Why start at one?');
       await composer.locator('textarea').fill('Please answer this one.');
       await composer.getByTestId('review-thread-reply-draft').click();
-      const strip = review.getByTestId('review-send-strip');
       await expect(strip).toContainText('2 drafts');
       await expect(review.getByTestId('review-submit-target')).toHaveValue('agent');
 
