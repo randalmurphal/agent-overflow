@@ -24,6 +24,7 @@ import {
   type ReviewLeadRow,
   type ReviewRow,
 } from './reviewRows';
+import { imageRowHeight, REVIEW_BINARY_ROW_PX } from './reviewImageRows';
 
 function addedPatch(path: string, count: number): string {
   const lines = Array.from({ length: count }, (_, index) => `+line ${index + 1}`);
@@ -833,5 +834,81 @@ describe('BlockRowsCache over evicted text', () => {
       expect(cache.get(second, block).rows).toEqual(expected);
     });
     expect(cache.get(second, block).splitRows).toHaveLength(block.splitCount!);
+  });
+});
+
+describe('a binary file\'s media row', () => {
+  const PATCH = [
+    'diff --git a/img/logo.png b/img/logo.png',
+    'index 1111111..2222222 100644',
+    'Binary files a/img/logo.png and b/img/logo.png differ',
+    'diff --git a/img/icon.png b/img/icon.png',
+    'new file mode 100644',
+    'index 0000000..3333333',
+    'Binary files /dev/null and b/img/icon.png differ',
+    'diff --git a/blob.bin b/blob.bin',
+    'index 4444444..5555555 100644',
+    'Binary files a/blob.bin and b/blob.bin differ',
+    'diff --git a/art.svg b/art.svg',
+    'index 6666666..7777777 100644',
+    '--- a/art.svg',
+    '+++ b/art.svg',
+    '@@ -1 +1 @@',
+    '-<svg/>',
+    '+<svg width="2"/>',
+    '',
+  ].join('\n');
+
+  function mediaRows(input: { split?: boolean; rendered?: string[]; media?: boolean; newSideOnly?: boolean }) {
+    const files = parseReviewFiles(PATCH);
+    const result = buildReviewRows({
+      files, viewMode: input.split ? 'split' : 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: [],
+      media: input.media ?? true, renderedPaths: new Set(input.rendered ?? []), newSideOnly: input.newSideOnly,
+    });
+    return { result, rows: result.rows.map((row, index) => ({ row, key: result.rowKeys[index] })) };
+  }
+
+  it('replaces git\'s line with one media row per binary file, sized before any byte arrives', () => {
+    const { result, rows } = mediaRows({});
+    const media = rows.filter(({ row }) => row.kind === 'media');
+    expect(media.map(({ key }) => key)).toEqual(['m:img/logo.png', 'm:img/icon.png', 'm:blob.bin']);
+    const [logo, icon, blob] = media.map(({ row }) => row as Extract<ReviewRow, { kind: 'media' }>);
+    // Unified stacks a change's two sides; an add has one; a non-image is one line.
+    expect(logo).toMatchObject({ image: true, heightPx: imageRowHeight(2, false) });
+    expect(icon).toMatchObject({ image: true, heightPx: imageRowHeight(1, false) });
+    expect(blob).toMatchObject({ image: false, heightPx: REVIEW_BINARY_ROW_PX });
+    expect(imageRowHeight(2, false)).toBeGreaterThan(imageRowHeight(1, false));
+    const estimate = reviewRowEstimate(result, false);
+    const at = result.rows.indexOf(logo);
+    expect(estimate.at(at)).toBe(logo.heightPx);
+    // Measured: a row that settles to the binary line shrinks once.
+    expect(estimate.isExact?.(at)).toBe(false);
+    // The text SVG keeps its lines.
+    expect(rows.some(({ key }) => key === 'm:art.svg')).toBe(false);
+  });
+
+  it('puts a change\'s two sides in two columns in split view', () => {
+    const { rows } = mediaRows({ split: true });
+    const logo = rows.find(({ key }) => key === 'm:img/logo.png')!.row as Extract<ReviewRow, { kind: 'media' }>;
+    expect(logo.heightPx).toBe(imageRowHeight(1, true));
+    expect(imageRowHeight(2, true)).toBe(imageRowHeight(1, true));
+  });
+
+  it('shows a text SVG rendered only while its toggle is on', () => {
+    const { rows } = mediaRows({ rendered: ['art.svg'] });
+    const art = rows.filter(({ row }) => row.kind !== 'file-header' && row.kind !== 'surface-end' && row.kind !== 'media' && 'fileIndex' in row && row.fileIndex === 3);
+    expect(art).toEqual([]);
+    expect(rows.find(({ key }) => key === 'm:art.svg')!.row).toMatchObject({ kind: 'media', image: true, rendered: true });
+  });
+
+  it('shows an edit\'s image by its new side alone', () => {
+    const { rows } = mediaRows({ newSideOnly: true });
+    const logo = rows.find(({ key }) => key === 'm:img/logo.png')!.row as Extract<ReviewRow, { kind: 'media' }>;
+    expect(logo.heightPx).toBe(imageRowHeight(1, false));
+  });
+
+  it('keeps git\'s line where the list has no media (the conflict view)', () => {
+    const { rows } = mediaRows({ media: false, rendered: ['art.svg'] });
+    expect(rows.some(({ row }) => row.kind === 'media')).toBe(false);
   });
 });

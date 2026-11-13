@@ -468,6 +468,7 @@
           collapsedPaths={review.collapsedPaths}
           onToggleCollapsed={review.toggleCollapsed}
           drafts={review.shownDrafts}
+          mediaHost={review.mediaHost}
           openEditors={review.openEditors}
           prThreads={review.prThreads}
           expandedPRThreadIds={review.expandedPRThreadIds}

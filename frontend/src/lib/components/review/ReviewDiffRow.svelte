@@ -2,6 +2,9 @@
   import type { Snippet } from 'svelte';
   import ReviewFileHeaderRow from './ReviewFileHeaderRow.svelte';
   import ReviewLineBlockRow from './ReviewLineBlockRow.svelte';
+  import ReviewImageDiff from './ReviewImageDiff.svelte';
+  import type { ReviewMediaHost } from '../../stores/reviewDiffMedia.svelte';
+  import { isSvgPath } from '../../utils/reviewImageRows';
   import type { ReviewThread } from '../../types/models';
   import type { ExpandDirection } from '../../utils/diffContextExpansion';
   import type { PaintedSpans, PatchScopeContext } from '../../utils/diffSpanCache.svelte';
@@ -39,6 +42,11 @@
     onAddComment?: (anchor: EditorAnchor, generation?: number) => void;
     onExtendRange?: (anchor: EditorAnchor, generation?: number) => void;
     lineComment?: LineCommentGate;
+    /** Binary and rendered-SVG files' rows; absent, a binary file shows
+     * git's line about it. */
+    mediaHost?: ReviewMediaHost;
+    /** The view mode (split puts two images in two columns). */
+    split?: boolean;
     onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => void;
     /** The line ranges a file's rows tint. */
     rangesFor?: (path: string) => readonly LineRange[];
@@ -48,7 +56,7 @@
 
   let {
     row, file, blockRows, collapsed, onToggleCollapsed, spanOwner, spanContext, painted, wordWrap, pulse, targets,
-    overview, draftEditor, commentThread, prThread, generation, onAddComment, onExtendRange, lineComment, onLineMenu, rangesFor, onExpandFold, onExpandGap,
+    overview, draftEditor, commentThread, prThread, generation, onAddComment, onExtendRange, lineComment, mediaHost, split = false, onLineMenu, rangesFor, onExpandFold, onExpandGap,
   }: Props = $props();
 
   // Per-file gutter width (ch) from the file's max line number — a true
@@ -80,7 +88,13 @@
     {collapsed}
     onToggle={() => onToggleCollapsed(file.path)}
     first={row.fileIndex === 0}
+    rendered={mediaHost && isSvgPath(file.path) && !file.header?.binary ? mediaHost.renderedPaths.has(file.path) : undefined}
+    onToggleRendered={() => mediaHost?.toggleRendered(file.path)}
   />
+{:else if row.kind === 'media'}
+  {#if mediaHost}
+    <ReviewImageDiff {file} image={row.image} heightPx={row.heightPx} {split} media={mediaHost.media} newSideOnly={mediaHost.newSideOnly} onReload={() => mediaHost?.reloadDiff()} />
+  {/if}
 {:else if row.kind === 'surface-end'}
   <!-- Closing cap for the last file's slab (exact height:
        REVIEW_SURFACE_END_PX; box-border keeps the border inside it). -->

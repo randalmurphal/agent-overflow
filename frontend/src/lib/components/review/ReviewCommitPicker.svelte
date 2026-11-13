@@ -43,6 +43,12 @@
   const single = $derived(at !== null && at.newer === at.older ? commits[at.newer] : null);
   const count = $derived(commits.length);
   const triggerText = $derived(commitSelectionLabel(commits, selection));
+  // The menu header: where the pick sits among the PR's commits.
+  const position = $derived.by(() => {
+    if (!at) return `${count} ${count === 1 ? 'commit' : 'commits'}`;
+    if (at.newer === at.older) return `Commit ${commitOrdinal(at.newer, count)} of ${count}`;
+    return `Commits ${commitOrdinal(at.older, count)}–${commitOrdinal(at.newer, count)} of ${count}`;
+  });
   const title = $derived.by(() => {
     if (!at) return `All commits (${count})`;
     const newer = commits[at.newer];
@@ -122,11 +128,7 @@
   {/snippet}
   {#snippet header()}
     <div class="flex items-center gap-2 border-b border-border-subtle px-3 py-1.5 text-[0.6875rem] text-fg-muted">
-      <span class="min-w-0 flex-1 truncate" data-testid="review-commit-position">
-        {#if at && at.newer === at.older}Commit {commitOrdinal(at.newer, count)} of {count}
-        {:else if at}Commits {commitOrdinal(at.older, count)}–{commitOrdinal(at.newer, count)} of {count}
-        {:else}{count} {count === 1 ? 'commit' : 'commits'}{/if}
-      </span>
+      <span class="min-w-0 flex-1 truncate" data-testid="review-commit-position">{position}</span>
       {#if ranges && count > 1}
         <span class="hidden shrink-0 text-fg-hint [@media(hover:hover)]:inline" data-testid="review-commit-range-hint">Shift+click for a range</span>
       {/if}

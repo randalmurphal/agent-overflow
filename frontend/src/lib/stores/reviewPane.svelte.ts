@@ -144,6 +144,8 @@ import {
   type ExpandDirection,
 } from '../utils/diffContextExpansion';
 import type { DiffGap } from '../utils/patchFiles';
+import { createReviewDiffMedia, type ReviewMediaHost } from './reviewDiffMedia.svelte';
+import type { DiffFilesTarget } from './reviewDiffFiles';
 import { keptText, PatchTextLost, reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
 import { anchorRow, anchorRows, completeAnchor, namesOneRow } from '../utils/patchRows';
 import { anchorKey, type CommentAnchor, type EditorRow, type EditorState } from '../utils/reviewRows';
@@ -253,6 +255,9 @@ export interface ReviewPaneState extends ReviewCommentActionsState {
   /** The drafts the diff shows: `drafts`, or in a head-ending run the
    * PR's drafts placed by head line. */
   readonly shownDrafts: readonly DiffReviewComment[];
+  /** The diff on screen's binary files (sizes, images) and the text SVGs
+   * shown rendered. */
+  readonly mediaHost: ReviewMediaHost;
   /** Edit tool calls of the thread (timeline order); populated in
    * edits scope only. Feeds the turn-grouped edit selector. */
   readonly edits: readonly EditDiffEntryView[];
@@ -1031,6 +1036,22 @@ export function createReviewPaneState(
   let commitSelectionLost = $state(false);
   const headRange = $derived(scope === 'pr' && isCommitRange(selectedCommits) && selectedCommits?.last === commitsHead);
   const prLineIndex = createReviewPRLineIndex();
+  // The diff on screen's binary files; targeted at each load's commit.
+  const media = createReviewDiffMedia();
+  // Text SVGs shown as images, by path; a new subject clears them.
+  const renderedSvgPaths = new SvelteSet<string>();
+  const mediaHost: ReviewMediaHost = {
+    media,
+    get newSideOnly() { return shown?.scope === 'edits'; },
+    renderedPaths: renderedSvgPaths,
+    toggleRendered(path) {
+      if (renderedSvgPaths.has(path)) renderedSvgPaths.delete(path);
+      else renderedSvgPaths.add(path);
+    },
+    reloadDiff() {
+      void reload({ userInitiated: true });
+    },
+  };
   let edits: EditDiffEntryView[] = $state([]);
   let editTurnLabels: ReadonlyMap<number, string> = $state(new Map());
   let selectedEdit: EditSelection | null = $state(null);
@@ -1631,6 +1652,7 @@ export function createReviewPaneState(
   function dispose(): void {
     disposed = true;
     prLineIndex.close();
+    media.setTarget(null, '');
     commentActions.dispose();
     showRead(null);
     disposePRRefWatch();
@@ -1832,6 +1854,8 @@ export function createReviewPaneState(
   // anchors or span context. Same-subject refreshes intentionally retain it.
   function retireDiffSubject(): void {
     revealedPaths.clear();
+    renderedSvgPaths.clear();
+    media.setTarget(null, '');
     loadedFiles = [];
     shown = null;
     armedEditorId = null;
@@ -1958,6 +1982,7 @@ export function createReviewPaneState(
         ignoreWhitespace: requestedIgnoreWhitespace,
         headRange,
       };
+      media.setTarget(filesTarget(loaded), `${shown.generation}`);
       applyPlacements(committed, placements);
       // Fresh defaults for the new patch, with the user's explicit
       // collapse/expand choices layered back on top.
@@ -2191,6 +2216,21 @@ export function createReviewPaneState(
       };
     }
     return { scope, commitSHA: '', headSHA: '', workspace };
+  }
+
+  // The diff a load opened, for its files' sizes and images: the source
+  // its Open call took, or the edit it replayed.
+  function filesTarget(loaded: LoadedPatch): DiffFilesTarget | null {
+    if (loaded.filesSource) return { kind: 'git', backend, workspace, opened: { source: loaded.filesSource, unavailable: null } };
+    if (scope !== 'edits' || threadId === null || !selectedEdit) return null;
+    return {
+      kind: 'edits',
+      backend,
+      threadId,
+      editPayloadId: selectedEdit.kind === 'item' ? selectedEdit.payloadId : '',
+      editTurnIndex: selectedEdit.kind === 'turn' ? selectedEdit.turnIndex : -1,
+      verifyPatch: (file) => file.body.whenResident(() => filePatchText(file)),
+    };
   }
 
   // One file's patch text, serialized from its merged lines — the ONLY
@@ -3478,6 +3518,7 @@ export function createReviewPaneState(
     get commitSelectionLost() { return commitSelectionLost; },
     dismissCommitSelectionLost(): void { commitSelectionLost = false; },
     get prDiffIndexState() { return prLineIndex.state; },
+    mediaHost,
     get prDiffIndexError() { return prLineIndex.error; },
     retryPRDiffIndex: () => prLineIndex.retry(),
     lineComment,

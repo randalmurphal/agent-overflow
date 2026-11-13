@@ -170,12 +170,12 @@
     return right && right.lineIndex === left.lineIndex ? undefined : findKey(left);
   }
 
-  function lineMenu(row: PatchDisplayRow) {
-    return (event: MouseEvent): void => {
-      if (!onLineMenu || row.lineIndex === undefined || row.pending) return;
-      event.preventDefault();
-      onLineMenu(event, path, row.lineIndex);
-    };
+  // A line's number gutter opens the line menu (Copy link to line) where
+  // the pane offers one; elsewhere the native menu stays.
+  function openLineMenu(event: MouseEvent, row: PatchDisplayRow | null): void {
+    if (!onLineMenu || !row || row.lineIndex === undefined || row.pending) return;
+    event.preventDefault();
+    onLineMenu(event, path, row.lineIndex);
   }
 
   function gapLabel(gap: DiffGap): string {
@@ -313,7 +313,7 @@
           {#if pair.left}
             {@render actionCell(pair.left, sideAnchor(pair.left, 'old'), 'old-line')}
             <!-- svelte-ignore a11y_no_static_element_interactions (the menu is a pointer gesture; the line has no keyboard focus to open it from) -->
-            <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}" data-testid="review-line-gutter" oncontextmenu={onLineMenu ? lineMenu(pair.left) : undefined}>{@render gutter(pair.left.oldLine)}</span>
+            <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}" data-testid="review-line-gutter" oncontextmenu={(event) => openLineMenu(event, pair.left)}>{@render gutter(pair.left.oldLine)}</span>
             <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={leftFindKey(pair.left, pair.right)}><DiffLineContent line={pair.left.line} spans={getSpansForReviewLine(file, pair.left.lineIndex ?? -1, pair.left.line, spanContext, painted)} intraline={pair.left.intraline ?? null} /></span>
           {/if}
         </div>
@@ -321,7 +321,7 @@
           {#if pair.right}
             {@render actionCell(pair.right, sideAnchor(pair.right, 'new'), 'new-line')}
             <!-- svelte-ignore a11y_no_static_element_interactions (the menu is a pointer gesture; the line has no keyboard focus to open it from) -->
-            <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}" data-testid="review-line-gutter" oncontextmenu={onLineMenu ? lineMenu(pair.right) : undefined}>{@render gutter(pair.right.newLine)}</span>
+            <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}" data-testid="review-line-gutter" oncontextmenu={(event) => openLineMenu(event, pair.right)}>{@render gutter(pair.right.newLine)}</span>
             <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={findKey(pair.right)}><DiffLineContent line={pair.right.line} spans={getSpansForReviewLine(file, pair.right.lineIndex ?? -1, pair.right.line, spanContext, painted)} intraline={pair.right.intraline ?? null} /></span>
           {/if}
         </div>
@@ -343,7 +343,7 @@
         >
           {@render actionCell(row, stackedAnchor(row), 'line')}
           <!-- svelte-ignore a11y_no_static_element_interactions (the menu is a pointer gesture; the line has no keyboard focus to open it from) -->
-          <span class="flex shrink-0 {gutterTintClass(row.line.type)}" data-testid="review-line-gutter" oncontextmenu={onLineMenu ? lineMenu(row) : undefined}>
+          <span class="flex shrink-0 {gutterTintClass(row.line.type)}" data-testid="review-line-gutter" oncontextmenu={(event) => openLineMenu(event, row)}>
             {@render gutter(row.oldLine)}
             {@render gutter(row.newLine)}
           </span>

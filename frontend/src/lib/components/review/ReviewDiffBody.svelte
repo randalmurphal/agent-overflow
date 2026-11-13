@@ -43,6 +43,8 @@
   import type { RowEstimate } from '../../utils/virtual/types';
   import type { LineRange } from '../../utils/reviewRange';
   import type { LineCommentGate } from '../../stores/reviewRangeComments';
+  import type { ReviewMediaHost } from '../../stores/reviewDiffMedia.svelte';
+  import { isSvgPath } from '../../utils/reviewImageRows';
 
   // The continuous virtualized review surface: every file's header +
   // line blocks + comment rows in ONE LongListVirtualizer, with a
@@ -114,6 +116,9 @@
     onExtendRange?: (anchor: EditorAnchor, generation?: number) => void;
     /** A head-ending commit run: what each line takes. */
     lineComment?: LineCommentGate;
+    /** Binary files' images and sizes, and rendered SVGs. Absent (the
+     * conflict view), binary files show git's line about them. */
+    mediaHost?: ReviewMediaHost;
     /** A line's number gutter menu (Copy link to line). */
     onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => void;
     /** The line ranges a file's rows tint. */
@@ -162,6 +167,7 @@
     onAddComment,
     onExtendRange,
     lineComment,
+    mediaHost,
     onLineMenu,
     rangesFor,
     onExpandFold,
@@ -176,7 +182,12 @@
   }: Props = $props();
 
   const built = $derived(
-    buildReviewRows({ files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds, overview: overview === undefined ? undefined : overviewLead }),
+    buildReviewRows({
+      files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds,
+      overview: overview === undefined ? undefined : overviewLead,
+      // Without a media host binary files keep git's line.
+      renderedPaths: mediaHost?.renderedPaths, newSideOnly: mediaHost?.newSideOnly, media: mediaHost !== undefined,
+    }),
   );
   const builtEstimate = $derived(reviewRowEstimate(built, wordWrap));
   // The rows detached editors suggest, by file.
@@ -498,6 +509,16 @@
     if (file) onToggleCollapsed(file.path);
   }
 
+  // The sticky bar's SVG toggle, as the header row's (ReviewDiffRow).
+  const stickyRendered = $derived.by(() => {
+    const file = stickyFile;
+    return mediaHost && file && isSvgPath(file.path) && !file.header?.binary ? mediaHost.renderedPaths.has(file.path) : undefined;
+  });
+  function toggleStickyRendered(): void {
+    const file = stickyFile;
+    if (file) mediaHost?.toggleRendered(file.path);
+  }
+
   function jumpToStickyFile(): void {
     const headerRow = built.firstRowOfFile[stickyFileIndex] ?? -1;
     if (headerRow >= 0) navigateToIndex(headerRow);
@@ -562,6 +583,8 @@
         file={stickyFile}
         collapsed={collapsedPaths.has(stickyFile?.path ?? '')}
         onToggle={toggleStickyFile}
+        rendered={stickyRendered}
+        onToggleRendered={toggleStickyRendered}
         overlay
         onJump={jumpToStickyFile}
       />
@@ -611,6 +634,8 @@
             {onAddComment}
             {onExtendRange}
             {lineComment}
+            {mediaHost}
+            split={viewMode === 'split'}
             {onLineMenu}
             {rangesFor}
             {onExpandFold}
