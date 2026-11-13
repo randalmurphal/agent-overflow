@@ -162,19 +162,22 @@ func (in githubMergeInputs) manage() PRManage {
 		out.Labels = append(out.Labels, label.label())
 	}
 	// Requesting a review and dismissing one have no viewer field: GitHub
-	// gives them to triage and write access.
-	triage := githubRoleAtLeast(repo.ViewerPermission, "TRIAGE")
+	// gives requests to triage access and to the PR's author ("Pull
+	// request authors and repository owners and collaborators can request
+	// a pull request review", the review requests reference), dismissals
+	// to write access.
+	request := githubRoleAtLeast(repo.ViewerPermission, "TRIAGE") || pull.ViewerDidAuthor
 	write := githubRoleAtLeast(repo.ViewerPermission, "WRITE")
 	out.Can = PRManageCan{
 		EditTitle:       pull.ViewerCanUpdate,
 		EditDescription: pull.ViewerCanUpdate,
-		Reviewers:       open && triage,
+		Reviewers:       open && request,
 		Assignees:       pull.ViewerCanAssign,
 		Labels:          pull.ViewerCanLabel,
 		Close:           open && pull.ViewerCanClose,
 		Reopen:          closed && pull.ViewerCanReopen,
 		ConvertToDraft:  open && !pull.IsDraft && pull.ViewerCanUpdate,
-		Rerequest:       open && triage,
+		Rerequest:       open && request,
 		Dismiss:         open && write,
 		ReviewerTeams:   repo.Owner != nil && repo.Owner.Typename == "Organization",
 	}

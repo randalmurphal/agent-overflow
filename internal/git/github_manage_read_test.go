@@ -70,6 +70,8 @@ func TestGitHubManageControlsFollowTheirViewerFields(t *testing.T) {
 			PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Labels: true, Close: true, ConvertToDraft: true, Rerequest: true}},
 		{"cannot label", `{"state":"OPEN","viewerCanUpdate":true,"viewerCanAssign":true}`, "READ",
 			PRManageCan{EditTitle: true, EditDescription: true, Assignees: true, ConvertToDraft: true}},
+		{"the author with read access", `{"state":"OPEN","viewerDidAuthor":true,"viewerCanUpdate":true}`, "READ",
+			PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, ConvertToDraft: true, Rerequest: true}},
 		{"closed, may reopen", `{"state":"CLOSED",` + all + `}`, "WRITE",
 			PRManageCan{EditTitle: true, EditDescription: true, Assignees: true, Labels: true, Reopen: true}},
 		{"closed, may not reopen", `{"state":"CLOSED","viewerCanUpdate":true}`, "WRITE",

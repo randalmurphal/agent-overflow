@@ -717,7 +717,10 @@ GitHub's capability flags come from its viewer fields: edit and convert to
 draft from `viewerCanUpdate`, close from `viewerCanClose`, reopen from
 `viewerCanReopen`, labels from `viewerCanLabel`, assignees from
 `viewerCanAssign`. Requesting and re-requesting reviews follow triage
-access and dismissing write access, which have no viewer field; team
+access or the viewer's authorship of the PR (`viewerDidAuthor`; GitHub's
+review requests reference: "Pull request authors and repository owners
+and collaborators can request a pull request review"), and dismissing
+write access, which have no viewer field; team
 reviewers need an organization owner. GHES before 3.10 is outside
 support. GitLab's: edit, close, reopen, draft and re-request from
 `userPermissions.updateMergeRequest`; reviewers, assignees and labels from
