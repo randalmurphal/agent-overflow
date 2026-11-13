@@ -950,7 +950,7 @@ func promoteQuietForTest(router *Router, threadID string) []store.Item {
 func markUserInterruptForTest(router *Router, threadID string) (string, error) {
 	open := router.InterruptTurnIndex(threadID)
 	tok := router.MarkFlushSendsInterrupted(threadID, open)
-	return router.MarkUserInterrupt(threadID, open, tok)
+	return router.MarkInterrupt(threadID, open, tok, StoppedByUser)
 }
 
 // TestMarkFlushSendsInterrupted_PreAckStampSettlesInterrupted
@@ -1225,13 +1225,13 @@ func TestInterruptMarkedTurnRecord_RestoreAndLinger(t *testing.T) {
 	}
 }
 
-// TestMarkUserInterrupt_TargetsSampledTurnNotEchoOpenedTurn pins
+// TestMarkInterrupt_TargetsSampledTurnNotEchoOpenedTurn pins
 // R11-4 (round 11): a queued echo consumed during the interrupt-ack
 // wait opens the queued message's own turn, so a post-ack "current
 // turn" read would land the "Stopped by user" record on the NEW turn
 // — which drains naturally — instead of the turn the user provably
 // cut. The post-ack bookkeeping must target the pre-ack sampled turn.
-func TestMarkUserInterrupt_TargetsSampledTurnNotEchoOpenedTurn(t *testing.T) {
+func TestMarkInterrupt_TargetsSampledTurnNotEchoOpenedTurn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -1243,12 +1243,12 @@ func TestMarkUserInterrupt_TargetsSampledTurnNotEchoOpenedTurn(t *testing.T) {
 	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), interruptedTurn)
 	router.WaitForPendingSettles()
 
-	errID, err := router.MarkUserInterrupt("t1", interruptedTurn, tok)
+	errID, err := router.MarkInterrupt("t1", interruptedTurn, tok, StoppedByUser)
 	if err != nil {
-		t.Fatalf("MarkUserInterrupt: %v", err)
+		t.Fatalf("MarkInterrupt: %v", err)
 	}
 	if errID == "" {
-		t.Fatal("MarkUserInterrupt returned no error id")
+		t.Fatal("MarkInterrupt returned no error id")
 	}
 	stopped, found, err := st.GetThreadItem("t1", errID)
 	if err != nil || !found {
@@ -1263,18 +1263,18 @@ func TestMarkUserInterrupt_TargetsSampledTurnNotEchoOpenedTurn(t *testing.T) {
 	// CT11-1): the stale token must make the whole call a no-op.
 	tok = router.MarkFlushSendsInterrupted("t1", 1)
 	router.MarkThreadActive("t1")
-	if errID, err := router.MarkUserInterrupt("t1", 1, tok); err != nil || errID != "" {
-		t.Errorf("stale MarkUserInterrupt = (%q, %v), want a silent no-op", errID, err)
+	if errID, err := router.MarkInterrupt("t1", 1, tok, StoppedByUser); err != nil || errID != "" {
+		t.Errorf("stale MarkInterrupt = (%q, %v), want a silent no-op", errID, err)
 	}
 }
 
-// TestMarkUserInterrupt_NegativeSampleIsNoOp pins R12-4 (round 12):
+// TestMarkInterrupt_NegativeSampleIsNoOp pins R12-4 (round 12):
 // a -1 pre-ack OpenTurnIndex sample means no turn was open — the turn
 // completed in the click-to-sample race and the interrupt ack'd an
 // idle CLI. The post-ack bookkeeping must be a no-op: any fallback
 // resolution would relabel completed history (LastTurnIndex) or a
 // queued echo's freshly opened turn as "Stopped by user".
-func TestMarkUserInterrupt_NegativeSampleIsNoOp(t *testing.T) {
+func TestMarkInterrupt_NegativeSampleIsNoOp(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	// A completed prior turn exists — exactly what a fallback would
@@ -1290,12 +1290,12 @@ func TestMarkUserInterrupt_NegativeSampleIsNoOp(t *testing.T) {
 	}
 
 	tok := router.MarkFlushSendsInterrupted("t1", -1)
-	errID, err := router.MarkUserInterrupt("t1", -1, tok)
+	errID, err := router.MarkInterrupt("t1", -1, tok, StoppedByUser)
 	if err != nil {
-		t.Fatalf("MarkUserInterrupt: %v", err)
+		t.Fatalf("MarkInterrupt: %v", err)
 	}
 	if errID != "" {
-		t.Fatalf("MarkUserInterrupt returned error id %q, want empty (no-op)", errID)
+		t.Fatalf("MarkInterrupt returned error id %q, want empty (no-op)", errID)
 	}
 	items, err := st.ListItems("t1")
 	if err != nil {

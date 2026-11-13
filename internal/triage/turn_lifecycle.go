@@ -1047,7 +1047,7 @@ func (r *Router) OpenTurnIndex(threadID string) int {
 // write failed. Stopping then cuts nothing.
 //
 // Interrupt paths sample this BEFORE awaiting the provider's interrupt
-// ack and pass the value to MarkFlushSendsInterrupted, MarkUserInterrupt
+// ack and pass the value to MarkFlushSendsInterrupted, MarkInterrupt
 // and EagerPersistDeferredFlushSends: the ack wait processes wire
 // events, so the turn the user cut can settle during it, and a post-ack
 // sample would report -1 for exactly that turn — its echo would then
@@ -1730,10 +1730,14 @@ func (r *Router) RecoverCrashedTurns() (int, error) {
 	return len(crashed), nil
 }
 
-// MarkUserInterrupt is the public chokepoint for the app-layer
+// StoppedByUser is the stop row of the user's own Stop.
+const StoppedByUser = "Stopped by user"
+
+// MarkInterrupt is the public chokepoint for the app-layer
 // interrupt flow. It flips every streaming/running item in the
 // interrupted turn to errored with a " — stopped" suffix and records a
-// new "Stopped by user" system error row so the timeline carries the
+// new system error row reading summary, which names who stopped the turn
+// (StoppedByUser for the user's own Stop), so the timeline carries the
 // explicit user-facing signal.
 //
 // sampledTurnIndex is the caller's PRE-ACK InterruptTurnIndex sample
@@ -1751,7 +1755,10 @@ func (r *Router) RecoverCrashedTurns() (int, error) {
 // Returns the error id that was persisted so the caller can surface
 // diagnostics or correlate with downstream emissions; empty string
 // when no turn could be resolved or the session was replaced.
-func (r *Router) MarkUserInterrupt(threadID string, sampledTurnIndex int, tok FlushStampToken) (string, error) {
+func (r *Router) MarkInterrupt(threadID string, sampledTurnIndex int, tok FlushStampToken, summary string) (string, error) {
+	if summary == "" {
+		return "", fmt.Errorf("triage: mark interrupt of %s: no stop summary", threadID)
+	}
 	if r.ThreadEpoch(threadID) != tok.threadEpoch {
 		return "", nil
 	}
@@ -1778,7 +1785,7 @@ func (r *Router) MarkUserInterrupt(threadID string, sampledTurnIndex int, tok Fl
 		Kind:      ItemKindError,
 		Role:      "system",
 		Status:    statusCompleted,
-		Summary:   "Stopped by user",
+		Summary:   summary,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

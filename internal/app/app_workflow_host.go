@@ -125,8 +125,21 @@ func (h workflowHostAdapter) ClaudeProjectsDir() (string, error) {
 // the seam exists.
 func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSource) *workflowhost.Runner {
 	return workflowhost.New(
-		workflowHostAdapter{app: app}, app.store, dataRoot, profiles, app.interruptTurnCtx,
+		workflowHostAdapter{app: app}, app.store, dataRoot, profiles, app.interruptTurnForWorkflow,
 	)
+}
+
+// interruptTurnForWorkflow is the workflow runner's stop: the user taking a
+// thread over from its workflow, or the workflow ending an attempt.
+func (a *App) interruptTurnForWorkflow(ctx context.Context, threadID string, why workflowhost.Interrupt) error {
+	switch why {
+	case workflowhost.InterruptForTakeover:
+		return a.interruptTurnCtx(ctx, threadID, stopForTakeover())
+	case workflowhost.InterruptStoppedAttempt:
+		return a.interruptTurnCtx(ctx, threadID, stopByWorkflow())
+	default:
+		return fmt.Errorf("interrupt turn %s: unknown workflow interrupt %d", threadID, why)
+	}
 }
 
 // WorkflowArtifact is one app-managed file deliverable copied from a phase

@@ -1669,7 +1669,7 @@ func TestE2E_InterruptTurnWithoutSession(t *testing.T) {
 	// MUST NOT synthesize a turn_completed, a stop marker, or an error
 	// event behind the user's back. A regression that swallows the
 	// missing-session check but accidentally fans out a spurious event
-	// (e.g. by routing through triage's MarkUserInterrupt before the
+	// (e.g. by routing through triage's MarkInterrupt before the
 	// session-presence guard) would pass an err-only assertion.
 	after := bus.allEvents()
 	if len(after) != before {

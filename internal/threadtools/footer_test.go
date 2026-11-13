@@ -113,14 +113,19 @@ func TestWakeTemplates(t *testing.T) {
 			want: "\"Parser\" (7f3a) [token tok] was cancelled.",
 		},
 		{
-			name: "interrupted by a restart of another computer",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Token: "tok"},
-			want: "\"Parser\" (7f3a, on Studio) [token tok] was interrupted by a restart of Studio.",
+			name: "interrupted states the recorded cause",
+			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "Its turn was stopped before it answered."},
+			want: "\"Parser\" (7f3a) [token tok] was interrupted: Its turn was stopped before it answered.",
 		},
 		{
-			name: "interrupted locally names this computer",
+			name: "interrupted on another computer names it beside the cause",
+			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Token: "tok", Text: "The computer running it restarted before the request finished."},
+			want: "\"Parser\" (7f3a, on Studio) [token tok] was interrupted: The computer running it restarted before the request finished.",
+		},
+		{
+			name: "interrupted with no recorded cause claims none",
 			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok"},
-			want: "\"Parser\" (7f3a) [token tok] was interrupted by a restart of this computer.",
+			want: "\"Parser\" (7f3a) [token tok] was interrupted.",
 		},
 		{
 			name: "expired",

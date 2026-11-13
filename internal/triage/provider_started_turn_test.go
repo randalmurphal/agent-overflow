@@ -133,9 +133,9 @@ func TestStopCutsProviderStartedTurn(t *testing.T) {
 		t.Fatalf("InterruptTurnIndex = %d, want the wake's turn 1", sampled)
 	}
 	tok := router.MarkFlushSendsInterrupted("t1", sampled)
-	errID, err := router.MarkUserInterrupt("t1", sampled, tok)
+	errID, err := router.MarkInterrupt("t1", sampled, tok, StoppedByUser)
 	if err != nil {
-		t.Fatalf("MarkUserInterrupt: %v", err)
+		t.Fatalf("MarkInterrupt: %v", err)
 	}
 	requireStoppedByUserRow(t, st, "t1", errID, 1)
 	text, found, err := st.GetThreadItem("t1", "text:1:0")

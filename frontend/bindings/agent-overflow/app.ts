@@ -2729,7 +2729,7 @@ export function InspectProjectFolder(path: string): $CancellablePromise<projecta
  * conversation rolled back, timeline truncated, composer draft
  * restored, `user_message:reverted` event emitted). When the predicate
  * does not match the method falls back to a plain interrupt
- * (provider Interrupt + triage.MarkUserInterrupt) so the caller can
+ * (provider Interrupt + triage.MarkInterrupt) so the caller can
  * roll back any optimistic UI it applied.
  * 
  * The frontend pre-checks its local predicate before calling so it
@@ -2766,7 +2766,7 @@ export function InterruptAndRevertIfClean(threadID: string, opts: app$0.Interrup
  * 
  * Spec: on user interrupt, any streaming items on the current turn are
  * flipped to errored with a " — stopped" suffix, and a system `error`
- * row with Summary "Stopped by user" is appended. This happens AFTER
+ * row with Summary triage.StoppedByUser is appended. This happens AFTER
  * the provider interrupt signal is sent so the UI gets a consistent
  * "signal sent, now here's the record" ordering. If the triage
  * bookkeeping fails we log — the provider interrupt already fired, so

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1840,5 +1841,70 @@ func TestThreadToolsLateCollectionStatesTheAnswersAge(t *testing.T) {
 	}
 	if !strings.Contains(wake.Message, "the backfill touched 412 rows") {
 		t.Errorf("wake body = %q, want the answer itself", wake.Message)
+	}
+}
+
+// A thread on another computer that stops a turn here is named the way this
+// computer names that computer, never by the name it reports for itself:
+// pairing is directional, so one this computer cannot reach back is only
+// "another computer".
+func TestAStopFromAnotherComputerNamesItByThisComputersPairing(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	gate := filepath.Join(t.TempDir(), "stop")
+	installMockClaudeTurns(t, pair.dest, [][]string{{
+		mockClaudeInitLine,
+		`{"type":"assistant","message":{"id":"msg-stop","role":"assistant","content":[{"type":"text","text":"working on it"}]}}`,
+		testutil.MockWaitForFile(gate),
+		`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["[Request interrupted by user]"]}`,
+	}})
+	spawn := pair.spawnThere(t, "work to be stopped", map[string]any{"notify": true})
+	waitUntilE2E(t, 30*time.Second, "the turn opens on the destination", func() bool {
+		receipt := pair.receipt(t, spawn.Token)
+		return receipt.State == store.ThreadReceiptRunning && pair.dest.triage.OpenTurnIndex(receipt.TargetThreadID) >= 0
+	})
+	threadID := pair.receipt(t, spawn.Token).TargetThreadID
+
+	stopped := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := pair.adapter().Cancel(ctx, pair.callerIdentity(), threadtools.CancelCall{ThreadID: threadID, ComputerID: pair.computer})
+		stopped <- err
+	}()
+	waitUntilE2E(t, 30*time.Second, "the destination records the stop", func() bool { return pair.dest.holdsTurnStop(threadID) })
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatalf("open gate: %v", err)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatalf("cancel the thread on the other computer: %v", err)
+	}
+
+	sourceID, _ := pair.source.backendIdentity()
+	name := "another computer"
+	if row, paired := pair.dest.threadTools().threadToolsPairing(sourceID); paired {
+		name = row.Nickname
+		if name == "" {
+			name = row.Name
+		}
+	}
+	want := fmt.Sprintf("Stopped by thread %q on %s", pair.caller.Title, name)
+	var stopRows []string
+	waitUntilE2E(t, 30*time.Second, "the stop row lands on the destination", func() bool {
+		items, err := pair.dest.store.ListItems(threadID)
+		if err != nil {
+			t.Fatalf("ListItems: %v", err)
+		}
+		stopRows = stopRows[:0]
+		for _, item := range items {
+			if item.Kind == "error" && strings.HasPrefix(item.Summary, "Stopped by") {
+				stopRows = append(stopRows, item.Summary)
+			}
+		}
+		return len(stopRows) > 0
+	})
+	if len(stopRows) != 1 || stopRows[0] != want {
+		t.Fatalf("stop rows = %q, want [%q]", stopRows, want)
 	}
 }

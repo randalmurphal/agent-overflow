@@ -777,8 +777,14 @@ What settles a request, in order:
    as a second wake, so a responder that ended its turn to wait on a
    command costs the caller nothing.
 3. An errored turn settles `errored` with the error text.
-4. `thread_cancel` settles `cancelled`; a restart of the responder's
-   computer mid-turn settles `interrupted`.
+4. `thread_cancel` by token settles `cancelled`. A turn stopped some
+   other way settles `interrupted` with its cause as the text, and the
+   wake states it: the user's Stop, another thread's `thread_cancel`
+   (named), the user taking the thread over from its workflow, the
+   workflow ending its attempt, a restart of the responder's computer,
+   or the thread moving to another computer. Every interrupt names who
+   is stopping the turn, recorded before the interrupt is sent; the
+   stopped thread's timeline row names the same stopper.
 
 A request settles once and its wake fires once, plus one more for a
 late reply. Every settlement and late reply bumps the request's
