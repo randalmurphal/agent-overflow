@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newIdentityTestStore(t *testing.T) *Store {
@@ -164,6 +165,38 @@ func TestUpsertEnrichesBlankOrgAndPreservesKnownOrg(t *testing.T) {
 	renamed := mustUpsert(t, store, Account{ID: "a", Provider: "claude", Email: "e@x.com", OrgID: "org-1", OrgName: "Alpha Renamed"})
 	if renamed.OrgName != "Alpha Renamed" {
 		t.Fatalf("rename not applied: %+v", renamed)
+	}
+}
+
+// Codex reports its workspace name on every account/read that names the
+// login, so a write without one is that observation: the saved name clears
+// instead of outliving the workspace (or the codex version) that reported it.
+func TestCodexWorkspaceNameFollowsTheLatestObservation(t *testing.T) {
+	store := newIdentityTestStore(t)
+	mustUpsert(t, store, Account{ID: "a", Provider: "codex", Email: "e@x.com", OrgID: "org-1"})
+
+	named := Account{ID: "a", Provider: "codex", Email: "e@x.com", OrgName: "Acme"}
+	for i := 0; i < 2; i++ {
+		got := mustUpsert(t, store, named)
+		if got.OrgName != "Acme" || got.OrgID != "org-1" {
+			t.Fatalf("delivery %d: %+v, want OrgName Acme and preserved OrgID org-1", i, got)
+		}
+	}
+
+	for i := 0; i < 2; i++ {
+		got := mustUpsert(t, store, Account{ID: "a", Provider: "codex", Email: "e@x.com"})
+		if got.OrgName != "" || got.OrgID != "org-1" {
+			t.Fatalf("unnamed delivery %d: %+v, want OrgName cleared and OrgID org-1 kept", i, got)
+		}
+	}
+
+	mustUpsert(t, store, named)
+	cleared, err := store.UpdateMetadata(Account{ID: "a", Provider: "codex", Email: "e@x.com"})
+	if err != nil || cleared.OrgName != "" || cleared.OrgID != "org-1" {
+		t.Fatalf("UpdateMetadata without a name: %+v, %v", cleared, err)
+	}
+	if saved, _ := store.Get("codex", "a", time.Now()); saved.OrgName != "" {
+		t.Fatalf("persisted OrgName = %q, want cleared", saved.OrgName)
 	}
 }
 

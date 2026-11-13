@@ -179,8 +179,12 @@ func conflictsWithSaved(account, existing Account) bool {
 //     refusal lives here, at the write chokepoint, so no future call site
 //     can silently rebind a saved account to a different organization.
 //
-// OrgName is display state and follows the same blank-preserves rule but
-// may change freely when known (organizations rename).
+// OrgName is display state and may change freely when known (organizations
+// rename). For Claude a blank preserves the saved name like OrgID. For Codex
+// the name has one source, the workspace name on the account/read that also
+// carries the login's email, and every Codex write carries either that
+// observation or the saved row itself, so a blank clears it: the workspace
+// is gone or the codex version no longer reports one.
 func mergeOrgFields(account, existing Account) (Account, error) {
 	incoming := strings.TrimSpace(account.OrgID)
 	saved := strings.TrimSpace(existing.OrgID)
@@ -193,7 +197,7 @@ func mergeOrgFields(account, existing Account) (Account, error) {
 	if incoming == "" {
 		account.OrgID = existing.OrgID
 	}
-	if strings.TrimSpace(account.OrgName) == "" {
+	if strings.TrimSpace(account.OrgName) == "" && account.Provider != string(provider.Codex) {
 		account.OrgName = existing.OrgName
 	}
 	return account, nil

@@ -84,6 +84,28 @@ func TestProbeAccountWaitsBrieflyForOutOfOrderAccountIdentity(t *testing.T) {
 	}
 }
 
+// The usage probe merges account/read into the rate-limit answer; the
+// workspace name must survive that merge like email and plan do.
+func TestProbeAccountCarriesWorkspaceName(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "mock-codex-workspace")
+	script := "#!/bin/bash\n" +
+		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"person@example.com","planType":"team","workspaceName":"Acme Team"}}}'` + "\n" +
+		`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"team"}}}'` + "\n"
+	mockexec.Write(t, path, script)
+
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  path})
+	if err != nil {
+		t.Fatalf("ProbeAccount: %v", err)
+	}
+	if info.Email != "person@example.com" || info.OrgName != "Acme Team" {
+		t.Fatalf("info = %+v, want email person@example.com and OrgName Acme Team", info)
+	}
+}
+
 func TestProbeIdentityReadsAccountWithoutRateLimitRequest(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "mock-codex-identity")

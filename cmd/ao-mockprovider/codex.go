@@ -344,7 +344,8 @@ func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string, para
 	var result string
 	switch method {
 	case "account/read":
-		// provider.AccountInfo comes off `account.{type,email,planType}`;
+		// provider.AccountInfo comes off
+		// `account.{type,email,planType,workspaceName}` (no workspace here);
 		// a response with no `account` decodes to a zero AccountInfo,
 		// which is how "signed out" would read.
 		result = `{"account":{"type":"chatgpt","email":"mock@agent-overflow.test","planType":"pro"}}`

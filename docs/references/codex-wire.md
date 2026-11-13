@@ -230,6 +230,17 @@ This is the only channel through which a child's usage is visible on the
 parent thread. AO's suppression and carve-out rules are in
 [`internal/provider/codex/AGENTS.md` §Routing and collaboration](../../internal/provider/codex/AGENTS.md#routing-and-collaboration).
 
+### `account/read`
+
+`{account, requiresOpenaiAuth}`; `account` is tagged by `type`. The `chatgpt`
+variant carries `email` (nullable), `planType` and, from 0.166,
+`workspaceName`: the display name of the selected ChatGPT workspace, `null`
+when unknown and absent on older versions. AO reads it as
+`AccountInfo.OrgName`. Codex has no other source for the name, so an
+observation without one clears the saved name rather than keeping it
+(`provideraccounts.mergeOrgFields`). AO takes the workspace id from
+`auth.json` (`CredentialOrgID`), not from this response.
+
 ### `account/rateLimits/updated` and `account/rateLimits/read`
 
 Re-verified against the installed `codex-cli 0.144.0`: the canonical quota
