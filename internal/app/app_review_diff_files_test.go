@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	gitops "agent-overflow/internal/git"
-	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
@@ -109,8 +107,8 @@ func filesHandle(t *testing.T, opened ReviewDiffOpened, err error) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opened.FilesHandle == "" || opened.SidesError != "" {
-		t.Fatalf("the open kept no pin: %q", opened.SidesError)
+	if opened.FilesHandle == "" {
+		t.Fatal("a git-backed open answered no files handle")
 	}
 	return opened.FilesHandle
 }
@@ -577,79 +575,6 @@ func TestGetReviewDiffFileSizesAnswersEachFile(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("working-tree file %d = %+v, want %+v", i, got[i], want[i])
 		}
-	}
-}
-
-// The record store keeps at most its bounds, least recently used first
-// out, and keeps nothing pinned across a clear.
-func TestReviewDiffRecordsAreBounded(t *testing.T) {
-	t.Parallel()
-	var records reviewDiffRecords
-	committed := gitdiff.Pin{Old: strings.Repeat("a", 40), New: strings.Repeat("b", 40)}
-	worktree := gitdiff.Pin{Old: strings.Repeat("a", 40)}
-	first := records.put(records.generation(), "/w", committed, nil, false)
-	for i := 1; i < maxReviewDiffRecords; i++ {
-		records.put(records.generation(), "/w", committed, nil, false)
-	}
-	if _, err := records.get(first, "/w"); err != nil {
-		t.Fatalf("the first record went before the bound: %v", err)
-	}
-	second := records.put(records.generation(), "/w", committed, nil, false)
-	if records.len() != maxReviewDiffRecords {
-		t.Fatalf("%d records, want %d", records.len(), maxReviewDiffRecords)
-	}
-	if _, err := records.get(second, "/w"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := records.get(first, "/other"); err == nil || errors.Is(err, errReviewDiffFilesGone) {
-		t.Fatalf("another workspace = %v, want its own refusal", err)
-	}
-
-	many := make([]gitdiff.WorktreeBlob, maxPinnedWorktreeBlobs)
-	for i := range many {
-		many[i] = gitdiff.WorktreeBlob{Path: fmt.Sprintf("f%d", i), Mode: "100644"}
-	}
-	var handles []string
-	for range maxReviewDiffRecordBindings/maxPinnedWorktreeBlobs + 1 {
-		handles = append(handles, records.put(records.generation(), "/w", worktree, many, false))
-	}
-	if _, err := records.get(handles[0], "/w"); !errors.Is(err, errReviewDiffFilesGone) {
-		t.Fatalf("the oldest record past the binding bound = %v, want gone", err)
-	}
-	if records.bindings > maxReviewDiffRecordBindings {
-		t.Fatalf("%d bindings held, over %d", records.bindings, maxReviewDiffRecordBindings)
-	}
-
-	gen := records.generation()
-	records.clear()
-	if records.len() != 0 {
-		t.Fatal("clear kept records")
-	}
-	if handle := records.put(gen, "/w", committed, nil, false); handle != "" {
-		t.Fatal("a pin made before the clear was kept")
-	}
-}
-
-// An open whose pinning cannot finish in its bound answers SidesError with
-// its patch intact, and a reset forgets every record.
-func TestOpenWithoutAPinKeepsItsPatch(t *testing.T) {
-	t.Parallel()
-	app, _ := reviewDiffFilesApp(t)
-	h := newImageHistory(t)
-	ref := testWorkspaceRef(t, app, h.repo)
-	ctx, _ := reviewDiffConn(t)
-	writeRepoBytes(t, h.repo, "fresh.png", sizedPNG(t, 2, 2))
-	app.reviewDiffPinTimeout = time.Nanosecond
-	opened, err := app.OpenWorkspaceDiff(ctx, ref, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if opened.FilesHandle != "" || opened.SidesError == "" {
-		t.Fatalf("handle %q, sidesError %q; want no handle and a reason", opened.FilesHandle, opened.SidesError)
-	}
-	patch, err := readOpenedReviewDiff(t, app, ctx, opened)
-	if err != nil || !strings.Contains(patch, "b/fresh.png") {
-		t.Fatalf("the patch without a pin (err %v):\n%s", err, patch)
 	}
 }
 

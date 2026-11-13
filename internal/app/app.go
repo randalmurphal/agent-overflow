@@ -347,6 +347,12 @@ type App struct {
 	reviewDiffFiles reviewDiffRecords
 	// reviewDiffPinTimeout overrides reviewDiffPinTimeout in tests.
 	reviewDiffPinTimeout time.Duration
+	// reviewDiffPinHook, set only by tests, runs at the start of each pin
+	// with the pin's context.
+	reviewDiffPinHook func(context.Context)
+	// reviewDiffReadHook, set only by tests, runs in a file read after its
+	// record is found and before it waits for the pin.
+	reviewDiffReadHook func()
 	// ciLogStore is the CI job log cache (app_ci_logs.go), opened on
 	// first use for the reason forgeAttachCache is lazy.
 	ciLogOnce  sync.Once

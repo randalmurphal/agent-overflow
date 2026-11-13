@@ -341,3 +341,40 @@ func TestIsLFSPointer(t *testing.T) {
 		}
 	}
 }
+
+// A snapshot held by the diff and by one more holder is removed once,
+// after both let go, in either order.
+func TestHoldKeepsTheSnapshotUntilEveryHolderLetsGo(t *testing.T) {
+	t.Parallel()
+	for _, diffFirst := range []bool{true, false} {
+		repo := testutil.InitGitRepo(t)
+		writeFile(t, repo, "README.txt", "changed\n")
+		root := t.TempDir()
+		sides, err := WorktreeSides(context.Background(), repo, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		release := sides.Hold()
+		diff := sides.OpenDiff(Options{})
+		snapshots := func() int {
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return len(entries)
+		}
+		first, second := diff.Close, release
+		if !diffFirst {
+			first, second = release, diff.Close
+		}
+		if err := first(); err != nil || snapshots() != 1 {
+			t.Fatalf("diff first %v: after one holder let go, %d snapshots (err %v), want 1", diffFirst, snapshots(), err)
+		}
+		if err := release(); err != nil {
+			t.Fatal(err)
+		}
+		if err := second(); err != nil || snapshots() != 0 {
+			t.Fatalf("diff first %v: after both let go, %d snapshots (err %v), want 0", diffFirst, snapshots(), err)
+		}
+	}
+}

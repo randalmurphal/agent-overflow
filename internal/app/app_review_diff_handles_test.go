@@ -141,6 +141,8 @@ func TestOpenReviewDiffHoldsNothingForAPatchThatFitsTheFirstChunk(t *testing.T) 
 	if n := openReviewDiffCount(app); n != 0 {
 		t.Fatalf("%d diffs held after a one-chunk patch", n)
 	}
+	// The files pin holds the snapshot until it settles, then lets go.
+	app.reviewDiffFiles.pins.Wait()
 	if n := snapshotEntries(t, app); n != 0 {
 		t.Fatalf("%d snapshots left after a one-chunk patch", n)
 	}
@@ -180,6 +182,7 @@ func TestReviewDiffHandleReadsTheRestOnlyOnItsConnection(t *testing.T) {
 	if n := openReviewDiffCount(app); n != 0 {
 		t.Fatalf("%d diffs held after release", n)
 	}
+	app.reviewDiffFiles.pins.Wait()
 	if n := snapshotEntries(t, app); n != 0 {
 		t.Fatalf("%d snapshots left after release", n)
 	}

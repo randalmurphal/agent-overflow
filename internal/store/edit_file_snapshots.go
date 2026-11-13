@@ -93,30 +93,37 @@ func (s *Store) GetEditFileSnapshot(threadID, payloadID, path string) (string, b
 	return content, true, nil
 }
 
-// ReadEditFileSnapshot is GetEditFileSnapshot for a caller that holds the
-// content in a buffer of its own: it reads the stored size first (the
-// gzip trailer), refuses one past MaxEditFileSnapshotBytes, asks take for a
-// buffer of exactly that size and decompresses into it, failing on content
-// of any other length. take is not called for empty content. Only the
-// compressed row is allocated here.
-func (s *Store) ReadEditFileSnapshot(threadID, payloadID, path string, take func(n int64) ([]byte, error)) (size int64, found bool, err error) {
+// GetEditFileSnapshotBlob returns one edit file snapshot row as stored,
+// compressed, for a caller that decompresses it into a buffer of its own
+// (DecompressEditFileSnapshot). Same containment as GetEditFileSnapshot.
+func (s *Store) GetEditFileSnapshotBlob(threadID, payloadID, path string) ([]byte, bool, error) {
 	var blob []byte
-	err = s.reader().QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT content
 		   FROM timeline_edit_file_snapshots
 		  WHERE thread_id = ? AND payload_id = ? AND path = ?`,
 		threadID, payloadID, path,
 	).Scan(&blob)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("store: read edit file snapshot %s %s: %w", payloadID, path, err)
+		return nil, false, fmt.Errorf("store: read edit file snapshot %s %s: %w", payloadID, path, err)
 	}
-	if size, err = readSnapshotInto(blob, take); err != nil {
-		return 0, false, fmt.Errorf("store: decompress edit file snapshot %s %s: %w", payloadID, path, err)
+	return blob, true, nil
+}
+
+// DecompressEditFileSnapshot decompresses a snapshot row: it reads the
+// stored size first (the gzip trailer), refuses one past
+// MaxEditFileSnapshotBytes, asks take for a buffer of exactly that size and
+// decompresses into it, failing on content of any other length. take is
+// not called for empty content.
+func DecompressEditFileSnapshot(blob []byte, take func(n int64) ([]byte, error)) (int64, error) {
+	size, err := readSnapshotInto(blob, take)
+	if err != nil {
+		return 0, fmt.Errorf("store: decompress edit file snapshot: %w", err)
 	}
-	return size, true, nil
+	return size, nil
 }
 
 // readSnapshotInto decompresses a snapshot blob into the buffer take

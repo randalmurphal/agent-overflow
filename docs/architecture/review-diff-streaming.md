@@ -53,19 +53,29 @@ user's object database. A working-tree side is pinned by the open's
 snapshot: each path it changes, with its mode and, for a regular file, the
 blob ID and size the snapshot recorded. The snapshot hashes a changed
 file's bytes as they are on disk, without filters, so a read proves a
-file by hashing its bytes the same way. Pinning runs beside the first
-chunk's read under its own 5 second bound, parses git's raw output as it
-arrives and stops git after 5000 paths. The record goes into a store of
-at most 64 records, 20000 working-tree paths and 8 MiB of their names,
-least recently used first out, cleared by the harness reset
-(`app_review_diff_records.go`). The open answers its `filesHandle`, or
-`sidesError` with the patch intact.
+file by hashing its bytes the same way.
+
+The open reserves a record and answers its `filesHandle` with the first
+chunk at once; pinning settles the record in the background under its own
+5 second bound, parses git's raw output as it arrives and stops git after
+5000 paths. The pin holds the snapshot until it exits, so a diff that
+closes first does not remove it; the last holder does. A record is as
+strict as a diff id: it belongs to the connection that opened it, a read
+rechecks the scope the open required, and the owner's teardown, the
+record's eviction, the harness reset and shutdown cancel and join its
+pin, which then publishes nothing. The store holds at most 64 records,
+least recently used first out, counted from reservation; a settling pin
+past 5000 paths, or past 20000 paths or 8 MiB of names across all
+records, fails with a sentence (`app_review_diff_records.go`).
 
 `GetReviewDiffFileSizes` (up to 100 files) and `GetReviewDiffImage` (one
 file, both sides) take the workspace, the handle and each file's `path`
-(and a rename's `oldPath`). A handle that is gone answers "This diff's
-files are no longer held; reload the diff."; one opened in another
-workspace is refused. Each path is one literal name: no empty, `.` or
+(and a rename's `oldPath`). A read of a pending record waits for its pin,
+within the caller's context. A handle the caller's connection does not
+hold, in that workspace, answers `review_diff_files_gone` ("This diff's
+files are no longer held; reload the diff."), whoever else holds it; a
+record whose pin failed answers `review_diff_files_unreadable` ("This
+diff's files cannot be read: <why>."), which reopening would not change. Each path is one literal name: no empty, `.` or
 `..` segment, no backslash, no NUL; spaces at either end and pathspec
 magic are part of the name. Each side it exists on must be a regular file
 the other side holds differently; a directory, a symlink, a submodule or
@@ -97,9 +107,12 @@ script.
 The edits scope has no handle: `GetEditDiffImage` takes the path and an
 edit's payload ID, or the turn index for the turn's last edit of the path
 (found by scanning the turn's patches from the end), and serves only that
-edit's recorded snapshot. It reserves the snapshot capture limit (4 MiB,
-enforced by `PutEditFileSnapshot`) first, decompresses into a buffer of
-the recorded size and shrinks the reservation to it. The old side is
+edit's recorded snapshot. Every read reads the snapshot row; the image is
+held under the SHA-256 of its compressed bytes, so a hit skips only the
+decompression and a replaced or cleared snapshot is never served from
+the cache. A load reserves the snapshot capture limit (4 MiB, enforced by
+`PutEditFileSnapshot`) first, decompresses into a buffer of the recorded
+size and shrinks the reservation to it. The old side is
 always `unavailable` ("An edit does not record the file before it."), as
 is the new side of an edit that recorded nothing ("This edit's file
 content was not recorded.") or a path the turn does not edit ("This turn

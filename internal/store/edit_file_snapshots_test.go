@@ -163,10 +163,10 @@ func TestPutEditFileSnapshotRefusesContentPastTheCaptureLimit(t *testing.T) {
 	}
 }
 
-// ReadEditFileSnapshot sizes the content before it decompresses any, asks
-// for exactly that buffer, and refuses a row whose content is not its
-// recorded size or is past the capture limit.
-func TestReadEditFileSnapshotFillsTheBufferItAskedFor(t *testing.T) {
+// DecompressEditFileSnapshot sizes the content before it decompresses
+// any, asks for exactly that buffer, and refuses a row whose content is not
+// its recorded size or is past the capture limit.
+func TestDecompressEditFileSnapshotFillsTheBufferItAskedFor(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t1", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -183,14 +183,18 @@ func TestReadEditFileSnapshotFillsTheBufferItAskedFor(t *testing.T) {
 		buf = make([]byte, n)
 		return buf, nil
 	}
-	size, found, err := s.ReadEditFileSnapshot("t1", "p1", "a.svg", take)
-	if err != nil || !found || size != int64(len(content)) || string(buf) != content || len(asked) != 1 || asked[0] != int64(len(content)) {
-		t.Fatalf("read %d bytes (found %v, err %v), asked %v", size, found, err, asked)
+	blob, found, err := s.GetEditFileSnapshotBlob("t1", "p1", "a.svg")
+	if err != nil || !found {
+		t.Fatalf("blob: found %v, err %v", found, err)
 	}
-	if _, found, err := s.ReadEditFileSnapshot("t-other", "p1", "a.svg", take); err != nil || found {
+	size, err := DecompressEditFileSnapshot(blob, take)
+	if err != nil || size != int64(len(content)) || string(buf) != content || len(asked) != 1 || asked[0] != int64(len(content)) {
+		t.Fatalf("read %d bytes (err %v), asked %v", size, err, asked)
+	}
+	if _, found, err := s.GetEditFileSnapshotBlob("t-other", "p1", "a.svg"); err != nil || found {
 		t.Fatalf("cross-thread payload: found %v, err %v", found, err)
 	}
-	if _, found, err := s.ReadEditFileSnapshot("t1", "p1", "missing.svg", take); err != nil || found {
+	if _, found, err := s.GetEditFileSnapshotBlob("t1", "p1", "missing.svg"); err != nil || found {
 		t.Fatalf("missing path: found %v, err %v", found, err)
 	}
 
@@ -199,12 +203,8 @@ func TestReadEditFileSnapshotFillsTheBufferItAskedFor(t *testing.T) {
 		"a recorded size shorter than its content": withISize(gzipped(t, "abcdef"), 3),
 		"a recorded size longer than its content":  withISize(gzipped(t, "abc"), 6),
 	} {
-		if _, err := s.db.Exec(`INSERT INTO edit_file_snapshots (thread_id, payload_id, path, content, created_at)
-			VALUES ('t1', 'p1', ?, ?, 0)`, name, blob); err != nil {
-			t.Fatal(err)
-		}
 		asked = nil
-		if _, _, err := s.ReadEditFileSnapshot("t1", "p1", name, take); err == nil {
+		if _, err := DecompressEditFileSnapshot(blob, take); err == nil {
 			t.Errorf("%s was read", name)
 		}
 		if name == "a recorded size past the limit" && len(asked) != 0 {
