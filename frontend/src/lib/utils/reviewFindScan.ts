@@ -207,7 +207,8 @@ export interface ReviewFindContent {
    * with whether it shows now, in the element `rowKey` names
    * (chat/markdown/markdownFindText.ts). */
   commentText(body: string, rowKey: string): readonly FindRun[];
-  /** The `data-find-key`s of the drafts open in their editor: not shown. */
+  /** The `data-find-key`s of the drafts and sent comments open in their
+   * editor: not shown. */
   editing?: ReadonlySet<string>;
   /** The hidden lines of each collapsed fold of a conflict file, by fold id. */
   foldLines?(path: string): ReadonlyMap<number, readonly string[]> | null;
@@ -335,11 +336,21 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
         for (const comment of thread.comments) {
           const key = reviewCommentKey(comment);
           const rowKey = findThreadCommentKey(thread.id, key);
+          // A sent comment open in its editor shows the editor, not its body.
+          if (content.editing?.has(rowKey)) continue;
           await tick();
           const shown = visibleBody(comment.body);
           if (shown !== '' && await emitText(content.commentText(shown, rowKey), file, { kind: 'thread', threadId: thread.id, comment: key }, {
             rowKey, line, place: { kind: 'thread', threadId: thread.id },
           })) return true;
+        }
+        // The thread's held replies, at its foot.
+        for (const draft of content.drafts) {
+          if (draft.status !== 'draft' || draft.replyThreadId !== thread.id) continue;
+          const rowKey = findDraftKey(draft.id);
+          if (content.editing?.has(rowKey)) continue;
+          await tick();
+          if (await emitText(draft.body, file, { kind: 'draft', commentId: draft.id }, { rowKey, line, place: { kind: 'draft', commentId: draft.id } })) return true;
         }
         return false;
       };

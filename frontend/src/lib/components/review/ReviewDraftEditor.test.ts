@@ -26,13 +26,13 @@ describe('<ReviewDraftEditor> keyboard submit', () => {
   it('submits on Ctrl+Enter', async () => {
     const { onSubmit, textarea } = setup();
     await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
-    expect(onSubmit).toHaveBeenCalledWith('e1', 'draft text');
+    expect(onSubmit).toHaveBeenCalledWith('e1', 'draft text', 'draft');
   });
 
   it('submits on Cmd+Enter (macOS)', async () => {
     const { onSubmit, textarea } = setup();
     await fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
-    expect(onSubmit).toHaveBeenCalledWith('e1', 'draft text');
+    expect(onSubmit).toHaveBeenCalledWith('e1', 'draft text', 'draft');
   });
 
   it('does not submit on plain Enter', async () => {
@@ -150,4 +150,67 @@ it('never says unplaced or detached', () => {
     expect(view.container.textContent?.toLowerCase()).not.toMatch(/unplaced|detached/);
     view.unmount();
   }
+});
+
+describe('<ReviewDraftEditor> send now or hold', () => {
+  function renderPost(primary: 'now' | 'draft', withheld: string | null = null) {
+    const onSubmit = vi.fn();
+    const view = render(ReviewDraftEditor, {
+      props: { editor, body: 'draft text', onBodyChange: vi.fn(), onCancel: vi.fn(), onSubmit, post: { primary, withheld } },
+    });
+    const primaryButton = view.container.querySelector<HTMLButtonElement>('[data-editor-control="primary"]')!;
+    const secondaryButton = view.container.querySelector<HTMLButtonElement>('[data-editor-control="secondary"]')!;
+    return { view, onSubmit, primaryButton, secondaryButton, textarea: view.container.querySelector('textarea')! };
+  }
+
+  it('makes Comment now primary with no drafts, and Ctrl+Shift+Enter adds a draft', async () => {
+    const { onSubmit, primaryButton, secondaryButton, textarea } = renderPost('now');
+    expect(primaryButton.textContent).toBe('Comment now');
+    expect(secondaryButton.textContent).toBe('Add draft');
+    expect(textarea.placeholder).toContain('Enter to comment now');
+    await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(onSubmit).toHaveBeenLastCalledWith('e1', 'draft text', 'now');
+    await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true, shiftKey: true });
+    expect(onSubmit).toHaveBeenLastCalledWith('e1', 'draft text', 'draft');
+  });
+
+  it('makes Add draft primary once the pane holds a draft', async () => {
+    const { onSubmit, primaryButton, secondaryButton, textarea } = renderPost('draft');
+    expect(primaryButton.textContent).toBe('Add draft');
+    expect(secondaryButton.textContent).toBe('Comment now');
+    expect(textarea.placeholder).toContain('Enter to add draft');
+    expect(textarea.placeholder).not.toContain('comment now');
+    await fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
+    expect(onSubmit).toHaveBeenLastCalledWith('e1', 'draft text', 'draft');
+    await fireEvent.click(secondaryButton);
+    expect(onSubmit).toHaveBeenLastCalledWith('e1', 'draft text', 'now');
+  });
+
+  it('withholds Comment now with the reason as hover text', async () => {
+    const { onSubmit, primaryButton, textarea } = renderPost('now', 'Not granted to this device');
+    expect(primaryButton.disabled).toBe(true);
+    expect(primaryButton.title).toBe('Not granted to this device');
+    await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('keeps one Add comment where nothing posts to the PR', () => {
+    const { textarea } = setup();
+    const buttons = [...textarea.closest('[data-testid="review-draft-editor"]')!.querySelectorAll('button')].map((button) => button.textContent?.trim());
+    expect(buttons).toEqual(['Cancel', 'Add comment']);
+  });
+
+  it('shows a pending post read-only and a refusal under the kept text', () => {
+    const view = render(ReviewDraftEditor, {
+      props: { editor, body: 'draft text', onBodyChange: vi.fn(), onCancel: vi.fn(), onSubmit: vi.fn(), post: { primary: 'now', withheld: null }, pending: true },
+    });
+    expect(view.container.querySelector('textarea')!.readOnly).toBe(true);
+    expect(view.getByTestId('review-editor-pending')).toBeTruthy();
+    view.unmount();
+    const failed = render(ReviewDraftEditor, {
+      props: { editor, body: 'draft text', onBodyChange: vi.fn(), onCancel: vi.fn(), onSubmit: vi.fn(), post: { primary: 'now', withheld: null }, error: 'The line is not in the diff.' },
+    });
+    expect(failed.getByTestId('review-editor-error').textContent).toBe('The line is not in the diff.');
+    expect(failed.container.querySelector('textarea')!.value).toBe('draft text');
+  });
 });

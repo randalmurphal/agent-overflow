@@ -40,6 +40,7 @@
   import { forgeLabels } from '../../utils/forgeLabels';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
+  import { commentWriteKey } from '../../stores/reviewCommentWrites.svelte';
 
   interface Props {
     /** A review companion beside a thread pane. */
@@ -433,6 +434,8 @@
           expandedPRThreadIds={review.expandedPRThreadIds}
           generation={review.shownGeneration}
           onAddComment={review.canDraftComments && review.commentsGranted ? (anchor, generation) => review?.openDraftEditor(anchor, generation) : undefined}
+          onExtendRange={review.canDraftComments && review.commentsGranted && review.canPostNow ? (anchor, generation) => review?.extendEditorRange(anchor, generation) : undefined}
+          rangesFor={(path) => review?.rangeTintsFor(path) ?? []}
           onExpandGap={(path, gap, dir) => { void review?.expandDiffContext(path, gap, dir); }}
           jumpToFilePath={jumpFilePath ?? review.pendingJumpFilePath}
           onJumpConsumed={onJumpConsumed}
@@ -456,7 +459,11 @@
               body={review?.draftBodyFor(editor.id) ?? ''}
               onBodyChange={(editorId, body) => review?.setDraftBody(editorId, body)}
               onCancel={(editorId) => review?.closeDraftEditor(editorId)}
-              onSubmit={(editorId, body) => review?.createComment(editorId, body)}
+              onSubmit={(editorId, body, mode) => review?.createComment(editorId, body, mode)}
+              post={review?.canPostNow ? { primary: review.primaryCommentAction, withheld: review.nowWithheldReason } : null}
+              pending={review?.commentWritePending(commentWriteKey.editor(editor.id)) ?? false}
+              error={review?.commentWriteError(commentWriteKey.editor(editor.id)) ?? null}
+              onDropRange={(editorId) => review?.dropEditorRange(editorId)}
               consumeFocus={(editorId) => review?.consumeDraftEditorFocus(editorId) ?? false}
               onUseLine={(editorId, seen) => review?.useSuggestedLine(editorId, seen) ?? false}
               onMove={(editorId) => review?.moveEditor(editorId)}
@@ -501,6 +508,7 @@
               onJumpToConversation={overviewShown
                 ? () => review?.jumpToConversationThread(thread.id)
                 : undefined}
+              {review}
             />
           {/snippet}
         </ReviewDiffBody>

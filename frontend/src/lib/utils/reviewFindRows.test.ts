@@ -46,7 +46,7 @@ const draft: DiffReviewComment = {
 };
 const thread: ReviewThread = {
   id: 'p1', path: 'src/a.test.ts', line: 10, side: 'right', isResolvable: true, isResolved: false, isOutdated: false,
-  comments: [{ authorLogin: 'a', body: 'needle one', createdAt: '', databaseID: 1 }, { authorLogin: 'b', body: 'needle two', createdAt: '', databaseID: 2 }],
+  comments: [{ authorLogin: 'a', body: 'needle one', createdAt: '', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }, { authorLogin: 'b', body: 'needle two', createdAt: '', databaseID: 2, id: `n${2}`, viewerCanEdit: false, viewerCanDelete: false }],
 };
 
 function diffContent(patch: string[], comments = true): ReviewFindContent {
@@ -136,14 +136,14 @@ describe('resolveReviewFindHit', () => {
   });
 
   it('a comment without a forge id is keyed by its time and author', () => {
-    const comment: ReviewComment = { authorLogin: 'a:b', body: 'x', createdAt: '2026-01-01T00:00:00Z', databaseID: 0 };
+    const comment: ReviewComment = { authorLogin: 'a:b', body: 'x', createdAt: '2026-01-01T00:00:00Z', databaseID: 0, id: `n${0}`, viewerCanEdit: false, viewerCanDelete: false };
     expect(reviewCommentKey(comment)).toBe('@2026-01-01T00:00:00Z@a:b');
     // The key is encoded: a colon in it does not split the row key.
     expect(pc('p:1', reviewCommentKey(comment))).toBe('pc:p%3A1:%402026-01-01T00%3A00%3A00Z%40a%3Ab');
   });
 
   it('a comment match is counted among the shown runs before it', async () => {
-    const two: ReviewThread = { ...thread, comments: [{ authorLogin: 'a', body: 'needle|needle needle|needle', createdAt: '', databaseID: 7 }] };
+    const two: ReviewThread = { ...thread, comments: [{ authorLogin: 'a', body: 'needle|needle needle|needle', createdAt: '', databaseID: 7, id: `n${7}`, viewerCanEdit: false, viewerCanDelete: false }] };
     const runs = (hidden: boolean): ReviewFindContent => ({
       ...diffContent(PATCHES.base), prThreads: [two],
       commentText: (body) => body.split('|').map((text, index) => ({ text, shown: !hidden || index !== 1 })),
@@ -271,7 +271,7 @@ class World {
   comment(): ReviewComment {
     this.ids += 1;
     // Some comments have no forge id.
-    return { authorLogin: `u${this.ids}`, body: this.body(), createdAt: `t${this.ids}`, databaseID: this.chance(0.2) ? 0 : this.ids };
+    return { authorLogin: `u${this.ids}`, body: this.body(), createdAt: `t${this.ids}`, databaseID: this.chance(0.2) ? 0 : this.ids, id: `n${this.ids}`, viewerCanEdit: false, viewerCanDelete: false };
   }
 
   draft(): DiffReviewComment {

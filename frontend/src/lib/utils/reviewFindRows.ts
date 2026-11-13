@@ -165,7 +165,11 @@ function commentLines(file: ReviewFile, content: ReviewFindLocateContent): Map<s
   if (!inserts) return out;
   const keysOf = (bucket: readonly InsertRow[]): string[] => bucket.flatMap((row) => {
     if (row.kind === 'comment-thread') return [findDraftKey(row.threadKey)];
-    if (row.kind === 'pr-thread') return row.thread.comments.map((comment) => findThreadCommentKey(row.thread.id, reviewCommentKey(comment)));
+    if (row.kind === 'pr-thread') {
+      // The thread's comments, then its held replies at its foot.
+      const replies = content.drafts.filter((draft) => draft.status === 'draft' && draft.replyThreadId === row.thread.id).map((draft) => findDraftKey(draft.id));
+      return [...row.thread.comments.map((comment) => findThreadCommentKey(row.thread.id, reviewCommentKey(comment))), ...replies];
+    }
     return [];
   });
   for (const key of keysOf(inserts.takeHead())) out.set(key, -1);
@@ -237,8 +241,8 @@ export function resolveReviewFindHit(shown: ReviewFindShown, hit: ReviewFindHit,
       ? thread.comments.find((each) => reviewCommentKey(each) === at.comment)
       : undefined;
     const body = comment ? visibleBody(comment.body) : '';
-    if (body === '') return ABSENT;
     const rowKey = findThreadCommentKey(at.threadId, at.comment);
+    if (body === '' || shown.editing.has(rowKey)) return ABSENT;
     const runs = shown.commentRuns(body, rowKey);
     const run = runs[hit.run];
     if (!run?.shown || !has(run.text)) return ABSENT;

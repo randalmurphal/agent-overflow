@@ -81,7 +81,7 @@ function draft(id: string, newLine: number, body: string): DiffReviewComment {
 function thread(id: string, line: number | null, bodies: string[], resolved = false): ReviewThread {
   return {
     id, path: 'src/needle.ts', line, side: 'right', isResolvable: true, isResolved: resolved, isOutdated: false,
-    comments: bodies.map((body, index) => ({ authorLogin: 'a', body, createdAt: '', databaseID: index + 1 })),
+    comments: bodies.map((body, index) => ({ authorLogin: 'a', body, createdAt: '', databaseID: index + 1, id: `n${index + 1}`, viewerCanEdit: false, viewerCanDelete: false })),
   };
 }
 
@@ -147,6 +147,18 @@ describe('scanReviewFind', () => {
       ['l:6:b.ts', 0],
     ]);
     expect(hits.find((hit) => hit.rowKey === 'pc:p1:1')?.place).toEqual({ kind: 'thread', threadId: 'p1' });
+  });
+
+  it('counts a thread\'s held reply at its foot, and nothing open in its editor', async () => {
+    const reply: DiffReviewComment = { ...draft('r1', 0, 'held needle reply'), scope: 'pr', side: 'reply', newLine: undefined, replyThreadId: 'p1' };
+    const source = content({ drafts: [reply], prThreads: [thread('p1', 2, ['first needle', 'second needle'])] });
+    expect((await scan(source, 'needle')).hits.filter((hit) => hit.rowKey.startsWith('pc:') || hit.rowKey.startsWith('dc:')).map((hit) => hit.rowKey))
+      .toEqual(['pc:p1:1', 'pc:p1:2', 'dc:r1']);
+    // A sent comment and a held reply open in their editors show the
+    // editor, so their bodies are not counted.
+    const editing = content({ ...source, editing: new Set(['pc:p1:2', 'dc:r1']) });
+    expect((await scan(editing, 'needle')).hits.filter((hit) => hit.rowKey.startsWith('pc:') || hit.rowKey.startsWith('dc:')).map((hit) => hit.rowKey))
+      .toEqual(['pc:p1:1']);
   });
 
   it('searches a collapsed conflict fold through its hidden lines, with the identity it has once open', async () => {

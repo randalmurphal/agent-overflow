@@ -43,7 +43,7 @@
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
   import { visibleBody } from '../../utils/reviewComments';
   import { readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
-  import { findDraftKey, findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
+  import { findDraftKey, findThreadCommentKey, findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
   import {
     findHitAtOrBelow,
     placeReviewFindHit,
@@ -121,12 +121,19 @@
     });
   }
 
-  // The drafts open in their editor, mounted or not: the store keeps an
-  // open edit across a row unmount, and its saved body is not on screen.
+  // The drafts and sent comments open in their editor, mounted or not:
+  // the store keeps an open edit across a row unmount, and the body it
+  // replaces is not on screen.
   function readEditing(): Set<string> {
     return untrack(() => {
       if (view !== 'diff') return new Set<string>();
-      return new Set(review.drafts.filter((draft) => review.draftEditBodyFor(draft.id) !== null).map((draft) => findDraftKey(draft.id)));
+      const out = new Set(review.drafts.filter((draft) => review.draftEditBodyFor(draft.id) !== null).map((draft) => findDraftKey(draft.id)));
+      for (const thread of review.prThreads) {
+        for (const comment of thread.comments) {
+          if (review.sentComments.editBodyFor(thread, comment) !== null) out.add(findThreadCommentKey(thread.id, reviewCommentKey(comment)));
+        }
+      }
+      return out;
     });
   }
 

@@ -40,6 +40,7 @@
     type ReviewRow,
   } from '../../utils/reviewRows';
   import type { RowEstimate } from '../../utils/virtual/types';
+  import type { LineRange } from '../../utils/reviewRange';
 
   // The continuous virtualized review surface: every file's header +
   // line blocks + comment rows in ONE LongListVirtualizer, with a
@@ -107,6 +108,10 @@
     /** The diff on screen (ShownDiff.generation), for a pick's check. */
     generation?: number;
     onAddComment?: (anchor: EditorAnchor, generation?: number) => void;
+    /** Shift+click on a line's add button (a range comment). */
+    onExtendRange?: (anchor: EditorAnchor, generation?: number) => void;
+    /** The line ranges a file's rows tint. */
+    rangesFor?: (path: string) => readonly LineRange[];
     /** Conflict view only: expands a fold row's hidden lines. */
     onExpandFold?: (path: string, foldId: number) => void;
     /** Diff view only: fetches a hunk gap's hidden context lines. */
@@ -149,6 +154,8 @@
     onOverviewOffChange,
     generation,
     onAddComment,
+    onExtendRange,
+    rangesFor,
     onExpandFold,
     onExpandGap,
     spanContext = null,
@@ -593,6 +600,8 @@
             {prThread}
             {generation}
             {onAddComment}
+            {onExtendRange}
+            {rangesFor}
             {onExpandFold}
             {onExpandGap}
           />

@@ -17,6 +17,9 @@ import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import type { ReviewFind } from '../../stores/reviewFind.svelte';
 
+// No sent comment open in its editor.
+const NO_SENT_EDITS = { editBodyFor: () => null };
+
 // Review find's count over comments is what its highlighter paints: for
 // a draft and a PR thread's markdown comments, the scanner's matches per
 // element (`data-find-key`, occurrence) are the painted matches per
@@ -41,9 +44,9 @@ const DRAFT: DiffReviewComment = {
 const THREAD: ReviewThread = {
   id: 'p1', path: 'src/a.ts', line: 3, side: 'right', isResolvable: true, isResolved: false, isOutdated: false,
   comments: [
-    { authorLogin: 'priya', body: 'Rename to **nee**dle and `needle_two`.', createdAt: '', databaseID: 1 },
-    { authorLogin: 'bot', body: '<details><summary>needle summary</summary>\n\nhidden needle\n\n</details>', createdAt: '', databaseID: 2 },
-    { authorLogin: 'jrow', body: '| a | b |\n| --- | --- |\n| needle | [link](https://example.com/needle) |', createdAt: '', databaseID: 3 },
+    { authorLogin: 'priya', body: 'Rename to **nee**dle and `needle_two`.', createdAt: '', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false },
+    { authorLogin: 'bot', body: '<details><summary>needle summary</summary>\n\nhidden needle\n\n</details>', createdAt: '', databaseID: 2, id: `n${2}`, viewerCanEdit: false, viewerCanDelete: false },
+    { authorLogin: 'jrow', body: '| a | b |\n| --- | --- |\n| needle | [link](https://example.com/needle) |', createdAt: '', databaseID: 3, id: `n${3}`, viewerCanEdit: false, viewerCanDelete: false },
   ],
 };
 
@@ -157,7 +160,7 @@ describe('review find over a comment its projection misreads', () => {
     render(ReviewThreadComments, { target: host, props: { thread: THREAD, findKeys: true } });
     await waitFor(() => expect(host.querySelectorAll('[data-find-key^="pc:"]').length).toBe(3));
     const review = {
-      drafts: [], prThreads: [THREAD], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+      drafts: [], prThreads: [THREAD], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS,
     } as unknown as ReviewPaneState;
     const files = parseReviewFiles(PATCH);
     onTestFinished(() => files[0].body.segments[0].store.dispose());
@@ -194,9 +197,9 @@ describe('review find\'s current comment match across a recount held open', () =
     ...Array.from({ length: 400_000 }, (_, i) => ` filler ${i}`), '',
   ].join('\n');
   const comments = [
-    { authorLogin: 'a', body: 'needle first', createdAt: '', databaseID: 11 },
-    { authorLogin: 'b', body: '<details><summary>sum</summary>\n\nneedle hidden\n\n</details>\n\nneedle after', createdAt: '', databaseID: 12 },
-    { authorLogin: 'c', body: 'needle third', createdAt: '', databaseID: 13 },
+    { authorLogin: 'a', body: 'needle first', createdAt: '', databaseID: 11, id: `n${11}`, viewerCanEdit: false, viewerCanDelete: false },
+    { authorLogin: 'b', body: '<details><summary>sum</summary>\n\nneedle hidden\n\n</details>\n\nneedle after', createdAt: '', databaseID: 12, id: `n${12}`, viewerCanEdit: false, viewerCanDelete: false },
+    { authorLogin: 'c', body: 'needle third', createdAt: '', databaseID: 13, id: `n${13}`, viewerCanEdit: false, viewerCanDelete: false },
   ];
   const thread: ReviewThread = { ...THREAD, comments };
 
@@ -214,7 +217,7 @@ describe('review find\'s current comment match across a recount held open', () =
     await waitFor(() => expect(host.querySelectorAll('[data-find-key^="pc:"]').length).toBe(3));
     const files = [...parseReviewFiles(PATCH), ...parseReviewFiles(BIG)];
     onTestFinished(() => { for (const file of files) file.body.segments[0].store.dispose(); });
-    const review = rawProps({ drafts: [] as DiffReviewComment[], prThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() });
+    const review = rawProps({ drafts: [] as DiffReviewComment[], prThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS });
     render(ReviewPaneFind, {
       target: document.body,
       props: {

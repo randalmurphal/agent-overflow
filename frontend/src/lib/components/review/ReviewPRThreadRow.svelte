@@ -1,12 +1,14 @@
 <script lang="ts">
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
-  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import ReviewAvatar from './ReviewAvatar.svelte';
+  import ReviewHeldReplies from './ReviewHeldReplies.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
+  import ReviewSentCommentActions from './ReviewSentCommentActions.svelte';
+  import ReviewSentCommentBody from './ReviewSentCommentBody.svelte';
   import ReviewThreadComments from './ReviewThreadComments.svelte';
   import ReviewThreadFooter from './ReviewThreadFooter.svelte';
-  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import { commentSnippet, visibleBody } from '../../utils/reviewComments';
+  import { rangeLabel, threadRange } from '../../utils/reviewRange';
   import { authorDisplayName, isBotLogin } from '../../utils/reviewIdentity';
   import {
     THREAD_CARD_CLASS,
@@ -23,7 +25,7 @@
   import { jumpPulse } from '../../utils/reviewJumpPulse';
   import { findThreadCommentKey, reviewCommentKey } from '../../utils/reviewFindScan';
   import type { ReviewThread } from '../../types/models';
-  import type { CommentAnchor } from '../../stores/reviewPane.svelte';
+  import type { CommentAnchor, ReviewPaneState } from '../../stores/reviewPane.svelte';
 
   // A PR review thread on the diff surface: the same card as the
   // Conversation feed (avatar, author, state edge and chip, the actions at
@@ -61,6 +63,8 @@
     onJumpToConversation?: () => void;
     /** The jump that landed here (utils/reviewJumpPulse); 0 for none. */
     pulse?: number;
+    /** The review whose comment actions and held replies the card shows. */
+    review?: ReviewPaneState | null;
   }
 
   let {
@@ -82,11 +86,16 @@
     onResolve,
     onJumpToConversation,
     pulse = 0,
+    review = null,
   }: Props = $props();
+
 
   const threadState = $derived(reviewThreadState(thread));
   const outdated = $derived(reviewThreadOutdated(thread, orphaned));
   const first = $derived(thread.comments[0]);
+  const range = $derived(threadRange(thread));
+  const heldReplies = $derived(review?.replyDraftsFor(thread.id) ?? []);
+  const editingFirst = $derived(first !== undefined && (review?.sentComments.editBodyFor(thread, first) ?? null) !== null);
   const firstBody = $derived(visibleBody(first?.body ?? ''));
   const summary = $derived(commentSnippet(first?.body ?? ''));
   const replyCount = $derived(Math.max(0, thread.comments.length - 1));
@@ -112,7 +121,7 @@
     <ReviewAvatar login={first?.authorLogin ?? ''} name={first?.authorName} size={20} />
   </div>
   <div class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]} {outdated ? THREAD_OUTDATED_CARD_CLASS : ''}" {@attach jumpPulse(pulse)}>
-    <div class="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 {onJumpToConversation ? 'pr-1' : 'pr-2.5'} text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {collapsed || firstBody === '' ? '' : 'border-b border-border-subtle'}">
+    <div class="group/comment flex min-w-0 items-center gap-1.5 py-1 pl-2.5 {onJumpToConversation ? 'pr-1' : 'pr-2.5'} text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {collapsed || (firstBody === '' && !editingFirst) ? '' : 'border-b border-border-subtle'}">
       <button
         type="button"
         class="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 overflow-hidden text-left"
@@ -144,9 +153,18 @@
           {#if firstTime}
             <span class="shrink-0 text-fg-subtle">· {firstTime}</span>
           {/if}
+          {#if first?.editedAt}
+            <span class="shrink-0 text-fg-subtle" data-testid="review-comment-edited">edited</span>
+          {/if}
+          {#if range}
+            <span class="shrink-0 text-fg-subtle" data-testid="review-thread-range">{rangeLabel(range)}</span>
+          {/if}
           <span class="min-w-0 flex-1 basis-0"></span>
         {/if}
       </button>
+      {#if !collapsed && first && review}
+        <ReviewSentCommentActions {review} {thread} comment={first} />
+      {/if}
       {#if onJumpToConversation}
         {@const jump = onJumpToConversation}
         <ReviewIconButton
@@ -159,14 +177,16 @@
     </div>
 
     <div class={threadBodyClass(threadState)}>
-      {#if !collapsed && firstBody !== ''}
-        <div class="px-3 py-2.5" data-find-key={first ? findThreadCommentKey(thread.id, reviewCommentKey(first)) : undefined}>
-          <ChatMarkdown source={firstBody} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
-        </div>
+      {#if !collapsed && first && (firstBody !== '' || editingFirst)}
+        <ReviewSentCommentBody {review} {thread} comment={first} class="px-3 py-2.5" findKey={findThreadCommentKey(thread.id, reviewCommentKey(first))} />
       {/if}
 
       {#if !collapsed && replyCount > 0}
-        <ReviewThreadComments {thread} skipFirst avatarSize={18} findKeys />
+        <ReviewThreadComments {thread} {review} skipFirst avatarSize={18} findKeys />
+      {/if}
+
+      {#if !collapsed && review}
+        <ReviewHeldReplies {review} replies={heldReplies} />
       {/if}
 
       {#if !collapsed || replying}
@@ -183,6 +203,8 @@
           {onBodyChange}
           {onSendReply}
           {onResolve}
+          hold={review?.canHoldReply ? { primary: review.primaryCommentAction, onHold: () => review?.holdPRThreadReply(thread) } : null}
+          nowWithheld={review?.nowWithheldReason ?? null}
         />
       {/if}
     </div>

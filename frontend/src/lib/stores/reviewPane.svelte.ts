@@ -28,6 +28,7 @@ import {
   GetPRDetail,
   MarkPRReady,
   MergePR,
+  PostPRLineComment,
   ListPRReviewThreads,
   MarkDiffReviewCommentsSent,
   ReplyToPRThread,
@@ -111,6 +112,7 @@ import type {
   CIPipeline,
   DiffReviewComment,
   DiffReviewScope,
+  DiffReviewThreadContext,
   MergeOutcome,
   PRDetail,
   ReviewEvent,
@@ -162,6 +164,8 @@ import {
 import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { ReviewSectionId } from './reviewSectionSizes.svelte';
 import { REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
+import { commentWriteKey, createCommentWrites, type CommentWrites } from './reviewCommentWrites.svelte';
+import { draftRange, RANGE_REFUSAL_TEXT, spanRange, threadRange, type LineRange } from '../utils/reviewRange';
 
 export type ReviewScope = DiffReviewScope;
 /** Where a PR thread's reply composer is: its diff row or its card in
@@ -396,9 +400,48 @@ export interface ReviewPaneState {
   setDraftBody(editorId: string, body: string): void;
   /** True exactly once after openDraftEditor, for the mount autofocus. */
   consumeDraftEditorFocus(editorId: string): boolean;
-  /** Saves an open editor's comment. Rejects with ReviewCommentRefused
-   * when nothing proves its line is the one it was opened on. */
-  createComment(editorId: string, body: string): Promise<void>;
+  /** Saves an open editor's comment as a draft, or with `now` posts it to
+   * the PR at once (the editor stays open, pending, until the forge's
+   * answer is on screen). Rejects with ReviewCommentRefused when nothing
+   * proves its line is the one it was opened on. */
+  createComment(editorId: string, body: string, mode?: 'draft' | 'now'): Promise<void>;
+  // ------------------------------------------------------------------
+  // Send now or hold (docs/specs/pull-requests.md#comments). "Now" posts
+  // one comment to the PR at once; "hold" saves a draft for the batch.
+  // ------------------------------------------------------------------
+  /** A comment box here can post to the PR now: the whole PR's diff on a
+   * backend with the comment actions. */
+  readonly canPostNow: boolean;
+  /** Why a now write is withheld (stale diff, no grant, a failing pump),
+   * or null; shown as the control's hover text. */
+  readonly nowWithheldReason: string | null;
+  /** Sent comments offer edit and delete (as the forge permits). */
+  readonly sentCommentActions: boolean;
+  /** A reply can be held as a draft for the batch. */
+  readonly canHoldReply: boolean;
+  /** What a comment box's primary button (and Ctrl/Cmd+Enter) does: now
+   * while the pane holds no drafts for this PR, a draft once it holds one. */
+  readonly primaryCommentAction: 'now' | 'draft';
+  /** A now write keyed by commentWriteKey: in flight or awaiting its frame. */
+  commentWritePending(key: string): boolean;
+  /** The forge's sentence for a now write that failed, kept in place. */
+  commentWriteError(key: string): string | null;
+  /** A thread's held replies, oldest first (normally one at most). */
+  replyDraftsFor(threadId: string): readonly DiffReviewComment[];
+  /** Held replies whose thread the PR no longer lists. */
+  readonly orphanedReplyDrafts: readonly DiffReviewComment[];
+  /** Saves the reply composer's text as a held reply to the thread. */
+  holdPRThreadReply(thread: ReviewThread): Promise<void>;
+  /** Shift+click on a line: spans the last-opened editor of the same file
+   * from its line to `anchor`. Opens an editor on `anchor` when none is. */
+  extendEditorRange(anchor: EditorAnchor, generation?: number): string | null;
+  /** Drops a range editor back to the line it was opened on. */
+  dropEditorRange(editorId: string): void;
+  /** The ranges the diff tints in a file: open range editors, range
+   * drafts, and the expanded forge threads that span lines. */
+  rangeTintsFor(path: string): readonly LineRange[];
+  /** Edit and delete of sent comments, and the PR-level comment. */
+  readonly sentComments: CommentWrites;
   /** The unsaved text of a draft open in its editor, or null when it is
    * not being edited; store-backed like `draftBodyFor`. */
   draftEditBodyFor(commentId: string): string | null;
@@ -426,6 +469,8 @@ export interface ReviewPaneState {
   /** Closes the composer; its text stays for the next open until a send
    * succeeds. */
   closeReply(threadId: string, surface: ReviewReplySurface): void;
+  /** Posts the reply composer's text now; the composer stays open, pending,
+   * until the forge's answer is on screen. */
   sendPRThreadReply(thread: ReviewThread): Promise<void>;
   replyErrorFor(threadId: string): string | null;
   sendingReply(threadId: string): boolean;
@@ -557,6 +602,16 @@ export interface ReadIntent {
 
 const CI_RESULT_STATUSES = new Set(['success', 'failed', 'running', 'pending', 'canceled', 'skipped', 'manual']);
 
+/** A thread as an agent delivery quotes it for a held reply. */
+function replyThreadContext(thread: ReviewThread): DiffReviewThreadContext {
+  return {
+    path: thread.path || undefined,
+    line: thread.line ?? thread.originalLine ?? undefined,
+    startLine: thread.startLine ?? undefined,
+    comments: thread.comments.map((comment) => ({ author: comment.authorLogin, body: comment.body })),
+  };
+}
+
 /** A fence longer than any backtick run in `text`. */
 function codeFence(text: string): string {
   const longest = (text.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
@@ -609,6 +664,7 @@ const EMPTY_CONVERSATION_FEED: readonly ConversationFeedItem[] = Object.freeze([
 
 // Same stability rule for the comment list a workspace-only pane reads.
 const EMPTY_COMMENTS: readonly DiffReviewComment[] = Object.freeze([]);
+const NO_RANGES: readonly LineRange[] = Object.freeze([]);
 // What a chat-bound call on a pinned review answers; the pane offers none.
 const PINNED_NO_CHAT = 'This review has no chat to send to.';
 
@@ -696,7 +752,20 @@ interface EditorRecord {
   /** Placed: the shown file and the loaded file its line was found in. */
   readonly shownFile: ReviewFile | null;
   readonly baseFile: ReviewFile | null;
+  /** Placed on a range: its first line (`anchor` is its last), the line
+   * the editor was opened on, and the span the diff tints. */
+  readonly rangeStart: CommentAnchor | null;
+  readonly rangeOrigin: CommentAnchor | null;
+  readonly range: LineRange | null;
+  /** Why the last shift+click made no range. */
+  readonly rangeRefusal: string | null;
 }
+
+const NO_RANGE = { rangeStart: null, rangeOrigin: null, range: null, rangeRefusal: null } as const;
+
+// The backend's comment actions (PostPRLineComment, PostPRComment,
+// EditPRComment, DeletePRComment, held replies and ranges in drafts).
+const PR_COMMENT_ACTIONS = 'pr-comment-actions.v1';
 
 function anchorSideLine(anchor: CommentAnchor): number {
   return (anchor.side === 'old' ? anchor.oldLine : anchor.newLine) ?? 0;
@@ -1019,6 +1088,8 @@ export function createReviewPaneState(
   let shown: ShownDiff | null = $state.raw(null);
   // The editor a picked line takes ("Move").
   let armedEditorId: string | null = $state(null);
+  // The editor last opened or focused by a pick: a shift+click spans it.
+  let lastEditorId: string | null = null;
   // The same for a saved draft open in its editor, by comment id, under
   // the comment source the draft belongs to. Anchors do not key it, so a
   // new view of the same subject (whitespace, a commit, an edit) keeps
@@ -1241,8 +1312,9 @@ export function createReviewPaneState(
   // The open editors of the diff on screen, as the rows place them.
   const shownEditors: readonly ReviewEditor[] = $derived(shown === null ? [] : openEditors
     .filter((editor) => editor.subject === shown?.subject)
-    .map(({ id, filePath, side, state, anchor, suggested, occurrence, repeated }) => ({
+    .map(({ id, filePath, side, state, anchor, suggested, occurrence, repeated, range, rangeRefusal }) => ({
       id, filePath, side, state, anchor, suggested, occurrence, repeated, armed: id === armedEditorId, generation: shown?.generation ?? 0,
+      range: range ?? undefined, rangeRefusal: rangeRefusal ?? undefined,
     })));
   // One gap-suppressed copy per loaded file, so a file keeps its identity
   // across rebuilds of the overlay below.
@@ -1379,6 +1451,49 @@ export function createReviewPaneState(
       || (effectiveSubmitTarget === 'pr' && (summaryBody.trim() !== '' || verdict !== 'comment')),
   );
   const isTurnActive = $derived(threadId !== null && getActiveTurn(threadId) !== null);
+
+  // Send now or hold. A comment box posts to the PR now only on the whole
+  // PR's diff (a picked commit's numbers would misanchor against the head)
+  // of a backend with the comment actions; a held reply needs a draft
+  // home too. The primary is "now" until the pane holds a draft for the
+  // PR, then "Add draft": the batch is what the reader is building.
+  const commentActions = $derived(getTransportHelloFor(backend)?.capabilities.includes(PR_COMMENT_ACTIONS) ?? false);
+  const canPostNow = $derived(commentActions && scope === 'pr' && selectedCommitSHA === null && prRef !== null);
+  // Edit and delete of sent comments, wherever the PR's threads show.
+  const sentCommentActions = $derived(commentActions && scope === 'pr' && prRef !== null);
+  const canHoldReply = $derived(canPostNow && canDraftComments && commentsGranted);
+  const nowWithheldReason = $derived<string | null>(
+    !(pinned ? hasScope('git:operate', backend) : threadHasScope('git:operate', threadId, workspace.projectId))
+      ? 'Not granted to this device'
+      : mergeWithheldReason,
+  );
+  const primaryCommentAction = $derived<'now' | 'draft'>(drafts.length === 0 ? 'now' : 'draft');
+  // A thread's held replies, oldest first. The backend refuses a second
+  // one, but recovering a delivery can leave several; each shows.
+  const replyDrafts = $derived.by(() => {
+    const out = new Map<string, DiffReviewComment[]>();
+    for (const draft of drafts) {
+      if (draft.replyThreadId) out.set(draft.replyThreadId, [...(out.get(draft.replyThreadId) ?? []), draft]);
+    }
+    for (const list of out.values()) list.sort((a, b) => a.createdAt - b.createdAt);
+    return out;
+  });
+  // A held reply whose thread a loaded snapshot no longer lists: it stays
+  // a draft (shown where it can be deleted) and is left out of a review.
+  const orphanedReplyDrafts = $derived.by<readonly DiffReviewComment[]>(() => {
+    if (!prSnapshot || replyDrafts.size === 0) return EMPTY_COMMENTS;
+    const live = new Set(prThreads.map((thread) => thread.id));
+    return [...replyDrafts.values()].flat().filter((draft) => !live.has(draft.replyThreadId!));
+  });
+  const commentWrites = createCommentWrites({
+    backend,
+    ref: () => prRef,
+    entityKey: () => prEntityKey,
+    launch: () => backendLaunch,
+    updateFailing: () => prUpdateError !== null,
+    withheld: () => nowWithheldReason,
+    refreshThreads: () => refreshPRThreads(),
+  });
 
   // The workspace's CURRENT open PR, read live from the shared git-status
   // store. Not memoized: a PR opened while this pane sat open must become
@@ -1528,6 +1643,7 @@ export function createReviewPaneState(
 
   function dispose(): void {
     disposed = true;
+    commentWrites.dispose();
     showRead(null);
     disposePRRefWatch();
     disposePaintedRetention();
@@ -2204,7 +2320,7 @@ export function createReviewPaneState(
   // The editor with no proven line: detached in a file of the diff, gone
   // when the file is not in it.
   function detached(editor: EditorRecord, reason: DetachReason, suggested: CommentAnchor | null = null): EditorRecord {
-    return { ...editor, state: reason === 'file-gone' ? 'gone' : 'detached', anchor: null, occurrence: 0, repeated: false, suggested, reason, shownFile: null, baseFile: null };
+    return { ...editor, state: reason === 'file-gone' ? 'gone' : 'detached', anchor: null, occurrence: 0, repeated: false, suggested, reason, shownFile: null, baseFile: null, ...NO_RANGE };
   }
 
   // Places the open editors of `subject` in `next`, the diff a load is
@@ -2260,9 +2376,11 @@ export function createReviewPaneState(
       if (!outcome.anchor || !shownFile || !baseFile) {
         return detached(moved, outcome.reason === 'file-gone' || !outcome.reason ? 'line-changed' : outcome.reason, outcome.suggested);
       }
+      // A range stays only while its last line is the line it was proven on.
+      const keepsRange = editor.anchor !== null && anchorKey(editor.anchor) === anchorKey(outcome.anchor);
       return {
         ...moved, state: 'placed', anchor: outcome.anchor, occurrence: 0, repeated: false, suggested: null, reason: null,
-        line: anchorSideLine(outcome.anchor), shownFile, baseFile,
+        line: anchorSideLine(outcome.anchor), shownFile, baseFile, ...(keepsRange ? { rangeRefusal: null } : NO_RANGE),
       };
     });
   }
@@ -2303,6 +2421,7 @@ export function createReviewPaneState(
       proof: { kind: 'none' },
       shownFile,
       baseFile,
+      ...NO_RANGE,
     };
   }
 
@@ -2333,11 +2452,48 @@ export function createReviewPaneState(
     const existing = placedEditorOn(editor);
     if (existing) {
       pendingEditorFocusId = existing.id;
+      lastEditorId = existing.id;
       return existing.id;
     }
     pendingEditorFocusId = editor.id;
+    lastEditorId = editor.id;
     openEditors = [...openEditors, editor];
     return editor.id;
+  }
+
+  // The editor a shift+click spans: the one last opened, when it is placed
+  // in the file clicked. Its first line and last are checked against the
+  // file as loaded (utils/reviewRange.ts); a refusal keeps the editor as
+  // it was and says why on it.
+  function extendEditorRange(anchor: EditorAnchor, generation?: number): string | null {
+    if (generation !== undefined && generation !== shown?.generation) return null;
+    const editor = openEditors.find((candidate) => candidate.id === lastEditorId);
+    if (!editor || editor.state !== 'placed' || editor.anchor === null || editor.subject !== shown?.subject
+      || editor.filePath !== anchor.filePath || armedEditorId !== null) {
+      return openDraftEditor(anchor, generation);
+    }
+    const base = loadedFiles.find((file) => file.path === anchor.filePath);
+    const shownFile = files.find((file) => file.path === anchor.filePath);
+    if (!base || !shownFile) return null;
+    const { lineIndex: _lineIndex, ...given } = anchor;
+    const origin = editor.rangeOrigin ?? editor.anchor;
+    const span = spanRange(base, origin, completeAnchor(shownFile, given));
+    if (span.kind === 'refused') {
+      replaceEditor(editor, { ...editor, rangeRefusal: RANGE_REFUSAL_TEXT[span.reason] });
+      return editor.id;
+    }
+    const placed = newEditor(span.kind === 'single' ? origin : span.end, editor.id);
+    if (!placed) return null;
+    replaceEditor(editor, span.kind === 'single' ? placed : { ...placed, rangeStart: span.start, rangeOrigin: origin, range: span.range });
+    pendingEditorFocusId = editor.id;
+    return editor.id;
+  }
+
+  function dropEditorRange(editorId: string): void {
+    const editor = openEditors.find((candidate) => candidate.id === editorId);
+    if (!editor?.rangeOrigin) return;
+    const placed = newEditor(editor.rangeOrigin, editor.id);
+    if (placed) replaceEditor(editor, placed);
   }
 
   function useSuggestedLine(editorId: string, seen: Pick<EditorRow, 'generation' | 'suggested'>): boolean {
@@ -2396,13 +2552,30 @@ export function createReviewPaneState(
     return editor.anchor;
   }
 
-  async function createComment(editorId: string, body: string): Promise<void> {
+  async function createComment(editorId: string, body: string, mode: 'draft' | 'now' = 'draft'): Promise<void> {
     const trimmed = body.trim();
     const bundle = shown;
     if (!bundle?.sourceKey || !trimmed) return;
     const editor = openEditors.find((candidate) => candidate.id === editorId) ?? null;
+    const start = editor?.rangeStart ?? null;
     try {
       const anchor = saveableAnchor(editor, bundle);
+      if (mode === 'now') {
+        if (!canPostNow) throw new Error('Comments post to the pull request only on its whole diff.');
+        // Posted from the diff on screen, at the head it was loaded at.
+        const request = {
+          headSha: loadedPRHeadSHA,
+          filePath: anchor.filePath,
+          side: anchor.side,
+          oldLine: anchor.oldLine,
+          newLine: anchor.newLine,
+          startOldLine: start?.oldLine,
+          startNewLine: start?.newLine,
+          body: trimmed,
+        };
+        await commentWrites.run(commentWriteKey.editor(editorId), (ref) => PostPRLineComment(prReferenceWire(ref), request), () => closeDraftEditor(editorId));
+        return;
+      }
       const input = {
         scope: bundle.scope,
         sourceKey: bundle.sourceKey,
@@ -2411,6 +2584,8 @@ export function createReviewPaneState(
         oldLine: anchor.oldLine,
         newLine: anchor.newLine,
         side: anchor.side,
+        startOldLine: start?.oldLine,
+        startNewLine: start?.newLine,
         selectedText: editor?.selectedText ?? '',
         body: trimmed,
       };
@@ -2492,13 +2667,18 @@ export function createReviewPaneState(
     const detail = prSnapshot?.detail;
     const shown = files;
     if (sendScope !== 'pr' || !detail) return undefined;
+    const threads = prThreads;
     return {
       number: detail.number,
       url: detail.url,
-      comments: await Promise.all(sending.map(async (comment) => ({
-        commentId: comment.id,
-        hunkExcerpt: await hunkExcerptForComment(shown, comment),
-      }))),
+      comments: await Promise.all(sending.map(async (comment) => {
+        // A held reply quotes the thread it answers, as the pane shows it.
+        if (comment.side === 'reply') {
+          const thread = threads.find((each) => each.id === comment.replyThreadId);
+          return { commentId: comment.id, hunkExcerpt: '', thread: thread ? replyThreadContext(thread) : undefined };
+        }
+        return { commentId: comment.id, hunkExcerpt: await hunkExcerptForComment(shown, comment) };
+      })),
     };
   }
 
@@ -2682,6 +2862,9 @@ export function createReviewPaneState(
       const result = settlement.result;
       if (result.partialFailurePath) {
         submitError = `The review posted, but its comment on ${result.partialFailurePath} did not. ${result.partialFailure ?? 'Unknown error.'}`;
+      } else if (result.partialFailureThreadId) {
+        // The reply stays a draft at its thread's foot.
+        submitError = `The review posted, but a held reply did not. ${result.partialFailure ?? 'Unknown error.'}`;
       } else if (result.partialFailure) {
         submitError = `The review posted, but a step after it did not. ${result.partialFailure}`;
       } else if (result.editedDraftIds?.length) {
@@ -2762,6 +2945,8 @@ export function createReviewPaneState(
     }
   }
 
+  // A reply posts now wherever the thread shows (a picked commit's too),
+  // under the gates every now write has.
   async function sendPRThreadReply(thread: ReviewThread): Promise<void> {
     if (!prRef) return;
     const body = (replyBodies.get(thread.id) ?? '').trim();
@@ -2771,17 +2956,58 @@ export function createReviewPaneState(
       replyErrors.set(thread.id, 'Thread has no top-level comment to reply to.');
       return;
     }
+    replyErrors.delete(thread.id);
+    await commentWrites.run(
+      commentWriteKey.reply(thread.id),
+      (ref) => ReplyToPRThread(prReferenceWire(ref), thread.id, first.databaseID, body),
+      () => {
+        if ((replyBodies.get(thread.id) ?? '').trim() === body) replyBodies.delete(thread.id);
+        closeReplyEverywhere(thread.id);
+      },
+      nowWithheldReason,
+    );
+  }
+
+  function closeReplyEverywhere(prThreadId: string): void {
+    openReplies.delete(`diff:${prThreadId}`);
+    openReplies.delete(`conversation:${prThreadId}`);
+  }
+
+  // The composer's text as the thread's held reply, which renders at the
+  // thread's foot and goes out with the batch. One per thread: a thread
+  // holding one opens that draft's edit instead of the composer.
+  async function holdPRThreadReply(thread: ReviewThread): Promise<void> {
+    const body = (replyBodies.get(thread.id) ?? '').trim();
+    const first = thread.comments[0];
+    if (!body || !canHoldReply || !sourceKey || sendingReplyIds.has(thread.id)) return;
+    if (!first) {
+      replyErrors.set(thread.id, 'Thread has no top-level comment to reply to.');
+      return;
+    }
     sendingReplyIds.add(thread.id);
     replyErrors.delete(thread.id);
+    const input = {
+      scope: 'pr' as const,
+      sourceKey,
+      commitSha: loadedPRHeadSHA,
+      filePath: thread.path,
+      side: 'reply' as const,
+      replyThreadId: thread.id,
+      replyRootId: first.databaseID,
+      selectedText: '',
+      body,
+    };
     try {
-      await withBackendTarget(backend, () => ReplyToPRThread(prReferenceWire(prRef), thread.id, first.databaseID, body));
-      replyBodies.delete(thread.id);
-      applyPRThreads(computerPRKey(prRef), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(prRef)))) ?? []) as ReviewThread[]);
+      if (pinnedDrafts !== null) await createPRDiffReviewComment(pinnedDrafts, input);
+      else {
+        const owner = commentThreadId();
+        await createDiffReviewComment(owner, input);
+        setActiveDiffReviewSource(owner, 'pr', input.sourceKey);
+      }
+      if ((replyBodies.get(thread.id) ?? '').trim() === body) replyBodies.delete(thread.id);
+      closeReplyEverywhere(thread.id);
     } catch (err) {
-      const message = userFacingError(err);
-      replyErrors.set(thread.id, message);
-      error = message;
-      throw err;
+      replyErrors.set(thread.id, userFacingError(err));
     } finally {
       sendingReplyIds.delete(thread.id);
     }
@@ -3223,7 +3449,24 @@ export function createReviewPaneState(
     const out = new SvelteSet<string>();
     if (!sourceKeyOutlivesPatch) return out;
     for (const comment of drafts) {
+      if (comment.side === 'reply') continue;
       if (!draftAnchorExists(files, comment)) out.add(comment.id);
+    }
+    for (const comment of orphanedReplyDrafts) out.add(comment.id);
+    return out;
+  });
+
+  // What the diff tints: the lines each range spans. A forge thread's
+  // span shows while its card is open, as a new range's does.
+  const rangeTints = $derived.by(() => {
+    const out = new Map<string, LineRange[]>();
+    const add = (range: LineRange | null) => {
+      if (range) out.set(range.filePath, [...(out.get(range.filePath) ?? []), range]);
+    };
+    for (const editor of shownEditors) if (editor.state === 'placed') add(editor.range ?? null);
+    for (const draft of drafts) add(draftRange(draft));
+    for (const thread of prThreads) {
+      if (!thread.isResolved || expandedPRThreadIds.has(thread.id)) add(threadRange(thread));
     }
     return out;
   });
@@ -3391,6 +3634,12 @@ export function createReviewPaneState(
       return openReplies.has(`${surface}:${prThreadId}`);
     },
     openReply(prThreadId: string, surface: ReviewReplySurface): void {
+      // A thread holding replies edits the newest instead.
+      const held = replyDrafts.get(prThreadId)?.at(-1);
+      if (held) {
+        if (draftEditBodies.get(held.id) === undefined) draftEditBodies.set(held.id, { sourceKey, body: held.body });
+        return;
+      }
       openReplies.add(`${surface}:${prThreadId}`);
     },
     closeReply(prThreadId: string, surface: ReviewReplySurface): void {
@@ -3399,11 +3648,29 @@ export function createReviewPaneState(
     refreshPRThreads,
     sendPRThreadReply,
     replyErrorFor(prThreadId: string): string | null {
-      return replyErrors.get(prThreadId) ?? null;
+      return replyErrors.get(prThreadId) ?? commentWrites.error(commentWriteKey.reply(prThreadId));
     },
     sendingReply(prThreadId: string): boolean {
-      return sendingReplyIds.has(prThreadId);
+      return sendingReplyIds.has(prThreadId) || commentWrites.pending(commentWriteKey.reply(prThreadId));
     },
+    holdPRThreadReply,
+    replyDraftsFor(prThreadId: string): readonly DiffReviewComment[] {
+      return replyDrafts.get(prThreadId) ?? EMPTY_COMMENTS;
+    },
+    get orphanedReplyDrafts() { return orphanedReplyDrafts; },
+    get canPostNow() { return canPostNow; },
+    get sentCommentActions() { return sentCommentActions; },
+    get nowWithheldReason() { return nowWithheldReason; },
+    get canHoldReply() { return canHoldReply; },
+    get primaryCommentAction() { return primaryCommentAction; },
+    commentWritePending: (key: string) => commentWrites.pending(key),
+    commentWriteError: (key: string) => commentWrites.error(key),
+    extendEditorRange,
+    dropEditorRange,
+    rangeTintsFor(path: string): readonly LineRange[] {
+      return rangeTints.get(path) ?? NO_RANGES;
+    },
+    sentComments: commentWrites,
     setPRThreadResolved,
     resolveErrorFor(prThreadId: string): string | null {
       return resolveErrors.get(prThreadId) ?? null;

@@ -1,14 +1,16 @@
 <script lang="ts">
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import Icon from '../primitives/Icon.svelte';
   import ReviewAvatar from './ReviewAvatar.svelte';
+  import ReviewHeldReplies from './ReviewHeldReplies.svelte';
+  import ReviewSentCommentActions from './ReviewSentCommentActions.svelte';
+  import ReviewSentCommentBody from './ReviewSentCommentBody.svelte';
   import ReviewThreadComments from './ReviewThreadComments.svelte';
   import ReviewThreadFooter from './ReviewThreadFooter.svelte';
   import ReviewThreadContext from './ReviewThreadContext.svelte';
-  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import { visibleBody } from '../../utils/reviewComments';
+  import { threadRange } from '../../utils/reviewRange';
   import { authorDisplayName, isBotLogin } from '../../utils/reviewIdentity';
   import {
     THREAD_CARD_CLASS,
@@ -66,11 +68,15 @@
   });
   // An outdated GitHub thread has no current line; it names the line it
   // was written at instead.
+  const range = $derived(threadRange(thread));
   const location = $derived.by(() => {
     if (thread.path === '') return '';
+    if (range) return `${thread.path}:${range.from}–${range.to}`;
     const line = thread.line ?? thread.originalLine;
     return line ? `${thread.path}:${line}` : thread.path;
   });
+  const heldReplies = $derived(review.replyDraftsFor(thread.id));
+  const editingFirst = $derived(first !== undefined && review.sentComments.editBodyFor(thread, first) !== null);
   // The file bar above the diff already carries directories; the card
   // names the file, and the full path is the tooltip.
   const shortLocation = $derived.by(() => {
@@ -103,7 +109,7 @@
   >
     <!-- Wraps so the chips land on a second line in a narrow feed instead
          of clipping. -->
-    <div class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 py-1.5 px-3 text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {firstBody === '' && !contextFile ? '' : 'border-b border-border-subtle'}">
+    <div class="group/comment flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 py-1.5 px-3 text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {firstBody === '' && !contextFile && !editingFirst ? '' : 'border-b border-border-subtle'}">
       <span class="shrink-0 font-semibold text-fg" title={first ? `@${first.authorLogin}` : ''}>{first ? authorDisplayName(first) : ''}</span>
       {#if first && isBotLogin(first.authorLogin)}
         <span class="shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1 text-[0.625rem] leading-4 text-fg-muted">bot</span>
@@ -130,12 +136,18 @@
       {#if firstTime}
         <span class="shrink-0 text-fg-subtle">· {firstTime}</span>
       {/if}
+      {#if first?.editedAt}
+        <span class="shrink-0 text-fg-subtle" data-testid="review-comment-edited">edited</span>
+      {/if}
       <span class="min-w-0 flex-1"></span>
       {#if outdated}
         <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_OUTDATED_CHIP_CLASS}" title={outdatedTitle(thread)} data-testid="review-thread-outdated">outdated</span>
       {/if}
       {#if threadState !== 'none'}
         <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_CHIP_CLASS[threadState]}">{threadState}</span>
+      {/if}
+      {#if first}
+        <ReviewSentCommentActions {review} {thread} comment={first} />
       {/if}
     </div>
 
@@ -144,10 +156,8 @@
     {/if}
 
     <div class={threadBodyClass(threadState)}>
-      {#if firstBody !== ''}
-        <div class="px-3.5 py-3">
-          <ChatMarkdown source={firstBody} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
-        </div>
+      {#if first && (firstBody !== '' || editingFirst)}
+        <ReviewSentCommentBody {review} {thread} comment={first} class="px-3.5 py-3" />
       {/if}
 
       {#if replyCount > 0 && settled}
@@ -164,8 +174,10 @@
       {/if}
 
       {#if replyCount > 0 && (repliesOpen || !settled)}
-        <ReviewThreadComments {thread} skipFirst />
+        <ReviewThreadComments {thread} {review} skipFirst />
       {/if}
+
+      <ReviewHeldReplies {review} replies={heldReplies} />
 
       <ReviewThreadFooter
         {thread}
@@ -179,6 +191,8 @@
         onCloseReply={() => review.closeReply(thread.id, 'conversation')}
         onBodyChange={(body) => review.setReplyBody(thread.id, body)}
         onSendReply={() => review.sendPRThreadReply(thread)}
+        hold={review.canHoldReply ? { primary: review.primaryCommentAction, onHold: () => review.holdPRThreadReply(thread) } : null}
+        nowWithheld={review.nowWithheldReason}
         onResolve={thread.isResolvable
           ? (resolved) => { void review.setPRThreadResolved(thread, resolved); }
           : undefined}
