@@ -237,6 +237,10 @@ type ReviewThread struct {
 	OriginalLine      *int   `json:"originalLine,omitempty"`
 	OriginalStartLine *int   `json:"originalStartLine,omitempty"`
 	Side              string `json:"side"`
+	// StartSide is the half StartLine (or OriginalStartLine) is on, "left"
+	// or "right", set with it. It differs from Side when a range starts on
+	// a removed line and ends on an unchanged or added one.
+	StartSide string `json:"startSide,omitempty"`
 	// IsResolvable distinguishes threads with a real resolve state from
 	// flat comments (GitHub conversation comments, non-resolvable GitLab
 	// notes) where IsResolved=false would misread as "needs attention".

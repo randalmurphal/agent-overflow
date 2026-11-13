@@ -4,6 +4,7 @@ import { getTransportHelloFor } from './transportStatus.svelte';
 import { commentWriteKey, createCommentWrites, type CommentWrites } from './reviewCommentWrites.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
+import { threadRange } from '../utils/reviewRange';
 import type { CommentAnchor } from '../utils/reviewRows';
 import type { DiffReviewComment, DiffReviewCommentInput, DiffReviewScope, DiffReviewThreadContext, ReviewThread } from '../types/models';
 
@@ -258,14 +259,16 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
       };
       await writes.run(commentWriteKey.editor(editorId), (ref) => PostPRLineComment(prReferenceWire(ref), request), onSettled);
     },
-    // A held reply quotes the thread it answers, as the pane shows it.
+    // A held reply quotes the thread it answers, as the pane shows it. A
+    // range from an old line to a new one is quoted by its last line: one
+    // span of numbers cannot name both halves.
     replyContext(comment, threads) {
       const thread = threads.find((each) => each.id === comment.replyThreadId);
       if (!thread) return undefined;
       return {
         path: thread.path || undefined,
         line: thread.line ?? thread.originalLine ?? undefined,
-        startLine: thread.startLine ?? undefined,
+        startLine: threadRange(thread)?.crossesHalves ? undefined : thread.startLine ?? undefined,
         comments: thread.comments.map((each) => ({ author: each.authorLogin, body: each.body })),
       };
     },

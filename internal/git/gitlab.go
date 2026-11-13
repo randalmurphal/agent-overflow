@@ -653,13 +653,14 @@ func normalizeGitLabDiscussion(discussion gitlabDiscussionRaw, at gitlabThreadCo
 			Comments:     comments,
 		}, true
 	}
-	path, line, startLine, side := normalizeGitLabPosition(root.Position)
+	path, line, startLine, side, startSide := normalizeGitLabPosition(root.Position)
 	return ReviewThread{
 		ID:           discussion.ID,
 		Path:         path,
 		Line:         line,
 		StartLine:    startLine,
 		Side:         side,
+		StartSide:    startSide,
 		IsResolvable: true,
 		IsResolved:   resolved,
 		IsOutdated:   currentHeadSHA != "" && root.Position.HeadSHA != "" && root.Position.HeadSHA != currentHeadSHA,
@@ -667,30 +668,31 @@ func normalizeGitLabDiscussion(discussion gitlabDiscussionRaw, at gitlabThreadCo
 	}, true
 }
 
-func normalizeGitLabPosition(position *gitlabPositionRaw) (string, *int, *int, string) {
-	path := position.NewPath
+func normalizeGitLabPosition(position *gitlabPositionRaw) (path string, line, startLine *int, side, startSide string) {
+	path = position.NewPath
 	if path == "" {
 		path = position.OldPath
 	}
 	if strings.EqualFold(position.PositionType, "file") {
-		return path, nil, nil, "file"
+		return path, nil, nil, "file", ""
 	}
 	// A range is its line_range: its side and last line are its end's,
 	// its first line the start's number on the start's own half (as
-	// GitHub's startLine), whichever numbers the position itself carries.
+	// GitHub's startLine and startDiffSide), whichever numbers the
+	// position itself carries.
 	if lr := position.LineRange; lr != nil {
 		if side, line := gitlabPointLine(lr.End, ""); line != nil {
-			_, start := gitlabPointLine(lr.Start, side)
-			return path, line, start, side
+			startSide, start := gitlabPointLine(lr.Start, side)
+			if start == nil {
+				startSide = ""
+			}
+			return path, line, start, side, startSide
 		}
 	}
-	side := "right"
-	line := position.NewLine
 	if position.NewLine == nil && position.OldLine != nil {
-		side = "left"
-		line = position.OldLine
+		return path, position.OldLine, nil, "left", ""
 	}
-	return path, line, nil, side
+	return path, position.NewLine, nil, "right", ""
 }
 
 // gitlabPointLine is a line_range point's half and its number there: a

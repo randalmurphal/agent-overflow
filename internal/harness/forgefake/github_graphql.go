@@ -636,6 +636,9 @@ func (e *Engine) githubThreadNodes(r *Repo, p *Pull) []map[string]any {
 			originalStartLine = *thread.StartLine
 			if !thread.Outdated {
 				startLine, startSide = *thread.StartLine, diffSide
+				if thread.StartPoint != nil && thread.StartPoint.Type == "old" {
+					startSide = "LEFT"
+				}
 			}
 		}
 		out = append(out, map[string]any{

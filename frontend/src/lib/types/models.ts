@@ -765,6 +765,9 @@ export interface ReviewThread {
   originalLine?: number | null;
   originalStartLine?: number | null;
   side: string;
+  /** The half startLine is on ("left" or "right"); differs from side when a
+   * range starts on a removed line and ends on an unchanged or added one. */
+  startSide?: string;
   /** False for flat conversation comments with no resolve state. */
   isResolvable: boolean;
   isResolved: boolean;

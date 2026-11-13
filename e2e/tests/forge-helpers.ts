@@ -33,6 +33,9 @@ export interface ForgeThread {
   path: string;
   line?: number;
   startLine?: number;
+  /** A range's first line as the forge's position names it, when it lies
+   * on the other half from `line` (a removed line, type `old`). */
+  startPoint?: { type?: 'old' | 'new'; oldLine?: number; newLine?: number };
   side?: 'right' | 'left' | 'file';
   resolved?: boolean;
   outdated?: boolean;

@@ -228,3 +228,47 @@ func TestGitLabPositionsOnExpandedContext(t *testing.T) {
 		}
 	}
 }
+
+// A range read back names the half its first line is on: a removed first
+// line through an added or unchanged last one starts on the left with its
+// old number, on both forges.
+func TestRangeThreadsReadBackTheirStartSide(t *testing.T) {
+	t.Parallel()
+	n := func(v int) *int { return &v }
+	type read struct {
+		line, start     *int
+		side, startSide string
+	}
+	check := func(name string, got, want read) {
+		t.Helper()
+		if fmt.Sprint(*got.line, got.side, got.startSide) != fmt.Sprint(*want.line, want.side, want.startSide) ||
+			(got.start == nil) != (want.start == nil) || (got.start != nil && *got.start != *want.start) {
+			t.Errorf("%s = line %d start %v side %q startSide %q, want line %d start %v side %q startSide %q",
+				name, *got.line, got.start, got.side, got.startSide, *want.line, want.start, want.side, want.startSide)
+		}
+	}
+	for name, c := range map[string]struct {
+		lr   gitlabLineRangeRaw
+		want read
+	}{
+		"removed to added":     {gitlabLineRangeRaw{Start: gitlabLineRangePoint{Type: "old", OldLine: n(3)}, End: gitlabLineRangePoint{Type: "new", NewLine: n(6)}}, read{n(6), n(3), "right", "left"}},
+		"removed to unchanged": {gitlabLineRangeRaw{Start: gitlabLineRangePoint{Type: "old", OldLine: n(3)}, End: gitlabLineRangePoint{OldLine: n(4), NewLine: n(5)}}, read{n(5), n(3), "right", "left"}},
+		"unchanged to added":   {gitlabLineRangeRaw{Start: gitlabLineRangePoint{OldLine: n(3), NewLine: n(4)}, End: gitlabLineRangePoint{Type: "new", NewLine: n(6)}}, read{n(6), n(4), "right", "right"}},
+		"removed to removed":   {gitlabLineRangeRaw{Start: gitlabLineRangePoint{Type: "old", OldLine: n(2)}, End: gitlabLineRangePoint{Type: "old", OldLine: n(4)}}, read{n(4), n(2), "left", "left"}},
+	} {
+		lr := c.lr
+		_, line, start, side, startSide := normalizeGitLabPosition(&gitlabPositionRaw{NewPath: "a.go", PositionType: "text", NewLine: c.want.line, LineRange: &lr})
+		check("gitlab "+name, read{line, start, side, startSide}, c.want)
+	}
+	if _, _, _, _, startSide := normalizeGitLabPosition(&gitlabPositionRaw{NewPath: "a.go", PositionType: "text", NewLine: n(5)}); startSide != "" {
+		t.Errorf("gitlab single line startSide = %q, want none", startSide)
+	}
+	threads := githubReviewThreads([]githubThreadRaw{
+		{ID: "T1", Path: "a.go", Line: n(6), StartLine: n(3), DiffSide: "RIGHT", StartDiffSide: "LEFT", SubjectType: "LINE"},
+		{ID: "T2", Path: "a.go", Line: n(6), DiffSide: "RIGHT", SubjectType: "LINE"},
+	})
+	check("github removed to added", read{threads[0].Line, threads[0].StartLine, threads[0].Side, threads[0].StartSide}, read{n(6), n(3), "right", "left"})
+	if threads[1].StartSide != "" {
+		t.Errorf("github single line startSide = %q, want none", threads[1].StartSide)
+	}
+}

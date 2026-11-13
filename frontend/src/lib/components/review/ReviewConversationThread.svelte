@@ -10,7 +10,7 @@
   import ReviewThreadFooter from './ReviewThreadFooter.svelte';
   import ReviewThreadContext from './ReviewThreadContext.svelte';
   import { visibleBody } from '../../utils/reviewComments';
-  import { threadRange } from '../../utils/reviewRange';
+  import { rangeSpan, threadRange } from '../../utils/reviewRange';
   import { authorDisplayName, isBotLogin } from '../../utils/reviewIdentity';
   import {
     THREAD_CARD_CLASS,
@@ -72,7 +72,7 @@
   const range = $derived(threadRange(thread));
   const location = $derived.by(() => {
     if (thread.path === '') return '';
-    if (range) return `${thread.path}:${range.from}–${range.to}`;
+    if (range) return `${thread.path}:${rangeSpan(range)}`;
     const line = thread.line ?? thread.originalLine;
     return line ? `${thread.path}:${line}` : thread.path;
   });

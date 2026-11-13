@@ -363,9 +363,10 @@ type Thread struct {
 	// OldLine is an unchanged line's old number beside Line, its new one
 	// (GitLab positions name both); nil otherwise.
 	OldLine *int `json:"oldLine,omitempty"`
-	// StartPoint is a GitLab range's first line as its position named it,
-	// which may lie on the other half from Line (a removed line through an
-	// unchanged one). Nil names StartLine on Side.
+	// StartPoint is a range's first line as its position named it, which
+	// may lie on the other half from Line (a removed line through an
+	// unchanged or added one). Nil names StartLine on Side. GitHub answers
+	// a removed one (Type "old") as startDiffSide LEFT.
 	StartPoint *LinePoint `json:"startPoint,omitempty"`
 	// Side is "right" (default), "left" or "file".
 	Side     string    `json:"side,omitempty"`

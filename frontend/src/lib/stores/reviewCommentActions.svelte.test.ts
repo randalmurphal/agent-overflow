@@ -395,6 +395,21 @@ describe('replies', () => {
       thread: { path: 'src/a.ts', line: 12, startLine: undefined, comments: [{ author: 'me', body: 'First.' }, { author: 'bob', body: 'A reply.' }] },
     }]);
   });
+
+  // A range on one half quotes its span; one from an old line to a new
+  // one quotes its last line, since one span cannot name both halves.
+  it.each([
+    ['right', 10],
+    ['left', undefined],
+  ] as const)('quotes a range thread starting on the %s half to an agent with start %s', async (startSide, quoted) => {
+    threads = [{ ...THREAD, startLine: 10, startSide }];
+    const state = await open();
+    state.setReplyBody(THREAD.id, 'Fix it like this.');
+    await state.holdPRThreadReply(threads[0]);
+    await state.sendDraftsToThread('agent-thread');
+    const options = drafts.send.mock.calls[0][5] as { pr: { comments: { thread: { line: number; startLine?: number } }[] } };
+    expect(options.pr.comments[0].thread).toMatchObject({ line: 12, startLine: quoted });
+  });
 });
 
 describe('edit and delete of a sent comment', () => {

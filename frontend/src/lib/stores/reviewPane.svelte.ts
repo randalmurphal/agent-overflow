@@ -3298,7 +3298,7 @@ export function createReviewPaneState(
     return out;
   });
 
-  const rangeTints = $derived(rangesByFile(shownEditors, drafts, prThreads, (id) => expandedPRThreadIds.has(id)));
+  const rangeTints = $derived(rangesByFile(shownEditors, drafts, prThreads, (id) => expandedPRThreadIds.has(id), files));
 
   function orphanedDraftIds(): SvelteSet<string> {
     return orphanedIds;

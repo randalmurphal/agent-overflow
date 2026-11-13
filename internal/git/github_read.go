@@ -768,6 +768,7 @@ func githubReviewThreads(nodes []githubThreadRaw) []ReviewThread {
 			OriginalLine:      node.OriginalLine,
 			OriginalStartLine: node.OriginalStartLine,
 			Side:              side,
+			StartSide:         strings.ToLower(node.StartDiffSide),
 			IsResolvable:      true,
 			IsResolved:        node.IsResolved,
 			IsOutdated:        node.IsOutdated,

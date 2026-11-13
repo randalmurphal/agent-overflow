@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseReviewFiles } from './patchStore';
-import { draftRange, rangeLabel, rowInRange, sharedHalf, spanRange, threadRange } from './reviewRange';
+import { draftRange, rangeLabel, rangesByFile, rangeSpan, rowInRange, sharedHalf, spanRange, threadRange } from './reviewRange';
+import type { ReviewThread } from '../types/models';
 import type { CommentAnchor } from './reviewRows';
 
 // Two hunks: lines 10-14 (a context line, a deletion, two additions, a
@@ -86,6 +87,44 @@ describe('ranges of drafts and threads', () => {
     expect(rowInRange(10, 10, 'old', range)).toBe(false);
     expect(rowInRange(10, 10, 'new', range)).toBe(true);
     expect(rowInRange(0, 13, null, range)).toBe(false);
+  });
+
+  describe('a forge thread from a removed line to a new one', () => {
+    // The file's first hunk as rows: [old, new].
+    const ROWS = [[10, 10], [11, 0], [0, 11], [0, 12], [12, 13]] as const;
+    const crossing = (startLine: number, line: number): ReviewThread => ({
+      id: 't', path: 'src/a.ts', line, startLine, side: 'right', startSide: 'left',
+      isResolvable: true, isResolved: false, isOutdated: false, comments: [],
+    });
+    const tinted = (thread: ReviewThread, half: 'old' | 'new' | null = null) => {
+      const ranges = rangesByFile([], [], [thread], () => false, [file]).get('src/a.ts') ?? [];
+      return ROWS.filter(([oldLine, newLine]) => ranges.some((range) => rowInRange(oldLine, newLine, half, range)));
+    };
+
+    it('reads its start by its old number and both ends by their halves', () => {
+      const range = threadRange(crossing(11, 12));
+      expect(range).toEqual({ filePath: 'src/a.ts', half: 'new', from: 11, to: 12, crossesHalves: true });
+      expect(rangeSpan(range!)).toBe('-11 to +12');
+      expect(rangeLabel(range!)).toBe('Lines -11 to +12');
+      // An old number at or past the new end is still a range.
+      expect(threadRange(crossing(14, 12))?.crossesHalves).toBe(true);
+      // Same halves read as before.
+      expect(threadRange({ path: 'a', line: 18, startLine: 12, side: 'right', startSide: 'right' })).toEqual({ filePath: 'a', half: 'new', from: 12, to: 18 });
+    });
+
+    it('tints the rows from the removed line through the new one, and no others', () => {
+      expect(tinted(crossing(11, 12))).toEqual([[11, 0], [0, 11], [0, 12]]);
+      expect(tinted(crossing(11, 13))).toEqual([[11, 0], [0, 11], [0, 12], [12, 13]]);
+      // Split view: each half by its own numbers.
+      expect(tinted(crossing(11, 13), 'old')).toEqual([[11, 0], [12, 13]]);
+      expect(tinted(crossing(11, 13), 'new')).toEqual([[0, 11], [0, 12], [12, 13]]);
+    });
+
+    it('tints nothing when the file has no such run', () => {
+      // Across the hunks, and a file not loaded.
+      expect(tinted(crossing(11, 41))).toEqual([]);
+      expect(rangesByFile([], [], [crossing(11, 12)], () => false, []).size).toBe(0);
+    });
   });
 
   it('names the half two lines share, new first', () => {
