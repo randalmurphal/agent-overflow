@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/forgeapi"
 )
@@ -93,11 +94,9 @@ func (f *githubForge) githubPipeline(ctx context.Context, client *forgeapi.Clien
 		Status: AggregateCIStatus(stageStatuses),
 		Stages: stages,
 	}
-	artifacts, err := f.runArtifacts(ctx, client, repo, pipeline)
-	if err != nil {
+	if err := f.githubCICapabilities(ctx, client, repo, &pipeline, permission, false, nil); err != nil {
 		return CIPipeline{}, err
 	}
-	fillGitHubCIActions(&pipeline, permission, artifacts)
 	return pipeline, nil
 }
 
@@ -426,15 +425,13 @@ func (f *githubForge) ReadPipeline(ctx context.Context, repo RepoReference, id s
 		}
 		pipeline.Stages = []CIStage{{Name: name, Status: AggregateCIStatus(statuses), Jobs: jobs}}
 	}
-	permission, err := f.repoCIPermission(ctx, client, repo)
-	if err != nil {
+	var stale map[string]bool
+	if created, err := time.Parse(time.RFC3339, run.CreatedAt); err == nil && f.core.nowFn().Sub(created) > githubRerunWindow {
+		stale = map[string]bool{id: true}
+	}
+	if err := f.githubCICapabilities(ctx, client, repo, &pipeline, "", true, stale); err != nil {
 		return CIPipeline{}, err
 	}
-	artifacts, err := f.runArtifacts(ctx, client, repo, pipeline)
-	if err != nil {
-		return CIPipeline{}, err
-	}
-	fillGitHubCIActions(&pipeline, permission, artifacts)
 	return pipeline, nil
 }
 

@@ -32,8 +32,8 @@ type githubForge struct {
 	core *Core
 	// ciPermissions caches each login's permission on a repository and
 	// ciArtifacts which completed runs keep artifacts (ci_actions_github.go).
-	ciPermissions gitlabCache[CIAction]
-	ciArtifacts   gitlabCache[bool]
+	ciPermissions ciCapabilityCache[CIAction]
+	ciArtifacts   ciCapabilityCache[bool]
 }
 
 func (f *githubForge) ID() string         { return "github" }

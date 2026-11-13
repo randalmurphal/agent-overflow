@@ -51,6 +51,11 @@ type CIPipeline struct {
 	// Actions are the pipeline-level actions and whether the viewer may
 	// take them (see CIPipelineActions).
 	Actions CIPipelineActions `json:"actions"`
+	// ActionsUnavailable is the sentence saying why some actions are not
+	// offered: a read behind their flags (GitHub's repository permission,
+	// a run's artifacts) failed, and the flags it would have set are
+	// absent. Empty when every flag was read.
+	ActionsUnavailable string `json:"actionsUnavailable,omitempty"`
 }
 
 type CIStage struct {

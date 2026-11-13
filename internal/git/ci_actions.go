@@ -7,6 +7,8 @@ import (
 	"io"
 	"slices"
 	"strconv"
+
+	"agent-overflow/internal/forgeapi"
 )
 
 // Acting on CI: retry a job, retry a pipeline's failed jobs, cancel a job
@@ -191,19 +193,35 @@ var ErrCIArtifactExpired = errors.New("the forge no longer keeps this artifact")
 // ErrNoCIArtifacts is a download that found nothing to save.
 var ErrNoCIArtifacts = errors.New("there are no artifacts to download")
 
-// CIPartialError is a pipeline action that acts on several GitHub
-// workflow runs and failed on some after succeeding on others: Done of
-// Total runs took it, and Err is the first failure.
+// CIPartialError is a CI action whose writes were not all confirmed: of
+// Total writes (one per GitHub workflow run a pipeline action acts on,
+// else one), Done the forge confirmed, Unconfirmed failed in a way that
+// does not prove the forge refused them (forgeapi.WriteNotApplied), so
+// they may have been applied, and the rest it refused. Err is the first
+// refusal, else the first unconfirmed failure. A write is never posted
+// again: the caller reads the pipeline to learn what happened.
 type CIPartialError struct {
-	Done, Total int
-	Err         error
+	Done, Unconfirmed, Total int
+	Err                      error
 }
 
 func (e *CIPartialError) Error() string {
-	return fmt.Sprintf("%d of %d workflow runs took the action; the rest failed: %v", e.Done, e.Total, e.Err)
+	return fmt.Sprintf("%d of %d CI writes confirmed, %d unconfirmed: %v", e.Done, e.Total, e.Unconfirmed, e.Err)
 }
 
 func (e *CIPartialError) Unwrap() error { return e.Err }
+
+// Applied reports whether any write took effect or may have.
+func (e *CIPartialError) Applied() bool { return e.Done+e.Unconfirmed > 0 }
+
+// ciWriteResult is the error of one posted CI write: as it is when the
+// forge did not apply it (or there was none), else one unconfirmed write.
+func ciWriteResult(err error) error {
+	if err == nil || forgeapi.WriteNotApplied(err) {
+		return err
+	}
+	return &CIPartialError{Unconfirmed: 1, Total: 1, Err: err}
+}
 
 // ForgeCIActor is the CI-action half of Forge. The writes take an
 // interactive context (the caller marks it); a job is named by the id
@@ -303,8 +321,10 @@ func (c *Core) StreamCIArtifact(ctx context.Context, repo RepoReference, artifac
 }
 
 // FindCIJobRetry returns the job that took over from old in pipeline: the
-// one in the same stage with the same name and the highest id above
-// old's, or nil. Both forges give a retried job a new, higher id and keep
+// one in the same stage with the same name (and, when old names its
+// GitHub workflow run, the same run, since two runs of one workflow share
+// a stage and may share job names) and the highest id above old's, or
+// nil. Both forges give a retried job a new, higher id and keep
 // its name and stage (GitHub: the new attempt's job; GitLab: the retry,
 // the old job dropping out of the read as retried), so this is how a log
 // view open on old follows its retry.
@@ -322,7 +342,7 @@ func FindCIJobRetry(pipeline CIPipeline, stage string, old CIJob) *CIJob {
 		for j := range pipeline.Stages[i].Jobs {
 			job := &pipeline.Stages[i].Jobs[j]
 			id, err := strconv.ParseInt(job.ID, 10, 64)
-			if err != nil || job.Name != old.Name || id <= oldID || (found != nil && id < foundID) {
+			if err != nil || job.Name != old.Name || (old.RunID != "" && job.RunID != old.RunID) || id <= oldID || (found != nil && id < foundID) {
 				continue
 			}
 			found, foundID = job, id

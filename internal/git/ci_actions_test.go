@@ -199,7 +199,7 @@ func TestGitHubCIPartialFailure(t *testing.T) {
 	}
 	explained := ExplainCIError(repo, "the checks of o/r#5", ActionRetryFailed, err)
 	var sentence *ForgeActionError
-	if !errors.As(explained, &sentence) || sentence.Message != "GitHub acted on 1 of 2 workflow runs of the checks of o/r#5. The others failed: The checks of o/r#5 can no longer be retried. Refresh to see its current state." {
+	if !errors.As(explained, &sentence) || sentence.Message != "Of the 2 workflow runs of the checks of o/r#5 asked to retry the failed jobs, GitHub took it on 1 and refused it on 1: The checks of o/r#5 can no longer be retried. Refresh to see its current state." {
 		t.Fatalf("sentence = %v", explained)
 	}
 
@@ -401,8 +401,8 @@ func TestCIArtifactDownloads(t *testing.T) {
 	}
 }
 
-// A log view open on a retried job follows the job of the same stage and
-// name with the highest newer id.
+// A log view open on a retried job follows the job of the same stage,
+// name and run with the highest newer id.
 func TestFindCIJobRetry(t *testing.T) {
 	t.Parallel()
 	pipeline := CIPipeline{Stages: []CIStage{
@@ -414,5 +414,13 @@ func TestFindCIJobRetry(t *testing.T) {
 	}
 	if got := FindCIJobRetry(pipeline, "test", CIJob{ID: "35", Name: "unit"}); got != nil {
 		t.Fatalf("the newest attempt has a retry %+v", got)
+	}
+	// Two GitHub runs of one workflow share its stage and job names: the
+	// retry is the one in the old job's run.
+	runs := CIPipeline{Stages: []CIStage{{Name: "CI", Jobs: []CIJob{
+		{ID: "20", RunID: "1", Name: "unit"}, {ID: "60", RunID: "2", Name: "unit"}, {ID: "45", RunID: "1", Name: "unit"},
+	}}}}
+	if got := FindCIJobRetry(runs, "CI", CIJob{ID: "20", RunID: "1", Name: "unit"}); got == nil || got.ID != "45" {
+		t.Fatalf("retry of run 1's job = %+v, want 45 of the same run", got)
 	}
 }

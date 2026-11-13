@@ -28,8 +28,7 @@ func ExplainCIError(repo RepoReference, subject string, action ForgeAction, err 
 		return &ForgeActionError{Kind: kind, Message: message, Err: err}
 	}
 	if partial, ok := errors.AsType[*CIPartialError](err); ok {
-		cause, _ := ExplainCIError(repo, subject, action, partial.Err).(*ForgeActionError)
-		return wrap(cause.Kind, fmt.Sprintf("%s acted on %d of %d workflow runs of %s. The others failed: %s", labels.name, partial.Done, partial.Total, subject, cause.Message))
+		return wrap(ciPartialSentence(repo, subject, action, partial))
 	}
 	switch {
 	case errors.Is(err, forgeapi.ErrNotFound) && !errors.Is(err, ErrNoCIArtifacts):
@@ -59,6 +58,62 @@ func ExplainCIError(repo RepoReference, subject string, action ForgeAction, err 
 	return explainForgeError(repo, subject, action, err)
 }
 
+// ciPartialSentence words a CI action whose writes were not all
+// confirmed: one write that may have been applied, or the runs of a
+// GitHub pipeline action that took it, may have, and refused it.
+func ciPartialSentence(repo RepoReference, subject string, action ForgeAction, partial *CIPartialError) (string, string) {
+	labels := forgeLabels(repo.Forge)
+	refused := partial.Total - partial.Done - partial.Unconfirmed
+	if partial.Total == 1 {
+		return ForgeErrorTransient, fmt.Sprintf("%s did not confirm the request to %s %s, so it may have been applied. The CI view shows what %s did.", labels.name, action, subject, labels.name)
+	}
+	parts := []string{}
+	if partial.Done > 0 {
+		parts = append(parts, fmt.Sprintf("took it on %d", partial.Done))
+	}
+	if partial.Unconfirmed > 0 {
+		parts = append(parts, fmt.Sprintf("did not confirm it on %d, which may have taken it", partial.Unconfirmed))
+	}
+	kind := ForgeErrorTransient
+	tail := "."
+	if refused > 0 {
+		parts = append(parts, fmt.Sprintf("refused it on %d", refused))
+		cause, _ := ExplainCIError(repo, subject, action, partial.Err).(*ForgeActionError)
+		kind, tail = cause.Kind, ": "+cause.Message
+		if !strings.HasSuffix(tail, ".") {
+			tail += "."
+		}
+	}
+	return kind, fmt.Sprintf("Of the %d workflow runs of %s asked to %s, %s %s%s", partial.Total, subject, strings.TrimSuffix(string(action), " of"), labels.name, joinClauses(parts), tail)
+}
+
+// joinClauses joins clauses as a list: "a", "a and b", "a, b and c".
+func joinClauses(parts []string) string {
+	if len(parts) <= 1 {
+		return strings.Join(parts, "")
+	}
+	return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
+}
+
+// ciActionsUnavailableSentence words a failed read behind the CI action
+// flags (CIPipeline.ActionsUnavailable): the flags it would have set are
+// not shown.
+func ciActionsUnavailableSentence(repo RepoReference, err error) string {
+	labels := forgeLabels(repo.Forge)
+	host := labels.host(repo.Host)
+	if forbidden, ok := errors.AsType[*forgeapi.ForbiddenError](err); ok {
+		if forbidden.Scope != "" {
+			return fmt.Sprintf("Retry, cancel and artifact downloads are not shown: your %s token lacks the `%s` scope. Create a token with that scope and log %s in with it.", host, forbidden.Scope, labels.binary)
+		}
+		return fmt.Sprintf("Retry, cancel and artifact downloads are not shown: this login cannot read the Actions permissions or artifacts of %s on %s.", repo.Project(), host)
+	}
+	if errors.Is(err, forgeapi.ErrNotFound) {
+		return fmt.Sprintf("Retry, cancel and artifact downloads are not shown: this login cannot read the Actions permissions or artifacts of %s on %s.", repo.Project(), host)
+	}
+	explained, _ := explainForgeError(repo, repo.Project(), ActionRead, err).(*ForgeActionError)
+	return "Retry, cancel and artifact downloads are not shown for now. " + explained.Message
+}
+
 // ciNoLongerSentence words GitLab's refusal of a job it no longer retries
 // (403 "Job is not retryable") or plays (400 "Unplayable Job"), and
 // GitHub's of a job or run it cannot re-run, from the forge's message;
@@ -66,12 +121,22 @@ func ExplainCIError(repo RepoReference, subject string, action ForgeAction, err 
 func ciNoLongerSentence(action ForgeAction, subject, message string) string {
 	lower := strings.ToLower(message)
 	switch {
+	case (action == ActionRetryJob || action == ActionRetryFailed) && ciTooOldMessage(lower):
+		return fmt.Sprintf("%s is more than 30 days old, so it can no longer be retried. Start a new run on the forge.", capitalize(subject))
 	case (action == ActionRetryJob || action == ActionRetryFailed) && (strings.Contains(lower, "not retryable") || strings.Contains(lower, "cannot be retried") || strings.Contains(lower, "cannot be rerun") || strings.Contains(lower, "cannot be re-run")):
 		return fmt.Sprintf("%s can no longer be retried. Refresh to see its current state.", capitalize(subject))
 	case action == ActionPlayJob && strings.Contains(lower, "unplayable"):
 		return fmt.Sprintf("%s can no longer be run. Refresh to see its current state.", capitalize(subject))
 	}
 	return ""
+}
+
+// ciTooOldMessage reports GitHub's refusal to re-run a workflow run past
+// its 30-day window (githubRerunWindow), as it words it: the run "was
+// created over a month ago". The wording is matched loosely, since
+// GitHub's documentation states the limit but not the message.
+func ciTooOldMessage(lower string) bool {
+	return strings.Contains(lower, "over a month ago") || strings.Contains(lower, "30 days") || (strings.Contains(lower, "created") && strings.Contains(lower, "month"))
 }
 
 func capitalize(s string) string {

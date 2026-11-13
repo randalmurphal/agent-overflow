@@ -17,13 +17,15 @@ import (
 // play with 400 "Unplayable Job" (docs.gitlab.com, jobs and pipelines
 // API).
 
+// jobPost posts one CI write, once; an error that does not prove GitLab
+// refused it is an unconfirmed write (ciWriteResult).
 func (f *gitlabForge) jobPost(ctx context.Context, repo RepoReference, path string) error {
 	client, err := f.core.gitlabAPI(repo.Host)
 	if err != nil {
 		return err
 	}
 	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: gitlabProjectPath(repo.Project()) + path}, nil)
-	return err
+	return ciWriteResult(err)
 }
 
 func (f *gitlabForge) RetryCIJob(ctx context.Context, repo RepoReference, jobID string) error {
