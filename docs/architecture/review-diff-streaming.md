@@ -82,13 +82,18 @@ diff's files cannot be read: <why>."), which reopening would not change. Each pa
 `..` segment, no backslash, no NUL; spaces at either end and pathspec
 magic are part of the name. Each side it exists on must be a regular file
 the other side holds differently; a directory, a symlink, a submodule or
-a path the diff does not change is refused. A committed side is read as
+a path the diff does not change is refused with
+`review_diff_file_refused` (the reason), which neither a retry nor a
+reload changes. A committed side is read as
 its blob, its size from the tree entry first. A working-tree side is read
 through the workspace as a root, so a symlink swapped in cannot lead
 outside it, its type and size taken from the opened file; bytes that are
-not the recorded blob are "changed since the diff was read". Sizes of a
-working-tree side are the recorded ones. Each file of a size batch fails
-alone.
+not the recorded blob answer `review_diff_files_changed` ("This file
+changed since the diff was read; reload the diff."). Sizes of a
+working-tree side are the recorded ones, so only an image read answers
+it. Each file of a size batch fails alone, with its `error` and `code`.
+Every origin, a connected browser included, gets the code and sentence;
+the client branches on the code (`reviewDiffFiles.ts`).
 
 A side over 25 MiB answers its size and `overCap` and none of it is read;
 bytes that are not an image a browser displays answer `notImage`. A side

@@ -6481,6 +6481,12 @@ export class ReviewDiffFileSizes {
     "new": ReviewDiffFileSide;
     "error"?: string;
 
+    /**
+     * Code is Error's refusal code (review_diff_file_refused), the one a
+     * whole read of the file would fail with.
+     */
+    "code"?: string;
+
     /** Creates a new ReviewDiffFileSizes instance. */
     constructor($$source: Partial<ReviewDiffFileSizes> = {}) {
         if (!("path" in $$source)) {

@@ -2040,8 +2040,8 @@ export function GetReviewDiffFileSizes(ws: app$0.WorkspaceRef, handle: string, f
  * review diff for display, from what the open pinned under handle, and
  * mints a single-use URL for each side that is an image within the cap. A
  * side's size is known before anything is read: over the cap nothing is.
- * A working-tree file that is no longer the blob the open recorded is
- * "changed since the diff was read". Pixel sizes are the client's to
+ * A working-tree file that is no longer the blob the open recorded is the
+ * review_diff_files_changed refusal. Pixel sizes are the client's to
  * measure.
  */
 export function GetReviewDiffImage(ws: app$0.WorkspaceRef, handle: string, file: app$0.ReviewDiffFile): $CancellablePromise<app$0.ReviewDiffImage> {

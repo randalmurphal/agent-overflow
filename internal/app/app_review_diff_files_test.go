@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
@@ -228,9 +231,8 @@ func TestGetReviewDiffImageReadsTheOpenedSidesNotHEAD(t *testing.T) {
 	testutil.RunGit(t, repo, "add", "wt.png")
 	testutil.RunGit(t, repo, "commit", "-qm", "wt")
 	writeRepoBytes(t, repo, "wt.png", sizedPNG(t, 3, 3))
-	if _, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "wt.png"}); err == nil || !strings.Contains(err.Error(), "changed since the diff was read") {
-		t.Fatalf("a working-tree file rewritten after HEAD moved = %v, want the changed refusal", err)
-	}
+	_, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "wt.png"})
+	wantChanged(t, err)
 }
 
 // The working-tree scopes read what the open recorded: an untracked image
@@ -283,15 +285,13 @@ func TestGetReviewDiffImageReadsTheWorktreeScopes(t *testing.T) {
 	opened, err = app.OpenWorkspaceDiff(ctx, ref, false)
 	handle = filesHandle(t, opened, err)
 	writeRepoBytes(t, h.repo, "fresh.png", sizedPNG(t, 3, 3))
-	if _, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "fresh.png"}); err == nil || !strings.Contains(err.Error(), "changed since the diff was read") {
-		t.Fatalf("a file rewritten since the open = %v, want the changed refusal", err)
-	}
+	_, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "fresh.png"})
+	wantChanged(t, err)
 	if err := os.Remove(filepath.Join(h.repo, "fresh.png")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "fresh.png"}); err == nil || !strings.Contains(err.Error(), "changed since the diff was read") {
-		t.Fatalf("a file deleted since the open = %v, want the changed refusal", err)
-	}
+	_, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "fresh.png"})
+	wantChanged(t, err)
 }
 
 // A held image is reachable only through a record whose open bound its
@@ -373,8 +373,16 @@ func TestGetReviewDiffImageRefusesWhatTheOpenedDiffDoesNotChange(t *testing.T) {
 		{"a working-tree file the diff leaves alone", workspace, ReviewDiffFile{Path: "README.txt"}, "not a file this diff changes"},
 		{"an unknown handle", "no-such-handle", ReviewDiffFile{Path: "fresh.png"}, "This diff's files are no longer held; reload the diff."},
 	} {
-		if _, err := app.GetReviewDiffImage(ctx, ref, tc.handle, tc.file); err == nil || !strings.Contains(err.Error(), tc.want) {
+		_, err := app.GetReviewDiffImage(ctx, ref, tc.handle, tc.file)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: error = %v, want %q", tc.name, err, tc.want)
+		}
+		wantCodeOf := reviewDiffFileRefusedCode
+		if tc.handle == "no-such-handle" {
+			wantCodeOf = reviewDiffFilesGoneCode
+		}
+		if code, _, _ := errorsx.PublicDetails(err); code != wantCodeOf {
+			t.Errorf("%s: code = %q, want %q", tc.name, code, wantCodeOf)
 		}
 	}
 	if _, err := app.GetReviewDiffImage(ctx, ref, "no-such-handle", ReviewDiffFile{Path: "fresh.png"}); !errors.Is(err, errReviewDiffFilesGone) {
@@ -530,9 +538,9 @@ func TestGetReviewDiffFileSizesAnswersEachFile(t *testing.T) {
 	want := []ReviewDiffFileSizes{
 		{Path: "changed.png", Old: ReviewDiffFileSide{true, size("old:changed.png")}, New: ReviewDiffFileSide{true, size("changed.png")}},
 		{Path: "fake.png", New: ReviewDiffFileSide{true, size("fake.png")}},
-		{Path: "README.txt", Error: "README.txt is not a file this diff changes"},
-		{Path: "moved", Error: "moved is not a file"},
-		{Path: "a/../b", Error: `gitdiff: invalid path "a/../b": ".." segment`},
+		{Path: "README.txt", Error: "README.txt is not a file this diff changes", Code: reviewDiffFileRefusedCode},
+		{Path: "moved", Error: "moved is not a file", Code: reviewDiffFileRefusedCode},
+		{Path: "a/../b", Error: `invalid path "a/../b": ".." segment`, Code: reviewDiffFileRefusedCode},
 		{Path: "moved/to.png", OldPath: "moved.png", Old: ReviewDiffFileSide{true, size("old:moved.png")}, New: ReviewDiffFileSide{true, size("moved/to.png")}},
 		{Path: "deleted.png", Old: ReviewDiffFileSide{true, size("old:deleted.png")}},
 	}
@@ -567,9 +575,9 @@ func TestGetReviewDiffFileSizesAnswersEachFile(t *testing.T) {
 	}
 	want = []ReviewDiffFileSizes{
 		{Path: "fresh.png", New: ReviewDiffFileSide{true, int64(len(fresh))}},
-		{Path: "README.txt", Error: "README.txt is not a file this diff changes"},
+		{Path: "README.txt", Error: "README.txt is not a file this diff changes", Code: reviewDiffFileRefusedCode},
 		{Path: "added.png", Old: ReviewDiffFileSide{true, size("added.png")}},
-		{Path: "dir//x", Error: `gitdiff: invalid path "dir//x": empty segment`},
+		{Path: "dir//x", Error: `invalid path "dir//x": empty segment`, Code: reviewDiffFileRefusedCode},
 	}
 	for i := range want {
 		if got[i] != want[i] {
@@ -732,5 +740,58 @@ func TestGetEditDiffImageAllocatesItsContentOnlyInTheStore(t *testing.T) {
 	outside := int64(after.TotalAlloc-before.TotalAlloc) - app.reviewDiffImages().Held()
 	if outside > 1<<20 {
 		t.Fatalf("%d bytes were allocated outside the store for %d bytes of content", outside, len(content))
+	}
+}
+
+// wantChanged checks err is the changed refusal, with its cause kept.
+func wantChanged(t *testing.T, err error) {
+	t.Helper()
+	wantCode(t, err, reviewDiffFilesChangedCode, "This file changed since the diff was read; reload the diff.")
+	if !errors.Is(err, gitdiff.ErrChangedSinceRead) {
+		t.Fatalf("the changed refusal lost its cause: %v", err)
+	}
+}
+
+// refusalReceiver answers a method error as a bound method would.
+type refusalReceiver struct{ err error }
+
+func (r *refusalReceiver) Read() error { return r.err }
+
+// Every refusal a file read answers reaches a connected browser (a
+// non-loopback caller) with its code and sentence, and never its cause.
+func TestReviewDiffFileRefusalsReachARemoteCallerByCode(t *testing.T) {
+	t.Parallel()
+	app, _ := reviewDiffFilesApp(t)
+	h := newImageHistory(t)
+	ref := testWorkspaceRef(t, app, h.repo)
+	ctx, _ := reviewDiffConn(t)
+	writeRepoBytes(t, h.repo, "fresh.png", sizedPNG(t, 6, 5))
+	opened, err := app.OpenWorkspaceDiff(ctx, ref, false)
+	handle := filesHandle(t, opened, err)
+	writeRepoBytes(t, h.repo, "fresh.png", sizedPNG(t, 3, 3))
+	_, changed := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "fresh.png"})
+	_, refused := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "README.txt"})
+	_, gone := app.GetReviewDiffImage(ctx, ref, "no-such-handle", ReviewDiffFile{Path: "fresh.png"})
+	for _, tc := range []struct {
+		err           error
+		code, message string
+	}{
+		{changed, reviewDiffFilesChangedCode, "This file changed since the diff was read; reload the diff."},
+		{refused, reviewDiffFileRefusedCode, "README.txt is not a file this diff changes"},
+		{gone, reviewDiffFilesGoneCode, "This diff's files are no longer held; reload the diff."},
+		{reviewDiffFilesUnreadable("git could not list them"), reviewDiffFilesUnreadableCode, "This diff's files cannot be read: git could not list them."},
+	} {
+		d := transport.NewDispatcher()
+		if _, err := d.Register(&refusalReceiver{fmt.Errorf("read review diff image: %w", tc.err)}, transport.RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
+			t.Fatal(err)
+		}
+		method, frame := d.ResolveForOrigin(0, "Read", false)
+		if frame != nil {
+			t.Fatalf("resolve: %+v", frame)
+		}
+		_, frame = d.Invoke(context.Background(), method, nil)
+		if frame == nil || frame.Code != tc.code || frame.Message != tc.message {
+			t.Errorf("%s: remote frame = %+v, want %q: %q", tc.code, frame, tc.code, tc.message)
+		}
 	}
 }

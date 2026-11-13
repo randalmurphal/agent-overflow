@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/attachment"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/reviewimage"
@@ -46,6 +48,9 @@ type ReviewDiffFileSizes struct {
 	Old     ReviewDiffFileSide `json:"old"`
 	New     ReviewDiffFileSide `json:"new"`
 	Error   string             `json:"error,omitempty"`
+	// Code is Error's refusal code (review_diff_file_refused), the one a
+	// whole read of the file would fail with.
+	Code string `json:"code,omitempty"`
 }
 
 // ReviewDiffImageSide is one side of a review diff image.
@@ -144,7 +149,11 @@ func (a *App) GetReviewDiffFileSizes(ctx context.Context, ws WorkspaceRef, handl
 	for i, file := range files {
 		answers[i] = ReviewDiffFileSizes{Path: file.Path, OldPath: file.OldPath}
 		if resolved[i].err != nil {
-			answers[i].Error = resolved[i].err.Error()
+			code, message, ok := errorsx.PublicDetails(resolved[i].err)
+			if !ok {
+				message = resolved[i].err.Error()
+			}
+			answers[i].Error, answers[i].Code = message, code
 			continue
 		}
 		answers[i].Old = ReviewDiffFileSide{Exists: resolved[i].old.Exists, Size: resolved[i].old.Size}
@@ -157,8 +166,8 @@ func (a *App) GetReviewDiffFileSizes(ctx context.Context, ws WorkspaceRef, handl
 // review diff for display, from what the open pinned under handle, and
 // mints a single-use URL for each side that is an image within the cap. A
 // side's size is known before anything is read: over the cap nothing is.
-// A working-tree file that is no longer the blob the open recorded is
-// "changed since the diff was read". Pixel sizes are the client's to
+// A working-tree file that is no longer the blob the open recorded is the
+// review_diff_files_changed refusal. Pixel sizes are the client's to
 // measure.
 //
 //ao:scope files:read
@@ -202,6 +211,9 @@ func (a *App) GetReviewDiffImage(ctx context.Context, ws WorkspaceRef, handle st
 			}
 			return sides.ReadBlob(ctx, current.OID, buf)
 		})
+		if errors.Is(err, gitdiff.ErrChangedSinceRead) {
+			err = reviewDiffFilesChanged(err)
+		}
 		if err != nil {
 			return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
 		}
@@ -334,18 +346,19 @@ type resolvedReviewDiffFile struct {
 // trees, a working-tree side from the blobs the open recorded. Each side
 // that exists is a regular file the diff changes: the other side holds
 // another blob or mode at that path, or nothing. A file that fails gets
-// its own error; only a failed tree read fails the call.
+// its own review_diff_file_refused error; only a failed tree read fails the
+// call.
 func resolveReviewDiffFiles(ctx context.Context, record *reviewDiffRecord, sides *gitdiff.Sides, files []ReviewDiffFile) ([]resolvedReviewDiffFile, error) {
 	resolved := make([]resolvedReviewDiffFile, len(files))
 	var paths []string
 	for i, file := range files {
 		if _, err := gitdiff.CleanPath(file.Path); err != nil {
-			resolved[i].err = err
+			resolved[i].err = reviewDiffFileRefused(strings.TrimPrefix(err.Error(), "gitdiff: "))
 			continue
 		}
 		if file.OldPath != "" {
 			if _, err := gitdiff.CleanPath(file.OldPath); err != nil {
-				resolved[i].err = err
+				resolved[i].err = reviewDiffFileRefused(strings.TrimPrefix(err.Error(), "gitdiff: "))
 				continue
 			}
 		}
@@ -364,19 +377,19 @@ func resolveReviewDiffFiles(ctx context.Context, record *reviewDiffRecord, sides
 			return nil, err
 		}
 	}
-	newAt := func(path string) (gitdiff.Entry, error) {
+	newAt := func(path string) gitdiff.Entry {
 		if record.blobs == nil {
-			return newEntries[path], nil
+			return newEntries[path]
 		}
 		blob, ok := record.blobs[path]
 		switch {
 		case !ok:
 			// The working tree holds this path as the old side does.
-			return oldEntries[path], nil
+			return oldEntries[path]
 		case blob.Mode == "000000":
-			return gitdiff.Entry{}, nil
+			return gitdiff.Entry{}
 		}
-		return gitdiff.Entry{Exists: true, Mode: blob.Mode, OID: blob.Blob, Size: blob.Size}, nil
+		return gitdiff.Entry{Exists: true, Mode: blob.Mode, OID: blob.Blob, Size: blob.Size}
 	}
 	changed := func(a, b gitdiff.Entry) bool {
 		return a.Exists != b.Exists || a.Mode != b.Mode || a.OID != b.OID
@@ -389,19 +402,10 @@ func resolveReviewDiffFiles(ctx context.Context, record *reviewDiffRecord, sides
 		if oldPath == "" {
 			oldPath = file.Path
 		}
-		current, err := newAt(file.Path)
-		if err != nil {
-			resolved[i].err = err
-			continue
-		}
-		newAtOld, err := newAt(oldPath)
-		if err != nil {
-			resolved[i].err = err
-			continue
-		}
+		current, newAtOld := newAt(file.Path), newAt(oldPath)
 		old := oldEntries[oldPath]
 		if !old.Exists && !current.Exists {
-			resolved[i].err = fmt.Errorf("%s is not a file this diff changes", file.Path)
+			resolved[i].err = reviewDiffFileRefused(file.Path + " is not a file this diff changes")
 			continue
 		}
 		for _, side := range []struct {
@@ -412,11 +416,11 @@ func resolveReviewDiffFiles(ctx context.Context, record *reviewDiffRecord, sides
 				continue
 			}
 			if !side.entry.IsFile() {
-				resolved[i].err = fmt.Errorf("%s is not a file", side.path)
+				resolved[i].err = reviewDiffFileRefused(side.path + " is not a file")
 				break
 			}
 			if !changed(side.entry, side.other) {
-				resolved[i].err = fmt.Errorf("%s is not a file this diff changes", side.path)
+				resolved[i].err = reviewDiffFileRefused(side.path + " is not a file this diff changes")
 				break
 			}
 		}

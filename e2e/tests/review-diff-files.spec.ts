@@ -6,9 +6,12 @@
 // run covering the whole PR is refused; an image's sizes and both sides'
 // bytes arrive at the sides the open pinned (held on the server under the
 // open's files handle), over the single-use URL the webview fetches; an SVG
-// answers sandboxed. The UI that shows them is covered by its own specs.
+// answers sandboxed; the refusals a file read answers carry their codes
+// over the wire. The UI that shows them is covered by its own specs.
 
 import { randomBytes } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
@@ -17,7 +20,7 @@ import { DIAGRAM_SVG, expectEveryForgeCallHandled, imagePullHistory, publishPull
 interface Commit { sha: string; subject: string }
 interface Opened { id: string; chunk: { data: string; nextOffset: number; eof: boolean }; filesHandle?: string }
 interface ImageSide { exists: boolean; size: number; url?: string; mimeType?: string; overCap?: boolean; notImage?: boolean }
-interface Sizes { path: string; old: { exists: boolean; size: number }; new: { exists: boolean; size: number }; error?: string }
+interface Sizes { path: string; old: { exists: boolean; size: number }; new: { exists: boolean; size: number }; error?: string; code?: string }
 
 async function readPatch(harness: HarnessApp, opened: Opened): Promise<string> {
   let patch = opened.chunk.data;
@@ -100,12 +103,24 @@ for (const forge of ['github', 'gitlab'] as const) {
       { path: 'img/moved.png', oldPath: 'moved.png', old: { exists: true, size: moved }, new: { exists: true, size: moved } },
       { path: 'old.png', old: { exists: true, size: solidPNG(8, 8, [40, 40, 200]).length }, new: { exists: false, size: 0 } },
       { path: 'data.bin', old: { exists: false, size: 0 }, new: { exists: true, size: 8 } },
-      { path: 'img', old: { exists: false, size: 0 }, new: { exists: false, size: 0 }, error: 'img is not a file' },
+      { path: 'img', old: { exists: false, size: 0 }, new: { exists: false, size: 0 }, error: 'img is not a file', code: 'review_diff_file_refused' },
     ]);
+    await expect(harness.rpc('GetReviewDiffImage', ws, wholeHandle, { path: 'img' }))
+      .rejects.toThrow('review_diff_file_refused: img is not a file');
     const data = await harness.rpc<{ new: ImageSide }>('GetReviewDiffImage', ws, wholeHandle, { path: 'data.bin' });
     expect(data.new).toEqual({ exists: true, size: 8, notImage: true });
     await expect(harness.rpc('GetReviewDiffImage', ws, 'no-such-handle', { path: 'data.bin' }))
       .rejects.toThrow("review_diff_files_gone: This diff's files are no longer held; reload the diff.");
+
+    // A working-tree file rewritten after its diff was opened is refused
+    // with its own code, which the client offers a reload on.
+    writeFileSync(join(workspacePath, 'fresh.png'), solidPNG(6, 6, [10, 20, 30]));
+    const worktree = await harness.rpc<Opened>('OpenWorkspaceDiff', ws, false);
+    const worktreeHandle = pinned(worktree);
+    await readPatch(harness, worktree);
+    writeFileSync(join(workspacePath, 'fresh.png'), solidPNG(7, 7, [30, 20, 10]));
+    await expect(harness.rpc('GetReviewDiffImage', ws, worktreeHandle, { path: 'fresh.png' }))
+      .rejects.toThrow("review_diff_files_changed: This file changed since the diff was read; reload the diff.");
     await expectEveryForgeCallHandled(harness);
   });
 }
