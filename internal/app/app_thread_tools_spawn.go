@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/worktreeapp"
 )
 
 // How a thread_spawn's thread comes to exist: the options a call resolves
@@ -369,11 +370,26 @@ func (t threadToolsApp) checkSpawnWorktreeBase(projectID string, call threadtool
 		fmt.Sprintf("Neither this computer nor origin has a branch %q as of the last fetch. Name an existing branch as base.", call.WorktreeBase), nil)
 }
 
-// applySpawnWorkspace picks the checkout the new thread runs in: the
-// worktree of a named branch, a named checkout of the project, or the
-// caller's own. Checkouts are read from git, as the sidebar's picker reads
-// them, so a worktree made outside the app is one too.
+// applySpawnWorkspace picks the checkout the new thread runs in and refuses
+// a worktree git still registers whose folder is gone, naming it: thread
+// creation refuses it too, in prose the model never sees.
 func (t threadToolsApp) applySpawnWorkspace(opts *CreateThreadOptions, caller store.Thread, call threadtools.SpawnCall) error {
+	if err := t.pickSpawnWorkspace(opts, caller, call); err != nil {
+		return err
+	}
+	if opts.WorktreePath != "" && worktreeapp.DirectoryGone(opts.WorktreePath) {
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("The worktree at %s is registered with git but its folder is gone, so nothing can run there. Name another checkout or branch, or remove that worktree first.",
+				opts.WorktreePath), nil)
+	}
+	return nil
+}
+
+// pickSpawnWorkspace resolves the checkout: the worktree of a named branch,
+// a named checkout of the project, or the caller's own. Checkouts are read
+// from git, as the sidebar's picker reads them, so a worktree made outside
+// the app is one too.
+func (t threadToolsApp) pickSpawnWorkspace(opts *CreateThreadOptions, caller store.Thread, call threadtools.SpawnCall) error {
 	if call.WorktreeBranch != "" {
 		return t.applySpawnWorktree(opts, call)
 	}

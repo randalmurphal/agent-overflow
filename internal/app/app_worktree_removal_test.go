@@ -572,33 +572,6 @@ func TestRemoveOtherWorktreeResumesGitStatusWhenRemovalFails(t *testing.T) {
 	}
 }
 
-// The list marks a worktree git still registers whose directory is gone, so
-// a client can tell a checkout deleted with `rm -rf` from a live one.
-func TestGitListWorktreesMarksARegisteredWorktreeWhoseDirectoryIsGone(t *testing.T) {
-	t.Parallel()
-	f := newWatchFixture(t)
-	live := f.worktree(t, "list-live")
-	deleted := f.worktree(t, "list-deleted")
-	if err := os.RemoveAll(deleted); err != nil {
-		t.Fatalf("remove directory: %v", err)
-	}
-
-	items, err := f.app.GitListWorktrees(WorkspaceRef{ProjectID: f.project.ID, WorkspacePath: f.repo})
-	if err != nil {
-		t.Fatalf("GitListWorktrees: %v", err)
-	}
-	missing := map[string]bool{}
-	for _, item := range items {
-		missing[gitops.CanonicalPath(item.Path)] = item.Missing
-	}
-	for path, want := range map[string]bool{f.repo: false, live: false, deleted: true} {
-		got, ok := missing[gitops.CanonicalPath(path)]
-		if !ok || got != want {
-			t.Errorf("%s: listed=%v missing=%v, want listed with missing=%v (items %+v)", path, ok, got, want, items)
-		}
-	}
-}
-
 // stopRecorder replaces session stops with a record of the thread ids.
 func stopRecorder(app *App) func() []string {
 	var mu sync.Mutex

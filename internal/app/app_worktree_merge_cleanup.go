@@ -19,6 +19,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/prthread"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/worktreeapp"
 )
 
 // Merged pull request worktree cleanup (docs/decisions.md, "A thread's
@@ -1070,7 +1071,9 @@ func (a *App) mergedPRStillDue(pr store.ThreadPullRequest, site *mergedPRSite, c
 	if err != nil {
 		return err
 	}
-	if !ok {
+	// A directory that vanished since the cleanup's own stat is left
+	// registered: unattended cleanup never prunes (docs/decisions.md).
+	if !ok || worktreeapp.DirectoryGone(worktree.Path) {
 		return errMergedPRWorktreeGone
 	}
 	if worktree.Branch != pr.Branch {

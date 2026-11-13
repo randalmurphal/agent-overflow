@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 )
 
 func newTestService(t *testing.T, transient []string, background map[string]int) (*Service, *store.Store) {
@@ -97,6 +98,60 @@ func TestThreadsReferencingWorkspaceMatchesEitherPathColumn(t *testing.T) {
 	slices.Sort(ids)
 	if want := []string{"workspace-ref", "worktree-ref"}; !slices.Equal(ids, want) {
 		t.Fatalf("ids = %v, want %v", ids, want)
+	}
+}
+
+// goneWorktree registers a worktree of repo on a branch pushed to origin
+// with one further local commit, then deletes its directory.
+func goneWorktree(t *testing.T, repo, branch string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), branch)
+	testutil.RunGit(t, repo, "worktree", "add", "-b", branch, path)
+	testutil.RunGit(t, path, "push", "-u", "origin", branch)
+	testutil.RunGit(t, path, "commit", "--allow-empty", "-m", "local only")
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatalf("remove directory: %v", err)
+	}
+	return path
+}
+
+// A registered worktree whose directory is gone has nothing uncommitted, and
+// its branch's unpushed commits are still counted, from the project root.
+func TestStatusOfAWorktreeWhoseDirectoryIsGone(t *testing.T) {
+	repo, _ := testutil.InitGitRepoWithOrigin(t)
+	path := goneWorktree(t, repo, "gone")
+	service, database := newTestService(t, nil, nil)
+	seedProject(t, database, "project", repo)
+	seedThread(t, database, "attached", "project", path, path)
+
+	status, err := service.Status(repo, path)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	want := WorktreeStatus{Path: status.Path, Branch: "gone", UnpushedCommits: 1, HasUpstream: true, AttachedThreads: 1, Missing: true}
+	if status != want {
+		t.Fatalf("Status = %+v, want %+v", status, want)
+	}
+}
+
+func TestFindPresentRefusesAWorktreeWhoseDirectoryIsGone(t *testing.T) {
+	repo, _ := testutil.InitGitRepoWithOrigin(t)
+	gone := goneWorktree(t, repo, "gone")
+	live := filepath.Join(t.TempDir(), "live")
+	testutil.RunGit(t, repo, "worktree", "add", "-b", "live", live)
+	service, _ := newTestService(t, nil, nil)
+
+	if worktree, ok, err := service.FindPresent(repo, live); err != nil || !ok || worktree.Branch != "live" {
+		t.Fatalf("FindPresent(live) = %+v, %v, %v; want the live worktree", worktree, ok, err)
+	}
+	if _, ok, err := service.Find(repo, gone); err != nil || !ok {
+		t.Fatalf("Find(gone) = %v, %v; want it registered", ok, err)
+	}
+	if _, ok, err := service.FindPresent(repo, gone); err == nil || ok {
+		t.Fatalf("FindPresent(gone) = %v, %v; want a refusal", ok, err)
+	}
+	if _, ok, err := service.FindPresent(repo, t.TempDir()); err != nil || ok {
+		t.Fatalf("FindPresent(unregistered) = %v, %v; want not found without error", ok, err)
 	}
 }
 
