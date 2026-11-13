@@ -66,6 +66,23 @@ describe('markSuggestionFences', () => {
   it('drops HTML comments from the rendered source', () => {
     expect(markSuggestionFences('Hi <!-- x -->', []).source).toBe('Hi');
   });
+
+  it('keeps the prose and the suggestions after a suggestion whose code opens a comment', () => {
+    const body = '```suggestion\nconst opener = "<!--";\n```\nWhy.\n```suggestion\ny\n```';
+    const marked = markSuggestionFences(body, [{ startLine: 0, endLine: 2, lines: ['const opener = "<!--";'] }, { startLine: 4, endLine: 6, lines: ['y'] }]);
+    expect(marks(marked.source)).toEqual([0, null, null, null, 1, null, null]);
+    expect(marked.source).toContain('Why.');
+    expect(marked.after).toEqual([]);
+  });
+
+  it('renders after the body a placed block whose fence the visible body lost', () => {
+    // The forge places the fence (a fence interrupts the paragraph the
+    // comment opener is in); the body shown drops it with the comment.
+    const body = 'a <!--\n```suggestion\nx\n```\n--> b\n```suggestion\ny\n```';
+    const marked = markSuggestionFences(body, [{ startLine: 1, endLine: 3, lines: ['x'] }, { startLine: 5, endLine: 7, lines: ['y'] }]);
+    expect(marks(marked.source)).toEqual([null, 1, null, null]);
+    expect(marked.after).toEqual([0]);
+  });
 });
 
 describe('sentBlocks and findableBody', () => {

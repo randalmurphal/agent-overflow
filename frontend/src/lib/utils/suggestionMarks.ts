@@ -64,17 +64,20 @@ export interface MarkedBody {
 export function markSuggestionFences(body: string, blocks: readonly (PlacedBlock | null)[]): MarkedBody {
   const lines = body.split('\n');
   const out = [...lines];
-  const after: number[] = [];
+  const marked: number[] = [];
   const used = new Set<number>();
   blocks.forEach((block, at) => {
-    if (block === null || used.has(block.startLine) || !fenceMatches(lines, block)) {
-      after.push(at);
-      return;
-    }
+    if (block === null || used.has(block.startLine) || !fenceMatches(lines, block)) return;
     used.add(block.startLine);
+    marked.push(at);
     out[block.startLine] = out[block.startLine].replace(/[ \t]*(\r?)$/, ` ${MARK}-${at}$1`);
   });
-  return { source: visibleBody(out.join('\n')), after };
+  const source = visibleBody(out.join('\n'));
+  // A marked fence the visible body dropped (it sat inside an HTML
+  // comment) renders after the body like any unplaced block, so no
+  // suggestion is ever lost.
+  const shown = new Set(marked.filter((at) => new RegExp(`${MARK}-${at}\\r?$`, 'm').test(source)));
+  return { source, after: blocks.map((_, at) => at).filter((at) => !shown.has(at)) };
 }
 
 /** Each sent suggestion's place and lines, or null for one the forge
