@@ -343,10 +343,14 @@ toolbar's reload and a stale-head Reload, which re-read the threads of a
 PR on screen) shows everything it read: when its answer lands, nothing
 up to it is counted.
 
-"Hide resolved threads" in the toolbar's view-options menu (off by
-default, held in the review state like whitespace, wrap and split, shown
-in the PR scope) leaves resolved threads out of the feed and the diff's
-thread rows. What it hides is decided when the view is loaded: on the
+"Hide resolved threads" in the toolbar's view-options menu (shown in the
+PR scope) leaves resolved threads out of the feed and the diff's thread
+rows. It is a remembered preference of the frontend, per computer, off
+until first ticked: a review starts from it, and the toggle and the
+"N resolved hidden" line write it. A review already open adopts a
+change made in another review only at its own explicit refresh or
+reload. A failed save shows the layout-save toast, and the choice still
+applies to the review. What it hides is decided when the view is loaded: on the
 toggle, an explicit refresh or reload, and each diff load. A thread
 resolved after that stays on screen, shown resolved, until the next such
 moment; one unresolved since shows again; an arrival shows whatever its

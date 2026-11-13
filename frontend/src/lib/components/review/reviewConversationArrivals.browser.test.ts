@@ -13,7 +13,8 @@ import ReviewPane from './ReviewPane.svelte';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { __resetPinnedReviewStatesForTest, disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
 import { applyPRUpdatedEvent } from '../../stores/prReviewStore.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
+import { appStorageGet, resetAppStorageForTest } from '../../stores/appStorage';
+import { HIDE_RESOLVED_KEY } from '../../stores/reviewHideResolved.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { __setTransportHelloForTest, __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { resetForTest as resetDiffReviewComments } from '../../stores/diffReviewComments.svelte';
@@ -319,8 +320,11 @@ describe('Hide resolved threads', () => {
     const card = target.querySelector('[data-testid="review-conversation-thread"]')!.children[1] as HTMLElement;
     expect(note.getBoundingClientRect().left).toBe(card.getBoundingClientRect().left);
 
+    expect(appStorageGet(HIDE_RESOLVED_KEY, HOME_BACKEND)).toBe('1');
     note.click();
     await vi.waitFor(() => expect(target.querySelectorAll('[data-testid="review-pr-thread"]').length).toBe(2));
+    // The line turns the remembered preference off, as the menu does.
+    expect(appStorageGet(HIDE_RESOLVED_KEY, HOME_BACKEND)).toBe('0');
     expect(target.querySelectorAll('[data-testid="review-conversation-thread"]').length).toBe(2);
     expect(testid('review-conversation-hidden-resolved')).toBeNull();
   });

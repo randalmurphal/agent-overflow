@@ -10,7 +10,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
-import { resetAppStorageForTest } from './appStorage';
+import { appStorageGet, reinitAppStorageForTest, resetAppStorageForTest } from './appStorage';
+import { HIDE_RESOLVED_KEY } from './reviewHideResolved.svelte';
+import { getToasts, resetToastsForTest } from './toast.svelte';
 import { __resetReviewPaneStateForTest, type ReviewPaneState } from './reviewPane.svelte';
 import { __resetPinnedReviewStatesForTest, reviewStateForPR, reviewSubjectForPR } from './reviewPanePinned.svelte';
 import { applyPRUpdatedEvent } from './prReviewStore.svelte';
@@ -112,6 +114,7 @@ beforeEach(() => {
   resetToLocalPage();
   __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: ['pr-review-drafts.v1', 'pr-comment-actions.v1'], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
   seq = 1;
+  resetToastsForTest();
   setBindingMock('SubscribePRUpdates', async () => ({ id: 'sub-5', prKey: KEY, detail: detail(), threads, headSHA: 'sha-5', seq: 1 }));
   setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setReviewDiffMock('OpenPRDiff', async () => PATCH);
@@ -386,5 +389,109 @@ describe('Hide resolved threads', () => {
     state.jumpToDiffThread(DONE);
     expect(state.shownPRThreads.map((each) => each.id)).toContain('t-done');
     expect(state.pendingJumpRowKey).toBe('pt:t-done');
+  });
+
+  describe('is remembered on the computer', () => {
+    const REF6: PRRef = { ...REF, number: 6 };
+    const KEY6 = prKey(REF6);
+    let threads6: ReviewThread[] = [];
+    const DONE6 = thread('t-done6', 2, { isResolved: true });
+    const OPEN6 = thread('t-open6', 3);
+
+    // Both PRs answered from their own lists; each review held by its own owner pane.
+    function serveTwo(): void {
+      const isSix = (pr: unknown) => (pr as { Number: number }).Number === 6;
+      setBindingMock('SubscribePRUpdates', async (pr: unknown) => isSix(pr)
+        ? { id: 'sub-6', prKey: KEY6, detail: { ...detail(), number: 6 }, threads: threads6, headSHA: 'sha-5', seq: 1 }
+        : { id: 'sub-5', prKey: KEY, detail: detail(), threads, headSHA: 'sha-5', seq: 1 });
+      setBindingMock('ListPRReviewThreads', async (pr: unknown) => (isSix(pr) ? threads6 : threads));
+    }
+
+    async function openSix(): Promise<ReviewPaneState> {
+      threads6 = [DONE6, OPEN6];
+      const state = reviewStateForPR('tools-2', reviewSubjectForPR({ ownerPaneId: 'tools-2', backend: HOME_BACKEND, projectId: 'project-1', pr: REF6 }));
+      await vi.waitFor(() => {
+        expect(state.loading).toBe(false);
+        expect(state.prThreads.length).toBe(2);
+      });
+      state.setConversationOpen(true);
+      return state;
+    }
+
+    it('a review opened later, and one after a restart, starts from it', async () => {
+      const first = await openWithResolved();
+      first.setHideResolved(true);
+      expect(appStorageGet(HIDE_RESOLVED_KEY, HOME_BACKEND)).toBe('1');
+
+      __resetPinnedReviewStatesForTest();
+      const later = await open([OLD, DONE, MID]);
+      expect(later.hideResolved).toBe(true);
+      expect(ids(later)).toEqual(['t-mid', 't-old']);
+      expect(later.hiddenResolvedCount).toBe(1);
+
+      // A restart: the store re-reads what this device saved.
+      __resetPinnedReviewStatesForTest();
+      reinitAppStorageForTest();
+      const restarted = await open([OLD, DONE, MID]);
+      expect(restarted.hideResolved).toBe(true);
+      expect(ids(restarted)).toEqual(['t-mid', 't-old']);
+    });
+
+    it('a review open elsewhere keeps what it shows until its own explicit refresh, then follows', async () => {
+      serveTwo();
+      const five = await openWithResolved();
+      const six = await openSix();
+      five.setHideResolved(true);
+      expect(six.hideResolved).toBe(false);
+      expect(ids(six)).toEqual(['t-open6', 't-done6']);
+
+      // A background change is not a moment the other review adopts it.
+      threads6 = [DONE6, OPEN6, thread('t-late6', 4)];
+      seq += 1;
+      applyPRUpdatedEvent({ prKey: KEY6, detail: { ...detail(), number: 6 }, threads: threads6, headSHA: 'sha-5', seq });
+      flushSync();
+      expect(six.hideResolved).toBe(false);
+      expect(ids(six)).toContain('t-done6');
+      // Nor is a reload nobody asked for (a moved head).
+      await six.reload();
+      await settle();
+      expect(six.hideResolved).toBe(false);
+      expect(ids(six)).toContain('t-done6');
+
+      await six.refreshPRThreads({ explicit: true });
+      await settle();
+      expect(six.hideResolved).toBe(true);
+      expect(ids(six)).not.toContain('t-done6');
+
+      // And off in one is followed the same way.
+      five.setHideResolved(false);
+      expect(six.hideResolved).toBe(true);
+      await six.reload({ userInitiated: true });
+      await settle();
+      expect(six.hideResolved).toBe(false);
+      expect(ids(six)).toContain('t-done6');
+    });
+
+    it('off through the resolved-hidden line writes it', async () => {
+      const state = await openWithResolved();
+      state.setHideResolved(true);
+      // The line calls the same setter the menu does.
+      state.setHideResolved(false);
+      expect(appStorageGet(HIDE_RESOLVED_KEY, HOME_BACKEND)).toBe('0');
+      __resetPinnedReviewStatesForTest();
+      expect((await open([OLD, DONE, MID])).hideResolved).toBe(false);
+    });
+
+    it('a failed save says so, and the toggle still applies to the review', async () => {
+      const state = await openWithResolved();
+      const setItem = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+      try {
+        state.setHideResolved(true);
+      } finally {
+        setItem.mockRestore();
+      }
+      expect(ids(state)).toEqual(['t-mid', 't-old']);
+      expect(getToasts().map((toast) => toast.message)).toContain('This device could not save its layout. Changes may be lost when the app closes.');
+    });
   });
 });

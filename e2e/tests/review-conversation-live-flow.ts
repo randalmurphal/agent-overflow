@@ -11,7 +11,8 @@
 // and goes; the Conversation header's refresh shows a comment the forge
 // gained with no chip; Hide resolved threads in the view-options menu
 // takes the resolved thread out of the feed and the diff, the feed says
-// "1 resolved hidden", and pressing that shows it again. Dark-theme
+// "1 resolved hidden", another PR opened next starts with its resolved
+// thread hidden, and pressing the line there shows it again. Dark-theme
 // screenshots of the view-options menu, the hidden note, the chip and the
 // list sorted by Created are attached.
 
@@ -36,6 +37,8 @@ export interface ConversationSurface {
 
 type Forge = 'github' | 'gitlab';
 const NUMBER: Record<Forge, number> = { github: 61, gitlab: 62 };
+// A second PR the remembered Hide resolved threads applies to.
+const OTHER: Record<Forge, number> = { github: 71, gitlab: 72 };
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
@@ -58,7 +61,7 @@ interface Seeded {
   updatedAt: number;
 }
 
-async function seedPullRequest(harness: HarnessApp, forge: Forge): Promise<Seeded> {
+async function seedPullRequest(harness: HarnessApp, forge: Forge, number = NUMBER[forge]): Promise<Seeded> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{ name: `live-${forge}-${randomBytes(4).toString('hex')}`, repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] }, threads: [] }],
   });
@@ -69,7 +72,7 @@ async function seedPullRequest(harness: HarnessApp, forge: Forge): Promise<Seede
     forge,
     project: `ao-e2e/live-${randomBytes(4).toString('hex')}`,
     pulls: [{
-      number: NUMBER[forge],
+      number,
       title: 'Retry a failed delivery',
       author: 'alice',
       authorName: 'Alice Ng',
@@ -240,6 +243,19 @@ export function conversationLiveFlow({ compact }: ConversationSurface): void {
       await expect(page.locator('[data-popover]').last().getByTestId('review-hide-resolved-toggle')).toHaveAttribute('aria-checked', 'true');
       await page.keyboard.press('Escape');
 
+      // The choice is remembered: another PR opened now starts with its
+      // resolved thread hidden.
+      await seedPullRequest(harness, forge, OTHER[forge]);
+      if (compact) await press(page.getByTestId('pulls-back'));
+      await press(row(page, OTHER[forge]).getByRole('button').first());
+      await expect(review.getByTestId('review-pr-header')).toContainText(`${OTHER[forge]}`);
+      await openConversation(review, press);
+      await expect(review.getByTestId('review-conversation-thread').filter({ hasText: 'Should this retry twice?' })).toHaveCount(1);
+      await expect(resolvedCard).toHaveCount(0);
+      await expect(resolvedRow).toHaveCount(0);
+      await expect(hidden).toHaveText('1 resolved hidden');
+
+      // The line is the way out there too.
       await press(hidden);
       await expect(resolvedCard).toHaveCount(1);
       await expect(resolvedRow).toHaveCount(1);

@@ -81,7 +81,8 @@ PR stores; components own presentation and interaction.
 - The toolbar (`ReviewToolbar`) holds the scope selectors, the diff's
   counts, collapse-all, the view-options menu (whitespace, wrap, split,
   and in the PR scope Hide resolved threads, `stores/reviewHideResolved.svelte.ts`,
-  whose `shownPRThreads` the diff rows and find read),
+  a remembered preference in `appStorage` whose `shownPRThreads` the diff
+  rows and find read),
   reload and close (Back on a pinned review); no
   comment tally (the tree badges, the Conversation header and the title
   bar's stepper carry counts). Every selector is `ReviewToolbarMenu`, a

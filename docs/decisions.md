@@ -622,9 +622,11 @@ and anti-changes that live only here:
   scrolled into the feed or has focus in it, the card at the top of the
   viewport holds its position to the pixel and an "N new" chip points
   up at the arrivals, already in the feed; at the top, an arrival simply
-  pushes the cards down. "Hide resolved threads" hides only what was
-  resolved when the view was last loaded, so nothing vanishes under the
-  cursor. Each section fits its content up to a cap and is
+  pushes the cards down. "Hide resolved threads" is remembered on the
+  computer so it need not be ticked per PR, and hides only what was
+  resolved when the view was last loaded; a review already open takes up
+  a change made elsewhere only at its own refresh or reload, so nothing
+  vanishes under the cursor. Each section fits its content up to a cap and is
   user-resizable (bottom drag handle, remembered height). Mechanism:
   `frontend/src/lib/components/review/AGENTS.md`.
 - Forge attachments referenced by PR/MR bodies and comments (images,

@@ -1,7 +1,14 @@
-// "Hide resolved threads", a review pane's view option (the toolbar's
-// view-options menu, beside whitespace, wrap and split, held in the
-// review state as they are). It applies to both homes of a thread: the
+// "Hide resolved threads", a review pane's view option in the toolbar's
+// view-options menu. It applies to both homes of a thread: the
 // Conversation feed and the thread rows in the diff.
+//
+// The option is a remembered preference of the frontend, per computer
+// (appStorage, as the Pull requests page's filters are). A review starts
+// from it; the toggle and the "N resolved hidden" line write it. A
+// review already open adopts a change made in another one only at its
+// own explicit refresh or reload, so nothing vanishes in a pane the
+// reader was not touching. A failed save is appStorage's toast; the
+// toggle still applies to the review.
 //
 // What is hidden is decided when the view is (re)loaded: on the toggle,
 // on an explicit refresh or reload, and on each diff load. A thread
@@ -13,13 +20,33 @@
 // where it is written.
 
 import { untrack } from 'svelte';
+import type { BackendKey } from '../transport/backendKey';
 import type { ReviewThread } from '../types/models';
+import { appStorageGet, appStorageSet } from './appStorage';
+
+export const HIDE_RESOLVED_KEY = 'review:hide-resolved';
+
+/** The remembered value on one computer. */
+export interface HideResolvedPreference {
+  read(): boolean;
+  write(on: boolean): void;
+}
+
+export function hideResolvedPreference(backend: BackendKey): HideResolvedPreference {
+  return {
+    read: () => appStorageGet(HIDE_RESOLVED_KEY, backend) === '1',
+    write: (on) => appStorageSet(HIDE_RESOLVED_KEY, on ? '1' : '0', backend),
+  };
+}
 
 export interface HideResolvedState {
   readonly on: boolean;
+  /** The reader's choice: applies here and is remembered. */
   set(on: boolean): void;
-  /** Decide again what is hidden: the threads resolved now. */
-  decide(): void;
+  /** Decide again what is hidden: the threads resolved now. `adopt`
+   * first takes up the remembered value (an explicit refresh or
+   * reload). */
+  decide(opts?: { adopt?: boolean }): void;
   /** Show a hidden thread until the next decision (a jump to it). */
   reveal(threadId: string): void;
   isHidden(threadId: string): boolean;
@@ -40,8 +67,9 @@ export function createHideResolved(
   threads: () => readonly ReviewThread[],
   /** Threads that hold a draft reply: never hidden. */
   heldReplies: () => ReadonlySet<string>,
+  preference: HideResolvedPreference,
 ): HideResolvedState {
-  let on = $state(false);
+  let on = $state(preference.read());
   let decided: ReadonlySet<string> = $state.raw(NONE);
 
   const hidden = $derived.by<ReadonlySet<string>>(() => {
@@ -57,7 +85,8 @@ export function createHideResolved(
     return hidden.size === 0 ? all : all.filter((thread) => !hidden.has(thread.id));
   });
 
-  function decide(): void {
+  function decide(opts?: { adopt?: boolean }): void {
+    if (opts?.adopt) on = preference.read();
     if (!on) {
       decided = NONE;
       return;
@@ -69,6 +98,7 @@ export function createHideResolved(
   return {
     get on() { return on; },
     set(next: boolean): void {
+      preference.write(next);
       if (next === on) return;
       on = next;
       decide();

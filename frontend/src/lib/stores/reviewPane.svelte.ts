@@ -170,7 +170,7 @@ import type { ReviewSectionId } from './reviewSectionSizes.svelte';
 import { REVIEW_COMMIT_CARD_ROW_KEY, REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
 import { createReviewCommentActions, type ReviewCommentActionsState } from './reviewCommentActions.svelte';
 import { createConversationFeed, type ConversationFeedAnchor } from './reviewConversationFeed.svelte';
-import { createHideResolved } from './reviewHideResolved.svelte';
+import { createHideResolved, hideResolvedPreference } from './reviewHideResolved.svelte';
 import { createReviewCommentExtras, type ReviewCommentExtrasState } from './reviewCommentExtras.svelte';
 import { EDITOR_PREVIEW_KEY } from './reviewEditorPreview.svelte';
 import { commentWriteKey } from './reviewCommentWrites.svelte';
@@ -1252,7 +1252,7 @@ export function createReviewPaneState(
     out.sort((a, b) => b.timeMs - a.timeMs || a.item.id.localeCompare(b.item.id));
     return out;
   });
-  const hideResolved = createHideResolved(() => prThreads, () => heldReplyThreadIds);
+  const hideResolved = createHideResolved(() => prThreads, () => heldReplyThreadIds, hideResolvedPreference(backend));
   const conversation = createConversationFeed({
     source: () => conversationFeedSource,
     subjectKey: () => prEntityKey,
@@ -3107,7 +3107,7 @@ export function createReviewPaneState(
       if (explicitReadOwed) {
         explicitReadOwed = false;
         conversation.endExplicitRead(answered && !disposed);
-        if (answered && !disposed) hideResolved.decide();
+        if (answered && !disposed) hideResolved.decide({ adopt: true });
       }
     }
   }
