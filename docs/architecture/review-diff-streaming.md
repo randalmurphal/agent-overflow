@@ -25,6 +25,41 @@ text is read again.
 
 There is no size limit on any diff source.
 
+A diff's two sides are resolved once, by `gitdiff.Sides`, for the patch and
+for every blob read from the same diff. A PR's commit run
+(`OpenPRCommitDiff(first, last)`) is the two-tree diff from `first`'s first
+parent (the empty tree for a root commit) to `last`, both in the commit
+list `ListPRCommits` answers at the same revision, `first` no newer than
+`last`; one commit is that commit's own change, and a run of several
+covering the whole list is refused in favor of `OpenPRDiff`
+(`gitdiff.CommitRangeSides`).
+
+## Reading a diff's files
+
+The patch says a file is binary (`Binary files ... differ`) and names each
+side's blob on its `index <old>..<new>` line, all zeros for a side that does
+not exist; a pure rename or mode change has no index line.
+`GetReviewDiffFileSizes` (up to 100 files) and `GetReviewDiffImage` (one
+file, both sides) take the diff's source in its Open call's terms
+(`ReviewDiffSource`: workspace, branch, commit, or pr with its revision and
+run) and the file as its patch named it (`ReviewDiffFileRef`: paths and the
+index line). Each call resolves the diff's sides again, lists the requested
+paths the diff changes (`git diff --raw --no-renames`, literal pathspecs)
+and serves a side only when that path changes and its blob is the one the
+index line named, so a worktree file rewritten since the patch was read, or
+a path the diff does not touch, is refused. A file with no index line must
+hold one blob on both sides. A failed size read leaves the patch on screen;
+each file of a size batch fails alone.
+
+A side over 25 MiB answers its size and `overCap` without reading it; bytes
+that are not an image a browser displays answer `notImage`. Image bytes are
+held in a memory LRU keyed by blob ID (100 MiB, 10 minutes, cleared by the
+harness reset) and served once per ticket from the local-image route,
+where an SVG gets an attachment disposition and a policy that allows no
+script. The edits scope has no git sides: `GetEditDiffImage` serves the new
+side its context expansion would serve, verified against the file's patch,
+and never an old side.
+
 ## Holding the patch
 
 `ReviewDiffSource` (`frontend/src/lib/stores/reviewDiffStream.ts`) reads the

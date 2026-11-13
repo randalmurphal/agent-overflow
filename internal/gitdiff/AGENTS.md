@@ -16,8 +16,10 @@ flags that make the output deterministic and parseable regardless of user
 configuration.
 
 Patches have no size limit and are never held whole. An `Open*` function
-resolves both endpoints to object IDs and returns a `Diff`, read in chunks by
-byte offset (`stream.go`). A worktree diff's snapshot lives in a directory
+resolves both endpoints to object IDs through `Sides` (`sides.go`) and returns
+a `Diff`, read in chunks by byte offset (`stream.go`). The same `Sides` lists
+the paths the diff changes and reads their blobs under a byte cap, so a blob
+read always describes the diff it belongs to. A worktree diff's snapshot lives in a directory
 under the caller's root until `Close`. A failed Git exit is an error, never a
 short patch. Closing a diff or cancelling a read terminates and reaps Git.
 Tests use temporary real repositories for worktree states, unusual paths,

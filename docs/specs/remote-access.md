@@ -3400,8 +3400,10 @@ frame.**
   video and audio go out under the signature-derived type, every other
   payload as `application/octet-stream` with an attachment disposition,
   so nothing a comment linked can render at the SPA origin. An SVG
-  image also carries an attachment disposition, because it is a
-  document that can run script. A positive `maxWidth` serves an image
+  image also carries an attachment disposition and the policy
+  `default-src 'none'; style-src 'unsafe-inline'; sandbox`, because it
+  is a document that can run script; the local-image route answers an
+  SVG the same way. A positive `maxWidth` serves an image
   as a display-size derivative (`attachment.Derive`, held in the same
   LRU under the original's id and the tier). `SaveForgeAttachment`
   writes the original bytes to the host's Downloads directory instead.
@@ -3421,7 +3423,11 @@ frame.**
   per request and answers 404 when its size or mtime changed since it was
   resolved; a derivative whose file was evicted or deleted answers 404,
   and the client's re-mint derives it again. The response carries the
-  sniffed image type, and an SVG an attachment disposition.
+  sniffed image type, and an SVG an attachment disposition. The sides of
+  a review diff file ride the same route (`GetReviewDiffImage`,
+  `GetEditDiffImage`, files:read): the bytes, at most 25 MiB a side,
+  sit in their own memory LRU (100 MiB, 10 min) the harness reset
+  clears ([review diff streaming](../architecture/review-diff-streaming.md#reading-a-diffs-files)).
   `SaveLocalImage` copies the original file to the host's Downloads
   directory.
 

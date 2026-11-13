@@ -10,7 +10,8 @@ details below reflect the design as written, not the current code).
 Superseded in part 2026-07-19: the checkpoint-backed **Turn**/**Session**
 scopes were removed with the git-checkpoint machinery; the shipped
 scopes are Workspace / Branch / PR, with a per-commit selector on the
-branch and PR scopes (`app_review_diffs.go`, `internal/gitdiff/`).
+branch and PR scopes (`app_review_diffs.go`, `internal/gitdiff/`); the PR
+scope also reads a contiguous run of its commits (`OpenPRCommitDiff`).
 Superseded in part 2026-08-08: PR polling is keyed by PR, not by
 subscription. One refcounted pump per PR key (`PRReference.Key`:
 `forge:namespace/repo:number` on the forge's public host,
@@ -21,7 +22,7 @@ the PR, not by the pane".
 Superseded in part 2026-09-27: standalone PR review (`pr://` threads
 started from a PR URL) and the forge CLI patch (`gh pr diff` /
 `glab mr diff`) were removed. The PR scope needs a local clone whose
-branch has the PR. Every PR read (diff, commit list, merge conflicts) runs
+branch has the PR. Every PR read (diff, commit run, commit list, merge conflicts) runs
 at the revision of the pane's PR snapshot, the head and the base commit
 the forge recorded (`git.PRRevision`), and fetches from origin only the
 commits the clone lacks (`Core.EnsurePRObjects`). The recorded base does
