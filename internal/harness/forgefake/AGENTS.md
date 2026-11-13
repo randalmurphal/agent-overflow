@@ -17,7 +17,7 @@ seeds. The CLI path is:
    records it. `internal/harnessrpc` exposes `HarnessForgeSeed`,
    `HarnessForgeInvocations`, `HarnessForgeOffline`,
    `HarnessForgeRateLimit`, `HarnessForgeRefuse`, `HarnessForgeRelease`,
-   `HarnessForgeAdvanceJob` and the `harness:forge` event. `HarnessReset`
+   `HarnessForgeAdvanceJob`, `HarnessForgeOrigin` and the `harness:forge` event. `HarnessReset`
    clears the fixture, the log, the offline state, the rate limits and the
    refusals, and releases every held answer.
 
@@ -331,12 +331,13 @@ and then drops or truncates the response.
   writes it as a real commit (the file set on the head, its mode kept,
   the message: GitHub's from the mutation, GitLab's "Apply 1
   suggestion(s) to 1 file(s)" with a `Co-authored-by` trailer for the
-  note's author at `<login>@example.com`) to the bare repository the e2e
-  helpers publish the pull's head repository to
-  (`<data root>/forge-origin/<project>.git`, `publishPullRequest`),
-  moving the head branch and the pull's head ref, and the pull's new head
-  is that commit; a pull whose head repository is not there, or lacks
-  its head, gets a generated sha. A GitLab note's suggestions keep the
+  note's author at `<login>@example.com`) to the pull's head repository's
+  origin, which the harness created (`HarnessForgeOrigin`,
+  `<data root>/forge-origin/<project>.git`, which `publishPullRequest`
+  pushes to), moving the head branch and the pull's head ref, and the
+  pull's new head is that commit; a pull whose head repository has no
+  origin the harness created there, or whose origin lacks its head, gets
+  a generated sha. A GitLab note's suggestions keep the
   `from_content` they had when written: a commit fixes each note's
   replaced text before it changes the files, and an edit reads it again. A GitLab note's suggestions are derived from
   its body (`internal/mdsuggest`) against its thread's lines in `files`
