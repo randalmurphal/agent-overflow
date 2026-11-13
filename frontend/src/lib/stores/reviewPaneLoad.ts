@@ -35,7 +35,7 @@ import { patchFileFromReviewFile, reviewFileFromPatchFile, whenResident, type Re
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { prRevision, type PRRevision } from '../utils/prRevision';
-import { resolveCommitSelection, type CommitSelection } from '../utils/commitRange';
+import { commitList, resolveCommitSelection, type CommitSelection } from '../utils/commitRange';
 
 /** Whether the diff for this selection comes from `internal/gitdiff`, the
  * only source that can apply `-w`: every scope but edits, whose patches
@@ -318,13 +318,6 @@ export async function loadPatch(
       return { patch, ...list, selectedCommitSHA: null };
     }
   }
-}
-
-// A commit list answer: the newest commits up to the backend's cap and
-// how many the range holds (null when it could not count them).
-function commitList(answer: { commits: BranchCommit[] | null; total: number | null } | null): { commits: BranchCommit[]; commitsTotal: number | null } {
-  if (!answer) return { commits: [], commitsTotal: 0 };
-  return { commits: answer.commits ?? [], commitsTotal: answer.total };
 }
 
 export async function defaultBaseBranch(workspace: WorkspaceRef): Promise<string> {

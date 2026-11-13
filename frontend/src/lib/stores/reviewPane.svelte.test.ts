@@ -3204,6 +3204,35 @@ describe('reviewPane store — edits scope', () => {
     });
   }
 
+  it('reads an edit image again under each open of the turn: a reload, or another pane, never reuses an older open\'s bytes', async () => {
+    installEditMocks();
+    const svg = ['diff --git a/diagram.svg b/diagram.svg', 'index 1111111..2222222 100644', 'Binary files a/diagram.svg and b/diagram.svg differ', ''].join('\n');
+    setReviewDiffMock('OpenTurnEditsDiff', async () => svg);
+    // The agent edits the file between opens: each read answers its bytes.
+    let version = 0;
+    const images = setBindingMock('GetEditDiffImage', async () => {
+      version += 1;
+      return { old: { exists: false, size: 0 }, new: { exists: true, size: 30 * 1024 * 1024, overCap: true }, maxBytes: version };
+    });
+    const first = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(first);
+    await first.setScope('edits');
+    await waitLoaded(first);
+    const before = first.mediaHost.media.identity;
+    expect(before).not.toBeNull();
+    const shown = first.mediaHost.media.image(first.files[0], ['new']);
+    await vi.waitFor(() => expect(shown.state).toMatchObject({ kind: 'image', maxBytes: 1 }));
+
+    await first.reload();
+    await waitLoaded(first);
+    expect(first.mediaHost.media.identity).not.toBe(before);
+    const reread = first.mediaHost.media.image(first.files[0], ['new']);
+    await vi.waitFor(() => expect(reread.state).toMatchObject({ kind: 'image', maxBytes: 2 }));
+    expect(images).toHaveBeenCalledTimes(2);
+    shown.release();
+    reread.release();
+  });
+
   it('defaults to the latest turn and keys comments by turn', async () => {
     const { turnDiff } = installEditMocks();
     const state = reviewStateForPane('pane-1', subjectFor());

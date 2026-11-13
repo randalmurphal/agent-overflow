@@ -347,7 +347,7 @@ describe('a review diff\'s images', () => {
     b.release();
   });
 
-  it('drops a diff\'s bytes from the cache when it is closed or replaced, once nothing shows them', async () => {
+  it('drops a diff\'s bytes from the cache when it is closed or replaced, a row still showing them included', async () => {
     byHandle();
     const media = createReviewDiffMedia();
     media.setTarget(gitTarget('h1'));
@@ -355,10 +355,10 @@ describe('a review diff\'s images', () => {
     await settle();
     expect(__mediaBlobCacheKeysForTest().filter((key) => key.includes('"h1"'))).toHaveLength(2);
     media.setTarget(null);
-    // Still shown: it goes when the row lets go.
-    expect(__mediaBlobCacheKeysForTest().filter((key) => key.includes('"h1"'))).toHaveLength(2);
-    row.release();
+    // Unreachable at once; the row keeps showing what it has until it lets go.
     expect(__mediaBlobCacheKeysForTest()).toEqual([]);
+    expect(shownUrls(row).every(([, url]) => url !== null)).toBe(true);
+    row.release();
     expect(media.identity).toBeNull();
   });
 
@@ -603,7 +603,7 @@ describe('a review diff\'s images', () => {
     const read = setBindingMock('GetEditDiffImage', async () => ({ old: side(false, 0), new: side(true, 99, { url: '/t/edit/new', mimeType: 'image/png' }), maxBytes: 100 }));
     const sizes = setBindingMock('GetReviewDiffFileSizes', async () => []);
     const media = createReviewDiffMedia();
-    media.setTarget({ kind: 'edits', backend: 'home', threadId: 't1', editPayloadId: 'pay', editTurnIndex: -1 });
+    media.setTarget({ kind: 'edits', backend: 'home', openId: 'open-1', threadId: 't1', editPayloadId: 'pay', editTurnIndex: -1 });
     expect(media.readsSizes).toBe(false);
     media.requestSizes(files()['blob.bin']);
     const handle = media.image(files()['img/icon.png'], ['new']);
@@ -612,6 +612,52 @@ describe('a review diff\'s images', () => {
     expect(read.mock.calls[0]).toEqual(['t1', { path: 'img/icon.png', editPayloadId: 'pay', editTurnIndex: -1 }]);
     expect(fetched).toEqual(['/t/edit/new']);
     handle.release();
+  });
+
+  // Two opens of one turn, its file edited between them: each answers
+  // its own bytes.
+  function editTarget(openId: string): DiffFilesTarget {
+    return { kind: 'edits', backend: 'home', openId, threadId: 't1', editPayloadId: '', editTurnIndex: 0 };
+  }
+  function editVersions() {
+    let version = 0;
+    return setBindingMock('GetEditDiffImage', async () => {
+      version += 1;
+      return { old: side(false, 0), new: side(true, 99, { url: `/t/edit/v${version}`, mimeType: 'image/png' }), maxBytes: 100 };
+    });
+  }
+
+  it('keeps two panes on one turn apart when the file changed between their opens', async () => {
+    editVersions();
+    const left = createReviewDiffMedia();
+    left.setTarget(editTarget('open-a'));
+    const a = left.image(files()['img/icon.png'], ['new']);
+    await settle();
+    const right = createReviewDiffMedia();
+    right.setTarget(editTarget('open-b'));
+    const b = right.image(files()['img/icon.png'], ['new']);
+    await settle();
+    expect(fetched).toEqual(['/t/edit/v1', '/t/edit/v2']);
+    expect(shownUrls(a)).not.toEqual(shownUrls(b));
+    a.release();
+    b.release();
+  });
+
+  it('never serves an image held on screen to the open that replaced its own', async () => {
+    editVersions();
+    const media = createReviewDiffMedia();
+    media.setTarget(editTarget('open-a'));
+    const held = media.image(files()['img/icon.png'], ['new']);
+    await settle();
+    // Still on screen while the pane's open is replaced (a reload).
+    media.setTarget(editTarget('open-b'));
+    const next = media.image(files()['img/icon.png'], ['new']);
+    await settle();
+    expect(fetched).toEqual(['/t/edit/v1', '/t/edit/v2']);
+    expect(shownUrls(next)).not.toEqual(shownUrls(held));
+    held.release();
+    next.release();
+    expect(__mediaBlobCacheKeysForTest().some((key) => key.includes('"open-a"'))).toBe(false);
   });
 
   it('remembers a side\'s decoded pixel size for its caption until the diff changes', () => {

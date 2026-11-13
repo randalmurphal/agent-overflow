@@ -125,6 +125,10 @@ export type DiffFilesTarget =
   | {
     kind: 'edits';
     backend: BackendKey;
+    /** Minted by the client for this open of the edits diff: a turn's
+     * files change while its agent keeps editing, so no other open (another
+     * pane, a reload) shares this one's bytes. */
+    openId: string;
     threadId: string;
     /** The edit read, or '' for a turn's edits. */
     editPayloadId: string;
@@ -279,13 +283,14 @@ export async function fetchDiffImageBytes(target: DiffFilesTarget, url: string):
 }
 
 /** The identity of the open whose files `target` reads, as the media
- * cache keys its bytes: the files handle (one per open, never reused) or
- * the edit read. Two diffs, or two panes, never share one; a reopen mints
- * a new one. */
+ * cache keys its bytes: the files handle the server minted for a git open,
+ * or the id the client minted for an edits open. One per open, never
+ * reused: two diffs, two panes or two loads of one never share one, and a
+ * reopen mints a new one. */
 export function diffFilesIdentity(target: DiffFilesTarget): string {
   return target.kind === 'git'
     ? gitFilesIdentity(target.backend, target.files.current)
-    : JSON.stringify(['review-image', target.backend, 'edit', target.threadId, target.editPayloadId, target.editTurnIndex]);
+    : JSON.stringify(['review-image', target.backend, 'edit', target.openId]);
 }
 
 /** The identity of a git diff's open by its files handle. */

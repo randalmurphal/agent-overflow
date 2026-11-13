@@ -2151,12 +2151,11 @@ export function createReviewPaneState(
     // streams (an empty pane) read under it from the first one; otherwise
     // the rows on screen are another diff's, and it is attached with this
     // diff's files when the read completes.
-    let target = editsTarget(arrival.loaded);
+    let target: DiffFilesTarget | null = null;
     const attach = (next: DiffFilesTarget | null): void => {
       target = next;
       if (progressive && !cancelled()) media.setTarget(next);
     };
-    attach(target);
     let sectionsShown = 0;
     let filesShown = 0;
     let publishedAt = 0;
@@ -2182,9 +2181,10 @@ export function createReviewPaneState(
       cancelled,
       onProgress,
       onOpened: (opened) => {
-        // A git diff's open answers its files handle; a retry's open
-        // answers a new one, with a new patch.
-        if (!arrival.loaded.selectedEdit) attach(gitTarget(patch, opened.filesHandle ?? ''));
+        // Each open, a retry's included, is its own target: a git diff's
+        // by the files handle it answers, an edits diff's by an id minted
+        // here.
+        attach(arrival.loaded.selectedEdit ? editsTarget(arrival.loaded) : gitTarget(patch, opened.filesHandle ?? ''));
         if (threadId !== null && opened.payloadIds?.length) {
           void seedEditPatchSpans(threadId, patch.backend, opened.payloadIds, cancelled);
         }
@@ -2278,6 +2278,7 @@ export function createReviewPaneState(
     return {
       kind: 'edits',
       backend,
+      openId: randomId(),
       threadId,
       editPayloadId: edit.kind === 'item' ? edit.payloadId : '',
       editTurnIndex: edit.kind === 'turn' ? edit.turnIndex : -1,

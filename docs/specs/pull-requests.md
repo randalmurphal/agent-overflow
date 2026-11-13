@@ -735,8 +735,8 @@ when the backend says why, its sentence. A refused read says why on the
 row: Retry when the backend was busy, `Reload diff` when the file changed
 since the diff was read, and only the sentence when the diff's files
 cannot be read at all. The reads name the handle the diff's open
-answered, and the bytes are cached under it, so no other diff or pane
-shares them. The server forgets a handle when it evicts it or the
+answered, and the bytes are cached under it (an edits diff's under an
+id minted for its open), so no other diff, pane or load shares them. The server forgets a handle when it evicts it or the
 connection that opened it ends. A diff of immutable revisions (the PR, a
 picked commit or run, a branch commit) is then opened once more for a new
 handle, before the next read when the connection ended; a diff that reads

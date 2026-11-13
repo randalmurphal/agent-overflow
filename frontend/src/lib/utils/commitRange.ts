@@ -24,6 +24,20 @@ export function commitOrdinal(index: number, total: number | null): number | nul
   return total === null ? null : total - index;
 }
 
+/**
+ * A commit list answer (ListPRCommits, ListBranchCommits): the newest
+ * commits up to the backend's cap and how many the range holds. A total
+ * smaller than the list cannot describe it, so it is no total.
+ */
+export function commitList(
+  answer: { commits: BranchCommit[] | null; total: number | null } | null,
+): { commits: BranchCommit[]; commitsTotal: number | null } {
+  if (!answer) return { commits: [], commitsTotal: 0 };
+  const commits = answer.commits ?? [];
+  const total = answer.total !== null && answer.total >= commits.length ? answer.total : null;
+  return { commits, commitsTotal: total };
+}
+
 /** Whether the list holds every commit of the range. */
 export function commitListComplete(commits: readonly BranchCommit[], total: number | null): boolean {
   return total === commits.length;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  commitList,
   commitListNote,
   commitOrdinal,
   commitSelectionBetween,
@@ -93,5 +94,21 @@ describe('a commit list short of the whole range', () => {
     for (const { total } of lists) {
       expect(resolveCommitSelection({ first: sha('z'), last: sha('f') }, COMMITS, total)).toEqual({ selection: null, lost: true });
     }
+  });
+});
+
+describe('a commit list answer', () => {
+  it.each([
+    { name: 'complete', total: 6, want: 6 },
+    { name: 'truncated', total: 900, want: 900 },
+    { name: 'uncounted', total: null, want: null },
+    { name: 'a total smaller than the list (another range\'s count)', total: 0, want: null },
+    { name: 'one short of the list', total: 5, want: null },
+  ])('$name: total $total reads as $want', ({ total, want }) => {
+    expect(commitList({ commits: COMMITS, total })).toEqual({ commits: COMMITS, commitsTotal: want });
+  });
+
+  it('reads no answer as an empty, complete list', () => {
+    expect(commitList(null)).toEqual({ commits: [], commitsTotal: 0 });
   });
 });

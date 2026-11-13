@@ -72,7 +72,8 @@ interface CacheEntry {
   objectURL: string;
   bytes: number;
   retained: number;
-  /** Dropped by discardMediaBlobs while held: goes at its last release. */
+  /** Dropped by discardMediaBlobs while held: no longer in the cache, so
+   * no acquire reaches it; its URL is revoked at its last release. */
   discarded: boolean;
 }
 
@@ -109,7 +110,13 @@ export function acquireMediaBlob<V extends MediaBytes>(
       (resolved) => {
         // The entry may already have been dropped by a reset between the
         // request and its reply; only account for one still in the map.
-        if (entries.get(key) === created) {
+        if (created.discarded) {
+          // Its source went while it loaded: its holders show it, and its
+          // URL goes with the last of them.
+          created.settled = resolved;
+          created.objectURL = resolved.url.startsWith('blob:') ? resolved.url : '';
+          if (created.retained === 0 && created.objectURL) revoke(created.objectURL);
+        } else if (entries.get(key) === created) {
           created.settled = resolved;
           created.objectURL = resolved.url.startsWith('blob:') ? resolved.url : '';
           // A data URL is a second, base64 copy beside the Blob.
@@ -142,22 +149,30 @@ export function acquireMediaBlob<V extends MediaBytes>(
       if (released) return;
       released = true;
       held.retained = Math.max(0, held.retained - 1);
-      if (held.discarded && held.retained === 0 && entries.get(key) === held) drop(key, held);
+      if (held.discarded && held.retained === 0 && held.objectURL) revoke(held.objectURL);
     },
   };
 }
 
 /**
- * Drops every entry whose key starts with `prefix`: its bytes can no
- * longer be asked for by that key (the source that minted them is gone).
- * An entry still held goes at its last release.
+ * Drops every entry whose key starts with `prefix` at once: its bytes can
+ * no longer be asked for by that key (the source that minted them is
+ * gone), and a later acquire of the key loads afresh. An entry still held
+ * keeps its URL for its holders until the last releases it; it no longer
+ * counts against the budget, which its holders (mounted rows) bound.
  */
 export function discardMediaBlobs(prefix: string): void {
   // Deleting the entry being visited is safe in a Map iteration.
   for (const [key, entry] of entries) {
     if (!key.startsWith(prefix)) continue;
-    if (entry.retained > 0) entry.discarded = true;
-    else drop(key, entry);
+    if (entry.retained > 0) {
+      entry.discarded = true;
+      entries.delete(key);
+      cachedBytes -= entry.bytes;
+      void entry.value.catch(() => {});
+    } else {
+      drop(key, entry);
+    }
   }
 }
 

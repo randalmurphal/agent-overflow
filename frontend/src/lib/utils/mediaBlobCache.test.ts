@@ -148,13 +148,32 @@ describe('the media blob cache', () => {
     await other.value;
     other.release();
     discardMediaBlobs('diff-1/');
-    expect(__mediaBlobCacheKeysForTest()).toEqual(['diff-1/b', 'diff-2/a']);
+    // A held entry leaves the cache at once: no acquire of its key reaches
+    // it, while its holder keeps showing it.
+    expect(__mediaBlobCacheKeysForTest()).toEqual(['diff-2/a']);
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a1');
     expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:b1');
+    const again = acquireMediaBlob('diff-1/b', async () => bytes('b2'));
+    expect(again.settled).toBeUndefined();
+    expect((await again.value).url).toBe('blob:b2');
+    again.release();
     held.release();
-    expect(__mediaBlobCacheKeysForTest()).toEqual(['diff-2/a']);
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:b1');
     expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:a2');
+  });
+
+  it('gives a held entry discarded while it loads to its holders, never to a later acquire, and revokes it at the last release', async () => {
+    const pending = deferred<MediaBytes>();
+    const held = acquireMediaBlob('diff-1/a', () => pending.promise);
+    discardMediaBlobs('diff-1/');
+    const fresh = acquireMediaBlob('diff-1/a', async () => bytes('fresh'));
+    pending.resolve(bytes('stale'));
+    expect((await held.value).url).toBe('blob:stale');
+    expect((await fresh.value).url).toBe('blob:fresh');
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:stale');
+    held.release();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:stale');
+    fresh.release();
   });
 
   it('remembers a decoded size only while the size is unknown', () => {

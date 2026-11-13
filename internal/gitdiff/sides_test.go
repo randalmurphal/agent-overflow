@@ -234,6 +234,23 @@ func fastImportCommits(t *testing.T, repo string, count int) {
 	}
 }
 
+// The list and its count read one range: a branch reset between them
+// (HEAD moved back to the base) leaves the total the listed range's.
+func TestCommitListAndCountReadOneRange(t *testing.T) {
+	t.Parallel()
+	const limit = 3
+	repo := testutil.InitGitRepo(t)
+	base := headSHA(t, repo)
+	fastImportCommits(t, repo, limit+2)
+	gitOutput(t, repo, "checkout", "--quiet", "feature")
+	list, err := listCommitRange(context.Background(), repo, "main", "HEAD", limit, time.Minute, func() {
+		gitOutput(t, repo, "reset", "--quiet", "--hard", base)
+	})
+	if err != nil || len(list.Commits) != limit || list.Total == nil || *list.Total != limit+2 {
+		t.Fatalf("listed %d commits of %v (err %v), want %d of %d", len(list.Commits), list.Total, err, limit, limit+2)
+	}
+}
+
 // commitsOf answers a list's commits.
 func commitsOf(list CommitList, err error) ([]Commit, error) { return list.Commits, err }
 
@@ -249,15 +266,15 @@ func TestCommitRangeOfATruncatedList(t *testing.T) {
 	base := headSHA(t, repo)
 	fastImportCommits(t, repo, limit+2)
 	head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "feature"))
-	list, err := listCommitRange(context.Background(), repo, base, head, limit, time.Minute)
+	list, err := listCommitRange(context.Background(), repo, base, head, limit, time.Minute, nil)
 	if err != nil || len(list.Commits) != limit || list.Total == nil || *list.Total != limit+2 {
 		t.Fatalf("listed %d commits of %v (err %v), want %d of %d", len(list.Commits), list.Total, err, limit, limit+2)
 	}
-	whole, err := listCommitRange(context.Background(), repo, base, head, limit+2, time.Minute)
+	whole, err := listCommitRange(context.Background(), repo, base, head, limit+2, time.Minute, nil)
 	if err != nil || len(whole.Commits) != limit+2 || whole.Total == nil || *whole.Total != limit+2 {
 		t.Fatalf("a list at the cap = %d commits of %v (err %v), want it complete", len(whole.Commits), whole.Total, err)
 	}
-	unknown, err := listCommitRange(context.Background(), repo, base, head, limit, time.Nanosecond)
+	unknown, err := listCommitRange(context.Background(), repo, base, head, limit, time.Nanosecond, nil)
 	if err != nil || len(unknown.Commits) != limit || unknown.Total != nil {
 		t.Fatalf("a count past its bound = %d commits of %v (err %v), want the list with no total", len(unknown.Commits), unknown.Total, err)
 	}

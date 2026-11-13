@@ -75,15 +75,26 @@ func ListCommitsRange(ctx context.Context, workspace, base, head string) (Commit
 	if head != "HEAD" && !commitSHAPattern.MatchString(head) {
 		return CommitList{}, fmt.Errorf("gitdiff: invalid head %q", head)
 	}
-	return listCommitRange(ctx, workspace, base, head, maxListedCommits, commitCountWait)
+	return listCommitRange(ctx, workspace, base, head, maxListedCommits, commitCountWait, nil)
 }
 
 // listCommitRange lists `base..head` up to limit commits and answers how
 // many it holds: the listed number when one more did not exist, else a
 // count of the range within countWait, or no total when that fails. Only
-// ctx ending fails the list.
-func listCommitRange(ctx context.Context, workspace, base, head string, limit int, countWait time.Duration) (CommitList, error) {
-	rev := base + ".." + head
+// ctx ending fails the list. Both ends are resolved to commit ids once,
+// before listing, so the list and its count read one range however the
+// refs move between them. beforeCount, set only by tests, runs between
+// the list and the count.
+func listCommitRange(ctx context.Context, workspace, base, head string, limit int, countWait time.Duration, beforeCount func()) (CommitList, error) {
+	baseID, err := resolveRangeEnd(ctx, workspace, base)
+	if err != nil {
+		return CommitList{}, err
+	}
+	headID, err := resolveRangeEnd(ctx, workspace, head)
+	if err != nil {
+		return CommitList{}, err
+	}
+	rev := baseID + ".." + headID
 	commits, err := logRev(ctx, workspace, limit+1, rev)
 	if err != nil {
 		return CommitList{}, fmt.Errorf("gitdiff: log %s: %w", rev, err)
@@ -93,6 +104,9 @@ func listCommitRange(ctx context.Context, workspace, base, head string, limit in
 		return CommitList{Commits: commits, Total: &total}, nil
 	}
 	list := CommitList{Commits: commits[:limit]}
+	if beforeCount != nil {
+		beforeCount()
+	}
 	countCtx, cancel := context.WithTimeout(ctx, countWait)
 	defer cancel()
 	out, _, _, err := runGit(countCtx, workspace, nil, false, "rev-list", "--count", rev, "--")
@@ -108,6 +122,16 @@ func listCommitRange(ctx context.Context, workspace, base, head string, limit in
 	}
 	log.Printf("gitdiff: count %s: %v; the total is unknown", rev, err)
 	return list, nil
+}
+
+// resolveRangeEnd resolves a range end (a ref name resolveBaseRef chose,
+// "HEAD" or a hex SHA) to its full commit id.
+func resolveRangeEnd(ctx context.Context, workspace, rev string) (string, error) {
+	out, _, _, err := runGit(ctx, workspace, nil, false, "rev-parse", "--verify", "--end-of-options", rev+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("gitdiff: resolve %s: %w", rev, err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // ListBranchCommits returns the commits on `branch` that are not reachable from
