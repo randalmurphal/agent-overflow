@@ -167,16 +167,20 @@ func TestCommentActionsThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
-// A maintainer may delete another author's comment on both forges, and
-// still not edit it.
+// A maintainer may delete another author's comment on both forges; on
+// GitLab a maintainer may edit it too ("Edit comments posted by other
+// users" is Maintainer and Owner), and the read says so for every note
+// from the viewer's cached project role, while GitHub answers its own
+// viewerCanUpdate.
 func TestMaintainersDeleteOthersCommentsThroughTheAppsForgeCode(t *testing.T) {
 	for _, tc := range []struct {
 		fixture forgefake.Fixture
 		role    string
 		ref     gitops.PRReference
+		mayEdit bool
 	}{
-		{githubMergeFixture("success"), "MAINTAIN", gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}},
-		{gitlabMergeFixture("success"), "maintainer", gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}},
+		{githubMergeFixture("success"), "MAINTAIN", gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}, false},
+		{gitlabMergeFixture("success"), "maintainer", gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}, true},
 	} {
 		t.Run(tc.ref.Forge, func(t *testing.T) {
 			fixture := commentFixture(tc.fixture)
@@ -184,20 +188,28 @@ func TestMaintainersDeleteOthersCommentsThroughTheAppsForgeCode(t *testing.T) {
 			r := newRig(t, fixture)
 			ctx := forgeapi.WithInteractive(t.Context())
 			theirs := threadByBody(mergeRead(t, r, tc.ref), "theirs")
-			if tc.ref.Forge == "github" && (!theirs.Comments[0].ViewerCanDelete || theirs.Comments[0].ViewerCanEdit) {
-				t.Fatalf("a maintainer's permissions = %+v", theirs.Comments[0])
+			if c := theirs.Comments[0]; !c.ViewerCanDelete || c.ViewerCanEdit != tc.mayEdit {
+				t.Fatalf("a maintainer's permissions = %+v", c)
 			}
-			if err := r.core.EditPRComment(ctx, tc.ref, targetOf(theirs, 0), "x"); err == nil {
-				t.Fatal("a maintainer edited another author's comment")
+			err := r.core.EditPRComment(ctx, tc.ref, targetOf(theirs, 0), "edited by a maintainer")
+			if (err == nil) != tc.mayEdit {
+				t.Fatalf("a maintainer's edit = %v, want allowed %v", err, tc.mayEdit)
 			}
 			if err := r.core.DeletePRComment(ctx, tc.ref, targetOf(theirs, 0)); err != nil {
 				t.Fatalf("a maintainer's delete: %v", err)
 			}
-			if threadByBody(mergeRead(t, r, tc.ref), "theirs") != nil {
+			read := mergeRead(t, r, tc.ref)
+			if threadByBody(read, "theirs") != nil || threadByBody(read, "edited by a maintainer") != nil {
 				t.Fatal("the deleted thread is still read")
 			}
 			expectAllHandled(t, r)
 		})
+	}
+	// A GitLab developer may edit and delete its own notes alone.
+	r := newRig(t, commentFixture(gitlabMergeFixture("success")))
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	if c := threadByBody(mergeRead(t, r, ref), "theirs").Comments[0]; c.ViewerCanEdit || c.ViewerCanDelete {
+		t.Fatalf("a developer's permissions on another author's note = %+v", c)
 	}
 }
 

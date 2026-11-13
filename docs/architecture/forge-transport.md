@@ -302,11 +302,14 @@ GitHub external check.
 | CI phase, no head pipeline | 1 merge request |
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
 
-GitLab's REST notes carry no permission and no edit time (`updated_at`
-also moves on a resolve), so a read of `Threads` marks the viewer's own
-notes editable and deletable by the cached viewer login (the same `user`
-read the detail makes) and reports no edit time. A note's ID is its
-decimal id and its URL the merge request's page at `#note_<id>`.
+GitLab's REST notes carry no permission and no edit time: the
+discussions read has `updated_at`, which a resolve also moves, and no
+`last_edited_at`, so GitLab comments report no edit time. A read of
+`Threads` derives who may edit and delete each note from the cached
+viewer login and project role (the same `user` and `projects/P` reads the
+detail makes): the author on its own notes, a maintainer or owner on
+every note (GitLab's "Edit comments posted by other users"). A note's ID
+is its decimal id and its URL the merge request's page at `#note_<id>`.
 
 | Comment action | GitLab requests |
 |---|---|

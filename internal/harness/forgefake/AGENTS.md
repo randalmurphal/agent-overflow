@@ -166,7 +166,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `PUT .../merge` with `{sha, squash, should_remove_source_branch, auto_merge, merge_when_pipeline_succeeds}` (`glab api merge`) | Merge now (405 while blocked, 401 without the role, 409 on a moved head) and Auto-merge (either key or both: arms a blocked merge request, with its system note) |
 | GitLab | `POST .../draft_notes` with `{note, position?, in_reply_to_discussion_id?}`, `GET .../draft_notes`, `DELETE .../draft_notes/ID`, `POST .../draft_notes/bulk_publish` (`glab api create draft note`, `glab api list draft notes`, `glab api delete draft note`, `glab api publish draft notes`) | SubmitReview: a viewer's draft (a summary, positioned on a line, a range or a file, or `in_reply_to_discussion_id` naming a discussion, else 404) answers its id; the list is the viewer's pending drafts in one page (how a publish whose answer was lost is settled); a delete removes the viewer's draft with that id (404 otherwise); publish makes each of the viewer's pending drafts, seeded `draftNotes` included, a thread, a conversation comment or a note of the discussion it replies to (a 404 publishing nothing when that discussion is gone), and leaves another author's pending |
 | GitLab | `POST .../discussions` with `{body, position}`, `POST .../notes` with `{body}` (`glab api create discussion`, `glab api create note`) | PostPRLineComment (a position whose shas are not the merge request's is a 400; a `line_range` point whose `line_code` or `type` is not GitLab's is unhandled; a range lies on one half), PostPRComment |
-| GitLab | `POST .../discussions/D/notes` with `{body}`, `PUT .../discussions/D/notes/N` with `{body}`, `DELETE .../discussions/D/notes/N` (`glab api create discussion note`, `glab api update discussion note`, `glab api delete discussion note`) | ReplyToPRThread (a thread, or a conversation comment's discussion, whose `replies` it joins; 404 otherwise), EditPRComment (the author's alone, else 403), DeletePRComment (the author's, or any as maintainer or owner, else 403); a discussion whose last note goes is deleted, one whose first note goes keeps its id |
+| GitLab | `POST .../discussions/D/notes` with `{body}`, `PUT .../discussions/D/notes/N` with `{body}`, `DELETE .../discussions/D/notes/N` (`glab api create discussion note`, `glab api update discussion note`, `glab api delete discussion note`) | ReplyToPRThread (a thread, or a conversation comment's discussion, whose `replies` it joins; 404 otherwise), EditPRComment and DeletePRComment (the author's, or any as maintainer or owner, else 403); a discussion whose last note goes is deleted, one whose first note goes keeps its id |
 | GitLab | `POST .../cancel_auto_merge`, `PUT .../rebase`, `PUT projects/P/merge_requests/N` with `{title}` | Cancel auto-merge (409 with none armed), Update branch (202, the head moves), Mark ready (the title loses its draft prefix) |
 | GitHub, GitLab | `GET user` (`gh api user`, `glab api user`) | the fixture's viewer (GitLab's with account id 1): GitLab's detail and project list reads (once per host per 10 minutes), and the transport's probe after a 401 on a mutation on both forges |
 | GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin), project MR list; the full view, with `project_id` and `source_project_id` (a pull with `headRepo` answers its fork's id) and the list fields (author, reviewers, draft, times, `user_notes_count`, conflicts, blocking discussions, `detailed_merge_status`), no pipeline |
@@ -235,9 +235,11 @@ and then drops or truncates the response.
   page and drops them after, so a page comes back short and still names
   the next, as GitLab's does.
 - Who may edit or delete a comment follows from its `author` and the
-  viewer's role, as on each forge: GitHub answers it as `viewerCanUpdate`
-  and `viewerCanDelete`, GitLab's notes carry no permission. Seed a
-  comment of another author's for one the viewer may not edit. A
+  viewer's role: on GitHub the author edits and the author, MAINTAIN or
+  ADMIN deletes (answered as `viewerCanUpdate` and `viewerCanDelete`); on
+  GitLab, whose notes carry no permission, the author or a maintainer or
+  owner edits and deletes. Seed a comment of another author's, with the
+  repository's default role, for one the viewer may not edit. A
   comment's `editedAt` is GitHub's `lastEditedAt` and GitLab's
   `updated_at`. A GitLab conversation comment's `replies` are the rest of
   its discussion.

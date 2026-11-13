@@ -269,11 +269,18 @@ func (e *Engine) glabNoteTarget(c *call, m []string) (*Repo, *Comment, func(), r
 	return r, &root.Replies[at], func() { root.Replies = slices.Delete(root.Replies, at, at+1) }, response{}, true
 }
 
+// gitlabMayChangeNote reports whether the viewer may edit or delete
+// comment: its author, or a maintainer or owner of the project.
+func (e *Engine) gitlabMayChangeNote(r *Repo, comment Comment) bool {
+	return strings.EqualFold(comment.Author, e.viewer) || gitlabRoles[r.Merge.Permission] >= gitlabRoles["maintainer"]
+}
+
 func glabForbidden() response {
 	return glabStatus(http.StatusForbidden, "403 Forbidden")
 }
 
-// glabUpdateDiscussionNote replaces a note's body; only its author may.
+// glabUpdateDiscussionNote replaces a note's body: its author's, or any as a
+// maintainer or owner.
 func glabUpdateDiscussionNote(e *Engine, c *call, m []string) response {
 	var in struct {
 		Body string `json:"body"`
@@ -281,11 +288,11 @@ func glabUpdateDiscussionNote(e *Engine, c *call, m []string) response {
 	if err := decodeRESTBody(c, &in, false); err != nil {
 		return unhandled("%v", err)
 	}
-	_, comment, _, fail, ok := e.glabNoteTarget(c, m)
+	r, comment, _, fail, ok := e.glabNoteTarget(c, m)
 	if !ok {
 		return fail
 	}
-	if !strings.EqualFold(comment.Author, e.viewer) {
+	if !e.gitlabMayChangeNote(r, *comment) {
 		return glabForbidden()
 	}
 	if strings.TrimSpace(in.Body) == "" {
@@ -305,7 +312,7 @@ func glabDeleteDiscussionNote(e *Engine, c *call, m []string) response {
 	if !ok {
 		return fail
 	}
-	if !strings.EqualFold(comment.Author, e.viewer) && gitlabRoles[r.Merge.Permission] < gitlabRoles["maintainer"] {
+	if !e.gitlabMayChangeNote(r, *comment) {
 		return glabForbidden()
 	}
 	remove()

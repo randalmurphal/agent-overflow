@@ -403,32 +403,40 @@ func TestGitLabSubmitReviewHeldReply(t *testing.T) {
 	}
 }
 
-// The viewer may edit and delete its own notes and no other; each note
-// links to its anchor on the merge request.
+// A developer may edit and delete its own notes and no other; a
+// maintainer or owner every note. Each note links to its anchor on the
+// merge request.
 func TestGitLabReadMarksTheViewersNotes(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
-	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		switch {
-		case call.Path == mr:
-			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
-		case strings.HasPrefix(call.Path, mr+"/discussions?"):
-			return forgeAPIAnswer{Body: `[{"id":"d","notes":[{"id":1,"body":"mine","author":{"username":"Me"}},{"id":2,"body":"theirs","author":{"username":"rev"}}]}]`}
-		case call.Path == "user":
-			return forgeAPIAnswer{Body: `{"id":1,"username":"me"}`}
+	for _, tc := range []struct {
+		access       int
+		mayEditOther bool
+	}{{30, false}, {40, true}, {50, true}} {
+		core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+			switch {
+			case call.Path == mr:
+				return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+			case strings.HasPrefix(call.Path, mr+"/discussions?"):
+				return forgeAPIAnswer{Body: `[{"id":"d","notes":[{"id":1,"body":"mine","author":{"username":"Me"}},{"id":2,"body":"theirs","author":{"username":"rev"}}]}]`}
+			case call.Path == gitlabTestProject:
+				return forgeAPIAnswer{Body: fmt.Sprintf(`{"permissions":{"project_access":null,"group_access":{"access_level":%d}}}`, tc.access)}
+			case call.Path == "user":
+				return forgeAPIAnswer{Body: `{"id":1,"username":"me"}`}
+			}
+			return forgeUnexpected(t, call)
+		})
+		threads, err := core.ListReviewThreads(t.Context(), gitlabTestRef(7))
+		if err != nil || len(threads) != 1 || len(threads[0].Comments) != 2 {
+			t.Fatalf("access %d: threads = %+v, %v", tc.access, threads, err)
 		}
-		return forgeUnexpected(t, call)
-	})
-	threads, err := core.ListReviewThreads(t.Context(), gitlabTestRef(7))
-	if err != nil || len(threads) != 1 || len(threads[0].Comments) != 2 {
-		t.Fatalf("threads = %+v, %v", threads, err)
-	}
-	mine, theirs := threads[0].Comments[0], threads[0].Comments[1]
-	if mine.ID != "1" || !mine.ViewerCanEdit || !mine.ViewerCanDelete || mine.URL != "https://gitlab.example/grp/sub/app/-/merge_requests/7#note_1" {
-		t.Fatalf("viewer's note = %+v", mine)
-	}
-	if theirs.ViewerCanEdit || theirs.ViewerCanDelete || mine.EditedAt != "" {
-		t.Fatalf("another's note = %+v", theirs)
+		mine, theirs := threads[0].Comments[0], threads[0].Comments[1]
+		if mine.ID != "1" || !mine.ViewerCanEdit || !mine.ViewerCanDelete || mine.URL != "https://gitlab.example/grp/sub/app/-/merge_requests/7#note_1" {
+			t.Fatalf("access %d: viewer's note = %+v", tc.access, mine)
+		}
+		if theirs.ViewerCanEdit != tc.mayEditOther || theirs.ViewerCanDelete != tc.mayEditOther || mine.EditedAt != "" {
+			t.Fatalf("access %d: another's note = %+v", tc.access, theirs)
+		}
 	}
 }
 

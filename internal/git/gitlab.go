@@ -284,10 +284,15 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, viewer)
 	}
 	if want.Threads {
-		// The viewer's own notes are the ones it may edit and delete
-		// (ReviewComment). The login is the detail's cached read, so a
-		// tick that reads both costs no request of its own for it.
-		markGitLabViewerNotes(out.Threads, f.viewerLogin(ctx, client, ref.Host))
+		// Who may edit and delete a note is its author and, for every note,
+		// a maintainer or owner (GitLab's notes carry no permission). The
+		// login and the role are the detail's cached reads, so a tick that
+		// reads both costs no request of its own for them.
+		settings, err := f.projectSettings(ctx, client, ref.Repository())
+		if err != nil {
+			return PRRead{}, err
+		}
+		markGitLabViewerNotes(out.Threads, f.viewerLogin(ctx, client, ref.Host), settings.accessLevel())
 	}
 	if want.CI {
 		if out.CI, err = readGitLabPipeline(ctx, client, ref.Repository(), mr.HeadPipeline); err != nil {
@@ -483,18 +488,21 @@ type gitlabThreadContext struct {
 	headSHA, webURL string
 }
 
-// markGitLabViewerNotes lets viewer edit and delete its own notes. GitLab's
-// REST notes carry no permission, and only a note's author may edit it; an
-// unknown viewer ("") may change none.
-func markGitLabViewerNotes(threads []ReviewThread, viewer string) {
-	if viewer == "" {
-		return
-	}
+// gitlabMaintainerAccess is the access level GitLab lets edit and
+// delete any note ("Edit comments posted by other users": Maintainer and
+// Owner).
+const gitlabMaintainerAccess = 40
+
+// markGitLabViewerNotes sets who may edit and delete each note: the
+// viewer on its own notes, and on every note with access (the viewer's
+// project role) of a maintainer or owner.
+func markGitLabViewerNotes(threads []ReviewThread, viewer string, access int) {
+	maintainer := access >= gitlabMaintainerAccess
 	for i := range threads {
 		for j := range threads[i].Comments {
 			comment := &threads[i].Comments[j]
-			own := strings.EqualFold(comment.AuthorLogin, viewer)
-			comment.ViewerCanEdit, comment.ViewerCanDelete = own, own
+			may := maintainer || (viewer != "" && strings.EqualFold(comment.AuthorLogin, viewer))
+			comment.ViewerCanEdit, comment.ViewerCanDelete = may, may
 		}
 	}
 }
