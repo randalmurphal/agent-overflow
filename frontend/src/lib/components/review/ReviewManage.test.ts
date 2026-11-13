@@ -382,6 +382,48 @@ describe('the merge commit message', () => {
     expect(merge.mock.calls[0][1]).toEqual(expect.objectContaining({ autoMerge: true, commitMessage: { title: 'Mine', body: 'Default body' } }));
   });
 
+  async function pickAndEdit(view: ReviewPaneView, method: string): Promise<void> {
+    await fireEvent.click(view.getByTestId('review-merge-trigger'));
+    await fireEvent.click(await waitFor(() => view.getByTestId(`review-merge-method-${method}`)));
+    if (!view.queryByTestId('review-merge-menu')) await fireEvent.click(view.getByTestId('review-merge-trigger'));
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-merge-edit-message')));
+    await waitFor(() => expect(view.getByTestId('review-merge-message-title')).toHaveValue(`Default ${method}`));
+    await fireEvent.input(view.getByTestId('review-merge-message-title'), { target: { value: 'Mine' } });
+  }
+
+  function withMethods(methods: string[]): PRDetail {
+    return detail(ALL, { merge: { ...prDetailFixture().merge, methods } });
+  }
+
+  it('moves an edited message to the default method when its method goes, and merges with it', async () => {
+    setBindingMock('GetPRMergeMessage', async (_pr: unknown, method: string) => ({ title: `Default ${method}`, body: 'Body' }));
+    const merge = setBindingMock('MergePR', async () => ({ seq: 0, outcome: { merged: true, autoMerge: false } }));
+    const view = await mountReviewPanePR(withMethods(['merge', 'squash']));
+    await pickAndEdit(view, 'squash');
+    frame(withMethods(['merge']), 2);
+    await waitFor(() => expect(view.getByTestId('review-merge-message-notice')).toHaveTextContent('Squash is no longer allowed here. This message will be used for the merge commit.'));
+    expect(view.getByTestId('review-merge-message')).toHaveTextContent('Merge commit');
+    expect(view.getByTestId('review-merge-message-state')).toHaveTextContent('edited');
+    expect(view.getByTestId('review-merge-message-title')).toHaveValue('Mine');
+    await mergeNow(view);
+    await waitFor(() => expect(merge).toHaveBeenCalledTimes(1));
+    expect(merge.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'merge', commitMessage: { title: 'Mine', body: 'Body' } }));
+  });
+
+  it('keeps an edited message on screen when the new method makes no commit, and merges without it', async () => {
+    setBindingMock('GetPRMergeMessage', async (_pr: unknown, method: string) => ({ title: `Default ${method}`, body: 'Body' }));
+    const merge = setBindingMock('MergePR', async () => ({ seq: 0, outcome: { merged: true, autoMerge: false } }));
+    const view = await mountReviewPanePR(withMethods(['squash', 'rebase']));
+    await pickAndEdit(view, 'squash');
+    frame(withMethods(['rebase']), 2);
+    await waitFor(() => expect(view.getByTestId('review-merge-message-notice')).toHaveTextContent('Squash is no longer allowed here. Rebase makes no commit, so this message will not be used.'));
+    expect(view.getByTestId('review-merge-message-title')).toHaveValue('Mine');
+    await mergeNow(view);
+    await waitFor(() => expect(merge).toHaveBeenCalledTimes(1));
+    expect(merge.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'rebase' }));
+    expect(merge.mock.calls[0][1]).not.toHaveProperty('commitMessage');
+  });
+
   it('is not offered for a rebase', async () => {
     const view = await mountReviewPanePR(detail(ALL, { merge: { ...prDetailFixture().merge, methods: ['rebase'] } }));
     await fireEvent.click(view.getByTestId('review-merge-trigger'));

@@ -82,7 +82,9 @@
   const manageBlocked = $derived(manage.blockedReason);
   const message = $derived(manage.mergeMessage);
   const offerMessage = $derived(!!detail.manage && methodHasCommitMessage(method));
-  const showMessage = $derived(showMerge && armed === null && offerMessage && message.open);
+  // Edited text stays on screen after its method stopped making a commit,
+  // so it is not lost; the editor says it will not be used.
+  const showMessage = $derived(showMerge && armed === null && (offerMessage || message.edited) && message.open);
   const dismissAnchors: Record<string, HTMLElement | undefined> = $state({});
   // The open Dismiss reason: its anchor and whose review it dismisses.
   const dismissing = $derived.by(() => {

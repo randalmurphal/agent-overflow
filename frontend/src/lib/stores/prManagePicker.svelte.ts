@@ -40,9 +40,9 @@ export interface PRPickerHost {
   /** The identity on screen now (the target's key), or null. */
   readonly identity: string | null;
   readonly backend: BackendKey;
-  /** Writes the change to `target`; `closing` when the pane is going,
-   * so a failure has no row to show on. */
-  apply(row: PRManageRow, change: PRPickerChange, target: PRManageTarget, closing: boolean): Promise<void>;
+  /** Writes the change to `target`; where a failure shows is decided
+   * when the answer arrives. */
+  apply(row: PRManageRow, change: PRPickerChange, target: PRManageTarget): Promise<void>;
   /** The row's picker opened. */
   opened(row: PRManageRow): void;
 }
@@ -179,7 +179,7 @@ export function createPRPickerState(host: PRPickerHost): PRPickerView {
   }
 
   // Closes the picker and writes its change to the PR it opened on.
-  async function apply(closing: boolean): Promise<void> {
+  async function apply(): Promise<void> {
     const closingRow = row;
     const on = target;
     if (closingRow === null || on === null) {
@@ -191,7 +191,7 @@ export function createPRPickerState(host: PRPickerHost): PRPickerView {
     if (change.add.length === 0 && change.remove.length === 0) return;
     const people = { add: change.add.flatMap((item) => item.person ?? []), remove: change.remove.flatMap((item) => item.person ?? []) };
     const labels = { add: change.add.flatMap((item) => item.label ?? []), remove: change.remove.flatMap((item) => item.label ?? []) };
-    await host.apply(closingRow, { people, labels }, on, closing);
+    await host.apply(closingRow, { people, labels }, on);
   }
 
   return {
@@ -251,13 +251,13 @@ export function createPRPickerState(host: PRPickerHost): PRPickerView {
       selected = next;
     },
     close(): Promise<void> {
-      return apply(false);
+      return apply();
     },
     discard(): void {
       reset();
     },
     dispose(): void {
-      void apply(true);
+      void apply();
     },
   };
 }

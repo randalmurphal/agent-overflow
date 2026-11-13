@@ -87,31 +87,41 @@ func (t *gitlabInputType) has(field string) bool {
 // cold reads of one host share one probe, which runs past the caller that
 // started it; each waits for it bounded by its own context.
 func (f *gitlabForge) manageSchema(ctx context.Context, client *forgeapi.Client, host string) (gitlabSchema, error) {
-	if known, ok := f.schemas.get(host, f.core.nowFn()); ok {
+	cached := func() (gitlabSchema, bool) { return f.schemas.get(host, f.core.nowFn()) }
+	if known, ok := cached(); ok {
 		return known, nil
 	}
-	return f.probes.do(ctx, host, func(ctx context.Context) (gitlabSchema, error) {
-		return f.probeSchema(ctx, client, host)
+	return f.probes.join(ctx, host, cached, func(ctx context.Context) (gitlabSchema, error) {
+		return f.probeSchema(ctx, client)
+	}, func(schema gitlabSchema) {
+		f.schemas.put(host, schema, f.core.nowFn())
 	})
 }
 
-// gitlabSchemaProbes is the schema probe in flight per host.
+// gitlabSchemaProbes is the schema probe in flight per host. A reset
+// advances its epoch: a probe started before it is never joined after it,
+// and its answer is never cached.
 type gitlabSchemaProbes struct {
 	mu      sync.Mutex
+	epoch   uint64
 	flights map[string]*gitlabSchemaProbe
 }
 
 type gitlabSchemaProbe struct {
 	done    chan struct{}
+	epoch   uint64
 	schema  gitlabSchema
 	err     error
 	waiters int
 }
 
-// do answers host's probe: the one in flight, else one probe starts on
-// ctx's values without its cancellation. A waiter whose context ends
-// returns its error; the probe goes on for the others.
-func (p *gitlabSchemaProbes) do(ctx context.Context, host string, probe func(context.Context) (gitlabSchema, error)) (gitlabSchema, error) {
+// join answers host's probe: the one in flight, else one probe starts on
+// ctx's values without its cancellation. Its leader rechecks cached first,
+// since a caller can miss the cache before another probe finished and
+// join after; a probe's answer is stored only while its epoch is current.
+// A waiter whose context ends returns its error; the probe goes on for
+// the others.
+func (p *gitlabSchemaProbes) join(ctx context.Context, host string, cached func() (gitlabSchema, bool), probe func(context.Context) (gitlabSchema, error), store func(gitlabSchema)) (gitlabSchema, error) {
 	if err := ctx.Err(); err != nil {
 		return gitlabSchema{}, err
 	}
@@ -121,13 +131,22 @@ func (p *gitlabSchemaProbes) do(ctx context.Context, host string, probe func(con
 	}
 	flight := p.flights[host]
 	if flight == nil {
-		flight = &gitlabSchemaProbe{done: make(chan struct{})}
+		flight = &gitlabSchemaProbe{done: make(chan struct{}), epoch: p.epoch}
 		p.flights[host] = flight
 		go func() {
-			schema, err := probe(context.WithoutCancel(ctx))
+			schema, known := cached()
+			var err error
+			if !known {
+				schema, err = probe(context.WithoutCancel(ctx))
+			}
 			p.mu.Lock()
+			if !known && err == nil && flight.epoch == p.epoch {
+				store(schema)
+			}
 			flight.schema, flight.err = schema, err
-			delete(p.flights, host)
+			if p.flights[host] == flight {
+				delete(p.flights, host)
+			}
 			p.mu.Unlock()
 			close(flight.done)
 		}()
@@ -147,6 +166,16 @@ func (p *gitlabSchemaProbes) do(ctx context.Context, host string, probe func(con
 	}
 }
 
+// reset forgets the probes in flight and, under the same lock, what
+// forget clears, so no probe of the old epoch stores after it.
+func (p *gitlabSchemaProbes) reset(forget func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.epoch++
+	clear(p.flights)
+	forget()
+}
+
 // waiters is how many callers wait on host's probe in flight.
 func (p *gitlabSchemaProbes) waiters(host string) int {
 	p.mu.Lock()
@@ -157,8 +186,8 @@ func (p *gitlabSchemaProbes) waiters(host string) int {
 	return 0
 }
 
-// probeSchema sends the PRManageSchema probe and caches its answer.
-func (f *gitlabForge) probeSchema(ctx context.Context, client *forgeapi.Client, host string) (gitlabSchema, error) {
+// probeSchema sends the PRManageSchema probe.
+func (f *gitlabForge) probeSchema(ctx context.Context, client *forgeapi.Client) (gitlabSchema, error) {
 	var raw struct {
 		Rereview *struct {
 			Name string `json:"name"`
@@ -178,7 +207,6 @@ func (f *gitlabForge) probeSchema(ctx context.Context, client *forgeapi.Client, 
 		setAssignees: raw.SetAssignees.has("operationMode"),
 		setLabels:    raw.SetLabels.has("operationMode"),
 	}
-	f.schemas.put(host, schema, f.core.nowFn())
 	return schema, nil
 }
 

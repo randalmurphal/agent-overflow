@@ -43,7 +43,8 @@ type gitlabForge struct {
 	pipelineTags gitlabPipelineTags
 	// schemas is each host's management schema (gitlab_manage.go).
 	schemas gitlabCache[gitlabSchema]
-	// probes is the schema probe in flight per host (gitlab_manage.go).
+	// probes is the schema probe in flight per host (gitlab_manage.go);
+	// its reset clears schemas.
 	probes gitlabSchemaProbes
 	// stateEventRetries holds the merge requests whose state events read
 	// failed, until it is due again (gitlab_manage.go).
@@ -64,7 +65,7 @@ func (f *gitlabForge) resetCaches() {
 	f.noCIJobCancelPermission.clear()
 	f.routes.clear()
 	f.pipelineTags.forget()
-	f.schemas.clear()
+	f.probes.reset(f.schemas.clear)
 	f.stateEventRetries.clear()
 	f.reactions.clear()
 	f.noNoteAwardEmoji.clear()

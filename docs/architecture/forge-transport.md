@@ -724,10 +724,11 @@ the thread before sending it again"), never with a retry. A GraphQL error answer
 refusal (`forgeapi.WriteNotApplied`) only when the answer had no data or
 the mutation's field was null, its data decoded, and every error is a
 known refusal: GitHub `FORBIDDEN`, `NOT_FOUND`, `UNPROCESSABLE` or
-`INSUFFICIENT_SCOPES`, a validation error before execution (no `data`), or
-GitLab's permission answer. A rate-limited GraphQL answer is a refusal
-only while its operation produced no data: data beside the rate limit
-means the operation ran. A people or label change removes first, then
+`INSUFFICIENT_SCOPES` or `RATE_LIMITED`, a validation error before
+execution (no `data`), or GitLab's permission answer. The quota header
+never decides whether a write ran: a rate-limited answer is a refusal only
+as a 403 or 429, or as a GraphQL answer refused by those rules, so an
+execution error beside a spent quota is unconfirmed. A people or label change removes first, then
 adds, one write per non-empty side; a failure of the second write is a
 `git.PartialWriteError` that names what the first did and whether the
 second was refused ("removed X; adding Y was refused: ...") or may have
@@ -804,9 +805,10 @@ gates its control; a host without it offers none and refuses the write).
 The answer, either way, is cached per host for 10 minutes; a failed probe
 is not cached and makes the read unavailable. Concurrent cold reads of a
 host share one probe, which runs past the caller that started it, each
-waiting bounded by its own context. A harness reset forgets the answers
-with the adapters' other per-host and per-project memory
-(`Core.ResetForgeCaches`). A host with the override is
+waiting bounded by its own context; the probe's leader rechecks the cache
+before sending. A harness reset forgets the answers with the adapters'
+other per-host and per-project memory (`Core.ResetForgeCaches`), and a
+probe in flight across it is never joined after it and never cached. A host with the override is
 read with `PRManageChecks`, which adds `mergeabilityChecks`: the
 `REQUESTED_CHANGES` check failing is what blocks (elsewhere the
 `detailed_merge_status` `requested_changes`), and the check passing while

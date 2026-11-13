@@ -23,7 +23,9 @@ func TestWriteNotAppliedClassifiesWhatAWritesErrorProves(t *testing.T) {
 		{"422", &StatusError{Status: http.StatusUnprocessableEntity}, true},
 		{"403 forbidden", &ForbiddenError{Status: &StatusError{Status: http.StatusForbidden}}, true},
 		{"401 after a refresh", &TransientError{Err: &StatusError{Status: http.StatusUnauthorized}}, true},
-		{"rate limited", &RateLimitedError{Host: "github.com"}, true},
+		{"rate limited before sending", &RateLimitedError{Host: "github.com"}, true},
+		{"rate limited with a 429", &RateLimitedError{Host: "github.com", Status: http.StatusTooManyRequests}, true},
+		{"quota header on a 200", &RateLimitedError{Host: "github.com", Status: http.StatusOK}, false},
 		{"login refused", &SetupError{Kind: SetupUnauthenticated}, true},
 		{"GraphQL refusal beside a null field", &GraphQLError{Problems: []GraphQLProblem{{Type: "FORBIDDEN", Message: "no"}}, Data: []byte(`{"m":null}`)}, true},
 		{"GraphQL refusal beside data that did not decode", &GraphQLError{Problems: []GraphQLProblem{{Type: "FORBIDDEN", Message: "no"}}, Data: []byte(`{"m":null}`), Undecoded: true}, false},
@@ -72,39 +74,65 @@ func TestWriteNotAppliedOnTheWire(t *testing.T) {
 	}
 }
 
-// A GraphQL answer that is also a rate-limit refusal proves a write not
-// applied only while it carried no data: a mutation that produced data
-// ran, whatever the quota headers say.
-func TestWriteNotAppliedRateLimitedGraphQLOnTheWire(t *testing.T) {
+// The quota header never decides whether a write ran: a rate-limited
+// answer proves a write not applied only when the forge said so (a 403 or
+// 429, or GraphQL errors all RATE_LIMITED, or known refusals, with no
+// data). An execution error beside a null payload is unconfirmed with the
+// header spent or not, while backoff still reads the header.
+func TestWriteNotAppliedRateLimitedOnTheWire(t *testing.T) {
 	t.Parallel()
+	const executionError = `{"data":{"updateIssueComment":null},"errors":[{"message":"Something went wrong while executing your query."}]}`
 	for _, tc := range []struct {
-		name, body string
-		want       bool
+		name, body  string
+		status      int
+		spent, rest bool
+		limited     bool
+		want        bool
 	}{
-		{"data beside an execution error, quota spent", `{"data":{"m":{"id":"1"}},"errors":[{"message":"Something went wrong while executing your query."}]}`, false},
-		{"rate limited, no data", `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, true},
-		{"rate limited, null data", `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, true},
-		{"rate limited, null field", `{"data":{"m":null},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, true},
+		{name: "execution error, null payload, quota spent", body: executionError, spent: true, limited: true, want: false},
+		{name: "execution error, null payload, quota left", body: executionError, want: false},
+		{name: "execution error, null data, quota spent", body: `{"data":null,"errors":[{"message":"Something went wrong while executing your query."}]}`, spent: true, limited: true, want: false},
+		{name: "data beside an execution error, quota spent", body: `{"data":{"updateIssueComment":{"id":"1"}},"errors":[{"message":"Something went wrong while executing your query."}]}`, spent: true, limited: true, want: false},
+		{name: "rate limited and an execution error, null payload", body: `{"data":{"updateIssueComment":null},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"},{"message":"Something went wrong while executing your query."}]}`, spent: true, limited: true, want: false},
+		{name: "rate limited, no data", body: `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, spent: true, limited: true, want: true},
+		{name: "rate limited, no data, no header", body: `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, limited: true, want: true},
+		{name: "rate limited, null data", body: `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, spent: true, limited: true, want: true},
+		{name: "rate limited, null field", body: `{"data":{"updateIssueComment":null},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, spent: true, limited: true, want: true},
+		{name: "refused, null field, quota spent", body: `{"data":{"updateIssueComment":null},"errors":[{"type":"FORBIDDEN","message":"no"}]}`, spent: true, limited: true, want: true},
+		{name: "REST 429", status: http.StatusTooManyRequests, body: `{"message":"slow down"}`, rest: true, limited: true, want: true},
+		{name: "REST 403 rate limit", status: http.StatusForbidden, body: `{"message":"API rate limit exceeded"}`, spent: true, rest: true, limited: true, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-RateLimit-Limit", "5000")
-				w.Header().Set("X-RateLimit-Remaining", "0")
+				w.Header().Set("X-RateLimit-Remaining", map[bool]string{true: "0", false: "4000"}[tc.spent])
 				w.Header().Set("X-RateLimit-Reset", "4102444800")
-				w.Header().Set("X-RateLimit-Resource", "graphql")
+				w.Header().Set("X-RateLimit-Resource", map[bool]string{true: "core", false: "graphql"}[tc.rest])
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+				}
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			t.Cleanup(srv.Close)
-			var out struct {
-				M *struct {
-					ID string `json:"id"`
-				} `json:"m"`
+			client := isolatedService(t, srv).GitHub("github.com")
+			var err error
+			if tc.rest {
+				_, err = client.Do(t.Context(), Request{Method: http.MethodPatch, Path: "repos/o/r/issues/comments/1", Body: map[string]string{"body": "b"}})
+			} else {
+				var out struct {
+					UpdateIssueComment *struct {
+						ID string `json:"id"`
+					} `json:"updateIssueComment"`
+				}
+				_, err = client.GraphQL(t.Context(), "UpdateIssueComment", "mutation UpdateIssueComment { updateIssueComment { id } }", nil, &out)
 			}
-			_, err := isolatedService(t, srv).GitHub("github.com").GraphQL(t.Context(), "M", "mutation M { m { id } }", nil, &out)
-			if _, limited := errors.AsType[*RateLimitedError](err); !limited {
-				t.Fatalf("err = %v, want the rate limit", err)
+			if err == nil {
+				t.Fatal("no error")
+			}
+			if _, limited := errors.AsType[*RateLimitedError](err); limited != tc.limited {
+				t.Fatalf("err = %v, rate limited %v, want %v: backoff reads the header", err, limited, tc.limited)
 			}
 			if got := WriteNotApplied(err); got != tc.want {
 				t.Fatalf("WriteNotApplied(%v) = %v, want %v", err, got, tc.want)

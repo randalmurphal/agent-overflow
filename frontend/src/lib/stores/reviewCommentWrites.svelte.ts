@@ -2,10 +2,7 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { untrack } from 'svelte';
 import { peekPRSeq } from './prReviewStore.svelte';
 import { DeletePRComment, EditPRComment, PostPRComment } from './bindings';
-import { addErrorToast, showToastText } from './toast.svelte';
-import { isTransportClassError } from './transportStatus.svelte';
-import { TransportError } from '../transport/wsClient';
-import { copyToClipboard } from '../utils/clipboard';
+import { toastLostWrite, writeFailure, type LostWriteText } from './lostWrite';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
@@ -23,7 +20,7 @@ import type { ReviewComment, ReviewThread } from '../types/models';
 //
 // A write with text whose pane went while it was in flight, and that then
 // fails, has no editor left: one toast says so, stays until dismissed, and
-// copies the text. Nothing is kept for a later pane.
+// copies the text (lostWrite.ts). Nothing is kept for a later pane.
 //
 // Also the state of the sent-comment actions: the text of an open edit
 // (the row is virtualized, so it lives here like every other editor) and
@@ -58,11 +55,7 @@ interface Awaited {
 }
 
 /** A write's text, for the toast when it fails after its pane is gone. */
-export interface CommentWriteText {
-  readonly body: string;
-  /** Who and where: `Your comment on src/a.ts:12`. */
-  readonly subject: string;
-}
+export type CommentWriteText = LostWriteText;
 
 /** `src/a.ts:12`, the place a thread names, or the pull request. */
 export function threadWhere(thread: Pick<ReviewThread, 'path' | 'line' | 'originalLine'>): string {
@@ -121,36 +114,6 @@ export interface CommentWrites {
 
 function sentKey(thread: ReviewThread, comment: ReviewComment): string {
   return `${thread.id}\u0000${comment.id}`;
-}
-
-function userFacingError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'string') return err;
-  return 'The forge did not take this comment.';
-}
-
-// A write whose answer never arrived (the connection dropped, or the call
-// timed out) may have gone through, as one the forge did not confirm may.
-const ANSWER_LOST = 'The connection dropped before the answer arrived, so this may have gone through. Check the pull request before sending it again.';
-
-/** What a failed write reads as, and whether it may have landed anyway. */
-function writeFailure(err: unknown): { unconfirmed: boolean; sentence: string } {
-  if (isTransportClassError(err)) return { unconfirmed: true, sentence: ANSWER_LOST };
-  return { unconfirmed: err instanceof TransportError && err.code === 'forge_unconfirmed', sentence: userFacingError(err) };
-}
-
-// The one toast for a write that failed after its pane went: held until
-// dismissed, with the text to copy. An unconfirmed write may be on the PR,
-// so it never reads as not sent; its sentence says what to check. When the
-// clipboard refuses, the toast shows the text itself instead.
-function toastLostWrite(text: CommentWriteText, err: unknown): void {
-  const failure = writeFailure(err);
-  const message = `${text.subject} ${failure.unconfirmed ? 'was not confirmed' : 'was not sent'}. ${failure.sentence}`;
-  const id = addErrorToast(message, err, 0, { label: 'Copy text', keep: true, run: () => {
-    void copyToClipboard(text.body).then((copied) => {
-      if (!copied) showToastText(id, `${message} The text could not be copied, so it is below.`, text.body);
-    });
-  } });
 }
 
 export function createCommentWrites(host: CommentWritesHost): CommentWrites {

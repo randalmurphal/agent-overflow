@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 )
 
 // NotSentError is a call that failed before its request left this
@@ -19,7 +20,7 @@ func (e *NotSentError) Unwrap() error { return e.Err }
 // WriteNotApplied reports whether err, the error of one write (POST, PUT,
 // PATCH, DELETE), proves the forge did not apply it: the request was
 // never sent (NotSentError), or the forge answered it in full with a 4xx
-// (a *StatusError, a rate limit whose answer carried no data, a refused login), or a GraphQL answer
+// (a *StatusError, a 403 or 429 rate limit, a refused login), or a GraphQL answer
 // that refused it (GraphQLError.Refused). Every other error
 // cannot say: a reset or timeout after the request was written, a body
 // cut short, a 5xx, or a success whose body did not decode.
@@ -39,9 +40,13 @@ func WriteNotApplied(err error) bool {
 		return status.Status >= 400 && status.Status < 500
 	}
 	if limited, ok := errors.AsType[*RateLimitedError](err); ok {
-		// A GraphQL answer whose operation produced data ran, whatever
-		// the quota headers say.
-		return limited.GraphQL == nil || !limited.GraphQL.ProducedData()
+		// The quota header never decides whether a write ran: only the
+		// Service's own refusal (never sent; NotSentError above), a 403 or
+		// 429, or a GraphQL answer the forge refused in full does.
+		if limited.GraphQL != nil {
+			return limited.GraphQL.Refused()
+		}
+		return limited.Status == 0 || limited.Status == http.StatusForbidden || limited.Status == http.StatusTooManyRequests
 	}
 	if gql, ok := errors.AsType[*GraphQLError](err); ok {
 		return gql.Refused()
