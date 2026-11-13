@@ -540,6 +540,16 @@ type gitlabTagRead struct {
 	err  error
 }
 
+// forget drops every remembered flag; listings and reads in flight keep
+// their bookkeeping and learn afresh.
+func (c *gitlabPipelineTags) forget() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, state := range c.repos {
+		clear(state.tags)
+	}
+}
+
 // beginListing registers a listing of pipelines ids under key and
 // returns its repository memory, its start and the flags remembered for
 // those ids.

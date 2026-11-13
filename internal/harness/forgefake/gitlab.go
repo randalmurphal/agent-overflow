@@ -104,7 +104,7 @@ func (e *Engine) gitlabMRJSON(r *Repo, p *Pull) map[string]any {
 	if armed != nil {
 		mergeUser = armed.By
 	}
-	return map[string]any{
+	out := map[string]any{
 		"id":                            r.ID*1000 + int64(p.Number),
 		"iid":                           p.Number,
 		"project_id":                    r.ID,
@@ -138,6 +138,8 @@ func (e *Engine) gitlabMRJSON(r *Repo, p *Pull) map[string]any {
 		"blocking_discussions_resolved": !r.Merge.DiscussionsMustResolve || !gitlabUnresolved(p),
 		"merge_after":                   nil,
 	}
+	maps.Copy(out, e.gitlabManageJSON(r, p))
+	return out
 }
 
 // gitlabUserOrNulls is a merge request's user field: the user, or an
@@ -172,7 +174,7 @@ func (e *Engine) gitlabDetailedStatus(r *Repo, p *Pull) string {
 		return "need_rebase"
 	case r.Merge.DiscussionsMustResolve && gitlabUnresolved(p):
 		return "discussions_not_resolved"
-	case len(p.ChangeRequests) > 0:
+	case len(p.ChangeRequests) > 0 && !p.ChangesOverridden:
 		return "requested_changes"
 	}
 	if r.Merge.PipelineMustSucceed {
@@ -890,6 +892,10 @@ func glabMerge(e *Engine, c *call, m []string) response {
 		ShouldRemoveSourceBranch  *bool  `json:"should_remove_source_branch"`
 		AutoMerge                 bool   `json:"auto_merge"`
 		MergeWhenPipelineSucceeds bool   `json:"merge_when_pipeline_succeeds"`
+		// The edited commit messages GitLab takes for the merge; the
+		// invocation records what was sent.
+		MergeCommitMessage  *string `json:"merge_commit_message"`
+		SquashCommitMessage *string `json:"squash_commit_message"`
 	}
 	if err := decodeRESTBody(c, &in, true); err != nil {
 		return unhandled("%v", err)
@@ -988,40 +994,4 @@ func glabRebase(e *Engine, c *call, m []string) response {
 	resp := glabOK(jsonResponse(map[string]any{"rebase_in_progress": true}))
 	resp.status = http.StatusAccepted
 	return resp
-}
-
-// glabUpdateMR answers `PUT .../merge_requests/N` with `{title}`, the one
-// edit the app makes: the title is set and the draft state follows its
-// prefix, leaving the system note of the change.
-func glabUpdateMR(e *Engine, c *call, m []string) response {
-	var in struct {
-		Title *string `json:"title"`
-	}
-	if err := decodeRESTBody(c, &in, false); err != nil {
-		return unhandled("%v", err)
-	}
-	if in.Title == nil {
-		return unhandled("a merge request update without a title is not implemented")
-	}
-	r, p, fail, ok := e.glabMRFrom(c, m)
-	if !ok {
-		return fail
-	}
-	switch {
-	case strings.TrimSpace(*in.Title) == "":
-		out, _ := json.Marshal(map[string]any{"message": map[string]any{"title": []string{"can't be blank"}}})
-		return response{stdout: out, stderr: "400 title can't be blank", status: http.StatusBadRequest, header: http.Header{"Content-Type": {"application/json"}}}
-	case gitlabRoles[r.Merge.Permission] < gitlabRoles["developer"] && !strings.EqualFold(p.Author, e.viewer):
-		return glabStatus(http.StatusForbidden, "403 Forbidden")
-	}
-	p.Title = *in.Title
-	if draft := gitlabDraftTitle.MatchString(p.Title); draft != p.Draft {
-		p.Draft = draft
-		kind := "marked_ready"
-		if draft {
-			kind = "marked_draft"
-		}
-		p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: kind, Actor: e.viewer, At: glabNow()})
-	}
-	return glabOK(jsonResponse(e.gitlabMRJSON(r, p)))
 }

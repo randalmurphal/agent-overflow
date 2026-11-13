@@ -161,7 +161,7 @@ func (f *githubForge) EditComment(ctx context.Context, ref PRReference, target C
 		ID string `json:"id"`
 	}
 	if _, err := client.GraphQL(ctx, operation, document, map[string]any{"id": target.CommentID, "body": body}, &raw); err != nil {
-		return err
+		return writeOutcome(err)
 	}
 	if answer := raw[field][node]; answer == nil || answer.ID != target.CommentID {
 		return fmt.Errorf("GitHub reported no edit of comment %s", target.CommentID)
@@ -185,7 +185,7 @@ func (f *githubForge) DeleteComment(ctx context.Context, ref PRReference, target
 		ClientMutationID *string `json:"clientMutationId"`
 	}
 	if _, err := client.GraphQL(ctx, operation, document, map[string]any{"id": target.CommentID}, &raw); err != nil {
-		return err
+		return writeOutcome(err)
 	}
 	if raw[field] == nil {
 		return fmt.Errorf("GitHub reported no delete of comment %s", target.CommentID)

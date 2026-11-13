@@ -128,7 +128,9 @@ an attachment URL at `/github/absolute/<host>/<path>`, GitLab REST at
 `/gitlab/api/v4/E`, GitLab GraphQL at `/gitlab/api/graphql` (recorded as
 `glab graphql <operation>`). The request's Host header is the invocation's
 recorded `host` (an attachment's is the host in its path); a GraphQL
-invocation also records its `operation` and `variables`. P is the
+invocation also records its `operation` and `variables`, and a REST
+write its JSON `body` (at most 64 KiB), so a spec can assert what the
+fake received. P is the
 project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 
 | Forge | Invocation (route) | App caller |
@@ -180,7 +182,8 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `POST .../discussions` with `{body, position}`, `POST .../notes` with `{body}` (`glab api create discussion`, `glab api create note`) | PostPRLineComment (a position whose shas are not the merge request's, or whose file, by both paths, or line the pull's `diff` lacks, is a 400; a `line_range` point whose `line_code` is not sha1 of the new path and the diff's two cursors at its line, or whose `type` is not GitLab's, is unhandled; a range may start on the other half, a removed line through an unchanged one, and reads back with its `line_range` as posted), PostPRComment |
 | GitLab | `GET .../discussions/D` (`glab api discussion`) | a held reply's draft refused with a 400: one discussion, 404 when gone |
 | GitLab | `POST .../discussions/D/notes` with `{body}`, `PUT .../discussions/D/notes/N` with `{body}`, `DELETE .../discussions/D/notes/N` (`glab api create discussion note`, `glab api update discussion note`, `glab api delete discussion note`) | ReplyToPRThread (a thread, or a conversation comment's discussion, whose `replies` it joins; 404 otherwise), EditPRComment and DeletePRComment (the author's, or any as maintainer or owner, else 403); a discussion whose last note goes is deleted, one whose first note goes keeps its id |
-| GitLab | `POST .../cancel_auto_merge`, `PUT .../rebase`, `PUT projects/P/merge_requests/N` with `{title}` | Cancel auto-merge (409 with none armed), Update branch (202, the head moves), Mark ready (the title loses its draft prefix) |
+| GitLab | `POST .../cancel_auto_merge`, `PUT .../rebase` | Cancel auto-merge (409 with none armed), Update branch (202, the head moves) |
+| GitLab | `PUT projects/P/merge_requests/N` with any of `{title, description, state_event}` (`glab api update merge request`) | edit (a title's draft prefix sets the draft state), close and reopen (`close`, `reopen`, with their state events, a reopen recorded as `opened`); 403 for a viewer who may not update, 400 for an empty title and for an update naming nothing (`{}` or `null`), as GitLab answers |
 | GitHub, GitLab | `GET user` (`gh api user`, `glab api user`) | the fixture's viewer (GitLab's with account id 1): GitLab's detail and project list reads (once per host per 10 minutes), and the transport's probe after a 401 on a mutation on both forges |
 | GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin), project MR list; the full view, with `project_id` and `source_project_id` (a pull with `headRepo` answers its fork's id) and the list fields (author, reviewers, draft, times, `user_notes_count`, conflicts, blocking discussions, `detailed_merge_status`), no pipeline |
 | GitLab | `GET projects/P/merge_requests?iids[]=N...&state=all&per_page=100` (`glab api merge request list`) | merged-PR cleanup: state and `merged_at` of tracked MRs |
@@ -193,6 +196,21 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `POST projects/P/pipelines/ID/retry`, `POST projects/P/pipelines/ID/cancel` (`glab api pipeline retry`, `glab api pipeline cancel`) | retry the pipeline's failed and canceled jobs (201), cancel its live jobs (200; 403 below the project's `cancelRole`) |
 | GitLab | `GET projects/P/jobs/ID/artifacts` (`glab api job artifacts`) | artifact download: the job's `artifacts` archive; 404 without one |
 | GitLab | `GET projects/P/uploads/SECRET/NAME` (`glab api upload`) | forge attachments |
+| GitHub | `POST`, `DELETE repos/O/R/pulls/N/requested_reviewers` with `{reviewers?, team_reviewers?}` (`gh api request reviewers`, `gh api remove reviewers`) | reviewers: each added user or team pending with its ReviewRequestedEvent (a re-request included); 403 below triage unless the viewer authored the pull, 422 for the author, a non-member or an unknown team, changing nothing |
+| GitHub | `POST`, `DELETE repos/O/R/issues/N/assignees` with `{assignees}` (`gh api add assignees`, `gh api remove assignees`) | assignees; as GitHub does, a non-member, one past 10 assignees, and any change by a viewer who may not assign, is ignored without an error |
+| GitHub | GraphQL `PRAssignees(owner, name, number)` | the pull's assignees, which the app counts against GitHub's 10 before a change |
+| GitHub | GraphQL `PREditTarget(owner, name, number)`, `EditPR(pullRequestID, title?, body?)` | edit: the node id and body the precondition compares, then the change |
+| GitHub | GraphQL `PRLabelTarget(owner, name, number, ids)`, `AddLabels`, `RemoveLabels(labelableID, labelIDs)` | labels: the repository and pull ids and each id's label with its repository (an unknown id is a `NOT_FOUND` error at its `nodes` index); a label of another repository is GitHub's `NOT_FOUND` |
+| GitHub | GraphQL `ClosePR`, `ReopenPR`, `ConvertPRToDraft(pullRequestID)` | close, reopen, convert to draft, each with its timeline event; refused for a viewer who may not close, reopen or update respectively, or a pull already in that state |
+| GitHub | GraphQL `SearchAssignable(owner, name, query)`, `SearchTeams(org, query)`, `SearchLabels(owner, name, query)` | pickers: the repository's owner (`__typename`, `login`) and `members`, an `organization`'s `teams`, or `labels`, 20 per page with `hasNextPage`; `teamsRefused` answers the teams search as GitHub does a token without `read:org` (null `data` beside an `INSUFFICIENT_SCOPES` error); a login that is no organization is `NOT_FOUND` |
+| GitHub | GraphQL `PRMergeMessage(owner, name, number, method)`, `MergePRMessage`, `EnableAutoMergeMessage` (as `MergePR`, `EnableAutoMerge` with `commitHeadline`, `commitBody`) | the default commit message (the fake's own wording, after GitHub's defaults), and a merge or auto-merge with an edited one |
+| GitLab | GraphQL `PRManageSchema` | the schema probes `rereview`, `updateInput`, `setReviewers`, `setAssignees` and `setLabels`, answered from the host's first GitLab repository as its `serverLacks` leaves them |
+| GitLab | GraphQL `PRManage`, `PRManageChecks(fullPath, iid)` | the Details read: `userPermissions`, reviewers with `reviewState`, assignees, labels with their global ids; `PRManageChecks` adds `mergeabilityChecks` (`REQUESTED_CHANGES` FAILED, SUCCESS once overridden, else INACTIVE) and is refused on a server that lacks the override |
+| GitLab | GraphQL `PRSetReviewers`, `PRSetAssignees(projectPath, iid, usernames, mode)`, `PRSetLabels(projectPath, iid, labelIds, mode)`, `PRSetDraft(projectPath, iid, draft)` | the set mutations, `mode` `APPEND` or `REMOVE`, each answering the merge request's list or draft state: as GitLab does, a non-member and an unknown label id are skipped without an error (an added reviewer gets its note); denied (null field beside GitLab's permission message) below developer; refused before execution on a server that lacks `operationMode`. The draft mutation moves the title's prefix, with its note |
+| GitLab | GraphQL `PRRereview(projectPath, iid, userId)`, `PRBypassChanges(projectPath, iid)` | re-request (the reviewer reads unreviewed, their change request cleared, a note) and bypass (`changesOverridden`, so `detailed_merge_status` leaves `requested_changes`); refused on a server that lacks them, re-request for a viewer who may not update or a user who is no reviewer, bypass below developer |
+| GitLab | GraphQL `PRMergeMessage(fullPath, iid)` | the default merge and squash commit messages (GitLab's default templates) |
+| GitLab | `GET projects/P/users?search=&per_page=N[&page=N]` (`glab api project users`), GraphQL `SearchProjectLabels(fullPath, search?)` | pickers: `members` matching search with `X-Next-Page` while more pages exist; the project's labels with their global ids, 20 with `hasNextPage` |
+| GitLab | `GET projects/P/merge_requests/N/resource_state_events?per_page=N[&page=N]` (`glab api state events`) | ReadPR events: the pull's `stateEvents` (`closed`, `opened` or `reopened` for a reopen, `merged`) |
 
 Unhandled (fail with their request): GitLab's discussion resolve PUT
 and `cancel_merge_when_pipeline_succeeds`. A lost or cut-short answer is not
@@ -252,6 +270,20 @@ and then drops or truncates the response.
   GitLab no longer shows the viewer: the events feed selects them into a
   page and drops them after, so a page comes back short and still names
   the next, as GitLab's does.
+- The management fixture: a repository's `members` (each with its GitLab
+  user id, generated when omitted) are whom reviews can be requested from
+  and who can be assigned; `teams`, `organization` and `teamsRefused` are
+  a GitHub organization's; `labels` are the repository's (GitHub ids
+  generated: GitHub `LA_ao<n>`, GitLab `gid://gitlab/ProjectLabel/<n>`;
+  a name may hold a comma). A pull's `teamReviewers` ("owner/slug"),
+  `assignees` and `labels` name them. A pull's `viewer` overrides what the
+  viewer may do (`update`, `close`, `reopen`, `label`, `assign`, `triage`,
+  `admin`), each its own knob, otherwise derived from the role and
+  authorship. A GitLab merge request's `stateEvents` are its
+  close, reopen and merge events (a seeded closed or merged one without
+  one gets one) and `changesOverridden` a standing bypass. A GitLab
+  repository's `serverLacks` (`rereview`, `overrideRequestedChanges`,
+  `operationMode`) makes it an older server without them.
 - Who may edit or delete a comment follows from its `author` and the
   viewer's role: on GitHub the author or WRITE and above edits and
   deletes (answered as `viewerCanUpdate` and `viewerCanDelete`); on

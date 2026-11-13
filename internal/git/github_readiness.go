@@ -44,6 +44,9 @@ type githubOpinionRaw struct {
 	ViewerDidAuthor           bool           `json:"viewerDidAuthor"`
 	AuthorCanPushToRepository bool           `json:"authorCanPushToRepository"`
 	Author                    githubActorRaw `json:"author"`
+	Commit                    struct {
+		OID string `json:"oid"`
+	} `json:"commit"`
 }
 
 type githubThreadStatesRaw struct {
@@ -89,6 +92,9 @@ type githubRepositoryMergeRaw struct {
 	AutoMergeAllowed         bool   `json:"autoMergeAllowed"`
 	ViewerPermission         string `json:"viewerPermission"`
 	ViewerDefaultMergeMethod string `json:"viewerDefaultMergeMethod"`
+	Owner                    *struct {
+		Typename string `json:"__typename"`
+	} `json:"owner"`
 }
 
 type githubTimelineRaw struct {
@@ -294,6 +300,7 @@ func (in githubMergeInputs) conditions(status string) (blockers, settled []Merge
 	}
 
 	var counted, approvedBy, changesBy []string
+	var changeRequests []ChangeRequest
 	for _, review := range in.pull.LatestOpinionatedReviews.Nodes {
 		name := firstNonEmpty(review.Author.Name, review.Author.Login)
 		switch strings.ToUpper(review.State) {
@@ -304,11 +311,14 @@ func (in githubMergeInputs) conditions(status string) (blockers, settled []Merge
 			}
 		case "CHANGES_REQUESTED":
 			changesBy = append(changesBy, name)
+			if review.ID != "" {
+				changeRequests = append(changeRequests, ChangeRequest{ReviewID: review.ID, AuthorLogin: review.Author.Login, AuthorName: review.Author.Name})
+			}
 		}
 	}
 	switch strings.ToUpper(in.pull.ReviewDecision) {
 	case "CHANGES_REQUESTED":
-		add(false, MergeBlocker{Kind: BlockerChangesRequested, Text: "Changes requested", Detail: "by " + nameList(changesBy)})
+		add(false, MergeBlocker{Kind: BlockerChangesRequested, Text: "Changes requested", Detail: "by " + nameList(changesBy), ChangeRequests: changeRequests})
 	case "REVIEW_REQUIRED":
 		text := "Needs approval"
 		if need := rules.approvals - len(counted); need > 0 {

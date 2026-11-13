@@ -202,6 +202,19 @@ func TestSettlePRActionRefreshesWhenThePRChanged(t *testing.T) {
 	if !ok || explained.Message != "Merged owner/repo#9, but GitHub kept the branch feature: delete refused" || fetches.Load() != base+2 {
 		t.Fatalf("merged, branch kept = %v, fetches %d", err, fetches.Load())
 	}
+
+	// A management write the forge may have applied, whole or in part,
+	// polls too, and says so.
+	for i, applied := range []error{
+		&gitops.UnconfirmedWriteError{Err: errors.New("connection reset")},
+		&gitops.PartialWriteError{Done: "removed bob from the reviewers", Next: "adding carol", Err: &gitops.UnconfirmedWriteError{Err: errors.New("EOF")}},
+		&gitops.PartialWriteError{Done: "removed bob from the reviewers", Next: "adding carol", Err: &gitops.ForgeActionError{Kind: gitops.ForgeErrorRefused, Message: "GitHub refused."}},
+	} {
+		_, err = app.settlePRAction(context.Background(), testPR, gitops.ActionReviewers, applied)
+		if _, ok := errors.AsType[*gitops.ForgeActionError](err); !ok || fetches.Load() != base+3+int32(i) {
+			t.Fatalf("%v = %v, fetches %d", applied, err, fetches.Load())
+		}
+	}
 }
 
 // An action the forge accepted whose refresh poll failed answers sequence

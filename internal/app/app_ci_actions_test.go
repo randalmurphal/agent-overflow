@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -556,5 +557,17 @@ func githubPRRunReposArtifacts(t *testing.T, engine *forgefake.Engine) {
 	repos[0].Pulls[0].CI.Artifacts = []forgefake.Artifact{{ID: 81, Name: "coverage", Text: "PK"}}
 	if _, err := engine.Seed(forgefake.Fixture{Repos: repos}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Two spellings of one repository reserve the same runs: the forge
+// resolves owner and name case-insensitively.
+func TestCIActionKeysAreTheRepositorysIdentity(t *testing.T) {
+	t.Parallel()
+	shouted := githubRunsRepo
+	shouted.Namespace, shouted.Repo = "Acme", "Runs"
+	pipeline := gitops.CIPipeline{ID: "500"}
+	if a, b := ciActionKeys(githubRunsRepo, pipeline, nil, nil), ciActionKeys(shouted, pipeline, nil, nil); !slices.Equal(a, b) {
+		t.Fatalf("keys %q and %q name one run", a, b)
 	}
 }

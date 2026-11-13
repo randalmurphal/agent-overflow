@@ -1,8 +1,12 @@
 <script lang="ts">
+  import Pencil from '@lucide/svelte/icons/pencil';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import { tick } from 'svelte';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import ReviewCollapsibleSection from './ReviewCollapsibleSection.svelte';
   import ReviewConversation from './ReviewConversation.svelte';
+  import ReviewDescriptionEditor from './ReviewDescriptionEditor.svelte';
+  import ReviewDetailsSection from './ReviewDetailsSection.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
   import ReviewMergeSection from './ReviewMergeSection.svelte';
   import ReviewResizableBody from './ReviewResizableBody.svelte';
@@ -30,6 +34,20 @@
   let { review, detail, hasWorkspace = false }: Props = $props();
 
   const unresolvedCount = $derived(review.unresolvedThreads.length);
+  const manage = $derived(review.manage);
+  const canEditDescription = $derived(!!detail.manage?.can.editDescription);
+  const editingDescription = $derived(canEditDescription && manage.descriptionDraft !== null);
+  let descriptionEditTrigger: HTMLButtonElement | undefined = $state(undefined);
+
+  function editDescription(): void {
+    manage.openDescription(detail.body);
+    review.setDescriptionOpen(true);
+  }
+
+  async function focusDescriptionEdit(): Promise<void> {
+    await tick();
+    descriptionEditTrigger?.focus({ preventScroll: true });
+  }
   const conversationTotal = $derived(review.conversationCount);
 
   // The feed renders in live order until the section has shown it once;
@@ -46,13 +64,37 @@
   {#if readinessPill(detail)}
     <ReviewMergeSection {review} {detail} {hasWorkspace} />
   {/if}
-  {#if detail.body}
+  {#if detail.manage}
+    <ReviewDetailsSection {manage} {detail} forge={review.prRef?.forge ?? ''} />
+  {/if}
+  {#if detail.body || canEditDescription}
     <ReviewCollapsibleSection
       label="Description"
       open={review.descriptionOpen}
       onToggle={() => review.setDescriptionOpen(!review.descriptionOpen)}
       testid="review-pr-description"
     >
+      {#snippet trailing()}
+        {#if canEditDescription && !editingDescription}
+          <!-- Revealed on hover; the space is held so nothing moves. -->
+          <span class="inline-flex shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-hover/section:opacity-100 compact:opacity-100">
+            <ReviewIconButton
+              bind:element={descriptionEditTrigger}
+              icon={Pencil}
+              label="Edit description"
+              testid="review-description-edit"
+              disabled={manage.blockedReason !== null}
+              disabledLabel={manage.blockedReason ?? undefined}
+              onclick={editDescription}
+            />
+          </span>
+        {/if}
+      {/snippet}
+      {#if editingDescription}
+        <ReviewDescriptionEditor {manage} onClosed={() => { void focusDescriptionEdit(); }} />
+      {:else if !detail.body}
+        <div class="px-3.5 py-3 text-xs text-fg-subtle" data-testid="review-description-empty">No description.</div>
+      {:else}
       <ReviewResizableBody
         section="description"
         fallbackClass="max-h-[min(45vh,26rem)]"
@@ -63,6 +105,7 @@
           <ChatMarkdown source={detail.body} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
         </div>
       </ReviewResizableBody>
+      {/if}
     </ReviewCollapsibleSection>
   {/if}
 

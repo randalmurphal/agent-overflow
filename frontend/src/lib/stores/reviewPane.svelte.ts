@@ -72,6 +72,7 @@ import type { PRCILogState } from './prReviewCI.svelte';
 import { CI_SECTION_INLINE_MAX_BYTES, createCISubjectState, type CILogView } from './ciSubject.svelte';
 import type { CIActionsView } from './ciSubjectActions.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
+import { createPRManageState, type PRManageView } from './prManage.svelte';
 import { TransportError } from '../transport/wsClient';
 import type { ForgeFailure } from '../utils/forgeFailure';
 import {
@@ -112,6 +113,7 @@ import type {
   DiffReviewComment,
   DiffReviewCommentInput,
   DiffReviewScope,
+  MergeMessage,
   MergeOutcome,
   PRDetail,
   ReviewEvent,
@@ -188,6 +190,8 @@ export interface MergePRChoice {
   method: string;
   deleteBranch: boolean;
   autoMerge: boolean;
+  /** The edited commit message (prMergeMessage.svelte.ts); omitted, the forge's default. */
+  commitMessage?: MergeMessage;
 }
 
 export interface ReviewPaneState extends ReviewCommentActionsState {
@@ -282,6 +286,9 @@ export interface ReviewPaneState extends ReviewCommentActionsState {
   cancelPRAutoMerge(): Promise<void>;
   updatePRBranch(): Promise<void>;
   markPRReady(): Promise<void>;
+  /** Managing the PR: its editors, Details pickers, state changes and
+   * reviews, under the merge actions' contract (prManage.svelte.ts). */
+  readonly manage: PRManageView;
   /** The head the LOADED diff was computed at — not the PR's live head.
    * Comment anchors, span context, and sent-marks all describe the diff
    * on screen, so they read this. */
@@ -1216,6 +1223,18 @@ export function createReviewPaneState(
   // the reader has not seen is refused by the forge, not merged blind.
   // Never the live head: the actions are withheld until a diff is loaded.
   const mergeHeadSHA = $derived(loadedPRHeadSHA);
+  const manage = createPRManageState({
+    get prRef() { return prRef; },
+    get identity() { return prRef ? computerPRKey(prRef) : null; },
+    get mergeMethods() { return prSnapshot?.detail?.merge?.methods ?? null; },
+    get entityKey() { return prEntityKey; },
+    get appliedSeq() { return peekPRSeq(prEntityKey); },
+    backend,
+    get launch() { return backendLaunch; },
+    get withheldReason() { return mergeWithheldReason; },
+    get updateFailing() { return prUpdateError !== null; },
+    refresh: () => { void refreshPRThreads(); },
+  });
   const sourceKey = $derived.by(() => sourceKeyFor(prRef));
   // The comment source of the selection under the PR `pr`: the controls'
   // (`sourceKey`) or, at a load's commit, the PR that load was for.
@@ -1573,6 +1592,7 @@ export function createReviewPaneState(
     conflictPaintedSpans.clear();
     resetConflictView();
     ci.dispose();
+    manage.dispose();
     releasePR();
   }
 
@@ -2939,6 +2959,7 @@ export function createReviewPaneState(
         headSHA: head,
         deleteBranch,
         autoMerge: choice.autoMerge,
+        ...(choice.commitMessage ? { commitMessage: choice.commitMessage } : {}),
       });
       const outcome = result.outcome as MergeOutcome;
       // The forge took the merge but has not finished it (GitLab merges
@@ -3351,6 +3372,7 @@ export function createReviewPaneState(
     cancelPRAutoMerge,
     updatePRBranch,
     markPRReady,
+    manage,
     get conversationOpen() { return conversationOpen; },
     get conversationFeed() { return conversationFeed; },
     get conversationNewCount() { return conversationNewCount; },

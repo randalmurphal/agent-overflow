@@ -41,6 +41,27 @@ type gitlabForge struct {
 	// pipelineTags remembers which listed pipelines ran on a tag
 	// (ci_gitlab.go).
 	pipelineTags gitlabPipelineTags
+	// schemas is each host's management schema (gitlab_manage.go).
+	schemas gitlabCache[gitlabSchema]
+	// probes is the schema probe in flight per host (gitlab_manage.go);
+	// its reset clears schemas.
+	probes gitlabSchemaProbes
+	// stateEventRetries holds the merge requests whose state events read
+	// failed, until it is due again (gitlab_manage.go).
+	stateEventRetries gitlabStateEventRetries
+}
+
+// resetCaches forgets what the adapter remembers of each host and
+// project (Core.ResetForgeCaches).
+func (f *gitlabForge) resetCaches() {
+	f.projects.clear()
+	f.viewers.clear()
+	f.noApprovalState.clear()
+	f.noCIJobCancelPermission.clear()
+	f.routes.clear()
+	f.pipelineTags.forget()
+	f.probes.reset(f.schemas.clear)
+	f.stateEventRetries.clear()
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }
@@ -237,12 +258,15 @@ func gitlabDiscussionPath(ref PRReference, discussionID string) string {
 }
 
 // ReadPR reads the merge request once and derives every wanted part from
-// it: the detail adds the approvals, the project's merge settings (read
-// once per login per project per gitlabCacheTTL) and the viewer's login
-// (once per login per host per gitlabCacheTTL), the threads and the
-// events the discussions (paged; the system notes are events, the rest
-// threads), CI the head pipeline's rows (paged, readGitLabPipeline). A
-// part not wanted costs no request. prev and stepsFor are unused: the
+// it: the detail adds the approvals, the management read (PRManage,
+// readManage), the project's merge settings (read once per login per
+// project per gitlabCacheTTL) and the viewer's login (once per login per
+// host per gitlabCacheTTL), the threads and the events the discussions
+// (paged; the system notes are events, the rest threads), the events
+// also the resource state events (closes, reopens and merges; a failure
+// leaves them out, gitlabForge.stateEvents), CI
+// the head pipeline's rows (paged, readGitLabPipeline). A part not
+// wanted costs no request. prev and stepsFor are unused: the
 // rows are one read the previous observation cannot stand in for, and
 // GitLab jobs have no steps.
 func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadParts, _ *CIPipeline, _ []string) (PRRead, error) {
@@ -256,6 +280,7 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	}
 	var out PRRead
 	var notes []gitlabNoteRaw
+	var states []gitlabStateEventRaw
 	var threads []ReviewThread
 	if want.Threads || want.Events {
 		var system []gitlabNoteRaw
@@ -268,9 +293,12 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 			out.Threads = threads
 		}
 	}
+	if want.Events {
+		states = f.stateEvents(ctx, client, ref)
+	}
 	// The detail's armed auto-merge takes its time and wording from the
 	// latest auto-merge event when the same read has the notes.
-	events := gitlabEvents(mr, notes)
+	events := gitlabEvents(mr, notes, states)
 	if want.Events {
 		out.Events = events
 	}
@@ -283,9 +311,19 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		if err != nil {
 			return PRRead{}, err
 		}
+		// The Details read is the detail's own: its failure is said in
+		// the detail and hides nothing else.
+		manage, err := f.readManage(ctx, client, ref, mr)
+		if err != nil {
+			if ctx.Err() != nil {
+				return PRRead{}, ctx.Err()
+			}
+			manage = unavailableManage(ref, err)
+		}
 		viewer := f.viewerLogin(ctx, client, ref.Host)
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
 		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, viewer)
+		manage.apply(&out.Detail)
 	}
 	if want.Threads {
 		// Who may edit and delete a note is its author and, for every note,
@@ -354,7 +392,11 @@ type gitlabMRRaw struct {
 	ForceRemoveSourceBranch     *bool           `json:"force_remove_source_branch"`
 	BlockingDiscussionsResolved bool            `json:"blocking_discussions_resolved"`
 	MergeCommitSHA              string          `json:"merge_commit_sha"`
-	User                        struct {
+	// Reviewers and Assignees are the sets a reviewer or assignee change
+	// replaces (gitlab_manage.go).
+	Reviewers []gitlabUserRaw `json:"reviewers"`
+	Assignees []gitlabUserRaw `json:"assignees"`
+	User      struct {
 		CanMerge bool `json:"can_merge"`
 	} `json:"user"`
 }

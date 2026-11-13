@@ -36,6 +36,13 @@ type githubForge struct {
 	ciArtifacts   ciCapabilityCache[bool]
 }
 
+// resetCaches forgets what the adapter remembers of each repository
+// (Core.ResetForgeCaches).
+func (f *githubForge) resetCaches() {
+	f.ciPermissions.clear()
+	f.ciArtifacts.clear()
+}
+
 func (f *githubForge) ID() string         { return "github" }
 func (f *githubForge) BinaryName() string { return "gh" }
 

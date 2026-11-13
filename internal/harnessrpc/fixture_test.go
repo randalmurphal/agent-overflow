@@ -25,6 +25,7 @@ import (
 func TestMain(m *testing.M) { os.Exit(providerpath.Guard(func() int { return storetest.Run(m) })) }
 
 type testHost struct {
+	forgeCachesReset  int
 	store             *store.Store
 	replay            *replaylog.Manager
 	emit              func(eventchan.Channel, any)
@@ -154,6 +155,8 @@ func (h *testHost) ClearUIState() error {
 	return h.store.ClearUIState()
 }
 func (h *testHost) ResetSessionImporter() {}
+
+func (h *testHost) ResetForgeCaches() { h.forgeCachesReset++ }
 
 // PauseMergedPRCleanup counts pauses and resumes and, through onPause and
 // onResume, lets a test see what the reset had done by then.

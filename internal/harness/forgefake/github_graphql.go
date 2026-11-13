@@ -59,6 +59,21 @@ var githubGraphQL = []graphQLOp{
 	{kind: "mutation", name: "DismissReview", required: []string{"reviewID", "message"}, run: ghDismissReview},
 	{kind: "mutation", name: "UpdatePRBranch", required: []string{"pullRequestID", "expectedHeadOid"}, run: ghUpdatePRBranch},
 	{kind: "mutation", name: "MarkPRReady", required: []string{"pullRequestID"}, run: ghMarkPRReady},
+	{kind: "mutation", name: "MergePRMessage", required: []string{"pullRequestID", "method", "expectedHeadOid", "commitHeadline", "commitBody"}, run: ghWithMessage(ghMergePR)},
+	{kind: "mutation", name: "EnableAutoMergeMessage", required: []string{"pullRequestID", "method", "expectedHeadOid", "commitHeadline", "commitBody"}, run: ghWithMessage(ghEnableAutoMerge)},
+	{kind: "query", name: "PREditTarget", required: []string{"owner", "name", "number"}, run: ghPREditTarget},
+	{kind: "mutation", name: "EditPR", required: []string{"pullRequestID"}, optional: []string{"title", "body"}, run: ghEditPR},
+	{kind: "query", name: "PRLabelTarget", required: []string{"owner", "name", "number", "ids"}, run: ghPRLabelTarget},
+	{kind: "mutation", name: "AddLabels", required: []string{"labelableID", "labelIDs"}, run: ghChangeLabels(true)},
+	{kind: "mutation", name: "RemoveLabels", required: []string{"labelableID", "labelIDs"}, run: ghChangeLabels(false)},
+	{kind: "mutation", name: "ClosePR", required: []string{"pullRequestID"}, run: ghSetState("close")},
+	{kind: "mutation", name: "ReopenPR", required: []string{"pullRequestID"}, run: ghSetState("reopen")},
+	{kind: "mutation", name: "ConvertPRToDraft", required: []string{"pullRequestID"}, run: ghSetState("draft")},
+	{kind: "query", name: "SearchAssignable", required: []string{"owner", "name", "query"}, run: ghSearchAssignable},
+	{kind: "query", name: "SearchTeams", required: []string{"org", "query"}, run: ghSearchTeams},
+	{kind: "query", name: "PRAssignees", required: []string{"owner", "name", "number"}, run: ghPRAssignees},
+	{kind: "query", name: "SearchLabels", required: []string{"owner", "name", "query"}, run: ghSearchLabels},
+	{kind: "query", name: "PRMergeMessage", required: []string{"owner", "name", "number", "method"}, run: ghPRMergeMessage},
 	{kind: "mutation", name: "UpdateReviewComment", required: []string{"id", "body"}, run: ghUpdateReviewComment},
 	{kind: "mutation", name: "UpdateIssueComment", required: []string{"id", "body"}, run: ghUpdateIssueComment},
 	{kind: "mutation", name: "DeleteReviewComment", required: []string{"id"}, run: ghDeleteReviewComment},
@@ -277,7 +292,9 @@ func ghPRTick(e *Engine, c *call, v graphQLVars) response {
 	repository := map[string]any{"pullRequest": pull, "viewerPermission": r.Merge.Permission}
 	if wantDetail {
 		maps.Copy(repository, githubRepositoryMerge(r))
+		repository["owner"] = map[string]any{"__typename": githubOwnerType(r)}
 		maps.Copy(pull, e.githubPullDetail(r, p))
+		maps.Copy(pull, e.githubManageDetail(r, p))
 	}
 	if wantChecks {
 		var rollup any
@@ -417,8 +434,8 @@ func githubOpinions(p *Pull) []*Review {
 }
 
 // githubOpinionNodes answers latestOpinionatedReviews: full is the
-// detail's selection, otherwise ViewerApproval's (id state
-// viewerDidAuthor).
+// detail's selection (with each review's commit), otherwise
+// ViewerApproval's (id state viewerDidAuthor).
 func githubOpinionNodes(r *Repo, p *Pull, viewer string, full bool) []map[string]any {
 	out := []map[string]any{}
 	for _, review := range githubOpinions(p) {
@@ -426,6 +443,7 @@ func githubOpinionNodes(r *Repo, p *Pull, viewer string, full bool) []map[string
 		if full {
 			node["authorCanPushToRepository"] = githubCanPush(r, review.Author, viewer)
 			node["author"] = githubActor(review.Author, review.AuthorName)
+			node["commit"] = map[string]any{"oid": review.CommitSHA}
 		}
 		out = append(out, node)
 	}
@@ -1018,6 +1036,9 @@ func githubTimelineNodes(p *Pull) []map[string]any {
 			node["currentRefName"] = event.Ref
 		case "review_requested":
 			node["requestedReviewer"] = map[string]any{"__typename": "User", "login": event.Ref}
+			if strings.Contains(event.Ref, "/") {
+				node["requestedReviewer"] = map[string]any{"__typename": "Team", "combinedSlug": event.Ref}
+			}
 		}
 		items = append(items, item{at, node})
 	}

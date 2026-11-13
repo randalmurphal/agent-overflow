@@ -1,8 +1,13 @@
 <script lang="ts">
   import FileText from '@lucide/svelte/icons/file-text';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import { tick } from 'svelte';
   import Icon from '../primitives/Icon.svelte';
   import ReviewAvatar from './ReviewAvatar.svelte';
+  import ReviewIconButton from './ReviewIconButton.svelte';
+  import ReviewPRStateMenu from './ReviewPRStateMenu.svelte';
+  import ReviewTitleEditor from './ReviewTitleEditor.svelte';
   import type { CIActionsView } from '../../stores/ciSubjectActions.svelte';
   import ReviewCIChips from './ReviewCIChips.svelte';
   import ReviewUnresolvedStepper from './ReviewUnresolvedStepper.svelte';
@@ -74,6 +79,16 @@
   // merging: the pill jumps to the Merge section, the one home of the
   // actions, so every pane reads and does the same thing.
   const readiness = $derived(readinessPill(detail));
+  // The title's editor, when the forge lets the viewer edit it.
+  const manage = $derived(review?.manage ?? null);
+  const canEditTitle = $derived(!!manage && !!detail.manage?.can.editTitle);
+  const editingTitle = $derived(canEditTitle && manage?.titleDraft != null);
+  let titleEditTrigger: HTMLButtonElement | undefined = $state(undefined);
+
+  async function focusTitleEdit(): Promise<void> {
+    await tick();
+    titleEditTrigger?.focus({ preventScroll: true });
+  }
 
   async function openURL(url: string | undefined): Promise<void> {
     if (!url) return;
@@ -119,16 +134,37 @@
   const lineClass = 'flex min-h-6 min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[0.75rem] text-fg-muted compact:min-h-8';
 </script>
 
-<section class="flex shrink-0 flex-col gap-1.5 border-b border-border bg-surface-1 px-4 py-2.5" data-testid="review-pr-header">
+<section class="group/titlebar flex shrink-0 flex-col gap-1.5 border-b border-border bg-surface-1 px-4 py-2.5" data-testid="review-pr-header">
   <div class="flex min-h-6 min-w-0 items-center gap-3 compact:min-h-8">
-    <button
-      type="button"
-      class="min-w-0 flex-1 truncate text-left text-sm font-semibold text-fg hover:text-accent"
-      title={detail.title}
-      onclick={() => { void openURL(detail.url); }}
-    >
-      {detail.title} <span class="font-normal text-fg-muted">#{detail.number}</span>
-    </button>
+    {#if editingTitle && manage}
+      <ReviewTitleEditor {manage} onClosed={() => { void focusTitleEdit(); }} />
+    {:else}
+      <span class="flex min-w-0 flex-1 items-center gap-1">
+        <button
+          type="button"
+          class="min-w-0 truncate text-left text-sm font-semibold text-fg hover:text-accent"
+          title={detail.title}
+          data-testid="review-pr-title"
+          onclick={() => { void openURL(detail.url); }}
+        >
+          {detail.title} <span class="font-normal text-fg-muted">#{detail.number}</span>
+        </button>
+        {#if canEditTitle && manage}
+          <!-- Revealed on hover; the space is held so nothing moves. -->
+          <span class="inline-flex shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-hover/titlebar:opacity-100 compact:opacity-100">
+            <ReviewIconButton
+              bind:element={titleEditTrigger}
+              icon={Pencil}
+              label="Edit title"
+              testid="review-title-edit"
+              disabled={manage.blockedReason !== null}
+              disabledLabel={manage.blockedReason ?? undefined}
+              onclick={() => manage?.openTitle(detail.title)}
+            />
+          </span>
+        {/if}
+      </span>
+    {/if}
     {#if review && overviewOff}
       <!-- Peek controls: the overview is above the viewport; each button
            scrolls the diff back to it with that section open. -->
@@ -185,6 +221,9 @@
       {/if}
     </span>
     <span class="inline-flex items-center rounded-full px-2 py-px text-[0.6875rem] {statePillClass}" data-testid="review-pr-state">{stateLabel}</span>
+    {#if manage}
+      <ReviewPRStateMenu {manage} {detail} />
+    {/if}
   </div>
 
   <div class={lineClass} data-testid="review-pr-refs-line">

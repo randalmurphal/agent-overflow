@@ -19,6 +19,16 @@
      * for the icon and the button is disabled. */
     pending?: boolean;
     testid?: string;
+    /** Extra classes (a hover reveal). */
+    class?: string;
+    /** The button, for a popover anchored to it and focus return. */
+    element?: HTMLButtonElement;
+    /** The button opens a menu or dialog popover. */
+    haspopup?: 'menu' | 'dialog';
+    expanded?: boolean;
+    /** Pending keeps the button focusable (aria-disabled, presses
+     * ignored), so focus returned to it after its popover applied stays. */
+    focusableWhilePending?: boolean;
   }
 
   let {
@@ -30,18 +40,34 @@
     spinning = false,
     pending = false,
     testid,
+    class: className = '',
+    element = $bindable(),
+    haspopup,
+    expanded,
+    focusableWhilePending = false,
   }: Props = $props();
+
+  const inert = $derived(pending && focusableWhilePending);
 </script>
 
 <button
+  bind:this={element}
   type="button"
-  class="inline-flex size-6 shrink-0 items-center justify-center rounded-[var(--radius-control)] text-fg-muted compact:size-8 hover:bg-surface-2 hover:text-fg disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-fg-muted data-[pending]:opacity-100"
+  aria-haspopup={haspopup}
+  aria-expanded={haspopup ? !!expanded : undefined}
+  class="{className} inline-flex size-6 shrink-0 items-center justify-center rounded-[var(--radius-control)] text-fg-muted compact:size-8 hover:bg-surface-2 hover:text-fg disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-fg-muted data-[pending]:opacity-100"
   aria-label={label}
   title={(disabled || pending) && disabledLabel ? disabledLabel : label}
   data-testid={testid}
   data-pending={pending || undefined}
-  disabled={disabled || pending}
-  onclick={() => onclick()}
+  aria-disabled={inert ? 'true' : undefined}
+  disabled={disabled || (pending && !focusableWhilePending)}
+  onclick={() => { if (!inert) onclick(); }}
+  onkeydown={(event) => {
+    // A held key's repeat is not another press: it would toggle shut the
+    // picker or menu the first press opened.
+    if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault();
+  }}
 >
   {#if pending}
     <SteppedSpinner size={13} />

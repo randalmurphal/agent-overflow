@@ -156,6 +156,9 @@ func (c *Client) GraphQL(ctx context.Context, operation, query string, vars map[
 	}
 	if out != nil && len(data) > 0 && string(data) != "null" {
 		if decodeErr := json.Unmarshal(data, out); decodeErr != nil {
+			if gqlErr != nil {
+				gqlErr.Undecoded = true
+			}
 			return resp, errors.Join(err, fmt.Errorf("forge GraphQL %s: decode data: %w", c.host, decodeErr))
 		}
 	}

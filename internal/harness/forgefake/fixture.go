@@ -63,6 +63,14 @@ type Repo struct {
 	// into a page and drops them from it after, so a page comes back
 	// short and still names its next page, as GitLab's does.
 	EventsHidden bool `json:"eventsHidden,omitempty"`
+	// Members, Teams, Labels, Organization and ServerLacks are what the
+	// management actions search and check (manage.go).
+	Members      []Member `json:"members,omitempty"`
+	Teams        []Team   `json:"teams,omitempty"`
+	TeamsRefused bool     `json:"teamsRefused,omitempty"`
+	Organization bool     `json:"organization,omitempty"`
+	Labels       []Label  `json:"labels,omitempty"`
+	ServerLacks  []string `json:"serverLacks,omitempty"`
 }
 
 // RepoMerge is a project's merge settings (GitHub repository settings,
@@ -206,6 +214,19 @@ type Pull struct {
 	// review's comments before bulk_publish, each visible to its author
 	// alone. A review the app submits adds the viewer's.
 	DraftNotes []DraftNote `json:"draftNotes,omitempty"`
+
+	// TeamReviewers, Assignees, Labels, Viewer, StateEvents and
+	// ChangesOverridden are the pull's management state (manage.go).
+	TeamReviewers     []string     `json:"teamReviewers,omitempty"`
+	Assignees         []string     `json:"assignees,omitempty"`
+	Labels            []string     `json:"labels,omitempty"`
+	Viewer            *ViewerCan   `json:"viewer,omitempty"`
+	StateEvents       []StateEvent `json:"stateEvents,omitempty"`
+	ChangesOverridden bool         `json:"changesOverridden,omitempty"`
+
+	// rerequested are GitLab reviewers asked again, whose state reads
+	// unreviewed until they approve.
+	rerequested []string
 
 	// squash is how a GitLab merge request merges or merged (its squash
 	// flag), squashSHA the squash commit of a squashed merge; forceRemove
@@ -637,6 +658,9 @@ func (r *Repo) normalize(ids *idSource) error {
 		}
 	}
 	if err := r.normalizePipelines(ids); err != nil {
+		return err
+	}
+	if err := r.normalizeManage(ids); err != nil {
 		return err
 	}
 	for i := range r.Attachments {

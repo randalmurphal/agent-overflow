@@ -181,8 +181,8 @@ func (a *App) runCIAction(ctx context.Context, req CIActionRequest, lookup func(
 // A job action reaches its own run or pipeline, a pipeline action every
 // one the pipeline shows (ciPipelineIDs), so a PR's head checks and a
 // Pipelines-tab view of one of their runs share the run's key. Keys are
-// per repository; a pipeline with no identity at all (no run read yet)
-// is keyed by its PR.
+// per repository identity, however it was spelled; a pipeline with no
+// identity at all (no run read yet) is keyed by its PR.
 func ciActionKeys(repo gitops.RepoReference, pipeline gitops.CIPipeline, job *gitops.CIJob, phase *ciPhase) []string {
 	var ids []string
 	switch {
@@ -197,7 +197,7 @@ func ciActionKeys(repo gitops.RepoReference, pipeline gitops.CIPipeline, job *gi
 	}
 	keys := make([]string, 0, len(ids)+1)
 	for _, id := range ids {
-		keys = append(keys, "ci:"+repo.Key()+" "+id)
+		keys = append(keys, "ci:"+repo.Identity()+" "+id)
 	}
 	if len(keys) == 0 {
 		keys = append(keys, "pr:"+phase.prKey)

@@ -348,6 +348,9 @@ func TestGitLabReadPREvents(t *testing.T) {
 		{"id":"s3","notes":[{"id":104,"body":"enabled an automatic merge when all merge checks for abc1234 pass","system":true,"created_at":"2026-01-01T00:00:04.000Z","author":{"username":"lead","name":"Lead"}}]}
 	]`
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if reply, ok := gitlabManageExtras(call); ok {
+			return reply
+		}
 		switch call.Path {
 		case mr:
 			return forgeAPIAnswer{Body: gitlabMergeMR(t, map[string]any{
@@ -390,18 +393,18 @@ func TestGitLabReadPREvents(t *testing.T) {
 	if d.Readiness.State != MergeStateMerged || d.MergedAt != "2026-01-01T00:00:05.000Z" || d.MergedBy != "lead" || d.ClosedAt != "" || d.Merge.AutoMerge != nil {
 		t.Fatalf("merged detail = %+v", d)
 	}
-	if n := len(calls.all()); n != 5 {
-		t.Fatalf("requests = %q, want the MR, one discussions page, the approvals, the project and the viewer", gitlabPaths(calls))
+	if n := len(calls.all()); n != 8 {
+		t.Fatalf("requests = %q, want the MR, one discussions page, the state events, the approvals, the project, the viewer, PRManageSchema and PRManage", gitlabPaths(calls))
 	}
 
 	// A closed merge request's close comes from closed_at, its id from the
 	// time so a later close is a new event.
-	events := gitlabEvents(decodeGitLabMR(t, map[string]any{"state": "closed", "closed_at": "2026-02-01T00:00:00.000Z", "closed_by": map[string]any{"username": "x", "name": "X"}}), nil)
+	events := gitlabEvents(decodeGitLabMR(t, map[string]any{"state": "closed", "closed_at": "2026-02-01T00:00:00.000Z", "closed_by": map[string]any{"username": "x", "name": "X"}}), nil, nil)
 	if len(events) != 1 || events[0].Kind != EventClosed || events[0].ID != "closed:2026-02-01T00:00:00.000Z" || events[0].ActorLogin != "x" {
 		t.Fatalf("closed events = %+v", events)
 	}
 	// A legacy "merged" note stands for the merge; none is added.
-	legacy := gitlabEvents(decodeGitLabMR(t, map[string]any{"state": "merged", "merged_at": "2026-01-01T00:00:05.000Z"}), []gitlabNoteRaw{{ID: 9, Body: "merged", System: true, CreatedAt: "2026-01-01T00:00:05.000Z"}})
+	legacy := gitlabEvents(decodeGitLabMR(t, map[string]any{"state": "merged", "merged_at": "2026-01-01T00:00:05.000Z"}), []gitlabNoteRaw{{ID: 9, Body: "merged", System: true, CreatedAt: "2026-01-01T00:00:05.000Z"}}, nil)
 	if len(legacy) != 1 || legacy[0].ID != "9" {
 		t.Fatalf("legacy merged events = %+v", legacy)
 	}
@@ -433,6 +436,9 @@ func TestGitLabProjectSettingsCache(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if reply, ok := gitlabManageExtras(call); ok {
+			return reply
+		}
 		switch call.Path {
 		case mr:
 			return forgeAPIAnswer{Body: gitlabMergeMR(t, nil)}
@@ -497,6 +503,9 @@ func TestGitLabViewerIsAuthor(t *testing.T) {
 		}
 	}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if reply, ok := gitlabManageExtras(call); ok {
+			return reply
+		}
 		switch call.Path {
 		case "user":
 			return forgeAPIAnswer{Body: `{"id":5,"username":"dev","name":"Dev"}`}
@@ -545,6 +554,9 @@ func TestGitLabViewerReadFailureLeavesTheViewerUnknown(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if reply, ok := gitlabManageExtras(call); ok {
+			return reply
+		}
 		switch call.Path {
 		case "user":
 			return forgeAPIAnswer{Status: http.StatusInternalServerError, Body: `{"message":"500 Internal Server Error"}`}
@@ -609,6 +621,10 @@ func TestGitLabCachesFollowTheLogin(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/graphql" {
+			_, _ = io.WriteString(w, gitlabManageEmpty)
+			return
+		}
 		switch call.Path {
 		case "user":
 			_, _ = io.WriteString(w, `{"username":"`+logins[token]+`"}`)
@@ -933,6 +949,32 @@ func TestGitLabAutoMergeSendsBothParameters(t *testing.T) {
 	}
 }
 
+// An auto-merge carries the edited message as a merge would: the squash
+// commit's in squash_commit_message, a merge commit's in
+// merge_commit_message.
+func TestGitLabAutoMergeCarriesTheEditedMessage(t *testing.T) {
+	t.Parallel()
+	mr := gitlabTestProject + "/merge_requests/7"
+	core, calls := gitlabMergeForge(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		if call.Method == http.MethodPut && call.Path == mr+"/merge" {
+			return forgeAPIAnswer{Body: `{"state":"opened","merge_when_pipeline_succeeds":true}`}, true
+		}
+		return forgeAPIAnswer{}, false
+	})
+	msg := MergeMessage{Title: "Tidy", Body: "Squashed."}
+	for _, tc := range []struct{ method, key string }{{MergeMethodSquash, "squash_commit_message"}, {MergeMethodMerge, "merge_commit_message"}} {
+		got, err := core.MergePR(t.Context(), gitlabTestRef(7), MergeRequest{Method: tc.method, HeadSHA: "abc1234", AutoMerge: true, CommitMessage: &msg})
+		if err != nil || got != (MergeOutcome{AutoMerge: true}) {
+			t.Fatalf("%s auto-merge = %+v, %v", tc.method, got, err)
+		}
+		all := calls.all()
+		body := jsonBody(t, all[len(all)-1])
+		if body[tc.key] != msg.String() || body["auto_merge"] != true || len(body) != 6 {
+			t.Fatalf("%s auto-merge body = %+v, want %s", tc.method, body, tc.key)
+		}
+	}
+}
+
 // Cancel uses cancel_auto_merge; a server without it (404) is asked the
 // older route, remembered for the host once it answers. A 404 on both is
 // the merge request gone, not remembered; the older route's error status
@@ -992,22 +1034,21 @@ func TestGitLabCancelAutoMerge(t *testing.T) {
 	}
 }
 
-// Update branch PUTs the rebase (202); mark ready reads the title and PUTs
-// it without every draft prefix, and sends nothing for a title without
-// one.
+// Update branch PUTs the rebase (202); mark ready is mergeRequestSetDraft
+// with draft false, read back: a merge request still a draft after it is
+// unconfirmed, the payload's errors a refusal. No title is read or
+// written.
 func TestGitLabUpdateBranchAndMarkReady(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
-	var title atomic.Value
-	title.Store("Draft: [draft] (Draft)  Fix the thing")
+	var answer atomic.Value
+	answer.Store(`{"data":{"mergeRequestSetDraft":{"errors":[],"mergeRequest":{"draft":false}}}}`)
 	core, calls := gitlabMergeForge(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
-		switch call.Method + " " + call.Path {
-		case "PUT " + mr + "/rebase":
+		switch {
+		case call.Method+" "+call.Path == "PUT "+mr+"/rebase":
 			return forgeAPIAnswer{Status: http.StatusAccepted, Body: `{"rebase_in_progress":true}`}, true
-		case "GET " + mr:
-			return forgeAPIAnswer{Body: gitlabMergeMR(t, map[string]any{"title": title.Load().(string), "draft": true})}, true
-		case "PUT " + mr:
-			return forgeAPIAnswer{Body: `{"iid":7}`}, true
+		case call.Op == "PRSetDraft":
+			return forgeAPIAnswer{Body: answer.Load().(string)}, true
 		}
 		return forgeAPIAnswer{}, false
 	})
@@ -1018,20 +1059,20 @@ func TestGitLabUpdateBranchAndMarkReady(t *testing.T) {
 	if err := core.MarkPRReady(t.Context(), ref); err != nil {
 		t.Fatal(err)
 	}
-	title.Store("Fix the thing")
-	if err := core.MarkPRReady(t.Context(), ref); err != nil {
-		t.Fatal(err)
-	}
 	sent := calls.all()
-	want := []string{"PUT " + mr + "/rebase", "GET " + mr, "PUT " + mr, "GET " + mr}
-	if got := gitlabPaths(calls); strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("requests = %q, want %q", got, want)
+	if got := gitlabPaths(calls); strings.Join(got, "\n") != "PUT "+mr+"/rebase\nGRAPHQL PRSetDraft" {
+		t.Fatalf("requests = %q", got)
 	}
-	if string(sent[2].Body) != `{"title":"Fix the thing"}` {
-		t.Fatalf("mark ready body = %s", sent[2].Body)
+	if v := sent[1].Vars; v["projectPath"] != "grp/sub/app" || v["iid"] != "7" || v["draft"] != false {
+		t.Fatalf("set draft variables = %v", v)
 	}
-	if got := gitlabDraftlessTitle("WIP: still a title"); got != "WIP: still a title" {
-		t.Fatalf("WIP is not a draft prefix on current GitLab: %q", got)
+	answer.Store(`{"data":{"mergeRequestSetDraft":{"errors":[],"mergeRequest":{"draft":true}}}}`)
+	if _, ok := errors.AsType[*UnconfirmedWriteError](core.MarkPRReady(t.Context(), ref)); !ok {
+		t.Fatal("a merge request still a draft was not unconfirmed")
+	}
+	answer.Store(`{"data":{"mergeRequestSetDraft":{"errors":["Draft could not be updated"],"mergeRequest":null}}}`)
+	if explained, ok := errors.AsType[*ForgeActionError](core.MarkPRReady(t.Context(), ref)); !ok || explained.Kind != ForgeErrorRefused {
+		t.Fatal("a payload error was not a refusal")
 	}
 }
 

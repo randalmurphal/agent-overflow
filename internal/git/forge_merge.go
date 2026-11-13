@@ -87,6 +87,13 @@ type MergeBlocker struct {
 	Text   string `json:"text"`
 	Detail string `json:"detail,omitempty"`
 	URL    string `json:"url,omitempty"`
+	// A BlockerChangesRequested row carries what its fix needs: on GitHub
+	// the reviews to dismiss (ChangeRequests), on GitLab whether the
+	// viewer may bypass them (Bypassable). A settled row of that kind
+	// with Bypassed is requested changes GitLab reports overridden.
+	ChangeRequests []ChangeRequest `json:"changeRequests,omitempty"`
+	Bypassable     bool            `json:"bypassable,omitempty"`
+	Bypassed       bool            `json:"bypassed,omitempty"`
 }
 
 // MergeOptions is what the project allows and what the viewer may do,
@@ -175,6 +182,10 @@ type MergeRequest struct {
 	HeadSHA      string `json:"headSHA"`
 	DeleteBranch bool   `json:"deleteBranch"`
 	AutoMerge    bool   `json:"autoMerge"`
+	// CommitMessage is the commit message the user edited, sent with a
+	// merge or an auto-merge of a method that writes a commit; nil leaves
+	// the forge's default.
+	CommitMessage *MergeMessage `json:"commitMessage,omitempty"`
 }
 
 // Validate checks the request's shape; forge-specific refusals come from
@@ -187,6 +198,16 @@ func (r MergeRequest) Validate() error {
 	}
 	if !mergeHeadSHAPattern.MatchString(strings.TrimSpace(r.HeadSHA)) {
 		return errors.New("merge requires the head commit sha the caller saw")
+	}
+	if m := r.CommitMessage; m != nil {
+		switch {
+		case !methodMakesCommit(r.Method):
+			return fmt.Errorf("the %s method writes no commit message to edit", r.Method)
+		case strings.TrimSpace(m.Title) == "":
+			return errors.New("the commit message needs a title")
+		case strings.ContainsAny(m.Title, "\r\n"):
+			return errors.New("the commit title is one line")
+		}
 	}
 	return nil
 }
