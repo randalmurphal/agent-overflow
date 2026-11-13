@@ -346,6 +346,10 @@ type PartialSubmitError struct {
 	UnpostedReplies []int
 	Unconfirmed     bool
 	Err             error
+	// ApproveErr is an approval the forge refused or did not confirm
+	// besides Err (GitLab approves after the publish): a second outcome,
+	// reported with the first.
+	ApproveErr error
 }
 
 // ReplyThreadGoneError is a held reply the forge refused because its
@@ -391,7 +395,11 @@ func (e *PartialSubmitError) Error() string {
 		return fmt.Sprintf("review submitted, but posting file-level comment for %s failed: %v", e.FailedPath, e.Err)
 	}
 	if e.FailedThreadID != "" {
-		return fmt.Sprintf("review submitted, but posting the reply to thread %s failed: %v", e.FailedThreadID, e.Err)
+		msg := fmt.Sprintf("review submitted, but posting the reply to thread %s failed: %v", e.FailedThreadID, e.Err)
+		if e.ApproveErr != nil {
+			msg += fmt.Sprintf("; the approval failed too: %v", e.ApproveErr)
+		}
+		return msg
 	}
 	return fmt.Sprintf("review submitted, but a follow-up step failed: %v", e.Err)
 }

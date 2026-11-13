@@ -390,6 +390,13 @@ func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, r
 		if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, action, partial.Err)); ok {
 			mapped.PartialFailure, mapped.PartialFailureKind = explained.Message, explained.Kind
 		}
+		if partial.ApproveErr != nil {
+			approval := partial.ApproveErr.Error()
+			if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, gitops.ActionApprove, partial.ApproveErr)); ok {
+				approval = explained.Message
+			}
+			mapped.PartialFailure += " The approval did not go through either: " + approval
+		}
 		if partial.Unconfirmed {
 			mapped.PartialFailure = "The forge did not confirm it, so it may already be on the PR; check the PR before sending it again. " + mapped.PartialFailure
 			mapped.PartialFailureKind = "unconfirmed"

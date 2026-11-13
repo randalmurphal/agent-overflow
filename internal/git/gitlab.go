@@ -780,6 +780,9 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 			}
 		}
 		out.PostedReview = true
+		// The publish published every draft: each file comment is up,
+		// whatever becomes of the replies and the approval.
+		out.PostedFileComments = gitlabFileComments(review.Comments)
 	}
 	// A published reply whose discussion went meanwhile was dropped:
 	// GitLab says nothing, so the discussions say.
@@ -790,11 +793,13 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if strings.EqualFold(review.Verdict, ReviewVerdictApprove) {
 		approve := forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/approve", Body: map[string]string{"sha": mr.headSHA()}}
 		if _, err := client.JSON(ctx, approve, nil); err != nil {
-			failure := gitlabApproveFailure(out, err)
-			if partial, ok := failure.(*PartialSubmitError); ok && replyFailure != nil {
-				partial.UnpostedReplies = replyFailure.UnpostedReplies
+			if replyFailure == nil {
+				return out, gitlabApproveFailure(out, err)
 			}
-			return out, failure
+			// Two outcomes: the replies' and the approval's, both reported.
+			replyFailure.ApproveErr = err
+			replyFailure.Unconfirmed = replyFailure.Unconfirmed || !forgeapi.WriteNotApplied(err)
+			return out, replyFailure
 		}
 		out.PostedReview = true
 	}
@@ -815,7 +820,7 @@ func (f *gitlabForge) confirmGitLabReplies(ctx context.Context, client *forgeapi
 	}
 	lost, err := lostGitLabReplies(ctx, client, ref, mr, before, replies, f.viewerLogin(ctx, client, ref.Host))
 	if err != nil {
-		return &PartialSubmitError{PostedReview: out.PostedReview, FailedThreadID: replies[0].comment.InReplyTo.ThreadID, UnpostedReplies: all, Unconfirmed: true,
+		return &PartialSubmitError{PostedReview: out.PostedReview, PostedFileComments: out.PostedFileComments, FailedThreadID: replies[0].comment.InReplyTo.ThreadID, UnpostedReplies: all, Unconfirmed: true,
 			Err: fmt.Errorf("read the discussions to confirm the replies: %w", err)}
 	}
 	out.PostedReplies = len(replies) - len(lost)
@@ -823,7 +828,7 @@ func (f *gitlabForge) confirmGitLabReplies(ctx context.Context, client *forgeapi
 		return nil
 	}
 	threadID := replies[lost[0]].comment.InReplyTo.ThreadID
-	return &PartialSubmitError{PostedReview: out.PostedReview, PostedReplies: out.PostedReplies, FailedThreadID: threadID, UnpostedReplies: lost,
+	return &PartialSubmitError{PostedReview: out.PostedReview, PostedFileComments: out.PostedFileComments, PostedReplies: out.PostedReplies, FailedThreadID: threadID, UnpostedReplies: lost,
 		Err: &ReplyThreadGoneError{ThreadID: threadID, Err: errors.New("GitLab published the review without this reply")}}
 }
 
@@ -896,6 +901,17 @@ func gitlabApproveFailure(out SubmitReviewResult, err error) error {
 		return submitWriteError(err)
 	}
 	return &PartialSubmitError{PostedReview: true, PostedFileComments: out.PostedFileComments, Unconfirmed: !forgeapi.WriteNotApplied(err), Err: err}
+}
+
+// gitlabFileComments counts the file comments among comments.
+func gitlabFileComments(comments []ReviewLineComment) int {
+	n := 0
+	for _, comment := range comments {
+		if comment.InReplyTo == nil && strings.EqualFold(comment.Side, "file") {
+			n++
+		}
+	}
+	return n
 }
 
 func gitlabDraftNotes(review SubmitReviewRequest) []ReviewLineComment {
