@@ -642,6 +642,34 @@ error enum respectively, and only the TURN died here.
 
 ---
 
+## `system/session_writes_lost`
+
+**Fires**: at most once, as the CLI exits with status 0 after the last
+result, when it could not save transcript lines, `~/.claude.json`
+changes, or both, because the disk was full or over quota (2.1.317+;
+schema read from the 2.1.321 bundle). A run that exits 1 reports this
+only on stderr.
+
+```json
+{"type":"system","subtype":"session_writes_lost","error_code":"ENOSPC",
+ "lost":["transcript","global_config"],"transcript_session_ids":["..."],
+ "uuid":"...","session_id":"..."}
+```
+
+`error_code` is `ENOSPC` (disk full) or `EDQUOT` (quota used up); when
+both kinds of write failed for different reasons it is the transcript's.
+`lost` is never empty. `transcript_session_ids` is present only when
+`transcript` is listed and names the sessions that lost lines, which after
+`/clear` can be an earlier session. Both enums are documented as open.
+
+AO emits a non-fatal `EventError` whose text names what was lost and why,
+and adds that resuming may miss part of the conversation when a transcript
+lost lines. An unknown code is named in the text; an unknown `lost` value
+stays in the meta only. Triage puts the row on the thread's last turn and
+drops a repeat with the same text.
+
+---
+
 ## Permission notices (`permission_denied`, `permission_retry`)
 
 Two `system` subtypes that report a permission OUTCOME rather than asking
