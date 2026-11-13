@@ -28,11 +28,18 @@
 // Edit on the reviewers, assignees and labels rows while the title,
 // description and state controls stay. A held Enter on the title bar's
 // `⋯` opens the menu and activates nothing. Closing the pane with Ctrl+W
-// while a picker holds a change writes that change (desktop).
+// while a picker holds a change writes that change (desktop). A
+// description save whose answer the fake holds until Back (compact) or
+// the pane's close (desktop), then refuses, is one held toast whose Copy
+// text puts the description on the clipboard. An edited squash message
+// stays edited when the snapshot drops Squash (the editor names Merge
+// and says the message goes with the merge commit), then Merge (Rebase
+// makes no commit: the editor stays, and the merge sends no message).
 // Screenshots (dark): the title bar's menu, the Details section
 // collapsed and expanded, a picker with results, the description editor
 // and its preview, the blocker row with Dismiss and its reason (GitHub)
-// or Bypass (GitLab), and the commit message editor.
+// or Bypass (GitLab), and the commit message editor, plain and with
+// each fallback's notice.
 
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
@@ -44,6 +51,7 @@ import {
   expectEveryForgeCallHandled,
   forgeInvocations,
   publishPullRequest,
+  releaseForgeRoute,
   clearForgeRefusal,
   refuseForgeRoute,
   seedForge,
@@ -626,6 +634,118 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
       await expect(details.getByTestId(`review-details-edit-${row}`), row).toHaveCount(0);
     }
     await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
+    await expectEveryForgeCallHandled(harness);
+  });
+
+  test('github: a description save refused after the review closed is one held toast with its text to copy', async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    const thread = 'Manage lost description thread';
+    await seedPullRequest(harness, 'github', thread);
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(harness.url).origin });
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await harness.open(page);
+    const review = await openReview(page, thread, 'github', compact);
+    const press = (target: Locator) => (compact ? target.tap() : target.click());
+    await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+    const description = await expandReviewSection(page, 'review-pr-description');
+    if (!compact) await description.locator(':scope > div').first().hover();
+    await press(description.getByTestId('review-description-edit'));
+    const bodyInput = description.getByTestId('review-description-input');
+    await expect(bodyInput).toHaveValue(BODY);
+    await bodyInput.fill(EDITED_BODY);
+
+    // The save is at the forge, its answer held, when the review closes.
+    const route = 'gh graphql EditPR';
+    const before = await lastSeq(harness);
+    await refuseForgeRoute(harness, { route, status: 200, times: 1, hold: true, body: { data: { updatePullRequest: null }, errors: [{ type: 'FORBIDDEN', path: ['updatePullRequest'], message: 'ao-viewer does not have the correct permissions to execute `UpdatePullRequest`' }] } });
+    await press(description.getByTestId('review-description-save'));
+    await expect.poll(async () => (await writes(harness, [route], before)).length).toBe(1);
+    if (compact) {
+      await bodyInput.focus();
+      await page.goBack();
+    } else {
+      await review.getByTestId('review-close').click();
+    }
+    await expect(page.getByTestId('review-pr-header')).toHaveCount(0);
+
+    await releaseForgeRoute(harness, route);
+    const head = 'Your description edit was not saved. ';
+    const toast = page.getByTestId('toast').filter({ hasText: head });
+    await expect(toast).toHaveCount(1, { timeout: 30_000 });
+    expect((await toast.getByTestId('toast-message').textContent())!.length).toBeGreaterThan(head.length + 10);
+    await toast.getByRole('button', { name: 'Copy text' }).click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(EDITED_BODY);
+    await expect(toast).toHaveCount(1);
+    expect(await writes(harness, [route], before)).toHaveLength(1);
+    await expectEveryForgeCallHandled(harness);
+  });
+
+  test('github: a merge method the forge stops offering moves the edited commit message and says where it goes', async ({ harness, page }, testInfo: TestInfo) => {
+    test.setTimeout(180_000);
+    const thread = 'Manage method fallback thread';
+    const seeded = await seedPullRequest(harness, 'github', thread, (seed) => ({
+      ...seed,
+      merge: { methods: ['merge', 'squash', 'rebase'] },
+      // No required approvals: the change request does not block the merge.
+      pulls: [{ ...seed.pulls![0], readiness: undefined }],
+    }));
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await harness.open(page);
+    const review = await openReview(page, thread, 'github', compact);
+    const press = (target: Locator) => (compact ? target.tap() : target.click());
+    const shot = (target: Locator | Page, name: string) => target.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-github-${name}.png`) });
+    await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+    const merge = await expandReviewSection(page, 'review-pr-merge');
+    await expect(review.getByTestId('review-pr-readiness')).toHaveText('Ready to merge', { timeout: 30_000 });
+
+    // Squash picked, its message edited.
+    const trigger = merge.getByTestId('review-merge-trigger');
+    const menu = page.getByTestId('review-merge-menu');
+    await press(trigger);
+    await press(menu.getByTestId('review-merge-method-squash'));
+    await press(menu.getByTestId('review-merge-edit-message'));
+    const message = merge.getByTestId('review-merge-message');
+    const messageTitle = message.getByTestId('review-merge-message-title');
+    await expect(messageTitle).toBeEnabled();
+    await expect(messageTitle).not.toHaveValue('');
+    await messageTitle.fill(COMMIT_TITLE);
+    await message.getByTestId('review-merge-message-body').fill(COMMIT_BODY);
+    await expect(message.getByTestId('review-merge-message-state')).toHaveText('edited');
+    const notice = message.getByTestId('review-merge-message-notice');
+    await expect(notice).toHaveCount(0);
+
+    // The forge stops offering Squash: the message goes with Merge.
+    const offer = async (methods: ('merge' | 'squash' | 'rebase')[]) => {
+      await seedForge(harness, [{ ...seeded, merge: { methods } }]);
+      // The next read of the PR: the Conversation's refresh.
+      const conversation = await expandReviewSection(page, 'review-pr-conversation');
+      await press(conversation.getByTestId('review-refresh-comments'));
+    };
+    await offer(['merge', 'rebase']);
+    await expect(notice).toHaveText('Squash is no longer allowed here. This message will be used for the merge commit.', { timeout: 30_000 });
+    await expect(messageTitle).toHaveValue(COMMIT_TITLE);
+    await expect(message.getByTestId('review-merge-message-state')).toHaveText('edited');
+    if (!compact) await shot(merge, 'commit-message-fallback');
+    else await shot(page, 'commit-message-fallback');
+    await press(trigger);
+    await expect(menu.getByTestId('review-merge-method-merge')).toBeVisible();
+    await expect(menu.getByTestId('review-merge-method-squash')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+
+    // Then only Rebase, which makes no commit: the editor stays with the
+    // text, and the merge sends none of it.
+    await offer(['rebase']);
+    await expect(notice).toHaveText('Merge is no longer allowed here. Rebase makes no commit, so this message will not be used.', { timeout: 30_000 });
+    await expect(messageTitle).toHaveValue(COMMIT_TITLE);
+    if (!compact) await shot(merge, 'commit-message-no-commit');
+    else await shot(page, 'commit-message-no-commit');
+    const before = await lastSeq(harness);
+    await press(trigger);
+    await press(menu.getByTestId('review-merge-now'));
+    await expect(review.getByTestId('review-pr-readiness')).toHaveText('Merged');
+    const merges = await writes(harness, ['gh graphql MergePR', 'gh graphql MergePRMessage'], before);
+    expect(merges.map((call) => [call.route, String(call.variables?.method).toLowerCase()])).toEqual([['gh graphql MergePR', 'rebase']]);
     await expectEveryForgeCallHandled(harness);
   });
 }

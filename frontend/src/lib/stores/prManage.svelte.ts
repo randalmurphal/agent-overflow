@@ -20,13 +20,18 @@
 // opened on (its computer and PR) and write only to it. When the pane's
 // PR becomes another, all of it is dropped: open editors and the picker
 // close without writing, the merge message and its method go, and a
-// late answer for the PR that was is ignored. The pane closing applies
-// an open picker's change (its failure is a toast, its row being gone). A failure shows on the surface
+// late answer for the PR that was is ignored. An operation is pending
+// only for the PR it was started on, and settles its own surface
+// whether or not that PR is on screen the moment it answers. The pane
+// closing applies an open picker's change; a failure that arrives after
+// the pane closed is a toast (a title or description edit's, the lost
+// write toast with its text to copy). A failure shows on the surface
 // that caused it where that surface stays: a picker's or re-request's on
 // its Details row, Dismiss's and Bypass's on the changes-requested
 // blocker row. The state menu's items toast, since their menu is gone.
 
 import { untrack } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import {
   BypassPRRequestedChanges,
   DismissPRReview,
@@ -38,6 +43,7 @@ import {
   SetPRState,
 } from './bindings';
 import { captureError, type CapturedError } from './errorReports.svelte';
+import { toastLostWrite } from './lostWrite';
 import { createPRMergeMessageState, type PRMergeMessageView } from './prMergeMessage.svelte';
 import { createPRPickerState, type PRManageTarget, type PRPickerView } from './prManagePicker.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
@@ -57,6 +63,8 @@ export interface PRManageHost {
   /** The PR's computer-scoped key (computerPRKey), whose applied
    * sequence settles a pending action; null outside the PR scope. */
   readonly entityKey: string | null;
+  /** The merge methods the PR's snapshot offers, or null before one. */
+  readonly mergeMethods: readonly string[] | null;
   /** The PR's applied sequence (peekPRSeq of entityKey). */
   readonly appliedSeq: number;
   readonly backend: BackendKey;
@@ -164,7 +172,12 @@ export interface PRManageView {
   dispose(): void;
 }
 
-interface Await extends PRManagePending {
+interface Running extends PRManagePending {
+  /** This operation, so its end never clears a newer one's state. */
+  readonly id: number;
+}
+
+interface Await extends Running {
   readonly key: string;
   readonly seq: number;
   readonly launch: string;
@@ -174,15 +187,26 @@ interface Await extends PRManagePending {
 type Outcome = { ok: true } | { ok: false; err: unknown } | { ok: false; blocked: string };
 
 export function createPRManageState(host: PRManageHost): PRManageView {
-  let running = $state<PRManagePending | null>(null);
-  let awaiting = $state<Await | null>(null);
+  // Each PR's operation in flight, and its wait for the pump's answer,
+  // keyed by the PR it was started on: the PR on screen reads only its
+  // own, so a slow write on another PR never holds this one's controls.
+  const running = new SvelteMap<string, Running>();
+  const awaiting = new SvelteMap<string, Await>();
+  let operations = 0;
+  // Which PR's management this is: a PR change ends it (discardAll), and
+  // an answer for an earlier one settles nothing. A moment without a PR
+  // is not a change.
+  let epoch = 0;
   let disposed = false;
 
   const pending = $derived.by<PRManagePending | null>(() => {
-    if (running) return running;
-    const wait = awaiting;
-    if (wait === null || wait.key !== host.entityKey || wait.launch !== host.launch || host.updateFailing) return null;
-    return host.appliedSeq < wait.seq ? wait : null;
+    const key = host.identity;
+    if (key === null) return null;
+    const live = running.get(key);
+    if (live) return { kind: live.kind, target: live.target };
+    const wait = awaiting.get(key);
+    if (!wait || wait.key !== host.entityKey || wait.launch !== host.launch || host.updateFailing) return null;
+    return host.appliedSeq < wait.seq ? { kind: wait.kind, target: wait.target } : null;
   });
   const blockedReason = $derived(
     host.withheldReason ?? (pending ? `${PR_MANAGE_ACTION_LABEL[pending.kind]}…` : null),
@@ -195,33 +219,48 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     return ref && key !== null ? { ref, key } : null;
   }
 
-  // An answer about `on` still belongs on screen.
-  function onScreen(on: PRManageTarget): boolean {
-    return !disposed && on.key === host.identity;
+  // Where an answer goes, chosen when it arrives: `gone` once the pane
+  // closed (a toast), `discarded` once the pane's PR became another
+  // (nothing), else `alive` (its surface, whether or not the PR is on
+  // screen this moment).
+  function fate(started: number): 'alive' | 'gone' | 'discarded' {
+    if (disposed) return 'gone';
+    return started === epoch ? 'alive' : 'discarded';
   }
 
-  // Runs one write to `on`; answers how it went. The caller shows a
-  // failure on its own surface, and drops an answer for a PR no longer
-  // on screen.
+  // Runs one write to `on`; answers how it went and the epoch it started
+  // in. The caller shows a failure on the surface `fate` names.
   async function run(kind: PRManageActionKind, target: string, on: PRManageTarget, call: (ref: PRRef) => Promise<{ seq: number }>): Promise<Outcome> {
     const blocked = untrack(() => blockedReason);
     if (blocked !== null) return { ok: false, blocked };
     const launch = host.launch;
-    running = { kind, target };
-    awaiting = null;
+    const op: Running = { kind, target, id: ++operations };
+    running.set(on.key, op);
+    awaiting.delete(on.key);
     let result: { seq: number };
     try {
       result = await withBackendTarget(host.backend, () => call(on.ref));
     } catch (err) {
-      if (disposed) return { ok: false, err };
-      running = null;
-      if (on.key === host.identity) host.refresh();
+      if (running.get(on.key) === op) running.delete(on.key);
+      if (!disposed && on.key === host.identity) host.refresh();
       return { ok: false, err };
     }
-    if (disposed) return { ok: true };
-    running = null;
-    if (host.launch === launch && host.entityKey === on.key && untrack(() => host.appliedSeq) < result.seq) awaiting = { kind, target, key: on.key, seq: result.seq, launch };
+    if (running.get(on.key) !== op) return { ok: true };
+    running.delete(on.key);
+    if (!disposed && host.launch === launch) awaiting.set(on.key, { ...op, key: on.key, seq: result.seq, launch });
     return { ok: true };
+  }
+
+  // The latest operation to show its failure on each surface, so an
+  // older one's answer never clears or replaces a newer one's.
+  const surfaceOwner = new Map<string, number>();
+  function claim(surface: string): number {
+    const id = ++operations;
+    surfaceOwner.set(surface, id);
+    return id;
+  }
+  function owns(surface: string, id: number): boolean {
+    return surfaceOwner.get(surface) === id;
   }
 
   // A write that did not start shows why as it is (it is hover text
@@ -274,28 +313,37 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     ? { reviewId: dismissState.reviewId, text: dismissState.text }
     : null);
 
+  // A failure on a Details row (`row`) or the changes-requested row, by
+  // where the answer finds things: the row while the state lives, a toast
+  // once the pane closed, nothing once the PR changed.
+  function settleOnRow(kind: PRManageActionKind, surface: string, started: number, token: number, outcome: Outcome, show: (error: PRManageError | null) => void): void {
+    const where = fate(started);
+    if (where === 'gone') {
+      if (!outcome.ok) toastFailure(kind, outcome);
+      return;
+    }
+    if (where === 'alive' && owns(surface, token)) show(outcome.ok ? null : failure(outcome));
+  }
+
   const picker = createPRPickerState({
     get target() { return currentTarget(); },
     get identity() { return host.identity; },
     get backend() { return host.backend; },
-    async apply(row, change, on, closing) {
+    async apply(row, change, on) {
+      const started = epoch;
+      const token = claim(row);
       const wire = row === 'labels' ? labelChange(change.labels) : peopleChange(change.people);
       const outcome = await run(row, '', on, (ref) => {
         const pr = prReferenceWire(ref);
         if (row === 'labels') return SetPRLabels(pr, wire as ReturnType<typeof labelChange>);
         return row === 'reviewers' ? SetPRReviewers(pr, wire as ReturnType<typeof peopleChange>) : SetPRAssignees(pr, wire as ReturnType<typeof peopleChange>);
       });
-      // Applied as the pane closed: no row is left to show a failure.
-      if (closing) {
-        if (!outcome.ok) toastFailure(row, outcome);
-        return;
-      }
-      if (!onScreen(on)) return;
       // The sentence as the backend gave it, on the row; a partial change
       // says so, and the row shows the next snapshot either way.
-      setRowError(row, outcome.ok ? null : failure(outcome));
+      settleOnRow(row, row, started, token, outcome, (error) => setRowError(row, error));
     },
     opened(row) {
+      claim(row);
       setRowError(row, null);
     },
   });
@@ -304,10 +352,13 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     get prRef() { return host.prRef; },
     get identity() { return host.identity; },
     get backend() { return host.backend; },
+    get methods() { return host.mergeMethods; },
   });
 
   // The PR on screen became another: drop everything that was its.
   function discardAll(): void {
+    epoch += 1;
+    surfaceOwner.clear();
     title = null;
     titleError = null;
     description = null;
@@ -362,7 +413,14 @@ export function createPRManageState(host: PRManageHost): PRManageView {
       }
       titleError = null;
       const outcome = await run('edit_title', '', draft.on, (ref) => EditPR(prReferenceWire(ref), { title: text }));
-      if (!onScreen(draft.on) || title !== draft) return;
+      // Gone with the pane: the one toast, with the text to copy.
+      if (disposed) {
+        if ('err' in outcome) toastLostWrite({ body: text, subject: 'Your title edit', notDone: 'was not saved' }, outcome.err);
+        return;
+      }
+      // Settles its own editor, on screen this moment or not; a PR change
+      // dropped it.
+      if (title !== draft) return;
       if (outcome.ok) title = { ...draft, submitted: true };
       else titleError = failure(outcome);
     },
@@ -396,7 +454,11 @@ export function createPRManageState(host: PRManageHost): PRManageView {
       // description changed since is refused, and the editor stays open
       // with the backend's sentence.
       const outcome = await run('edit_description', '', draft.on, (ref) => EditPR(prReferenceWire(ref), { description: draft.text, expectedDescription: draft.expected }));
-      if (!onScreen(draft.on) || description === null || description.on !== draft.on || description.expected !== draft.expected) return;
+      if (disposed) {
+        if ('err' in outcome) toastLostWrite({ body: draft.text, subject: 'Your description edit', notDone: 'was not saved' }, outcome.err);
+        return;
+      }
+      if (description === null || description.on !== draft.on || description.expected !== draft.expected) return;
       if (outcome.ok) description = { ...description, submitted: true };
       else descriptionError = failure(outcome);
     },
@@ -409,16 +471,20 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     async setState(state: PRStateChange): Promise<void> {
       const on = currentTarget();
       if (!on) return;
+      const started = epoch;
       const outcome = await run(state, '', on, (ref) => SetPRState(prReferenceWire(ref), state));
-      if (onScreen(on) && !outcome.ok) toastFailure(state, outcome);
+      if (fate(started) !== 'discarded' && !outcome.ok) toastFailure(state, outcome);
     },
     async rerequest(reviewer: PRPerson): Promise<void> {
       const on = currentTarget();
       if (!on) return;
       const person = wirePerson(reviewer);
+      const started = epoch;
+      const token = claim('reviewers');
       setRowError('reviewers', null);
       const outcome = await run('rerequest', reviewer.login, on, (ref) => RerequestPRReview(prReferenceWire(ref), person));
-      if (onScreen(on) && !outcome.ok) setRowError('reviewers', failure(outcome));
+      // A success leaves the row as it is: it never clears a newer failure.
+      if (!outcome.ok) settleOnRow('rerequest', 'reviewers', started, token, outcome, (error) => setRowError('reviewers', error));
     },
     get dismissDraft() { return dismissDraft; },
     get changeRequestError() { return changeRequestError; },
@@ -428,6 +494,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
       const text = failedDismiss?.reviewId === reviewId ? failedDismiss.text : '';
       failedDismiss = null;
       dismissState = { reviewId, text, submitted: false, on };
+      claim('changes');
       changeRequestError = null;
     },
     setDismissText(text: string): void {
@@ -442,9 +509,15 @@ export function createPRManageState(host: PRManageHost): PRManageView {
       if (!draft || dismissDraft === null || dismissSaving) return;
       const message = draft.text.trim();
       if (message === '') return;
+      const started = epoch;
+      const token = claim('changes');
       changeRequestError = null;
       const outcome = await run('dismiss', draft.reviewId, draft.on, (ref) => DismissPRReview(prReferenceWire(ref), draft.reviewId, message));
-      if (!onScreen(draft.on) || dismissState !== draft) return;
+      if (fate(started) === 'gone') {
+        if (!outcome.ok) toastFailure('dismiss', outcome);
+        return;
+      }
+      if (dismissState !== draft || !owns('changes', token)) return;
       if (outcome.ok) {
         dismissState = { ...draft, submitted: true };
         return;
@@ -458,9 +531,11 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     async bypass(): Promise<void> {
       const on = currentTarget();
       if (!on) return;
+      const started = epoch;
+      const token = claim('changes');
       changeRequestError = null;
       const outcome = await run('bypass', '', on, (ref) => BypassPRRequestedChanges(prReferenceWire(ref)));
-      if (onScreen(on) && !outcome.ok) changeRequestError = failure(outcome);
+      if (!outcome.ok) settleOnRow('bypass', 'changes', started, token, outcome, (error) => { changeRequestError = error; });
     },
 
     mergeMessage,

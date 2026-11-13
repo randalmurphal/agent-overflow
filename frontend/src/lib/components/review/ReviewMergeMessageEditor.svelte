@@ -72,6 +72,9 @@
     <span class="shrink-0 text-[0.6875rem] text-fg-subtle" data-testid="review-merge-message-state">{message.edited ? 'edited' : 'default'}</span>
     <ReviewIconButton icon={X} label="Close the commit message" testid="review-merge-message-close" disabled={merging} disabledLabel="The merge is waiting for the forge's answer." onclick={close} />
   </div>
+  {#if message.notice}
+    <p class="text-[0.6875rem] text-fg-muted" data-testid="review-merge-message-notice">{message.notice}</p>
+  {/if}
   {#if message.error}
     <ReviewManageError error={message.error} testid="review-merge-message-error" />
   {/if}

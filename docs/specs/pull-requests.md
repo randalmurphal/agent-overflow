@@ -544,8 +544,7 @@ permission reads and the refusals are in
   returns them. A GitHub reviewer whose review is in stays checked: only
   a pending request can be withdrawn. Closing the picker by any route
   (Escape, Tab, a click outside, its trigger, the pane closing) applies
-  the row's change to the PR it opened on; a failure while the pane
-  closes has no row left and is a toast. The overview scrolling out and
+  the row's change to the PR it opened on. The overview scrolling out and
   back neither applies nor loses an open picker. Each person and
   label passed as the backend gave it (a person addressed by `login`, a
   label by `id` on both forges); nothing is written when nothing changed.
@@ -583,19 +582,43 @@ permission reads and the refusals are in
   was written for; a failed default read shows its sentence in the
   editor and the merge goes on with the forge's default. The title takes
   focus once the default has loaded, unless the reader moved focus
-  meanwhile. The editor hides while auto-merge is armed.
+  meanwhile. The editor hides while auto-merge is armed. A method a
+  snapshot stops offering falls back to the project's default through
+  the same path as a pick, keeping edited text: the editor shows the new
+  method, the text still marked edited, and a quiet line ("Squash is no
+  longer allowed here. This message will be used for the merge
+  commit."). When the new method makes no commit the line reads "...
+  Rebase makes no commit, so this message will not be used.", the editor
+  stays open with the text, and the merge sends no message. The editor
+  always shows what the merge sends.
 - Every action follows the merge actions' contract: no optimistic state;
   pending from the call until the pane has applied the snapshot whose
   sequence reaches the answer's `seq` (0 settles at once), given up with
   a new backend launch or a failing pump; one management action at a
-  time; withheld with the merge actions' reason as hover text. An editor
+  time per PR, keyed by the PR it started on, so the controls of the PR
+  on screen read only its own; withheld with the merge actions' reason
+  as hover text. An editor
   whose write is pending cannot be dismissed (Cancel disabled, saying it
   is saving; Escape does nothing), a held key's repeat never submits,
   and every popover and editor returns focus to the control that opened
   it. A failure shows its sentence with Details on the surface that
   caused it: an editor's on the editor, a picker's or re-request's on its
   Details row, Dismiss's and Bypass's on the changes-requested row. A
-  state change that fails is a toast, since its menu is gone.
+  state change that fails is a toast, since its menu is gone. The
+  surface is chosen when the answer arrives: the row while the pane's
+  review state is alive, a toast once it was disposed (the pane closed),
+  nothing when the pane's PR changed. Each operation claims its surface,
+  so an older answer never replaces a newer operation's sentence there.
+  A completion settles its own PR's draft and error even when that PR is
+  briefly not on screen, and never clears a newer operation's state.
+- A title or description save that fails after the pane's review state
+  was disposed (Back or the pane's close while it is pending) is one
+  toast, held until dismissed, through the comment writes' lost-write
+  rule (`stores/lostWrite.ts`): "Your description edit was not saved.
+  <sentence>", or, for `forge_unconfirmed` and a lost answer, "Your
+  description edit was not confirmed. <sentence>" ("Your title edit"
+  for the title). `Copy text` copies the text that was sent. A failure
+  while the state is alive stays in the editor.
 - Each editor, the picker and the commit message belong to the PR (its
   computer and number) they opened on and write only to it. When the
   pane's PR becomes another (a branch change in the same workspace),
@@ -690,8 +713,12 @@ after its remove applied, re-request, close, reopen, draft and ready, a
 refused then retried dismiss (GitHub) and bypass (GitLab) with the
 sentence on the blocker row and focus on the Merge header after, and a
 merge with an edited commit message, a held Enter on the `⋯` that
-activates nothing, and Ctrl+W closing the pane writing an open picker's
-change (desktop); on GitLab also a refused
+activates nothing, Ctrl+W closing the pane writing an open picker's
+change (desktop), a description save refused after Back (compact) or
+the pane's close (desktop) as one held toast whose Copy text holds the
+description, and an edited squash message that falls back to Merge
+and then to Rebase as the snapshot drops each method, with the notice
+and a merge that sends no message; on GitLab also a refused
 management read (Details shows the sentence, no control anywhere, the
 controls back once it answers) and a host without `operationMode` (no
 row Edit, the other controls kept). `review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a

@@ -30,6 +30,7 @@ function makeHost() {
     prRef: REF as typeof REF | null,
     identity: KEY as string | null,
     entityKey: KEY as string | null,
+    mergeMethods: ['merge', 'squash'] as string[] | null,
     appliedSeq: 1,
     backend: HOME_BACKEND,
     launch: 'L1',
@@ -41,6 +42,7 @@ function makeHost() {
     get prRef() { return host.prRef; },
     get identity() { return host.identity; },
     get entityKey() { return host.entityKey; },
+    get mergeMethods() { return host.mergeMethods; },
     get appliedSeq() { return host.appliedSeq; },
     backend: HOME_BACKEND,
     get launch() { return host.launch; },
@@ -370,6 +372,162 @@ describe('the PR on screen changing', () => {
     call.resolve({ seq: 0 });
     await saving;
     expect(edit.mock.calls[0][0]).toEqual(expect.objectContaining({ Number: 5 }));
+  });
+});
+
+describe('a title or description save that fails after the pane closed', () => {
+  const cases = [
+    { editor: 'title', subject: 'Your title edit', start: (v: PRManageView) => { v.openTitle('Old'); v.setTitleDraft('Sent title'); return v.saveTitle(); }, text: 'Sent title' },
+    { editor: 'description', subject: 'Your description edit', start: (v: PRManageView) => { v.openDescription('Old'); v.setDescriptionDraft('Sent body'); return v.saveDescription(); }, text: 'Sent body' },
+  ] as const;
+  for (const each of cases) {
+    it(`says the ${each.editor} edit was not saved, held, with its text to copy`, async () => {
+      const call = deferred<{ seq: number }>();
+      setBindingMock('EditPR', () => call.promise);
+      const writeText = vi.fn(async (_text: string) => {});
+      vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+      const saving = each.start(view);
+      view.dispose();
+      call.reject(new TransportError('forge_refused', 'GitHub refused the edit.'));
+      await saving;
+      const toast = getToasts().at(-1)!;
+      expect(toast.message).toBe(`${each.subject} was not saved. GitHub refused the edit.`);
+      expect(toast.duration).toBe(0);
+      expect(toast.action).toMatchObject({ label: 'Copy text', keep: true });
+      toast.action!.run();
+      await settle();
+      expect(writeText).toHaveBeenCalledWith(each.text);
+      vi.unstubAllGlobals();
+    });
+
+    it(`says the ${each.editor} edit was not confirmed when the forge did not confirm it or the answer was lost`, async () => {
+      for (const err of [new TransportError('forge_unconfirmed', 'GitHub did not confirm it.'), new TransportError('timeout', 'timed out')]) {
+        const call = deferred<{ seq: number }>();
+        setBindingMock('EditPR', () => call.promise);
+        const made = makeHost();
+        let fresh!: PRManageView;
+        cleanup.push($effect.root(() => { fresh = createPRManageState(made.lent); }));
+        const saving = each.start(fresh);
+        fresh.dispose();
+        call.reject(err);
+        await saving;
+        expect(getToasts().at(-1)?.message).toMatch(new RegExp(`^${each.subject} was not confirmed\\. `));
+      }
+    });
+  }
+
+  it('keeps a failure in the editor while the state lives', async () => {
+    setBindingMock('EditPR', async () => { throw new TransportError('forge_refused', 'GitHub refused the edit.'); });
+    view.openDescription('Old');
+    view.setDescriptionDraft('Mine');
+    await view.saveDescription();
+    expect(view.descriptionError?.message).toBe('GitHub refused the edit.');
+    expect(getToasts()).toHaveLength(0);
+  });
+});
+
+describe("where a picker's failure shows, decided when the answer arrives", () => {
+  it('toasts a failure that arrives after the pane closed, for a picker closed before it', async () => {
+    const call = deferred<{ seq: number }>();
+    setBindingMock('SearchPRCandidates', async () => ({ people: [{ login: 'jdoe' }], labels: [], more: false }));
+    const set = setBindingMock('SetPRReviewers', () => call.promise);
+    view.picker.open('reviewers', { people: [] });
+    await settle();
+    view.picker.toggle('u:jdoe');
+    const closing = view.picker.close();
+    view.dispose();
+    call.reject(new TransportError('forge_refused', 'GitHub refused the reviewers.'));
+    await closing;
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(getToasts().at(-1)?.message).toBe('Changing reviewers failed: GitHub refused the reviewers.');
+  });
+});
+
+describe('an operation belongs to the PR it was started on', () => {
+  it("holds only its own PR's controls", async () => {
+    const call = deferred<{ seq: number }>();
+    const onB = deferred<{ seq: number }>();
+    setBindingMock('SetPRState', () => call.promise);
+    const bypass = setBindingMock('BypassPRRequestedChanges', () => onB.promise);
+    const closing = view.setState('close');
+    expect(view.blockedReason).toBe('Close…');
+    host.prRef = REF_B;
+    host.identity = KEY_B;
+    host.entityKey = KEY_B;
+    await settle();
+    expect(view.pending).toBeNull();
+    expect(view.blockedReason).toBeNull();
+    const bypassing = view.bypass();
+    expect(bypass).toHaveBeenCalledWith(expect.objectContaining({ Number: 6 }));
+    expect(view.pending?.kind).toBe('bypass');
+    // A's answer ends A's operation, never B's.
+    call.resolve({ seq: 0 });
+    await closing;
+    expect(view.pending?.kind).toBe('bypass');
+    onB.resolve({ seq: 0 });
+    await bypassing;
+    expect(view.pending).toBeNull();
+  });
+
+  it('settles a save that answers while the pane has no PR for a moment', async () => {
+    const call = deferred<{ seq: number }>();
+    setBindingMock('EditPR', () => call.promise);
+    view.openTitle('Old');
+    view.setTitleDraft('New');
+    const saving = view.saveTitle();
+    host.prRef = null;
+    host.identity = null;
+    host.entityKey = null;
+    await settle();
+    call.resolve({ seq: 0 });
+    await saving;
+    host.prRef = REF;
+    host.identity = KEY;
+    host.entityKey = KEY;
+    await settle();
+    // Saved: the editor is closed, not back as an unsaved draft.
+    expect(view.titleDraft).toBeNull();
+  });
+
+  it('keeps a refusal that arrives while the pane has no PR for a moment', async () => {
+    const call = deferred<{ seq: number }>();
+    setBindingMock('EditPR', () => call.promise);
+    view.openDescription('Old');
+    view.setDescriptionDraft('Mine');
+    const saving = view.saveDescription();
+    host.prRef = null;
+    host.identity = null;
+    host.entityKey = null;
+    await settle();
+    call.reject(new TransportError('forge_refused', 'The description changed since you opened it.'));
+    await saving;
+    host.prRef = REF;
+    host.identity = KEY;
+    host.entityKey = KEY;
+    await settle();
+    expect(view.descriptionDraft).toBe('Mine');
+    expect(view.descriptionError?.message).toBe('The description changed since you opened it.');
+  });
+
+  it("never lets an older answer clear a newer failure on its row", async () => {
+    const first = deferred<{ seq: number }>();
+    setBindingMock('SearchPRCandidates', async () => ({ people: [{ login: 'jdoe' }, { login: 'alee' }], labels: [], more: false }));
+    const set = setBindingMock('SetPRReviewers', () => first.promise);
+    view.picker.open('reviewers', { people: [] });
+    await settle();
+    view.picker.toggle('u:jdoe');
+    const older = view.picker.close();
+    // A newer change of the row while the older one is in flight: it does
+    // not start, and the row says why.
+    view.picker.open('reviewers', { people: [] });
+    await settle();
+    view.picker.toggle('u:alee');
+    await view.picker.close();
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(view.rowError('reviewers')?.message).toBe('Changing reviewers…');
+    first.resolve({ seq: 0 });
+    await older;
+    expect(view.rowError('reviewers')?.message).toBe('Changing reviewers…');
   });
 });
 

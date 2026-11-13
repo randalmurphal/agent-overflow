@@ -9,7 +9,15 @@
 // in the editor and never stands in the way of a merge. The editor
 // belongs to the PR it opened on: on another PR it reads closed and
 // sends nothing, and `discard` drops it with the pick.
+//
+// A method the forge stops offering (a snapshot drops it) falls back to
+// the project's default through the same path as a pick, keeping edited
+// text, with a notice saying what happened: the message now goes with
+// the new method's commit, or, for a method that makes none, the editor
+// stays open with the text and the merge sends none. What the editor
+// shows is what a merge sends.
 
+import { untrack } from 'svelte';
 import { GetPRMergeMessage } from './bindings';
 import { captureError } from './errorReports.svelte';
 import type { PRManageError } from './prManage.svelte';
@@ -25,6 +33,23 @@ export interface PRMergeMessageHost {
   /** The PR's computer-scoped identity, or null. */
   readonly identity: string | null;
   readonly backend: BackendKey;
+  /** The methods the snapshot offers, or null before one. */
+  readonly methods: readonly string[] | null;
+}
+
+const METHOD_NAME: Record<string, string> = { merge: 'Merge', squash: 'Squash', rebase: 'Rebase', fast_forward: 'Fast-forward' };
+
+function methodName(method: string): string {
+  return METHOD_NAME[method] ?? method.charAt(0).toUpperCase() + method.slice(1);
+}
+
+/** What the editor says when `was` stopped being offered and the edited
+ * text now goes with `next`. */
+export function fallbackNotice(was: string, next: string): string {
+  const what = methodHasCommitMessage(next)
+    ? `This message will be used for the ${next === 'squash' ? 'squash' : 'merge'} commit.`
+    : `${methodName(next)} makes no commit, so this message will not be used.`;
+  return `${methodName(was)} is no longer allowed here. ${what}`;
 }
 
 export interface PRMergeMessageView {
@@ -45,6 +70,8 @@ export interface PRMergeMessageView {
   readonly loading: boolean;
   /** The default read failed; the editor starts empty. */
   readonly error: PRManageError | null;
+  /** The method was no longer offered and the text moved to another. */
+  readonly notice: string | null;
   openFor(method: string): void;
   setTitle(text: string): void;
   setBody(text: string): void;
@@ -69,6 +96,7 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
   let defaults = $state.raw<ReadonlyMap<string, MergeMessage>>(new Map());
   let loading = $state(false);
   let error = $state<PRManageError | null>(null);
+  let notice = $state<string | null>(null);
   let generation = 0;
 
   const live = $derived(open && openedOn !== null && openedOn.key === host.identity);
@@ -110,13 +138,33 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
     defaults = new Map();
     loading = false;
     error = null;
+    notice = null;
   }
 
-  function follow(next: string): void {
+  // The one method-change path: a pick, or a fallback (`was` no longer
+  // offered), which keeps edited text and says so.
+  function follow(next: string, was?: string): void {
     if (!live || next === method) return;
     method = next;
+    notice = was !== undefined && edited !== null ? fallbackNotice(was, next) : null;
     if (edited === null) void read(next);
   }
+
+  // The snapshot's methods: a pick or the editor's method it no longer
+  // offers falls back to the project's default.
+  function reconcile(offered: readonly string[]): void {
+    const fallback = offered[0];
+    if (picked !== null && !offered.includes(picked)) picked = fallback;
+    if (live && !offered.includes(method)) follow(picked ?? fallback, method);
+  }
+  const stopReconcile = $effect.root(() => {
+    $effect(() => {
+      const methods = host.methods;
+      if (methods === null) return;
+      const offered = methods.length ? methods : ['merge'];
+      untrack(() => reconcile(offered));
+    });
+  });
 
   return {
     selected(methods: readonly string[]): string {
@@ -127,6 +175,7 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
       follow(next);
     },
     get open() { return live; },
+    get notice() { return live ? notice : null; },
     get method() { return method; },
     get title() { return shown.title; },
     get body() { return shown.body; },
@@ -165,6 +214,7 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
       picked = null;
     },
     dispose(): void {
+      stopReconcile();
       reset();
       picked = null;
     },
