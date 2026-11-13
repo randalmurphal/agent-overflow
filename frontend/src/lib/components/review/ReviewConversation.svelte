@@ -74,10 +74,18 @@
   // Until the remembered place is restored, the mount's own layout must
   // not overwrite it.
   let placed = false;
+  // The scrollTop the hold last wrote. Its scroll event can arrive after
+  // a later growth above the reader, so it must not re-record the anchor
+  // from a layout the hold has not compensated yet.
+  let heldScrollTop: number | null = null;
 
   function recordPlace(scroller: HTMLElement): void {
     review.setConversationAnchor(topEntry(scroller));
-    // The chip goes once its newest arrival has been in view.
+    noteArrivalSeen(scroller);
+  }
+
+  // The chip goes once its newest arrival has been in view.
+  function noteArrivalSeen(scroller: HTMLElement): void {
     const newest = review.conversationNewestArrivalId;
     const el = newest ? entryOf(newest) : null;
     if (!el) return;
@@ -86,18 +94,24 @@
     if (rect.bottom > view.top && rect.top < view.bottom) review.acknowledgeConversationArrivals();
   }
 
-  // Keep the anchored entry where it was on screen, then record where
+  // Keep the anchored entry where it was on screen: the anchor stays as
+  // recorded, so rounding never accumulates. Otherwise record where
   // things stand. Runs after every feed change and every size change.
   function holdPlace(): void {
     const scroller = scrollerOf();
     if (!scroller || !placed) return;
     const anchor = review.conversationAnchor;
     const el = anchor ? entryOf(anchor.id) : null;
-    if (anchor && el && placeHeld(scroller)) {
-      const drift = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.offset;
-      if (Math.abs(drift) >= 0.5) scroller.scrollTop += drift;
+    if (!anchor || !el || !placeHeld(scroller)) {
+      recordPlace(scroller);
+      return;
     }
-    recordPlace(scroller);
+    const drift = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.offset;
+    if (Math.abs(drift) >= 0.5) {
+      scroller.scrollTop += drift;
+      heldScrollTop = scroller.scrollTop;
+    }
+    noteArrivalSeen(scroller);
   }
 
   // Scrolls the section alone (never the diff around it) so `el` is in
@@ -131,7 +145,13 @@
       placed = true;
       holdPlace();
     });
-    const onScroll = () => { if (placed) recordPlace(scroller); };
+    const onScroll = () => {
+      if (!placed) return;
+      const own = heldScrollTop !== null && Math.abs(scroller.scrollTop - heldScrollTop) < 1;
+      heldScrollTop = null;
+      if (own) noteArrivalSeen(scroller);
+      else recordPlace(scroller);
+    };
     scroller.addEventListener('scroll', onScroll, { passive: true });
     return () => {
       live = false;

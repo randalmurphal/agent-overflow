@@ -166,6 +166,22 @@ describe('a reader scrolled into the Conversation feed', () => {
     expect(testid('review-conversation-new')).toBeNull();
   });
 
+  it('keeps the top card where it was when scrolled to the end of the feed', async () => {
+    await openConversation();
+    scroller().scrollTop = scroller().scrollHeight;
+    await frames(2);
+    const top = [...target.querySelectorAll<HTMLElement>('[data-feed-id]')].find((el) => el.getBoundingClientRect().bottom > scroller().getBoundingClientRect().top)!.dataset.feedId!.slice(2);
+    const before = offsetOf(top);
+    push([...threads, note('n13', 13)]);
+    // The arrival lays out taller a moment later (its body rendering),
+    // before the scroll the hold made has dispatched its event.
+    await new Promise((done) => setTimeout(done, 0));
+    entry('n13').style.paddingBottom = '21px';
+    await frames(3);
+    expect(Math.abs(offsetOf(top) - before)).toBeLessThanOrEqual(1);
+    expect(testid('review-conversation-new')!.textContent).toContain('1 new');
+  });
+
   it('keeps the top card where it was when a reply grows a card above it', async () => {
     await openConversation();
     const top = await scrollIntoFeed();
@@ -215,5 +231,70 @@ describe('a reader at the top of the feed', () => {
     await frames(3);
     expect(Math.abs(offsetOf('n12') - before)).toBeLessThanOrEqual(1);
     expect(testid('review-conversation-new')!.textContent).toContain('1 new');
+  });
+});
+
+describe('Hide resolved threads', () => {
+  // Two threads on the diff's one line, one resolved.
+  function lineThread(id: string, day: number, resolved: boolean): ReviewThread {
+    return {
+      id, path: 'a.ts', line: 1, side: 'right', isResolvable: true, isResolved: resolved, isOutdated: false,
+      comments: [{ id: `c-${id}`, authorLogin: 'bob', body: `Thread ${id}.`, createdAt: `2026-01-0${day}T00:00:00Z`, databaseID: day, viewerCanEdit: false, viewerCanDelete: false }],
+    };
+  }
+
+  async function openWithThreads(): Promise<void> {
+    threads = [lineThread('open', 2, false), lineThread('done', 1, true)];
+    app = mount(ReviewPane, { target, props: { pr: { ownerPaneId: OWNER, backend: HOME_BACKEND, projectId: 'project-1', pr: PR } } });
+    const section = await vi.waitFor(() => {
+      const found = testid('review-pr-conversation');
+      expect(found).not.toBeNull();
+      return found!;
+    }, { timeout: 5_000 });
+    section.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click();
+    await vi.waitFor(() => expect(target.querySelectorAll('[data-testid="review-pr-thread"]').length).toBe(2));
+  }
+
+  async function toggle(): Promise<void> {
+    testid('review-view-options')!.click();
+    const item = await vi.waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-testid="review-hide-resolved-toggle"]');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    item.click();
+    await frames(2);
+  }
+
+  it('hides the resolved thread from the feed and the diff, says so, and the note turns it off', async () => {
+    await openWithThreads();
+    expect(target.querySelectorAll('[data-testid="review-conversation-thread"]').length).toBe(2);
+    expect(testid('review-conversation-hidden-resolved')).toBeNull();
+
+    await toggle();
+    await vi.waitFor(() => expect(target.querySelectorAll('[data-testid="review-pr-thread"]').length).toBe(1));
+    expect([...target.querySelectorAll('[data-testid="review-conversation-thread"]')].map((el) => el.getAttribute('data-thread-id'))).toEqual(['open']);
+    expect(testid('review-pr-conversation')!.textContent).toContain('1');
+    const note = testid('review-conversation-hidden-resolved')!;
+    expect(note.textContent).toContain('1 resolved hidden');
+
+    note.click();
+    await vi.waitFor(() => expect(target.querySelectorAll('[data-testid="review-pr-thread"]').length).toBe(2));
+    expect(target.querySelectorAll('[data-testid="review-conversation-thread"]').length).toBe(2);
+    expect(testid('review-conversation-hidden-resolved')).toBeNull();
+  });
+
+  it('keeps a thread resolved while on where it is until the next reload', async () => {
+    await openWithThreads();
+    await toggle();
+    await vi.waitFor(() => expect(target.querySelectorAll('[data-testid="review-pr-thread"]').length).toBe(1));
+    push([lineThread('open', 2, true), lineThread('done', 1, true)]);
+    await frames(2);
+    expect(target.querySelectorAll('[data-testid="review-pr-thread"]').length).toBe(1);
+    expect(target.querySelector('[data-testid="review-conversation-thread"][data-thread-id="open"]')).not.toBeNull();
+
+    testid('review-reload')!.click();
+    await vi.waitFor(() => expect(target.querySelectorAll('[data-testid="review-pr-thread"]').length).toBe(0));
+    expect(testid('review-conversation-hidden-resolved')!.textContent).toContain('2 resolved hidden');
   });
 });

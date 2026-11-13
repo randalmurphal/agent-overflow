@@ -518,10 +518,8 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
       // A merged PR has no menu.
       await expect(stateMenu).toHaveCount(0);
 
-      // Each action's event is in the Conversation feed.
+      // Each action's event is in the Conversation feed, with no press.
       const conversation = await expandReviewSection(page, 'review-pr-conversation');
-      const fresh = conversation.getByTestId('review-conversation-new');
-      if (await fresh.isVisible()) await press(fresh);
       const kinds = ['closed', 'reopened', 'marked_draft', 'marked_ready', 'review_requested', ...(forge === 'github' ? ['review_dismissed'] : []), 'merged'];
       for (const kind of kinds) {
         await expect(conversation.locator(`[data-testid="review-conversation-event"][data-kind="${kind}"]`).first()).toBeVisible();
