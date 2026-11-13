@@ -3716,6 +3716,12 @@ CLI binary; the subtypes we use or plan to use:
   user envelope containing
   `<local-command-stdout>Set model to ...</local-command-stdout>`.
 
+  From 2.1.307 the ack can wait up to 15 s while the API confirms the
+  model (changelog; not observed on the wire), so AO gives `set_model` a
+  20 s silence budget (`SetModelControlRequestTimeout`) instead of
+  `DefaultControlRequestTimeout`. `controlRequestTimeoutFor` in
+  `session_control.go` chooses every request's budget.
+
   Models without effort need no process reset when switching: the CLI's
   request builder suppresses `output_config.effort` for unsupported models,
   even if the session retains an effort preference. Source:
