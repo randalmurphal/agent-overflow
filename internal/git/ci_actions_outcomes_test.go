@@ -23,6 +23,35 @@ func countPath(calls *forgeAPICalls, path string) int {
 
 const githubRun111Artifacts = "repos/o/r/actions/runs/111/artifacts?per_page=100"
 
+// One run's artifacts read fails and another's finds an artifact: the
+// download is still offered, and the sentence covers the rest only.
+func TestGitHubCIActionsUnavailableForSomeRuns(t *testing.T) {
+	t.Parallel()
+	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		switch {
+		case call.Op == "PRTick":
+			rollup := githubCheckRun("unit", "CI", "COMPLETED", "SUCCESS", "111", "901", "2026-07-06T14:00:00Z", "2026-07-06T14:01:00Z") + "," +
+				githubCheckRun("docs", "Docs", "COMPLETED", "SUCCESS", "222", "902", "2026-07-06T14:00:00Z", "2026-07-06T14:01:00Z")
+			return githubData(`{"repository":{"viewerPermission":"WRITE","pullRequest":{"number":5,"commits":{"nodes":[{"commit":{"id":"C","statusCheckRollup":{"contexts":{"pageInfo":{"hasNextPage":false},"nodes":[` + rollup + `]}}}}]}}}}`)
+		case call.Path == githubRun111Artifacts:
+			return forgeAPIAnswer{Body: `{"total_count":1,"artifacts":[{"id":5,"name":"coverage","size_in_bytes":10,"expired":false}]}`}
+		case call.Path == "repos/o/r/actions/runs/222/artifacts?per_page=100":
+			return forgeAPIAnswer{Status: http.StatusForbidden, Body: `{"message":"Resource not accessible by integration"}`}
+		}
+		return forgeUnexpected(t, call)
+	})
+	pipeline, err := core.ListPRCIJobs(t.Context(), githubTestRef(5), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pipeline.Actions.Artifacts != CIActionAllowed {
+		t.Fatalf("the run whose artifacts were read offers no download: %+v", pipeline.Actions)
+	}
+	if want := "Some artifact downloads are not shown: this login cannot read the Actions artifacts of o/r on forge.example."; pipeline.ActionsUnavailable != want {
+		t.Fatalf("ActionsUnavailable = %q, want %q", pipeline.ActionsUnavailable, want)
+	}
+}
+
 // A failed artifacts read keeps the CI read: the jobs and every flag the
 // artifacts do not decide stay, the artifacts flag is absent, and the
 // pipeline says why in one sentence. The failure is not asked again

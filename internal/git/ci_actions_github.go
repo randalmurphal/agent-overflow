@@ -127,11 +127,15 @@ func (f *githubForge) githubCICapabilities(ctx context.Context, client *forgeapi
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		pipeline.ActionsUnavailable = ciActionsUnavailableSentence(repo, permErr, artErr)
 		pipeline.ActionsRetryAt = ciRetryAt(permErr, artErr)
 		log.Printf("forge: CI actions of %s on %s unavailable: %v", repo.Project(), repo.Host, cmp.Or(permErr, artErr))
 	}
 	fillGitHubCIActions(pipeline, permission, artifacts, stale)
+	if permErr != nil || artErr != nil {
+		// After the fill: a run whose artifacts were read can still offer
+		// the download another run's failed read did not.
+		pipeline.ActionsUnavailable = ciActionsUnavailableSentence(repo, permErr, artErr, pipeline.Actions.Artifacts == CIActionAllowed)
+	}
 	return nil
 }
 

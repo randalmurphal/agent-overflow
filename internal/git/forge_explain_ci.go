@@ -98,16 +98,22 @@ func joinClauses(parts []string) string {
 // ciActionsUnavailableSentence words a failed read behind the CI action
 // flags (CIPipeline.ActionsUnavailable), naming only what it took away:
 // retry and cancel for the permission read (permErr), artifact downloads
-// for an artifacts read (artErr), all three when both failed.
-func ciActionsUnavailableSentence(repo RepoReference, permErr, artErr error) string {
+// for an artifacts read (artErr), all three when both failed. someArtifacts
+// says a download is still offered, from the runs whose artifacts were
+// read: the sentence then covers the others only.
+func ciActionsUnavailableSentence(repo RepoReference, permErr, artErr error, someArtifacts bool) string {
 	labels := forgeLabels(repo.Forge)
 	host := labels.host(repo.Host)
-	what, read, err := "Retry, cancel and artifact downloads are", "the repository permissions or Actions artifacts", permErr
+	downloads := "artifact downloads"
+	if someArtifacts {
+		downloads = "some artifact downloads"
+	}
+	what, read, err := "Retry, cancel and "+downloads+" are", "the repository permissions or Actions artifacts", permErr
 	switch {
 	case artErr == nil:
 		what, read = "Retry and cancel are", "the repository permissions"
 	case permErr == nil:
-		what, read, err = "Artifact downloads are", "the Actions artifacts", artErr
+		what, read, err = capitalize(downloads)+" are", "the Actions artifacts", artErr
 	}
 	if forbidden, ok := errors.AsType[*forgeapi.ForbiddenError](err); ok {
 		if forbidden.Scope != "" {
