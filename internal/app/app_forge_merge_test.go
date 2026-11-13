@@ -211,8 +211,7 @@ func TestSettlePRActionRefreshesWhenThePRChanged(t *testing.T) {
 		&gitops.PartialWriteError{Done: "removed bob from the reviewers of", Next: "adding carol", Err: &gitops.ForgeActionError{Kind: gitops.ForgeErrorRefused, Message: "GitHub refused."}},
 	} {
 		_, err = app.settlePRAction(context.Background(), testPR, gitops.ActionReviewers, applied)
-		explained, ok = errors.AsType[*gitops.ForgeActionError](err)
-		if !ok || fetches.Load() != base+3+int32(i) {
+		if _, ok := errors.AsType[*gitops.ForgeActionError](err); !ok || fetches.Load() != base+3+int32(i) {
 			t.Fatalf("%v = %v, fetches %d", applied, err, fetches.Load())
 		}
 	}
