@@ -6,12 +6,13 @@
 // handlers.
 
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
-import { expect } from './fixtures.js';
+import { expect, type SeedResult } from './fixtures.js';
 
 export interface ForgeComment {
   id?: number;
@@ -161,9 +162,24 @@ export interface ForgePipeline {
   createdAt?: string;
   updatedAt?: string;
   jobs: ForgeJob[];
+  /** GitHub only: the run's artifacts. */
+  artifacts?: ForgeArtifact[];
 }
 
-export type ForgeJobStatus = 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'canceled';
+/** A GitLab job's archive or a GitHub run's artifact, served as its bytes. */
+export interface ForgeArtifact {
+  /** GitHub's artifact id; generated when omitted. */
+  id?: number;
+  /** GitHub's artifact name. */
+  name?: string;
+  text?: string;
+  base64?: string;
+  /** GitHub: listed expired, its download a 410. */
+  expired?: boolean;
+}
+
+/** `manual` is GitLab's: a job waiting for a manual start. */
+export type ForgeJobStatus = 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'canceled' | 'manual';
 
 export interface ForgeJob {
   /** Generated when omitted. Give one to re-seed the same job. */
@@ -191,6 +207,10 @@ export interface ForgeJob {
   targetUrl?: string;
   /** A bridge's downstream pipeline path ("/grp/child/-/pipelines/9"). */
   downstream?: string;
+  /** GitLab only: the job's artifacts archive. */
+  artifacts?: ForgeArtifact;
+  /** Set by the fake on a job a retry replaced. */
+  retried?: boolean;
 }
 
 export interface ForgeSyntheticLog {
@@ -285,6 +305,18 @@ export async function seedForge(harness: HarnessApp, repos: ForgeRepo[]): Promis
   await harness.rpc('HarnessForgeSeed', { repos });
 }
 
+/**
+ * Move one current CI job of a seeded repository on, as its runner would
+ * (HarnessForgeAdvanceJob): `job` names the newest attempt of that name,
+ * `id` one job. The pipeline's status follows its jobs. Answers the job.
+ */
+export async function advanceForgeJob(
+  harness: HarnessApp,
+  advance: { forge: 'github' | 'gitlab'; project: string; job?: string; id?: number; status: ForgeJobStatus; log?: string; artifacts?: ForgeArtifact },
+): Promise<ForgeJob> {
+  return harness.rpc<ForgeJob>('HarnessForgeAdvanceJob', advance);
+}
+
 /** Take the fake forge off the network, or put it back. */
 export async function setForgeOffline(harness: HarnessApp, offline: boolean): Promise<void> {
   await harness.rpc('HarnessForgeOffline', offline);
@@ -359,6 +391,22 @@ repo=$(printf '%s\\n' "$request" | sed -n '1s/^git-upload-pack //p')
 case "$request" in *version=2*) GIT_PROTOCOL=version=2; export GIT_PROTOCOL ;; esac
 exec git upload-pack --strict '${root}'"$repo"
 `;
+}
+
+/** Seed one project with a git repository and a thread titled `title`,
+ * for a pull request `publishPullRequest` publishes from it; answers its
+ * path. */
+export async function seedThreadProject(harness: HarnessApp, title: string, prefix = 'ci'): Promise<string> {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: `${prefix}-${randomBytes(4).toString('hex')}`,
+        repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+        threads: [{ title, turns: [{ userText: 'Hello.', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }],
+      },
+    ],
+  });
+  return seed.projects[0].path;
 }
 
 /**
@@ -463,6 +511,15 @@ export async function openPullRequestReview(page: Page, title: string) {
   const review = page.locator('section[data-pane-kind="review"]');
   await expect(review.getByTestId('review-pr-header')).toBeVisible();
   return review;
+}
+
+/** Open a stage chip's list and a job's log from it; answers the log view. */
+export async function openCIJobLog(page: Page, surface: Locator, stage: string, job: string): Promise<Locator> {
+  await surface.getByTestId('review-ci-chip').filter({ hasText: stage }).click();
+  await page.getByTestId('review-ci-job').filter({ hasText: job }).click();
+  const log = surface.getByTestId('review-ci-log');
+  await expect(log).toBeVisible();
+  return log;
 }
 
 /** Expand one collapsed review header section (`review-pr-description`, ...). */

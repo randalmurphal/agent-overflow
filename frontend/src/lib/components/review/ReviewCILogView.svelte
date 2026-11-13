@@ -328,12 +328,12 @@
   }
 </script>
 
-<div class="flex min-h-0 flex-1 flex-col" data-testid="review-ci-log" data-cached-blocks={blocks.size}>
+<div class="flex min-h-0 flex-1 flex-col" data-testid="review-ci-log" data-cached-blocks={blocks.size} data-job-id={view.jobId}>
   <div class="flex items-center gap-2 border-b border-border bg-surface-1 px-3 py-2 text-xs">
     <span class="h-2 w-2 shrink-0 rounded-full {ciStatusDotClass(view.job.status)}"></span>
     <span class="min-w-0 truncate font-mono text-fg" title={view.job.name}>{view.job.name}</span>
     <span class="shrink-0 text-fg-subtle">{view.stageName}</span>
-    <span class="shrink-0 {ciStatusTextClass(view.job.status)}">{view.job.status}</span>
+    <span class="shrink-0 {ciStatusTextClass(view.job.status)}" data-testid="review-ci-log-status">{view.job.status}</span>
     {#if formatCIDuration(view.job.durationSeconds)}
       <span class="shrink-0 tabular-nums text-fg-subtle">{formatCIDuration(view.job.durationSeconds)}</span>
     {/if}
