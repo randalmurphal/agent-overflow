@@ -105,6 +105,12 @@ async function assertEveryAppend(
     expect(normalizeElement(direct), `after ${JSON.stringify(consumed)}`).toEqual(
       normalizeElement(baseline),
     );
+    // The literal owner keeps its adopted host without searching the message
+    // again, which is exact only while the tail never holds a second host.
+    expect(
+      direct.querySelectorAll('.md-volatile [data-streamdown-direct-append-safe]').length,
+      `literal hosts after ${JSON.stringify(consumed)}`,
+    ).toBeLessThanOrEqual(1);
   }
   expect(consumed).toBe(source);
   await harness.synchronize();
