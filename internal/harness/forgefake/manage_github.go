@@ -86,7 +86,7 @@ func (e *Engine) ghRESTPull(c *call, m []string) (*Repo, *Pull, response, bool) 
 // `repos/O/R/pulls/N/requested_reviewers` with `{reviewers,
 // team_reviewers}`. A request needs triage access (403), names
 // collaborators only and never the author (422, nothing changed); each
-// added reviewer is pending again (a re-request) with its
+// added reviewer or team is pending again (a re-request) with its
 // ReviewRequestedEvent.
 func ghRequestedReviewers(e *Engine, c *call, m []string) response {
 	var in struct {
@@ -137,6 +137,7 @@ func ghRequestedReviewers(e *Engine, c *call, m []string) response {
 			if !containsFold(p.TeamReviewers, combined) {
 				p.TeamReviewers = append(p.TeamReviewers, combined)
 			}
+			p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "review_requested", Actor: e.viewer, At: now, Ref: combined})
 		} else {
 			p.TeamReviewers = removeFold(p.TeamReviewers, combined)
 		}

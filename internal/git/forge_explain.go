@@ -100,9 +100,14 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	if err == nil {
 		return nil
 	}
+	// An explained error is final, unless it is the cause inside an
+	// unconfirmed write, which explains it again below.
 	var explained *ForgeActionError
 	if errors.As(err, &explained) {
-		return err
+		_, explainedUnconfirmed := errors.AsType[*UnconfirmedWriteError](explained)
+		if _, unconfirmed := errors.AsType[*UnconfirmedWriteError](err); !unconfirmed || explainedUnconfirmed {
+			return err
+		}
 	}
 	labels := forgeLabels(ref.Forge)
 	if left, ok := errors.AsType[*DraftsLeftError](err); ok {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -201,5 +202,18 @@ func TestSettlePRActionRefreshesWhenThePRChanged(t *testing.T) {
 	explained, ok := errors.AsType[*gitops.ForgeActionError](err)
 	if !ok || explained.Message != "Merged owner/repo#9, but GitHub kept the branch feature: delete refused" || fetches.Load() != base+2 {
 		t.Fatalf("merged, branch kept = %v, fetches %d", err, fetches.Load())
+	}
+
+	// A management write the forge may have applied, whole or in part,
+	// polls too, and says so.
+	for i, unconfirmed := range []*gitops.UnconfirmedWriteError{
+		{Err: errors.New("connection reset")},
+		{Err: errors.New("HTTP 422: no such user"), Partial: true},
+	} {
+		_, err = app.settlePRAction(context.Background(), testPR, gitops.ActionReviewers, unconfirmed)
+		explained, ok = errors.AsType[*gitops.ForgeActionError](err)
+		if !ok || !strings.Contains(explained.Message, "The pane shows what GitHub did.") || fetches.Load() != base+3+int32(i) {
+			t.Fatalf("unconfirmed %+v = %v, fetches %d", unconfirmed, err, fetches.Load())
+		}
 	}
 }

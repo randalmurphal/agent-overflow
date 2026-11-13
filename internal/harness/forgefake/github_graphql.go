@@ -1020,6 +1020,9 @@ func githubTimelineNodes(p *Pull) []map[string]any {
 			node["currentRefName"] = event.Ref
 		case "review_requested":
 			node["requestedReviewer"] = map[string]any{"__typename": "User", "login": event.Ref}
+			if strings.Contains(event.Ref, "/") {
+				node["requestedReviewer"] = map[string]any{"__typename": "Team", "combinedSlug": event.Ref}
+			}
 		}
 		items = append(items, item{at, node})
 	}
