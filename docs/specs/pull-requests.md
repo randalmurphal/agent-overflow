@@ -474,7 +474,12 @@ permission reads and the refusals are in
 - The changes-requested blocker row: GitHub offers Dismiss per review in
   `blocker.changeRequests`, opening a reason field (required; Enter
   dismisses); GitLab offers Bypass when `blocker.bypassable`. A bypass
-  stands as the settled row "Requested changes bypassed".
+  stands as the settled row "Requested changes bypassed". A failed
+  Dismiss closes its reason field, keeps the reason for that review's
+  next Dismiss, and shows its sentence on the row, as a failed Bypass
+  does, until the next Dismiss opens or Bypass starts. Once Dismiss or
+  Bypass settles, focus returns to its button, or to the Merge header
+  when the answer took the button away.
 - `Merge ▾` gains `Edit commit message…` for a method that makes a
   commit (merge, squash): a title and body editor in the Merge section,
   prefilled with the forge's default for the method, read when it opens
@@ -491,8 +496,10 @@ permission reads and the refusals are in
   whose write is pending cannot be dismissed (Cancel disabled, saying it
   is saving; Escape does nothing), a held key's repeat never submits,
   and every popover and editor returns focus to the control that opened
-  it. An editor's failure shows its sentence with Details on the editor;
-  a state change, re-request or bypass that fails is a toast.
+  it. A failure shows its sentence with Details on the surface that
+  caused it: an editor's on the editor, a picker's or re-request's on its
+  Details row, Dismiss's and Bypass's on the changes-requested row. A
+  state change that fails is a toast, since its menu is gone.
 - The close, reopen, draft, ready, review requested and review dismissed
   events these cause are rows in the Conversation feed.
 
@@ -576,9 +583,11 @@ remembered across a reload, stages and a GitLab and a GitHub job log.
 `review-manage.spec.ts` and its compact twin (`review-manage-flow.ts`)
 drive the management controls on both forges: a refused title edit and
 its retry, the stale-description refusal, each Details picker's change
-and the request it sent, re-request, close, reopen, draft and ready,
-dismiss (GitHub) and bypass (GitLab), and a merge with an edited commit
-message. `review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a
+and the request it sent, a refused reviewers write on its row,
+re-request, close, reopen, draft and ready, a refused then retried
+dismiss (GitHub) and bypass (GitLab) with the sentence on the blocker
+row and focus on the Merge header after, and a merge with an edited
+commit message. `review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a
 GitHub PR (a refused retry, a retry followed to passed, cancel, a manual
 job, artifacts saved to disk, a refused artifacts read that keeps the
 jobs and says why in the menu), and `ci-actions-flow.ts` the same from

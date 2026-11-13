@@ -14,7 +14,10 @@
 // actions (a stale diff, a failing pump). An editor's text lives here,
 // not in its component: the overview is a virtualized row and unmounts.
 // An editor whose write is pending cannot be dismissed; a failed write
-// keeps it open with the sentence on it.
+// keeps it open with the sentence on it. A failure shows on the surface
+// that caused it where that surface stays: a picker's or re-request's on
+// its Details row, Dismiss's and Bypass's on the changes-requested
+// blocker row. The state menu's items toast, since their menu is gone.
 
 import { untrack } from 'svelte';
 import {
@@ -124,8 +127,8 @@ export interface PRManageView {
   readonly detailsOpen: boolean | null;
   setDetailsOpen(open: boolean): void;
   readonly picker: PRPickerView;
-  /** A row's failed change, shown on the row until its picker opens again
-   * or the next change of that row is accepted. */
+  /** A row's failed change or re-request (reviewers), shown on the row
+   * until its picker opens again or the row's next write starts. */
   rowError(row: PRManageRow): PRManageError | null;
 
   // The title bar's state changes and the reviews.
@@ -133,7 +136,11 @@ export interface PRManageView {
   rerequest(reviewer: PRPerson): Promise<void>;
   /** The open Dismiss reason popover: the review it dismisses and its text. */
   readonly dismissDraft: { readonly reviewId: string; readonly text: string } | null;
-  readonly dismissError: PRManageError | null;
+  /** The changes-requested blocker row's failed Dismiss or Bypass, until
+   * the next Dismiss opens or Bypass starts. */
+  readonly changeRequestError: PRManageError | null;
+  /** Opens the reason popover; after a failed dismissal of the same
+   * review it opens with the reason that failed. */
   openDismiss(reviewId: string): void;
   setDismissText(text: string): void;
   cancelDismiss(): void;
@@ -196,9 +203,14 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     return { ok: true };
   }
 
+  // A write that did not start shows why as it is (it is hover text
+  // already); a failed one shows the backend's sentence.
   function failure(outcome: Exclude<Outcome, { ok: true }>): PRManageError {
-    const err = 'blocked' in outcome ? new Error(outcome.blocked) : outcome.err;
-    return { message: userFacingError(err), captured: captureError(err) };
+    if ('blocked' in outcome) {
+      const err = new Error(outcome.blocked);
+      return { message: outcome.blocked, captured: captureError(err) };
+    }
+    return { message: userFacingError(outcome.err), captured: captureError(outcome.err) };
   }
 
   function toastFailure(kind: PRManageActionKind, outcome: Exclude<Outcome, { ok: true }>): void {
@@ -232,7 +244,9 @@ export function createPRManageState(host: PRManageHost): PRManageView {
   }
 
   let dismissState = $state<{ reviewId: string; text: string; submitted: boolean } | null>(null);
-  let dismissError = $state<PRManageError | null>(null);
+  // The reason of a dismissal that failed, offered again on its reopen.
+  let failedDismiss: { reviewId: string; text: string } | null = null;
+  let changeRequestError = $state<PRManageError | null>(null);
   const dismissSaving = $derived(pending?.kind === 'dismiss');
   const dismissDraft = $derived(dismissState && !(dismissState.submitted && !dismissSaving)
     ? { reviewId: dismissState.reviewId, text: dismissState.text }
@@ -342,15 +356,18 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     },
     async rerequest(reviewer: PRPerson): Promise<void> {
       const person = wirePerson(reviewer);
+      setRowError('reviewers', null);
       const outcome = await run('rerequest', reviewer.login, (ref) => RerequestPRReview(prReferenceWire(ref), person));
-      if (outcome && !outcome.ok) toastFailure('rerequest', outcome);
+      if (outcome && !outcome.ok) setRowError('reviewers', failure(outcome));
     },
     get dismissDraft() { return dismissDraft; },
-    get dismissError() { return dismissError; },
+    get changeRequestError() { return changeRequestError; },
     openDismiss(reviewId: string): void {
       if (dismissSaving) return;
-      dismissState = { reviewId, text: '', submitted: false };
-      dismissError = null;
+      const text = failedDismiss?.reviewId === reviewId ? failedDismiss.text : '';
+      failedDismiss = null;
+      dismissState = { reviewId, text, submitted: false };
+      changeRequestError = null;
     },
     setDismissText(text: string): void {
       if (dismissState && !dismissSaving) dismissState = { ...dismissState, text };
@@ -358,22 +375,29 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     cancelDismiss(): void {
       if (dismissSaving) return;
       dismissState = null;
-      dismissError = null;
     },
     async dismiss(): Promise<void> {
       const draft = dismissState;
       if (!draft || dismissSaving) return;
       const message = draft.text.trim();
       if (message === '') return;
-      dismissError = null;
+      changeRequestError = null;
       const outcome = await run('dismiss', draft.reviewId, (ref) => DismissPRReview(prReferenceWire(ref), draft.reviewId, message));
       if (outcome === null || dismissState !== draft) return;
-      if (outcome.ok) dismissState = { ...draft, submitted: true };
-      else dismissError = failure(outcome);
+      if (outcome.ok) {
+        dismissState = { ...draft, submitted: true };
+        return;
+      }
+      // The popover closes and the sentence goes on the blocker row; the
+      // reason waits for the next Dismiss of that review.
+      dismissState = null;
+      failedDismiss = { reviewId: draft.reviewId, text: draft.text };
+      changeRequestError = failure(outcome);
     },
     async bypass(): Promise<void> {
+      changeRequestError = null;
       const outcome = await run('bypass', '', (ref) => BypassPRRequestedChanges(prReferenceWire(ref)));
-      if (outcome && !outcome.ok) toastFailure('bypass', outcome);
+      if (outcome && !outcome.ok) changeRequestError = failure(outcome);
     },
 
     mergeMessage,

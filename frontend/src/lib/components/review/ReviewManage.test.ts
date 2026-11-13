@@ -144,6 +144,85 @@ describe('which management controls show', () => {
   });
 });
 
+describe("where a review action's failure shows", () => {
+  const REFUSED = 'GitHub refused this because the login cannot dismiss reviews here.';
+  const changeRequests = [{ reviewId: 'R1', authorLogin: 'kchen' }];
+  function blocked(can: Partial<PRManageCan>, requests = changeRequests): PRDetail {
+    return detail(can, {
+      readiness: { state: 'blocked', blockers: [{ kind: 'changes_requested', text: 'Changes requested', changeRequests: requests, bypassable: true }], settled: [] },
+    });
+  }
+  function cleared(can: Partial<PRManageCan>): PRDetail {
+    return detail(can, { readiness: { state: 'ready', blockers: [], settled: [] } });
+  }
+  async function openMerge(view: ReviewPaneView): Promise<HTMLElement> {
+    await fireEvent.click(view.getByTestId('review-pr-readiness'));
+    return waitFor(() => view.getByTestId('review-pr-merge'));
+  }
+  function blockerRow(view: ReviewPaneView): HTMLElement {
+    return view.getAllByTestId('review-merge-blocker').find((row) => row.dataset.kind === 'changes_requested')!;
+  }
+
+  it('shows a refused Bypass on the changes-requested row and gives focus back to Bypass', async () => {
+    setBindingMock('BypassPRRequestedChanges', async () => { throw new Error(REFUSED); });
+    const view = await mountReviewPanePR(blocked({ bypass: true }));
+    await openMerge(view);
+    const bypass = await waitFor(() => view.getByTestId('review-merge-row-bypass'));
+    bypass.focus();
+    await fireEvent.click(bypass);
+    await waitFor(() => expect(within(blockerRow(view)).getByTestId('review-merge-change-request-error-message')).toHaveTextContent(REFUSED));
+    await waitFor(() => expect(document.activeElement).toBe(view.getByTestId('review-merge-row-bypass')));
+  });
+
+  it('shows a refused Dismiss on the changes-requested row, with the popover closed and focus on its Dismiss', async () => {
+    setBindingMock('DismissPRReview', async () => { throw new Error(REFUSED); });
+    const view = await mountReviewPanePR(blocked({ dismiss: true }));
+    await openMerge(view);
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-merge-row-dismiss')));
+    const reason = await waitFor(() => view.getByTestId('review-dismiss-reason'));
+    await fireEvent.input(reason, { target: { value: 'Addressed' } });
+    await fireEvent.click(view.getByTestId('review-dismiss-confirm'));
+    await waitFor(() => expect(within(blockerRow(view)).getByTestId('review-merge-change-request-error-message')).toHaveTextContent(REFUSED));
+    expect(view.queryByTestId('review-dismiss-popover')).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(view.getByTestId('review-merge-row-dismiss')));
+  });
+
+  it("gives focus to the Merge header once a dismissal's answer takes its Dismiss away", async () => {
+    setBindingMock('DismissPRReview', async () => ({ seq: 2 }));
+    const view = await mountReviewPanePR(blocked({ dismiss: true }));
+    const section = await openMerge(view);
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-merge-row-dismiss')));
+    await fireEvent.input(await waitFor(() => view.getByTestId('review-dismiss-reason')), { target: { value: 'Addressed' } });
+    await fireEvent.click(view.getByTestId('review-dismiss-confirm'));
+    await waitFor(() => expect(view.getByTestId('review-dismiss-confirm')).toHaveAttribute('aria-busy', 'true'));
+    frame(cleared({ dismiss: true }), 2);
+    await waitFor(() => expect(view.queryByTestId('review-merge-row-dismiss')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(section.querySelector('button[aria-expanded]')));
+  });
+
+  it("gives focus to the Merge header once a Bypass's answer takes its button away", async () => {
+    setBindingMock('BypassPRRequestedChanges', async () => ({ seq: 2 }));
+    const view = await mountReviewPanePR(blocked({ bypass: true }));
+    const section = await openMerge(view);
+    const bypass = await waitFor(() => view.getByTestId('review-merge-row-bypass'));
+    bypass.focus();
+    await fireEvent.click(bypass);
+    await waitFor(() => expect(view.getByTestId('review-merge-row-bypass')).toHaveAttribute('aria-busy', 'true'));
+    frame(cleared({ bypass: true }), 2);
+    await waitFor(() => expect(view.queryByTestId('review-merge-row-bypass')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(section.querySelector('button[aria-expanded]')));
+  });
+
+  it('shows a refused re-request on the Reviewers row, not as a toast', async () => {
+    setBindingMock('RerequestPRReview', async () => { throw new Error(REFUSED); });
+    const view = await mountReviewPanePR(detail(ALL));
+    await fireEvent.click(view.getByTestId('review-details-rerequest'));
+    const details = view.getByTestId('review-pr-details');
+    await waitFor(() => expect(within(details).getByTestId('review-details-error-reviewers-message')).toHaveTextContent(REFUSED));
+    expect(view.queryByText(/Re-requesting the review failed/)).toBeNull();
+  });
+});
+
 describe('the editors while a write is pending', () => {
   it('saves the title on Enter but never on a held key, and Escape does nothing while it saves', async () => {
     const edit = setBindingMock('EditPR', async () => ({ seq: 2 }));

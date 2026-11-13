@@ -1,7 +1,6 @@
 <script lang="ts">
   import Button from '../primitives/Button.svelte';
   import Popover from '../primitives/Popover.svelte';
-  import ReviewManageError from './ReviewManageError.svelte';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import { SAVING_TITLE, type PRManageView } from '../../stores/prManage.svelte';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
@@ -10,7 +9,8 @@
   // requested changes, under the blocker row's Dismiss. Enter dismisses
   // (a held key's repeat does not), Escape cancels. While the dismissal
   // is pending it stays: Escape, a click outside and Cancel do nothing,
-  // and it closes when the forge's answer is on screen.
+  // and it closes when the forge's answer is on screen. A failed
+  // dismissal closes it with the sentence on the blocker row.
 
   interface Props {
     manage: PRManageView;
@@ -66,9 +66,6 @@
         onkeydown={onKeydown}
       />
     </label>
-    {#if manage.dismissError}
-      <ReviewManageError error={manage.dismissError} testid="review-dismiss-error" />
-    {/if}
     <div class="flex items-center justify-end gap-1.5">
       <Button variant="ghost" size="xs" testId="review-dismiss-cancel" disabled={saving} title={saving ? SAVING_TITLE : undefined} onclick={() => close('escape')}>Cancel</Button>
       <Button

@@ -8,10 +8,14 @@
 // and the editor stays open, and a fresh edit with Preview saves; the
 // Details section adds and removes a reviewer, an assignee and a label,
 // one change per picker, and a picker closed unchanged writes nothing;
-// a settled review is re-requested; the title bar's menu closes and
-// reopens the PR and converts it to a draft, and the draft blocker's
-// Mark ready makes it ready again; the changes-requested blocker is
-// dismissed with a reason (GitHub) or bypassed (GitLab) and clears;
+// a refused reviewers write shows its sentence on the Reviewers row,
+// which still shows the forge's reviewers; a settled review is
+// re-requested; the title bar's menu closes and reopens the PR and
+// converts it to a draft, and the draft blocker's Mark ready makes it
+// ready again; a refused Dismiss (GitHub) or Bypass (GitLab) shows its
+// sentence on the changes-requested row with focus back on its button,
+// and the retry dismisses with the reason kept (GitHub) or bypasses
+// (GitLab), the blocker clears and focus lands on the Merge header;
 // Merge now sends the edited commit message the fake received; the
 // merged PR has no menu; and each action's event is in the Conversation
 // feed. Screenshots (dark): the title bar's menu, the Details section
@@ -294,7 +298,26 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
         return made;
       }
 
+      // A refused reviewers write: the sentence on the Reviewers row, and
+      // the row still shows the forge's reviewers.
+      await refuseForgeRoute(harness, forge === 'gitlab'
+        ? { route: 'glab api update merge request', status: 403, times: 1, body: { message: '403 Forbidden' } }
+        : { route: 'gh api request reviewers', status: 422, times: 1, body: { message: 'Reviews may only be requested from collaborators.' } });
+      const refusedAt = await lastSeq(harness);
+      await reveal(details.locator('[data-testid="review-details-row"][data-row="reviewers"]'));
+      await press(details.getByTestId('review-details-edit-reviewers'));
+      await picker.getByTestId('review-picker-search').fill('jane');
+      await press(option('u:jdoe'));
+      await page.keyboard.press('Escape');
+      await expect(picker).toHaveCount(0);
+      await expect(details.getByTestId('review-details-error-reviewers-message')).not.toBeEmpty();
+      await expect.poll(async () => (await writes(harness, ROW_WRITES[forge].reviewers, refusedAt)).length).toBe(1);
+      await expect(reviewer('jdoe')).toHaveCount(0);
+      await expect(reviewer('alee')).toHaveAttribute('data-state', 'PENDING');
+      await expect(details.getByTestId('review-details-error-assignees')).toHaveCount(0);
+
       const reviewerWrites = await editRow('reviewers', 'u:jdoe', 'jane', 'u:alee', true);
+      await expect(details.getByTestId('review-details-error-reviewers')).toHaveCount(0);
       await expect(reviewer('jdoe')).toHaveAttribute('data-state', 'PENDING');
       await expect(reviewer('alee')).toHaveCount(0);
       if (forge === 'github') {
@@ -350,24 +373,49 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
 
       // The review that requested changes: dismissed with a reason on
       // GitHub, bypassed on GitLab; the blocker clears.
+      // The first try is refused: its sentence on the blocker row, and
+      // focus back on the button that tried.
       const changes = merge.locator('[data-testid="review-merge-blocker"][data-kind="changes_requested"]');
+      const changesError = changes.getByTestId('review-merge-change-request-error-message');
+      const mergeHeader = merge.locator('button[aria-expanded]').first();
       await expect(changes).toHaveCount(1);
       if (forge === 'github') {
-        await press(changes.getByTestId('review-merge-row-dismiss'));
+        await refuseForgeRoute(harness, { route: 'gh graphql DismissReview', status: 200, times: 1, body: { data: { dismissPullRequestReview: null }, errors: [{ type: 'FORBIDDEN', path: ['dismissPullRequestReview'], message: 'ao-viewer does not have the correct permissions to execute `DismissPullRequestReview`' }] } });
+        const dismissButton = changes.getByTestId('review-merge-row-dismiss');
         const dismiss = page.getByTestId('review-dismiss-popover');
-        await expect(dismiss.getByTestId('review-dismiss-reason')).toBeFocused();
+        const reason = dismiss.getByTestId('review-dismiss-reason');
+        await press(dismissButton);
+        await expect(reason).toBeFocused();
         await expect(dismiss.getByTestId('review-dismiss-confirm')).toBeDisabled();
-        await dismiss.getByTestId('review-dismiss-reason').fill('Addressed in the retry cap.');
+        await reason.fill('Addressed in the retry cap.');
         await expect(dismiss.getByTestId('review-dismiss-confirm')).toBeEnabled();
         await shot(page, 'blocker-dismiss');
-        await dismiss.getByTestId('review-dismiss-reason').press('Enter');
+        await reason.press('Enter');
+        await expect(dismiss).toHaveCount(0);
+        await expect(changesError).not.toBeEmpty();
+        await expect(dismissButton).toBeFocused();
+        await shot(merge, 'blocker-dismiss-refused');
+        // The retry opens with the reason that failed; its success takes
+        // the blocker, and its Dismiss, away.
+        await press(dismissButton);
+        await expect(reason).toHaveValue('Addressed in the retry cap.');
+        await expect(changesError).toHaveCount(0);
+        await reason.press('Enter');
         await expect(dismiss).toHaveCount(0);
       } else {
+        await refuseForgeRoute(harness, { route: 'glab graphql PRBypassChanges', status: 200, times: 1, body: { errors: [{ message: 'You do not have permission to override requested changes.' }] } });
+        const bypass = changes.getByTestId('review-merge-row-bypass');
         await shot(merge, 'blocker-bypass');
-        await press(changes.getByTestId('review-merge-row-bypass'));
+        await press(bypass);
+        await expect(changesError).not.toBeEmpty();
+        await expect(bypass).toBeFocused();
+        await shot(merge, 'blocker-bypass-refused');
+        await press(bypass);
+        await expect(changesError).toHaveCount(0);
         await expect(merge.locator('[data-testid="review-merge-settled"][data-kind="changes_requested"]')).toContainText('Requested changes bypassed');
       }
       await expect(changes).toHaveCount(0);
+      await expect(mergeHeader).toBeFocused();
       // GitHub still needs the approval its base requires.
       if (forge === 'github') await press(merge.getByTestId('review-merge-approve'));
       const pill = header.getByTestId('review-pr-readiness');

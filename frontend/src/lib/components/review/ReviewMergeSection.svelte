@@ -8,6 +8,7 @@
   import Popover from '../primitives/Popover.svelte';
   import ReviewCollapsibleSection from './ReviewCollapsibleSection.svelte';
   import ReviewDismissPopover from './ReviewDismissPopover.svelte';
+  import ReviewManageError from './ReviewManageError.svelte';
   import ReviewMergeMessageEditor from './ReviewMergeMessageEditor.svelte';
   import ReviewResizableBody from './ReviewResizableBody.svelte';
   import { tick } from 'svelte';
@@ -91,6 +92,35 @@
       if (entry) return { anchor: dismissAnchors[id], who: authorDisplayName({ authorLogin: entry.authorLogin, authorName: entry.authorName }) };
     }
     return null;
+  });
+
+  // Dismiss and Bypass hand focus back when they settle: to the button
+  // that opened them while it is still on screen (a failure), else to the
+  // section's header (the blocker answered and its row left). Only focus
+  // the settle dropped is moved; a reader who went elsewhere keeps theirs.
+  let headerToggle: HTMLButtonElement | undefined = $state(undefined);
+  let bypassAnchor: HTMLElement | undefined = $state(undefined);
+  function focusAfterSettle(opener: HTMLElement | null | undefined): void {
+    void tick().then(() => {
+      const active = document.activeElement;
+      if (active && active !== document.body) return;
+      const target = opener?.isConnected ? opener : headerToggle;
+      target?.focus({ preventScroll: true });
+    });
+  }
+  let dismissOpenFor: string | null = null;
+  $effect(() => {
+    const id = manage.dismissDraft?.reviewId ?? null;
+    const was = dismissOpenFor;
+    dismissOpenFor = id;
+    if (was !== null && id === null) focusAfterSettle(dismissAnchors[was]?.querySelector('button'));
+  });
+  let bypassWasPending = false;
+  $effect(() => {
+    const now = manage.pending?.kind === 'bypass';
+    const was = bypassWasPending;
+    bypassWasPending = now;
+    if (was && !now) focusAfterSettle(bypassAnchor?.querySelector('button'));
   });
 
   function commitMessage() {
@@ -222,6 +252,7 @@
   open={review.mergeOpen}
   onToggle={() => review.setMergeOpen(!review.mergeOpen)}
   testid="review-pr-merge"
+  bind:toggle={headerToggle}
 >
   {#snippet badge()}
     {#if pill}
@@ -306,12 +337,17 @@
         {@const action = blockerAction(blocker)}
         <div class={rowClass} data-testid="review-merge-blocker" data-kind={blocker.kind}>
           <span class="size-2 shrink-0 rounded-full {blockerDot(blocker)}"></span>
-          <span class="min-w-0 flex-1">
+          <div class="min-w-0 flex-1">
             <span class="block truncate text-fg compact:whitespace-normal compact:break-words" title={blocker.text}>{blocker.text}</span>
             {#if blocker.detail}
               <span class="block truncate text-[0.6875rem] text-fg-muted compact:whitespace-normal compact:break-words" title={blocker.detail}>{blocker.detail}</span>
             {/if}
-          </span>
+            {#if blocker.kind === 'changes_requested' && manage.changeRequestError}
+              <div class="mt-1" data-testid="review-merge-row-error">
+                <ReviewManageError error={manage.changeRequestError} testid="review-merge-change-request-error" />
+              </div>
+            {/if}
+          </div>
           {#if blocker.kind === 'approvals' && merge?.viewerApproved}
             <span class="shrink-0 text-[0.6875rem] text-fg-subtle" data-testid="review-merge-you-approved">you approved</span>
           {:else if blocker.kind === 'approvals' && merge && !merge.viewerCanApprove && merge.cannotApproveReason}
@@ -322,6 +358,7 @@
             <Button variant="ghost" size="xs" class={actionClass} testId={action.testid} disabled={action.merge ? busy : false} onclick={action.run}>{action.label}</Button>
           {/if}
           {#if canBypass(detail, blocker)}
+            <span bind:this={bypassAnchor} class="inline-flex shrink-0">
             <Button
               variant="ghost"
               size="xs"
@@ -332,6 +369,7 @@
               title={withheld ?? manageBlocked ?? 'Merge without the requested changes being addressed'}
               onclick={() => { void manage.bypass(); }}
             >Bypass</Button>
+            </span>
           {/if}
           {#if dismissibleChangeRequests(detail, blocker).length === 1}
             {@const entry = dismissibleChangeRequests(detail, blocker)[0]}

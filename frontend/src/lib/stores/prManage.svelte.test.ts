@@ -113,7 +113,7 @@ describe('pending', () => {
     expect(view.blockedReason).toBe('Close…');
     await view.bypass();
     expect(bypass).not.toHaveBeenCalled();
-    expect(getToasts().at(-1)?.message).toBe('Bypassing the requested changes did not start: Close…');
+    expect(view.changeRequestError?.message).toBe('Close…');
     host.appliedSeq = 4;
     host.withheldReason = 'The diff is still loading.';
     await view.setState('reopen');
@@ -197,6 +197,70 @@ describe('the dismiss reason', () => {
     expect(view.dismissDraft).not.toBeNull();
     host.appliedSeq = 3;
     expect(view.dismissDraft).toBeNull();
+  });
+});
+
+describe("where a review action's failure shows", () => {
+  const REFUSED = 'GitLab refused this because the login cannot approve merge requests here.';
+
+  it('puts a failed dismissal on the blocker row, closes the reason and offers it again on that review only', async () => {
+    const dismiss = setBindingMock('DismissPRReview', async () => { throw new TransportError('forge_forbidden', REFUSED); });
+    view.openDismiss('R1');
+    view.setDismissText('Addressed');
+    await view.dismiss();
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect(view.dismissDraft).toBeNull();
+    expect(view.changeRequestError?.message).toBe(REFUSED);
+    expect(getToasts()).toHaveLength(0);
+    view.openDismiss('R2');
+    expect(view.dismissDraft).toEqual({ reviewId: 'R2', text: '' });
+    expect(view.changeRequestError).toBeNull();
+    view.cancelDismiss();
+    view.openDismiss('R1');
+    expect(view.dismissDraft?.text).toBe('');
+  });
+
+  it("reopens the failed review's Dismiss with its reason", async () => {
+    setBindingMock('DismissPRReview', async () => { throw new TransportError('forge_forbidden', REFUSED); });
+    view.openDismiss('R1');
+    view.setDismissText('Addressed');
+    await view.dismiss();
+    view.openDismiss('R1');
+    expect(view.dismissDraft).toEqual({ reviewId: 'R1', text: 'Addressed' });
+  });
+
+  it('puts a failed Bypass on the blocker row until the next one starts', async () => {
+    let fail = true;
+    setBindingMock('BypassPRRequestedChanges', async () => {
+      if (fail) throw new TransportError('forge_forbidden', REFUSED);
+      return { seq: 0 };
+    });
+    await view.bypass();
+    expect(view.changeRequestError?.message).toBe(REFUSED);
+    expect(getToasts()).toHaveLength(0);
+    fail = false;
+    await view.bypass();
+    expect(view.changeRequestError).toBeNull();
+  });
+
+  it('puts a failed re-request on the Reviewers row, cleared by the next one or the picker', async () => {
+    let fail = true;
+    setBindingMock('RerequestPRReview', async () => {
+      if (fail) throw new TransportError('forge_forbidden', REFUSED);
+      return { seq: 0 };
+    });
+    setBindingMock('SearchPRCandidates', async () => ({ people: [], labels: [], more: false }));
+    await view.rerequest({ login: 'kchen' });
+    expect(view.rowError('reviewers')?.message).toBe(REFUSED);
+    expect(view.rowError('assignees')).toBeNull();
+    expect(getToasts()).toHaveLength(0);
+    fail = false;
+    await view.rerequest({ login: 'kchen' });
+    expect(view.rowError('reviewers')).toBeNull();
+    fail = true;
+    await view.rerequest({ login: 'kchen' });
+    view.picker.open('reviewers', { people: [] });
+    expect(view.rowError('reviewers')).toBeNull();
   });
 });
 
