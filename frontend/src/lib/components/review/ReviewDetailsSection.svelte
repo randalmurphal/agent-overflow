@@ -157,6 +157,8 @@
           {@const rerequesting = pending?.kind === 'rerequest' && pending.target === reviewer.login}
           <div class="group/reviewer flex min-h-6 min-w-0 flex-wrap items-center gap-x-1.5 compact:min-h-8" data-testid="review-details-reviewer" data-login={reviewer.login} data-state={reviewer.state}>
             {@render person(reviewer)}
+            <!-- The state and its re-request stay together when the line wraps. -->
+            <span class="inline-flex shrink-0 items-center gap-1.5">
             <span class="shrink-0 rounded-full px-1.5 text-[0.6875rem] {reviewerStateClass(reviewer.state)}" data-testid="review-details-reviewer-state">{REVIEWER_STATE_LABEL[reviewer.state] ?? reviewer.state.toLowerCase()}</span>
             {#if reviewer.stale}
               <span class="shrink-0 text-[0.6875rem] text-fg-subtle" title="Reviewed an older commit">outdated</span>
@@ -175,6 +177,7 @@
                 />
               </span>
             {/if}
+            </span>
           </div>
         {:else}
           <span class={noneClass}>None</span>

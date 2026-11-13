@@ -536,7 +536,17 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
       // Through the list, not through the tap's own scroll-into-view: that
       // centers the target in every scrollable ancestor, the compact pane
       // strip included.
-      await review.getByTestId('review-scroll').evaluate((el) => { el.scrollTop = 0; });
+      // The overview's sections above the Conversation (Merge, Details)
+      // can push the card below a phone's first screen: from the top, the
+      // list scrolls the card's row up to it.
+      const scroller = review.getByTestId('review-scroll');
+      await scroller.evaluate((el) => { el.scrollTop = 0; });
+      await expect(jumpToRow).toBeAttached();
+      const target = await jumpToRow.elementHandle();
+      await scroller.evaluate((el, button) => {
+        const below = button!.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom;
+        if (below > -24) el.scrollTop += below + 48;
+      }, target);
       await expect(jumpToRow).toBeInViewport();
     };
     for (let attempt = 0; attempt < 5 && !restarted; attempt += 1) {
