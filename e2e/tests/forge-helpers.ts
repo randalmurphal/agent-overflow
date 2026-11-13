@@ -142,6 +142,8 @@ export interface ForgeRepoMerge {
   squashOption?: 'default_off' | 'default_on' | 'always' | 'never';
   pipelineMustSucceed?: boolean;
   discussionsMustResolve?: boolean;
+  /** GitLab: the least role that may cancel a job or pipeline (default developer). */
+  cancelRole?: 'developer' | 'maintainer' | 'no_one';
 }
 
 export interface ForgePipeline {
@@ -159,8 +161,10 @@ export interface ForgePipeline {
   source?: string;
   /** GitHub run display title; defaults to name. */
   title?: string;
+  /** RFC 3339; defaults to the seed time. GitHub re-runs a run only within 30 days of it. */
   createdAt?: string;
   updatedAt?: string;
+  /** Job ids are unique per repository; a seed that repeats one is refused. */
   jobs: ForgeJob[];
   /** GitHub only: the run's artifacts. */
   artifacts?: ForgeArtifact[];
@@ -176,6 +180,8 @@ export interface ForgeArtifact {
   base64?: string;
   /** GitHub: listed expired, its download a 410. */
   expired?: boolean;
+  /** GitHub: the list's expires_at (RFC 3339); 90 days after the run by default. */
+  expiresAt?: string;
 }
 
 /** `manual` is GitLab's: a job waiting for a manual start. */

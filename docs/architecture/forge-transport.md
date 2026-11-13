@@ -239,12 +239,23 @@ CI read adds REST requests only for what the rollup lacks: the jobs list
 of a run (`repos/O/R/actions/runs/ID/jobs?per_page=100`, paged by `Link`)
 while a job in `stepsFor` has steps that are not settled in `prev`, and a
 job's log on request (`StreamCIJobLog`: `Stream` with `NoLimit` into the
-CI log store, 404 is `ErrCIJobLogNotFound`), and the first artifacts page
-of each completed run (`repos/O/R/actions/runs/ID/artifacts?per_page=100`)
-for the pipeline's artifacts action. GraphQL has no artifacts field, so
-that answer is remembered per run and job set (a re-run's new jobs read
-it again) for 10 minutes and then revalidated through the ETag store; a
-live run is not asked.
+CI log store, 404 is `ErrCIJobLogNotFound`), and each completed run's
+artifacts list (`repos/O/R/actions/runs/ID/artifacts?per_page=100`) for
+the pipeline's artifacts action, read until a page holds an artifact
+that has not expired or the list ends (at most `githubReadMaxPages`
+pages). GraphQL has no artifacts field, so that answer is remembered per
+run and job set (a re-run's new jobs read it again) for 10 minutes, never
+past the earliest `expires_at` of the artifacts it found, and then
+revalidated through the ETag store; a live run is not asked. A download
+that finds a run's artifacts gone or expired drops the run's answer and
+has every pump showing the run poll, so the flag clears with the
+sentence the user already got. A failed artifacts read (or, for
+`ReadPipeline`, permission read) leaves the CI read whole: the flags it
+would have set are absent, `CIPipeline.ActionsUnavailable` carries one
+sentence and the failure is logged. The failure is remembered as the
+open-PR lookup's are (20 seconds, doubling to 15 minutes, or a rate
+limit's release when later), so it is asked again when that is due, not
+every tick.
 
 | Tick | GitHub requests |
 |---|---|
@@ -282,7 +293,14 @@ after)`: its builds, bridges and external commit statuses, which the REST
 jobs list lacks, 100 per page by cursor, at most `gitlabCIJobsMaxPages`
 (5) pages, with each build's and the pipeline's `retryable`,
 `cancelable`, `playable`, `canPlayJob`, `userPermissions` and archive
-`artifacts` for the CI actions). A build's trace is read on request (`StreamCIJobLog`, as on
+`artifacts` for the CI actions). Every field it selects exists from
+GitLab 16.0 except the cancel permissions (`JobPermissions.cancelBuild`,
+`PipelinePermissions.cancelPipeline`, 16.6), which alone decide cancel
+where they exist, since a project can restrict cancel past update. A
+server whose schema lacks them refuses the whole document ("Field
+'cancelBuild' doesn't exist"); the read is sent once more without them,
+update deciding cancel as it did there, and the host is read that way for
+10 minutes. A build's trace is read on request (`StreamCIJobLog`, as on
 GitHub); a bridge or a commit status has no log and no job id, as a
 GitHub external check.
 
@@ -560,34 +578,50 @@ req)` (`app_ci_actions.go`) act on the pipeline a PR pump's or a pipeline
 pump's CI phase holds, through one implementation. The request is checked
 against that pipeline's capability flags (`CIJob.Actions`,
 `CIPipeline.Actions`: empty when the action does not apply, `denied` when
-the viewer may not take it) before any forge request, and one action runs
-per pipeline at a time (a GitHub PR's head checks are keyed by the PR).
-`Core.RunCIAction` runs on `context.WithoutCancel` and interactive. On
-success, or a GitHub pipeline action that some runs took, the caller's
-pump polls at once and the answer is its sequence after that poll
-(`CIActionResult.Seq`, as `PRActionResult.Seq`); every other pump showing
-a touched pipeline or run polls without holding up the answer, and each
-polls at the live cadence for a minute after, since GitHub queues a re-run
-asynchronously.
+the viewer may not take it) before any forge request. An action reserves,
+in one step under the pumps' lock, the identities its writes reach: a
+job action its GitHub run or GitLab pipeline, a pipeline action every run
+or the pipeline it shows. A second action reaching any reserved identity
+is refused, so a PR's head checks and a Pipelines-tab view of one of
+their runs cannot fire the same run twice. `Core.RunCIAction` runs on
+`context.WithoutCancel` and interactive, and posts each write once. Each
+write is confirmed, refused (`forgeapi.WriteNotApplied`) or unconfirmed
+(it may have been applied: a reset, a timeout or a 5xx after sending);
+anything short of every write confirmed or every write refused is one
+`CIPartialError` counting each. When any write was confirmed or
+unconfirmed, the caller's pump polls at once and the answer is its
+sequence after that poll (`CIActionResult.Seq`, as `PRActionResult.Seq`);
+every other pump showing a touched pipeline or run polls without holding
+up the answer, and each polls at the live cadence for a minute after,
+since GitHub queues a re-run asynchronously.
 
 | Action | GitHub | GitLab |
 |---|---|---|
-| Retry a job | `POST repos/O/R/actions/jobs/ID/rerun` | `POST projects/P/jobs/ID/retry` |
+| Retry a job | `POST repos/O/R/actions/jobs/ID/rerun`, within 30 days of the run's creation | `POST projects/P/jobs/ID/retry` |
 | Retry the failed jobs | `POST repos/O/R/actions/runs/ID/rerun-failed-jobs` per completed run with a failed or canceled job | `POST projects/P/pipelines/ID/retry` |
 | Cancel a job | not offered | `POST projects/P/jobs/ID/cancel` |
 | Cancel the pipeline | `POST repos/O/R/actions/runs/ID/cancel` per live run | `POST projects/P/pipelines/ID/cancel` |
 | Run a manual job | not offered | `POST projects/P/jobs/ID/play` |
 | Download artifacts | `GET repos/O/R/actions/runs/ID/artifacts` pages, then `GET repos/O/R/actions/artifacts/ID/zip` per unexpired artifact | `GET projects/P/jobs/ID/artifacts` |
 
-A GitHub pipeline action that some runs took and others refused is one
-`CIPartialError`, worded by `ExplainCIError`. A retried job is a new job
-under a new id on both forges, and the old one drops out of the read; the
-log view follows the new attempt with `git.FindCIJobRetry` (same stage and
-name, the highest id above the old one).
+`ExplainCIError` words a `CIPartialError` with its counts and says an
+unconfirmed write may have been applied. GitHub re-runs a run only within
+30 days of its creation: `ReadPipeline`'s run carries `created_at`, so a
+run past it offers no retry; a PR's rollup does not, so no request is
+added and GitHub's refusal ("created over a month ago") reads as the run
+being too old. A retried job is a new job under a new id on both forges,
+and the old one drops out of the read; the log view follows the new
+attempt with `git.FindCIJobRetry` (same stage and name, the same GitHub
+workflow run when the old job names one, the highest id above the old
+one).
 
 `SaveCIArtifacts(repo, req, subject)` (`app_ci_artifacts.go`) streams each
 artifact with `Stream` into a temp file under the app data directory's
-`ci-artifacts`, renamed into place once whole, as a saved CI log is: at
+`ci-artifacts`, in the repository's directory
+(`<forge>/<host>/<namespace...>/<repo>`, each segment escaped one to one,
+so the path is the repository's whole identity; saved logs use the same
+directory under `ci-logs`), renamed into place once whole, as a saved CI
+log is: at
 most 100 artifacts per save, each at most 1 GiB (a GitHub artifact the
 list sizes past it is refused before its request) within a 10-minute
 timeout, and the answer names the directory and files. Downloads are not
