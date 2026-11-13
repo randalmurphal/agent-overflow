@@ -255,7 +255,7 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	var threads []ReviewThread
 	if want.Threads || want.Events {
 		var system []gitlabNoteRaw
-		threads, system, err = readGitLabDiscussions(ctx, client, ref, mr.headSHA())
+		threads, system, err = readGitLabDiscussions(ctx, client, ref, gitlabThreadContext{headSHA: mr.headSHA(), webURL: mr.WebURL})
 		if err != nil {
 			return PRRead{}, err
 		}
@@ -282,6 +282,12 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		viewer := f.viewerLogin(ctx, client, ref.Host)
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
 		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, viewer)
+	}
+	if want.Threads {
+		// The viewer's own notes are the ones it may edit and delete
+		// (ReviewComment). The login is the detail's cached read, so a
+		// tick that reads both costs no request of its own for it.
+		markGitLabViewerNotes(out.Threads, f.viewerLogin(ctx, client, ref.Host))
 	}
 	if want.CI {
 		if out.CI, err = readGitLabPipeline(ctx, client, ref.Repository(), mr.HeadPipeline); err != nil {
@@ -470,11 +476,34 @@ func normalizeGitLabMergeability(hasConflicts bool, detailed string) string {
 	}
 }
 
+// gitlabThreadContext is what normalizing a discussion needs beside it:
+// the merge request's current head (outdated threads) and its web URL
+// (each note's link).
+type gitlabThreadContext struct {
+	headSHA, webURL string
+}
+
+// markGitLabViewerNotes lets viewer edit and delete its own notes. GitLab's
+// REST notes carry no permission, and only a note's author may edit it; an
+// unknown viewer ("") may change none.
+func markGitLabViewerNotes(threads []ReviewThread, viewer string) {
+	if viewer == "" {
+		return
+	}
+	for i := range threads {
+		for j := range threads[i].Comments {
+			comment := &threads[i].Comments[j]
+			own := strings.EqualFold(comment.AuthorLogin, viewer)
+			comment.ViewerCanEdit, comment.ViewerCanDelete = own, own
+		}
+	}
+}
+
 // readGitLabDiscussions reads every page of the merge request's
 // discussions: the human notes as threads normalized against the MR's
 // current head commit, and the system notes in GitLab's order, which are
 // the events' source (gitlabEvents).
-func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRReference, headSHA string) ([]ReviewThread, []gitlabNoteRaw, error) {
+func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRReference, at gitlabThreadContext) ([]ReviewThread, []gitlabNoteRaw, error) {
 	request := forgeapi.Request{
 		Path:         gitlabMRPath(ref) + "/discussions",
 		Query:        url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
@@ -488,7 +517,7 @@ func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRR
 		if err := json.Unmarshal(resp.Body, &discussions); err != nil {
 			return false, fmt.Errorf("GitLab merge request discussions: decode response: %w", err)
 		}
-		threads = append(threads, gitlabReviewThreads(discussions, headSHA)...)
+		threads = append(threads, gitlabReviewThreads(discussions, at)...)
 		for _, discussion := range discussions {
 			for _, note := range discussion.Notes {
 				if note.System {
@@ -504,10 +533,10 @@ func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRR
 	return threads, system, nil
 }
 
-func gitlabReviewThreads(discussions []gitlabDiscussionRaw, currentHeadSHA string) []ReviewThread {
+func gitlabReviewThreads(discussions []gitlabDiscussionRaw, at gitlabThreadContext) []ReviewThread {
 	threads := make([]ReviewThread, 0, len(discussions))
 	for _, discussion := range discussions {
-		thread, ok := normalizeGitLabDiscussion(discussion, currentHeadSHA)
+		thread, ok := normalizeGitLabDiscussion(discussion, at)
 		if !ok {
 			continue
 		}
@@ -564,7 +593,8 @@ type gitlabLineRangePoint struct {
 	NewLine  *int   `json:"new_line,omitempty"`
 }
 
-func normalizeGitLabDiscussion(discussion gitlabDiscussionRaw, currentHeadSHA string) (ReviewThread, bool) {
+func normalizeGitLabDiscussion(discussion gitlabDiscussionRaw, at gitlabThreadContext) (ReviewThread, bool) {
+	currentHeadSHA := at.headSHA
 	var root *gitlabNoteRaw
 	comments := make([]ReviewComment, 0, len(discussion.Notes))
 	resolvable := discussion.Resolved != nil
@@ -587,13 +617,18 @@ func normalizeGitLabDiscussion(discussion gitlabDiscussionRaw, currentHeadSHA st
 				resolved = *note.Resolved
 			}
 		}
-		comments = append(comments, ReviewComment{
+		comment := ReviewComment{
+			ID:          strconv.FormatInt(note.ID, 10),
 			AuthorLogin: note.Author.Username,
 			AuthorName:  note.Author.Name,
 			Body:        note.Body,
 			CreatedAt:   note.CreatedAt,
 			DatabaseID:  note.ID,
-		})
+		}
+		if at.webURL != "" {
+			comment.URL = at.webURL + "#note_" + comment.ID
+		}
+		comments = append(comments, comment)
 	}
 	if root == nil || len(comments) == 0 {
 		return ReviewThread{}, false
@@ -677,6 +712,9 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 			ID int64 `json:"id"`
 		}
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes", Body: body}, &draft); err != nil {
+			if body.InReplyToDiscussionID != "" && errors.Is(err, forgeapi.ErrNotFound) {
+				err = &ReplyThreadGoneError{ThreadID: body.InReplyToDiscussionID, Err: err}
+			}
 			unknown := 1
 			if forgeapi.WriteNotApplied(err) {
 				unknown = 0
@@ -789,10 +827,12 @@ func gitlabDraftNotes(review SubmitReviewRequest) []ReviewLineComment {
 	return notes
 }
 
-// gitlabDraftNoteIn is the REST body of one draft note.
+// gitlabDraftNoteIn is the REST body of one draft note: a summary, a
+// positioned comment, or a reply to a discussion.
 type gitlabDraftNoteIn struct {
-	Note     string             `json:"note"`
-	Position *gitlabPositionRaw `json:"position,omitempty"`
+	Note                  string             `json:"note"`
+	Position              *gitlabPositionRaw `json:"position,omitempty"`
+	InReplyToDiscussionID string             `json:"in_reply_to_discussion_id,omitempty"`
 }
 
 // gitlabDraftCleanupTimeout bounds removing a failed submit's drafts.
@@ -854,6 +894,13 @@ func gitlabDraftNoteBody(comment ReviewLineComment, refs *PRDiffRefs) (gitlabDra
 	if strings.EqualFold(comment.Side, "summary") {
 		return payload, nil
 	}
+	if reply := comment.InReplyTo; reply != nil {
+		if strings.TrimSpace(reply.ThreadID) == "" {
+			return gitlabDraftNoteIn{}, errors.New("a reply names its discussion")
+		}
+		payload.InReplyToDiscussionID = reply.ThreadID
+		return payload, nil
+	}
 	position, err := gitlabPositionForComment(comment, refs)
 	if err != nil {
 		return gitlabDraftNoteIn{}, err
@@ -881,42 +928,51 @@ func gitlabPositionForComment(comment ReviewLineComment, refs *PRDiffRefs) (*git
 	if comment.Line == nil {
 		return nil, fmt.Errorf("draft note for %s is missing a line", comment.Path)
 	}
-	side := strings.ToLower(strings.TrimSpace(comment.Side))
-	switch side {
-	case "left", "old":
-		position.OldLine = comment.Line
-	case "right", "new", "":
-		position.NewLine = comment.Line
-	default:
-		return nil, fmt.Errorf("draft note for %s has invalid side %q", comment.Path, comment.Side)
+	end, err := gitlabLinePoint(comment.Path, *comment.Line, derefInt(comment.OldLine), comment.Side)
+	if err != nil {
+		return nil, err
 	}
-	if comment.OldLine != nil {
-		// An unchanged line: GitLab names it by both numbers
-		// (https://docs.gitlab.com/api/discussions/#create-new-merge-request-thread).
-		// A range would need both numbers of its start, which the comment
-		// does not carry.
-		if position.NewLine == nil || comment.StartLine != nil {
-			return nil, fmt.Errorf("draft note for %s names an unchanged line as a range or on the left", comment.Path)
+	position.OldLine, position.NewLine = end.OldLine, end.NewLine
+	if start := comment.Start; start != nil {
+		first, err := gitlabLinePoint(comment.Path, start.Line, start.OldLine, start.Side)
+		if err != nil {
+			return nil, err
 		}
-		position.OldLine = comment.OldLine
-	}
-	if comment.StartLine != nil {
-		position.LineRange = gitlabLineRange(comment.Path, side, *comment.StartLine, *comment.Line)
+		position.LineRange = &gitlabLineRangeRaw{Start: first, End: end}
 	}
 	return position, nil
 }
 
-func gitlabLineRange(path, side string, start, end int) *gitlabLineRangeRaw {
-	if side == "left" || side == "old" {
-		return &gitlabLineRangeRaw{
-			Start: gitlabLineRangePoint{LineCode: gitlabLineCode(path, start, 0), Type: "old", OldLine: &start},
-			End:   gitlabLineRangePoint{LineCode: gitlabLineCode(path, end, 0), Type: "old", OldLine: &end},
+func derefInt(n *int) int {
+	if n == nil {
+		return 0
+	}
+	return *n
+}
+
+// gitlabLinePoint is one line of the diff as GitLab names it: a removed
+// line by its old number (type old), an added line by its new number
+// (type new), an unchanged line on the right by both (no type,
+// https://docs.gitlab.com/api/discussions/#create-a-new-thread-in-the-merge-request-diff).
+// Its line code is sha1(path)_old_new with 0 for the number a changed
+// line lacks, as GitLab writes it.
+func gitlabLinePoint(path string, line, oldLine int, side string) (gitlabLineRangePoint, error) {
+	if line <= 0 || oldLine < 0 {
+		return gitlabLineRangePoint{}, fmt.Errorf("draft note for %s names line %d", path, line)
+	}
+	switch strings.ToLower(strings.TrimSpace(side)) {
+	case "left", "old":
+		if oldLine != 0 {
+			return gitlabLineRangePoint{}, fmt.Errorf("draft note for %s names an unchanged line on the left", path)
 		}
+		return gitlabLineRangePoint{LineCode: gitlabLineCode(path, line, 0), Type: "old", OldLine: &line}, nil
+	case "right", "new", "":
+		if oldLine > 0 {
+			return gitlabLineRangePoint{LineCode: gitlabLineCode(path, oldLine, line), OldLine: &oldLine, NewLine: &line}, nil
+		}
+		return gitlabLineRangePoint{LineCode: gitlabLineCode(path, 0, line), Type: "new", NewLine: &line}, nil
 	}
-	return &gitlabLineRangeRaw{
-		Start: gitlabLineRangePoint{LineCode: gitlabLineCode(path, 0, start), Type: "new", NewLine: &start},
-		End:   gitlabLineRangePoint{LineCode: gitlabLineCode(path, 0, end), Type: "new", NewLine: &end},
-	}
+	return gitlabLineRangePoint{}, fmt.Errorf("draft note for %s has invalid side %q", path, side)
 }
 
 func gitlabLineCode(path string, oldLine, newLine int) string {
@@ -937,6 +993,9 @@ func (f *gitlabForge) ReplyToThread(ctx context.Context, ref PRReference, thread
 	}
 	request := forgeapi.Request{Method: http.MethodPost, Path: gitlabDiscussionPath(ref, threadID) + "/notes", Body: map[string]string{"body": body}}
 	_, err = client.JSON(ctx, request, nil)
+	if errors.Is(err, forgeapi.ErrNotFound) {
+		return &ReplyThreadGoneError{ThreadID: threadID, Err: err}
+	}
 	return err
 }
 

@@ -135,6 +135,8 @@ func TestForgeListReadsTakeAPageOverTheDefaultBodyBound(t *testing.T) {
 				return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 			case strings.HasPrefix(call.Path, mr+"/discussions?"):
 				return forgeAPIAnswer{Body: page}
+			case call.Path == "user":
+				return forgeAPIAnswer{Body: `{"id":1,"username":"viewer"}`}
 			}
 			return forgeUnexpected(t, call)
 		})

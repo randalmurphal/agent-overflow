@@ -209,6 +209,12 @@ func (f *githubForge) ListMergedPRHeads(ctx context.Context, cwd string, limit i
 	return heads, nil
 }
 
+// SubmitReview posts the review with its line and range comments, then
+// each file comment and each reply on its own after it: GitHub's review
+// takes neither, so they are follow-ups under the partial-submit contract.
+// A request with nothing for the review itself (a comment verdict with no
+// body and no line comment) posts no review, which GitHub would refuse,
+// and its first follow-up's error decides whether anything posted.
 func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
 	number := ref.Number
 	if _, _, err := splitGitHubProject(ref.Project()); err != nil {
@@ -219,13 +225,20 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	}
 	headSHA := ""
 	fileComments := make([]ReviewLineComment, 0)
+	replies := make([]ReviewLineComment, 0)
 	lineComments := make([]ReviewLineComment, 0, len(review.Comments))
 	for _, comment := range review.Comments {
-		if strings.EqualFold(comment.Side, "file") {
+		switch {
+		case comment.InReplyTo != nil:
+			if comment.InReplyTo.RootDatabaseID <= 0 || strings.TrimSpace(comment.Body) == "" {
+				return SubmitReviewResult{}, fmt.Errorf("reply to thread %s needs its root comment and a body", comment.InReplyTo.ThreadID)
+			}
+			replies = append(replies, comment)
+		case strings.EqualFold(comment.Side, "file"):
 			fileComments = append(fileComments, comment)
-			continue
+		default:
+			lineComments = append(lineComments, comment)
 		}
-		lineComments = append(lineComments, comment)
 	}
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
@@ -243,21 +256,44 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
-	// The only write before the review exists: its error decides
-	// whether the review may have posted.
-	if err := postGitHubReview(ctx, client, ref, body); err != nil {
-		return SubmitReviewResult{}, submitWriteError(err)
-	}
-	out := SubmitReviewResult{PostedReview: true}
+	fileBodies := make([]githubFileCommentIn, 0, len(fileComments))
 	for _, comment := range fileComments {
-		body, err := githubFileCommentRequestBody(comment, headSHA)
+		in, err := githubFileCommentRequestBody(comment, headSHA)
 		if err != nil {
-			return out, err
+			return SubmitReviewResult{}, err
 		}
-		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: pulls + "/comments", Body: body}, nil); err != nil {
-			return out, &PartialSubmitError{PostedReview: true, PostedFileComments: out.PostedFileComments, FailedPath: comment.Path, Unconfirmed: !forgeapi.WriteNotApplied(err), Err: err}
+		fileBodies = append(fileBodies, in)
+	}
+	out := SubmitReviewResult{}
+	followUps := len(fileComments) + len(replies)
+	emptyReview := body.Event == "COMMENT" && strings.TrimSpace(body.Body) == "" && len(body.Comments) == 0
+	if !emptyReview || followUps == 0 {
+		// The only write before the review exists: its error decides
+		// whether the review may have posted.
+		if err := postGitHubReview(ctx, client, ref, body); err != nil {
+			return SubmitReviewResult{}, submitWriteError(err)
+		}
+		out.PostedReview = true
+	}
+	// failed is a follow-up's failure: nothing posted yet makes it the
+	// submit's own write error, else a partial submit.
+	failed := func(err error, path, threadID string) error {
+		if !out.PostedReview && out.PostedFileComments == 0 && out.PostedReplies == 0 {
+			return submitWriteError(err)
+		}
+		return &PartialSubmitError{PostedReview: out.PostedReview, PostedFileComments: out.PostedFileComments, PostedReplies: out.PostedReplies, FailedPath: path, FailedThreadID: threadID, Unconfirmed: !forgeapi.WriteNotApplied(err), Err: err}
+	}
+	for i, in := range fileBodies {
+		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: pulls + "/comments", Body: in}, nil); err != nil {
+			return out, failed(err, fileComments[i].Path, "")
 		}
 		out.PostedFileComments++
+	}
+	for _, reply := range replies {
+		if err := postGitHubReply(ctx, client, ref, *reply.InReplyTo, reply.Body); err != nil {
+			return out, failed(err, "", reply.InReplyTo.ThreadID)
+		}
+		out.PostedReplies++
 	}
 	return out, nil
 }
@@ -322,14 +358,18 @@ func githubReviewCommentBody(comment ReviewLineComment) (githubReviewCommentIn, 
 		return githubReviewCommentIn{}, fmt.Errorf("review comment for %s has invalid side %q", comment.Path, comment.Side)
 	}
 	out := githubReviewCommentIn{
-		Path:      comment.Path,
-		Body:      comment.Body,
-		Line:      *comment.Line,
-		Side:      side,
-		StartLine: comment.StartLine,
+		Path: comment.Path,
+		Body: comment.Body,
+		Line: *comment.Line,
+		Side: side,
 	}
-	if comment.StartLine != nil {
-		out.StartSide = side
+	if start := comment.Start; start != nil {
+		startSide := githubLineSide(start.Side)
+		if start.Line <= 0 || startSide == "" {
+			return githubReviewCommentIn{}, fmt.Errorf("review comment for %s has an invalid range start", comment.Path)
+		}
+		line := start.Line
+		out.StartLine, out.StartSide = &line, startSide
 	}
 	return out, nil
 }
@@ -382,26 +422,18 @@ func githubLineSide(side string) string {
 	}
 }
 
-func (f *githubForge) ReplyToThread(ctx context.Context, ref PRReference, _ string, databaseID int64, body string) error {
+func (f *githubForge) ReplyToThread(ctx context.Context, ref PRReference, threadID string, databaseID int64, body string) error {
 	if _, _, err := splitGitHubProject(ref.Project()); err != nil {
 		return err
 	}
 	if ref.Number <= 0 {
 		return fmt.Errorf("PR number must be positive, got %d", ref.Number)
 	}
-	if databaseID <= 0 {
-		return errors.New("GitHub review reply requires the root comment databaseID")
-	}
-	if strings.TrimSpace(body) == "" {
-		return errors.New("reply body is required")
-	}
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
 		return err
 	}
-	path := fmt.Sprintf("%s/pulls/%d/comments/%d/replies", githubRepoPath(ref.Repository()), ref.Number, databaseID)
-	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: path, Body: map[string]string{"body": body}}, nil)
-	return err
+	return postGitHubReply(ctx, client, ref, ReviewThreadReply{ThreadID: threadID, RootDatabaseID: databaseID}, body)
 }
 
 // githubSetThreadResolvedMutation runs resolveReviewThread or

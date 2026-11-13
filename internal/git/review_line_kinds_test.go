@@ -1,7 +1,9 @@
 package git
 
 import (
+	"crypto/sha1"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -112,14 +114,37 @@ func TestGitLabSubmitReviewPostsEachKindOfLine(t *testing.T) {
 	}
 }
 
-// A range over unchanged lines would need both numbers of its start: the
-// comment carries only its end's, so it is refused rather than sent
-// half-formed.
-func TestGitLabRefusesARangeOnAnUnchangedLine(t *testing.T) {
+// A range names each end as GitLab names a diff line: an unchanged line by
+// both numbers with no type, an added line by its new number, a removed
+// line by its old one, each line code sha1(path)_old_new with 0 for the
+// number a changed line lacks.
+func TestGitLabRangePositionsNameEachEnd(t *testing.T) {
 	t.Parallel()
-	end, start, old := 4, 2, 3
-	_, err := gitlabPositionForComment(ReviewLineComment{Path: "a.go", Body: "x", Line: &end, StartLine: &start, OldLine: &old, Side: "right"}, &PRDiffRefs{})
-	if err == nil {
-		t.Fatal("a range on an unchanged line was accepted")
+	end, old := 6, 5
+	position, err := gitlabPositionForComment(ReviewLineComment{
+		Path: "a.go", Body: "x", Line: &end, OldLine: &old, Side: "right",
+		Start: &ReviewLineStart{Line: 2, OldLine: 0, Side: "right"},
+	}, &PRDiffRefs{BaseSHA: "b", HeadSHA: "h", StartSHA: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(position)
+	code := fmt.Sprintf("%x", sha1.Sum([]byte("a.go")))
+	want := `{"base_sha":"b","start_sha":"s","head_sha":"h","old_path":"a.go","new_path":"a.go","position_type":"text","old_line":5,"new_line":6,` +
+		`"line_range":{"start":{"line_code":"` + code + `_0_2","type":"new","new_line":2},"end":{"line_code":"` + code + `_5_6","old_line":5,"new_line":6}}}`
+	if string(got) != want {
+		t.Fatalf("position =\n%s\nwant\n%s", got, want)
+	}
+	left, err := gitlabPositionForComment(ReviewLineComment{
+		Path: "a.go", Body: "x", Line: &end, Side: "left", Start: &ReviewLineStart{Line: 4, Side: "left"},
+	}, &PRDiffRefs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := json.Marshal(left.LineRange); string(got) != `{"start":{"line_code":"`+code+`_4_0","type":"old","old_line":4},"end":{"line_code":"`+code+`_6_0","type":"old","old_line":6}}` {
+		t.Fatalf("left range = %s", got)
+	}
+	if _, err := gitlabPositionForComment(ReviewLineComment{Path: "a.go", Body: "x", Line: &end, Side: "left", Start: &ReviewLineStart{Line: 4, OldLine: 3, Side: "left"}}, &PRDiffRefs{}); err == nil {
+		t.Fatal("an unchanged start on the left was accepted")
 	}
 }

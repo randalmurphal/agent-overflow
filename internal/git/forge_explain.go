@@ -64,6 +64,9 @@ const (
 	ActionReview    ForgeAction = "review"
 	ActionReply     ForgeAction = "reply on"
 	ActionResolve   ForgeAction = "resolve a thread on"
+	ActionComment   ForgeAction = "comment on"
+	ActionEdit      ForgeAction = "edit a comment on"
+	ActionDelete    ForgeAction = "delete a comment on"
 )
 
 // ExplainForgeError turns err, from a forge call about ref, into a
@@ -109,7 +112,13 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	var status *forgeapi.StatusError
 	var kept *BranchKeptError
 	var refused *forgeapi.RefusalError
+	var moved *HeadMovedError
+	var gone *ReplyThreadGoneError
 	switch {
+	case errors.As(err, &moved):
+		return wrap(ForgeErrorStaleHead, "The branch moved after you loaded this. Reload and try again.")
+	case errors.As(err, &gone):
+		return wrap(ForgeErrorNotFound, fmt.Sprintf("The thread this reply answers is no longer on %s, so the reply was not posted.", name))
 	case errors.As(err, &kept):
 		reason := trimSentence(kept.Err.Error())
 		if errors.As(kept.Err, &status) {

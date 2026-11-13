@@ -201,6 +201,8 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 		case strings.HasPrefix(call.Path, mr+"/discussions?"):
 			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d", "head2") + "]", Header: http.Header{"X-Next-Page": {"1"}}}
+		case call.Path == "user":
+			return forgeAPIAnswer{Body: `{"id":1,"username":"viewer"}`}
 		}
 		return forgeUnexpected(t, call)
 	})
@@ -208,8 +210,8 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 	if err != nil || len(threads) != 1 {
 		t.Fatalf("ListReviewThreads = %+v, %v", threads, err)
 	}
-	if n := len(calls.all()); n != 2 {
-		t.Fatalf("requests = %q, want the MR and one discussions page", gitlabPaths(calls))
+	if n := len(calls.all()); n != 3 {
+		t.Fatalf("requests = %q, want the MR, one discussions page and the viewer", gitlabPaths(calls))
 	}
 }
 

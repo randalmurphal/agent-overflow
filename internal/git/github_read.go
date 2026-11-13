@@ -31,10 +31,13 @@ const (
 	githubPageInfoFields = `pageInfo { hasNextPage endCursor }`
 	githubActor          = `author { login ... on User { name } }`
 
-	githubThreadCommentFields = `id databaseId ` + githubActor + ` body createdAt replyTo { id databaseId }`
+	// githubViewerCommentFields is what edit, delete and the "edited" mark
+	// read from a comment of either kind.
+	githubViewerCommentFields = `lastEditedAt url viewerCanUpdate viewerCanDelete`
+	githubThreadCommentFields = `id databaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` replyTo { id databaseId }`
 	githubThreadFields        = `id isResolved isOutdated path line startLine originalLine originalStartLine diffSide startDiffSide subjectType ` +
 		`comments(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }`
-	githubCommentFields = `id databaseId ` + githubActor + ` body createdAt isMinimized`
+	githubCommentFields = `id databaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` isMinimized`
 	// isRequired is the forge's own answer to whether the PR's base
 	// requires the context, branch protection and rulesets alike, so it
 	// needs the PR's $number in every document that selects contexts.
@@ -174,13 +177,23 @@ type githubActorRaw struct {
 	Name  string `json:"name"`
 }
 
+// githubViewerCommentRaw is githubViewerCommentFields; lastEditedAt is
+// null for a comment never edited.
+type githubViewerCommentRaw struct {
+	LastEditedAt    string `json:"lastEditedAt"`
+	URL             string `json:"url"`
+	ViewerCanUpdate bool   `json:"viewerCanUpdate"`
+	ViewerCanDelete bool   `json:"viewerCanDelete"`
+}
+
 type githubThreadCommentRaw struct {
 	ID         string         `json:"id"`
 	DatabaseID int64          `json:"databaseId"`
 	Body       string         `json:"body"`
 	CreatedAt  string         `json:"createdAt"`
 	Author     githubActorRaw `json:"author"`
-	ReplyTo    *struct {
+	githubViewerCommentRaw
+	ReplyTo *struct {
 		ID         string `json:"id"`
 		DatabaseID int64  `json:"databaseId"`
 	} `json:"replyTo"`
@@ -218,6 +231,7 @@ type githubCommentRaw struct {
 	CreatedAt   string         `json:"createdAt"`
 	IsMinimized bool           `json:"isMinimized"`
 	Author      githubActorRaw `json:"author"`
+	githubViewerCommentRaw
 }
 
 type githubCommentsRaw struct {
@@ -757,12 +771,14 @@ func githubReviewThreads(nodes []githubThreadRaw) []ReviewThread {
 		}
 		for _, comment := range node.Comments.Nodes {
 			out := ReviewComment{
+				ID:          comment.ID,
 				AuthorLogin: comment.Author.Login,
 				AuthorName:  comment.Author.Name,
 				Body:        comment.Body,
 				CreatedAt:   comment.CreatedAt,
 				DatabaseID:  comment.DatabaseID,
 			}
+			comment.githubViewerCommentRaw.fill(&out)
 			if comment.ReplyTo != nil {
 				out.ReplyTo = &ReviewReplyTo{ID: comment.ReplyTo.ID, DatabaseID: comment.ReplyTo.DatabaseID}
 			}
@@ -781,16 +797,25 @@ func githubConversationThreads(nodes []githubCommentRaw) []ReviewThread {
 		if node.IsMinimized {
 			continue
 		}
-		threads = append(threads, ReviewThread{
-			ID: node.ID,
-			Comments: []ReviewComment{{
-				AuthorLogin: node.Author.Login,
-				AuthorName:  node.Author.Name,
-				Body:        node.Body,
-				CreatedAt:   node.CreatedAt,
-				DatabaseID:  node.DatabaseID,
-			}},
-		})
+		comment := ReviewComment{
+			ID:          node.ID,
+			AuthorLogin: node.Author.Login,
+			AuthorName:  node.Author.Name,
+			Body:        node.Body,
+			CreatedAt:   node.CreatedAt,
+			DatabaseID:  node.DatabaseID,
+		}
+		node.githubViewerCommentRaw.fill(&comment)
+		// The thread is named by its one comment (CommentTarget).
+		threads = append(threads, ReviewThread{ID: node.ID, Comments: []ReviewComment{comment}})
 	}
 	return threads
+}
+
+// fill copies the viewer's permissions, the edit time and the URL onto out.
+func (raw githubViewerCommentRaw) fill(out *ReviewComment) {
+	out.EditedAt = raw.LastEditedAt
+	out.URL = raw.URL
+	out.ViewerCanEdit = raw.ViewerCanUpdate
+	out.ViewerCanDelete = raw.ViewerCanDelete
 }
