@@ -76,6 +76,67 @@ export class AutoMergeRequest {
     }
 }
 
+/**
+ * CIAction is whether one action applies to a job or pipeline and whether
+ * the viewer may take it. Empty: the action does not apply, and the UI
+ * shows nothing for it. CIActionAllowed: it applies and the forge reports
+ * nothing against the viewer taking it. CIActionDenied: it applies, but
+ * the forge reports the viewer may not take it (GitLab's job and pipeline
+ * permissions, GitHub's repository permission).
+ */
+export enum CIAction {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    CIActionAllowed = "allowed",
+    CIActionDenied = "denied",
+};
+
+/**
+ * CIActionKind names one write ForgeCIActor performs.
+ */
+export enum CIActionKind {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    CIActionRetryJob = "retry_job",
+    CIActionCancelJob = "cancel_job",
+    CIActionPlayJob = "play_job",
+    CIActionRetryFailed = "retry_failed",
+    CIActionCancelPipeline = "cancel_pipeline",
+};
+
+/**
+ * CIArtifactsRequest names whose artifacts to download: one GitLab job's
+ * archive (JobID), or every artifact of the GitHub workflow runs RunIDs.
+ */
+export class CIArtifactsRequest {
+    "jobId"?: string;
+    "runIds"?: string[];
+
+    /** Creates a new CIArtifactsRequest instance. */
+    constructor($$source: Partial<CIArtifactsRequest> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIArtifactsRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIArtifactsRequest {
+        const $$createField1_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("runIds" in $$parsedSource) {
+            $$parsedSource["runIds"] = $$createField1_0($$parsedSource["runIds"]);
+        }
+        return new CIArtifactsRequest($$parsedSource as Partial<CIArtifactsRequest>);
+    }
+}
+
 export class CIJob {
     /**
      * ID is the forge's numeric job id, as a string. Empty when the job
@@ -90,6 +151,18 @@ export class CIJob {
     "logsAvailable": boolean;
     "steps"?: CIStep[];
 
+    /**
+     * RunID is a GitHub Actions job's workflow run id; empty on GitLab and
+     * for an external check.
+     */
+    "runId"?: string;
+
+    /**
+     * Actions are the job-level actions and whether the viewer may take
+     * them (see CIJobActions).
+     */
+    "actions": CIJobActions;
+
     /** Creates a new CIJob instance. */
     constructor($$source: Partial<CIJob> = {}) {
         if (!("name" in $$source)) {
@@ -101,6 +174,9 @@ export class CIJob {
         if (!("logsAvailable" in $$source)) {
             this["logsAvailable"] = false;
         }
+        if (!("actions" in $$source)) {
+            this["actions"] = (new CIJobActions());
+        }
 
         Object.assign(this, $$source);
     }
@@ -109,12 +185,48 @@ export class CIJob {
      * Creates a new CIJob instance from a string or object.
      */
     static createFrom($$source: any = {}): CIJob {
-        const $$createField7_0 = $$createType1;
+        const $$createField7_0 = $$createType2;
+        const $$createField9_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("steps" in $$parsedSource) {
             $$parsedSource["steps"] = $$createField7_0($$parsedSource["steps"]);
         }
+        if ("actions" in $$parsedSource) {
+            $$parsedSource["actions"] = $$createField9_0($$parsedSource["actions"]);
+        }
         return new CIJob($$parsedSource as Partial<CIJob>);
+    }
+}
+
+/**
+ * CIJobActions are the job-level actions. Retry applies to a job that
+ * finished failed or canceled (on GitHub, once its whole workflow run
+ * completed, since GitHub re-runs a job of a completed run only); Cancel
+ * to a running or pending GitLab job; Play to a GitLab job waiting for a
+ * manual start; Artifacts to a GitLab job with an artifacts archive.
+ * GitHub cancels runs, not jobs, starts no manual jobs and keeps
+ * artifacts per run, so a GitHub job carries Retry alone. A job with no
+ * ID (a GitHub external check, a GitLab bridge or commit status) carries
+ * none.
+ */
+export class CIJobActions {
+    "retry"?: CIAction;
+    "cancel"?: CIAction;
+    "play"?: CIAction;
+    "artifacts"?: CIAction;
+
+    /** Creates a new CIJobActions instance. */
+    constructor($$source: Partial<CIJobActions> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIJobActions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIJobActions {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CIJobActions($$parsedSource as Partial<CIJobActions>);
     }
 }
 
@@ -145,6 +257,12 @@ export class CIPipeline {
     "sha"?: string;
     "stages": CIStage[];
 
+    /**
+     * Actions are the pipeline-level actions and whether the viewer may
+     * take them (see CIPipelineActions).
+     */
+    "actions": CIPipelineActions;
+
     /** Creates a new CIPipeline instance. */
     constructor($$source: Partial<CIPipeline> = {}) {
         if (!("status" in $$source)) {
@@ -152,6 +270,9 @@ export class CIPipeline {
         }
         if (!("stages" in $$source)) {
             this["stages"] = [];
+        }
+        if (!("actions" in $$source)) {
+            this["actions"] = (new CIPipelineActions());
         }
 
         Object.assign(this, $$source);
@@ -161,12 +282,46 @@ export class CIPipeline {
      * Creates a new CIPipeline instance from a string or object.
      */
     static createFrom($$source: any = {}): CIPipeline {
-        const $$createField5_0 = $$createType3;
+        const $$createField5_0 = $$createType5;
+        const $$createField6_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("stages" in $$parsedSource) {
             $$parsedSource["stages"] = $$createField5_0($$parsedSource["stages"]);
         }
+        if ("actions" in $$parsedSource) {
+            $$parsedSource["actions"] = $$createField6_0($$parsedSource["actions"]);
+        }
         return new CIPipeline($$parsedSource as Partial<CIPipeline>);
+    }
+}
+
+/**
+ * CIPipelineActions are the pipeline-level actions. RetryFailed applies
+ * to a finished pipeline with a failed or canceled job, Cancel to a
+ * running or pending one. A GitHub pipeline is every workflow run its
+ * jobs belong to: RetryFailed applies when a completed run holds a failed
+ * or canceled job, Cancel when a run is still live, and each acts on the
+ * runs that qualify. Artifacts is GitHub's alone (artifacts belong to a
+ * run): a completed run of the pipeline has artifacts; GitLab's are per
+ * job.
+ */
+export class CIPipelineActions {
+    "retryFailed"?: CIAction;
+    "cancel"?: CIAction;
+    "artifacts"?: CIAction;
+
+    /** Creates a new CIPipelineActions instance. */
+    constructor($$source: Partial<CIPipelineActions> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIPipelineActions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIPipelineActions {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CIPipelineActions($$parsedSource as Partial<CIPipelineActions>);
     }
 }
 
@@ -197,7 +352,7 @@ export class CIStage {
      * Creates a new CIStage instance from a string or object.
      */
     static createFrom($$source: any = {}): CIStage {
-        const $$createField2_0 = $$createType5;
+        const $$createField2_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("jobs" in $$parsedSource) {
             $$parsedSource["jobs"] = $$createField2_0($$parsedSource["jobs"]);
@@ -322,7 +477,7 @@ export class CheckSummary {
      * Creates a new CheckSummary instance from a string or object.
      */
     static createFrom($$source: any = {}): CheckSummary {
-        const $$createField6_0 = $$createType7;
+        const $$createField6_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("checks" in $$parsedSource) {
             $$parsedSource["checks"] = $$createField6_0($$parsedSource["checks"]);
@@ -612,8 +767,8 @@ export class MergeOptions {
      * Creates a new MergeOptions instance from a string or object.
      */
     static createFrom($$source: any = {}): MergeOptions {
-        const $$createField0_0 = $$createType8;
-        const $$createField4_0 = $$createType10;
+        const $$createField0_0 = $$createType0;
+        const $$createField4_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("methods" in $$parsedSource) {
             $$parsedSource["methods"] = $$createField0_0($$parsedSource["methods"]);
@@ -702,9 +857,9 @@ export class MergeReadiness {
      * Creates a new MergeReadiness instance from a string or object.
      */
     static createFrom($$source: any = {}): MergeReadiness {
-        const $$createField1_0 = $$createType12;
-        const $$createField2_0 = $$createType12;
-        const $$createField3_0 = $$createType13;
+        const $$createField1_0 = $$createType14;
+        const $$createField2_0 = $$createType14;
+        const $$createField3_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("blockers" in $$parsedSource) {
             $$parsedSource["blockers"] = $$createField1_0($$parsedSource["blockers"]);
@@ -881,11 +1036,11 @@ export class PRDetail {
      * Creates a new PRDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): PRDetail {
-        const $$createField17_0 = $$createType15;
-        const $$createField18_0 = $$createType16;
-        const $$createField20_0 = $$createType18;
-        const $$createField21_0 = $$createType19;
-        const $$createField22_0 = $$createType20;
+        const $$createField17_0 = $$createType17;
+        const $$createField18_0 = $$createType18;
+        const $$createField20_0 = $$createType20;
+        const $$createField21_0 = $$createType21;
+        const $$createField22_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
             $$parsedSource["latestReviews"] = $$createField17_0($$parsedSource["latestReviews"]);
@@ -1291,7 +1446,7 @@ export class ReviewComment {
      * Creates a new ReviewComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewComment {
-        const $$createField5_0 = $$createType22;
+        const $$createField5_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replyTo" in $$parsedSource) {
             $$parsedSource["replyTo"] = $$createField5_0($$parsedSource["replyTo"]);
@@ -1474,7 +1629,7 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField10_0 = $$createType24;
+        const $$createField10_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField10_0($$parsedSource["comments"]);
@@ -1522,28 +1677,30 @@ export class ReviewVerdict {
 }
 
 // Private type creation functions
-const $$createType0 = CIStep.createFrom;
-const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = CIStage.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = CIJob.createFrom;
+const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = CIStep.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = CIJobActions.createFrom;
+const $$createType4 = CIStage.createFrom;
 const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = CheckStatus.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = $Create.Array($Create.Any);
-const $$createType9 = AutoMergeRequest.createFrom;
-const $$createType10 = $Create.Nullable($$createType9);
-const $$createType11 = MergeBlocker.createFrom;
-const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = ApprovalCount.createFrom;
-const $$createType14 = ReviewVerdict.createFrom;
-const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = CheckSummary.createFrom;
-const $$createType17 = PRDiffRefs.createFrom;
-const $$createType18 = $Create.Nullable($$createType17);
-const $$createType19 = MergeReadiness.createFrom;
-const $$createType20 = MergeOptions.createFrom;
-const $$createType21 = ReviewReplyTo.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = ReviewComment.createFrom;
-const $$createType24 = $Create.Array($$createType23);
+const $$createType6 = CIPipelineActions.createFrom;
+const $$createType7 = CIJob.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = CheckStatus.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = AutoMergeRequest.createFrom;
+const $$createType12 = $Create.Nullable($$createType11);
+const $$createType13 = MergeBlocker.createFrom;
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = ApprovalCount.createFrom;
+const $$createType16 = ReviewVerdict.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = CheckSummary.createFrom;
+const $$createType19 = PRDiffRefs.createFrom;
+const $$createType20 = $Create.Nullable($$createType19);
+const $$createType21 = MergeReadiness.createFrom;
+const $$createType22 = MergeOptions.createFrom;
+const $$createType23 = ReviewReplyTo.createFrom;
+const $$createType24 = $Create.Nullable($$createType23);
+const $$createType25 = ReviewComment.createFrom;
+const $$createType26 = $Create.Array($$createType25);

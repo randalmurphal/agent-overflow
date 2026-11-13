@@ -416,9 +416,12 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RevertConversationAndResendMessage", ID: 2059566413, Scope: "threads:operate", Route: "thread"},                   // main.App.RevertConversationAndResendMessage
 	{Name: "RevokeAccessDevice", ID: 2945903583, Scope: "access:admin", Route: "home"},                                        // main.App.RevokeAccessDevice
 	{Name: "RevokeAccessSession", ID: 2284519219, Scope: "access:admin", Route: "home"},                                       // main.App.RevokeAccessSession
+	{Name: "RunPRCIAction", ID: 1262689694, Scope: "git:operate", Route: "home"},                                              // main.App.RunPRCIAction
+	{Name: "RunPipelineAction", ID: 3964218798, Scope: "git:operate", Route: "home"},                                          // main.App.RunPipelineAction
 	{Name: "RunThreadShellCommand", ID: 651196145, Scope: "terminal:operate", Route: "thread"},                                // main.App.RunThreadShellCommand
 	{Name: "RunningBackgroundAgents", ID: 2886446326, Scope: "threads:read", Route: "thread"},                                 // main.App.RunningBackgroundAgents
 	{Name: "SaveAttachment", ID: 2182723789, Scope: "attachments:write", Route: "thread"},                                     // main.App.SaveAttachment
+	{Name: "SaveCIArtifacts", ID: 1986917811, Scope: "git:operate", Route: "selected"},                                        // main.App.SaveCIArtifacts
 	{Name: "SaveDraft", ID: 3025273299, Scope: "threads:operate", Route: "thread"},                                            // main.App.SaveDraft
 	{Name: "SaveForgeAttachment", ID: 2960563266, Scope: "git:operate", Route: "selected"},                                    // main.App.SaveForgeAttachment
 	{Name: "SaveLocalImage", ID: 1040176720, Scope: "files:read", Route: "selected"},                                          // main.App.SaveLocalImage
