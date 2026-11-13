@@ -150,6 +150,14 @@ PR stores; components own presentation and interaction.
   loaded diff shows in the pane-level group, to copy or discard; a
   collapsed or filtered file hides its editors with it. The contract is
   in [review pane design](../../../../../docs/architecture/review-pane-design.md#open-new-comment-editors).
+  Every editor's Preview is `ReviewPreviewToggle` in its button row and
+  `ReviewEditorPreview` in the box's place at the box's height, its
+  state in `editorPreviews` under the editor's key. A sent comment's body
+  renders through `ReviewCommentMarkdown` (fences as
+  `ReviewSuggestionDiff`, the reaction chips under it), and its hover
+  actions are Add reaction, Copy link, Edit, Delete in that order. A
+  reaction or Apply never shows before the forge's answer
+  ([pull requests](../../../../../docs/specs/pull-requests.md#suggestions-reactions-and-preview)).
   Rows an expansion supplied carry no version proof; verified expansions
   are a backend change and out of scope here.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.

@@ -8,7 +8,7 @@ import { newSideLineIndexes } from '../utils/suggestionLines';
 import type { CommentSuggestion, ReviewComment, ReviewThread } from '../types/models';
 
 // Suggested changes in a review pane (docs/specs/pull-requests.md,
-// "Suggested changes"): Apply on one suggestion, and the diff text the
+// "Suggestions, reactions and preview"): Apply on one suggestion, and the diff text the
 // read and the editors take a suggestion's replaced lines from. Apply is
 // one operation per suggestion (reviewForgeOps.svelte.ts), named with
 // the head the pane's diff was loaded at; a moved branch is the forge's

@@ -6,7 +6,7 @@ import { prReferenceWire } from '../utils/prReference';
 import type { CommentReaction, ReviewComment, ReviewThread } from '../types/models';
 
 // Reactions on a review pane's PR comments
-// (docs/specs/pull-requests.md#reactions): a chip per reaction present,
+// (docs/specs/pull-requests.md#suggestions-reactions-and-preview): a chip per reaction present,
 // which toggles the viewer's own, and the Add reaction popover's eight.
 // Each chip is one operation (reviewForgeOps.svelte.ts): pending from
 // the press until the forge's answer is on screen, one at a time, its
