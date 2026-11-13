@@ -40,20 +40,26 @@ type Label struct {
 }
 
 // ViewerCan overrides what the viewer may do on a pull, each nil field
-// derived from the viewer's role and authorship: update (edit, close,
-// reopen, draft: GitHub WRITE or the author, GitLab developer or the
-// author), label (GitHub TRIAGE), triage (GitHub reviewers and
-// assignees: TRIAGE), admin (GitLab reviewers, assignees and labels:
-// developer). Each write refuses as its forge does when the flag is
-// false.
+// derived from the viewer's role and authorship, each independent of
+// the others: update (edit; GitHub draft; GitLab close, reopen and draft:
+// GitHub WRITE or the author, GitLab developer or the author), close and
+// reopen (GitHub viewerCanClose, viewerCanReopen: WRITE or the author),
+// label (GitHub viewerCanLabel: TRIAGE), assign (GitHub viewerCanAssign:
+// TRIAGE), triage (GitHub review requests: TRIAGE), admin (GitLab
+// reviewers, assignees and labels: developer). Each write refuses as its
+// forge does when its flag is false.
 type ViewerCan struct {
 	Update *bool `json:"update,omitempty"`
+	Close  *bool `json:"close,omitempty"`
+	Reopen *bool `json:"reopen,omitempty"`
 	Label  *bool `json:"label,omitempty"`
+	Assign *bool `json:"assign,omitempty"`
 	Triage *bool `json:"triage,omitempty"`
 	Admin  *bool `json:"admin,omitempty"`
 }
 
-// StateEvent is a GitLab resource state event: a close, a reopen or a
+// StateEvent is a GitLab resource state event: a close, a reopen
+// ("opened", as GitLab records it; "reopened" as some servers do) or a
 // merge, which GitLab records as these rather than as system notes. A
 // seeded closed or merged merge request without one gets one.
 type StateEvent struct {
@@ -63,11 +69,16 @@ type StateEvent struct {
 	At    string `json:"at,omitempty"`
 }
 
-// The GitLab features an older server lacks (Repo.ServerLacks).
+// The GitLab features an older server lacks (Repo.ServerLacks):
+// operationMode is the set mutations' (reviewers, assignees, labels).
 const (
-	lacksRereview = "rereview"
-	lacksOverride = "overrideRequestedChanges"
+	lacksRereview      = "rereview"
+	lacksOverride      = "overrideRequestedChanges"
+	lacksOperationMode = "operationMode"
 )
+
+// githubAssigneesMax is how many assignees GitHub keeps.
+const githubAssigneesMax = 10
 
 func (r *Repo) normalizeManage(ids *idSource) error {
 	if r.Forge != "github" && (len(r.Teams) > 0 || r.TeamsRefused || r.Organization) {
@@ -77,8 +88,8 @@ func (r *Repo) normalizeManage(ids *idSource) error {
 		return errors.New("serverLacks names what an older GitLab lacks")
 	}
 	for _, lack := range r.ServerLacks {
-		if lack != lacksRereview && lack != lacksOverride {
-			return fmt.Errorf("serverLacks %q is not %s or %s", lack, lacksRereview, lacksOverride)
+		if lack != lacksRereview && lack != lacksOverride && lack != lacksOperationMode {
+			return fmt.Errorf("serverLacks %q is not %s, %s or %s", lack, lacksRereview, lacksOverride, lacksOperationMode)
 		}
 	}
 	for i := range r.Members {
@@ -97,12 +108,15 @@ func (r *Repo) normalizeManage(ids *idSource) error {
 	}
 	for i := range r.Labels {
 		label := &r.Labels[i]
-		if strings.TrimSpace(label.Name) == "" || strings.Contains(label.Name, ",") {
-			return fmt.Errorf("labels[%d]: a name without a comma is required", i)
+		if strings.TrimSpace(label.Name) == "" {
+			return fmt.Errorf("labels[%d]: a name is required", i)
 		}
 		label.Color = strings.ToLower(defaultString(label.Color, "#ededed"))
-		if r.Forge == "github" && label.ID == "" {
+		if label.ID == "" {
 			label.ID = "LA_ao" + strconv.FormatInt(ids.next(), 10)
+			if r.Forge == "gitlab" {
+				label.ID = "gid://gitlab/ProjectLabel/" + strconv.FormatInt(ids.next(), 10)
+			}
 		}
 	}
 	for i := range r.Pulls {
@@ -133,9 +147,9 @@ func (p *Pull) normalizeStateEvents(ids *idSource) error {
 	for i := range p.StateEvents {
 		event := &p.StateEvents[i]
 		switch event.State {
-		case "closed", "reopened", "merged":
+		case "closed", "opened", "reopened", "merged":
 		default:
-			return fmt.Errorf("stateEvents[%d]: state %q is not closed, reopened or merged", i, event.State)
+			return fmt.Errorf("stateEvents[%d]: state %q is not closed, opened, reopened or merged", i, event.State)
 		}
 		if event.ID == 0 {
 			event.ID = ids.next()
@@ -258,7 +272,27 @@ func (e *Engine) mayUpdate(r *Repo, p *Pull) bool {
 	return viewerMay(p.viewer().Update, role)
 }
 
-// mayTriage is GitHub's triage access: requesting reviews and assigning.
+// githubWriter is GitHub WRITE access or the pull's author.
+func (e *Engine) githubWriter(r *Repo, p *Pull) bool {
+	return strings.EqualFold(p.Author, e.viewer) || githubRoles[r.Merge.Permission] >= githubRoles["WRITE"]
+}
+
+// mayClose is GitHub's viewerCanClose.
+func (e *Engine) mayClose(r *Repo, p *Pull) bool {
+	return viewerMay(p.viewer().Close, e.githubWriter(r, p))
+}
+
+// mayReopen is GitHub's viewerCanReopen.
+func (e *Engine) mayReopen(r *Repo, p *Pull) bool {
+	return viewerMay(p.viewer().Reopen, e.githubWriter(r, p))
+}
+
+// mayAssign is GitHub's viewerCanAssign.
+func (e *Engine) mayAssign(r *Repo, p *Pull) bool {
+	return viewerMay(p.viewer().Assign, githubRoles[r.Merge.Permission] >= githubRoles["TRIAGE"])
+}
+
+// mayTriage is GitHub's triage access to request reviews.
 func (e *Engine) mayTriage(r *Repo, p *Pull) bool {
 	return viewerMay(p.viewer().Triage, githubRoles[r.Merge.Permission] >= githubRoles["TRIAGE"])
 }

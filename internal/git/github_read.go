@@ -55,7 +55,7 @@ const (
 		`merged mergedAt mergedBy { ` + githubActorAs + ` } closedAt viewerDidAuthor isCrossRepository ` +
 		`viewerCanEnableAutoMerge viewerCanDisableAutoMerge ` +
 		`autoMergeRequest { enabledAt mergeMethod enabledBy { ` + githubActorAs + ` } } ` +
-		`latestOpinionatedReviews(first: 100) { nodes { id state viewerDidAuthor authorCanPushToRepository ` + githubActor + ` } } ` +
+		`latestOpinionatedReviews(first: 100) { nodes { id state viewerDidAuthor authorCanPushToRepository commit { oid } ` + githubActor + ` } } ` +
 		`threadStates: reviewThreads(first: 100) { ` + githubPageInfoFields + ` nodes { isResolved } } ` +
 		`baseRef { refUpdateRule { requiredApprovingReviewCount requiredStatusCheckContexts requiresCodeOwnerReviews requiresConversationResolution } ` +
 		`rules(first: 100) { nodes { type parameters { __typename ` +

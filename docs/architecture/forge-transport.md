@@ -217,7 +217,7 @@ GitHub answers a read with one GraphQL request, `PRTick`:
 | Variable | Selects |
 |---|---|
 | `owner`, `name`, `number` | the pull request and the repository's `viewerPermission` (the merge box's and the CI actions' permission); both are always selected |
-| `wantDetail` | `viewer`, the detail fields, `latestReviews(first: 100)`, and what readiness and merge options derive from: the merge state and viewer flags, `autoMergeRequest`, `latestOpinionatedReviews(first: 100)`, `threadStates: reviewThreads(first: 100) { isResolved }`, `baseRef { refUpdateRule rules(first: 100) }`, and the repository's merge methods, `deleteBranchOnMerge`, `autoMergeAllowed`, `viewerDefaultMergeMethod` and `owner { __typename }`, and the management fields (`viewerCanUpdate`, `viewerCanClose`, `viewerCanReopen`, `viewerCanLabel`, `reviewRequests`, `assignees` and `labels`, each `first: 100`; see [Managing a PR](#managing-a-pr)) |
+| `wantDetail` | `viewer`, the detail fields, `latestReviews(first: 100)`, and what readiness and merge options derive from: the merge state and viewer flags, `autoMergeRequest`, `latestOpinionatedReviews(first: 100)`, `threadStates: reviewThreads(first: 100) { isResolved }`, `baseRef { refUpdateRule rules(first: 100) }`, and the repository's merge methods, `deleteBranchOnMerge`, `autoMergeAllowed`, `viewerDefaultMergeMethod` and `owner { __typename }`, and the management fields (`viewerCanUpdate`, `viewerCanClose`, `viewerCanReopen`, `viewerCanLabel`, `viewerCanAssign`, `reviewRequests`, `assignees` and `labels`, each `first: 100`, and each standing review's `commit { oid }`; see [Managing a PR](#managing-a-pr)) |
 | `wantChecks` | `commits(last: 1)`: the head commit's `id` and `statusCheckRollup.contexts(first: 100)`, each with `isRequired(pullRequestNumber: $number)`; true for `Detail` or `CI`, since the detail's check summary and readiness and the pipeline all come from the rollup |
 | `wantThreads` | `reviewThreads(first: 100)`, each with `comments(first: 100)`, and `comments(first: 100)` |
 | `wantEvents` | `timelineItems(last: 100, itemTypes: [...])`: the review, merge, close, reopen, draft, auto-merge, force-push, base-change and review-request items `ReviewEvent` maps |
@@ -283,8 +283,9 @@ id.
 
 GitLab's `ReadPR` reads the merge request once
 (`projects/P/merge_requests/N`) and derives every part from it: `Detail`
-adds its approvals, the management read (GraphQL `PRManage`, see
-[Managing a PR](#managing-a-pr)), the project's merge settings (`projects/P`, cached
+adds its approvals, the management read (GraphQL `PRManage` or
+`PRManageChecks`, after a `PRManageSchema` probe once per host per 10
+minutes; see [Managing a PR](#managing-a-pr)), the project's merge settings (`projects/P`, cached
 per login and project for 10 minutes, then revalidated through the ETag
 store: a `W/` ETag answered 304) and the viewer's login (`user`, cached
 per login and host for 10 minutes; the author may cancel an auto-merge, and a refused read
@@ -292,9 +293,13 @@ is cached as an unknown viewer), `Threads` and `Events` its discussions
 (`per_page=100`, paged by `X-Next-Page`, positions normalized against
 `diff_refs.head_sha`; one read serves both, system notes are the events),
 `Events` also the resource state events (`resource_state_events?per_page=100`,
-paged): GitLab records a close, a reopen and a merge as these rather than
-as notes, and the merge request's `merged_at`/`closed_at` stand in for a
-merge or close without one, and `CI`
+at most 3 pages: every page while they fit, else the newest 3 by
+`X-Total-Pages`): GitLab records a close, a reopen (`opened`, or
+`reopened` on some servers) and a merge as these rather than as notes,
+and the merge request's `merged_at`/`closed_at` stand in for a merge or
+close without one. A failed state events read leaves the events without
+them, is logged, and is not asked again for that merge request until its
+retry is due (20 seconds doubling to 15 minutes; a success resets it), and `CI`
 the rows of its `head_pipeline` (GraphQL `PipelineJobs(fullPath, id,
 after)`: its builds, bridges and external commit statuses, which the REST
 jobs list lacks, 100 per page by cursor, at most `gitlabCIJobsMaxPages`
@@ -313,7 +318,8 @@ GitHub external check.
 
 | Tick | GitLab requests |
 |---|---|
-| Pump (`Detail`, `Threads`, `Events`) | 1 merge request + 1 approvals + 1 `PRManage` (or `PRManageChecks`) + 1 discussions page per 100 discussions + 1 state events page per 100 events; + 1 `projects/P` per login and project and 1 `user` per login and host per 10 minutes |
+| Pump (`Detail`, `Threads`, `Events`), warm | 1 merge request + 1 discussions page per 100 discussions + 1 state events page per 100 events (at most 3) + 1 approvals + 1 `PRManage` (or `PRManageChecks`) |
+| Pump, cold host or project (first read, then every 10 minutes) | the warm requests + 1 `PRManageSchema` per host + 1 `projects/P` per login and project + 1 `user` per login and host |
 | CI phase, a head pipeline | 1 merge request + 1 `PipelineJobs` per 100 rows |
 | CI phase, no head pipeline | 1 merge request |
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
@@ -642,62 +648,97 @@ The review pane's management actions (`ForgeManager`,
 `internal/git/forge_manage.go`; bound in `internal/app/app_pr_manage.go`)
 follow the merge actions' contract: each write is interactive, validated
 in `git.Core`, checked inside the adapter against the PR it names, and on
-success the PR's pump polls at once (`PRActionResult.Seq`). A write the
-forge may have applied returns `git.UnconfirmedWriteError` (`Partial` when
-an earlier write of the same change was applied); it is not sent again,
-the pump polls all the same, and `ExplainForgeError` says the pane shows
-what the forge did. A refusal (`forgeapi.WriteNotApplied`, which counts a
-GraphQL error answer) changes nothing and is explained as such. The two
-reads outside the tick, a picker's search (`SearchPRCandidates`) and the
-default merge commit message (`GetPRMergeMessage`), are their own calls;
-their failure never touches the PR's read.
+success the PR's pump polls at once (`PRActionResult.Seq`). The app runs
+the management writes of one PR one at a time (`prManageLocks`, keyed by
+the PR, waiting bounded by the call's context, an entry dropped once no
+call holds or waits on it); merge actions are outside it. The two reads
+outside the tick, a picker's search (`SearchPRCandidates`) and the default
+merge commit message (`GetPRMergeMessage`), are their own calls; their
+failure never touches the PR's read.
+
+A write has three outcomes. Applied; refused, which changed nothing; or
+unconfirmed (`git.UnconfirmedWriteError`), which may have applied, is not
+sent again, refreshes the pump all the same, and is explained as "the pane
+shows what the forge did", never with a retry. A GraphQL error answer is a
+refusal (`forgeapi.WriteNotApplied`) only when the answer had no data or
+the mutation's field was null, its data decoded, and every error is a
+known refusal: GitHub `FORBIDDEN`, `NOT_FOUND`, `UNPROCESSABLE` or
+`INSUFFICIENT_SCOPES`, a validation error before execution (no `data`), or
+GitLab's permission answer. A people or label change removes first, then
+adds, one write per non-empty side; a failure of the second write is a
+`git.PartialWriteError` that names what the first did and whether the
+second was refused ("removed X; adding Y was refused: ...") or may have
+applied ("removed X; adding Y may have applied").
 
 The read rides the detail (`PRDetail.Manage`): reviewers with their state
 (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `PENDING`), assignees,
 labels and one capability flag per control (`PRManageCan`), from the
-forge's own answer. The changes-requested blocker carries the reviews a
-dismissal needs (`MergeBlocker.ChangeRequests`) and whether a GitLab
-bypass is offered (`Bypassable`); a GitLab bypass that stands is a settled
-row (`Bypassed`).
+forge's own answer. A GitHub reviewer's state and staleness come from the
+same review: the standing approval or change request when one stands,
+else the latest review. A failed GitLab management read never fails or
+hides the PR: `PRManage.Unavailable` says so in one sentence, every flag
+is false and the lists are empty. The changes-requested blocker carries
+the reviews a dismissal needs (`MergeBlocker.ChangeRequests`) and whether
+a GitLab bypass is offered (`Bypassable`); a GitLab bypass that stands is
+a settled row (`Bypassed`).
+
+People are addressed by login on both forges (`PRPerson.ID` is GitLab's
+user id, needed only to re-request a review); labels by their global id
+on both (`PRLabel.ID`: GitHub's node id, GitLab's
+`gid://gitlab/ProjectLabel/N` or `GroupLabel/N`).
 
 | Action | GitHub requests | GitLab requests |
 |---|---|---|
 | Edit title or description | `PREditTarget(owner, name, number)` (node id, body), then `EditPR` (`updatePullRequest`, only the fields given) | 1 merge request read for a description edit, then `PUT projects/P/merge_requests/N` with `title`, `description` |
-| Reviewers | REST `POST` then `DELETE repos/O/R/pulls/N/requested_reviewers` (`reviewers`, `team_reviewers` by slug), one per non-empty side | 1 merge request read, then `PUT` with the whole `reviewer_ids` |
-| Assignees | REST `POST` then `DELETE repos/O/R/issues/N/assignees` | 1 merge request read, then `PUT` with the whole `assignee_ids` |
-| Labels | `PRLabelTarget(owner, name, number, ids)` (the PR's node id and labels, each added id's repository), then `AddLabels` / `RemoveLabels` | `PUT` with `add_labels`, `remove_labels` (comma lists) |
+| Reviewers | REST `DELETE` then `POST repos/O/R/pulls/N/requested_reviewers` (`reviewers`, `team_reviewers` by slug; a team must be the repository owner's) | `PRSetReviewers` (`mergeRequestSetReviewers`, by username) with `operationMode` `REMOVE`, then `APPEND`, each checked against the reviewers it answers |
+| Assignees | `PRAssignees` (the PR's assignees, to refuse a change leaving more than 10), then REST `DELETE` then `POST repos/O/R/issues/N/assignees` | `PRSetAssignees` (`mergeRequestSetAssignees`), as reviewers |
+| Labels | `PRLabelTarget(owner, name, number, ids)` (the PR's node id, each added id's repository), then `RemoveLabels` then `AddLabels` | `PRSetLabels` (`mergeRequestSetLabels`, by label id), `REMOVE` then `APPEND`, checked as reviewers |
 | Close, reopen | `PRMergeTarget` + `ClosePR` / `ReopenPR` | `PUT` with `state_event` |
-| Convert to draft | `PRMergeTarget` + `ConvertPRToDraft` | 1 merge request read, then `PUT` with `title` "Draft: " + title |
-| Re-request a review | as adding the reviewer | GraphQL `PRRereview` (`mergeRequestReviewerRereview`) |
+| Convert to draft, mark ready | `PRMergeTarget` + `ConvertPRToDraft` / `MarkPRReady` | `PRSetDraft` (`mergeRequestSetDraft`), checked against the `draft` it answers |
+| Re-request a review | as adding the reviewer | `PRRereview` (`mergeRequestReviewerRereview`) |
 | Dismiss a change request (GitHub) | `ViewerApproval` (the review must be one of the PR's standing change requests), then `DismissReview` | not offered |
-| Bypass requested changes (GitLab) | not offered | GraphQL `PRBypassChanges` (`mergeRequestUpdate(overrideRequestedChanges: true)`) |
-| Picker search, 20 per page with `More` | `SearchAssignable` (`assignableUsers(query)`, and `teams(query)` for an organization's reviewers, whose refusal keeps the users) or `SearchLabels` | `projects/P/users?search=` or `projects/P/labels?search=` (`X-Next-Page` is `More`) |
+| Bypass requested changes (GitLab) | not offered | `PRBypassChanges` (`mergeRequestUpdate(overrideRequestedChanges: true)`) |
+| Picker search, 20 per page with `More` | `SearchAssignable` (`assignableUsers(query)` and the owner's type), and for an organization's reviewers `SearchTeams` (`organization(login).teams(query)`), whose failure of any kind keeps the users; or `SearchLabels` | `projects/P/users?search=` (`X-Next-Page` is `More`) or `SearchProjectLabels` (`project.labels(searchTerm, includeAncestorGroups: true)`) |
 | Default merge message | `PRMergeMessage` (`viewerMergeHeadlineText`, `viewerMergeBodyText` for the method) | `PRMergeMessage` (`defaultMergeCommitMessage`, `defaultSquashCommitMessage`), split at the first line |
-| Merge with an edited message | `MergePRMessage` / `EnableAutoMergeMessage` (`commitHeadline`, `commitBody`) | `merge_commit_message` or `squash_commit_message` on the merge `PUT` |
+| Merge with an edited message | `MergePRMessage` / `EnableAutoMergeMessage` (`commitHeadline`, `commitBody`) | `merge_commit_message` or `squash_commit_message` on the merge `PUT`, auto-merge included |
 
 Neither forge takes a precondition on the description, so a description
 edit names the description it replaces (`PREdit.ExpectedDescription`) and
 the adapter compares it with a fresh read (CRLF and trailing newlines
 ignored) before writing; a mismatch is `git.ErrDescriptionChanged`. A
-people or label change is one write per side, in order, stopping at the
-first failure. GitHub ignores an assignee it cannot assign without an
-error, so the next read is the answer.
+removal is sent as asked, even of someone or something the last read did
+not show. GitHub ignores an assignee it cannot assign without an error, so
+the next read is the answer. A GitLab set mutation skips a non-member or
+an unknown label id without an error; the adapter checks the list the
+mutation answers, and a miss is a refusal naming who or what was not
+applied.
 
-GitHub's capability flags: edit from `viewerCanUpdate`, close and reopen
-from `viewerCanClose` / `viewerCanReopen` (GHES 3.10 and later), labels
-from `viewerCanLabel`, reviewers, assignees and re-request from triage
-access, dismiss from write access, team reviewers from an organization
-owner. GitLab's: edit, close, reopen, draft and re-request from
-`userPermissions.updateMergeRequest`, reviewers, assignees and labels from
-`adminMergeRequest`, bypass from the merge request's
-`detailed_merge_status` `requested_changes` and the REST `user.can_merge`.
+GitHub's capability flags come from its viewer fields: edit and convert to
+draft from `viewerCanUpdate`, close from `viewerCanClose`, reopen from
+`viewerCanReopen`, labels from `viewerCanLabel`, assignees from
+`viewerCanAssign`. Requesting and re-requesting reviews follow triage
+access and dismissing write access, which have no viewer field; team
+reviewers need an organization owner. GHES before 3.10 is outside
+support. GitLab's: edit, close, reopen, draft and re-request from
+`userPermissions.updateMergeRequest`; reviewers, assignees and labels from
+`adminMergeRequest` and the host's set mutation; bypass from the REST
+`user.can_merge` and requested changes blocking the merge.
 
-GitLab's management read probes the schema in the same request:
-`__type(name: "MergeRequestReviewerRereviewInput")` gates re-request and
-`MergeRequestUpdateInput`'s `overrideRequestedChanges` gates bypass. A
-host whose schema has the override is read with `PRManageChecks` for 10
-minutes, which adds `mergeabilityChecks`; a `REQUESTED_CHANGES` check
-that passes while a reviewer still requests changes is a standing bypass.
+GitLab's schema decides which controls exist and which document is sent.
+`PRManageSchema` asks for `MergeRequestReviewerRereviewInput` (gates
+re-request), `MergeRequestUpdateInput`'s `overrideRequestedChanges`
+(gates bypass) and `operationMode` on `MergeRequestSetReviewersInput`,
+`MergeRequestSetAssigneesInput` and `MergeRequestSetLabelsInput` (each
+gates its control; a host without it offers none and refuses the write).
+The answer, either way, is cached per host for 10 minutes; a failed probe
+is not cached and makes the read unavailable. A host with the override is
+read with `PRManageChecks`, which adds `mergeabilityChecks`: the
+`REQUESTED_CHANGES` check failing is what blocks (elsewhere the
+`detailed_merge_status` `requested_changes`), and the check passing while
+a reviewer still requests changes is shown as bypassed. That is an
+inference: GitLab reports no bypass as such. The `project.labels`
+arguments are taken from GitLab's schema as recalled, not from the
+reference page, which could not be read in full.
 
 ## Merged PR worktree cleanup
 

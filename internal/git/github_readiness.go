@@ -44,6 +44,9 @@ type githubOpinionRaw struct {
 	ViewerDidAuthor           bool           `json:"viewerDidAuthor"`
 	AuthorCanPushToRepository bool           `json:"authorCanPushToRepository"`
 	Author                    githubActorRaw `json:"author"`
+	Commit                    struct {
+		OID string `json:"oid"`
+	} `json:"commit"`
 }
 
 type githubThreadStatesRaw struct {

@@ -174,6 +174,23 @@ func TestGitHubManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	if got := lastEvent(read); got.Kind != gitops.EventReviewRequested {
 		t.Fatalf("last event after requesting a review = %+v", got)
 	}
+	// A removal is sent as asked, though this read no longer shows the
+	// label: GitHub answers it.
+	removes := routeCount(r, 0, "gh graphql RemoveLabels")
+	if err := r.core.SetPRLabels(ctx, ref, gitops.PRLabelChange{Remove: []gitops.PRLabel{m.Labels[0]}}); err != nil {
+		t.Fatalf("removing a label the PR no longer has: %v", err)
+	}
+	if n := routeCount(r, 0, "gh graphql RemoveLabels"); n != removes+1 {
+		t.Fatalf("RemoveLabels sent %d times, want once more", n-removes)
+	}
+	// Teams are searched for reviewers only.
+	teams := routeCount(r, 0, "gh graphql SearchTeams")
+	if assignees, err := r.core.SearchPRCandidates(ctx, ref, gitops.CandidateAssignees, ""); err != nil || slices.ContainsFunc(assignees.People, func(p gitops.PRPerson) bool { return p.Team }) {
+		t.Fatalf("assignee candidates = %+v, %v", assignees, err)
+	}
+	if n := routeCount(r, 0, "gh graphql SearchTeams"); n != teams {
+		t.Fatalf("an assignee search asked for teams %d times", n-teams)
+	}
 
 	// Re-request carol's review; dismiss her change request and the
 	// blocker goes.
@@ -325,18 +342,39 @@ func routeCount(r *rig, since int, route string) int {
 	return n
 }
 
+func gitlabManageRef() gitops.PRReference {
+	return gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "manage", Number: 2}
+}
+
+func findLabel(t *testing.T, labels []gitops.PRLabel, name string) gitops.PRLabel {
+	t.Helper()
+	for _, label := range labels {
+		if label.Name == name {
+			return label
+		}
+	}
+	t.Fatalf("no label %s in %+v", name, labels)
+	return gitops.PRLabel{}
+}
+
 func TestGitLabManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	r := newRig(t, gitlabManageFixture())
-	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "manage", Number: 2}
+	ref := gitlabManageRef()
 	ctx := forgeapi.WithInteractive(t.Context())
 
+	// A cold host probes the schema, then reads with the checks it has;
+	// a warm one reads alone.
 	read := mergeRead(t, r, ref)
+	if routeCount(r, 0, "glab graphql PRManageSchema") != 1 || routeCount(r, 0, "glab graphql PRManageChecks") != 1 || routeCount(r, 0, "glab graphql PRManage") != 0 {
+		t.Fatalf("cold read routes = %v", r.engine.Invocations(0).Invocations)
+	}
 	m := read.Detail.Manage
 	if got := reviewerStates(m.Reviewers); len(got) != 2 || got["bob"] != gitops.ReviewerPending || got["carol"] != gitops.ReviewerChangesRequested {
 		t.Fatalf("reviewers = %+v", m.Reviewers)
 	}
-	if m.Reviewers[0].ID != "11" || !slices.Equal(labelNames(m.Labels), []string{"bug"}) || m.Labels[0].Color != "#d73a4a" {
-		t.Fatalf("reviewer ids %+v, labels %+v", m.Reviewers, m.Labels)
+	bug := findLabel(t, m.Labels, "bug")
+	if m.Reviewers[0].ID != "11" || !strings.HasPrefix(bug.ID, "gid://gitlab/ProjectLabel/") || bug.Color != "#d73a4a" || m.Unavailable != "" {
+		t.Fatalf("reviewer ids %+v, labels %+v, unavailable %q", m.Reviewers, m.Labels, m.Unavailable)
 	}
 	want := gitops.PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Assignees: true, Labels: true, Close: true,
 		ConvertToDraft: true, Rerequest: true, Bypass: true}
@@ -346,11 +384,16 @@ func TestGitLabManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	if b, ok := findBlocker(read.Detail.Readiness, "changes_requested"); !ok || !b.Bypassable || b.Bypassed {
 		t.Fatalf("changes requested blocker = %+v (%v)", b, ok)
 	}
+	before := len(r.engine.Invocations(0).Invocations)
+	mergeRead(t, r, ref)
+	if routeCount(r, before, "glab graphql PRManageSchema") != 0 || routeCount(r, before, "glab graphql PRManageChecks") != 1 {
+		t.Fatalf("warm read routes = %v", r.engine.Invocations(before).Invocations)
+	}
 
 	// Title and description in one PUT; a stale description is refused
 	// before it.
 	title, body, stale := "Tidy up", "New body", "Older"
-	before := len(r.engine.Invocations(0).Invocations)
+	before = len(r.engine.Invocations(0).Invocations)
 	if err := r.core.EditPR(ctx, ref, gitops.PREdit{Title: &title, Description: &body, ExpectedDescription: &stale}); !errors.Is(err, gitops.ErrDescriptionChanged) {
 		t.Fatalf("EditPR on a changed description = %v", err)
 	}
@@ -365,42 +408,51 @@ func TestGitLabManageActionsThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatalf("edit body = %v", got)
 	}
 
-	// Pickers.
+	// Pickers: members by REST, labels by GraphQL with their ids.
 	people, err := r.core.SearchPRCandidates(ctx, ref, gitops.CandidateAssignees, "o")
 	if err != nil || !slices.Equal(logins(people.People), []string{"bob", "carol", "octo"}) || people.People[0].ID != "11" || people.More {
 		t.Fatalf("assignee candidates = %+v, %v", people, err)
 	}
 	labels, err := r.core.SearchPRCandidates(ctx, ref, gitops.CandidateLabels, "ui")
-	if err != nil || !slices.Equal(labelNames(labels.Labels), []string{"ui"}) {
+	if err != nil || !slices.Equal(labelNames(labels.Labels), []string{"ui"}) || labels.Labels[0].ID == "" {
 		t.Fatalf("label candidates = %+v, %v", labels, err)
 	}
 
-	// Reviewers and assignees as full id sets, labels as add and remove
-	// lists.
-	if err := r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Remove: []gitops.PRPerson{{Login: "bob", ID: "11"}}}); err != nil {
+	// Reviewers: remove bob and add octo, REMOVE then APPEND by username,
+	// leaving whoever else is there; assignees: add bob, then remove him.
+	if err := r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "octo"}}, Remove: []gitops.PRPerson{{Login: "bob"}}}); err != nil {
 		t.Fatalf("SetPRPeople reviewers: %v", err)
 	}
-	if got := decodeRaw(t, lastInvocation(t, r, "glab api update merge request").Body); len(got) != 1 || len(got["reviewer_ids"].([]any)) != 1 || got["reviewer_ids"].([]any)[0] != float64(12) {
-		t.Fatalf("reviewers body = %v", got)
+	var modes []string
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Route == "glab graphql PRSetReviewers" {
+			vars := decodeRaw(t, inv.Variables)
+			modes = append(modes, vars["mode"].(string)+" "+strings.Join(anyStrings(vars["usernames"]), ","))
+		}
 	}
-	if err := r.core.SetPRPeople(ctx, ref, false, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "bob", ID: "11"}}}); err != nil {
+	if !slices.Equal(modes, []string{"REMOVE bob", "APPEND octo"}) {
+		t.Fatalf("reviewer writes = %q", modes)
+	}
+	if err := r.core.SetPRPeople(ctx, ref, false, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "bob"}, {Login: "carol"}}}); err != nil {
 		t.Fatalf("SetPRPeople assignees: %v", err)
 	}
-	if err := r.core.SetPRLabels(ctx, ref, gitops.PRLabelChange{Add: labels.Labels, Remove: []gitops.PRLabel{{Name: "bug"}}}); err != nil {
-		t.Fatalf("SetPRLabels: %v", err)
+	if err := r.core.SetPRPeople(ctx, ref, false, gitops.PRPeopleChange{Remove: []gitops.PRPerson{{Login: "bob"}}}); err != nil {
+		t.Fatalf("SetPRPeople remove an assignee: %v", err)
 	}
-	if got := decodeRaw(t, lastInvocation(t, r, "glab api update merge request").Body); got["add_labels"] != "ui" || got["remove_labels"] != "bug" {
-		t.Fatalf("labels body = %v", got)
+	if err := r.core.SetPRLabels(ctx, ref, gitops.PRLabelChange{Add: labels.Labels, Remove: []gitops.PRLabel{bug}}); err != nil {
+		t.Fatalf("SetPRLabels: %v", err)
 	}
 	read = mergeRead(t, r, ref)
 	m = read.Detail.Manage
-	if read.Detail.Title != title || read.Detail.Body != body || !slices.Equal(logins(peopleOf(m.Reviewers)), []string{"carol"}) ||
-		!slices.Equal(logins(m.Assignees), []string{"bob"}) || !slices.Equal(labelNames(m.Labels), []string{"ui"}) {
+	if read.Detail.Title != title || read.Detail.Body != body || !slices.Equal(logins(peopleOf(m.Reviewers)), []string{"carol", "octo"}) ||
+		!slices.Equal(logins(m.Assignees), []string{"carol"}) || !slices.Equal(labelNames(m.Labels), []string{"ui"}) {
 		t.Fatalf("after the changes: title %q, body %q, manage %+v", read.Detail.Title, read.Detail.Body, m)
 	}
+	if lastEventOf(read, gitops.EventReviewRequested).Ref != "octo" {
+		t.Fatalf("events after adding a reviewer = %+v", read.Events)
+	}
 
-	// Bypass: the blocker settles as bypassed, from the mergeability
-	// check the read now selects.
+	// Bypass: the blocker settles as bypassed, from the mergeability check.
 	if err := r.core.BypassPRRequestedChanges(ctx, ref); err != nil {
 		t.Fatalf("BypassPRRequestedChanges: %v", err)
 	}
@@ -412,9 +464,6 @@ func TestGitLabManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	if _, ok := findBlocker(read.Detail.Readiness, "changes_requested"); ok {
 		t.Fatalf("after bypass: blockers %+v", read.Detail.Readiness.Blockers)
 	}
-	if routeCount(r, 0, "glab graphql PRManageChecks") == 0 {
-		t.Fatal("no read selected the mergeability checks on a server that has them")
-	}
 
 	// Re-request carol: she is pending again, with the note.
 	if err := r.core.RerequestPRReview(ctx, ref, gitops.PRPerson{Login: "carol", ID: "12"}); err != nil {
@@ -424,22 +473,36 @@ func TestGitLabManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	if got := reviewerStates(read.Detail.Manage.Reviewers)["carol"]; got != gitops.ReviewerPending || lastEvent(read).Kind != gitops.EventReviewRequested {
 		t.Fatalf("after re-request: carol %q, last event %+v", got, lastEvent(read))
 	}
-	if _, ok := findBlocker(read.Detail.Readiness, "changes_requested"); ok {
-		t.Fatalf("blockers after the re-request = %+v", read.Detail.Readiness.Blockers)
-	}
 
+	// Draft is mergeRequestSetDraft; close and reopen are state events,
+	// the reopen recorded as GitLab records it ("opened"). Each step adds
+	// its event; the order among events of one millisecond is not
+	// asserted, as notes and state events tie on it.
+	kindCount := func(read gitops.PRRead, kind string) int {
+		n := 0
+		for _, event := range read.Events {
+			if event.Kind == kind {
+				n++
+			}
+		}
+		return n
+	}
 	for _, step := range []struct{ state, event, prState string }{
 		{gitops.PRStateToDraft, gitops.EventMarkedDraft, "open"},
 		{gitops.PRStateClose, gitops.EventClosed, "closed"},
 		{gitops.PRStateReopen, gitops.EventReopened, "open"},
 	} {
+		before := kindCount(read, step.event)
 		if err := r.core.SetPRState(ctx, ref, step.state); err != nil {
 			t.Fatalf("SetPRState %s: %v", step.state, err)
 		}
 		read = mergeRead(t, r, ref)
-		if read.Detail.State != step.prState || lastEvent(read).Kind != step.event {
+		if read.Detail.State != step.prState || kindCount(read, step.event) != before+1 {
 			t.Fatalf("after %s: state %q, events %+v", step.state, read.Detail.State, read.Events)
 		}
+	}
+	if vars := decodeRaw(t, lastInvocation(t, r, "glab graphql PRSetDraft").Variables); vars["draft"] != true {
+		t.Fatalf("set draft variables = %v", vars)
 	}
 	if !read.Detail.Draft || read.Detail.Title != "Draft: "+title {
 		t.Fatalf("draft: %v, title %q", read.Detail.Draft, read.Detail.Title)
@@ -452,6 +515,9 @@ func TestGitLabManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	if err := r.core.MarkPRReady(ctx, ref); err != nil {
 		t.Fatalf("MarkPRReady: %v", err)
 	}
+	if got := mergeRead(t, r, ref).Detail; got.Draft || got.Title != title {
+		t.Fatalf("ready: draft %v, title %q", got.Draft, got.Title)
+	}
 	edited := gitops.MergeMessage{Title: "Tidy everything", Body: "Squashed."}
 	if _, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "squash", HeadSHA: strings.Repeat("2", 40), CommitMessage: &edited}); err != nil {
 		t.Fatalf("MergePR with a message: %v", err)
@@ -461,19 +527,64 @@ func TestGitLabManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
-// An older GitLab without the rereview mutation or the override offers
-// neither, never selects the mergeability checks, and refuses both
-// writes if sent anyway; a reporter may change nothing.
+func anyStrings(v any) []string {
+	var out []string
+	for _, item := range v.([]any) {
+		out = append(out, item.(string))
+	}
+	return out
+}
+
+func lastEventOf(read gitops.PRRead, kind string) gitops.ReviewEvent {
+	for i := len(read.Events) - 1; i >= 0; i-- {
+		if read.Events[i].Kind == kind {
+			return read.Events[i]
+		}
+	}
+	return gitops.ReviewEvent{}
+}
+
+// What GitLab does not apply is refused by name: a non-member reviewer, a
+// label id it does not know.
+func TestGitLabManageMissesAreRefusals(t *testing.T) {
+	fixture := gitlabManageFixture()
+	r := newRig(t, fixture)
+	ref := gitlabManageRef()
+	ctx := forgeapi.WithInteractive(t.Context())
+
+	err := r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "eve"}}})
+	if got := explained(t, ref, gitops.ActionReviewers, err); got.Kind != gitops.ForgeErrorRefused || !strings.Contains(got.Message, "eve") {
+		t.Fatalf("a non-member reviewer = %+v", got)
+	}
+	err = r.core.SetPRLabels(ctx, ref, gitops.PRLabelChange{Add: []gitops.PRLabel{{ID: "gid://gitlab/ProjectLabel/999", Name: "gone"}}})
+	if got := explained(t, ref, gitops.ActionLabels, err); got.Kind != gitops.ForgeErrorNotFound || !strings.Contains(got.Message, "gone") {
+		t.Fatalf("an unknown label = %+v", got)
+	}
+	// Remove bob, then a refused add: the change is partial and says what
+	// it did.
+	err = r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Remove: []gitops.PRPerson{{Login: "bob"}}, Add: []gitops.PRPerson{{Login: "eve"}}})
+	if got := explained(t, ref, gitops.ActionReviewers, err); !strings.HasPrefix(got.Message, "Removed bob from the reviewers of grp/manage!2; adding eve was refused: ") {
+		t.Fatalf("partial = %+v", got)
+	}
+	if got := logins(peopleOf(mergeRead(t, r, ref).Detail.Manage.Reviewers)); !slices.Equal(got, []string{"carol"}) {
+		t.Fatalf("reviewers after the partial change = %v", got)
+	}
+}
+
+// An older GitLab without the rereview mutation, the override or the set
+// mutations' operationMode offers none of them, never selects the
+// mergeability checks, and refuses the writes if sent anyway (before
+// sending the people and label ones); a reporter may change nothing.
 func TestGitLabManageOnAnOlderServerThroughTheAppsForgeCode(t *testing.T) {
 	fixture := gitlabManageFixture()
-	fixture.Repos[0].ServerLacks = []string{"rereview", "overrideRequestedChanges"}
+	fixture.Repos[0].ServerLacks = []string{"rereview", "overrideRequestedChanges", "operationMode"}
 	r := newRig(t, fixture)
-	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "manage", Number: 2}
+	ref := gitlabManageRef()
 	ctx := forgeapi.WithInteractive(t.Context())
 
 	for range 2 {
 		read := mergeRead(t, r, ref)
-		if c := read.Detail.Manage.Can; c.Rerequest || c.Bypass || !c.Reviewers {
+		if c := read.Detail.Manage.Can; c.Rerequest || c.Bypass || c.Reviewers || c.Assignees || c.Labels || !c.EditTitle {
 			t.Fatalf("an older server's flags = %+v", c)
 		}
 		if b, ok := findBlocker(read.Detail.Readiness, "changes_requested"); !ok || b.Bypassable {
@@ -483,14 +594,21 @@ func TestGitLabManageOnAnOlderServerThroughTheAppsForgeCode(t *testing.T) {
 	if n := routeCount(r, 0, "glab graphql PRManageChecks"); n != 0 {
 		t.Fatalf("PRManageChecks sent %d times to a server without it", n)
 	}
+	if n := routeCount(r, 0, "glab graphql PRManageSchema"); n != 1 {
+		t.Fatalf("schema probes over two reads = %d, want 1 (a negative answer is cached)", n)
+	}
 	if got := explained(t, ref, gitops.ActionRerequest, r.core.RerequestPRReview(ctx, ref, gitops.PRPerson{Login: "carol", ID: "12"})); got.Kind != gitops.ForgeErrorRefused && got.Kind != gitops.ForgeErrorForge {
 		t.Fatalf("rereview on an older server = %+v", got)
 	}
 	if got := explained(t, ref, gitops.ActionBypass, r.core.BypassPRRequestedChanges(ctx, ref)); got.Kind != gitops.ForgeErrorRefused && got.Kind != gitops.ForgeErrorForge {
 		t.Fatalf("bypass on an older server = %+v", got)
 	}
+	if got := explained(t, ref, gitops.ActionReviewers, r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "octo"}}})); got.Kind != gitops.ForgeErrorRefused || routeCount(r, 0, "glab graphql PRSetReviewers") != 0 {
+		t.Fatalf("reviewers on an older server = %+v", got)
+	}
 
 	fixture.Repos[0].Merge = &forgefake.RepoMerge{Permission: "reporter"}
+	fixture.Repos[0].ServerLacks = nil
 	if _, err := r.engine.Seed(fixture); err != nil {
 		t.Fatal(err)
 	}

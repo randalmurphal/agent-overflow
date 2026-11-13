@@ -887,6 +887,21 @@ func TestGitHubMerge(t *testing.T) {
 			t.Fatal("an auto-merge GitHub did not arm succeeded")
 		}
 	})
+	t.Run("auto-merge with an edited message", func(t *testing.T) {
+		t.Parallel()
+		core, fake, calls := newGitHubMergeCore(t)
+		fake.set("EnableAutoMergeMessage", githubData(`{"enablePullRequestAutoMerge":{"pullRequest":{"autoMergeRequest":{"enabledAt":"2026-10-20T00:00:00Z"}}}}`))
+		msg := MergeMessage{Title: "Tidy (#5)", Body: "Squashed."}
+		out, err := core.MergePR(t.Context(), githubTestRef(5), MergeRequest{Method: MergeMethodSquash, HeadSHA: testHead, AutoMerge: true, CommitMessage: &msg})
+		if err != nil || out != (MergeOutcome{AutoMerge: true}) || fmt.Sprint(calls.ops()) != "[PRMergeTarget EnableAutoMergeMessage]" {
+			t.Fatalf("auto-merge = %+v, %v after %v", out, err, calls.ops())
+		}
+		sent := calls.all()[1]
+		if sent.Vars["commitHeadline"] != msg.Title || sent.Vars["commitBody"] != msg.Body ||
+			!strings.Contains(sent.Query, "commitHeadline: $commitHeadline, commitBody: $commitBody") {
+			t.Fatalf("auto-merge with a message = %+v", sent)
+		}
+	})
 	t.Run("forge refusals reach the caller as their types", func(t *testing.T) {
 		t.Parallel()
 		core, fake, _ := newGitHubMergeCore(t)

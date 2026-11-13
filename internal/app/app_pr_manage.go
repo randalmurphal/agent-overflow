@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"sync"
 
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
@@ -12,7 +13,8 @@ import (
 // convert to draft, re-request a review, dismiss (GitHub) or bypass
 // (GitLab) a review that requested changes. Each follows the merge
 // actions' contract (app_forge_merge.go): the user's own action
-// (interactive), validated in git.Core, and on success the PR's pump
+// (interactive), validated in git.Core, one at a time per PR
+// (runPRManage), and on success the PR's pump
 // polls at once and the answer carries its sequence after that poll
 // (PRActionResult.Seq). A change the forge may have applied is not sent
 // again: the pump polls all the same and the failure says so. The two
@@ -27,47 +29,39 @@ import (
 //ao:scope git:operate
 //ao:route selected
 func (a *App) EditPR(ctx context.Context, pr gitops.PRReference, edit gitops.PREdit) (PRActionResult, error) {
-	if err := a.admitPRAction(pr); err != nil {
-		return PRActionResult{}, err
-	}
-	err := a.gitCore().EditPR(forgeapi.WithInteractive(ctx), pr, edit)
-	return a.settlePRAction(ctx, pr, gitops.ActionEdit, err)
+	return a.runPRManage(ctx, pr, gitops.ActionEdit, func(ctx context.Context) error {
+		return a.gitCore().EditPR(ctx, pr, edit)
+	})
 }
 
-// SetPRReviewers adds and removes reviewers in one change.
+// SetPRReviewers removes and adds reviewers in one change.
 //
 //ao:scope git:operate
 //ao:route selected
 func (a *App) SetPRReviewers(ctx context.Context, pr gitops.PRReference, change gitops.PRPeopleChange) (PRActionResult, error) {
-	if err := a.admitPRAction(pr); err != nil {
-		return PRActionResult{}, err
-	}
-	err := a.gitCore().SetPRPeople(forgeapi.WithInteractive(ctx), pr, true, change)
-	return a.settlePRAction(ctx, pr, gitops.ActionReviewers, err)
+	return a.runPRManage(ctx, pr, gitops.ActionReviewers, func(ctx context.Context) error {
+		return a.gitCore().SetPRPeople(ctx, pr, true, change)
+	})
 }
 
-// SetPRAssignees adds and removes assignees in one change.
+// SetPRAssignees removes and adds assignees in one change.
 //
 //ao:scope git:operate
 //ao:route selected
 func (a *App) SetPRAssignees(ctx context.Context, pr gitops.PRReference, change gitops.PRPeopleChange) (PRActionResult, error) {
-	if err := a.admitPRAction(pr); err != nil {
-		return PRActionResult{}, err
-	}
-	err := a.gitCore().SetPRPeople(forgeapi.WithInteractive(ctx), pr, false, change)
-	return a.settlePRAction(ctx, pr, gitops.ActionAssignees, err)
+	return a.runPRManage(ctx, pr, gitops.ActionAssignees, func(ctx context.Context) error {
+		return a.gitCore().SetPRPeople(ctx, pr, false, change)
+	})
 }
 
-// SetPRLabels adds and removes labels in one change.
+// SetPRLabels removes and adds labels in one change.
 //
 //ao:scope git:operate
 //ao:route selected
 func (a *App) SetPRLabels(ctx context.Context, pr gitops.PRReference, change gitops.PRLabelChange) (PRActionResult, error) {
-	if err := a.admitPRAction(pr); err != nil {
-		return PRActionResult{}, err
-	}
-	err := a.gitCore().SetPRLabels(forgeapi.WithInteractive(ctx), pr, change)
-	return a.settlePRAction(ctx, pr, gitops.ActionLabels, err)
+	return a.runPRManage(ctx, pr, gitops.ActionLabels, func(ctx context.Context) error {
+		return a.gitCore().SetPRLabels(ctx, pr, change)
+	})
 }
 
 // SetPRState closes ("close"), reopens ("reopen") or converts the PR to a
@@ -76,15 +70,13 @@ func (a *App) SetPRLabels(ctx context.Context, pr gitops.PRReference, change git
 //ao:scope git:operate
 //ao:route selected
 func (a *App) SetPRState(ctx context.Context, pr gitops.PRReference, state string) (PRActionResult, error) {
-	if err := a.admitPRAction(pr); err != nil {
-		return PRActionResult{}, err
-	}
 	if err := gitops.ValidatePRStateChange(state); err != nil {
 		return PRActionResult{}, err
 	}
 	action := map[string]gitops.ForgeAction{gitops.PRStateClose: gitops.ActionClose, gitops.PRStateReopen: gitops.ActionReopen, gitops.PRStateToDraft: gitops.ActionToDraft}[state]
-	err := a.gitCore().SetPRState(forgeapi.WithInteractive(ctx), pr, state)
-	return a.settlePRAction(ctx, pr, action, err)
+	return a.runPRManage(ctx, pr, action, func(ctx context.Context) error {
+		return a.gitCore().SetPRState(ctx, pr, state)
+	})
 }
 
 // RerequestPRReview asks one reviewer for a new review.
@@ -92,11 +84,9 @@ func (a *App) SetPRState(ctx context.Context, pr gitops.PRReference, state strin
 //ao:scope git:operate
 //ao:route selected
 func (a *App) RerequestPRReview(ctx context.Context, pr gitops.PRReference, reviewer gitops.PRPerson) (PRActionResult, error) {
-	if err := a.admitPRAction(pr); err != nil {
-		return PRActionResult{}, err
-	}
-	err := a.gitCore().RerequestPRReview(forgeapi.WithInteractive(ctx), pr, reviewer)
-	return a.settlePRAction(ctx, pr, gitops.ActionRerequest, err)
+	return a.runPRManage(ctx, pr, gitops.ActionRerequest, func(ctx context.Context) error {
+		return a.gitCore().RerequestPRReview(ctx, pr, reviewer)
+	})
 }
 
 // DismissPRReview dismisses a GitHub review that requested changes
@@ -105,11 +95,9 @@ func (a *App) RerequestPRReview(ctx context.Context, pr gitops.PRReference, revi
 //ao:scope git:operate
 //ao:route selected
 func (a *App) DismissPRReview(ctx context.Context, pr gitops.PRReference, reviewID, message string) (PRActionResult, error) {
-	if err := a.admitPRAction(pr); err != nil {
-		return PRActionResult{}, err
-	}
-	err := a.gitCore().DismissPRReview(forgeapi.WithInteractive(ctx), pr, reviewID, message)
-	return a.settlePRAction(ctx, pr, gitops.ActionDismiss, err)
+	return a.runPRManage(ctx, pr, gitops.ActionDismiss, func(ctx context.Context) error {
+		return a.gitCore().DismissPRReview(ctx, pr, reviewID, message)
+	})
 }
 
 // BypassPRRequestedChanges overrides the requested changes blocking a
@@ -118,11 +106,85 @@ func (a *App) DismissPRReview(ctx context.Context, pr gitops.PRReference, review
 //ao:scope git:operate
 //ao:route selected
 func (a *App) BypassPRRequestedChanges(ctx context.Context, pr gitops.PRReference) (PRActionResult, error) {
+	return a.runPRManage(ctx, pr, gitops.ActionBypass, func(ctx context.Context) error {
+		return a.gitCore().BypassPRRequestedChanges(ctx, pr)
+	})
+}
+
+// runPRManage is every management write: admitted as the merge actions
+// are, run as the user's own (interactive) while holding the PR's
+// management lock, so a second write of the same PR waits and then reads
+// what the first left (a description edit's precondition sees it), and
+// settled as the merge actions are. The lock is released before the
+// settle's refresh.
+func (a *App) runPRManage(ctx context.Context, pr gitops.PRReference, action gitops.ForgeAction, write func(context.Context) error) (PRActionResult, error) {
 	if err := a.admitPRAction(pr); err != nil {
 		return PRActionResult{}, err
 	}
-	err := a.gitCore().BypassPRRequestedChanges(forgeapi.WithInteractive(ctx), pr)
-	return a.settlePRAction(ctx, pr, gitops.ActionBypass, err)
+	release, err := a.prManage.acquire(ctx, prUpdateKey(pr))
+	if err != nil {
+		return PRActionResult{}, err
+	}
+	err = write(forgeapi.WithInteractive(ctx))
+	release()
+	return a.settlePRAction(ctx, pr, action, err)
+}
+
+// prManageLocks is one lock per PR for its management writes. A caller
+// waits for the holder, bounded by its context; an entry lives while it
+// is held or awaited.
+type prManageLocks struct {
+	mu      sync.Mutex
+	entries map[string]*prManageLock
+}
+
+type prManageLock struct {
+	slot  chan struct{}
+	users int
+}
+
+// acquire takes key's lock, or fails with ctx's error; release gives it
+// back and forgets the entry once nobody holds or awaits it.
+func (l *prManageLocks) acquire(ctx context.Context, key string) (release func(), err error) {
+	l.mu.Lock()
+	if l.entries == nil {
+		l.entries = map[string]*prManageLock{}
+	}
+	entry := l.entries[key]
+	if entry == nil {
+		entry = &prManageLock{slot: make(chan struct{}, 1)}
+		l.entries[key] = entry
+	}
+	entry.users++
+	l.mu.Unlock()
+	leave := func() {
+		l.mu.Lock()
+		entry.users--
+		if entry.users == 0 {
+			delete(l.entries, key)
+		}
+		l.mu.Unlock()
+	}
+	select {
+	case entry.slot <- struct{}{}:
+	case <-ctx.Done():
+		leave()
+		return nil, ctx.Err()
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			<-entry.slot
+			leave()
+		})
+	}, nil
+}
+
+// size is the number of PRs with a held or awaited lock.
+func (l *prManageLocks) size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.entries)
 }
 
 // SearchPRCandidates is one picker search: kind "reviewers",

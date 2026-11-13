@@ -22,11 +22,17 @@ var gitlabGraphQL = []graphQLOp{
 	{kind: "query", name: "PullsReviewingApprovals", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("reviewer", gitlabApprovalsNode)},
 	{kind: "query", name: "PullsAuthoredApprovals", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("author", gitlabApprovalsNode)},
 	{kind: "query", name: "PipelineJobs", required: []string{"fullPath", "id"}, optional: []string{"after"}, run: glabPipelineJobs},
+	{kind: "query", name: "PRManageSchema", run: glabManageSchema},
 	{kind: "query", name: "PRManage", required: []string{"fullPath", "iid"}, run: glabManage(false)},
 	{kind: "query", name: "PRManageChecks", required: []string{"fullPath", "iid"}, run: glabManage(true)},
 	{kind: "mutation", name: "PRRereview", required: []string{"projectPath", "iid", "userId"}, run: glabRereview},
 	{kind: "mutation", name: "PRBypassChanges", required: []string{"projectPath", "iid"}, run: glabBypassChanges},
 	{kind: "query", name: "PRMergeMessage", required: []string{"fullPath", "iid"}, run: glabMergeMessage},
+	{kind: "mutation", name: "PRSetReviewers", required: []string{"projectPath", "iid", "usernames", "mode"}, run: glabSetPeople(true)},
+	{kind: "mutation", name: "PRSetAssignees", required: []string{"projectPath", "iid", "usernames", "mode"}, run: glabSetPeople(false)},
+	{kind: "mutation", name: "PRSetLabels", required: []string{"projectPath", "iid", "labelIds", "mode"}, run: glabSetLabels},
+	{kind: "mutation", name: "PRSetDraft", required: []string{"projectPath", "iid", "draft"}, run: glabSetDraft},
+	{kind: "query", name: "SearchProjectLabels", required: []string{"fullPath"}, optional: []string{"search"}, run: glabSearchLabels},
 }
 
 // glabPullsRead answers project(fullPath) { mergeRequests(<filter>Username:

@@ -5336,7 +5336,7 @@ export function SetNetworkSettings(s: network$0.Settings): $CancellablePromise<n
 }
 
 /**
- * SetPRAssignees adds and removes assignees in one change.
+ * SetPRAssignees removes and adds assignees in one change.
  */
 export function SetPRAssignees(pr: git$0.PRReference, change: git$0.PRPeopleChange): $CancellablePromise<app$0.PRActionResult> {
     return $Call.ByID(1016620183, pr, change).then(($result: any) => {
@@ -5359,7 +5359,7 @@ export function SetPRCILogFollows(subscriptionID: string, jobIDs: string[]): $Ca
 }
 
 /**
- * SetPRLabels adds and removes labels in one change.
+ * SetPRLabels removes and adds labels in one change.
  */
 export function SetPRLabels(pr: git$0.PRReference, change: git$0.PRLabelChange): $CancellablePromise<app$0.PRActionResult> {
     return $Call.ByID(2026774950, pr, change).then(($result: any) => {
@@ -5377,7 +5377,7 @@ export function SetPRListActive(subscriptionID: string, active: boolean): $Cance
 }
 
 /**
- * SetPRReviewers adds and removes reviewers in one change.
+ * SetPRReviewers removes and adds reviewers in one change.
  */
 export function SetPRReviewers(pr: git$0.PRReference, change: git$0.PRPeopleChange): $CancellablePromise<app$0.PRActionResult> {
     return $Call.ByID(960122143, pr, change).then(($result: any) => {

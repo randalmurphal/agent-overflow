@@ -100,14 +100,16 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	if err == nil {
 		return nil
 	}
-	// An explained error is final, unless it is the cause inside an
-	// unconfirmed write, which explains it again below.
+	// An explained error is final, unless it is the cause inside a write
+	// whose outcome the explanation has to word (unconfirmed, partial).
+	outcome := func(err error) bool {
+		_, unconfirmed := errors.AsType[*UnconfirmedWriteError](err)
+		_, partial := errors.AsType[*PartialWriteError](err)
+		return unconfirmed || partial
+	}
 	var explained *ForgeActionError
-	if errors.As(err, &explained) {
-		_, explainedUnconfirmed := errors.AsType[*UnconfirmedWriteError](explained)
-		if _, unconfirmed := errors.AsType[*UnconfirmedWriteError](err); !unconfirmed || explainedUnconfirmed {
-			return err
-		}
+	if errors.As(err, &explained) && (!outcome(err) || outcome(explained)) {
+		return err
 	}
 	labels := forgeLabels(ref.Forge)
 	if left, ok := errors.AsType[*DraftsLeftError](err); ok {
@@ -119,12 +121,15 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	wrap := func(kind, message string) error {
 		return &ForgeActionError{Kind: kind, Message: message, Err: err}
 	}
-	if unconfirmed, ok := errors.AsType[*UnconfirmedWriteError](err); ok {
-		if unconfirmed.Partial {
-			var cause *ForgeActionError
-			errors.As(explainForgeError(ref, name, action, unconfirmed.Err), &cause)
-			return wrap(cause.Kind, fmt.Sprintf("%s applied part of the change to %s, then: %s The pane shows what %s did.", labels.name, name, cause.Message, labels.name))
+	if partial, ok := errors.AsType[*PartialWriteError](err); ok {
+		if partial.Unconfirmed() {
+			return wrap(ForgeErrorTransient, fmt.Sprintf("%s %s; %s may have applied. The pane shows what %s did.", capitalize(partial.Done), name, partial.Next, labels.name))
 		}
+		var cause *ForgeActionError
+		errors.As(explainForgeError(ref, name, action, partial.Err), &cause)
+		return wrap(cause.Kind, fmt.Sprintf("%s %s; %s was refused: %s", capitalize(partial.Done), name, partial.Next, cause.Message))
+	}
+	if _, ok := errors.AsType[*UnconfirmedWriteError](err); ok {
 		return wrap(ForgeErrorTransient, fmt.Sprintf("%s did not confirm the request to %s %s, so it may have been applied. The pane shows what %s did.", labels.name, action, name, labels.name))
 	}
 	var setup *forgeapi.SetupError

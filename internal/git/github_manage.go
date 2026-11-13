@@ -15,15 +15,15 @@ import (
 // rest on. The read rides PRTick's detail (githubManageFields). Writes:
 // the title and body are updatePullRequest after a read of the current
 // body (GitHub takes no precondition on it); reviewers and assignees are
-// REST, addressed by login, which GitHub checks itself; labels are
-// addLabelsToLabelable / removeLabelsFromLabelable after one read that
-// proves every label id belongs to the PR's repository or the PR; close,
-// reopen and convert to draft are their mutations; a dismissal checks
-// that the review is one of the PR's standing change requests.
+// REST, addressed by login, which GitHub checks itself, removals first;
+// labels are removeLabelsFromLabelable / addLabelsToLabelable after one
+// read that proves every label to add belongs to the PR's repository;
+// close, reopen and convert to draft are their mutations; a dismissal
+// checks that the review is one of the PR's standing change requests.
 
 // githubManageFields is the Details half of the detail selection. The
 // viewerCan* flags are the forge's own answer per control.
-const githubManageFields = `viewerCanUpdate viewerCanClose viewerCanReopen viewerCanLabel ` +
+const githubManageFields = `viewerCanUpdate viewerCanClose viewerCanReopen viewerCanLabel viewerCanAssign ` +
 	`reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login name } ... on Bot { login } ... on Mannequin { login } ... on Team { combinedSlug name } } } } ` +
 	`assignees(first: 100) { nodes { login name } } ` +
 	`labels(first: 100) { nodes { id name color } }`
@@ -34,6 +34,7 @@ type githubPullManageRaw struct {
 	ViewerCanClose  bool `json:"viewerCanClose"`
 	ViewerCanReopen bool `json:"viewerCanReopen"`
 	ViewerCanLabel  bool `json:"viewerCanLabel"`
+	ViewerCanAssign bool `json:"viewerCanAssign"`
 	ReviewRequests  struct {
 		Nodes []struct {
 			RequestedReviewer *struct {
@@ -74,8 +75,8 @@ func githubRoleAtLeast(permission, role string) bool {
 // manage is the Details read: reviewers (each requested reviewer
 // pending, each other reviewer at their latest review: an approval or a
 // change request where one stands, else commented), assignees, labels and
-// the viewer's capabilities. Requesting reviews and assigning take triage
-// access on GitHub; dismissing a review takes write.
+// the viewer's capabilities, each from GitHub's own viewer field where the
+// schema has one.
 func (in githubMergeInputs) manage() PRManage {
 	pull, repo := in.pull, in.repo
 	open := in.open()
@@ -91,23 +92,29 @@ func (in githubMergeInputs) manage() PRManage {
 		seen[key] = len(out.Reviewers)
 		out.Reviewers = append(out.Reviewers, r)
 	}
-	opinions := map[string]string{}
+	// A reviewer's state and staleness come from one review: the standing
+	// approval or change request when there is one, else the latest
+	// review (a comment).
+	opinions := map[string]githubOpinionRaw{}
 	for _, review := range pull.LatestOpinionatedReviews.Nodes {
-		opinions[strings.ToLower(review.Author.Login)] = strings.ToUpper(review.State)
+		opinions[strings.ToLower(review.Author.Login)] = review
 	}
+	stale := func(commit string) bool { return commit != "" && commit != pull.HeadRefOID }
 	for _, review := range pull.LatestReviews.Nodes {
 		login := review.Author.Login
 		if login == "" || strings.EqualFold(login, pull.Author.Login) {
 			continue
 		}
-		state := ReviewerCommented
-		switch opinions[strings.ToLower(login)] {
-		case "APPROVED":
-			state = ReviewerApproved
-		case "CHANGES_REQUESTED":
-			state = ReviewerChangesRequested
+		reviewer := PRReviewer{PRPerson: PRPerson{Login: login, Name: review.Author.Name}, State: ReviewerCommented, Stale: stale(review.Commit.OID)}
+		if opinion, ok := opinions[strings.ToLower(login)]; ok {
+			switch strings.ToUpper(opinion.State) {
+			case "APPROVED":
+				reviewer.State, reviewer.Stale = ReviewerApproved, stale(opinion.Commit.OID)
+			case "CHANGES_REQUESTED":
+				reviewer.State, reviewer.Stale = ReviewerChangesRequested, stale(opinion.Commit.OID)
+			}
 		}
-		add(PRReviewer{PRPerson: PRPerson{Login: login, Name: review.Author.Name}, State: state, Stale: review.Commit.OID != "" && review.Commit.OID != pull.HeadRefOID})
+		add(reviewer)
 	}
 	for _, node := range pull.ReviewRequests.Nodes {
 		reviewer := node.RequestedReviewer
@@ -130,13 +137,15 @@ func (in githubMergeInputs) manage() PRManage {
 	for _, label := range pull.Labels.Nodes {
 		out.Labels = append(out.Labels, label.label())
 	}
+	// Requesting a review and dismissing one have no viewer field: GitHub
+	// gives them to triage and write access.
 	triage := githubRoleAtLeast(repo.ViewerPermission, "TRIAGE")
 	write := githubRoleAtLeast(repo.ViewerPermission, "WRITE")
 	out.Can = PRManageCan{
 		EditTitle:       pull.ViewerCanUpdate,
 		EditDescription: pull.ViewerCanUpdate,
 		Reviewers:       open && triage,
-		Assignees:       triage,
+		Assignees:       pull.ViewerCanAssign,
 		Labels:          pull.ViewerCanLabel,
 		Close:           open && pull.ViewerCanClose,
 		Reopen:          closed && pull.ViewerCanReopen,
@@ -209,73 +218,121 @@ func (f *githubForge) EditPR(ctx context.Context, ref PRReference, edit PREdit) 
 	return nil
 }
 
-// githubPeopleBody is a requested_reviewers or assignees body.
-func githubPeopleBody(reviewers bool, people []PRPerson) map[string][]string {
+// githubAssigneesMax is how many assignees GitHub keeps on an issue or
+// pull request.
+const githubAssigneesMax = 10
+
+// githubPeopleBody is a requested_reviewers or assignees body. A team is
+// "owner/slug" with the repository's owner, sent as its slug.
+func githubPeopleBody(ref PRReference, reviewers bool, people []PRPerson) (map[string][]string, error) {
 	if !reviewers {
-		logins := make([]string, 0, len(people))
-		for _, person := range people {
-			logins = append(logins, person.Login)
-		}
-		return map[string][]string{"assignees": logins}
+		return map[string][]string{"assignees": logins(people)}, nil
 	}
 	body := map[string][]string{"reviewers": {}, "team_reviewers": {}}
 	for _, person := range people {
-		if person.Team {
-			_, slug, _ := strings.Cut(person.Login, "/")
-			body["team_reviewers"] = append(body["team_reviewers"], slug)
-		} else {
+		if !person.Team {
 			body["reviewers"] = append(body["reviewers"], person.Login)
+			continue
 		}
+		owner, slug, _ := strings.Cut(person.Login, "/")
+		if owner == "" || slug == "" || !strings.EqualFold(owner, ref.Namespace) {
+			return nil, &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("%s is not a team of %s, so it cannot review %s. Search the reviewers again.", person.Login, ref.Namespace, ref.Project())}
+		}
+		body["team_reviewers"] = append(body["team_reviewers"], slug)
 	}
-	return body
+	return body, nil
 }
 
-// SetPRPeople adds, then removes: reviewers through
-// pulls/N/requested_reviewers, assignees through issues/N/assignees.
-// GitHub checks every login (a reviewer must be a collaborator, a team
-// the repository's).
+const githubAssigneesQuery = `query PRAssignees($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) { assignees(first: 100) { nodes { login } } } }
+}`
+
+// checkAssigneeLimit refuses an assignee change that would leave more
+// than githubAssigneesMax assignees, before any write.
+func checkAssigneeLimit(ctx context.Context, client *forgeapi.Client, ref PRReference, change PRPeopleChange) error {
+	if len(change.Add) == 0 {
+		return nil
+	}
+	vars, err := githubPullVars(ref)
+	if err != nil {
+		return err
+	}
+	var raw struct {
+		Repository *struct {
+			PullRequest *struct {
+				Assignees struct {
+					Nodes []githubActorRaw `json:"nodes"`
+				} `json:"assignees"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	if _, err := client.GraphQL(ctx, "PRAssignees", githubAssigneesQuery, vars, &raw); err != nil {
+		return err
+	}
+	if raw.Repository == nil || raw.Repository.PullRequest == nil {
+		return fmt.Errorf("GitHub answered no pull request %s#%d on %s", ref.Project(), ref.Number, ref.Host)
+	}
+	final := map[string]bool{}
+	for _, assignee := range raw.Repository.PullRequest.Assignees.Nodes {
+		final[strings.ToLower(assignee.Login)] = true
+	}
+	for _, person := range change.Remove {
+		delete(final, strings.ToLower(person.Login))
+	}
+	for _, person := range change.Add {
+		final[strings.ToLower(person.Login)] = true
+	}
+	if len(final) > githubAssigneesMax {
+		return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitHub takes at most %d assignees, and this change leaves %d on %s#%d. Remove some in the same change.", githubAssigneesMax, len(final), ref.Project(), ref.Number)}
+	}
+	return nil
+}
+
+// SetPRPeople removes, then adds: reviewers through
+// pulls/N/requested_reviewers, assignees through issues/N/assignees
+// (after checking GitHub's assignee limit). GitHub checks every login (a
+// reviewer must be a collaborator, a team the repository's).
 func (f *githubForge) SetPRPeople(ctx context.Context, ref PRReference, reviewers bool, change PRPeopleChange) error {
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
 		return err
 	}
-	path := fmt.Sprintf("%s/issues/%d/assignees", githubRepoPath(ref.Repository()), ref.Number)
+	path, list := fmt.Sprintf("%s/issues/%d/assignees", githubRepoPath(ref.Repository()), ref.Number), "assignees of"
 	if reviewers {
-		path = githubPullPath(ref) + "/requested_reviewers"
+		path, list = githubPullPath(ref)+"/requested_reviewers", "reviewers of"
 	}
-	var writes []func() error
-	if len(change.Add) > 0 {
-		writes = append(writes, func() error {
-			_, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: path, Body: githubPeopleBody(reviewers, change.Add)}, nil)
+	removeBody, err := githubPeopleBody(ref, reviewers, change.Remove)
+	if err != nil {
+		return err
+	}
+	addBody, err := githubPeopleBody(ref, reviewers, change.Add)
+	if err != nil {
+		return err
+	}
+	if !reviewers {
+		if err := checkAssigneeLimit(ctx, client, ref, change); err != nil {
 			return err
-		})
-	}
-	if len(change.Remove) > 0 {
-		writes = append(writes, func() error {
-			_, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodDelete, Path: path, Body: githubPeopleBody(reviewers, change.Remove)}, nil)
-			return err
-		})
-	}
-	return runWrites(writes)
-}
-
-// runWrites runs a change's writes in order and stops at the first
-// failure, classified as writeOutcome does; one after an applied write
-// is a partial change.
-func runWrites(writes []func() error) error {
-	for i, write := range writes {
-		if err := write(); err != nil {
-			if i > 0 {
-				return &UnconfirmedWriteError{Err: err, Partial: true}
-			}
-			return writeOutcome(err)
 		}
 	}
-	return nil
+	step := func(method, verb string, people []PRPerson, body map[string][]string) changeStep {
+		done, next := stepWords(verb, logins(people), list)
+		return changeStep{done: done, next: next, run: func() error {
+			_, err := client.JSON(ctx, forgeapi.Request{Method: method, Path: path, Body: body}, nil)
+			return writeOutcome(err)
+		}}
+	}
+	var steps []changeStep
+	if len(change.Remove) > 0 {
+		steps = append(steps, step(http.MethodDelete, "remove", change.Remove, removeBody))
+	}
+	if len(change.Add) > 0 {
+		steps = append(steps, step(http.MethodPost, "add", change.Add, addBody))
+	}
+	return runSteps(steps)
 }
 
 const githubLabelTargetQuery = `query PRLabelTarget($owner: String!, $name: String!, $number: Int!, $ids: [ID!]!) {
-  repository(owner: $owner, name: $name) { id pullRequest(number: $number) { id labels(first: 100) { nodes { id } } } }
+  repository(owner: $owner, name: $name) { id pullRequest(number: $number) { id } }
   nodes(ids: $ids) { __typename ... on Label { id repository { id } } }
 }`
 
@@ -287,10 +344,9 @@ const githubRemoveLabelsMutation = `mutation RemoveLabels($labelableID: ID!, $la
   removeLabelsFromLabelable(input: {labelableId: $labelableID, labelIds: $labelIDs}) { clientMutationId }
 }`
 
-// SetPRLabels reads the PR's node id and labels and resolves every label
-// to add, then adds and removes. A label to add must be one of the
-// repository's; a label to remove that the PR no longer carries is
-// already removed.
+// SetPRLabels reads the PR's node id and resolves every label to add,
+// which must be one of the repository's, then removes and adds. A removal
+// is sent as asked and GitHub answers it.
 func (f *githubForge) SetPRLabels(ctx context.Context, ref PRReference, change PRLabelChange) error {
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
@@ -300,19 +356,19 @@ func (f *githubForge) SetPRLabels(ctx context.Context, ref PRReference, change P
 	if err != nil {
 		return err
 	}
-	adds := make([]string, 0, len(change.Add))
-	for _, label := range change.Add {
-		adds = append(adds, label.ID)
+	ids := func(labels []PRLabel) []string {
+		out := make([]string, 0, len(labels))
+		for _, label := range labels {
+			out = append(out, label.ID)
+		}
+		return out
 	}
-	vars["ids"] = adds
+	vars["ids"] = ids(change.Add)
 	var raw struct {
 		Repository *struct {
 			ID          string `json:"id"`
 			PullRequest *struct {
-				ID     string `json:"id"`
-				Labels struct {
-					Nodes []githubLabelRaw `json:"nodes"`
-				} `json:"labels"`
+				ID string `json:"id"`
 			} `json:"pullRequest"`
 		} `json:"repository"`
 		Nodes []*struct {
@@ -338,31 +394,22 @@ func (f *githubForge) SetPRLabels(ctx context.Context, ref PRReference, change P
 			return &ForgeActionError{Kind: ForgeErrorNotFound, Message: fmt.Sprintf("The label %s is not one of %s's labels. Search the labels again.", firstNonEmpty(label.Name, label.ID), ref.Project())}
 		}
 	}
-	current := map[string]bool{}
-	for _, label := range raw.Repository.PullRequest.Labels.Nodes {
-		current[label.ID] = true
-	}
-	var removes []string
-	for _, label := range change.Remove {
-		if current[label.ID] {
-			removes = append(removes, label.ID)
-		}
-	}
 	pullID := raw.Repository.PullRequest.ID
-	var writes []func() error
-	if len(adds) > 0 {
-		writes = append(writes, func() error {
-			_, err := client.GraphQL(ctx, "AddLabels", githubAddLabelsMutation, map[string]any{"labelableID": pullID, "labelIDs": adds}, nil)
-			return err
-		})
+	step := func(verb, op, doc string, labels []PRLabel) changeStep {
+		done, next := stepWords(verb, labelNames(labels), "labels of")
+		return changeStep{done: done, next: next, run: func() error {
+			_, err := client.GraphQL(ctx, op, doc, map[string]any{"labelableID": pullID, "labelIDs": ids(labels)}, nil)
+			return writeOutcome(err)
+		}}
 	}
-	if len(removes) > 0 {
-		writes = append(writes, func() error {
-			_, err := client.GraphQL(ctx, "RemoveLabels", githubRemoveLabelsMutation, map[string]any{"labelableID": pullID, "labelIDs": removes}, nil)
-			return err
-		})
+	var steps []changeStep
+	if len(change.Remove) > 0 {
+		steps = append(steps, step("remove", "RemoveLabels", githubRemoveLabelsMutation, change.Remove))
 	}
-	return runWrites(writes)
+	if len(change.Add) > 0 {
+		steps = append(steps, step("add", "AddLabels", githubAddLabelsMutation, change.Add))
+	}
+	return runSteps(steps)
 }
 
 // graphQLProblemsUnder is whether every problem's path starts at field.
@@ -488,11 +535,15 @@ func (f *githubForge) BypassRequestedChanges(context.Context, PRReference) error
 	return ErrUnsupportedForge
 }
 
-const githubSearchPeopleQuery = `query SearchAssignable($owner: String!, $name: String!, $query: String!, $withTeams: Boolean!) {
+const githubSearchPeopleQuery = `query SearchAssignable($owner: String!, $name: String!, $query: String!) {
   repository(owner: $owner, name: $name) {
+    owner { __typename login }
     assignableUsers(first: 20, query: $query) { pageInfo { hasNextPage } nodes { login name } }
-    owner { ... on Organization @include(if: $withTeams) { teams(first: 20, query: $query) { pageInfo { hasNextPage } nodes { combinedSlug name } } } }
   }
+}`
+
+const githubSearchTeamsQuery = `query SearchTeams($org: String!, $query: String!) {
+  organization(login: $org) { teams(first: 20, query: $query) { pageInfo { hasNextPage } nodes { combinedSlug name } } }
 }`
 
 const githubSearchLabelsQuery = `query SearchLabels($owner: String!, $name: String!, $query: String!) {
@@ -501,9 +552,9 @@ const githubSearchLabelsQuery = `query SearchLabels($owner: String!, $name: Stri
 
 // SearchCandidates answers the repository's assignable users (reviewers
 // and assignees alike; GitHub requests reviews from the same set) and,
-// for reviewers, its organization's teams when the login can read them:
-// a refusal confined to the teams leaves the users. Labels are the
-// repository's.
+// for reviewers on an organization's repository, its teams in a request
+// of their own, whose failure of any kind (a token without read:org)
+// leaves the users. Labels are the repository's.
 func (f *githubForge) SearchCandidates(ctx context.Context, ref PRReference, kind, query string) (PRCandidates, error) {
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
@@ -536,30 +587,20 @@ func (f *githubForge) SearchCandidates(ctx context.Context, ref PRReference, kin
 		out.More = raw.Repository.Labels.PageInfo.HasNextPage
 		return out, nil
 	}
-	vars["withTeams"] = kind == CandidateReviewers
 	var raw struct {
 		Repository *struct {
+			Owner struct {
+				Typename string `json:"__typename"`
+				Login    string `json:"login"`
+			} `json:"owner"`
 			AssignableUsers struct {
 				PageInfo githubPageInfo   `json:"pageInfo"`
 				Nodes    []githubActorRaw `json:"nodes"`
 			} `json:"assignableUsers"`
-			Owner *struct {
-				Teams *struct {
-					PageInfo githubPageInfo `json:"pageInfo"`
-					Nodes    []struct {
-						CombinedSlug string `json:"combinedSlug"`
-						Name         string `json:"name"`
-					} `json:"nodes"`
-				} `json:"teams"`
-			} `json:"owner"`
 		} `json:"repository"`
 	}
-	_, err = client.GraphQL(ctx, "SearchAssignable", githubSearchPeopleQuery, vars, &raw)
-	if err != nil {
-		gqlErr, ok := errors.AsType[*forgeapi.GraphQLError](err)
-		if !ok || !graphQLProblemsAt(gqlErr, "repository", "owner", "teams") || raw.Repository == nil {
-			return PRCandidates{}, err
-		}
+	if _, err := client.GraphQL(ctx, "SearchAssignable", githubSearchPeopleQuery, vars, &raw); err != nil {
+		return PRCandidates{}, err
 	}
 	if raw.Repository == nil {
 		return PRCandidates{}, fmt.Errorf("GitHub answered no repository %s on %s", ref.Project(), ref.Host)
@@ -568,31 +609,28 @@ func (f *githubForge) SearchCandidates(ctx context.Context, ref PRReference, kin
 		out.People = append(out.People, PRPerson{Login: user.Login, Name: user.Name})
 	}
 	out.More = raw.Repository.AssignableUsers.PageInfo.HasNextPage
-	if owner := raw.Repository.Owner; owner != nil && owner.Teams != nil {
-		for _, team := range owner.Teams.Nodes {
-			out.People = append(out.People, PRPerson{Login: team.CombinedSlug, Name: team.Name, Team: true})
-		}
-		out.More = out.More || owner.Teams.PageInfo.HasNextPage
+	if kind != CandidateReviewers || raw.Repository.Owner.Typename != "Organization" {
+		return out, nil
 	}
+	var teams struct {
+		Organization *struct {
+			Teams struct {
+				PageInfo githubPageInfo `json:"pageInfo"`
+				Nodes    []struct {
+					CombinedSlug string `json:"combinedSlug"`
+					Name         string `json:"name"`
+				} `json:"nodes"`
+			} `json:"teams"`
+		} `json:"organization"`
+	}
+	if _, err := client.GraphQL(ctx, "SearchTeams", githubSearchTeamsQuery, map[string]any{"org": raw.Repository.Owner.Login, "query": query}, &teams); err != nil || teams.Organization == nil {
+		return out, nil
+	}
+	for _, team := range teams.Organization.Teams.Nodes {
+		out.People = append(out.People, PRPerson{Login: team.CombinedSlug, Name: team.Name, Team: true})
+	}
+	out.More = out.More || teams.Organization.Teams.PageInfo.HasNextPage
 	return out, nil
-}
-
-// graphQLProblemsAt is whether every problem's path begins with path.
-func graphQLProblemsAt(gqlErr *forgeapi.GraphQLError, path ...string) bool {
-	if len(gqlErr.Problems) == 0 {
-		return false
-	}
-	for _, problem := range gqlErr.Problems {
-		if len(problem.Path) < len(path) {
-			return false
-		}
-		for i, segment := range path {
-			if fmt.Sprint(problem.Path[i]) != segment {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 const githubMergeMessageQuery = `query PRMergeMessage($owner: String!, $name: String!, $number: Int!, $method: PullRequestMergeMethod!) {

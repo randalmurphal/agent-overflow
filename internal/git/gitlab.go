@@ -41,10 +41,11 @@ type gitlabForge struct {
 	// pipelineTags remembers which listed pipelines ran on a tag
 	// (ci_gitlab.go).
 	pipelineTags gitlabPipelineTags
-	// manageOverride is whether a host's mergeRequestUpdate takes
-	// overrideRequestedChanges, from its last Details read
-	// (gitlab_manage.go).
-	manageOverride gitlabCache[bool]
+	// schemas is each host's management schema (gitlab_manage.go).
+	schemas gitlabCache[gitlabSchema]
+	// stateEventRetries holds the merge requests whose state events read
+	// failed, until it is due again (gitlab_manage.go).
+	stateEventRetries gitlabStateEventRetries
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }
@@ -246,7 +247,8 @@ func gitlabDiscussionPath(ref PRReference, discussionID string) string {
 // project per gitlabCacheTTL) and the viewer's login (once per login per
 // host per gitlabCacheTTL), the threads and the events the discussions
 // (paged; the system notes are events, the rest threads), the events
-// also the resource state events (paged; closes, reopens and merges), CI
+// also the resource state events (closes, reopens and merges; a failure
+// leaves them out, gitlabForge.stateEvents), CI
 // the head pipeline's rows (paged, readGitLabPipeline). A part not
 // wanted costs no request. prev and stepsFor are unused: the
 // rows are one read the previous observation cannot stand in for, and
@@ -276,9 +278,7 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		}
 	}
 	if want.Events {
-		if states, err = readGitLabStateEvents(ctx, client, ref); err != nil {
-			return PRRead{}, err
-		}
+		states = f.stateEvents(ctx, client, ref)
 	}
 	// The detail's armed auto-merge takes its time and wording from the
 	// latest auto-merge event when the same read has the notes.
@@ -295,9 +295,14 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		if err != nil {
 			return PRRead{}, err
 		}
+		// The Details read is the detail's own: its failure is said in
+		// the detail and hides nothing else.
 		manage, err := f.readManage(ctx, client, ref, mr)
 		if err != nil {
-			return PRRead{}, err
+			if ctx.Err() != nil {
+				return PRRead{}, ctx.Err()
+			}
+			manage = unavailableManage(ref, err)
 		}
 		viewer := f.viewerLogin(ctx, client, ref.Host)
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))

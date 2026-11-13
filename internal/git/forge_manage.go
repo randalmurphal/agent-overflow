@@ -28,18 +28,25 @@ const (
 )
 
 // PRManage is what the review pane's Details section shows and which
-// management controls it offers, read with the detail.
+// management controls it offers, read with the detail. Unavailable is
+// the sentence saying the read failed: the lists are then empty and
+// every Can flag false, and the rest of the detail stands.
 type PRManage struct {
-	Reviewers []PRReviewer `json:"reviewers"`
-	Assignees []PRPerson   `json:"assignees"`
-	Labels    []PRLabel    `json:"labels"`
-	Can       PRManageCan  `json:"can"`
+	Reviewers   []PRReviewer `json:"reviewers"`
+	Assignees   []PRPerson   `json:"assignees"`
+	Labels      []PRLabel    `json:"labels"`
+	Can         PRManageCan  `json:"can"`
+	Unavailable string       `json:"unavailable,omitempty"`
+}
+
+// emptyManage is a PRManage with nothing shown and nothing offered.
+func emptyManage() PRManage {
+	return PRManage{Reviewers: []PRReviewer{}, Assignees: []PRPerson{}, Labels: []PRLabel{}}
 }
 
 // PRPerson is a user, or on GitHub a team (Team, Login its
-// "org/slug"). ID is GitLab's numeric user id, which its reviewer and
-// assignee writes address users by; empty on GitHub, which addresses
-// them by login.
+// "org/slug"). Both forges address people by Login; ID is GitLab's
+// numeric user id, which its re-review mutation alone takes.
 type PRPerson struct {
 	Login string `json:"login"`
 	Name  string `json:"name,omitempty"`
@@ -57,9 +64,9 @@ type PRReviewer struct {
 	Stale bool   `json:"stale,omitempty"`
 }
 
-// PRLabel is one label. ID is GitHub's label node id (its label writes
-// address labels by it); empty on GitLab, whose writes name labels.
-// Color is "#rrggbb", empty when the forge gave none.
+// PRLabel is one label. ID is its global id (a GitHub node id, a GitLab
+// label gid), which label writes address it by on both forges. Color is
+// "#rrggbb", empty when the forge gave none.
 type PRLabel struct {
 	ID    string `json:"id,omitempty"`
 	Name  string `json:"name"`
@@ -138,9 +145,8 @@ func sameDescription(a, b string) bool {
 	return norm(a) == norm(b)
 }
 
-// PRPeopleChange adds and removes reviewers or assignees in one write
-// per row. A GitLab user carries its ID; a GitHub team (reviewers only)
-// is a PRPerson with Team.
+// PRPeopleChange removes, then adds, reviewers or assignees, one write
+// per side. A GitHub team (reviewers only) is a PRPerson with Team.
 type PRPeopleChange struct {
 	Add    []PRPerson `json:"add"`
 	Remove []PRPerson `json:"remove"`
@@ -151,8 +157,8 @@ type PRPeopleChange struct {
 const prPeopleMax = 100
 
 // Validate checks the change for a forge: something to do, at most
-// prPeopleMax people, each a login, a GitLab user with its numeric id,
-// no team outside GitHub reviewers, and no one both added and removed.
+// prPeopleMax people, each a login, no team outside GitHub reviewers,
+// and no one both added and removed.
 func (c PRPeopleChange) Validate(forge string, reviewers bool) error {
 	if len(c.Add)+len(c.Remove) == 0 {
 		return errors.New("the change adds and removes no one")
@@ -162,7 +168,7 @@ func (c PRPeopleChange) Validate(forge string, reviewers bool) error {
 	}
 	seen := map[string]bool{}
 	for _, person := range append(append([]PRPerson{}, c.Add...), c.Remove...) {
-		if err := validPerson(forge, person, reviewers); err != nil {
+		if err := validPerson(forge, person, reviewers, false); err != nil {
 			return err
 		}
 		key := strings.ToLower(person.Login)
@@ -174,7 +180,9 @@ func (c PRPeopleChange) Validate(forge string, reviewers bool) error {
 	return nil
 }
 
-func validPerson(forge string, person PRPerson, reviewers bool) error {
+// validPerson checks one person; needID asks for GitLab's user id, which
+// its re-review takes.
+func validPerson(forge string, person PRPerson, reviewers, needID bool) error {
 	login := strings.TrimSpace(person.Login)
 	if login == "" || login != person.Login || strings.ContainsAny(login, " \t\r\n,") {
 		return fmt.Errorf("%q is not a login", person.Login)
@@ -182,7 +190,7 @@ func validPerson(forge string, person PRPerson, reviewers bool) error {
 	if person.Team && (forge != "github" || !reviewers || strings.Count(login, "/") != 1) {
 		return fmt.Errorf("%s is not a GitHub team reviewer", login)
 	}
-	if forge == "gitlab" {
+	if forge == "gitlab" && needID {
 		if _, err := gitlabUserID(person.ID); err != nil {
 			return fmt.Errorf("%s: %w", login, err)
 		}
@@ -199,15 +207,15 @@ func gitlabUserID(id string) (int64, error) {
 	return n, nil
 }
 
-// PRLabelChange adds and removes labels in one write per row: by ID on
-// GitHub, by Name on GitLab.
+// PRLabelChange removes, then adds, labels, one write per side, each
+// label by its ID.
 type PRLabelChange struct {
 	Add    []PRLabel `json:"add"`
 	Remove []PRLabel `json:"remove"`
 }
 
-// Validate checks the change for a forge.
-func (c PRLabelChange) Validate(forge string) error {
+// Validate checks the change's shape.
+func (c PRLabelChange) Validate() error {
 	if len(c.Add)+len(c.Remove) == 0 {
 		return errors.New("the change adds and removes no label")
 	}
@@ -216,15 +224,10 @@ func (c PRLabelChange) Validate(forge string) error {
 	}
 	seen := map[string]bool{}
 	for _, label := range append(append([]PRLabel{}, c.Add...), c.Remove...) {
-		key := label.Name
-		if forge == "github" {
-			key = label.ID
-		}
+		key := label.ID
 		switch {
 		case strings.TrimSpace(key) == "":
-			return errors.New("a label is named by its id (GitHub) or name (GitLab)")
-		case forge == "gitlab" && strings.Contains(label.Name, ","):
-			return fmt.Errorf("label %q holds a comma, which GitLab's label lists cannot carry", label.Name)
+			return fmt.Errorf("label %q carries no id", label.Name)
 		case seen[key]:
 			return fmt.Errorf("label %s is named twice", firstNonEmpty(label.Name, key))
 		}
@@ -322,32 +325,94 @@ func ValidateMergeMessageMethod(method string) error {
 	return nil
 }
 
-// UnconfirmedWriteError is a management change the forge may have
-// applied, in part or whole: its write failed in a way
-// forgeapi.WriteNotApplied cannot rule out (a reset or timeout after
-// sending, a 5xx, a body cut short), or (Partial) an earlier write of
-// the same change took effect and a later one failed. A caller does not
-// send it again; it refreshes and lets the forge's answer show what
-// happened.
+// UnconfirmedWriteError is a management write the forge may have
+// applied: it failed in a way forgeapi.WriteNotApplied cannot rule out (a
+// reset or timeout after sending, a 5xx, a body cut short, an error
+// beside data). A caller does not send it again; it refreshes and lets
+// the forge's answer show what happened.
 type UnconfirmedWriteError struct {
-	Err     error
-	Partial bool
+	Err error
 }
 
 func (e *UnconfirmedWriteError) Error() string {
-	if e.Partial {
-		return fmt.Sprintf("the forge applied part of the change: %v", e.Err)
-	}
 	return fmt.Sprintf("the forge did not confirm the change: %v", e.Err)
 }
 
 func (e *UnconfirmedWriteError) Unwrap() error { return e.Err }
 
+// PartialWriteError is a change whose earlier writes took effect (Done,
+// "removed bob from the reviewers") and whose next write (Next, "adding
+// carol") failed with Err, which either refused it or left it
+// unconfirmed (Unconfirmed). The caller refreshes as for an unconfirmed
+// write.
+type PartialWriteError struct {
+	Done, Next string
+	Err        error
+}
+
+func (e *PartialWriteError) Error() string {
+	return fmt.Sprintf("%s; %s failed: %v", e.Done, e.Next, e.Err)
+}
+
+func (e *PartialWriteError) Unwrap() error { return e.Err }
+
+// Unconfirmed is whether the failed write may have applied: anything but
+// a refusal (an explained ForgeActionError, or what
+// forgeapi.WriteNotApplied proves).
+func (e *PartialWriteError) Unconfirmed() bool {
+	if _, ok := errors.AsType[*UnconfirmedWriteError](e.Err); ok {
+		return true
+	}
+	if _, ok := errors.AsType[*ForgeActionError](e.Err); ok {
+		return false
+	}
+	return !forgeapi.WriteNotApplied(e.Err)
+}
+
+// changeStep is one write of a change: done words it applied ("removed
+// bob from the reviewers"), next words it to come ("adding carol").
+type changeStep struct {
+	done, next string
+	run        func() error
+}
+
+// runSteps runs a change's writes in order and stops at the first
+// failure: the first write's failure classified as writeOutcome does,
+// a later one's a PartialWriteError after what the earlier ones did.
+func runSteps(steps []changeStep) error {
+	var done []string
+	for _, step := range steps {
+		if err := step.run(); err != nil {
+			if len(done) == 0 {
+				if _, explained := errors.AsType[*ForgeActionError](err); explained {
+					return err
+				}
+				return writeOutcome(err)
+			}
+			return &PartialWriteError{Done: strings.Join(done, "; "), Next: step.next, Err: err}
+		}
+		done = append(done, step.done)
+	}
+	return nil
+}
+
+// stepWords words one side of a people or label change: "removed bob
+// and carol from the reviewers" and "removing bob and carol".
+func stepWords(verb string, names []string, list string) (done, next string) {
+	joined := joinClauses(names)
+	switch verb {
+	case "remove":
+		return fmt.Sprintf("removed %s from the %s", joined, list), "removing " + joined
+	default:
+		return fmt.Sprintf("added %s to the %s", joined, list), "adding " + joined
+	}
+}
+
 // writeOutcome is the error of one management write as its caller
 // classifies it: nil, as it is when the forge did not apply it, else
 // unconfirmed.
 func writeOutcome(err error) error {
-	if err == nil || forgeapi.WriteNotApplied(err) {
+	if _, classified := errors.AsType[*UnconfirmedWriteError](err); classified || err == nil || forgeapi.WriteNotApplied(err) {
 		return err
 	}
 	return &UnconfirmedWriteError{Err: err}
@@ -432,7 +497,7 @@ func (c *Core) SetPRLabels(ctx context.Context, ref PRReference, change PRLabelC
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	if err := change.Validate(ref.Forge); err != nil {
+	if err := change.Validate(); err != nil {
 		return err
 	}
 	return c.ForgeByID(ref.Forge).SetPRLabels(forgeWrite(ctx), ref, change)
@@ -455,7 +520,7 @@ func (c *Core) RerequestPRReview(ctx context.Context, ref PRReference, reviewer 
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	if err := validPerson(ref.Forge, reviewer, true); err != nil {
+	if err := validPerson(ref.Forge, reviewer, true, true); err != nil {
 		return err
 	}
 	return c.ForgeByID(ref.Forge).RerequestReview(forgeWrite(ctx), ref, reviewer)
@@ -518,4 +583,16 @@ func normalizeColor(color string) string {
 		color = "#" + color
 	}
 	return strings.ToLower(color)
+}
+
+// manageUnavailableSentence words a failed Details read
+// (PRManage.Unavailable) in the error vocabulary.
+func manageUnavailableSentence(ref PRReference, err error) string {
+	const what = "Reviewers, assignees, labels and the PR's edit controls are"
+	labels := forgeLabels(ref.Forge)
+	if forbidden, ok := errors.AsType[*forgeapi.ForbiddenError](err); ok && forbidden.Scope != "" {
+		return fmt.Sprintf("%s not shown: your %s token lacks the `%s` scope. Create a token with that scope and log %s in with it.", what, labels.host(ref.Host), forbidden.Scope, labels.binary)
+	}
+	explained, _ := ExplainForgeError(ref, ActionRead, err).(*ForgeActionError)
+	return what + " not shown for now. " + explained.Message
 }

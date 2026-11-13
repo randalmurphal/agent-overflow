@@ -101,7 +101,6 @@ var gitlabAPI = []apiRoute{
 	{name: "glab api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"hostname"}, run: forgeUser},
 	{name: "glab api user events", method: "GET", pattern: regexp.MustCompile(`^users/(\d+)/events(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabUserEvents},
 	{name: "glab api project users", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/users(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabProjectUsers},
-	{name: "glab api project labels", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/labels(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabProjectLabels},
 	{name: "glab api state events", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/resource_state_events(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabStateEvents},
 }
 
