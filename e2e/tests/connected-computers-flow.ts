@@ -15,9 +15,15 @@ import { doneResult, humanGateWorkflow, seedWorkflow, setClaudeScenario, startWo
 interface Seed { projects: Array<{ projectId: string; path: string; threadIds: string[] }> }
 interface ProjectRow { project: { id: string; name: string; path: string } }
 
+// Closes Settings and waits out its exit fade. Until the overlay is gone its
+// Close button still reads visible, and a click on it then never lands.
+async function closeSettings(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
+  await expect(page.getByTestId('settings-overlay')).toHaveCount(0);
+}
+
 async function settingsPage(page: Page, name: string): Promise<void> {
-  const close = page.getByRole('button', { name: 'Close Settings', exact: true });
-  if (await close.isVisible()) await close.click();
+  if (await page.getByTestId('settings-overlay').isVisible()) await closeSettings(page);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('tab', { name, exact: true }).click();
 }
@@ -99,7 +105,7 @@ export function connectedComputersFlow(): void {
       // must still receive new rows live, across replay, and after replay.
       // Keep home online throughout so a home restart cannot hide a missing
       // subscription or accidentally repair the remote catalog.
-      await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
+      await closeSettings(page);
       const createRemoteDraft = async (title: string) => {
         const thread = await remote!.rpc<{ id: string }>('CreateThread', {
           projectId: remoteSeed.projects[0].projectId, title, provider: 'codex',
@@ -166,7 +172,7 @@ export function connectedComputersFlow(): void {
       await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).not.toBe(initialFont);
       const changedFont = await page.evaluate(() => getComputedStyle(document.documentElement).fontSize);
       expect(await second.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe(initialFont);
-      await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
+      await closeSettings(page);
 
       await page.getByTestId('sidebar-tool-workflows').click();
       await page.getByTestId('workflows-pause-all').click();
@@ -206,7 +212,7 @@ export function connectedComputersFlow(): void {
       await computerRow.getByRole('button', { name: 'Verify & reconnect' }).click();
       await expect(computerRow).toContainText('Connected');
       expect(await home.rpc<Array<{ id: string }>>('ListBackends')).toEqual(expect.arrayContaining([expect.objectContaining({ id: remoteId })]));
-      await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
+      await closeSettings(page);
 
       // Stop one independently; a remembered catalog must not disappear on
       // reload and the other computer must remain usable.

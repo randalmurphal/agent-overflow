@@ -387,6 +387,25 @@ func TestMergedPRWorktreeRemovedOutsideMeanwhileIsGone(t *testing.T) {
 	}
 }
 
+// A worktree whose directory vanishes while the cleanup waits on the forge
+// keeps its registration: an unattended cleanup never prunes one.
+func TestMergedPRWorktreeWhoseDirectoryVanishesMeanwhileStaysRegistered(t *testing.T) {
+	t.Parallel()
+	m := newMergeCase(t, "feature/vanished-dir")
+	m.during(func() {
+		if err := os.RemoveAll(m.path); err != nil {
+			t.Errorf("remove directory: %v", err)
+		}
+	})
+	m.pass()
+	m.due()
+	m.pass()
+	m.expectOutcome(t, store.PROutcomeGone)
+	if _, registered, err := m.app.findWorktree(m.repo, m.path); err != nil || !registered {
+		t.Fatalf("registered=%v err=%v, want the registration kept", registered, err)
+	}
+}
+
 // A removal that fails because the worktree went outside the app in the
 // moment before git ran is gone, with no error row; one git completed
 // whose reaction then failed is removed, and its threads are told.

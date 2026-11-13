@@ -239,6 +239,12 @@ export type Extension = {
     tokenizer: (this: TokenizerThis, src: string, tokens: Token[] | TokensList) => GenericToken | undefined;
     start?: TokenizerStartFunction;
     applyInBlockParsing?: boolean;
+    /**
+     * True only when this extension tokenizes `source` exactly as `previous`
+     * did. A renderer holding output produced under `previous` may then keep
+     * it. Absent, or false, means the output is rebuilt.
+     */
+    tokenizesAlike?: (previous: Extension, source: string) => boolean;
 };
 export type StreamdownToken = Exclude<MarkedToken, Tokens.List | Tokens.ListItem | Tokens.Table> | ListToken | ListItemToken | MathToken | AlertToken | FootnoteToken | SubSupToken | BrToken | HrToken | TableToken | THead | TBody | TFoot | THeadRow | TRow | TH | TD | DescriptionListToken | DescriptionToken | DescriptionDetailToken | DescriptionTermToken | AlignToken | CitationToken | MdxToken | DetailsToken | DetailsSummaryToken;
 export type { TableToken, THead, TBody, TFoot, THeadRow, TRow, TH, TD } from './extensions/table';

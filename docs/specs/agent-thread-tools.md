@@ -303,7 +303,8 @@ project, the root or any linked worktree, including one made outside the
 app. `worktree` (optional branch name) runs the thread on that branch
 instead of inheriting the workspace. A branch already checked out runs in
 that checkout, the project root included, because git checks a branch out
-in one place. A branch that exists locally, or on origin after a fetch,
+in one place. A worktree git still registers whose folder is gone is
+refused, named in the error. A branch that exists locally, or on origin after a fetch,
 gets a fresh worktree that checks it out as it is (tracking origin's when
 only origin has it), the same checkout the composer's branch picker makes;
 `base` and `base_local` are refused for an existing branch. A branch that
