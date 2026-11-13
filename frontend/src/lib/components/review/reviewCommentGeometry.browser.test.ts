@@ -76,7 +76,7 @@ describe('a sent comment\'s header actions', () => {
       backend: HOME_BACKEND,
       ref: () => ({ forge: 'github', host: 'github.com', namespace: 'o', repo: 'r', number: 1 }),
       identity: () => 'k',
-      entityKey: () => 'k',
+      appliedSeq: () => 0,
       launch: () => 'l',
       updateFailing: () => false,
       refreshThreads: async () => {},

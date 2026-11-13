@@ -76,7 +76,7 @@
     {:else}
       <textarea
         bind:this={summary}
-        class="mt-2 w-full resize-none rounded border border-border-subtle bg-surface-0 px-2 py-1.5 text-xs"
+        class="mt-2 block w-full resize-none rounded border border-border-subtle bg-surface-0 px-2 py-1.5 text-xs"
         rows="2"
         aria-label="Review summary"
         data-testid="review-summary"

@@ -4,7 +4,7 @@
 // current text), previewed as the diff it will become and posted, then
 // rendered from the forge's answer; Apply landing a commit on the head
 // branch, the pane's stale-head banner taking over and the thread's
-// state following after the reload; a refused apply's sentence under its
+// state following from the PR read; a refused apply's sentence under its
 // suggestion; Applied and Outdated suggestions; a reaction toggled on and
 // off from its chip and one added from the popover, each chip showing the
 // forge's answer; GitLab's unknown awards as chips; GitLab's reactions
@@ -118,18 +118,20 @@ for (const forge of ['github', 'gitlab'] as const) {
       await card.screenshot({ path: testInfo.outputPath(`${forge}-suggestion-refused.png`) });
 
       // The second goes through: the head moves, so the pane's stale-head
-      // banner takes over; reloaded, the diff and the thread follow.
+      // banner takes over, and the PR read the apply answered with shows
+      // the thread's new state. (The fake moves the head to a commit the
+      // test origin lacks, so the diff itself cannot reload here.)
       await suggestion.getByTestId('review-suggestion-apply').click();
       await expect(review.getByTestId('review-pr-stale')).toBeVisible({ timeout: 30_000 });
       await expect(error).toHaveCount(0);
-      expect(await forgeRouteCalls(harness, routes.apply)).toHaveLength(1);
-      await review.getByTestId('review-pr-stale').getByRole('button', { name: 'Reload' }).click();
-      await expect(line(review, 'export const half = 5 / 2;')).toBeVisible({ timeout: 30_000 });
+      // GitHub refuses a mutation with a 200, so its refused call counts.
+      expect(await forgeRouteCalls(harness, routes.apply)).toHaveLength(forge === 'github' ? 2 : 1);
       if (forge === 'github') {
-        // GitHub's UI resolves the thread an applied suggestion came from.
+        // GitHub resolves the thread an applied suggestion came from.
         await expect(card).toHaveAttribute('data-state', 'resolved', { timeout: 30_000 });
       } else {
         await expect(card.getByTestId('review-suggestion-applied')).toBeVisible({ timeout: 30_000 });
+        await expect(card.getByTestId('review-suggestion-apply')).toHaveCount(0);
       }
       await expectEveryForgeCallHandled(harness);
     } finally {
@@ -167,8 +169,11 @@ for (const forge of ['github', 'gitlab'] as const) {
       await card.locator('[data-first-comment]').last().hover();
       const actions = header.getByTestId('review-comment-actions');
       await expect(actions.locator('> span')).toHaveCSS('opacity', '1');
-      await expect(actions.locator('button')).toHaveCount(2);
-      expect(await actions.locator('button').evaluateAll((els) => els.map((el) => el.getAttribute('aria-label')))).toEqual(['Add reaction', 'Copy link']);
+      // GitHub lets a WRITE viewer edit and delete another's comment;
+      // GitLab only a maintainer.
+      const labels = forge === 'github' ? ['Add reaction', 'Copy link', 'Edit', 'Delete'] : ['Add reaction', 'Copy link'];
+      await expect(actions.locator('button')).toHaveCount(labels.length);
+      expect(await actions.locator('button').evaluateAll((els) => els.map((el) => el.getAttribute('aria-label')))).toEqual(labels);
       await centre(card);
       await card.screenshot({ path: testInfo.outputPath(`${forge}-reactions-hover.png`) });
       await actions.getByTestId('review-comment-react').click();

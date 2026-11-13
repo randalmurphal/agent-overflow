@@ -1,7 +1,7 @@
 // Suggestions, reactions, Preview and Copy link on compact, on GitLab
 // against the fake forge: a comment's hover actions show without hover;
 // a chip toggles and the popover adds a reaction by tap; a new comment's
-// Suggest change and Preview fit the editor's button row; Apply lands a
+// Suggest change and Preview fit the editor, its button row wrapping; Apply lands a
 // commit and the stale-head banner takes over; Copy link fills the
 // clipboard. The fixture and steps are in
 // review-suggestions-reactions-flow.ts; review-suggestions-reactions.spec.ts
@@ -53,9 +53,13 @@ test('on compact, reactions, suggestions, Preview and Copy link work by tap', as
     const editor = await openEditor(review, 'const five', true);
     await editor.getByTestId('review-editor-suggest').tap();
     await expect(editor.locator('textarea')).toHaveValue('```suggestion\nexport const five = 5;\n```');
-    const row = (await editor.getByTestId('review-draft-editor-now').boundingBox())!;
-    const suggest = (await editor.getByTestId('review-editor-suggest').boundingBox())!;
-    expect(Math.abs(suggest.y - row.y)).toBeLessThan(row.height);
+    // The row wraps whole groups: every button stays inside the editor.
+    const box = (await editor.boundingBox())!;
+    for (const button of await editor.locator('[data-editor-control]').all()) {
+      const b = (await button.boundingBox())!;
+      expect(b.x).toBeGreaterThanOrEqual(box.x - 0.5);
+      expect(b.x + b.width).toBeLessThanOrEqual(box.x + box.width + 0.5);
+    }
     await centre(editor);
     await page.screenshot({ path: testInfo.outputPath('compact-editor-suggestion.png') });
     await editor.getByTestId('review-editor-preview-toggle').tap();

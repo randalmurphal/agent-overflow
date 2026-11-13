@@ -83,7 +83,7 @@
   {:else}
     <textarea
       bind:this={textarea}
-      class="min-h-24 w-full resize-y rounded-[var(--radius-field)] border border-border bg-surface-0 px-2.5 py-2 font-mono text-xs leading-relaxed text-fg outline-none placeholder:text-fg-subtle focus:border-accent/60 read-only:opacity-70"
+      class="block min-h-24 w-full resize-y rounded-[var(--radius-field)] border border-border bg-surface-0 px-2.5 py-2 font-mono text-xs leading-relaxed text-fg outline-none placeholder:text-fg-subtle focus:border-accent/60 read-only:opacity-70"
       rows="10"
       {placeholder}
       aria-label="Pull request description"

@@ -1,6 +1,5 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { untrack } from 'svelte';
-import { peekPRSeq } from './prReviewStore.svelte';
 import { toastLostWrite, writeFailure, type LostWriteText } from './lostWrite';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
@@ -35,11 +34,13 @@ export interface ForgeOpsHost {
   /** The PR's computer-scoped key (computerPRKey of ref), whatever the
    * scope; null without a PR. */
   identity(): string | null;
-  /** The PR's entity key whose applied seq settles a write. */
-  entityKey(): string | null;
+  /** The PR's applied seq (peekPRSeq of its entity key), which settles a
+   * write. */
+  appliedSeq(): number;
   launch(): string;
   updateFailing(): boolean;
-  /** Reads the PR's threads again, for an answer with no pump (seq 0). */
+  /** Reads the PR's threads again, for an answer with no pump (seq 0);
+   * the read shows its own failure on the pane. */
   refreshThreads(): Promise<void>;
 }
 
@@ -69,7 +70,6 @@ export interface ForgeOps {
 
 interface Op {
   readonly id: number;
-  readonly entity: string;
   readonly launch: string;
   /** The answer's seq; undefined while the call is in flight. */
   readonly seq?: number;
@@ -90,7 +90,7 @@ export function createForgeOps(host: ForgeOpsHost): ForgeOps {
   function opPending(op: Op | undefined): boolean {
     if (!op) return false;
     if (op.seq === undefined) return true;
-    return op.launch === host.launch() && !host.updateFailing() && peekPRSeq(op.entity) < op.seq;
+    return op.launch === host.launch() && !host.updateFailing() && host.appliedSeq() < op.seq;
   }
 
   function scoped(key: string): string | null {
@@ -118,12 +118,11 @@ export function createForgeOps(host: ForgeOpsHost): ForgeOps {
   return {
     async run(key, surface, call, lost, options = {}) {
       const ref = host.ref();
-      const entity = host.entityKey();
       const opKey = scoped(key);
       const surfaceKey = scoped(surface);
-      if (!ref || !entity || opKey === null || surfaceKey === null || opPending(ops.get(opKey))) return false;
+      if (!ref || opKey === null || surfaceKey === null || opPending(ops.get(opKey))) return false;
       const started = epoch;
-      const op: Op = { id: ++counter, entity, launch: host.launch() };
+      const op: Op = { id: ++counter, launch: host.launch() };
       ops.set(opKey, op);
       surfaceOwner.set(surfaceKey, op.id);
       errors.delete(surfaceKey);
@@ -139,13 +138,13 @@ export function createForgeOps(host: ForgeOpsHost): ForgeOps {
         }
         if (started !== epoch) return false;
         if (surfaceOwner.get(surfaceKey) === op.id) errors.set(surfaceKey, writeFailure(err).sentence);
-        if (options.refreshOnFailure) void host.refreshThreads().catch(() => {});
+        if (options.refreshOnFailure) void host.refreshThreads();
         return false;
       }
       if (ops.get(opKey) !== op) return true;
       if (seq <= 0) {
         ops.delete(opKey);
-        if (!disposed) void host.refreshThreads().catch(() => {});
+        if (!disposed) void host.refreshThreads();
         return true;
       }
       ops.set(opKey, { ...op, seq });

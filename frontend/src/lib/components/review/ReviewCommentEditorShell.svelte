@@ -186,7 +186,7 @@
     {rows}
     readonly={pending}
     placeholder={shownPlaceholder}
-    class="w-full resize-none rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-2 text-xs leading-relaxed text-fg placeholder:text-fg-subtle focus:border-accent/60 focus:outline-none read-only:opacity-70"
+    class="block w-full resize-none rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-2 text-xs leading-relaxed text-fg placeholder:text-fg-subtle focus:border-accent/60 focus:outline-none read-only:opacity-70"
     oninput={(event) => onBodyChange(event.currentTarget.value)}
     onkeydown={onKeydown}
   ></textarea>
@@ -199,7 +199,9 @@
   {/if}
   {@render notes?.()}
   {#if !hideActions}
-    <div class="mt-2 flex items-center gap-1.5">
+    <!-- Two groups that wrap whole, so a narrow editor keeps every button. -->
+    <div class="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1">
+      <span class="flex min-w-0 items-center gap-1.5">
       {@render leading?.()}
       {#if suggest && !previewing}
         <button
@@ -215,7 +217,8 @@
       {#if preview}
         <ReviewPreviewToggle control={preview} field={() => textarea} />
       {/if}
-      <span class="min-w-0 flex-1"></span>
+      </span>
+      <span class="ml-auto flex items-center gap-1.5">
       {#if pending}
         <span class="flex items-center gap-1 text-[0.6875rem] text-fg-muted" data-testid="review-editor-pending">
           <SteppedSpinner size={11} />
@@ -250,6 +253,7 @@
         title={primary.title}
         onclick={() => fire(primary)}
       >{primary.label}</button>
+      </span>
     </div>
   {/if}
 </div>

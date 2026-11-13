@@ -65,6 +65,6 @@ describe('an editor\'s preview', () => {
     const { container } = render(ReviewEditorPreview, { body: BODY, height: 80, source: { file, from: 2, to: 2 } });
     await waitFor(() => expect(lines(container, 'removed')).toEqual(['const b = 3;']));
     expect(lines(container, 'added')).toEqual(['const b = 30;']);
-    expect(container.querySelector<HTMLElement>('[data-testid="review-editor-preview"]')!.style.minHeight).toBe('80px');
+    expect(container.querySelector<HTMLElement>('[data-testid="review-editor-preview"]')!.style.height).toBe('80px');
   });
 });
