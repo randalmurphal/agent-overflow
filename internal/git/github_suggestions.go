@@ -1,0 +1,296 @@
+package git
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"agent-overflow/internal/forgeapi"
+)
+
+// GitHub's suggestions. GitHub reports none of its own: the read parses
+// each review thread comment's body (ParseSuggestions) and anchors its
+// blocks on the thread's new-side lines; the replaced text is not read
+// (it would take each thread's diffHunk into the one tick request), so
+// From is left unknown. GitHub has no apply endpoint: the apply reads the
+// file at the head the pane loaded, rewrites the anchored lines and
+// commits it to the head branch with createCommitOnBranch, as GitHub's
+// own "Commit suggestion" does, then resolves the thread as GitHub does.
+
+// githubSuggestionBlocks are the blocks GitHub renders as suggestions:
+// the ones without GitLab's -N+M header, which GitHub reads as code.
+func githubSuggestionBlocks(body string) []ParsedSuggestion {
+	var out []ParsedSuggestion
+	for _, block := range ParseSuggestions(body) {
+		if !block.Widened {
+			out = append(out, block)
+		}
+	}
+	return out
+}
+
+// githubNewSideRange is the new-side lines a thread is anchored on, ok
+// false for a file thread, an old-side line or range, or an outdated
+// thread (whose current lines GitHub nulls).
+func githubNewSideRange(thread ReviewThread) (start, end int, ok bool) {
+	if thread.Side != "right" || thread.Line == nil || (thread.StartSide != "" && thread.StartSide != "right") {
+		return 0, 0, false
+	}
+	start = *thread.Line
+	if thread.StartLine != nil {
+		start = *thread.StartLine
+	}
+	return start, *thread.Line, start > 0 && start <= *thread.Line
+}
+
+// githubMarkSuggestions fills each review thread comment's suggestions.
+// A suggestion is appliable while the PR is open, the viewer may apply
+// suggestions (viewerCanApplySuggestion, GitHub's own answer), and the
+// thread is current, unresolved (GitHub's apply resolves it) and on new
+// lines.
+func githubMarkSuggestions(threads []ReviewThread, pull *githubPullRaw) {
+	open := strings.EqualFold(pull.State, "OPEN")
+	for i := range threads {
+		thread := &threads[i]
+		start, end, onNew := githubNewSideRange(*thread)
+		appliable := open && pull.ViewerCanApplySuggestion && onNew && !thread.IsOutdated && !thread.IsResolved
+		for j := range thread.Comments {
+			comment := &thread.Comments[j]
+			for index, block := range githubSuggestionBlocks(comment.Body) {
+				suggestion := CommentSuggestion{Index: index, To: block.Lines, Appliable: appliable}
+				if onNew {
+					suggestion.StartLine, suggestion.EndLine = start, end
+				}
+				comment.Suggestions = append(comment.Suggestions, suggestion)
+			}
+		}
+	}
+}
+
+// githubReactions maps reaction groups with a count to the shared
+// vocabulary, in GitHub's order.
+func githubReactions(groups []githubReactionGroupRaw) []CommentReaction {
+	var out []CommentReaction
+	for _, group := range groups {
+		name := githubReactionName(group.Content)
+		if name == "" || group.Reactors.TotalCount <= 0 {
+			continue
+		}
+		out = append(out, CommentReaction{Name: name, Count: group.Reactors.TotalCount, ViewerReacted: group.ViewerHasReacted})
+	}
+	return out
+}
+
+// githubSuggestionTargetQuery reads what an apply checks and needs: the
+// thread with its anchor, its PR (to check it is the caller's, open and
+// at the head the caller saw) and its comments' ids (the comment must be
+// one of them), the comment's body and author (the Co-authored-by
+// trailer), and the viewer (no trailer for their own suggestion).
+const githubSuggestionTargetQuery = `query SuggestionTarget($threadID: ID!, $commentID: ID!) {
+  viewer { login }
+  thread: node(id: $threadID) {
+    __typename
+    ... on PullRequestReviewThread {
+      id isResolved isOutdated path line startLine diffSide startDiffSide subjectType
+      pullRequest { number state headRefName headRefOid repository { nameWithOwner } headRepository { nameWithOwner } }
+      comments(first: 100) { ` + githubPageInfoFields + ` nodes { id } }
+    }
+  }
+  comment: node(id: $commentID) {
+    __typename
+    ... on PullRequestReviewComment { id body author { login ... on User { databaseId name } } }
+  }
+}`
+
+const githubSuggestionCommitMutation = `mutation SuggestionCommit($repository: String!, $branch: String!, $expectedHeadOid: GitObjectID!, $headline: String!, $body: String, $path: String!, $contents: Base64String!) {
+  createCommitOnBranch(input: {branch: {repositoryNameWithOwner: $repository, branchName: $branch}, expectedHeadOid: $expectedHeadOid, message: {headline: $headline, body: $body}, fileChanges: {additions: [{path: $path, contents: $contents}]}}) { commit { oid } }
+}`
+
+type githubSuggestionTargetRaw struct {
+	Viewer *struct {
+		Login string `json:"login"`
+	} `json:"viewer"`
+	Thread *struct {
+		Typename      string `json:"__typename"`
+		ID            string `json:"id"`
+		IsResolved    bool   `json:"isResolved"`
+		IsOutdated    bool   `json:"isOutdated"`
+		Path          string `json:"path"`
+		Line          *int   `json:"line"`
+		StartLine     *int   `json:"startLine"`
+		DiffSide      string `json:"diffSide"`
+		StartDiffSide string `json:"startDiffSide"`
+		SubjectType   string `json:"subjectType"`
+		PullRequest   *struct {
+			Number     int    `json:"number"`
+			State      string `json:"state"`
+			HeadRef    string `json:"headRefName"`
+			HeadOID    string `json:"headRefOid"`
+			Repository struct {
+				NameWithOwner string `json:"nameWithOwner"`
+			} `json:"repository"`
+			HeadRepository *struct {
+				NameWithOwner string `json:"nameWithOwner"`
+			} `json:"headRepository"`
+		} `json:"pullRequest"`
+		Comments githubThreadCommentsRaw `json:"comments"`
+	} `json:"thread"`
+	Comment *struct {
+		Typename string `json:"__typename"`
+		ID       string `json:"id"`
+		Body     string `json:"body"`
+		Author   *struct {
+			Login      string `json:"login"`
+			DatabaseID int64  `json:"databaseId"`
+			Name       string `json:"name"`
+		} `json:"author"`
+	} `json:"comment"`
+}
+
+// ApplySuggestion commits one suggestion to the head branch and resolves
+// its thread. Everything is checked before the commit: the thread and
+// comment belong to ref and to each other, the PR is open at req.HeadSHA,
+// the thread is current, unresolved and on new lines, and the comment
+// holds the suggestion. A failed resolve after the commit is a
+// PartialWriteError; the commit is never sent twice.
+func (f *githubForge) ApplySuggestion(ctx context.Context, ref PRReference, req SuggestionApply) error {
+	client, err := f.core.githubAPI(ref.Host)
+	if err != nil {
+		return err
+	}
+	var raw githubSuggestionTargetRaw
+	if _, err := client.GraphQL(ctx, "SuggestionTarget", githubSuggestionTargetQuery, map[string]any{"threadID": req.Target.ThreadID, "commentID": req.Target.CommentID}, &raw); err != nil {
+		var gql *forgeapi.GraphQLError
+		if errors.As(err, &gql) && graphQLNotFound(gql) {
+			return &CommentNotOnPRError{CommentID: req.Target.CommentID}
+		}
+		return err
+	}
+	thread, comment := raw.Thread, raw.Comment
+	elsewhere := &CommentNotOnPRError{CommentID: req.Target.CommentID}
+	if thread == nil || thread.Typename != "PullRequestReviewThread" || thread.PullRequest == nil ||
+		thread.PullRequest.Number != ref.Number || !strings.EqualFold(thread.PullRequest.Repository.NameWithOwner, ref.Namespace+"/"+ref.Repo) ||
+		comment == nil || comment.Typename != "PullRequestReviewComment" {
+		return elsewhere
+	}
+	members := githubThreadRaw{ID: thread.ID, Comments: thread.Comments}
+	if err := f.readThreadComments(ctx, client, &members); err != nil {
+		return err
+	}
+	found := false
+	for _, node := range members.Comments.Nodes {
+		found = found || node.ID == comment.ID
+	}
+	if !found {
+		if members.Comments.PageInfo.HasNextPage {
+			return &SuggestionNotAppliedError{Reason: "the thread has more comments than the app reads, so the comment could not be found in it"}
+		}
+		return elsewhere
+	}
+	pull := thread.PullRequest
+	view := ReviewThread{Side: strings.ToLower(thread.DiffSide), StartSide: strings.ToLower(thread.StartDiffSide), Line: thread.Line, StartLine: thread.StartLine}
+	if strings.EqualFold(thread.SubjectType, "FILE") {
+		view.Side = "file"
+	}
+	start, end, onNew := githubNewSideRange(view)
+	blocks := githubSuggestionBlocks(comment.Body)
+	switch {
+	case !strings.EqualFold(pull.State, "OPEN"):
+		return &SuggestionNotAppliedError{Reason: "the pull request is not open"}
+	case !strings.EqualFold(pull.HeadOID, req.HeadSHA):
+		return &HeadMovedError{Want: req.HeadSHA, Have: pull.HeadOID}
+	case thread.IsOutdated:
+		return &SuggestionNotAppliedError{Reason: "the lines it changes have changed since it was written"}
+	case thread.IsResolved:
+		return &SuggestionNotAppliedError{Reason: "its thread is resolved"}
+	case !onNew:
+		return &SuggestionNotAppliedError{Reason: "the comment is not on lines of the changed file"}
+	case req.Index >= len(blocks):
+		return &SuggestionNotAppliedError{Reason: "the comment holds no such suggestion"}
+	case pull.HeadRepository == nil:
+		return &SuggestionNotAppliedError{Reason: "the head branch's repository is gone"}
+	}
+	headRepo := pull.HeadRepository.NameWithOwner
+	content, err := readGitHubFileAt(ctx, client, headRepo, thread.Path, pull.HeadOID)
+	if err != nil {
+		return err
+	}
+	rewritten, err := applySuggestionToFile(content, start, end, blocks[req.Index].Lines)
+	if err != nil {
+		return err
+	}
+	vars := map[string]any{
+		"repository": headRepo, "branch": pull.HeadRef, "expectedHeadOid": pull.HeadOID,
+		"headline": SuggestionCommitHeadline, "path": thread.Path, "contents": base64.StdEncoding.EncodeToString(rewritten),
+	}
+	viewer := ""
+	if raw.Viewer != nil {
+		viewer = raw.Viewer.Login
+	}
+	if trailer := githubCoAuthor(comment.Author, viewer); trailer != "" {
+		vars["body"] = trailer
+	}
+	var commit struct {
+		CreateCommitOnBranch *struct {
+			Commit *struct {
+				OID string `json:"oid"`
+			} `json:"commit"`
+		} `json:"createCommitOnBranch"`
+	}
+	if _, err := client.GraphQL(ctx, "SuggestionCommit", githubSuggestionCommitMutation, vars, &commit); err != nil {
+		return writeOutcome(err)
+	}
+	if commit.CreateCommitOnBranch == nil || commit.CreateCommitOnBranch.Commit == nil || commit.CreateCommitOnBranch.Commit.OID == "" {
+		return &UnconfirmedWriteError{Err: errors.New("GitHub answered the suggestion's commit with no commit")}
+	}
+	if err := f.SetThreadResolved(ctx, ref, thread.ID, true); err != nil {
+		return &PartialWriteError{Done: "committed the suggestion to the head branch", Next: "resolving its thread", Err: err}
+	}
+	return nil
+}
+
+// githubCoAuthor is the Co-authored-by trailer crediting a suggestion's
+// author, as GitHub's own commit does: a user's no-reply address,
+// ID+login@users.noreply.github.com. A bot, a deleted account, an author
+// without an id, or the viewer themself gets none.
+func githubCoAuthor(author *struct {
+	Login      string `json:"login"`
+	DatabaseID int64  `json:"databaseId"`
+	Name       string `json:"name"`
+}, viewer string) string {
+	if author == nil || author.Login == "" || author.DatabaseID <= 0 || strings.EqualFold(author.Login, viewer) {
+		return ""
+	}
+	name := strings.TrimSpace(author.Name)
+	if name == "" || strings.ContainsAny(name, "<>\r\n") {
+		name = author.Login
+	}
+	return fmt.Sprintf("Co-authored-by: %s <%d+%s@users.noreply.github.com>", name, author.DatabaseID, author.Login)
+}
+
+// readGitHubFileAt reads path's raw bytes in repo at the commit sha,
+// bounded by suggestionFileMaxBytes: a larger file is refused, never read
+// whole.
+func readGitHubFileAt(ctx context.Context, client *forgeapi.Client, repo, path, sha string) ([]byte, error) {
+	segments := strings.Split(path, "/")
+	for i := range segments {
+		segments[i] = url.PathEscape(segments[i])
+	}
+	resp, err := client.Do(ctx, forgeapi.Request{
+		Path:         "repos/" + repo + "/contents/" + strings.Join(segments, "/"),
+		Query:        url.Values{"ref": {sha}},
+		Header:       http.Header{"Accept": {"application/vnd.github.raw"}},
+		MaxBodyBytes: suggestionFileMaxBytes,
+	})
+	if errors.Is(err, forgeapi.ErrBodyTooLarge) {
+		return nil, &SuggestionNotAppliedError{Reason: fmt.Sprintf("the file is larger than %d MiB", suggestionFileMaxBytes>>20)}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
+}

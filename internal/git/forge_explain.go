@@ -86,6 +86,9 @@ const (
 	ActionBypass    ForgeAction = "bypass the requested changes on"
 	ActionSearch    ForgeAction = "search"
 	ActionMergeText ForgeAction = "read the default commit message of"
+	// The suggestion and reaction actions (forge_suggestions.go).
+	ActionApplySuggestion ForgeAction = "apply a suggestion on"
+	ActionReact           ForgeAction = "change a reaction on"
 )
 
 // ExplainForgeError turns err, from a forge call about ref, into a
@@ -155,7 +158,10 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	var moved *HeadMovedError
 	var gone *ReplyThreadGoneError
 	var elsewhere *CommentNotOnPRError
+	var notApplied *SuggestionNotAppliedError
 	switch {
+	case errors.As(err, &notApplied):
+		return wrap(ForgeErrorRefused, fmt.Sprintf("The suggestion was not applied: %s.", notApplied.Reason))
 	case errors.As(err, &elsewhere):
 		return wrap(ForgeErrorNotFound, fmt.Sprintf("That comment is not on %s, so it was not changed.", name))
 	case errors.As(err, &moved):
@@ -272,7 +278,7 @@ func graphQLHeadMoved(graphQL *forgeapi.GraphQLError) bool {
 		return false
 	}
 	lower := strings.ToLower(graphQL.Problems[0].Message)
-	return strings.Contains(lower, "head branch was modified") || strings.Contains(lower, "expected head")
+	return strings.Contains(lower, "head branch was modified") || strings.Contains(lower, "expected head") || strings.Contains(lower, "expected branch to point to")
 }
 
 func graphQLSentence(graphQL *forgeapi.GraphQLError, labels forgeLabelSet, action ForgeAction, name string) string {

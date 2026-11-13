@@ -33,7 +33,11 @@ const (
 
 	// githubViewerCommentFields is what edit, delete and the "edited" mark
 	// read from a comment of either kind.
-	githubViewerCommentFields = `lastEditedAt url viewerCanUpdate viewerCanDelete`
+	githubViewerCommentFields = `lastEditedAt url viewerCanUpdate viewerCanDelete ` + githubReactionFields
+	// githubReactionFields is a comment's reaction groups: GitHub answers
+	// every content, so the count is the reactors' totalCount (no nodes:
+	// the names would cost a connection per comment).
+	githubReactionFields      = `reactionGroups { content viewerHasReacted reactors { totalCount } }`
 	githubThreadCommentFields = `id databaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` replyTo { id databaseId }`
 	githubThreadFields        = `id isResolved isOutdated path line startLine originalLine originalStartLine diffSide startDiffSide subjectType ` +
 		`comments(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }`
@@ -111,6 +115,7 @@ const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number
       number headRefName
       ... @include(if: $wantDetail) { ` + githubDetailFields + ` }
       commits(last: 1) @include(if: $wantChecks) { nodes { commit { id oid statusCheckRollup { contexts(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubContextFields + ` } } } } } }
+      ... @include(if: $wantThreads) { state viewerCanApplySuggestion }
       reviewThreads(first: 100) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubThreadFields + ` } }
       comments(first: 100) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubCommentFields + ` } }
       timelineItems(last: 100, itemTypes: [` + githubTimelineItemTypes + `]) @include(if: $wantEvents) { ` + githubTimelinePageInfoFields + ` nodes { ` + githubTimelineFields + ` } }
@@ -185,10 +190,20 @@ type githubActorRaw struct {
 // githubViewerCommentRaw is githubViewerCommentFields; lastEditedAt is
 // null for a comment never edited.
 type githubViewerCommentRaw struct {
-	LastEditedAt    string `json:"lastEditedAt"`
-	URL             string `json:"url"`
-	ViewerCanUpdate bool   `json:"viewerCanUpdate"`
-	ViewerCanDelete bool   `json:"viewerCanDelete"`
+	LastEditedAt    string                   `json:"lastEditedAt"`
+	URL             string                   `json:"url"`
+	ViewerCanUpdate bool                     `json:"viewerCanUpdate"`
+	ViewerCanDelete bool                     `json:"viewerCanDelete"`
+	ReactionGroups  []githubReactionGroupRaw `json:"reactionGroups"`
+}
+
+// githubReactionGroupRaw is one reactionGroups entry.
+type githubReactionGroupRaw struct {
+	Content          string `json:"content"`
+	ViewerHasReacted bool   `json:"viewerHasReacted"`
+	Reactors         struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"reactors"`
 }
 
 type githubThreadCommentRaw struct {
@@ -309,7 +324,10 @@ type githubPullRaw struct {
 	MergeStateStatus string         `json:"mergeStateStatus"`
 	ReviewDecision   string         `json:"reviewDecision"`
 	Author           githubActorRaw `json:"author"`
-	LatestReviews    struct {
+	// ViewerCanApplySuggestion is selected with the threads: whether the
+	// viewer may commit a suggestion to the head branch.
+	ViewerCanApplySuggestion bool `json:"viewerCanApplySuggestion"`
+	LatestReviews            struct {
 		Nodes []githubReviewRaw `json:"nodes"`
 	} `json:"latestReviews"`
 	Commits struct {
@@ -526,6 +544,7 @@ func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, 
 		page = next.Comments.PageInfo
 	}
 	out := githubReviewThreads(threads)
+	githubMarkSuggestions(out, pull)
 	return append(out, githubConversationThreads(comments)...), nil
 }
 
@@ -830,10 +849,12 @@ func githubConversationThreads(nodes []githubCommentRaw) []ReviewThread {
 	return threads
 }
 
-// fill copies the viewer's permissions, the edit time and the URL onto out.
+// fill copies the viewer's permissions, the edit time, the URL and the
+// reactions onto out.
 func (raw githubViewerCommentRaw) fill(out *ReviewComment) {
 	out.EditedAt = raw.LastEditedAt
 	out.URL = raw.URL
 	out.ViewerCanEdit = raw.ViewerCanUpdate
 	out.ViewerCanDelete = raw.ViewerCanDelete
+	out.Reactions = githubReactions(raw.ReactionGroups)
 }
