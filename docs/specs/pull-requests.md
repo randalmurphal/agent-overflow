@@ -433,9 +433,15 @@ permission reads and the refusals are in
   each from the forge's own answer and each decided alone (a row's Edit
   by its own flag). A control the viewer may not use is absent. A detail
   without `manage` (an older backend) shows no Details section and none
-  of these controls; that absence is the compatibility gate. A failed
-  management read sets `manage.unavailable`: every flag is false and the
-  Details section, collapsed, shows the sentence instead of its rows.
+  of these controls; that absence is the compatibility gate. A GitLab
+  host decides per control as well: one whose schema lacks a set
+  mutation's `operationMode` offers no Edit on that row, one without
+  re-request or the requested-changes override no Re-request or Bypass,
+  while the other controls stay. A failed management read sets
+  `manage.unavailable`: every flag is false, the lists are empty, and the
+  Details section, collapsed, shows the sentence instead of its rows; the
+  rest of the PR loads as usual, and the controls return with the next
+  snapshot whose read answers.
 - Edit affordances are icons revealed on hover (always shown on compact)
   whose space is held, so nothing moves when they appear or go pending.
 - Title: the pencil at the end of the title line turns it into one
@@ -462,11 +468,18 @@ permission reads and the refusals are in
   only on a GitHub organization (`can.reviewerTeams`) and when the search
   returns them. A GitHub reviewer whose review is in stays checked: only
   a pending request can be withdrawn. Closing the picker (Escape, Tab, a
-  click outside, its trigger) applies the row's adds and removes as one
-  write, each person and label passed as the backend gave it; nothing is
-  written when nothing changed. A failed change shows its sentence on
-  the row (a partial one says what applied); the row shows the next
-  snapshot either way.
+  click outside, its trigger) applies the row's change, each person and
+  label passed as the backend gave it (a person addressed by `login`, a
+  label by `id` on both forges); nothing is written when nothing changed.
+  The backend removes first, then adds, one write per side. A failed
+  change shows its sentence on the row, until the row's picker opens
+  again or its next write starts. When the remove applied and the add
+  did not, the sentence says both ("Removed X …; adding Y was refused:
+  …"), or, when the forge's answer was lost, that the add may have
+  applied and the pane shows what the forge did. The refusals name the
+  cause: GitHub's 10-assignee limit, a person GitLab did not add, a label
+  that is not the project's, a host that cannot change the row. The row
+  shows the next snapshot either way.
 - The title bar's `⋯` at the end of the state line holds Convert to
   draft and Close on an open PR, Reopen on a closed one; a merged PR has
   no menu. No confirm step: each is undone by the item that replaces it.
@@ -583,11 +596,14 @@ remembered across a reload, stages and a GitLab and a GitHub job log.
 `review-manage.spec.ts` and its compact twin (`review-manage-flow.ts`)
 drive the management controls on both forges: a refused title edit and
 its retry, the stale-description refusal, each Details picker's change
-and the request it sent, a refused reviewers write on its row,
-re-request, close, reopen, draft and ready, a refused then retried
-dismiss (GitHub) and bypass (GitLab) with the sentence on the blocker
-row and focus on the Merge header after, and a merge with an edited
-commit message. `review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a
+and the requests it sent, a reviewers change whose add was refused
+after its remove applied, re-request, close, reopen, draft and ready, a
+refused then retried dismiss (GitHub) and bypass (GitLab) with the
+sentence on the blocker row and focus on the Merge header after, and a
+merge with an edited commit message; on GitLab also a refused
+management read (Details shows the sentence, no control anywhere, the
+controls back once it answers) and a host without `operationMode` (no
+row Edit, the other controls kept). `review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a
 GitHub PR (a refused retry, a retry followed to passed, cancel, a manual
 job, artifacts saved to disk, a refused artifacts read that keeps the
 jobs and says why in the menu), and `ci-actions-flow.ts` the same from

@@ -8,8 +8,10 @@
 // and the editor stays open, and a fresh edit with Preview saves; the
 // Details section adds and removes a reviewer, an assignee and a label,
 // one change per picker, and a picker closed unchanged writes nothing;
-// a refused reviewers write shows its sentence on the Reviewers row,
-// which still shows the forge's reviewers; a settled review is
+// a reviewers change whose remove applied and whose add was refused
+// shows the partial sentence on the Reviewers row, which shows the
+// forge's reviewers (GitHub refuses the request; on GitLab the person
+// left the project); a settled review is
 // re-requested; the title bar's menu closes and reopens the PR and
 // converts it to a draft, and the draft blocker's Mark ready makes it
 // ready again; a refused Dismiss (GitHub) or Bypass (GitLab) shows its
@@ -18,7 +20,14 @@
 // (GitLab), the blocker clears and focus lands on the Merge header;
 // Merge now sends the edited commit message the fake received; the
 // merged PR has no menu; and each action's event is in the Conversation
-// feed. Screenshots (dark): the title bar's menu, the Details section
+// feed. On GitLab, on a backend of its own (a fresh schema probe, a 1 s
+// PR poll): a refused management read leaves the PR loaded with its
+// Merge, Description and Conversation, Details showing only the
+// sentence and no management control anywhere, and the controls return
+// on the next snapshot once the read answers; and a host without the set
+// mutations' operationMode shows no Edit on the reviewers, assignees and
+// labels rows while the title, description and state controls stay.
+// Screenshots (dark): the title bar's menu, the Details section
 // collapsed and expanded, a picker with results, the description editor
 // and its preview, the blocker row with Dismiss and its reason (GitHub)
 // or Bypass (GitLab), and the commit message editor.
@@ -26,13 +35,14 @@
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 
-import type { HarnessApp } from '../src/harness.js';
+import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   expandReviewSection,
   expectEveryForgeCallHandled,
   forgeInvocations,
   publishPullRequest,
+  clearForgeRefusal,
   refuseForgeRoute,
   seedForge,
   type ForgeHTTPInvocation,
@@ -109,7 +119,7 @@ function repo(forge: Forge): ForgeRepo {
     : { forge, ...common };
 }
 
-async function seedPullRequest(harness: HarnessApp, forge: Forge, title: string): Promise<ForgeRepo> {
+async function seedPullRequest(harness: HarnessApp, forge: Forge, title: string, adjust: (repo: ForgeRepo) => ForgeRepo = (same) => same): Promise<ForgeRepo> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
       {
@@ -119,7 +129,7 @@ async function seedPullRequest(harness: HarnessApp, forge: Forge, title: string)
       },
     ],
   });
-  return publishPullRequest(harness, seed.projects[0].path, repo(forge), {
+  return publishPullRequest(harness, seed.projects[0].path, adjust(repo(forge)), {
     'src/queue/deliver.ts': 'export async function deliver(): Promise<void> {\n  await post();\n}\n',
   });
 }
@@ -167,11 +177,12 @@ async function lastSeq(harness: HarnessApp): Promise<number> {
 }
 
 // The routes each row's change writes on.
+// A change removes first, then adds: one write per side.
 const ROW_WRITES: Record<Forge, Record<'reviewers' | 'assignees' | 'labels', string[]>> = {
   gitlab: {
-    reviewers: ['glab api update merge request'],
-    assignees: ['glab api update merge request'],
-    labels: ['glab api update merge request'],
+    reviewers: ['glab graphql PRSetReviewers'],
+    assignees: ['glab graphql PRSetAssignees'],
+    labels: ['glab graphql PRSetLabels'],
   },
   github: {
     reviewers: ['gh api request reviewers', 'gh api remove reviewers'],
@@ -179,6 +190,11 @@ const ROW_WRITES: Record<Forge, Record<'reviewers' | 'assignees' | 'labels', str
     labels: ['gh graphql AddLabels', 'gh graphql RemoveLabels'],
   },
 };
+
+/** A GitLab set mutation's mode and what it named. */
+function setMutation(call: ForgeHTTPInvocation): [unknown, unknown] {
+  return [call.variables?.mode, call.variables?.usernames ?? call.variables?.labelIds];
+}
 
 export function reviewManageFlow({ compact }: ManageSurface): void {
   for (const forge of ['gitlab', 'github'] as const) {
@@ -293,46 +309,74 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
         let made: ForgeHTTPInvocation[] = [];
         await expect(async () => {
           made = await writes(harness, ROW_WRITES[forge][row], before);
-          expect(made.length).toBe(forge === 'gitlab' ? 1 : 2);
+          expect(made.length).toBe(2);
         }).toPass({ timeout: 15_000 });
         return made;
       }
 
-      // A refused reviewers write: the sentence on the Reviewers row, and
-      // the row still shows the forge's reviewers.
-      await refuseForgeRoute(harness, forge === 'gitlab'
-        ? { route: 'glab api update merge request', status: 403, times: 1, body: { message: '403 Forbidden' } }
-        : { route: 'gh api request reviewers', status: 422, times: 1, body: { message: 'Reviews may only be requested from collaborators.' } });
-      const refusedAt = await lastSeq(harness);
-      await reveal(details.locator('[data-testid="review-details-row"][data-row="reviewers"]'));
-      await press(details.getByTestId('review-details-edit-reviewers'));
-      await picker.getByTestId('review-picker-search').fill('jane');
-      await press(option('u:jdoe'));
-      await page.keyboard.press('Escape');
-      await expect(picker).toHaveCount(0);
-      await expect(details.getByTestId('review-details-error-reviewers-message')).not.toBeEmpty();
-      await expect.poll(async () => (await writes(harness, ROW_WRITES[forge].reviewers, refusedAt)).length).toBe(1);
-      await expect(reviewer('jdoe')).toHaveCount(0);
-      await expect(reviewer('alee')).toHaveAttribute('data-state', 'PENDING');
-      await expect(details.getByTestId('review-details-error-assignees')).toHaveCount(0);
-
       const reviewerWrites = await editRow('reviewers', 'u:jdoe', 'jane', 'u:alee', true);
-      await expect(details.getByTestId('review-details-error-reviewers')).toHaveCount(0);
       await expect(reviewer('jdoe')).toHaveAttribute('data-state', 'PENDING');
       await expect(reviewer('alee')).toHaveCount(0);
       if (forge === 'github') {
         expect(reviewerWrites.map((call) => [call.route, call.body])).toEqual([
-          ['gh api request reviewers', { reviewers: ['jdoe'], team_reviewers: [] }],
           ['gh api remove reviewers', { reviewers: ['alee'], team_reviewers: [] }],
+          ['gh api request reviewers', { reviewers: ['jdoe'], team_reviewers: [] }],
         ]);
       } else {
-        expect(Object.keys(reviewerWrites[0].body as object)).toEqual(['reviewer_ids']);
+        expect(reviewerWrites.map(setMutation)).toEqual([['REMOVE', ['alee']], ['APPEND', ['jdoe']]]);
       }
+
+      // A partial change: the remove applies and the add is refused. The
+      // row says what applied and what was refused, and shows the forge's
+      // reviewers. GitHub refuses the request; GitLab skips a person who
+      // is no longer a member, which the app reads back as refused.
+      const partialAt = await lastSeq(harness);
+      const reviewersRow = details.locator('[data-testid="review-details-row"][data-row="reviewers"]');
+      await reveal(reviewersRow);
+      await press(details.getByTestId('review-details-edit-reviewers'));
+      await picker.getByTestId('review-picker-search').fill('sawmon');
+      await press(option('u:sabossedgh'));
+      await picker.getByTestId('review-picker-search').fill('');
+      await press(option('u:jdoe'));
+      await expect(option('u:jdoe')).toHaveAttribute('data-checked', 'false');
+      if (forge === 'github') {
+        await refuseForgeRoute(harness, { route: 'gh api request reviewers', status: 422, times: 1, body: { message: 'Reviews may only be requested from collaborators.' } });
+      } else {
+        await seedForge(harness, [{
+          ...seeded,
+          members: MEMBERS.filter((member) => member.login !== 'sabossedgh'),
+          pulls: [{ ...seeded.pulls![0], title: EDITED_TITLE, body: EDITED_BODY, reviewers: ['jdoe', 'rmurphy', 'kchen'] }],
+        }]);
+      }
+      await page.keyboard.press('Escape');
+      await expect(picker).toHaveCount(0);
+      const reviewersError = details.getByTestId('review-details-error-reviewers-message');
+      await expect(reviewersError).toContainText('jdoe');
+      await expect(reviewersError).toContainText('sabossedgh');
+      await expect(reviewersError).toContainText('refused');
+      const partial = await writes(harness, ROW_WRITES[forge].reviewers, partialAt);
+      if (forge === 'github') {
+        expect(partial.map((call) => [call.route, call.body])).toEqual([
+          ['gh api remove reviewers', { reviewers: ['jdoe'], team_reviewers: [] }],
+          ['gh api request reviewers', { reviewers: ['sabossedgh'], team_reviewers: [] }],
+        ]);
+      } else {
+        expect(partial.map(setMutation)).toEqual([['REMOVE', ['jdoe']], ['APPEND', ['sabossedgh']]]);
+      }
+      await expect(reviewer('jdoe')).toHaveCount(0);
+      await expect(reviewer('sabossedgh')).toHaveCount(0);
+      await expect(reviewer('kchen')).toHaveAttribute('data-state', 'CHANGES_REQUESTED');
+      await shot(details, 'details-partial');
       await editRow('assignees', 'u:jdoe', 'jane', 'u:alee');
       await expect.poll(assignees).toEqual(['jdoe']);
       const labelWrites = await editRow('labels', 'feature', 'feat', 'bug');
       await expect(details.getByTestId('review-details-label')).toHaveText(['feature']);
-      if (forge === 'gitlab') expect(labelWrites[0].body).toEqual({ add_labels: 'feature', remove_labels: 'bug' });
+      if (forge === 'gitlab') {
+        const [removed, added] = labelWrites.map(setMutation);
+        expect(removed[0]).toBe('REMOVE');
+        expect(added[0]).toBe('APPEND');
+        for (const ids of [removed[1], added[1]]) expect(ids).toEqual([expect.stringMatching(/^gid:\/\/gitlab\/ProjectLabel\/\d+$/)]);
+      }
 
       // A picker closed with nothing changed writes nothing.
       const quiet = await lastSeq(harness);
@@ -460,4 +504,96 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
       await expectEveryForgeCallHandled(harness);
     });
   }
+
+  // Every control that hangs off the management flags, wherever it is.
+  const MANAGE_CONTROLS = [
+    'review-title-edit',
+    'review-description-edit',
+    'review-pr-state-menu',
+    'review-details-edit-reviewers',
+    'review-details-edit-assignees',
+    'review-details-edit-labels',
+    'review-details-rerequest',
+    'review-merge-row-dismiss',
+    'review-merge-row-bypass',
+  ];
+
+  // A backend of its own: the GitLab schema probe is cached per host, and
+  // the next snapshot comes within a second.
+  function launchManageHarness(): Promise<HarnessApp> {
+    return launchHarness({ env: { AO_HARNESS_TIMING: [...HARNESS_TIMING.split(','), 'pr-update=1s'].join(',') } });
+  }
+
+  test('gitlab: a refused management read leaves the PR, says why in Details and offers no management control until it answers', async ({ page }, testInfo: TestInfo) => {
+    test.setTimeout(180_000);
+    const harness = await launchManageHarness();
+    try {
+      const thread = 'Manage unavailable thread';
+      await seedPullRequest(harness, 'gitlab', thread);
+      const refusal = { status: 403, body: { message: '403 Forbidden' } };
+      await refuseForgeRoute(harness, { route: 'glab graphql PRManageChecks', ...refusal });
+      await refuseForgeRoute(harness, { route: 'glab graphql PRManage', ...refusal });
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await harness.open(page);
+      const review = await openReview(page, thread, 'gitlab', compact);
+      const press = (target: Locator) => (compact ? target.tap() : target.click());
+
+      // The PR is there: its title, the Merge section with its blocker,
+      // the description and the conversation.
+      await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+      const merge = await expandReviewSection(page, 'review-pr-merge');
+      await expect(merge.locator('[data-testid="review-merge-blocker"][data-kind="changes_requested"]')).toHaveCount(1);
+      await expect(await expandReviewSection(page, 'review-pr-description')).toContainText(BODY);
+      await expect(await expandReviewSection(page, 'review-pr-conversation')).toContainText('One question on the backoff.');
+
+      // Details is collapsed and, opened, holds only the sentence.
+      const details = review.getByTestId('review-pr-details');
+      await expect(details).toHaveAttribute('data-open', 'false');
+      await press(details.locator('button[aria-expanded]').first());
+      await expect(details.getByTestId('review-details-unavailable')).not.toBeEmpty();
+      await expect(details.getByTestId('review-details-rows')).toHaveCount(0);
+      await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-unavailable.png`) });
+      for (const id of MANAGE_CONTROLS) await expect(page.getByTestId(id), id).toHaveCount(0);
+
+      // The read answers again: the controls return on the next snapshot.
+      await clearForgeRefusal(harness, 'glab graphql PRManageChecks');
+      await clearForgeRefusal(harness, 'glab graphql PRManage');
+      await expect(details.getByTestId('review-details-unavailable')).toHaveCount(0, { timeout: 30_000 });
+      await expect(details.getByTestId('review-details-rows')).toBeVisible();
+      for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-edit-reviewers', 'review-details-edit-assignees', 'review-details-edit-labels', 'review-merge-row-bypass']) {
+        await expect(page.getByTestId(id), id).toBeAttached();
+      }
+      await expectEveryForgeCallHandled(harness);
+    } finally {
+      await page.close();
+      await harness.close();
+    }
+  });
+
+  test('gitlab: a host without the set mutations offers no people or label edits, and keeps the rest', async ({ page }, testInfo: TestInfo) => {
+    test.setTimeout(180_000);
+    const harness = await launchManageHarness();
+    try {
+      const thread = 'Manage older host thread';
+      await seedPullRequest(harness, 'gitlab', thread, (seed) => ({ ...seed, serverLacks: ['operationMode'] }));
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await harness.open(page);
+      const review = await openReview(page, thread, 'gitlab', compact);
+      await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+      const details = review.getByTestId('review-pr-details');
+      await expect(details.getByTestId('review-details-rows')).toBeVisible();
+      await expect(details.locator('[data-testid="review-details-reviewer"][data-login="alee"]')).toBeVisible();
+      for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-rerequest']) {
+        await expect(page.getByTestId(id).first(), id).toBeAttached();
+      }
+      for (const row of ['reviewers', 'assignees', 'labels']) {
+        await expect(details.getByTestId(`review-details-edit-${row}`), row).toHaveCount(0);
+      }
+      await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
+      await expectEveryForgeCallHandled(harness);
+    } finally {
+      await page.close();
+      await harness.close();
+    }
+  });
 }

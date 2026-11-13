@@ -736,9 +736,16 @@ read with `PRManageChecks`, which adds `mergeabilityChecks`: the
 `REQUESTED_CHANGES` check failing is what blocks (elsewhere the
 `detailed_merge_status` `requested_changes`), and the check passing while
 a reviewer still requests changes is shown as bypassed. That is an
-inference: GitLab reports no bypass as such. The `project.labels`
-arguments are taken from GitLab's schema as recalled, not from the
-reference page, which could not be read in full.
+inference: GitLab reports no bypass as such.
+
+The GitLab GraphQL arguments these use: `project.labels` takes
+`searchTerm`, `includeAncestorGroups`, `first` and `after`;
+`MergeRequestSetReviewersInput` and `MergeRequestSetAssigneesInput` take
+usernames with `operationMode` (`REPLACE`, `APPEND`, `REMOVE`);
+`MergeRequestSetLabelsInput` takes `labelIds` with `operationMode`;
+`MergeRequestSetDraftInput` takes `draft`;
+`MergeRequestReviewerRereviewInput` takes `userId`; and
+`mergeabilityChecks` reports the `REQUESTED_CHANGES` identifier.
 
 ## Merged PR worktree cleanup
 
