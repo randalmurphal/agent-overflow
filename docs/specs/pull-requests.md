@@ -577,8 +577,9 @@ permission reads and the refusals are in
   prefilled with the forge's default for the method, read when it opens
   and when the method changes until the text is edited. The review state
   holds one selected method beside the message, so the overview's
-  remount keeps both: the project's default (the first offered) until
-  the reader picks, re-resolved on every snapshot. The editor has no
+  remount keeps both: the project's default (the first offered),
+  re-resolved on every snapshot, until the reader picks a method or edits
+  the message. The editor has no
   method of its own; it shows the selected one, which Merge now and
   Auto-merge send. The message (`commitMessage`) is sent exactly when its
   text is edited and the selected method makes a commit; a failed default

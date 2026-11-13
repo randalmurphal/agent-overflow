@@ -1,7 +1,8 @@
 // The Merge section's method and commit message editor. The store holds
-// the one selected method: the project's default (the first offered)
-// until the reader picks, re-resolved on every snapshot, and changed only
-// by a pick or by a snapshot that stops offering it. The editor has no
+// the one selected method: the project's default (the first offered),
+// re-resolved on every snapshot, until the reader picks a method or edits
+// the message; from then it changes only by a pick or by a snapshot that
+// stops offering it. The editor has no
 // method of its own; it shows the selected one, with the forge's default
 // message for it, read when the editor opens and when the selection
 // changes (never per tick), until the reader edits it. A merge sends the
@@ -95,6 +96,9 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
   let openedOn = $state<{ ref: PRRef; key: string } | null>(null);
   // The selected method; null only before the first snapshot.
   let selected = $state<string | null>(null);
+  // The reader has neither picked a method nor edited the message, so
+  // the selection is the project's default, wherever a snapshot moves it.
+  let followsDefault = true;
   let edited = $state<MergeMessage | null>(null);
   // The defaults read while this editor was open, per method.
   let defaults = $state.raw<ReadonlyMap<string, MergeMessage>>(new Map());
@@ -132,6 +136,7 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
 
   function edit(next: Partial<MergeMessage>): void {
     if (!live || loading) return;
+    followsDefault = false;
     edited = { ...shown, ...next };
   }
 
@@ -161,6 +166,7 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
     const offered = methods.length ? methods : ['merge'];
     if (selected === null) selected = offered[0];
     else if (!offered.includes(selected)) select(offered[0], selected);
+    else if (followsDefault) select(offered[0]);
   }
   const stopReconcile = $effect.root(() => {
     $effect(() => {
@@ -172,6 +178,7 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
   return {
     get method() { return method; },
     pick(next: string): void {
+      followsDefault = false;
       select(next);
     },
     get open() { return live; },
@@ -207,6 +214,7 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
     discard(): void {
       reset();
       selected = null;
+      followsDefault = true;
       reconcile(untrack(() => host.methods));
     },
     dispose(): void {

@@ -847,6 +847,40 @@ describe('the merge commit message', () => {
     expect(message.commitMessage).toEqual({ title: 'Mine', body: 'Body' });
   });
 
+  it('follows a changed project default until the reader picks or edits', async () => {
+    const read = setBindingMock('GetPRMergeMessage', async (_pr: unknown, method: string) => ({ title: `Default ${method}`, body: 'Body' }));
+    const message = view.mergeMessage;
+    await settle();
+    expect(message.method).toBe('merge');
+    // Untouched, the selection is the default, wherever it moves, and
+    // the open editor reads the new default's message.
+    message.openEditor();
+    await settle();
+    host.mergeMethods = ['squash', 'merge'];
+    await settle();
+    expect(message.method).toBe('squash');
+    expect(message.title).toBe('Default squash');
+    expect(message.notice).toBeNull();
+    // An edit is written for the method shown: it stays.
+    message.setTitle('Mine');
+    host.mergeMethods = ['merge', 'squash'];
+    await settle();
+    expect(message.method).toBe('squash');
+    expect(message.commitMessage).toEqual({ title: 'Mine', body: 'Body' });
+    expect(read.mock.calls.map((callArgs) => callArgs[1])).toEqual(['merge', 'squash']);
+    // Another PR starts on its own default again; a pick stays too.
+    message.discard();
+    await settle();
+    expect(message.method).toBe('merge');
+    host.mergeMethods = ['squash', 'merge'];
+    await settle();
+    expect(message.method).toBe('squash');
+    message.pick('squash');
+    host.mergeMethods = ['merge', 'squash'];
+    await settle();
+    expect(message.method).toBe('squash');
+  });
+
   // For any sequence of snapshots, picks, edits, opens and closes, the
   // request a merge builds (the selected method and the commit message)
   // is what the editor shows: the method is the one shown and offered,
