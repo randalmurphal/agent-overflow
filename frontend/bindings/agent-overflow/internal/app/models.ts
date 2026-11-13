@@ -6628,17 +6628,11 @@ export class ReviewDiffOpened {
 
     /**
      * FilesHandle names what a git-backed open pinned for its file reads
-     * (GetReviewDiffFileSizes, GetReviewDiffImage), held on the server
-     * (app_review_diff_records.go). Empty for an edits diff, and when the
-     * pin could not be made (SidesError says why).
+     * (GetReviewDiffFileSizes, GetReviewDiffImage), held on the server for
+     * the connection that opened it (app_review_diff_records.go). Every
+     * git-backed open answers one; empty for an edits diff.
      */
     "filesHandle"?: string;
-
-    /**
-     * SidesError is a sentence saying why the diff's files cannot be read
-     * while the diff itself can.
-     */
-    "sidesError"?: string;
 
     /** Creates a new ReviewDiffOpened instance. */
     constructor($$source: Partial<ReviewDiffOpened> = {}) {

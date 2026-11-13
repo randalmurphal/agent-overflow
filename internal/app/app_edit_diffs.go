@@ -181,7 +181,7 @@ func (a *App) openEditsDiff(ctx context.Context, action, threadID string, payloa
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
 	}
-	opened, err := a.holdOpenedReviewDiff(ctx, action, transport.ScopeThreadsRead, diff, nil)
+	opened, err := a.holdOpenedReviewDiff(ctx, action, transport.ScopeThreadsRead, diff)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}

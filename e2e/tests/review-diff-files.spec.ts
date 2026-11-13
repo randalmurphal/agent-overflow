@@ -15,7 +15,7 @@ import { expect, test, type SeedResult } from './fixtures.js';
 import { DIAGRAM_SVG, expectEveryForgeCallHandled, imagePullHistory, publishPullRequest, solidPNG } from './forge-helpers.js';
 
 interface Commit { sha: string; subject: string }
-interface Opened { id: string; chunk: { data: string; nextOffset: number; eof: boolean }; filesHandle?: string; sidesError?: string }
+interface Opened { id: string; chunk: { data: string; nextOffset: number; eof: boolean }; filesHandle?: string }
 interface ImageSide { exists: boolean; size: number; url?: string; mimeType?: string; overCap?: boolean; notImage?: boolean }
 interface Sizes { path: string; old: { exists: boolean; size: number }; new: { exists: boolean; size: number }; error?: string }
 
@@ -32,7 +32,6 @@ async function readPatch(harness: HarnessApp, opened: Opened): Promise<string> {
 
 /** The handle an open kept its pinned sides under. */
 function pinned(opened: Opened): string {
-  expect(opened.sidesError).toBeUndefined();
   expect(opened.filesHandle).toBeTruthy();
   return opened.filesHandle!;
 }
@@ -106,7 +105,7 @@ for (const forge of ['github', 'gitlab'] as const) {
     const data = await harness.rpc<{ new: ImageSide }>('GetReviewDiffImage', ws, wholeHandle, { path: 'data.bin' });
     expect(data.new).toEqual({ exists: true, size: 8, notImage: true });
     await expect(harness.rpc('GetReviewDiffImage', ws, 'no-such-handle', { path: 'data.bin' }))
-      .rejects.toThrow("This diff's files are no longer held; reload the diff.");
+      .rejects.toThrow("review_diff_files_gone: This diff's files are no longer held; reload the diff.");
     await expectEveryForgeCallHandled(harness);
   });
 }

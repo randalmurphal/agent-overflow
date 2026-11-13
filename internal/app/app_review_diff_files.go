@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -12,6 +14,7 @@ import (
 	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/reviewimage"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 )
 
 // The files of a git-backed review diff, read at the two sides the diff was
@@ -115,8 +118,6 @@ var (
 	errNotImage = errors.New("not an image a browser displays")
 	// errLFSPointer marks bytes that are a Git LFS pointer.
 	errLFSPointer = errors.New("a Git LFS pointer")
-	// errEditUnrecorded marks an edit that recorded no content.
-	errEditUnrecorded = errors.New("no recorded content")
 )
 
 // GetReviewDiffFileSizes answers the byte size and existence of each side of
@@ -131,7 +132,7 @@ func (a *App) GetReviewDiffFileSizes(ctx context.Context, ws WorkspaceRef, handl
 	if len(files) > maxReviewDiffFiles {
 		return nil, fmt.Errorf("%s: %d files exceeds %d", action, len(files), maxReviewDiffFiles)
 	}
-	record, sides, err := a.reviewDiffRecord(action, ws, handle)
+	record, sides, err := a.reviewDiffRecord(ctx, action, ws, handle)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +164,7 @@ func (a *App) GetReviewDiffFileSizes(ctx context.Context, ws WorkspaceRef, handl
 //ao:scope files:read
 func (a *App) GetReviewDiffImage(ctx context.Context, ws WorkspaceRef, handle string, file ReviewDiffFile) (ReviewDiffImage, error) {
 	const action = "read review diff image"
-	record, sides, err := a.reviewDiffRecord(action, ws, handle)
+	record, sides, err := a.reviewDiffRecord(ctx, action, ws, handle)
 	if err != nil {
 		return ReviewDiffImage{}, err
 	}
@@ -246,40 +247,51 @@ func (a *App) GetEditDiffImage(ctx context.Context, threadID string, req EditDif
 		}
 		payloadID = last
 	}
-	// The snapshot store's capture limit is reserved before anything is
-	// read, the content decompressed straight into a buffer of its
+	// Every read reads the edit's snapshot row; the cache key is the
+	// SHA-256 of its compressed bytes, so a held entry is that row's
+	// content and a hit skips only the decompression. The capture limit is
+	// reserved before decompressing, straight into a buffer of the
 	// recorded size, and the reservation shrunk to it.
-	var size int64
-	held, err := a.reviewDiffImages().LoadWithin(ctx, "edit\x00"+threadID+"\x00"+payloadID+"\x00"+req.Path, store.MaxEditFileSnapshotBytes,
+	blob, found, err := a.store.GetEditFileSnapshotBlob(threadID, payloadID, req.Path)
+	if err != nil {
+		return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
+	}
+	if !found {
+		answer.New = ReviewDiffImageSide{Unavailable: unavailableEditUnrecorded}
+		return answer, nil
+	}
+	sum := sha256.Sum256(blob)
+	size := int64(0)
+	held, err := a.reviewDiffImages().LoadWithin(ctx, "edit\x00"+hex.EncodeToString(sum[:]), store.MaxEditFileSnapshotBytes,
 		func(take func(int64) ([]byte, error)) (string, error) {
 			var buf []byte
-			n, found, err := a.store.ReadEditFileSnapshot(threadID, payloadID, req.Path, func(n int64) ([]byte, error) {
+			n, err := store.DecompressEditFileSnapshot(blob, func(n int64) ([]byte, error) {
 				var takeErr error
 				buf, takeErr = take(n)
 				return buf, takeErr
 			})
 			size = n
-			switch {
-			case err != nil:
+			if err != nil {
 				return "", err
-			case !found:
-				return "", errEditUnrecorded
 			}
 			return displayImageMIME(buf)
 		})
-	answer.New, err = a.mintReviewDiffSide(held, size, err)
-	if errors.Is(err, errEditUnrecorded) {
-		answer.New, err = ReviewDiffImageSide{Unavailable: unavailableEditUnrecorded}, nil
+	if err == nil {
+		size = held.Size
 	}
+	answer.New, err = a.mintReviewDiffSide(held, size, err)
 	if err != nil {
 		return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
 	}
 	return answer, nil
 }
 
-// reviewDiffRecord looks up what the open behind handle pinned, in the
-// workspace ws resolves to.
-func (a *App) reviewDiffRecord(action string, ws WorkspaceRef, handle string) (*reviewDiffRecord, *gitdiff.Sides, error) {
+// reviewDiffRecord looks up what the open behind handle pinned: the
+// caller's connection must own it, it must have been opened in the
+// workspace ws resolves to, and the caller must still hold the scope the
+// open required. A pending record is waited for, within ctx; a record
+// whose pin failed is the unreadable refusal.
+func (a *App) reviewDiffRecord(ctx context.Context, action string, ws WorkspaceRef, handle string) (*reviewDiffRecord, *gitdiff.Sides, error) {
 	if a.shuttingDown.Load() {
 		return nil, nil, ErrShuttingDown
 	}
@@ -287,9 +299,26 @@ func (a *App) reviewDiffRecord(action string, ws WorkspaceRef, handle string) (*
 	if err != nil {
 		return nil, nil, err
 	}
-	record, err := a.reviewDiffFiles.get(handle, workspace)
+	record, err := a.reviewDiffFiles.get(handle, workspace, transport.ConnStateFromContext(ctx))
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", action, err)
+	}
+	if err := a.requireScope(ctx, record.scope, "reading a review diff's files"); err != nil {
+		return nil, nil, err
+	}
+	if hook := a.reviewDiffReadHook; hook != nil {
+		hook()
+	}
+	select {
+	case <-record.done:
+	case <-ctx.Done():
+		return nil, nil, fmt.Errorf("%s: %w", action, ctx.Err())
+	}
+	if !a.reviewDiffFiles.holds(record) {
+		return nil, nil, fmt.Errorf("%s: %w", action, errReviewDiffFilesGone)
+	}
+	if record.failure != "" {
+		return nil, nil, fmt.Errorf("%s: %w", action, reviewDiffFilesUnreadable(record.failure))
 	}
 	return record, gitdiff.OpenedSides(workspace, record.pin), nil
 }
@@ -341,8 +370,6 @@ func resolveReviewDiffFiles(ctx context.Context, record *reviewDiffRecord, sides
 		}
 		blob, ok := record.blobs[path]
 		switch {
-		case !ok && record.truncated:
-			return gitdiff.Entry{}, fmt.Errorf("this diff changes more than %d files, and %s is not among those its files were kept for", maxPinnedWorktreeBlobs, path)
 		case !ok:
 			// The working tree holds this path as the old side does.
 			return oldEntries[path], nil
@@ -471,28 +498,31 @@ func (a *App) reviewDiffPinWait() time.Duration {
 	return reviewDiffPinTimeout
 }
 
-// reviewDiffPinned is what pinning an open answered.
-type reviewDiffPinned struct {
-	handle  string
-	failure string
-}
-
-// pinReviewDiff records sides' pin, made in record generation gen, and
-// answers its handle, or why the diff's files cannot be read.
-func (a *App) pinReviewDiff(ctx context.Context, gen uint64, sides *gitdiff.Sides) reviewDiffPinned {
-	blobs, truncated, err := sides.WorktreeBlobs(ctx, maxPinnedWorktreeBlobs)
-	if err != nil {
-		log.Printf("review diff: pin worktree blobs: %v", err)
-		if ctx.Err() != nil {
-			return reviewDiffPinned{failure: "The diff's files took too long to list; reload the diff to read them."}
+// startReviewDiffPin settles record from sides in the background, under
+// ctx (the pin's own bound, cancelled when the record is removed). It
+// holds the sides' snapshot until it exits (release), and closes
+// record.done last.
+func (a *App) startReviewDiffPin(ctx context.Context, record *reviewDiffRecord, sides *gitdiff.Sides, release func() error) {
+	a.reviewDiffFiles.pins.Add(1)
+	go func() {
+		defer a.reviewDiffFiles.pins.Done()
+		defer close(record.done)
+		defer record.cancel()
+		defer func() { logReviewDiffCloseError(release()) }()
+		if hook := a.reviewDiffPinHook; hook != nil {
+			hook(ctx)
 		}
-		return reviewDiffPinned{failure: "The diff's files cannot be read: " + err.Error()}
-	}
-	handle := a.reviewDiffFiles.put(gen, sides.Workspace(), sides.Pin(), blobs, truncated)
-	if handle == "" {
-		return reviewDiffPinned{failure: errReviewDiffFilesGone.Error()}
-	}
-	return reviewDiffPinned{handle: handle}
+		blobs, truncated, err := sides.WorktreeBlobs(ctx, maxPinnedWorktreeBlobs)
+		failure := ""
+		switch {
+		case ctx.Err() != nil:
+			failure = fmt.Sprintf("listing them took longer than %s", a.reviewDiffPinWait())
+		case err != nil:
+			log.Printf("review diff: pin worktree blobs: %v", err)
+			failure = "git could not list them"
+		}
+		a.reviewDiffFiles.settle(record, sides.Pin(), blobs, truncated, failure)
+	}()
 }
 
 // lastTurnEditOfPath answers the turn's last edit that changes path: its

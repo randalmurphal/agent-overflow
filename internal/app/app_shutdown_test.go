@@ -149,6 +149,9 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// drain barrier runs. Cancelling after the drain would let
 		// in-flight goroutines slip past it.
 		"cancel app context",
+		// "stop review diff pins" joins the background git runs that pin
+		// review diffs' files; nothing they do outlives the app.
+		"stop review diff pins",
 		"drain triage",
 		"drain flush dispatch",
 		// "drain notifications" MUST appear before "close store" — a queued

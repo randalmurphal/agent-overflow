@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // Sides are the two trees a review diff compares: old and new are commit or
@@ -24,6 +25,8 @@ type Sides struct {
 	// paths limits the diff to these literal paths; nil is every path.
 	paths   []string
 	release func() error
+	// shared counts the holders of the snapshot once Hold adds one.
+	shared *sharedRelease
 	// beforeWorktreeOpen, set only by tests, runs in ReadWorktreeFile
 	// after the path is checked and before the file is opened.
 	beforeWorktreeOpen func(path string)
@@ -38,6 +41,49 @@ func (s *Sides) Close() error {
 		return nil
 	}
 	return release()
+}
+
+// Hold answers a release for one more holder of the sides' snapshot: the
+// snapshot is removed once, when the last of its holders (this one, the
+// Diff OpenDiff hands it to, or Close) releases it. Each release removes
+// at most once however often it is called. Sides without a snapshot
+// answer a release that does nothing.
+func (s *Sides) Hold() func() error {
+	if s.release == nil {
+		return func() error { return nil }
+	}
+	if s.shared == nil {
+		s.shared = &sharedRelease{holders: 1, release: s.release}
+		s.release = s.shared.holder()
+	}
+	s.shared.mu.Lock()
+	s.shared.holders++
+	s.shared.mu.Unlock()
+	return s.shared.holder()
+}
+
+// sharedRelease removes a snapshot when its last holder lets go.
+type sharedRelease struct {
+	mu      sync.Mutex
+	holders int
+	release func() error
+}
+
+func (r *sharedRelease) holder() func() error {
+	var once sync.Once
+	return func() error {
+		var err error
+		once.Do(func() {
+			r.mu.Lock()
+			r.holders--
+			last := r.holders == 0
+			r.mu.Unlock()
+			if last {
+				err = r.release()
+			}
+		})
+		return err
+	}
 }
 
 // OpenDiff returns the patch between the sides. The diff takes over the
