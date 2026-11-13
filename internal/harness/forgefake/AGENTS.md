@@ -82,7 +82,9 @@ inspection go through the harness wire with no fixture files.
 - `routes.go` is the whole CLI and REST route table, `githubGraphQL` and
   `gitlabGraphQL` the whole GraphQL ones. A route's flag list is closed; a REST route's flags
   are the request properties `httpCall` synthesizes (`hostname`,
-  `method`).
+  `method`, and `accept` for a GitHub `application/vnd.github.*` media
+  type). A request body is read up to 4 MiB; past it the request is
+  unhandled.
 - A handler answers status and headers through its response (`status`,
   `header`). A route that lists the `if-none-match` flag is conditional:
   its 200s carry an ETag (a hash of the body) and a request naming the
@@ -211,6 +213,13 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | GraphQL `PRMergeMessage(fullPath, iid)` | the default merge and squash commit messages (GitLab's default templates) |
 | GitLab | `GET projects/P/users?search=&per_page=N[&page=N]` (`glab api project users`), GraphQL `SearchProjectLabels(fullPath, search?)` | pickers: `members` matching search with `X-Next-Page` while more pages exist; the project's labels with their global ids, 20 with `hasNextPage` |
 | GitLab | `GET projects/P/merge_requests/N/resource_state_events?per_page=N[&page=N]` (`glab api state events`) | ReadPR events: the pull's `stateEvents` (`closed`, `opened` or `reopened` for a reopen, `merged`) |
+| GitHub | GraphQL `SuggestionTarget(threadID, commentID)` | ApplyPRSuggestion: the viewer, the thread with its anchor, pull (state, head branch and oid, repository, head repository) and first 100 comment ids, and the comment's body and author (`databaseId` and `name` for a user with a display name) |
+| GitHub | `GET repos/O/R/contents/PATH?ref=SHA` with `Accept: application/vnd.github.raw` (`gh api contents`) | ApplyPRSuggestion: the file at the head of a pull whose head repository is O/R (the repository or its `headRepo` fork), from the pull's `files`; another ref, path or media type is a 404 or unhandled |
+| GitHub | GraphQL `SuggestionCommit(repository, branch, expectedHeadOid, headline, body?, path, contents)` | ApplyPRSuggestion's `createCommitOnBranch`: the file lands on the head branch, the head moves to a new sha and a thread on a changed line reads outdated; `FORBIDDEN` for a viewer who may not push or a fork head, `UNPROCESSABLE` "Expected branch to point to ..." for another head, `NOT_FOUND` for an unknown branch |
+| GitHub | GraphQL `ReactionTarget(id)`, `AddReaction`, `RemoveReaction(subjectID, content)` | SetPRCommentReaction: the comment's type, pull and `reactionGroups` (all eight contents); the viewer's reaction added or removed, a repeat changing nothing; an unknown id is `NOT_FOUND` |
+| GitLab | `PUT suggestions/ID/apply` (`glab api apply suggestion`) | ApplyPRSuggestion: the note's lines replaced in the pull's `files`, the head moved, the suggestion applied (`appliedSuggestions`); 403 below developer or `viewer.push` false, 400 "A suggestion is not applicable." when not appliable, 404 for an unknown id |
+| GitLab | `GET`, `POST`, `DELETE projects/P/merge_requests/N/notes/ID/award_emoji[/AWARD]` (`glab api note award emoji`, `glab api create note award emoji`, `glab api delete note award emoji`) | SetPRCommentReaction: the note's awards paged by `X-Next-Page`; an add answers 201, a duplicate GitLab's 404 "has already been taken", a blank name 400; a delete answers 204, another user's award 403, an unknown one 404; a note not on the merge request 404 |
+| GitLab | GraphQL `MRNoteReactions(fullPath, iid, after?)` | ReadPR threads: every note (`gid://gitlab/DiffNote/N`, `Note/N` or `DiscussionNote/N`, system notes included) with its `awardEmoji`, 100 per page; a repository whose `serverLacks` has `awardEmoji` answers GitLab's "Field 'awardEmoji' doesn't exist on type 'Note'" |
 
 Unhandled (fail with their request): GitLab's discussion resolve PUT
 and `cancel_merge_when_pipeline_succeeds`. A lost or cut-short answer is not
@@ -283,7 +292,7 @@ and then drops or truncates the response.
   close, reopen and merge events (a seeded closed or merged one without
   one gets one) and `changesOverridden` a standing bypass. A GitLab
   repository's `serverLacks` (`rereview`, `overrideRequestedChanges`,
-  `operationMode`) makes it an older server without them.
+  `operationMode`, `awardEmoji`) makes it an older server without them.
 - Who may edit or delete a comment follows from its `author` and the
   viewer's role: on GitHub the author or WRITE and above edits and
   deletes (answered as `viewerCanUpdate` and `viewerCanDelete`); on
@@ -300,6 +309,19 @@ and then drops or truncates the response.
   comment. A thread's `oldPath` is a renamed file's path before the
   change, answered as `old_path`. The e2e `publishPullRequest` seeds a
   GitLab pull's `diff` from the pushed change.
+- Suggestions and reactions: a pull's `files` (path to content) are
+  its head's files, which the contents route serves and a suggestion
+  commit or apply rewrites. A GitLab note's suggestions are derived from
+  its body (`internal/mdsuggest`) against its thread's lines in `files`
+  (widened by a `-N+M` header), with id note id times 1000 plus the
+  block's index, `from_content` from the file, appliable while the pull
+  is open, the thread not outdated, the lines inside the file and the
+  index not in the comment's `appliedSuggestions`. A comment's
+  `reactions` are `{name, user, id?}` in GitLab's award names (GitHub's
+  contents map onto the eight shared ones; another name on a GitHub
+  comment is refused at seed). A pull's `viewer.push` overrides whether
+  the viewer may push to its head, otherwise WRITE and above on a head
+  that is no fork (GitHub) or developer and above (GitLab).
 - Generated ids start at 1,000,000 and stay unique across reseeds and
   resets.
 - A GitLab job's `kind` makes it a `bridge` (its `downstream` pipeline
