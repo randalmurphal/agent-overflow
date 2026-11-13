@@ -104,6 +104,11 @@ export interface ReviewCommentActions {
   /** Its members keep their getters: merge with Object.defineProperties. */
   readonly state: ReviewCommentActionsState;
   readonly writes: CommentWrites;
+  /** Threads the reader is using here: a reply composer open on either
+   * surface, reply text kept (a reply being sent or held as a draft
+   * keeps its text until it lands, and after a failure), a held draft
+   * reply, or any write on the thread (`writes.activeThreads`). */
+  readonly threadsInUse: ReadonlySet<string>;
   /** Posts a new comment's line (a range from `start`) now, keyed by its
    * editor; `onSettled` closes the editor once the answer is on screen.
    * Throws where comments cannot post now. */
@@ -174,16 +179,39 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     showPostedComment: host.showPostedComment,
   });
 
+  const threadsInUse = $derived.by<ReadonlySet<string>>(() => {
+    const out = new Set<string>(writes.activeThreads);
+    for (const key of openReplies) out.add(key.slice(key.indexOf(':') + 1));
+    for (const [threadId, body] of replyBodies) if (body.trim() !== '') out.add(threadId);
+    for (const threadId of replyDrafts.keys()) out.add(threadId);
+    return out;
+  });
+
   function closeEverywhere(threadId: string): void {
     openReplies.delete(`diff:${threadId}`);
     openReplies.delete(`conversation:${threadId}`);
   }
 
+  function forgetReplyFailure(threadId: string): void {
+    replyErrors.delete(threadId);
+    writes.clearError(commentWriteKey.reply(threadId));
+  }
+
+  // A reply's failure shows in its composer, so it lives as long as the
+  // composer could show it: gone once no composer is open and no text is
+  // kept to reopen one with.
+  function dropUnshownReplyFailure(threadId: string): void {
+    if (openReplies.has(`diff:${threadId}`) || openReplies.has(`conversation:${threadId}`)) return;
+    if ((replyBodies.get(threadId) ?? '').trim() !== '') return;
+    forgetReplyFailure(threadId);
+  }
+
   // The composer's text, once it is gone where it went: kept if the reader
-  // changed it meanwhile.
+  // changed it meanwhile. A failure of an earlier attempt goes with it.
   function sent(threadId: string, body: string): void {
     if ((replyBodies.get(threadId) ?? '').trim() === body) replyBodies.delete(threadId);
     closeEverywhere(threadId);
+    forgetReplyFailure(threadId);
   }
 
   const state: ReviewCommentActionsState = {
@@ -197,7 +225,10 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     sentComments: writes,
 
     replyBodyFor: (threadId) => replyBodies.get(threadId) ?? '',
-    setReplyBody(threadId, body) { replyBodies.set(threadId, body); },
+    setReplyBody(threadId, body) {
+      replyBodies.set(threadId, body);
+      dropUnshownReplyFailure(threadId);
+    },
     replyOpen: (threadId, surface) => openReplies.has(`${surface}:${threadId}`),
     openReply(threadId, surface) {
       const held = replyDrafts.get(threadId)?.at(-1);
@@ -208,6 +239,7 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
       // A reply being posted stays open, so a failure shows in it.
       if (writes.pending(commentWriteKey.reply(threadId))) return;
       openReplies.delete(`${surface}:${threadId}`);
+      dropUnshownReplyFailure(threadId);
     },
     // A reply posts now wherever the thread shows (a picked commit's too),
     // under the gates every now write has.
@@ -261,6 +293,7 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
   return {
     state,
     writes,
+    get threadsInUse() { return threadsInUse; },
     async postLineComment(editorId, anchor, start, body, onSettled) {
       if (!canPostNow) throw new Error('Comments post to the pull request only on its whole diff.');
       const request = {

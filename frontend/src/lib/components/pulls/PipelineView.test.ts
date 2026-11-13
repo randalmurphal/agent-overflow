@@ -27,7 +27,7 @@ const ROW: PipelineRowView = {
   shortSHA: 'abcdef1',
   title: 'Fix the parser',
   projectName: 'App',
-  age: '5m ago',
+  age: '5m ago', times: '',
   url: 'https://gitlab.com/group/app/-/pipelines/77',
   stages: null,
   stagesError: null,

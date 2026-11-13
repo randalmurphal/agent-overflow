@@ -154,7 +154,7 @@
   function diffContent(): ReviewFindLocateContent {
     return untrack(() => {
       const conflicts = view === 'conflicts';
-      return { files, drafts: conflicts ? [] : review.shownDrafts, prThreads: conflicts ? [] : review.prThreads, showsMedia: conflicts ? undefined : showsMedia };
+      return { files, drafts: conflicts ? [] : review.shownDrafts, prThreads: conflicts ? [] : review.shownPRThreads, showsMedia: conflicts ? undefined : showsMedia };
     });
   }
 
@@ -440,7 +440,7 @@
       const content = untrack(() => ({
         files,
         drafts: conflicts ? [] : review.shownDrafts,
-        prThreads: conflicts ? [] : review.prThreads,
+        prThreads: conflicts ? [] : review.shownPRThreads,
         showsMedia: conflicts ? undefined : showsMedia,
         foldLines: conflicts ? (path: string) => review.conflictFoldLines(path) : undefined,
         commentText: (body: string, rowKey: string) => commentTexts()(body, details.toggled.get(rowKey)).all,
@@ -585,7 +585,7 @@
     const scope = scopeOf(shown);
     const content = shown === 'log'
       ? [review.ciLog?.version, review.ciLog?.sections]
-      : [files, shown === 'diff' ? review.shownDrafts : null, shown === 'diff' ? review.prThreads : null, shown === 'diff' ? review.mediaHost.renderedPaths.size : null];
+      : [files, shown === 'diff' ? review.shownDrafts : null, shown === 'diff' ? review.shownPRThreads : null, shown === 'diff' ? review.mediaHost.renderedPaths.size : null];
     void content;
     untrack(() => {
       if (scope !== seenView) {

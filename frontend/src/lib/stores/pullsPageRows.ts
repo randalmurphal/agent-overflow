@@ -5,8 +5,8 @@
 // A find query is a needle from `utils/findMatch.ts`; '' admits every row.
 
 import type { PRListItem, PRListSnapshot, ProjectPRList } from './bindings';
-import type { MRFilters, PullsSort } from './pullsPageFilters.svelte';
-import { pullNumberLabel, type PullRowView } from '../components/pulls/pullRowView';
+import type { MRFilters, PullsSort, PullsSortKey } from './pullsPageFilters.svelte';
+import { pullNumberLabel, pullTimesText, type PullRowView } from '../components/pulls/pullRowView';
 import type { PipelineRowView } from '../components/pulls/pipelineRowView';
 import type { BackendKey } from '../transport/backendKey';
 import { TransportError } from '../transport/wsClient';
@@ -210,7 +210,7 @@ export function groupRows(snapshot: PRListSnapshot | null, backend: BackendKey, 
   });
   const groups: PullsGroup[] = [];
   for (const row of admitted) {
-    const view = projectPullRow(row, backend);
+    const view = projectPullRow(row, backend, filters.sort.key);
     const last = groups[groups.length - 1];
     if (last && last.group === row.item.group) last.rows.push(view);
     else groups.push({ group: row.item.group, rows: [view] });
@@ -218,7 +218,8 @@ export function groupRows(snapshot: PRListSnapshot | null, backend: BackendKey, 
   return groups;
 }
 
-export function projectPullRow(row: PullsListedRow, backend: BackendKey): PullRowView {
+/** `sortKey` picks the time the age shows: the one the list is sorted by. */
+export function projectPullRow(row: PullsListedRow, backend: BackendKey, sortKey: PullsSortKey): PullRowView {
   const { item, project } = row;
   return {
     key: row.key,
@@ -233,7 +234,8 @@ export function projectPullRow(row: PullsListedRow, backend: BackendKey): PullRo
     projectName: project.name,
     author: item.viewerIsAuthor ? 'you' : (item.author.name || item.author.login),
     viewerIsAuthor: item.viewerIsAuthor,
-    age: ageOf(item.updatedAt, backend),
+    age: ageOf(sortKey === 'created' ? item.createdAt : item.updatedAt, backend),
+    times: pullTimesText(item.createdAt, item.updatedAt),
     draft: item.draft,
     crossRepository: item.crossRepository,
     ci: item.ci,
@@ -244,8 +246,8 @@ export function projectPullRow(row: PullsListedRow, backend: BackendKey): PullRo
 
 // "2h": the relative form without its "ago", which the row's age column
 // reads as.
-function ageOf(updatedAt: string, backend: BackendKey): string {
-  const at = Date.parse(updatedAt);
+function ageOf(time: string, backend: BackendKey): string {
+  const at = Date.parse(time);
   return Number.isFinite(at) ? relativeTime(at, 'locale', backend).replace(/ ago$/, '') : '';
 }
 

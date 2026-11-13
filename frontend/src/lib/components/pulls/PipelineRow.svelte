@@ -76,6 +76,6 @@
         {/each}
       {/if}
     </span>
-    <span class="shrink-0 text-[0.6875rem] text-fg-muted">{row.age}</span>
+    <span class="shrink-0 text-[0.6875rem] text-fg-muted" title={row.times} data-testid="pipeline-age"><span aria-hidden="true">{row.age}</span><span class="sr-only">{row.times}</span></span>
   </button>
 </div>

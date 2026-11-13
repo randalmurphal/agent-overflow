@@ -614,10 +614,21 @@ and anti-changes that live only here:
   settled, still counted, stepped and resolvable (ruling 2026-10-19). The
   thread's row on the diff is the same card. A top-level comment is
   NEVER truncated or clamped; only settled threads' replies may fold.
-  Reading is protected from updates: ordering freezes from the
-  section's first render, arrivals wait behind an "N new" chip, and a
-  remote resolve never moves an open card ("nothing worse than
-  GitLab"). Each section fits its content up to a cap and is
+  Reading is protected from updates without hiding them: a card keeps
+  its place once shown and never moves or disappears for a remote update
+  (a resolve, a reply), and every arrival joins the feed at its
+  chronological place on its own, never behind a press. An explicit
+  refresh or reload shows everything it read. While the reader is
+  scrolled into the feed or has focus in it, the card at the top of the
+  viewport holds its position to the pixel and an "N new" chip points
+  up at the arrivals, already in the feed; at the top, an arrival simply
+  pushes the cards down. "Hide resolved threads" is remembered on the
+  computer so it need not be ticked per PR, and hides only what was
+  resolved at the last decision point and never a thread the reader is
+  using; between decision points the hidden set only shrinks, and a
+  review already open takes up a change made elsewhere only at its own
+  refresh or reload, so nothing vanishes under the cursor. A thread
+  read never removes a card a push brought while it ran. Each section fits its content up to a cap and is
   user-resizable (bottom drag handle, remembered height). Mechanism:
   `frontend/src/lib/components/review/AGENTS.md`.
 - Forge attachments referenced by PR/MR bodies and comments (images,

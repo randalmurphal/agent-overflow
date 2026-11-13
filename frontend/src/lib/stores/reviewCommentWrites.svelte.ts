@@ -41,8 +41,8 @@ export interface CommentWritesHost {
   /** Reads the PR's threads again, for an answer with no pump (seq 0). */
   refreshThreads(): Promise<void>;
   /** Shows the PR comment the viewer posted (`commentId`, the forge's id
-   * for it as the read names it) in a Conversation feed that froze its
-   * order, at the feed's end; whatever else arrived stays behind "N new". */
+   * for it as the read names it): it counts as seen in the Conversation
+   * feed, never in "N new", and the section scrolls it into view. */
   showPostedComment(commentId: string): void;
 }
 
@@ -73,6 +73,18 @@ export const commentWriteKey = {
   prComment: 'pr-comment',
 } as const;
 
+/** The thread a write's key belongs to: every key of a thread's write
+ * starts `<kind>:<threadId>` (a reply, an edit, a delete, and
+ * reviewForgeOps' reactions and suggestions). Null for a key that is
+ * no thread's (a new comment's editor, the PR comment). */
+export function threadOfWriteKey(key: string): string | null {
+  const colon = key.indexOf(':');
+  if (colon < 0 || !THREAD_WRITE_KINDS.has(key.slice(0, colon))) return null;
+  return key.slice(colon + 1).split('\u0000')[0] || null;
+}
+
+const THREAD_WRITE_KINDS: ReadonlySet<string> = new Set(['reply', 'edit', 'delete', 'reaction', 'reactions', 'suggestion']);
+
 export interface CommentWrites {
   /** Runs `call` unless withheld; resolves true once it was accepted (the
    * settle may still be waiting for its frame), false when it failed or
@@ -97,6 +109,11 @@ export interface CommentWrites {
   setEditBody(thread: ReviewThread, comment: ReviewComment, body: string | null): void;
   /** The `threadId\0commentId` of every sent comment open in its editor. */
   readonly editing: ReadonlySet<string>;
+  /** Threads with a reply, edit or delete in flight or waiting for its
+   * frame, a sent comment open in its editor, or a delete being
+   * confirmed. A failed write's surface is one of these or the reply's
+   * kept text, so its failure needs no entry of its own. */
+  readonly activeThreads: ReadonlySet<string>;
   saveEdit(thread: ReviewThread, comment: ReviewComment): Promise<void>;
   confirmingDelete(thread: ReviewThread, comment: ReviewComment): boolean;
   setConfirmDelete(thread: ReviewThread, comment: ReviewComment, confirming: boolean): void;
@@ -119,6 +136,12 @@ function sentKey(thread: ReviewThread, comment: ReviewComment): string {
 export function createCommentWrites(host: CommentWritesHost): CommentWrites {
   const inFlight = new SvelteSet<string>();
   const awaiting = new SvelteMap<string, Awaited>();
+  // A write's failure lives exactly as long as the surface that shows
+  // it: a reply's while its composer is open or its text kept
+  // (reviewCommentActions drops it otherwise, and when the reply is sent
+  // or held), an edit's while its editor is open, a delete's while its
+  // confirm is. Dismissing the surface clears it, so a failure stored is
+  // a failure shown.
   const errors = new SvelteMap<string, string>();
   const editBodies = new SvelteMap<string, string>();
   const confirming = new SvelteSet<string>();
@@ -145,6 +168,18 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
         }
       });
     });
+  });
+
+  const activeThreads = $derived.by<ReadonlySet<string>>(() => {
+    const out = new Set<string>();
+    for (const keys of [inFlight, awaiting.keys()]) {
+      for (const key of keys) {
+        const thread = threadOfWriteKey(key);
+        if (thread !== null) out.add(thread);
+      }
+    }
+    for (const keys of [editBodies.keys(), confirming]) for (const key of keys) out.add(key.split('\u0000')[0]);
+    return out;
   });
 
   function isPending(key: string): boolean {
@@ -213,6 +248,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       }
     },
     get editing() { return new Set(editBodies.keys()); },
+    get activeThreads() { return activeThreads; },
     async saveEdit(thread, comment) {
       const key = sentKey(thread, comment);
       const body = (editBodies.get(key) ?? '').trim();
@@ -230,6 +266,8 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       const key = sentKey(thread, comment);
       if (on) confirming.add(key);
       else {
+        // A delete that is out keeps its confirm: its answer shows there.
+        if (isPending(commentWriteKey.delete(thread.id, comment.id))) return;
         confirming.delete(key);
         errors.delete(commentWriteKey.delete(thread.id, comment.id));
       }
@@ -258,7 +296,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       const body = prCommentBody.trim();
       if (!body) return;
       // The answer names the created comment; one it does not name (an
-      // older backend) joins nothing and stays behind "N new".
+      // older backend) joins the feed as any arrival does.
       let created = '';
       await run(commentWriteKey.prComment, async (ref) => {
         const answer = await PostPRComment(prReferenceWire(ref), body);

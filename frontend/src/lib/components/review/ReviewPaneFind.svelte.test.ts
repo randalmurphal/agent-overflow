@@ -122,7 +122,7 @@ describe('review find over the diff', () => {
       },
       scrollFindBy: () => {},
     };
-    const review = { shownDrafts: [], mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState;
+    const review = { shownDrafts: [], mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState;
     const root = document.createElement('div');
     document.body.append(root);
     const { rerender } = render(ReviewPaneFind, {
@@ -173,7 +173,7 @@ describe('review find over the diff', () => {
       scrollFindBy: () => {},
     };
     const review = {
-      shownDrafts: [reply], mediaHost: NO_MEDIA_HOST, drafts: [reply], prThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: expanded, togglePRThread,
+      shownDrafts: [reply], mediaHost: NO_MEDIA_HOST, drafts: [reply], prThreads: [thread], shownPRThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: expanded, togglePRThread,
       draftEditBodyFor: () => null, sentComments: { editing: new Set<string>(), editBodyFor: () => null },
     } as unknown as ReviewPaneState;
     const root = document.createElement('div');
@@ -189,6 +189,34 @@ describe('review find over the diff', () => {
     await vi.waitFor(() => expect(asks.length).toBeGreaterThan(0));
     expect(asks.at(-1)).toMatchObject({ fileIndex: 0, rowKey: 'dc:d1', place: { kind: 'thread', threadId: 'p1' } });
     expect(togglePRThread.mock.calls).toEqual(resolved ? [['p1']] : []);
+    root.remove();
+  });
+
+  // Hide resolved threads: find searches the threads the view shows, so
+  // a hidden thread's comments are not matched.
+  it('does not match a thread Hide resolved hides', async () => {
+    const files = parseReviewFiles(patch('src/a.ts', ['alpha', 'beta']));
+    const thread = (id: string, body: string, resolved: boolean) => ({
+      id, path: 'src/a.ts', line: 2, side: 'right', isResolvable: true, isResolved: resolved, isOutdated: false,
+      comments: [{ id: `n-${id}`, authorLogin: 'priya', body, createdAt: '', databaseID: 1, viewerCanEdit: false, viewerCanDelete: false }],
+    });
+    const shown = thread('p1', 'open zq here', false);
+    // Its suggestion is not matched either.
+    const hidden = thread('p2', 'resolved zq here\n\n```suggestion\nconst zq = 1;\n```', true);
+    const review = {
+      shownDrafts: [], mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [shown, hidden], shownPRThreads: [shown], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(['p2']),
+      draftEditBodyFor: () => null, sentComments: { editing: new Set<string>(), editBodyFor: () => null },
+    } as unknown as ReviewPaneState;
+    const list = { findReadingPosition: () => null, revealFindPlace: () => true, scrollFindBy: () => {} };
+    const root = document.createElement('div');
+    document.body.append(root);
+    render(ReviewPaneFind, {
+      props: { findKey: 'pane-find-hidden', title: 'Review', review, view: 'diff', files, root, diff: () => list, log: () => undefined },
+    });
+    const find = getPaneFindProvider('pane-find-hidden') as ReviewFind<ReviewFindHit>;
+    openPaneFind('pane-find-hidden');
+    setPaneFindQuery('pane-find-hidden', 'zq');
+    await vi.waitFor(() => expect([find.result.count, find.result.pending]).toEqual([1, false]));
     root.remove();
   });
 });

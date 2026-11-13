@@ -1,7 +1,7 @@
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { takePinnedBackend } from '../transport/backends';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import {
   applyPRCIUpdatedEvent,
@@ -17,6 +17,7 @@ import {
   peekPRError,
   peekPRFailure,
   peekPRSnapshot,
+  prReadStart,
   prReviewKeys,
   setPRThreadResolveOverride,
 } from './prReviewStore.svelte';
@@ -892,6 +893,62 @@ describe('prReviewStore — applying pushes', () => {
     applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], events: [], headSHA: 'sha-a' });
     expect(a.snapshot?.events).toEqual([]);
     a.release();
+  });
+});
+
+describe('prReviewStore — a thread read converges with the frames that landed during it', () => {
+  const comment = (id: string, at: string) => ({ id, authorLogin: 'bob', body: id, createdAt: at, databaseID: 0, viewerCanEdit: false, viewerCanDelete: false });
+  const thread = (id: string, ...comments: ReturnType<typeof comment>[]): ReviewThread => ({ ...threadStub(id), comments });
+  const T1 = thread('t-1', comment('c-1', '2026-01-01T00:00:00Z'));
+
+  let a: ReturnType<typeof attachPR> | null = null;
+  async function held(): Promise<ReturnType<typeof attachPR>> {
+    installSubscribeMock();
+    a = attachPR(KEY, { ref: REF });
+    await flush();
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [T1], headSHA: 'sha-a', seq: 2 });
+    return a;
+  }
+  afterEach(() => {
+    a?.release();
+    a = null;
+  });
+  const ids = (held: ReturnType<typeof attachPR>) => held.snapshot?.threads.map((each) => `${each.id}:${each.comments.map((c) => c.id).join(',')}`);
+
+  it('an answer older than a pushed thread or reply keeps them', async () => {
+    const pr = await held();
+    const from = prReadStart(KEY);
+    applyPRUpdatedEvent({
+      prKey: KEY, detail: detailStub(), headSHA: 'sha-a', seq: 3,
+      threads: [thread('t-1', comment('c-1', '2026-01-01T00:00:00Z'), comment('c-2', '2026-01-02T00:00:00Z')), thread('t-2', comment('c-3', '2026-01-03T00:00:00Z'))],
+    });
+    applyPRSnapshot(KEY, { detail: detailStub(), threads: [T1], headSHA: 'sha-a' }, from);
+    expect(ids(pr)).toEqual(['t-1:c-1,c-2', 't-2:c-3']);
+    // A re-list after a write converges the same way: its answer predates
+    // t-3's frame and keeps it.
+    const again = prReadStart(KEY);
+    const listed = pr.snapshot!.threads;
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), headSHA: 'sha-a', seq: 4, threads: [...listed, thread('t-3', comment('c-4', '2026-01-04T00:00:00Z'))] });
+    applyPRThreads(KEY, listed, again);
+    expect(ids(pr)).toEqual(['t-1:c-1,c-2', 't-2:c-3', 't-3:c-4']);
+  });
+
+  it('two overlapping reads answering out of order keep what the newer one brought', async () => {
+    const pr = await held();
+    const first = prReadStart(KEY);
+    const second = prReadStart(KEY);
+    applyPRSnapshot(KEY, { detail: detailStub(), threads: [thread('t-1', comment('c-1', '2026-01-01T00:00:00Z'), comment('c-2', '2026-01-02T00:00:00Z')), thread('t-2')], headSHA: 'sha-a' }, second);
+    applyPRSnapshot(KEY, { detail: detailStub(), threads: [T1], headSHA: 'sha-a' }, first);
+    expect(ids(pr)).toEqual(['t-1:c-1,c-2', 't-2:']);
+  });
+
+  it('a thread or comment the read started with and the forge no longer lists goes', async () => {
+    const pr = await held();
+    const from = prReadStart(KEY);
+    applyPRSnapshot(KEY, { detail: detailStub(), threads: [thread('t-1')], headSHA: 'sha-a' }, from);
+    expect(ids(pr)).toEqual(['t-1:']);
+    applyPRSnapshot(KEY, { detail: detailStub(), threads: [], headSHA: 'sha-a' }, prReadStart(KEY));
+    expect(ids(pr)).toEqual([]);
   });
 });
 

@@ -198,6 +198,7 @@
         <button
           type="button"
           class="{textButton} text-fg-muted hover:bg-surface-2 hover:text-fg"
+          disabled={pending}
           data-testid="review-comment-confirm-cancel"
           onclick={() => onConfirmingChange(null)}
         >Cancel</button>

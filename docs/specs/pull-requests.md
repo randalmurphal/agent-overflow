@@ -208,10 +208,11 @@ with All commits picked, on both surfaces and both forges:
   one reads `-4 to +6` and tints the rows from the removed line through
   the last one.
 - One "Comment…" field at the end of the Conversation feed posts a
-  comment on the PR itself, now; it shows in the feed even after the feed
-  froze. The answer names the created comment (`PRActionResult.commentId`,
-  as `ReviewComment.id` reads it), and only that comment joins the frozen
-  feed; one the answer does not name stays behind "N new".
+  comment on the PR itself, now. The answer names the created comment
+  (`PRActionResult.commentId`, as `ReviewComment.id` reads it): that
+  comment is in the feed at its place at once, never counted in "N new",
+  and the section scrolls it into view. One the answer does not name
+  joins as any arrival does.
 
 A write posted now (`PostPRLineComment`, `ReplyToPRThread`,
 `PostPRComment`, `EditPRComment`, `DeletePRComment`) answers
@@ -322,8 +323,57 @@ Text, Ref}` with `Kind` from `approved`, `unapproved`, `review_dismissed`,
 notes already in the discussions read (no extra request); GitHub from
 `timelineItems` inside `PRTick` under `$wantEvents`. Pushes stay the
 commit groups the feed already builds from git. Events are feed items of
-kind `event`, in time order with the rest, frozen and revealed like
-threads. Label, milestone and assignee changes are not events.
+kind `event`, in time order with the rest, placed like threads. Label, milestone and assignee changes are not events.
+
+### The Conversation feed
+
+The feed (newest first) holds its order: a card keeps its place once
+shown, and a remote update (a resolve, a reply) never moves or removes
+it; a reply grows its card in place. Every arrival, from the poll or a
+pushed update, joins the feed on its own at its chronological place.
+While the reader is scrolled into the section or has focus inside it,
+the card at the top of the section's viewport stays where it is to the
+pixel through arrivals and growth above it, and a chip "↑ N new" on the
+header counts the arrivals that joined meanwhile; pressing it scrolls to
+the newest, and it goes once that one has been in view. At the top with
+focus elsewhere, an arrival simply appears and pushes the cards down.
+The chip only points at entries already in the feed. An explicit
+re-read of the threads (the Conversation header's refresh, the
+toolbar's reload and a stale-head Reload, which re-read the threads of a
+PR on screen) shows everything it read: when its answer lands, nothing
+up to it is counted. A thread read carries no pump sequence, so its
+answer is reconciled with the frames that landed while it ran: a thread
+or comment that arrived by push during the read stays even when the
+answer, read earlier, lacks it. A field a frame changed during the read
+(a resolve, an edit) takes the answer's value until the next frame. A
+failed thread read shows its own banner with Retry while the pane shows
+that PR in PR scope; a change of scope or PR drops it, a diff load
+neither clears nor replaces it, and it never clears the diff load's
+error.
+
+"Hide resolved threads" in the toolbar's view-options menu (shown in the
+PR scope) leaves resolved threads out of the feed and the diff's thread
+rows. It is a remembered preference of the frontend, per computer, off
+until first ticked: a review starts from it, and the toggle and the
+"N resolved hidden" line write it. A review already open adopts a
+change made in another review only at its own explicit refresh or
+reload. A failed save shows the layout-save toast, and the choice still
+applies to the review. What it hides is decided at a decision point:
+the toggle, an explicit refresh or reload, and a load with nothing on
+screen (the review's first); a load nobody asked for is not one.
+Between two decision points the hidden set only shrinks: a thread
+resolved since stays on screen, shown resolved; a hidden thread that
+shows for any reason (unresolved, a jump, the reader using it) stays
+shown even if it is resolved again; an arrival shows whatever its
+state. A thread the reader is using is never hidden: a reply composer
+open or reply text kept, a sent comment open for edit or a delete being
+confirmed, a held draft reply, or a reply, edit, delete, resolve,
+reaction or suggestion apply in flight, waiting for its frame or
+failed. The header's count is what the feed shows, and "N resolved
+hidden" at the feed's end turns the option off. The file tree's badges
+and the unresolved stepper count unresolved threads and are unaffected.
+Find does not match a hidden thread, and a jump to one shows it until
+the next decision.
 
 ### Error vocabulary
 
@@ -378,7 +428,10 @@ are sent to a thread; they survive stepping through the list and a
 restart. The page records nothing about which MRs the user opened.
 
 A row reads top down: the project, `!number`, the author's display name
-("you" for your own) and the age; the title, wrapping to two lines; then
+("you" for your own) and the age of the time the list is sorted by (the
+created time under `Created`, the updated time under every other sort),
+whose hover text and accessible label give both: "Opened <date> ·
+Updated <date and time>"; the title, wrapping to two lines; then
 the facts, wrapping and never cut: the state label in its tone, approvals
 `n/m`, the unresolved count and, on your own MRs only, the CI dot. The
 label says why the row is where it is: `Review requested`, `+N commits
@@ -476,7 +529,8 @@ filters, list, detail beside it) and loses its modal.
 
 Rows are pipelines of the selected projects on any ref: id, ref (branch,
 MR, tag), head commit, stage dots for the rows on screen (or that their
-read failed), age. A project whose pipelines or origin could not be read
+read failed), age from its created time (hover text and accessible
+label "Created <date and time> · Updated <date and time>"). A project whose pipelines or origin could not be read
 shows its failure above the rows, as on the Merge requests tab. Filters:
 project, ref kind, status, default all; the ref and status pickers are
 one choice each and close on the pick. A row opens the stages / jobs /

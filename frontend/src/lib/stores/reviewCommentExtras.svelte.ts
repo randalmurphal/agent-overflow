@@ -3,6 +3,7 @@ import { createEditorPreviews, type EditorPreviews } from './reviewEditorPreview
 import { createReviewReactions, type ReviewReactions } from './reviewReactions.svelte';
 import { createReviewSuggestions, type ReviewSuggestions } from './reviewSuggestions.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
+import { threadOfWriteKey } from './reviewCommentWrites.svelte';
 import type { ReviewFile } from '../utils/patchStore';
 
 // A review pane's suggested changes, reactions and editor previews
@@ -41,6 +42,8 @@ export interface ReviewCommentExtrasHost extends ForgeOpsHost {
 export interface ReviewCommentExtras {
   /** Its members keep their getters: merge with Object.defineProperties. */
   readonly state: ReviewCommentExtrasState;
+  /** Threads with a reaction or suggestion apply pending or failed. */
+  readonly activeThreads: ReadonlySet<string>;
   dispose(): void;
 }
 
@@ -59,6 +62,7 @@ export function createReviewCommentExtras(host: ReviewCommentExtrasHost): Review
   });
   const editorPreviews = createEditorPreviews(host.openEditorKeys, host.backend);
   const reactionsUnavailable = $derived(capable() && host.onPR() ? host.reactionsUnavailable() : null);
+  const activeThreads = $derived(new Set(ops.activeKeys.flatMap((key) => threadOfWriteKey(key) ?? [])));
 
   return {
     state: {
@@ -67,6 +71,7 @@ export function createReviewCommentExtras(host: ReviewCommentExtrasHost): Review
       editorPreviews,
       get reactionsUnavailable() { return reactionsUnavailable; },
     },
+    get activeThreads() { return activeThreads; },
     dispose() {
       ops.dispose();
       editorPreviews.dispose();

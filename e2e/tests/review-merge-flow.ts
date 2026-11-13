@@ -256,14 +256,11 @@ export function reviewMergeFlow({ compact }: MergeSurface): void {
       await expect(conversation.locator('[data-testid="review-conversation-event"][data-kind="approved"]')).toHaveCount(0);
 
       // Unapprove withdraws it: the blocker is back and the withdrawal is
-      // an event row.
+      // an event row, in the feed with no press.
       await press(approve);
       await expect(approve).toHaveText('Approve');
       await expect(pill).toHaveText('Blocked · 2');
       await expect(approvals).toHaveCount(1);
-      const fresh = conversation.getByTestId('review-conversation-new');
-      await expect(fresh).toBeVisible();
-      await press(fresh);
       await expect(conversation.locator(`[data-testid="review-conversation-event"][data-kind="${WITHDRAWN[forge]}"]`)).toContainText('ao-viewer');
 
       // Auto-merge when ready arms the forge's; the armed row's Cancel

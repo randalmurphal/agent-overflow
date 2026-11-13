@@ -32,7 +32,7 @@ import { installPullsReceiver } from './pullsPage.svelte';
 import { ensurePullsFilters, pipelineFilters, setPipelineFilters, type PipelineFilters } from './pullsPageFilters.svelte';
 import { pipelineRowMatches } from './pullsPageRows';
 import { getTransportStatusFor } from './transportStatus.svelte';
-import { shortSHA, type PipelineRowView, type PipelineStageView } from '../components/pulls/pipelineRowView';
+import { pipelineTimesText, shortSHA, type PipelineRowView, type PipelineStageView } from '../components/pulls/pipelineRowView';
 import type { BackendKey } from '../transport/backendKey';
 import { onBackendDetached, withBackendTarget } from '../transport/backends';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
@@ -247,6 +247,7 @@ class PipelinesPageBackend {
       title: summary.title ?? '',
       projectName: pipeline.projectName,
       age: Number.isFinite(at) ? relativeTime(at, 'locale', this.backend) : '',
+      times: pipelineTimesText(summary.createdAt, summary.updatedAt),
       url: summary.url,
       stages: this.stages.get(pipeline.key)?.stages ?? null,
       stagesError: this.stages.get(pipeline.key)?.error ?? null,

@@ -1,7 +1,8 @@
 <script lang="ts">
   // The review pane's banners under its toolbar: the load's error with
-  // Retry, a branch list failure, a submit failure, a conflict read
-  // failure, the PR pump's failure by kind, and the stale-PR Reload.
+  // Retry, the PR threads read's failure with Retry, a branch list
+  // failure, a submit failure, a conflict read failure, the PR pump's
+  // failure by kind, and the stale-PR Reload.
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import { rateLimitMessage } from '../../utils/forgeFailure';
 
@@ -19,6 +20,19 @@
       disabled={review.loading}
       onclick={() => { void review.reload({ userInitiated: true }); }}
       data-testid="review-error-retry"
+    >Retry</button>
+  </div>
+{/if}
+{#if review.threadsError}
+  <!-- The PR threads read's own failure: a diff load neither clears nor
+       replaces it. Retry reads the threads again. -->
+  <div class="flex items-start justify-between gap-3 border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-threads-error">
+    <span class="max-h-32 min-w-0 overflow-y-auto whitespace-pre-wrap break-words">{review.threadsError}</span>
+    <button
+      type="button"
+      class="shrink-0 rounded border border-error/40 px-2 py-0.5"
+      onclick={() => { void review.refreshPRThreads({ explicit: true }); }}
+      data-testid="review-threads-error-retry"
     >Retry</button>
   </div>
 {/if}

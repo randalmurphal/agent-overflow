@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tick } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import { getToasts } from './toast.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import {
@@ -3081,6 +3081,60 @@ describe('collapse overrides across reloads', () => {
 });
 
 describe('comments-only PR refresh', () => {
+  describe('a failed read belongs to its PR in PR scope', () => {
+    async function failedOnPR5(): Promise<ReturnType<typeof reviewStateForPane>> {
+      installPRMocks();
+      setBindingMock('GetPRDetail', async () => prDetailStub());
+      const state = reviewStateForPane('pane-1', prSubject());
+      await waitLoaded(state);
+      await state.setScope('pr');
+      setBindingMock('ListPRReviewThreads', async () => { throw new Error('The threads did not load.'); });
+      await state.refreshPRThreads({ explicit: true });
+      expect(state.threadsError).toContain('threads did not load');
+      return state;
+    }
+
+    it('stays while the pane shows the PR, and its read clears it', async () => {
+      const state = await failedOnPR5();
+      await state.reload();
+      await flushPane();
+      expect(state.threadsError).toContain('threads did not load');
+      const list = setBindingMock('ListPRReviewThreads', async () => []);
+      await state.refreshPRThreads({ explicit: true });
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(state.threadsError).toBeNull();
+    });
+
+    it('goes with a change of scope, and a return does not bring it back', async () => {
+      const state = await failedOnPR5();
+      const leaving = state.setScope('workspace');
+      // Not shown outside PR scope, from the moment the scope changes.
+      expect(state.threadsError).toBeNull();
+      await leaving;
+      await flushPane();
+      expect(state.threadsError).toBeNull();
+      setBindingMock('ListPRReviewThreads', async () => []);
+      await state.setScope('pr');
+      await flushPane();
+      expect(state.threadsError).toBeNull();
+    });
+
+    it('goes with a change of PR', async () => {
+      const state = await failedOnPR5();
+      setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
+        id: `sub-${pr.Number}`, prKey: `github:owner/repo:${pr.Number}`, detail: prDetailStub({ number: pr.Number }), threads: [], headSHA: 'sha-a',
+      }));
+      seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/7', openPrNumber: 7 });
+      await vi.waitFor(() => expect(state.prRef?.number).toBe(7));
+      expect(state.threadsError).toBeNull();
+      // Back on #5 (its read failing still), the return's own read decides.
+      seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/5', openPrNumber: 5 });
+      await vi.waitFor(() => expect(state.prRef?.number).toBe(5));
+      await flushPane();
+      expect(state.threadsError).toBeNull();
+    });
+  });
+
   it('refreshes detail + threads without reloading the diff', async () => {
     installPRMocks();
     const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
@@ -4024,7 +4078,7 @@ describe('reviewPane store — conversation section and resolve', () => {
       (entry.kind === 'thread' ? [entry.thread.id] : []));
   }
 
-  it('freezes ordering while open: arrivals wait behind the new chip, reveal folds them in', async () => {
+  it('holds the order while open: arrivals join at their place, no reveal needed', async () => {
     const resolvedEarly = convThread('t-resolved', {
       isResolved: true,
       comments: [{ authorLogin: 'bob', body: 'old', createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
@@ -4034,46 +4088,40 @@ describe('reviewPane store — conversation section and resolve', () => {
     });
     const state = await statePRWithThreads([resolvedEarly, openLater]);
 
-    // Closed by default; opening freezes the order in hand.
+    // Closed by default; opening shows the order in hand.
     expect(state.conversationOpen).toBe(false);
     expect(state.conversationFeed).toEqual([]);
     state.setConversationOpen(true);
-    expect(state.conversationFrozen).toBe(true);
     // Chronological, newest first; replies unfold by default only on the
     // unresolved thread.
     expect(feedThreadIds(state)).toEqual(['t-open', 't-resolved']);
     expect(state.conversationThreadExpanded('t-open')).toBe(true);
     expect(state.conversationThreadExpanded('t-resolved')).toBe(false);
 
-    // A thread arriving mid-read neither reorders nor appears; it counts.
+    // A thread arriving mid-read joins at its own time (2026-01-01, tie
+    // broken by id), neither reordering the rest nor waiting; the reader
+    // is at the top, so nothing counts as new.
     applyPRUpdatedEvent({
       prKey: PR_KEY,
       detail: prDetailStub(),
       threads: [resolvedEarly, openLater, convThread('t-arrived')],
       headSHA: 'sha-a',
     });
-    expect(feedThreadIds(state)).toEqual(['t-open', 't-resolved']);
-    expect(state.conversationNewCount).toBe(1);
-
-    state.revealNewConversationThreads();
-    expect(state.conversationNewCount).toBe(0);
-    // The arrival interleaves by its own time (2026-01-01, tie broken by
-    // id) rather than jumping the whole feed.
+    flushSync();
     expect(feedThreadIds(state)).toEqual(['t-open', 't-arrived', 't-resolved']);
+    expect(state.conversationNewCount).toBe(0);
+    expect(state.conversationThreadExpanded('t-arrived')).toBe(true);
 
-    // Closing forgets the frozen view; an explicit reopen freezes what is
-    // in hand.
+    // Closing forgets the view; a reopen shows what is in hand.
     state.setConversationOpen(false);
     expect(state.conversationFeed).toEqual([]);
-    expect(state.conversationFrozen).toBe(false);
     state.setConversationOpen(true);
-    expect(state.conversationFrozen).toBe(true);
     expect(feedThreadIds(state)).toEqual(['t-open', 't-arrived', 't-resolved']);
     expect(state.conversationNewCount).toBe(0);
     // Leaving pr scope drops the view but keeps the section open.
     await state.setScope('workspace');
     expect(state.conversationOpen).toBe(true);
-    expect(state.conversationFrozen).toBe(false);
+    expect(state.conversationFeed).toEqual([]);
   });
 
   it('interleaves verdicts and commit pushes chronologically, newest first', async () => {
@@ -4129,14 +4177,15 @@ describe('reviewPane store — conversation section and resolve', () => {
     expect(first?.kind === 'thread' && first.thread.isResolved).toBe(true);
     expect(state.conversationThreadExpanded('t-1')).toBe(true);
 
-    // ...even across a reveal (new arrivals fold in, open cards stay open).
+    // ...even as arrivals join (open cards stay open).
     applyPRUpdatedEvent({
       prKey: PR_KEY,
       detail: prDetailStub(),
       threads: [{ ...open, isResolved: true }, convThread('t-2')],
       headSHA: 'sha-a',
     });
-    state.revealNewConversationThreads();
+    flushSync();
+    expect(feedThreadIds(state)).toEqual(['t-1', 't-2']);
     expect(state.conversationThreadExpanded('t-1')).toBe(true);
   });
 

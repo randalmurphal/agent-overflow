@@ -50,7 +50,13 @@ PR stores; components own presentation and interaction.
   is the diff list's first row (`kind: 'overview'`, key
   `REVIEW_OVERVIEW_ROW_KEY`) for every PR, measured like any row and
   unmounted when far below, so section open state, section scroll offsets
-  and the frozen feed live in the review store. The Merge section
+  and the Conversation feed's order, arrivals and reading anchor live in
+  the review store (`stores/reviewConversationFeed.svelte.ts`). The feed
+  never gates an arrival: it joins at its place, and `ReviewConversation`
+  holds the reader's top card to the pixel by compensating `scrollTop`
+  (the section body has `overflow-anchor: none`, as WebKit has none); the
+  contract is in
+  [pull requests](../../../../../docs/specs/pull-requests.md#the-conversation-feed). The Merge section
   (`ReviewMergeSection`) is the one home of approve, merge and auto-merge
   on every surface: the title bar's refs line carries only the readiness
   pill, which jumps to it, and both read `utils/reviewReadiness.ts` so
@@ -73,7 +79,11 @@ PR stores; components own presentation and interaction.
   `utils/reviewIdentity.ts` through `ReviewAvatar`. The Conversation card
   and the diff row (`ReviewPRThreadRow`) render the same card.
 - The toolbar (`ReviewToolbar`) holds the scope selectors, the diff's
-  counts, collapse-all, the view-options menu (whitespace, wrap, split),
+  counts, collapse-all, the view-options menu (whitespace, wrap, split,
+  and in the PR scope Hide resolved threads, `stores/reviewHideResolved.svelte.ts`,
+  a remembered preference in `appStorage` whose `shownPRThreads` the diff
+  rows and find read; it never hides a thread the review state's
+  `threadInUse` names, the one answer to that question),
   reload and close (Back on a pinned review); no
   comment tally (the tree badges, the Conversation header and the title
   bar's stepper carry counts). Every selector is `ReviewToolbarMenu`, a
