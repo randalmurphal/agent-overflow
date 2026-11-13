@@ -10,6 +10,7 @@ export {
     CIStep,
     CheckStatus,
     CheckSummary,
+    CommentTarget,
     GitActionResult,
     GitBranch,
     GitStatus,
@@ -30,7 +31,9 @@ export {
     ReviewComment,
     ReviewEvent,
     ReviewLineComment,
+    ReviewLineStart,
     ReviewReplyTo,
     ReviewThread,
+    ReviewThreadReply,
     ReviewVerdict
 } from "./models.js";

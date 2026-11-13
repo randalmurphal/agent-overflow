@@ -90,6 +90,7 @@ export {
     PRApprovals,
     PRCILogFollowResult,
     PRCILogState,
+    PRLineCommentRequest,
     PRListItem,
     PRListSnapshot,
     PRListSubscriptionResult,

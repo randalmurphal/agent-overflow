@@ -332,6 +332,36 @@ export class CheckSummary {
 }
 
 /**
+ * CommentTarget names one sent comment: ThreadID is its thread's
+ * ReviewThread.ID and CommentID its ReviewComment.ID. A GitHub
+ * conversation comment's thread ID is its own ID (ReviewThread).
+ */
+export class CommentTarget {
+    "threadId": string;
+    "commentId": string;
+
+    /** Creates a new CommentTarget instance. */
+    constructor($$source: Partial<CommentTarget> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("commentId" in $$source)) {
+            this["commentId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommentTarget instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommentTarget {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CommentTarget($$parsedSource as Partial<CommentTarget>);
+    }
+}
+
+/**
  * GitActionResult summarizes the outcome of a git binding action.
  */
 export class GitActionResult {
@@ -1261,16 +1291,37 @@ export class RepoReference {
     }
 }
 
+/**
+ * ReviewComment is one comment of a thread. ID is what an edit or a
+ * delete names (CommentTarget.CommentID): a GitHub comment's node id, a
+ * GitLab note's id in decimal. ViewerCanEdit and ViewerCanDelete are the
+ * forge's answer for the signed-in login: GitHub's viewerCanUpdate and
+ * viewerCanDelete; GitLab's REST notes carry no permission, so there they
+ * are the viewer's own notes (GitLab lets only a note's author edit it).
+ * EditedAt is when the forge says the body was last edited (GitHub's
+ * lastEditedAt), empty when it was not or the forge does not say (GitLab's
+ * REST notes do not: their updated_at also moves on a resolve). URL is the
+ * comment on the forge's web UI when the read carries it: GitHub's url,
+ * GitLab's merge request page at the note's anchor.
+ */
 export class ReviewComment {
+    "id": string;
     "authorLogin": string;
     "authorName"?: string;
     "body": string;
     "createdAt": string;
+    "editedAt"?: string;
     "databaseID": number;
     "replyTo"?: ReviewReplyTo | null;
+    "viewerCanEdit": boolean;
+    "viewerCanDelete": boolean;
+    "url"?: string;
 
     /** Creates a new ReviewComment instance. */
     constructor($$source: Partial<ReviewComment> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
         if (!("authorLogin" in $$source)) {
             this["authorLogin"] = "";
         }
@@ -1283,6 +1334,12 @@ export class ReviewComment {
         if (!("databaseID" in $$source)) {
             this["databaseID"] = 0;
         }
+        if (!("viewerCanEdit" in $$source)) {
+            this["viewerCanEdit"] = false;
+        }
+        if (!("viewerCanDelete" in $$source)) {
+            this["viewerCanDelete"] = false;
+        }
 
         Object.assign(this, $$source);
     }
@@ -1291,10 +1348,10 @@ export class ReviewComment {
      * Creates a new ReviewComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewComment {
-        const $$createField5_0 = $$createType22;
+        const $$createField7_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replyTo" in $$parsedSource) {
-            $$parsedSource["replyTo"] = $$createField5_0($$parsedSource["replyTo"]);
+            $$parsedSource["replyTo"] = $$createField7_0($$parsedSource["replyTo"]);
         }
         return new ReviewComment($$parsedSource as Partial<ReviewComment>);
     }
@@ -1346,10 +1403,11 @@ export class ReviewEvent {
 }
 
 /**
- * ReviewLineComment is one comment of a review: a file comment, or a line
- * on the left (Line is its old number) or the right (its new number). An
- * unchanged line is on the right with its old number in OldLine, which
- * GitLab needs beside the new one.
+ * ReviewLineComment is one comment of a review: a file comment, a line on
+ * the left (Line is its old number) or the right (its new number), a range
+ * of lines ending at Line and starting at Start, or a reply to a thread
+ * (InReplyTo, with no line). An unchanged line is on the right with its
+ * old number in OldLine, which GitLab needs beside the new one.
  */
 export class ReviewLineComment {
     "path": string;
@@ -1357,7 +1415,18 @@ export class ReviewLineComment {
     "line"?: number | null;
     "oldLine"?: number | null;
     "side": string;
-    "startLine"?: number | null;
+
+    /**
+     * Start is the first line of a range, described as Line, OldLine and
+     * Side describe the last; nil for one line.
+     */
+    "start"?: ReviewLineStart | null;
+
+    /**
+     * InReplyTo makes the comment a reply to an existing thread. Path and
+     * Line then only name the thread for a failure's sentence.
+     */
+    "inReplyTo"?: ReviewThreadReply | null;
 
     /** Creates a new ReviewLineComment instance. */
     constructor($$source: Partial<ReviewLineComment> = {}) {
@@ -1378,8 +1447,47 @@ export class ReviewLineComment {
      * Creates a new ReviewLineComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewLineComment {
+        const $$createField5_0 = $$createType24;
+        const $$createField6_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("start" in $$parsedSource) {
+            $$parsedSource["start"] = $$createField5_0($$parsedSource["start"]);
+        }
+        if ("inReplyTo" in $$parsedSource) {
+            $$parsedSource["inReplyTo"] = $$createField6_0($$parsedSource["inReplyTo"]);
+        }
         return new ReviewLineComment($$parsedSource as Partial<ReviewLineComment>);
+    }
+}
+
+/**
+ * ReviewLineStart is the first line of a range comment: Line on Side
+ * ("left" at its old number, "right" at its new one), and an unchanged
+ * line's old number in OldLine beside its new one on the right.
+ */
+export class ReviewLineStart {
+    "line": number;
+    "oldLine"?: number;
+    "side": string;
+
+    /** Creates a new ReviewLineStart instance. */
+    constructor($$source: Partial<ReviewLineStart> = {}) {
+        if (!("line" in $$source)) {
+            this["line"] = 0;
+        }
+        if (!("side" in $$source)) {
+            this["side"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewLineStart instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewLineStart {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReviewLineStart($$parsedSource as Partial<ReviewLineStart>);
     }
 }
 
@@ -1411,7 +1519,10 @@ export class ReviewReplyTo {
 /**
  * ReviewThread is one PR discussion: a file-anchored review thread
  * (Path set) or a PR-level conversation thread (Path empty — GitLab
- * position-less discussions, GitHub PR conversation comments).
+ * position-less discussions, GitHub PR conversation comments). A GitHub
+ * conversation comment is a thread of its own whose ID is the comment's
+ * ID, which is how a write tells it from a review thread comment
+ * (CommentTarget).
  */
 export class ReviewThread {
     "id": string;
@@ -1474,12 +1585,42 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField10_0 = $$createType24;
+        const $$createField10_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField10_0($$parsedSource["comments"]);
         }
         return new ReviewThread($$parsedSource as Partial<ReviewThread>);
+    }
+}
+
+/**
+ * ReviewThreadReply names the thread a reply answers: ThreadID as ReadPR
+ * reported it, and RootDatabaseID its first comment's DatabaseID, which a
+ * GitHub reply is posted under.
+ */
+export class ReviewThreadReply {
+    "threadId": string;
+    "rootDatabaseId": number;
+
+    /** Creates a new ReviewThreadReply instance. */
+    constructor($$source: Partial<ReviewThreadReply> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("rootDatabaseId" in $$source)) {
+            this["rootDatabaseId"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewThreadReply instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewThreadReply {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReviewThreadReply($$parsedSource as Partial<ReviewThreadReply>);
     }
 }
 
@@ -1545,5 +1686,9 @@ const $$createType19 = MergeReadiness.createFrom;
 const $$createType20 = MergeOptions.createFrom;
 const $$createType21 = ReviewReplyTo.createFrom;
 const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = ReviewComment.createFrom;
-const $$createType24 = $Create.Array($$createType23);
+const $$createType23 = ReviewLineStart.createFrom;
+const $$createType24 = $Create.Nullable($$createType23);
+const $$createType25 = ReviewThreadReply.createFrom;
+const $$createType26 = $Create.Nullable($$createType25);
+const $$createType27 = ReviewComment.createFrom;
+const $$createType28 = $Create.Array($$createType27);

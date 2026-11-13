@@ -3888,6 +3888,51 @@ export class PRCILogState {
 }
 
 /**
+ * PRLineCommentRequest is a comment posted now on the PR's diff, anchored
+ * as a draft is (store.DiffReviewCommentInput): Side "file" for a file,
+ * "old", "new" or "context" for a line, with StartOldLine and StartNewLine
+ * the first line of a range. HeadSHA is the head of the diff the caller
+ * shows; the forge refuses a comment once the head moved on GitLab, and
+ * GitHub pins the comment to that commit.
+ */
+export class PRLineCommentRequest {
+    "headSha": string;
+    "filePath": string;
+    "side": string;
+    "oldLine"?: number;
+    "newLine"?: number;
+    "startOldLine"?: number;
+    "startNewLine"?: number;
+    "body": string;
+
+    /** Creates a new PRLineCommentRequest instance. */
+    constructor($$source: Partial<PRLineCommentRequest> = {}) {
+        if (!("headSha" in $$source)) {
+            this["headSha"] = "";
+        }
+        if (!("filePath" in $$source)) {
+            this["filePath"] = "";
+        }
+        if (!("side" in $$source)) {
+            this["side"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRLineCommentRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRLineCommentRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRLineCommentRequest($$parsedSource as Partial<PRLineCommentRequest>);
+    }
+}
+
+/**
  * PRListItem is one row: the forge's row, its attention state, group and
  * reason (prAttention), and the detail fields as the page shows them:
  * Approvals given and required, Unresolved threads and CI, the head
@@ -6914,10 +6959,19 @@ export class SubmitPRReviewRequest {
     }
 }
 
+/**
+ * SubmitPRReviewResult is what a submit posted. PostedReplies counts the
+ * held replies GitHub posted after the review (GitLab publishes them with
+ * it). PartialFailurePath names a failed follow-up file comment's file and
+ * PartialFailureThreadID a failed reply's thread (a gone thread is kind
+ * not_found); the drafts that did not post stay drafts.
+ */
 export class SubmitPRReviewResult {
     "postedReview": boolean;
     "postedFileComments": number;
+    "postedReplies"?: number;
     "partialFailurePath"?: string;
+    "partialFailureThreadId"?: string;
 
     /**
      * PartialFailure is the failed follow-up's sentence and
@@ -6959,14 +7013,14 @@ export class SubmitPRReviewResult {
      * Creates a new SubmitPRReviewResult instance from a string or object.
      */
     static createFrom($$source: any = {}): SubmitPRReviewResult {
-        const $$createField5_0 = $$createType8;
-        const $$createField6_0 = $$createType8;
+        const $$createField7_0 = $$createType8;
+        const $$createField8_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("sentDraftIds" in $$parsedSource) {
-            $$parsedSource["sentDraftIds"] = $$createField5_0($$parsedSource["sentDraftIds"]);
+            $$parsedSource["sentDraftIds"] = $$createField7_0($$parsedSource["sentDraftIds"]);
         }
         if ("editedDraftIds" in $$parsedSource) {
-            $$parsedSource["editedDraftIds"] = $$createField6_0($$parsedSource["editedDraftIds"]);
+            $$parsedSource["editedDraftIds"] = $$createField8_0($$parsedSource["editedDraftIds"]);
         }
         return new SubmitPRReviewResult($$parsedSource as Partial<SubmitPRReviewResult>);
     }
