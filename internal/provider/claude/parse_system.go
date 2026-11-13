@@ -153,7 +153,8 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		return parseModelRefusalNoFallbackEvent(threadID, raw, now, line)
 
 	case "session_writes_lost":
-		return parseSessionWritesLostEvent(threadID, raw, now, line), nil
+		p.recordSessionWritesLost(raw)
+		return nil, nil
 
 	case "permission_denied":
 		return parsePermissionDeniedEvent(threadID, raw, now, line)

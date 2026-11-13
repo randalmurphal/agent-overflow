@@ -25,6 +25,9 @@ type Session struct {
 	cancel   context.CancelFunc
 	closing  atomic.Bool
 	readDone chan struct{}
+	// lostWrites holds a system/session_writes_lost the CLI sent, for the
+	// app to report after the process ends (TakeLostWritesError).
+	lostWrites lostWrites
 	// systemPromptPath and appendSystemPromptPath are the files
 	// cfg.SystemPrompt and cfg.AppendSystemPrompt were written to for
 	// `--system-prompt-file` and `--append-system-prompt-file`, or "" for

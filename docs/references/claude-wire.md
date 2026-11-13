@@ -662,11 +662,18 @@ both kinds of write failed for different reasons it is the transcript's.
 `transcript` is listed and names the sessions that lost lines, which after
 `/clear` can be an earlier session. Both enums are documented as open.
 
-AO emits a non-fatal `EventError` whose text names what was lost and why,
-and adds that resuming may miss part of the conversation when a transcript
-lost lines. An unknown code is named in the text; an unknown `lost` value
-stays in the meta only. Triage puts the row on the thread's last turn and
-drops a repeat with the same text.
+AO keeps only an error text naming what was lost and why, plus a line
+saying resuming may miss part of the conversation when a transcript lost
+lines. An unknown code is named in the text; an unknown `lost` value reads
+as "other session data". The code, list and session ids are not stored.
+
+The envelope's usual cause of exit is AO closing the session, after which
+triage drops the thread's wire events, so the parser emits no event. The
+session holds the first text it saw (`Session.TakeLostWritesError`), and
+the app puts it on the thread as one error row once the process has ended:
+`closeProviderSession` after Close returns, and `unregisterSession` after a
+self-exit's final `disconnected` status. The text is handed out once, so a
+session that reaches both paths reports it once.
 
 ---
 

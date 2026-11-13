@@ -115,6 +115,9 @@ func (s *Session) readLoop() {
 			log.Printf("claude: parse error: %v (line: %s)", err, string(line[:min(len(line), 200)]))
 			continue
 		}
+		if text := s.parser.takeSessionWritesLost(); text != "" {
+			s.lostWrites.store(text)
+		}
 
 		for _, evt := range events {
 			if evt.Kind == provider.EventInit && evt.Meta != nil {

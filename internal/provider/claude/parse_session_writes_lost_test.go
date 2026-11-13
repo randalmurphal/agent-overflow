@@ -1,124 +1,141 @@
 package claude
 
 import (
-	"encoding/json"
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // system/session_writes_lost (2.1.317+) says the CLI could not save its
 // transcript, ~/.claude.json, or both, because the disk was full or over
-// quota. It is a non-fatal error on the thread.
-func TestParseSystem_SessionWritesLostIsAnError(t *testing.T) {
+// quota. The parser emits no event and records one error text.
+func TestParseSystem_SessionWritesLostRecordsOneErrorText(t *testing.T) {
 	tests := []struct {
 		name        string
 		line        string
 		contains    []string
 		notContains []string
-		meta        map[string]any
 	}{
 		{
 			name:     "transcript and config on a full disk",
 			line:     `{"type":"system","subtype":"session_writes_lost","error_code":"ENOSPC","lost":["transcript","global_config"],"transcript_session_ids":["s-1"],"uuid":"u-1","session_id":"s-1"}`,
-			contains: []string{"transcript", "~/.claude.json", "the disk is full", "Resuming"},
-			meta: map[string]any{
-				"kind":                 "session_writes_lost",
-				"errorCode":            "ENOSPC",
-				"lost":                 []any{"transcript", "global_config"},
-				"transcriptSessionIds": []any{"s-1"},
-			},
+			contains: []string{"Claude could not save the conversation transcript and its settings file (~/.claude.json) because the disk is full.", "Resuming"},
 		},
 		{
 			name:        "transcript only over quota",
 			line:        `{"type":"system","subtype":"session_writes_lost","error_code":"EDQUOT","lost":["transcript"],"transcript_session_ids":["s-0","s-1"],"uuid":"u-1","session_id":"s-1"}`,
-			contains:    []string{"transcript", "the disk quota is used up", "Resuming"},
+			contains:    []string{"could not save the conversation transcript because the disk quota is used up.", "Resuming"},
 			notContains: []string{"~/.claude.json"},
-			meta: map[string]any{
-				"kind":                 "session_writes_lost",
-				"errorCode":            "EDQUOT",
-				"lost":                 []any{"transcript"},
-				"transcriptSessionIds": []any{"s-0", "s-1"},
-			},
 		},
 		{
 			name:        "config only",
 			line:        `{"type":"system","subtype":"session_writes_lost","error_code":"ENOSPC","lost":["global_config"],"uuid":"u-1","session_id":"s-1"}`,
-			contains:    []string{"~/.claude.json", "the disk is full"},
+			contains:    []string{"could not save its settings file (~/.claude.json) because the disk is full."},
 			notContains: []string{"transcript", "Resuming"},
-			meta: map[string]any{
-				"kind":      "session_writes_lost",
-				"errorCode": "ENOSPC",
-				"lost":      []any{"global_config"},
-			},
 		},
 		{
 			name:        "absent error code and lost list",
 			line:        `{"type":"system","subtype":"session_writes_lost","uuid":"u-1","session_id":"s-1"}`,
-			contains:    []string{"could not save", "the disk is full or over quota"},
+			contains:    []string{"could not save some of its session data because the disk is full or over quota."},
 			notContains: []string{"Resuming"},
-			meta:        map[string]any{"kind": "session_writes_lost"},
 		},
 		{
-			name:     "an unknown code and an unknown lost value",
+			name:        "only an unknown lost value",
+			line:        `{"type":"system","subtype":"session_writes_lost","error_code":"ENOSPC","lost":["plugin_cache"],"uuid":"u-1","session_id":"s-1"}`,
+			contains:    []string{"could not save some of its session data because the disk is full."},
+			notContains: []string{"plugin_cache", "Resuming"},
+		},
+		{
+			name:     "an unknown code beside a known and an unknown lost value",
 			line:     `{"type":"system","subtype":"session_writes_lost","error_code":"EIO","lost":["transcript","plugin_cache"],"uuid":"u-1","session_id":"s-1"}`,
-			contains: []string{"transcript", "a disk error (EIO)"},
-			meta: map[string]any{
-				"kind":      "session_writes_lost",
-				"errorCode": "EIO",
-				"lost":      []any{"transcript", "plugin_cache"},
-			},
+			contains: []string{"could not save the conversation transcript and other session data because a disk error (EIO).", "Resuming"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			events, err := ParseLine(testThread, []byte(tt.line))
+			p := NewParser()
+			events, err := p.ParseLine(testThread, []byte(tt.line))
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			if len(events) != 1 || events[0].Kind != provider.EventError {
-				t.Fatalf("events = %+v, want one EventError", events)
+			if len(events) != 0 {
+				t.Fatalf("events = %+v, want none", events)
 			}
+			// A repeat in the same process keeps the first text.
+			if _, err := p.ParseLine(testThread, []byte(`{"type":"system","subtype":"session_writes_lost","error_code":"EDQUOT","lost":["global_config"]}`)); err != nil {
+				t.Fatalf("parse repeat: %v", err)
+			}
+			text := p.takeSessionWritesLost()
 			for _, want := range tt.contains {
-				if !strings.Contains(events[0].Content, want) {
-					t.Fatalf("Content = %q, want it to contain %q", events[0].Content, want)
+				if !strings.Contains(text, want) {
+					t.Fatalf("text = %q, want it to contain %q", text, want)
 				}
 			}
 			for _, unwanted := range tt.notContains {
-				if strings.Contains(events[0].Content, unwanted) {
-					t.Fatalf("Content = %q, must not contain %q", events[0].Content, unwanted)
+				if strings.Contains(text, unwanted) {
+					t.Fatalf("text = %q, must not contain %q", text, unwanted)
 				}
 			}
-			var meta map[string]any
-			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-				t.Fatalf("meta unmarshal: %v", err)
-			}
-			if len(meta) != len(tt.meta) {
-				t.Fatalf("meta = %+v, want %+v", meta, tt.meta)
-			}
-			for key, want := range tt.meta {
-				got, _ := json.Marshal(meta[key])
-				wantJSON, _ := json.Marshal(want)
-				if string(got) != string(wantJSON) {
-					t.Fatalf("meta[%q] = %s, want %s", key, got, wantJSON)
-				}
-			}
-			// Triage reads a top-level `fatal` as "the provider process is
-			// gone" and a top-level `error` string as an SDK error enum.
-			if _, present := meta["fatal"]; present {
-				t.Fatalf("meta must not claim fatal: %+v", meta)
-			}
-			if _, present := meta["error"]; present {
-				t.Fatalf("meta must not carry a top-level error enum: %+v", meta)
-			}
-
-			// A second delivery composes the same row text, which is what
-			// lets triage's matching-row check drop it.
-			again, err := ParseLine(testThread, []byte(tt.line))
-			if err != nil || len(again) != 1 || again[0].Content != events[0].Content {
-				t.Fatalf("second parse = %+v, %v; want the same content", again, err)
+			if again := p.takeSessionWritesLost(); again != "" {
+				t.Fatalf("second take = %q, want empty", again)
 			}
 		})
+	}
+}
+
+// The CLI writes the envelope as it exits, after its stdin closes. The text
+// is on the Session once Close returns, and is handed out once.
+func TestSessionLostWritesAreReadyWhenCloseReturns(t *testing.T) {
+	t.Parallel()
+	path := t.TempDir() + "/fake-claude"
+	mockexec.Write(t, path, `#!/bin/sh
+while IFS= read -r _; do :; done
+sleep 0.2
+printf '%s\n' '{"type":"system","subtype":"session_writes_lost","error_code":"ENOSPC","lost":["transcript"],"transcript_session_ids":["s-1"],"uuid":"u-1","session_id":"s-1"}'
+exit 0
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: path})
+	if err != nil {
+		cancel()
+		t.Fatalf("spawn: %v", err)
+	}
+	var emitted []provider.ProviderEvent
+	s := &Session{
+		proc:     proc,
+		threadID: testThread,
+		parser:   NewParser(),
+		onEvent: func(evt provider.ProviderEvent) {
+			if evt.Kind != provider.EventSessionStatus {
+				emitted = append(emitted, evt)
+			}
+		},
+		cancel:   cancel,
+		readDone: make(chan struct{}),
+	}
+	go s.readLoop()
+	if got := s.TakeLostWritesError(); got != "" {
+		t.Fatalf("before close = %q, want empty", got)
+	}
+	start := time.Now()
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatalf("close took %s", time.Since(start))
+	}
+	text := s.TakeLostWritesError()
+	if !strings.Contains(text, "the conversation transcript because the disk is full") {
+		t.Fatalf("after close = %q, want the transcript text", text)
+	}
+	if again := s.TakeLostWritesError(); again != "" {
+		t.Fatalf("second take = %q, want empty", again)
+	}
+	if len(emitted) != 0 {
+		t.Fatalf("emitted %+v, want no provider event for the envelope", emitted)
 	}
 }
