@@ -2,7 +2,7 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { untrack } from 'svelte';
 import { peekPRSeq } from './prReviewStore.svelte';
 import { DeletePRComment, EditPRComment, PostPRComment } from './bindings';
-import { addErrorToast, addTextToast, removeToast } from './toast.svelte';
+import { addErrorToast, showToastText } from './toast.svelte';
 import { isTransportClassError } from './transportStatus.svelte';
 import { TransportError } from '../transport/wsClient';
 import { copyToClipboard } from '../utils/clipboard';
@@ -148,9 +148,7 @@ function toastLostWrite(text: CommentWriteText, err: unknown): void {
   const message = `${text.subject} ${failure.unconfirmed ? 'was not confirmed' : 'was not sent'}. ${failure.sentence}`;
   const id = addErrorToast(message, err, 0, { label: 'Copy text', keep: true, run: () => {
     void copyToClipboard(text.body).then((copied) => {
-      if (copied) return;
-      removeToast(id);
-      addTextToast(`${message} The text could not be copied, so it is below.`, text.body);
+      if (!copied) showToastText(id, `${message} The text could not be copied, so it is below.`, text.body);
     });
   } });
 }

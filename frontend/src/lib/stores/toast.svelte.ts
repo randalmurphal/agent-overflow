@@ -56,14 +56,14 @@ export function addErrorToast(
 }
 
 /**
- * An error toast that stays until dismissed and shows `text` whole and
- * selectable under its message: the only copy of something the reader
- * typed, when the clipboard cannot take it.
+ * Turns a toast still on screen into one that stays until dismissed and
+ * shows `text` whole and selectable under `message`, without its action:
+ * the only copy of something the reader typed, when the clipboard cannot
+ * take it. A toast already dismissed stays dismissed.
  */
-export function addTextToast(message: string, text: string): string {
-  const id = `toast-${++nextId}`;
-  toasts = [...toasts, { id, type: 'error', message, duration: 0, text }];
-  return id;
+export function showToastText(id: string, message: string, text: string): void {
+  holdToast(id);
+  toasts = toasts.map((toast) => toast.id === id ? { ...toast, message, text, duration: 0, action: undefined } : toast);
 }
 
 // An actionable failure may remain until retried or explicitly dismissed.

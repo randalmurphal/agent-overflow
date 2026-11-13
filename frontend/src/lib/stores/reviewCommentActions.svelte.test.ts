@@ -872,7 +872,36 @@ describe('a write that fails after its pane is gone', () => {
   });
 
   it('shows the text itself when the clipboard refuses', async () => {
-    const writeText = vi.fn(async (_text: string) => { throw new DOMException('denied', 'NotAllowedError'); });
+    const refusals: (() => void)[] = [];
+    const writeText = vi.fn((_text: string) => new Promise<void>((_resolve, reject) => { refusals.push(() => { reject(new DOMException('denied', 'NotAllowedError')); }); }));
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { writes } = await inFlight();
+      disposePRReviewStates('tools-1');
+      writes[0].reject(refused());
+      await settle();
+      const view = render(Toast);
+      // Twice before either refusal lands: still one toast.
+      const copy = view.getByText('Copy text');
+      await fireEvent.click(copy);
+      await fireEvent.click(copy);
+      expect(refusals).toHaveLength(2);
+      for (const refuse of refusals) refuse();
+      await settle();
+      expect(messages()).toEqual([`Your comment on src/a.ts:11–12 was not sent. ${REFUSED} The text could not be copied, so it is below.`]);
+      expect(view.getByTestId('toast-text').textContent).toBe('Rename these.');
+      expect(view.queryByText('Copy text')).toBeNull();
+      view.unmount();
+    } finally {
+      logged.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('stays dismissed when the clipboard refuses after the toast was closed', async () => {
+    let refuse: () => void = () => {};
+    const writeText = vi.fn((_text: string) => new Promise<void>((_resolve, reject) => { refuse = () => { reject(new DOMException('denied', 'NotAllowedError')); }; }));
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -882,10 +911,10 @@ describe('a write that fails after its pane is gone', () => {
       await settle();
       const view = render(Toast);
       await fireEvent.click(view.getByText('Copy text'));
+      await fireEvent.click(view.getByLabelText('Dismiss Notification'));
+      refuse();
       await settle();
-      expect(messages()).toEqual([`Your comment on src/a.ts:11–12 was not sent. ${REFUSED} The text could not be copied, so it is below.`]);
-      expect(view.getByTestId('toast-text').textContent).toBe('Rename these.');
-      expect(view.queryByText('Copy text')).toBeNull();
+      expect(getToasts()).toEqual([]);
       view.unmount();
     } finally {
       logged.mockRestore();
