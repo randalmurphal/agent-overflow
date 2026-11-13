@@ -13,10 +13,13 @@ import (
 // have applied: unconfirmed, never refused; a refusal stays one.
 func TestCommentEditAndDeleteOutcomes(t *testing.T) {
 	t.Parallel()
-	githubCore := func(answer string) *Core {
+	githubCore := func(answer string, spent bool) *Core {
 		core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 			if call.Op == "CommentOwner" {
 				return githubData(`{"node":{"__typename":"PullRequestReviewComment","pullRequest":{"number":5,"repository":{"nameWithOwner":"o/r"}}}}`)
+			}
+			if spent {
+				return forgeAPIAnswer{Body: answer, Header: http.Header{"X-Ratelimit-Limit": {"5000"}, "X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {"4102444800"}, "X-Ratelimit-Resource": {"graphql"}}}
 			}
 			return forgeAPIAnswer{Body: answer}
 		})
@@ -29,17 +32,25 @@ func TestCommentEditAndDeleteOutcomes(t *testing.T) {
 		write        func(*Core) error
 		action       ForgeAction
 		unconfirmed  bool
+		spent        bool
 	}{
 		{"edit with data and an error", `{"data":{"updatePullRequestReviewComment":{"pullRequestReviewComment":{"id":"PRRC_2"}}},"errors":[{"message":"Something went wrong"}]}`,
-			func(c *Core) error { return c.EditPRComment(t.Context(), ghRef, review, "new") }, ActionEdit, true},
+			func(c *Core) error { return c.EditPRComment(t.Context(), ghRef, review, "new") }, ActionEdit, true, false},
 		{"delete with data and an error", `{"data":{"deletePullRequestReviewComment":{"clientMutationId":null}},"errors":[{"message":"timeout"}]}`,
-			func(c *Core) error { return c.DeletePRComment(t.Context(), ghRef, review) }, ActionDelete, true},
+			func(c *Core) error { return c.DeletePRComment(t.Context(), ghRef, review) }, ActionDelete, true, false},
 		{"edit refused", `{"data":{"updatePullRequestReviewComment":null},"errors":[{"type":"FORBIDDEN","message":"no"}]}`,
-			func(c *Core) error { return c.EditPRComment(t.Context(), ghRef, review, "new") }, ActionEdit, false},
+			func(c *Core) error { return c.EditPRComment(t.Context(), ghRef, review, "new") }, ActionEdit, false, false},
+		// The quota header spent beside an execution error: not a refusal.
+		{"edit with an execution error, quota spent", `{"data":{"updatePullRequestReviewComment":null},"errors":[{"message":"Something went wrong while executing your query."}]}`,
+			func(c *Core) error { return c.EditPRComment(t.Context(), ghRef, review, "new") }, ActionEdit, true, true},
+		{"delete with an execution error, quota spent", `{"data":{"deletePullRequestReviewComment":null},"errors":[{"message":"Something went wrong while executing your query."}]}`,
+			func(c *Core) error { return c.DeletePRComment(t.Context(), ghRef, review) }, ActionDelete, true, true},
+		{"edit rate limited", `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`,
+			func(c *Core) error { return c.EditPRComment(t.Context(), ghRef, review, "new") }, ActionEdit, false, true},
 	} {
 		t.Run("github "+tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := tc.write(githubCore(tc.answer))
+			err := tc.write(githubCore(tc.answer, tc.spent))
 			_, unsure := errors.AsType[*UnconfirmedWriteError](err)
 			explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(ghRef, tc.action, err))
 			if unsure != tc.unconfirmed || explained == nil || (explained.Kind == ForgeErrorUnconfirmed) != tc.unconfirmed {
