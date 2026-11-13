@@ -837,12 +837,12 @@ describe('a write that fails after its pane is gone', () => {
     }
   });
 
-  it('says an unconfirmed one may have been posted, and never asks for it again', async () => {
+  it('says an unconfirmed one was not confirmed, never that it was not sent', async () => {
     const { writes } = await inFlight();
     disposePRReviewStates('tools-1');
     for (const write of writes) write.reject(unconfirmed());
     await settle();
-    const tail = `may have been posted. ${UNCONFIRMED} Check the pull request before sending it again.`;
+    const tail = `was not confirmed. ${UNCONFIRMED}`;
     expect(messages()).toEqual([
       `Your comment on src/a.ts:11–12 ${tail}`,
       `Your comment on src/a.ts:12 ${tail}`,

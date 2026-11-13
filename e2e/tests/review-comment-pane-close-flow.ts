@@ -71,14 +71,14 @@ export async function failAfterPaneCloses(harness: HarnessApp, page: Page, compa
   await expect(page.getByTestId('review-pr-header')).toHaveCount(0);
 
   await releaseForgeRoute(harness, route, outcome === 'lost');
-  const head = outcome === 'refused' ? 'Your comment on src/values.ts:6 was not sent. ' : 'Your comment on src/values.ts:6 may have been posted. ';
+  const head = outcome === 'refused' ? 'Your comment on src/values.ts:6 was not sent. ' : 'Your comment on src/values.ts:6 was not confirmed. ';
   const toast = page.getByTestId('toast').filter({ hasText: head });
   await expect(toast).toHaveCount(1, { timeout: 30_000 });
   const message = (await toast.getByTestId('toast-message').textContent())!;
   // The forge's sentence follows; a lost answer never reads as not sent.
   expect(message.length).toBeGreaterThan(head.length + 10);
   if (outcome === 'lost') {
-    expect(message).toMatch(/Check the pull request before sending it again\.$/);
+    expect(message).toContain('may have');
     expect(message).not.toContain('not sent');
   }
 

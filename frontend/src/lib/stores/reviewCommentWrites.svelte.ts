@@ -130,12 +130,11 @@ function userFacingError(err: unknown): string {
 
 // The one toast for a write that failed after its pane went: held until
 // dismissed, with the text to copy. An unconfirmed write may be on the PR,
-// so it never reads as not sent and never asks for a resend.
+// so it never reads as not sent; the forge's sentence says what to check.
 function toastLostWrite(text: CommentWriteText, err: unknown): void {
   const sentence = userFacingError(err);
-  const message = err instanceof TransportError && err.code === 'forge_unconfirmed'
-    ? `${text.subject} may have been posted. ${sentence} Check the pull request before sending it again.`
-    : `${text.subject} was not sent. ${sentence}`;
+  const outcome = err instanceof TransportError && err.code === 'forge_unconfirmed' ? 'was not confirmed' : 'was not sent';
+  const message = `${text.subject} ${outcome}. ${sentence}`;
   addErrorToast(message, err, 0, { label: 'Copy text', keep: true, run: () => { void copyToClipboard(text.body); } });
 }
 
