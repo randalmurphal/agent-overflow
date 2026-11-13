@@ -158,3 +158,46 @@ export class Commit {
         return new Commit($$parsedSource as Partial<Commit>);
     }
 }
+
+/**
+ * CommitList is a range's commits for the selector, newest first and
+ * capped, and how many the range holds.
+ */
+export class CommitList {
+    "commits": Commit[];
+
+    /**
+     * Total is how many commits the range holds, counted without listing
+     * them; null when they could not be counted in time. The list is
+     * complete exactly when Total equals the number of Commits.
+     */
+    "total": number | null;
+
+    /** Creates a new CommitList instance. */
+    constructor($$source: Partial<CommitList> = {}) {
+        if (!("commits" in $$source)) {
+            this["commits"] = [];
+        }
+        if (!("total" in $$source)) {
+            this["total"] = null;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommitList instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommitList {
+        const $$createField0_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("commits" in $$parsedSource) {
+            $$parsedSource["commits"] = $$createField0_0($$parsedSource["commits"]);
+        }
+        return new CommitList($$parsedSource as Partial<CommitList>);
+    }
+}
+
+// Private type creation functions
+const $$createType0 = Commit.createFrom;
+const $$createType1 = $Create.Array($$createType0);

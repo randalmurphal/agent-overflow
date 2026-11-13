@@ -182,6 +182,11 @@ func CommitSides(ctx context.Context, workspace, sha string) (*Sides, error) {
 // covers the whole list is refused: it is the pull request's whole diff,
 // which MergeBaseSides reads.
 func CommitRangeSides(ctx context.Context, workspace, base, head, first, last string) (*Sides, error) {
+	return commitRangeSides(ctx, workspace, base, head, first, last, maxListedCommits)
+}
+
+// commitRangeSides is CommitRangeSides over a list capped at limit.
+func commitRangeSides(ctx context.Context, workspace, base, head, first, last string, limit int) (*Sides, error) {
 	for _, arg := range []struct{ value, label string }{{base, "base"}, {head, "head"}, {first, "first commit"}, {last, "last commit"}} {
 		if !commitSHAPattern.MatchString(arg.value) {
 			return nil, fmt.Errorf("gitdiff: invalid %s %q", arg.label, arg.value)
@@ -189,13 +194,13 @@ func CommitRangeSides(ctx context.Context, workspace, base, head, first, last st
 	}
 	// One past the cap tells a list the selector shows whole from one it
 	// cut short.
-	commits, err := logRev(ctx, workspace, maxListedCommits+1, base+".."+head)
+	commits, err := logRev(ctx, workspace, limit+1, base+".."+head)
 	if err != nil {
 		return nil, fmt.Errorf("gitdiff: log %s..%s: %w", base, head, err)
 	}
-	truncated := len(commits) > maxListedCommits
+	truncated := len(commits) > limit
 	if truncated {
-		commits = commits[:maxListedCommits]
+		commits = commits[:limit]
 	}
 	index := func(sha string) int {
 		return slices.IndexFunc(commits, func(c Commit) bool { return c.SHA == sha })

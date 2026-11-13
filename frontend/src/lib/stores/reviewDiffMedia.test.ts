@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { createReviewDiffMedia, type ImageHandle } from './reviewDiffMedia.svelte';
-import { DiffFilesHandle, DIFF_FILES_GONE, DIFF_FILES_UNREADABLE, type DiffFilesTarget, type DiffImageAnswer } from './reviewDiffFiles';
+import { DiffFilesHandle, DIFF_FILES_CHANGED, DIFF_FILES_GONE, DIFF_FILES_UNREADABLE, DIFF_FILE_REFUSED, readDiffFileSizes, type DiffFilesTarget, type DiffImageAnswer } from './reviewDiffFiles';
 import { TransportError } from '../transport/wsClient';
 import { frontendErrorCaptureStateForTest, resetFrontendErrorCaptureForTest } from '../utils/frontendErrorCapture';
 import { __mediaBlobCacheKeysForTest, __resetMediaBlobCacheForTest, __setMediaBlobCacheLimitsForTest } from '../utils/mediaBlobCache';
@@ -29,6 +29,7 @@ const WORKSPACE = { projectId: 'p1', workspacePath: '' };
 // (null: the open read the working tree).
 const GONE = 'This diff\'s files are no longer held; reload the diff.';
 const gone = () => new TransportError(DIFF_FILES_GONE, GONE);
+const CHANGED = 'This file changed since the diff was read; reload the diff.';
 
 function gitTarget(handle = 'h1', reopen: (() => Promise<string>) | null = async () => 'h2', workspace = WORKSPACE): DiffFilesTarget {
   return { kind: 'git', backend: 'home', workspace, files: new DiffFilesHandle(handle, reopen) };
@@ -151,14 +152,56 @@ describe('a review diff\'s images', () => {
 
   it('offers reloading the diff for a file changed since it was read, never the same read again', async () => {
     const read = setBindingMock('GetReviewDiffImage', async () => {
-      throw new Error('img/logo.png changed since the diff was read.');
+      throw new TransportError(DIFF_FILES_CHANGED, CHANGED);
+    });
+    setBindingMock('GetReviewDiffFileSizes', async () => []);
+    const reopen = vi.fn(async () => 'h2');
+    const media = createReviewDiffMedia();
+    media.setTarget(gitTarget('h1', reopen));
+    const handle = media.image(files()['img/logo.png'], ['old', 'new']);
+    await settle();
+    expect(handle.state).toMatchObject({ kind: 'binary', reason: CHANGED, action: 'reload' });
+    expect(reopen).not.toHaveBeenCalled();
+    handle.retry();
+    await settle();
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers the changed refusal a reload on its code whatever its sentence says (a redacted one included)', async () => {
+    setBindingMock('GetReviewDiffImage', async () => {
+      throw new TransportError(DIFF_FILES_CHANGED, 'method failed (id: abc)');
     });
     setBindingMock('GetReviewDiffFileSizes', async () => []);
     const media = createReviewDiffMedia();
     media.setTarget(gitTarget());
     const handle = media.image(files()['img/logo.png'], ['old', 'new']);
     await settle();
-    expect(handle.state).toMatchObject({ kind: 'binary', reason: 'img/logo.png changed since the diff was read.', action: 'reload' });
+    expect(handle.state).toMatchObject({ kind: 'binary', reason: 'method failed (id: abc)', action: 'reload' });
+  });
+
+  it('offers a retry, never a reload, for a sentence that reads like the changed refusal but has no code', async () => {
+    setBindingMock('GetReviewDiffImage', async () => {
+      throw new Error(CHANGED);
+    });
+    setBindingMock('GetReviewDiffFileSizes', async () => []);
+    const media = createReviewDiffMedia();
+    media.setTarget(gitTarget());
+    const handle = media.image(files()['img/logo.png'], ['old', 'new']);
+    await settle();
+    expect(handle.state).toMatchObject({ kind: 'binary', reason: CHANGED, action: 'retry' });
+  });
+
+  it('offers nothing for a file the diff refuses: every read answers the same', async () => {
+    const SENTENCE = 'img/logo.png is not a file this diff changes';
+    const read = setBindingMock('GetReviewDiffImage', async () => {
+      throw new TransportError(DIFF_FILE_REFUSED, SENTENCE);
+    });
+    setBindingMock('GetReviewDiffFileSizes', async () => []);
+    const media = createReviewDiffMedia();
+    media.setTarget(gitTarget());
+    const handle = media.image(files()['img/logo.png'], ['old', 'new']);
+    await settle();
+    expect(handle.state).toMatchObject({ kind: 'binary', reason: SENTENCE, action: null });
     handle.retry();
     await settle();
     expect(read).toHaveBeenCalledTimes(1);
@@ -507,6 +550,14 @@ describe('a review diff\'s images', () => {
     back.release();
     next.release();
     iconRow.release();
+  });
+
+  it('carries a file\'s own refusal code with its sentence', async () => {
+    setBindingMock('GetReviewDiffFileSizes', async (_ws: unknown, _handle: unknown, refs: Array<{ path: string }>) => refs.map((ref) => ({
+      path: ref.path, old: side(false, 0), new: side(false, 0), error: `${ref.path} is not a file`, code: DIFF_FILE_REFUSED,
+    })));
+    const sizes = await readDiffFileSizes(gitTarget(), [files()['img/logo.png']]);
+    expect(sizes.get('img/logo.png')).toEqual({ old: side(false, 0), new: side(false, 0), error: 'img/logo.png is not a file', code: DIFF_FILE_REFUSED });
   });
 
   it('reads binary files\' sizes in batches of 100, and a file\'s own failure is its own', async () => {

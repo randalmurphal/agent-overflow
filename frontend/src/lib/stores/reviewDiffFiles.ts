@@ -142,6 +142,8 @@ export interface DiffFileSizes {
   new: DiffFileSide;
   /** This file's read failed (the others' stand). */
   error?: string;
+  /** The refusal code of `error` (DIFF_FILE_REFUSED). */
+  code?: string;
 }
 
 export interface DiffImageSide extends DiffFileSide {
@@ -166,10 +168,14 @@ export interface DiffImageAnswer {
 export const DIFF_FILE_SIZES_BATCH = 100;
 
 /** The file reads' refusals, by code: a handle this connection does not
- * hold (evicted, or opened on a connection that has ended), and a diff
- * whose files the server could not pin, which reopening would not change. */
+ * hold (evicted, or opened on a connection that has ended); a diff whose
+ * files the server could not pin, which reopening would not change; a
+ * working-tree file that changed since the diff was read, which a reload
+ * shows; and a file the diff cannot answer for, which nothing changes. */
 export const DIFF_FILES_GONE = 'review_diff_files_gone';
 export const DIFF_FILES_UNREADABLE = 'review_diff_files_unreadable';
+export const DIFF_FILES_CHANGED = 'review_diff_files_changed';
+export const DIFF_FILE_REFUSED = 'review_diff_file_refused';
 // The server's sentence for the gone refusal, said here when the client
 // knows the handle went with its connection without asking.
 const FILES_GONE_SENTENCE = 'This diff\'s files are no longer held; reload the diff.';
@@ -189,19 +195,21 @@ export function diffFilesReadSizes(target: DiffFilesTarget): boolean {
  * after one reopen, so the same read would be refused again). */
 export type DiffReadAction = 'retry' | 'reload';
 
-// The backend gives a working-tree file that changed since the open no
-// code of its own; its sentence is all there is (a non-loopback caller
-// gets it redacted, and Retry then).
-const CHANGED_SINCE_READ = /changed since the diff was read/i;
-
-/** A refused read's sentence and what its row offers. Unreadable files
- * offer nothing: every read of the diff answers the same. */
+/** A refused read's sentence and what its row offers, decided by its code
+ * alone. Unreadable and refused files offer nothing: every read answers the
+ * same. */
 export function diffReadFailure(err: unknown): { reason: string; action: DiffReadAction | null } {
   const reason = err instanceof Error ? err.message : String(err);
-  const code = refusalCode(err);
-  if (code === DIFF_FILES_UNREADABLE) return { reason, action: null };
-  if (code === DIFF_FILES_GONE || CHANGED_SINCE_READ.test(reason)) return { reason, action: 'reload' };
-  return { reason, action: 'retry' };
+  switch (refusalCode(err)) {
+    case DIFF_FILES_UNREADABLE:
+    case DIFF_FILE_REFUSED:
+      return { reason, action: null };
+    case DIFF_FILES_GONE:
+    case DIFF_FILES_CHANGED:
+      return { reason, action: 'reload' };
+    default:
+      return { reason, action: 'retry' };
+  }
 }
 
 function fileRef(file: ReviewFile) {
@@ -242,6 +250,7 @@ export async function readDiffFileSizes(target: DiffFilesTarget, files: readonly
       old: { exists: answer.old.exists, size: answer.old.size },
       new: { exists: answer.new.exists, size: answer.new.size },
       ...(answer.error ? { error: answer.error } : {}),
+      ...(answer.code ? { code: answer.code } : {}),
     });
   }
   return out;

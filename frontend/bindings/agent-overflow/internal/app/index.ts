@@ -16,6 +16,7 @@ export {
     BackgroundTaskStop,
     BackgroundWorkInventory,
     BranchCommit,
+    BranchCommitList,
     BranchPruneCandidate,
     BranchPruneCandidates,
     BranchPruneResult,

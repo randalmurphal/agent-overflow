@@ -9,6 +9,7 @@ import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/dif
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { CIPipeline, DiffReviewComment, DiffReviewCommentInput, PRDetail, ReviewThread, Thread } from '../../types/models';
 import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from '../../stores/eventsPRReview';
 import { formatTimeOfDay } from '../../utils/format';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
@@ -125,9 +126,9 @@ beforeEach(() => {
   setBindingMock('UpdateThreadBranch', async () => []);
   setReviewDiffMock('OpenWorkspaceDiff', async () => patch());
   setReviewDiffMock('OpenBranchBaseDiff', async () => '');
-  setBindingMock('ListBranchCommits', async () => []);
+  setBindingMock('ListBranchCommits', async () => commitList([]));
   setReviewDiffMock('OpenCommitDiff', async () => '');
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setReviewDiffMock('OpenPRCommitDiff', async () => '');
   setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
   setReviewDiffMock('OpenTurnEditsDiff', async () => '');
@@ -1023,9 +1024,9 @@ describe('<ReviewPane>', () => {
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
     setReviewDiffMock('OpenPRDiff', async () => patch());
     setBindingMock('ListPRReviewThreads', async () => []);
-    setBindingMock('ListPRCommits', async () => [
+    setBindingMock('ListPRCommits', async () => commitList([
       { sha: commitSHA, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenPRCommitDiff', async () => patch());
     // Echo the requested sourceKey so a draft exists (and the send strip
     // renders) in both the whole-PR and single-commit views.
@@ -1549,9 +1550,9 @@ describe('<ReviewPane> PR read intent', () => {
       if (fail) throw new Error('fetch failed');
       return patch();
     });
-    const list = setBindingMock('ListPRCommits', async () => [
+    const list = setBindingMock('ListPRCommits', async () => commitList([
       { sha: commitSHA, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     const commitDiff = setReviewDiffMock('OpenPRCommitDiff', async () => patch());
     const view = await renderPRScope();
     await waitFor(() => expect(view.getByTestId('review-diff-stats')).toBeInTheDocument());

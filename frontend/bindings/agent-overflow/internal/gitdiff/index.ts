@@ -4,5 +4,6 @@
 export {
     ChangedFile,
     Chunk,
-    Commit
+    Commit,
+    CommitList
 } from "./models.js";

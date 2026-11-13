@@ -35,19 +35,37 @@ const (
 	maxReviewDiffRecordPathBytes = 8 << 20
 )
 
-// The file reads' refusals, each with its own code: a handle this caller
-// does not hold (evicted, cleared, released with its connection, another
-// connection's, or never made), and a record whose pin failed, which
-// reopening the same diff would not change.
+// The file reads' refusals the client acts on, each with its own code: a
+// handle this caller does not hold (evicted, cleared, released with its
+// connection, another connection's, or never made); a record whose pin
+// failed, which reopening the same diff would not change; a working-tree
+// file that is no longer what the diff read, which a reload of the diff
+// shows; and a file the diff cannot answer for (not a path, not a file, or
+// not one it changes), which neither a retry nor a reload changes. Any other
+// failure is the read's own and may pass on a retry.
 const (
 	reviewDiffFilesGoneCode       = "review_diff_files_gone"
 	reviewDiffFilesUnreadableCode = "review_diff_files_unreadable"
+	reviewDiffFilesChangedCode    = "review_diff_files_changed"
+	reviewDiffFileRefusedCode     = "review_diff_file_refused"
 )
 
 var errReviewDiffFilesGone = errorsx.Public(reviewDiffFilesGoneCode, "This diff's files are no longer held; reload the diff.", nil)
 
 func reviewDiffFilesUnreadable(why string) error {
 	return errorsx.Public(reviewDiffFilesUnreadableCode, "This diff's files cannot be read: "+why+".", nil)
+}
+
+// reviewDiffFilesChanged is the refusal of a working-tree file that is no
+// longer the blob the diff recorded (gitdiff.ErrChangedSinceRead, its cause).
+func reviewDiffFilesChanged(cause error) error {
+	return errorsx.Public(reviewDiffFilesChangedCode, "This file changed since the diff was read; reload the diff.", cause)
+}
+
+// reviewDiffFileRefused is the refusal of a file the diff cannot answer
+// for; why is the reason, which names only the caller's own path.
+func reviewDiffFileRefused(why string) error {
+	return errorsx.Public(reviewDiffFileRefusedCode, why, nil)
 }
 
 type reviewDiffRecord struct {

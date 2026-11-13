@@ -235,14 +235,15 @@ func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRRefer
 }
 
 // ListPRCommits returns the commits a PR carries at rev (`base..head`,
-// newest first), computed from the referenced clone. userInitiated is
-// whether a person asked for the read (prRevisionWorkspace).
+// newest first, capped) and how many it carries (BranchCommitList),
+// computed from the referenced clone. userInitiated is whether a person
+// asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, userInitiated bool) ([]BranchCommit, error) {
+func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, userInitiated bool) (BranchCommitList, error) {
 	workspace, err := a.prRevisionWorkspace("list PR commits", ws, pr, rev, userInitiated)
 	if err != nil {
-		return nil, err
+		return BranchCommitList{}, err
 	}
 	return gitdiff.ListCommitsRange(context.Background(), workspace, rev.BaseSHA, rev.HeadSHA)
 }
