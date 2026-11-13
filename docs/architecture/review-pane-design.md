@@ -278,8 +278,10 @@ polling.
 - **Send now or hold.** With `pr-comment-actions.v1` in the PR scope, a
   new comment and a reply each post now or are held as a draft, the
   primary following whether the pane holds drafts; a held reply is a
-  draft of its thread and goes with the batch. Writes posted now settle by
-  the pump's seq (`stores/reviewCommentWrites.svelte.ts`). The product
+  draft of its thread and goes with the batch. The gates, the reply
+  composers and the held replies are `stores/reviewCommentActions.svelte.ts`;
+  writes posted now settle by the pump's seq
+  (`stores/reviewCommentWrites.svelte.ts`). The product
   contract is in [Pull requests](../specs/pull-requests.md#sending-and-managing-comments).
   Elsewhere a reply posts now and a line comment is a draft. A thread's actions
   sit at its foot as on the forges: a reply field that opens the composer,

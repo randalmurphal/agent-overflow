@@ -106,6 +106,26 @@ export function threadRange(thread: Pick<ReviewThread, 'path' | 'line' | 'startL
   return { filePath: thread.path, half: thread.side === 'left' || thread.side === 'old' ? 'old' : 'new', from: start, to: line };
 }
 
+/**
+ * The ranges a diff tints, by file: placed range editors, range drafts,
+ * and forge threads that span lines while unresolved or opened.
+ */
+export function rangesByFile(
+  editors: readonly { readonly state: string; readonly range?: LineRange }[],
+  drafts: readonly DiffReviewComment[],
+  threads: readonly ReviewThread[],
+  threadOpen: (threadId: string) => boolean,
+): Map<string, LineRange[]> {
+  const out = new Map<string, LineRange[]>();
+  const add = (range: LineRange | null | undefined) => {
+    if (range) out.set(range.filePath, [...(out.get(range.filePath) ?? []), range]);
+  };
+  for (const editor of editors) if (editor.state === 'placed') add(editor.range);
+  for (const draft of drafts) add(draftRange(draft));
+  for (const thread of threads) if (!thread.isResolved || threadOpen(thread.id)) add(threadRange(thread));
+  return out;
+}
+
 /** `Lines 12–18`. */
 export function rangeLabel(range: LineRange): string {
   return `Lines ${range.from}–${range.to}`;

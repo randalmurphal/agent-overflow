@@ -28,10 +28,8 @@ import {
   GetPRDetail,
   MarkPRReady,
   MergePR,
-  PostPRLineComment,
   ListPRReviewThreads,
   MarkDiffReviewCommentsSent,
-  ReplyToPRThread,
   SetPRThreadResolved,
   SendDiffReviewComments,
   SubmitPRReview,
@@ -112,8 +110,8 @@ import type {
   CILogSection,
   CIPipeline,
   DiffReviewComment,
+  DiffReviewCommentInput,
   DiffReviewScope,
-  DiffReviewThreadContext,
   MergeOutcome,
   PRDetail,
   ReviewEvent,
@@ -165,13 +163,10 @@ import {
 import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { ReviewSectionId } from './reviewSectionSizes.svelte';
 import { REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
-import { commentWriteKey, createCommentWrites, type CommentWrites } from './reviewCommentWrites.svelte';
-import { draftRange, RANGE_REFUSAL_TEXT, spanRange, threadRange, type LineRange } from '../utils/reviewRange';
+import { createReviewCommentActions, type ReviewCommentActionsState } from './reviewCommentActions.svelte';
+import { RANGE_REFUSAL_TEXT, rangesByFile, spanRange, type LineRange } from '../utils/reviewRange';
 
 export type ReviewScope = DiffReviewScope;
-/** Where a PR thread's reply composer is: its diff row or its card in
- * the overview's Conversation section. */
-export type ReviewReplySurface = 'diff' | 'conversation';
 
 /** One row of the Conversation section's chronological feed: a review
  * thread's card, a verdict one-liner, a forge event one-liner (an
@@ -194,7 +189,7 @@ export interface MergePRChoice {
   autoMerge: boolean;
 }
 
-export interface ReviewPaneState {
+export interface ReviewPaneState extends ReviewCommentActionsState {
   /** Subject this state was created for — the registry's staleness check.
    *  Conversation/draft identity, ownership epoch and checkout. */
   readonly identity: string;
@@ -410,33 +405,6 @@ export interface ReviewPaneState {
    * answer is on screen). Rejects with ReviewCommentRefused when nothing
    * proves its line is the one it was opened on. */
   createComment(editorId: string, body: string, mode?: 'draft' | 'now'): Promise<void>;
-  // ------------------------------------------------------------------
-  // Send now or hold (docs/specs/pull-requests.md#comments). "Now" posts
-  // one comment to the PR at once; "hold" saves a draft for the batch.
-  // ------------------------------------------------------------------
-  /** A comment box here can post to the PR now: the whole PR's diff on a
-   * backend with the comment actions. */
-  readonly canPostNow: boolean;
-  /** Why a now write is withheld (stale diff, no grant, a failing pump),
-   * or null; shown as the control's hover text. */
-  readonly nowWithheldReason: string | null;
-  /** Sent comments offer edit and delete (as the forge permits). */
-  readonly sentCommentActions: boolean;
-  /** A reply can be held as a draft for the batch. */
-  readonly canHoldReply: boolean;
-  /** What a comment box's primary button (and Ctrl/Cmd+Enter) does: now
-   * while the pane holds no drafts for this PR, a draft once it holds one. */
-  readonly primaryCommentAction: 'now' | 'draft';
-  /** A now write keyed by commentWriteKey: in flight or awaiting its frame. */
-  commentWritePending(key: string): boolean;
-  /** The forge's sentence for a now write that failed, kept in place. */
-  commentWriteError(key: string): string | null;
-  /** A thread's held replies, oldest first (normally one at most). */
-  replyDraftsFor(threadId: string): readonly DiffReviewComment[];
-  /** Held replies whose thread the PR no longer lists. */
-  readonly orphanedReplyDrafts: readonly DiffReviewComment[];
-  /** Saves the reply composer's text as a held reply to the thread. */
-  holdPRThreadReply(thread: ReviewThread): Promise<void>;
   /** Shift+click on a line: spans the last-opened editor of the same file
    * from its line to `anchor`. Opens an editor on `anchor` when none is. */
   extendEditorRange(anchor: EditorAnchor, generation?: number): string | null;
@@ -445,8 +413,6 @@ export interface ReviewPaneState {
   /** The ranges the diff tints in a file: open range editors, range
    * drafts, and the expanded forge threads that span lines. */
   rangeTintsFor(path: string): readonly LineRange[];
-  /** Edit and delete of sent comments, and the PR-level comment. */
-  readonly sentComments: CommentWrites;
   /** The unsaved text of a draft open in its editor, or null when it is
    * not being edited; store-backed like `draftBodyFor`. */
   draftEditBodyFor(commentId: string): string | null;
@@ -465,20 +431,6 @@ export interface ReviewPaneState {
   setSummaryBody(body: string): void;
   orphanedDraftIds(): SvelteSet<string>;
   togglePRThread(threadId: string): void;
-  replyBodyFor(threadId: string): string;
-  setReplyBody(threadId: string, body: string): void;
-  /** Whether a thread's reply composer is open on one surface (the diff
-   * row or the Conversation card); store-backed, both rows unmount. */
-  replyOpen(threadId: string, surface: ReviewReplySurface): boolean;
-  openReply(threadId: string, surface: ReviewReplySurface): void;
-  /** Closes the composer; its text stays for the next open until a send
-   * succeeds. */
-  closeReply(threadId: string, surface: ReviewReplySurface): void;
-  /** Posts the reply composer's text now; the composer stays open, pending,
-   * until the forge's answer is on screen. */
-  sendPRThreadReply(thread: ReviewThread): Promise<void>;
-  replyErrorFor(threadId: string): string | null;
-  sendingReply(threadId: string): boolean;
   /** Optimistic resolve/unresolve: the thread flips at once (entity-level,
    * so every pane on the PR agrees) and the override holds against stale
    * poll snapshots until one agrees. A failure reverts and surfaces. */
@@ -606,16 +558,6 @@ export interface ReadIntent {
 }
 
 const CI_RESULT_STATUSES = new Set(['success', 'failed', 'running', 'pending', 'canceled', 'skipped', 'manual']);
-
-/** A thread as an agent delivery quotes it for a held reply. */
-function replyThreadContext(thread: ReviewThread): DiffReviewThreadContext {
-  return {
-    path: thread.path || undefined,
-    line: thread.line ?? thread.originalLine ?? undefined,
-    startLine: thread.startLine ?? undefined,
-    comments: thread.comments.map((comment) => ({ author: comment.authorLogin, body: comment.body })),
-  };
-}
 
 /** A fence longer than any backtick run in `text`. */
 function codeFence(text: string): string {
@@ -767,10 +709,6 @@ interface EditorRecord {
 }
 
 const NO_RANGE = { rangeStart: null, rangeOrigin: null, range: null, rangeRefusal: null } as const;
-
-// The backend's comment actions (PostPRLineComment, PostPRComment,
-// EditPRComment, DeletePRComment, held replies and ranges in drafts).
-const PR_COMMENT_ACTIONS = 'pr-comment-actions.v1';
 
 function anchorSideLine(anchor: CommentAnchor): number {
   return (anchor.side === 'old' ? anchor.oldLine : anchor.newLine) ?? 0;
@@ -1010,11 +948,6 @@ export function createReviewPaneState(
   let verdict: 'comment' | 'approve' | 'request-changes' = $state('comment');
   let summaryBody = $state('');
   let submitError: string | null = $state(null);
-  const replyBodies = new SvelteMap<string, string>();
-  // `${surface}:${threadId}` of each open reply composer.
-  const openReplies = new SvelteSet<string>();
-  const replyErrors = new SvelteMap<string, string>();
-  const sendingReplyIds: SvelteSet<string> = $state(new SvelteSet<string>());
   const resolvingThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
   const resolveErrors = new SvelteMap<string, string>();
   // The PR header's Conversation section. The order and the
@@ -1457,48 +1390,29 @@ export function createReviewPaneState(
   );
   const isTurnActive = $derived(threadId !== null && getActiveTurn(threadId) !== null);
 
-  // Send now or hold. A comment box posts to the PR now only on the whole
-  // PR's diff (a picked commit's numbers would misanchor against the head)
-  // of a backend with the comment actions; a held reply needs a draft
-  // home too. The primary is "now" until the pane holds a draft for the
-  // PR, then "Add draft": the batch is what the reader is building.
-  const commentActions = $derived(getTransportHelloFor(backend)?.capabilities.includes(PR_COMMENT_ACTIONS) ?? false);
-  const canPostNow = $derived(commentActions && scope === 'pr' && selectedCommitSHA === null && prRef !== null);
-  // Edit and delete of sent comments, wherever the PR's threads show.
-  const sentCommentActions = $derived(commentActions && scope === 'pr' && prRef !== null);
-  const canHoldReply = $derived(canPostNow && canDraftComments && commentsGranted);
-  const nowWithheldReason = $derived<string | null>(
-    !(pinned ? hasScope('git:operate', backend) : threadHasScope('git:operate', threadId, workspace.projectId))
-      ? 'Not granted to this device'
-      : mergeWithheldReason,
-  );
-  const primaryCommentAction = $derived<'now' | 'draft'>(drafts.length === 0 ? 'now' : 'draft');
-  // A thread's held replies, oldest first. The backend refuses a second
-  // one, but recovering a delivery can leave several; each shows.
-  const replyDrafts = $derived.by(() => {
-    const out = new Map<string, DiffReviewComment[]>();
-    for (const draft of drafts) {
-      if (draft.replyThreadId) out.set(draft.replyThreadId, [...(out.get(draft.replyThreadId) ?? []), draft]);
-    }
-    for (const list of out.values()) list.sort((a, b) => a.createdAt - b.createdAt);
-    return out;
-  });
-  // A held reply whose thread a loaded snapshot no longer lists: it stays
-  // a draft (shown where it can be deleted) and is left out of a review.
-  const orphanedReplyDrafts = $derived.by<readonly DiffReviewComment[]>(() => {
-    if (!prSnapshot || replyDrafts.size === 0) return EMPTY_COMMENTS;
-    const live = new Set(prThreads.map((thread) => thread.id));
-    return [...replyDrafts.values()].flat().filter((draft) => !live.has(draft.replyThreadId!));
-  });
-  const commentWrites = createCommentWrites({
+  // Send now or hold, and the reply composers (reviewCommentActions.svelte.ts).
+  const commentActions = createReviewCommentActions({
     backend,
+    scope: () => scope,
+    selectedCommitSHA: () => selectedCommitSHA,
     ref: () => prRef,
     entityKey: () => prEntityKey,
     launch: () => backendLaunch,
     updateFailing: () => prUpdateError !== null,
-    withheld: () => nowWithheldReason,
+    forgeGranted: () => (pinned ? hasScope('git:operate', backend) : threadHasScope('git:operate', threadId, workspace.projectId)),
+    prWithheld: () => mergeWithheldReason,
+    canDraft: () => canDraftComments && commentsGranted,
+    drafts: () => drafts,
+    threads: () => prThreads,
+    threadsLoaded: () => prSnapshot !== null,
+    sourceKey: () => sourceKey,
+    loadedHeadSHA: () => loadedPRHeadSHA,
+    saveDraft: (input) => saveDraft(input),
+    editDraft(draft) {
+      if (draftEditBodies.get(draft.id) === undefined) draftEditBodies.set(draft.id, { sourceKey, body: draft.body });
+    },
     refreshThreads: () => refreshPRThreads(),
-    // Only a feed already frozen holds the comment back.
+    // Only a feed already frozen holds a posted comment back.
     revealConversation: () => { if (conversationOrder.length > 0) captureConversationOrder(true); },
   });
 
@@ -1650,7 +1564,7 @@ export function createReviewPaneState(
 
   function dispose(): void {
     disposed = true;
-    commentWrites.dispose();
+    commentActions.dispose();
     showRead(null);
     disposePRRefWatch();
     disposePaintedRetention();
@@ -2567,51 +2481,29 @@ export function createReviewPaneState(
     const start = editor?.rangeStart ?? null;
     try {
       const anchor = saveableAnchor(editor, bundle);
-      if (mode === 'now') {
-        if (!canPostNow) throw new Error('Comments post to the pull request only on its whole diff.');
-        // Posted from the diff on screen, at the head it was loaded at.
-        const request = {
-          headSha: loadedPRHeadSHA,
-          filePath: anchor.filePath,
-          side: anchor.side,
-          oldLine: anchor.oldLine,
-          newLine: anchor.newLine,
-          startOldLine: start?.oldLine,
-          startNewLine: start?.newLine,
-          body: trimmed,
-        };
-        await commentWrites.run(commentWriteKey.editor(editorId), (ref) => PostPRLineComment(prReferenceWire(ref), request), () => closeDraftEditor(editorId));
-        return;
-      }
-      const input = {
-        scope: bundle.scope,
-        sourceKey: bundle.sourceKey,
-        commitSha: bundle.commitSha,
-        filePath: anchor.filePath,
-        oldLine: anchor.oldLine,
-        newLine: anchor.newLine,
-        side: anchor.side,
-        startOldLine: start?.oldLine,
-        startNewLine: start?.newLine,
-        selectedText: editor?.selectedText ?? '',
-        body: trimmed,
-      };
-      if (pinnedDrafts !== null) {
-        if (!canDraftComments) throw new Error('Comment on the whole pull request: pick All commits.');
-        await createPRDiffReviewComment(pinnedDrafts, input);
-        closeDraftEditor(editorId);
-        error = null;
-        return;
-      }
-      const thread = commentThreadId();
-      await createDiffReviewComment(thread, input);
+      // Posted from the diff on screen, at the head it was loaded at.
+      if (mode === 'now') return await commentActions.postLineComment(editorId, anchor, start, trimmed, () => closeDraftEditor(editorId));
+      if (pinnedDrafts !== null && !canDraftComments) throw new Error('Comment on the whole pull request: pick All commits.');
+      const { filePath, oldLine, newLine, side } = anchor;
+      await saveDraft({
+        scope: bundle.scope, sourceKey: bundle.sourceKey, commitSha: bundle.commitSha, filePath, oldLine, newLine, side,
+        startOldLine: start?.oldLine, startNewLine: start?.newLine, selectedText: editor?.selectedText ?? '', body: trimmed,
+      });
       closeDraftEditor(editorId);
-      setActiveDiffReviewSource(thread, bundle.scope, bundle.sourceKey);
       error = null;
     } catch (err) {
       error = userFacingError(err);
       throw err;
     }
+  }
+
+  // A new draft in the pane's comment home: the PR's for a pinned review,
+  // else the thread's, whose active comment source it becomes.
+  async function saveDraft(input: DiffReviewCommentInput): Promise<void> {
+    if (pinnedDrafts !== null) return void await createPRDiffReviewComment(pinnedDrafts, input);
+    const owner = commentThreadId();
+    await createDiffReviewComment(owner, input);
+    setActiveDiffReviewSource(owner, input.scope, input.sourceKey);
   }
 
   async function updateComment(commentId: string, body: string): Promise<void> {
@@ -2680,10 +2572,7 @@ export function createReviewPaneState(
       url: detail.url,
       comments: await Promise.all(sending.map(async (comment) => {
         // A held reply quotes the thread it answers, as the pane shows it.
-        if (comment.side === 'reply') {
-          const thread = threads.find((each) => each.id === comment.replyThreadId);
-          return { commentId: comment.id, hunkExcerpt: '', thread: thread ? replyThreadContext(thread) : undefined };
-        }
+        if (comment.side === 'reply') return { commentId: comment.id, hunkExcerpt: '', thread: commentActions.replyContext(comment, threads) };
         return { commentId: comment.id, hunkExcerpt: await hunkExcerptForComment(shown, comment) };
       })),
     };
@@ -2949,74 +2838,6 @@ export function createReviewPaneState(
     } catch (err) {
       if (disposed) return;
       error = userFacingError(err);
-    }
-  }
-
-  // A reply posts now wherever the thread shows (a picked commit's too),
-  // under the gates every now write has.
-  async function sendPRThreadReply(thread: ReviewThread): Promise<void> {
-    if (!prRef) return;
-    const body = (replyBodies.get(thread.id) ?? '').trim();
-    if (!body || sendingReplyIds.has(thread.id)) return;
-    const first = thread.comments[0];
-    if (!first) {
-      replyErrors.set(thread.id, 'Thread has no top-level comment to reply to.');
-      return;
-    }
-    replyErrors.delete(thread.id);
-    await commentWrites.run(
-      commentWriteKey.reply(thread.id),
-      (ref) => ReplyToPRThread(prReferenceWire(ref), thread.id, first.databaseID, body),
-      () => {
-        if ((replyBodies.get(thread.id) ?? '').trim() === body) replyBodies.delete(thread.id);
-        closeReplyEverywhere(thread.id);
-      },
-      nowWithheldReason,
-    );
-  }
-
-  function closeReplyEverywhere(prThreadId: string): void {
-    openReplies.delete(`diff:${prThreadId}`);
-    openReplies.delete(`conversation:${prThreadId}`);
-  }
-
-  // The composer's text as the thread's held reply, which renders at the
-  // thread's foot and goes out with the batch. One per thread: a thread
-  // holding one opens that draft's edit instead of the composer.
-  async function holdPRThreadReply(thread: ReviewThread): Promise<void> {
-    const body = (replyBodies.get(thread.id) ?? '').trim();
-    const first = thread.comments[0];
-    if (!body || !canHoldReply || !sourceKey || sendingReplyIds.has(thread.id)) return;
-    if (!first) {
-      replyErrors.set(thread.id, 'Thread has no top-level comment to reply to.');
-      return;
-    }
-    sendingReplyIds.add(thread.id);
-    replyErrors.delete(thread.id);
-    const input = {
-      scope: 'pr' as const,
-      sourceKey,
-      commitSha: loadedPRHeadSHA,
-      filePath: thread.path,
-      side: 'reply' as const,
-      replyThreadId: thread.id,
-      replyRootId: first.databaseID,
-      selectedText: '',
-      body,
-    };
-    try {
-      if (pinnedDrafts !== null) await createPRDiffReviewComment(pinnedDrafts, input);
-      else {
-        const owner = commentThreadId();
-        await createDiffReviewComment(owner, input);
-        setActiveDiffReviewSource(owner, 'pr', input.sourceKey);
-      }
-      if ((replyBodies.get(thread.id) ?? '').trim() === body) replyBodies.delete(thread.id);
-      closeReplyEverywhere(thread.id);
-    } catch (err) {
-      replyErrors.set(thread.id, userFacingError(err));
-    } finally {
-      sendingReplyIds.delete(thread.id);
     }
   }
 
@@ -3459,30 +3280,17 @@ export function createReviewPaneState(
       if (comment.side === 'reply') continue;
       if (!draftAnchorExists(files, comment)) out.add(comment.id);
     }
-    for (const comment of orphanedReplyDrafts) out.add(comment.id);
+    for (const comment of commentActions.state.orphanedReplyDrafts) out.add(comment.id);
     return out;
   });
 
-  // What the diff tints: the lines each range spans. A forge thread's
-  // span shows while its card is open, as a new range's does.
-  const rangeTints = $derived.by(() => {
-    const out = new Map<string, LineRange[]>();
-    const add = (range: LineRange | null) => {
-      if (range) out.set(range.filePath, [...(out.get(range.filePath) ?? []), range]);
-    };
-    for (const editor of shownEditors) if (editor.state === 'placed') add(editor.range ?? null);
-    for (const draft of drafts) add(draftRange(draft));
-    for (const thread of prThreads) {
-      if (!thread.isResolved || expandedPRThreadIds.has(thread.id)) add(threadRange(thread));
-    }
-    return out;
-  });
+  const rangeTints = $derived(rangesByFile(shownEditors, drafts, prThreads, (id) => expandedPRThreadIds.has(id)));
 
   function orphanedDraftIds(): SvelteSet<string> {
     return orphanedIds;
   }
 
-  return {
+  const own = {
     identity,
     rowId,
     get scope() { return scope; },
@@ -3633,53 +3441,12 @@ export function createReviewPaneState(
       if (expandedPRThreadIds.has(prThreadId)) expandedPRThreadIds.delete(prThreadId);
       else expandedPRThreadIds.add(prThreadId);
     },
-    replyBodyFor(prThreadId: string): string {
-      return replyBodies.get(prThreadId) ?? '';
-    },
-    setReplyBody(prThreadId: string, body: string): void {
-      replyBodies.set(prThreadId, body);
-    },
-    replyOpen(prThreadId: string, surface: ReviewReplySurface): boolean {
-      return openReplies.has(`${surface}:${prThreadId}`);
-    },
-    openReply(prThreadId: string, surface: ReviewReplySurface): void {
-      // A thread holding replies edits the newest instead.
-      const held = replyDrafts.get(prThreadId)?.at(-1);
-      if (held) {
-        if (draftEditBodies.get(held.id) === undefined) draftEditBodies.set(held.id, { sourceKey, body: held.body });
-        return;
-      }
-      openReplies.add(`${surface}:${prThreadId}`);
-    },
-    closeReply(prThreadId: string, surface: ReviewReplySurface): void {
-      openReplies.delete(`${surface}:${prThreadId}`);
-    },
     refreshPRThreads,
-    sendPRThreadReply,
-    replyErrorFor(prThreadId: string): string | null {
-      return replyErrors.get(prThreadId) ?? commentWrites.error(commentWriteKey.reply(prThreadId));
-    },
-    sendingReply(prThreadId: string): boolean {
-      return sendingReplyIds.has(prThreadId) || commentWrites.pending(commentWriteKey.reply(prThreadId));
-    },
-    holdPRThreadReply,
-    replyDraftsFor(prThreadId: string): readonly DiffReviewComment[] {
-      return replyDrafts.get(prThreadId) ?? EMPTY_COMMENTS;
-    },
-    get orphanedReplyDrafts() { return orphanedReplyDrafts; },
-    get canPostNow() { return canPostNow; },
-    get sentCommentActions() { return sentCommentActions; },
-    get nowWithheldReason() { return nowWithheldReason; },
-    get canHoldReply() { return canHoldReply; },
-    get primaryCommentAction() { return primaryCommentAction; },
-    commentWritePending: (key: string) => commentWrites.pending(key),
-    commentWriteError: (key: string) => commentWrites.error(key),
     extendEditorRange,
     dropEditorRange,
     rangeTintsFor(path: string): readonly LineRange[] {
       return rangeTints.get(path) ?? NO_RANGES;
     },
-    sentComments: commentWrites,
     setPRThreadResolved,
     resolveErrorFor(prThreadId: string): string | null {
       return resolveErrors.get(prThreadId) ?? null;
@@ -3753,7 +3520,12 @@ export function createReviewPaneState(
     },
     setIgnoreWhitespace,
     dispose,
-  };
+  } satisfies Omit<ReviewPaneState, keyof ReviewCommentActionsState>;
+  // Own properties, getters intact: a spread would read each getter once.
+  return Object.defineProperties({} as ReviewPaneState, {
+    ...Object.getOwnPropertyDescriptors(own),
+    ...Object.getOwnPropertyDescriptors(commentActions.state),
+  });
 }
 
 function userFacingError(err: unknown): string {
