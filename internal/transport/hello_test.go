@@ -220,6 +220,7 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 		"flush-settlement.v1",
 		"thread-find.v1",
 		"pr-review-drafts.v1",
+		"pr-comment-actions.v1",
 	}
 	assertCapabilities(t, serverCapabilities, want)
 	assertCapabilities(t, serverCapabilitiesWithBrowser, append(append([]string{}, want...), "browser"))
