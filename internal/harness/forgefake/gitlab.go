@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -623,17 +624,23 @@ func glabPipelineJobs(e *Engine, c *call, v graphQLVars) response {
 			stages = append(stages, map[string]any{"name": job.Stage})
 		}
 	}
-	jobs := slices.Clone(pipeline.Jobs)
-	// GitLab answers the rows newest first.
+	// The read asks for retried: false, so a job a retry replaced is left
+	// out; GitLab answers the rows newest first.
+	var jobs []Job
+	for _, job := range pipeline.current() {
+		jobs = append(jobs, *job)
+	}
 	slices.SortStableFunc(jobs, func(a, b Job) int { return cmp.Compare(b.ID, a.ID) })
 	nodes := make([]map[string]any, 0, len(jobs))
 	for _, job := range jobs {
 		nodes = append(nodes, gitlabJobNode(r, job))
 	}
-	return graphQLData(map[string]any{"project": map[string]any{"pipeline": map[string]any{
+	out := map[string]any{
 		"stages": map[string]any{"nodes": stages},
 		"jobs":   graphQLConnection(nodes, offset, githubGraphQLPageSize),
-	}}})
+	}
+	maps.Copy(out, gitlabPipelineActionFields(r, pipeline))
+	return graphQLData(map[string]any{"project": map[string]any{"pipeline": out}})
 }
 
 // gitlabJobNode is one PipelineJobs row. A build's webPath and
@@ -680,6 +687,7 @@ func gitlabJobNode(r *Repo, job Job) map[string]any {
 		details = jobPath
 	}
 	node["detailedStatus"] = map[string]any{"detailsPath": details}
+	maps.Copy(node, gitlabJobActionFields(r, job))
 	return node
 }
 

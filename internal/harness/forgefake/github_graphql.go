@@ -268,7 +268,8 @@ func ghPRTick(e *Engine, c *call, v graphQLVars) response {
 		return fail
 	}
 	pull := map[string]any{"number": p.Number, "headRefName": p.HeadRef}
-	repository := map[string]any{"pullRequest": pull}
+	// viewerPermission is selected on every tick (the CI actions read it).
+	repository := map[string]any{"pullRequest": pull, "viewerPermission": r.Merge.Permission}
 	if wantDetail {
 		maps.Copy(repository, githubRepositoryMerge(r))
 		maps.Copy(pull, e.githubPullDetail(r, p))
@@ -575,8 +576,11 @@ func githubContextNodes(r *Repo, p *Pull) []map[string]any {
 	if pipeline == nil {
 		return nil
 	}
+	// The rollup holds each check's latest run: a job a re-run replaced is
+	// left out.
 	out := make([]map[string]any, 0, len(pipeline.Jobs))
-	for _, job := range pipeline.Jobs {
+	for _, current := range pipeline.current() {
+		job := *current
 		status, conclusion := githubCheckState(job.Status)
 		out = append(out, map[string]any{
 			"__typename":  "CheckRun",

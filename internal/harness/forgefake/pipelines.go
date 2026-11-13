@@ -64,6 +64,9 @@ func (p *Pipeline) normalizeRun(forge string, pull *Pull, ids *idSource) error {
 		sources = gitlabSources
 	}
 	p.Source = defaultString(p.Source, sources[p.RefKind])
+	if err := p.normalizeForgeCI(forge); err != nil {
+		return err
+	}
 	if forge == "github" {
 		for i, job := range p.Jobs {
 			if job.Kind != "" {

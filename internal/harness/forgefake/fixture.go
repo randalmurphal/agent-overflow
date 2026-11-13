@@ -377,6 +377,8 @@ type Pipeline struct {
 	// Defaults to the aggregate of the jobs.
 	Status string `json:"status,omitempty"`
 	Jobs   []Job  `json:"jobs,omitempty"`
+	// Artifacts are a GitHub run's artifacts (ci_actions_github.go).
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 }
 
 // Job is one CI job.
@@ -386,7 +388,8 @@ type Job struct {
 	Name  string `json:"name"`
 	Stage string `json:"stage,omitempty"`
 	// Status is one of success, failed, running, pending, skipped,
-	// canceled. Each forge's handler spells it the way that forge does.
+	// canceled, and manual on GitLab (a job waiting for a manual start).
+	// Each forge's handler spells it the way that forge does.
 	Status       string `json:"status"`
 	AllowFailure bool   `json:"allowFailure,omitempty"`
 	StartedAt    string `json:"startedAt,omitempty"`
@@ -411,6 +414,12 @@ type Job struct {
 	// Downstream is a bridge's downstream pipeline path on the forge
 	// ("/grp/child/-/pipelines/9"); empty answers none yet.
 	Downstream string `json:"downstream,omitempty"`
+	// Retried marks a job a retry replaced: the reads leave it out, as
+	// GitLab's retried: false and GitHub's latest attempt do
+	// (ci_actions.go).
+	Retried bool `json:"retried,omitempty"`
+	// Artifacts is a GitLab build's artifacts archive.
+	Artifacts *Artifact `json:"artifacts,omitempty"`
 }
 
 // The GitLab pipeline row kinds past a build (Job.Kind).
@@ -467,7 +476,7 @@ var (
 		"approved": true, "unapproved": true, "merged": true, "closed": true, "reopened": true, "marked_draft": true,
 		"marked_ready": true, "auto_merge_set": true, "auto_merge_canceled": true, "base_changed": true, "review_requested": true,
 	}
-	jobStatuses  = map[string]bool{"success": true, "failed": true, "running": true, "pending": true, "skipped": true, "canceled": true}
+	jobStatuses  = map[string]bool{"success": true, "failed": true, "running": true, "pending": true, "skipped": true, "canceled": true, "manual": true}
 	reviewStates = map[string]bool{"APPROVED": true, "CHANGES_REQUESTED": true, "COMMENTED": true, "DISMISSED": true, "PENDING": true}
 )
 
@@ -979,7 +988,7 @@ func (p *Pipeline) normalize(ids *idSource) error {
 	for i := range p.Jobs {
 		job := &p.Jobs[i]
 		if job.Name == "" || !jobStatuses[job.Status] {
-			return fmt.Errorf("jobs[%d]: name and a status (success, failed, running, pending, skipped, canceled) are required", i)
+			return fmt.Errorf("jobs[%d]: name and a status (success, failed, running, pending, skipped, canceled, manual) are required", i)
 		}
 		for j := range job.Steps {
 			step := &job.Steps[j]
@@ -1015,12 +1024,18 @@ func (p *Pipeline) normalize(ids *idSource) error {
 			stage = "external"
 		}
 		job.Stage = defaultString(job.Stage, stage)
-		if job.StartedAt == "" && job.Status != "pending" && job.Status != "skipped" {
+		if err := job.normalizeArtifacts(); err != nil {
+			return fmt.Errorf("jobs[%d]: %w", i, err)
+		}
+		if job.StartedAt == "" && job.Status != "pending" && job.Status != "skipped" && job.Status != "manual" {
 			job.StartedAt = "2026-01-01T00:00:00Z"
 		}
 		if job.CompletedAt == "" && job.StartedAt != "" && job.Status != "running" {
 			job.CompletedAt = "2026-01-01T00:01:00Z"
 		}
+	}
+	if err := p.normalizeArtifacts(ids); err != nil {
+		return err
 	}
 	if p.Status == "" {
 		p.Status = aggregateJobStatus(p.Jobs)
