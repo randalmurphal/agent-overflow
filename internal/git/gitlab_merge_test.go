@@ -622,6 +622,18 @@ func TestGitLabCachesFollowTheLogin(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/graphql" {
+			var payload struct {
+				Query         string         `json:"query"`
+				OperationName string         `json:"operationName"`
+				Variables     map[string]any `json:"variables"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("GraphQL body: %v", err)
+			}
+			if invalid, ok := checkGraphQLRequest(t, payload.OperationName, payload.Query, payload.Variables); !ok {
+				_, _ = io.WriteString(w, invalid)
+				return
+			}
 			_, _ = io.WriteString(w, gitlabManageEmpty)
 			return
 		}

@@ -32,12 +32,15 @@ const (
 	githubActor          = `author { login ... on User { name } }`
 
 	// githubViewerCommentFields is what edit, delete and the "edited" mark
-	// read from a comment of either kind.
-	githubViewerCommentFields = `lastEditedAt url viewerCanUpdate viewerCanDelete ` + githubReactionFields
+	// read from a comment of either kind, with its reaction groups while
+	// the read's $wantReactions is set: every document that selects it
+	// declares and sends that variable.
+	githubViewerCommentFields = `lastEditedAt url viewerCanUpdate viewerCanDelete reactionGroups @include(if: $wantReactions) ` + githubReactionGroupFields
 	// githubReactionFields is a comment's reaction groups: GitHub answers
 	// every content, so the count is the reactors' totalCount (no nodes:
 	// the names would cost a connection per comment).
-	githubReactionFields      = `reactionGroups @include(if: $wantReactions) { content viewerHasReacted reactors { totalCount } }`
+	githubReactionFields      = `reactionGroups ` + githubReactionGroupFields
+	githubReactionGroupFields = `{ content viewerHasReacted reactors { totalCount } }`
 	githubThreadCommentFields = `id databaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` replyTo { id databaseId }`
 	githubThreadFields        = `id isResolved isOutdated path line startLine originalLine originalStartLine diffSide startDiffSide subjectType ` +
 		`comments(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }`

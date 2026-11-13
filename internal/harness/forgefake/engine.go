@@ -49,8 +49,9 @@ type Invocation struct {
 	Via string `json:"via"`
 	// Route names the handler that answered. Empty when Unhandled.
 	Route string `json:"route,omitempty"`
-	// Unhandled marks an invocation no handler implements. Stderr (CLI) or
-	// Detail (HTTP) then carries the reason and the call.
+	// Unhandled marks an invocation no handler implements, or a GraphQL
+	// request the forge would refuse as invalid. Stderr (CLI) or Detail
+	// (HTTP) then carries the reason and the call.
 	Unhandled bool      `json:"unhandled,omitempty"`
 	At        time.Time `json:"at"`
 
@@ -411,6 +412,10 @@ type response struct {
 	status    int
 	header    http.Header
 	unhandled string
+	// invalid is why a GraphQL request fails the forge's validation; the
+	// answer is the forge's own errors body, and the invocation is
+	// recorded as unhandled with this detail.
+	invalid string
 	// body is a job log, served over HTTP in place of stdout: bytes
 	// [from, to) of it on a 206, all of it otherwise. etag is its
 	// validator when the handler names one; a conditional route hashes

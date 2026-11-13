@@ -94,6 +94,11 @@ func newForgeAPIService(t *testing.T, answer func(call forgeAPICall) forgeAPIAns
 				return
 			}
 			call.Op, call.Query, call.Vars = payload.OperationName, payload.Query, payload.Variables
+			if invalid, ok := checkGraphQLRequest(t, call.Op, call.Query, call.Vars); !ok {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, invalid)
+				return
+			}
 		case strings.HasPrefix(r.URL.Path, "/github/rest/"):
 			call.Path = strings.TrimPrefix(r.URL.EscapedPath(), "/github/rest/")
 		case strings.HasPrefix(r.URL.Path, "/gitlab/api/v4/"):
