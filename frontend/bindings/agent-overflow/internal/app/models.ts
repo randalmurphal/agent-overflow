@@ -3808,6 +3808,12 @@ export class PRActionResult {
     "seq": number;
     "outcome": git$0.MergeOutcome;
 
+    /**
+     * CommentID is the comment PostPRComment created, as ReviewComment.ID
+     * names it; empty for every other action and when the forge named none.
+     */
+    "commentId"?: string;
+
     /** Creates a new PRActionResult instance. */
     constructor($$source: Partial<PRActionResult> = {}) {
         if (!("seq" in $$source)) {

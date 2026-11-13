@@ -31,6 +31,9 @@ import (
 type PRActionResult struct {
 	Seq     uint64              `json:"seq"`
 	Outcome gitops.MergeOutcome `json:"outcome"`
+	// CommentID is the comment PostPRComment created, as ReviewComment.ID
+	// names it; empty for every other action and when the forge named none.
+	CommentID string `json:"commentId,omitempty"`
 }
 
 //ao:scope git:operate

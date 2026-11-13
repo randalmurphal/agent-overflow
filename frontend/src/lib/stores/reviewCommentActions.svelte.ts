@@ -97,7 +97,7 @@ export interface ReviewCommentActionsHost {
   /** Opens a draft's edit unless it is open. */
   editDraft(draft: DiffReviewComment): void;
   refreshThreads(): Promise<void>;
-  showPostedComment(body: string): void;
+  showPostedComment(commentId: string): void;
 }
 
 export interface ReviewCommentActions {

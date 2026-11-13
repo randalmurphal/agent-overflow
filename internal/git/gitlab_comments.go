@@ -51,13 +51,22 @@ func (f *gitlabForge) PostLineComment(ctx context.Context, ref PRReference, head
 	return commentWriteError(err)
 }
 
-func (f *gitlabForge) PostPRComment(ctx context.Context, ref PRReference, body string) error {
+// PostPRComment answers the note's id, as the read names its comment.
+func (f *gitlabForge) PostPRComment(ctx context.Context, ref PRReference, body string) (string, error) {
 	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
-		return err
+		return "", err
 	}
-	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: gitlabMRPath(ref) + "/notes", Body: map[string]string{"body": body}}, nil)
-	return commentWriteError(err)
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	if _, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: gitlabMRPath(ref) + "/notes", Body: map[string]string{"body": body}}, &created); err != nil {
+		return "", commentWriteError(err)
+	}
+	if created.ID <= 0 {
+		return "", nil
+	}
+	return strconv.FormatInt(created.ID, 10), nil
 }
 
 // gitlabNotePath is the REST path of one note in its discussion.

@@ -146,9 +146,15 @@ func TestPRCommentActionsSettleOnTheFrameThatShowsThem(t *testing.T) {
 			if got := threadWithBody(threads, "a range"); got == nil || *got.Line != 8 || got.StartLine == nil || *got.StartLine != 5 || got.Side != "right" {
 				t.Fatalf("range thread = %+v", got)
 			}
-			threads = settled("PR comment", func() (PRActionResult, error) { return c.app.PostPRComment(ctx, c.pr, "on the PR") })
-			if got := threadWithBody(threads, "on the PR"); got == nil || got.Path != "" {
-				t.Fatalf("PR comment = %+v", got)
+			var posted PRActionResult
+			threads = settled("PR comment", func() (PRActionResult, error) {
+				result, err := c.app.PostPRComment(ctx, c.pr, "on the PR")
+				posted = result
+				return result, err
+			})
+			// The answer names the created comment as the read does.
+			if got := threadWithBody(threads, "on the PR"); got == nil || got.Path != "" || posted.CommentID == "" || got.Comments[0].ID != posted.CommentID {
+				t.Fatalf("PR comment = %+v, answered comment %q", got, posted.CommentID)
 			}
 			theirs := threadWithBody(threads, "theirs")
 			threads = settled("reply", func() (PRActionResult, error) {
@@ -342,7 +348,7 @@ func TestPRCommentCreatesWithALostAnswerAreUnconfirmed(t *testing.T) {
 				c.gate.lose("drop")
 				result, err := create.post()
 				explained, ok := errors.AsType[*gitops.ForgeActionError](err)
-				if !ok || explained.Kind != gitops.ForgeErrorUnconfirmed || !strings.Contains(explained.Message, "may have posted this comment. Check the thread before sending it again.") || result.Seq != 0 {
+				if !ok || explained.Kind != gitops.ForgeErrorUnconfirmed || !strings.Contains(explained.Message, "may have posted this comment. Check the thread before sending it again.") || result.Seq != 0 || result.CommentID != "" {
 					t.Fatalf("%s = %+v, %v", create.body, result, err)
 				}
 				for deadline := time.Now().Add(5 * time.Second); ; {

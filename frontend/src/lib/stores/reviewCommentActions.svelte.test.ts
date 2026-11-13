@@ -497,7 +497,7 @@ describe('a comment on the PR itself', () => {
   const feedIds = (state: ReviewPaneState) => state.conversationFeed.map((item) => item.id);
 
   it('shows the posted comment in a frozen feed, not behind "new"', async () => {
-    setBindingMock('PostPRComment', async () => ({ seq: 8 }));
+    setBindingMock('PostPRComment', async () => ({ seq: 8, commentId: 'node-9' }));
     const state = await open();
     state.setConversationOpen(true);
     state.freezeConversation();
@@ -511,7 +511,7 @@ describe('a comment on the PR itself', () => {
   });
 
   it('joins only the posted comment, at the feed\'s end; what else arrived stays behind "new"', async () => {
-    setBindingMock('PostPRComment', async () => ({ seq: 8 }));
+    setBindingMock('PostPRComment', async () => ({ seq: 8, commentId: 'node-9' }));
     const state = await open();
     state.setConversationOpen(true);
     state.freezeConversation();
@@ -525,8 +525,38 @@ describe('a comment on the PR itself', () => {
     expect(state.conversationNewCount).toBe(2);
   });
 
+  // The answer names the created comment: the join is by that id, never
+  // by text another reviewer can post too.
+  it('joins the comment the answer names, not another reviewer\'s with the same text', async () => {
+    setBindingMock('PostPRComment', async () => ({ seq: 8, commentId: 'node-9' }));
+    const state = await open();
+    state.setConversationOpen(true);
+    state.freezeConversation();
+    const twin: ReviewThread = { ...POSTED, id: 'pr-comment-3', comments: [comment({ id: 'node-12', authorLogin: 'bob', body: 'Looks good overall.', createdAt: '2026-01-03T00:00:00Z', databaseID: 112 })] };
+    state.sentComments.setPRCommentBody('Looks good overall.');
+    await state.sentComments.postPRComment();
+    // Newest first: the other reviewer's twin comes before the viewer's.
+    frame(8, { threads: [THREAD, twin, POSTED] });
+    await settle();
+    expect(feedIds(state)).toEqual([`t:${THREAD.id}`, `t:${POSTED.id}`]);
+    expect(state.conversationNewCount).toBe(1);
+  });
+
+  it('joins nothing when the answer names no comment', async () => {
+    setBindingMock('PostPRComment', async () => ({ seq: 8 }));
+    const state = await open();
+    state.setConversationOpen(true);
+    state.freezeConversation();
+    state.sentComments.setPRCommentBody('Looks good overall.');
+    await state.sentComments.postPRComment();
+    frame(8, { threads: [THREAD, POSTED] });
+    await settle();
+    expect(feedIds(state)).toEqual([`t:${THREAD.id}`]);
+    expect(state.conversationNewCount).toBe(1);
+  });
+
   it('shows it after the threads\' re-read when the answer has no seq', async () => {
-    setBindingMock('PostPRComment', async () => ({ seq: 0 }));
+    setBindingMock('PostPRComment', async () => ({ seq: 0, commentId: 'node-9' }));
     const state = await open();
     state.setConversationOpen(true);
     state.freezeConversation();

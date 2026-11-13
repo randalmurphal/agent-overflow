@@ -1414,7 +1414,7 @@ export function createReviewPaneState(
       if (draftEditBodies.get(draft.id) === undefined) draftEditBodies.set(draft.id, { sourceKey, body: draft.body });
     },
     refreshThreads: () => refreshPRThreads(),
-    showPostedComment: (body) => joinPostedComment(body),
+    showPostedComment: (commentId) => joinPostedComment(commentId),
   });
 
   // The workspace's CURRENT open PR, read live from the shared git-status
@@ -2983,13 +2983,13 @@ export function createReviewPaneState(
   // resolved while the reader had them open.
   // The viewer's own PR comment joins a frozen feed at its end, as it was
   // posted from there; nothing else that arrived meanwhile does. It is the
-  // newest unknown PR-level entry with the posted text. A feed not frozen
-  // yet shows it in its live order.
-  function joinPostedComment(body: string): void {
+  // PR-level entry whose comment is the one the post's answer named. A
+  // feed not frozen yet shows it in its live order.
+  function joinPostedComment(commentId: string): void {
     if (conversationOrder.length === 0) return;
     const known = new Set(conversationOrder);
     const mine = conversationFeedSource.find(({ item }) => item.kind === 'thread' && !known.has(item.id)
-      && !item.thread.isResolvable && item.thread.comments[0]?.body.trim() === body);
+      && !item.thread.isResolvable && item.thread.comments[0]?.id === commentId);
     if (mine) conversationOrder = [...conversationOrder, mine.item.id];
   }
 

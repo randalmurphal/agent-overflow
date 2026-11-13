@@ -20,8 +20,10 @@ type ForgeCommenter interface {
 	// *HeadMovedError when the head is not headSHA any more.
 	PostLineComment(ctx context.Context, ref PRReference, headSHA string, comment ReviewLineComment) error
 	// PostPRComment posts a comment on the PR itself: a GitHub issue
-	// comment, a GitLab merge request note.
-	PostPRComment(ctx context.Context, ref PRReference, body string) error
+	// comment, a GitLab merge request note. It answers the created
+	// comment's id as ReviewComment.ID reads it, or "" when the forge's
+	// answer named none.
+	PostPRComment(ctx context.Context, ref PRReference, body string) (string, error)
 	// EditComment replaces the body of a sent comment.
 	EditComment(ctx context.Context, ref PRReference, target CommentTarget, body string) error
 	// DeleteComment deletes a sent comment. Deleting a thread's only
@@ -91,8 +93,8 @@ func (e *HeadMovedError) Error() string {
 func (nullForge) PostLineComment(context.Context, PRReference, string, ReviewLineComment) error {
 	return ErrUnsupportedForge
 }
-func (nullForge) PostPRComment(context.Context, PRReference, string) error {
-	return ErrUnsupportedForge
+func (nullForge) PostPRComment(context.Context, PRReference, string) (string, error) {
+	return "", ErrUnsupportedForge
 }
 func (nullForge) EditComment(context.Context, PRReference, CommentTarget, string) error {
 	return ErrUnsupportedForge
@@ -129,12 +131,12 @@ func (c *Core) PostPRLineComment(ctx context.Context, ref PRReference, headSHA s
 
 // PostPRComment posts a comment on the PR itself (see
 // ForgeCommenter.PostPRComment).
-func (c *Core) PostPRComment(ctx context.Context, ref PRReference, body string) error {
+func (c *Core) PostPRComment(ctx context.Context, ref PRReference, body string) (string, error) {
 	if err := ref.Validate(); err != nil {
-		return err
+		return "", err
 	}
 	if err := requireCommentBody(body); err != nil {
-		return err
+		return "", err
 	}
 	return c.ForgeByID(ref.Forge).PostPRComment(forgeWrite(ctx), ref, body)
 }

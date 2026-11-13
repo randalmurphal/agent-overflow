@@ -71,17 +71,18 @@ func TestGitHubPostPRComment(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		if call.Method == http.MethodPost && call.Path == "repos/o/r/issues/5/comments" {
-			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":9}`}
+			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":9,"node_id":"IC_9"}`}
 		}
 		return forgeUnexpected(t, call)
 	})
-	if err := core.PostPRComment(t.Context(), githubTestRef(5), "looks good"); err != nil {
-		t.Fatal(err)
+	// The created comment is named as the read names it: its node id.
+	if id, err := core.PostPRComment(t.Context(), githubTestRef(5), "looks good"); err != nil || id != "IC_9" {
+		t.Fatalf("PostPRComment = %q, %v; want IC_9", id, err)
 	}
 	if sent := calls.all(); len(sent) != 1 || string(sent[0].Body) != `{"body":"looks good"}` {
 		t.Fatalf("requests = %v", calls.ops())
 	}
-	if err := core.PostPRComment(t.Context(), githubTestRef(5), "  "); err == nil {
+	if _, err := core.PostPRComment(t.Context(), githubTestRef(5), "  "); err == nil {
 		t.Fatal("an empty PR comment was sent")
 	}
 }
@@ -316,8 +317,9 @@ func TestGitLabPostLineComment(t *testing.T) {
 	if got := calls.ops(); len(got) != 4 || got[3] != "GET "+mr {
 		t.Fatalf("a comment on a moved head was posted: %v", got)
 	}
-	if err := core.PostPRComment(t.Context(), gitlabTestRef(7), "overall"); err != nil {
-		t.Fatal(err)
+	// The created note is named as the read names it: its id.
+	if id, err := core.PostPRComment(t.Context(), gitlabTestRef(7), "overall"); err != nil || id != "5" {
+		t.Fatalf("PostPRComment = %q, %v; want 5", id, err)
 	}
 	if sent := calls.all(); string(sent[len(sent)-1].Body) != `{"body":"overall"}` {
 		t.Fatalf("note body = %s", sent[len(sent)-1].Body)

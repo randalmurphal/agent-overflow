@@ -62,14 +62,21 @@ func (f *githubForge) PostLineComment(ctx context.Context, ref PRReference, head
 	return commentWriteError(err)
 }
 
-func (f *githubForge) PostPRComment(ctx context.Context, ref PRReference, body string) error {
+// PostPRComment answers the comment's node id: the read names a
+// conversation comment, and its thread, by it.
+func (f *githubForge) PostPRComment(ctx context.Context, ref PRReference, body string) (string, error) {
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
-		return err
+		return "", err
 	}
 	path := fmt.Sprintf("%s/issues/%d/comments", githubRepoPath(ref.Repository()), ref.Number)
-	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: path, Body: map[string]string{"body": body}}, nil)
-	return commentWriteError(err)
+	var created struct {
+		NodeID string `json:"node_id"`
+	}
+	if _, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: path, Body: map[string]string{"body": body}}, &created); err != nil {
+		return "", commentWriteError(err)
+	}
+	return created.NodeID, nil
 }
 
 // githubConversationTarget reports whether target is a conversation (issue)

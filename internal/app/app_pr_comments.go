@@ -82,8 +82,12 @@ func (a *App) PostPRComment(ctx context.Context, pr gitops.PRReference, body str
 	if err := a.admitPRAction(pr); err != nil {
 		return PRActionResult{}, err
 	}
-	err := a.gitCore().PostPRComment(forgeapi.WithInteractive(ctx), pr, body)
-	return a.settlePRAction(ctx, pr, gitops.ActionComment, err)
+	commentID, err := a.gitCore().PostPRComment(forgeapi.WithInteractive(ctx), pr, body)
+	result, err := a.settlePRAction(ctx, pr, gitops.ActionComment, err)
+	if err == nil {
+		result.CommentID = commentID
+	}
+	return result, err
 }
 
 // ReplyToPRThread posts a reply to one thread now. threadID is the thread's
