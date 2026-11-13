@@ -144,7 +144,13 @@ func (w Wake) String() string {
 	case WakeCancelled:
 		return fmt.Sprintf("%s%s was cancelled.", who, token)
 	case WakeInterrupted:
-		return fmt.Sprintf("%s%s was interrupted by a restart of %s.", who, token, restartedComputer(w.Computer))
+		// Text is the cause the settling code recorded: a person stopped the
+		// turn, the computer running it restarted, the thread moved. The kind
+		// alone does not say which.
+		if w.Text == "" {
+			return fmt.Sprintf("%s%s was interrupted.", who, token)
+		}
+		return fmt.Sprintf("%s%s was interrupted: %s", who, token, w.body())
 	case WakeExpired:
 		return fmt.Sprintf("%s%s did not answer within a day.", who, token)
 	case WakeReminder:
@@ -182,13 +188,6 @@ func onComputer(name string) string {
 		return ""
 	}
 	return ", on " + name
-}
-
-func restartedComputer(name string) string {
-	if name == "" {
-		return "this computer"
-	}
-	return name
 }
 
 // Age renders a duration the way a status line states it: one unit, no

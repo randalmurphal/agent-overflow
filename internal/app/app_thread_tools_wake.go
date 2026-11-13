@@ -389,7 +389,7 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 	case row.State == store.ThreadRequestCancelled:
 		wake.Kind = threadtools.WakeCancelled
 	case row.State == store.ThreadRequestInterrupted:
-		wake.Kind = threadtools.WakeInterrupted
+		wake.Kind, wake.Text = threadtools.WakeInterrupted, string(row.Answer)
 	case row.State == store.ThreadRequestExpired:
 		wake.Kind = threadtools.WakeExpired
 	default:

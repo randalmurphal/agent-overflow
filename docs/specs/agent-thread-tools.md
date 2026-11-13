@@ -777,8 +777,10 @@ What settles a request, in order:
    as a second wake, so a responder that ended its turn to wait on a
    command costs the caller nothing.
 3. An errored turn settles `errored` with the error text.
-4. `thread_cancel` settles `cancelled`; a restart of the responder's
-   computer mid-turn settles `interrupted`.
+4. `thread_cancel` settles `cancelled`. A turn stopped some other way
+   (a person's Stop, a restart of the responder's computer, the thread
+   moving to another computer) settles `interrupted` with its cause as
+   the text, and the wake states that cause.
 
 A request settles once and its wake fires once, plus one more for a
 late reply. Every settlement and late reply bumps the request's

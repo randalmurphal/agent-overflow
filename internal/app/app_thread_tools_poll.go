@@ -798,6 +798,11 @@ func (a *App) sweepThreadExports(now time.Time) {
 // transcript in the same directory.
 const threadAnswerExportPrefix = "answer-"
 
+// threadReceiptRestarted is the boot sweep's settlement text. The caller may
+// be on another computer, so it names the computer by its role, and the wake
+// names which one.
+const threadReceiptRestarted = "The computer running it restarted before the request finished."
+
 // sweepThreadRequestsAtBoot settles what the last run left open.
 //
 // A receipt in `accepted` or `running` describes work that was either queued
@@ -813,7 +818,7 @@ func (a *App) sweepThreadRequestsAtBoot() {
 	for _, receipt := range receipts {
 		if err := a.settleThreadReceipt(receipt.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptInterrupted,
-			Answer:     []byte("This computer restarted before the request finished."),
+			Answer:     []byte(threadReceiptRestarted),
 			AnswerKind: store.ThreadAnswerError,
 		}); err != nil {
 			logThreadRequestSweep("settle interrupted receipt "+receipt.Token, err)

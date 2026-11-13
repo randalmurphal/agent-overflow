@@ -2429,6 +2429,9 @@ func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
 	if err != nil || !found || receipt.State != store.ThreadReceiptInterrupted {
 		t.Fatalf("receipt = %+v found=%v err=%v", receipt, found, err)
 	}
+	if body, err := after.app.threadWakeBody(row, false); err != nil || !strings.Contains(body, "was interrupted: "+threadReceiptRestarted) {
+		t.Errorf("wake = %q err=%v, want the restart as its cause", body, err)
+	}
 	// A scratch thread is a thread nobody can see; one left by a restart is
 	// swept with its row rather than kept forever.
 	if _, err := after.app.store.GetThread(scratch.ID); err == nil {
