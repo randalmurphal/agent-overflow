@@ -241,12 +241,14 @@ func gitlabDiscussionPath(ref PRReference, discussionID string) string {
 }
 
 // ReadPR reads the merge request once and derives every wanted part from
-// it: the detail adds the approvals, the project's merge settings (read
-// once per login per project per gitlabCacheTTL) and the viewer's login
-// (once per login per host per gitlabCacheTTL), the threads and the
-// events the discussions (paged; the system notes are events, the rest
-// threads), CI the head pipeline's rows (paged, readGitLabPipeline). A
-// part not wanted costs no request. prev and stepsFor are unused: the
+// it: the detail adds the approvals, the management read (PRManage,
+// readManage), the project's merge settings (read once per login per
+// project per gitlabCacheTTL) and the viewer's login (once per login per
+// host per gitlabCacheTTL), the threads and the events the discussions
+// (paged; the system notes are events, the rest threads), the events
+// also the resource state events (paged; closes, reopens and merges), CI
+// the head pipeline's rows (paged, readGitLabPipeline). A part not
+// wanted costs no request. prev and stepsFor are unused: the
 // rows are one read the previous observation cannot stand in for, and
 // GitLab jobs have no steps.
 func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadParts, _ *CIPipeline, _ []string) (PRRead, error) {
