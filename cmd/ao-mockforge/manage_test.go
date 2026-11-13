@@ -174,6 +174,23 @@ func TestGitHubManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	if got := lastEvent(read); got.Kind != gitops.EventReviewRequested {
 		t.Fatalf("last event after requesting a review = %+v", got)
 	}
+	// A removal is sent as asked, though this read no longer shows the
+	// label: GitHub answers it.
+	removes := routeCount(r, 0, "gh graphql RemoveLabels")
+	if err := r.core.SetPRLabels(ctx, ref, gitops.PRLabelChange{Remove: []gitops.PRLabel{m.Labels[0]}}); err != nil {
+		t.Fatalf("removing a label the PR no longer has: %v", err)
+	}
+	if n := routeCount(r, 0, "gh graphql RemoveLabels"); n != removes+1 {
+		t.Fatalf("RemoveLabels sent %d times, want once more", n-removes)
+	}
+	// Teams are searched for reviewers only.
+	teams := routeCount(r, 0, "gh graphql SearchTeams")
+	if assignees, err := r.core.SearchPRCandidates(ctx, ref, gitops.CandidateAssignees, ""); err != nil || slices.ContainsFunc(assignees.People, func(p gitops.PRPerson) bool { return p.Team }) {
+		t.Fatalf("assignee candidates = %+v, %v", assignees, err)
+	}
+	if n := routeCount(r, 0, "gh graphql SearchTeams"); n != teams {
+		t.Fatalf("an assignee search asked for teams %d times", n-teams)
+	}
 
 	// Re-request carol's review; dismiss her change request and the
 	// blocker goes.
@@ -458,17 +475,29 @@ func TestGitLabManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	}
 
 	// Draft is mergeRequestSetDraft; close and reopen are state events,
-	// the reopen recorded as GitLab records it ("opened").
+	// the reopen recorded as GitLab records it ("opened"). Each step adds
+	// its event; the order among events of one millisecond is not
+	// asserted, as notes and state events tie on it.
+	kindCount := func(read gitops.PRRead, kind string) int {
+		n := 0
+		for _, event := range read.Events {
+			if event.Kind == kind {
+				n++
+			}
+		}
+		return n
+	}
 	for _, step := range []struct{ state, event, prState string }{
 		{gitops.PRStateToDraft, gitops.EventMarkedDraft, "open"},
 		{gitops.PRStateClose, gitops.EventClosed, "closed"},
 		{gitops.PRStateReopen, gitops.EventReopened, "open"},
 	} {
+		before := kindCount(read, step.event)
 		if err := r.core.SetPRState(ctx, ref, step.state); err != nil {
 			t.Fatalf("SetPRState %s: %v", step.state, err)
 		}
 		read = mergeRead(t, r, ref)
-		if read.Detail.State != step.prState || lastEvent(read).Kind != step.event {
+		if read.Detail.State != step.prState || kindCount(read, step.event) != before+1 {
 			t.Fatalf("after %s: state %q, events %+v", step.state, read.Detail.State, read.Events)
 		}
 	}

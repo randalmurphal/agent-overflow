@@ -26,6 +26,7 @@ func TestWriteNotAppliedClassifiesWhatAWritesErrorProves(t *testing.T) {
 		{"rate limited", &RateLimitedError{Host: "github.com"}, true},
 		{"login refused", &SetupError{Kind: SetupUnauthenticated}, true},
 		{"GraphQL refusal beside a null field", &GraphQLError{Problems: []GraphQLProblem{{Type: "FORBIDDEN", Message: "no"}}, Data: []byte(`{"m":null}`)}, true},
+		{"GraphQL refusal beside data that did not decode", &GraphQLError{Problems: []GraphQLProblem{{Type: "FORBIDDEN", Message: "no"}}, Data: []byte(`{"m":null}`), Undecoded: true}, false},
 		{"GraphQL refusal of an unknown type", &GraphQLError{Problems: []GraphQLProblem{{Type: "SOMETHING", Message: "no"}}, Data: []byte(`{"m":null}`)}, false},
 		{"502", &StatusError{Status: http.StatusBadGateway}, false},
 		{"reset after sending", &TransientError{Err: errors.New("connection reset")}, false},

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/forgeapi"
@@ -319,37 +320,76 @@ func readGitLabStateEvents(ctx context.Context, client *forgeapi.Client, ref PRR
 	return out, nil
 }
 
-// gitlabStateEventsRetry is a merge request whose state events read
-// failed: asked again once due, its wait doubling per consecutive
-// failure.
+// gitlabStateEventRetries holds the merge requests whose state events
+// read is failing: each is asked again once due, its wait the Core's
+// prLookupErrorDelay of its consecutive failures. A success forgets it;
+// at most gitlabCacheMax are held, the soonest due dropped first.
+type gitlabStateEventRetries struct {
+	mu      sync.Mutex
+	entries map[string]gitlabStateEventsRetry
+}
+
 type gitlabStateEventsRetry struct {
 	failures int
 	due      time.Time
 }
 
+// due reports whether key may be read at now, and its failures so far.
+func (r *gitlabStateEventRetries) due(key string, now time.Time) (bool, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	retry, ok := r.entries[key]
+	return !ok || !now.Before(retry.due), retry.failures
+}
+
+func (r *gitlabStateEventRetries) succeeded(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.entries, key)
+}
+
+func (r *gitlabStateEventRetries) failed(key string, retry gitlabStateEventsRetry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.entries == nil {
+		r.entries = make(map[string]gitlabStateEventsRetry)
+	}
+	if _, ok := r.entries[key]; !ok && len(r.entries) >= gitlabCacheMax {
+		soonest := ""
+		for k, entry := range r.entries {
+			if soonest == "" || entry.due.Before(r.entries[soonest].due) {
+				soonest = k
+			}
+		}
+		delete(r.entries, soonest)
+	}
+	r.entries[key] = retry
+}
+
 // stateEvents is the events read's state events. A failure leaves the
 // events without them (the merge request's merged_at and closed_at still
 // stand in for a merge and a close), is logged, and is not asked again
-// until its retry is due (prLookupErrorBase doubling to prLookupErrorMax),
-// so a failing endpoint costs one request and one log line per wait,
-// not per tick.
+// until its retry is due, so a failing endpoint costs one request and one
+// log line per wait, not per tick.
 func (f *gitlabForge) stateEvents(ctx context.Context, client *forgeapi.Client, ref PRReference) []gitlabStateEventRaw {
 	key, now := ref.Key(), f.core.nowFn()
-	retry, failing := f.stateEventRetries.get(key, now)
-	if failing && now.Before(retry.due) {
+	due, failures := f.stateEventRetries.due(key, now)
+	if !due {
 		return nil
 	}
 	states, err := readGitLabStateEvents(ctx, client, ref)
 	if err == nil {
-		if failing {
-			f.stateEventRetries.put(key, gitlabStateEventsRetry{due: now}, now)
+		if failures > 0 {
+			f.stateEventRetries.succeeded(key)
 		}
 		return states
 	}
-	wait := prLookupErrorBase << min(retry.failures, 10)
-	wait = min(wait, prLookupErrorMax)
-	f.stateEventRetries.put(key, gitlabStateEventsRetry{failures: retry.failures + 1, due: now.Add(wait)}, now)
-	log.Printf("gitlab: state events of %s!%d on %s unavailable, closes and reopens left out until %s: %v", ref.Project(), ref.Number, ref.Host, now.Add(wait).Format(time.RFC3339), err)
+	if ctx.Err() != nil {
+		return nil
+	}
+	next := now.Add(f.core.prLookupErrorDelay(failures + 1))
+	f.stateEventRetries.failed(key, gitlabStateEventsRetry{failures: failures + 1, due: next})
+	log.Printf("gitlab: state events of %s!%d on %s unavailable, closes and reopens left out until %s: %v", ref.Project(), ref.Number, ref.Host, next.Format(time.RFC3339), err)
 	return nil
 }
 

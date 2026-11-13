@@ -949,6 +949,32 @@ func TestGitLabAutoMergeSendsBothParameters(t *testing.T) {
 	}
 }
 
+// An auto-merge carries the edited message as a merge would: the squash
+// commit's in squash_commit_message, a merge commit's in
+// merge_commit_message.
+func TestGitLabAutoMergeCarriesTheEditedMessage(t *testing.T) {
+	t.Parallel()
+	mr := gitlabTestProject + "/merge_requests/7"
+	core, calls := gitlabMergeForge(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		if call.Method == http.MethodPut && call.Path == mr+"/merge" {
+			return forgeAPIAnswer{Body: `{"state":"opened","merge_when_pipeline_succeeds":true}`}, true
+		}
+		return forgeAPIAnswer{}, false
+	})
+	msg := MergeMessage{Title: "Tidy", Body: "Squashed."}
+	for _, tc := range []struct{ method, key string }{{MergeMethodSquash, "squash_commit_message"}, {MergeMethodMerge, "merge_commit_message"}} {
+		got, err := core.MergePR(t.Context(), gitlabTestRef(7), MergeRequest{Method: tc.method, HeadSHA: "abc1234", AutoMerge: true, CommitMessage: &msg})
+		if err != nil || got != (MergeOutcome{AutoMerge: true}) {
+			t.Fatalf("%s auto-merge = %+v, %v", tc.method, got, err)
+		}
+		all := calls.all()
+		body := jsonBody(t, all[len(all)-1])
+		if body[tc.key] != msg.String() || body["auto_merge"] != true || len(body) != 6 {
+			t.Fatalf("%s auto-merge body = %+v, want %s", tc.method, body, tc.key)
+		}
+	}
+}
+
 // Cancel uses cancel_auto_merge; a server without it (404) is asked the
 // older route, remembered for the host once it answers. A 404 on both is
 // the merge request gone, not remembered; the older route's error status

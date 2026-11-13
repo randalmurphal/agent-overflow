@@ -45,7 +45,7 @@ type gitlabForge struct {
 	schemas gitlabCache[gitlabSchema]
 	// stateEventRetries holds the merge requests whose state events read
 	// failed, until it is due again (gitlab_manage.go).
-	stateEventRetries gitlabCache[gitlabStateEventsRetry]
+	stateEventRetries gitlabStateEventRetries
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }
