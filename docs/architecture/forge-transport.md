@@ -66,7 +66,7 @@ CLI-backed source in production and a fixed fake token when isolated.
 Three kinds of forge method, two sources of the host:
 
 - PR-scoped methods (`ReadPR`, `SubmitReview`, `ReplyToThread`,
-  `SetThreadResolved`, the merge actions) take a
+  `SetThreadResolved`, the merge and comment actions) take a
   `PRReference`, which carries `Host` beside
   `Forge`, `Namespace`, `Repo` and `Number`. The host comes from the PR URL
   every reference is built from (`ParsePRURL`, `prRefFromUrl`); the wire
@@ -201,7 +201,9 @@ asks for `Detail`, `Threads` and `Events` (the forge events the
 Conversation feed shows: approvals, merges, draft flips, auto-merge,
 force pushes), the CI phase for `CI` alone on its own cadence. A merge
 action (`ApprovePR`, `UnapprovePR`, `MergePR`, `CancelPRAutoMerge`,
-`UpdatePRBranch`, `MarkPRReady`) that succeeds asks the PR's live pump for
+`UpdatePRBranch`, `MarkPRReady`) or comment action (`PostPRLineComment`,
+`PostPRComment`, `ReplyToPRThread`, `EditPRComment`, `DeletePRComment`,
+`internal/app/app_pr_comments.go`) that succeeds asks the PR's live pump for
 one snapshot poll at once (`prPumpRequest.snapshot`), so every pane on the
 PR follows the forge's answer without waiting out the interval, and
 answers with the pump's sequence after that poll (`PRActionResult.Seq`,
@@ -260,6 +262,20 @@ id.
 | `Merge` with `AutoMerge` | `PRMergeTarget` + `EnableAutoMerge` (`enablePullRequestAutoMerge`, `expectedHeadOid`) |
 | `CancelAutoMerge`, `UpdateBranch`, `MarkReady` | `PRMergeTarget` + `DisableAutoMerge`, `UpdatePRBranch` (`expectedHeadOid`) or `MarkPRReady` |
 
+Each comment action is one request; GitHub decides who may edit or delete
+and the read carries its answer (`viewerCanUpdate`, `viewerCanDelete`,
+`lastEditedAt`, `url` on every comment, no extra request). A conversation
+comment is a thread whose ID is its comment's (`CommentTarget`), which is
+how an edit or delete picks the issue comment mutation.
+
+| Comment action | GitHub requests |
+|---|---|
+| `PostLineComment` | 1 REST `POST repos/O/R/pulls/N/comments` (`commit_id` the caller's head, `path`, `line`/`side` with `start_line`/`start_side` for a range, or `subject_type: file`) |
+| `PostPRComment` | 1 REST `POST repos/O/R/issues/N/comments` |
+| `ReplyToThread` | 1 REST `POST repos/O/R/pulls/N/comments/ROOT/replies` under the thread's first comment; a 404 is `*ReplyThreadGoneError` |
+| `EditComment`, `DeleteComment` | 1 `UpdateReviewComment`/`UpdateIssueComment(id, body)` or `DeleteReviewComment`/`DeleteIssueComment(id)` on the comment's node id |
+| `SubmitReview` | 1 REST `POST .../reviews` with the line and range comments, then 1 `POST .../comments` per file comment and 1 `.../replies` per held reply, in order; a COMMENT review with no body and no line comments is skipped when follow-ups exist. A follow-up's failure after anything posted is a `*PartialSubmitError` naming the file (`FailedPath`) or the thread (`FailedThreadID`) |
+
 GitLab's `ReadPR` reads the merge request once
 (`projects/P/merge_requests/N`) and derives every part from it: `Detail`
 adds its approvals, the project's merge settings (`projects/P`, cached
@@ -284,6 +300,20 @@ GitHub external check.
 | CI phase, a head pipeline | 1 merge request + 1 `PipelineJobs` per 100 rows |
 | CI phase, no head pipeline | 1 merge request |
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
+
+GitLab's REST notes carry no permission and no edit time (`updated_at`
+also moves on a resolve), so a read of `Threads` marks the viewer's own
+notes editable and deletable by the cached viewer login (the same `user`
+read the detail makes) and reports no edit time. A note's ID is its
+decimal id and its URL the merge request's page at `#note_<id>`.
+
+| Comment action | GitLab requests |
+|---|---|
+| `PostLineComment` | 1 merge request read, then 1 `POST .../discussions` with `{body, position}` against its `diff_refs`; a head other than the caller's is `*HeadMovedError` (kind `stale_head`) before the post. A range's `line_range` points carry `line_code` (`sha1(path)_old_new`, 0 for the missing number) and `type` (`new`, `old`, or none for an unchanged line) |
+| `PostPRComment` | 1 `POST .../notes` |
+| `ReplyToThread` | 1 `POST .../discussions/D/notes`; a 404 is `*ReplyThreadGoneError` |
+| `EditComment`, `DeleteComment` | 1 `PUT` (`{body}`) or `DELETE .../discussions/D/notes/N` |
+| `SubmitReview` | 1 `POST .../draft_notes` per comment (a held reply with `in_reply_to_discussion_id`), then `bulk_publish`; a draft whose discussion is gone (404) deletes the drafts it created and fails the submit with `*ReplyThreadGoneError` before anything publishes |
 
 Git status looks up a branch's open PR (`lookupOpenPR`,
 `internal/git/status_pr_cache.go`). The forges' head-branch filters also
@@ -692,8 +722,8 @@ never received, as not applied, whatever failed after it.
 `StatusError.Error()` carries the method, the redacted URL, the status and a
 bounded body (4 KiB). No forge error is classified from CLI stderr.
 
-A bound method that acts on a PR (`SubmitPRReview`, `ReplyToPRThread`,
-`SetPRThreadResolved`, the merge actions) returns its forge failure
+A bound method that acts on a PR (`SubmitPRReview`, `SetPRThreadResolved`,
+the merge and comment actions) returns its forge failure
 through `git.ExplainForgeError`: one sentence naming the cause and the
 fix, carried as reviewed prose under the code `forge_<kind>` (`transient`,
 `rate_limited`, `setup`, `forbidden`, `not_found`, `stale_head`, `refused`,
