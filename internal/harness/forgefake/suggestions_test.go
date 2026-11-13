@@ -332,7 +332,9 @@ func TestReactionsOnThreadAndConversationComments(t *testing.T) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	gh, gl := e.repoOn("github", "github.com", "acme/r"), e.repoOn("gitlab", "gitlab.com", "grp/r")
-	reacted := func(c Comment) bool { return len(c.Reactions) == 1 && c.Reactions[0].Name == "eyes" && c.Reactions[0].User == "octo" }
+	reacted := func(c Comment) bool {
+		return len(c.Reactions) == 1 && c.Reactions[0].Name == "eyes" && c.Reactions[0].User == "octo"
+	}
 	switch {
 	case !reacted(gh.pull(1).Threads[0].Comments[1]) || len(gh.pull(1).Threads[0].Comments[0].Reactions) != 0:
 		t.Fatalf("GitHub thread comments = %+v", gh.pull(1).Threads[0].Comments)

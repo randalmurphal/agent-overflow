@@ -391,7 +391,7 @@ func readGitHubFileAt(ctx context.Context, client *forgeapi.Client, repo, path, 
 // gitBlobID is the SHA-1 object id Git gives content as a blob.
 func gitBlobID(content []byte) string {
 	h := sha1.New()
-	fmt.Fprintf(h, "blob %d\x00", len(content))
+	h.Write([]byte("blob " + strconv.Itoa(len(content)) + "\x00"))
 	h.Write(content)
 	return hex.EncodeToString(h.Sum(nil))
 }

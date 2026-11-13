@@ -146,7 +146,7 @@ var githubFileModes = map[string]struct {
 // gitBlobID is the SHA-1 object id Git gives content as a blob.
 func gitBlobID(content string) string {
 	h := sha1.New()
-	fmt.Fprintf(h, "blob %d\x00", len(content))
+	h.Write([]byte("blob " + strconv.Itoa(len(content)) + "\x00"))
 	h.Write([]byte(content))
 	return hex.EncodeToString(h.Sum(nil))
 }
