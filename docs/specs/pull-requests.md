@@ -209,14 +209,24 @@ with All commits picked, on both surfaces and both forges:
   the last one.
 - One "Comment…" field at the end of the Conversation feed posts a
   comment on the PR itself, now; it shows in the feed even after the feed
-  froze.
+  froze. The answer names the created comment (`PRActionResult.commentId`,
+  as `ReviewComment.id` reads it), and only that comment joins the frozen
+  feed; one the answer does not name stays behind "N new".
 
 A write posted now (`PostPRLineComment`, `ReplyToPRThread`,
 `PostPRComment`, `EditPRComment`, `DeletePRComment`) answers
 `PRActionResult`; its editor stays pending until the pane applies the
 frame at the answer's seq, the backend restarts or the pump fails, and
 closes at once on seq 0. A failure keeps the text and shows the forge's
-sentence on the editor. Posting now is withheld, with the reason as the
+sentence on the editor. Back and the pane's close are not blocked while a
+write is pending, and the write outlives its pane: one the forge refuses
+after the pane's review state was disposed says so in a toast naming the
+comment's place and the sentence, and its text and sentence are kept in
+memory for that PR (`stores/failedCommentWrites.ts`, at most 10, oldest
+dropped). The PR's next review state shows them in the editor when the
+same line, thread reply, comment edit or Comment field opens, and frees
+them when that editor sends, cancels or empties its text. One accepted
+after its pane went changes nothing. Posting now is withheld, with the reason as the
 control's hover text, under the merge actions' gates and when
 `git:operate` is not granted. Open editors' text lives in the review
 state, so it survives its row unmounting, and find skips an open edit.

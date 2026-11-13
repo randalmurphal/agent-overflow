@@ -293,7 +293,7 @@ how an edit or delete picks the issue comment mutation.
 | Comment action | GitHub requests |
 |---|---|
 | `PostLineComment` | 1 REST `POST repos/O/R/pulls/N/comments` (`commit_id` the caller's head, `path`, `line`/`side` with `start_line`/`start_side` for a range, or `subject_type: file`) |
-| `PostPRComment` | 1 REST `POST repos/O/R/issues/N/comments` |
+| `PostPRComment` | 1 REST `POST repos/O/R/issues/N/comments` (answers the comment's `node_id`) |
 | `ReplyToThread` | 1 REST `POST repos/O/R/pulls/N/comments/ROOT/replies` under the thread's first comment; a 404 is `*ReplyThreadGoneError` |
 | `EditComment`, `DeleteComment` | 1 `CommentOwner(id)` (`node { __typename, pullRequest { number, repository { nameWithOwner } } }`: a node id is global, so a comment that is not of the target's kind on the named PR is refused as `*CommentNotOnPRError`, kind `not_found`, before any write), then 1 `UpdateReviewComment`/`UpdateIssueComment(id, body)` or `DeleteReviewComment`/`DeleteIssueComment(id)` |
 | `SubmitReview` | 1 REST `POST .../reviews` with the line and range comments, then 1 `POST .../comments` per file comment and 1 `.../replies` per held reply, in order; a COMMENT review with no body and no line comments is skipped when follow-ups exist. A follow-up's failure after anything posted is a `*PartialSubmitError` naming the file (`FailedPath`) or the thread (`FailedThreadID`) |
@@ -344,7 +344,7 @@ is its decimal id and its URL the merge request's page at `#note_<id>`.
 | Comment action | GitLab requests |
 |---|---|
 | `PostLineComment` | 1 merge request read, then the diffs read below, then 1 `POST .../discussions` with `{body, position}` against its `diff_refs`; a head other than the caller's is `*HeadMovedError` (kind `stale_head`) before the post |
-| `PostPRComment` | 1 `POST .../notes` |
+| `PostPRComment` | 1 `POST .../notes` (answers the note's `id`) |
 | `ReplyToThread` | 1 `POST .../discussions/D/notes`; a 404 is `*ReplyThreadGoneError` |
 | `EditComment`, `DeleteComment` | 1 `PUT` (`{body}`) or `DELETE .../discussions/D/notes/N` |
 | `SubmitReview` | The diffs read below when a comment is positioned, 1 `POST .../draft_notes` per comment, then `bulk_publish`. With held replies, 1 discussions read before (a discussion that is gone fails the submit with `*ReplyThreadGoneError` before any draft; each reply's draft carries `in_reply_to_discussion_id` and `resolve_discussion` set to its discussion's state, since publishing a reply without it reopens a resolved discussion) and 1 after the publish (GitLab drops a reply whose discussion went in between and answers success, so a reply that is not a new note of its discussion is a `*PartialSubmitError` naming its thread, `UnpostedReplies` its ordinal). A 400 on a reply's draft is the discussion gone when `GET .../discussions/D` answers 404. The publish posts every draft at once, so the result counts every file comment posted whatever becomes of the replies and the approval, and each draft is sent but the replies that check could not find. An approval that fails after that check failed or found a reply missing is reported beside it (`PartialSubmitError.ApproveErr`), not in its place |

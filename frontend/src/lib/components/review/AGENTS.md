@@ -134,7 +134,10 @@ PR stores; components own presentation and interaction.
   them render `ReviewCommentEditorShell`, and a sent comment's header
   actions are one `ReviewCommentActions` taking a list of actions. Closing a reply (Cancel,
   Escape, Back) keeps its text for the next open; only a sent reply
-  clears it. A reload of the same subject keeps every open editor. A new
+  clears it. A write posted now that fails after its review state was
+  disposed is kept for the PR's next review state
+  (`stores/failedCommentWrites.ts`), which adopts it when that editor
+  opens. A reload of the same subject keeps every open editor. A new
   comment's editor stays on its line only by exact identity
   (`utils/editorPlacement.ts`); otherwise it is detached: in place in
   its file after a suggested row, with "Use this line" and "Move", and
