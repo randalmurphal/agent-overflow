@@ -1,0 +1,521 @@
+package git
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"agent-overflow/internal/forgeapi"
+)
+
+// Managing a PR: its title and description, reviewers, assignees and
+// labels, closing, reopening and converting it to a draft, re-requesting
+// a review and clearing a review that requested changes (GitHub dismisses
+// it, GitLab bypasses it). The read side rides the detail read
+// (PRDetail.Manage); the writes are ForgeManager, each confirmed by the
+// PR pump's next poll as the merge actions are. See
+// docs/architecture/forge-transport.md, "Managing a PR".
+
+// Reviewer states, the vocabulary of ReviewVerdict.State and the
+// Conversation feed.
+const (
+	ReviewerApproved         = "APPROVED"
+	ReviewerChangesRequested = "CHANGES_REQUESTED"
+	ReviewerCommented        = "COMMENTED"
+	ReviewerPending          = "PENDING"
+)
+
+// PRManage is what the review pane's Details section shows and which
+// management controls it offers, read with the detail.
+type PRManage struct {
+	Reviewers []PRReviewer `json:"reviewers"`
+	Assignees []PRPerson   `json:"assignees"`
+	Labels    []PRLabel    `json:"labels"`
+	Can       PRManageCan  `json:"can"`
+}
+
+// PRPerson is a user, or on GitHub a team (Team, Login its
+// "org/slug"). ID is GitLab's numeric user id, which its reviewer and
+// assignee writes address users by; empty on GitHub, which addresses
+// them by login.
+type PRPerson struct {
+	Login string `json:"login"`
+	Name  string `json:"name,omitempty"`
+	ID    string `json:"id,omitempty"`
+	Team  bool   `json:"team,omitempty"`
+}
+
+// PRReviewer is one reviewer and where their review stands: State is
+// ReviewerApproved, ReviewerChangesRequested, ReviewerCommented or
+// ReviewerPending (asked and not reviewed since). Stale is a GitHub
+// review on a commit older than the head.
+type PRReviewer struct {
+	PRPerson
+	State string `json:"state"`
+	Stale bool   `json:"stale,omitempty"`
+}
+
+// PRLabel is one label. ID is GitHub's label node id (its label writes
+// address labels by it); empty on GitLab, whose writes name labels.
+// Color is "#rrggbb", empty when the forge gave none.
+type PRLabel struct {
+	ID    string `json:"id,omitempty"`
+	Name  string `json:"name"`
+	Color string `json:"color,omitempty"`
+}
+
+// PRManageCan is what the forge says the viewer may do, one flag per
+// control; a false flag hides the control. Each comes from the forge's
+// own answer (GitHub viewerCan* and viewerPermission, GitLab
+// userPermissions and user.can_merge) and applies to the PR's current
+// state (Close only while open, Reopen only while closed, ConvertToDraft
+// only on an open PR that is not a draft). Rerequest also needs the
+// server's re-review mutation, Bypass GitLab's override (both read from
+// its schema). ReviewerTeams is whether reviewer search can offer teams:
+// GitHub organizations only.
+type PRManageCan struct {
+	EditTitle       bool `json:"editTitle"`
+	EditDescription bool `json:"editDescription"`
+	Reviewers       bool `json:"reviewers"`
+	Assignees       bool `json:"assignees"`
+	Labels          bool `json:"labels"`
+	Close           bool `json:"close"`
+	Reopen          bool `json:"reopen"`
+	ConvertToDraft  bool `json:"convertToDraft"`
+	Rerequest       bool `json:"rerequest"`
+	Dismiss         bool `json:"dismiss"`
+	Bypass          bool `json:"bypass"`
+	ReviewerTeams   bool `json:"reviewerTeams"`
+}
+
+// ChangeRequest is one review that requested changes and blocks the
+// merge, on a BlockerChangesRequested row: ReviewID is the GitHub review
+// node id DismissPRReview takes.
+type ChangeRequest struct {
+	ReviewID    string `json:"reviewId"`
+	AuthorLogin string `json:"authorLogin"`
+	AuthorName  string `json:"authorName,omitempty"`
+}
+
+// PREdit is a title or description edit; nil leaves a field as it is.
+// A description edit names ExpectedDescription, the description the
+// editor opened with: the forge adapter re-reads the description and
+// refuses with ErrDescriptionChanged when it differs (line endings
+// aside), since neither forge's API takes a precondition on it.
+type PREdit struct {
+	Title               *string `json:"title,omitempty"`
+	Description         *string `json:"description,omitempty"`
+	ExpectedDescription *string `json:"expectedDescription,omitempty"`
+}
+
+// ErrDescriptionChanged refuses a description edit whose
+// ExpectedDescription is no longer the PR's.
+var ErrDescriptionChanged = &ForgeActionError{Kind: ForgeErrorRefused, Message: "The description changed since you opened it. Copy your text, reload the description and edit again."}
+
+// Validate checks the edit's shape.
+func (e PREdit) Validate() error {
+	switch {
+	case e.Title == nil && e.Description == nil:
+		return errors.New("the edit changes nothing")
+	case e.Title != nil && strings.TrimSpace(*e.Title) == "":
+		return errors.New("the title cannot be empty")
+	case e.Title != nil && strings.ContainsAny(*e.Title, "\r\n"):
+		return errors.New("the title is one line")
+	case e.Description != nil && e.ExpectedDescription == nil:
+		return errors.New("a description edit names the description it replaces")
+	case e.Description == nil && e.ExpectedDescription != nil:
+		return errors.New("the expected description belongs to a description edit")
+	}
+	return nil
+}
+
+// sameDescription compares two descriptions as the forges store them:
+// GitHub answers a body edited in the browser with CRLF line endings.
+func sameDescription(a, b string) bool {
+	norm := func(s string) string { return strings.TrimRight(strings.ReplaceAll(s, "\r\n", "\n"), "\n") }
+	return norm(a) == norm(b)
+}
+
+// PRPeopleChange adds and removes reviewers or assignees in one write
+// per row. A GitLab user carries its ID; a GitHub team (reviewers only)
+// is a PRPerson with Team.
+type PRPeopleChange struct {
+	Add    []PRPerson `json:"add"`
+	Remove []PRPerson `json:"remove"`
+}
+
+// prPeopleMax bounds one change, as the forges bound reviewers and
+// assignees.
+const prPeopleMax = 100
+
+// Validate checks the change for a forge: something to do, at most
+// prPeopleMax people, each a login, a GitLab user with its numeric id,
+// no team outside GitHub reviewers, and no one both added and removed.
+func (c PRPeopleChange) Validate(forge string, reviewers bool) error {
+	if len(c.Add)+len(c.Remove) == 0 {
+		return errors.New("the change adds and removes no one")
+	}
+	if len(c.Add)+len(c.Remove) > prPeopleMax {
+		return fmt.Errorf("a change names at most %d people", prPeopleMax)
+	}
+	seen := map[string]bool{}
+	for _, person := range append(append([]PRPerson{}, c.Add...), c.Remove...) {
+		if err := validPerson(forge, person, reviewers); err != nil {
+			return err
+		}
+		key := strings.ToLower(person.Login)
+		if seen[key] {
+			return fmt.Errorf("%s is named twice", person.Login)
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+func validPerson(forge string, person PRPerson, reviewers bool) error {
+	login := strings.TrimSpace(person.Login)
+	if login == "" || login != person.Login || strings.ContainsAny(login, " \t\r\n,") {
+		return fmt.Errorf("%q is not a login", person.Login)
+	}
+	if person.Team && (forge != "github" || !reviewers || strings.Count(login, "/") != 1) {
+		return fmt.Errorf("%s is not a GitHub team reviewer", login)
+	}
+	if forge == "gitlab" {
+		if _, err := gitlabUserID(person.ID); err != nil {
+			return fmt.Errorf("%s: %w", login, err)
+		}
+	}
+	return nil
+}
+
+// gitlabUserID parses a GitLab numeric user id.
+func gitlabUserID(id string) (int64, error) {
+	n, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("user id %q is not a GitLab user id", id)
+	}
+	return n, nil
+}
+
+// PRLabelChange adds and removes labels in one write per row: by ID on
+// GitHub, by Name on GitLab.
+type PRLabelChange struct {
+	Add    []PRLabel `json:"add"`
+	Remove []PRLabel `json:"remove"`
+}
+
+// Validate checks the change for a forge.
+func (c PRLabelChange) Validate(forge string) error {
+	if len(c.Add)+len(c.Remove) == 0 {
+		return errors.New("the change adds and removes no label")
+	}
+	if len(c.Add)+len(c.Remove) > prPeopleMax {
+		return fmt.Errorf("a change names at most %d labels", prPeopleMax)
+	}
+	seen := map[string]bool{}
+	for _, label := range append(append([]PRLabel{}, c.Add...), c.Remove...) {
+		key := label.Name
+		if forge == "github" {
+			key = label.ID
+		}
+		switch {
+		case strings.TrimSpace(key) == "":
+			return errors.New("a label is named by its id (GitHub) or name (GitLab)")
+		case forge == "gitlab" && strings.Contains(label.Name, ","):
+			return fmt.Errorf("label %q holds a comma, which GitLab's label lists cannot carry", label.Name)
+		case seen[key]:
+			return fmt.Errorf("label %s is named twice", firstNonEmpty(label.Name, key))
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+// PRStateChange values: what SetPRState does.
+const (
+	PRStateClose   = "close"
+	PRStateReopen  = "reopen"
+	PRStateToDraft = "draft"
+)
+
+// ValidatePRStateChange checks a SetPRState argument.
+func ValidatePRStateChange(state string) error {
+	switch state {
+	case PRStateClose, PRStateReopen, PRStateToDraft:
+		return nil
+	}
+	return fmt.Errorf("unsupported PR state change %q", state)
+}
+
+// Candidate search kinds.
+const (
+	CandidateReviewers = "reviewers"
+	CandidateAssignees = "assignees"
+	CandidateLabels    = "labels"
+)
+
+// candidatePageSize is the results one search answers; past it More is
+// set and the picker asks the user to type to narrow.
+const candidatePageSize = 20
+
+// candidateQueryMax bounds a search string.
+const candidateQueryMax = 100
+
+// PRCandidates is one picker search: the first candidatePageSize people
+// (users, and GitHub teams for reviewers when the login can read them)
+// or labels matching the query, and More when the forge has more.
+type PRCandidates struct {
+	People []PRPerson `json:"people"`
+	Labels []PRLabel  `json:"labels"`
+	More   bool       `json:"more"`
+}
+
+// ValidateCandidateSearch checks a search's kind and query.
+func ValidateCandidateSearch(kind, query string) error {
+	switch kind {
+	case CandidateReviewers, CandidateAssignees, CandidateLabels:
+	default:
+		return fmt.Errorf("unsupported search %q", kind)
+	}
+	if len(query) > candidateQueryMax || strings.ContainsAny(query, "\r\n") {
+		return fmt.Errorf("a search is one line of at most %d bytes", candidateQueryMax)
+	}
+	return nil
+}
+
+// MergeMessage is a merge commit's message: its title (the first line)
+// and body.
+type MergeMessage struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+// String is the whole message, as GitLab takes it.
+func (m MergeMessage) String() string {
+	if strings.TrimSpace(m.Body) == "" {
+		return m.Title
+	}
+	return m.Title + "\n\n" + m.Body
+}
+
+// splitMergeMessage splits a whole message into its first line and the
+// rest.
+func splitMergeMessage(message string) MergeMessage {
+	message = strings.ReplaceAll(message, "\r\n", "\n")
+	title, body, _ := strings.Cut(message, "\n")
+	return MergeMessage{Title: strings.TrimSpace(title), Body: strings.Trim(body, "\n")}
+}
+
+// methodMakesCommit is whether a merge method writes a commit whose
+// message can be edited: a rebase (GitLab's fast-forward too) does not.
+func methodMakesCommit(method string) bool {
+	return method == MergeMethodMerge || method == MergeMethodSquash
+}
+
+// ValidateMergeMessageMethod checks a default-message read's method.
+func ValidateMergeMessageMethod(method string) error {
+	if !methodMakesCommit(method) {
+		return fmt.Errorf("the %s method writes no commit message", method)
+	}
+	return nil
+}
+
+// UnconfirmedWriteError is a management change the forge may have
+// applied, in part or whole: its write failed in a way
+// forgeapi.WriteNotApplied cannot rule out (a reset or timeout after
+// sending, a 5xx, a body cut short), or (Partial) an earlier write of
+// the same change took effect and a later one failed. A caller does not
+// send it again; it refreshes and lets the forge's answer show what
+// happened.
+type UnconfirmedWriteError struct {
+	Err     error
+	Partial bool
+}
+
+func (e *UnconfirmedWriteError) Error() string {
+	if e.Partial {
+		return fmt.Sprintf("the forge applied part of the change: %v", e.Err)
+	}
+	return fmt.Sprintf("the forge did not confirm the change: %v", e.Err)
+}
+
+func (e *UnconfirmedWriteError) Unwrap() error { return e.Err }
+
+// writeOutcome is the error of one management write as its caller
+// classifies it: nil, as it is when the forge did not apply it, else
+// unconfirmed.
+func writeOutcome(err error) error {
+	if err == nil || forgeapi.WriteNotApplied(err) {
+		return err
+	}
+	return &UnconfirmedWriteError{Err: err}
+}
+
+// ForgeManager is the management half of Forge. Every write takes an
+// interactive context and is checked inside the adapter against the PR
+// it names: an id the caller passes (a review to dismiss, a label to
+// remove) must belong to that PR.
+type ForgeManager interface {
+	// EditPR changes the title and/or the description (see PREdit).
+	EditPR(ctx context.Context, ref PRReference, edit PREdit) error
+	// SetPRPeople adds and removes reviewers (reviewers) or assignees.
+	SetPRPeople(ctx context.Context, ref PRReference, reviewers bool, change PRPeopleChange) error
+	// SetPRLabels adds and removes labels.
+	SetPRLabels(ctx context.Context, ref PRReference, change PRLabelChange) error
+	// SetPRState closes, reopens or converts the PR to a draft.
+	SetPRState(ctx context.Context, ref PRReference, state string) error
+	// RerequestReview asks reviewer for a new review.
+	RerequestReview(ctx context.Context, ref PRReference, reviewer PRPerson) error
+	// DismissReview dismisses a review that requested changes (GitHub;
+	// GitLab answers ErrUnsupportedForge).
+	DismissReview(ctx context.Context, ref PRReference, reviewID, message string) error
+	// BypassRequestedChanges overrides the requested changes blocking the
+	// merge (GitLab; GitHub answers ErrUnsupportedForge).
+	BypassRequestedChanges(ctx context.Context, ref PRReference) error
+	// SearchCandidates is one picker search (see PRCandidates).
+	SearchCandidates(ctx context.Context, ref PRReference, kind, query string) (PRCandidates, error)
+	// DefaultMergeMessage is the forge's default commit message of a
+	// merge with method (merge or squash).
+	DefaultMergeMessage(ctx context.Context, ref PRReference, method string) (MergeMessage, error)
+}
+
+func (nullForge) EditPR(context.Context, PRReference, PREdit) error { return ErrUnsupportedForge }
+func (nullForge) SetPRPeople(context.Context, PRReference, bool, PRPeopleChange) error {
+	return ErrUnsupportedForge
+}
+func (nullForge) SetPRLabels(context.Context, PRReference, PRLabelChange) error {
+	return ErrUnsupportedForge
+}
+func (nullForge) SetPRState(context.Context, PRReference, string) error { return ErrUnsupportedForge }
+func (nullForge) RerequestReview(context.Context, PRReference, PRPerson) error {
+	return ErrUnsupportedForge
+}
+func (nullForge) DismissReview(context.Context, PRReference, string, string) error {
+	return ErrUnsupportedForge
+}
+func (nullForge) BypassRequestedChanges(context.Context, PRReference) error {
+	return ErrUnsupportedForge
+}
+func (nullForge) SearchCandidates(context.Context, PRReference, string, string) (PRCandidates, error) {
+	return PRCandidates{}, ErrUnsupportedForge
+}
+func (nullForge) DefaultMergeMessage(context.Context, PRReference, string) (MergeMessage, error) {
+	return MergeMessage{}, ErrUnsupportedForge
+}
+
+// EditPR validates and dispatches a title or description edit.
+func (c *Core) EditPR(ctx context.Context, ref PRReference, edit PREdit) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if err := edit.Validate(); err != nil {
+		return err
+	}
+	return c.ForgeByID(ref.Forge).EditPR(forgeWrite(ctx), ref, edit)
+}
+
+// SetPRPeople validates and dispatches a reviewer or assignee change.
+func (c *Core) SetPRPeople(ctx context.Context, ref PRReference, reviewers bool, change PRPeopleChange) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if err := change.Validate(ref.Forge, reviewers); err != nil {
+		return err
+	}
+	return c.ForgeByID(ref.Forge).SetPRPeople(forgeWrite(ctx), ref, reviewers, change)
+}
+
+// SetPRLabels validates and dispatches a label change.
+func (c *Core) SetPRLabels(ctx context.Context, ref PRReference, change PRLabelChange) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if err := change.Validate(ref.Forge); err != nil {
+		return err
+	}
+	return c.ForgeByID(ref.Forge).SetPRLabels(forgeWrite(ctx), ref, change)
+}
+
+// SetPRState validates and dispatches a close, reopen or convert to
+// draft.
+func (c *Core) SetPRState(ctx context.Context, ref PRReference, state string) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if err := ValidatePRStateChange(state); err != nil {
+		return err
+	}
+	return c.ForgeByID(ref.Forge).SetPRState(forgeWrite(ctx), ref, state)
+}
+
+// RerequestPRReview validates and dispatches a re-request.
+func (c *Core) RerequestPRReview(ctx context.Context, ref PRReference, reviewer PRPerson) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if err := validPerson(ref.Forge, reviewer, true); err != nil {
+		return err
+	}
+	return c.ForgeByID(ref.Forge).RerequestReview(forgeWrite(ctx), ref, reviewer)
+}
+
+// DismissPRReview validates and dispatches a dismissal: GitHub requires
+// a message.
+func (c *Core) DismissPRReview(ctx context.Context, ref PRReference, reviewID, message string) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(reviewID) == "" {
+		return errors.New("a dismissal names the review")
+	}
+	if strings.TrimSpace(message) == "" {
+		return errors.New("a dismissal needs a reason")
+	}
+	return c.ForgeByID(ref.Forge).DismissReview(forgeWrite(ctx), ref, reviewID, strings.TrimSpace(message))
+}
+
+// BypassPRRequestedChanges dispatches a bypass.
+func (c *Core) BypassPRRequestedChanges(ctx context.Context, ref PRReference) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	return c.ForgeByID(ref.Forge).BypassRequestedChanges(forgeWrite(ctx), ref)
+}
+
+// SearchPRCandidates validates and dispatches one picker search. It is
+// a read on the caller's context.
+func (c *Core) SearchPRCandidates(ctx context.Context, ref PRReference, kind, query string) (PRCandidates, error) {
+	if err := ref.Validate(); err != nil {
+		return PRCandidates{}, err
+	}
+	if err := ValidateCandidateSearch(kind, query); err != nil {
+		return PRCandidates{}, err
+	}
+	return c.ForgeByID(ref.Forge).SearchCandidates(ctx, ref, kind, strings.TrimSpace(query))
+}
+
+// PRMergeMessage reads the forge's default commit message for method.
+func (c *Core) PRMergeMessage(ctx context.Context, ref PRReference, method string) (MergeMessage, error) {
+	if err := ref.Validate(); err != nil {
+		return MergeMessage{}, err
+	}
+	if err := ValidateMergeMessageMethod(method); err != nil {
+		return MergeMessage{}, err
+	}
+	return c.ForgeByID(ref.Forge).DefaultMergeMessage(ctx, ref, method)
+}
+
+// normalizeColor spells a forge's label color as "#rrggbb": GitHub
+// answers it without the hash.
+func normalizeColor(color string) string {
+	color = strings.TrimSpace(color)
+	if color == "" {
+		return ""
+	}
+	if !strings.HasPrefix(color, "#") {
+		color = "#" + color
+	}
+	return strings.ToLower(color)
+}

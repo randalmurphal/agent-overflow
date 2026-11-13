@@ -64,6 +64,19 @@ const (
 	ActionReview    ForgeAction = "review"
 	ActionReply     ForgeAction = "reply on"
 	ActionResolve   ForgeAction = "resolve a thread on"
+	// The management actions (forge_manage.go).
+	ActionEdit      ForgeAction = "edit"
+	ActionReviewers ForgeAction = "change the reviewers of"
+	ActionAssignees ForgeAction = "change the assignees of"
+	ActionLabels    ForgeAction = "change the labels of"
+	ActionClose     ForgeAction = "close"
+	ActionReopen    ForgeAction = "reopen"
+	ActionToDraft   ForgeAction = "convert to draft"
+	ActionRerequest ForgeAction = "re-request a review on"
+	ActionDismiss   ForgeAction = "dismiss a review on"
+	ActionBypass    ForgeAction = "bypass the requested changes on"
+	ActionSearch    ForgeAction = "search"
+	ActionMergeText ForgeAction = "read the default commit message of"
 )
 
 // ExplainForgeError turns err, from a forge call about ref, into a
@@ -100,6 +113,14 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	}
 	wrap := func(kind, message string) error {
 		return &ForgeActionError{Kind: kind, Message: message, Err: err}
+	}
+	if unconfirmed, ok := errors.AsType[*UnconfirmedWriteError](err); ok {
+		if unconfirmed.Partial {
+			var cause *ForgeActionError
+			errors.As(explainForgeError(ref, name, action, unconfirmed.Err), &cause)
+			return wrap(cause.Kind, fmt.Sprintf("%s applied part of the change to %s, then: %s The pane shows what %s did.", labels.name, name, cause.Message, labels.name))
+		}
+		return wrap(ForgeErrorTransient, fmt.Sprintf("%s did not confirm the request to %s %s, so it may have been applied. The pane shows what %s did.", labels.name, action, name, labels.name))
 	}
 	var setup *forgeapi.SetupError
 	var limited *forgeapi.RateLimitedError

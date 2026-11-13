@@ -348,6 +348,9 @@ func TestGitLabReadPREvents(t *testing.T) {
 		{"id":"s3","notes":[{"id":104,"body":"enabled an automatic merge when all merge checks for abc1234 pass","system":true,"created_at":"2026-01-01T00:00:04.000Z","author":{"username":"lead","name":"Lead"}}]}
 	]`
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if reply, ok := gitlabManageExtras(call); ok {
+			return reply
+		}
 		switch call.Path {
 		case mr:
 			return forgeAPIAnswer{Body: gitlabMergeMR(t, map[string]any{
@@ -390,18 +393,18 @@ func TestGitLabReadPREvents(t *testing.T) {
 	if d.Readiness.State != MergeStateMerged || d.MergedAt != "2026-01-01T00:00:05.000Z" || d.MergedBy != "lead" || d.ClosedAt != "" || d.Merge.AutoMerge != nil {
 		t.Fatalf("merged detail = %+v", d)
 	}
-	if n := len(calls.all()); n != 5 {
-		t.Fatalf("requests = %q, want the MR, one discussions page, the approvals, the project and the viewer", gitlabPaths(calls))
+	if n := len(calls.all()); n != 7 {
+		t.Fatalf("requests = %q, want the MR, one discussions page, the state events, the approvals, the project, the viewer and PRManage", gitlabPaths(calls))
 	}
 
 	// A closed merge request's close comes from closed_at, its id from the
 	// time so a later close is a new event.
-	events := gitlabEvents(decodeGitLabMR(t, map[string]any{"state": "closed", "closed_at": "2026-02-01T00:00:00.000Z", "closed_by": map[string]any{"username": "x", "name": "X"}}), nil)
+	events := gitlabEvents(decodeGitLabMR(t, map[string]any{"state": "closed", "closed_at": "2026-02-01T00:00:00.000Z", "closed_by": map[string]any{"username": "x", "name": "X"}}), nil, nil)
 	if len(events) != 1 || events[0].Kind != EventClosed || events[0].ID != "closed:2026-02-01T00:00:00.000Z" || events[0].ActorLogin != "x" {
 		t.Fatalf("closed events = %+v", events)
 	}
 	// A legacy "merged" note stands for the merge; none is added.
-	legacy := gitlabEvents(decodeGitLabMR(t, map[string]any{"state": "merged", "merged_at": "2026-01-01T00:00:05.000Z"}), []gitlabNoteRaw{{ID: 9, Body: "merged", System: true, CreatedAt: "2026-01-01T00:00:05.000Z"}})
+	legacy := gitlabEvents(decodeGitLabMR(t, map[string]any{"state": "merged", "merged_at": "2026-01-01T00:00:05.000Z"}), []gitlabNoteRaw{{ID: 9, Body: "merged", System: true, CreatedAt: "2026-01-01T00:00:05.000Z"}}, nil)
 	if len(legacy) != 1 || legacy[0].ID != "9" {
 		t.Fatalf("legacy merged events = %+v", legacy)
 	}
@@ -433,6 +436,9 @@ func TestGitLabProjectSettingsCache(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if reply, ok := gitlabManageExtras(call); ok {
+			return reply
+		}
 		switch call.Path {
 		case mr:
 			return forgeAPIAnswer{Body: gitlabMergeMR(t, nil)}
@@ -497,6 +503,9 @@ func TestGitLabViewerIsAuthor(t *testing.T) {
 		}
 	}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if reply, ok := gitlabManageExtras(call); ok {
+			return reply
+		}
 		switch call.Path {
 		case "user":
 			return forgeAPIAnswer{Body: `{"id":5,"username":"dev","name":"Dev"}`}
@@ -545,6 +554,9 @@ func TestGitLabViewerReadFailureLeavesTheViewerUnknown(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if reply, ok := gitlabManageExtras(call); ok {
+			return reply
+		}
 		switch call.Path {
 		case "user":
 			return forgeAPIAnswer{Status: http.StatusInternalServerError, Body: `{"message":"500 Internal Server Error"}`}
@@ -609,6 +621,10 @@ func TestGitLabCachesFollowTheLogin(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/graphql" {
+			_, _ = io.WriteString(w, gitlabManageEmpty)
+			return
+		}
 		switch call.Path {
 		case "user":
 			_, _ = io.WriteString(w, `{"username":"`+logins[token]+`"}`)

@@ -112,6 +112,15 @@ func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 		"squash":                      req.Method == MergeMethodSquash,
 		"should_remove_source_branch": req.DeleteBranch,
 	}
+	if m := req.CommitMessage; m != nil {
+		// GitLab takes the whole message; the squash commit's is its own
+		// field.
+		key := "merge_commit_message"
+		if req.Method == MergeMethodSquash {
+			key = "squash_commit_message"
+		}
+		body[key] = m.String()
+	}
 	if req.AutoMerge {
 		body["auto_merge"] = true
 		body["merge_when_pipeline_succeeds"] = true

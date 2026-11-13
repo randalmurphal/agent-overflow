@@ -522,13 +522,19 @@ func gitlabAutoMerge(mr gitlabMRRaw, methods []string, events []ReviewEvent, aut
 	return out
 }
 
-// gitlabEvents maps the system notes to forge events, in GitLab's order,
-// and adds the merge and the close the merge request itself reports:
-// GitLab records state changes as resource state events, not notes, so
-// only a merge request from before that change has "merged" or "closed"
-// notes. Reopening leaves no trace in either read and is not reported.
-func gitlabEvents(mr gitlabMRRaw, notes []gitlabNoteRaw) []ReviewEvent {
-	var out []ReviewEvent
+// gitlabEvents maps the system notes and the resource state events (the
+// closes, reopens and merges GitLab records as these, not as notes) to
+// forge events in time order. Without state events (a read that did not
+// ask for events) it adds the merge and the close the merge request
+// itself reports.
+func gitlabEvents(mr gitlabMRRaw, notes []gitlabNoteRaw, states []gitlabStateEventRaw) []ReviewEvent {
+	out := gitlabStateEvents(states)
+	added := len(out) > 0
+	for i := range out {
+		if out[i].Kind == EventMerged {
+			out[i].Ref = mr.MergeCommitSHA
+		}
+	}
 	for _, note := range notes {
 		kind, ref, text, ok := gitlabNoteEvent(note.Body)
 		if !ok {
@@ -547,7 +553,6 @@ func gitlabEvents(mr gitlabMRRaw, notes []gitlabNoteRaw) []ReviewEvent {
 	has := func(kind string) bool {
 		return slices.ContainsFunc(out, func(e ReviewEvent) bool { return e.Kind == kind })
 	}
-	added := false
 	switch NormalizePRState(mr.State) {
 	case "merged":
 		if mr.MergedAt != "" && !has(EventMerged) {

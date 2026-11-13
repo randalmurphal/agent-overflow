@@ -41,6 +41,10 @@ type gitlabForge struct {
 	// pipelineTags remembers which listed pipelines ran on a tag
 	// (ci_gitlab.go).
 	pipelineTags gitlabPipelineTags
+	// manageOverride is whether a host's mergeRequestUpdate takes
+	// overrideRequestedChanges, from its last Details read
+	// (gitlab_manage.go).
+	manageOverride gitlabCache[bool]
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }
@@ -256,6 +260,7 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	}
 	var out PRRead
 	var notes []gitlabNoteRaw
+	var states []gitlabStateEventRaw
 	var threads []ReviewThread
 	if want.Threads || want.Events {
 		var system []gitlabNoteRaw
@@ -268,9 +273,14 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 			out.Threads = threads
 		}
 	}
+	if want.Events {
+		if states, err = readGitLabStateEvents(ctx, client, ref); err != nil {
+			return PRRead{}, err
+		}
+	}
 	// The detail's armed auto-merge takes its time and wording from the
 	// latest auto-merge event when the same read has the notes.
-	events := gitlabEvents(mr, notes)
+	events := gitlabEvents(mr, notes, states)
 	if want.Events {
 		out.Events = events
 	}
@@ -283,9 +293,14 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		if err != nil {
 			return PRRead{}, err
 		}
+		manage, err := f.readManage(ctx, client, ref, mr)
+		if err != nil {
+			return PRRead{}, err
+		}
 		viewer := f.viewerLogin(ctx, client, ref.Host)
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
 		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, viewer)
+		manage.apply(&out.Detail)
 	}
 	if want.CI {
 		if out.CI, err = f.readGitLabPipeline(ctx, client, ref.Repository(), mr.HeadPipeline); err != nil {
@@ -343,7 +358,11 @@ type gitlabMRRaw struct {
 	ForceRemoveSourceBranch     *bool           `json:"force_remove_source_branch"`
 	BlockingDiscussionsResolved bool            `json:"blocking_discussions_resolved"`
 	MergeCommitSHA              string          `json:"merge_commit_sha"`
-	User                        struct {
+	// Reviewers and Assignees are the sets a reviewer or assignee change
+	// replaces (gitlab_manage.go).
+	Reviewers []gitlabUserRaw `json:"reviewers"`
+	Assignees []gitlabUserRaw `json:"assignees"`
+	User      struct {
 		CanMerge bool `json:"can_merge"`
 	} `json:"user"`
 }

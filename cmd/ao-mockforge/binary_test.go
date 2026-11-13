@@ -481,7 +481,9 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 
 	// One pump tick reads the merge request once and derives every part
 	// from it: approvals for the detail, discussions for the threads and
-	// the head pipeline's jobs for CI.
+	// the head pipeline's jobs for CI. The management read (an earlier
+	// read found the override, so it selects the mergeability checks)
+	// is the detail's one extra request.
 	before := len(r.engine.Invocations(0).Invocations)
 	read, err := r.core.ReadPR(t.Context(), ref, gitops.PRReadParts{Detail: true, Threads: true, CI: true}, nil, nil)
 	if err != nil {
@@ -497,7 +499,7 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		}
 		routes[inv.Route]++
 	}
-	if want := map[string]int{"glab api merge request": 1, "glab api approvals": 1, "glab api discussions": 1, "glab graphql PipelineJobs": 1}; !maps.Equal(routes, want) {
+	if want := map[string]int{"glab api merge request": 1, "glab api approvals": 1, "glab api discussions": 1, "glab graphql PipelineJobs": 1, "glab graphql PRManageChecks": 1}; !maps.Equal(routes, want) {
 		t.Fatalf("ReadPR requests = %v, want %v", routes, want)
 	}
 

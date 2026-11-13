@@ -94,6 +94,9 @@ type Forge interface {
 	// The CI actions: retry, cancel, run a manual job, artifacts
 	// (ci_actions.go).
 	ForgeCIActor
+	// The management actions: title, description, reviewers, assignees,
+	// labels, state, reviews (forge_manage.go).
+	ForgeManager
 }
 
 // PRReadParts names the parts of a PR one ReadPR decodes. Events are the
@@ -180,6 +183,9 @@ type PRDetail struct {
 	MergedAt  string         `json:"mergedAt,omitempty"`
 	MergedBy  string         `json:"mergedBy,omitempty"`
 	ClosedAt  string         `json:"closedAt,omitempty"`
+	// Manage is the Details section and the management capabilities
+	// (forge_manage.go).
+	Manage PRManage `json:"manage"`
 }
 
 type PRDiffRefs struct {

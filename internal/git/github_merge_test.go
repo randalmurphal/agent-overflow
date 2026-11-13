@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -184,7 +185,7 @@ func TestGitHubReadyListsSettledRows(t *testing.T) {
 		{Kind: BlockerChecks, Text: "Checks passed"},
 		{Kind: BlockerConflicts, Text: "No conflicts with main"},
 	}
-	if !slices.Equal(r.Settled, want) {
+	if !reflect.DeepEqual(r.Settled, want) {
 		t.Fatalf("settled = %+v, want %+v", r.Settled, want)
 	}
 }
@@ -205,7 +206,7 @@ func TestGitHubBlockedExpansion(t *testing.T) {
 			"baseRef": map[string]any{"refUpdateRule": map[string]any{"requiredApprovingReviewCount": two, "requiredStatusCheckContexts": []string{}, "requiresCodeOwnerReviews": false, "requiresConversationResolution": false}, "rules": map[string]any{"nodes": []any{}}},
 		})).Readiness
 		want := []MergeBlocker{{Kind: BlockerApprovals, Text: "Needs 1 more approval", Detail: "Ann approved · 2 required"}}
-		if r.State != MergeStateBlocked || !slices.Equal(r.Blockers, want) {
+		if r.State != MergeStateBlocked || !reflect.DeepEqual(r.Blockers, want) {
 			t.Fatalf("readiness = %+v, want %+v (a reader without push access does not count)", r, want)
 		}
 	})
@@ -223,7 +224,7 @@ func TestGitHubBlockedExpansion(t *testing.T) {
 	t.Run("required count unreadable", func(t *testing.T) {
 		t.Parallel()
 		r := readGitHubDetail(t, githubMergeRepo(nil), githubMergePull(map[string]any{"mergeStateStatus": "BLOCKED", "reviewDecision": "REVIEW_REQUIRED"})).Readiness
-		if !slices.Equal(r.Blockers, []MergeBlocker{{Kind: BlockerApprovals, Text: "Needs approval"}}) {
+		if !reflect.DeepEqual(r.Blockers, []MergeBlocker{{Kind: BlockerApprovals, Text: "Needs approval"}}) {
 			t.Fatalf("blockers = %+v", r.Blockers)
 		}
 	})
@@ -233,7 +234,8 @@ func TestGitHubBlockedExpansion(t *testing.T) {
 			"mergeStateStatus": "BLOCKED", "reviewDecision": "CHANGES_REQUESTED",
 			"latestOpinionatedReviews": map[string]any{"nodes": []any{githubOpinion("PRR_1", "bob", "Bob", "CHANGES_REQUESTED", true, false)}},
 		})).Readiness
-		if !slices.Equal(r.Blockers, []MergeBlocker{{Kind: BlockerChangesRequested, Text: "Changes requested", Detail: "by Bob"}}) {
+		if !reflect.DeepEqual(r.Blockers, []MergeBlocker{{Kind: BlockerChangesRequested, Text: "Changes requested", Detail: "by Bob",
+			ChangeRequests: []ChangeRequest{{ReviewID: "PRR_1", AuthorLogin: "bob", AuthorName: "Bob"}}}}) {
 			t.Fatalf("blockers = %+v", r.Blockers)
 		}
 	})
@@ -252,7 +254,7 @@ func TestGitHubBlockedExpansion(t *testing.T) {
 				"rules": map[string]any{"nodes": []any{map[string]any{"type": "REQUIRED_STATUS_CHECKS", "parameters": map[string]any{"__typename": "RequiredStatusChecksParameters", "requiredStatusChecks": []any{map[string]any{"context": "e2e"}, map[string]any{"context": "test"}}}}}}},
 		})).Readiness
 		want := []MergeBlocker{{Kind: BlockerChecks, Text: "1 required check failed, 3 pending", Detail: "build, test, deploy, e2e", URL: "https://github.com/o/r/runs/build"}}
-		if r.State != MergeStateBlocked || !slices.Equal(r.Blockers, want) {
+		if r.State != MergeStateBlocked || !reflect.DeepEqual(r.Blockers, want) {
 			t.Fatalf("readiness = %+v, want %+v", r, want)
 		}
 	})
@@ -272,7 +274,7 @@ func TestGitHubBlockedExpansion(t *testing.T) {
 			"mergeStateStatus": "BLOCKED", "threadStates": states,
 			"baseRef": githubRules(map[string]any{"type": "REQUIRED_REVIEW_THREAD_RESOLUTION", "parameters": nil}),
 		})).Readiness
-		if !slices.Equal(r.Blockers, []MergeBlocker{{Kind: BlockerThreads, Text: "2 unresolved conversations"}}) {
+		if !reflect.DeepEqual(r.Blockers, []MergeBlocker{{Kind: BlockerThreads, Text: "2 unresolved conversations"}}) {
 			t.Fatalf("blockers = %+v", r.Blockers)
 		}
 		// Not required: unresolved threads are no condition at all.
@@ -313,7 +315,7 @@ func TestGitHubBlockedExpansion(t *testing.T) {
 			"latestOpinionatedReviews": map[string]any{"nodes": []any{githubOpinion("PRR_1", "ann", "Ann", "APPROVED", true, false)}},
 			"commits":                  githubRollup(githubRun("build", "COMPLETED", "SUCCESS", true)),
 		})).Readiness
-		if !slices.Equal(r.Blockers, []MergeBlocker{{Kind: BlockerRules, Text: "Merging is blocked by the rules on main"}}) || len(r.Settled) != 3 {
+		if !reflect.DeepEqual(r.Blockers, []MergeBlocker{{Kind: BlockerRules, Text: "Merging is blocked by the rules on main"}}) || len(r.Settled) != 3 {
 			t.Fatalf("readiness = %+v", r)
 		}
 	})
@@ -352,7 +354,7 @@ func TestGitHubThreadStatesPage(t *testing.T) {
 	if ops := calls.ops(); fmt.Sprint(ops) != "[PRTick PRThreadStatesPage]" {
 		t.Fatalf("requests = %v", ops)
 	}
-	if !slices.Equal(got.Detail.Readiness.Blockers, []MergeBlocker{{Kind: BlockerThreads, Text: "1 unresolved conversation"}}) {
+	if !reflect.DeepEqual(got.Detail.Readiness.Blockers, []MergeBlocker{{Kind: BlockerThreads, Text: "1 unresolved conversation"}}) {
 		t.Fatalf("blockers = %+v", got.Detail.Readiness.Blockers)
 	}
 

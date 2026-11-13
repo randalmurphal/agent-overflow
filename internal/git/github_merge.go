@@ -41,6 +41,14 @@ const githubEnableAutoMergeMutation = `mutation EnableAutoMerge($pullRequestID: 
   enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestID, mergeMethod: $method, expectedHeadOid: $expectedHeadOid}) { pullRequest { autoMergeRequest { enabledAt } } }
 }`
 
+const githubMergePRMessageMutation = `mutation MergePRMessage($pullRequestID: ID!, $method: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!, $commitHeadline: String!, $commitBody: String!) {
+  mergePullRequest(input: {pullRequestId: $pullRequestID, mergeMethod: $method, expectedHeadOid: $expectedHeadOid, commitHeadline: $commitHeadline, commitBody: $commitBody}) { pullRequest { merged mergeCommit { oid } } }
+}`
+
+const githubEnableAutoMergeMessageMutation = `mutation EnableAutoMergeMessage($pullRequestID: ID!, $method: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!, $commitHeadline: String!, $commitBody: String!) {
+  enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestID, mergeMethod: $method, expectedHeadOid: $expectedHeadOid, commitHeadline: $commitHeadline, commitBody: $commitBody}) { pullRequest { autoMergeRequest { enabledAt } } }
+}`
+
 const githubDisableAutoMergeMutation = `mutation DisableAutoMerge($pullRequestID: ID!) {
   disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestID}) { pullRequest { autoMergeRequest { enabledAt } } }
 }`
@@ -194,26 +202,11 @@ func (f *githubForge) Unapprove(ctx context.Context, ref PRReference) error {
 // viewerApprovalID is the node id of the viewer's standing approval of
 // ref.
 func viewerApprovalID(ctx context.Context, client *forgeapi.Client, ref PRReference) (string, error) {
-	vars, err := githubPullVars(ref)
+	reviews, err := githubOpinions(ctx, client, ref)
 	if err != nil {
 		return "", err
 	}
-	var raw struct {
-		Repository *struct {
-			PullRequest *struct {
-				LatestOpinionatedReviews struct {
-					Nodes []githubOpinionRaw `json:"nodes"`
-				} `json:"latestOpinionatedReviews"`
-			} `json:"pullRequest"`
-		} `json:"repository"`
-	}
-	if _, err := client.GraphQL(ctx, "ViewerApproval", githubViewerApprovalQuery, vars, &raw); err != nil {
-		return "", err
-	}
-	if raw.Repository == nil || raw.Repository.PullRequest == nil {
-		return "", fmt.Errorf("GitHub answered no pull request %s#%d on %s", ref.Project(), ref.Number, ref.Host)
-	}
-	for _, review := range raw.Repository.PullRequest.LatestOpinionatedReviews.Nodes {
+	for _, review := range reviews {
 		if review.ViewerDidAuthor && strings.EqualFold(review.State, "APPROVED") && review.ID != "" {
 			return review.ID, nil
 		}
@@ -239,6 +232,13 @@ func (f *githubForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 		return MergeOutcome{}, err
 	}
 	vars := map[string]any{"pullRequestID": target.ID, "method": githubMergeMethodEnum(req.Method), "expectedHeadOid": strings.TrimSpace(req.HeadSHA)}
+	mergeOp, mergeDoc, autoOp, autoDoc := "MergePR", githubMergePRMutation, "EnableAutoMerge", githubEnableAutoMergeMutation
+	if m := req.CommitMessage; m != nil {
+		// The edited message rides its own operations, so a merge that
+		// leaves the default sends the same request as before.
+		vars["commitHeadline"], vars["commitBody"] = m.Title, m.Body
+		mergeOp, mergeDoc, autoOp, autoDoc = "MergePRMessage", githubMergePRMessageMutation, "EnableAutoMergeMessage", githubEnableAutoMergeMessageMutation
+	}
 	if req.AutoMerge {
 		var raw struct {
 			Enable *struct {
@@ -249,7 +249,7 @@ func (f *githubForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 				} `json:"pullRequest"`
 			} `json:"enablePullRequestAutoMerge"`
 		}
-		if _, err := client.GraphQL(ctx, "EnableAutoMerge", githubEnableAutoMergeMutation, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, autoOp, autoDoc, vars, &raw); err != nil {
 			return MergeOutcome{}, err
 		}
 		if raw.Enable == nil || raw.Enable.PullRequest == nil || raw.Enable.PullRequest.AutoMergeRequest == nil {
@@ -268,7 +268,7 @@ func (f *githubForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 			} `json:"pullRequest"`
 		} `json:"mergePullRequest"`
 	}
-	if _, err := client.GraphQL(ctx, "MergePR", githubMergePRMutation, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, mergeOp, mergeDoc, vars, &raw); err != nil {
 		return MergeOutcome{}, err
 	}
 	if raw.Merge == nil || raw.Merge.PullRequest == nil {

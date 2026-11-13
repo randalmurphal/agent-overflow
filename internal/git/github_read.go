@@ -60,12 +60,13 @@ const (
 		`baseRef { refUpdateRule { requiredApprovingReviewCount requiredStatusCheckContexts requiresCodeOwnerReviews requiresConversationResolution } ` +
 		`rules(first: 100) { nodes { type parameters { __typename ` +
 		`... on PullRequestParameters { requiredApprovingReviewCount requireCodeOwnerReview requiredReviewThreadResolution allowedMergeMethods } ` +
-		`... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }`
+		`... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } } ` +
+		githubManageFields
 	// githubRepositoryMergeFields is the repository half of the detail:
 	// the merge methods and settings the Merge menu offers.
 	// viewerPermission is selected beside it on every tick, since the CI
 	// actions read it too.
-	githubRepositoryMergeFields = `mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed deleteBranchOnMerge autoMergeAllowed viewerDefaultMergeMethod`
+	githubRepositoryMergeFields = `mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed deleteBranchOnMerge autoMergeAllowed viewerDefaultMergeMethod owner { __typename }`
 	// githubTimelineItemTypes are the timeline items the Conversation feed
 	// shows as forge events (github_readiness.go maps them).
 	githubTimelineItemTypes = `PULL_REQUEST_REVIEW, REVIEW_DISMISSED_EVENT, MERGED_EVENT, CLOSED_EVENT, REOPENED_EVENT, ` +
@@ -310,6 +311,7 @@ type githubPullRaw struct {
 	Comments      githubCommentsRaw `json:"comments"`
 	TimelineItems githubTimelineRaw `json:"timelineItems"`
 	githubPullMergeRaw
+	githubPullManageRaw
 }
 
 // githubTickRaw is PRTick's data.
@@ -388,6 +390,7 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		}
 		out.Detail.Readiness = merge.readiness()
 		out.Detail.Merge = merge.options(out.Detail.Readiness)
+		out.Detail.Manage = merge.manage()
 		if pull.Merged || strings.EqualFold(pull.State, "MERGED") {
 			out.Detail.MergedAt = pull.MergedAt
 			if pull.MergedBy != nil {
