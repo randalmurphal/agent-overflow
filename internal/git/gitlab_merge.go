@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -208,46 +207,13 @@ func (f *gitlabForge) UpdateBranch(ctx context.Context, ref PRReference, _ strin
 	return err
 }
 
-// gitlabDraftPrefix is GitLab's draft title prefix (MergeRequest
-// DRAFT_REGEX): [draft], (draft) or draft:, any case, with the space
-// after it.
-var gitlabDraftPrefix = regexp.MustCompile(`(?i)^(\[draft\]|\(draft\)|draft:)+\s*`)
-
-// gitlabMaxDraftPrefixes bounds the prefixes stripped, as GitLab does.
-const gitlabMaxDraftPrefixes = 20
-
-// gitlabDraftlessTitle is title with every leading draft prefix removed,
-// as GitLab's draftless_title computes it.
-func gitlabDraftlessTitle(title string) string {
-	for range gitlabMaxDraftPrefixes {
-		next := gitlabDraftPrefix.ReplaceAllString(title, "")
-		if next == title {
-			break
-		}
-		title = next
-	}
-	return title
-}
-
-// MarkReady takes the merge request out of draft: GitLab's draft state is
-// its title prefix, so the current title is read and PUT without it. A
-// title with no prefix is already ready and sends nothing.
+// MarkReady takes the merge request out of draft with
+// mergeRequestSetDraft, which drops the title's draft prefix on the
+// server, so no title read here is written back.
 func (f *gitlabForge) MarkReady(ctx context.Context, ref PRReference) error {
 	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
 		return err
 	}
-	mr, err := readGitLabMR(ctx, client, ref)
-	if err != nil {
-		return err
-	}
-	title := gitlabDraftlessTitle(mr.Title)
-	if title == mr.Title {
-		return nil
-	}
-	if strings.TrimSpace(title) == "" {
-		return errors.New("the merge request title is only a draft prefix; give it a title on GitLab")
-	}
-	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPut, Path: gitlabMRPath(ref), Body: map[string]string{"title": title}}, nil)
-	return err
+	return gitlabSetDraft(ctx, client, ref, false)
 }

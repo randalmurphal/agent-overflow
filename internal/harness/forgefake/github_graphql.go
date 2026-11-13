@@ -68,7 +68,9 @@ var githubGraphQL = []graphQLOp{
 	{kind: "mutation", name: "ClosePR", required: []string{"pullRequestID"}, run: ghSetState("close")},
 	{kind: "mutation", name: "ReopenPR", required: []string{"pullRequestID"}, run: ghSetState("reopen")},
 	{kind: "mutation", name: "ConvertPRToDraft", required: []string{"pullRequestID"}, run: ghSetState("draft")},
-	{kind: "query", name: "SearchAssignable", required: []string{"owner", "name", "query", "withTeams"}, run: ghSearchAssignable},
+	{kind: "query", name: "SearchAssignable", required: []string{"owner", "name", "query"}, run: ghSearchAssignable},
+	{kind: "query", name: "SearchTeams", required: []string{"org", "query"}, run: ghSearchTeams},
+	{kind: "query", name: "PRAssignees", required: []string{"owner", "name", "number"}, run: ghPRAssignees},
 	{kind: "query", name: "SearchLabels", required: []string{"owner", "name", "query"}, run: ghSearchLabels},
 	{kind: "query", name: "PRMergeMessage", required: []string{"owner", "name", "number", "method"}, run: ghPRMergeMessage},
 }
@@ -427,8 +429,8 @@ func githubOpinions(p *Pull) []*Review {
 }
 
 // githubOpinionNodes answers latestOpinionatedReviews: full is the
-// detail's selection, otherwise ViewerApproval's (id state
-// viewerDidAuthor).
+// detail's selection (with each review's commit), otherwise
+// ViewerApproval's (id state viewerDidAuthor).
 func githubOpinionNodes(r *Repo, p *Pull, viewer string, full bool) []map[string]any {
 	out := []map[string]any{}
 	for _, review := range githubOpinions(p) {
@@ -436,6 +438,7 @@ func githubOpinionNodes(r *Repo, p *Pull, viewer string, full bool) []map[string
 		if full {
 			node["authorCanPushToRepository"] = githubCanPush(r, review.Author, viewer)
 			node["author"] = githubActor(review.Author, review.AuthorName)
+			node["commit"] = map[string]any{"oid": review.CommitSHA}
 		}
 		out = append(out, node)
 	}

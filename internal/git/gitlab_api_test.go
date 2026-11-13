@@ -114,8 +114,8 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := gitlabPaths(calls)
-	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 8 {
-		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, PRManage, two discussion pages and one PipelineJobs page", paths)
+	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 9 {
+		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, PRManageSchema, PRManage, two discussion pages and one PipelineJobs page", paths)
 	}
 	for _, call := range calls.all() {
 		if call.Host != testForgeHost || call.Header.Get("Private-Token") != "test-token" {
@@ -153,6 +153,8 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 			return forgeAPIAnswer{Body: `[]`}
 		case call.Op == "PipelineJobs":
 			return gitlabJobs(1, 1)
+		case call.Op == "PRManageSchema":
+			return forgeAPIAnswer{Body: gitlabSchemaBare}
 		case call.Op == "PRManage":
 			return forgeAPIAnswer{Body: gitlabManageEmpty}
 		case call.Path == mr+"/resource_state_events?per_page=100":
@@ -169,7 +171,7 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		pipeline int32
 		paths    []string
 	}{
-		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject, "GET user", "GRAPHQL PRManage"}},
+		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject, "GET user", "GRAPHQL PRManageSchema", "GRAPHQL PRManage"}},
 		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GRAPHQL PRManage"}},
 		{PRReadParts{Threads: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100"}},
 		{PRReadParts{Events: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100", "GET " + mr + "/resource_state_events?per_page=100"}},

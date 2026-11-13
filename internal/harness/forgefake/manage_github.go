@@ -15,7 +15,6 @@ import (
 // githubManageDetail is the Details selection of a pull: the viewerCan*
 // flags, the review requests, assignees and labels. Callers hold mu.
 func (e *Engine) githubManageDetail(r *Repo, p *Pull) map[string]any {
-	update := e.mayUpdate(r, p)
 	requests := []map[string]any{}
 	for _, login := range p.Reviewers {
 		reviewer := githubActor(login, "")
@@ -38,10 +37,11 @@ func (e *Engine) githubManageDetail(r *Repo, p *Pull) map[string]any {
 		assignees = append(assignees, githubActor(login, name))
 	}
 	return map[string]any{
-		"viewerCanUpdate": update,
-		"viewerCanClose":  update,
-		"viewerCanReopen": update,
+		"viewerCanUpdate": e.mayUpdate(r, p),
+		"viewerCanClose":  e.mayClose(r, p),
+		"viewerCanReopen": e.mayReopen(r, p),
 		"viewerCanLabel":  e.mayLabel(r, p),
+		"viewerCanAssign": e.mayAssign(r, p),
 		"reviewRequests":  map[string]any{"nodes": requests},
 		"assignees":       map[string]any{"nodes": assignees},
 		"labels":          map[string]any{"nodes": githubLabelNodes(r, p.Labels)},
@@ -151,8 +151,9 @@ func ghRequestedReviewers(e *Engine, c *call, m []string) response {
 
 // ghAssignees answers POST and DELETE `repos/O/R/issues/N/assignees`
 // with `{assignees}`. As GitHub does, a login that cannot be assigned
-// (not a collaborator), or any change by a viewer without triage access,
-// is silently ignored; the answer is the issue as it stands.
+// (not a collaborator), one past githubAssigneesMax, or any change by a
+// viewer who may not assign, is silently ignored; the answer is the issue
+// as it stands.
 func ghAssignees(e *Engine, c *call, m []string) response {
 	var in struct {
 		Assignees []string `json:"assignees"`
@@ -165,10 +166,10 @@ func ghAssignees(e *Engine, c *call, m []string) response {
 		return fail
 	}
 	adding := c.flag("method") == http.MethodPost
-	if e.mayTriage(r, p) {
+	if e.mayAssign(r, p) {
 		for _, login := range in.Assignees {
 			switch {
-			case adding && r.member(login) != nil && !containsFold(p.Assignees, login):
+			case adding && r.member(login) != nil && !containsFold(p.Assignees, login) && len(p.Assignees) < githubAssigneesMax:
 				p.Assignees = append(p.Assignees, login)
 			case !adding:
 				p.Assignees = removeFold(p.Assignees, login)
@@ -231,8 +232,8 @@ func ghEditPR(e *Engine, c *call, v graphQLVars) response {
 	return graphQLData(map[string]any{field: map[string]any{"pullRequest": map[string]any{"id": p.NodeID}}})
 }
 
-// ghPRLabelTarget answers the repository's and the pull's node ids, the
-// pull's labels, and each id of $ids as a node: a label (with its
+// ghPRLabelTarget answers the repository's and the pull's node ids and
+// each id of $ids as a node: a label (with its
 // repository) or null beside a NOT_FOUND error at its index.
 func ghPRLabelTarget(e *Engine, c *call, v graphQLVars) response {
 	project, number, err := v.pullVars()
@@ -244,10 +245,6 @@ func ghPRLabelTarget(e *Engine, c *call, v graphQLVars) response {
 	if !ok {
 		return fail
 	}
-	labels := []map[string]any{}
-	for _, node := range githubLabelNodes(r, p.Labels) {
-		labels = append(labels, map[string]any{"id": node["id"]})
-	}
 	nodes := make([]any, len(ids))
 	var problems []map[string]any
 	for i, id := range ids {
@@ -258,7 +255,7 @@ func ghPRLabelTarget(e *Engine, c *call, v graphQLVars) response {
 		problems = append(problems, map[string]any{"type": "NOT_FOUND", "path": []any{"nodes", i}, "message": fmt.Sprintf("Could not resolve to a node with the global id of '%s'.", id)})
 	}
 	data := map[string]any{
-		"repository": map[string]any{"id": githubRepoNodeID(r), "pullRequest": map[string]any{"id": p.NodeID, "labels": map[string]any{"nodes": labels}}},
+		"repository": map[string]any{"id": githubRepoNodeID(r), "pullRequest": map[string]any{"id": p.NodeID}},
 		"nodes":      nodes,
 	}
 	if len(problems) > 0 {
@@ -333,7 +330,8 @@ func ghSetState(state string) func(e *Engine, c *call, v graphQLVars) response {
 		if !ok {
 			return fail
 		}
-		if !e.mayUpdate(r, p) {
+		may := map[string]bool{"close": e.mayClose(r, p), "reopen": e.mayReopen(r, p), "draft": e.mayUpdate(r, p)}[state]
+		if !may {
 			return graphQLMutationError(field, "FORBIDDEN", fmt.Sprintf("%s does not have the correct permissions to execute `%s`", e.viewer, strings.ToUpper(field[:1])+field[1:]))
 		}
 		now := githubNow()
@@ -362,16 +360,13 @@ func ghSetState(state string) func(e *Engine, c *call, v graphQLVars) response {
 	}
 }
 
-// ghSearchAssignable answers the repository's members matching $query as
-// assignableUsers, and with $withTeams on an organization's repository
-// its teams; teamsRefused answers the teams as GitHub does a token
-// without read:org (null beside an error at their path).
+// ghSearchAssignable answers the repository's owner and its members
+// matching $query as assignableUsers.
 func ghSearchAssignable(e *Engine, c *call, v graphQLVars) response {
 	owner, err := v.str("owner")
 	name, err1 := v.str("name")
 	query, err2 := v.str("query")
-	withTeams, err3 := v.boolean("withTeams")
-	if err := firstErr(err, err1, err2, err3); err != nil {
+	if err := firstErr(err, err1, err2); err != nil {
 		return unhandled("SearchAssignable: %v", err)
 	}
 	r := e.repoOn("github", c.http.host, owner+"/"+name)
@@ -384,27 +379,62 @@ func ghSearchAssignable(e *Engine, c *call, v graphQLVars) response {
 			users = append(users, githubActor(m.Login, m.Name))
 		}
 	}
-	ownerNode := map[string]any{}
-	var problems []map[string]any
-	if withTeams && r.Organization {
-		if r.TeamsRefused {
-			ownerNode["teams"] = nil
-			problems = append(problems, map[string]any{"type": "INSUFFICIENT_SCOPES", "path": []any{"repository", "owner", "teams"}, "message": "Your token has not been granted the required scopes to execute this query. The 'teams' field requires one of the following scopes: ['read:org']."})
-		} else {
-			teams := []map[string]any{}
-			for _, team := range r.Teams {
-				if matches(query, team.Slug, team.Name) {
-					teams = append(teams, map[string]any{"combinedSlug": owner + "/" + team.Slug, "name": team.Name})
-				}
-			}
-			ownerNode["teams"] = githubPage(teams, 20)
+	repoOwner, _, _ := strings.Cut(r.Project, "/")
+	return graphQLData(map[string]any{"repository": map[string]any{
+		"owner":           map[string]any{"__typename": githubOwnerType(r), "login": repoOwner},
+		"assignableUsers": githubPage(users, 20),
+	}})
+}
+
+// ghSearchTeams answers an organization's teams matching $query. A
+// repository's teamsRefused answers as GitHub does a token without
+// read:org: the whole answer is an error, its data null. A login that is
+// no organization on the host is GitHub's NOT_FOUND.
+func ghSearchTeams(e *Engine, c *call, v graphQLVars) response {
+	org, err := v.str("org")
+	query, err1 := v.str("query")
+	if err := firstErr(err, err1); err != nil {
+		return unhandled("SearchTeams: %v", err)
+	}
+	for _, key := range sortedKeys(e.repos) {
+		r := e.repos[key]
+		owner, _, _ := strings.Cut(r.Project, "/")
+		if r.Forge != "github" || !strings.EqualFold(r.Host, c.http.host) || !r.Organization || !strings.EqualFold(owner, org) {
+			continue
 		}
+		if r.TeamsRefused {
+			return jsonResponse(map[string]any{"data": nil, "errors": []map[string]any{{"type": "INSUFFICIENT_SCOPES", "message": "Your token has not been granted the required scopes to execute this query. The 'teams' field requires one of the following scopes: ['read:org']."}}})
+		}
+		teams := []map[string]any{}
+		for _, team := range r.Teams {
+			if matches(query, team.Slug, team.Name) {
+				teams = append(teams, map[string]any{"combinedSlug": owner + "/" + team.Slug, "name": team.Name})
+			}
+		}
+		return graphQLData(map[string]any{"organization": map[string]any{"teams": githubPage(teams, 20)}})
 	}
-	data := map[string]any{"repository": map[string]any{"assignableUsers": githubPage(users, 20), "owner": ownerNode}}
-	if len(problems) > 0 {
-		return jsonResponse(map[string]any{"data": data, "errors": problems})
+	return graphQLNotFound(map[string]any{"organization": nil}, []string{"organization"}, fmt.Sprintf("Could not resolve to an Organization with the login of '%s'.", org))
+}
+
+// ghPRAssignees answers the pull's assignees.
+func ghPRAssignees(e *Engine, c *call, v graphQLVars) response {
+	project, number, err := v.pullVars()
+	if err != nil {
+		return unhandled("PRAssignees: %v", err)
 	}
-	return graphQLData(data)
+	r, p, fail, ok := e.ghGraphQLPull(c, project, number, map[string]any{})
+	if !ok {
+		return fail
+	}
+	nodes := []map[string]any{}
+	for _, login := range p.Assignees {
+		name := ""
+		if m := r.member(login); m != nil {
+			name = m.Name
+		}
+		nodes = append(nodes, githubActor(login, name))
+	}
+	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"assignees": map[string]any{"nodes": nodes}}}})
 }
 
 // githubPage is the first page of nodes with its hasNextPage.

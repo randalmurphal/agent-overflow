@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -206,14 +205,15 @@ func TestSettlePRActionRefreshesWhenThePRChanged(t *testing.T) {
 
 	// A management write the forge may have applied, whole or in part,
 	// polls too, and says so.
-	for i, unconfirmed := range []*gitops.UnconfirmedWriteError{
-		{Err: errors.New("connection reset")},
-		{Err: errors.New("HTTP 422: no such user"), Partial: true},
+	for i, applied := range []error{
+		&gitops.UnconfirmedWriteError{Err: errors.New("connection reset")},
+		&gitops.PartialWriteError{Done: "removed bob from the reviewers of", Next: "adding carol", Err: &gitops.UnconfirmedWriteError{Err: errors.New("EOF")}},
+		&gitops.PartialWriteError{Done: "removed bob from the reviewers of", Next: "adding carol", Err: &gitops.ForgeActionError{Kind: gitops.ForgeErrorRefused, Message: "GitHub refused."}},
 	} {
-		_, err = app.settlePRAction(context.Background(), testPR, gitops.ActionReviewers, unconfirmed)
+		_, err = app.settlePRAction(context.Background(), testPR, gitops.ActionReviewers, applied)
 		explained, ok = errors.AsType[*gitops.ForgeActionError](err)
-		if !ok || !strings.Contains(explained.Message, "The pane shows what GitHub did.") || fetches.Load() != base+3+int32(i) {
-			t.Fatalf("unconfirmed %+v = %v, fetches %d", unconfirmed, err, fetches.Load())
+		if !ok || fetches.Load() != base+3+int32(i) {
+			t.Fatalf("%v = %v, fetches %d", applied, err, fetches.Load())
 		}
 	}
 }
