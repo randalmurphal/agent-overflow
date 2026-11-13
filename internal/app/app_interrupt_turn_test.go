@@ -407,7 +407,7 @@ func TestInterruptTurnDropsIntentThatWaitedAcrossCodexRevert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer sess.Close()
+	t.Cleanup(func() { _ = sess.Close() })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "codex-stale-interrupt-token",
