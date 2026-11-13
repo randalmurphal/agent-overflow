@@ -38,6 +38,14 @@ import (
 // common directory is itself, it has no alternates, and git runs with no
 // inherited GIT_ variable. Anything else is refused and the fake keeps
 // its generated sha.
+//
+// The boundary is the path, not the origin's contents. The rules stop a
+// seeded or mistaken path from sending the write to a repository the
+// harness did not create. They do not defend against a writer inside the
+// origin root: the e2e helpers push to these origins by design, and
+// whoever can write there (hooks, local config, hard links, a directory
+// swapped between two harness calls) is the test itself, which already
+// runs with the same access.
 
 // forgeOriginRootPattern names the origin root under the data root, one
 // per harness process.
