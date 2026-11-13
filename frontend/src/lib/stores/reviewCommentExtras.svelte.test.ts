@@ -166,12 +166,12 @@ describe('a reaction chip', () => {
     const answer = deferred<{ seq: number }>();
     setBindingMock('SetPRCommentReaction', () => answer.promise);
     const { reactions } = extras.state;
-    reactions.setPickerOpen(THREAD, COMMENT, true);
-    expect(reactions.pickerOpen(THREAD, COMMENT)).toBe(true);
+    reactions.setPickerOpen('copy', THREAD, COMMENT, true);
+    expect(reactions.pickerOpen('copy', THREAD, COMMENT)).toBe(true);
     const done = reactions.toggle(THREAD, COMMENT, 'thumbsup', true);
     host.ref = REF_B;
     flushSync();
-    expect(reactions.pickerOpen(THREAD, COMMENT)).toBe(false);
+    expect(reactions.pickerOpen('copy', THREAD, COMMENT)).toBe(false);
     // Back on the first PR before the answer: it still started on a PR
     // the pane left, so it writes nothing.
     host.ref = REF;
@@ -180,6 +180,27 @@ describe('a reaction chip', () => {
     await done;
     expect(reactions.error(THREAD, COMMENT)).toBeNull();
     expect(getToasts()).toHaveLength(0);
+  });
+
+  it('keeps the popover with the copy that opened it, the pending chip shared', async () => {
+    const answer = deferred<{ seq: number }>();
+    setBindingMock('SetPRCommentReaction', () => answer.promise);
+    const { reactions } = extras.state;
+    reactions.setPickerOpen('conversation', THREAD, COMMENT, true);
+    expect(reactions.pickerOpen('conversation', THREAD, COMMENT)).toBe(true);
+    expect(reactions.pickerOpen('diff', THREAD, COMMENT)).toBe(false);
+    // Another copy's close leaves it; another copy's open takes it.
+    reactions.setPickerOpen('diff', THREAD, COMMENT, false);
+    expect(reactions.pickerOpen('conversation', THREAD, COMMENT)).toBe(true);
+    reactions.setPickerOpen('diff', THREAD, COMMENT, true);
+    expect(reactions.pickerOpen('conversation', THREAD, COMMENT)).toBe(false);
+    expect(reactions.pickerOpen('diff', THREAD, COMMENT)).toBe(true);
+    reactions.setPickerOpen('diff', THREAD, COMMENT, false);
+    expect(reactions.pickerOpen('diff', THREAD, COMMENT)).toBe(false);
+    const done = reactions.toggle(THREAD, COMMENT, 'thumbsup', true);
+    expect(reactions.pending(THREAD, COMMENT, 'thumbsup')).toBe(true);
+    answer.reject(new TransportError('forge_refused', 'No.'));
+    await done;
   });
 
   it('toasts a failure that answers after the state was disposed, with no Copy text', async () => {

@@ -93,7 +93,7 @@ describe('the Add reaction popover', () => {
     const anchor = document.body.appendChild(document.createElement('button'));
     try {
       // `anchor` is also a render option: pass the props by name.
-      render(ReviewReactionPicker, { props: { reactions, thread: THREAD, comment: COMMENT, anchor } });
+      render(ReviewReactionPicker, { props: { reactions, owner: 'copy-1', thread: THREAD, comment: COMMENT, anchor } });
       const options = await waitFor(() => {
         const found = [...document.querySelectorAll<HTMLButtonElement>('[data-testid="review-reaction-option"]')];
         expect(found).toHaveLength(8);
@@ -101,7 +101,7 @@ describe('the Add reaction popover', () => {
       });
       expect(options.map((option) => option.dataset.reaction)).toEqual([...SHARED_REACTIONS]);
       await fireEvent.click(options.find((option) => option.dataset.reaction === 'thumbsup')!);
-      expect(reactions.setPickerOpen).toHaveBeenCalledWith(THREAD, COMMENT, false);
+      expect(reactions.setPickerOpen).toHaveBeenCalledWith('copy-1', THREAD, COMMENT, false);
       expect(reactions.toggle).toHaveBeenCalledWith(THREAD, COMMENT, 'thumbsup', false);
     } finally {
       anchor.remove();
@@ -151,7 +151,7 @@ describe('a sent comment\'s hover actions', () => {
       expect(edit.getAttribute('aria-disabled') === 'true' || (edit as HTMLButtonElement).disabled).toBe(true);
       expect(edit.title).toBe('The pane is offline.');
       await fireEvent.click(rows()[0]);
-      expect(review.reactions.setPickerOpen).toHaveBeenCalledWith(THREAD, COMMENT, true);
+      expect(review.reactions.setPickerOpen).toHaveBeenCalledWith(expect.any(String), THREAD, COMMENT, true);
       expect(rows()).toHaveLength(0);
     } finally {
       setCompactLayoutForTest(false);

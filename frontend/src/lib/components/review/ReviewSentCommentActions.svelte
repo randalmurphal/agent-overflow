@@ -11,6 +11,7 @@
   import { commentWriteKey } from '../../stores/reviewCommentWrites.svelte';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
+  import { randomId } from '../../utils/randomId';
   import type { ReviewComment, ReviewThread } from '../../types/models';
 
   // A sent comment's hover actions, in order: Add reaction (every
@@ -36,7 +37,14 @@
   const reactions = $derived(review.reactions);
   const editing = $derived(writes.editBodyFor(thread, comment) !== null);
   const deleteKey = $derived(commentWriteKey.delete(thread.id, comment.id));
-  const picking = $derived(reactions.pickerOpen(thread, comment));
+  // This copy's Add reaction popover: the same comment can be mounted in
+  // the Conversation and the diff, and only the copy that opened it shows
+  // it (one popover's outside press would close the other's).
+  const owner = randomId();
+  const picking = $derived(reactions.pickerOpen(owner, thread, comment));
+  onDestroy(() => {
+    if (picking) reactions.setPickerOpen(owner, thread, comment, false);
+  });
 
   let copied = $state(false);
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
@@ -59,7 +67,7 @@
       out.push({
         id: 'react', icon: SmilePlus, label: 'Add reaction', haspopup: 'dialog', expanded: picking,
         disabled: reactions.withheld !== null, disabledLabel: reactions.withheld ?? undefined, testid: 'review-comment-react',
-        run: () => reactions.setPickerOpen(thread, comment, !picking),
+        run: () => reactions.setPickerOpen(owner, thread, comment, !picking),
       });
     }
     const url = comment.url ?? '';
@@ -79,8 +87,8 @@
 </script>
 
 {#snippet picker(anchor: (id: string) => HTMLButtonElement | undefined)}
-  {#if reactions.canAdd}
-    <ReviewReactionPicker {reactions} {thread} {comment} anchor={anchor('react')} />
+  {#if reactions.canAdd && picking}
+    <ReviewReactionPicker {reactions} {owner} {thread} {comment} anchor={anchor('react')} />
   {/if}
 {/snippet}
 

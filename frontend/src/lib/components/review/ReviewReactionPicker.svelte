@@ -11,19 +11,22 @@
   // reactions both forges take. A pick toggles the viewer's own (one the
   // viewer already gave is marked, and picking it removes it), closes
   // the popover and returns focus to its button; the chip under the body
-  // shows the forge's answer. Its open state is the review state's, so
-  // the pane's PR changing closes it.
+  // shows the forge's answer. Its open state is the review state's, under
+  // the mounted actions that opened it (`owner`), so the pane's PR
+  // changing closes it.
 
   interface Props {
     reactions: ReviewReactions;
+    /** The mounted actions that opened it. */
+    owner: string;
     thread: ReviewThread;
     comment: ReviewComment;
     anchor: HTMLButtonElement | undefined;
   }
 
-  let { reactions, thread, comment, anchor }: Props = $props();
+  let { reactions, owner, thread, comment, anchor }: Props = $props();
 
-  const open = $derived(reactions.pickerOpen(thread, comment));
+  const open = $derived(reactions.pickerOpen(owner, thread, comment));
   const mine = $derived(new Set(reactions.reactionsOf(comment).filter((each) => each.viewerReacted).map((each) => each.name)));
   let grid: HTMLDivElement | undefined = $state(undefined);
 
@@ -36,7 +39,7 @@
   });
 
   function close(reason?: PopoverCloseReason): void {
-    reactions.setPickerOpen(thread, comment, false);
+    reactions.setPickerOpen(owner, thread, comment, false);
     restorePickerFocus(reason, { triggerEl: anchor });
   }
 

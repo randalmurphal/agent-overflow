@@ -10,8 +10,11 @@ import type { CommentReaction, ReviewComment, ReviewThread } from '../types/mode
 // which toggles the viewer's own, and the Add reaction popover's eight.
 // Each chip is one operation (reviewForgeOps.svelte.ts): pending from
 // the press until the forge's answer is on screen, one at a time, its
-// failure on the comment's chip row. Which comment's popover is open
-// lives here, so the pane's PR changing closes it.
+// failure on the comment's chip row, shared by every copy of the
+// comment. Which popover is open lives here, so the pane's PR changing
+// closes it; it belongs to the mounted actions that opened it (`owner`,
+// one per mounted copy), since a thread can show in the Conversation and
+// in the diff at once and only one copy may hold the popover.
 
 export interface ReviewReactions {
   /** The backend reads and writes reactions (pr-suggestions-reactions.v1)
@@ -30,9 +33,11 @@ export interface ReviewReactions {
   error(thread: ReviewThread, comment: ReviewComment): string | null;
   /** Adds (`reacted`) or removes the viewer's reaction. */
   toggle(thread: ReviewThread, comment: ReviewComment, name: string, reacted: boolean): Promise<void>;
-  /** The comment whose Add reaction popover is open. */
-  pickerOpen(thread: ReviewThread, comment: ReviewComment): boolean;
-  setPickerOpen(thread: ReviewThread, comment: ReviewComment, open: boolean): void;
+  /** The Add reaction popover `owner` opened on the comment is open. */
+  pickerOpen(owner: string, thread: ReviewThread, comment: ReviewComment): boolean;
+  /** Opens `owner`'s popover on the comment (closing any other), or
+   * closes it if it is `owner`'s. */
+  setPickerOpen(owner: string, thread: ReviewThread, comment: ReviewComment, open: boolean): void;
 }
 
 export interface ReviewReactionsHost {
@@ -57,9 +62,11 @@ export function reactionOpKey(thread: ReviewThread, comment: ReviewComment, name
 export function createReviewReactions(host: ReviewReactionsHost): ReviewReactions {
   const available = $derived(host.capable() && host.onPR());
   const canAdd = $derived(available && host.unavailable() === null);
-  // The open popover, with the PR epoch it opened in: a PR change closes it.
+  // The open popover, its owner, and the PR epoch it opened in: a PR
+  // change closes it.
   let picker = $state<{ key: string; epoch: number } | null>(null);
   const openPicker = $derived(picker !== null && picker.epoch === host.ops.epoch ? picker.key : null);
+  const pickerKey = (owner: string, thread: ReviewThread, comment: ReviewComment) => `${owner}\u0000${commentKey(thread, comment)}`;
 
   return {
     get available() { return available; },
@@ -78,9 +85,9 @@ export function createReviewReactions(host: ReviewReactionsHost): ReviewReaction
         { subject: `Your ${reactionGlyph(name)} reaction on ${threadWhere(thread)}`, notDone: reacted ? 'was not added' : 'was not removed' },
       );
     },
-    pickerOpen: (thread, comment) => openPicker === commentKey(thread, comment),
-    setPickerOpen(thread, comment, open) {
-      const key = commentKey(thread, comment);
+    pickerOpen: (owner, thread, comment) => openPicker === pickerKey(owner, thread, comment),
+    setPickerOpen(owner, thread, comment, open) {
+      const key = pickerKey(owner, thread, comment);
       if (open) picker = { key, epoch: host.ops.epoch };
       else if (picker?.key === key) picker = null;
     },

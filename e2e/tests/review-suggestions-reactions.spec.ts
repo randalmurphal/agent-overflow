@@ -240,6 +240,47 @@ for (const forge of ['github', 'gitlab'] as const) {
   });
 }
 
+test('with a thread in the Conversation and the diff, a reaction picked from either copy is sent once and both copies follow', async ({ page }, testInfo) => {
+  test.setTimeout(150_000);
+  const routes = ROUTES.github;
+  const { harness, review } = await openPinned(page, 'github', 'react-two-copies');
+  try {
+    const conversation = await expandReviewSection(page, 'review-pr-conversation');
+    const listed = conversation.getByTestId('review-conversation-thread').filter({ hasText: 'A half reads better' });
+    const inDiff = thread(review, 'A half reads better');
+    await expect(listed).toHaveCount(1, { timeout: 30_000 });
+    await expect(inDiff).toHaveCount(1);
+    const picker = page.getByTestId('review-reaction-picker');
+
+    const pick = async (card: typeof listed, name: string) => {
+      await card.scrollIntoViewIfNeeded();
+      await card.locator('[data-first-comment]').last().hover();
+      await card.locator('[data-first-comment]').first().getByTestId('review-comment-react').click();
+      await expect(picker).toHaveCount(1);
+      await expect(picker.getByTestId('review-reaction-option')).toHaveCount(8);
+      await picker.locator(`[data-reaction="${name}"]`).click();
+      await expect(picker).toHaveCount(0);
+    };
+
+    // Open from the Conversation's copy: one write, both chips show it.
+    await pick(listed, 'rocket');
+    for (const card of [listed, inDiff]) {
+      await expect(chip(card, 'rocket')).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
+    }
+    expect(await forgeRouteCalls(harness, routes.react)).toHaveLength(1);
+    await listed.screenshot({ path: testInfo.outputPath('github-reaction-two-copies.png') });
+
+    // Open from the diff's copy: picking it again removes it, once.
+    await pick(inDiff, 'rocket');
+    for (const card of [listed, inDiff]) await expect(chip(card, 'rocket')).toHaveCount(0, { timeout: 30_000 });
+    expect(await forgeRouteCalls(harness, routes.unreact)).toHaveLength(1);
+    expect(await forgeRouteCalls(harness, routes.react)).toHaveLength(1);
+    await expectEveryForgeCallHandled(harness);
+  } finally {
+    await closeAll(page, harness);
+  }
+});
+
 test('on gitlab, a refused reactions read shows one line and the threads stay', async ({ page }, testInfo) => {
   test.setTimeout(150_000);
   await page.emulateMedia({ colorScheme: 'dark' });
