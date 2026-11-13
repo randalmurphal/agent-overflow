@@ -221,6 +221,18 @@ export function AllowPreviewPort(port: number): $CancellablePromise<number[]> {
 }
 
 /**
+ * AnswerThreadShellCommand types one line into the running command's
+ * terminal, to answer a prompt the command wrote there (sudo's or ssh's for a
+ * password). The line reaches the command only: it is not output, it is not
+ * sent to the agent, and it is not logged.
+ * 
+ * LocalOnly: this is input to an arbitrary local command.
+ */
+export function AnswerThreadShellCommand(threadID: string, answer: app$0.ShellCommandAnswer): $CancellablePromise<void> {
+    return $Call.ByID(2190095592, threadID, answer);
+}
+
+/**
  * AppendLiveDictation streams piece seq of a live recording, 16-bit PCM at
  * 24 kHz, and returns the text heard so far.
  */

@@ -21,6 +21,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1273975760: 'selected', // AgentRemoteStart
 	1365876070: 'selected', // AgentRemoteStatus
 	4007046465: 'selected', // AllowPreviewPort
+	2190095592: 'thread', // AnswerThreadShellCommand
 	2562809680: 'selected', // AppendLiveDictation
 	2157691816: 'home', // AppendUIRenderTraceBatch
 	580543372: 'selected', // ApprovePR

@@ -131,7 +131,7 @@ func startWithRead(cfg ProcessConfig, readMaster func(fd int, buf []byte) (int, 
 	if err != nil {
 		return nil, fmt.Errorf("terminal: pty spawn: %w", err)
 	}
-	master, err := pollableMaster(f)
+	master, err := procutil.PollableMaster(f)
 	var raw syscall.RawConn
 	if err == nil {
 		raw, err = master.SyscallConn()

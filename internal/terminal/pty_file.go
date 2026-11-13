@@ -16,7 +16,7 @@ type osFilePty struct {
 }
 
 // resize sets the winsize through SyscallConn rather than File.Fd, which
-// would put a pollable master back in blocking mode (pollableMaster).
+// would put a pollable master back in blocking mode (procutil.PollableMaster).
 func (o *osFilePty) resize(rows, cols uint16) error {
 	raw, err := o.SyscallConn()
 	if err != nil {

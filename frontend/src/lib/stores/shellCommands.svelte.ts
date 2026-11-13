@@ -9,12 +9,18 @@
 // GetThreadShellCommands is a full snapshot and output frames carry a per-run
 // sequence. Frames that arrive while a snapshot is in flight are buffered and
 // replayed over it (snapshotStream.ts).
+//
+// A command can prompt on its own terminal (sudo, ssh). A `terminal` frame
+// carries the whole retained text of that terminal under its own sequence,
+// and answerShellCommand types a line into it. The answer is often a
+// password: it is passed to the binding and held nowhere here.
 
 import type { ShellCommandEvent } from '../types/events';
 import { threadHasScope } from '../transport/entityScopes';
 import { randomId } from '../utils/randomId';
 import { isTransportClassError } from './transportStatus.svelte';
 import {
+  AnswerThreadShellCommand,
   GetThreadShellCommands,
   RunThreadShellCommand,
   StopThreadShellCommand,
@@ -30,6 +36,10 @@ export interface ShellRunView {
   output: string;
   /** Highest chunk sequence folded into `output`. */
   outputSeq: number;
+  /** The end of what the command wrote to its own terminal: a prompt. */
+  terminal: string;
+  /** Sequence of the terminal frame `terminal` reflects. */
+  terminalSeq: number;
   startedAt: number;
   /** Why a finished command's output did not reach the thread. */
   error: string;
@@ -107,6 +117,8 @@ export async function runShellCommand(threadId: string, command: string): Promis
     state: 'running',
     output: '',
     outputSeq: 0,
+    terminal: '',
+    terminalSeq: 0,
     startedAt: Date.now(),
     error: '',
     stopping: false,
@@ -155,6 +167,17 @@ export async function stopShellCommand(threadId: string): Promise<void> {
   }
 }
 
+/**
+ * Types `text` and a newline into the running command's terminal. Not
+ * idempotent, so it is never retried, and the text is not kept: it can be a
+ * password.
+ */
+export async function answerShellCommand(threadId: string, text: string): Promise<void> {
+  const view = views.get(threadId);
+  if (!view || view.state !== 'running') return;
+  await AnswerThreadShellCommand(threadId, { runId: view.runId, text });
+}
+
 /** Clears a failed run's notice. Local: the backend holds no failed run. */
 export function dismissShellRun(threadId: string): void {
   if (views.get(threadId)?.state === 'failed') drop(threadId);
@@ -189,6 +212,8 @@ function applySnapshot(threadId: string, runs: RunningCommands): void {
       state: 'running',
       output: tail(run.output ?? ''),
       outputSeq: run.outputSeq ?? 0,
+      terminal: run.terminal ?? '',
+      terminalSeq: run.terminalSeq ?? 0,
       startedAt: run.startedAt ?? Date.now(),
       error: '',
       stopping: previous?.runId === run.runId && previous.stopping,
@@ -246,6 +271,8 @@ function applyEvent(threadId: string, evt: ShellCommandEvent): void {
           state: 'running',
           output: '',
           outputSeq: 0,
+          terminal: '',
+          terminalSeq: 0,
           startedAt: evt.startedAt ?? Date.now(),
           error: '',
           stopping: false,
@@ -271,6 +298,19 @@ function applyEvent(threadId: string, evt: ShellCommandEvent): void {
       bump(threadId);
       return;
     }
+    case 'terminal': {
+      if (!view || view.runId !== evt.runId || view.state !== 'running') {
+        void hydrateShellRun(threadId);
+        return;
+      }
+      // Each frame is the whole text, so the newest replaces it and an
+      // older one, or one a snapshot already reflects, is dropped.
+      const seq = evt.terminalSeq ?? 0;
+      if (seq <= view.terminalSeq) return;
+      views.set(threadId, { ...view, terminal: evt.terminal ?? '', terminalSeq: seq });
+      bump(threadId);
+      return;
+    }
     case 'finished': {
       if (view && view.runId !== evt.runId) return;
       if (evt.state === 'failed') {
@@ -280,6 +320,8 @@ function applyEvent(threadId: string, evt: ShellCommandEvent): void {
           state: 'failed',
           output: '',
           outputSeq: 0,
+          terminal: '',
+          terminalSeq: 0,
           startedAt: view?.startedAt ?? 0,
           error: evt.error || 'The command could not be run.',
           stopping: false,

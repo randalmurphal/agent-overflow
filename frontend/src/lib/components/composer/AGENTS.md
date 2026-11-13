@@ -42,8 +42,11 @@ Send runs the command that was in the box when it was pressed: capture it
 before the send path's first await. A draft that
 holds a command's output (a message taken back) is a message again, so it
 is resent and never rerun. `ShellRunCard.svelte` shows the running command
-above the composer. Keyboard submit and the button share
-`deriveComposerSendState`'s `shell` input. The contract is in
+above the composer, with a field to answer a prompt the command leaves open
+on its terminal. That field's text is often a password: it goes only to
+`answerShellCommand`, never to the draft, a store, an error message or a
+log, and it is cleared before the call awaits. Keyboard submit and the
+button share `deriveComposerSendState`'s `shell` input. The contract is in
 [composer shell commands](../../../../../docs/specs/composer-shell-commands.md).
 
 ## Toolbar and background work

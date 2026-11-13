@@ -131,4 +131,152 @@ describe('<ShellRunCard>', () => {
     await fireEvent.click(getByTestId('shell-run-dismiss'));
     expect(queryByTestId('shell-run-card')).toBeNull();
   });
+
+  describe('a prompt on the command\'s terminal', () => {
+    function ask(text: string, terminalSeq = 1, threadId = 'thread-1'): void {
+      applyShellCommandEvent({ phase: 'terminal', threadId, runId: 'run-1', terminalSeq, terminal: text });
+    }
+
+    it('shows the prompt and a masked answer field while the terminal waits on an open line', async () => {
+      const { pane } = makePane();
+      const { getByTestId, queryByTestId } = render(ShellRunCard, { props: { pane } });
+      start('sudo apt update');
+      await tick();
+      expect(queryByTestId('shell-run-prompt')).toBeNull();
+      expect(queryByTestId('shell-run-answer')).toBeNull();
+
+      ask('[sudo] password for me: ');
+      await tick();
+      expect(getByTestId('shell-run-prompt').textContent).toContain('The command is asking:');
+      expect(getByTestId('shell-run-prompt').textContent).toContain('[sudo] password for me:');
+      const field = getByTestId('shell-run-answer') as HTMLInputElement;
+      expect(field.type).toBe('password');
+      expect(field.getAttribute('aria-label')).toBe("Answer the command's prompt");
+      for (const [name, value] of [
+        ['autocomplete', 'off'], ['autocapitalize', 'off'], ['autocorrect', 'off'], ['spellcheck', 'false'],
+        ['data-1p-ignore', ''], ['data-lpignore', 'true'], ['data-bwignore', ''],
+      ]) {
+        expect(field.getAttribute(name), name).toBe(value);
+      }
+
+      // Answered: the terminal ended the line and the command runs on.
+      ask('[sudo] password for me: \n', 2);
+      await tick();
+      expect(queryByTestId('shell-run-prompt')).toBeNull();
+      expect(queryByTestId('shell-run-answer')).toBeNull();
+      expect(getByTestId('shell-run-command').classList.contains('truncate')).toBe(true);
+
+      // It asks again.
+      ask('[sudo] password for me: \nSorry, try again.\n[sudo] password for me: ', 3);
+      await tick();
+      expect(getByTestId('shell-run-prompt').textContent).toContain('Sorry, try again.');
+      expect((getByTestId('shell-run-answer') as HTMLInputElement).type).toBe('password');
+    });
+
+    it('shows only the last lines of the terminal', async () => {
+      const { pane } = makePane();
+      const { getByTestId } = render(ShellRunCard, { props: { pane } });
+      start();
+      ask('first\nsecond\nthird\nfourth: ');
+      await tick();
+      const shown = getByTestId('shell-run-prompt').textContent ?? '';
+      expect(shown).not.toContain('first');
+      expect(shown).toContain('second');
+      expect(shown).toContain('fourth:');
+    });
+
+    it('wraps the command while it asks and truncates it otherwise', async () => {
+      const { pane } = makePane();
+      const { getByTestId } = render(ShellRunCard, { props: { pane } });
+      start('ssh build-host.example.com make deploy');
+      await tick();
+      expect(getByTestId('shell-run-command').classList.contains('truncate')).toBe(true);
+      ask('password: ');
+      await tick();
+      const command = getByTestId('shell-run-command');
+      expect(command.classList.contains('truncate')).toBe(false);
+      expect(command.classList.contains('whitespace-pre-wrap')).toBe(true);
+    });
+
+    it('shows no field for a failed run', async () => {
+      const { pane } = makePane();
+      const { getByTestId, queryByTestId } = render(ShellRunCard, { props: { pane } });
+      start();
+      ask('Password: ');
+      applyShellCommandEvent({ phase: 'finished', threadId: 'thread-1', runId: 'run-1', state: 'failed', error: 'boom' });
+      await tick();
+      expect(getByTestId('shell-run-card').getAttribute('data-state')).toBe('failed');
+      expect(queryByTestId('shell-run-prompt')).toBeNull();
+      expect(queryByTestId('shell-run-answer')).toBeNull();
+    });
+
+    it('sends the answer on Enter and on Send, emptying the field before the call settles', async () => {
+      const { pane } = makePane();
+      let settle!: () => void;
+      const answer = setBindingMock('AnswerThreadShellCommand', () => new Promise<void>((resolve) => { settle = resolve; }));
+      const { getByTestId } = render(ShellRunCard, { props: { pane } });
+      start();
+      ask('Password: ');
+      await tick();
+      const field = getByTestId('shell-run-answer') as HTMLInputElement;
+
+      await fireEvent.input(field, { target: { value: 'hunter2' } });
+      await fireEvent.keyDown(field, { key: 'Enter' });
+      expect(answer).toHaveBeenCalledTimes(1);
+      expect(answer).toHaveBeenCalledWith('thread-1', { runId: 'run-1', text: 'hunter2' });
+      expect(field.value).toBe('');
+      settle();
+
+      // A bare answer is "press Enter to continue".
+      await fireEvent.click(getByTestId('shell-run-answer-send'));
+      expect(answer).toHaveBeenCalledTimes(2);
+      expect(answer).toHaveBeenLastCalledWith('thread-1', { runId: 'run-1', text: '' });
+      settle();
+
+      // Other keys type; they do not send.
+      await fireEvent.keyDown(field, { key: 'a' });
+      expect(answer).toHaveBeenCalledTimes(2);
+    });
+
+    it('shows the answer on request and masks it again after it is sent', async () => {
+      const { pane } = makePane();
+      setBindingMock('AnswerThreadShellCommand', async () => undefined);
+      const { getByTestId } = render(ShellRunCard, { props: { pane } });
+      start();
+      ask('Password: ');
+      await tick();
+      const field = getByTestId('shell-run-answer') as HTMLInputElement;
+      const reveal = getByTestId('shell-run-answer-reveal');
+      expect(reveal.getAttribute('aria-pressed')).toBe('false');
+
+      await fireEvent.click(reveal);
+      expect(field.type).toBe('text');
+      expect(reveal.getAttribute('aria-pressed')).toBe('true');
+      expect(reveal.getAttribute('aria-label')).toBe('Hide the answer');
+
+      await fireEvent.input(field, { target: { value: 'yes' } });
+      await fireEvent.keyDown(field, { key: 'Enter' });
+      await tick();
+      expect(field.type).toBe('password');
+      expect(reveal.getAttribute('aria-pressed')).toBe('false');
+    });
+
+    it('reports a failed answer without the answer, and does not put it back', async () => {
+      const { pane, setGeneralError } = makePane();
+      setBindingMock('AnswerThreadShellCommand', async () => { throw new Error('shell command is not running'); });
+      const { getByTestId } = render(ShellRunCard, { props: { pane } });
+      start();
+      ask('Password: ');
+      await tick();
+      const field = getByTestId('shell-run-answer') as HTMLInputElement;
+      await fireEvent.input(field, { target: { value: 'hunter2' } });
+      await fireEvent.click(getByTestId('shell-run-answer-send'));
+      await waitFor(() => expect(setGeneralError).toHaveBeenCalledTimes(1));
+      const [message, err] = setGeneralError.mock.calls[0];
+      expect(message).toBe('Failed to send the answer: shell command is not running');
+      expect(message).not.toContain('hunter2');
+      expect(err).toBeInstanceOf(Error);
+      expect(field.value).toBe('');
+    });
+  });
 });

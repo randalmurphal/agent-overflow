@@ -9,6 +9,7 @@ import {
   shellInvocationRuns,
   shellOutcomeLabel,
   shellOutputTail,
+  shellTerminalPrompt,
   textWithoutShellInvocations,
   type ShellOutputMeta,
 } from './shellInvocation';
@@ -108,5 +109,19 @@ describe('shellOutputTail', () => {
     expect(shellOutputTail('start\n10%\r50%\r100%\ndone\n', 3)).toBe('start\n100%\ndone');
     expect(shellOutputTail('a\r\nb\r\n', 2)).toBe('a\nb');
     expect(shellOutputTail('10%\r20%\r', 1)).toBe('20%');
+  });
+});
+
+describe('shellTerminalPrompt', () => {
+  it('is the last lines of a terminal whose last line is open', () => {
+    expect(shellTerminalPrompt('[sudo] password for me: ', 3)).toBe('[sudo] password for me: ');
+    expect(shellTerminalPrompt('a\nb\nSorry, try again.\nPassword: ', 2)).toBe('Sorry, try again.\nPassword: ');
+  });
+
+  it('is empty once the terminal ends its line, and for an empty terminal', () => {
+    // The line break after an answer, typed or written by the command.
+    expect(shellTerminalPrompt('[sudo] password for me: \n', 3)).toBe('');
+    expect(shellTerminalPrompt('Continue (yes/no)? yes\n', 3)).toBe('');
+    expect(shellTerminalPrompt('', 3)).toBe('');
   });
 });

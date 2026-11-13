@@ -4,6 +4,7 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { DisconnectedError } from '../transport/wsClient';
 import {
   OUTPUT_TAIL_CHARS,
+  answerShellCommand,
   applyShellCommandEvent,
   dismissShellRun,
   getShellRun,
@@ -20,6 +21,7 @@ import {
 const GetThreadShellCommands = vi.fn();
 const RunThreadShellCommand = vi.fn();
 const StopThreadShellCommand = vi.fn();
+const AnswerThreadShellCommand = vi.fn();
 
 const THREAD = 't1';
 
@@ -29,11 +31,14 @@ function started(runId = 'run-1', command = 'make test'): ShellCommandEvent {
 function output(seq: number, chunk: string, runId = 'run-1'): ShellCommandEvent {
   return { phase: 'output', threadId: THREAD, runId, seq, chunk };
 }
+function terminal(terminalSeq: number, text: string, runId = 'run-1'): ShellCommandEvent {
+  return { phase: 'terminal', threadId: THREAD, runId, terminalSeq, terminal: text };
+}
 function finished(state: string, runId = 'run-1', error = ''): ShellCommandEvent {
   return { phase: 'finished', threadId: THREAD, runId, state, error, exitCode: 0, finishedAt: 2_000 };
 }
-function snapshot(runId: string, text: string, outputSeq: number) {
-  return [{ threadId: THREAD, runId, command: 'make test', state: 'running', output: text, outputSeq, startedAt: 1_000 }];
+function snapshot(runId: string, text: string, outputSeq: number, term?: { terminal: string; terminalSeq: number }) {
+  return [{ threadId: THREAD, runId, command: 'make test', state: 'running', output: text, outputSeq, startedAt: 1_000, ...term }];
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -47,6 +52,8 @@ beforeEach(() => {
   GetThreadShellCommands.mockReset();
   RunThreadShellCommand.mockReset();
   StopThreadShellCommand.mockReset();
+  AnswerThreadShellCommand.mockReset();
+  setBindingMock('AnswerThreadShellCommand', (...args: unknown[]) => AnswerThreadShellCommand(...args));
   setBindingMock('GetThreadShellCommands', (...args: unknown[]) => GetThreadShellCommands(...args));
   setBindingMock('RunThreadShellCommand', (...args: unknown[]) => RunThreadShellCommand(...args));
   setBindingMock('StopThreadShellCommand', (...args: unknown[]) => StopThreadShellCommand(...args));
@@ -461,5 +468,107 @@ describe('running and stopping', () => {
   it('does nothing when there is no running command to stop', async () => {
     await stopShellCommand(THREAD);
     expect(StopThreadShellCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe('terminal prompts', () => {
+  it('starts a run with an empty terminal, from its start frame or this client\'s own start', async () => {
+    applyShellCommandEvent(started());
+    expect(getShellRun(THREAD)).toMatchObject({ terminal: '', terminalSeq: 0 });
+    resetShellRunsForTest();
+    RunThreadShellCommand.mockResolvedValue({ state: 'running' });
+    await runShellCommand(THREAD, 'sudo true');
+    expect(getShellRun(THREAD)).toMatchObject({ terminal: '', terminalSeq: 0 });
+  });
+
+  it('replaces the terminal text with each newer frame and keeps it across a start frame', () => {
+    applyShellCommandEvent(started());
+    const before = shellRunRevision(THREAD);
+    applyShellCommandEvent(terminal(1, '[sudo] password for me: '));
+    expect(getShellRun(THREAD)).toMatchObject({ terminal: '[sudo] password for me: ', terminalSeq: 1 });
+    expect(shellRunRevision(THREAD)).toBeGreaterThan(before);
+    applyShellCommandEvent(terminal(2, '[sudo] password for me: \nSorry, try again.\n[sudo] password for me: '));
+    expect(getShellRun(THREAD)?.terminal).toBe('[sudo] password for me: \nSorry, try again.\n[sudo] password for me: ');
+    // Output and the terminal count separately.
+    applyShellCommandEvent(output(1, 'a\n'));
+    expect(getShellRun(THREAD)).toMatchObject({ output: 'a\n', outputSeq: 1, terminalSeq: 2 });
+    applyShellCommandEvent(started());
+    expect(getShellRun(THREAD)?.terminalSeq).toBe(2);
+  });
+
+  it('drops a terminal frame at or below the sequence it holds', () => {
+    applyShellCommandEvent(started());
+    applyShellCommandEvent(terminal(3, 'newest'));
+    const revision = shellRunRevision(THREAD);
+    applyShellCommandEvent(terminal(2, 'older'));
+    applyShellCommandEvent(terminal(3, 'same'));
+    expect(getShellRun(THREAD)).toMatchObject({ terminal: 'newest', terminalSeq: 3 });
+    expect(shellRunRevision(THREAD)).toBe(revision);
+    expect(GetThreadShellCommands).not.toHaveBeenCalled();
+  });
+
+  it('takes the terminal from the snapshot, and defaults it when absent', async () => {
+    GetThreadShellCommands.mockResolvedValue(snapshot('run-1', 'a\n', 1, { terminal: 'Password: ', terminalSeq: 4 }));
+    await hydrateShellRun(THREAD);
+    expect(getShellRun(THREAD)).toMatchObject({ terminal: 'Password: ', terminalSeq: 4 });
+    applyShellCommandEvent(terminal(4, 'stale'));
+    expect(getShellRun(THREAD)?.terminal).toBe('Password: ');
+
+    GetThreadShellCommands.mockResolvedValue(snapshot('run-1', 'a\n', 1));
+    await hydrateShellRun(THREAD);
+    expect(getShellRun(THREAD)).toMatchObject({ terminal: '', terminalSeq: 0 });
+  });
+
+  it('reads the run when a terminal frame names one this client does not hold', async () => {
+    GetThreadShellCommands.mockResolvedValue(snapshot('run-1', '', 0, { terminal: 'Password: ', terminalSeq: 1 }));
+    applyShellCommandEvent(terminal(1, 'Password: '));
+    expect(GetThreadShellCommands).toHaveBeenCalledWith(THREAD);
+    await vi.waitFor(() => expect(getShellRun(THREAD)).toMatchObject({ runId: 'run-1', terminal: 'Password: ', terminalSeq: 1 }));
+    expect(GetThreadShellCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays terminal frames buffered during a snapshot read over it', async () => {
+    const pending = deferred<ReturnType<typeof snapshot>>();
+    GetThreadShellCommands.mockReturnValue(pending.promise);
+    const hydration = hydrateShellRun(THREAD);
+    applyShellCommandEvent(terminal(1, 'Password: '));
+    applyShellCommandEvent(terminal(3, 'Password: \nSorry.\nPassword: '));
+    pending.resolve(snapshot('run-1', '', 0, { terminal: 'Password: \nSorry.', terminalSeq: 2 }));
+    await hydration;
+    expect(getShellRun(THREAD)).toMatchObject({ terminal: 'Password: \nSorry.\nPassword: ', terminalSeq: 3 });
+    expect(GetThreadShellCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not carry the terminal into a failure', () => {
+    applyShellCommandEvent(started());
+    applyShellCommandEvent(terminal(1, 'Password: '));
+    applyShellCommandEvent(finished('failed', 'run-1', 'boom'));
+    expect(getShellRun(THREAD)).toMatchObject({ state: 'failed', terminal: '', terminalSeq: 0 });
+  });
+
+  it('answers the running command once, with its run id, and keeps no copy of the answer', async () => {
+    applyShellCommandEvent(started());
+    applyShellCommandEvent(terminal(1, 'Password: '));
+    AnswerThreadShellCommand.mockResolvedValue(undefined);
+    await answerShellCommand(THREAD, 'hunter2');
+    expect(AnswerThreadShellCommand).toHaveBeenCalledTimes(1);
+    expect(AnswerThreadShellCommand).toHaveBeenCalledWith(THREAD, { runId: 'run-1', text: 'hunter2' });
+    expect(JSON.stringify(getShellRun(THREAD))).not.toContain('hunter2');
+  });
+
+  it('answers nothing without a running command', async () => {
+    await answerShellCommand(THREAD, 'hunter2');
+    applyShellCommandEvent(finished('failed', 'run-1', 'boom'));
+    await answerShellCommand(THREAD, 'hunter2');
+    expect(AnswerThreadShellCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects a failed answer without asking again', async () => {
+    applyShellCommandEvent(started());
+    AnswerThreadShellCommand.mockRejectedValue(new DisconnectedError());
+    await expect(answerShellCommand(THREAD, 'hunter2')).rejects.toBeInstanceOf(DisconnectedError);
+    await Promise.resolve();
+    expect(AnswerThreadShellCommand).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(getShellRun(THREAD))).not.toContain('hunter2');
   });
 });

@@ -181,8 +181,10 @@ export {
 
   // Composer shell commands (`!command`, and Run on a shell code block).
   // The snapshot is the reconnect companion of the shell:command stream;
-  // the output read serves a sent command's timeline row. See
+  // the output read serves a sent command's timeline row; the answer types
+  // a line into a running command's terminal and is never retried. See
   // app_shell_command.go.
+  AnswerThreadShellCommand,
   RunThreadShellCommand,
   StopThreadShellCommand,
   GetThreadShellCommands,
