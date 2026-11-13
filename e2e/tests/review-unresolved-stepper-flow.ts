@@ -16,7 +16,7 @@
 // repeat jump to the same card restarts the pulse, and under reduced
 // motion the ring holds unchanged and then clears.
 import { randomBytes } from 'node:crypto';
-import type { Locator, Page, TestInfo } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
