@@ -23,8 +23,8 @@ import (
 // WorktreeStatus describes a worktree's safety classification for the cleanup
 // UI: whether the working tree has uncommitted changes, whether the branch
 // has unpushed commits, whether an upstream is configured, how many threads
-// are currently attached to the worktree, and how many open terminals
-// removing it would close.
+// are currently attached to the worktree, how many open terminals removing it
+// would close, and whether its directory is already gone.
 type WorktreeStatus struct {
 	Path             string `json:"path"`
 	Branch           string `json:"branch"`
@@ -34,6 +34,7 @@ type WorktreeStatus struct {
 	HasUpstream      bool   `json:"hasUpstream"`
 	AttachedThreads  int    `json:"attachedThreads"`
 	Terminals        int    `json:"terminals"`
+	Missing          bool   `json:"missing"`
 }
 
 // WorktreeRemoval is what an in-app worktree removal answers its caller.
@@ -1054,6 +1055,7 @@ func (a *App) computeWorktreeStatus(project, worktreePath string) (WorktreeStatu
 		HasUpstream:      status.HasUpstream,
 		AttachedThreads:  status.AttachedThreads,
 		Terminals:        a.worktreeTerminalCount(worktreePath),
+		Missing:          status.Missing,
 	}, nil
 }
 
@@ -1108,9 +1110,9 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 		thread.WorktreePath = ""
 		thread.Branch = core.CurrentBranch(project)
 	default:
-		worktree, ok, err := a.findWorktree(project, target)
+		worktree, ok, err := a.worktreeApplication().FindPresent(project, target)
 		if err != nil {
-			return store.Thread{}, err
+			return store.Thread{}, fmt.Errorf("switch workspace: %w", err)
 		}
 		if !ok {
 			return store.Thread{}, fmt.Errorf("switch workspace: %s is not a worktree for %s", target, project)

@@ -20,6 +20,9 @@ type WorktreeStatus struct {
 	UnpushedCommits  int    `json:"unpushedCommits"`
 	HasUpstream      bool   `json:"hasUpstream"`
 	AttachedThreads  int    `json:"attachedThreads"`
+	// Missing is true when git still registers the worktree but its
+	// directory is gone. Removing it then deletes only git's registration.
+	Missing bool `json:"missing"`
 }
 
 // WorktreeListItem is the picker-facing worktree shape.
@@ -31,6 +34,14 @@ type WorktreeListItem struct {
 	// Missing is true when git still registers the worktree but its
 	// directory is gone (deleted without `git worktree remove`).
 	Missing bool `json:"missing"`
+}
+
+// DirectoryGone reports whether a registered worktree has no directory to
+// work in. A path that cannot be read counts as gone: nothing can run there
+// either.
+func DirectoryGone(path string) bool {
+	info, err := os.Stat(path)
+	return err != nil || !info.IsDir()
 }
 
 // WorkspaceActivity aggregates live work across every thread referencing one
@@ -95,6 +106,20 @@ func (s *Service) Find(project, candidate string) (gitops.Worktree, bool, error)
 		}
 	}
 	return gitops.Worktree{}, false, nil
+}
+
+// FindPresent is Find for a caller about to put a thread in the worktree. A
+// registered worktree whose directory is gone is refused: nothing can run
+// there.
+func (s *Service) FindPresent(project, candidate string) (gitops.Worktree, bool, error) {
+	worktree, ok, err := s.Find(project, candidate)
+	if err != nil || !ok {
+		return worktree, ok, err
+	}
+	if DirectoryGone(worktree.Path) {
+		return gitops.Worktree{}, false, fmt.Errorf("worktree %s is registered but its directory is missing; remove the worktree to clear it", worktree.Path)
+	}
+	return worktree, true, nil
 }
 
 // ThreadsReferencingWorkspace returns every thread whose workspace_path or
@@ -198,7 +223,10 @@ func (s *Service) Activity(workspacePath string) (WorkspaceActivity, error) {
 	return activity, nil
 }
 
-// Status computes one registered worktree's loss-of-work signals.
+// Status computes one registered worktree's loss-of-work signals. A worktree
+// whose directory is gone has no working tree to hold uncommitted changes;
+// its branch belongs to the repository, so its unpushed commits are read at
+// the project root.
 func (s *Service) Status(project, worktreePath string) (WorktreeStatus, error) {
 	worktreePath = strings.TrimSpace(worktreePath)
 	if worktreePath == "" {
@@ -211,15 +239,20 @@ func (s *Service) Status(project, worktreePath string) (WorktreeStatus, error) {
 	if !ok {
 		return WorktreeStatus{}, fmt.Errorf("%s is not a worktree for %s", worktreePath, project)
 	}
-	status := WorktreeStatus{Path: worktree.Path, Branch: worktree.Branch}
-	count, err := s.core.CountWorkingTreeChanges(worktree.Path)
-	if err != nil {
-		return WorktreeStatus{}, fmt.Errorf("status: %w", err)
+	status := WorktreeStatus{Path: worktree.Path, Branch: worktree.Branch, Missing: DirectoryGone(worktree.Path)}
+	cwd := worktree.Path
+	if status.Missing {
+		cwd = project
+	} else {
+		count, err := s.core.CountWorkingTreeChanges(cwd)
+		if err != nil {
+			return WorktreeStatus{}, fmt.Errorf("status: %w", err)
+		}
+		status.UncommittedCount = count
+		status.Dirty = count > 0
 	}
-	status.UncommittedCount = count
-	status.Dirty = count > 0
 	if status.Branch != "" {
-		unpushed, hasUpstream, err := s.core.CountUnpushedCommits(worktree.Path, status.Branch)
+		unpushed, hasUpstream, err := s.core.CountUnpushedCommits(cwd, status.Branch)
 		if err != nil {
 			return WorktreeStatus{}, fmt.Errorf("unpushed commits: %w", err)
 		}
@@ -248,9 +281,7 @@ func (s *Service) List(project string) ([]WorktreeListItem, error) {
 	items := make([]WorktreeListItem, len(worktrees))
 	itemByPath := make(map[string]int, len(items))
 	for index, worktree := range worktrees {
-		info, statErr := os.Stat(worktree.Path)
-		missing := statErr != nil || !info.IsDir()
-		items[index] = WorktreeListItem{Path: worktree.Path, Branch: worktree.Branch, Head: worktree.HEAD, Missing: missing}
+		items[index] = WorktreeListItem{Path: worktree.Path, Branch: worktree.Branch, Head: worktree.HEAD, Missing: DirectoryGone(worktree.Path)}
 		itemByPath[gitops.CanonicalPath(worktree.Path)] = index
 	}
 	for _, ref := range refs {
