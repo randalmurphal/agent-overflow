@@ -83,7 +83,7 @@ func (p threadWorkspacePort) ObserveOrigin(workspacePath string) store.ThreadOri
 }
 
 func (p threadWorkspacePort) FindWorktree(projectPath, candidate string) (string, string, bool, error) {
-	worktree, found, err := p.app.findWorktree(projectPath, candidate)
+	worktree, found, err := p.app.worktreeApplication().FindPresent(projectPath, candidate)
 	return worktree.Path, worktree.Branch, found, err
 }
 

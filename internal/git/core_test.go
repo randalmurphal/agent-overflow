@@ -549,6 +549,42 @@ func TestRemoveWorktreeLiftsLock(t *testing.T) {
 	}
 }
 
+// A worktree whose directory was deleted is still registered. Removal drops
+// the registration, locked (as Claude Code leaves the ones it enters) or not.
+func TestRemoveWorktreeDropsARegistrationWhoseDirectoryIsGone(t *testing.T) {
+	t.Parallel()
+	for _, lock := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unlocked", true: "locked"}[lock], func(t *testing.T) {
+			t.Parallel()
+			repo := initGitRepo(t)
+			core := NewCore()
+			worktreePath := filepath.Join(t.TempDir(), "gone")
+			if err := core.CreateWorktree(repo, worktreePath, "feature/gone"); err != nil {
+				t.Fatalf("CreateWorktree: %v", err)
+			}
+			if lock {
+				testutil.RunGit(t, repo, "worktree", "lock", "--", worktreePath)
+			}
+			if err := os.RemoveAll(worktreePath); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := core.RemoveWorktreeForce(repo, worktreePath, false); err != nil {
+				t.Fatalf("RemoveWorktreeForce on a missing worktree: %v", err)
+			}
+			worktrees, err := core.ListWorktrees(repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, wt := range worktrees {
+				if SameFilesystemPath(wt.Path, worktreePath) {
+					t.Fatalf("worktree still listed after removal: %+v", wt)
+				}
+			}
+		})
+	}
+}
+
 // A dirty locked worktree still needs the caller's force: lifting the lock
 // must not silently bypass git's dirty-tree guard.
 func TestRemoveWorktreeLiftsLockButKeepsDirtyGuard(t *testing.T) {

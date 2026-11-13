@@ -4,20 +4,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/platform"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
 // credentialProbeGit logs "<GIT_TERMINAL_PROMPT>|<GIT_ASKPASS>|<SSH_ASKPASS>|
-// <SSH_ASKPASS_REQUIRE>|<GCM_INTERACTIVE>|<argv>" per invocation and answers
-// just enough for the Core entry points under test to reach their network
-// command. A missing variable logs as "<unset>" so "inherited the user's
-// value" and "explicitly blanked" stay distinguishable.
+// <SSH_ASKPASS_REQUIRE>|<GCM_INTERACTIVE>|<argv>" per invocation. A missing
+// variable logs as "<unset>" so "inherited the user's value" and "explicitly
+// blanked" stay distinguishable.
 const credentialProbeGit = `#!/bin/sh
 printf '%s|%s|%s|%s|%s|%s\n' \
   "${GIT_TERMINAL_PROMPT-<unset>}" \
@@ -26,7 +27,16 @@ printf '%s|%s|%s|%s|%s|%s\n' \
   "${SSH_ASKPASS_REQUIRE-<unset>}" \
   "${GCM_INTERACTIVE-<unset>}" \
   "$*" >> "$AO_GIT_LOG"
-case "$1 $2" in
+` + probeGitAnswers
+
+// wslenvProbeGit logs "<WSLENV>|<argv>" per invocation.
+const wslenvProbeGit = `#!/bin/sh
+printf '%s|%s\n' "${WSLENV-<unset>}" "$*" >> "$AO_GIT_LOG"
+` + probeGitAnswers
+
+// probeGitAnswers answers just enough for the Core entry points under test
+// to reach their network command.
+const probeGitAnswers = `case "$1 $2" in
   "rev-parse --show-toplevel") echo "/tmp/repo" ;;
   "rev-parse --git-common-dir") echo "/tmp/repo/.git" ;;
   "symbolic-ref --quiet") echo "feature" ;;
@@ -77,7 +87,7 @@ func commandCredentialEnv(t *testing.T, logPath string) map[string]string {
 	return env
 }
 
-// blockedEnv is what nonInteractiveEnv must look like from inside the child:
+// blockedEnv is what gitenv.NonInteractive must look like from inside the child:
 // prompts off, both askpass hooks blanked, ssh and GCM told never to ask.
 const blockedEnv = "0|||never|never"
 
@@ -327,5 +337,86 @@ func TestBackgroundFetchFailsFastInsteadOfAskingRealGit(t *testing.T) {
 	}
 	if _, err := os.Stat(askpassLog); err != nil {
 		t.Fatalf("user-initiated prune never invoked the askpass helper: %v", err)
+	}
+}
+
+// TestUnattendedGitListsItsPromptPolicyInWSLENV pins the half of the
+// contract a Windows credential helper depends on: an unattended command
+// names its prompt variables in WSLENV beside whatever the user already
+// listed, and a command the user asked for leaves WSLENV as it was.
+func TestUnattendedGitListsItsPromptPolicyInWSLENV(t *testing.T) {
+	logPath := installMockGit(t, wslenvProbeGit)
+	pinUserCredentialEnv(t)
+	t.Setenv("WSLENV", "TERM:FOO/p")
+
+	core := NewCore()
+	cwd := t.TempDir()
+	if _, err := core.FetchRemotesBackground(t.Context(), cwd); err != nil {
+		t.Fatalf("FetchRemotesBackground: %v", err)
+	}
+	if err := core.Pull(cwd); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	wslenv := make(map[string]string)
+	for _, line := range strings.Split(readFile(t, logPath), "\n") {
+		if value, argv, ok := strings.Cut(line, "|"); ok {
+			wslenv[argv] = value
+		}
+	}
+	for argv, want := range map[string]string{
+		"fetch --quiet origin": "TERM:FOO/p:GIT_TERMINAL_PROMPT:SSH_ASKPASS_REQUIRE:GCM_INTERACTIVE",
+		"pull --ff-only":       "TERM:FOO/p",
+	} {
+		got, ok := wslenv[argv]
+		if !ok {
+			t.Fatalf("mock git never saw %q; log:\n%s", argv, readFile(t, logPath))
+		}
+		if got != want {
+			t.Errorf("`git %s` ran with WSLENV %q, want %q", argv, got, want)
+		}
+	}
+}
+
+// TestBackgroundFetchTellsAWindowsCredentialHelperNotToAsk runs real git
+// under WSL against an endpoint that demands credentials, with a credential
+// helper that is a Windows program, the shape of the usual
+// git-credential-manager.exe setup. The helper records the GCM_INTERACTIVE
+// it was started with, which is what decides whether Git Credential Manager
+// opens its sign-in window.
+func TestBackgroundFetchTellsAWindowsCredentialHelperNotToAsk(t *testing.T) {
+	if !platform.IsWSL() {
+		t.Skip("needs WSL: the helper is a Windows program")
+	}
+	if out, err := exec.Command("cmd.exe", "/d", "/c", "echo ok").Output(); err != nil || !strings.Contains(string(out), "ok") {
+		t.Skipf("WSL cannot start Windows programs here: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	helperLog := filepath.Join(t.TempDir(), "helper.log")
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("AO_HELPER_LOG", helperLog)
+	// The user's own settings: prompts allowed, and a WSLENV that does not
+	// carry the variable.
+	t.Setenv("GCM_INTERACTIVE", "auto")
+	t.Setenv("WSLENV", "TERM")
+
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "remote", "add", "origin", server.URL+"/repo.git")
+	testutil.RunGit(t, repo, "config", "--file", globalConfig, "credential.helper",
+		`!f() { cmd.exe /d /c "echo gcm=%GCM_INTERACTIVE%" >> "$AO_HELPER_LOG" 2>&1; }; f`)
+
+	if _, err := NewCore().FetchRemotesBackground(t.Context(), repo); err == nil {
+		t.Fatal("FetchRemotesBackground against a credential-requiring remote should fail")
+	}
+	if got := readFile(t, helperLog); !strings.Contains(got, "gcm=never") {
+		t.Fatalf("the Windows credential helper did not see GCM_INTERACTIVE=never; it saw:\n%s", got)
 	}
 }

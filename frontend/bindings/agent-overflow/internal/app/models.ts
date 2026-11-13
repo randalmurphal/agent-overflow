@@ -11814,8 +11814,8 @@ export class WorktreeSetupStep {
  * WorktreeStatus describes a worktree's safety classification for the cleanup
  * UI: whether the working tree has uncommitted changes, whether the branch
  * has unpushed commits, whether an upstream is configured, how many threads
- * are currently attached to the worktree, and how many open terminals
- * removing it would close.
+ * are currently attached to the worktree, how many open terminals removing it
+ * would close, and whether its directory is already gone.
  */
 export class WorktreeStatus {
     "path": string;
@@ -11826,6 +11826,7 @@ export class WorktreeStatus {
     "hasUpstream": boolean;
     "attachedThreads": number;
     "terminals": number;
+    "missing": boolean;
 
     /** Creates a new WorktreeStatus instance. */
     constructor($$source: Partial<WorktreeStatus> = {}) {
@@ -11852,6 +11853,9 @@ export class WorktreeStatus {
         }
         if (!("terminals" in $$source)) {
             this["terminals"] = 0;
+        }
+        if (!("missing" in $$source)) {
+            this["missing"] = false;
         }
 
         Object.assign(this, $$source);

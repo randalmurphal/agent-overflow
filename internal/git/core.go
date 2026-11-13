@@ -19,6 +19,7 @@ import (
 
 	"agent-overflow/internal/appimage"
 	"agent-overflow/internal/forgeapi"
+	"agent-overflow/internal/gitenv"
 	"agent-overflow/internal/procutil"
 )
 
@@ -67,45 +68,6 @@ const (
 // Core.runLocaleC for which invocations need it and why it is not applied
 // to every subprocess.
 var localeCEnv = []string{"LC_ALL=C", "LANG=C"}
-
-// nonInteractiveEnv closes every channel a child git can use to ask a human
-// for credentials. It is the DEFAULT for every subprocess this package
-// spawns; the handful of user-initiated network commands opt back out via
-// commandSpec.allowCredentialPrompt.
-//
-// Without it, a repository whose remote needs credentials turns the
-// background cadence (gitwatch refresh, the branch picker's opportunistic
-// `git fetch --all`) into a Git Credential Manager / ssh-askpass GUI dialog
-// the user never asked for, or — with no askpass helper installed — a hang
-// until our own 45s timeout fires.
-//
-// All five entries are load-bearing, verified against git 2.43.0 with a
-// local HTTP endpoint answering 401:
-//
-//   - GIT_TERMINAL_PROMPT=0 alone is NOT enough. git's prompt chain tries
-//     an askpass helper FIRST and only falls through to the terminal when
-//     none is configured, so a user with GIT_ASKPASS (or core.askpass, or
-//     SSH_ASKPASS) set still gets the dialog.
-//   - GIT_ASKPASS= (empty, not unset) is what disables that chain. git
-//     reads GIT_ASKPASS → core.askpass → SSH_ASKPASS in order and stops at
-//     the first one that is *set*; an empty value therefore both fails the
-//     `*askpass` non-empty test and shadows the two fallbacks. Unsetting it
-//     instead would let core.askpass or SSH_ASKPASS take over.
-//   - SSH_ASKPASS= / SSH_ASKPASS_REQUIRE=never cover the ssh:// transport,
-//     where the prompt comes from ssh rather than from git.
-//   - GCM_INTERACTIVE=never stops Git Credential Manager from opening its
-//     own window before it ever reaches git's prompt chain.
-//
-// The result is a fast, descriptive failure ("could not read Username for
-// ...: terminal prompts disabled") that reaches the pane as an error instead
-// of a modal dialog behind the app window.
-var nonInteractiveEnv = []string{
-	"GIT_TERMINAL_PROMPT=0",
-	"GIT_ASKPASS=",
-	"SSH_ASKPASS=",
-	"SSH_ASKPASS_REQUIRE=never",
-	"GCM_INTERACTIVE=never",
-}
 
 type commandResult struct {
 	stdout   string
@@ -789,7 +751,7 @@ type commandSpec struct {
 	// the Core's configured cap, then the package default.
 	maxBytes int64
 	// allowCredentialPrompt lets THIS command ask the user for credentials
-	// (see nonInteractiveEnv, applied to every other command).
+	// (see gitenv.NonInteractive, applied to every other command).
 	//
 	// The default is the safe one on purpose: a new background caller that
 	// forgets to think about prompting gets a fast, descriptive failure,
@@ -881,7 +843,7 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	// into the squashfs mount.
 	env := append(appimage.Scrub(os.Environ()), "GIT_OPTIONAL_LOCKS=0")
 	if !spec.allowCredentialPrompt {
-		env = append(env, nonInteractiveEnv...)
+		env = gitenv.NonInteractive(env)
 	}
 	cmd.Env = append(append(env, spec.extraEnv...), target.env...)
 	if spec.cwd != "" {

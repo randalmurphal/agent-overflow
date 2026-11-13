@@ -3,13 +3,13 @@ package app
 import (
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitroot"
+	"agent-overflow/internal/worktreeapp"
 	"agent-overflow/internal/worktreewatch"
 )
 
@@ -122,7 +122,7 @@ func (a *App) reconcileProjectWorktrees(projectPath string, removed []string) {
 	}
 	live := make(map[string]struct{}, len(registered))
 	for _, path := range registered {
-		if info, err := os.Stat(path); err == nil && info.IsDir() {
+		if !worktreeapp.DirectoryGone(path) {
 			live[gitops.CanonicalPath(path)] = struct{}{}
 		}
 	}

@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  disambiguatedProjectLabels,
-  formatProjectLabel,
+  disambiguatedPathLabels,
+  formatPathLabel,
   pathBasename,
 } from './pathDisplay';
 
-describe('disambiguatedProjectLabels', () => {
+describe('disambiguatedPathLabels', () => {
   it('leaves unique names bare', () => {
-    const labels = disambiguatedProjectLabels([
+    const labels = disambiguatedPathLabels([
       { id: 'a', name: 'web', path: '/work/web' },
       { id: 'b', name: 'api', path: '/work/api' },
     ]);
@@ -16,7 +16,7 @@ describe('disambiguatedProjectLabels', () => {
   });
 
   it('adds one parent segment for a simple duplicate', () => {
-    const labels = disambiguatedProjectLabels([
+    const labels = disambiguatedPathLabels([
       { id: 'a', name: 'web', path: '/work/clients/web' },
       { id: 'b', name: 'web', path: '/work/personal/web' },
     ]);
@@ -25,7 +25,7 @@ describe('disambiguatedProjectLabels', () => {
   });
 
   it('deepens the prefix only until the group is distinct', () => {
-    const labels = disambiguatedProjectLabels([
+    const labels = disambiguatedPathLabels([
       { id: 'a', name: 'web', path: '/alpha/src/web' },
       { id: 'b', name: 'web', path: '/beta/src/web' },
     ]);
@@ -40,14 +40,14 @@ describe('disambiguatedProjectLabels', () => {
     ['/app', '/work/app', '/app', '/work/app'],
     ['/work/app', 'work/app', '/work/app', 'work/app'],
   ])('preserves roots when the complete path is needed: %s', (a, b, expectedA, expectedB) => {
-    const labels = disambiguatedProjectLabels([{ id: 'a', name: 'app', path: a }, { id: 'b', name: 'app', path: b }]);
-    expect(formatProjectLabel(labels.get('a')!)).toBe(expectedA);
-    expect(formatProjectLabel(labels.get('b')!)).toBe(expectedB);
+    const labels = disambiguatedPathLabels([{ id: 'a', name: 'app', path: a }, { id: 'b', name: 'app', path: b }]);
+    expect(formatPathLabel(labels.get('a')!)).toBe(expectedA);
+    expect(formatPathLabel(labels.get('b')!)).toBe(expectedB);
   });
 
   it('keeps the real dir name in the prefix for a renamed project', () => {
     // Both display as "svc" but only b's dir is actually named svc.
-    const labels = disambiguatedProjectLabels([
+    const labels = disambiguatedPathLabels([
       { id: 'a', name: 'svc', path: '/work/backend' },
       { id: 'b', name: 'svc', path: '/work/svc' },
     ]);
@@ -56,7 +56,7 @@ describe('disambiguatedProjectLabels', () => {
   });
 
   it('handles Windows separators', () => {
-    const labels = disambiguatedProjectLabels([
+    const labels = disambiguatedPathLabels([
       { id: 'a', name: 'web', path: 'C:\\repos\\clients\\web' },
       { id: 'b', name: 'web', path: 'C:\\repos\\personal\\web' },
     ]);
@@ -65,7 +65,7 @@ describe('disambiguatedProjectLabels', () => {
   });
 
   it('disambiguates three-way groups', () => {
-    const labels = disambiguatedProjectLabels([
+    const labels = disambiguatedPathLabels([
       { id: 'a', name: 'web', path: '/x/web' },
       { id: 'b', name: 'web', path: '/y/web' },
       { id: 'c', name: 'web', path: '/z/web' },
@@ -78,7 +78,7 @@ describe('disambiguatedProjectLabels', () => {
     // Pathological: same parents, one renamed so its basename got popped
     // and the remainder equals the other's parents. Better a tied prefix
     // than a bare ambiguous name.
-    const labels = disambiguatedProjectLabels([
+    const labels = disambiguatedPathLabels([
       { id: 'a', name: 'web', path: '/work/web' },
       { id: 'b', name: 'web', path: '/work' },
     ]);
@@ -87,10 +87,10 @@ describe('disambiguatedProjectLabels', () => {
   });
 });
 
-describe('formatProjectLabel', () => {
+describe('formatPathLabel', () => {
   it('joins prefix and name with a slash', () => {
-    expect(formatProjectLabel({ prefix: 'clients', name: 'web' })).toBe('clients/web');
-    expect(formatProjectLabel({ prefix: '', name: 'web' })).toBe('web');
+    expect(formatPathLabel({ prefix: 'clients', name: 'web' })).toBe('clients/web');
+    expect(formatPathLabel({ prefix: '', name: 'web' })).toBe('web');
   });
 });
 
