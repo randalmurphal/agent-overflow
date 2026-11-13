@@ -19,8 +19,8 @@ func (e *NotSentError) Unwrap() error { return e.Err }
 // WriteNotApplied reports whether err, the error of one write (POST, PUT,
 // PATCH, DELETE), proves the forge did not apply it: the request was
 // never sent (NotSentError), or the forge answered it in full with a 4xx
-// (a *StatusError, a rate limit, a refused login, a GraphQL envelope
-// whose errors refused the mutation). Every other error
+// (a *StatusError, a rate limit, a refused login), or a GraphQL answer
+// that refused it (GraphQLError.Refused). Every other error
 // cannot say: a reset or timeout after the request was written, a body
 // cut short, a 5xx, or a success whose body did not decode.
 func WriteNotApplied(err error) bool {
@@ -41,10 +41,8 @@ func WriteNotApplied(err error) bool {
 	if _, ok := errors.AsType[*RateLimitedError](err); ok {
 		return true
 	}
-	// A GraphQL answer with errors is the whole answer: GitHub and GitLab
-	// run a mutation that errors as not run (its payload null).
-	if _, ok := errors.AsType[*GraphQLError](err); ok {
-		return true
+	if gql, ok := errors.AsType[*GraphQLError](err); ok {
+		return gql.Refused()
 	}
 	if setup, ok := errors.AsType[*SetupError](err); ok {
 		return setup.Kind == SetupUnauthenticated || setup.Kind == SetupMissing

@@ -25,7 +25,8 @@ func TestWriteNotAppliedClassifiesWhatAWritesErrorProves(t *testing.T) {
 		{"401 after a refresh", &TransientError{Err: &StatusError{Status: http.StatusUnauthorized}}, true},
 		{"rate limited", &RateLimitedError{Host: "github.com"}, true},
 		{"login refused", &SetupError{Kind: SetupUnauthenticated}, true},
-		{"GraphQL refusal", &GraphQLError{Problems: []GraphQLProblem{{Type: "FORBIDDEN", Message: "no"}}}, true},
+		{"GraphQL refusal beside a null field", &GraphQLError{Problems: []GraphQLProblem{{Type: "FORBIDDEN", Message: "no"}}, Data: []byte(`{"m":null}`)}, true},
+		{"GraphQL refusal of an unknown type", &GraphQLError{Problems: []GraphQLProblem{{Type: "SOMETHING", Message: "no"}}, Data: []byte(`{"m":null}`)}, false},
 		{"502", &StatusError{Status: http.StatusBadGateway}, false},
 		{"reset after sending", &TransientError{Err: errors.New("connection reset")}, false},
 		{"other", errors.New("decode response"), false},
@@ -67,5 +68,47 @@ func TestWriteNotAppliedOnTheWire(t *testing.T) {
 		if err == nil || WriteNotApplied(err) {
 			t.Fatalf("%s: err = %v; want an error that proves nothing", how, err)
 		}
+	}
+}
+
+// On the wire, a GraphQL answer with errors proves a write not applied
+// only when it carried no data or a null field, every error is a known
+// refusal, and its data decoded.
+func TestWriteNotAppliedGraphQLOnTheWire(t *testing.T) {
+	t.Parallel()
+	const gitlabDenied = "The resource that you are attempting to access does not exist or you don't have permission to perform this action"
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"GitHub refusal, null field", `{"data":{"m":null},"errors":[{"type":"FORBIDDEN","message":"no","path":["m"]}]}`, true},
+		{"GitHub refusal, null data", `{"data":null,"errors":[{"type":"UNPROCESSABLE","message":"no"}]}`, true},
+		{"validation, no data", `{"errors":[{"message":"Field 'x' doesn't exist on type 'Mutation'","extensions":{"code":"undefinedField"}}]}`, true},
+		{"GitLab permission answer", `{"data":{"m":null},"errors":[{"message":"` + gitlabDenied + `","path":["m"]}]}`, true},
+		{"partial data with errors", `{"data":{"m":{"id":"1"}},"errors":[{"type":"FORBIDDEN","message":"no"}]}`, false},
+		{"internal error, null payload", `{"data":{"m":null},"errors":[{"message":"Something went wrong while executing your query."}]}`, false},
+		{"timeout, null data", `{"data":null,"errors":[{"message":"Timeout on validation of query"}]}`, false},
+		{"refusal beside data that does not decode", `{"data":{"m":5},"errors":[{"type":"FORBIDDEN","message":"no"}]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			t.Cleanup(srv.Close)
+			var out struct {
+				M *struct {
+					ID string `json:"id"`
+				} `json:"m"`
+			}
+			_, err := isolatedService(t, srv).GitHub("github.com").GraphQL(t.Context(), "M", "mutation M { m { id } }", nil, &out)
+			if err == nil {
+				t.Fatal("no error")
+			}
+			if got := WriteNotApplied(err); got != tc.want {
+				t.Fatalf("WriteNotApplied(%v) = %v, want %v", err, got, tc.want)
+			}
+		})
 	}
 }

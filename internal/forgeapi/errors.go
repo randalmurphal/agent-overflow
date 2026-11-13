@@ -218,11 +218,55 @@ type GraphQLProblem struct {
 }
 
 // GraphQLError is a GraphQL response whose envelope carries errors. Data
-// is the envelope's data beside them, possibly partial or null; the
-// caller decides what partial data it accepts.
+// is the envelope's data beside them, possibly partial or null, and nil
+// when the envelope had no data entry; the caller decides what partial
+// data it accepts. Undecoded is a Data that did not decode into the
+// caller's value (Client.GraphQL joins the decode error beside it).
 type GraphQLError struct {
-	Problems []GraphQLProblem
-	Data     json.RawMessage
+	Problems  []GraphQLProblem
+	Data      json.RawMessage
+	Undecoded bool
+}
+
+// gitlabNoPermission is GitLab's answer to a mutation the viewer may not
+// run or on a resource it cannot see, which GitLab raises before acting.
+const gitlabNoPermission = "The resource that you are attempting to access does not exist or you don't have permission to perform this action"
+
+// githubRefusalTypes are the GitHub error types a mutation answers when it
+// refused before acting.
+var githubRefusalTypes = map[string]bool{"FORBIDDEN": true, "NOT_FOUND": true, "UNPROCESSABLE": true, "INSUFFICIENT_SCOPES": true}
+
+// Refused reports whether the answer proves its operation changed
+// nothing: its data decoded, and either the envelope had no data entry
+// (the GraphQL spec's errors raised before execution: a document or its
+// variables failed validation), or every field of its data is null and
+// every error is a known refusal (a GitHub refusal type, GitLab's
+// permission answer). Anything else, data beside the errors or an error
+// of another kind (an internal error, a timeout), cannot say.
+func (e *GraphQLError) Refused() bool {
+	if e.Undecoded || len(e.Problems) == 0 {
+		return false
+	}
+	if len(e.Data) == 0 {
+		return true
+	}
+	var fields map[string]json.RawMessage
+	if string(e.Data) != "null" {
+		if err := json.Unmarshal(e.Data, &fields); err != nil {
+			return false
+		}
+	}
+	for _, value := range fields {
+		if string(value) != "null" {
+			return false
+		}
+	}
+	for _, p := range e.Problems {
+		if !githubRefusalTypes[p.Type] && !strings.HasPrefix(p.Message, gitlabNoPermission) {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *GraphQLError) Error() string {
