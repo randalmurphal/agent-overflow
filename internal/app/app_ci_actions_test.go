@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/forgefake"
 )
@@ -318,5 +320,24 @@ func TestSaveCIArtifacts(t *testing.T) {
 	}
 	if _, err := app.SaveCIArtifacts(context.Background(), ciActionsGitLab, gitops.CIArtifactsRequest{JobID: "../x"}, "x"); err == nil {
 		t.Fatal("a job id that is not a number was accepted")
+	}
+}
+
+// An artifact past the cap is named in its sentence, and a failure after
+// some files were saved says where they are.
+func TestCIArtifactFailureSentences(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	artifact := gitops.CIArtifact{ID: "7", Name: "coverage", RunID: "400"}
+	tooLarge := fmt.Errorf("artifact coverage: %w", forgeapi.ErrBodyTooLarge)
+	var sentence *gitops.ForgeActionError
+	err := app.explainArtifactFailure(ciActionsGitHub, "pipeline 400 of acme/acts", artifact, CIArtifactsSaved{}, tooLarge)
+	if !errors.As(err, &sentence) || sentence.Kind != gitops.ForgeErrorRefused || sentence.Message != "The artifact coverage of pipeline 400 of acme/acts is larger than the 1024 MiB the app downloads. Download it from the forge." {
+		t.Fatalf("too large = %v", err)
+	}
+	saved := CIArtifactsSaved{Dir: "/data/ci-artifacts", Paths: []string{"/data/ci-artifacts/a.zip"}}
+	err = app.explainArtifactFailure(ciActionsGitHub, "pipeline 400 of acme/acts", artifact, saved, gitops.ErrCIArtifactExpired)
+	if !errors.As(err, &sentence) || sentence.Kind != gitops.ForgeErrorNotFound || sentence.Message != "Saved 1 artifacts to /data/ci-artifacts before the download stopped. The artifacts of pipeline 400 of acme/acts have expired on GitHub." {
+		t.Fatalf("after a saved file = %v", err)
 	}
 }
