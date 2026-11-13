@@ -1266,9 +1266,9 @@ export class PREdit {
 }
 
 /**
- * PRLabel is one label. ID is GitHub's label node id (its label writes
- * address labels by it); empty on GitLab, whose writes name labels.
- * Color is "#rrggbb", empty when the forge gave none.
+ * PRLabel is one label. ID is its global id (a GitHub node id, a GitLab
+ * label gid), which label writes address it by on both forges. Color is
+ * "#rrggbb", empty when the forge gave none.
  */
 export class PRLabel {
     "id"?: string;
@@ -1294,8 +1294,8 @@ export class PRLabel {
 }
 
 /**
- * PRLabelChange adds and removes labels in one write per row: by ID on
- * GitHub, by Name on GitLab.
+ * PRLabelChange removes, then adds, labels, one write per side, each
+ * label by its ID.
  */
 export class PRLabelChange {
     "add": PRLabel[];
@@ -1382,13 +1382,16 @@ export class PRListReview {
 
 /**
  * PRManage is what the review pane's Details section shows and which
- * management controls it offers, read with the detail.
+ * management controls it offers, read with the detail. Unavailable is
+ * the sentence saying the read failed: the lists are then empty and
+ * every Can flag false, and the rest of the detail stands.
  */
 export class PRManage {
     "reviewers": PRReviewer[];
     "assignees": PRPerson[];
     "labels": PRLabel[];
     "can": PRManageCan;
+    "unavailable"?: string;
 
     /** Creates a new PRManage instance. */
     constructor($$source: Partial<PRManage> = {}) {
@@ -1510,9 +1513,8 @@ export class PRManageCan {
 }
 
 /**
- * PRPeopleChange adds and removes reviewers or assignees in one write
- * per row. A GitLab user carries its ID; a GitHub team (reviewers only)
- * is a PRPerson with Team.
+ * PRPeopleChange removes, then adds, reviewers or assignees, one write
+ * per side. A GitHub team (reviewers only) is a PRPerson with Team.
  */
 export class PRPeopleChange {
     "add": PRPerson[];
@@ -1549,9 +1551,8 @@ export class PRPeopleChange {
 
 /**
  * PRPerson is a user, or on GitHub a team (Team, Login its
- * "org/slug"). ID is GitLab's numeric user id, which its reviewer and
- * assignee writes address users by; empty on GitHub, which addresses
- * them by login.
+ * "org/slug"). Both forges address people by Login; ID is GitLab's
+ * numeric user id, which its re-review mutation alone takes.
  */
 export class PRPerson {
     "login": string;
