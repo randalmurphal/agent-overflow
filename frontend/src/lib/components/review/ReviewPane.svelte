@@ -442,12 +442,12 @@
         {/if}
         {#snippet leadRowContent()}
           {#if selectedCommit}
-            <ReviewCommitCard commit={selectedCommit} ordinal={commitOrdinal(selectedAt?.newer ?? 0, review?.commits.length ?? 0)} count={review?.commits.length ?? 0} />
+            <ReviewCommitCard commit={selectedCommit} ordinal={commitOrdinal(selectedAt?.newer ?? 0, review?.commitsTotal ?? null)} total={review?.commitsTotal ?? null} />
           {:else if selectedRun}
             <ReviewRangeCard
               commits={selectedRun}
               olderIndex={selectedAt?.older ?? 0}
-              count={review?.commits.length ?? 0}
+              total={review?.commitsTotal ?? null}
               onLeave={() => { void review?.selectCommits(null, { userInitiated: true }); }}
               indexError={review?.headRange && review.prDiffIndexState === 'failed' ? review.prDiffIndexError : null}
               onRetryIndex={() => review?.retryPRDiffIndex()}

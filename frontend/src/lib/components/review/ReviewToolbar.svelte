@@ -221,6 +221,7 @@
   {#if review && (review.scope === 'branch' || review.scope === 'pr') && review.commits.length > 0}
     <ReviewCommitPicker
       commits={review.commits}
+      total={review.commitsTotal}
       selection={review.selectedCommits}
       ranges={review.scope === 'pr'}
       disabled={review.loading}

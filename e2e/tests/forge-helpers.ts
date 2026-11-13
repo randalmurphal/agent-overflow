@@ -579,7 +579,7 @@ async function commitPullHistory(workspace: string, env: GitEnv, history: PullHi
   let second = 0;
   const dated = (args: string[], author?: string) => {
     second += 1;
-    const date = `2026-01-01T00:00:${String(second).padStart(2, '0')}Z`;
+    const date = new Date(Date.UTC(2026, 0, 1) + second * 1000).toISOString().replace('.000Z', 'Z');
     const identity = author ? { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: `${author.toLowerCase().replace(/\s+/g, '-')}@example.com` } : {};
     execFileSync('git', args, { cwd: workspace, env: { ...env, ...identity, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
   };

@@ -9,16 +9,17 @@
 
   interface Props {
     commit: BranchCommit;
-    /** Its place in the picker's list, newest first. */
-    ordinal: number;
-    count: number;
+    /** Its place among the PR's commits, the first = 1, and how many
+     * there are; null when the backend could not count them. */
+    ordinal: number | null;
+    total: number | null;
   }
 
-  let { commit, ordinal, count }: Props = $props();
+  let { commit, ordinal, total }: Props = $props();
 
   const age = $derived(commit.authoredAt > 0 ? relativeTime(commit.authoredAt) : '');
   // One string, so the separators survive template whitespace handling.
-  const metaRest = $derived([age, `${ordinal} of ${count}`].filter(Boolean).map((part) => ` · ${part}`).join(''));
+  const metaRest = $derived([age, ordinal !== null && total !== null ? `${ordinal} of ${total}` : ''].filter(Boolean).map((part) => ` · ${part}`).join(''));
 </script>
 
 <div class="px-[var(--review-slab-inset)] pb-3 pt-2.5" data-testid="review-commit-card" data-sha={commit.sha}>

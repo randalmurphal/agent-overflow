@@ -85,8 +85,12 @@ export interface LoadedPatch {
   /** Edits: sections that repeat a path show as one file per path
    * (EditFileMerge). */
   mergesPaths?: boolean;
-  /** Commit selector rows for the loaded range; omitted → empty. */
+  /** Commit selector rows for the loaded range, the newest up to the
+   * backend's cap; omitted → empty. */
   commits?: BranchCommit[];
+  /** How many commits the range holds (null: uncounted); the list is
+   * complete when it equals `commits.length`. */
+  commitsTotal?: number | null;
   /** The commit the diff was actually computed for — a stale selection
    * that left the range resolves back to null (full range). */
   selectedCommitSHA?: string | null;
@@ -117,6 +121,7 @@ export interface EditDesire {
  * commit/edit lists are unchanged by picking an entry. */
 export interface ExistingLoad {
   commits: BranchCommit[];
+  commitsTotal: number | null;
   edits: EditDiffEntryView[];
   editTurnLabels: ReadonlyMap<number, string>;
   /** pr scope: the revision the commit list was computed at. */
@@ -244,17 +249,16 @@ export async function loadPatch(
       const pr = prReferenceWire(prRef);
       // The backend reads the revision from the local clone, fetching only
       // the commits the clone lacks.
-      const commits = existing
-        ? existing.commits
-        : ((await ListPRCommits(workspace, pr, revision, userInitiated))?.commits ?? []);
+      const list = existing ?? commitList(await ListPRCommits(workspace, pr, revision, userInitiated));
+      const { commits, commitsTotal } = list;
       // A run is of the list as it is now: one whose commits left it (a
       // rebase, an amend) falls back to the whole PR, and says so.
-      const { selection, lost } = resolveCommitSelection(selectedCommits, commits);
+      const { selection, lost } = resolveCommitSelection(selectedCommits, commits, commitsTotal);
       const patch = selection
         ? diff(() => OpenPRCommitDiff(workspace, pr, revision, selection.first, selection.last, ignoreWhitespace, userInitiated), true)
         : diff(() => OpenPRDiff(workspace, pr, revision, ignoreWhitespace, userInitiated), true);
       return {
-        patch, commits, selectedCommitSHA: selection?.last ?? null, selectedCommits: selection,
+        patch, commits, commitsTotal, selectedCommitSHA: selection?.last ?? null, selectedCommits: selection,
         commitSelectionLost: lost, prRevision: revision,
       };
     }
@@ -293,27 +297,34 @@ export async function loadPatch(
         : diff(() => OpenBranchBaseDiff(workspace, branch, ignoreWhitespace));
       if (existing) {
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
-        return { patch: branchDiff(commitSHA), commits: existing.commits, selectedCommitSHA: commitSHA };
+        return { patch: branchDiff(commitSHA), commits: existing.commits, commitsTotal: existing.commitsTotal, selectedCommitSHA: commitSHA };
       }
       if (selectedCommitSHA) {
         // Sequenced: the selection must be validated against the fresh
         // list before deciding which diff to fetch.
-        const commits = (await ListBranchCommits(workspace, branch))?.commits ?? [];
+        const { commits, commitsTotal } = commitList(await ListBranchCommits(workspace, branch));
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
-        return { patch: branchDiff(commitSHA), commits, selectedCommitSHA: commitSHA };
+        return { patch: branchDiff(commitSHA), commits, commitsTotal, selectedCommitSHA: commitSHA };
       }
       // The diff opens while the commit list loads.
       const patch = branchDiff(null).start();
-      let commits: BranchCommit[];
+      let list: { commits: BranchCommit[]; commitsTotal: number | null };
       try {
-        commits = (await ListBranchCommits(workspace, branch))?.commits ?? [];
+        list = commitList(await ListBranchCommits(workspace, branch));
       } catch (err) {
         patch.abandon();
         throw err;
       }
-      return { patch, commits, selectedCommitSHA: null };
+      return { patch, ...list, selectedCommitSHA: null };
     }
   }
+}
+
+// A commit list answer: the newest commits up to the backend's cap and
+// how many the range holds (null when it could not count them).
+function commitList(answer: { commits: BranchCommit[] | null; total: number | null } | null): { commits: BranchCommit[]; commitsTotal: number | null } {
+  if (!answer) return { commits: [], commitsTotal: 0 };
+  return { commits: answer.commits ?? [], commitsTotal: answer.total };
 }
 
 export async function defaultBaseBranch(workspace: WorkspaceRef): Promise<string> {

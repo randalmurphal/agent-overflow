@@ -15,9 +15,9 @@ const one = (commit: BranchCommit): CommitSelection => ({ first: commit.sha, las
 
 type View = ReturnType<typeof mount>['view'];
 
-function mount(selection: CommitSelection | null, ranges = true) {
+function mount(selection: CommitSelection | null, ranges = true, total: number | null = COMMITS.length) {
   const onSelect = vi.fn();
-  const view = render(ReviewCommitPicker, { commits: COMMITS, selection, ranges, onSelect });
+  const view = render(ReviewCommitPicker, { commits: COMMITS, total, selection, ranges, onSelect });
   return { view, onSelect };
 }
 
@@ -186,5 +186,52 @@ describe('<ReviewCommitPicker>', () => {
   it('falls back to "All commits" when the picked SHA is not in the list', () => {
     const { view } = mount(one({ ...NEWEST, sha: 'd'.repeat(40) }));
     expect(view.getByTestId('review-commit-select')).toHaveTextContent('All commits');
+  });
+
+  it('on a truncated list counts from the PR\'s first commit, keeps `From here` on the oldest listed, and says how much is listed', async () => {
+    const { view, onSelect } = mount(one(NEWEST), true, 50);
+    expect(view.getByTestId('review-commit-ordinal')).toHaveTextContent('50/50');
+    await open(view);
+    expect(view.getByTestId('review-commit-position')).toHaveTextContent('Commit 50 of 50');
+    expect(view.getByTestId('review-commit-all')).toHaveTextContent('50');
+    expect(view.getAllByTestId('review-commit-list-note').map((note) => note.textContent)).toEqual(['Only the newest 3 of 50 commits are listed.']);
+    // The listed ends are not the whole PR: a span over them stays a run.
+    await fireEvent.click(view.getAllByTestId('review-commit-option')[2], { shiftKey: true });
+    expect(onSelect).toHaveBeenLastCalledWith({ first: OLDEST.sha, last: NEWEST.sha });
+    view.unmount();
+
+    const run = mount(null, true, 50);
+    await open(run.view);
+    const fromOldest = run.view.getAllByTestId('review-commit-option')[2].querySelector('button[aria-label^="Changes from"]');
+    expect(fromOldest).not.toBeNull();
+    await fireEvent.click(fromOldest!);
+    expect(run.onSelect).toHaveBeenLastCalledWith({ first: OLDEST.sha, last: NEWEST.sha });
+    run.view.unmount();
+
+    const shown = mount({ first: OLDEST.sha, last: NEWEST.sha }, true, 50);
+    expect(shown.view.getByTestId('review-commit-ordinal')).toHaveTextContent('48–50/50');
+  });
+
+  it('with an uncounted list shows no ordinals: a commit by its hash, a run by its ends, at the same fixed width', async () => {
+    const picked = mount(one(MIDDLE), true, null);
+    const trigger = picked.view.getByTestId('review-commit-select');
+    expect(picked.view.queryByTestId('review-commit-ordinal')).toBeNull();
+    expect(picked.view.getByTestId('review-commit-hash')).toHaveTextContent('bbbbbbb');
+    expect(trigger.textContent).not.toMatch(/\d+\/\d*/);
+    // The ghost a run sizes the trigger with is its ends' width.
+    expect(trigger.querySelector('[data-ghost="aaaaaaa–aaaaaaa"]')).not.toBeNull();
+    await open(picked.view);
+    expect(picked.view.getByTestId('review-commit-position')).toHaveTextContent('Commit bbbbbbb');
+    expect(picked.view.getByTestId('review-commit-list-note')).toHaveTextContent('Only the newest 3 commits are listed.');
+    picked.view.unmount();
+
+    const run = mount({ first: OLDEST.sha, last: NEWEST.sha }, true, null);
+    expect(run.view.getByTestId('review-commit-ordinal')).toHaveTextContent('ccccccc–aaaaaaa');
+  });
+
+  it('says nothing of the list when it is complete', async () => {
+    const { view } = mount(null);
+    await open(view);
+    expect(view.queryByTestId('review-commit-list-note')).toBeNull();
   });
 });

@@ -14,26 +14,33 @@
     commits: readonly BranchCommit[];
     /** The run's older end's index in the whole list. */
     olderIndex: number;
-    count: number;
+    /** How many commits the PR has; null when the backend could not count
+     * them (the card names the run by its ends alone). */
+    total: number | null;
     onLeave: () => void;
     /** The whole PR's diff failed to read for a head-ending run. */
     indexError?: string | null;
     onRetryIndex?: () => void;
   }
 
-  let { commits, olderIndex, count, onLeave, indexError = null, onRetryIndex }: Props = $props();
+  let { commits, olderIndex, total, onLeave, indexError = null, onRetryIndex }: Props = $props();
 
   const first = $derived(commits[commits.length - 1]);
   const last = $derived(commits[0]);
-  const from = $derived(commitOrdinal(olderIndex, count));
-  const to = $derived(commitOrdinal(olderIndex - commits.length + 1, count));
+  const newerIndex = $derived(olderIndex - commits.length + 1);
+  const from = $derived(commitOrdinal(olderIndex, total));
+  const to = $derived(commitOrdinal(newerIndex, total));
+  const place = $derived([
+    from !== null && to !== null ? `${from}–${to} of ${total}` : '',
+    newerIndex === 0 ? 'to the head' : '',
+  ].filter(Boolean).join(' · '));
 </script>
 
 <div class="px-[var(--review-slab-inset)] pb-3 pt-2.5" data-testid="review-range-card" data-first={first?.sha} data-last={last?.sha}>
   <section class="overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/70 px-3.5 py-2 text-xs">
     <div class="flex min-w-0 items-baseline gap-2">
       <span class="font-semibold text-fg" data-testid="review-range-card-count">{commits.length} commits</span>
-      <span class="min-w-0 flex-1 truncate text-[0.6875rem] text-fg-muted">{from}–{to} of {count}{to === count ? ' · to the head' : ''}</span>
+      <span class="min-w-0 flex-1 truncate text-[0.6875rem] text-fg-muted">{place}</span>
       <button
         type="button"
         class="shrink-0 rounded-[var(--radius-field)] px-1.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg compact:select-none"

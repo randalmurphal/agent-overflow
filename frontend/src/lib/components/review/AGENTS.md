@@ -80,7 +80,8 @@ PR stores; components own presentation and interaction.
   bordered trigger over the shared `Menu`; a trigger never truncates on
   its own, a long value is shortened in the middle with the whole value as
   hover text. The commit picker (`ReviewCommitPicker`) reads `All commits`,
-  `N/T <shortSha>` or a run's `N–M/T`, numbered from the oldest
+  `N/T <shortSha>` or a run's `N–M/T`, numbered from the PR's first
+  commit by the backend's count even when only the newest are listed
   (`utils/commitRange.ts`), and never the subject; the subject, author, age
   and body live in the menu rows and in the commit card (`ReviewCommitCard`)
   or a run's card (`ReviewRangeCard`), which takes the overview's place as

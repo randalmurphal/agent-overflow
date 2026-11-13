@@ -695,7 +695,13 @@ or a run (Shift+click on a second row, or a row's `From here`, which runs
 to the newest commit). Commits are numbered from the oldest: the trigger
 reads `All commits`, `N/T <short sha>` for one commit or `N–M/T` for a run,
 never a subject; its steppers are Older (left) and Newer (right). A run
-of the whole list is All commits, never sent. The run is pane state like a
+of the whole list is All commits, never sent. The backend lists at most
+the newest 300 commits with the PR's real count: ordinals and `T` count
+from the PR's first commit, the menu says once that only the newest N of
+T are listed, the oldest listed commit keeps `From here`, and a run of
+the whole truncated list stays a run. When the count is unknown there are
+no ordinals: a commit reads as its short hash and a run as
+`<sha>–<sha>`, at the same trigger width. The run is pane state like a
 picked commit: kept across a reload while its commits are listed, and
 when one is gone (a rebase, an amend) the pane shows All commits with a
 banner saying so. A run's card leads the diff in the commit card's place:

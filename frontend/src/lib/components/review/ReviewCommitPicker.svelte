@@ -11,6 +11,8 @@
     commitSelectionBetween,
     commitSelectionForClick,
     commitSelectionFromHere,
+    commitListComplete,
+    commitListNote,
     commitSelectionIndexes,
     commitSelectionLabel,
     type CommitSelection,
@@ -25,11 +27,17 @@
   // (ReviewCommitCard, ReviewRangeCard). With `ranges` (pr scope),
   // shift+click on a row spans from the picked commit to it, and a row's
   // `From here` picks it through the newest. The header steps to the
-  // older or newer commit; the ends do not wrap.
+  // older or newer commit; the ends do not wrap. The list may hold only
+  // the newest of the PR's commits (`total` more than it holds, or null
+  // when uncounted): ordinals then count from the PR's first commit, the
+  // oldest listed keeps `From here`, the menu says how much is listed, and
+  // with no total the trigger names commits by short hash.
 
   interface Props {
     /** Newest first, as the selector lists them. */
     commits: readonly BranchCommit[];
+    /** How many commits the range holds; null when uncounted. */
+    total: number | null;
     selection: CommitSelection | null;
     /** Runs of commits can be picked (pr scope). */
     ranges?: boolean;
@@ -37,20 +45,29 @@
     onSelect: (selection: CommitSelection | null) => void;
   }
 
-  let { commits, selection, ranges = false, disabled = false, onSelect }: Props = $props();
+  let { commits, total, selection, ranges = false, disabled = false, onSelect }: Props = $props();
 
   const at = $derived(commitSelectionIndexes(commits, selection));
   const single = $derived(at !== null && at.newer === at.older ? commits[at.newer] : null);
   const count = $derived(commits.length);
-  const triggerText = $derived(commitSelectionLabel(commits, selection));
+  const complete = $derived(commitListComplete(commits, total));
+  const note = $derived(commitListNote(commits, total));
+  // How many commits the PR has, as the menu says it.
+  const totalText = $derived(total === null ? `${count}+` : String(total));
+  const triggerText = $derived(commitSelectionLabel(commits, total, selection));
   // The menu header: where the pick sits among the PR's commits.
   const position = $derived.by(() => {
-    if (!at) return `${count} ${count === 1 ? 'commit' : 'commits'}`;
-    if (at.newer === at.older) return `Commit ${commitOrdinal(at.newer, count)} of ${count}`;
-    return `Commits ${commitOrdinal(at.older, count)}–${commitOrdinal(at.newer, count)} of ${count}`;
+    if (!at) return `${totalText} ${total === 1 ? 'commit' : 'commits'}`;
+    const older = commitOrdinal(at.older, total);
+    const newer = commitOrdinal(at.newer, total);
+    if (older === null || newer === null) return at.newer === at.older ? `Commit ${commits[at.newer].shortSha}` : `Commits ${triggerText}`;
+    if (at.newer === at.older) return `Commit ${newer} of ${total}`;
+    return `Commits ${older}–${newer} of ${total}`;
   });
+  // The widest ordinal text the trigger can show, for its ghost labels.
+  const widestTotal = $derived(String(total ?? count));
   const title = $derived.by(() => {
-    if (!at) return `All commits (${count})`;
+    if (!at) return `All commits (${totalText})`;
     const newer = commits[at.newer];
     if (at.newer === at.older) return `${newer.shortSha} ${newer.subject}`;
     return `${commits[at.older].shortSha}–${newer.shortSha} (${at.older - at.newer + 1} commits)`;
@@ -73,7 +90,7 @@
       ? (direction < 0 ? 0 : count - 1)
       : direction < 0 ? at.older + 1 : at.newer - 1;
     const commit = commits[index];
-    if (commit) onSelect(commitSelectionBetween(commits, commit.sha, commit.sha));
+    if (commit) onSelect(commitSelectionBetween(commits, total, commit.sha, commit.sha));
   }
   const canStepOlder = $derived(!at ? count > 0 : at.older < count - 1);
   const canStepNewer = $derived(!at ? count > 0 : at.newer > 0);
@@ -108,15 +125,19 @@
     <span class="grid">
       <span class="invisible col-start-1 row-start-1 whitespace-nowrap after:content-[attr(data-ghost)]" aria-hidden="true" data-ghost="All commits"></span>
       <span class="invisible col-start-1 row-start-1 whitespace-nowrap" aria-hidden="true">
-        <span class="text-[0.6875rem] tabular-nums after:content-[attr(data-ghost)]" data-ghost="{count}/{count}"></span>
+        {#if total !== null}
+          <span class="text-[0.6875rem] tabular-nums after:content-[attr(data-ghost)]" data-ghost="{widestTotal}/{widestTotal}"></span>
+        {/if}
         <span class="font-mono text-[0.625rem] after:content-[attr(data-ghost)]" data-ghost={widestShortSha}></span>
       </span>
       {#if ranges}
-        <span class="invisible col-start-1 row-start-1 whitespace-nowrap text-[0.6875rem] tabular-nums after:content-[attr(data-ghost)]" aria-hidden="true" data-ghost="{count}–{count}/{count}"></span>
+        <span class="invisible col-start-1 row-start-1 whitespace-nowrap text-[0.6875rem] tabular-nums after:content-[attr(data-ghost)]" aria-hidden="true" data-ghost={total === null ? `${widestShortSha}–${widestShortSha}` : `${widestTotal}–${widestTotal}/${widestTotal}`}></span>
       {/if}
       <span class="col-start-1 row-start-1 whitespace-nowrap">
         {#if single}
-          <span class="text-[0.6875rem] tabular-nums text-fg-muted" data-testid="review-commit-ordinal">{triggerText}</span>
+          {#if total !== null}
+            <span class="text-[0.6875rem] tabular-nums text-fg-muted" data-testid="review-commit-ordinal">{triggerText}</span>
+          {/if}
           <span class="font-mono text-[0.625rem]" data-testid="review-commit-hash">{single.shortSha}</span>
         {:else if at}
           <span class="text-[0.6875rem] tabular-nums" data-testid="review-commit-ordinal">{triggerText}</span>
@@ -143,7 +164,7 @@
   {#snippet children(close)}
     <MenuItem
       label="All commits"
-      suffix={String(count)}
+      suffix={totalText}
       checked={at === null}
       {disabled}
       testId="review-commit-all"
@@ -159,13 +180,13 @@
           checked={inSelection(index)}
           {disabled}
           testId="review-commit-option"
-          actionText={ranges && index < count - 1 ? 'From here' : undefined}
+          actionText={ranges && (index < count - 1 || !complete) ? 'From here' : undefined}
           actionTitle="This commit through the newest"
           actionLabel="Changes from {commit.shortSha} through the newest"
           actionReveal="hover"
-          onAction={ranges && index < count - 1 ? () => { close(); onSelect(commitSelectionFromHere(commits, commit.sha)); } : undefined}
+          onAction={ranges && (index < count - 1 || !complete) ? () => { close(); onSelect(commitSelectionFromHere(commits, total, commit.sha)); } : undefined}
           onSelect={() => {
-            const next = commitSelectionForClick(commits, selection, commit.sha, ranges && shiftHeld);
+            const next = commitSelectionForClick(commits, total, selection, commit.sha, ranges && shiftHeld);
             shiftHeld = false;
             close();
             onSelect(next);
@@ -177,5 +198,8 @@
         </MenuItem>
       {/each}
     </div>
+    {#if note}
+      <div class="px-3 py-1.5 text-[0.6875rem] text-fg-hint" data-testid="review-commit-list-note">{note}</div>
+    {/if}
   {/snippet}
 </ReviewToolbarMenu>

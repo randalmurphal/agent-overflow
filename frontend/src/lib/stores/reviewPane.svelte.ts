@@ -237,6 +237,10 @@ export interface ReviewPaneState extends ReviewCommentActionsState {
   /** Commits the branch/PR carries (newest first); empty outside those
    * scopes and for non-git workspaces. Feeds the commit selector. */
   readonly commits: readonly BranchCommit[];
+  /** How many commits the range holds: more than `commits` when the
+   * backend listed only the newest, null when it could not count them
+   * (utils/commitRange.ts). */
+  readonly commitsTotal: number | null;
   /** Selected single commit, or null for the full-range diff. In pr
    * scope with a run of commits picked, the run's newer end. */
   readonly selectedCommitSHA: string | null;
@@ -1031,6 +1035,7 @@ export function createReviewPaneState(
   let pendingConversationThreadId: string | null = $state(null);
   let expandedPRThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
   let commits: BranchCommit[] = $state([]);
+  let commitsTotal: number | null = $state(0);
   let selectedCommitSHA: string | null = $state(null);
   // A run's older end, with `selectedCommitSHA` its newer; null for one
   // commit. pr scope only.
@@ -1785,7 +1790,7 @@ export function createReviewPaneState(
     // A run is a pr-scope pick; a run equal to the whole list is the
     // whole diff (commitSelectionBetween), never sent.
     const asked = selection && (scope === 'pr' || selection.first === selection.last) ? selection : null;
-    const next = scope === 'pr' ? resolveCommitSelection(asked, commits).selection : asked;
+    const next = scope === 'pr' ? resolveCommitSelection(asked, commits, commitsTotal).selection : asked;
     commitSelectionLost = false;
     if (sameCommitSelection(next, selectedCommits)) return;
     navigationSeq++;
@@ -1799,7 +1804,7 @@ export function createReviewPaneState(
   }
 
   async function showChangesFrom(sha: string): Promise<void> {
-    const selection = commitSelectionFromHere(commits, sha);
+    const selection = commitSelectionFromHere(commits, commitsTotal, sha);
     await selectCommits(selection, { userInitiated: true });
     if (disposed || !sameCommitSelection(selectedCommits, selection)) return;
     // To the diff: a run's card leads it; the whole PR's diff starts at
@@ -1972,7 +1977,7 @@ export function createReviewPaneState(
         // toggle on while the new source can't honor it, and passing it
         // anyway would make the button's state a lie.
         ignoreWhitespace && canIgnoreWhitespace,
-        selectionOnly ? { commits, edits, editTurnLabels, prRevision: loadedPRRevision } : undefined,
+        selectionOnly ? { commits, commitsTotal, edits, editTurnLabels, prRevision: loadedPRRevision } : undefined,
         userInitiated,
       );
       if (seq !== loadSeq || disposed) {
@@ -2111,6 +2116,7 @@ export function createReviewPaneState(
       arrival.applied = true;
       const { loaded } = arrival;
       commits = loaded.commits ?? [];
+      commitsTotal = loaded.commits ? (loaded.commitsTotal ?? null) : 0;
       edits = loaded.edits ?? [];
       editTurnLabels = loaded.editTurnLabels ?? new Map();
       if (loaded.selectedEdit !== undefined) selectedEdit = loaded.selectedEdit;
@@ -3558,6 +3564,7 @@ export function createReviewPaneState(
     get armedEditorId() { return armedEditorId; },
     get shownGeneration() { return shown?.generation ?? 0; },
     get commits() { return commits; },
+    get commitsTotal() { return commitsTotal; },
     get selectedCommitSHA() { return selectedCommitSHA; },
     get selectedCommits() { return selectedCommits; },
     get headRange() { return headRange; },

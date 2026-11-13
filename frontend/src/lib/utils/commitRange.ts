@@ -4,8 +4,12 @@ import type { BranchCommit } from '../types/git';
 // run of the commit list (docs/specs/pull-requests.md#commit-ranges).
 // The list arrives newest first; a run is named by its ends, `first` the
 // older and `last` the newer, as `OpenPRCommitDiff(first, last)` takes
-// them. Ordinals count from the oldest commit (1) to the head (T), so a
-// run to the head reads `N–T/T`.
+// them. Ordinals count from the PR's first commit (1) to the head (T), so a
+// run to the head reads `N–T/T`. The backend lists at most the newest 300
+// commits and says how many the range holds (`total`, null when it could
+// not count them): the list is complete exactly when `total` is its
+// length. T is `total`; with no total there are no ordinals, and only a
+// complete list's ends are the whole PR.
 
 export interface CommitSelection {
   /** The older end; equal to `last` for one commit. */
@@ -14,33 +18,46 @@ export interface CommitSelection {
   readonly last: string;
 }
 
-/** The commit's ordinal in a newest-first list of `count`, oldest = 1. */
-export function commitOrdinal(index: number, count: number): number {
-  return count - index;
+/** The commit's ordinal at `index` of a newest-first list of the newest
+ * of `total` commits, the first commit = 1; null with no total. */
+export function commitOrdinal(index: number, total: number | null): number | null {
+  return total === null ? null : total - index;
+}
+
+/** Whether the list holds every commit of the range. */
+export function commitListComplete(commits: readonly BranchCommit[], total: number | null): boolean {
+  return total === commits.length;
+}
+
+// Whether `older`–`newer` (list indexes) spans a complete list's ends:
+// the whole PR, which has one representation (All commits).
+function wholeList(commits: readonly BranchCommit[], total: number | null, older: number, newer: number): boolean {
+  return older !== newer && newer === 0 && older === commits.length - 1 && commitListComplete(commits, total);
 }
 
 /**
  * The selection for a pick between two commits of the list, in either
  * order, or null for "All commits": a run of two or more commits that
- * covers the whole list is the whole PR, which has one representation.
+ * covers a complete list is the whole PR, which has one representation (a
+ * truncated list's ends are not the PR's first commit).
  * One commit stays a selection even when it is the only one. Null too
  * when either end is not in the list.
  */
-export function commitSelectionBetween(commits: readonly BranchCommit[], a: string, b: string): CommitSelection | null {
+export function commitSelectionBetween(commits: readonly BranchCommit[], total: number | null, a: string, b: string): CommitSelection | null {
   const ia = commits.findIndex((commit) => commit.sha === a);
   const ib = commits.findIndex((commit) => commit.sha === b);
   if (ia < 0 || ib < 0) return null;
   // Newest first: the larger index is the older commit.
   const older = Math.max(ia, ib);
   const newer = Math.min(ia, ib);
-  if (older !== newer && older === commits.length - 1 && newer === 0) return null;
+  if (wholeList(commits, total, older, newer)) return null;
   return { first: commits[older].sha, last: commits[newer].sha };
 }
 
 /** `From here`: the commit through the newest. */
-export function commitSelectionFromHere(commits: readonly BranchCommit[], sha: string): CommitSelection | null {
+export function commitSelectionFromHere(commits: readonly BranchCommit[], total: number | null, sha: string): CommitSelection | null {
   const head = commits[0];
-  return head ? commitSelectionBetween(commits, sha, head.sha) : null;
+  return head ? commitSelectionBetween(commits, total, sha, head.sha) : null;
 }
 
 /** The list indexes of a selection's ends (`newer` <= `older`), or null
@@ -63,29 +80,43 @@ export function isCommitRange(selection: CommitSelection | null): boolean {
 
 /**
  * The selection a load of a fresh list keeps: the same one when both ends
- * are still in it in order and it is not the whole list; else null (All
- * commits), with `lost` telling a held pick that vanished from one that
- * was never there.
+ * are still in it in order and it is not a complete list's whole; else
+ * null (All commits), with `lost` telling a held pick that vanished from
+ * one that was never there.
  */
 export function resolveCommitSelection(
   selection: CommitSelection | null,
   commits: readonly BranchCommit[],
+  total: number | null,
 ): { selection: CommitSelection | null; lost: boolean } {
   if (!selection) return { selection: null, lost: false };
   const at = commitSelectionIndexes(commits, selection);
   if (!at) return { selection: null, lost: true };
-  if (at.newer !== at.older && at.newer === 0 && at.older === commits.length - 1) return { selection: null, lost: false };
+  if (wholeList(commits, total, at.older, at.newer)) return { selection: null, lost: false };
   return { selection, lost: false };
 }
 
-/** The picker's trigger text: `All commits`, `N/T` or `N–M/T`. */
-export function commitSelectionLabel(commits: readonly BranchCommit[], selection: CommitSelection | null): string {
+/** The picker's trigger text: `All commits`, `N/T` or `N–M/T`; with no
+ * total, the short hash or `<sha>–<sha>` instead of ordinals. */
+export function commitSelectionLabel(commits: readonly BranchCommit[], total: number | null, selection: CommitSelection | null): string {
   const at = commitSelectionIndexes(commits, selection);
   if (!at) return 'All commits';
-  const count = commits.length;
-  const from = commitOrdinal(at.older, count);
-  const to = commitOrdinal(at.newer, count);
-  return from === to ? `${to}/${count}` : `${from}–${to}/${count}`;
+  const from = commitOrdinal(at.older, total);
+  const to = commitOrdinal(at.newer, total);
+  if (from === null || to === null) {
+    const [older, newer] = [commits[at.older].shortSha, commits[at.newer].shortSha];
+    return older === newer ? newer : `${older}–${newer}`;
+  }
+  return from === to ? `${to}/${total}` : `${from}–${to}/${total}`;
+}
+
+/** The menu's quiet note on a truncated list: how much of it is listed,
+ * or null when the list is complete. */
+export function commitListNote(commits: readonly BranchCommit[], total: number | null): string | null {
+  if (commitListComplete(commits, total)) return null;
+  return total === null
+    ? `Only the newest ${commits.length} commits are listed.`
+    : `Only the newest ${commits.length} of ${total} commits are listed.`;
 }
 
 /** The selection a (shift+)click on the picker's row of `sha` makes:
@@ -93,12 +124,13 @@ export function commitSelectionLabel(commits: readonly BranchCommit[], selection
  * picked) to it; a plain click picks it alone. */
 export function commitSelectionForClick(
   commits: readonly BranchCommit[],
+  total: number | null,
   current: CommitSelection | null,
   sha: string,
   shift: boolean,
 ): CommitSelection | null {
-  if (shift && current) return commitSelectionBetween(commits, current.last, sha);
-  return commitSelectionBetween(commits, sha, sha);
+  if (shift && current) return commitSelectionBetween(commits, total, current.last, sha);
+  return commitSelectionBetween(commits, total, sha, sha);
 }
 
 export function sameCommitSelection(a: CommitSelection | null, b: CommitSelection | null): boolean {
