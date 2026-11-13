@@ -75,7 +75,7 @@
         {thread}
         {comment}
         class="col-start-2 mt-1"
-        findKey={findKeys ? findThreadCommentKey(thread.id, reviewCommentKey(comment)) : undefined}
+        findKey={findKeys ? findThreadCommentKey(thread?.id ?? '', reviewCommentKey(comment)) : undefined}
       />
     </div>
   {/if}

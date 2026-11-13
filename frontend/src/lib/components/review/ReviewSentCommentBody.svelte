@@ -26,22 +26,36 @@
   let { review, thread, comment, findKey, class: className = '' }: Props = $props();
 
   const writes = $derived(review?.sentComments ?? null);
-  const editBody = $derived(writes?.editBodyFor(thread, comment) ?? null);
+  // The open edit and everything its editor reads, or null: one value, so
+  // nothing in its branch reads a closed edit.
+  const edit = $derived.by(() => {
+    const body = writes?.editBodyFor(thread, comment) ?? null;
+    if (!writes || body === null) return null;
+    const key = commentWriteKey.edit(thread.id, comment.id);
+    return {
+      body,
+      pending: writes.pending(key),
+      error: writes.error(key),
+      unchanged: body.trim() === '' || body.trim() === comment.body.trim(),
+      change: (next: string) => writes.setEditBody(thread, comment, next),
+      save: () => writes.saveEdit(thread, comment),
+      cancel: () => writes.setEditBody(thread, comment, null),
+    };
+  });
   const shown = $derived(visibleBody(comment.body));
-  const editKey = $derived(commentWriteKey.edit(thread.id, comment.id));
   const deleteError = $derived(writes?.error(commentWriteKey.delete(thread.id, comment.id)) ?? null);
   let focusOnce = true;
 </script>
 
-{#if writes && editBody !== null}
+{#if edit}
   <div class={className} data-testid="review-comment-edit-editor">
     <ReviewCommentEditorShell
-      body={editBody}
-      onBodyChange={(body) => writes.setEditBody(thread, comment, body)}
-      primary={{ label: 'Save', run: () => writes.saveEdit(thread, comment), disabled: editBody.trim() === '' || editBody.trim() === comment.body.trim(), testid: 'review-comment-save' }}
-      onCancel={() => writes.setEditBody(thread, comment, null)}
-      pending={writes.pending(editKey)}
-      error={writes.error(editKey)}
+      body={edit?.body ?? ''}
+      onBodyChange={(body) => edit?.change(body)}
+      primary={{ label: 'Save', run: () => edit?.save(), disabled: edit?.unchanged ?? true, testid: 'review-comment-save' }}
+      onCancel={() => edit?.cancel()}
+      pending={edit?.pending ?? false}
+      error={edit?.error ?? null}
       takeFocus={() => {
         const take = focusOnce;
         focusOnce = false;
