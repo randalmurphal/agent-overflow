@@ -321,9 +321,9 @@ func (f *githubForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 	if err != nil {
 		return err
 	}
-	path, list := fmt.Sprintf("%s/issues/%d/assignees", githubRepoPath(ref.Repository()), ref.Number), "assignees of"
+	path, list := fmt.Sprintf("%s/issues/%d/assignees", githubRepoPath(ref.Repository()), ref.Number), "assignees"
 	if reviewers {
-		path, list = githubPullPath(ref)+"/requested_reviewers", "reviewers of"
+		path, list = githubPullPath(ref)+"/requested_reviewers", "reviewers"
 	}
 	removeBody, err := githubPeopleBody(ref, reviewers, change.Remove)
 	if err != nil {
@@ -420,7 +420,7 @@ func (f *githubForge) SetPRLabels(ctx context.Context, ref PRReference, change P
 	}
 	pullID := raw.Repository.PullRequest.ID
 	step := func(verb, op, doc string, labels []PRLabel) changeStep {
-		done, next := stepWords(verb, labelNames(labels), "labels of")
+		done, next := stepWords(verb, labelNames(labels), "labels")
 		return changeStep{done: done, next: next, run: func() error {
 			_, err := client.GraphQL(ctx, op, doc, map[string]any{"labelableID": pullID, "labelIDs": ids(labels)}, nil)
 			return writeOutcome(err)

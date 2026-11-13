@@ -383,6 +383,11 @@ func runSteps(steps []changeStep) error {
 	var done []string
 	for _, step := range steps {
 		if err := step.run(); err != nil {
+			// A step that applied in part names its own halves.
+			if partial, ok := errors.AsType[*PartialWriteError](err); ok {
+				partial.Done = strings.Join(append(done, partial.Done), "; ")
+				return partial
+			}
 			if len(done) == 0 {
 				if _, explained := errors.AsType[*ForgeActionError](err); explained {
 					return err
@@ -397,7 +402,8 @@ func runSteps(steps []changeStep) error {
 }
 
 // stepWords words one side of a people or label change: "removed bob
-// and carol from the reviewers" and "removing bob and carol".
+// and carol from the reviewers" and "removing bob and carol". The
+// explanation names the PR after the last applied side ("... of o/r#7").
 func stepWords(verb string, names []string, list string) (done, next string) {
 	joined := joinClauses(names)
 	switch verb {
