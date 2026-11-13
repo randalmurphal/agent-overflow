@@ -21,6 +21,7 @@ import { prKey, type PRRef } from '../utils/prReference';
 import type { DiffReviewComment, PRDetail, ReviewComment, ReviewThread } from '../types/models';
 import { installPRDraftsFake, type PRDraftsFake } from '../../test/helpers/prDraftsFake';
 import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
+import { TransportError } from '../transport/wsClient';
 import { resetToLocalPage } from '../../test/helpers/scopes';
 import { resetStagedBackends } from '../../test/helpers/backends';
 import ReviewSentCommentBody from '../components/review/ReviewSentCommentBody.svelte';
@@ -205,6 +206,35 @@ describe('a comment posted now', () => {
     expect(state.commentWriteError(key)).toBe('The branch moved after you loaded this. Reload and try again.');
     expect(state.openEditors.map((editor) => editor.id)).toEqual([id]);
     expect(state.draftBodyFor(id)).toBe('Rename this.');
+  });
+
+  it('renders an unconfirmed write as a failure: open, text kept, the sentence, no retry', async () => {
+    const UNCONFIRMED = 'GitHub may have posted this comment. Check the thread before sending it again.';
+    const refuse = async () => { throw new TransportError('forge_unconfirmed', UNCONFIRMED); };
+    const line = setBindingMock('PostPRLineComment', refuse);
+    const reply = setBindingMock('ReplyToPRThread', refuse);
+    const prComment = setBindingMock('PostPRComment', refuse);
+    const state = await open();
+    const id = editorWith(state, added12, 'Rename this.');
+    await state.createComment(id, 'Rename this.', 'now');
+    state.openReply(THREAD.id, 'diff');
+    state.setReplyBody(THREAD.id, 'Agreed.');
+    await state.sendPRThreadReply(THREAD);
+    state.sentComments.setPRCommentOpen(true);
+    state.sentComments.setPRCommentBody('Looks good.');
+    await state.sentComments.postPRComment();
+    await settle();
+    expect([line, reply, prComment].map((mock) => mock.mock.calls.length)).toEqual([1, 1, 1]);
+    expect(state.commentWriteError(commentWriteKey.editor(id))).toBe(UNCONFIRMED);
+    expect(state.openEditors.map((editor) => editor.id)).toEqual([id]);
+    expect(state.draftBodyFor(id)).toBe('Rename this.');
+    expect(state.replyErrorFor(THREAD.id)).toBe(UNCONFIRMED);
+    expect(state.replyOpen(THREAD.id, 'diff')).toBe(true);
+    expect(state.replyBodyFor(THREAD.id)).toBe('Agreed.');
+    expect(state.commentWriteError(commentWriteKey.prComment)).toBe(UNCONFIRMED);
+    expect(state.sentComments.prCommentOpen).toBe(true);
+    expect(state.sentComments.prCommentBody).toBe('Looks good.');
+    expect(state.drafts).toEqual([]);
   });
 
   it('closes at once on seq 0 and reads the threads again', async () => {
