@@ -28,6 +28,30 @@ const githubManageFields = `viewerCanUpdate viewerCanClose viewerCanReopen viewe
 	`assignees(first: 100) { nodes { login name } } ` +
 	`labels(first: 100) { nodes { id name color } }`
 
+// githubManageSelections are the pull request fields githubManageFields
+// selects.
+var githubManageSelections = map[string]bool{"viewerCanUpdate": true, "viewerCanClose": true, "viewerCanReopen": true, "viewerCanLabel": true,
+	"viewerCanAssign": true, "reviewRequests": true, "assignees": true, "labels": true}
+
+// githubManageOnly reports whether err is a GraphQL answer whose data
+// decoded and whose every error lies under a management selection of
+// the pull request: what the read can publish without its controls.
+func githubManageOnly(err error) bool {
+	gql, ok := errors.AsType[*forgeapi.GraphQLError](err)
+	if !ok || gql.Undecoded || len(gql.Problems) == 0 {
+		return false
+	}
+	for _, p := range gql.Problems {
+		if len(p.Path) < 3 || p.Path[0] != "repository" || p.Path[1] != "pullRequest" {
+			return false
+		}
+		if field, ok := p.Path[2].(string); !ok || !githubManageSelections[field] {
+			return false
+		}
+	}
+	return true
+}
+
 // githubPullManageRaw is the Details half of a PR's detail.
 type githubPullManageRaw struct {
 	ViewerCanUpdate bool `json:"viewerCanUpdate"`
