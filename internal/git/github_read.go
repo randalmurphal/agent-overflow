@@ -778,7 +778,7 @@ func githubReviewThreads(nodes []githubThreadRaw) []ReviewThread {
 				CreatedAt:   comment.CreatedAt,
 				DatabaseID:  comment.DatabaseID,
 			}
-			comment.githubViewerCommentRaw.fill(&out)
+			comment.fill(&out)
 			if comment.ReplyTo != nil {
 				out.ReplyTo = &ReviewReplyTo{ID: comment.ReplyTo.ID, DatabaseID: comment.ReplyTo.DatabaseID}
 			}
@@ -805,7 +805,7 @@ func githubConversationThreads(nodes []githubCommentRaw) []ReviewThread {
 			CreatedAt:   node.CreatedAt,
 			DatabaseID:  node.DatabaseID,
 		}
-		node.githubViewerCommentRaw.fill(&comment)
+		node.fill(&comment)
 		// The thread is named by its one comment (CommentTarget).
 		threads = append(threads, ReviewThread{ID: node.ID, Comments: []ReviewComment{comment}})
 	}

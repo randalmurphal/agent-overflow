@@ -160,7 +160,8 @@ describe('the primary comment action', () => {
     await state.createComment(editorWith(state, added12, 'And this.'), 'And this.');
     expect(state.drafts).toHaveLength(2);
     expect(state.primaryCommentAction).toBe('draft');
-    for (const draft of [...state.drafts]) await state.deleteComment(draft.id);
+    // A copy: each delete shrinks state.drafts.
+    for (const draft of state.drafts.slice()) await state.deleteComment(draft.id);
     expect(state.primaryCommentAction).toBe('now');
   });
 
