@@ -131,7 +131,10 @@ func (a *App) settlePRAction(ctx context.Context, pr gitops.PRReference, action 
 // refreshPRSnapshot polls a live pump's snapshot at once, for the caller
 // whose action changed the PR, and reports the pump's sequence once the
 // poll ran. No pump (no pane is watching) means nothing to refresh and
-// sequence zero.
+// sequence zero; so does a refresh that did not run or whose poll failed
+// (a failure frame, or a transient one held back for its retry): no frame
+// shows the change, the caller settles on the write the forge accepted,
+// and the pump's failure tells the pane it is stale.
 func (a *App) refreshPRSnapshot(ctx context.Context, pr gitops.PRReference) uint64 {
 	a.prUpdates.mu.Lock()
 	pump := a.livePRUpdatePumpLocked(prUpdateKey(pr))
@@ -139,10 +142,16 @@ func (a *App) refreshPRSnapshot(ctx context.Context, pr gitops.PRReference) uint
 	if pump == nil {
 		return 0
 	}
-	if err := a.requestPump(ctx, &pump.pumpCore, &prPumpRequest{snapshot: true}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, context.Canceled) {
-		log.Printf("pr updates: refresh after action failed for pr=%s: %v", prUpdateKey(pr), err)
+	if err := a.requestPump(ctx, &pump.pumpCore, &prPumpRequest{snapshot: true}); err != nil {
+		if !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, context.Canceled) {
+			log.Printf("pr updates: refresh after action failed for pr=%s: %v", prUpdateKey(pr), err)
+		}
+		return 0
 	}
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
+	if pump.fail.failing() || pump.graced {
+		return 0
+	}
 	return pump.seq
 }
