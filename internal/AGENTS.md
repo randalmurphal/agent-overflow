@@ -19,7 +19,7 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | Conversation move/copy | [threadtransfer/](threadtransfer/AGENTS.md) |
 | Workflow definitions and execution | [workflow/def/](workflow/def/AGENTS.md), [workflow/engine/](workflow/engine/AGENTS.md) |
 | Application services and their boundaries | [Application composition](../docs/architecture/root-decomposition.md) |
-| Repository/worktree lookup and operations | [gitroot/](gitroot/AGENTS.md), [git/](git/AGENTS.md), [gitapp/](gitapp/AGENTS.md), `worktreewatch/` (registry watch for removals made outside the app) |
+| Repository/worktree lookup and operations | [gitroot/](gitroot/AGENTS.md), [git/](git/AGENTS.md), [gitapp/](gitapp/AGENTS.md), `worktreewatch/` (registry watch for removals made outside the app), `gitenv/` (the no-credential-prompt environment every git child gets) |
 | Forge HTTP transport: tokens, rate gates, ETags, isolation | `forgeapi/`; contract in [forge-transport.md](../docs/architecture/forge-transport.md) |
 | CI job logs on disk: download, line index, sections, reads | `cilog/` (package comment); the review pane's use in [review-pane-design.md](../docs/architecture/review-pane-design.md) |
 | Browser engines and thread browser tools | [browser/](browser/AGENTS.md) |

@@ -73,7 +73,7 @@ func (c *Core) CommonDir(cwd string) (string, error) {
 // explicit PruneRemotes action.
 //
 // This is a background command by construction, so it keeps the package
-// default non-interactive env (see nonInteractiveEnv) — against a
+// default non-interactive env (see gitenv.NonInteractive) — against a
 // credential-requiring remote it fails fast with a readable error rather
 // than raising a credential dialog behind the app window. The caller
 // decides what a failure is worth saying out loud; for the app cadence

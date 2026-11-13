@@ -32,7 +32,7 @@ type WorktreeSeed struct {
 	// error the user needs: the cut proceeded from the local base exactly
 	// as it would have without any fetch at all. A remote that needs
 	// interactive credentials lands here too (this fetch keeps the package
-	// default non-interactive env, see nonInteractiveEnv), which is why it
+	// default non-interactive env, see gitenv.NonInteractive), which is why it
 	// must never become a user-facing failure.
 	FetchErr error
 }
