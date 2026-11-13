@@ -575,26 +575,33 @@ permission reads and the refusals are in
 - `Merge ▾` gains `Edit commit message…` for a method that makes a
   commit (merge, squash): a title and body editor in the Merge section,
   prefilled with the forge's default for the method, read when it opens
-  and when the method changes until the text is edited. The method picked
-  in the menu lives in the review state beside the message, so the
-  overview's remount keeps both. Only an edited message is sent with
-  Merge now and Auto-merge (`commitMessage`), and only with the method it
-  was written for; a failed default read shows its sentence in the
-  editor and the merge goes on with the forge's default. The title takes
+  and when the method changes until the text is edited. The review state
+  holds one selected method beside the message, so the overview's
+  remount keeps both: the project's default (the first offered) until
+  the reader picks, re-resolved on every snapshot. The editor has no
+  method of its own; it shows the selected one, which Merge now and
+  Auto-merge send. The message (`commitMessage`) is sent exactly when its
+  text is edited and the selected method makes a commit; a failed default
+  read shows its sentence in the editor and the merge goes on with the
+  forge's default. The title takes
   focus once the default has loaded, unless the reader moved focus
-  meanwhile. The editor hides while auto-merge is armed. A method a
-  snapshot stops offering falls back to the project's default through
-  the same path as a pick, keeping edited text: the editor shows the new
+  meanwhile. The editor hides while auto-merge is armed. A selected
+  method a snapshot stops offering falls back to the project's default
+  through the same path as a pick, keeping edited text: the editor shows the new
   method, the text still marked edited, and a quiet line ("Squash is no
   longer allowed here. This message will be used for the merge
   commit."). When the new method makes no commit the line reads "...
   Rebase makes no commit, so this message will not be used.", the editor
-  stays open with the text, and the merge sends no message. The editor
-  always shows what the merge sends.
+  stays open with the text, and the merge sends no message. A method
+  that comes back does not move the selection back; the line goes once
+  the reader picks a method or the message is no longer edited. The
+  editor always shows what the merge sends.
 - Every action follows the merge actions' contract: no optimistic state;
   pending from the call until the pane has applied the snapshot whose
   sequence reaches the answer's `seq` (0 settles at once), given up with
-  a new backend launch or a failing pump; one management action at a
+  a new backend launch or a failing pump, and the wait is dropped then;
+  a wait of a PR the pane left stays until the pane is back on it and
+  its sequence is known. One management action at a
   time per PR, keyed by the PR it started on, so the controls of the PR
   on screen read only its own; withheld with the merge actions' reason
   as hover text. An editor
@@ -607,7 +614,9 @@ permission reads and the refusals are in
   state change that fails is a toast, since its menu is gone. The
   surface is chosen when the answer arrives: the row while the pane's
   review state is alive, a toast once it was disposed (the pane closed),
-  nothing when the pane's PR changed. Each operation claims its surface,
+  nothing when the pane's PR changed, for good: a write discarded by a
+  PR change toasts nothing when the pane closes later. Each operation
+  claims its surface,
   so an older answer never replaces a newer operation's sentence there.
   A completion settles its own PR's draft and error even when that PR is
   briefly not on screen, and never clears a newer operation's state.

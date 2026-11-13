@@ -424,6 +424,53 @@ describe('the merge commit message', () => {
     expect(merge.mock.calls[0][1]).not.toHaveProperty('commitMessage');
   });
 
+  it('keeps the default method an edited message fell back from, when the method comes back, and sends the message with the method shown', async () => {
+    setBindingMock('GetPRMergeMessage', async (_pr: unknown, method: string) => ({ title: `Default ${method}`, body: 'Body' }));
+    const merge = setBindingMock('MergePR', async () => ({ seq: 0, outcome: { merged: true, autoMerge: false } }));
+    const view = await mountReviewPanePR(withMethods(['merge', 'squash']));
+    // No pick: the editor opens on the default, Merge.
+    await fireEvent.click(view.getByTestId('review-merge-trigger'));
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-merge-edit-message')));
+    await waitFor(() => expect(view.getByTestId('review-merge-message-title')).toHaveValue('Default merge'));
+    await fireEvent.input(view.getByTestId('review-merge-message-title'), { target: { value: 'Mine' } });
+    frame(withMethods(['squash']), 2);
+    await waitFor(() => expect(view.getByTestId('review-merge-message-notice')).toHaveTextContent('Merge is no longer allowed here. This message will be used for the squash commit.'));
+    expect(view.getByTestId('review-merge-message')).toHaveTextContent('Squash and merge');
+    // Merge is back: the selection stays where the fallback put it.
+    frame(withMethods(['merge', 'squash']), 3);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(view.getByTestId('review-merge-message')).toHaveTextContent('Squash and merge');
+    expect(view.getByTestId('review-merge-message-state')).toHaveTextContent('edited');
+    await mergeNow(view);
+    await waitFor(() => expect(merge).toHaveBeenCalledTimes(1));
+    expect(merge.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'squash', commitMessage: { title: 'Mine', body: 'Body' } }));
+    // A pick ends the notice; the edited text goes with the pick.
+    await fireEvent.click(view.getByTestId('review-merge-trigger'));
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-merge-method-merge')));
+    await waitFor(() => expect(view.queryByTestId('review-merge-message-notice')).toBeNull());
+    expect(view.getByTestId('review-merge-message')).toHaveTextContent('Merge commit');
+    expect(view.getByTestId('review-merge-message-title')).toHaveValue('Mine');
+    if (view.queryByTestId('review-merge-menu')) await fireEvent.click(within(view.getByTestId('review-merge-menu')).getByTestId('review-merge-now'));
+    else await mergeNow(view);
+    await waitFor(() => expect(merge).toHaveBeenCalledTimes(2));
+    expect(merge.mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'merge', commitMessage: { title: 'Mine', body: 'Body' } }));
+  });
+
+  it('keeps a fallback from a picked method when the picked method comes back', async () => {
+    setBindingMock('GetPRMergeMessage', async (_pr: unknown, method: string) => ({ title: `Default ${method}`, body: 'Body' }));
+    const merge = setBindingMock('MergePR', async () => ({ seq: 0, outcome: { merged: true, autoMerge: false } }));
+    const view = await mountReviewPanePR(withMethods(['merge', 'squash']));
+    await pickAndEdit(view, 'squash');
+    frame(withMethods(['merge']), 2);
+    await waitFor(() => expect(view.getByTestId('review-merge-message')).toHaveTextContent('Merge commit'));
+    frame(withMethods(['merge', 'squash']), 3);
+    await waitFor(() => expect(view.getByTestId('review-merge-message-notice')).toBeInTheDocument());
+    expect(view.getByTestId('review-merge-message')).toHaveTextContent('Merge commit');
+    await mergeNow(view);
+    await waitFor(() => expect(merge).toHaveBeenCalledTimes(1));
+    expect(merge.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'merge', commitMessage: { title: 'Mine', body: 'Body' } }));
+  });
+
   it('is not offered for a rebase', async () => {
     const view = await mountReviewPanePR(detail(ALL, { merge: { ...prDetailFixture().merge, methods: ['rebase'] } }));
     await fireEvent.click(view.getByTestId('review-merge-trigger'));

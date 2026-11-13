@@ -6,9 +6,10 @@
 // failure; a picker's adds and removes are one write, none when nothing
 // changed, an older search's results go the moment the query changes,
 // and labels are one option per id through a rename; the merge commit
-// message is sent only when edited, and only for its method; everything
-// belongs to the PR it opened on and is dropped when the PR changes; the
-// pane closing applies an open picker's change.
+// message is sent only when edited and the one selected method makes a
+// commit; everything belongs to the PR it opened on and is dropped when
+// the PR changes, for good; settled waits are not kept; the pane closing
+// applies an open picker's change.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
@@ -321,13 +322,13 @@ describe('the PR on screen changing', () => {
     setBindingMock('GetPRMergeMessage', async () => ({ title: 'Default', body: '' }));
     const message = view.mergeMessage;
     message.pick('squash');
-    message.openFor('squash');
+    message.openEditor();
     await settle();
     message.setTitle('Meant for A');
     await switchPR();
     expect(message.open).toBe(false);
-    expect(message.messageFor('squash')).toBeUndefined();
-    expect(message.selected(['merge', 'squash'])).toBe('merge');
+    expect(message.commitMessage).toBeUndefined();
+    expect(message.method).toBe('merge');
   });
 
   it("hides what was A's at once, before the reset runs", async () => {
@@ -335,7 +336,7 @@ describe('the PR on screen changing', () => {
     setBindingMock('GetPRMergeMessage', async () => ({ title: 'Default', body: '' }));
     view.openTitle('A title');
     view.picker.open('reviewers', { people: [] });
-    view.mergeMessage.openFor('merge');
+    view.mergeMessage.openEditor();
     await settle();
     view.mergeMessage.setTitle('Meant for A');
     // No flush: the identity watch has not run yet.
@@ -344,7 +345,7 @@ describe('the PR on screen changing', () => {
     expect(view.titleDraft).toBeNull();
     expect(view.picker.row).toBeNull();
     expect(view.mergeMessage.open).toBe(false);
-    expect(view.mergeMessage.messageFor('merge')).toBeUndefined();
+    expect(view.mergeMessage.commitMessage).toBeUndefined();
   });
 
   it('ignores a late answer for the PR that was', async () => {
@@ -531,6 +532,140 @@ describe('an operation belongs to the PR it was started on', () => {
   });
 });
 
+describe('a write discarded by a PR change, then the pane closing', () => {
+  async function toB(): Promise<void> {
+    host.prRef = REF_B;
+    host.identity = KEY_B;
+    host.entityKey = KEY_B;
+    await settle();
+  }
+
+  it("toasts nothing for a picker's refusal", async () => {
+    const call = deferred<{ seq: number }>();
+    setBindingMock('SearchPRCandidates', async () => ({ people: [{ login: 'jdoe' }], labels: [], more: false }));
+    setBindingMock('SetPRReviewers', () => call.promise);
+    view.picker.open('reviewers', { people: [] });
+    await settle();
+    view.picker.toggle('u:jdoe');
+    const closing = view.picker.close();
+    await toB();
+    view.dispose();
+    call.reject(new TransportError('forge_refused', 'GitHub refused the reviewers.'));
+    await closing;
+    expect(getToasts()).toHaveLength(0);
+  });
+
+  for (const editor of ['title', 'description'] as const) {
+    it(`toasts nothing for a ${editor} save's refusal`, async () => {
+      const call = deferred<{ seq: number }>();
+      setBindingMock('EditPR', () => call.promise);
+      let saving: Promise<void>;
+      if (editor === 'title') {
+        view.openTitle('Old');
+        view.setTitleDraft('Mine');
+        saving = view.saveTitle();
+      } else {
+        view.openDescription('Old');
+        view.setDescriptionDraft('Mine');
+        saving = view.saveDescription();
+      }
+      await toB();
+      view.dispose();
+      call.reject(new TransportError('forge_refused', 'GitHub refused the edit.'));
+      await saving;
+      expect(getToasts()).toHaveLength(0);
+    });
+  }
+
+  it("toasts nothing for a state change's refusal", async () => {
+    const call = deferred<{ seq: number }>();
+    setBindingMock('SetPRState', () => call.promise);
+    const closing = view.setState('close');
+    await toB();
+    view.dispose();
+    call.reject(new TransportError('forge_refused', 'GitHub refused it.'));
+    await closing;
+    expect(getToasts()).toHaveLength(0);
+  });
+});
+
+describe('the waits for the pump', () => {
+  const at = (n: number) => ({ prRef: { ...REF, number: n }, key: `home:github:owner/repo:${n}` });
+  async function show(n: number): Promise<void> {
+    const pr = at(n);
+    host.prRef = pr.prRef;
+    host.identity = pr.key;
+    host.entityKey = pr.key;
+    await settle();
+  }
+
+  it('stores no wait that is already settled', async () => {
+    setBindingMock('SetPRState', async () => ({ seq: 0 }));
+    await view.setState('close');
+    setBindingMock('SetPRState', async () => ({ seq: 1 }));
+    await view.setState('reopen');
+    expect(view.waitCountForTest()).toBe(0);
+    // Nor a seq 0 answer for a PR the pane has left.
+    const call = deferred<{ seq: number }>();
+    setBindingMock('SetPRState', () => call.promise);
+    const closing = view.setState('close');
+    await show(80);
+    call.resolve({ seq: 0 });
+    await closing;
+    await settle();
+    expect(view.waitCountForTest()).toBe(0);
+  });
+
+  it('drops a wait once its sequence is applied or the wait is given up', async () => {
+    setBindingMock('SetPRState', async () => ({ seq: 3 }));
+    await view.setState('close');
+    expect(view.waitCountForTest()).toBe(1);
+    host.appliedSeq = 3;
+    await settle();
+    expect(view.waitCountForTest()).toBe(0);
+    await view.setState('reopen');
+    host.launch = 'L2';
+    await settle();
+    expect(view.waitCountForTest()).toBe(0);
+    host.launch = 'L1';
+    host.appliedSeq = 1;
+    await view.setState('close');
+    host.updateFailing = true;
+    await settle();
+    expect(view.waitCountForTest()).toBe(0);
+  });
+
+  it('holds no settled waits across many PRs, and keeps an outstanding one for the PR it waits on', async () => {
+    for (let n = 10; n < 60; n += 1) {
+      await show(n);
+      host.appliedSeq = 1;
+      setBindingMock('SetPRState', async () => ({ seq: 2 }));
+      await view.setState('close');
+      host.appliedSeq = 2;
+      await settle();
+    }
+    expect(view.waitCountForTest()).toBe(0);
+    // An outstanding wait survives a moment without a PR and another PR.
+    await show(70);
+    host.appliedSeq = 1;
+    setBindingMock('SetPRState', async () => ({ seq: 5 }));
+    await view.setState('close');
+    host.prRef = null;
+    host.identity = null;
+    host.entityKey = null;
+    await settle();
+    await show(70);
+    expect(view.pending?.kind).toBe('close');
+    await show(71);
+    expect(view.waitCountForTest()).toBe(1);
+    await show(70);
+    expect(view.pending?.kind).toBe('close');
+    host.appliedSeq = 5;
+    await settle();
+    expect(view.waitCountForTest()).toBe(0);
+  });
+});
+
 describe('the pane closing', () => {
   it("applies an open picker's change to its PR, and toasts a failure", async () => {
     setBindingMock('SearchPRCandidates', async () => ({ people: [{ login: 'jdoe' }], labels: [], more: false }));
@@ -655,36 +790,104 @@ describe('the merge commit message', () => {
   it('sends only an edited message, for a method that makes a commit', async () => {
     const read = setBindingMock('GetPRMergeMessage', async (_pr: unknown, method: string) => ({ title: `Default ${method}`, body: 'Body' }));
     const message = view.mergeMessage;
-    expect(message.messageFor('merge')).toBeUndefined();
-    message.openFor('merge');
+    expect(message.commitMessage).toBeUndefined();
+    message.openEditor();
     await settle();
     expect(message.title).toBe('Default merge');
-    expect(message.messageFor('merge')).toBeUndefined();
+    expect(message.commitMessage).toBeUndefined();
     // Untouched, a method change reads that method's default.
     message.pick('squash');
     await settle();
     expect(read.mock.calls.map((callArgs) => callArgs[1])).toEqual(['merge', 'squash']);
     expect(message.title).toBe('Default squash');
     message.setTitle('Mine\nsplit');
-    expect(message.messageFor('squash')).toEqual({ title: 'Mine split', body: 'Body' });
-    expect(message.messageFor('rebase')).toBeUndefined();
-    // Edited, a method change keeps the text and reads nothing; the text
-    // goes with the method the editor shows, never another.
+    expect(message.method).toBe('squash');
+    expect(message.commitMessage).toEqual({ title: 'Mine split', body: 'Body' });
+    // Edited, a method change keeps the text and reads nothing.
     message.pick('merge');
     await settle();
     expect(read).toHaveBeenCalledTimes(2);
     expect(message.title).toBe('Mine split');
-    expect(message.messageFor('merge')).toEqual({ title: 'Mine split', body: 'Body' });
-    expect(message.messageFor('squash')).toBeUndefined();
+    expect(message.commitMessage).toEqual({ title: 'Mine split', body: 'Body' });
+    // A method that makes no commit sends none.
+    message.pick('rebase');
+    expect(message.commitMessage).toBeUndefined();
     message.close();
-    expect(message.messageFor('merge')).toBeUndefined();
+    message.pick('merge');
+    expect(message.commitMessage).toBeUndefined();
   });
 
   it('shows a failed default read and leaves the merge as it was', async () => {
     setBindingMock('GetPRMergeMessage', async () => { throw new TransportError('forge_transient', 'GitHub did not answer. Try again in a moment.'); });
-    view.mergeMessage.openFor('merge');
+    view.mergeMessage.openEditor();
     await settle();
     expect(view.mergeMessage.error?.message).toBe('GitHub did not answer. Try again in a moment.');
-    expect(view.mergeMessage.messageFor('merge')).toBeUndefined();
+    expect(view.mergeMessage.commitMessage).toBeUndefined();
+  });
+
+  it('starts on the default, and keeps a fallback when the method comes back', async () => {
+    setBindingMock('GetPRMergeMessage', async (_pr: unknown, method: string) => ({ title: `Default ${method}`, body: 'Body' }));
+    const message = view.mergeMessage;
+    await settle();
+    expect(message.method).toBe('merge');
+    message.openEditor();
+    await settle();
+    message.setTitle('Mine');
+    host.mergeMethods = ['squash'];
+    await settle();
+    expect(message.method).toBe('squash');
+    expect(message.notice).toBe('Merge is no longer allowed here. This message will be used for the squash commit.');
+    host.mergeMethods = ['merge', 'squash'];
+    await settle();
+    expect(message.method).toBe('squash');
+    expect(message.commitMessage).toEqual({ title: 'Mine', body: 'Body' });
+    // A pick ends the notice.
+    message.pick('merge');
+    expect(message.notice).toBeNull();
+    expect(message.commitMessage).toEqual({ title: 'Mine', body: 'Body' });
+  });
+
+  // For any sequence of snapshots, picks, edits, opens and closes, the
+  // request a merge builds (the selected method and the commit message)
+  // is what the editor shows: the method is the one shown and offered,
+  // and the message is present exactly when shown as edited for a method
+  // that makes a commit, with the text shown.
+  it('always sends the method shown, and the message exactly when it is shown edited for a commit', async () => {
+    setBindingMock('GetPRMergeMessage', async (_pr: unknown, method: string) => ({ title: `Default ${method}`, body: 'Body' }));
+    const ALL_METHODS = ['merge', 'squash', 'rebase'];
+    let seed = 7;
+    const next = (n: number) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return (seed >>> 16) % n;
+    };
+    const message = view.mergeMessage;
+    for (let run = 0; run < 40; run += 1) {
+      message.close();
+      host.mergeMethods = ['merge', 'squash'];
+      await settle();
+      for (let step = 0; step < 25; step += 1) {
+        const offered = host.mergeMethods ?? ['merge'];
+        switch (next(6)) {
+          case 0: {
+            const subset = ALL_METHODS.filter(() => next(2) === 0);
+            host.mergeMethods = subset;
+            break;
+          }
+          case 1: message.pick(offered[next(offered.length)] ?? 'merge'); break;
+          case 2: message.setTitle(`Title ${step}`); break;
+          case 3: message.openEditor(); break;
+          case 4: message.close(); break;
+          default: message.setBody(`Body ${step}`); break;
+        }
+        await settle();
+        const shownOffered = (host.mergeMethods ?? []).length ? host.mergeMethods! : ['merge'];
+        expect(shownOffered).toContain(message.method);
+        const sent = message.commitMessage;
+        const commits = message.method === 'merge' || message.method === 'squash';
+        expect(sent !== undefined).toBe(message.open && message.edited && commits);
+        if (sent) expect(sent).toEqual({ title: message.title.trim(), body: message.body });
+        if (message.notice !== null) expect(message.edited).toBe(true);
+      }
+    }
   });
 });
