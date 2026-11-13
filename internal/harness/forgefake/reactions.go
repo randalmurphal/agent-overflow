@@ -120,16 +120,14 @@ func ghReactionTarget(e *Engine, c *call, v graphQLVars) response {
 	if !ok {
 		return graphQLNodeNotFound(id)
 	}
-	typename, comment := "PullRequestReviewComment", Comment{}
-	if thread < 0 {
-		typename, comment = "IssueComment", p.Comments[at]
-	} else {
-		comment = p.Threads[thread].Comments[at]
+	typename, comment := "IssueComment", p.Comments
+	if thread >= 0 {
+		typename, comment = "PullRequestReviewComment", p.Threads[thread].Comments
 	}
 	return graphQLData(map[string]any{"node": map[string]any{
 		"__typename":     typename,
 		"pullRequest":    map[string]any{"number": p.Number, "repository": map[string]any{"nameWithOwner": r.Project}},
-		"reactionGroups": e.githubReactionGroups(comment),
+		"reactionGroups": e.githubReactionGroups(comment[at]),
 	}})
 }
 
