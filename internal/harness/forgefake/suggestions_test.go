@@ -14,7 +14,8 @@ const suggestionsFixture = `{
   "repos": [
     {"forge": "github", "project": "acme/s", "pulls": [
       {"number": 1, "title": "S", "author": "someone", "headSha": "1111111111111111111111111111111111111111",
-       "files": {"a.go": "one\ntwo\nthree\n"},
+       "files": {"a.go": "one\ntwo\nthree\n", "run.sh": "echo\n", "link": "a.go"},
+       "fileModes": {"run.sh": "100755", "link": "120000", "vendor": "160000", "dir": "040000"},
        "threads": [{"id": "PRRT_s", "path": "a.go", "line": 2, "side": "right", "comments": [{"id": 50, "author": "someone", "authorName": "Some One", "body": "` + "```suggestion\\nTWO\\n```" + `",
          "reactions": [{"name": "heart", "user": "someone"}, {"name": "heart", "user": "octo"}]}]}],
        "comments": [{"id": 51, "author": "someone", "body": "note"}]},
@@ -66,21 +67,48 @@ func gql(t *testing.T, kind, op, decl string, vars map[string]any) string {
 func TestGitHubSuggestionRoutes(t *testing.T) {
 	t.Parallel()
 	e, send := suggestionsEngine(t)
-	raw := http.Header{"Accept": {"application/vnd.github.raw"}}
-	if got := send("GET", "github.com", "repos/acme/s/contents/a.go?ref=1111111111111111111111111111111111111111", "", raw); got.status != 200 || got.body != "one\ntwo\nthree\n" {
-		t.Fatalf("contents = %+v", got)
+	raw := http.Header{"Accept": {"application/vnd.github.raw+json"}}
+	head := "1111111111111111111111111111111111111111"
+	entry := func(repo, oid, path string) string {
+		owner, name, _ := strings.Cut(repo, "/")
+		return send("POST", "github.com", "/github/graphql", gql(t, "query", "SuggestionFile", "($owner: String!, $name: String!, $oid: GitObjectID!, $path: String!)",
+			map[string]any{"owner": owner, "name": name, "oid": oid, "path": path}), nil).body
 	}
-	if got := send("GET", "github.com", "repos/acme/s/contents/a.go?ref=1111111111111111111111111111111111111111", "", nil); got.status != http.StatusNotFound {
-		t.Fatalf("contents without the raw media type = %+v, want unhandled", got)
+	blob := gitBlobID("one\ntwo\nthree\n")
+	if got := entry("acme/s", head, "a.go"); !strings.Contains(got, `"file":{"mode":33188,"object":{"__typename":"Blob","byteSize":14,"isBinary":false},"oid":"`+blob+`","type":"blob"}`) {
+		t.Fatalf("entry = %s", got)
+	}
+	for path, want := range map[string]string{
+		"run.sh": `"mode":33261,"object":{"__typename":"Blob"`,
+		"link":   `"mode":40960,"object":{"__typename":"Blob"`,
+		"vendor": `"mode":57344,"object":{"__typename":"Commit"},"oid":"`,
+		"dir":    `"mode":16384,"object":{"__typename":"Tree"},"oid":"`,
+		"gone":   `"file":null`,
+	} {
+		if got := entry("acme/s", head, path); !strings.Contains(got, want) {
+			t.Fatalf("entry %s = %s", path, got)
+		}
+	}
+	if got := entry("acme/s", strings.Repeat("9", 40), "a.go"); !strings.Contains(got, `"object":null`) {
+		t.Fatalf("entry at another commit = %s", got)
+	}
+	if got := entry("nobody/s", head, "a.go"); !strings.Contains(got, "NOT_FOUND") {
+		t.Fatalf("entry in an unknown repository = %s", got)
+	}
+	if got := send("GET", "github.com", "repos/acme/s/git/blobs/"+blob, "", raw); got.status != 200 || got.body != "one\ntwo\nthree\n" {
+		t.Fatalf("blob = %+v", got)
+	}
+	if got := send("GET", "github.com", "repos/acme/s/git/blobs/"+strings.Repeat("a", 40), "", raw); got.status != http.StatusNotFound {
+		t.Fatalf("unknown blob = %+v", got)
+	}
+	if got := send("GET", "github.com", "repos/acme/s/git/blobs/"+blob, "", nil); got.status != http.StatusNotFound {
+		t.Fatalf("blob without the raw media type = %+v, want unhandled", got)
 	}
 	if inv := e.Invocations(0).Invocations; !inv[len(inv)-1].Unhandled {
-		t.Fatalf("contents without the raw media type was handled: %+v", inv[len(inv)-1])
+		t.Fatalf("blob without the raw media type was handled: %+v", inv[len(inv)-1])
 	}
-	if got := send("GET", "github.com", "repos/acme/s/contents/a.go?ref=9999999999999999999999999999999999999999", "", raw); got.status != http.StatusNotFound {
-		t.Fatalf("contents at another sha = %+v", got)
-	}
-	if got := send("GET", "github.com", "repos/fork/s/contents/a.go?ref=2222222222222222222222222222222222222222", "", raw); got.status != 200 || got.body != "x\n" {
-		t.Fatalf("a fork head's contents = %+v", got)
+	if got := send("GET", "github.com", "repos/fork/s/git/blobs/"+gitBlobID("x\n"), "", raw); got.status != 200 || got.body != "x\n" {
+		t.Fatalf("a fork head's blob = %+v", got)
 	}
 	decl := "($repository: String!, $branch: String!, $expectedHeadOid: GitObjectID!, $headline: String!, $body: String, $path: String!, $contents: Base64String!)"
 	commit := func(repo, branch, head string) string {
@@ -118,7 +146,7 @@ func TestGitHubSuggestionRoutes(t *testing.T) {
 	// The viewer may not push below WRITE.
 	e.mu.Lock()
 	e.repoOn("github", "github.com", "acme/s").Merge.Permission = "TRIAGE"
-	head := p.HeadSHA
+	head = p.HeadSHA
 	e.mu.Unlock()
 	if got := send("POST", "github.com", "/github/graphql", commit("acme/s", "feature", head), nil); !strings.Contains(got.body, "FORBIDDEN") {
 		t.Fatalf("commit below write = %s", got.body)
@@ -247,5 +275,25 @@ func TestGitLabReactionRoutes(t *testing.T) {
 	older := send("POST", "gitlab.com", "/gitlab/api/graphql", gql(t, "query", "MRNoteReactions", "($fullPath: ID!, $iid: String!, $after: String)", map[string]any{"fullPath": "grp/s", "iid": "3"}), nil).body
 	if !strings.Contains(older, "Field 'awardEmoji' doesn't exist on type 'Note'") || strings.Contains(older, `"data"`) {
 		t.Fatalf("reactions read on an older server = %s", older)
+	}
+}
+
+// fileModes name a GitHub mode the fake models, on a path whose kind
+// matches what files holds.
+func TestFileModesAreChecked(t *testing.T) {
+	t.Parallel()
+	for name, pull := range map[string]string{
+		"unknown mode":         `"files": {"a": "x"}, "fileModes": {"a": "100666"}`,
+		"directory with bytes": `"files": {"a": "x"}, "fileModes": {"a": "040000"}`,
+		"link without target":  `"fileModes": {"a": "120000"}`,
+	} {
+		fixture := `{"repos": [{"forge": "github", "project": "o/r", "pulls": [{"number": 1, "title": "T", ` + pull + `}]}]}`
+		if _, err := seedJSON(New(Options{APIToken: testAPIToken}), fixture); err == nil {
+			t.Errorf("%s: seeded", name)
+		}
+	}
+	gitlab := `{"repos": [{"forge": "gitlab", "project": "g/r", "pulls": [{"number": 1, "title": "T", "files": {"a": "x"}, "fileModes": {"a": "100755"}}]}]}`
+	if _, err := seedJSON(New(Options{APIToken: testAPIToken}), gitlab); err == nil {
+		t.Error("GitLab fileModes seeded")
 	}
 }

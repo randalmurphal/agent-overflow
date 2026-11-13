@@ -2,11 +2,14 @@ package git
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"agent-overflow/internal/forgeapi"
@@ -276,25 +279,119 @@ func githubCoAuthor(author *struct {
 	return fmt.Sprintf("Co-authored-by: %s <%d+%s@users.noreply.github.com>", name, author.DatabaseID, author.Login)
 }
 
-// readGitHubFileAt reads path's raw bytes in repo at the commit sha,
-// bounded by suggestionFileMaxBytes: a larger file is refused, never read
-// whole.
+// githubSuggestionFileQuery reads the tree entry at path on the head
+// commit: what the apply may rewrite is a regular file's blob, which the
+// entry's mode, type and blob size decide before any content is read.
+const githubSuggestionFileQuery = `query SuggestionFile($owner: String!, $name: String!, $oid: GitObjectID!, $path: String!) {
+  repository(owner: $owner, name: $name) {
+    object(oid: $oid) {
+      __typename
+      ... on Commit { file(path: $path) { mode type oid object { __typename ... on Blob { byteSize isBinary } } } }
+    }
+  }
+}`
+
+type githubSuggestionFileRaw struct {
+	Repository *struct {
+		Object *struct {
+			Typename string `json:"__typename"`
+			File     *struct {
+				Mode   int    `json:"mode"`
+				Type   string `json:"type"`
+				OID    string `json:"oid"`
+				Object *struct {
+					Typename string `json:"__typename"`
+					ByteSize int64  `json:"byteSize"`
+					IsBinary *bool  `json:"isBinary"`
+				} `json:"object"`
+			} `json:"file"`
+		} `json:"object"`
+	} `json:"repository"`
+}
+
+// Git tree entry modes, as octal numbers.
+const (
+	gitModeFile       = 0o100644
+	gitModeExecutable = 0o100755
+	gitModeSymlink    = 0o120000
+	gitModeSubmodule  = 0o160000
+	gitModeTree       = 0o040000
+)
+
+// gitTreeMode reads TreeEntry.mode, an Int: the mode's value, or its
+// octal digits read as a decimal number (100644), whichever the answer
+// is; the two never collide for the modes Git writes.
+func gitTreeMode(mode int) int {
+	if octal, err := strconv.ParseInt(strconv.Itoa(mode), 8, 64); err == nil {
+		switch int(octal) {
+		case gitModeFile, gitModeExecutable, gitModeSymlink, gitModeSubmodule, gitModeTree:
+			return int(octal)
+		}
+	}
+	return mode
+}
+
+// readGitHubFileAt reads the regular file at path in repo at the commit
+// sha: its tree entry first (SuggestionFile), refusing what the apply
+// cannot rewrite before any content is read (no entry, a symbolic link,
+// a submodule, a directory, an executable file, whose mode the commit
+// API cannot keep, a blob past suggestionFileMaxBytes or one GitHub
+// calls binary), then the blob by its id
+// (repos/R/git/blobs/OID, raw, bounded), checked against that id.
 func readGitHubFileAt(ctx context.Context, client *forgeapi.Client, repo, path, sha string) ([]byte, error) {
-	segments := strings.Split(path, "/")
-	for i := range segments {
-		segments[i] = url.PathEscape(segments[i])
+	owner, name, _ := strings.Cut(repo, "/")
+	var raw githubSuggestionFileRaw
+	if _, err := client.GraphQL(ctx, "SuggestionFile", githubSuggestionFileQuery, map[string]any{"owner": owner, "name": name, "oid": sha, "path": path}, &raw); err != nil {
+		return nil, err
+	}
+	refuse := func(reason string) ([]byte, error) { return nil, &SuggestionNotAppliedError{Reason: reason} }
+	if raw.Repository == nil || raw.Repository.Object == nil || raw.Repository.Object.Typename != "Commit" {
+		return refuse("the head commit is not in the head branch's repository")
+	}
+	entry := raw.Repository.Object.File
+	if entry == nil {
+		return refuse("the file is not on the head commit")
+	}
+	mode := gitTreeMode(entry.Mode)
+	switch {
+	case mode == gitModeSymlink:
+		return refuse("the file is a symbolic link")
+	case mode == gitModeSubmodule || entry.Type == "commit":
+		return refuse("the path is a submodule")
+	case mode == gitModeTree || entry.Type == "tree":
+		return refuse("the path is a directory")
+	case mode == gitModeExecutable:
+		return refuse("the file is executable and GitHub's commit API cannot keep that; apply it from a checkout")
+	case mode != gitModeFile || entry.Type != "blob" || entry.Object == nil || entry.Object.Typename != "Blob":
+		return refuse("the path is not a regular file")
+	case entry.Object.ByteSize > suggestionFileMaxBytes:
+		return refuse(fmt.Sprintf("the file is larger than %d MiB", suggestionFileMaxBytes>>20))
+	case entry.Object.IsBinary != nil && *entry.Object.IsBinary:
+		return refuse("the file is not text")
+	case len(entry.OID) != sha1.Size*2:
+		return refuse("the repository's object format is not supported")
 	}
 	resp, err := client.Do(ctx, forgeapi.Request{
-		Path:         "repos/" + repo + "/contents/" + strings.Join(segments, "/"),
-		Query:        url.Values{"ref": {sha}},
-		Header:       http.Header{"Accept": {"application/vnd.github.raw"}},
+		Path:         "repos/" + repo + "/git/blobs/" + url.PathEscape(entry.OID),
+		Header:       http.Header{"Accept": {"application/vnd.github.raw+json"}},
 		MaxBodyBytes: suggestionFileMaxBytes,
 	})
 	if errors.Is(err, forgeapi.ErrBodyTooLarge) {
-		return nil, &SuggestionNotAppliedError{Reason: fmt.Sprintf("the file is larger than %d MiB", suggestionFileMaxBytes>>20)}
+		return refuse(fmt.Sprintf("the file is larger than %d MiB", suggestionFileMaxBytes>>20))
 	}
 	if err != nil {
 		return nil, err
 	}
+	if !strings.EqualFold(gitBlobID(resp.Body), entry.OID) {
+		return refuse("the file read is not the file on the head commit")
+	}
 	return resp.Body, nil
+}
+
+// gitBlobID is the SHA-1 object id Git gives content as a blob.
+func gitBlobID(content []byte) string {
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", len(content))
+	h.Write(content)
+	return hex.EncodeToString(h.Sum(nil))
 }

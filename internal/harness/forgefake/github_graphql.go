@@ -79,6 +79,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "mutation", name: "DeleteReviewComment", required: []string{"id"}, run: ghDeleteReviewComment},
 	{kind: "mutation", name: "DeleteIssueComment", required: []string{"id"}, run: ghDeleteIssueComment},
 	{kind: "query", name: "SuggestionTarget", required: []string{"threadID", "commentID"}, run: ghSuggestionTarget},
+	{kind: "query", name: "SuggestionFile", required: []string{"owner", "name", "oid", "path"}, run: ghSuggestionFile},
 	{kind: "mutation", name: "SuggestionCommit", required: []string{"repository", "branch", "expectedHeadOid", "headline", "path", "contents"}, optional: []string{"body"}, run: ghSuggestionCommit},
 	{kind: "query", name: "ReactionTarget", required: []string{"id"}, run: ghReactionTarget},
 	{kind: "mutation", name: "AddReaction", required: []string{"subjectID", "content"}, run: ghReaction(true)},

@@ -298,3 +298,24 @@ func lastSeq(r *rig) int {
 	}
 	return all[len(all)-1].Seq
 }
+
+// A GitHub apply reads the tree entry before any content: an executable
+// file is refused with nothing read or written, and a regular one is read
+// as the blob its entry names.
+func TestGitHubApplyReadsTheTreeEntryThroughTheAppsForgeCode(t *testing.T) {
+	fixture := suggestionFixture(githubMergeFixture("success"))
+	fixture.Repos[0].Pulls[0].FileModes = map[string]string{"a.go": "100755"}
+	r := newRig(t, fixture)
+	ctx := forgeapi.WithInteractive(t.Context())
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
+	thread := threadByBody(mergeRead(t, r, ref), "Use:\n```suggestion\nTWO\n```\n")
+	s := thread.Comments[0].Suggestions[0]
+	err := r.core.ApplyPRSuggestion(ctx, ref, gitops.SuggestionApply{Target: targetOf(thread, 0), Digest: s.Digest, HeadSHA: strings.Repeat("9", 40)})
+	if got := explained(t, ref, gitops.ActionApplySuggestion, err); got.Message != "The suggestion was not applied: the file is executable and GitHub's commit API cannot keep that; apply it from a checkout." {
+		t.Fatalf("executable apply = %s: %s", got.Kind, got.Message)
+	}
+	if routeCount(r, 0, "gh graphql SuggestionFile") != 1 || routeCount(r, 0, "gh api blob") != 0 || routeCount(r, 0, "gh graphql SuggestionCommit") != 0 {
+		t.Fatalf("requests = %+v", r.engine.Invocations(0).Invocations)
+	}
+	expectAllHandled(t, r)
+}

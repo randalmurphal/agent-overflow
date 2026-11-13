@@ -57,11 +57,18 @@ func TestGitHubApplySuggestionAfterAProseEdit(t *testing.T) {
 }
 
 type githubApplyRig struct {
-	target  string
-	file    forgeAPIAnswer
-	commit  forgeAPIAnswer
-	resolve forgeAPIAnswer
+	target string
+	// file is the blob request's answer; entry edits the tree entry the
+	// SuggestionFile read answers, by default the regular file whose blob
+	// is file's body; entryAnswer replaces that answer whole.
+	file        forgeAPIAnswer
+	entry       func(file map[string]any)
+	entryAnswer string
+	commit      forgeAPIAnswer
+	resolve     forgeAPIAnswer
 }
+
+const githubTestBlobPath = "repos/o/r/git/blobs/"
 
 func newGitHubApplyCore(t *testing.T, rig githubApplyRig) (*Core, *forgeAPICalls) {
 	t.Helper()
@@ -70,6 +77,15 @@ func newGitHubApplyCore(t *testing.T, rig githubApplyRig) (*Core, *forgeAPICalls
 	}
 	if rig.file.Body == "" && rig.file.Status == 0 {
 		rig.file = forgeAPIAnswer{Body: "one\ntwo\nthree\nfour\n"}
+	}
+	blobID := gitBlobID([]byte(rig.file.Body))
+	if rig.entryAnswer == "" {
+		file := map[string]any{"mode": 33188, "type": "blob", "oid": blobID,
+			"object": map[string]any{"__typename": "Blob", "byteSize": len(rig.file.Body), "isBinary": false}}
+		if rig.entry != nil {
+			rig.entry(file)
+		}
+		rig.entryAnswer = mustJSON(map[string]any{"data": map[string]any{"repository": map[string]any{"object": map[string]any{"__typename": "Commit", "file": file}}}})
 	}
 	if rig.commit.Body == "" && rig.commit.Status == 0 {
 		rig.commit = githubData(`{"createCommitOnBranch":{"commit":{"oid":"bbbb"}}}`)
@@ -85,9 +101,14 @@ func newGitHubApplyCore(t *testing.T, rig githubApplyRig) (*Core, *forgeAPICalls
 			return rig.commit
 		case call.Op == "SetThreadResolved":
 			return rig.resolve
-		case call.Method == http.MethodGet && call.Path == "repos/o/r/contents/a.go?ref="+githubTestHead:
-			if call.Header.Get("Accept") != "application/vnd.github.raw" {
-				t.Errorf("contents read with Accept %q", call.Header.Get("Accept"))
+		case call.Op == "SuggestionFile":
+			if call.Vars["owner"] != "o" || call.Vars["name"] != "r" || call.Vars["oid"] != githubTestHead || call.Vars["path"] != "a.go" {
+				t.Errorf("SuggestionFile variables = %v", call.Vars)
+			}
+			return forgeAPIAnswer{Body: rig.entryAnswer}
+		case call.Method == http.MethodGet && strings.HasPrefix(call.Path, githubTestBlobPath):
+			if call.Header.Get("Accept") != "application/vnd.github.raw+json" {
+				t.Errorf("blob read with Accept %q", call.Header.Get("Accept"))
 			}
 			return rig.file
 		}
@@ -118,7 +139,7 @@ func TestGitHubApplySuggestionCommitsAndResolves(t *testing.T) {
 	if err := core.ApplyPRSuggestion(t.Context(), githubTestRef(5), applyReq()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(calls.ops(), ","); got != "SuggestionTarget,GET repos/o/r/contents/a.go?ref="+githubTestHead+",SuggestionCommit,SetThreadResolved" {
+	if got := strings.Join(calls.ops(), ","); got != "SuggestionTarget,SuggestionFile,GET "+githubTestBlobPath+gitBlobID([]byte("one\ntwo\nthree\nfour\n"))+",SuggestionCommit,SetThreadResolved" {
 		t.Fatalf("requests = %s", got)
 	}
 	commit := lastOp(calls, "SuggestionCommit").Vars
@@ -179,7 +200,9 @@ func TestGitHubApplySuggestionRefusals(t *testing.T) {
 		{"a block inserted before it", githubApplyRig{target: githubSuggestionTargetBody("```suggestion\nX\n```\n```suggestion\nTWO\n```")}, nil, githubTestRef(5), changed},
 		{"the anchor moved", githubApplyRig{target: githubSuggestionTarget(func(thread, _ map[string]any) { thread["line"], thread["startLine"] = 4, 3 })}, nil, githubTestRef(5), changed},
 		{"a digest of another forge", githubApplyRig{}, func(r *SuggestionApply) { r.Digest = SuggestionDigest("gitlab", 2, 3, []string{"TWO"}) }, githubTestRef(5), changed},
-		{"file past the bound", githubApplyRig{file: forgeAPIAnswer{Body: big}}, nil, githubTestRef(5), notApplied},
+		{"blob past the bound", githubApplyRig{file: forgeAPIAnswer{Body: big}, entry: func(file map[string]any) {
+			file["object"].(map[string]any)["byteSize"] = 10
+		}}, nil, githubTestRef(5), notApplied},
 		{"binary file", githubApplyRig{file: forgeAPIAnswer{Body: "one\x00\ntwo\nthree\n"}}, nil, githubTestRef(5), notApplied},
 		{"file shorter than the anchor", githubApplyRig{file: forgeAPIAnswer{Body: "one\ntwo\n"}}, nil, githubTestRef(5), notApplied},
 	} {
@@ -327,4 +350,82 @@ func mustJSON(v any) string {
 		panic(err)
 	}
 	return string(out)
+}
+
+// What the apply may rewrite is the regular file's blob at the thread's
+// path on the head commit, read by its id and checked against it. Every
+// other entry is refused, by its own sentence, before any content is
+// read; a blob within the bound applies at exactly the bound.
+func TestGitHubApplySuggestionFileEntry(t *testing.T) {
+	t.Parallel()
+	exact := "one\ntwo\nthree\n" + strings.Repeat("x", suggestionFileMaxBytes-len("one\ntwo\nthree\n"))
+	lfs := "version https://git-lfs.github.com/spec/v1\noid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393\nsize 12345\n"
+	commit := func(file map[string]any) map[string]any {
+		return map[string]any{"data": map[string]any{"repository": map[string]any{"object": map[string]any{"__typename": "Commit", "file": file}}}}
+	}
+	for _, tc := range []struct {
+		name   string
+		rig    githubApplyRig
+		reason string // empty: applies
+		blob   bool   // the blob was read
+	}{
+		{"a symbolic link to a file", githubApplyRig{entry: func(f map[string]any) { f["mode"] = 40960 }}, "the file is a symbolic link", false},
+		{"a symbolic link, mode as octal digits", githubApplyRig{entry: func(f map[string]any) { f["mode"] = 120000 }}, "the file is a symbolic link", false},
+		{"a submodule", githubApplyRig{entry: func(f map[string]any) {
+			f["mode"], f["type"], f["object"] = 57344, "commit", map[string]any{"__typename": "Commit"}
+		}}, "the path is a submodule", false},
+		{"a directory", githubApplyRig{entry: func(f map[string]any) {
+			f["mode"], f["type"], f["object"] = 16384, "tree", map[string]any{"__typename": "Tree"}
+		}}, "the path is a directory", false},
+		{"a missing path", githubApplyRig{entryAnswer: mustJSON(commit(nil))}, "the file is not on the head commit", false},
+		{"the head commit missing", githubApplyRig{entryAnswer: mustJSON(map[string]any{"data": map[string]any{"repository": map[string]any{"object": nil}}})},
+			"the head commit is not in the head branch's repository", false},
+		{"executable", githubApplyRig{entry: func(f map[string]any) { f["mode"] = 33261 }},
+			"the file is executable and GitHub's commit API cannot keep that; apply it from a checkout", false},
+		{"one byte past the bound", githubApplyRig{file: forgeAPIAnswer{Body: exact + "x"}}, "the file is larger than 1 MiB", false},
+		{"binary by GitHub's answer", githubApplyRig{entry: func(f map[string]any) { f["object"].(map[string]any)["isBinary"] = true }}, "the file is not text", false},
+		{"an object id of another format", githubApplyRig{entry: func(f map[string]any) { f["oid"] = strings.Repeat("a", 64) }}, "the repository's object format is not supported", false},
+		{"bytes that are not the blob", githubApplyRig{entry: func(f map[string]any) { f["oid"] = strings.Repeat("a", 40) }}, "the file read is not the file on the head commit", true},
+		{"exactly the bound", githubApplyRig{file: forgeAPIAnswer{Body: exact}}, "", true},
+		{"a Git LFS pointer is a regular file", githubApplyRig{file: forgeAPIAnswer{Body: lfs},
+			target: githubSuggestionTarget(func(thread, _ map[string]any) { thread["line"] = 2 })}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			core, calls := newGitHubApplyCore(t, tc.rig)
+			req := applyReq()
+			if strings.Contains(tc.name, "LFS") {
+				req.Digest = SuggestionDigest("github", 2, 2, []string{"TWO"})
+			}
+			err := core.ApplyPRSuggestion(t.Context(), githubTestRef(5), req)
+			var refused *SuggestionNotAppliedError
+			switch {
+			case tc.reason == "" && err != nil:
+				t.Fatalf("err = %v", err)
+			case tc.reason != "" && (!errors.As(err, &refused) || refused.Reason != tc.reason):
+				t.Fatalf("err = %v, want the reason %q", err, tc.reason)
+			}
+			blob := false
+			for _, op := range calls.ops() {
+				blob = blob || strings.HasPrefix(op, "GET "+githubTestBlobPath)
+			}
+			if blob != tc.blob {
+				t.Fatalf("blob read %t, want %t: %v", blob, tc.blob, calls.ops())
+			}
+			if (lastOp(calls, "SuggestionCommit") != nil) != (tc.reason == "") {
+				t.Fatalf("commit sent %t for reason %q", lastOp(calls, "SuggestionCommit") != nil, tc.reason)
+			}
+		})
+	}
+}
+
+func TestGitBlobID(t *testing.T) {
+	t.Parallel()
+	// git hash-object of "hello\n" and of the empty blob.
+	if got := gitBlobID([]byte("hello\n")); got != "ce013625030ba8dba906f756967f9e9ca394464a" {
+		t.Fatalf("hello = %s", got)
+	}
+	if got := gitBlobID(nil); got != "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" {
+		t.Fatalf("empty = %s", got)
+	}
 }

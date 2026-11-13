@@ -1,10 +1,11 @@
 package forgefake
 
 import (
+	"crypto/sha1"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,7 +15,8 @@ import (
 )
 
 // Suggested changes. A pull's Files are its head branch at HeadSHA. On
-// GitHub the app reads a file through the contents API and commits the
+// GitHub the app reads the file's tree entry (SuggestionFile) and its
+// blob (git/blobs) and commits the
 // rewritten file with createCommitOnBranch (SuggestionCommit); on GitLab
 // the discussions carry each note's suggestions, derived as GitLab
 // derives them (the note's suggestion blocks over the thread's lines of
@@ -118,31 +120,89 @@ func (e *Engine) commitFile(p *Pull, path, content string) string {
 	return p.HeadSHA
 }
 
-// ghContents answers GET repos/O/R/contents/PATH?ref=SHA with the raw
-// media type: the file's bytes on the head of a pull whose head
-// repository is O/R (the repository itself, or a pull's headRepo fork)
-// at that sha. The fake models no older commit: another ref is a 404.
-func ghContents(e *Engine, c *call, m []string) response {
-	if accept := c.flag("accept"); accept != "application/vnd.github.raw" {
-		return unhandled("gh api contents answers the raw media type only, not %q", accept)
+// File modes a pull's FileModes may give a path, as Git writes them.
+var githubFileModes = map[string]struct {
+	value      int
+	entryType  string
+	objectType string
+}{
+	"100644": {0o100644, "blob", "Blob"},
+	"100755": {0o100755, "blob", "Blob"},
+	"120000": {0o120000, "blob", "Blob"},
+	"160000": {0o160000, "commit", "Commit"},
+	"040000": {0o040000, "tree", "Tree"},
+}
+
+// gitBlobID is the SHA-1 object id Git gives content as a blob.
+func gitBlobID(content string) string {
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", len(content))
+	h.Write([]byte(content))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ghSuggestionFile answers SuggestionFile: the tree entry at path on the
+// commit oid of a pull whose head repository is owner/name, from the
+// pull's Files and FileModes (a regular file by default; a tree or a
+// submodule needs only its mode). The fake models no other commit: an oid
+// other than a head is a null object, a path the head lacks a null file.
+func ghSuggestionFile(e *Engine, c *call, v graphQLVars) response {
+	owner, err := v.str("owner")
+	name, err1 := v.str("name")
+	oid, err2 := v.str("oid")
+	path, err3 := v.str("path")
+	if err := firstErr(err, err1, err2, err3); err != nil {
+		return unhandled("SuggestionFile: %v", err)
 	}
-	query, err := url.ParseQuery(m[3])
-	if err != nil || len(query) != 1 || query.Get("ref") == "" {
-		return unhandled("gh api contents takes ref alone: %q", m[3])
+	if e.repoOn("github", c.http.host, owner+"/"+name) == nil && e.githubHeadPull(c, owner+"/"+name, "", "") == nil {
+		return graphQLNotFound(map[string]any{"repository": nil}, []string{"repository"}, fmt.Sprintf("Could not resolve to a Repository with the name '%s/%s'.", owner, name))
 	}
-	path, err := url.PathUnescape(m[2])
-	if err != nil {
-		return unhandled("contents path %q", m[2])
-	}
-	p := e.githubHeadPull(c, m[1], "", query.Get("ref"))
+	p := e.githubHeadPull(c, owner+"/"+name, "", oid)
 	if p == nil {
-		return ghNotFound()
+		return graphQLData(map[string]any{"repository": map[string]any{"object": nil}})
 	}
-	content, ok := p.Files[path]
-	if !ok {
-		return ghNotFound()
+	var file any
+	content, isFile := p.Files[path]
+	mode, hasMode := p.FileModes[path]
+	if !hasMode {
+		mode = "100644"
 	}
-	return response{stdout: []byte(content), header: http.Header{"Content-Type": {"application/vnd.github.raw"}}}
+	kind := githubFileModes[mode]
+	switch {
+	case kind.entryType == "blob" && isFile:
+		file = map[string]any{"mode": kind.value, "type": "blob", "oid": gitBlobID(content), "object": map[string]any{
+			"__typename": "Blob", "byteSize": len(content), "isBinary": !utf8.ValidString(content) || strings.ContainsRune(content, 0),
+		}}
+	case kind.entryType != "blob" && hasMode:
+		file = map[string]any{"mode": kind.value, "type": kind.entryType, "oid": gitBlobID(path), "object": map[string]any{"__typename": kind.objectType}}
+	}
+	return graphQLData(map[string]any{"repository": map[string]any{"object": map[string]any{"__typename": "Commit", "file": file}}})
+}
+
+// ghBlob answers GET repos/O/R/git/blobs/SHA with the raw media type: a
+// file of a pull whose head repository is O/R whose blob id is SHA.
+func ghBlob(e *Engine, c *call, m []string) response {
+	if accept := c.flag("accept"); accept != "application/vnd.github.raw+json" {
+		return unhandled("gh api blob answers the raw media type only, not %q", accept)
+	}
+	for _, key := range sortedKeys(e.repos) {
+		r := e.repos[key]
+		if r.Forge != "github" || !strings.EqualFold(r.Host, c.http.host) {
+			continue
+		}
+		for i := range r.Pulls {
+			p := &r.Pulls[i]
+			if !strings.EqualFold(cmpOr(p.HeadRepo, r.Project), m[1]) {
+				continue
+			}
+			for _, path := range sortedKeys(p.Files) {
+				if gitBlobID(p.Files[path]) == strings.ToLower(m[2]) {
+					return response{stdout: []byte(p.Files[path]), header: http.Header{"Content-Type": {"application/vnd.github.raw+json"}}}
+				}
+			}
+		}
+	}
+	return ghNotFound()
 }
 
 func ghNotFound() response {
