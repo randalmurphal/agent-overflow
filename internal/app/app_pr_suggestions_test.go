@@ -32,7 +32,7 @@ func TestPRSuggestionAndReactionWritesHoldThePRLock(t *testing.T) {
 	target := gitops.CommentTarget{ThreadID: "d1", CommentID: "31"}
 	for name, write := range map[string]func(context.Context) error{
 		"apply": func(ctx context.Context) error {
-			_, err := app.ApplyPRSuggestion(ctx, testGitLabPR, gitops.SuggestionApply{Target: target, SuggestionID: "9", HeadSHA: "abcdef1"})
+			_, err := app.ApplyPRSuggestion(ctx, testGitLabPR, gitops.SuggestionApply{Target: target, SuggestionID: "9", HeadSHA: "abcdef1", Digest: strings.Repeat("a", 64)})
 			return err
 		},
 		"react": func(ctx context.Context) error {

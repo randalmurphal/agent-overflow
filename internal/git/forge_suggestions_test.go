@@ -120,8 +120,10 @@ func TestGitHubMarkSuggestions(t *testing.T) {
 		githubMarkSuggestions(threads, tc.pull)
 		got := threads[0].Comments[0].Suggestions
 		want := []CommentSuggestion{
-			{Index: 0, StartLine: tc.lines[0], EndLine: tc.lines[1], To: []string{"new"}, Appliable: tc.appliable},
-			{Index: 1, StartLine: tc.lines[0], EndLine: tc.lines[1], To: []string{}, Appliable: tc.appliable},
+			{Index: 0, StartLine: tc.lines[0], EndLine: tc.lines[1], To: []string{"new"}, Appliable: tc.appliable,
+				Digest: SuggestionDigest("github", tc.lines[0], tc.lines[1], []string{"new"})},
+			{Index: 1, StartLine: tc.lines[0], EndLine: tc.lines[1], To: []string{}, Appliable: tc.appliable,
+				Digest: SuggestionDigest("github", tc.lines[0], tc.lines[1], nil)},
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s: suggestions = %+v, want %+v", tc.name, got, want)
@@ -166,8 +168,10 @@ func TestGitLabSuggestionsAreTheForgesOwn(t *testing.T) {
 		{ID: 12, FromLine: 9, ToLine: 9, Applied: true, FromContent: "x\r\n", ToContent: ""},
 	})
 	want := []CommentSuggestion{
-		{Index: 0, ID: "11", StartLine: 4, EndLine: 5, From: []string{"a", "b"}, FromKnown: true, To: []string{"c"}, Appliable: true},
-		{Index: 1, ID: "12", StartLine: 9, EndLine: 9, From: []string{"x"}, FromKnown: true, To: []string{}, Applied: true},
+		{Index: 0, ID: "11", StartLine: 4, EndLine: 5, From: []string{"a", "b"}, FromKnown: true, To: []string{"c"}, Appliable: true,
+			Digest: SuggestionDigest("gitlab", 4, 5, []string{"c"})},
+		{Index: 1, ID: "12", StartLine: 9, EndLine: 9, From: []string{"x"}, FromKnown: true, To: []string{}, Applied: true,
+			Digest: SuggestionDigest("gitlab", 9, 9, nil)},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("suggestions = %+v", got)
@@ -187,18 +191,22 @@ func TestSuggestionRequestsAndReactionNamesAreChecked(t *testing.T) {
 	t.Parallel()
 	head := strings.Repeat("a", 40)
 	target := CommentTarget{ThreadID: "t", CommentID: "c"}
+	digest := SuggestionDigest("github", 1, 1, []string{"x"})
 	for _, tc := range []struct {
 		forge string
 		req   SuggestionApply
 		ok    bool
 	}{
-		{"github", SuggestionApply{Target: target, HeadSHA: head}, true},
-		{"github", SuggestionApply{Target: target, HeadSHA: "abc"}, false},
-		{"github", SuggestionApply{Target: CommentTarget{ThreadID: "t"}, HeadSHA: head}, false},
-		{"github", SuggestionApply{Target: target, HeadSHA: head, Index: -1}, false},
-		{"gitlab", SuggestionApply{Target: target, HeadSHA: head, SuggestionID: "12"}, true},
-		{"gitlab", SuggestionApply{Target: target, HeadSHA: head}, false},
-		{"gitlab", SuggestionApply{Target: target, HeadSHA: head, SuggestionID: "x"}, false},
+		{"github", SuggestionApply{Target: target, HeadSHA: head, Digest: digest}, true},
+		{"github", SuggestionApply{Target: target, HeadSHA: "abc", Digest: digest}, false},
+		{"github", SuggestionApply{Target: CommentTarget{ThreadID: "t"}, HeadSHA: head, Digest: digest}, false},
+		{"github", SuggestionApply{Target: target, HeadSHA: head, Index: -1, Digest: digest}, false},
+		{"github", SuggestionApply{Target: target, HeadSHA: head}, false},
+		{"github", SuggestionApply{Target: target, HeadSHA: head, Digest: strings.ToUpper(digest)}, false},
+		{"github", SuggestionApply{Target: target, HeadSHA: head, Digest: digest[:63]}, false},
+		{"gitlab", SuggestionApply{Target: target, HeadSHA: head, SuggestionID: "12", Digest: digest}, true},
+		{"gitlab", SuggestionApply{Target: target, HeadSHA: head, Digest: digest}, false},
+		{"gitlab", SuggestionApply{Target: target, HeadSHA: head, SuggestionID: "x", Digest: digest}, false},
 	} {
 		if err := tc.req.Validate(tc.forge); (err == nil) != tc.ok {
 			t.Fatalf("%s %+v: %v", tc.forge, tc.req, err)
@@ -252,6 +260,31 @@ func TestSuggestionOutcomesAreExplained(t *testing.T) {
 	for _, e := range []*ForgeActionError{partial, lost} {
 		if strings.Contains(strings.ToLower(e.Message), "try again") {
 			t.Fatalf("a partial apply advises a retry: %q", e.Message)
+		}
+	}
+}
+
+// The digest encodes every field length-prefixed: lines that join to the
+// same text, a line moved across the boundary, or another forge or
+// anchor, differ.
+func TestSuggestionDigest(t *testing.T) {
+	t.Parallel()
+	base := SuggestionDigest("github", 2, 3, []string{"ab", "c"})
+	if len(base) != 64 || strings.ToLower(base) != base || base != SuggestionDigest("github", 2, 3, []string{"ab", "c"}) {
+		t.Fatalf("digest = %q", base)
+	}
+	for name, other := range map[string]string{
+		"lines split elsewhere": SuggestionDigest("github", 2, 3, []string{"a", "bc"}),
+		"lines joined":          SuggestionDigest("github", 2, 3, []string{"abc"}),
+		"an empty line added":   SuggestionDigest("github", 2, 3, []string{"ab", "c", ""}),
+		"no lines":              SuggestionDigest("github", 2, 3, nil),
+		"another start":         SuggestionDigest("github", 1, 3, []string{"ab", "c"}),
+		"another end":           SuggestionDigest("github", 2, 4, []string{"ab", "c"}),
+		"another forge":         SuggestionDigest("gitlab", 2, 3, []string{"ab", "c"}),
+		"digits across fields":  SuggestionDigest("github", 23, 3, []string{"ab", "c"}),
+	} {
+		if other == base {
+			t.Errorf("%s: same digest", name)
 		}
 	}
 }

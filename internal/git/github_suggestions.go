@@ -66,6 +66,7 @@ func githubMarkSuggestions(threads []ReviewThread, pull *githubPullRaw) {
 				if onNew {
 					suggestion.StartLine, suggestion.EndLine = start, end
 				}
+				suggestion.Digest = SuggestionDigest("github", suggestion.StartLine, suggestion.EndLine, block.Lines)
 				comment.Suggestions = append(comment.Suggestions, suggestion)
 			}
 		}
@@ -156,7 +157,7 @@ type githubSuggestionTargetRaw struct {
 // its thread. Everything is checked before the commit: the thread and
 // comment belong to ref and to each other, the PR is open at req.HeadSHA,
 // the thread is current, unresolved and on new lines, and the comment
-// holds the suggestion. A failed resolve after the commit is a
+// holds the suggestion the caller was shown (its digest). A failed resolve after the commit is a
 // PartialWriteError; the commit is never sent twice.
 func (f *githubForge) ApplySuggestion(ctx context.Context, ref PRReference, req SuggestionApply) error {
 	client, err := f.core.githubAPI(ref.Host)
@@ -210,8 +211,10 @@ func (f *githubForge) ApplySuggestion(ctx context.Context, ref PRReference, req 
 		return &SuggestionNotAppliedError{Reason: "its thread is resolved"}
 	case !onNew:
 		return &SuggestionNotAppliedError{Reason: "the comment is not on lines of the changed file"}
-	case req.Index >= len(blocks):
-		return &SuggestionNotAppliedError{Reason: "the comment holds no such suggestion"}
+	case req.Index >= len(blocks) || SuggestionDigest("github", start, end, blocks[req.Index].Lines) != req.Digest:
+		// The comment was edited, a block came or went before it, or the
+		// anchor moved since the pane read it.
+		return &SuggestionChangedError{}
 	case pull.HeadRepository == nil:
 		return &SuggestionNotAppliedError{Reason: "the head branch's repository is gone"}
 	}

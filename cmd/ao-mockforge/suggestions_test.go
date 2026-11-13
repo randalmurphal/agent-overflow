@@ -30,6 +30,9 @@ func suggestionFixture(fixture forgefake.Fixture) forgefake.Fixture {
 		Author: "octo", AuthorName: "Octo Cat", Body: "Use:\n```suggestion\nTWO\n```\n",
 		Reactions: []forgefake.Reaction{{Name: "heart", User: "octo"}},
 	}}}}
+	p.Threads = append(p.Threads, forgefake.Thread{Path: "a.go", Line: intPtr(3), Side: "right", Comments: []forgefake.Comment{{
+		Author: "alice", Body: "```suggestion\nTHREE\n```",
+	}}})
 	p.Comments = []forgefake.Comment{{Author: "octo", Body: "their note"}}
 	fixture.Repos[0].Pulls[1].Comments = []forgefake.Comment{{Author: "octo", Body: "elsewhere"}}
 	return fixture
@@ -156,7 +159,26 @@ func TestSuggestionsAndReactionsThroughTheAppsForgeCode(t *testing.T) {
 			// Apply: a head the pane did not load is refused and changes
 			// nothing; then the suggestion lands, the head moves and the
 			// suggestion no longer applies.
-			apply := gitops.SuggestionApply{Target: onThread, Index: 0, SuggestionID: s.ID, HeadSHA: tc.head[:39] + "0"}
+			// A suggestion edited after the read is refused as changed and
+			// nothing is written.
+			mine := threadByBody(read, "```suggestion\nTHREE\n```")
+			shown := mine.Comments[0].Suggestions[0]
+			if err := r.core.EditPRComment(ctx, ref, targetOf(mine, 0), "```suggestion\nTHREE!\n```"); err != nil {
+				t.Fatalf("EditPRComment: %v", err)
+			}
+			stale := gitops.SuggestionApply{Target: targetOf(mine, 0), Index: 0, SuggestionID: shown.ID, Digest: shown.Digest, HeadSHA: tc.head}
+			if err := r.core.ApplyPRSuggestion(ctx, ref, stale); !errors.As(err, new(*gitops.SuggestionChangedError)) {
+				t.Fatalf("apply of an edited suggestion = %v", err)
+			}
+			if got := explained(t, ref, gitops.ActionApplySuggestion, r.core.ApplyPRSuggestion(ctx, ref, stale)); got.Kind != gitops.ForgeErrorSuggestionChanged ||
+				got.Message != "The suggestion changed since it was loaded. Reload the pull request." {
+				t.Fatalf("explained = %s: %s", got.Kind, got.Message)
+			}
+			if n := routeCount(r, 0, "gh graphql SuggestionCommit") + routeCount(r, 0, "glab api apply suggestion"); n != 0 {
+				t.Fatalf("%d writes for a changed suggestion", n)
+			}
+
+			apply := gitops.SuggestionApply{Target: onThread, Index: 0, SuggestionID: s.ID, Digest: s.Digest, HeadSHA: tc.head[:39] + "0"}
 			if err := r.core.ApplyPRSuggestion(ctx, ref, apply); !errors.As(err, new(*gitops.HeadMovedError)) {
 				t.Fatalf("apply on a moved head = %v", err)
 			}
@@ -226,7 +248,7 @@ func TestGitHubForkSuggestionRefusedThroughTheAppsForgeCode(t *testing.T) {
 	if s := thread.Comments[0].Suggestions; len(s) != 1 || s[0].Appliable {
 		t.Fatalf("a fork head's suggestion = %+v (GitHub's viewerCanApplySuggestion says no)", s)
 	}
-	err := r.core.ApplyPRSuggestion(ctx, ref, gitops.SuggestionApply{Target: targetOf(thread, 0), HeadSHA: head})
+	err := r.core.ApplyPRSuggestion(ctx, ref, gitops.SuggestionApply{Target: targetOf(thread, 0), HeadSHA: head, Digest: thread.Comments[0].Suggestions[0].Digest})
 	if got := explained(t, ref, gitops.ActionApplySuggestion, err); got.Kind != gitops.ForgeErrorRefused {
 		t.Fatalf("fork apply = %s: %s", got.Kind, got.Message)
 	}
@@ -248,7 +270,7 @@ func TestGitLabReactionsReadFailureKeepsThreads(t *testing.T) {
 		t.Fatalf("SetRefusal: %v", err)
 	}
 	read := mergeRead(t, r, ref)
-	if threadByBody(read, "their note") == nil || len(read.Threads) != 2 {
+	if threadByBody(read, "their note") == nil || len(read.Threads) != 3 {
 		t.Fatalf("threads with the reactions read refused = %+v", read.Threads)
 	}
 	if read.ReactionsUnavailable != "Reactions are not shown: GitLab's reactions could not be read." {

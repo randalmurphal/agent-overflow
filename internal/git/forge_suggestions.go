@@ -3,6 +3,9 @@ package git
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -39,19 +42,60 @@ type CommentSuggestion struct {
 	To        []string `json:"to"`
 	Appliable bool     `json:"appliable"`
 	Applied   bool     `json:"applied,omitempty"`
+	// Digest names what the user is shown and what an apply writes
+	// (SuggestionDigest); the apply presents it and is refused when the
+	// suggestion no longer has it.
+	Digest string `json:"digest"`
+}
+
+// SuggestionDigest is the lowercase hex SHA-256 of a canonical encoding
+// of a suggestion as shown and as written: the forge, the first and last
+// replaced line, and the replacement lines, each length-prefixed so no
+// two suggestions encode alike. The read and the apply both use it.
+func SuggestionDigest(forge string, start, end int, to []string) string {
+	h := sha256.New()
+	field := func(s string) {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(s)))
+		h.Write(n[:])
+		h.Write([]byte(s))
+	}
+	field("ao-suggestion-v1")
+	field(forge)
+	field(strconv.Itoa(start))
+	field(strconv.Itoa(end))
+	field(strconv.Itoa(len(to)))
+	for _, line := range to {
+		field(line)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// SuggestionChangedError refuses an apply whose suggestion is no longer
+// the one the caller's pane showed: its digest differs, or its index or
+// GitLab id is gone. Nothing is written; the pane's read is stale.
+type SuggestionChangedError struct{}
+
+func (e *SuggestionChangedError) Error() string {
+	return "the suggestion changed since it was loaded"
 }
 
 // SuggestionApply names one suggestion to apply: the comment it is in
 // (Target), its Index in that comment's suggestions, GitLab's suggestion
-// ID, and HeadSHA, the head the caller's pane loaded. A head that moved
+// ID, the Digest the read gave it (CommentSuggestion.Digest; a
+// suggestion that no longer has it is *SuggestionChangedError), and
+// HeadSHA, the head the caller's pane loaded. A head that moved
 // is refused (*HeadMovedError) before anything is written; GitHub's
 // commit also names it as its expectedHeadOid.
 type SuggestionApply struct {
 	Target       CommentTarget `json:"target"`
 	Index        int           `json:"index"`
 	SuggestionID string        `json:"suggestionId,omitempty"`
+	Digest       string        `json:"digest"`
 	HeadSHA      string        `json:"headSha"`
 }
+
+var suggestionDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Validate checks the request's shape for forge.
 func (s SuggestionApply) Validate(forge string) error {
@@ -63,6 +107,9 @@ func (s SuggestionApply) Validate(forge string) error {
 	}
 	if s.Index < 0 {
 		return errors.New("a suggestion index is not negative")
+	}
+	if !suggestionDigestPattern.MatchString(s.Digest) {
+		return errors.New("applying a suggestion requires the digest the read gave it")
 	}
 	if forge == "gitlab" {
 		if id, err := strconv.ParseInt(s.SuggestionID, 10, 64); err != nil || id <= 0 {

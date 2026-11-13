@@ -32,6 +32,30 @@ func githubSuggestionTarget(mod func(thread, pull map[string]any)) string {
 	}})
 }
 
+// githubSuggestionTargetBody is the default target with the comment's
+// body replaced.
+func githubSuggestionTargetBody(body string) string {
+	target := githubSuggestionTarget(nil)
+	out := strings.Replace(target, `"body":`+mustJSON("```suggestion\nTWO\n```"), `"body":`+mustJSON(body), 1)
+	if out == target {
+		panic("the default body is not in the target")
+	}
+	return out
+}
+
+// Prose around the block edited after the read leaves the suggestion
+// as shown, so it still applies.
+func TestGitHubApplySuggestionAfterAProseEdit(t *testing.T) {
+	t.Parallel()
+	core, calls := newGitHubApplyCore(t, githubApplyRig{target: githubSuggestionTargetBody("Please:\n```suggestion\nTWO\n```\nthanks")})
+	if err := core.ApplyPRSuggestion(t.Context(), githubTestRef(5), applyReq()); err != nil {
+		t.Fatal(err)
+	}
+	if lastOp(calls, "SuggestionCommit") == nil {
+		t.Fatal("no commit")
+	}
+}
+
 type githubApplyRig struct {
 	target  string
 	file    forgeAPIAnswer
@@ -72,7 +96,7 @@ func newGitHubApplyCore(t *testing.T, rig githubApplyRig) (*Core, *forgeAPICalls
 }
 
 func applyReq() SuggestionApply {
-	return SuggestionApply{Target: CommentTarget{ThreadID: "T1", CommentID: "C1"}, Index: 0, HeadSHA: githubTestHead}
+	return SuggestionApply{Target: CommentTarget{ThreadID: "T1", CommentID: "C1"}, Index: 0, HeadSHA: githubTestHead, Digest: SuggestionDigest("github", 2, 3, []string{"TWO"})}
 }
 
 func lastOp(calls *forgeAPICalls, op string) *forgeAPICall {
@@ -150,7 +174,11 @@ func TestGitHubApplySuggestionRefusals(t *testing.T) {
 		{"outdated", githubApplyRig{target: githubSuggestionTarget(func(thread, _ map[string]any) { thread["isOutdated"] = true })}, nil, githubTestRef(5), notApplied},
 		{"resolved", githubApplyRig{target: githubSuggestionTarget(func(thread, _ map[string]any) { thread["isResolved"] = true })}, nil, githubTestRef(5), notApplied},
 		{"old side", githubApplyRig{target: githubSuggestionTarget(func(thread, _ map[string]any) { thread["diffSide"] = "LEFT" })}, nil, githubTestRef(5), notApplied},
-		{"no such suggestion", githubApplyRig{}, func(r *SuggestionApply) { r.Index = 1 }, githubTestRef(5), notApplied},
+		{"no such suggestion", githubApplyRig{}, func(r *SuggestionApply) { r.Index = 1 }, githubTestRef(5), changed},
+		{"the block edited", githubApplyRig{target: githubSuggestionTargetBody("```suggestion\nTHREE\n```")}, nil, githubTestRef(5), changed},
+		{"a block inserted before it", githubApplyRig{target: githubSuggestionTargetBody("```suggestion\nX\n```\n```suggestion\nTWO\n```")}, nil, githubTestRef(5), changed},
+		{"the anchor moved", githubApplyRig{target: githubSuggestionTarget(func(thread, _ map[string]any) { thread["line"], thread["startLine"] = 4, 3 })}, nil, githubTestRef(5), changed},
+		{"a digest of another forge", githubApplyRig{}, func(r *SuggestionApply) { r.Digest = SuggestionDigest("gitlab", 2, 3, []string{"TWO"}) }, githubTestRef(5), changed},
 		{"file past the bound", githubApplyRig{file: forgeAPIAnswer{Body: big}}, nil, githubTestRef(5), notApplied},
 		{"binary file", githubApplyRig{file: forgeAPIAnswer{Body: "one\x00\ntwo\nthree\n"}}, nil, githubTestRef(5), notApplied},
 		{"file shorter than the anchor", githubApplyRig{file: forgeAPIAnswer{Body: "one\ntwo\n"}}, nil, githubTestRef(5), notApplied},
@@ -173,6 +201,7 @@ func TestGitHubApplySuggestionRefusals(t *testing.T) {
 	}
 }
 
+func changed(err error) bool     { return errors.As(err, new(*SuggestionChangedError)) }
 func notOnPR(err error) bool     { return errors.As(err, new(*CommentNotOnPRError)) }
 func notApplied(err error) bool  { return errors.As(err, new(*SuggestionNotAppliedError)) }
 func unconfirmed(err error) bool { return errors.As(err, new(*UnconfirmedWriteError)) }

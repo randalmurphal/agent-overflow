@@ -15,7 +15,8 @@ const gitlabTestDiscussionWithSuggestion = `{"id":"d1","notes":[{"id":31,"body":
 	"suggestions":[{"id":901,"from_line":2,"to_line":2,"appliable":true,"applied":false,"from_content":"two\n","to_content":"TWO\n"}]}]}`
 
 func gitlabApplyReq() SuggestionApply {
-	return SuggestionApply{Target: CommentTarget{ThreadID: "d1", CommentID: "31"}, SuggestionID: "901", HeadSHA: "dead2" + strings.Repeat("0", 35)}
+	return SuggestionApply{Target: CommentTarget{ThreadID: "d1", CommentID: "31"}, SuggestionID: "901", HeadSHA: "dead2" + strings.Repeat("0", 35),
+		Digest: SuggestionDigest("gitlab", 2, 2, []string{"TWO"})}
 }
 
 // The read carries GitLab's own suggestion and the apply checks it is
@@ -28,6 +29,8 @@ func TestGitLabSuggestionReadAndApply(t *testing.T) {
 	var applyAnswer atomic.Value
 	applyAnswer.Store(forgeAPIAnswer{Body: `{"id":901,"from_line":2,"to_line":2,"appliable":false,"applied":true,"from_content":"two\n","to_content":"TWO\n"}`})
 	mrBody := strings.ReplaceAll(gitlabTestMR(7, 0), `"head2"`, `"`+head+`"`)
+	var discussion atomic.Value
+	discussion.Store(gitlabTestDiscussionWithSuggestion)
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		if reply, ok := gitlabManageExtras(call); ok {
 			return reply
@@ -38,7 +41,7 @@ func TestGitLabSuggestionReadAndApply(t *testing.T) {
 		case call.Path == mr+"/discussions?per_page=100":
 			return forgeAPIAnswer{Body: "[" + gitlabTestDiscussionWithSuggestion + "]"}
 		case call.Path == mr+"/discussions/d1":
-			return forgeAPIAnswer{Body: gitlabTestDiscussionWithSuggestion}
+			return forgeAPIAnswer{Body: discussion.Load().(string)}
 		case call.Path == mr+"/discussions/gone":
 			return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"404 Not found"}`}
 		case call.Path == gitlabTestProject:
@@ -55,7 +58,8 @@ func TestGitLabSuggestionReadAndApply(t *testing.T) {
 		t.Fatalf("threads = %+v, %v", threads, err)
 	}
 	got := threads[0].Comments[0].Suggestions
-	if len(got) != 1 || got[0].ID != "901" || !got[0].Appliable || !got[0].FromKnown || got[0].From[0] != "two" || got[0].To[0] != "TWO" || got[0].StartLine != 2 {
+	if len(got) != 1 || got[0].ID != "901" || !got[0].Appliable || !got[0].FromKnown || got[0].From[0] != "two" || got[0].To[0] != "TWO" || got[0].StartLine != 2 ||
+		got[0].Digest != gitlabApplyReq().Digest {
 		t.Fatalf("suggestions = %+v", got)
 	}
 	ref := gitlabTestRef(7)
@@ -72,7 +76,8 @@ func TestGitLabSuggestionReadAndApply(t *testing.T) {
 	}{
 		{"moved head", func(r *SuggestionApply) { r.HeadSHA = strings.Repeat("9", 40) }, func(err error) bool { return errors.As(err, new(*HeadMovedError)) }},
 		{"another note's suggestion", func(r *SuggestionApply) { r.Target.CommentID = "32" }, notOnPR},
-		{"a suggestion not in the note", func(r *SuggestionApply) { r.SuggestionID = "902" }, notOnPR},
+		{"a suggestion not in the note", func(r *SuggestionApply) { r.SuggestionID = "902" }, changed},
+		{"another digest", func(r *SuggestionApply) { r.Digest = SuggestionDigest("gitlab", 2, 2, []string{"THREE"}) }, changed},
 		{"a discussion not on this merge request", func(r *SuggestionApply) { r.Target.ThreadID = "gone" }, notOnPR},
 	} {
 		req := gitlabApplyReq()
@@ -81,8 +86,39 @@ func TestGitLabSuggestionReadAndApply(t *testing.T) {
 			t.Fatalf("%s: err = %v", tc.name, err)
 		}
 	}
+	// The note edited since the read: the block changed, a block inserted
+	// before it (GitLab renumbers its suggestions) or the anchor moved is
+	// refused; prose edited around it still applies.
+	edited := func(suggestions string) string {
+		return strings.Replace(gitlabTestDiscussionWithSuggestion,
+			`[{"id":901,"from_line":2,"to_line":2,"appliable":true,"applied":false,"from_content":"two\n","to_content":"TWO\n"}]`, suggestions, 1)
+	}
+	for _, tc := range []struct {
+		name, suggestions string
+	}{
+		{"the block edited", `[{"id":901,"from_line":2,"to_line":2,"appliable":true,"applied":false,"from_content":"two\n","to_content":"THREE\n"}]`},
+		{"a block inserted before it", `[{"id":905,"from_line":2,"to_line":2,"appliable":true,"applied":false,"from_content":"two\n","to_content":"X\n"},{"id":906,"from_line":2,"to_line":2,"appliable":true,"applied":false,"from_content":"two\n","to_content":"TWO\n"}]`},
+		{"the anchor moved", `[{"id":901,"from_line":3,"to_line":3,"appliable":true,"applied":false,"from_content":"three\n","to_content":"TWO\n"}]`},
+	} {
+		body := edited(tc.suggestions)
+		if body == gitlabTestDiscussionWithSuggestion {
+			t.Fatalf("%s: the fixture did not change", tc.name)
+		}
+		discussion.Store(body)
+		if err := core.ApplyPRSuggestion(t.Context(), ref, gitlabApplyReq()); !changed(err) {
+			t.Fatalf("%s: err = %v", tc.name, err)
+		}
+	}
 	if put := countOps(calls, "PUT suggestions/901/apply"); put != 1 {
 		t.Fatalf("a refused apply was sent: %d applies", put)
+	}
+	discussion.Store(strings.Replace(gitlabTestDiscussionWithSuggestion, `"body":"`, `"body":"Please:\n`, 1))
+	if err := core.ApplyPRSuggestion(t.Context(), ref, gitlabApplyReq()); err != nil {
+		t.Fatalf("after a prose edit: %v", err)
+	}
+	discussion.Store(gitlabTestDiscussionWithSuggestion)
+	if put := countOps(calls, "PUT suggestions/901/apply"); put != 2 {
+		t.Fatalf("applies = %d", put)
 	}
 	// GitLab's refusal is a refusal; an answer that does not report the
 	// suggestion applied, or no answer, is unconfirmed.
