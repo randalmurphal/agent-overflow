@@ -38,4 +38,16 @@ describe('insertSuggestion', () => {
     expect(suggestionFence(['a ```` b'])).toBe('`````');
     expect(suggestionFence(['no ticks'])).toBe('```');
   });
+
+  it('writes LF only into a CRLF body, the caret counted in the text the textarea holds', () => {
+    const out = insertSuggestion('Use:\r\nthis\r\n', 'Use:\nthis\n'.length, ['a\r', 'b\r']);
+    expect(out.body).toBe('Use:\nthis\n```suggestion\na\nb\n```');
+    expect(out.body.slice(0, out.caret)).toBe('Use:\nthis\n```suggestion\na\nb');
+  });
+
+  it('keeps a lone CR inside a line, at the length the textarea gives it', () => {
+    const out = insertSuggestion('', 0, ['in\rside']);
+    expect(out.body).toBe('```suggestion\nin\rside\n```');
+    expect(out.caret).toBe('```suggestion\nin\rside'.length);
+  });
 });

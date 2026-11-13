@@ -31,9 +31,11 @@ export function newSideLineIndexes(file: ReviewFile, from: number, to: number): 
   return out.length === to - from + 1 ? out : null;
 }
 
-/** A diff line's text without its `+` or ` ` column. */
+/** A diff line's text without its `+` or ` ` column and without a CRLF
+ * file's line ending (a CR inside the line is content). */
 function newSideText(raw: string): string {
-  return raw.startsWith('+') || raw.startsWith(' ') ? raw.slice(1) : raw;
+  const text = raw.startsWith('+') || raw.startsWith(' ') ? raw.slice(1) : raw;
+  return text.endsWith('\r') ? text.slice(0, -1) : text;
 }
 
 /** Reads new-side lines `from`..`to` of `file`, bringing evicted text back

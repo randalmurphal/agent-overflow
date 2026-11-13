@@ -46,3 +46,34 @@ describe('readNewSideLines', () => {
     await expect(readNewSideLines(file(), 21, 22)).resolves.toEqual(['far();', 'there();']);
   });
 });
+
+describe('readNewSideLines on a CRLF file', () => {
+  // The line ending is not the line's text: a trailing CR goes; a lone CR
+  // inside a line is content and stays.
+  const CRLF = [
+    'diff --git a/w.txt b/w.txt',
+    '--- a/w.txt',
+    '+++ b/w.txt',
+    '@@ -1,3 +1,4 @@',
+    ' one\r',
+    '-two\r',
+    '+two!\r',
+    '+in\rside\r',
+    '+bare',
+    ' three\r\r',
+    '',
+  ].join('\n');
+
+  it.each([
+    [1, 1, ['one']],
+    [2, 2, ['two!']],
+    [1, 2, ['one', 'two!']],
+    [3, 3, ['in\rside']],
+    [4, 4, ['bare']],
+    [5, 5, ['three\r']],
+    [1, 5, ['one', 'two!', 'in\rside', 'bare', 'three\r']],
+  ] as const)('reads lines %i..%i without their line ending', async (from, to, want) => {
+    const [only] = parseReviewFiles(CRLF);
+    await expect(readNewSideLines(only, from, to)).resolves.toEqual(want);
+  });
+});
