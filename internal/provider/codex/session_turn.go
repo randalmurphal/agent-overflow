@@ -417,6 +417,22 @@ func (s *Session) claimTurnStart(turnID string) bool {
 	return true
 }
 
+// claimSafetyBufferingNotice reports whether a held-response notice for
+// turnID is the first of its turn. Codex derives
+// `model/safetyBuffering/updated` from every stream frame of a held response
+// and never sends showBufferingUi=false (codex-rs/codex-api/src/sse/responses.rs),
+// so the repeats are dropped here.
+func (s *Session) claimSafetyBufferingNotice(turnID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turn.safetyBufferingNoticed && s.turn.safetyBufferingNoticeTurn == turnID {
+		return false
+	}
+	s.turn.safetyBufferingNoticed = true
+	s.turn.safetyBufferingNoticeTurn = turnID
+	return true
+}
+
 // clearTurnStart drops the recorded turnID on completion so a follow-up
 // turn with the same ID (rare, but possible across resumed sessions)
 // can fire fresh.

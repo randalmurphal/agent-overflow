@@ -11,14 +11,16 @@ import (
 // app-server is known to emit, in upstream declaration order.
 //
 // Last synced against the `server_notification_definitions!` block at
-// codex-rs/app-server-protocol/src/protocol/common.rs @ **rust-v0.150.1**
-// (81 entries, including the `#[serde(rename = "account/login/completed")]`
+// codex-rs/app-server-protocol/src/protocol/common.rs @ **rust-v0.168.0**
+// (88 entries, including the `#[serde(rename = "account/login/completed")]`
 // tail entry). Update BOTH this tag and the list when re-syncing — the
 // tag is the only record of what "complete" meant.
 //
 // The 0.150 additions are the MCP event stream plus the three typed realtime
 // item notifications. AO starts neither surface, so all four remain in the
-// derived opt-out complement.
+// derived opt-out complement. So do the seven added from 0.151 through 0.168:
+// thread read state, section, attachment and prediction, gateway OAuth, and
+// the two model-provider auth-recovery notices.
 //
 // The catalog exists to compute the initialize-time opt-out list (the
 // complement of what we consume). Being out of date is therefore safe in
@@ -31,6 +33,7 @@ var codexNotificationCatalog = []string{
 	"error",
 	"thread/started",
 	"thread/status/changed",
+	"thread/readState/changed",
 	"thread/archived",
 	"thread/deleted",
 	"thread/unarchived",
@@ -38,7 +41,10 @@ var codexNotificationCatalog = []string{
 	"thread/reverted",
 	"skills/changed",
 	"thread/name/updated",
+	"thread/section/changed",
+	"thread/attachment/updated",
 	"thread/goal/updated",
+	"thread/prediction/updated",
 	"thread/goal/cleared",
 	"thread/queue/changed",
 	"project/changed",
@@ -75,6 +81,7 @@ var codexNotificationCatalog = []string{
 	"mcpServer/startupStatus/updated",
 	"mcpServer/event/stream/notification",
 	"account/updated",
+	"account/gatewayOAuth/changed",
 	"account/rateLimits/updated",
 	"app/list/updated",
 	"remoteControl/status/changed",
@@ -87,6 +94,8 @@ var codexNotificationCatalog = []string{
 	"thread/compacted",
 	"model/rerouted",
 	"model/verification",
+	"modelProvider/authRecoveryStarted",
+	"modelProvider/authRecoveryCompleted",
 	"turn/moderationMetadata",
 	"model/safetyBuffering/updated",
 	"warning",

@@ -99,8 +99,8 @@ func TestSessionOptOutNeverDropsAConsumedNotification(t *testing.T) {
 // upstream sync.
 func TestCodexNotificationCatalogHasNoDuplicates(t *testing.T) {
 	t.Parallel()
-	if len(codexNotificationCatalog) != 81 {
-		t.Fatalf("catalog entries = %d, want rust-v0.150.1's 81", len(codexNotificationCatalog))
+	if len(codexNotificationCatalog) != 88 {
+		t.Fatalf("catalog entries = %d, want rust-v0.168.0's 88", len(codexNotificationCatalog))
 	}
 	seen := map[string]struct{}{}
 	for _, method := range codexNotificationCatalog {
@@ -439,6 +439,27 @@ func TestCatalogCoversThe0149Additions(t *testing.T) {
 		}
 		if got := slices.Contains(optOut, entry.method); got == entry.consumed {
 			t.Errorf("%q in opt-out list = %v, want %v", entry.method, got, !entry.consumed)
+		}
+	}
+}
+
+// TestCatalogOptsOutOfThe0168Additions records the decision for the seven
+// methods the 0.150.1 to 0.168.0 sync added: AO consumes none of them, so each
+// is opted out at initialize instead of arriving at the drift log.
+func TestCatalogOptsOutOfThe0168Additions(t *testing.T) {
+	t.Parallel()
+	optOut := sessionOptOutNotificationMethods()
+	for _, method := range []string{
+		"thread/readState/changed",
+		"thread/section/changed",
+		"thread/attachment/updated",
+		"thread/prediction/updated",
+		"account/gatewayOAuth/changed",
+		"modelProvider/authRecoveryStarted",
+		"modelProvider/authRecoveryCompleted",
+	} {
+		if !slices.Contains(optOut, method) {
+			t.Errorf("%q is not in the initialize opt-out list", method)
 		}
 	}
 }
