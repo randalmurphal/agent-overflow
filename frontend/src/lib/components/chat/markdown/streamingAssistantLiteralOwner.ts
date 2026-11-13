@@ -206,9 +206,7 @@ export function createStreamingAssistantLiteralOwner(
   let pendingWhitespaceLength = 0;
   let selectionRestoreGeneration = 0;
 
-  function findHostElement(): HTMLElement | null {
-    const root = options.getRoot();
-    if (!root) return null;
+  function findHostElement(root: HTMLElement): HTMLElement | null {
     const hosts = root.querySelectorAll<HTMLElement>(
       '.md-volatile [data-streamdown-direct-append-safe]',
     );
@@ -235,11 +233,33 @@ export function createStreamingAssistantLiteralOwner(
   }
 
   /**
+   * Whether the held host is still the one `findHostElement` would return,
+   * proven without querying the message's finished blocks. The renderer mounts
+   * a literal host only at the trailing leaf of a streaming Streamdown's last
+   * block, and moving that leaf destroys the old `LiteralHost`, whose teardown
+   * detaches the controller and releases its owner. So while `releaseHost` is
+   * live and the held element is still inside the root's volatile tail, no
+   * later host can exist in that tail.
+   */
+  function holdsCurrentHost(root: HTMLElement): boolean {
+    const host = hostElement;
+    if (!host || !releaseHost || !host.isConnected) return false;
+    const volatile = host.closest('.md-volatile');
+    return volatile !== null && root.contains(volatile);
+  }
+
+  /**
    * Adopt whatever the renderer currently presents. Adoption mutates nothing:
    * the owner inherits the on-screen text and extends from there.
    */
   function ensureHost(): boolean {
-    const found = findHostElement();
+    const root = options.getRoot();
+    if (!root) {
+      if (hostElement) forgetHost();
+      return false;
+    }
+    if (holdsCurrentHost(root)) return true;
+    const found = findHostElement(root);
     if (!found) {
       if (hostElement) forgetHost();
       return false;

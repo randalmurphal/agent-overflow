@@ -89,6 +89,25 @@ interface PathLinkExtension {
     src: string,
     tokens: Token[] | TokensList,
   ): GenericLinkToken | GenericImageToken | undefined;
+  tokenizesAlike(previous: object, source: string): boolean;
+}
+
+/** What one built extension matches on, kept so a successor can name the
+ * sources its own allowlist tokenizes differently. */
+interface PathLinkInputs {
+  allowed: ReadonlySet<string>;
+  workspacePath: string;
+  imageWorkspacePath: string;
+  mode: PathLinkMode;
+}
+const builtInputs = new WeakMap<object, PathLinkInputs>();
+
+/** Paths in exactly one of the two allowlists. */
+function changedPaths(left: ReadonlySet<string>, right: ReadonlySet<string>): string[] {
+  const changed: string[] = [];
+  for (const path of left) if (!right.has(path)) changed.push(path);
+  for (const path of right) if (!left.has(path)) changed.push(path);
+  return changed;
 }
 
 // Shape that satisfies both marked's runtime contract and streamdown's
@@ -273,11 +292,41 @@ export function buildPathLinkExtension(
     return null;
   };
 
-  return {
+  const effectiveImageWorkspace = imageWorkspacePath || workspacePath;
+  // Keyed weakly, so an extension never keeps its predecessors alive.
+  const changesSince = new WeakMap<object, string[] | null>();
+
+  const extension: PathLinkExtension = {
     name: 'pathLink',
     level: 'inline',
     start(src) {
       return earliestPathLinkHit(src, scanRe);
+    },
+    // Triage grows the allowlist while a message streams, so each new path
+    // builds a new extension. Prose matching is literal on the allowlisted
+    // paths, so a source containing none of the paths that differ tokenizes
+    // the same under both. A markdown link's target is unescaped before the
+    // allowlist sees it and need not appear literally, so a source holding
+    // one is never claimed.
+    tokenizesAlike(previous, source) {
+      let changes = changesSince.get(previous);
+      if (changes === undefined) {
+        const before = builtInputs.get(previous);
+        changes = before
+          && before.workspacePath === workspacePath
+          && before.imageWorkspacePath === effectiveImageWorkspace
+          && before.mode === mode
+          ? changedPaths(before.allowed, allowed)
+          : null;
+        changesSince.set(previous, changes);
+      }
+      if (changes === null) return false;
+      if (changes.length === 0) return true;
+      if (source.includes('](')) return false;
+      for (const path of changes) {
+        if (source.includes(path)) return false;
+      }
+      return true;
     },
     tokenizer(this: unknown, src, tokens) {
       if (isInsideMarkdownLinkLabel(this)) return undefined;
@@ -288,7 +337,7 @@ export function buildPathLinkExtension(
           this,
           parseAllowlistedTarget,
           workspacePath,
-          imageWorkspacePath || workspacePath,
+          effectiveImageWorkspace,
           mode,
         );
       }
@@ -336,6 +385,13 @@ export function buildPathLinkExtension(
       return buildLinkToken(raw, path, line, col, 'text', raw);
     },
   };
+  builtInputs.set(extension, {
+    allowed,
+    workspacePath,
+    imageWorkspacePath: effectiveImageWorkspace,
+    mode,
+  });
+  return extension;
 }
 
 /**
