@@ -26,8 +26,15 @@
   let titleInput: HTMLInputElement | undefined = $state(undefined);
   let root: HTMLDivElement | undefined = $state(undefined);
 
+  // The title takes focus once it is enabled (the default has loaded),
+  // unless the reader has put focus somewhere else meanwhile: it may
+  // still be where the editor was opened from, or nowhere.
+  const opener = document.activeElement;
   $effect(() => {
-    titleInput?.focus({ preventScroll: true });
+    const field = titleInput;
+    if (!field || message.loading) return;
+    const active = document.activeElement;
+    if (active === null || active === document.body || active === opener || root?.contains(active)) field.focus({ preventScroll: true });
   });
 
   $effect(() => {

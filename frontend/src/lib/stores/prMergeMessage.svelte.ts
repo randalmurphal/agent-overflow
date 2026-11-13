@@ -1,11 +1,14 @@
-// The Merge section's commit message editor: the forge's default for
-// the chosen method, read when the editor opens and when the method
-// changes (never per tick), until the reader edits it. Only an edited
-// message is sent with Merge now or Auto-merge; untouched, the forge's
-// default applies as it does without the editor. A method that makes no
-// commit (rebase, fast-forward) has no message. A failed default read
-// shows its sentence in the editor and never stands in the way of a
-// merge.
+// The Merge section's method and commit message editor: the method the
+// reader picked in the Merge menu (it outlives the section's mount), and
+// the forge's default message for it, read when the editor opens and
+// when the method changes (never per tick), until the reader edits it.
+// Only an edited message is sent, and only with the method it was
+// written for; untouched, the forge's default applies as it does
+// without the editor. A method that makes no commit (rebase,
+// fast-forward) has no message. A failed default read shows its sentence
+// in the editor and never stands in the way of a merge. The editor
+// belongs to the PR it opened on: on another PR it reads closed and
+// sends nothing, and `discard` drops it with the pick.
 
 import { GetPRMergeMessage } from './bindings';
 import { captureError } from './errorReports.svelte';
@@ -19,10 +22,18 @@ import { userFacingError } from '../utils/userFacingError';
 
 export interface PRMergeMessageHost {
   readonly prRef: PRRef | null;
+  /** The PR's computer-scoped identity, or null. */
+  readonly identity: string | null;
   readonly backend: BackendKey;
 }
 
 export interface PRMergeMessageView {
+  /** The method a merge uses: the reader's pick while `methods` offers
+   * it, else the project's default (the first). */
+  selected(methods: readonly string[]): string;
+  /** The reader picked `method` in the Merge menu: the editor follows,
+   * reading its default unless the text was edited. */
+  pick(method: string): void;
   readonly open: boolean;
   /** The method the editor shows the message of. */
   readonly method: string;
@@ -35,20 +46,24 @@ export interface PRMergeMessageView {
   /** The default read failed; the editor starts empty. */
   readonly error: PRManageError | null;
   openFor(method: string): void;
-  /** The Merge menu's method changed: read its default unless edited. */
-  methodChanged(method: string): void;
   setTitle(text: string): void;
   setBody(text: string): void;
   close(): void;
   /** What a merge with `method` sends as its commit message: the edited
-   * text while the editor is open, else nothing. */
+   * text while the editor is open on this PR for that method, else
+   * nothing. */
   messageFor(method: string): MergeMessage | undefined;
+  /** The PR changed: the editor closes and the pick is dropped. */
+  discard(): void;
   dispose(): void;
 }
 
 export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMessageView {
   let open = $state(false);
+  // The PR the editor opened on.
+  let openedOn = $state<{ ref: PRRef; key: string } | null>(null);
   let method = $state('');
+  let picked = $state<string | null>(null);
   let edited = $state<MergeMessage | null>(null);
   // The defaults read while this editor was open, per method.
   let defaults = $state.raw<ReadonlyMap<string, MergeMessage>>(new Map());
@@ -56,8 +71,10 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
   let error = $state<PRManageError | null>(null);
   let generation = 0;
 
+  const live = $derived(open && openedOn !== null && openedOn.key === host.identity);
+
   async function read(forMethod: string): Promise<void> {
-    const ref = host.prRef;
+    const ref = openedOn?.ref;
     if (!ref || !methodHasCommitMessage(forMethod)) return;
     if (defaults.has(forMethod)) {
       error = null;
@@ -81,21 +98,35 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
   const shown = $derived<MergeMessage>(edited ?? defaults.get(method) ?? { title: '', body: '' });
 
   function edit(next: Partial<MergeMessage>): void {
-    if (!open || loading) return;
+    if (!live || loading) return;
     edited = { ...shown, ...next };
   }
 
   function reset(): void {
     generation += 1;
     open = false;
+    openedOn = null;
     edited = null;
     defaults = new Map();
     loading = false;
     error = null;
   }
 
+  function follow(next: string): void {
+    if (!live || next === method) return;
+    method = next;
+    if (edited === null) void read(next);
+  }
+
   return {
-    get open() { return open; },
+    selected(methods: readonly string[]): string {
+      return picked !== null && methods.includes(picked) ? picked : methods[0];
+    },
+    pick(next: string): void {
+      picked = next;
+      follow(next);
+    },
+    get open() { return live; },
     get method() { return method; },
     get title() { return shown.title; },
     get body() { return shown.body; },
@@ -103,19 +134,18 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
     get loading() { return loading; },
     get error() { return error; },
     openFor(next: string): void {
-      if (open) {
-        this.methodChanged(next);
+      if (live) {
+        follow(next);
         return;
       }
+      const ref = host.prRef;
+      const key = host.identity;
+      if (!ref || key === null) return;
       reset();
       open = true;
+      openedOn = { ref, key };
       method = next;
       void read(next);
-    },
-    methodChanged(next: string): void {
-      if (!open || next === method) return;
-      method = next;
-      if (edited === null) void read(next);
     },
     setTitle(text: string): void {
       edit({ title: text.replace(/[\r\n]+/g, ' ') });
@@ -127,11 +157,16 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
       reset();
     },
     messageFor(forMethod: string): MergeMessage | undefined {
-      if (!open || edited === null || !methodHasCommitMessage(forMethod)) return undefined;
+      if (!live || edited === null || forMethod !== method || !methodHasCommitMessage(forMethod)) return undefined;
       return { title: edited.title.trim(), body: edited.body };
+    },
+    discard(): void {
+      reset();
+      picked = null;
     },
     dispose(): void {
       reset();
+      picked = null;
     },
   };
 }

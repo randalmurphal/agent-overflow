@@ -1,10 +1,14 @@
 // The Details section's picker: one row's searchable multi-select
 // (reviewers, assignees or labels). Its query and selection live in the
-// review state, so a remounted overview keeps them. Results load when it
-// opens and as the reader types (debounced); an answer to an older query
-// is dropped. Closing it applies the selection as one change, the add
+// review state, so a remounted overview keeps them and neither applies
+// nor loses them. Results load when it opens and as the reader types
+// (debounced); a query change drops the older results at once, keeping
+// the checked entries listed, and an answer to an older query is
+// dropped. Closing it, by any route, the pane's closing included,
+// applies the selection as one change to the PR it opened on: the add
 // and remove sets against what the row showed when it opened; nothing is
-// written when they are both empty.
+// written when they are both empty. The PR changing under it discards
+// it.
 
 import { SearchPRCandidates } from './bindings';
 import { captureError } from './errorReports.svelte';
@@ -24,10 +28,21 @@ export interface PRPickerChange {
   readonly labels: { add: PRLabel[]; remove: PRLabel[] };
 }
 
+/** The PR a picker opened on: its reference and computer-scoped key. */
+export interface PRManageTarget {
+  readonly ref: PRRef;
+  readonly key: string;
+}
+
 export interface PRPickerHost {
-  readonly prRef: PRRef | null;
+  /** The PR on screen now, or null. */
+  readonly target: PRManageTarget | null;
+  /** The identity on screen now (the target's key), or null. */
+  readonly identity: string | null;
   readonly backend: BackendKey;
-  apply(row: PRManageRow, change: PRPickerChange): Promise<void>;
+  /** Writes the change to `target`; `closing` when the pane is going,
+   * so a failure has no row to show on. */
+  apply(row: PRManageRow, change: PRPickerChange, target: PRManageTarget, closing: boolean): Promise<void>;
   /** The row's picker opened. */
   opened(row: PRManageRow): void;
 }
@@ -65,6 +80,9 @@ export interface PRPickerView {
   toggle(key: string): void;
   /** Closes the picker and applies its change. */
   close(): Promise<void>;
+  /** Closes the picker without writing (the PR changed). */
+  discard(): void;
+  /** The pane is closing: applies the open change, then clears. */
   dispose(): void;
 }
 
@@ -75,7 +93,11 @@ function itemKey(item: Item): string {
 }
 
 export function createPRPickerState(host: PRPickerHost): PRPickerView {
-  let row = $state<PRManageRow | null>(null);
+  let openRow = $state<PRManageRow | null>(null);
+  let target: PRManageTarget | null = null;
+  let targetKey = $state<string | null>(null);
+  // A picker shows only on the PR it opened on.
+  const row = $derived(openRow !== null && targetKey === host.identity ? openRow : null);
   let query = $state('');
   let teams = false;
   // What the row showed (initial), what is selected now, and every item
@@ -99,10 +121,9 @@ export function createPRPickerState(host: PRPickerHost): PRPickerView {
     timer = null;
   }
 
-  async function search(forRow: PRManageRow, text: string): Promise<void> {
-    const ref = host.prRef;
-    if (!ref) return;
-    const mine = ++generation;
+  async function search(forRow: PRManageRow, text: string, mine: number): Promise<void> {
+    const ref = target?.ref;
+    if (!ref || mine !== generation) return;
     loading = true;
     try {
       const answer = await withBackendTarget(host.backend, () => SearchPRCandidates(prReferenceWire(ref), forRow, pickerQuery(text)));
@@ -133,6 +154,9 @@ export function createPRPickerState(host: PRPickerHost): PRPickerView {
       out.push({ key, person: item.person, label: item.label, checked: selected.has(key), locked: locked.has(key) });
     };
     if (pickerQuery(query) === '') for (const [key, item] of known) push(key, item);
+    // While a new query's answer is awaited the old results are gone;
+    // what is checked stays in reach.
+    else if (loading) for (const [key, item] of selected) push(key, item);
     for (const item of results) push(itemKey(item), item);
     return out;
   });
@@ -140,7 +164,9 @@ export function createPRPickerState(host: PRPickerHost): PRPickerView {
   function reset(): void {
     clearTimer();
     generation += 1;
-    row = null;
+    openRow = null;
+    target = null;
+    targetKey = null;
     query = '';
     initial = new Map();
     selected = new Map();
@@ -152,6 +178,22 @@ export function createPRPickerState(host: PRPickerHost): PRPickerView {
     error = null;
   }
 
+  // Closes the picker and writes its change to the PR it opened on.
+  async function apply(closing: boolean): Promise<void> {
+    const closingRow = row;
+    const on = target;
+    if (closingRow === null || on === null) {
+      reset();
+      return;
+    }
+    const change = selectionChange(initial, selected);
+    reset();
+    if (change.add.length === 0 && change.remove.length === 0) return;
+    const people = { add: change.add.flatMap((item) => item.person ?? []), remove: change.remove.flatMap((item) => item.person ?? []) };
+    const labels = { add: change.add.flatMap((item) => item.label ?? []), remove: change.remove.flatMap((item) => item.label ?? []) };
+    await host.apply(closingRow, { people, labels }, on, closing);
+  }
+
   return {
     get row() { return row; },
     get query() { return query; },
@@ -160,9 +202,13 @@ export function createPRPickerState(host: PRPickerHost): PRPickerView {
     get more() { return more; },
     get error() { return error; },
     open(next: PRManageRow, shown: PRPickerOpen): void {
+      const on = host.target;
+      if (!on) return;
       reset();
       host.opened(next);
-      row = next;
+      openRow = next;
+      target = on;
+      targetKey = on.key;
       teams = !!shown.teams;
       const items: Item[] = next === 'labels'
         ? (shown.labels ?? []).map((label) => ({ label }))
@@ -172,16 +218,23 @@ export function createPRPickerState(host: PRPickerHost): PRPickerView {
       selected = map;
       known = map;
       locked = new Set(shown.locked ?? []);
-      void search(next, '');
+      void search(next, '', ++generation);
     },
     setQuery(text: string): void {
       if (row === null) return;
       query = text;
       clearTimer();
+      // The older answer is dropped now, not when the debounce ends: its
+      // results are not this query's and cannot be picked.
+      const mine = ++generation;
+      results = [];
+      more = false;
+      error = null;
+      loading = true;
       const forRow = row;
       timer = setTimeout(() => {
         timer = null;
-        void search(forRow, text);
+        void search(forRow, text, mine);
       }, PICKER_SEARCH_DEBOUNCE_MS);
     },
     toggle(key: string): void {
@@ -197,18 +250,14 @@ export function createPRPickerState(host: PRPickerHost): PRPickerView {
       }
       selected = next;
     },
-    async close(): Promise<void> {
-      const closing = row;
-      if (closing === null) return;
-      const change = selectionChange(initial, selected);
+    close(): Promise<void> {
+      return apply(false);
+    },
+    discard(): void {
       reset();
-      if (change.add.length === 0 && change.remove.length === 0) return;
-      const people = { add: change.add.flatMap((item) => item.person ?? []), remove: change.remove.flatMap((item) => item.person ?? []) };
-      const labels = { add: change.add.flatMap((item) => item.label ?? []), remove: change.remove.flatMap((item) => item.label ?? []) };
-      await host.apply(closing, { people, labels });
     },
     dispose(): void {
-      reset();
+      void apply(true);
     },
   };
 }

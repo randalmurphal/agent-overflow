@@ -54,11 +54,12 @@
   const settled = $derived<readonly MergeBlocker[]>(readiness?.settled ?? []);
   const methods = $derived<readonly string[]>(merge?.methods?.length ? merge.methods : ['merge']);
 
-  // The menu's picks live with the section: the project's default until
-  // the reader picks, falling back when a poll drops the pick's method.
-  let pickedMethod: string | null = $state(null);
+  // The method lives in the review state with the commit message, so a
+  // remount keeps both: the project's default until the reader picks,
+  // falling back when a poll drops the pick's method. The branch delete
+  // toggle is the section's own.
   let pickedDelete: boolean | null = $state(null);
-  const method = $derived(pickedMethod !== null && methods.includes(pickedMethod) ? pickedMethod : methods[0]);
+  const method = $derived(review.manage.mergeMessage.selected(methods));
   const deleteBranch = $derived(merge?.deleteBranchOffered ? (pickedDelete ?? merge.deleteBranchDefault) : false);
 
   const showApprove = $derived(!settledPR && !!merge && (merge.viewerCanApprove || merge.viewerApproved));
@@ -457,7 +458,7 @@
             description={index === 0 ? 'project default' : undefined}
             checked={candidate === method}
             testId="review-merge-method-{candidate}"
-            onSelect={() => { pickedMethod = candidate; message.methodChanged(candidate); }}
+            onSelect={() => message.pick(candidate)}
           />
         {/each}
         {#if merge?.deleteBranchOffered}

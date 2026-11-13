@@ -47,6 +47,14 @@ function frame(next: PRDetail, seq: number): void {
   applyPRReviewUpdated({ prKey: PR_KEY, detail: next, threads: [], events: [], headSHA: next.headSHA, seq });
 }
 
+/** Opens the Details section, collapsed by default. */
+async function openDetails(view: ReviewPaneView): Promise<HTMLElement> {
+  const section = view.getByTestId('review-pr-details');
+  if (section.getAttribute('data-open') !== 'true') await fireEvent.click(section.querySelector('button[aria-expanded]')!);
+  await waitFor(() => expect(section.getAttribute('data-open')).toBe('true'));
+  return section;
+}
+
 function controls(view: ReviewPaneView): string[] {
   const ids = [
     'review-title-edit',
@@ -67,11 +75,12 @@ beforeEach(() => {
 describe('which management controls show', () => {
   it('shows none without the flags, and every one with them', async () => {
     let view = await mountReviewPanePR(detail({}));
-    expect(view.getByTestId('review-pr-details')).toBeInTheDocument();
+    await openDetails(view);
     expect(controls(view)).toEqual([]);
     view.unmount();
     resetReviewPanePR();
     view = await mountReviewPanePR(detail(ALL));
+    await openDetails(view);
     expect(controls(view)).toEqual([
       'review-title-edit',
       'review-pr-state-menu',
@@ -87,6 +96,7 @@ describe('which management controls show', () => {
 
   it('decides each row on its own flag', async () => {
     const view = await mountReviewPanePR(detail({ labels: true }));
+    await openDetails(view);
     expect(controls(view)).toEqual(['review-details-edit-labels']);
   });
 
@@ -103,6 +113,21 @@ describe('which management controls show', () => {
     expect(within(menu).queryByTestId('review-merge-edit-message')).toBeNull();
   });
 
+  it('never activates a state item on a held key, and keeps navigating on a held arrow', async () => {
+    const setState = setBindingMock('SetPRState', async () => ({ seq: 0 }));
+    const view = await mountReviewPanePR(detail({ close: true, convertToDraft: true }));
+    await fireEvent.click(view.getByTestId('review-pr-state-menu'));
+    const items = await waitFor(() => within(view.getByTestId('review-pr-state-items')).getAllByRole('menuitem'));
+    items[0].focus();
+    await fireEvent.keyDown(items[0], { key: 'Enter', repeat: true });
+    await fireEvent.keyDown(items[0], { key: ' ', repeat: true });
+    expect(setState).not.toHaveBeenCalled();
+    await fireEvent.keyDown(items[0], { key: 'ArrowDown', repeat: true });
+    expect(document.activeElement).toBe(items[1]);
+    await fireEvent.keyDown(items[1], { key: 'Enter' });
+    await waitFor(() => expect(setState).toHaveBeenCalledWith(expect.anything(), 'close'));
+  });
+
   it('offers the state items the flags and state allow', async () => {
     const view = await mountReviewPanePR(detail({ close: true, convertToDraft: true }));
     await fireEvent.click(view.getByTestId('review-pr-state-menu'));
@@ -110,14 +135,23 @@ describe('which management controls show', () => {
     expect(within(items).getAllByRole('menuitem').map((item) => item.textContent?.trim())).toEqual(['Convert to draft', 'Close']);
   });
 
-  it('opens Details collapsed when every row is empty, and shows a failed read as its sentence', async () => {
-    let view = await mountReviewPanePR(detail(ALL, {}, { reviewers: [], assignees: [], labels: [] }));
-    expect(view.getByTestId('review-pr-details').getAttribute('data-open')).toBe('false');
+  it('opens Details collapsed, summing the rows up in its header, and shows a failed read as its sentence', async () => {
+    let view = await mountReviewPanePR(detail(ALL));
+    let section = view.getByTestId('review-pr-details');
+    expect(section.getAttribute('data-open')).toBe('false');
+    expect(within(section).getByTestId('review-details-summary')).toHaveTextContent('2 reviewers · 1 assignee · 1 label');
+    view.unmount();
+    resetReviewPanePR();
+    view = await mountReviewPanePR(detail(ALL, {}, { reviewers: [], assignees: [], labels: [] }));
+    section = view.getByTestId('review-pr-details');
+    expect(section.getAttribute('data-open')).toBe('false');
+    expect(within(section).queryByTestId('review-details-summary')).toBeNull();
     view.unmount();
     resetReviewPanePR();
     view = await mountReviewPanePR(detail(NONE, {}, { reviewers: [], assignees: [], labels: [], unavailable: 'GitLab did not answer the management read.' }));
-    const section = view.getByTestId('review-pr-details');
+    section = view.getByTestId('review-pr-details');
     expect(section.getAttribute('data-open')).toBe('false');
+    expect(within(section).getByTestId('review-details-summary')).toHaveTextContent('unavailable');
     await fireEvent.click(section.querySelector('button[aria-expanded]')!);
     expect(within(section).getByTestId('review-details-unavailable')).toHaveTextContent('GitLab did not answer the management read.');
     expect(within(section).queryByTestId('review-details-rows')).toBeNull();
@@ -216,8 +250,8 @@ describe("where a review action's failure shows", () => {
   it('shows a refused re-request on the Reviewers row, not as a toast', async () => {
     setBindingMock('RerequestPRReview', async () => { throw new Error(REFUSED); });
     const view = await mountReviewPanePR(detail(ALL));
+    const details = await openDetails(view);
     await fireEvent.click(view.getByTestId('review-details-rerequest'));
-    const details = view.getByTestId('review-pr-details');
     await waitFor(() => expect(within(details).getByTestId('review-details-error-reviewers-message')).toHaveTextContent(REFUSED));
     expect(view.queryByText(/Re-requesting the review failed/)).toBeNull();
   });
@@ -288,6 +322,61 @@ describe('the merge commit message', () => {
     await mergeNow(view);
     await waitFor(() => expect(merge).toHaveBeenCalledTimes(2));
     expect(merge.mock.calls[1][1]).toEqual(expect.objectContaining({ commitMessage: { title: 'Mine', body: 'Default body' } }));
+  });
+
+  it('takes focus once the default has loaded, unless the reader moved on', async () => {
+    let answer!: (value: { title: string; body: string }) => void;
+    setBindingMock('GetPRMergeMessage', () => new Promise((resolve) => { answer = resolve; }));
+    let view = await mountReviewPanePR(detail(ALL));
+    await fireEvent.click(view.getByTestId('review-merge-trigger'));
+    let menu = await waitFor(() => view.getByTestId('review-merge-menu'));
+    await fireEvent.click(within(menu).getByTestId('review-merge-edit-message'));
+    const title = await waitFor(() => view.getByTestId('review-merge-message-title'));
+    expect(title).toBeDisabled();
+    answer({ title: 'Default title', body: '' });
+    await waitFor(() => expect(title).toBeEnabled());
+    await waitFor(() => expect(document.activeElement).toBe(title));
+    view.unmount();
+    resetReviewPanePR();
+    setBindingMock('GetPRMergeMessage', () => new Promise((resolve) => { answer = resolve; }));
+    view = await mountReviewPanePR(detail(ALL));
+    await fireEvent.click(view.getByTestId('review-merge-trigger'));
+    menu = await waitFor(() => view.getByTestId('review-merge-menu'));
+    await fireEvent.click(within(menu).getByTestId('review-merge-edit-message'));
+    const elsewhere = view.getByTestId('review-merge-approve');
+    elsewhere.focus();
+    answer({ title: 'Default title', body: '' });
+    await waitFor(() => expect(view.getByTestId('review-merge-message-title')).toBeEnabled());
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  it('merges with no message after a failed default read', async () => {
+    setBindingMock('GetPRMergeMessage', async () => { throw new Error('GitHub did not answer. Try again in a moment.'); });
+    const merge = setBindingMock('MergePR', async () => ({ seq: 0, outcome: { merged: true, autoMerge: false } }));
+    const view = await mountReviewPanePR(detail(ALL));
+    await fireEvent.click(view.getByTestId('review-merge-trigger'));
+    const menu = await waitFor(() => view.getByTestId('review-merge-menu'));
+    await fireEvent.click(within(menu).getByTestId('review-merge-edit-message'));
+    await waitFor(() => expect(view.getByTestId('review-merge-message-error')).toBeInTheDocument());
+    await mergeNow(view);
+    await waitFor(() => expect(merge).toHaveBeenCalledTimes(1));
+    expect(merge.mock.calls[0][1]).toEqual(expect.objectContaining({ autoMerge: false }));
+    expect(merge.mock.calls[0][1]).not.toHaveProperty('commitMessage');
+  });
+
+  it('arms auto-merge with the edited message', async () => {
+    setBindingMock('GetPRMergeMessage', async () => ({ title: 'Default title', body: 'Default body' }));
+    const merge = setBindingMock('MergePR', async () => ({ seq: 0, outcome: { merged: false, autoMerge: true } }));
+    const view = await mountReviewPanePR(detail(ALL, {
+      readiness: { state: 'blocked', blockers: [{ kind: 'checks', text: 'Checks running' }], settled: [] },
+    }));
+    await openEditor(view);
+    await fireEvent.input(view.getByTestId('review-merge-message-title'), { target: { value: 'Mine' } });
+    await fireEvent.click(view.getByTestId('review-merge-trigger'));
+    const menu = await waitFor(() => view.getByTestId('review-merge-menu'));
+    await fireEvent.click(within(menu).getByTestId('review-merge-auto'));
+    await waitFor(() => expect(merge).toHaveBeenCalledTimes(1));
+    expect(merge.mock.calls[0][1]).toEqual(expect.objectContaining({ autoMerge: true, commitMessage: { title: 'Mine', body: 'Default body' } }));
   });
 
   it('is not offered for a rebase', async () => {

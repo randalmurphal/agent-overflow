@@ -1219,6 +1219,7 @@ export function createReviewPaneState(
   const mergeHeadSHA = $derived(loadedPRHeadSHA);
   const manage = createPRManageState({
     get prRef() { return prRef; },
+    get identity() { return prRef ? computerPRKey(prRef) : null; },
     get entityKey() { return prEntityKey; },
     get appliedSeq() { return peekPRSeq(prEntityKey); },
     backend,

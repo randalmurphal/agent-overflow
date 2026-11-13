@@ -63,6 +63,11 @@
   aria-disabled={inert ? 'true' : undefined}
   disabled={disabled || (pending && !focusableWhilePending)}
   onclick={() => { if (!inert) onclick(); }}
+  onkeydown={(event) => {
+    // A held key's repeat is not another press: it would toggle shut the
+    // picker or menu the first press opened.
+    if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault();
+  }}
 >
   {#if pending}
     <SteppedSpinner size={13} />

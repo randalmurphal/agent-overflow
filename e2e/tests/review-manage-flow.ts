@@ -27,7 +27,9 @@
 // on the next snapshot once the read answers; and a host without the set
 // mutations' operationMode shows no Edit on the reviewers, assignees and
 // labels rows while the title, description and state controls stay.
-// Screenshots (dark): the title bar's menu, the Details section
+// A held Enter on the title bar's `⋯` opens the menu and activates
+// nothing. Closing the pane with Ctrl+W while a picker holds a change
+// writes that change (desktop). Screenshots (dark): the title bar's menu, the Details section
 // collapsed and expanded, a picker with results, the description editor
 // and its preview, the blocker row with Dismiss and its reason (GitHub)
 // or Bypass (GitLab), and the commit message editor.
@@ -265,8 +267,13 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
       await expect(description.getByTestId('review-description-editor')).toHaveCount(0);
       await expect(description.locator('strong')).toHaveText('once');
 
-      // Details: open with the rows the forge holds.
+      // Details: collapsed, its header summing up the rows the forge
+      // holds; opened, the rows.
       const details = review.getByTestId('review-pr-details');
+      await expect(details).toHaveAttribute('data-open', 'false');
+      await expect(details.getByTestId('review-details-summary')).toHaveText('3 reviewers · 1 assignee · 1 label');
+      await shot(details, 'details-collapsed');
+      await press(details.locator('button[aria-expanded]').first());
       await expect(details).toHaveAttribute('data-open', 'true');
       const reviewer = (login: string) => details.locator(`[data-testid="review-details-reviewer"][data-login="${login}"]`);
       await expect(reviewer('alee')).toHaveAttribute('data-state', 'PENDING');
@@ -276,16 +283,15 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
       await expect.poll(assignees).toEqual(['alee']);
       await expect(details.getByTestId('review-details-label')).toHaveText(['bug']);
       await shot(details, 'details-expanded');
-      await press(details.locator('button[aria-expanded]').first());
-      await expect(details).toHaveAttribute('data-open', 'false');
-      await expect(details.getByTestId('review-details-summary')).toHaveText('3 reviewers · 1 assignee · 1 label');
-      await shot(details, 'details-collapsed');
-      await press(details.locator('button[aria-expanded]').first());
-      await expect(details).toHaveAttribute('data-open', 'true');
+      await expect(details.getByTestId('review-details-summary')).toHaveCount(0);
 
       // Each picker: one write for its row's adds and removes.
       const picker = page.getByTestId('review-picker');
-      const option = (key: string) => picker.locator(`[data-testid="review-picker-option"][data-key="${key}"]`);
+      // A person by key (`u:login`), a label by its name (labels are keyed
+      // by their forge id).
+      const option = (key: string) => picker.locator(key.includes(':')
+        ? `[data-testid="review-picker-option"][data-key="${key}"]`
+        : `[data-testid="review-picker-option"][data-name="${key}"]`);
       async function editRow(row: 'reviewers' | 'assignees' | 'labels', add: string, query: string, remove: string, screenshot = false): Promise<ForgeHTTPInvocation[]> {
         const before = await lastSeq(harness);
         const rowEl = details.locator(`[data-testid="review-details-row"][data-row="${row}"]`);
@@ -396,6 +402,18 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
       // blocker's Mark ready.
       const stateMenu = header.getByTestId('review-pr-state-menu');
       const stateItems = page.getByTestId('review-pr-state-items');
+      // A held Enter opens the menu, and its repeats never activate the
+      // item focus moved to.
+      const beforeHeld = await lastSeq(harness);
+      await stateMenu.focus();
+      await page.keyboard.down('Enter');
+      for (let repeat = 0; repeat < 5; repeat += 1) await page.keyboard.down('Enter');
+      await page.keyboard.up('Enter');
+      await expect(stateItems.getByRole('menuitem')).toHaveText(['Convert to draft', 'Close']);
+      await expect(statePill).toHaveText('open');
+      expect((await forgeInvocations(harness)).filter((call) => call.seq > beforeHeld && call.via === 'http' && /Close|Convert|Draft|update merge request/.test(call.route ?? ''))).toEqual([]);
+      await page.keyboard.press('Escape');
+      await expect(stateItems).toHaveCount(0);
       await reveal(header);
       await press(stateMenu);
       await expect(stateItems.getByRole('menuitem')).toHaveText(['Convert to draft', 'Close']);
@@ -505,6 +523,35 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     });
   }
 
+  test("github: closing the pane from the keyboard writes the open picker's change", async ({ harness, page }) => {
+    test.skip(compact, 'the compact layout closes a pane by Back, which closes the picker first');
+    test.setTimeout(120_000);
+    const thread = 'Manage pane close thread';
+    await seedPullRequest(harness, 'github', thread);
+    await harness.open(page);
+    const review = await openReview(page, thread, 'github', compact);
+    await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+    const details = review.getByTestId('review-pr-details');
+    await details.locator('button[aria-expanded]').first().click();
+    await details.locator('[data-testid="review-details-row"][data-row="reviewers"]').hover();
+    await details.getByTestId('review-details-edit-reviewers').click();
+    const picker = page.getByTestId('review-picker');
+    const search = picker.getByTestId('review-picker-search');
+    await expect(search).toBeFocused();
+    await search.fill('jane');
+    await picker.locator('[data-testid="review-picker-option"][data-key="u:jdoe"]').click();
+    await expect(picker.locator('[data-key="u:jdoe"]')).toHaveAttribute('data-checked', 'true');
+    const before = await lastSeq(harness);
+    await search.focus();
+    await page.keyboard.press('Control+w');
+    await expect(review).toHaveCount(0);
+    await expect(async () => {
+      const made = await writes(harness, ['gh api request reviewers', 'gh api remove reviewers'], before);
+      expect(made.map((call) => [call.route, call.body])).toEqual([['gh api request reviewers', { reviewers: ['jdoe'], team_reviewers: [] }]]);
+    }).toPass({ timeout: 15_000 });
+    await expectEveryForgeCallHandled(harness);
+  });
+
   // Every control that hangs off the management flags, wherever it is.
   const MANAGE_CONTROLS = [
     'review-title-edit',
@@ -581,6 +628,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
       const review = await openReview(page, thread, 'gitlab', compact);
       await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
       const details = review.getByTestId('review-pr-details');
+      await (compact ? details.locator('button[aria-expanded]').first().tap() : details.locator('button[aria-expanded]').first().click());
       await expect(details.getByTestId('review-details-rows')).toBeVisible();
       await expect(details.locator('[data-testid="review-details-reviewer"][data-login="alee"]')).toBeVisible();
       for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-rerequest']) {

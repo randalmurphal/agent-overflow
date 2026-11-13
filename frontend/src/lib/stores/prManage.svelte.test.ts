@@ -4,8 +4,11 @@
 // while withheld; an editor cannot be dismissed while it saves, closes
 // once the answer is on screen and stays open with the sentence on a
 // failure; a picker's adds and removes are one write, none when nothing
-// changed, and an older search's answer is dropped; the merge commit
-// message is sent only when edited.
+// changed, an older search's results go the moment the query changes,
+// and labels are one option per id through a rename; the merge commit
+// message is sent only when edited, and only for its method; everything
+// belongs to the PR it opened on and is dropped when the PR changes; the
+// pane closing applies an open picker's change.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
@@ -18,11 +21,15 @@ import type { PRCandidates } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
 const REF = { forge: 'github' as const, host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 };
+const REF_B = { ...REF, number: 6 };
+const KEY = 'home:github:owner/repo:5';
+const KEY_B = 'home:github:owner/repo:6';
 
 function makeHost() {
   const host = $state({
-    prRef: REF,
-    entityKey: 'home:github:owner/repo:5' as string | null,
+    prRef: REF as typeof REF | null,
+    identity: KEY as string | null,
+    entityKey: KEY as string | null,
     appliedSeq: 1,
     backend: HOME_BACKEND,
     launch: 'L1',
@@ -32,6 +39,7 @@ function makeHost() {
   });
   const lent: PRManageHost = {
     get prRef() { return host.prRef; },
+    get identity() { return host.identity; },
     get entityKey() { return host.entityKey; },
     get appliedSeq() { return host.appliedSeq; },
     backend: HOME_BACKEND,
@@ -264,6 +272,121 @@ describe("where a review action's failure shows", () => {
   });
 });
 
+describe('the PR on screen changing', () => {
+  async function switchPR(): Promise<void> {
+    host.prRef = REF_B;
+    host.identity = KEY_B;
+    host.entityKey = KEY_B;
+    await settle();
+  }
+
+  it('closes the title and description editors without writing, and for good', async () => {
+    const edit = setBindingMock('EditPR', async () => ({ seq: 0 }));
+    view.openTitle('A title');
+    view.setTitleDraft('Meant for A');
+    view.openDescription('A body');
+    view.setDescriptionDraft('Meant for A');
+    await switchPR();
+    expect(view.titleDraft).toBeNull();
+    expect(view.descriptionDraft).toBeNull();
+    await view.saveTitle();
+    await view.saveDescription();
+    expect(edit).not.toHaveBeenCalled();
+    // Back on A: what was typed for it is gone too.
+    host.prRef = REF;
+    host.identity = KEY;
+    host.entityKey = KEY;
+    await settle();
+    expect(view.titleDraft).toBeNull();
+    expect(view.descriptionDraft).toBeNull();
+  });
+
+  it('discards a picker with changes, writing nothing', async () => {
+    setBindingMock('SearchPRCandidates', async () => ({ people: [{ login: 'jdoe' }], labels: [], more: false }));
+    const set = setBindingMock('SetPRReviewers', async () => ({ seq: 0 }));
+    view.picker.open('reviewers', { people: [] });
+    await settle();
+    view.picker.toggle('u:jdoe');
+    await switchPR();
+    expect(view.picker.row).toBeNull();
+    await view.picker.close();
+    view.dispose();
+    await settle();
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('drops an edited merge message and its method', async () => {
+    setBindingMock('GetPRMergeMessage', async () => ({ title: 'Default', body: '' }));
+    const message = view.mergeMessage;
+    message.pick('squash');
+    message.openFor('squash');
+    await settle();
+    message.setTitle('Meant for A');
+    await switchPR();
+    expect(message.open).toBe(false);
+    expect(message.messageFor('squash')).toBeUndefined();
+    expect(message.selected(['merge', 'squash'])).toBe('merge');
+  });
+
+  it("hides what was A's at once, before the reset runs", async () => {
+    setBindingMock('SearchPRCandidates', async () => ({ people: [{ login: 'jdoe' }], labels: [], more: false }));
+    setBindingMock('GetPRMergeMessage', async () => ({ title: 'Default', body: '' }));
+    view.openTitle('A title');
+    view.picker.open('reviewers', { people: [] });
+    view.mergeMessage.openFor('merge');
+    await settle();
+    view.mergeMessage.setTitle('Meant for A');
+    // No flush: the identity watch has not run yet.
+    host.prRef = REF_B;
+    host.identity = KEY_B;
+    expect(view.titleDraft).toBeNull();
+    expect(view.picker.row).toBeNull();
+    expect(view.mergeMessage.open).toBe(false);
+    expect(view.mergeMessage.messageFor('merge')).toBeUndefined();
+  });
+
+  it('ignores a late answer for the PR that was', async () => {
+    const call = deferred<{ seq: number }>();
+    setBindingMock('SearchPRCandidates', async () => ({ people: [{ login: 'jdoe' }], labels: [], more: false }));
+    setBindingMock('SetPRReviewers', () => call.promise);
+    view.picker.open('reviewers', { people: [] });
+    await settle();
+    view.picker.toggle('u:jdoe');
+    const closing = view.picker.close();
+    await switchPR();
+    call.reject(new TransportError('forge_refused', 'GitHub refused the reviewers.'));
+    await closing;
+    expect(view.rowError('reviewers')).toBeNull();
+    expect(host.refreshes).toBe(0);
+  });
+
+  it('writes only to the PR an editor opened on', async () => {
+    const call = deferred<{ seq: number }>();
+    const edit = setBindingMock('EditPR', () => call.promise);
+    view.openTitle('Old');
+    view.setTitleDraft('New');
+    const saving = view.saveTitle();
+    host.prRef = REF_B;
+    call.resolve({ seq: 0 });
+    await saving;
+    expect(edit.mock.calls[0][0]).toEqual(expect.objectContaining({ Number: 5 }));
+  });
+});
+
+describe('the pane closing', () => {
+  it("applies an open picker's change to its PR, and toasts a failure", async () => {
+    setBindingMock('SearchPRCandidates', async () => ({ people: [{ login: 'jdoe' }], labels: [], more: false }));
+    const set = setBindingMock('SetPRReviewers', async () => { throw new TransportError('forge_refused', 'GitHub refused the reviewers.'); });
+    view.picker.open('reviewers', { people: [] });
+    await settle();
+    view.picker.toggle('u:jdoe');
+    view.dispose();
+    await settle();
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }), { add: [{ login: 'jdoe' }], remove: [] });
+    expect(getToasts().at(-1)?.message).toBe('Changing reviewers failed: GitHub refused the reviewers.');
+  });
+});
+
 describe('the picker', () => {
   const ALEE = { login: 'alee', name: 'Al Lee', state: 'PENDING' };
   const KCHEN = { login: 'kchen', state: 'CHANGES_REQUESTED' };
@@ -315,6 +438,36 @@ describe('the picker', () => {
     expect(view.picker.loading).toBe(false);
   });
 
+  it('drops the old results the moment the query changes, keeping what is checked', async () => {
+    vi.useFakeTimers();
+    const answers: Record<string, ReturnType<typeof deferred<PRCandidates>>> = { '': deferred(), ja: deferred() };
+    setBindingMock('SearchPRCandidates', (_pr: unknown, _kind: string, query: string) => answers[query].promise);
+    view.picker.open('assignees', { people: [ALEE] });
+    answers[''].resolve({ people: [ALEE, KCHEN], labels: [], more: false });
+    await settle();
+    expect(view.picker.options.map((option) => option.key)).toEqual(['u:alee', 'u:kchen']);
+    view.picker.setQuery('ja');
+    // Inside the debounce: the old results are gone and cannot be picked.
+    expect(view.picker.loading).toBe(true);
+    expect(view.picker.options.map((option) => option.key)).toEqual(['u:alee']);
+    view.picker.toggle('u:kchen');
+    expect(view.picker.options.find((option) => option.key === 'u:kchen')).toBeUndefined();
+    vi.advanceTimersByTime(PICKER_SEARCH_DEBOUNCE_MS);
+    answers.ja.resolve({ people: [JDOE], labels: [], more: false });
+    await settle();
+    expect(view.picker.options.map((option) => [option.key, option.checked])).toEqual([['u:jdoe', false]]);
+  });
+
+  it('keeps one option per label id through a rename, and writes nothing for it', async () => {
+    setBindingMock('SearchPRCandidates', async () => ({ people: [], labels: [{ id: 'LA_1', name: 'defect' }], more: false }));
+    const set = setBindingMock('SetPRLabels', async () => ({ seq: 0 }));
+    view.picker.open('labels', { labels: [{ id: 'LA_1', name: 'bug' }] });
+    await settle();
+    expect(view.picker.options.map((option) => [option.key, option.checked])).toEqual([['l:LA_1', true]]);
+    await view.picker.close();
+    expect(set).not.toHaveBeenCalled();
+  });
+
   it('offers teams only when asked to', async () => {
     const team = { login: 'owner/core', team: true };
     setBindingMock('SearchPRCandidates', async () => ({ people: [JDOE, team], labels: [], more: false }));
@@ -328,11 +481,11 @@ describe('the picker', () => {
   });
 
   it('shows a failed change on its row until the row is picked again', async () => {
-    setBindingMock('SearchPRCandidates', async () => ({ people: [], labels: [{ name: 'feature' }], more: false }));
+    setBindingMock('SearchPRCandidates', async () => ({ people: [], labels: [{ name: 'feature', id: 'LA_9' }], more: false }));
     setBindingMock('SetPRLabels', async () => { throw new TransportError('forge_transient', 'GitHub applied part of the change to the labels and then timed out. The pane shows what GitHub did.'); });
     view.picker.open('labels', { labels: [] });
     await settle();
-    view.picker.toggle('feature');
+    view.picker.toggle('l:LA_9');
     await view.picker.close();
     expect(view.rowError('labels')?.message).toContain('applied part of the change');
     view.picker.open('labels', { labels: [] });
@@ -350,18 +503,21 @@ describe('the merge commit message', () => {
     expect(message.title).toBe('Default merge');
     expect(message.messageFor('merge')).toBeUndefined();
     // Untouched, a method change reads that method's default.
-    message.methodChanged('squash');
+    message.pick('squash');
     await settle();
     expect(read.mock.calls.map((callArgs) => callArgs[1])).toEqual(['merge', 'squash']);
     expect(message.title).toBe('Default squash');
     message.setTitle('Mine\nsplit');
     expect(message.messageFor('squash')).toEqual({ title: 'Mine split', body: 'Body' });
     expect(message.messageFor('rebase')).toBeUndefined();
-    // Edited, a method change keeps the text and reads nothing.
-    message.methodChanged('merge');
+    // Edited, a method change keeps the text and reads nothing; the text
+    // goes with the method the editor shows, never another.
+    message.pick('merge');
     await settle();
     expect(read).toHaveBeenCalledTimes(2);
     expect(message.title).toBe('Mine split');
+    expect(message.messageFor('merge')).toEqual({ title: 'Mine split', body: 'Body' });
+    expect(message.messageFor('squash')).toBeUndefined();
     message.close();
     expect(message.messageFor('merge')).toBeUndefined();
   });

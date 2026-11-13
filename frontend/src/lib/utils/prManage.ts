@@ -56,9 +56,11 @@ export function personKey(person: PRPerson): string {
   return `${person.team ? 't' : 'u'}:${person.login.toLowerCase()}`;
 }
 
-/** A label's identity in a picker: its name, unique per repository. */
+/** A label's identity in the picker, its change and the Details row:
+ * its forge id, which a rename keeps (the name only for a label the
+ * backend sent without one). */
 export function labelKey(label: PRLabel): string {
-  return label.name.toLowerCase();
+  return label.id ? `l:${label.id}` : `n:${label.name.toLowerCase()}`;
 }
 
 /** The add and remove sets that take `initial` to `selected`, each in

@@ -14,7 +14,14 @@
 // actions (a stale diff, a failing pump). An editor's text lives here,
 // not in its component: the overview is a virtualized row and unmounts.
 // An editor whose write is pending cannot be dismissed; a failed write
-// keeps it open with the sentence on it. A failure shows on the surface
+// keeps it open with the sentence on it.
+//
+// Every editor, the picker and the merge message belong to the PR they
+// opened on (its computer and PR) and write only to it. When the pane's
+// PR becomes another, all of it is dropped: open editors and the picker
+// close without writing, the merge message and its method go, and a
+// late answer for the PR that was is ignored. The pane closing applies
+// an open picker's change (its failure is a toast, its row being gone). A failure shows on the surface
 // that caused it where that surface stays: a picker's or re-request's on
 // its Details row, Dismiss's and Bypass's on the changes-requested
 // blocker row. The state menu's items toast, since their menu is gone.
@@ -32,11 +39,11 @@ import {
 } from './bindings';
 import { captureError, type CapturedError } from './errorReports.svelte';
 import { createPRMergeMessageState, type PRMergeMessageView } from './prMergeMessage.svelte';
-import { createPRPickerState, type PRPickerView } from './prManagePicker.svelte';
+import { createPRPickerState, type PRManageTarget, type PRPickerView } from './prManagePicker.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
-import type { PRDetail, PRPerson } from '../types/models';
+import type { PRPerson } from '../types/models';
 import { labelChange, peopleChange, PR_STATE_LABEL, wirePerson, type PRManageRow, type PRStateChange } from '../utils/prManage';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { userFacingError } from '../utils/userFacingError';
@@ -44,6 +51,9 @@ import { userFacingError } from '../utils/userFacingError';
 /** What the review pane lends the management state. */
 export interface PRManageHost {
   readonly prRef: PRRef | null;
+  /** The PR's computer-scoped key whatever the scope (computerPRKey of
+   * prRef), or null: the identity the management state belongs to. */
+  readonly identity: string | null;
   /** The PR's computer-scoped key (computerPRKey), whose applied
    * sequence settles a pending action; null outside the PR scope. */
   readonly entityKey: string | null;
@@ -123,8 +133,9 @@ export interface PRManageView {
   saveDescription(): Promise<void>;
 
   // The Details section.
-  /** Open, or null for the default (open unless every row is empty). */
-  readonly detailsOpen: boolean | null;
+  /** The Details section is open; collapsed until the reader opens it,
+   * then remembered as the other overview sections are. */
+  readonly detailsOpen: boolean;
   setDetailsOpen(open: boolean): void;
   readonly picker: PRPickerView;
   /** A row's failed change or re-request (reviewers), shown on the row
@@ -177,12 +188,22 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     host.withheldReason ?? (pending ? `${PR_MANAGE_ACTION_LABEL[pending.kind]}…` : null),
   );
 
-  // Runs one write; answers how it went. The caller shows a failure on
-  // its own surface.
-  async function run(kind: PRManageActionKind, target: string, call: (ref: PRRef) => Promise<{ seq: number }>): Promise<Outcome | null> {
+  // The PR on screen, to capture when an editor or picker opens.
+  function currentTarget(): PRManageTarget | null {
     const ref = host.prRef;
-    const key = host.entityKey;
-    if (!ref || key === null) return null;
+    const key = host.identity;
+    return ref && key !== null ? { ref, key } : null;
+  }
+
+  // An answer about `on` still belongs on screen.
+  function onScreen(on: PRManageTarget): boolean {
+    return !disposed && on.key === host.identity;
+  }
+
+  // Runs one write to `on`; answers how it went. The caller shows a
+  // failure on its own surface, and drops an answer for a PR no longer
+  // on screen.
+  async function run(kind: PRManageActionKind, target: string, on: PRManageTarget, call: (ref: PRRef) => Promise<{ seq: number }>): Promise<Outcome> {
     const blocked = untrack(() => blockedReason);
     if (blocked !== null) return { ok: false, blocked };
     const launch = host.launch;
@@ -190,16 +211,16 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     awaiting = null;
     let result: { seq: number };
     try {
-      result = await withBackendTarget(host.backend, () => call(ref));
+      result = await withBackendTarget(host.backend, () => call(on.ref));
     } catch (err) {
-      if (disposed) return null;
+      if (disposed) return { ok: false, err };
       running = null;
-      host.refresh();
+      if (on.key === host.identity) host.refresh();
       return { ok: false, err };
     }
-    if (disposed) return null;
+    if (disposed) return { ok: true };
     running = null;
-    if (host.launch === launch && host.entityKey === key && untrack(() => host.appliedSeq) < result.seq) awaiting = { kind, target, key, seq: result.seq, launch };
+    if (host.launch === launch && host.entityKey === on.key && untrack(() => host.appliedSeq) < result.seq) awaiting = { kind, target, key: on.key, seq: result.seq, launch };
     return { ok: true };
   }
 
@@ -224,17 +245,18 @@ export function createPRManageState(host: PRManageHost): PRManageView {
   // An editor closes once its write's answer is on screen: `submitted`
   // marks a write that succeeded, and the editor reads closed as soon as
   // its action is no longer pending.
-  let title = $state<{ text: string; submitted: boolean } | null>(null);
+  // An editor shows only on the PR it opened on.
+  let title = $state<{ text: string; submitted: boolean; on: PRManageTarget } | null>(null);
   let titleError = $state<PRManageError | null>(null);
   const titleSaving = $derived(pending?.kind === 'edit_title');
-  const titleDraft = $derived(title && !(title.submitted && !titleSaving) ? title.text : null);
+  const titleDraft = $derived(title && title.on.key === host.identity && !(title.submitted && !titleSaving) ? title.text : null);
 
-  let description = $state<{ text: string; expected: string; preview: boolean; submitted: boolean } | null>(null);
+  let description = $state<{ text: string; expected: string; preview: boolean; submitted: boolean; on: PRManageTarget } | null>(null);
   let descriptionError = $state<PRManageError | null>(null);
   const descriptionSaving = $derived(pending?.kind === 'edit_description');
-  const descriptionOpen = $derived(description !== null && !(description.submitted && !descriptionSaving));
+  const descriptionOpen = $derived(description !== null && description.on.key === host.identity && !(description.submitted && !descriptionSaving));
 
-  let detailsOpen = $state<boolean | null>(null);
+  let detailsOpen = $state(false);
   let rowErrors = $state<Partial<Record<PRManageRow, PRManageError>>>({});
   function setRowError(row: PRManageRow, error: PRManageError | null): void {
     const next = { ...rowErrors };
@@ -243,26 +265,32 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     rowErrors = next;
   }
 
-  let dismissState = $state<{ reviewId: string; text: string; submitted: boolean } | null>(null);
+  let dismissState = $state<{ reviewId: string; text: string; submitted: boolean; on: PRManageTarget } | null>(null);
   // The reason of a dismissal that failed, offered again on its reopen.
   let failedDismiss: { reviewId: string; text: string } | null = null;
   let changeRequestError = $state<PRManageError | null>(null);
   const dismissSaving = $derived(pending?.kind === 'dismiss');
-  const dismissDraft = $derived(dismissState && !(dismissState.submitted && !dismissSaving)
+  const dismissDraft = $derived(dismissState && dismissState.on.key === host.identity && !(dismissState.submitted && !dismissSaving)
     ? { reviewId: dismissState.reviewId, text: dismissState.text }
     : null);
 
   const picker = createPRPickerState({
-    get prRef() { return host.prRef; },
+    get target() { return currentTarget(); },
+    get identity() { return host.identity; },
     get backend() { return host.backend; },
-    async apply(row, change) {
+    async apply(row, change, on, closing) {
       const wire = row === 'labels' ? labelChange(change.labels) : peopleChange(change.people);
-      const outcome = await run(row, '', (ref) => {
+      const outcome = await run(row, '', on, (ref) => {
         const pr = prReferenceWire(ref);
         if (row === 'labels') return SetPRLabels(pr, wire as ReturnType<typeof labelChange>);
         return row === 'reviewers' ? SetPRReviewers(pr, wire as ReturnType<typeof peopleChange>) : SetPRAssignees(pr, wire as ReturnType<typeof peopleChange>);
       });
-      if (outcome === null) return;
+      // Applied as the pane closed: no row is left to show a failure.
+      if (closing) {
+        if (!outcome.ok) toastFailure(row, outcome);
+        return;
+      }
+      if (!onScreen(on)) return;
       // The sentence as the backend gave it, on the row; a partial change
       // says so, and the row shows the next snapshot either way.
       setRowError(row, outcome.ok ? null : failure(outcome));
@@ -274,7 +302,33 @@ export function createPRManageState(host: PRManageHost): PRManageView {
 
   const mergeMessage = createPRMergeMessageState({
     get prRef() { return host.prRef; },
+    get identity() { return host.identity; },
     get backend() { return host.backend; },
+  });
+
+  // The PR on screen became another: drop everything that was its.
+  function discardAll(): void {
+    title = null;
+    titleError = null;
+    description = null;
+    descriptionError = null;
+    dismissState = null;
+    failedDismiss = null;
+    changeRequestError = null;
+    rowErrors = {};
+    picker.discard();
+    mergeMessage.discard();
+  }
+  let identity: string | null = untrack(() => host.identity);
+  const stopIdentityWatch = $effect.root(() => {
+    $effect(() => {
+      const next = host.identity;
+      // A moment without a PR (git status settling) is not another PR.
+      if (next === null || next === identity) return;
+      const was = identity;
+      identity = next;
+      if (was !== null) untrack(discardAll);
+    });
   });
 
   return {
@@ -285,8 +339,9 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     get titleError() { return titleError; },
     get titleSaving() { return titleSaving; },
     openTitle(current: string): void {
-      if (titleDraft !== null) return;
-      title = { text: current, submitted: false };
+      const on = currentTarget();
+      if (titleDraft !== null || !on) return;
+      title = { text: current, submitted: false, on };
       titleError = null;
     },
     setTitleDraft(text: string): void {
@@ -299,15 +354,15 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     },
     async saveTitle(): Promise<void> {
       const draft = title;
-      if (!draft || titleSaving) return;
+      if (!draft || titleDraft === null || titleSaving) return;
       const text = draft.text.trim();
       if (text === '') {
         titleError = failure({ ok: false, blocked: 'The title cannot be empty.' });
         return;
       }
       titleError = null;
-      const outcome = await run('edit_title', '', (ref) => EditPR(prReferenceWire(ref), { title: text }));
-      if (outcome === null || title !== draft) return;
+      const outcome = await run('edit_title', '', draft.on, (ref) => EditPR(prReferenceWire(ref), { title: text }));
+      if (!onScreen(draft.on) || title !== draft) return;
       if (outcome.ok) title = { ...draft, submitted: true };
       else titleError = failure(outcome);
     },
@@ -317,8 +372,9 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     get descriptionError() { return descriptionError; },
     get descriptionSaving() { return descriptionSaving; },
     openDescription(current: string): void {
-      if (descriptionOpen) return;
-      description = { text: current, expected: current, preview: false, submitted: false };
+      const on = currentTarget();
+      if (descriptionOpen || !on) return;
+      description = { text: current, expected: current, preview: false, submitted: false, on };
       descriptionError = null;
     },
     setDescriptionDraft(text: string): void {
@@ -334,13 +390,13 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     },
     async saveDescription(): Promise<void> {
       const draft = description;
-      if (!draft || descriptionSaving) return;
+      if (!draft || !descriptionOpen || descriptionSaving) return;
       descriptionError = null;
       // The description the editor opened with is the precondition: a
       // description changed since is refused, and the editor stays open
       // with the backend's sentence.
-      const outcome = await run('edit_description', '', (ref) => EditPR(prReferenceWire(ref), { description: draft.text, expectedDescription: draft.expected }));
-      if (outcome === null || description === null || description.expected !== draft.expected) return;
+      const outcome = await run('edit_description', '', draft.on, (ref) => EditPR(prReferenceWire(ref), { description: draft.text, expectedDescription: draft.expected }));
+      if (!onScreen(draft.on) || description === null || description.on !== draft.on || description.expected !== draft.expected) return;
       if (outcome.ok) description = { ...description, submitted: true };
       else descriptionError = failure(outcome);
     },
@@ -351,22 +407,27 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     rowError(row: PRManageRow): PRManageError | null { return rowErrors[row] ?? null; },
 
     async setState(state: PRStateChange): Promise<void> {
-      const outcome = await run(state, '', (ref) => SetPRState(prReferenceWire(ref), state));
-      if (outcome && !outcome.ok) toastFailure(state, outcome);
+      const on = currentTarget();
+      if (!on) return;
+      const outcome = await run(state, '', on, (ref) => SetPRState(prReferenceWire(ref), state));
+      if (onScreen(on) && !outcome.ok) toastFailure(state, outcome);
     },
     async rerequest(reviewer: PRPerson): Promise<void> {
+      const on = currentTarget();
+      if (!on) return;
       const person = wirePerson(reviewer);
       setRowError('reviewers', null);
-      const outcome = await run('rerequest', reviewer.login, (ref) => RerequestPRReview(prReferenceWire(ref), person));
-      if (outcome && !outcome.ok) setRowError('reviewers', failure(outcome));
+      const outcome = await run('rerequest', reviewer.login, on, (ref) => RerequestPRReview(prReferenceWire(ref), person));
+      if (onScreen(on) && !outcome.ok) setRowError('reviewers', failure(outcome));
     },
     get dismissDraft() { return dismissDraft; },
     get changeRequestError() { return changeRequestError; },
     openDismiss(reviewId: string): void {
-      if (dismissSaving) return;
+      const on = currentTarget();
+      if (dismissSaving || !on) return;
       const text = failedDismiss?.reviewId === reviewId ? failedDismiss.text : '';
       failedDismiss = null;
-      dismissState = { reviewId, text, submitted: false };
+      dismissState = { reviewId, text, submitted: false, on };
       changeRequestError = null;
     },
     setDismissText(text: string): void {
@@ -378,12 +439,12 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     },
     async dismiss(): Promise<void> {
       const draft = dismissState;
-      if (!draft || dismissSaving) return;
+      if (!draft || dismissDraft === null || dismissSaving) return;
       const message = draft.text.trim();
       if (message === '') return;
       changeRequestError = null;
-      const outcome = await run('dismiss', draft.reviewId, (ref) => DismissPRReview(prReferenceWire(ref), draft.reviewId, message));
-      if (outcome === null || dismissState !== draft) return;
+      const outcome = await run('dismiss', draft.reviewId, draft.on, (ref) => DismissPRReview(prReferenceWire(ref), draft.reviewId, message));
+      if (!onScreen(draft.on) || dismissState !== draft) return;
       if (outcome.ok) {
         dismissState = { ...draft, submitted: true };
         return;
@@ -395,25 +456,21 @@ export function createPRManageState(host: PRManageHost): PRManageView {
       changeRequestError = failure(outcome);
     },
     async bypass(): Promise<void> {
+      const on = currentTarget();
+      if (!on) return;
       changeRequestError = null;
-      const outcome = await run('bypass', '', (ref) => BypassPRRequestedChanges(prReferenceWire(ref)));
-      if (outcome && !outcome.ok) changeRequestError = failure(outcome);
+      const outcome = await run('bypass', '', on, (ref) => BypassPRRequestedChanges(prReferenceWire(ref)));
+      if (onScreen(on) && !outcome.ok) changeRequestError = failure(outcome);
     },
 
     mergeMessage,
 
     dispose(): void {
-      disposed = true;
+      stopIdentityWatch();
+      // The open picker's change is written before the state goes.
       picker.dispose();
+      disposed = true;
       mergeMessage.dispose();
     },
   };
-}
-
-/** Whether the Details section opens: the reader's choice, else open
- * unless every row is empty. */
-export function detailsSectionOpen(choice: boolean | null, detail: PRDetail): boolean {
-  if (choice !== null) return choice;
-  const manage = detail.manage;
-  return !!manage && !manage.unavailable && (manage.reviewers.length > 0 || manage.assignees.length > 0 || manage.labels.length > 0);
 }

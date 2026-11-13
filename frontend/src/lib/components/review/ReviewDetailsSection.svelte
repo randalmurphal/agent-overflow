@@ -8,11 +8,12 @@
   import ReviewIconButton from './ReviewIconButton.svelte';
   import ReviewManageError from './ReviewManageError.svelte';
   import ReviewPeoplePicker from './ReviewPeoplePicker.svelte';
-  import { detailsSectionOpen, PR_MANAGE_ACTION_LABEL, type PRManageView } from '../../stores/prManage.svelte';
+  import { PR_MANAGE_ACTION_LABEL, type PRManageView } from '../../stores/prManage.svelte';
   import {
     canEditRow,
     canRerequest,
     labelColor,
+    labelKey,
     personKey,
     REVIEWER_STATE_LABEL,
     reviewerStateClass,
@@ -26,8 +27,8 @@
   // row has one Edit (only where the forge lets the viewer change it)
   // opening a searchable multi-select whose close applies the row's
   // change as one write. A settled or outdated review has a Re-request
-  // icon. Collapsed by default while every row is empty; the reader's
-  // choice lives in the review state. Nothing here is optimistic: the
+  // icon. Collapsed by default, its header summing the rows up; the
+  // reader's choice lives in the review state. Nothing here is optimistic: the
   // rows are the forge's answer, and a control is pending until it is on
   // screen.
 
@@ -45,7 +46,7 @@
   const labels = $derived(data?.labels ?? []);
   // The management read failed: its sentence instead of empty rows.
   const unavailable = $derived(data?.unavailable ?? '');
-  const open = $derived(detailsSectionOpen(manage.detailsOpen, detail));
+  const open = $derived(manage.detailsOpen);
   const pending = $derived(manage.pending);
   const blocked = $derived(manage.blockedReason);
   const picker = $derived(manage.picker);
@@ -55,7 +56,7 @@
     if (reviewers.length) parts.push(`${reviewers.length} ${reviewers.length === 1 ? 'reviewer' : 'reviewers'}`);
     if (assignees.length) parts.push(`${assignees.length} ${assignees.length === 1 ? 'assignee' : 'assignees'}`);
     if (labels.length) parts.push(`${labels.length} ${labels.length === 1 ? 'label' : 'labels'}`);
-    return parts.join(' · ');
+    return unavailable ? 'unavailable' : parts.join(' · ');
   });
 
   const anchors: Record<PRManageRow, HTMLButtonElement | undefined> = $state({ reviewers: undefined, assignees: undefined, labels: undefined });
@@ -207,7 +208,7 @@
       <span class={nameClass}>{ROW_LABEL.labels}</span>
       <div class={valuesClass}>
       <div class="flex min-w-0 flex-wrap items-center gap-1 pt-0.5 compact:pt-1.5">
-        {#each labels as label (label.name)}
+        {#each labels as label (labelKey(label))}
           {@const color = labelColor(label)}
           <!-- A neutral chip with the forge's color as a dot: a forge
                color as the chip's fill is not legible in every theme. -->

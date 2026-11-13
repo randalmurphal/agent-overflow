@@ -459,16 +459,25 @@ permission reads and the refusals are in
 - Details, between Merge and Description: Reviewers (each with the
   verdict vocabulary: approved, changes requested, commented, pending;
   an outdated GitHub review is marked), Assignees and Labels (a neutral
-  chip with the forge's color as a dot). Collapsed by default while
-  every row is empty; the reader's choice lives in the review state. A
-  settled or outdated review has a Re-request icon. Each row's Edit opens
-  a searchable multi-select: results load on open and as the reader
-  types (250 ms debounce, an older query's answer dropped), the first
-  page only, "Type to narrow" when the forge has more. Teams are offered
+  chip with the forge's color as a dot). Collapsed by default, always:
+  its header carries a muted one-line summary ("3 reviewers · 1
+  assignee · 2 labels", a zero part left out, nothing when all are zero,
+  "unavailable" when the read failed); opening it is remembered in the
+  review state as the other overview sections are. A settled or outdated
+  review has a Re-request icon. Each row's Edit opens a searchable
+  multi-select: results load on open and as the reader types (250 ms
+  debounce); a query change drops the older results at once (the
+  checked entries stay listed) and an older query's answer is dropped;
+  the first page only, "Type to narrow" when the forge has more. Labels
+  are one option per forge id, so a rename while the picker is open
+  changes nothing. Teams are offered
   only on a GitHub organization (`can.reviewerTeams`) and when the search
   returns them. A GitHub reviewer whose review is in stays checked: only
-  a pending request can be withdrawn. Closing the picker (Escape, Tab, a
-  click outside, its trigger) applies the row's change, each person and
+  a pending request can be withdrawn. Closing the picker by any route
+  (Escape, Tab, a click outside, its trigger, the pane closing) applies
+  the row's change to the PR it opened on; a failure while the pane
+  closes has no row left and is a toast. The overview scrolling out and
+  back neither applies nor loses an open picker. Each person and
   label passed as the backend gave it (a person addressed by `login`, a
   label by `id` on both forges); nothing is written when nothing changed.
   The backend removes first, then adds, one write per side. A failed
@@ -483,7 +492,9 @@ permission reads and the refusals are in
 - The title bar's `⋯` at the end of the state line holds Convert to
   draft and Close on an open PR, Reopen on a closed one; a merged PR has
   no menu. No confirm step: each is undone by the item that replaces it.
-  Mark ready stays the draft blocker's fix.
+  Mark ready stays the draft blocker's fix. A held Enter or Space never
+  activates a menu item (`MenuItem` ignores a repeated keydown), so the
+  press that opened the menu cannot pick the item focus moved to.
 - The changes-requested blocker row: GitHub offers Dismiss per review in
   `blocker.changeRequests`, opening a reason field (required; Enter
   dismisses); GitLab offers Bypass when `blocker.bypassable`. A bypass
@@ -496,11 +507,14 @@ permission reads and the refusals are in
 - `Merge ▾` gains `Edit commit message…` for a method that makes a
   commit (merge, squash): a title and body editor in the Merge section,
   prefilled with the forge's default for the method, read when it opens
-  and when the method changes until the text is edited. Only an edited
-  message is sent with Merge now and Auto-merge (`commitMessage`); a
-  failed default read shows its sentence in the editor and the merge
-  goes on with the forge's default. The editor hides while auto-merge is
-  armed.
+  and when the method changes until the text is edited. The method picked
+  in the menu lives in the review state beside the message, so the
+  overview's remount keeps both. Only an edited message is sent with
+  Merge now and Auto-merge (`commitMessage`), and only with the method it
+  was written for; a failed default read shows its sentence in the
+  editor and the merge goes on with the forge's default. The title takes
+  focus once the default has loaded, unless the reader moved focus
+  meanwhile. The editor hides while auto-merge is armed.
 - Every action follows the merge actions' contract: no optimistic state;
   pending from the call until the pane has applied the snapshot whose
   sequence reaches the answer's `seq` (0 settles at once), given up with
@@ -513,6 +527,12 @@ permission reads and the refusals are in
   caused it: an editor's on the editor, a picker's or re-request's on its
   Details row, Dismiss's and Bypass's on the changes-requested row. A
   state change that fails is a toast, since its menu is gone.
+- Each editor, the picker and the commit message belong to the PR (its
+  computer and number) they opened on and write only to it. When the
+  pane's PR becomes another (a branch change in the same workspace),
+  all of it is discarded: open editors and the picker close without
+  writing, the commit message and its method go, and a late answer for
+  the PR that was is ignored.
 - The close, reopen, draft, ready, review requested and review dismissed
   events these cause are rows in the Conversation feed.
 
@@ -600,7 +620,9 @@ and the requests it sent, a reviewers change whose add was refused
 after its remove applied, re-request, close, reopen, draft and ready, a
 refused then retried dismiss (GitHub) and bypass (GitLab) with the
 sentence on the blocker row and focus on the Merge header after, and a
-merge with an edited commit message; on GitLab also a refused
+merge with an edited commit message, a held Enter on the `⋯` that
+activates nothing, and Ctrl+W closing the pane writing an open picker's
+change (desktop); on GitLab also a refused
 management read (Details shows the sentence, no control anywhere, the
 controls back once it answers) and a host without `operationMode` (no
 row Edit, the other controls kept). `review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a

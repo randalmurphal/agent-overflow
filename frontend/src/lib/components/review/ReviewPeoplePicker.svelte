@@ -122,6 +122,7 @@
           class="flex h-7 cursor-pointer items-center gap-2 px-2.5 text-xs compact:h-10 {index === activeIndex ? 'bg-surface-2/60' : ''} {option.locked ? 'cursor-default opacity-60' : 'hover:bg-surface-2/40'}"
           data-testid="review-picker-option"
           data-key={option.key}
+          data-name={option.label?.name}
           data-checked={option.checked ? 'true' : 'false'}
           onmousedown={(event) => event.preventDefault()}
           onclick={() => { active = index; toggle(option); }}
