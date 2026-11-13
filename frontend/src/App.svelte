@@ -69,6 +69,7 @@
   import { applyDiscardedDim } from './lib/theme/discardedDim';
   import { applyFonts } from './lib/utils/fonts';
   import { startAmbientTicker } from './lib/utils/ambientTicker';
+  import { installWorkingSpriteReadiness } from './lib/stores/spinners.svelte';
   import { startIdleMemoryTrim } from './lib/utils/idleMemoryTrim';
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
@@ -577,6 +578,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     const cleanupScreenPresence = installScreenPresence();
     const cleanupDictationSources = installDictationSourcesRefresh();
     const cleanupReadAloudSources = installReadAloudSourceRefresh();
+    const cleanupWorkingSprites = installWorkingSpriteReadiness();
     const cleanupDeviceNames = installDeviceNameSync();
     const cleanupOwnDevices = remote ? installOwnDeviceSync() : noop;
     const cleanupComputerRoutes = remote ? installComputerRouteUpdates() : noop;
@@ -650,6 +652,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       cleanupScreenPresence();
       cleanupDictationSources();
       cleanupReadAloudSources();
+      cleanupWorkingSprites();
       cleanupDeviceNames();
       cleanupOwnDevices();
       cleanupComputerRoutes();
