@@ -1,7 +1,6 @@
 import { SvelteMap } from 'svelte/reactivity';
 import {
   diffFilesReadSizes,
-  diffFilesUnavailable,
   diffImageBlobKey,
   diffReadFailure,
   DIFF_FILE_SIZES_BATCH,
@@ -161,13 +160,6 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
       const diff = target;
       releaseBlobs();
       if (!diff) return;
-      // No handle (the open could not pin the diff's files): the slot
-      // says why; nothing is read.
-      const unpinned = diffFilesUnavailable(diff);
-      if (unpinned) {
-        state = { kind: 'binary', reason: unpinned, action: null, sizes: null };
-        return;
-      }
       // One read per mount serves both sides' first fetch.
       let fresh: Promise<DiffImageAnswer> | null = null;
       const answer = (): Promise<DiffImageAnswer> => (fresh ??= readDiffImage(diff, file));
@@ -264,7 +256,7 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
       pendingSizes = [];
     },
     requestSizes(file) {
-      if (!target || !diffFilesReadSizes(target) || sizesByPath.has(file.path) || diffFilesUnavailable(target)) return;
+      if (!target || !diffFilesReadSizes(target) || sizesByPath.has(file.path)) return;
       sizesByPath.set(file.path, { kind: 'loading' });
       pendingSizes.push(file);
       if (sizesQueued) return;

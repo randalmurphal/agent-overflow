@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { createReviewDiffMedia, type ImageHandle } from './reviewDiffMedia.svelte';
-import { DiffFilesHandle, type DiffFilesTarget, type DiffImageAnswer } from './reviewDiffFiles';
+import { DiffFilesHandle, DIFF_FILES_GONE, DIFF_FILES_UNREADABLE, type DiffFilesTarget, type DiffImageAnswer } from './reviewDiffFiles';
+import { TransportError } from '../transport/wsClient';
 import { frontendErrorCaptureStateForTest, resetFrontendErrorCaptureForTest } from '../utils/frontendErrorCapture';
 import { __resetMediaBlobCacheForTest, __setMediaBlobCacheLimitsForTest } from '../utils/mediaBlobCache';
 import { parseReviewFiles, type ReviewFile } from '../utils/patchStore';
@@ -24,8 +25,11 @@ vi.mock('../transport/backends', () => ({
 
 const WORKSPACE = { projectId: 'p1', workspacePath: '' };
 // A git diff's target: the handle its open answered, and its reopen.
-function gitTarget(handle = 'h1', reopen: () => Promise<{ handle: string; unavailable: string | null }> = async () => ({ handle: 'h2', unavailable: null })): DiffFilesTarget {
-  return { kind: 'git', backend: 'home', workspace: WORKSPACE, files: new DiffFilesHandle({ handle, unavailable: null }, reopen) };
+const GONE = 'This diff\'s files are no longer held; reload the diff.';
+const gone = () => new TransportError(DIFF_FILES_GONE, GONE);
+
+function gitTarget(handle = 'h1', reopen: () => Promise<string> = async () => 'h2'): DiffFilesTarget {
+  return { kind: 'git', backend: 'home', workspace: WORKSPACE, files: new DiffFilesHandle(handle, reopen) };
 }
 
 const PATCH = [
@@ -158,26 +162,12 @@ describe('a review diff\'s images', () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
-  it('shows a diff whose files could not be pinned as binary rows with its sentence, reading nothing', async () => {
-    const read = setBindingMock('GetReviewDiffImage', async () => answer('logo'));
-    const sizes = setBindingMock('GetReviewDiffFileSizes', async () => []);
-    const media = createReviewDiffMedia();
-    media.setTarget({ kind: 'git', backend: 'home', workspace: WORKSPACE, files: new DiffFilesHandle({ handle: '', unavailable: 'The diff\'s sides could not be read.' }, async () => ({ handle: 'never', unavailable: null })) }, '1');
-    const handle = media.image(files()['img/logo.png'], ['old', 'new']);
-    media.requestSizes(files()['blob.bin']);
-    await settle();
-    expect(handle.state).toEqual({ kind: 'binary', reason: 'The diff\'s sides could not be read.', action: null, sizes: null });
-    expect(read).not.toHaveBeenCalled();
-    expect(sizes).not.toHaveBeenCalled();
-  });
-
   it('reopens a handle the server no longer holds once, shared by every read, and reads again on the new one', async () => {
-    const GONE = 'This diff\'s files are no longer held; reload the diff.';
     const read = setBindingMock('GetReviewDiffImage', async (_ws: unknown, handle: string, file: { path: string }) => {
-      if (handle === 'h1') throw new Error(GONE);
+      if (handle === 'h1') throw gone();
       return answer(file.path === 'img/logo.png' ? 'logo' : 'icon');
     });
-    const reopen = vi.fn(async () => ({ handle: 'h2', unavailable: null }));
+    const reopen = vi.fn(async () => 'h2');
     const media = createReviewDiffMedia();
     media.setTarget(gitTarget('h1', reopen), '1');
     const logo = media.image(files()['img/logo.png'], ['old', 'new']);
@@ -192,12 +182,11 @@ describe('a review diff\'s images', () => {
   });
 
   it('shows the sentence, offering a reload, when the reopened handle is refused too: never a loop', async () => {
-    const GONE = 'This diff\'s files are no longer held; reload the diff.';
     const read = setBindingMock('GetReviewDiffImage', async () => {
-      throw new Error(GONE);
+      throw gone();
     });
     setBindingMock('GetReviewDiffFileSizes', async () => []);
-    const reopen = vi.fn(async () => ({ handle: 'h2', unavailable: null }));
+    const reopen = vi.fn(async () => 'h2');
     const media = createReviewDiffMedia();
     media.setTarget(gitTarget('h1', reopen), '1');
     const handle = media.image(files()['img/logo.png'], ['old', 'new']);
@@ -213,10 +202,10 @@ describe('a review diff\'s images', () => {
   it('shows a diff whose files the server could not pin as the sentence, reopening nothing and offering no retry', async () => {
     const SENTENCE = 'This diff\'s files cannot be read: the snapshot failed.';
     const read = setBindingMock('GetReviewDiffImage', async () => {
-      throw new Error(SENTENCE);
+      throw new TransportError(DIFF_FILES_UNREADABLE, SENTENCE);
     });
     setBindingMock('GetReviewDiffFileSizes', async () => []);
-    const reopen = vi.fn(async () => ({ handle: 'h2', unavailable: null }));
+    const reopen = vi.fn(async () => 'h2');
     const media = createReviewDiffMedia();
     media.setTarget(gitTarget('h1', reopen), '1');
     const handle = media.image(files()['img/logo.png'], ['old', 'new']);
@@ -231,29 +220,47 @@ describe('a review diff\'s images', () => {
   it('never reopens the handle of a diff that left the screen (a reconnect answering for it late)', async () => {
     let refuse: (err: Error) => void = () => {};
     setBindingMock('GetReviewDiffImage', () => new Promise((_resolve, reject) => { refuse = reject; }));
-    const reopen = vi.fn(async () => ({ handle: 'h2', unavailable: null }));
+    const reopen = vi.fn(async () => 'h2');
     const media = createReviewDiffMedia();
     media.setTarget(gitTarget('h1', reopen), '1');
     const handle = media.image(files()['img/logo.png'], ['old', 'new']);
     await settle();
     media.setTarget(gitTarget('h9'), '2');
-    refuse(new Error('This diff\'s files are no longer held; reload the diff.'));
+    refuse(gone());
     await settle();
     expect(reopen).not.toHaveBeenCalled();
     expect(handle.state.kind).toBe('loading');
     handle.release();
   });
 
-  it('shows a reopen that answers no handle as the open\'s sentence', async () => {
-    setBindingMock('GetReviewDiffImage', async () => {
-      throw new Error('This diff\'s files are no longer held; reload the diff.');
+  it('reopens on the gone code alone, never on a sentence that reads like it', async () => {
+    const read = setBindingMock('GetReviewDiffImage', async () => {
+      throw new Error(GONE);
     });
     setBindingMock('GetReviewDiffFileSizes', async () => []);
+    const reopen = vi.fn(async () => 'h2');
     const media = createReviewDiffMedia();
-    media.setTarget(gitTarget('h1', async () => ({ handle: '', unavailable: 'The working tree could not be snapshotted.' })), '1');
+    media.setTarget(gitTarget('h1', reopen), '1');
     const handle = media.image(files()['img/logo.png'], ['old', 'new']);
     await settle();
-    expect(handle.state).toMatchObject({ kind: 'binary', action: 'reload' });
+    expect(reopen).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(handle.state).toMatchObject({ kind: 'binary', action: 'retry' });
+  });
+
+  it('reads sizes on a reopened handle too, once', async () => {
+    const sizes = setBindingMock('GetReviewDiffFileSizes', async (_ws: unknown, handle: string, list: Array<{ path: string }>) => {
+      if (handle === 'h1') throw gone();
+      return list.map((file) => ({ path: file.path, old: { exists: false, size: 0 }, new: { exists: true, size: 8 } }));
+    });
+    const reopen = vi.fn(async () => 'h2');
+    const media = createReviewDiffMedia();
+    media.setTarget(gitTarget('h1', reopen), '1');
+    media.requestSizes(files()['blob.bin']);
+    await settle();
+    expect(reopen).toHaveBeenCalledTimes(1);
+    expect(sizes.mock.calls.map((call) => call[1])).toEqual(['h1', 'h2']);
+    expect(media.sizes('blob.bin')).toMatchObject({ kind: 'ready' });
   });
 
   it('shows a busy refusal on the row with Retry, and a Retry is one fresh read', async () => {

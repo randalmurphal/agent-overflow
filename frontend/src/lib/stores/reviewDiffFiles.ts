@@ -1,5 +1,6 @@
 import { GetEditDiffImage, GetReviewDiffFileSizes, GetReviewDiffImage } from './bindings';
 import { withBackendTarget } from '../transport/backends';
+import { TransportError } from '../transport/wsClient';
 import type { BackendKey } from '../transport/backendKey';
 import type { WorkspaceRef } from '../types/git';
 import type { ReviewFile } from '../utils/patchStore';
@@ -13,35 +14,29 @@ import type { ReviewFile } from '../utils/patchStore';
 // here. A git diff's reads name the handle its open answered and the
 // file's paths; the client holds no object id.
 
-/** What a git diff's open answered for its file reads. */
-export interface OpenedDiffFiles {
-  /** The server's record of the open's pinned sides; '' when there is none. */
-  handle: string;
-  /** Why this diff's files cannot be read while the diff can (no handle). */
-  unavailable: string | null;
-}
-
-/** A git diff's file handle, reopened once when the server no longer
- * holds it (it was evicted, or the connection that opened it ended). It
+/** A git diff's file handle (the server's record of what its open
+ * pinned), reopened once when the server no longer holds it: it was
+ * evicted, or the connection that opened it ended (every handle of a
+ * connection goes with it, so the first read after a reconnect reopens). It
  * belongs to one open of one diff: once that diff leaves the screen
  * (`close`), nothing reopens it. */
 export class DiffFilesHandle {
-  private reopening: Promise<OpenedDiffFiles> | null = null;
+  private reopening: Promise<string> | null = null;
   private closed = false;
 
   constructor(
-    private opened: OpenedDiffFiles,
+    private opened: string,
     /** Opens the same diff again for a new handle (the patch is not read). */
-    private readonly reopen: () => Promise<OpenedDiffFiles>,
+    private readonly reopen: () => Promise<string>,
   ) {}
 
-  get current(): OpenedDiffFiles {
+  get current(): string {
     return this.opened;
   }
 
   /** The handle after `stale`'s: the one another read already reopened
    * for, else one reopen shared by every read waiting on it. */
-  renew(stale: OpenedDiffFiles): Promise<OpenedDiffFiles> {
+  renew(stale: string): Promise<string> {
     if (this.closed) return Promise.reject(new Error('The diff is no longer shown.'));
     if (this.opened !== stale) return Promise.resolve(this.opened);
     this.reopening ??= this.reopen().then(
@@ -115,20 +110,19 @@ export interface DiffImageAnswer {
 /** Size batches the backend takes per call. */
 export const DIFF_FILE_SIZES_BATCH = 100;
 
-/** The backend's refusal of a handle it no longer holds. */
-const FILES_GONE = /no longer held/i;
+/** The file reads' refusals, by code: a handle this connection does not
+ * hold (evicted, or opened on a connection that has ended), and a diff
+ * whose files the server could not pin, which reopening would not change. */
+export const DIFF_FILES_GONE = 'review_diff_files_gone';
+export const DIFF_FILES_UNREADABLE = 'review_diff_files_unreadable';
+
+function refusalCode(err: unknown): string | undefined {
+  return err instanceof TransportError ? err.code : undefined;
+}
 
 /** Whether the target can read sizes: every scope but edits. */
 export function diffFilesReadSizes(target: DiffFilesTarget): boolean {
   return target.kind === 'git';
-}
-
-/** Why no file of this diff can be read, or null when they can: each
- * file's row says it in its image slot. */
-export function diffFilesUnavailable(target: DiffFilesTarget): string | null {
-  if (target.kind !== 'git') return null;
-  const { handle, unavailable } = target.files.current;
-  return handle ? null : (unavailable ?? 'This diff\'s files cannot be read.');
 }
 
 /** What a refused read offers on its row: a retry of the same read (the
@@ -137,14 +131,19 @@ export function diffFilesUnavailable(target: DiffFilesTarget): string | null {
  * after one reopen, so the same read would be refused again). */
 export type DiffReadAction = 'retry' | 'reload';
 
-// The server could not pin this diff's files: every read of it answers
-// the same, so the row says why and offers nothing.
-const FILES_UNREADABLE = /files cannot be read/i;
+// The backend gives a working-tree file that changed since the open no
+// code of its own; its sentence is all there is (a non-loopback caller
+// gets it redacted, and Retry then).
+const CHANGED_SINCE_READ = /changed since the diff was read/i;
 
+/** A refused read's sentence and what its row offers. Unreadable files
+ * offer nothing: every read of the diff answers the same. */
 export function diffReadFailure(err: unknown): { reason: string; action: DiffReadAction | null } {
   const reason = err instanceof Error ? err.message : String(err);
-  if (FILES_UNREADABLE.test(reason)) return { reason, action: null };
-  return { reason, action: /changed since the diff was read|no longer held/i.test(reason) ? 'reload' : 'retry' };
+  const code = refusalCode(err);
+  if (code === DIFF_FILES_UNREADABLE) return { reason, action: null };
+  if (code === DIFF_FILES_GONE || CHANGED_SINCE_READ.test(reason)) return { reason, action: 'reload' };
+  return { reason, action: 'retry' };
 }
 
 function fileRef(file: ReviewFile) {
@@ -157,14 +156,12 @@ function fileRef(file: ReviewFile) {
 // caller's. Never more.
 async function onHandle<T>(target: Extract<DiffFilesTarget, { kind: 'git' }>, read: (handle: string) => Promise<T>): Promise<T> {
   const first = target.files.current;
-  if (!first.handle) throw new Error(first.unavailable ?? 'This diff\'s files cannot be read.');
   try {
-    return await withBackendTarget(target.backend, () => read(first.handle));
+    return await withBackendTarget(target.backend, () => read(first));
   } catch (err) {
-    if (!FILES_GONE.test(err instanceof Error ? err.message : String(err))) throw err;
+    if (refusalCode(err) !== DIFF_FILES_GONE) throw err;
     const next = await target.files.renew(first);
-    if (!next.handle) throw err;
-    return withBackendTarget(target.backend, () => read(next.handle));
+    return withBackendTarget(target.backend, () => read(next));
   }
 }
 

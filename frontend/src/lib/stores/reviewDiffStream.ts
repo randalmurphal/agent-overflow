@@ -28,9 +28,9 @@ export interface ReviewDiffOpened {
   chunk: ReviewDiffChunk;
   /** Edits diffs: the payloads joined, in patch order. */
   payloadIds?: string[];
-  /** A git diff's handle for its file reads; absent with `sidesError`. */
+  /** A git diff's handle for its file reads (every git-backed open
+   * answers one; an edits diff none). */
   filesHandle?: string;
-  sidesError?: string;
 }
 
 export interface ReviewDiffRead {
@@ -40,8 +40,9 @@ export interface ReviewDiffRead {
   onLost(listener: (err: PatchTextLost) => void): void;
   /** Releases the handle, if the read kept it, and the text's budget. */
   dispose(): void;
-  /** What the open this patch came from answered for its file reads. */
-  files: { handle: string; unavailable: string | null };
+  /** The files handle the open this patch came from answered ('' for
+   * an edits diff). */
+  files: string;
 }
 
 export interface ReviewDiffReadOptions {
@@ -123,7 +124,7 @@ export class ReviewDiffSource {
         parser,
         onLost: (listener) => store.whenLost(listener),
         dispose: () => store.dispose(),
-        files: openedFiles(opened),
+        files: opened.filesHandle ?? '',
       };
       return read;
     } finally {
@@ -133,10 +134,10 @@ export class ReviewDiffSource {
 
   /** Opens the diff again for a new file handle, reading none of its
    * patch (the server forgot the last one). */
-  async reopenFiles(): Promise<{ handle: string; unavailable: string | null }> {
+  async reopenFiles(): Promise<string> {
     const opened = await this.open();
     this.release(opened.id);
-    return openedFiles(opened);
+    return opened.filesHandle ?? '';
   }
 
   // Reads an evicted chunk again: the same offset and a window no larger
@@ -160,10 +161,6 @@ export class ReviewDiffSource {
       reportFrontendDiagnostic('review diff: release failed', err instanceof Error ? err.message : String(err));
     });
   }
-}
-
-function openedFiles(opened: ReviewDiffOpened): { handle: string; unavailable: string | null } {
-  return { handle: opened.filesHandle ?? '', unavailable: opened.sidesError || null };
 }
 
 function retryableReadError(err: unknown): boolean {
