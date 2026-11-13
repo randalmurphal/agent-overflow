@@ -1,6 +1,6 @@
 // The text the `Suggest change` control writes: a suggestion fence whose
 // backticks outnumber any run in its lines, so a line that is itself a
-// fence stays content. Reading a body.replace(/\r\n?/g, '\n').replace(/\\r\\n?/g, '\\n')'s fences is the backend's
+// fence stays content. Reading a body's fences is the backend's
 // (`internal/mdsuggest`): the read carries each suggestion's place in its
 // body and `ParseCommentSuggestions` answers an editor's preview.
 
@@ -21,7 +21,7 @@ export function suggestionFence(lines: readonly string[]): string {
  * written in LF and its caret lands where the textarea shows it. A
  * line's trailing CR is its line ending, not content, and is dropped. */
 export function insertSuggestion(body: string, caret: number, lines: readonly string[]): { body: string; caret: number } {
-  const text = body;
+  const text = body.replace(/\r\n?/g, '\n');
   const at = Math.max(0, Math.min(caret, text.length));
   const before = text.slice(0, at);
   const after = text.slice(at);
