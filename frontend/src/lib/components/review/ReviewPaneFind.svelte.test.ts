@@ -142,4 +142,50 @@ describe('review find over the diff', () => {
     expect(asks.slice(before).map((at) => [at.fileIndex, at.place])).toEqual([[0, asked.place]]);
     root.remove();
   });
+
+  // A held reply shows at its thread's foot: its hit asks for the thread's
+  // row, and opens the thread when it is settled, as a thread comment's does.
+  it.each([
+    ['unmounted', false],
+    ['collapsed as resolved', true],
+  ])('a held reply in a thread that is %s asks for the thread\'s row and opens it', async (_name, resolved) => {
+    const files = parseReviewFiles(patch('src/a.ts', ['alpha', 'beta']));
+    const thread = {
+      id: 'p1', path: 'src/a.ts', line: 2, side: 'right', isResolvable: true, isResolved: resolved, isOutdated: false,
+      comments: [{ id: 'n1', authorLogin: 'priya', body: 'Why beta?', createdAt: '', databaseID: 1, viewerCanEdit: false, viewerCanDelete: false }],
+    };
+    const reply = {
+      id: 'd1', threadId: 't', scope: 'pr', sourceKey: 'k', filePath: 'src/a.ts', status: 'draft', side: 'reply',
+      replyThreadId: 'p1', replyRootId: 1, selectedText: '', body: 'held zq reply', createdAt: 0, updatedAt: 0,
+    };
+    const expanded = new Set<string>();
+    const togglePRThread = vi.fn((id: string) => { expanded.add(id); });
+    const asks: { fileIndex: number; place: ReviewFindPlace }[] = [];
+    const list = {
+      findReadingPosition: () => null,
+      revealFindPlace: (at: { fileIndex: number; place: ReviewFindPlace }) => {
+        asks.push(at);
+        return true;
+      },
+      scrollFindBy: () => {},
+    };
+    const review = {
+      drafts: [reply], prThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: expanded, togglePRThread,
+      draftEditBodyFor: () => null, sentComments: { editing: new Set<string>(), editBodyFor: () => null },
+    } as unknown as ReviewPaneState;
+    const root = document.createElement('div');
+    document.body.append(root);
+    render(ReviewPaneFind, {
+      props: { findKey: 'pane-find-held', title: 'Review', review, view: 'diff', files, root, diff: () => list, log: () => undefined },
+    });
+    const find = getPaneFindProvider('pane-find-held') as ReviewFind<ReviewFindHit>;
+    openPaneFind('pane-find-held');
+    setPaneFindQuery('pane-find-held', 'zq');
+    await vi.waitFor(() => expect([find.result.count, find.result.pending]).toEqual([1, false]));
+    find.next();
+    await vi.waitFor(() => expect(asks.length).toBeGreaterThan(0));
+    expect(asks.at(-1)).toMatchObject({ fileIndex: 0, rowKey: 'dc:d1', place: { kind: 'thread', threadId: 'p1' } });
+    expect(togglePRThread.mock.calls).toEqual(resolved ? [['p1']] : []);
+    root.remove();
+  });
 });

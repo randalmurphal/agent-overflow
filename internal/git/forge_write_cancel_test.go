@@ -23,7 +23,7 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
 	discussion := mr + "/discussions/abc"
-	line := 4
+	line := 3
 	review := SubmitReviewRequest{Verdict: ReviewVerdictApprove, Body: "Looks good", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 	}}
@@ -38,7 +38,7 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 				_, err := core.SubmitReview(ctx, gitlabTestRef(7), review)
 				return err
 			},
-			want: []string{"GET " + mr, "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"},
+			want: []string{"GET " + mr, "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"},
 		},
 		"approve": {
 			hold:  "POST " + mr + "/approve",
@@ -76,6 +76,8 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 				switch {
 				case key == "GET "+mr:
 					return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+				case key == "GET "+mr+"/diffs?per_page=100":
+					return gitlabTestDiffsAnswer()
 				case key == "POST "+mr+"/draft_notes":
 					return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":11}`}
 				case key == "POST "+mr+"/draft_notes/bulk_publish":

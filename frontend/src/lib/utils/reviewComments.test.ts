@@ -12,8 +12,8 @@ function thread(overrides: Partial<ReviewThread> = {}): ReviewThread {
     isResolved: overrides.isResolved ?? false,
     isOutdated: overrides.isOutdated ?? false,
     comments: overrides.comments ?? [
-      { authorLogin: 'alice', body: 'first line\nsecond line', createdAt: '2026-01-01', databaseID: 1 },
-      { authorLogin: 'bob', body: 'reply', createdAt: '2026-01-02', databaseID: 2 },
+      { authorLogin: 'alice', body: 'first line\nsecond line', createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false },
+      { authorLogin: 'bob', body: 'reply', createdAt: '2026-01-02', databaseID: 2, id: `n${2}`, viewerCanEdit: false, viewerCanDelete: false },
     ],
   };
 }

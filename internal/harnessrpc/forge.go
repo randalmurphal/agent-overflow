@@ -80,11 +80,18 @@ func (h *Harness) HarnessForgeRateLimit(limit forgefake.RateLimit) error {
 
 // HarnessForgeRefuse makes one fake forge route answer a refusal in
 // place of its handler (forgefake.Refusal): {route, status, header,
-// body, times}, route a REST route name or "gh graphql <operation>",
-// times 0 until cleared. Status 0 clears the route's refusal; HarnessReset
+// body, times, hold}, route a REST route name or "gh graphql <operation>",
+// times 0 until cleared, hold to answer only on HarnessForgeRelease. Status 0 clears the route's refusal; HarnessReset
 // clears every one.
 func (h *Harness) HarnessForgeRefuse(refusal forgefake.Refusal) error {
 	return h.forge.SetRefusal(refusal)
+}
+
+// HarnessForgeRelease ends the refusal armed with hold on its route
+// (forgefake.Release: {route, drop}): the requests it holds are answered
+// with the refusal, or with drop closed with no reply, their answer lost.
+func (h *Harness) HarnessForgeRelease(release forgefake.Release) error {
+	return h.forge.ReleaseRefusal(release)
 }
 
 // HarnessForgeAdvanceJob moves one current CI job of a seeded repository

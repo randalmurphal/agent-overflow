@@ -11,7 +11,7 @@ function comment(overrides: Partial<ReviewComment> = {}): ReviewComment {
     authorLogin: 'octocat',
     body: 'First comment body.',
     createdAt: '2026-01-01T00:00:00Z',
-    databaseID: 1,
+    databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false,
     ...overrides,
   };
 }
@@ -34,7 +34,7 @@ function withReplies(count: number): ReviewComment[] {
   return [
     comment(),
     ...Array.from({ length: count }, (_, index) =>
-      comment({ authorLogin: `replier${index}`, body: `Reply number ${index + 1}.`, databaseID: index + 2 })),
+      comment({ authorLogin: `replier${index}`, body: `Reply number ${index + 1}.`, databaseID: index + 2, id: `n${index + 2}`, viewerCanEdit: false, viewerCanDelete: false })),
   ];
 }
 
@@ -49,6 +49,12 @@ function fakeReview(overrides: Partial<Record<keyof ReviewPaneState, unknown>> =
     files: [],
     isTurnActive: false,
     replyBodyFor: vi.fn(() => ''),
+    replyDraftsFor: vi.fn(() => []),
+    sentComments: { editBodyFor: () => null, confirmingDelete: () => false, pending: () => false, error: () => null },
+    sentCommentActions: false,
+    nowWithheldReason: null,
+    canHoldReply: false,
+    primaryCommentAction: 'now',
     replyErrorFor: vi.fn(() => null),
     sendingReply: vi.fn(() => false),
     resolvingThread: vi.fn(() => false),
@@ -277,5 +283,17 @@ describe('<ReviewConversationThread> code context', () => {
       expect(view.queryByTestId('review-thread-context')).toBeNull();
       view.unmount();
     }
+  });
+});
+
+describe('the card header', () => {
+  it('keeps the state chip at its right edge, the comment actions\' slot left of it', () => {
+    const review = fakeReview({ sentCommentActions: true });
+    const mine = comment({ viewerCanEdit: true, viewerCanDelete: true });
+    const view = render(ReviewConversationThread, { review: review as unknown as ReviewPaneState, thread: thread({ comments: [mine] }), inDiff: false });
+    const header = view.container.querySelector('[data-first-comment]')!;
+    const children = [...header.children];
+    expect(children.at(-1)?.getAttribute('data-testid')).toBe('review-thread-state');
+    expect(children.at(-2)?.getAttribute('data-testid')).toBe('review-comment-actions');
   });
 });

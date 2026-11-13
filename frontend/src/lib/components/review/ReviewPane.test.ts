@@ -408,7 +408,7 @@ describe('<ReviewPane>', () => {
       isResolvable: true,
       isResolved: false,
       isOutdated: false,
-      comments: [{ authorLogin: 'alice', authorName: 'Alice Doe', body: '**Guard this.** It can be null.', createdAt: '2026-01-01T00:00:00Z', databaseID: 1 }],
+      comments: [{ authorLogin: 'alice', authorName: 'Alice Doe', body: '**Guard this.** It can be null.', createdAt: '2026-01-01T00:00:00Z', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
     }];
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
@@ -524,7 +524,7 @@ describe('<ReviewPane>', () => {
     };
     const thread = (id: string, path: string): ReviewThread => ({
       id, path, line: 1, side: 'right', isResolvable: true, isResolved: false, isOutdated: false,
-      comments: [{ authorLogin: 'alice', body: `About ${path}.`, createdAt: '2026-01-01T00:00:00Z', databaseID: Number(id.slice(2)) }],
+      comments: [{ authorLogin: 'alice', body: `About ${path}.`, createdAt: '2026-01-01T00:00:00Z', databaseID: Number(id.slice(2)), id: `n${id}`, viewerCanEdit: false, viewerCanDelete: false }],
     });
     const threads = [thread('t-1', 'src/app.test.ts'), thread('t-2', 'docs/notes.md')];
     setBindingMock('SubscribePRUpdates', async () => ({ id: 'sub-1', prKey: 'github:owner/repo:5', detail, threads, headSHA: 'sha-a' }));

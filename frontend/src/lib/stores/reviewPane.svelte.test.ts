@@ -3907,7 +3907,7 @@ describe('reviewPane store — conversation section and resolve', () => {
   function convThread(id: string, overrides: Partial<ReviewThread> = {}): ReviewThread {
     return {
       ...reviewThreadStub(id),
-      comments: [{ authorLogin: 'alice', body: `body of ${id}`, createdAt: '2026-01-01', databaseID: 1 }],
+      comments: [{ authorLogin: 'alice', body: `body of ${id}`, createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
       ...overrides,
     };
   }
@@ -3935,10 +3935,10 @@ describe('reviewPane store — conversation section and resolve', () => {
   it('freezes ordering while open: arrivals wait behind the new chip, reveal folds them in', async () => {
     const resolvedEarly = convThread('t-resolved', {
       isResolved: true,
-      comments: [{ authorLogin: 'bob', body: 'old', createdAt: '2026-01-01', databaseID: 1 }],
+      comments: [{ authorLogin: 'bob', body: 'old', createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
     });
     const openLater = convThread('t-open', {
-      comments: [{ authorLogin: 'alice', body: 'new', createdAt: '2026-01-02', databaseID: 2 }],
+      comments: [{ authorLogin: 'alice', body: 'new', createdAt: '2026-01-02', databaseID: 2, id: `n${2}`, viewerCanEdit: false, viewerCanDelete: false }],
     });
     const state = await statePRWithThreads([resolvedEarly, openLater]);
 
@@ -3996,7 +3996,7 @@ describe('reviewPane store — conversation section and resolve', () => {
         }],
       }),
       threads: [convThread('t-1', {
-        comments: [{ authorLogin: 'alice', body: 'hm', createdAt: '2026-01-02T00:00:00Z', databaseID: 1 }],
+        comments: [{ authorLogin: 'alice', body: 'hm', createdAt: '2026-01-02T00:00:00Z', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
       })],
       headSHA: 'sha-a',
     }));

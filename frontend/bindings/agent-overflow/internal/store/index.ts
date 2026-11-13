@@ -18,6 +18,8 @@ export {
     DiffReviewPRContext,
     DiffReviewPRContextEntry,
     DiffReviewSourceRef,
+    DiffReviewThreadComment,
+    DiffReviewThreadContext,
     DiscussionDefinition,
     DiscussionParticipant,
     DiscussionSettings,

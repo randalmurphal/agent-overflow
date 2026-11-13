@@ -20,6 +20,11 @@ export interface ForgeComment {
   authorName?: string;
   body: string;
   createdAt?: string;
+  /** RFC 3339; GitHub reads it as lastEditedAt. The viewer may edit its own
+   * comments and delete them, or any as a maintainer. */
+  editedAt?: string;
+  /** GitLab conversation comments only: the further notes of its discussion. */
+  replies?: ForgeComment[];
 }
 
 /** A review thread anchored to the diff; `side` defaults to right. */
@@ -28,6 +33,9 @@ export interface ForgeThread {
   path: string;
   line?: number;
   startLine?: number;
+  /** A range's first line as the forge's position names it, when it lies
+   * on the other half from `line` (a removed line, type `old`). */
+  startPoint?: { type?: 'old' | 'new'; oldLine?: number; newLine?: number };
   side?: 'right' | 'left' | 'file';
   resolved?: boolean;
   outdated?: boolean;
@@ -349,13 +357,21 @@ export async function setForgeRateLimit(
  * 403, 405, 409 or 422, or 200 with an `errors` body on a GraphQL
  * operation. `route` is a REST route's name (`glab api approve`) or
  * `gh graphql <operation>`. Nothing in the fixture changes; the request is
- * recorded under its route. HarnessReset clears it.
+ * recorded under its route. With `hold` the request is recorded at once
+ * and answered, or its answer lost, on `releaseForgeRoute`. HarnessReset
+ * clears it.
  */
 export async function refuseForgeRoute(
   harness: HarnessApp,
-  refusal: { route: string; status: number; header?: Record<string, string>; body?: unknown; times?: number },
+  refusal: { route: string; status: number; header?: Record<string, string>; body?: unknown; times?: number; hold?: boolean },
 ): Promise<void> {
   await harness.rpc('HarnessForgeRefuse', refusal);
+}
+
+/** End a held refusal on `route`: its requests get the refusal, or with
+ * `drop` lose their answer (closed with no reply). */
+export async function releaseForgeRoute(harness: HarnessApp, route: string, drop = false): Promise<void> {
+  await harness.rpc('HarnessForgeRelease', { route, drop });
 }
 
 /** Clear a route's refusal. */
@@ -366,6 +382,12 @@ export async function clearForgeRefusal(harness: HarnessApp, route: string): Pro
 export async function forgeInvocations(harness: HarnessApp): Promise<ForgeInvocation[]> {
   const log = await harness.rpc<{ invocations: ForgeInvocation[] }>('HarnessForgeInvocations', 0);
   return log.invocations;
+}
+
+/** The fake's answered HTTP requests on `route` (status below 300), oldest first. */
+export async function forgeRouteCalls(harness: HarnessApp, route: string): Promise<ForgeHTTPInvocation[]> {
+  return (await forgeInvocations(harness))
+    .filter((call): call is ForgeHTTPInvocation => call.via === 'http' && call.route === route && call.status < 300);
 }
 
 /** Fail on any invocation the fake has no handler for, naming the call. */
@@ -463,7 +485,14 @@ export async function publishPullRequest(
   git(workspace, 'update-ref', 'refs/remotes/origin/main', baseSha);
   git(workspace, 'update-ref', 'refs/remotes/origin/feature', headSha);
 
-  const seeded: ForgeRepo = { ...repo, pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha, startSha: baseSha }, ...rest] };
+  // A GitLab position names lines by the merge request's diff, which the
+  // fake answers from the pull's `diff`: the pushed change, unless the spec
+  // seeds its own. A GitHub pull needs none for its comments.
+  const diff = pull.diff ?? (repo.forge === 'gitlab' ? git(workspace, 'diff', '-M', '--no-color', baseSha, headSha) + '\n' : undefined);
+  const seeded: ForgeRepo = {
+    ...repo,
+    pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha, startSha: baseSha, ...(diff === undefined ? {} : { diff }) }, ...rest],
+  };
   await seedForge(harness, [seeded]);
   git(workspace, 'config', 'core.gitProxy', proxy);
   git(workspace, 'remote', 'add', 'origin', `git://${FORGE_HOST[repo.forge]}/${repo.project}.git`);

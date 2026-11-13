@@ -338,10 +338,17 @@ func (a *App) ListPRReviewThreads(ctx context.Context, pr gitops.PRReference) ([
 	return a.gitCore().ListReviewThreads(forgeapi.WithInteractive(ctx), pr)
 }
 
+// SubmitPRReviewResult is what a submit posted. PostedReplies counts the
+// held replies GitHub posted after the review (GitLab publishes them with
+// it). PartialFailurePath names a failed follow-up file comment's file and
+// PartialFailureThreadID a failed reply's thread (a gone thread is kind
+// not_found); the drafts that did not post stay drafts.
 type SubmitPRReviewResult struct {
-	PostedReview       bool   `json:"postedReview"`
-	PostedFileComments int    `json:"postedFileComments"`
-	PartialFailurePath string `json:"partialFailurePath,omitempty"`
+	PostedReview           bool   `json:"postedReview"`
+	PostedFileComments     int    `json:"postedFileComments"`
+	PostedReplies          int    `json:"postedReplies,omitempty"`
+	PartialFailurePath     string `json:"partialFailurePath,omitempty"`
+	PartialFailureThreadID string `json:"partialFailureThreadId,omitempty"`
 	// PartialFailure is the failed follow-up's sentence and
 	// PartialFailureKind its kind (git.ExplainForgeError), never the
 	// forge's raw text.
@@ -367,18 +374,28 @@ func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, r
 		return SubmitPRReviewResult{
 			PostedReview:       result.PostedReview,
 			PostedFileComments: result.PostedFileComments,
+			PostedReplies:      result.PostedReplies,
 		}, nil
 	}
 	var partial *gitops.PartialSubmitError
 	if errors.As(err, &partial) {
 		mapped := SubmitPRReviewResult{
-			PostedReview:       partial.PostedReview,
-			PostedFileComments: partial.PostedFileComments,
-			PartialFailurePath: partial.FailedPath,
+			PostedReview:           partial.PostedReview,
+			PostedFileComments:     partial.PostedFileComments,
+			PostedReplies:          partial.PostedReplies,
+			PartialFailurePath:     partial.FailedPath,
+			PartialFailureThreadID: partial.FailedThreadID,
 		}
 		mapped.PartialFailure = partial.Err.Error()
 		if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, action, partial.Err)); ok {
 			mapped.PartialFailure, mapped.PartialFailureKind = explained.Message, explained.Kind
+		}
+		if partial.ApproveErr != nil {
+			approval := partial.ApproveErr.Error()
+			if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, gitops.ActionApprove, partial.ApproveErr)); ok {
+				approval = explained.Message
+			}
+			mapped.PartialFailure += " The approval did not go through either: " + approval
 		}
 		if partial.Unconfirmed {
 			mapped.PartialFailure = "The forge did not confirm it, so it may already be on the PR; check the PR before sending it again. " + mapped.PartialFailure
@@ -387,18 +404,6 @@ func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, r
 		return mapped, nil
 	}
 	return SubmitPRReviewResult{}, err
-}
-
-//ao:scope git:operate
-//ao:route selected
-func (a *App) ReplyToPRThread(ctx context.Context, pr gitops.PRReference, threadID string, databaseID int64, body string) error {
-	if a.shuttingDown.Load() {
-		return ErrShuttingDown
-	}
-	if err := pr.Validate(); err != nil {
-		return err
-	}
-	return gitops.ExplainForgeError(pr, gitops.ActionReply, a.gitCore().ReplyToThread(forgeapi.WithInteractive(ctx), pr, threadID, databaseID, body))
 }
 
 // SetPRThreadResolved resolves (or reopens) one review thread on the

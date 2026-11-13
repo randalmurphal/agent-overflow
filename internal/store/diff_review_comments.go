@@ -33,35 +33,52 @@ const (
 // thread (ThreadID) or, for a PR the Pull requests page reviews with no
 // thread, to that PR (PRKey, git.PRReference.Key); exactly one is set.
 type DiffReviewComment struct {
-	ID           string `json:"id"`
-	ThreadID     string `json:"threadId"`
-	PRKey        string `json:"prKey,omitempty"`
-	Scope        string `json:"scope"`
-	SourceKey    string `json:"sourceKey"`
-	CommitSHA    string `json:"commitSha,omitempty"`
-	FilePath     string `json:"filePath"`
-	Status       string `json:"status"`
-	OldLine      int    `json:"oldLine,omitempty"`
-	NewLine      int    `json:"newLine,omitempty"`
-	Side         string `json:"side"`
-	SelectedText string `json:"selectedText"`
-	Body         string `json:"body"`
-	SentAt       int64  `json:"sentAt,omitempty"`
-	SentTurnID   string `json:"sentTurnId,omitempty"`
-	CreatedAt    int64  `json:"createdAt"`
-	UpdatedAt    int64  `json:"updatedAt"`
+	ID        string `json:"id"`
+	ThreadID  string `json:"threadId"`
+	PRKey     string `json:"prKey,omitempty"`
+	Scope     string `json:"scope"`
+	SourceKey string `json:"sourceKey"`
+	CommitSHA string `json:"commitSha,omitempty"`
+	FilePath  string `json:"filePath"`
+	Status    string `json:"status"`
+	OldLine   int    `json:"oldLine,omitempty"`
+	NewLine   int    `json:"newLine,omitempty"`
+	Side      string `json:"side"`
+	// StartOldLine and StartNewLine are the first line of a range, as
+	// OldLine and NewLine give its last; both 0 for one line.
+	StartOldLine int `json:"startOldLine,omitempty"`
+	StartNewLine int `json:"startNewLine,omitempty"`
+	// ReplyThreadID makes the draft a held reply to that forge thread
+	// (side "reply", pr scope), and ReplyRootID is the thread's first
+	// comment's database id, which GitHub posts a reply under. FilePath is
+	// the thread's file, empty for a conversation thread.
+	ReplyThreadID string `json:"replyThreadId,omitempty"`
+	ReplyRootID   int64  `json:"replyRootId,omitempty"`
+	SelectedText  string `json:"selectedText"`
+	Body          string `json:"body"`
+	SentAt        int64  `json:"sentAt,omitempty"`
+	SentTurnID    string `json:"sentTurnId,omitempty"`
+	CreatedAt     int64  `json:"createdAt"`
+	UpdatedAt     int64  `json:"updatedAt"`
 }
 
+// DiffReviewCommentInput is a new draft: a line (Side old, new or
+// context), a range (StartOldLine and StartNewLine its first line), a file
+// (Side file), or a held reply (ReplyThreadID, Side reply).
 type DiffReviewCommentInput struct {
-	Scope        string `json:"scope"`
-	SourceKey    string `json:"sourceKey"`
-	CommitSHA    string `json:"commitSha,omitempty"`
-	FilePath     string `json:"filePath"`
-	OldLine      int    `json:"oldLine,omitempty"`
-	NewLine      int    `json:"newLine,omitempty"`
-	Side         string `json:"side"`
-	SelectedText string `json:"selectedText"`
-	Body         string `json:"body"`
+	Scope         string `json:"scope"`
+	SourceKey     string `json:"sourceKey"`
+	CommitSHA     string `json:"commitSha,omitempty"`
+	FilePath      string `json:"filePath"`
+	OldLine       int    `json:"oldLine,omitempty"`
+	NewLine       int    `json:"newLine,omitempty"`
+	Side          string `json:"side"`
+	StartOldLine  int    `json:"startOldLine,omitempty"`
+	StartNewLine  int    `json:"startNewLine,omitempty"`
+	ReplyThreadID string `json:"replyThreadId,omitempty"`
+	ReplyRootID   int64  `json:"replyRootId,omitempty"`
+	SelectedText  string `json:"selectedText"`
+	Body          string `json:"body"`
 }
 
 type DiffReviewCommentUpdate struct {
@@ -85,9 +102,28 @@ type DiffReviewPRContext struct {
 	Comments []DiffReviewPRContextEntry `json:"comments"`
 }
 
+// DiffReviewPRContextEntry is what a send adds to one draft for the agent:
+// the hunk it is on, or for a held reply the thread it answers.
 type DiffReviewPRContextEntry struct {
-	CommentID   string `json:"commentId"`
-	HunkExcerpt string `json:"hunkExcerpt"`
+	CommentID   string                   `json:"commentId"`
+	HunkExcerpt string                   `json:"hunkExcerpt"`
+	Thread      *DiffReviewThreadContext `json:"thread,omitempty"`
+}
+
+// DiffReviewThreadContext is the forge thread a held reply answers, as the
+// pane showed it: its file and lines (none for a conversation thread) and
+// its comments in order.
+type DiffReviewThreadContext struct {
+	Path      string                    `json:"path,omitempty"`
+	Line      int                       `json:"line,omitempty"`
+	StartLine int                       `json:"startLine,omitempty"`
+	Comments  []DiffReviewThreadComment `json:"comments"`
+}
+
+// DiffReviewThreadComment is one comment of a thread a reply answers.
+type DiffReviewThreadComment struct {
+	Author string `json:"author"`
+	Body   string `json:"body"`
 }
 
 // DiffReviewOwner is who diff review comments belong to: a thread, or a PR
@@ -265,12 +301,8 @@ func (s *Store) CreateDiffReviewComment(comment DiffReviewComment) (DiffReviewCo
 	if err != nil {
 		return DiffReviewComment{}, err
 	}
-	filePath, err := validateDiffReviewAnchor(comment.FilePath, comment.OldLine, comment.NewLine)
-	if err != nil {
-		return DiffReviewComment{}, err
-	}
-	side, err := normalizeDiffReviewSide(comment.Side, comment.OldLine, comment.NewLine)
-	if err != nil {
+	comment.Scope = scope
+	if err := normalizeDiffReviewShape(&comment); err != nil {
 		return DiffReviewComment{}, err
 	}
 	selectedText, err := normalizeDiffReviewSelectedText(comment.SelectedText)
@@ -284,8 +316,6 @@ func (s *Store) CreateDiffReviewComment(comment DiffReviewComment) (DiffReviewCo
 	comment.Scope = scope
 	comment.SourceKey = sourceKey
 	comment.CommitSHA = strings.TrimSpace(comment.CommitSHA)
-	comment.FilePath = filePath
-	comment.Side = side
 	comment.SelectedText = selectedText
 	comment.Body = body
 	comment.Status = "draft"
@@ -295,16 +325,32 @@ func (s *Store) CreateDiffReviewComment(comment DiffReviewComment) (DiffReviewCo
 	if comment.UpdatedAt == 0 {
 		comment.UpdatedAt = comment.CreatedAt
 	}
-	_, err = s.db.Exec(
+	// A held reply is the thread's only draft reply for its owner and
+	// source when created: the statement inserts it only when no other is
+	// a draft, in the one write. Recovery that returns a sent reply to
+	// draft may leave two; both are kept.
+	result, err := s.db.Exec(
 		`INSERT INTO diff_review_comments (
 			id, thread_id, pr_key, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
+			start_old_line, start_new_line, reply_thread_id, reply_root_id,
 			selected_text, body, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)`,
+		) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'draft', ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+		WHERE ?13 = '' OR NOT EXISTS (
+			SELECT 1 FROM diff_review_comments
+			WHERE thread_id IS ?2 AND pr_key IS ?3 AND scope = ?4 AND source_key = ?5
+				AND reply_thread_id = ?13 AND status = 'draft'
+		)`,
 		comment.ID, nullableText(owner.ThreadID), nullableText(owner.PRKey), comment.Scope, comment.SourceKey, comment.CommitSHA, comment.FilePath, comment.OldLine, comment.NewLine,
-		comment.Side, comment.SelectedText, comment.Body, comment.CreatedAt, comment.UpdatedAt,
+		comment.Side, comment.StartOldLine, comment.StartNewLine, comment.ReplyThreadID, comment.ReplyRootID,
+		comment.SelectedText, comment.Body, comment.CreatedAt, comment.UpdatedAt,
 	)
 	if err != nil {
 		return DiffReviewComment{}, fmt.Errorf("store: create diff review comment %s: %w", comment.ID, err)
+	}
+	if inserted, err := result.RowsAffected(); err != nil {
+		return DiffReviewComment{}, fmt.Errorf("store: create diff review comment %s: %w", comment.ID, err)
+	} else if inserted == 0 {
+		return DiffReviewComment{}, ErrDiffReviewReplyExists
 	}
 	return s.GetDiffReviewComment(owner, comment.ID)
 }
@@ -422,19 +468,27 @@ func (s *Store) MarkDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceK
 }
 
 // PostedDiffReviewDraft is a draft as a review posted it to the forge:
-// its id, the body the forge received and the line it was anchored to.
+// its id, the body the forge received and the line, range or thread it
+// was anchored to. The anchor columns never change after a draft is
+// created, so the comparison is a guard rather than a second source.
 type PostedDiffReviewDraft struct {
-	ID       string `json:"id"`
-	Body     string `json:"body"`
-	FilePath string `json:"filePath"`
-	Side     string `json:"side"`
-	OldLine  int    `json:"oldLine"`
-	NewLine  int    `json:"newLine"`
+	ID            string `json:"id"`
+	Body          string `json:"body"`
+	FilePath      string `json:"filePath"`
+	Side          string `json:"side"`
+	OldLine       int    `json:"oldLine"`
+	NewLine       int    `json:"newLine"`
+	StartOldLine  int    `json:"startOldLine"`
+	StartNewLine  int    `json:"startNewLine"`
+	ReplyThreadID string `json:"replyThreadId"`
 }
 
 // PostedDiffReviewDraftOf is draft as a review posting it now carries it.
 func PostedDiffReviewDraftOf(draft DiffReviewComment) PostedDiffReviewDraft {
-	return PostedDiffReviewDraft{ID: draft.ID, Body: draft.Body, FilePath: draft.FilePath, Side: draft.Side, OldLine: draft.OldLine, NewLine: draft.NewLine}
+	return PostedDiffReviewDraft{
+		ID: draft.ID, Body: draft.Body, FilePath: draft.FilePath, Side: draft.Side, OldLine: draft.OldLine, NewLine: draft.NewLine,
+		StartOldLine: draft.StartOldLine, StartNewLine: draft.StartNewLine, ReplyThreadID: draft.ReplyThreadID,
+	}
 }
 
 // MarkPostedDiffReviewDraftsSent marks sent, in one statement, each of the
@@ -476,7 +530,10 @@ func (s *Store) MarkPostedDiffReviewDraftsSent(owner DiffReviewOwner, scope, sou
 	                                           AND json_extract(p.value, '$.filePath') = diff_review_comments.file_path
 	                                           AND json_extract(p.value, '$.side') = diff_review_comments.side
 	                                           AND json_extract(p.value, '$.oldLine') = diff_review_comments.old_line
-	                                           AND json_extract(p.value, '$.newLine') = diff_review_comments.new_line)
+	                                           AND json_extract(p.value, '$.newLine') = diff_review_comments.new_line
+	                                           AND json_extract(p.value, '$.startOldLine') = diff_review_comments.start_old_line
+	                                           AND json_extract(p.value, '$.startNewLine') = diff_review_comments.start_new_line
+	                                           AND json_extract(p.value, '$.replyThreadId') = diff_review_comments.reply_thread_id)
 	                      RETURNING id`,
 		sentAt, sentTurnID, value, scope, sourceKey, string(encoded))
 	if err != nil {
@@ -844,6 +901,7 @@ func (s *Store) diffReviewCommentsAlreadySent(owner DiffReviewOwner, scope, sour
 // diffReviewCommentColumns is a comment row as scanOwnedDiffReviewComment
 // reads it.
 const diffReviewCommentColumns = `id, thread_id, pr_key, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
+		        start_old_line, start_new_line, reply_thread_id, reply_root_id,
 		        selected_text, body, sent_at, sent_turn_id, created_at, updated_at`
 
 func (s *Store) GetDiffReviewComment(owner DiffReviewOwner, commentID string) (DiffReviewComment, error) {
@@ -989,7 +1047,9 @@ func scanOwnedDiffReviewComment(scanner interface{ Scan(...any) error }) (DiffRe
 	var threadID, prKey sql.NullString
 	if err := scanner.Scan(
 		&comment.ID, &threadID, &prKey, &comment.Scope, &comment.SourceKey, &comment.CommitSHA, &comment.FilePath, &comment.Status,
-		&comment.OldLine, &comment.NewLine, &comment.Side, &comment.SelectedText, &comment.Body,
+		&comment.OldLine, &comment.NewLine, &comment.Side,
+		&comment.StartOldLine, &comment.StartNewLine, &comment.ReplyThreadID, &comment.ReplyRootID,
+		&comment.SelectedText, &comment.Body,
 		&comment.SentAt, &comment.SentTurnID, &comment.CreatedAt, &comment.UpdatedAt,
 	); err != nil {
 		return DiffReviewComment{}, err
@@ -1004,7 +1064,9 @@ func scanDiffReviewComment(scanner interface{ Scan(...any) error }) (DiffReviewC
 	var comment DiffReviewComment
 	if err := scanner.Scan(
 		&comment.ID, &comment.ThreadID, &comment.Scope, &comment.SourceKey, &comment.CommitSHA, &comment.FilePath, &comment.Status,
-		&comment.OldLine, &comment.NewLine, &comment.Side, &comment.SelectedText, &comment.Body,
+		&comment.OldLine, &comment.NewLine, &comment.Side,
+		&comment.StartOldLine, &comment.StartNewLine, &comment.ReplyThreadID, &comment.ReplyRootID,
+		&comment.SelectedText, &comment.Body,
 		&comment.SentAt, &comment.SentTurnID, &comment.CreatedAt, &comment.UpdatedAt,
 	); err != nil {
 		return DiffReviewComment{}, err

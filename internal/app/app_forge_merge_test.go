@@ -203,3 +203,41 @@ func TestSettlePRActionRefreshesWhenThePRChanged(t *testing.T) {
 		t.Fatalf("merged, branch kept = %v, fetches %d", err, fetches.Load())
 	}
 }
+
+// An action the forge accepted whose refresh poll failed answers sequence
+// zero: no frame shows the change, so the caller settles on the write at
+// once and the pump's own failure frame says the pane is stale. A poll
+// that fails with a transient error first (held back for one retry)
+// counts as failed too. A refresh that ran answers its frame's sequence.
+func TestPRActionWhoseRefreshFailedAnswersNoSequence(t *testing.T) {
+	t.Parallel()
+	for name, failure := range map[string]error{
+		"forge":     errors.New("forge GET repos/o/r/pulls/9: HTTP 500"),
+		"transient": &forgeapi.TransientError{Err: errors.New("dial tcp: connection refused")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			app, script, _, sub := newScriptedPump(t, ok)
+			app.prUpdates.mu.Lock()
+			pump := app.livePRUpdatePumpLocked(sub.PRKey)
+			app.prUpdates.mu.Unlock()
+			pump.paused.Store(true)
+			time.Sleep(20 * time.Millisecond)
+			script.mu.Lock()
+			script.steps = []func() error{fails(failure)}
+			script.at = nil
+			script.mu.Unlock()
+			result, err := app.settlePRAction(context.Background(), testPR, gitops.ActionApprove, nil)
+			if err != nil || result.Seq != 0 {
+				t.Fatalf("settle after a failed refresh = %+v, %v; want seq 0", result, err)
+			}
+			script.mu.Lock()
+			script.steps = []func() error{ok}
+			script.mu.Unlock()
+			result, err = app.settlePRAction(context.Background(), testPR, gitops.ActionApprove, nil)
+			if err != nil || result.Seq == 0 {
+				t.Fatalf("settle after a good refresh = %+v, %v; want its frame's seq", result, err)
+			}
+		})
+	}
+}

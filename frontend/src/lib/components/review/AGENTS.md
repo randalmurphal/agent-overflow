@@ -123,12 +123,16 @@ PR stores; components own presentation and interaction.
   that renders searched text carries the matching key; text the scanner
   skips (the +/- gutter, the log's clip note, any chrome inside a keyed
   element) carries `data-find-skip`. A split view keys a context line on
-  its new side only. A draft open in its editor is not counted, mounted
-  or not: find reads the open edits from the review state.
-- An open comment editor (a new comment, a draft's edit, a thread reply)
-  is a virtualized row, so its unsaved text and open state live in the
+  its new side only. A draft or a sent comment open in its editor is not
+  counted, mounted or not: find reads the open edits from the review
+  state.
+- An open comment editor (a new comment, a draft's edit, a thread reply,
+  a sent comment's edit, the Conversation's PR comment field) is a
+  virtualized row, so its unsaved text and open state live in the
   review state (`draftBodyFor`, `draftEditBodyFor`, `replyBodyFor`,
-  `replyOpen`) until it is saved or cancelled. Closing a reply (Cancel,
+  `replyOpen`, `sentComments`) until it is saved or cancelled. All of
+  them render `ReviewCommentEditorShell`, and a sent comment's header
+  actions are one `ReviewCommentActions` taking a list of actions. Closing a reply (Cancel,
   Escape, Back) keeps its text for the next open; only a sent reply
   clears it. A reload of the same subject keeps every open editor. A new
   comment's editor stays on its line only by exact identity

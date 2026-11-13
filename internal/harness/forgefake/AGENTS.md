@@ -16,9 +16,10 @@ seeds. The CLI path is:
 3. `Engine.Handle` routes the call, answers from the seeded fixture and
    records it. `internal/harnessrpc` exposes `HarnessForgeSeed`,
    `HarnessForgeInvocations`, `HarnessForgeOffline`,
-   `HarnessForgeRateLimit`, `HarnessForgeRefuse`, `HarnessForgeAdvanceJob`
-   and the `harness:forge` event. `HarnessReset` clears the fixture, the
-   log, the offline state, the rate limits and the refusals.
+   `HarnessForgeRateLimit`, `HarnessForgeRefuse`, `HarnessForgeRelease`,
+   `HarnessForgeAdvanceJob` and the `harness:forge` event. `HarnessReset`
+   clears the fixture, the log, the offline state, the rate limits and the
+   refusals, and releases every held answer.
 
 The HTTP path: `harnessrpc.StartForgeAPI` serves `Engine.ServeHTTP` on its
 own loopback listener and hands its base URL and fixed token to the boot
@@ -71,7 +72,11 @@ inspection go through the harness wire with no fixture files.
   name (`glab api approve`), `gh graphql <operation>` or
   `glab graphql <operation>`. It is answered
   after the route matched and before its handler runs, so nothing
-  changes, and is recorded under the route. A 401 on a mutation is
+  changes, and is recorded under the route. With `hold` the request is
+  recorded at once and answered only on `ReleaseRefusal`
+  (`HarnessForgeRelease`, `{route, drop}`), so a spec can act while it is
+  in flight; with `drop` the held request is closed with no reply, its
+  answer lost. A 401 on a mutation is
   retried once after the transport's token refresh and then probed with
   `GET user`, so drive one with `times` 0.
 - `routes.go` is the whole CLI and REST route table, `githubGraphQL` and
@@ -141,6 +146,10 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | GraphQL `MergePR`, `EnableAutoMerge(pullRequestID, method, expectedHeadOid)` | Merge now (merged, MergedEvent and ClosedEvent, head deleted when the repository does) and Auto-merge (armed, the method's enabled event); a head other than `expectedHeadOid` answers "Head branch was modified. Review and try the merge again." |
 | GitHub | GraphQL `DisableAutoMerge`, `MarkPRReady(pullRequestID)`, `UpdatePRBranch(pullRequestID, expectedHeadOid)`, `DismissReview(reviewID, message)` | Cancel auto-merge, Mark ready, Update branch (the head moves to a new commit), Unapprove (the review reads DISMISSED, a ReviewDismissedEvent) |
 | GitHub | `POST repos/O/R/pulls/N/reviews` with `{event, body?, commit_id?, comments?}` (`gh api pull reviews`) | Approve and SubmitReview: the viewer's review, a timeline item, and a thread of the viewer's per line comment (`{path, body, line, side, start_line?, start_side?}`, its line not checked against the diff); the author's approval and a comment without a side are GitHub's 422 |
+| GitHub | `POST repos/O/R/pulls/N/comments` with `{body, commit_id, path, line?, side?, start_line?, start_side?, subject_type?}` (`gh api pull comments`) | PostPRLineComment: a thread of the viewer's on a line, a range (one side) or a file (`subject_type: "file"`); a `commit_id` other than the head is a 422 (the fake models no older commit) |
+| GitHub | `POST repos/O/R/pulls/N/comments/ID/replies`, `POST repos/O/R/issues/N/comments` with `{body}` (`gh api pull comment reply`, `gh api issue comments`) | ReplyToPRThread and SubmitReview's held replies (404 unless ID is a thread's first comment), PostPRComment (a conversation comment) |
+| GitHub | GraphQL `CommentOwner(id)` | EditPRComment and DeletePRComment: the comment's type and the pull request and repository it is on; an id no repository on the host has is a `NOT_FOUND` |
+| GitHub | GraphQL `UpdateReviewComment`, `UpdateIssueComment(id, body)`, `DeleteReviewComment`, `DeleteIssueComment(id)` | EditPRComment and DeletePRComment by node id (`PRRC_ao<id>`, `IC_ao<id>`): the author or a WRITE, MAINTAIN or ADMIN viewer may edit (sets `editedAt`) and delete, else `FORBIDDEN`; a thread whose only comment goes is deleted with it |
 | GitHub | `DELETE repos/O/R/git/refs/heads/B` (`gh api delete branch`) | the head branch delete after a merge: 204, then 422 "Reference does not exist" |
 | GitHub | GraphQL `SetThreadResolved(threadID, resolved)` | SetThreadResolved (flips the seeded thread) |
 | GitHub | GraphQL `PullsSearch(query, after)` | project PR list: `search` over `is:pr is:open repo:O/R` (any other query is unhandled), the repository's open pulls newest first in pages of 100, beside the viewer, each with its last 10 `comments` and submitted `reviews`, its opinionated reviews (state, `viewerDidAuthor`), the first 100 review threads' `isResolved` with `pageInfo`, and the base's `refUpdateRule` (its `requiredApprovingReviewCount` alone) and `rules` as PRTick answers them; a repository not on the host answers GitHub's search refusal (null `search` beside an error) |
@@ -166,7 +175,11 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `GET projects/P/merge_requests/N/discussions?per_page=N[&page=N]` (`glab api discussions`) | ReadPR threads and, from the system notes, events; `X-Next-Page` while more pages exist |
 | GitLab | `POST .../approve` with `{sha}`, `POST .../unapprove` (`glab api approve`, `glab api unapprove`) | Approve (409 on a moved head, 401 for a viewer GitLab takes no approval from) and Unapprove (404 with none), each with its system note |
 | GitLab | `PUT .../merge` with `{sha, squash, should_remove_source_branch, auto_merge, merge_when_pipeline_succeeds}` (`glab api merge`) | Merge now (405 while blocked, 401 without the role, 409 on a moved head) and Auto-merge (either key or both: arms a blocked merge request, with its system note) |
-| GitLab | `POST .../draft_notes` with `{note, position?}`, `GET .../draft_notes`, `DELETE .../draft_notes/ID`, `POST .../draft_notes/bulk_publish` (`glab api create draft note`, `glab api list draft notes`, `glab api delete draft note`, `glab api publish draft notes`) | SubmitReview: a viewer's draft (a summary, or positioned on a line, a range or a file) answers its id; the list is the viewer's pending drafts in one page (how a publish whose answer was lost is settled); a delete removes the viewer's draft with that id (404 otherwise); publish makes each of the viewer's pending drafts, seeded `draftNotes` included, a thread or a conversation comment, and leaves another author's pending |
+| GitLab | `POST .../draft_notes` with `{note, position?, in_reply_to_discussion_id?, resolve_discussion?}`, `GET .../draft_notes`, `DELETE .../draft_notes/ID`, `POST .../draft_notes/bulk_publish` (`glab api create draft note`, `glab api list draft notes`, `glab api delete draft note`, `glab api publish draft notes`) | SubmitReview: a viewer's draft (a summary, positioned on a line, a range or a file as a discussion's position is, or `in_reply_to_discussion_id` naming a discussion with `resolve_discussion`, else GitLab's 400) answers its id; the list is the viewer's pending drafts in one page (how a publish whose answer was lost is settled); a delete removes the viewer's draft with that id (404 otherwise); publish makes each of the viewer's pending drafts, seeded `draftNotes` included, a thread, a conversation comment or a note of the discussion it replies to (which `resolve_discussion` resolves and its absence reopens; a reply whose discussion went is dropped and the publish still succeeds, as on GitLab), and leaves another author's pending |
+| GitLab | `GET projects/P/merge_requests/N/diffs?per_page=N[&page=N]` (`glab api merge request diffs`) | PostPRLineComment and SubmitReview: the pull's `diff` by file (`old_path`, `new_path`, the hunks, `new_file`, `renamed_file`, `deleted_file`); `X-Next-Page` while more pages exist |
+| GitLab | `POST .../discussions` with `{body, position}`, `POST .../notes` with `{body}` (`glab api create discussion`, `glab api create note`) | PostPRLineComment (a position whose shas are not the merge request's, or whose file, by both paths, or line the pull's `diff` lacks, is a 400; a `line_range` point whose `line_code` is not sha1 of the new path and the diff's two cursors at its line, or whose `type` is not GitLab's, is unhandled; a range may start on the other half, a removed line through an unchanged one, and reads back with its `line_range` as posted), PostPRComment |
+| GitLab | `GET .../discussions/D` (`glab api discussion`) | a held reply's draft refused with a 400: one discussion, 404 when gone |
+| GitLab | `POST .../discussions/D/notes` with `{body}`, `PUT .../discussions/D/notes/N` with `{body}`, `DELETE .../discussions/D/notes/N` (`glab api create discussion note`, `glab api update discussion note`, `glab api delete discussion note`) | ReplyToPRThread (a thread, or a conversation comment's discussion, whose `replies` it joins; 404 otherwise), EditPRComment and DeletePRComment (the author's, or any as maintainer or owner, else 403); a discussion whose last note goes is deleted, one whose first note goes keeps its id |
 | GitLab | `POST .../cancel_auto_merge`, `PUT .../rebase`, `PUT projects/P/merge_requests/N` with `{title}` | Cancel auto-merge (409 with none armed), Update branch (202, the head moves), Mark ready (the title loses its draft prefix) |
 | GitHub, GitLab | `GET user` (`gh api user`, `glab api user`) | the fixture's viewer (GitLab's with account id 1): GitLab's detail and project list reads (once per host per 10 minutes), and the transport's probe after a 401 on a mutation on both forges |
 | GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin), project MR list; the full view, with `project_id` and `source_project_id` (a pull with `headRepo` answers its fork's id) and the list fields (author, reviewers, draft, times, `user_notes_count`, conflicts, blocking discussions, `detailed_merge_status`), no pipeline |
@@ -181,9 +194,8 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `GET projects/P/jobs/ID/artifacts` (`glab api job artifacts`) | artifact download: the job's `artifacts` archive; 404 without one |
 | GitLab | `GET projects/P/uploads/SECRET/NAME` (`glab api upload`) | forge attachments |
 
-Unhandled (fail with their request): GitHub's file comment and
-reply POSTs; GitLab's discussion note POST, discussion resolve PUT and
-`cancel_merge_when_pipeline_succeeds`. A lost or cut-short answer is not
+Unhandled (fail with their request): GitLab's discussion resolve PUT
+and `cancel_merge_when_pipeline_succeeds`. A lost or cut-short answer is not
 a fake behavior: a test wraps the engine in a handler that runs the route
 and then drops or truncates the response.
 
@@ -240,6 +252,22 @@ and then drops or truncates the response.
   GitLab no longer shows the viewer: the events feed selects them into a
   page and drops them after, so a page comes back short and still names
   the next, as GitLab's does.
+- Who may edit or delete a comment follows from its `author` and the
+  viewer's role: on GitHub the author or WRITE and above edits and
+  deletes (answered as `viewerCanUpdate` and `viewerCanDelete`); on
+  GitLab, whose notes carry no permission, the author or a maintainer or
+  owner edits and deletes. Seed a comment of another author's, with a
+  GitHub role below WRITE or GitLab's default role, for one the viewer
+  may not edit. A
+  comment's `editedAt` is GitHub's `lastEditedAt` and GitLab's
+  `updated_at`. A GitLab conversation comment's `replies` are the rest of
+  its discussion.
+- A GitLab position resolves against the pull's `diff`, a unified `git
+  diff` (`diff --git`, `rename from`/`rename to`, `new file mode`,
+  `deleted file mode` and hunks); a pull with none takes no positioned
+  comment. A thread's `oldPath` is a renamed file's path before the
+  change, answered as `old_path`. The e2e `publishPullRequest` seeds a
+  GitLab pull's `diff` from the pushed change.
 - Generated ids start at 1,000,000 and stay unique across reseeds and
   resets.
 - A GitLab job's `kind` makes it a `bridge` (its `downstream` pipeline

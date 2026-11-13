@@ -127,6 +127,16 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		inv.Detail = strings.TrimSpace(resp.stderr)
 	}
 	e.record(inv)
+	if resp.held != nil {
+		select {
+		case <-resp.held.done:
+		case <-r.Context().Done():
+			return
+		}
+		if resp.held.drop {
+			panic(http.ErrAbortHandler)
+		}
+	}
 
 	if inv.Unhandled {
 		// The detail names the request's own path: it goes out as plain

@@ -91,6 +91,9 @@ type Forge interface {
 	// The merge actions: approvals, merging, auto-merge, branch updates
 	// (forge_merge.go).
 	ForgeMerger
+	// The comment actions: comment now, edit and delete a sent comment
+	// (forge_comments.go).
+	ForgeCommenter
 	// The CI actions: retry, cancel, run a manual job, artifacts
 	// (ci_actions.go).
 	ForgeCIActor
@@ -220,7 +223,10 @@ type CheckStatus struct {
 
 // ReviewThread is one PR discussion: a file-anchored review thread
 // (Path set) or a PR-level conversation thread (Path empty — GitLab
-// position-less discussions, GitHub PR conversation comments).
+// position-less discussions, GitHub PR conversation comments). A GitHub
+// conversation comment is a thread of its own whose ID is the comment's
+// ID, which is how a write tells it from a review thread comment
+// (CommentTarget).
 type ReviewThread struct {
 	ID        string `json:"id"`
 	Path      string `json:"path"`
@@ -231,6 +237,10 @@ type ReviewThread struct {
 	OriginalLine      *int   `json:"originalLine,omitempty"`
 	OriginalStartLine *int   `json:"originalStartLine,omitempty"`
 	Side              string `json:"side"`
+	// StartSide is the half StartLine (or OriginalStartLine) is on, "left"
+	// or "right", set with it. It differs from Side when a range starts on
+	// a removed line and ends on an unchanged or added one.
+	StartSide string `json:"startSide,omitempty"`
 	// IsResolvable distinguishes threads with a real resolve state from
 	// flat comments (GitHub conversation comments, non-resolvable GitLab
 	// notes) where IsResolved=false would misread as "needs attention".
@@ -240,13 +250,29 @@ type ReviewThread struct {
 	Comments     []ReviewComment `json:"comments"`
 }
 
+// ReviewComment is one comment of a thread. ID is what an edit or a
+// delete names (CommentTarget.CommentID): a GitHub comment's node id, a
+// GitLab note's id in decimal. ViewerCanEdit and ViewerCanDelete are the
+// forge's answer for the signed-in login: GitHub's viewerCanUpdate and
+// viewerCanDelete; GitLab's REST notes carry no permission, so there they
+// are the viewer's own notes (GitLab lets only a note's author edit it).
+// EditedAt is when the forge says the body was last edited (GitHub's
+// lastEditedAt), empty when it was not or the forge does not say (GitLab's
+// REST notes do not: their updated_at also moves on a resolve). URL is the
+// comment on the forge's web UI when the read carries it: GitHub's url,
+// GitLab's merge request page at the note's anchor.
 type ReviewComment struct {
-	AuthorLogin string         `json:"authorLogin"`
-	AuthorName  string         `json:"authorName,omitempty"`
-	Body        string         `json:"body"`
-	CreatedAt   string         `json:"createdAt"`
-	DatabaseID  int64          `json:"databaseID"`
-	ReplyTo     *ReviewReplyTo `json:"replyTo,omitempty"`
+	ID              string         `json:"id"`
+	AuthorLogin     string         `json:"authorLogin"`
+	AuthorName      string         `json:"authorName,omitempty"`
+	Body            string         `json:"body"`
+	CreatedAt       string         `json:"createdAt"`
+	EditedAt        string         `json:"editedAt,omitempty"`
+	DatabaseID      int64          `json:"databaseID"`
+	ReplyTo         *ReviewReplyTo `json:"replyTo,omitempty"`
+	ViewerCanEdit   bool           `json:"viewerCanEdit"`
+	ViewerCanDelete bool           `json:"viewerCanDelete"`
+	URL             string         `json:"url,omitempty"`
 }
 
 type ReviewReplyTo struct {
@@ -260,35 +286,88 @@ type SubmitReviewRequest struct {
 	Comments []ReviewLineComment `json:"comments"`
 }
 
-// ReviewLineComment is one comment of a review: a file comment, or a line
-// on the left (Line is its old number) or the right (its new number). An
-// unchanged line is on the right with its old number in OldLine, which
-// GitLab needs beside the new one.
+// ReviewLineComment is one comment of a review: a file comment, a line on
+// the left (Line is its old number) or the right (its new number), a range
+// of lines ending at Line and starting at Start, or a reply to a thread
+// (InReplyTo, with no line). An unchanged line is on the right with its
+// old number in OldLine, which GitLab needs beside the new one.
 type ReviewLineComment struct {
-	Path      string `json:"path"`
-	Body      string `json:"body"`
-	Line      *int   `json:"line,omitempty"`
-	OldLine   *int   `json:"oldLine,omitempty"`
-	Side      string `json:"side"`
-	StartLine *int   `json:"startLine,omitempty"`
+	Path    string `json:"path"`
+	Body    string `json:"body"`
+	Line    *int   `json:"line,omitempty"`
+	OldLine *int   `json:"oldLine,omitempty"`
+	Side    string `json:"side"`
+	// Start is the first line of a range, described as Line, OldLine and
+	// Side describe the last; nil for one line.
+	Start *ReviewLineStart `json:"start,omitempty"`
+	// InReplyTo makes the comment a reply to an existing thread. Path and
+	// Line then only name the thread for a failure's sentence.
+	InReplyTo *ReviewThreadReply `json:"inReplyTo,omitempty"`
 }
 
+// ReviewLineStart is the first line of a range comment: Line on Side
+// ("left" at its old number, "right" at its new one), and an unchanged
+// line's old number in OldLine beside its new one on the right.
+type ReviewLineStart struct {
+	Line    int    `json:"line"`
+	OldLine int    `json:"oldLine,omitempty"`
+	Side    string `json:"side"`
+}
+
+// ReviewThreadReply names the thread a reply answers: ThreadID as ReadPR
+// reported it, and RootDatabaseID its first comment's DatabaseID, which a
+// GitHub reply is posted under.
+type ReviewThreadReply struct {
+	ThreadID       string `json:"threadId"`
+	RootDatabaseID int64  `json:"rootDatabaseId"`
+}
+
+// SubmitReviewResult is what a submit posted: the review itself, and the
+// follow-ups a forge posts after it one at a time (GitHub's file comments
+// and replies), in the order of the request's comments of each kind.
 type SubmitReviewResult struct {
 	PostedReview       bool `json:"postedReview"`
 	PostedFileComments int  `json:"postedFileComments"`
+	PostedReplies      int  `json:"postedReplies"`
 }
 
 // PartialSubmitError reports that the primary review landed but a later
 // provider-specific follow-up call failed. Unconfirmed is a follow-up the
 // forge may have applied all the same (forgeapi.WriteNotApplied could not
-// prove it did not).
+// prove it did not). FailedPath names a failed file comment's file and
+// FailedThreadID a failed reply's thread; a reply whose thread is gone
+// wraps a *ReplyThreadGoneError. PostedReview is false when the request
+// had nothing for the review itself and its first follow-up posted.
 type PartialSubmitError struct {
 	PostedReview       bool
 	PostedFileComments int
+	PostedReplies      int
 	FailedPath         string
-	Unconfirmed        bool
-	Err                error
+	FailedThreadID     string
+	// UnpostedReplies are the ordinals, among the request's replies, of
+	// the replies that are not on the forge (GitHub's after a failed
+	// follow-up, GitLab's that a publish dropped).
+	UnpostedReplies []int
+	Unconfirmed     bool
+	Err             error
+	// ApproveErr is an approval the forge refused or did not confirm
+	// besides Err (GitLab approves after the publish): a second outcome,
+	// reported with the first.
+	ApproveErr error
 }
+
+// ReplyThreadGoneError is a held reply the forge refused because its
+// thread no longer exists (deleted, or its only comment deleted).
+type ReplyThreadGoneError struct {
+	ThreadID string
+	Err      error
+}
+
+func (e *ReplyThreadGoneError) Error() string {
+	return fmt.Sprintf("the thread %s this reply answers is gone: %v", e.ThreadID, e.Err)
+}
+
+func (e *ReplyThreadGoneError) Unwrap() error { return e.Err }
 
 // UnconfirmedSubmitError is a review submit the forge may have applied:
 // its write failed in a way that does not prove the forge refused it (a
@@ -318,6 +397,13 @@ func (e *PartialSubmitError) Error() string {
 	}
 	if e.FailedPath != "" {
 		return fmt.Sprintf("review submitted, but posting file-level comment for %s failed: %v", e.FailedPath, e.Err)
+	}
+	if e.FailedThreadID != "" {
+		msg := fmt.Sprintf("review submitted, but posting the reply to thread %s failed: %v", e.FailedThreadID, e.Err)
+		if e.ApproveErr != nil {
+			msg += fmt.Sprintf("; the approval failed too: %v", e.ApproveErr)
+		}
+		return msg
 	}
 	return fmt.Sprintf("review submitted, but a follow-up step failed: %v", e.Err)
 }

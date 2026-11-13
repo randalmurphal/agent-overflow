@@ -165,7 +165,11 @@ function commentLines(file: ReviewFile, content: ReviewFindLocateContent): Map<s
   if (!inserts) return out;
   const keysOf = (bucket: readonly InsertRow[]): string[] => bucket.flatMap((row) => {
     if (row.kind === 'comment-thread') return [findDraftKey(row.threadKey)];
-    if (row.kind === 'pr-thread') return row.thread.comments.map((comment) => findThreadCommentKey(row.thread.id, reviewCommentKey(comment)));
+    if (row.kind === 'pr-thread') {
+      // The thread's comments, then its held replies at its foot.
+      const replies = content.drafts.filter((draft) => draft.status === 'draft' && draft.replyThreadId === row.thread.id).map((draft) => findDraftKey(draft.id));
+      return [...row.thread.comments.map((comment) => findThreadCommentKey(row.thread.id, reviewCommentKey(comment))), ...replies];
+    }
     return [];
   });
   for (const key of keysOf(inserts.takeHead())) out.set(key, -1);
@@ -229,7 +233,11 @@ export function resolveReviewFindHit(shown: ReviewFindShown, hit: ReviewFindHit,
     const rowKey = findDraftKey(at.commentId);
     const draft = shown.drafts.find((each) => each.id === at.commentId && each.status === 'draft' && each.filePath === file.path);
     if (!draft || shown.editing.has(rowKey) || hit.run !== 0 || !has(draft.body)) return ABSENT;
-    return present(rowKey, { kind: 'draft', commentId: at.commentId }, hit.occurrence);
+    if (!draft.replyThreadId) return present(rowKey, { kind: 'draft', commentId: at.commentId }, hit.occurrence);
+    // A held reply shows at its thread's foot, in this file's diff.
+    const thread = shown.prThreads.find((each) => each.id === draft.replyThreadId);
+    if (!thread || prThreadAnchor(thread).filePath !== file.path) return ABSENT;
+    return present(rowKey, { kind: 'thread', threadId: thread.id }, hit.occurrence);
   }
   if (at.kind === 'thread') {
     const thread = shown.prThreads.find((each) => each.id === at.threadId);
@@ -237,8 +245,8 @@ export function resolveReviewFindHit(shown: ReviewFindShown, hit: ReviewFindHit,
       ? thread.comments.find((each) => reviewCommentKey(each) === at.comment)
       : undefined;
     const body = comment ? visibleBody(comment.body) : '';
-    if (body === '') return ABSENT;
     const rowKey = findThreadCommentKey(at.threadId, at.comment);
+    if (body === '' || shown.editing.has(rowKey)) return ABSENT;
     const runs = shown.commentRuns(body, rowKey);
     const run = runs[hit.run];
     if (!run?.shown || !has(run.text)) return ABSENT;

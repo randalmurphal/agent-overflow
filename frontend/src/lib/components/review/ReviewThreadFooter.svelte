@@ -4,10 +4,10 @@
   import Copy from '@lucide/svelte/icons/copy';
   import LoaderCircle from '@lucide/svelte/icons/loader-circle';
   import Icon from '../primitives/Icon.svelte';
+  import ReviewCommentEditorShell, { type EditorAction } from './ReviewCommentEditorShell.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
-  import { isImeComposingEvent } from '../../utils/imeComposition';
   import { threadClipboardText } from '../../utils/reviewComments';
   import type { ReviewThread } from '../../types/models';
 
@@ -17,6 +17,10 @@
   // the inline diff strip (ReviewPRThreadRow) and the conversation card
   // (ReviewConversationThread) so the two surfaces cannot drift. The
   // composer's text is store-backed; the open flag belongs to the host.
+  // Where a reply can be held for the batch the composer offers Reply now
+  // and Add draft, the primary as the review state says (`hold`);
+  // elsewhere one Reply that posts now. A reply posted now keeps the
+  // composer open, pending, until the forge's answer shows it.
 
   interface Props {
     thread: ReviewThread;
@@ -31,6 +35,11 @@
     onCloseReply: () => void;
     onBodyChange: (body: string) => void;
     onSendReply: () => Promise<void> | void;
+    /** Holding a reply as a draft: which action is primary and how. Absent
+     * where a reply only posts now. */
+    hold?: { primary: 'now' | 'draft'; onHold: () => Promise<void> | void } | null;
+    /** Why posting now is withheld, or null. */
+    nowWithheld?: string | null;
     /** Absent for non-resolvable threads: no resolve control renders. */
     onResolve?: (resolved: boolean) => void;
   }
@@ -47,17 +56,26 @@
     onCloseReply,
     onBodyChange,
     onSendReply,
+    hold = null,
+    nowWithheld = null,
     onResolve,
   }: Props = $props();
 
-  let textareaEl: HTMLTextAreaElement | undefined = $state();
   let copied = $state(false);
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // The composer opens from the reply field: put the caret there.
-  $effect(() => {
-    if (replying) textareaEl?.focus();
+
+  const empty = $derived(body.trim() === '');
+  const nowAction = $derived<EditorAction>({
+    label: hold ? 'Reply now' : 'Reply',
+    run: onSendReply,
+    disabled: empty || nowWithheld !== null,
+    title: nowWithheld ?? undefined,
+    testid: 'review-thread-reply-now',
   });
+  const draftAction = $derived<EditorAction | null>(hold ? { label: 'Add draft', run: hold.onHold, disabled: empty, testid: 'review-thread-reply-draft' } : null);
+  const primaryAction = $derived(hold?.primary === 'draft' && draftAction ? draftAction : nowAction);
+  const secondaryAction = $derived(hold ? (primaryAction === nowAction ? draftAction : nowAction) : null);
 
   onDestroy(() => {
     if (copiedTimer) clearTimeout(copiedTimer);
@@ -76,20 +94,6 @@
     }, 2000);
   }
 
-  function onKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      onCloseReply();
-      return;
-    }
-    // Mid-composition the reply text is still in the IME buffer, so the
-    // submit chord would post a truncated comment.
-    if (event.key === 'Enter' && isImeComposingEvent(event)) return;
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      void onSendReply();
-    }
-  }
 </script>
 
 {#snippet actions()}
@@ -116,37 +120,19 @@
 
 <div class="border-t border-border-subtle px-3.5 py-2.5" data-testid="review-thread-footer">
   {#if replying}
-    <div data-testid="review-thread-composer">
-      <textarea
-        bind:this={textareaEl}
-        class="w-full resize-none rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-2 text-xs text-fg placeholder:text-fg-subtle focus:border-accent/60 focus:outline-none"
-        rows="3"
-        placeholder="Reply… (Ctrl+Enter to send)"
-        value={body}
-        oninput={(event) => onBodyChange(event.currentTarget.value)}
-        onkeydown={onKeydown}
-      ></textarea>
-      {#if error}<div class="mt-1 text-[0.6875rem] text-error">{error}</div>{/if}
-      <div class="mt-2 flex items-center gap-1.5">
-        {@render actions()}
-        <span class="min-w-0 flex-1"></span>
-        <button
-          type="button"
-          class="h-6 rounded-[var(--radius-control)] px-2 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg"
-          onclick={onCloseReply}
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          class="h-6 rounded-[var(--radius-control)] bg-accent px-2.5 text-[0.6875rem] font-medium text-accent-fg disabled:opacity-45"
-          disabled={sending || body.trim() === ''}
-          onclick={() => { void onSendReply(); }}
-        >
-          Reply
-        </button>
-      </div>
-    </div>
+    <ReviewCommentEditorShell
+      testid="review-thread-composer"
+      {body}
+      {onBodyChange}
+      placeholder="Reply…"
+      primary={primaryAction}
+      secondary={secondaryAction}
+      onCancel={onCloseReply}
+      pending={sending}
+      {error}
+      takeFocus={() => true}
+      leading={actions}
+    />
   {:else}
     <div class="flex items-center gap-1.5">
       <button

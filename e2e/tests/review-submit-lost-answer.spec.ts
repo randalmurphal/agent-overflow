@@ -68,7 +68,7 @@ for (const forge of ['gitlab', 'github'] as const) {
       await review.getByTestId('review-add-comment').first().click();
       const editor = review.getByTestId('review-draft-editor');
       await editor.locator('textarea').fill('Guard this.');
-      await editor.getByRole('button', { name: 'Add comment' }).click();
+      await editor.getByTestId('review-draft-editor-add').click();
       const strip = review.getByTestId('review-send-strip');
       await expect(strip).toBeVisible();
 

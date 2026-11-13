@@ -939,6 +939,16 @@ export function DeleteEmptyDraftThread(threadID: string): $CancellablePromise<bo
 }
 
 /**
+ * DeletePRComment deletes a sent comment; a thread's only comment takes
+ * the thread with it on the forge, and the next frame shows it gone.
+ */
+export function DeletePRComment(pr: git$0.PRReference, target: git$0.CommentTarget): $CancellablePromise<app$0.PRActionResult> {
+    return $Call.ByID(559991881, pr, target).then(($result: any) => {
+        return $$createType7($result);
+    });
+}
+
+/**
  * DeletePRDiffReviewComment deletes a draft, or resolves one already sent,
  * as DeleteDiffReviewComment does.
  */
@@ -1143,6 +1153,16 @@ export function DownloadUpdate(tag: string): $CancellablePromise<void> {
 export function EditOpenAIKeyFile(): $CancellablePromise<app$0.OpenAIKeyFile> {
     return $Call.ByID(1579042384).then(($result: any) => {
         return $$createType32($result);
+    });
+}
+
+/**
+ * EditPRComment replaces the body of a sent comment. The forge decides
+ * whether the viewer may (ReviewComment.ViewerCanEdit is its answer).
+ */
+export function EditPRComment(pr: git$0.PRReference, target: git$0.CommentTarget, body: string): $CancellablePromise<app$0.PRActionResult> {
+    return $Call.ByID(1171217596, pr, target, body).then(($result: any) => {
+        return $$createType7($result);
     });
 }
 
@@ -3862,6 +3882,26 @@ export function PostChannelMessage(channelID: string, content: string): $Cancell
 }
 
 /**
+ * PostPRComment posts a comment on pr itself, not on a line: a GitHub
+ * conversation comment, a GitLab merge request note.
+ */
+export function PostPRComment(pr: git$0.PRReference, body: string): $CancellablePromise<app$0.PRActionResult> {
+    return $Call.ByID(3141095494, pr, body).then(($result: any) => {
+        return $$createType7($result);
+    });
+}
+
+/**
+ * PostPRLineComment posts one comment on a line, range or file of pr's
+ * diff now.
+ */
+export function PostPRLineComment(pr: git$0.PRReference, req: app$0.PRLineCommentRequest): $CancellablePromise<app$0.PRActionResult> {
+    return $Call.ByID(1583250136, pr, req).then(($result: any) => {
+        return $$createType7($result);
+    });
+}
+
+/**
  * PrepareThreadWorktree creates a new worktree from baseBranch, switches the
  * thread to it, and returns the updated thread. requestedBranch is optional:
  * blank means "create a temporary auto branch using the configured prefix".
@@ -4604,8 +4644,15 @@ export function RepairBackendAddress(id: string, endpoint: string): $Cancellable
     return $Call.ByID(1188796788, id, endpoint);
 }
 
-export function ReplyToPRThread(pr: git$0.PRReference, threadID: string, databaseID: number, body: string): $CancellablePromise<void> {
-    return $Call.ByID(446243420, pr, threadID, databaseID, body);
+/**
+ * ReplyToPRThread posts a reply to one thread now. threadID is the thread's
+ * id and databaseID its first comment's (GitHub posts the reply under it).
+ * A thread that is gone is refused as kind not_found.
+ */
+export function ReplyToPRThread(pr: git$0.PRReference, threadID: string, databaseID: number, body: string): $CancellablePromise<app$0.PRActionResult> {
+    return $Call.ByID(446243420, pr, threadID, databaseID, body).then(($result: any) => {
+        return $$createType7($result);
+    });
 }
 
 /**
