@@ -134,7 +134,7 @@ export interface PaneSession {
   readonly ensureMaterializedThread: () => Promise<string | null>;
   /** Dev-only memory probe; opaque to every consumer, which just records it. */
   readonly debugMemoryStats: () => unknown;
-  /** A Stop drops the send-in-flight flag with the turn it clears (`revertOnInterrupt.svelte.ts`). */
+  /** A Stop drops the send-in-flight flag with the turn it clears (`threadInterrupt.svelte.ts`). */
   readonly setSendInFlight: (value: boolean) => void;
 }
 
@@ -340,7 +340,7 @@ export interface RevealRead {
  * provider banner's action needs the thread's provider.
  *
  * Consumers: `chat/ProviderStatusBanner.svelte` (the whole role),
- * `stores/interruptErrors.ts` (`Pick<…, 'setGeneralError'>`), and
+ * `stores/threadInterrupt.svelte.ts` (`Pick<…, 'threadId' | 'setGeneralError'>`), and
  * `stores/eventsProvider.ts` (a `Pick` of the writers, intersected with
  * `ThreadPaneIngest`). `composer/Composer.svelte` also reaches
  * `setGeneralError`, but through the whole pane — it is one of the
@@ -404,11 +404,10 @@ export interface PaneDoors {
  * (intersected with a `Pick` of `ErrorSurface`'s writers),
  * `stores/eventsQueue.ts`, `stores/eventsDiscussion.ts`,
  * `stores/eventsMessageRevert.ts`, `stores/eventsDraftRows.ts`,
- * `stores/eventsThreadRows.ts`, `stores/eventsTransportGap.ts`,
- * `stores/revertOnInterrupt.svelte.ts`. Each narrows at its pane
- * acquisition point (the registry hands out whole `ThreadPane`s), so a
- * new member use in any of them fails to compile until it is added
- * here. `stores/eventsTerminal.ts` stays off this role on purpose: its
+ * `stores/eventsThreadRows.ts`, `stores/eventsTransportGap.ts`. Each
+ * narrows at its pane acquisition point (the registry hands out whole
+ * `ThreadPane`s), so a new member use in any of them fails to compile
+ * until it is added here. `stores/eventsTerminal.ts` stays off this role on purpose: its
  * two members (`paneId`, `requestTerminalFocus`) are a focus request,
  * not ingest, and it states its own `Pick`.
  */
@@ -431,9 +430,7 @@ export interface ThreadPaneIngest {
   readonly applyItemDelta: (evt: ItemDeltaEvent) => void;
   readonly applyItemMeta: (evt: ItemMetaEvent) => void;
   readonly applyItemPatch: (evt: ItemPatchEvent) => void;
-  readonly upsertItems: (incoming: Item[]) => boolean;
   readonly removeItemById: (itemId: string, expectedThreadId: string) => Item | null;
-  readonly removeItemsFromTurn: (fromTurnIndex: number, expectedThreadId: string) => Item[];
   readonly removeRevertedItems: (turnIndex: number, keptAnchorTurnItemIds: string[]) => Item[];
   readonly addApproval: (approval: ApprovalRequest) => void;
   readonly removeApproval: (requestId: string) => void;

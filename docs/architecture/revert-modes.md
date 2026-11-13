@@ -3,60 +3,22 @@
 Every real user message gets a `message_anchors` row written immediately
 after its `items` row persists. The anchor carries the provider-side
 identity of the message (Claude's wire uuid + parent uuid, and the AO
-`turn_index` Codex anchors resolve against), so the three
+`turn_index` Codex anchors resolve against), so the two
 message-boundary operations can slice provider history at that message:
 
 - **Fork-from-message** (`app_thread_fork.go`): fork the thread at a
   chosen user message into a new thread that reads the source's history
   before it ([pointer forks](sqlite-store.md#pointer-forks)). The source
   thread is left untouched.
-- **Revert-on-interrupt** (`app_revert_on_interrupt.go`): the Stop/Esc
-  un-send. When the newest turn has never settled and holds only one user
-  message plus the model's unfinished reasoning or request retry/error
-  rows, Stop rolls the message back (conversation only) and restores it
-  into the composer draft instead of leaving a dangling turn.
 - **Edit-and-resend** (`app_revert_and_resend.go`): stage the edited text in
   `thread_draft_recoveries`, roll back, prepare the provider, then publish the
   cut and persisted replacement together through `user_message:reverted`.
   Composer autosaves remain independent. The thread action lock spans the cut
-  and send; a client send ID prevents duplicate replacement dispatch.
+  and send; a client send ID prevents duplicate replacement dispatch. It
+  refuses while a turn runs or a send awaits provider confirmation.
 
-Early Stop immediately restores the raw submitted draft and hides the outgoing
-turn. Background-task checks and provider cleanup run behind a Send gate while
-editing remains available. Draft autosaves wait behind restoration so switching
-panes cannot let the backend overwrite newer typing. A background guard or a
-raced assistant response declines the rollback and retains ordinary interrupt
-behavior.
-
-Eligibility is an allowlist, so a new row kind declines the un-send until it is
-classified. Any other row in the turn (agent output, a background completion or
-its notification, compaction, a command result, a user row the reader did not
-send) is content the provider conversation holds. A turn that has settled once
-stays committed even when the provider opens another round on it, such as
-Claude answering a background task notification after an earlier Stop. Headless
-Claude checks the turn again after its session stops and before the history is
-cut, because rows can land between the first check and the stop.
-
-A client can be asked to un-send before the message's row reaches it: the row
-waits in the item queue while its turn start is applied at once. The client
-then offers the un-send from its record of the dispatched send, on the turn
-the composer predicted. A running turn must be that turn, the row must not
-already sit on another turn, and no row may sit on a later one. Otherwise Stop
-is an ordinary interrupt. The backend's check that the latest message carries
-the expected send ID stays authoritative.
-
-While the un-send is pending, the timeline presents no row on the cut turn or
-later, and not the user row of the send being taken back on any turn: the
-backend can place it below the turn the client predicted. One predicate
-(`hiddenByInterruptCut`) is applied in two places. The row projection leaves
-such a row out of what it renders, whichever path put it in the pane's window,
-and reads the cut reactively. A history read in that window therefore installs
-whole, so cursors, caches and the recovery from a lost reply keep the backend's
-state, and none of it is painted beside the restored draft. The item stream
-also refuses such a pushed row, so a row nobody sees starts no reveal, follow
-or run state. A refusal clears the cut, which shows the rows the window holds,
-and re-reads the window when a pushed row was refused. A committed un-send
-removes the rows before the cut clears.
+Stop is always a plain interrupt: the message stays in the transcript and the
+turn ends interrupted.
 
 Older-message replacement keeps the editor loading until preparation completes.
 The client transfers follow intent before applying the cut and replacement in
@@ -71,7 +33,7 @@ into the composer draft. Startup recovers unfinished edits without dispatching
 them and retires copies whose send ID is already accepted. Outstanding recovery
 prevents empty-thread cleanup, transfer export and snapshot rewind.
 
-All three are conversation-level operations. There is no working-tree
+Both are conversation-level operations. There is no working-tree
 revert: the per-message git-checkpoint machinery (hidden
 `refs/agent-overflow/*` snapshot refs, `thread_tracked_files`,
 revert-to-message with file restore) was removed. It flooded repo
@@ -94,13 +56,14 @@ missing or drifted anchor is synthesized from the item's persisted meta
 
 ## Rollback sequence
 
-`rollbackConversationLocked` (`app_conversation_rollback.go`) owns the shared
-provider rollback and cache truncation. Early un-send also restores a prompt
-draft; edit/resend owns separate durable recovery. Background-task guards remain
-in the entry points. Early Stop declines rollback while tasks run; older-message
-replacement requires explicit consent to stop them. The guards count every live
-background launch the session stop kills, nested launches under an ended agent
-included (`CountLiveRunningBackgroundToolCalls`).
+`rollbackConversationLocked` (`app_conversation_rollback.go`) owns the
+provider rollback and cache truncation for edit-and-resend, which owns its
+durable recovery and the composer draft. It supports Claude and Codex and
+refuses any other provider before it stops or cuts anything; claude-tui keeps
+its conversation inside the TUI. Edit-and-resend requires explicit consent to
+stop running background tasks. Its guard counts every live background launch
+the session stop kills, nested launches under an ended agent included
+(`CountLiveRunningBackgroundToolCalls`).
 
 A cut can delete the completion row of a background launch that stays in the
 kept history. The launch stays settled with no result card, and nothing writes
@@ -112,7 +75,6 @@ Provider-side rollback differs by provider:
 - **Codex** prefers native `thread/revert` for supported paginated sessions,
   retaining the provider thread identity. Older app servers use `thread/fork`.
   Both cut at turn boundaries. An empty provider prefix starts a fresh thread.
-  Native revert owns active-turn shutdown; it needs no preceding interrupt RPC.
 - **Claude** has no rollback RPC. `rollbackClaudeThreadToMessage`
   slices the current Claude JSONL through the end of the turn before
   the selected message using `internal/provider/claude/sessionfork`,

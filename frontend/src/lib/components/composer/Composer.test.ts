@@ -52,6 +52,7 @@ import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { UsageBucket } from '../../stores/bindings';
 import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
+import { resetDirectSendsForTest } from '../../stores/threadInterrupt.svelte';
 import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
 import {
   applyShellCommandEvent,
@@ -196,6 +197,7 @@ describe('<Composer>', () => {
     resetSendQueueForTest();
     resetThreadStatuses();
     resetThreadInterruptStateForTest();
+    resetDirectSendsForTest();
     resetResendRevertMarkersForTest();
     resetTerminalFocusForTest();
     // The initial-focus gate compares against the panes store's focused
@@ -2347,21 +2349,18 @@ describe('<Composer>', () => {
     expect(interrupt).toHaveBeenCalledWith('thread-1', []);
   });
 
-  it('leaves an accepted send in the timeline and the composer empty when its un-send fails', async () => {
+  it('keeps the sent message and leaves the composer empty when Stop interrupts its turn', async () => {
     const pane = await buildPane();
     const draft = await buildDraft();
     setBindingMock('SaveDraft', async () => {});
     const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread());
-    setBindingMock('CountRunningBackgroundTasks', async () => 0);
-    const revert = deferred<never>();
-    setBindingMock('InterruptAndRevertIfClean', async () => revert.promise);
+    const interrupt = setBindingMock('InterruptTurn', vi.fn(async () => {}));
 
     const { getByLabelText, getByTestId, findByTestId } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
     await fireEvent.input(textarea, { target: { value: 'a side question' } });
     await fireEvent.click(getByTestId('composer-send'));
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-    // The backend's row for the accepted send.
     const { sendId } = (send.mock.calls[0] as unknown as [string, string, { sendId: string }])[2];
     const sent = makeItem({ id: 'user:canonical', threadId: 'thread-1', kind: 'user_text', role: 'user',
       status: 'completed', turnIndex: 0, itemIndex: 0, summary: 'a side question', meta: JSON.stringify({ sendId }) });
@@ -2369,45 +2368,25 @@ describe('<Composer>', () => {
     pane.setActiveTurn({ turnId: 't1', turnIndex: sent.turnIndex, startedAt: 0 });
 
     await fireEvent.click(await findByTestId('composer-interrupt'));
-    // The un-send paints the message back into the composer while it runs.
-    await waitFor(() => expect(textarea.value).toBe('a side question'));
-    revert.reject(new Error('interrupt-and-revert: claude rollback: refusing a slice'));
-
-    await waitFor(() => expect(pane.generalError ?? '').not.toBe(''));
-    await waitFor(() => {
-      expect(pane.items.some((item) => item.kind === 'user_text')).toBe(true);
-      expect(draft.content).toBe('');
-      expect(textarea.value).toBe('');
-    });
+    expect(interrupt).toHaveBeenCalledWith('thread-1', []);
+    await tick();
+    expect(pane.items.some((item) => item.id === 'user:canonical')).toBe(true);
+    expect(draft.content).toBe('');
+    expect(textarea.value).toBe('');
   });
 
-  it('keeps Send disabled with hover guidance until the revert cut is applied', async () => {
+  it('keeps Send disabled with hover guidance until the Stop answers', async () => {
     const pane = await buildPane(makeTestThread(), [makeItem({
       id: 'user:0',
       turnIndex: 0,
       kind: 'user_text',
       role: 'user',
-      summary: 'retry this prompt',
+      summary: 'a long task',
     })]);
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
     const draft = await buildDraft();
-    const revert = deferred<{
-      reverted: boolean;
-      userItemId: string;
-      turnIndex: number;
-      historyEpoch: number;
-      historyRev: number;
-    }>();
-    setBindingMock('CountRunningBackgroundTasks', async () => 0);
-    setBindingMock('InterruptAndRevertIfClean', async () => revert.promise);
-    // The event-side draft refresh reads the durable prompt the backend wrote.
-    setBindingMock('GetDraft', async (threadId: string) => ({
-      threadId,
-      content: 'retry this prompt',
-      attachmentIds: [],
-      terminalChips: [],
-      updatedAt: 1,
-    }));
+    const stopped = deferred<void>();
+    setBindingMock('InterruptTurn', async () => stopped.promise);
     const send = setBindingMock('SendMessageWithOptions', async () =>
       makeTestThread({ runtimeMode: 'full-access' }));
 
@@ -2415,29 +2394,56 @@ describe('<Composer>', () => {
       props: { pane, draft },
     });
     await fireEvent.click(getByTestId('composer-interrupt'));
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'next prompt' } });
 
     await waitFor(() => {
       const button = getByTestId('composer-send') as HTMLButtonElement;
       expect(button.disabled).toBe(true);
-      expect(button.title).toBe('Wait for the interrupted message to finish reverting');
+      expect(button.title).toBe('Wait for the stop or message edit to finish');
     });
     expect(queryByTestId('composer-interrupt')).toBeNull();
-    await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter' });
+    await fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(send).not.toHaveBeenCalled();
 
-    revert.resolve({
-      reverted: true,
-      userItemId: 'user:0',
-      turnIndex: 0,
-      historyEpoch: 2,
-      historyRev: 4,
-    });
-
+    stopped.resolve();
     await waitFor(() => {
       expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(false);
     });
     await fireEvent.click(getByTestId('composer-send'));
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  });
+
+  it('holds a Stop pressed before the send answers, then interrupts the turn the send started', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    setBindingMock('SaveDraft', async () => {});
+    const answered = deferred<ReturnType<typeof makeTestThread>>();
+    const send = setBindingMock('SendMessageWithOptions', async () => answered.promise);
+    const interrupt = setBindingMock('InterruptTurn', vi.fn(async () => {}));
+
+    const { getByLabelText, getByTestId, findByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'start the build' } });
+    await fireEvent.click(getByTestId('composer-send'));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    // The row lands before the reply does; the Send button turns into Stop.
+    const { sendId } = (send.mock.calls[0] as unknown as [string, string, { sendId: string }])[2];
+    pane.applyProviderItemUpserts([makeItem({ id: 'user:0', threadId: 'thread-1', kind: 'user_text', role: 'user',
+      status: 'completed', turnIndex: 0, itemIndex: 0, summary: 'start the build', meta: JSON.stringify({ sendId }) })]);
+
+    await fireEvent.click(await findByTestId('composer-interrupt'));
+    await tick();
+    expect(interrupt).not.toHaveBeenCalled();
+    // The message stays sent and the composer stays empty.
+    expect(textarea.value).toBe('');
+    expect((getByTestId('composer-send') as HTMLButtonElement).title).toBe('Wait for the stop or message edit to finish');
+
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    answered.resolve(makeTestThread());
+    await waitFor(() => expect(interrupt).toHaveBeenCalledWith('thread-1', []));
+    expect(textarea.value).toBe('');
+    expect(pane.items.some((item) => item.id === 'user:0')).toBe(true);
   });
 
   it('shows the interrupt affordance while a send is waiting for turn start', async () => {

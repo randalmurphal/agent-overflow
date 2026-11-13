@@ -39,7 +39,6 @@ import { filterRedundantNotifications } from '../../utils/notificationFilter';
 import { isPendingFlushRow } from '../../utils/userMessageMeta';
 import { itemsWithinLoadedWindow } from '../../stores/threadItems';
 import { getFlushedForThread } from '../../stores/sendQueue.svelte';
-import { hiddenByInterruptCut, optimisticInterruptCut } from '../../stores/threadInterruptState.svelte';
 
 const EMPTY_RECEIVER_LABELS = new Map<string, string>();
 /** Shared, so the common "gate is holding nothing" case allocates nothing. */
@@ -103,16 +102,11 @@ export function createTimelineRowProjection(
     void options.getPane().activityRuns.windowRevision;
     const oldest = options.getPane().oldestLoadedCursor;
     const newest = options.getPane().newestLoadedCursor;
-    // An early Stop's un-send in flight. The window keeps whatever a read
-    // installs; the rows the Stop took off the screen are not painted until
-    // the cut clears. Tracked, so they show the moment a refusal clears it.
-    const interruptCut = optimisticInterruptCut(options.getPane().threadId ?? '');
     return untrack(() => {
       const pane = options.getPane();
       const items = itemsWithinLoadedWindow(options.getPane().items, oldest, newest);
-      const visibleItems = pendingIds.size === 0 && interruptCut === null ? items : items.filter(
-        (item) => (!pendingIds.has(item.id) || !isPendingFlushRow(item))
-          && (interruptCut === null || !hiddenByInterruptCut(item, interruptCut)),
+      const visibleItems = pendingIds.size === 0 ? items : items.filter(
+        (item) => !pendingIds.has(item.id) || !isPendingFlushRow(item),
       );
       const loadedIds = new Set(pane.activityRuns.loadedItems(visibleItems).map(item => item.id));
       // Relationship lookup sees retained agent context and children; only

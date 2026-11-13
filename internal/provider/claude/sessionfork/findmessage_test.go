@@ -276,8 +276,8 @@ func TestInjectedUserContentWrappersCoversCrossSessionMessage(t *testing.T) {
 	t.Fatalf("InjectedUserContentWrappers is missing the cross-session-message entry: %v", InjectedUserContentWrappers)
 }
 
-// withSyntheticInterruptJSONL reproduces the revert-on-interrupt
-// off-by-one bug. A prior turn was interrupted, so Claude wrote a
+// withSyntheticInterruptJSONL reproduces the ordinal-walk off-by-one
+// bug. A prior turn was interrupted, so Claude wrote a
 // `[Request interrupted by user]` entry into the JSONL: a
 // `type:"user"`, `role:"user"` row with NO synthetic boolean flags and
 // array content whose first block is `{type:"text", text:"[Request
@@ -298,7 +298,7 @@ const withSyntheticInterruptJSONL = `{"type":"user","uuid":"u1","parentUuid":nul
 `
 
 // TestFindUUIDBeforeUserTurn_SkipsSyntheticInterrupt is the regression
-// guard for the revert-on-interrupt bug: a `[Request interrupted by
+// guard for the ordinal-walk bug: a `[Request interrupted by
 // user]` marker in kept history was counted as a real prompt, so the
 // ordinal walk landed one turn too early and the resumed Claude session
 // silently lost a turn (timeline/composer looked correct; only Claude's

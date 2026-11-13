@@ -316,9 +316,9 @@ Mechanism in
 - Monitor idle-wake: the CLI writes `<task-notification>` to the
   transcript only. A transcript-tail backfill was proposed and declined.
 - A Claude Stop kills every running or parked background agent, from any
-  turn, with the shells it owns. Stop and the Stop un-send therefore ask
-  for confirmation while such an agent is live, and the backend refuses
-  them until confirmed (ruling 2026-09-24). The app asks through one
+  turn, with the shells it owns. Stop therefore asks for confirmation
+  while such an agent is live, and the backend refuses it until
+  confirmed (ruling 2026-09-24). The app asks through one
   dialog at the root (`BackgroundKillConfirmationHost.svelte`) that names
   the agents; declining stops nothing, and the sent message stays either
   way. Agent thread requests, their cancels and workflow takeovers are

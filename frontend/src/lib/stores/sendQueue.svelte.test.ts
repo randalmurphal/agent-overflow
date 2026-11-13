@@ -292,7 +292,7 @@ describe('sendQueue store', () => {
   describe('readers across clearForThread', () => {
     it('a mounted reader sees a message queued after a clear of a drained thread', () => {
       // A thread that queued once and drained holds both zones empty. A
-      // clear at that point (an early Stop that un-sends, a revert, an
+      // clear at that point (a revert, an
       // archive) changes nothing a reader can see, and the reader must
       // still follow the thread's next queued message.
       replaceQueueForThread('t1', [makeItem({ message: 'first', threadId: 't1' })]);

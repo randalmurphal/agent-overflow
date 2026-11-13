@@ -7,10 +7,9 @@
 //   "Keep them running"  - nothing stops: the turn keeps going, the Stop
 //                          button stays, the agent stays in the tray.
 //   "Stop both"          - the confirmed interrupt goes out and the turn
-//                          ends. The sent message stays: the un-send is
-//                          not offered while background work runs. The
-//                          mock writes the CLI's kill frames, so the agent
-//                          ends killed and the tray empties.
+//                          ends. The sent message stays. The mock writes
+//                          the CLI's kill frames, so the agent ends
+//                          killed and the tray empties.
 //   a later agent        - an agent launched while the question is open
 //                          was not confirmed: the confirmed Stop is
 //                          refused again with the new set, the app asks
@@ -94,7 +93,6 @@ test('Stop asks before killing a background agent; keep leaves the turn running,
   await completed;
   await expect(dialog).toHaveCount(0);
   await expect(stop).toHaveCount(0);
-  // The message stays: a Stop that kills agents never un-sends.
   await expect(page.getByText('watch the gate and wait', { exact: true })).toBeVisible();
   await expect
     .poll(async () => {

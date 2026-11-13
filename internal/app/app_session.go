@@ -926,9 +926,8 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	// replacement could reactivate the thread between the post-ack
 	// epoch checks and their store writes, and the Codex resend could
 	// go through a captured session already swapped out (round-12,
-	// CT12-2/CT12-3/C12-2). runPlainInterruptLocked holds the same lock
-	// via its caller — including across the ack wait, the established
-	// precedent that the provider event worker never blocks on this lock.
+	// CT12-2/CT12-3/C12-2). Holding it across the ack wait is safe because
+	// the provider event worker never blocks on this lock.
 	// The in-triage epoch fences stay as defense for an interrupt that
 	// acquires this lock only after a replacement completed.
 	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
@@ -965,6 +964,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	// previous stamps are RESTORED — not wiped: an entry eager-persisted
 	// by an earlier interrupt still carries that interrupt's valid
 	// stamp.
+	pendingTUISendTurn := a.claudeTUIPendingSendTurn(threadID, sess)
 	interruptedTurn := anyOpenTurn
 	var stampToken triage.FlushStampToken
 	if a.triage != nil {
@@ -976,6 +976,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		}
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
+	discardsMessage := a.claudeTUIStopDiscardsMessage(threadID, sess, interruptedTurn, pendingTUISendTurn)
 	a.recordTurnStop(threadID, interruptedTurn, stop)
 	if expectTurnIndex != anyOpenTurn {
 		cancelParked()
@@ -1016,6 +1017,9 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 			a.emitErrorToThread(threadID, fmt.Sprintf("The turn stopped, but recording the stop failed: %v", err))
 		}
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)
+	}
+	if discardsMessage {
+		a.noticeClaudeTUIDiscardedMessage(threadID)
 	}
 	return true, nil
 }

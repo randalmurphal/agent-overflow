@@ -108,7 +108,7 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
   // that frontier row. A gate drop releases whatever top-level rows sit
   // after the old frontier — nothing, when the drop came from the lone
   // streaming row draining, or from a removal that truncated the tail
-  // (revert-on-interrupt drops both frontier and withheld successor in
+  // (a conversation revert drops both frontier and withheld successor in
   // one call), where arming would open a phantom spring window over a
   // SHRINKING timeline. A retreat (a replay delta re-creating a smoother
   // for an earlier row) only withholds and never releases. Evaluated

@@ -47,14 +47,7 @@ type TurnCompletedEvent struct {
 	TokenUsage         json.RawMessage `json:"tokenUsage,omitempty"`
 	ErrorMessage       string          `json:"errorMessage,omitempty"`
 	Aborted            bool            `json:"aborted,omitempty"`
-	// RevertedUserMessage signals that the turn ended because the App
-	// layer reverted the most-recent user message (early-interrupt
-	// revert). The frontend uses this to suppress the "Interrupted"
-	// thread-status pill that would otherwise paint on Aborted: from
-	// the user's perspective nothing happened, the message went back
-	// into the composer. Always paired with Aborted: true.
-	RevertedUserMessage bool `json:"revertedUserMessage,omitempty"`
-	CountsAsActivity    bool `json:"countsAsActivity"`
+	CountsAsActivity   bool            `json:"countsAsActivity"`
 	// HistoryRev / HistoryEpoch are the thread's history invalidation
 	// stamps (docs/architecture/thread-replica-sync.md §3) read at the moment
 	// this event was built — BEFORE the settlement writes that follow it

@@ -456,24 +456,19 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 //
 // Handoff visibility: the boundary-drain triggers (turn / tool /
 // background-task completion) run lock-free on this goroutine, without
-// App.flushHandoffMu — only the RegisterQueueItem trigger holds that
-// mutex against the revert-on-interrupt predicate. A batch mid-handoff
-// must therefore stay visible to the predicate on its own: the
+// App's flush handoff mutex — only the RegisterQueueItem trigger holds
+// that mutex against the App's pending-work count (pendingFlushWorkCount,
+// read by idle eviction and transfer reservation). A batch mid-handoff
+// must therefore stay visible to that count on its own: the
 // claimed batch is recorded under r.mu alongside the queue
 // delete and dropped only after the dispatcher has synchronously
 // recorded the batch in-flight (enqueueFlushDispatch bumps its
 // inflight counter before returning). Folded into QueuedFlushItemCount
 // and QueuedFlushItems,
-// the batch reads as queued → claimed → in-flight, never invisible —
-// without it, a Stop landing in the gap on a turn with no durable agent
-// rows (a top-level Codex unified-exec completing outside an active
-// wire round persists nothing) would wrongly revert the turn's prompt
-// while the dispatcher delivers the follow-up (round-14 close-out,
-// C14-1). The overlap is airtight only if the predicate reads the
-// triage counts BEFORE the App inflight count — pendingFlushWorkCount
-// does. A dispatch that fails and requeues between those two reads is
-// covered separately: the failure persists an error row before the
-// inflight count drops, so the turn is no longer clean.
+// the batch reads as queued → claimed → in-flight, never invisible
+// (round-14 close-out, C14-1). The overlap is airtight only if the count
+// reads the triage counts BEFORE the App inflight count —
+// pendingFlushWorkCount does.
 func (r *Router) tryFlushQueue(threadID string) bool {
 	if threadID == "" {
 		return false

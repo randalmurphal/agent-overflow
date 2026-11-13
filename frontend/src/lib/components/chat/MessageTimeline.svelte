@@ -29,7 +29,6 @@
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
-  import { optimisticInterruptCut } from '../../stores/threadInterruptState.svelte';
   import Button from '../primitives/Button.svelte';
   import MessageNavRail from './MessageNavRail.svelte';
   import {
@@ -239,12 +238,6 @@
   // virtualizer and index-based decorations downstream.
   const rows = createTimelineRowProjection({ getPane: () => pane });
   let revealedNodes = $derived(rows.revealedNodes);
-  // The empty states key on what is presented. A window whose every row an
-  // early Stop's un-send took off the screen reads as empty until it settles.
-  let nothingPresented = $derived(
-    pane.items.length === 0
-      || (optimisticInterruptCut(pane.threadId ?? '') !== null && rows.groupedNodes.length === 0),
-  );
 
   // Animation mode is keyed on whether LIVE timeline content advanced
   // recently (`pane.lastLiveContentAt`), NOT on whether a provider turn
@@ -1049,7 +1042,7 @@
     {:else if pane.historyWindowPending}
       <!-- Keep a cached or replica window available for verification without
            painting a state the backend has not confirmed. -->
-    {:else if nothingPresented && !getActiveTurn(pane.threadId) && !pane.loading}
+    {:else if pane.items.length === 0 && !getActiveTurn(pane.threadId) && !pane.loading}
       <div class="flex min-h-full items-center justify-center px-6 py-8" data-testid="empty-thread-greeting">
         <h2 class="min-w-0 max-w-2xl text-center text-2xl font-normal leading-snug tracking-tight text-text-secondary text-balance [overflow-wrap:anywhere] compact:text-xl">
           {#if projectName}
@@ -1059,7 +1052,7 @@
           {/if}
         </h2>
       </div>
-    {:else if nothingPresented && getActiveTurn(pane.threadId)}
+    {:else if pane.items.length === 0 && getActiveTurn(pane.threadId)}
       <!-- Active turn but no items yet. The working/todo UI lives in the
            ChatView bottom overlay, outside the virtualized history. -->
       <div class={`${ROW_SHELL_CLASSES} pt-8`} style={rowShellStyle}></div>

@@ -657,7 +657,7 @@ describe('threadRevealGate', () => {
           updatedAt: 4,
         });
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
-        // Optimistic revert removes the streaming frontier row.
+        // A removal takes the streaming frontier row.
         pane.removeItemById('think:0:0', 't');
         // The withheld successor becomes the frontier and resumes from its start.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });

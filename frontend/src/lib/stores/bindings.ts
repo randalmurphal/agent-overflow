@@ -95,7 +95,6 @@ export {
   DismissSessionBanner,
   SendMessage,
   InterruptTurn,
-  InterruptAndRevertIfClean,
   GetConversationMutationState,
   GetThreadLiveState,
   ListThreadLiveActivity,

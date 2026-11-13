@@ -80,7 +80,7 @@ describe('the optimistic clear of a Stop and its refusal', () => {
     expect(getActiveTurn('t1')).toBeNull();
 
     projectTurnStarted('t1', 'turn-2', 1, 6);
-    projectTurnCompleted('t1', 'turn-2', { turnIndex: 1 });
+    projectTurnCompleted('t1', 'turn-2');
     expect(getThreadStatus('t1')).toBe('idle');
     expect(projectTurnStopRequested('t1')).toBeNull();
     restoreRefusedTurnStop('t1', null);
@@ -90,7 +90,7 @@ describe('the optimistic clear of a Stop and its refusal', () => {
   it('does not put a turn back once a canonical signal or a later Stop superseded the clear', () => {
     projectTurnStarted('t1', 'turn-1', 0, 5);
     const first = projectTurnStopRequested('t1');
-    projectTurnCompleted('t1', 'turn-1', { turnIndex: 0 });
+    projectTurnCompleted('t1', 'turn-1');
     restoreRefusedTurnStop('t1', first);
     expect(getActiveTurn('t1')).toBeNull();
     expect(getThreadStatus('t1')).toBe('idle');
@@ -111,9 +111,9 @@ describe('the optimistic clear of a Stop and its refusal', () => {
   it('settles the open background-kill question as "keep them" when its turn ends', async () => {
     projectTurnStarted('t1', 'turn-1', 0, 5);
     let ask = confirmBackgroundKill('t1', []);
-    projectTurnCompleted('t1', 'stale-turn', { turnIndex: 0 });
+    projectTurnCompleted('t1', 'stale-turn');
     expect(pendingBackgroundKillConfirmation()?.threadId).toBe('t1');
-    projectTurnCompleted('t1', 'turn-1', { turnIndex: 0 });
+    projectTurnCompleted('t1', 'turn-1');
     await expect(ask).resolves.toBe(false);
 
     projectTurnStarted('t1', 'turn-2', 1, 6);

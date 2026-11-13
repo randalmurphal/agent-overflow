@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -385,68 +386,44 @@ func TestInterruptTurn_AgentLaunchedWhileWaitingForTheLockIsRefused(t *testing.T
 	}
 }
 
-// The un-send refuses before its own "running background tasks" decline,
-// and nothing is interrupted, reverted or written. Confirmed, it declines
-// the revert for that background work and stops the turn.
-func TestInterruptAndRevertIfClean_RefusesWhileAgentsLiveAndProceedsOnConfirm(t *testing.T) {
+// InterruptAndRevertIfClean is InterruptTurn under an older client's name:
+// the same refusal while an agent is unconfirmed, with nothing interrupted
+// or written, then a plain interrupt that keeps the message once confirmed.
+func TestInterruptAndRevertIfClean_RefusesLikeInterruptTurnAndKeepsTheMessage(t *testing.T) {
 	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "agent", "task-agent", "")
-	// The newest turn is an unanswered message, so only the background
-	// work keeps it from being un-sent.
 	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "never mind")
 	itemsBefore := f.itemCount(t)
 
 	result, err := f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, nil)
-	agents := requireRefusal(t, err)
-	if got := agentIDs(agents); len(got) != 1 || got[0] != "agent=running" {
-		t.Fatalf("refusal agents = %v, want the running agent", got)
+	refused := agentIDs(requireRefusal(t, err))
+	want := agentIDs(requireRefusal(t, f.app.InterruptTurn(f.thread.ID, nil)))
+	if !slices.Equal(refused, want) || len(refused) != 1 || refused[0] != "agent=running" {
+		t.Fatalf("refusal agents = %v, InterruptTurn's = %v, want the running agent", refused, want)
 	}
-	if result.Reverted || result.Reason != "" {
+	if result != (InterruptAndRevertResult{}) {
 		t.Fatalf("refused result = %+v, want empty", result)
 	}
 	if n := f.interrupts(t); n != 0 {
-		t.Fatalf("a refused un-send sent %d interrupts", n)
+		t.Fatalf("a refused Stop sent %d interrupts", n)
 	}
 	if got := f.itemCount(t); got != itemsBefore {
-		t.Fatalf("a refused un-send changed rows: %d items, want %d", got, itemsBefore)
-	}
-	if _, ok := f.app.sessionManager().get(f.thread.ID); !ok {
-		t.Fatal("a refused un-send stopped the session")
+		t.Fatalf("a refused Stop changed rows: %d items, want %d", got, itemsBefore)
 	}
 
 	result, err = f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, []string{"agent"})
 	if err != nil {
 		t.Fatalf("confirmed InterruptAndRevertIfClean: %v", err)
 	}
-	if result.Reverted || result.Reason != "running background tasks" {
-		t.Fatalf("confirmed result = %+v, want the plain-interrupt decline", result)
+	if result.Reverted || result.Reason == "" {
+		t.Fatalf("confirmed result = %+v, want reverted:false with a reason", result)
 	}
 	if n := f.interrupts(t); n != 1 {
-		t.Fatalf("confirmed un-send sent %d interrupts, want 1", n)
+		t.Fatalf("confirmed Stop sent %d interrupts, want 1", n)
 	}
 	if _, found, err := f.app.store.GetThreadItem(f.thread.ID, "u:1"); err != nil || !found {
 		t.Fatalf("the message must stay: found=%v err=%v", found, err)
-	}
-}
-
-// With only a main-thread shell the un-send takes its existing decline to
-// the plain interrupt without asking.
-func TestInterruptAndRevertIfClean_MainThreadShellKeepsTheExistingDecline(t *testing.T) {
-	t.Parallel()
-	f := newClaudeAgentKillFixture(t)
-	f.launchShell(t, "main-shell", "task-main-shell", "")
-	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "never mind")
-
-	result, err := f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, nil)
-	if err != nil {
-		t.Fatalf("InterruptAndRevertIfClean: %v", err)
-	}
-	if result.Reverted || result.Reason != "running background tasks" {
-		t.Fatalf("result = %+v, want the plain-interrupt decline", result)
-	}
-	if n := f.interrupts(t); n != 1 {
-		t.Fatalf("interrupts = %d, want 1", n)
 	}
 }
 
@@ -554,11 +531,16 @@ func TestStopRefusalWireFrameNamesTheAgents(t *testing.T) {
 		name string
 		args []any
 	}
+	// The options an older client sends with InterruptAndRevertIfClean.
+	oldClientOptions := map[string]any{
+		"expectedSendId": "send-1",
+		"draft":          map[string]any{"content": "hello", "attachmentIds": []string{}, "terminalChips": []any{}},
+	}
 	var calls []call
 	for _, confirmed := range [][]string{nil, {}, {"another-agent"}} {
 		calls = append(calls,
 			call{"InterruptTurn", []any{f.thread.ID, confirmed}},
-			call{"InterruptAndRevertIfClean", []any{f.thread.ID, InterruptRevertOptions{}, confirmed}})
+			call{"InterruptAndRevertIfClean", []any{f.thread.ID, oldClientOptions, confirmed}})
 	}
 	for _, c := range calls {
 		name, args := c.name, c.args

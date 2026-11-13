@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
@@ -19,10 +17,10 @@ import (
 	"agent-overflow/internal/usermessage"
 )
 
-// rollbackToMessage drives the kept destructive rollback tail the way
-// the un-send path does, minus the live-session interrupt plumbing:
-// load the thread + user item, project the composer draft, resolve the
-// message anchor, and hand off to rollbackConversationLocked.
+// rollbackToMessage drives the destructive rollback tail the way the
+// edit-and-resend saga does, minus its staging and resend: load the
+// thread + user item, resolve the message anchor, and hand off to
+// rollbackConversationLocked.
 func rollbackToMessage(app *App, threadID, userItemID string) error {
 	unlock := app.threadLocks().Lock(threadID)
 	defer unlock()
@@ -37,22 +35,17 @@ func rollbackToMessage(app *App, threadID, userItemID string) error {
 	if !found {
 		return fmt.Errorf("user item %s not found", userItemID)
 	}
-	promptDraft, err := composerdraft.FromUserItem(threadID, item, time.Now().UnixMilli())
-	if err != nil {
-		return err
-	}
 	anchor := app.resolveMessageAnchor("test rollback", threadID, item)
 	_, err = app.rollbackConversationLocked(rollbackConversationLockedArgs{
 		thread:      thread,
 		userItem:    item,
 		anchor:      anchor,
-		promptDraft: &promptDraft,
 		errorPrefix: "test rollback",
 	})
 	return err
 }
 
-func TestConversationRollbackDeletesSelectedPromptAndRestoresDraft(t *testing.T) {
+func TestConversationRollbackDeletesSelectedPrompt(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(t)
 	home := testProviderHome(t, app)
@@ -83,71 +76,58 @@ func TestConversationRollbackDeletesSelectedPromptAndRestoresDraft(t *testing.T)
 	if len(items) != 1 || items[0].ID != "user:0" {
 		t.Fatalf("items after rollback = %+v", items)
 	}
-	draft, ok, err := app.store.GetThreadDraft(thread.ID)
-	if err != nil {
-		t.Fatalf("get draft: %v", err)
-	}
-	if !ok || draft.Content != "second" {
-		t.Fatalf("draft = %+v ok=%v", draft, ok)
+	// The composer draft belongs to the caller.
+	if _, ok, err := app.store.GetThreadDraft(thread.ID); err != nil || ok {
+		t.Fatalf("the rollback wrote a composer draft: ok=%v err=%v", ok, err)
 	}
 }
 
-// TestConversationRollbackClaudeTUIForgetsToolCallLinks: the claude-tui
-// revert keeps the session live, so no teardown clears the router's
-// cached tool-call links; the cut must drop them itself.
-func TestConversationRollbackClaudeTUIForgetsToolCallLinks(t *testing.T) {
+// A provider the rollback cannot cut is refused before anything is stopped,
+// cleaned or truncated: claude-tui owns its conversation inside the TUI, so
+// a cut of AO's copy alone would leave the two disagreeing.
+func TestConversationRollbackRefusesAnUnsupportedProviderUpFront(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "tui", string(provider.ClaudeTUI), t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 1)
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
-	requireLinksForgotten := primeCutToolCallLinks(t, app, thread.ID, 1)
+	app.sessionManager().put(thread.ID, session{Provider: string(provider.ClaudeTUI), Token: "tui"})
+	stops := 0
+	app.stopSessionFn = func(string) error { stops++; return nil }
 
-	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
-		t.Fatalf("rollback: %v", err)
+	unlock := app.threadLocks().Lock(thread.ID)
+	item, found, err := app.store.GetThreadItem(thread.ID, "user:1")
+	if err != nil || !found {
+		unlock()
+		t.Fatalf("load user item: found=%v err=%v", found, err)
+	}
+	_, err = app.rollbackConversationLocked(rollbackConversationLockedArgs{
+		thread:                      thread,
+		userItem:                    item,
+		anchor:                      app.resolveMessageAnchor("test rollback", thread.ID, item),
+		errorPrefix:                 "test rollback",
+		clearRunningBackgroundTasks: true,
+	})
+	unlock()
+	if err == nil || !strings.Contains(err.Error(), `provider "claude-tui" does not support conversation rollback`) {
+		t.Fatalf("rollback err = %v, want the unsupported-provider refusal", err)
+	}
+	if stops != 0 {
+		t.Fatalf("the refused rollback stopped the session %d times", stops)
+	}
+	if _, ok := app.sessionManager().get(thread.ID); !ok {
+		t.Fatal("the refused rollback removed the live session")
 	}
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {
 		t.Fatalf("list items: %v", err)
 	}
-	if len(items) != 1 || items[0].ID != "user:0" {
-		t.Fatalf("items after rollback = %+v", items)
+	if len(items) != 3 {
+		t.Fatalf("items after the refused rollback = %+v, want all three kept", items)
 	}
-	requireLinksForgotten()
-}
-
-func TestConversationRollbackRestoresDraftAttachments(t *testing.T) {
-	t.Parallel()
-	app := newTestApp(t)
-	thread := createAppTestThread(t, app, "t-attachments", "claude", t.TempDir())
-	meta, err := json.Marshal(userMessageMeta{
-		Attachments: []userMessageAttachmentMeta{
-			{ID: "att-1", ThreadID: thread.ID, Filename: "one.png", MimeType: "image/png"},
-			{ID: "att-2", ThreadID: thread.ID, Filename: "two.png", MimeType: "image/png"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal meta: %v", err)
-	}
-	insertUserItemWithMeta(t, app.store, thread.ID, "user:0", 0, "look at [Image #1] and [Image #2]", string(meta))
-	seedMessageAnchor(t, app.store, thread.ID, "user:0", 0, "provider-user-0", "")
-
-	if err := rollbackToMessage(app, thread.ID, "user:0"); err != nil {
-		t.Fatalf("rollback: %v", err)
-	}
-	draft, ok, err := app.store.GetThreadDraft(thread.ID)
-	if err != nil {
-		t.Fatalf("get draft: %v", err)
-	}
-	if !ok {
-		t.Fatal("draft missing")
-	}
-	var got []string
-	if err := json.Unmarshal([]byte(draft.Attachments), &got); err != nil {
-		t.Fatalf("decode draft attachments: %v", err)
-	}
-	if strings.Join(got, ",") != "att-1,att-2" {
-		t.Fatalf("draft attachments = %v, want [att-1 att-2]", got)
+	if count, err := app.countRunningBackgroundTasks(thread.ID); err != nil || count != 1 {
+		t.Fatalf("running background tasks = %d (%v), want the launch left running", count, err)
 	}
 }
 
@@ -308,13 +288,6 @@ func TestConversationRollbackKeepsSharedTurnPrefix(t *testing.T) {
 	if _, ok, _ := app.store.GetMessageAnchor(thread.ID, "flush:0"); ok {
 		t.Fatal("rolled-back flush row's anchor should cascade away with its item")
 	}
-	draft, ok, err := app.store.GetThreadDraft(thread.ID)
-	if err != nil || !ok {
-		t.Fatalf("get draft: ok=%v err=%v", ok, err)
-	}
-	if draft.Content != "queued follow-up" {
-		t.Fatalf("draft content = %q, want the rolled-back queued message", draft.Content)
-	}
 	updated, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
@@ -397,13 +370,6 @@ func TestConversationRollbackMidTurnAnchorWithoutUUIDClonesFullTranscript(t *tes
 	if strings.Join(gotIDs, ",") != "user:0,text:0:0,text:0:1" {
 		t.Fatalf("items after rollback = %v, want [user:0 text:0:0 text:0:1]", gotIDs)
 	}
-	draft, ok, err := app.store.GetThreadDraft(thread.ID)
-	if err != nil || !ok {
-		t.Fatalf("get draft: ok=%v err=%v", ok, err)
-	}
-	if draft.Content != "queued follow-up" {
-		t.Fatalf("draft content = %q, want the rolled-back queued message", draft.Content)
-	}
 	updated, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
@@ -456,11 +422,6 @@ func TestConversationRollbackMidTurnAnchorStaleUUIDFails(t *testing.T) {
 	}
 	if _, ok, err := app.store.GetMessageAnchor(thread.ID, "flush:0"); err != nil || !ok {
 		t.Errorf("message anchor must survive a failed rollback (ok=%v err=%v)", ok, err)
-	}
-	if _, ok, err := app.store.GetThreadDraft(thread.ID); err != nil {
-		t.Fatalf("get draft: %v", err)
-	} else if ok {
-		t.Error("failed rollback must not restore the composer draft")
 	}
 }
 
@@ -516,13 +477,6 @@ func TestConversationRollbackMidTurnAnchorRetryAfterPartialFailure(t *testing.T)
 	}
 	if strings.Join(gotIDs, ",") != "user:0,text:0:0,text:0:1" {
 		t.Fatalf("items after retry = %v, want [user:0 text:0:0 text:0:1]", gotIDs)
-	}
-	draft, ok, err := app.store.GetThreadDraft(thread.ID)
-	if err != nil || !ok {
-		t.Fatalf("get draft: ok=%v err=%v", ok, err)
-	}
-	if draft.Content != "queued follow-up" {
-		t.Fatalf("draft content = %q, want the rolled-back queued message", draft.Content)
 	}
 	updated, err := app.store.GetThread(thread.ID)
 	if err != nil {
@@ -1018,13 +972,6 @@ func TestConversationRollbackCanRollBackAgainAfterClaudeSessionFork(t *testing.T
 	if len(items) != 1 || items[0].ID != "user:0" {
 		t.Fatalf("items after second rollback = %+v, want only first user item", items)
 	}
-	draft, ok, err := app.store.GetThreadDraft(thread.ID)
-	if err != nil {
-		t.Fatalf("get draft: %v", err)
-	}
-	if !ok || draft.Content != "second" {
-		t.Fatalf("draft after second rollback = %+v ok=%v, want second prompt", draft, ok)
-	}
 	afterSecond, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("get thread after second rollback: %v", err)
@@ -1175,4 +1122,103 @@ func TestConversationRollbackKeepsPersistedTodo(t *testing.T) {
 	if !reflect.DeepEqual(stored, seeded) {
 		t.Fatalf("rollback changed the persisted todo: got %+v, want %+v", stored, seeded)
 	}
+}
+
+// A rollback receives the thread snapshot loaded when it began. Session
+// slicing can take long enough for a narrow thread setting update to land
+// before that snapshot is committed. Finishing the rollback must change only
+// provider-resume state, never restore unrelated fields from its stale
+// snapshot.
+func TestRollbackPreservesConcurrentEffortChange(t *testing.T) {
+	t.Parallel()
+	for _, providerName := range []string{"claude", "codex"} {
+		t.Run(providerName, func(t *testing.T) {
+			app := newTestApp(t)
+
+			thread := createAppTestThread(t, app, "revert-preserves-effort-"+providerName, providerName, t.TempDir())
+			thread.ReasoningEffort = "high"
+			thread.SessionRef = "stale-session"
+			if err := app.store.UpdateThread(thread); err != nil {
+				t.Fatalf("seed thread: %v", err)
+			}
+			rollbackSnapshot, err := app.store.GetThread(thread.ID)
+			if err != nil {
+				t.Fatalf("load rollback snapshot: %v", err)
+			}
+			if _, _, err := app.store.UpdateReasoningEffort(thread.ID, "xhigh"); err != nil {
+				t.Fatalf("update effort during rollback: %v", err)
+			}
+
+			anchor := store.MessageAnchor{ThreadID: thread.ID, UserItemID: "user:0", TurnIndex: 0}
+			userItem := store.Item{
+				ID: "user:0", ThreadID: thread.ID, TurnIndex: 0,
+				Kind: "user_text", Role: "user",
+			}
+			switch providerName {
+			case "claude":
+				err = app.rollbackClaudeThreadToMessage(rollbackSnapshot, anchor, userItem)
+			case "codex":
+				err = app.rollbackCodexThreadToMessage(rollbackSnapshot, anchor)
+			}
+			if err != nil {
+				t.Fatalf("finish rollback: %v", err)
+			}
+
+			updated, err := app.store.GetThread(thread.ID)
+			if err != nil {
+				t.Fatalf("reload thread: %v", err)
+			}
+			if updated.ReasoningEffort != "xhigh" {
+				t.Fatalf("effort after rollback = %q, want xhigh", updated.ReasoningEffort)
+			}
+			if updated.SessionRef != "" {
+				t.Fatalf("session ref after turn-zero rollback = %q, want empty", updated.SessionRef)
+			}
+		})
+	}
+}
+
+// An earlier interrupt leaves a `[Request interrupted by user]` marker in
+// the Claude transcript, written as array content the way the CLI emits
+// it. A rollback to a message with no anchor and no stamped provider id
+// takes the ordinal walk, which must not count that marker as a prompt:
+// the cut keeps turns 0 and 1 whole and drops only "third".
+func TestConversationRollbackOrdinalWalkSkipsAPriorInterruptMarker(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(t)
+	home := testProviderHome(t, app)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	const sessionID = "prior-interrupt-session"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"prior-interrupt-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"prior-interrupt-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"int1","parentUuid":"a0","sessionId":"prior-interrupt-session","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}
+{"type":"user","uuid":"u1","parentUuid":"int1","sessionId":"prior-interrupt-session","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"prior-interrupt-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"prior-interrupt-session","message":{"role":"user","content":"third"}}
+`)
+	thread := createAppTestThread(t, app, "interrupt-marker", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "u:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "u:1", 1, "second")
+	insertUserItem(t, app.store, thread.ID, "u:2", 2, "third")
+
+	if err := rollbackToMessage(app, thread.ID, "u:2"); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef == "" || updated.SessionRef == sessionID {
+		t.Fatalf("thread session ref = %q, want sliced fork session", updated.SessionRef)
+	}
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef,
+		[]string{"first", "reply 0", "second", "reply 1"},
+		[]string{"third"})
 }

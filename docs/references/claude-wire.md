@@ -918,15 +918,12 @@ months-old source mirror disagreed on the async case, the wire won):
   after 1,200 frames; AO's control-request timeout therefore counts
   silence from the CLI, not time since the request
   (`DefaultControlRequestTimeout`), under a one-minute ceiling on the
-  whole wait (`DefaultControlRequestCeiling`). AO's plain Stop
-  and the Stop un-send both send this interrupt (`interruptTurnAtIndex`
-  in `internal/app/app_session.go`). While a running or parked agent is
-  live, both refuse with `background_agents_running` until the caller
-  confirms that agent by its transcript root; an agent launched after
-  the question was asked is refused again
-  (`internal/app/app_background_kill.go`). The un-send also
-  stops the session (`InterruptAndRevertIfClean`, `stopSession`) and
-  declines while background work runs (`hasRunningBackgroundTasks`).
+  whole wait (`DefaultControlRequestCeiling`). AO's Stop sends this
+  interrupt (`interruptTurnAtIndex` in `internal/app/app_session.go`).
+  While a running or parked agent is live, it refuses with
+  `background_agents_running` until the caller confirms that agent by
+  its transcript root; an agent launched after the question was asked
+  is refused again (`internal/app/app_background_kill.go`).
 - Session close kills every remaining shell and every async agent
   and, on a graceful stdin
   close, emits their killed terminals before exit. AO tears the thread

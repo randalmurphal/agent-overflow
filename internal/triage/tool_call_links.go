@@ -140,7 +140,7 @@ func (r *Router) lookupItemLink(threadID, itemID string) (itemLink, bool, error)
 
 // ForgetToolCallLinks drops the thread's cached links. The app calls it
 // after a conversation cut deletes rows while the session stays live
-// (Codex thread/revert, the claude-tui native revert): a deleted scope's
+// (Codex thread/revert): a deleted scope's
 // cached turn would otherwise place a late event in a turn index the next
 // turn reuses.
 func (r *Router) ForgetToolCallLinks(threadID string) {

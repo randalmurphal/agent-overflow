@@ -1,5 +1,4 @@
-import { beginUndoableSend, retireUndoableSend, type SendUndoOutcome } from '../../stores/composerSendUndo';
-// Composer send / interrupt flow.
+// Composer send flow.
 //
 // Extracted from Composer.svelte to shrink the shell below the 300-line
 // guideline. Owns nothing reactive — each call captures the current
@@ -8,10 +7,11 @@ import { beginUndoableSend, retireUndoableSend, type SendUndoOutcome } from '../
 // path easy to trace from the click handler all the way to SendMessage.
 
 import { SendMessageWithOptions } from '../../stores/bindings';
+import { trackDirectSend } from '../../stores/threadInterrupt.svelte';
 import type { Attachment } from '../../types/attachment';
 import type { TerminalChip } from '../../types/draft';
 import { addErrorToast } from '../../stores/toast.svelte';
-import { isUndeliveredSendError } from '../../stores/transportStatus.svelte';
+import { isTransportClassError, isUndeliveredSendError } from '../../stores/transportStatus.svelte';
 import { confirmUnsentMessageRestore } from '../../stores/unsentMessageConfirmation.svelte';
 import { userFacingError } from '../../utils/userFacingError';
 import { syncThreadReply } from '../../stores/panes.svelte';
@@ -27,7 +27,6 @@ import { autoPinNewThread, shouldAutoPinFirstSend } from '../../stores/threadAut
 
 export interface SendOptions {
   threadId: string;
-  turnIndex?: number;
   message: string;
   /** Captured draft persistence must succeed before any send is issued. */
   draftReady?: Promise<void>;
@@ -57,12 +56,11 @@ export interface SendOptions {
  */
 export async function dispatchSend(opts: SendOptions): Promise<boolean> {
   let sendStarted = false;
-  let outcome: SendUndoOutcome = 'failed';
-  const undo = beginUndoableSend(opts.threadId, opts.options.sendId, { ...opts.snapshot, sourceProposedPlan: opts.snapshot.sourceProposedPlan ?? null }, opts.turnIndex);
+  // How the send ended, told as soon as it is known: a Stop pressed
+  // meanwhile waits for it.
+  const settleSend = trackDirectSend(opts.threadId);
   try {
     if (opts.draftReady) await opts.draftReady;
-    if (undo.undoRequested) { outcome = 'cancelled'; return false; }
-    undo.dispatched = true;
     const autoPinAfterSend = shouldAutoPinFirstSend(getThreadById(opts.threadId));
     // Flip the sidebar pill to Working the moment the user clicks Send.
     // Provider sessions for brand-new threads take seconds to cold-start
@@ -76,21 +74,18 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
 
     const mark = threadRowFrameMark();
     let updated = (await SendMessageWithOptions(opts.threadId, opts.message, opts.options)) as Thread;
+    settleSend('accepted');
     if (autoPinAfterSend) {
       try { updated = await autoPinNewThread(updated); }
       catch (err) { opts.reportError(`Message sent, but pinning the thread failed: ${userFacingError(err)}`, err); }
     }
     syncThreadReply(updated, mark);
-    outcome = 'accepted';
     return true;
   } catch (err) {
+    // A send never issued, or one the backend answered with an error, sent
+    // nothing; a lost or timed-out reply leaves the message possibly sent.
+    settleSend(sendStarted && isTransportClassError(err) ? 'unknown' : 'refused');
     console.error('Failed to send message:', err);
-    if (undo.undoRequested) {
-      outcome = isUndeliveredSendError(err) ? 'unknown' : 'failed';
-      if (sendStarted && outcome === 'failed') projectSendResolved(opts.threadId);
-      opts.reportError(`Send interrupted during preparation: ${userFacingError(err)}`, err);
-      return false;
-    }
     // Flip to error so the sidebar pill reads "Failed" — the user
     // should see the failure without having to open the thread.
     if (sendStarted) {
@@ -143,8 +138,5 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
       );
     }
     return false;
-  } finally {
-    undo.finish(outcome);
-    if (outcome !== 'accepted') retireUndoableSend(opts.threadId, undo);
   }
 }

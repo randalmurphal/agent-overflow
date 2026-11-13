@@ -321,14 +321,6 @@ type threadState struct {
 	workspacePath    string
 	workspacePathSet bool
 
-	// revertedTurn marks a thread whose next provider:turn_completed
-	// emission should carry RevertedUserMessage=true. Set by the App
-	// layer's revert-on-interrupt path BEFORE it tears down the session;
-	// consumed (read-and-clear) when handleTurnComplete claims the round.
-	// Defensively cleared by clearOpenTurn too, so a stale flag never
-	// leaks into a future turn. See revert_marker.go.
-	revertedTurn bool
-
 	// usageEmitThrottle rate-limits provider:usage emissions to at most
 	// one per usageEmitMinInterval. The context-window meter changes
 	// gradually during streaming; Claude can fire 10-50 token usage
@@ -447,8 +439,8 @@ type threadIdentity struct {
 
 	// claimedFlushItems holds batch items mid-handoff between the
 	// queue delete in tryFlushQueue and the dispatcher's synchronous
-	// in-flight record. Folded into QueuedFlushItemCount so the
-	// revert-on-interrupt predicate sees a draining batch as queued →
+	// in-flight record. Folded into QueuedFlushItemCount so the App's
+	// pending-work count sees a draining batch as queued →
 	// claimed → in-flight, never invisible (round-14 close-out, C14-1),
 	// and into QueuedFlushItems so the same handoff cannot publish a
 	// queue_state_changed snapshot that omits the item — Zone 1 dropped

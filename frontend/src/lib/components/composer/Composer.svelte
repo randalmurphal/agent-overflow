@@ -11,7 +11,7 @@
   // cleanup, the pending approval / user-input panels, and the activity
   // rail.
 
-  import { onDestroy, onMount, tick, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
   import ComposerInputSurface from './ComposerInputSurface.svelte';
@@ -51,7 +51,7 @@
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
-  import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
+  import { runInterrupt } from '../../stores/threadInterrupt.svelte';
   import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
   import {
     DeleteEmptyDraftThread,
@@ -786,8 +786,6 @@
     // so the fresh element mounts empty.
     surface?.recreateInput();
 
-    const lastItem = pane.items.length > 0 ? pane.items[pane.items.length - 1] : null;
-    const nextTurn = lastItem ? lastItem.turnIndex + 1 : 0;
     // The pane this send belongs to, captured alongside `threadId`: the
     // settle below runs after an await, and the pane binding can have
     // moved by then.
@@ -800,7 +798,6 @@
       try {
         await dispatchSend({
           draftReady,
-          turnIndex: nextTurn,
           threadId,
           message,
           options: sendOptions,
@@ -880,18 +877,10 @@
   }
 
   function interrupt() {
-    if (!pane.threadId) return;
-    // The flow owns the working presentation on both arms: the early
-    // un-send hides it now, and the plain Stop clears it in this tick or,
+    // The Stop owns the working presentation: it clears it in this tick or,
     // when a background agent would die with the turn, after the person
-    // confirms (stores/revertOnInterrupt.svelte.ts).
-    if (runInterruptOrRevert(pane, draft)) {
-      pane.setSendInFlight(false);
-      const restoredThreadId = pane.threadId;
-      void tick().then(() => {
-        if (pane.threadId === restoredThreadId) surface?.focusInputAtEnd();
-      });
-    }
+    // confirms (stores/threadInterrupt.svelte.ts).
+    runInterrupt(pane);
   }
 
   function resetTextareaHeight() {
@@ -1256,7 +1245,7 @@
         : shellBlockedReason
         ? shellBlockedReason
         : interruptPending
-        ? 'Wait for the interrupted message to finish reverting'
+        ? 'Wait for the stop or message edit to finish'
         : undefined}
       hasCurrentPlan={Boolean(latestPlanItem)}
       planCommentCount={hasDraftDiffReviewComments ? activeDiffReviewDraftComments.length : latestPlanDraftComments.length}

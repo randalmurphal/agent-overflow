@@ -1,8 +1,8 @@
 import { applyTurnStarted, applyTurnCompleted } from './eventsProvider';
 import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from './eventsItemStream';
-// The `user_message:reverted` fan-out, focused on the one branch the
-// edit-and-resend saga added: whether the composer rehydrates. The
-// truncation itself is covered end-to-end in events.test.ts.
+// The `user_message:reverted` fan-out: resend markers, idempotence, fencing,
+// and the composer draft it leaves alone. The truncation itself is covered
+// end-to-end in events.test.ts.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -91,8 +91,9 @@ describe('applyUserMessageReverted', () => {
 
   it('records a consumable marker only for a pending-resend revert', async () => {
     await seedPane();
-    // Ordinary un-send: no marker — a later saga failure on this thread
-    // must not be misread as committed.
+    // A revert that is not an edit-and-resend (an older backend's): no
+    // marker — a later saga failure on this thread must not be misread as
+    // committed.
     applyUserMessageReverted({ threadId: 'thread-a', userItemId: 'u:1', turnIndex: 1 });
     expect(consumeResendRevertMarker('thread-a', 'u:1')).toBe(false);
 
@@ -158,8 +159,8 @@ describe('applyUserMessageReverted', () => {
       turnIndex: 1,
       draftPendingResend: true,
     });
-    // A newer revert on the same thread — here an ordinary un-send, which
-    // records nothing itself. The older saga's marker describes a
+    // A newer revert on the same thread — here one that is not a resend,
+    // which records nothing itself. The older saga's marker describes a
     // conversation shape that no longer exists, and nothing local will
     // ever consume a marker set by ANOTHER connected client's revert, so
     // the sweep is what keeps it from answering a later, unrelated
@@ -184,7 +185,7 @@ describe('applyUserMessageReverted', () => {
     expect(consumeResendRevertMarker('thread-b', 'u:1')).toBe(true);
   });
 
-  it('rehydrates the composer draft for an ordinary revert', async () => {
+  it('leaves the composer draft alone for a revert without the resend flag', async () => {
     const pane = await seedPane();
     const { draft, reloadFromBackend } = stubDraft();
     registerComposerDraft(pane.paneId, draft);
@@ -192,7 +193,7 @@ describe('applyUserMessageReverted', () => {
     applyUserMessageReverted({ threadId: 'thread-a', userItemId: 'u:1', turnIndex: 1 });
 
     expect(pane.items.map((it) => it.id)).toEqual(['u:0']);
-    expect(reloadFromBackend).toHaveBeenCalledWith('thread-a');
+    expect(reloadFromBackend).not.toHaveBeenCalled();
   });
 
   it('ignores duplicate and stale cuts after Send reopens', async () => {

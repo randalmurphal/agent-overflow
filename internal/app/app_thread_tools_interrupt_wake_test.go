@@ -211,9 +211,6 @@ func TestInterruptWithoutACauseIsRefused(t *testing.T) {
 		if _, err := app.interruptTurnAtIndex(context.Background(), "thread", anyOpenTurn, stop); err == nil || !strings.Contains(err.Error(), "no stop cause") {
 			t.Errorf("interruptTurnAtIndex(%+v): err = %v, want the missing cause refused", stop, err)
 		}
-		if err := app.runPlainInterruptLocked("thread", stop); err == nil || !strings.Contains(err.Error(), "no stop cause") {
-			t.Errorf("runPlainInterruptLocked(%+v): err = %v, want the missing cause refused", stop, err)
-		}
 	}
 	if err := app.interruptTurnForWorkflow(context.Background(), "thread", 0); err == nil || !strings.Contains(err.Error(), "unknown workflow interrupt") {
 		t.Errorf("interruptTurnForWorkflow(0): err = %v, want it refused", err)

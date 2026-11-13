@@ -129,15 +129,11 @@ func TestInterruptTurnRecordsStopInTurnStartGap(t *testing.T) {
 	}))
 }
 
-func TestPlainInterruptFallbackRecordsStopInTurnStartGap(t *testing.T) {
+// An older client's InterruptAndRevertIfClean is the same interrupt.
+func TestInterruptAndRevertIfCleanRecordsStopInTurnStartGap(t *testing.T) {
 	t.Parallel()
-	requireStopAndLaterError(t, interruptInTurnStartGap(t, "plain-interrupt-start-gap", func(app *App, threadID string) error {
-		// The caller owns the thread action lock, as InterruptAndRevertIfClean does.
-		unlock, err := app.threadLocks().LockCtx(t.Context(), threadID)
-		if err != nil {
-			return err
-		}
-		defer unlock()
-		return app.runPlainInterruptLocked(threadID, stopByUser(nil))
+	requireStopAndLaterError(t, interruptInTurnStartGap(t, "interrupt-and-revert-start-gap", func(app *App, threadID string) error {
+		_, err := app.InterruptAndRevertIfClean(threadID, InterruptRevertOptions{}, nil)
+		return err
 	}))
 }

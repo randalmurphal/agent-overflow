@@ -251,7 +251,6 @@ export function createAgentScopeView(
     get upsertItems() { return sourcePane.upsertItems; },
     get applyProviderItemUpserts() { return sourcePane.applyProviderItemUpserts; },
     get removeItemById() { return sourcePane.removeItemById; },
-    get removeItemsFromTurn() { return sourcePane.removeItemsFromTurn; },
     get removeRevertedItems() { return sourcePane.removeRevertedItems; },
     get __syncLedgerArmedForTest() { return sourcePane.__syncLedgerArmedForTest; },
     get __cancelReplicaWriteBackForTest() { return sourcePane.__cancelReplicaWriteBackForTest; },

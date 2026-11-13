@@ -1,8 +1,6 @@
 import { applyTimelineMutation } from './timelineSurfaces';
-import { hiddenByInterruptCut, optimisticInterruptCut, noteHiddenInterruptItem } from './threadInterruptState.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { threadBackend, HOME_BACKEND } from '../transport/entityIndex';
-import { getUndoableSend, retireUndoableSend } from './composerSendUndo';
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 // Item-stream event batching: the provider:item_event ordered mutation
@@ -434,8 +432,6 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, sequence?: number): v
     // channel is narrowed to the threads a client watches and a client
     // that is not watching would never have learned any of them.
     if (!isValidItemForThread(evt.item, evt.threadId)) return;
-    if ((evt.item.kind === 'assistant_text' || evt.item.kind === 'tool_call')
-      && getUndoableSend(evt.threadId)?.turnIndex === evt.item.turnIndex) retireUndoableSend(evt.threadId);
   } else if (evt.action === 'delta') {
     if (!isBoundedString(evt.threadId, 512)) return;
     if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
@@ -684,11 +680,6 @@ export function flushItemEventQueue(): void {
     for (const entry of events) {
       if (!survivesCut(entry)) continue;
       const { evt, rowKey: itemKey } = entry;
-      const hidden = optimisticInterruptCut(evt.threadId);
-      if (hidden !== null && evt.action === 'upsert' && hiddenByInterruptCut(evt.item, hidden)) {
-        noteHiddenInterruptItem(evt.threadId);
-        continue;
-      }
       if (evt.action === 'upsert') {
         // A queued delta for this row must land before the upsert
         // replaces the row's summary wholesale, and so must an event

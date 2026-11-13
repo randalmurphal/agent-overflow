@@ -1,29 +1,11 @@
-// Thread-scoped interrupt transaction state.
-//
-// Early Stop hides working presentation immediately while canonical execution
-// state remains live. Send stays closed until the caller applies its confirmed
-// cut or reconciles an uncertain outcome. Edit/resend uses the same Send gate.
+// Thread-scoped interrupt transaction state: one Stop or edit-and-resend at
+// a time per thread, and the Send gate the composer reads while it runs.
 
-import type { Item } from '../types/models';
-import { parseUserMessageMeta } from '../utils/userMessageMeta';
 import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 const pendingByThread = createKeyedSignalRegistry<number>(0);
-/**
- * What an early Stop took off the screen while its un-send settles: every
- * row from `turnIndex` on, and the user row of `sendId` on whatever turn the
- * backend placed it. The turn is the pane's prediction when the row had not
- * arrived, and the backend can place the row on a lower one.
- */
-export interface OptimisticInterruptCut {
-  turnIndex: number;
-  /** Empty when the message being un-sent carries no send id. */
-  sendId: string;
-}
-const restoredByThread = createKeyedSignalRegistry<OptimisticInterruptCut | null>(null);
 const pendingThreads = new Set<string>();
-const hiddenItemThreads = new Set<string>();
 let nextToken = 0;
 
 /** Claim the one interrupt transaction allowed on a thread. */
@@ -42,32 +24,20 @@ export function beginThreadInterrupt(threadId: string): number | null {
 export function finishThreadInterrupt(threadId: string, token: number): void {
   if (!threadId || token <= 0) return;
   if (pendingByThread.get(threadId) !== token) return;
-  hiddenItemThreads.delete(threadId);
-  restoredByThread.drop(threadId);
   pendingByThread.drop(threadId);
   pendingThreads.delete(threadId);
 }
 
+/** Whether `token` still holds the thread's transaction. */
 export function isThreadInterruptCurrent(threadId: string, token: number): boolean {
-  return pendingByThread.get(threadId) === token;
+  return token > 0 && pendingByThread.get(threadId) === token;
 }
 
 export function isThreadInterruptPending(threadId: string | null | undefined): boolean {
   return Boolean(threadId && pendingByThread.get(threadId) !== 0);
 }
 
-/** Hide only presentation while the authoritative interrupt is still settling. */
-export function presentThreadInterruptAsRestored(threadId: string, token: number, turnIndex = 0, sendId = ''): void {
-  if (pendingByThread.get(threadId) === token) restoredByThread.set(threadId, { turnIndex, sendId });
-}
-
-export function isThreadInterruptRestored(threadId: string | null | undefined): boolean {
-  return Boolean(threadId && restoredByThread.get(threadId) !== null);
-}
-
 export function resetThreadInterruptStateForTest(): void {
-  hiddenItemThreads.clear();
-  restoredByThread.reset();
   pendingByThread.reset();
   pendingThreads.clear();
 }
@@ -75,31 +45,7 @@ export function resetThreadInterruptStateForTest(): void {
 onThreadHistoryInvalidated((owns) => {
   for (const id of pendingThreads) {
     if (!owns(id)) continue;
-    hiddenItemThreads.delete(id);
-    restoredByThread.drop(id);
     pendingByThread.drop(id);
     pendingThreads.delete(id);
   }
 });
-
-/** Reactive: a reader re-runs when the thread's cut is installed or cleared. */
-export function optimisticInterruptCut(threadId: string): OptimisticInterruptCut | null { return restoredByThread.get(threadId); }
-
-/**
- * Whether `cut` takes `item` off the screen. The one rule, applied twice:
- * the item stream refuses such a pushed row, so it starts no reveal, follow
- * or run state for a row nobody sees, and the timeline's row projection
- * leaves out such a row the window holds, which is how a history read that
- * lands while the un-send settles stays whole without being painted.
- */
-export function hiddenByInterruptCut(item: Item, cut: OptimisticInterruptCut): boolean {
-  return item.turnIndex >= cut.turnIndex
-    || (cut.sendId !== '' && item.kind === 'user_text' && parseUserMessageMeta(item.meta).sendId === cut.sendId);
-}
-
-export function noteHiddenInterruptItem(threadId: string): void { hiddenItemThreads.add(threadId); }
-export function restoreThreadInterruptPresentation(threadId: string, token: number): boolean {
-  if (pendingByThread.get(threadId) !== token) return false;
-  restoredByThread.drop(threadId);
-  return hiddenItemThreads.delete(threadId);
-}

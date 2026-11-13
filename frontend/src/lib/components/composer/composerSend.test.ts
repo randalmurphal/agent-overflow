@@ -1,4 +1,3 @@
-import { getUndoableSend } from '../../stores/composerSendUndo';
 import { buildSendOptions } from '../../utils/sendOptions';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchSend } from './composerSend';
@@ -8,7 +7,10 @@ import { resetForTest as resetWorktreeIntent } from '../../stores/worktreeIntent
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
-import { DisconnectedError } from '../../transport/wsClient';
+import { DisconnectedError, TransportError } from '../../transport/wsClient';
+import { projectTurnStarted } from '../../stores/threadStatuses.svelte';
+import { resetDirectSendsForTest, runInterrupt } from '../../stores/threadInterrupt.svelte';
+import { isThreadInterruptPending, resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
 import {
   hasPendingUnsentMessageConfirmation,
   resetUnsentMessageConfirmationForTest,
@@ -276,19 +278,158 @@ describe('dispatchSend', () => {
     expect(await dispatchSend(sendOptions())).toBe(true);
     expect(pin).not.toHaveBeenCalled();
   });
-  it('does not dispatch when Stop cancelled the captured draft preparation', async () => {
-    const send = setBindingMock('SendMessageWithOptions', async () => makeThread());
-    let ready!: () => void;
-    const draftReady = new Promise<void>((resolve) => { ready = resolve; });
-    const opts = { ...sendOptions(), draftReady };
-    const pending = dispatchSend(opts);
-    const undo = getUndoableSend(opts.threadId)!;
-    undo.undoRequested = true;
-    ready();
-    expect(await pending).toBe(false);
-    expect(await undo.completion).toBe('cancelled');
-    expect(send).not.toHaveBeenCalled();
-    expect(opts.restoreDraft).not.toHaveBeenCalled();
-  });
 
+  // A Stop pressed before the send answers waits for the answer, then stops
+  // the turn: the message is sent, then interrupted, never cancelled.
+  describe('a Stop pressed while the send is unanswered', () => {
+    beforeEach(() => {
+      resetThreadInterruptStateForTest();
+      resetDirectSendsForTest();
+    });
+
+    function stopPane() {
+      return { threadId: 'thread-1', setGeneralError: vi.fn(), setSendInFlight: vi.fn() };
+    }
+
+    it('still sends a message whose draft was being prepared, then interrupts it', async () => {
+      const order: string[] = [];
+      setBindingMock('SendMessageWithOptions', async () => { order.push('send'); return makeThread(); });
+      setBindingMock('InterruptTurn', async () => { order.push('interrupt'); });
+      let ready!: () => void;
+      const draftReady = new Promise<void>((resolve) => { ready = resolve; });
+      const opts = { ...sendOptions(), draftReady };
+      const pending = dispatchSend(opts);
+
+      runInterrupt(stopPane());
+      await Promise.resolve();
+      expect(order).toEqual([]);
+      ready();
+      expect(await pending).toBe(true);
+      await vi.waitFor(() => expect(order).toEqual(['send', 'interrupt']));
+      expect(opts.restoreDraft).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(isThreadInterruptPending('thread-1')).toBe(false));
+    });
+
+    it('sends nothing for a draft whose preparation failed', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const send = setBindingMock('SendMessageWithOptions', vi.fn(async () => makeThread()));
+      const interrupt = setBindingMock('InterruptTurn', vi.fn(async () => {}));
+      let fail!: (err: unknown) => void;
+      const draftReady = new Promise<void>((_resolve, reject) => { fail = reject; });
+      const pane = stopPane();
+      const pending = dispatchSend({ ...sendOptions(), draftReady });
+
+      runInterrupt(pane);
+      fail(new Error('draft write failed'));
+      expect(await pending).toBe(false);
+      await Promise.resolve();
+      expect(send).not.toHaveBeenCalled();
+      expect(interrupt).not.toHaveBeenCalled();
+      expect(pane.setGeneralError).not.toHaveBeenCalled();
+      expect(isThreadInterruptPending('thread-1')).toBe(false);
+    });
+
+    it('does not interrupt for a turn that starts while the draft is being prepared', async () => {
+      const order: string[] = [];
+      setBindingMock('SendMessageWithOptions', async () => { order.push('send'); return makeThread(); });
+      setBindingMock('InterruptTurn', async () => { order.push('interrupt'); });
+      let ready!: () => void;
+      const draftReady = new Promise<void>((resolve) => { ready = resolve; });
+      const pending = dispatchSend({ ...sendOptions(), draftReady });
+
+      runInterrupt(stopPane());
+      projectTurnStarted('thread-1', 'unrelated', 0, 1);
+      await vi.waitFor(() => expect(isThreadInterruptPending('thread-1')).toBe(true));
+      await Promise.resolve();
+      expect(order).toEqual([]);
+      ready();
+      expect(await pending).toBe(true);
+      await vi.waitFor(() => expect(order).toEqual(['send', 'interrupt']));
+      await vi.waitFor(() => expect(isThreadInterruptPending('thread-1')).toBe(false));
+    });
+
+    it('interrupts once the send is accepted, without waiting for the pin that follows', async () => {
+      replaceAllThreads([makeThread({ isDraft: true })]);
+      setBindingMock('SendMessageWithOptions', async () => makeThread({ isDraft: false }));
+      let pinned!: (thread: Thread) => void;
+      setBindingMock('PinThread', () => new Promise<Thread>((resolve) => { pinned = resolve; }));
+      const interrupt = setBindingMock('InterruptTurn', vi.fn(async () => {}));
+      const pending = dispatchSend(sendOptions());
+
+      runInterrupt(stopPane());
+      await vi.waitFor(() => expect(interrupt).toHaveBeenCalledWith('thread-1', []));
+      pinned(makeThread({ isDraft: false, pinnedAt: 10, pinGroup: 0 }));
+      expect(await pending).toBe(true);
+    });
+
+    it('leaves a refused send to its own failure path and interrupts nothing', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const failure = new Error('provider is not signed in');
+      setBindingMock('SendMessageWithOptions', async () => { throw failure; });
+      const interrupt = setBindingMock('InterruptTurn', vi.fn(async () => {}));
+      const opts = sendOptions();
+      const pane = stopPane();
+      const pending = dispatchSend(opts);
+
+      runInterrupt(pane);
+      expect(await pending).toBe(false);
+      await Promise.resolve();
+      expect(opts.restoreDraft).toHaveBeenCalledWith('thread-1', opts.snapshot);
+      expect(opts.reportError).toHaveBeenCalledTimes(1);
+      expect(opts.reportError).toHaveBeenCalledWith('Failed to send message: Provider is not signed in.', failure);
+      expect(interrupt).not.toHaveBeenCalled();
+      expect(pane.setGeneralError).not.toHaveBeenCalled();
+      expect(isThreadInterruptPending('thread-1')).toBe(false);
+    });
+
+    it('waits for a lost reply even when a turn is running, then interrupts once', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const reply = deferredReply();
+      setBindingMock('SendMessageWithOptions', () => reply.promise);
+      const interrupt = setBindingMock('InterruptTurn', vi.fn(async () => {}));
+      const opts = sendOptions();
+      const pending = dispatchSend(opts);
+      await vi.waitFor(() => expect(getBindingMock('SendMessageWithOptions')).toHaveBeenCalled());
+      projectTurnStarted('thread-1', 'turn-1', 0, 1);
+
+      runInterrupt(stopPane());
+      await Promise.resolve();
+      expect(interrupt).not.toHaveBeenCalled();
+
+      reply.reject(new DisconnectedError('connection lost (close 1006)'));
+      await vi.waitFor(() => expect(interrupt).toHaveBeenCalledWith('thread-1', []));
+      // The send's own failure handling still asks about the message.
+      await vi.waitFor(() => expect(hasPendingUnsentMessageConfirmation()).toBe(true));
+      resolveUnsentMessageConfirmation(true);
+      expect(await pending).toBe(false);
+      expect(opts.restoreDraft).toHaveBeenCalled();
+      expect(interrupt).toHaveBeenCalledTimes(1);
+    });
+
+    it('attempts the interrupt when the reply times out and no turn has started', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const reply = deferredReply();
+      setBindingMock('SendMessageWithOptions', () => reply.promise);
+      const interrupt = setBindingMock('InterruptTurn', vi.fn(async () => {}));
+      const opts = sendOptions();
+      const pending = dispatchSend(opts);
+      await vi.waitFor(() => expect(getBindingMock('SendMessageWithOptions')).toHaveBeenCalled());
+
+      runInterrupt(stopPane());
+      await Promise.resolve();
+      expect(interrupt).not.toHaveBeenCalled();
+      reply.reject(new TransportError('timeout', 'RPC 7 timed out after 30000ms'));
+      expect(await pending).toBe(false);
+      await vi.waitFor(() => expect(interrupt).toHaveBeenCalledWith('thread-1', []));
+      // The send's own failure handling is unchanged.
+      expect(opts.restoreDraft).toHaveBeenCalled();
+      expect(opts.reportError).toHaveBeenCalledTimes(1);
+    });
+  });
 });
+
+function deferredReply() {
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<Thread>((_resolve, rej) => { reject = rej; });
+  return { promise, reject };
+}

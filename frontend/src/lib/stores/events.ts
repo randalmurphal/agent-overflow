@@ -15,7 +15,7 @@ import { installComputerHydration } from './computerHydration';
 //   - eventsProvider.ts      — approvals, usage, turn/session lifecycle
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit
 //   - eventsQueue.ts         — send-queue mirror (state/flushed/restored, sends pending)
-//   - eventsMessageRevert.ts — user-message revert (Stop/Esc un-send)
+//   - eventsMessageRevert.ts — user-message revert (edit-and-resend)
 //   - eventsDraftRows.ts     — composer-draft convergence across clients
 //   - eventsProjectRows.ts   — project row projections (sidebar list)
 //   - eventsTransportGap.ts  — missed-seq resync

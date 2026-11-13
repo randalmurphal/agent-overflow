@@ -10,7 +10,7 @@ import (
 // lifetime: the mid-handoff claim lives on the never-deleted threadIdentity,
 // not on threadState, so a session teardown sweeping the thread's state while
 // the dispatcher holds a batch must NOT make that batch invisible to
-// QueuedFlushItemCount (the revert-on-interrupt predicate reads it — C14-1).
+// QueuedFlushItemCount (the App's pending-work count reads it — C14-1).
 //
 // The T1 threadState split briefly moved the claim onto the deletable state
 // (Codex cross-review finding 1, 2026-08-25). Two behaviors regressed, both

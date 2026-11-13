@@ -506,11 +506,11 @@ describe('threadPaneScroll', () => {
         expect(pane.revealBoundary).toEqual({ turnIndex: 1, itemIndex: 0 });
         markStructuralContentPending.mockClear();
 
-        // Revert-on-interrupt truncates the tail: frontier AND withheld
+        // A conversation revert truncates the tail: frontier AND withheld
         // successor go in one call. The boundary drops, but nothing
         // mounts — the timeline SHRANK — so arming would open a phantom
         // spring window over the revert settle.
-        pane.removeItemsFromTurn(1, pane.threadId!);
+        pane.removeRevertedItems(1, []);
         expect(pane.revealBoundary).toBeNull();
         expect(markStructuralContentPending).not.toHaveBeenCalled();
       } finally {
@@ -998,9 +998,8 @@ describe('threadPaneScroll', () => {
         });
         expect(pane.lastLiveContentAt).toBe(0);
 
-        // Driving pane.upsertItems directly (the revertOnInterrupt rollback
-        // path) must NOT stamp — only the events.ts provider fan-out marks
-        // live content. This is what keeps rollback restores sync-pinned.
+        // Driving pane.upsertItems directly must NOT stamp: only the
+        // events.ts provider fan-out marks live content.
         pane.upsertItems([
           makeItem({
             id: 'new:1:0',

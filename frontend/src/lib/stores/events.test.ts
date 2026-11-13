@@ -3847,7 +3847,7 @@ describe('setupEventListeners', () => {
     expect(pane.items).toHaveLength(1);
 
     // NaN slips past `typeof === 'number'` in JS, so
-    // removeItemsFromTurn's own Number.isFinite guard is the second
+    // removeRevertedItems' own Number.isFinite guard is the second
     // line of defense.
     emitWailsEvent('user_message:reverted', {
       threadId: 'thread-a',

@@ -15,9 +15,9 @@ function revertFailure(): TransportError {
   return new TransportError('method_error', 'failed', {
     detail: {
       ref: 'rKVz',
-      method: 'InterruptAndRevertIfClean',
+      method: 'RevertConversationAndResendMessage',
       at: 1,
-      chain: ['interrupt-and-revert: claude rollback: uuid missing', 'claude rollback: uuid missing', 'uuid missing'],
+      chain: ['revert and resend: claude rollback: uuid missing', 'claude rollback: uuid missing', 'uuid missing'],
     },
   });
 }
@@ -42,13 +42,13 @@ describe('<Toast> error reports', () => {
 
   it('expands the error chain and stays up while expanded', async () => {
     vi.useFakeTimers();
-    addErrorToast('Could not undo the message', revertFailure(), 1000);
+    addErrorToast('Could not resend the edited message', revertFailure(), 1000);
     const { getByTestId, queryByTestId, getByLabelText } = render(Toast);
     expect(queryByTestId('error-details')).toBeNull();
 
     await fireEvent.click(getByTestId('error-details-toggle'));
     const details = getByTestId('error-details');
-    expect(details.textContent).toContain('InterruptAndRevertIfClean');
+    expect(details.textContent).toContain('RevertConversationAndResendMessage');
     expect(details.textContent).toContain('ref rKVz');
     expect(details.querySelectorAll('li')).toHaveLength(3);
     expect(getByLabelText('Hide details').getAttribute('aria-expanded')).toBe('true');
@@ -90,14 +90,14 @@ describe('<Toast> error reports', () => {
   });
 
   it('copies the report with the backend log for an agent', async () => {
-    addErrorToast('Could not undo the message', revertFailure());
+    addErrorToast('Could not resend the edited message', revertFailure());
     const { getByLabelText } = render(Toast);
     // The log is read at capture, before the copy click.
     await waitFor(() => expect(getToasts()[0].captured?.backendLog).toBeDefined());
     await fireEvent.click(getByLabelText('Copy error for an agent'));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const text = writeText.mock.calls[0][0];
-    expect(text).toContain('Agent Overflow error: Could not undo the message');
+    expect(text).toContain('Agent Overflow error: Could not resend the edited message');
     expect(text).toContain('- ref: rKVz');
     expect(text).toContain('3. uuid missing');
     expect(text).toContain('transport: failed (id: rKVz)');

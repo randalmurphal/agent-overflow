@@ -456,7 +456,12 @@ else is the escape hatch.
   the composer to render, *then* send `\r`. Key off observed composer render,
   not a blind sleep.
 - **Interrupt:** send `Esc` (not `Ctrl-C`, which kills the process). Confirm the
-  fingerprint per the interrupt section.
+  fingerprint per the interrupt section. An Esc that lands before any reply makes
+  the TUI drop the just-sent prompt from the model's context and put it back in
+  its own composer, while AO's transcript keeps the message. After such a stop
+  (the open turn held only the user's message plus thinking, API retry or error
+  rows) the thread gets a warning notice that the agent likely did not keep the
+  message (`app_claudetui_stop_notice.go`).
 
 ## Attach & take-control
 

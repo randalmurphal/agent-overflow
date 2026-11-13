@@ -8,7 +8,6 @@
 // load, turns, reveal smoothing/sequencing, scroll, errors, companions —
 // named after the module it covers.
 
-import { beginThreadInterrupt, presentThreadInterruptAsRestored, finishThreadInterrupt } from './threadInterruptState.svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { createThreadPane } from './thread.svelte';
@@ -81,15 +80,12 @@ describe('createThreadPane', () => {
     expect(getActiveTurn(threadId)).toBeNull();
   });
 
-  it('clears canonical activity during optimistic un-send recovery', async () => {
-    const pane = await buildPane(makeThread({ id: 'undo-recovery' }));
+  it('clears a stale active turn when strict recovery finds none', async () => {
+    const pane = await buildPane(makeThread({ id: 'stale-recovery' }));
     const id = pane.threadId!;
     projectTurnStarted(id, 'old-turn', 3, 100);
-    const token = beginThreadInterrupt(id)!;
-    presentThreadInterruptAsRestored(id, token, 3);
     setBindingMock('GetThreadLiveState', async () => ({ threadId: id, activeTurn: null }));
     await pane.refreshFromBackend(true);
-    finishThreadInterrupt(id, token);
     expect(getActiveTurn(id)).toBeNull();
     expect(getThreadStatus(id)).toBe('idle');
   });

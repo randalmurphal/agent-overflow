@@ -431,21 +431,18 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// its streaming items already settled. Registered after the other
 	// defers so it runs before them, and in particular before the queue
 	// boundary flush can start the next turn.
-	// The revert marker belongs to the round claimed here and is taken with
-	// it, before clearOpenTurn below drops any marker still pending.
 	//
 	// A failed turn-index or payload read still ends the round it took:
 	// the event carries the round's own index, and nothing else would
 	// ever tell a client the round is over.
 	round, hasRound := r.takeOpenRound(evt.ThreadID)
 	if hasRound {
-		reverted := r.consumeRevertedTurn(evt.ThreadID)
 		emitIndex := turnIndex
 		if err != nil {
 			emitIndex = round.TurnIndex
 		}
 		defer func() {
-			r.emit(eventchan.ProviderTurnCompleted, r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta, reverted))
+			r.emit(eventchan.ProviderTurnCompleted, r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta))
 		}()
 	}
 
@@ -850,8 +847,7 @@ func turnCountsAsThreadActivity(evt provider.ProviderEvent) bool {
 //
 // Pure projection — does not write the `turns` row. settleTurnRow
 // owns the UPDATE and runs once per logical turn under the
-// claimTurnSettlement gate. reverted is the revert marker taken when the
-// round was claimed.
+// claimTurnSettlement gate.
 //
 // No persistErr parameter: the payload reports what the provider said
 // about the round. A persistence failure in handleTurnComplete surfaces
@@ -863,7 +859,6 @@ func (r *Router) buildRoundCompletedEvent(
 	turnIndex int,
 	now int64,
 	meta turnCompleteMeta,
-	reverted bool,
 ) TurnCompletedEvent {
 	fields := decodeTurnCompleteFields(evt, r.persistedTurnID(evt, turnIndex), meta, nil)
 	startedAt := now
@@ -880,20 +875,19 @@ func (r *Router) buildRoundCompletedEvent(
 		log.Printf("triage: read history stamp for %s: %v", evt.ThreadID, err)
 	}
 	return TurnCompletedEvent{
-		ThreadID:            evt.ThreadID,
-		TurnID:              roundID,
-		TurnIndex:           turnIndex,
-		StartedAt:           startedAt,
-		CompletedAt:         now,
-		StopReason:          fields.stopReason,
-		AssistantMessageID:  fields.assistantMessageID,
-		TokenUsage:          meta.Usage,
-		ErrorMessage:        fields.errorMessage,
-		Aborted:             meta.Aborted || meta.Truncated,
-		RevertedUserMessage: reverted,
-		CountsAsActivity:    turnCountsAsThreadActivity(evt),
-		HistoryRev:          stamp.Rev,
-		HistoryEpoch:        stamp.Epoch,
+		ThreadID:           evt.ThreadID,
+		TurnID:             roundID,
+		TurnIndex:          turnIndex,
+		StartedAt:          startedAt,
+		CompletedAt:        now,
+		StopReason:         fields.stopReason,
+		AssistantMessageID: fields.assistantMessageID,
+		TokenUsage:         meta.Usage,
+		ErrorMessage:       fields.errorMessage,
+		Aborted:            meta.Aborted || meta.Truncated,
+		CountsAsActivity:   turnCountsAsThreadActivity(evt),
+		HistoryRev:         stamp.Rev,
+		HistoryEpoch:       stamp.Epoch,
 	}
 }
 
@@ -1577,12 +1571,6 @@ func (r *Router) clearOpenTurn(threadID string, agentScopes map[string]bool) {
 	// already or the turn closed without forward progress; either way
 	// the next turn starts with a clean flag.
 	st.openAPIRetryRow = false
-	// revertedTurn is normally read-and-cleared when handleTurnComplete
-	// claims the round. Defensive sweep here covers the case
-	// where MarkTurnReverted was set but no turn-completed actually
-	// fires (rare — e.g. the thread had no open turn so no
-	// synthesizeTruncatedTurnComplete ran).
-	st.revertedTurn = false
 	r.mu.Unlock()
 }
 
@@ -2059,7 +2047,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 			TurnComplete: &provider.TruncatedTurnCompleteMeta{Synthetic: true},
 			Timestamp:    time.UnixMilli(cleanupAt),
 		}
-		completed := r.buildRoundCompletedEvent(synth, strandedRound.TurnID, strandedRound.TurnIndex, cleanupAt, turnCompleteMeta{Truncated: true}, false)
+		completed := r.buildRoundCompletedEvent(synth, strandedRound.TurnID, strandedRound.TurnIndex, cleanupAt, turnCompleteMeta{Truncated: true})
 		// No turns row settles for this round, so it must not move the
 		// read clock a client derives unread from.
 		completed.CountsAsActivity = false

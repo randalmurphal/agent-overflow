@@ -40,7 +40,7 @@ import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
 import { closeFocusedBrowserTab, isReplayingBrowserPageChord } from './browserCompanion.svelte';
 import type { PaneLayoutItem } from './paneLayout.svelte';
-import { focusPaneComposer, focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
+import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
 import {
@@ -71,8 +71,7 @@ import {
 } from './bindings';
 import { cycleMode } from '../utils/modeCycle';
 import { isScratchThreadMode } from '../utils/threadModes';
-import { runInterrupt, runInterruptOrRevert } from './revertOnInterrupt.svelte';
-import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
+import { reportNonBenignInterruptError, runInterrupt } from './threadInterrupt.svelte';
 import { getSettings, updateSetting } from './settings.svelte';
 import { openReviewCompanion, reviewSubjectForPane } from './reviewPane.svelte';
 import { requestThreadActionConfirmation } from './threadActionConfirmations.svelte';
@@ -92,7 +91,6 @@ import {
 } from './composerPickerRegistry.svelte';
 import { toggleComposerDictation } from './dictation.svelte';
 import { toggleReadAloud } from './readAloud.svelte';
-import { reportNonBenignInterruptError } from './interruptErrors';
 import { PICKER_TOGGLE_INPUT_EVENT, type GitDialogKind } from './eventNames';
 import { startPaneTitleRename } from './paneTitleRename';
 import { registerWorkflowCommands } from './workflowCommands.svelte';
@@ -514,30 +512,16 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           decision: 'decline',
           answers: {},
         })).catch((err) => reportNonBenignInterruptError(pane, err));
-        // Approval / user-input cancels are mid-turn responses, not the
-        // "stop before the agent answered" affordance — a plain interrupt
-        // rather than the revert path. It owns the optimistic clear and
-        // asks first when a background agent would die with the turn.
-        runInterrupt(pane);
       } else if (approval) {
         pane.removeApproval(approval.requestId);
         void RespondToApproval(threadID, new ApprovalResponse({
           requestId: approval.requestId,
           decision: 'cancel',
         })).catch((err) => reportNonBenignInterruptError(pane, err));
-        runInterrupt(pane);
-      } else {
-        const draft = getComposerDraftForPane(pane.paneId);
-        const restored = runInterruptOrRevert(pane, draft ?? {
-          content: '',
-          attachments: [],
-          terminalChips: [],
-        });
-        if (restored) {
-          pane.setSendInFlight(false);
-          queueMicrotask(() => { if (pane.threadId === threadID) focusPaneComposer(pane.paneId); });
-        }
       }
+      // The Stop owns the optimistic clear and asks first when a
+      // background agent would die with the turn.
+      runInterrupt(pane);
     },
   });
 

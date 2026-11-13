@@ -22,7 +22,7 @@ import type { LiveStateHydrationGuard } from './threadPaneShared';
 import { cursorFromItem } from './threadItems';
 import {
   finishThreadLiveStateHydration,
-  getCanonicalActiveTurn as getActiveTurn,
+  getActiveTurn,
   isThreadLiveStateHydrationCurrent,
   projectTurnCompleted,
   projectTurnStarted,

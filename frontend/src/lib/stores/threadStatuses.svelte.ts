@@ -1,5 +1,3 @@
-import { getUndoableSend, retireUndoableSend, resetUndoableSendsForTest } from './composerSendUndo';
-import { isThreadInterruptRestored } from './threadInterruptState.svelte';
 import type { ApprovalKind } from '../types/events';
 import type { Thread } from '../types/models';
 import { resolveEffectiveThreadStatus } from '../utils/threadStatusPill';
@@ -238,7 +236,6 @@ function recalculateThreadStatus(threadId: string): void {
  * to render no dot, so callers don't need to special-case undefined.
  */
 export function getThreadStatus(threadId: string): ThreadLiveStatus {
-  if (isThreadInterruptRestored(threadId)) return 'idle';
   const stored = statuses.get(threadId);
   if ((approvalIDsByThread.get(threadId)?.size ?? 0) > 0 || stored === 'pending-approval') {
     return 'pending-approval';
@@ -322,7 +319,6 @@ export function clearThreadStatus(threadId: string): void {
   activeTurns.drop(threadId);
   completedTurnIDsByThread.delete(threadId);
   refusableStops.delete(threadId);
-  retireUndoableSend(threadId);
   pendingSendThreads.drop(threadId);
   sendsPendingThreads.drop(threadId);
   sendsPendingAhead.delete(threadId);
@@ -400,12 +396,11 @@ export function projectSendResolved(threadId: string, opts: { error?: boolean } 
  */
 export function hasPendingSend(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
-  return !isThreadInterruptRestored(threadId) && pendingSendThreads.get(threadId);
+  return pendingSendThreads.get(threadId);
 }
 
 export function isThreadWorking(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
-  if (isThreadInterruptRestored(threadId)) return false;
   return activeTurns.get(threadId) !== null
     || pendingSendThreads.get(threadId)
     || hasQueueItems(threadId);
@@ -421,7 +416,6 @@ export function isThreadWorking(threadId: string | null | undefined): boolean {
  * answer carries the backend's.
  */
 function showsThreadRunning(threadId: string): boolean {
-  if (isThreadInterruptRestored(threadId)) return false;
   if (activeTurns.get(threadId) !== null || pendingSendThreads.get(threadId)) return true;
   const hello = getTransportHelloFor(threadBackend(threadId) ?? HOME_BACKEND);
   if (!hello?.capabilities.includes('sends-pending.v1')) return hasQueueItems(threadId);
@@ -541,7 +535,7 @@ onThreadOwnershipChanged((threadId, previousBackend) => {
 });
 
 export function isSendInFlight(threadId: string | null | undefined, paneSendInFlight: boolean): boolean {
-  return !isThreadInterruptRestored(threadId) && (paneSendInFlight || hasPendingSend(threadId));
+  return paneSendInFlight || hasPendingSend(threadId);
 }
 
 /**
@@ -668,7 +662,7 @@ export function projectTurnStarted(
 export function projectTurnCompleted(
   threadId: string,
   turnId: string,
-  opts: { turnIndex?: number; aborted?: boolean; errorMessage?: string; revertedUserMessage?: boolean } = {},
+  opts: { aborted?: boolean; errorMessage?: string } = {},
 ): void {
   if (!threadId || !turnId) return;
   // A Stop whose interrupt RPC is unanswered marked the thread interrupted
@@ -676,9 +670,7 @@ export function projectTurnCompleted(
   const unansweredStop = refusableStops.get(threadId);
   refusableStops.delete(threadId);
   markCompletedTurnID(threadId, turnId);
-  if (opts.turnIndex !== undefined && getUndoableSend(threadId)?.turnIndex === opts.turnIndex) retireUndoableSend(threadId);
   if (activeTurns.get(threadId)?.turnId === turnId) {
-    retireUndoableSend(threadId);
     activeTurns.set(threadId, null);
     cancelBackgroundKillConfirmationForThread(threadId);
   }
@@ -686,17 +678,8 @@ export function projectTurnCompleted(
     errorThreads.add(threadId);
     interruptedThreads.delete(threadId);
   } else if (opts.aborted) {
-    // Suppress the Interrupted pill when the turn ended via revert-on-
-    // interrupt. The user message was undone and put back into the
-    // composer; nothing happened, so the sidebar must not paint a
-    // "user interrupted" status on this thread.
-    if (opts.revertedUserMessage) {
-      interruptedThreads.delete(threadId);
-      errorThreads.delete(threadId);
-    } else {
-      interruptedThreads.add(threadId);
-      errorThreads.delete(threadId);
-    }
+    interruptedThreads.add(threadId);
+    errorThreads.delete(threadId);
   } else if (unansweredStop?.turnId === turnId) {
     // The turn ended on its own before the Stop could take effect.
     interruptedThreads.delete(threadId);
@@ -739,12 +722,26 @@ export function settleTurnStopRequest(threadId: string, stopped: ActiveTurn | nu
 }
 
 /**
+ * The Stop's interrupt was delivered. With no turn open, a send still read
+ * as pending was stopped before its turn began and may never start one (the
+ * Claude terminal UI discards a prompt stopped before its first request), so
+ * the thread reads interrupted instead of running. A turn that starts anyway
+ * is projected by its own events.
+ */
+export function projectStopDelivered(threadId: string): void {
+  if (activeTurns.get(threadId) !== null || !pendingSendThreads.get(threadId)) return;
+  pendingSendThreads.set(threadId, false);
+  interruptedThreads.add(threadId);
+  errorThreads.delete(threadId);
+  recalculateThreadStatus(threadId);
+}
+
+/**
  * Settle every live-status signal for a thread after a successful
  * revert (`user_message:reverted`). A revert
  * means "that send never happened": the backend stopped or rolled the
- * provider session, truncated SQLite, and put the message back in the
- * composer — so nothing on this thread is working, queued, or awaiting
- * a turn signal anymore.
+ * provider session and truncated SQLite, so nothing on this thread is
+ * working, queued, or awaiting a turn signal anymore.
  *
  * This is the structural fix for the resend-after-revert race: the
  * revert can land while `provider:turn_completed` for the aborted turn
@@ -821,11 +818,6 @@ function hasCompletedTurnID(threadId: string, turnId: string): boolean {
   return completedTurnIDsByThread.get(threadId)?.has(turnId) === true;
 }
 
-/** Execution reconciliation must read through the temporary presentation overlay. */
-export function getCanonicalActiveTurn(threadId: string | null | undefined): ActiveTurn | null {
-  return threadId ? activeTurns.get(threadId) : null;
-}
-
 /**
  * Read the live in-flight turn for a thread. Returns null when no
  * turn is active or the thread id is empty/null/undefined. The
@@ -837,7 +829,7 @@ export function getCanonicalActiveTurn(threadId: string | null | undefined): Act
  */
 export function getActiveTurn(threadId: string | null | undefined): ActiveTurn | null {
   if (!threadId) return null;
-  return isThreadInterruptRestored(threadId) ? null : activeTurns.get(threadId);
+  return activeTurns.get(threadId);
 }
 
 /**
@@ -971,7 +963,6 @@ export function projectThreadViewed(threadId: string): void {
  * send queue because `isThreadWorking` reads that bridge state.
  */
 export function resetForTest(): void {
-  resetUndoableSendsForTest();
   activeTurns.reset();
   completedTurnIDsByThread.clear();
   refusableStops.clear();

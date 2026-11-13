@@ -84,8 +84,8 @@ func TestCodexThreadRevertCutsInPlace(t *testing.T) {
 	p.closeStdinAndExpectExit(0, testTimeout)
 }
 
-// TestCodexThreadRevertOwnsActiveTurnShutdown pins the live Esc-un-send wire
-// order. The active turn's terminal notification precedes the revert response,
+// TestCodexThreadRevertOwnsActiveTurnShutdown pins the wire order of a
+// thread/revert that reaches an active turn. The active turn's terminal notification precedes the revert response,
 // and the skipped scenario tail never runs.
 func TestCodexThreadRevertOwnsActiveTurnShutdown(t *testing.T) {
 	sc := &scenario.Scenario{
