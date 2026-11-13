@@ -355,15 +355,21 @@ test('a pane, a thread row and a tool held over a pane are over the shield, and 
     const from = await center(source);
     await page.mouse.move(from.x, from.y);
     await page.mouse.down();
-    await page.mouse.move(x, y, { steps: 12 });
-    // Chromium delivers no dragover for some synthetic moves (hoverUntilSlot).
+    // The shield comes up on the drag's first dragover over the strip. A
+    // real drag delivers one as it crosses in; Chromium delivers none for
+    // some synthetic moves (hoverUntilSlot), and a drag resting at the edge
+    // with no shield yet is scrolled. So bring the shield up mid-pane, away
+    // from every edge, and go to the edge over it.
+    const midY = at.y + at.height / 2;
+    await page.mouse.move(x, midY, { steps: 12 });
     let nudge = 1;
     await expect(async () => {
       nudge = -nudge;
-      await page.mouse.move(x + nudge, y);
+      await page.mouse.move(x + nudge, midY);
       await expect(shield, what).toBeVisible({ timeout: 250 });
     }).toPass();
     await shield.evaluate((el) => { el.dataset.held = 'yes'; });
+    await page.mouse.move(x, y, { steps: 6 });
     // An uncovered timeline scrolls within the first half second of such a
     // hold; nothing moving is only shown by waiting it out.
     for (let step = 0; step < 30; step += 1) {
