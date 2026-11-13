@@ -571,6 +571,11 @@ export {
   SetPRUpdatesActive,
   SetPRCILogFollows,
   RefreshPRCI,
+  // The CI actions on a subscribed PR's or pipeline's CI (stores/ciActions.svelte.ts),
+  // and the artifacts download beside the CI log save.
+  RunPRCIAction,
+  RunPipelineAction,
+  SaveCIArtifacts,
   // The Pull requests page (docs/specs/pull-requests.md): the forge
   // projects, the list pump, what the user saw of each PR, opening a
   // thread on a PR's head, the drafts a PR owns, and the Pipelines tab's

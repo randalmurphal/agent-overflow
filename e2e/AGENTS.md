@@ -30,8 +30,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
 - `forge-helpers.ts` seeds the fake `gh`/`glab` and forge API
   (`HarnessForgeSeed`), arms a route's refusal (`HarnessForgeRefuse`),
   publishes a seeded workspace's branch as a PR
-  through a local origin, reads the recorded calls (a union on `via`: `cli`
-  or `http`) and opens a PR's review pane through the UI. A forge call the
+  through a local origin, moves a CI job on as its runner would
+  (`advanceForgeJob`), reads the recorded calls (a union on `via`: `cli`
+  or `http`) and opens a PR's review pane and a CI job's log through the UI. A forge call the
   fake does not answer is added to the fake first:
   [forgefake/AGENTS.md](../internal/harness/forgefake/AGENTS.md).
 - `rigs/` contains manual performance tools outside release gates. Follow

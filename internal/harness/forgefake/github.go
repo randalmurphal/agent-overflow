@@ -45,8 +45,11 @@ func ghRunJobs(e *Engine, c *call, m []string) response {
 	if pipeline == nil {
 		return ghHTTPNotFound()
 	}
+	// The list answers the run's latest attempt: a job a re-run replaced
+	// is left out.
 	jobs := make([]map[string]any, 0, len(pipeline.Jobs))
-	for _, job := range pipeline.Jobs {
+	for _, current := range pipeline.current() {
+		job := *current
 		status, conclusion := githubRESTState(job.Status)
 		steps := make([]map[string]any, 0, len(job.Steps))
 		for _, step := range job.Steps {

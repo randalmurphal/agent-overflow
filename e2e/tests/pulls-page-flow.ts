@@ -50,9 +50,11 @@ export interface PullsSurface {
 
 const VIEWER = 'ao-viewer';
 const SHA = (seed: string): string => seed.repeat(40).slice(0, 40);
-const PIPELINE_JOBS = (status: 'success' | 'failed' | 'running') => [
-  { id: 1, name: 'build', stage: 'build', status: 'success' as const, log: 'built\n' },
-  { id: 2, name: 'unit', stage: 'test', status, log: 'unit tests ran\nall green\n' },
+// Job ids are unique in a repository, as both forges number them: a CI
+// action names its job by id alone.
+const PIPELINE_JOBS = (pipeline: number, status: 'success' | 'failed' | 'running') => [
+  { id: pipeline * 10 + 1, name: 'build', stage: 'build', status: 'success' as const, log: 'built\n' },
+  { id: pipeline * 10 + 2, name: 'unit', stage: 'test', status, log: 'unit tests ran\nall green\n' },
 ];
 
 function gitlabRepo(): ForgeRepo {
@@ -67,16 +69,16 @@ function gitlabRepo(): ForgeRepo {
         number: 101, title: 'Queue: retry a failed delivery once', author: 'sabossedgh', authorName: 'Sawmon Abossedgh',
         reviewers: [VIEWER], readiness: { requiredApprovals: 1 },
         comments: [{ author: 'alice', authorName: 'Alice Ng', body: 'One question on the backoff.', createdAt: '2026-10-18T15:00:00Z' }],
-        ci: { id: 45_101, jobs: PIPELINE_JOBS('running') },
+        ci: { id: 45_101, jobs: PIPELINE_JOBS(45_101, 'running') },
         updatedAt: '2026-10-19T12:00:00Z',
       },
       { number: 102, title: 'Draft: speed up builds', draft: true, author: VIEWER, headRef: 'builds', headSha: SHA('2'), updatedAt: '2026-10-18T12:00:00Z' },
-      { number: 103, title: 'Tenable rules: crash on empty filter', author: VIEWER, headRef: 'tenable', headSha: SHA('3'), ci: { id: 45_103, jobs: PIPELINE_JOBS('failed') }, updatedAt: '2026-10-17T12:00:00Z' },
+      { number: 103, title: 'Tenable rules: crash on empty filter', author: VIEWER, headRef: 'tenable', headSha: SHA('3'), ci: { id: 45_103, jobs: PIPELINE_JOBS(45_103, 'failed') }, updatedAt: '2026-10-17T12:00:00Z' },
       { number: 104, title: 'Postern: retry budget for webhooks', author: 'alice', authorName: 'Alice Ng', headRef: 'postern', headSha: SHA('4'), updatedAt: '2026-10-16T12:00:00Z' },
     ],
     pipelines: [
-      { id: 9_001, refKind: 'branch', ref: 'main', sha: SHA('a'), status: 'success', title: 'Merge !100', jobs: PIPELINE_JOBS('success') },
-      { id: 9_002, refKind: 'tag', ref: 'v3.9.2', sha: SHA('b'), status: 'failed', title: 'release', jobs: PIPELINE_JOBS('failed') },
+      { id: 9_001, refKind: 'branch', ref: 'main', sha: SHA('a'), status: 'success', title: 'Merge !100', jobs: PIPELINE_JOBS(9_001, 'success') },
+      { id: 9_002, refKind: 'tag', ref: 'v3.9.2', sha: SHA('b'), status: 'failed', title: 'release', jobs: PIPELINE_JOBS(9_002, 'failed') },
       // An external pipeline holds one commit status and no job.
       { id: 9_003, refKind: 'branch', ref: 'review', sha: SHA('f'), source: 'external', status: 'success', jobs: [{ name: 'CodeRabbit', kind: 'external', status: 'success' }] },
     ],
@@ -94,13 +96,13 @@ function githubRepo(): ForgeRepo {
         number: 201, title: 'Rework the review pane header', author: VIEWER,
         readiness: { requiredApprovals: 1 },
         reviews: [{ author: 'rmurphy', authorName: 'Randy Murphy', state: 'APPROVED', submittedAt: '2026-10-19T09:00:00Z' }],
-        ci: { id: 46_201, jobs: PIPELINE_JOBS('success') },
+        ci: { id: 46_201, jobs: PIPELINE_JOBS(46_201, 'success') },
         updatedAt: '2026-10-19T10:00:00Z',
       },
       { number: 202, title: 'Trim transcript retention', author: 'bob', authorName: 'Bob Lee', reviewers: [VIEWER], headRef: 'retention', headSha: SHA('5'), updatedAt: '2026-10-18T10:00:00Z' },
     ],
     pipelines: [
-      { id: 7_001, name: 'CI', refKind: 'branch', ref: 'main', sha: SHA('c'), status: 'running', title: 'CI', jobs: PIPELINE_JOBS('running') },
+      { id: 7_001, name: 'CI', refKind: 'branch', ref: 'main', sha: SHA('c'), status: 'running', title: 'CI', jobs: PIPELINE_JOBS(7_001, 'running') },
     ],
   };
 }

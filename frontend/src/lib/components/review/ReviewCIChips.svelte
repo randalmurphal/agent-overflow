@@ -3,6 +3,9 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
   import Popover from '../primitives/Popover.svelte';
+  import ReviewCIJobActions from './ReviewCIJobActions.svelte';
+  import ReviewCIPipelineMenu from './ReviewCIPipelineMenu.svelte';
+  import type { CIActionsView } from '../../stores/ciSubjectActions.svelte';
   import { OpenExternalURL } from '../../stores/bindings';
   import type { CIJob, CIPipeline } from '../../types/models';
   import { ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
@@ -15,7 +18,9 @@
   // job with a fetchable log opens the log view (external checks link
   // out instead). The refresh control is the line's last item so it
   // wraps WITH the chips on a narrow pane instead of sitting on a row
-  // of its own.
+  // of its own. With `actions`, the pipeline's actions sit in one menu
+  // before the refresh, and a job row's actions are revealed on hover
+  // (always shown on compact, and while one of them is pending).
 
   interface Props {
     pipeline: CIPipeline | null;
@@ -30,6 +35,8 @@
     onRefresh?: () => void;
     /** A manual refresh is in flight; the chips stay. */
     refreshing?: boolean;
+    /** The pipeline's and its jobs' actions; absent offers none. */
+    actions?: CIActionsView;
   }
 
   let {
@@ -41,6 +48,7 @@
     onOpenJob,
     onRefresh,
     refreshing = false,
+    actions,
   }: Props = $props();
 
   let openStageIndex: number | null = $state(null);
@@ -134,6 +142,9 @@
   {:else}
     <span class="text-fg-subtle">No checks</span>
   {/if}
+  {#if actions && stages.length > 0}
+    <ReviewCIPipelineMenu {actions} />
+  {/if}
   {#if onRefresh}
     <button
       type="button"
@@ -180,21 +191,33 @@
             </span>
           {/if}
         {/snippet}
-        {#if action.kind === 'none'}
-          <div class="flex w-full items-center gap-2 px-3 py-1.5 text-left" data-testid="review-ci-job" data-action="none">
-            {@render jobLine()}
-          </div>
-        {:else}
-          <button
-            type="button"
-            class="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-2/60"
-            data-testid="review-ci-job"
-            data-action={action.kind}
-            onclick={() => pickJob(stageName, job, action)}
-          >
-            {@render jobLine()}
-          </button>
-        {/if}
+        {@const jobPending = !!actions && actions.pending?.jobId === (job.id ?? null) && !!job.id}
+        <div class="group flex w-full items-center hover:bg-surface-2/60">
+          {#if action.kind === 'none'}
+            <div class="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 pr-2 text-left" data-testid="review-ci-job" data-action="none">
+              {@render jobLine()}
+            </div>
+          {:else}
+            <button
+              type="button"
+              class="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 pr-2 text-left"
+              data-testid="review-ci-job"
+              data-action={action.kind}
+              onclick={() => pickJob(stageName, job, action)}
+            >
+              {@render jobLine()}
+            </button>
+          {/if}
+          {#if actions && job.id}
+            <span
+              class="flex shrink-0 items-center pr-1 group-hover:opacity-100 group-focus-within:opacity-100 compact:opacity-100 {jobPending ? 'opacity-100' : 'opacity-0'}"
+              data-testid="review-ci-job-actions"
+              data-job={job.name}
+            >
+              <ReviewCIJobActions {actions} {job} testPrefix="review-ci-job" />
+            </span>
+          {/if}
+        </div>
       {/each}
     </div>
   {/if}

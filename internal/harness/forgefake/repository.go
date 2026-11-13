@@ -23,7 +23,17 @@ func forgeRepositoryIdentity(e *Engine, c *call, match []string) response {
 		}
 		return glabNotFound("Project")
 	}
-	return jsonResponse(map[string]any{"id": r.ID, "full_name": r.Project, "path_with_namespace": r.Project})
+	out := map[string]any{"id": r.ID, "full_name": r.Project, "path_with_namespace": r.Project}
+	if forge == "github" {
+		// The viewer's permissions, as GitHub answers them to a signed-in
+		// user (the CI actions' permission on a single pipeline).
+		role := githubRoles[r.Merge.Permission]
+		out["permissions"] = map[string]any{
+			"admin": role >= githubRoles["ADMIN"], "maintain": role >= githubRoles["MAINTAIN"],
+			"push": role >= githubRoles["WRITE"], "triage": role >= githubRoles["TRIAGE"], "pull": role >= githubRoles["READ"],
+		}
+	}
+	return jsonResponse(out)
 }
 
 var fixtureSSHHost = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)

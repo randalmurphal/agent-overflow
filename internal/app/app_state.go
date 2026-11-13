@@ -133,6 +133,9 @@ type appPRUpdateState struct {
 	pipelines       map[string]*pipelinePump
 	pipelineHandles map[string]*pipelineHandle
 	pipelineFetchFn func(ctx context.Context, repo gitops.RepoReference, id string, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error)
+	// ciActions holds the pipelines a CI action is running on, by
+	// ciActionKey (app_ci_actions.go): one at a time per pipeline.
+	ciActions map[string]bool
 
 	// list is this backend's PR list pump (app_pr_list.go), nil while no
 	// page subscribes, and listHandles its subscribers. The list fetch

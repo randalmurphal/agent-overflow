@@ -4,8 +4,13 @@
 export {
     ApprovalCount,
     AutoMergeRequest,
+    CIAction,
+    CIActionKind,
+    CIArtifactsRequest,
     CIJob,
+    CIJobActions,
     CIPipeline,
+    CIPipelineActions,
     CIStage,
     CIStep,
     CheckStatus,

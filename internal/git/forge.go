@@ -91,6 +91,9 @@ type Forge interface {
 	// The merge actions: approvals, merging, auto-merge, branch updates
 	// (forge_merge.go).
 	ForgeMerger
+	// The CI actions: retry, cancel, run a manual job, artifacts
+	// (ci_actions.go).
+	ForgeCIActor
 }
 
 // PRReadParts names the parts of a PR one ReadPR decodes. Events are the

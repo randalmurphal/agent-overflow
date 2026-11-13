@@ -16,9 +16,9 @@ seeds. The CLI path is:
 3. `Engine.Handle` routes the call, answers from the seeded fixture and
    records it. `internal/harnessrpc` exposes `HarnessForgeSeed`,
    `HarnessForgeInvocations`, `HarnessForgeOffline`,
-   `HarnessForgeRateLimit`, `HarnessForgeRefuse` and the `harness:forge`
-   event. `HarnessReset` clears the fixture, the log, the offline state,
-   the rate limits and the refusals.
+   `HarnessForgeRateLimit`, `HarnessForgeRefuse`, `HarnessForgeAdvanceJob`
+   and the `harness:forge` event. `HarnessReset` clears the fixture, the
+   log, the offline state, the rate limits and the refusals.
 
 The HTTP path: `harnessrpc.StartForgeAPI` serves `Engine.ServeHTTP` on its
 own loopback listener and hands its base URL and fixed token to the boot
@@ -128,12 +128,12 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 
 | Forge | Invocation (route) | App caller |
 |---|---|---|
-| GitHub | `GET repos/O/R` (`gh repository identity`) | repository identity |
+| GitHub | `GET repos/O/R` (`gh repository identity`) | repository identity; ReadPipeline's CI permission (`permissions` from the repository's `merge.permission`) |
 | GitLab | `GET projects/P` (`glab repository identity`, conditional) | repository identity; the merge settings and the viewer's access the Merge section reads |
 | ssh | `-G -o CanonicalizeHostname=no -o PermitLocalCommand=no [-l U] H` | local SSH host resolution, from fixture `sshHosts` |
 | GitHub | `gh pr create --title T --body B [--base B] [--draft]` | GitCreatePR |
 | GitLab | `glab mr create --title T --description D --yes --no-editor [--target-branch B] [--draft]` | GitCreatePR |
-| GitHub | GraphQL `PRTick(owner, name, number, wantDetail, wantThreads, wantEvents, wantChecks)` (`gh graphql PRTick`) | ReadPR: detail and viewer with the repository's merge settings and the merge box (readiness, opinions, thread states, base protection, auto-merge), threads and comments, the newest 100 timeline items, head commit rollup (CI, each check's `isRequired`) |
+| GitHub | GraphQL `PRTick(owner, name, number, wantDetail, wantThreads, wantEvents, wantChecks)` (`gh graphql PRTick`) | ReadPR: detail and viewer with the repository's merge settings and the merge box (readiness, opinions, thread states, base protection, auto-merge), threads and comments, the newest 100 timeline items, head commit rollup (CI, each check's `isRequired`); `viewerPermission` on every read |
 | GitHub | GraphQL `PRThreadsPage`, `PRCommentsPage`, `PRThreadStatesPage(owner, name, number, after)` | ReadPR: review threads, comments and thread states past the first 100 |
 | GitHub | GraphQL `PRTimelinePage(owner, name, number, before)` | ReadPR events: older timeline pages, read backwards |
 | GitHub | GraphQL `ThreadCommentsPage(threadID, after)`, `RollupContextsPage(commitID, number, after)` | ReadPR: one thread's comments, the rollup's contexts past 100 |
@@ -151,6 +151,11 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | `GET repos/O/R/actions/runs/ID` (`gh api run`, conditional) | ReadPipeline: one run |
 | GitHub | `GET repos/O/R/actions/runs/ID/jobs?per_page=N[&page=N]` (`gh api run jobs`, conditional) | CI steps of a followed job's run, ReadPipeline's jobs; `Link` rel="next" while more pages exist |
 | GitHub | `GET repos/O/R/actions/jobs/ID/logs` (`gh api job logs`, conditional) | CI job log (the current `log` of a started job; 404 while the job is pending and while it sets `logWithheld`, as the real endpoint does until the job's log blob exists, which for a running job is its whole run; a running job with a log models the jobs API still reporting a completed job running); answered directly where the real endpoint redirects to its log blob, with the blob's ETag and Range behavior: a start or closed range is a 206 with `Content-Range`, a suffix range is ignored (200, whole body), a start at or past the end is a 416 (HTTP range semantics; not measured on the forges) |
+| GitHub | `POST repos/O/R/actions/jobs/ID/rerun` (`gh api job rerun`) | retry a job: 201, the job replaced by a pending attempt under a new id; 403 while its run is live, for a viewer below write, or "created over a month ago" for a run created more than 30 days ago |
+| GitHub | `POST repos/O/R/actions/runs/ID/rerun-failed-jobs` (`gh api run rerun failed`) | retry the failed jobs: 201, each failed or canceled job replaced; 403 while the run is live, when it has none, or for a run created more than 30 days ago |
+| GitHub | `POST repos/O/R/actions/runs/ID/cancel` (`gh api run cancel`) | cancel a run: 202, its live jobs canceled; 409 once it completed |
+| GitHub | `GET repos/O/R/actions/runs/ID/artifacts?[per_page=N][&page=N]` (`gh api run artifacts`) | the CI read's artifacts flag, ListCIArtifacts: the run's `artifacts`, expired ones included, each with its `expires_at`; `Link` rel="next" while more pages exist |
+| GitHub | `GET repos/O/R/actions/artifacts/ID/zip` (`gh api artifact zip`) | artifact download, answered directly where the real endpoint redirects to its blob; 410 once `expired` |
 | GitHub | `GET <attachment URL>` (`gh api attachment`) | forge attachments |
 | GitLab | `GET projects/P/merge_requests/N` (`glab api merge request`, conditional) | ReadPR, once per read: detail, head SHA for threads, head pipeline for CI, the merge fields with `detailed_merge_status` derived from the fixture |
 | GitLab | `GET projects/P/merge_requests/N/approvals` (`glab api approvals`) | ReadPR detail: approvals required and left, the viewer's standing |
@@ -168,8 +173,12 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `GET projects/P/merge_requests?iids[]=N...&state=all&per_page=100` (`glab api merge request list`) | merged-PR cleanup: state and `merged_at` of tracked MRs |
 | GitLab | `GET projects/P/pipelines?[per_page=N][&page=N][&ref=R][&status=S][&scope=tags\|branches]` (`glab api pipelines`) | pipelines list: every pipeline of the project, highest id first; a scope answers each tag's latest tag pipeline or each branch's latest branch pipeline (a branch may share a tag's name), then the ref and status filters apply; `X-Next-Page` while more pages exist |
 | GitLab | `GET projects/P/pipelines/ID` (`glab api pipeline`) | ReadPipeline: one pipeline; ListPipelines: its `tag` flag, for a pipeline on a tag's name outside the tag scope |
-| GitLab | GraphQL `PipelineJobs(fullPath, id, after)` (`glab graphql PipelineJobs`) | ReadPR CI, ReadPipeline's rows: the pipeline's stages in fixture order and its rows newest first in pages of 100, each a build, a bridge or an external commit status by its `kind` (gid, `webPath`, `detailsPath`, `downstreamPipeline` as gitlab.com answers them); a project not on the host is a null `project`, a pipeline it lacks a null `pipeline` |
+| GitLab | GraphQL `PipelineJobs(fullPath, id, after)` (`glab graphql PipelineJobs`) | ReadPR CI, ReadPipeline's rows: the pipeline's stages in fixture order and its current rows (no retried job) newest first in pages of 100, with the CI action fields (`retryable`, `cancelable`, `playable`, `canPlayJob`, `userPermissions` from the viewer's role and the project's `cancelRole`, the archive), each a build, a bridge or an external commit status by its `kind` (gid, `webPath`, `detailsPath`, `downstreamPipeline` as gitlab.com answers them); a project not on the host is a null `project`, a pipeline it lacks a null `pipeline` |
 | GitLab | `GET projects/P/jobs/ID/trace` (`glab api job trace`, conditional) | CI job log (the current `log` of a started job, running included; 404 while the job sets `logWithheld`). A completed job's trace honors a start or closed range (206) and refuses a suffix range (400); a running job's trace ignores `Range` (200, whole body) and a running `synthetic` trace grows on every request |
+| GitLab | `POST projects/P/jobs/ID/retry` (`glab api job retry`) | retry a job: 201 with the new pending job; 403 "Job is not retryable" for a live, replaced or non-build job |
+| GitLab | `POST projects/P/jobs/ID/cancel`, `POST projects/P/jobs/ID/play` (`glab api job cancel`, `glab api job play`) | cancel a live job (201; a finished one is unchanged; 403 below the project's `cancelRole`), run a manual job (200, pending; 400 "Unplayable Job" otherwise) |
+| GitLab | `POST projects/P/pipelines/ID/retry`, `POST projects/P/pipelines/ID/cancel` (`glab api pipeline retry`, `glab api pipeline cancel`) | retry the pipeline's failed and canceled jobs (201), cancel its live jobs (200; 403 below the project's `cancelRole`) |
+| GitLab | `GET projects/P/jobs/ID/artifacts` (`glab api job artifacts`) | artifact download: the job's `artifacts` archive; 404 without one |
 | GitLab | `GET projects/P/uploads/SECRET/NAME` (`glab api upload`) | forge attachments |
 
 Unhandled (fail with their request): GitHub's file comment and
@@ -209,8 +218,9 @@ and then drops or truncates the response.
   stays armed until merged or canceled: the fake does not merge it when
   the pull becomes ready.
 - `pipelines` are a repository's pipelines beside its pulls' `ci`; the
-  lists answer both, highest id first, and an id is unique in its
-  repository. A pull's `ci` defaults to a merge request pipeline of its
+  lists answer both, highest id first, and a pipeline id and a job id
+  are each unique in their repository (a seed that repeats one is
+  refused). A pipeline's `createdAt` defaults to the seed time. A pull's `ci` defaults to a merge request pipeline of its
   head (GitLab ref `refs/merge-requests/N/head`). A pipeline's `refKind`
   is answered as each forge can: GitHub only through the run's event
   (`source`, defaulting to push, release or pull_request by kind), GitLab
@@ -236,6 +246,21 @@ and then drops or truncates the response.
   path, none until set) or an `external` commit status (its `targetUrl`,
   stage `external` by default) instead of a build; neither has a log, and
   its trace is the forge's 404. A GitHub run holds builds only.
+- A job's `status` may be `manual` on GitLab (a job waiting to be
+  played). A retry, on both forges, marks the job `retried` and appends a
+  pending attempt of it under a new id; the reads answer only the jobs no
+  retry replaced. Every CI action refuses a viewer below write (GitHub)
+  or developer (GitLab) with the forge's 403; the refusal messages are
+  the fake's. A GitLab project's `merge.cancelRole` (developer by
+  default, maintainer or no_one) gates cancel alone, so `cancelBuild` and
+  `updateBuild` can differ. GitHub refuses a re-run of a run created more
+  than 30 days ago. `artifacts` are a GitHub run's (`pipeline.artifacts`,
+  each named, `expired` and `expiresAt` optional) or a GitLab build's
+  archive (`job.artifacts`), each `text` or `base64`; the other forge's
+  form is refused at seed.
+  `AdvanceJob` (`HarnessForgeAdvanceJob`) moves a current job to a later
+  status, starting and completing it as its runner would, and the
+  pipeline's status follows its current jobs.
 - A job's `log` is served as the forge would serve it, and the app's log
   view splits it into rows from what it carries. A GitHub log splits by
   its steps: give each line its own time prefix

@@ -3,6 +3,7 @@
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import Icon from '../primitives/Icon.svelte';
   import ReviewAvatar from './ReviewAvatar.svelte';
+  import type { CIActionsView } from '../../stores/ciSubjectActions.svelte';
   import ReviewCIChips from './ReviewCIChips.svelte';
   import ReviewUnresolvedStepper from './ReviewUnresolvedStepper.svelte';
   import { OpenExternalURL } from '../../stores/bindings';
@@ -42,6 +43,8 @@
     onOpenCIJob?: (stageName: string, job: CIJob) => void;
     /** Has the pump re-poll CI now, no diff or thread refresh. */
     onRefreshCI?: () => void;
+    /** The PR's CI actions; absent offers none. */
+    ciActions?: CIActionsView;
     /** Present in the review pane proper; absent in narrow test mounts. */
     review?: ReviewPaneState | null;
     /** The overview row has scrolled off under this bar. */
@@ -60,6 +63,7 @@
     forge = '',
     onOpenCIJob,
     onRefreshCI,
+    ciActions,
     review = null,
     overviewOff = false,
   }: Props = $props();
@@ -251,6 +255,7 @@
         onOpenJob={onOpenCIJob}
         onRefresh={onRefreshCI}
         refreshing={ciRefreshing}
+        actions={ciActions}
       />
     </div>
   {/if}

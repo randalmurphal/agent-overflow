@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,9 +18,8 @@ import (
 
 func TestCILogFileName(t *testing.T) {
 	t.Parallel()
-	pr := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "group/sub", Repo: "repo", Number: 42}
-	name := ciLogFileName(pr.Repository(), "1234", "unit tests (linux/amd64)")
-	if name != "gitlab-group-sub-repo-1234-unit-tests--linux-amd64.log" {
+	name := ciLogFileName("1234", "unit tests (linux/amd64)")
+	if name != "1234-unit-tests--linux-amd64.log" {
 		t.Fatalf("name = %q", name)
 	}
 	if strings.ContainsAny(name, "/\\ ") {
@@ -32,19 +32,55 @@ func TestCILogFileName(t *testing.T) {
 	}
 }
 
-// savedLogs lists the saved logs in the ci-logs directory, leaving out the
-// cache beside them.
+// The saved files of a repository are under a directory that is its
+// whole identity, so two repositories never share a file, whatever their
+// names: another host, a namespace that sanitizes alike, a port.
+func TestCIRepoDirIsTheRepositoryIdentity(t *testing.T) {
+	t.Parallel()
+	repos := []gitops.RepoReference{
+		{Forge: "gitlab", Host: "gitlab.com", Namespace: "group/sub", Repo: "repo"},
+		{Forge: "gitlab", Host: "gitlab.example", Namespace: "group/sub", Repo: "repo"},
+		{Forge: "gitlab", Host: "gitlab.example:8443", Namespace: "group/sub", Repo: "repo"},
+		{Forge: "gitlab", Host: "gitlab.com", Namespace: "group-sub", Repo: "repo"},
+		{Forge: "gitlab", Host: "gitlab.com", Namespace: "group", Repo: "sub-repo"},
+		{Forge: "github", Host: "gitlab.com", Namespace: "group/sub", Repo: "repo"},
+	}
+	seen := map[string]gitops.RepoReference{}
+	for _, repo := range repos {
+		dir := ciRepoDir(repo)
+		if other, ok := seen[dir]; ok {
+			t.Fatalf("%s and %s share %s", repo.Key(), other.Key(), dir)
+		}
+		seen[dir] = repo
+		if filepath.IsAbs(dir) || strings.Contains(dir, "..") || strings.ContainsAny(dir, ":") {
+			t.Fatalf("dir %q is not a safe relative path", dir)
+		}
+	}
+	if got := ciRepoDir(repos[2]); got != filepath.Join("gitlab", "gitlab.example%3A8443", "group", "sub", "repo") {
+		t.Fatalf("dir = %q", got)
+	}
+}
+
+// savedLogs lists the saved logs under the ci-logs directory, leaving out
+// the cache beside them.
 func savedLogs(t *testing.T, app *App) []string {
 	t.Helper()
-	names, err := filepath.Glob(filepath.Join(app.configDir, "ci-logs", "*"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := filepath.Join(app.configDir, "ci-logs")
 	var out []string
-	for _, name := range names {
-		if filepath.Base(name) != "cache" {
-			out = append(out, filepath.Base(name))
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
+		if d.IsDir() && d.Name() == "cache" && filepath.Dir(path) == root {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() {
+			out = append(out, filepath.Base(path))
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
 	}
 	return out
 }
@@ -78,7 +114,7 @@ func TestSavePRCIJobLogWritesFullLog(t *testing.T) {
 	if !filepath.IsAbs(path) {
 		t.Fatalf("path %q is not absolute", path)
 	}
-	if filepath.Base(path) != "github-acme-widgets-901-build.log" {
+	if path != filepath.Join(app.configDir, "ci-logs", "github", "github.com", "acme", "widgets", "901-build.log") {
 		t.Fatalf("unexpected file name %q", filepath.Base(path))
 	}
 	data, err := os.ReadFile(path)
@@ -228,7 +264,7 @@ func TestSavePRCIJobLogSectionWritesTheSection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SavePRCIJobLogSection: %v", err)
 	}
-	if filepath.Base(path) != "github-owner-repo-901-build-Run-make-test.log" {
+	if filepath.Base(path) != "901-build-Run-make-test.log" {
 		t.Fatalf("unexpected file name %q", filepath.Base(path))
 	}
 	// The file is plain text: the escape sequences the view colors with

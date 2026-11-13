@@ -130,6 +130,35 @@ func newForgeAPIService(t *testing.T, answer func(call forgeAPICall) forgeAPIAns
 	return svc, calls
 }
 
+// githubCIExtras answers the reads a GitHub pipeline read adds for its
+// actions, for a test about something else: a run's artifacts list
+// (none) and the repository's permissions (push). ok is false for any
+// other request.
+func githubCIExtras(call forgeAPICall) (forgeAPIAnswer, bool) {
+	path, _, _ := strings.Cut(call.Path, "?")
+	switch {
+	case call.Op != "" || call.Method != http.MethodGet:
+		return forgeAPIAnswer{}, false
+	case strings.HasPrefix(path, "repos/") && strings.HasSuffix(path, "/artifacts") && strings.Contains(path, "/actions/runs/"):
+		return forgeAPIAnswer{Body: `{"total_count":0,"artifacts":[]}`}, true
+	case strings.Count(path, "/") == 2 && strings.HasPrefix(path, "repos/"):
+		return forgeAPIAnswer{Body: `{"id":1,"permissions":{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}}`}, true
+	}
+	return forgeAPIAnswer{}, false
+}
+
+// withoutCIExtras drops githubCIExtras' requests from ops.
+func withoutCIExtras(ops []string) []string {
+	return slices.DeleteFunc(ops, func(op string) bool {
+		method, path, ok := strings.Cut(op, " ")
+		if !ok {
+			return false
+		}
+		_, extra := githubCIExtras(forgeAPICall{Method: method, Path: path})
+		return extra
+	})
+}
+
 func githubData(data string) forgeAPIAnswer {
 	return forgeAPIAnswer{Body: `{"data":` + data + `}`}
 }
@@ -153,6 +182,9 @@ func TestReadPRParsesRecordedTicks(t *testing.T) {
 		t.Helper()
 		answer := readTestdata(t, fixture)
 		core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+			if extra, ok := githubCIExtras(call); ok {
+				return extra
+			}
 			if call.Op != "PRTick" {
 				return forgeUnexpected(t, call)
 			}
@@ -162,7 +194,7 @@ func TestReadPRParsesRecordedTicks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadPR: %v", err)
 		}
-		if ops := calls.ops(); len(ops) != 1 {
+		if ops := withoutCIExtras(calls.ops()); len(ops) != 1 {
 			t.Fatalf("requests = %v, want the one PRTick", ops)
 		}
 		if !got.HasCI {
@@ -340,12 +372,17 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 	}
 	var query string
 	for _, tc := range cases {
-		core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer { return forgeAPIAnswer{Body: answer} })
+		core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+			if extra, ok := githubCIExtras(call); ok {
+				return extra
+			}
+			return forgeAPIAnswer{Body: answer}
+		})
 		got, err := core.ReadPR(t.Context(), githubTestRef(14571), tc.want, nil, nil)
 		if err != nil {
 			t.Fatalf("%+v: %v", tc.want, err)
 		}
-		sent := calls.all()
+		sent := slices.DeleteFunc(calls.all(), func(call forgeAPICall) bool { _, extra := githubCIExtras(call); return extra })
 		if len(sent) != 1 || sent[0].Op != "PRTick" || sent[0].Host != testForgeHost {
 			t.Fatalf("%+v: requests = %+v", tc.want, sent)
 		}
@@ -410,6 +447,9 @@ func githubContextsJSON(from, n int) []string {
 func TestReadPRPagesEveryConnection(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if extra, ok := githubCIExtras(call); ok {
+			return extra
+		}
 		switch call.Op {
 		case "PRTick":
 			return githubData(`{"viewer":{"login":"v"},"repository":{"pullRequest":{"number":5,"title":"t","author":{"login":"a"},"state":"OPEN",
@@ -444,7 +484,7 @@ func TestReadPRPagesEveryConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadPR: %v", err)
 	}
-	if ops := calls.ops(); fmt.Sprint(ops) != "[PRTick RollupContextsPage PRThreadsPage ThreadCommentsPage PRCommentsPage]" {
+	if ops := withoutCIExtras(calls.ops()); fmt.Sprint(ops) != "[PRTick RollupContextsPage PRThreadsPage ThreadCommentsPage PRCommentsPage]" {
 		t.Fatalf("requests = %v", ops)
 	}
 	if len(got.Threads) != 2+150 {
@@ -534,6 +574,9 @@ func newGitHubCICore(t *testing.T) (*Core, *githubCIFake, func() []string) {
 	t.Helper()
 	fake := &githubCIFake{}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if extra, ok := githubCIExtras(call); ok {
+			return extra
+		}
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		if call.Op == "PRTick" {
@@ -552,7 +595,7 @@ func newGitHubCICore(t *testing.T) (*Core, *githubCIFake, func() []string) {
 	return core, fake, func() []string {
 		var rest []string
 		for _, call := range calls.all() {
-			if call.Op == "" {
+			if _, extra := githubCIExtras(call); call.Op == "" && !extra {
 				rest = append(rest, call.Path)
 			}
 		}
