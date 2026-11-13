@@ -86,6 +86,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "BrowserCompanionRevealPageFile", ID: 535837959, Scope: "host", Route: "home"},                                     // main.App.BrowserCompanionRevealPageFile
 	{Name: "BrowserCompanionThreadState", ID: 1485125416, Scope: "host", Route: "home"},                                       // main.App.BrowserCompanionThreadState
 	{Name: "BrowserHostReport", ID: 2848608143, Scope: "host", Route: "home"},                                                 // main.App.BrowserHostReport
+	{Name: "BypassPRRequestedChanges", ID: 4161987710, Scope: "git:operate", Route: "selected"},                               // main.App.BypassPRRequestedChanges
 	{Name: "CancelDevicePairing", ID: 2608316491, Scope: "access:admin", Route: "home"},                                       // main.App.CancelDevicePairing
 	{Name: "CancelDictation", ID: 1562772056, Scope: "threads:operate", Route: "selected"},                                    // main.App.CancelDictation
 	{Name: "CancelLiveDictation", ID: 3365706830, Scope: "threads:operate", Route: "selected"},                                // main.App.CancelLiveDictation
@@ -138,10 +139,12 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DisallowPreviewPort", ID: 1061100039, Scope: "access:admin", Route: "selected"},                                   // main.App.DisallowPreviewPort
 	{Name: "DiscardUnpreparedThreadTransfer", ID: 2309612888, Scope: "threads:operate", Route: "selected"},                    // main.App.DiscardUnpreparedThreadTransfer
 	{Name: "DiscoverComputers", ID: 4113468152, Scope: "host", Route: "home", Remote: true},                                   // main.App.DiscoverComputers
+	{Name: "DismissPRReview", ID: 1185171749, Scope: "git:operate", Route: "selected"},                                        // main.App.DismissPRReview
 	{Name: "DismissSessionBanner", ID: 1317713039, Scope: "threads:operate", Route: "thread"},                                 // main.App.DismissSessionBanner
 	{Name: "DismissThreadWorktreeSetup", ID: 41472159, Scope: "terminal:operate", Route: "thread"},                            // main.App.DismissThreadWorktreeSetup
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host", Route: "home"},                                                     // main.App.DownloadUpdate
 	{Name: "EditOpenAIKeyFile", ID: 1579042384, Scope: "host", Route: "selected"},                                             // main.App.EditOpenAIKeyFile
+	{Name: "EditPR", ID: 679416267, Scope: "git:operate", Route: "selected"},                                                  // main.App.EditPR
 	{Name: "FetchForgeAttachment", ID: 1594348919, Scope: "git:operate", Route: "selected"},                                   // main.App.FetchForgeAttachment
 	{Name: "FinishDictation", ID: 2178028847, Scope: "threads:operate", Route: "selected"},                                    // main.App.FinishDictation
 	{Name: "FinishLiveDictation", ID: 3774452621, Scope: "threads:operate", Route: "selected"},                                // main.App.FinishLiveDictation
@@ -183,6 +186,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetPRCILogLines", ID: 1435724188, Scope: "git:operate", Route: "selected"},                                        // main.App.GetPRCILogLines
 	{Name: "GetPRDetail", ID: 2443547196, Scope: "git:operate", Route: "selected"},                                            // main.App.GetPRDetail
 	{Name: "GetPRMergeConflicts", ID: 106351482, Scope: "git:operate", Route: "workspace"},                                    // main.App.GetPRMergeConflicts
+	{Name: "GetPRMergeMessage", ID: 276106990, Scope: "git:operate", Route: "selected"},                                       // main.App.GetPRMergeMessage
 	{Name: "GetPRReviewSubmitOutcome", ID: 4070778679, Scope: "git:operate", Route: "selected", CallerBound: true},            // main.App.GetPRReviewSubmitOutcome
 	{Name: "GetPayloadChunk", ID: 73280836, Scope: "threads:read", Route: "thread"},                                           // main.App.GetPayloadChunk
 	{Name: "GetPayloadData", ID: 3448919335, Scope: "threads:read", Route: "thread"},                                          // main.App.GetPayloadData
@@ -403,6 +407,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ReportUpdateInstallStatus", ID: 314214419, Scope: "host", Route: "home"},                                          // main.App.ReportUpdateInstallStatus
 	{Name: "RequestServiceUpdate", ID: 3093237072, Scope: "access:admin", Route: "selected", StepUp: true, Remote: true},      // main.App.RequestServiceUpdate
 	{Name: "RequestWebviewMemoryTrim", ID: 2045178958, Scope: "host", Route: "home"},                                          // main.App.RequestWebviewMemoryTrim
+	{Name: "RerequestPRReview", ID: 2068518611, Scope: "git:operate", Route: "selected"},                                      // main.App.RerequestPRReview
 	{Name: "ResetKeybindings", ID: 2775767393, Scope: "settings:write", Route: "home"},                                        // main.App.ResetKeybindings
 	{Name: "ResizeTerminal", ID: 1887984285, Scope: "terminal:operate", Route: "home"},                                        // main.App.ResizeTerminal
 	{Name: "RespondToApproval", ID: 1919237704, Scope: "approvals:respond", Route: "thread"},                                  // main.App.RespondToApproval
@@ -429,6 +434,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SavePRCIJobLogSection", ID: 1281545488, Scope: "git:operate", Route: "selected"},                                  // main.App.SavePRCIJobLogSection
 	{Name: "SavePayloadToFile", ID: 3576148797, Scope: "host", Route: "thread"},                                               // main.App.SavePayloadToFile
 	{Name: "SearchPRCILog", ID: 349857499, Scope: "git:operate", Route: "selected", CallerBound: true},                        // main.App.SearchPRCILog
+	{Name: "SearchPRCandidates", ID: 173160885, Scope: "git:operate", Route: "selected"},                                      // main.App.SearchPRCandidates
 	{Name: "SearchThreadItems", ID: 1414650511, Scope: "threads:read", Route: "thread", CallerBound: true},                    // main.App.SearchThreadItems
 	{Name: "SearchThreadMessages", ID: 3644945077, Scope: "threads:read", Route: "all"},                                       // main.App.SearchThreadMessages
 	{Name: "SearchTimelineItems", ID: 1822896830, Scope: "threads:read", Route: "thread", CallerBound: true},                  // main.App.SearchTimelineItems
@@ -445,8 +451,12 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetDeviceName", ID: 2755315818, Scope: "access:admin", Route: "home"},                                             // main.App.SetDeviceName
 	{Name: "SetEditorSettings", ID: 3655340267, Scope: "settings:write", Route: "selected"},                                   // main.App.SetEditorSettings
 	{Name: "SetNetworkSettings", ID: 3915514446, Scope: "settings:write", Route: "home", StepUp: true},                        // main.App.SetNetworkSettings
+	{Name: "SetPRAssignees", ID: 1016620183, Scope: "git:operate", Route: "selected"},                                         // main.App.SetPRAssignees
 	{Name: "SetPRCILogFollows", ID: 1675722685, Scope: "git:operate", Route: "home"},                                          // main.App.SetPRCILogFollows
+	{Name: "SetPRLabels", ID: 2026774950, Scope: "git:operate", Route: "selected"},                                            // main.App.SetPRLabels
 	{Name: "SetPRListActive", ID: 2324570575, Scope: "git:operate", Route: "home"},                                            // main.App.SetPRListActive
+	{Name: "SetPRReviewers", ID: 960122143, Scope: "git:operate", Route: "selected"},                                          // main.App.SetPRReviewers
+	{Name: "SetPRState", ID: 3486078714, Scope: "git:operate", Route: "selected"},                                             // main.App.SetPRState
 	{Name: "SetPRThreadResolved", ID: 2594833485, Scope: "git:operate", Route: "selected"},                                    // main.App.SetPRThreadResolved
 	{Name: "SetPRUpdatesActive", ID: 1078249699, Scope: "git:operate", Route: "home"},                                         // main.App.SetPRUpdatesActive
 	{Name: "SetPipelineActive", ID: 1113626255, Scope: "git:operate", Route: "home"},                                          // main.App.SetPipelineActive
