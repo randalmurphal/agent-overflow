@@ -702,11 +702,33 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	diffRefs := mr.diffRefs()
 	notes := gitlabDraftNotes(review)
 	mrPath := gitlabMRPath(ref)
+	var replies []gitlabHeldReply
+	for _, note := range notes {
+		if note.InReplyTo != nil {
+			replies = append(replies, gitlabHeldReply{ordinal: len(replies), comment: note})
+		}
+	}
+	// Held replies: every discussion they answer exists now, and each
+	// draft keeps its discussion resolved or open (gitlab_replies.go).
+	var before gitlabReplyThreads
+	if len(replies) > 0 {
+		if before, err = readGitLabReplyThreads(ctx, client, ref, mr); err != nil {
+			return SubmitReviewResult{}, err
+		}
+		for _, reply := range replies {
+			if threadID := reply.comment.InReplyTo.ThreadID; before[threadID].ID == "" {
+				return SubmitReviewResult{}, &ReplyThreadGoneError{ThreadID: threadID, Err: errors.New("the merge request has no such discussion")}
+			}
+		}
+	}
 	bodies := make([]gitlabDraftNoteIn, 0, len(notes))
 	for _, note := range notes {
 		body, err := gitlabDraftNoteBody(note, diffRefs)
 		if err != nil {
 			return SubmitReviewResult{}, err
+		}
+		if body.InReplyToDiscussionID != "" {
+			body.ResolveDiscussion = before.resolveFor(body.InReplyToDiscussionID)
 		}
 		bodies = append(bodies, body)
 	}
@@ -720,7 +742,7 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 			ID int64 `json:"id"`
 		}
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes", Body: body}, &draft); err != nil {
-			if body.InReplyToDiscussionID != "" && errors.Is(err, forgeapi.ErrNotFound) {
+			if body.InReplyToDiscussionID != "" && gitlabReplyRefused(ctx, client, ref, body.InReplyToDiscussionID, err) {
 				err = &ReplyThreadGoneError{ThreadID: body.InReplyToDiscussionID, Err: err}
 			}
 			unknown := 1
@@ -749,14 +771,62 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		}
 		out.PostedReview = true
 	}
+	// A published reply whose discussion went meanwhile was dropped:
+	// GitLab says nothing, so the discussions say.
+	var replyFailure *PartialSubmitError
+	if len(replies) > 0 {
+		replyFailure = f.confirmGitLabReplies(ctx, client, ref, mr, before, replies, &out)
+	}
 	if strings.EqualFold(review.Verdict, ReviewVerdictApprove) {
 		approve := forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/approve", Body: map[string]string{"sha": mr.headSHA()}}
 		if _, err := client.JSON(ctx, approve, nil); err != nil {
-			return out, gitlabApproveFailure(out, err)
+			failure := gitlabApproveFailure(out, err)
+			if partial, ok := failure.(*PartialSubmitError); ok && replyFailure != nil {
+				partial.UnpostedReplies = replyFailure.UnpostedReplies
+			}
+			return out, failure
 		}
 		out.PostedReview = true
 	}
+	if replyFailure != nil {
+		return out, replyFailure
+	}
 	return out, nil
+}
+
+// confirmGitLabReplies counts the published replies that are notes of
+// their discussions into out, and returns the failure that names the
+// first one that is not (nil when all are). A discussions read that fails
+// leaves every reply unconfirmed.
+func (f *gitlabForge) confirmGitLabReplies(ctx context.Context, client *forgeapi.Client, ref PRReference, mr gitlabMRRaw, before gitlabReplyThreads, replies []gitlabHeldReply, out *SubmitReviewResult) *PartialSubmitError {
+	all := make([]int, 0, len(replies))
+	for _, reply := range replies {
+		all = append(all, reply.ordinal)
+	}
+	lost, err := lostGitLabReplies(ctx, client, ref, mr, before, replies, f.viewerLogin(ctx, client, ref.Host))
+	if err != nil {
+		return &PartialSubmitError{PostedReview: out.PostedReview, FailedThreadID: replies[0].comment.InReplyTo.ThreadID, UnpostedReplies: all, Unconfirmed: true,
+			Err: fmt.Errorf("read the discussions to confirm the replies: %w", err)}
+	}
+	out.PostedReplies = len(replies) - len(lost)
+	if len(lost) == 0 {
+		return nil
+	}
+	threadID := replies[lost[0]].comment.InReplyTo.ThreadID
+	return &PartialSubmitError{PostedReview: out.PostedReview, PostedReplies: out.PostedReplies, FailedThreadID: threadID, UnpostedReplies: lost,
+		Err: &ReplyThreadGoneError{ThreadID: threadID, Err: errors.New("GitLab published the review without this reply")}}
+}
+
+// gitlabReplyRefused reports whether err, a draft reply's create failure,
+// is its discussion gone: GitLab answers a 404 for a merge request it
+// cannot find and a 400 for a discussion it cannot, which the discussion's
+// own read tells from any other 400.
+func gitlabReplyRefused(ctx context.Context, client *forgeapi.Client, ref PRReference, threadID string, err error) bool {
+	if errors.Is(err, forgeapi.ErrNotFound) {
+		return true
+	}
+	status, ok := errors.AsType[*forgeapi.StatusError](err)
+	return ok && status.Status == http.StatusBadRequest && gitlabDiscussionGone(ctx, client, ref, threadID)
 }
 
 // resolveGitLabPublish settles a bulk_publish whose answer did not say
@@ -841,6 +911,10 @@ type gitlabDraftNoteIn struct {
 	Note                  string             `json:"note"`
 	Position              *gitlabPositionRaw `json:"position,omitempty"`
 	InReplyToDiscussionID string             `json:"in_reply_to_discussion_id,omitempty"`
+	// ResolveDiscussion is a reply's discussion state to keep: GitLab
+	// reopens a resolved discussion a reply is published into unless it
+	// says resolve.
+	ResolveDiscussion *bool `json:"resolve_discussion,omitempty"`
 }
 
 // gitlabDraftCleanupTimeout bounds removing a failed submit's drafts.

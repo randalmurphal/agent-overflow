@@ -72,6 +72,7 @@ var gitlabAPI = []apiRoute{
 	{name: "glab api approvals", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approvals$`), flags: []string{"hostname"}, run: glabApprovals},
 	{name: "glab api discussions", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabDiscussions},
 	{name: "glab api create discussion", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions$`), flags: []string{"hostname"}, run: glabCreateDiscussion},
+	{name: "glab api discussion", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([^/?]+)$`), flags: []string{"hostname"}, run: glabDiscussion},
 	{name: "glab api create discussion note", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([^/?]+)/notes$`), flags: []string{"hostname"}, run: glabCreateDiscussionNote},
 	{name: "glab api update discussion note", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([^/?]+)/notes/(\d+)$`), flags: []string{"hostname"}, run: glabUpdateDiscussionNote},
 	{name: "glab api delete discussion note", method: "DELETE", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([^/?]+)/notes/(\d+)$`), flags: []string{"hostname"}, run: glabDeleteDiscussionNote},

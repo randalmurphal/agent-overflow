@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -362,4 +364,71 @@ func bodiesOf(threads []gitops.ReviewThread) []string {
 		}
 	}
 	return out
+}
+
+// A GitLab held reply leaves its discussion resolved or open as it was,
+// and one whose discussion goes while the submit is at the forge (GitLab
+// publishes the rest and drops it) is reported, not marked sent.
+func TestSubmitPRReviewGitLabHeldRepliesKeepTheirDiscussion(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "gitlab")
+	line := 2
+	seed := func(threads ...forgefake.Thread) {
+		t.Helper()
+		pull := forgefake.Pull{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open", Threads: threads}
+		if _, err := c.engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: "gitlab", Project: "acme/widgets", Pulls: []forgefake.Pull{pull}}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved := forgefake.Thread{ID: strings.Repeat("a", 40), Path: "main.go", Line: &line, Side: "right", Resolved: true, Comments: []forgefake.Comment{{ID: 501, Author: "octo", Body: "resolved root"}}}
+	open := forgefake.Thread{ID: strings.Repeat("b", 40), Path: "main.go", Line: &line, Side: "right", Comments: []forgefake.Comment{{ID: 502, Author: "alice", Body: "open root"}}}
+	seed(resolved, open)
+	threads := c.threads(t)
+	toResolved := c.replyDraft(t, false, threadWithBody(threads, "resolved root"), "into the resolved one")
+	toOpen := c.replyDraft(t, false, threadWithBody(threads, "open root"), "into the open one")
+	if _, err := c.submit(c.request(false, toResolved, toOpen)); err != nil {
+		t.Fatal(err)
+	}
+	threads = c.threads(t)
+	if got := threadWithBody(threads, "resolved root"); !got.IsResolved || len(got.Comments) != 2 {
+		t.Fatalf("resolved discussion after a reply = %+v", got)
+	}
+	if got := threadWithBody(threads, "open root"); got.IsResolved || len(got.Comments) != 2 {
+		t.Fatalf("open discussion after a reply = %+v", got)
+	}
+
+	// The open discussion is deleted while the publish is held.
+	seed(resolved, open)
+	threads = c.threads(t)
+	lost := c.replyDraft(t, false, threadWithBody(threads, "open root"), "lost reply")
+	kept := c.draft(t, false, 3, "a line")
+	entered, release := c.gate.hold()
+	type answer struct {
+		result SubmitPRReviewResult
+		err    error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		result, err := c.submit(c.request(false, kept, lost))
+		done <- answer{result, err}
+	}()
+	<-entered
+	// The viewer deletes the discussion's only note on GitLab meanwhile.
+	deleteNote := httptest.NewRequest(http.MethodDelete, "/gitlab/api/v4/projects/acme%2Fwidgets/merge_requests/9/discussions/"+open.ID+"/notes/502", nil)
+	deleteNote.Host = "gitlab.com"
+	deleteNote.Header.Set("Private-Token", mergeForgeToken)
+	recorder := httptest.NewRecorder()
+	c.engine.ServeHTTP(recorder, deleteNote)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("delete the discussion = %d %s", recorder.Code, recorder.Body)
+	}
+	release()
+	got := <-done
+	if got.err != nil || !got.result.PostedReview || got.result.PartialFailureThreadID != open.ID || got.result.PartialFailureKind != gitops.ForgeErrorNotFound ||
+		!slices.Equal(got.result.SentDraftIDs, []string{kept.ID}) {
+		t.Fatalf("submit with a dropped reply = %+v, %v", got.result, got.err)
+	}
+	if status := c.comment(t, false, lost.ID).Status; status != "draft" {
+		t.Fatalf("the dropped reply is %q, want draft", status)
+	}
 }

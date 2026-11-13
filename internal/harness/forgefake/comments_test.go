@@ -117,7 +117,7 @@ func TestGitLabCommentRoutesKeepDiscussionsAsGitLabDoes(t *testing.T) {
 	}
 	e.mu.Unlock()
 
-	if got := send("POST", "gitlab.com", mr+"/draft_notes", `{"note":"x","in_reply_to_discussion_id":"nope"}`); got.status != http.StatusNotFound || lastInvocation(t, e).Unhandled {
-		t.Fatalf("a draft reply to no discussion = %+v, want 404", got)
+	if got := send("POST", "gitlab.com", mr+"/draft_notes", `{"note":"x","in_reply_to_discussion_id":"nope"}`); got.status != http.StatusBadRequest || lastInvocation(t, e).Unhandled {
+		t.Fatalf("a draft reply to no discussion = %+v, want GitLab's 400", got)
 	}
 }

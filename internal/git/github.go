@@ -281,7 +281,13 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		if !out.PostedReview && out.PostedFileComments == 0 && out.PostedReplies == 0 {
 			return submitWriteError(err)
 		}
-		return &PartialSubmitError{PostedReview: out.PostedReview, PostedFileComments: out.PostedFileComments, PostedReplies: out.PostedReplies, FailedPath: path, FailedThreadID: threadID, Unconfirmed: !forgeapi.WriteNotApplied(err), Err: err}
+		// The follow-ups stop at the first failure: every reply from the
+		// first not posted on is not on the PR.
+		unposted := make([]int, 0, len(replies)-out.PostedReplies)
+		for ordinal := out.PostedReplies; ordinal < len(replies); ordinal++ {
+			unposted = append(unposted, ordinal)
+		}
+		return &PartialSubmitError{PostedReview: out.PostedReview, PostedFileComments: out.PostedFileComments, PostedReplies: out.PostedReplies, FailedPath: path, FailedThreadID: threadID, UnpostedReplies: unposted, Unconfirmed: !forgeapi.WriteNotApplied(err), Err: err}
 	}
 	for i, in := range fileBodies {
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: pulls + "/comments", Body: in}, nil); err != nil {

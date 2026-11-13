@@ -337,8 +337,12 @@ type PartialSubmitError struct {
 	PostedReplies      int
 	FailedPath         string
 	FailedThreadID     string
-	Unconfirmed        bool
-	Err                error
+	// UnpostedReplies are the ordinals, among the request's replies, of
+	// the replies that are not on the forge (GitHub's after a failed
+	// follow-up, GitLab's that a publish dropped).
+	UnpostedReplies []int
+	Unconfirmed     bool
+	Err             error
 }
 
 // ReplyThreadGoneError is a held reply the forge refused because its

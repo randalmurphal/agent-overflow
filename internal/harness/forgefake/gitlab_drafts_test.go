@@ -103,7 +103,7 @@ func TestGitLabDraftNotesCreateDeleteAndPublish(t *testing.T) {
 		t.Fatalf("discussions after publish = %s", discussions.body)
 	}
 
-	if got := glabSend(t, srv, "POST", mr+"/draft_notes", `{"note":"x","resolve_discussion":true}`); got.status != http.StatusNotFound || !lastInvocation(t, e).Unhandled {
+	if got := glabSend(t, srv, "POST", mr+"/draft_notes", `{"note":"x","commit_id":"abc"}`); got.status != http.StatusNotFound || !lastInvocation(t, e).Unhandled {
 		t.Fatalf("create with an unimplemented parameter = %+v, want unhandled", got)
 	}
 	if got := glabSend(t, srv, "POST", mr+"/draft_notes", `{"note":" "}`); got.status != http.StatusBadRequest {

@@ -226,6 +226,9 @@ type DraftNote struct {
 	// InReplyTo is the discussion a draft reply answers; publishing adds
 	// the note to it. It has no path or line.
 	InReplyTo string `json:"inReplyTo,omitempty"`
+	// ResolveDiscussion is the reply's resolve_discussion: publishing
+	// resolves its discussion when set and reopens it otherwise.
+	ResolveDiscussion bool `json:"resolveDiscussion,omitempty"`
 }
 
 // Readiness is the merge box state a pull carries beyond its reviews, CI,

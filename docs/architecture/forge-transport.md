@@ -317,7 +317,7 @@ is its decimal id and its URL the merge request's page at `#note_<id>`.
 | `PostPRComment` | 1 `POST .../notes` |
 | `ReplyToThread` | 1 `POST .../discussions/D/notes`; a 404 is `*ReplyThreadGoneError` |
 | `EditComment`, `DeleteComment` | 1 `PUT` (`{body}`) or `DELETE .../discussions/D/notes/N` |
-| `SubmitReview` | 1 `POST .../draft_notes` per comment (a held reply with `in_reply_to_discussion_id`), then `bulk_publish`; a draft whose discussion is gone (404) deletes the drafts it created and fails the submit with `*ReplyThreadGoneError` before anything publishes |
+| `SubmitReview` | 1 `POST .../draft_notes` per comment, then `bulk_publish`. With held replies, 1 discussions read before (a discussion that is gone fails the submit with `*ReplyThreadGoneError` before any draft; each reply's draft carries `in_reply_to_discussion_id` and `resolve_discussion` set to its discussion's state, since publishing a reply without it reopens a resolved discussion) and 1 after the publish (GitLab drops a reply whose discussion went in between and answers success, so a reply that is not a new note of its discussion is a `*PartialSubmitError` naming its thread, `UnpostedReplies` its ordinal). A 400 on a reply's draft is the discussion gone when `GET .../discussions/D` answers 404 |
 
 Git status looks up a branch's open PR (`lookupOpenPR`,
 `internal/git/status_pr_cache.go`). The forges' head-branch filters also

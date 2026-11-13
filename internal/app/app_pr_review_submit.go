@@ -174,6 +174,10 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 		}
 	}
 	result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, request)
+	var unposted []int
+	if partial, ok := errors.AsType[*gitops.PartialSubmitError](err); ok {
+		unposted = partial.UnpostedReplies
+	}
 	if _, ok := errors.AsType[*gitops.UnconfirmedSubmitError](err); ok {
 		slog.Warn("submit PR review: the forge did not confirm the review", "pr", pr.Key(), "err", err)
 		return SubmitPRReviewResult{Unconfirmed: true}, nil
@@ -187,7 +191,7 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 	if !mapped.Posted {
 		return mapped, nil
 	}
-	posted := postedReviewDraftsOf(drafts, mapped)
+	posted := postedReviewDraftsOf(drafts, mapped, unposted)
 	sentAt := time.Now().UnixMilli()
 	marked, err := a.store.MarkPostedDiffReviewDraftsSent(owner, string(store.DiffReviewScopePR), source, posted, sentAt, sentTurnID)
 	if err != nil {
@@ -372,23 +376,25 @@ func prDraftSource(pr gitops.PRReference) string { return "pr:" + pr.Key() }
 // forge received them. GitHub posts file comments and then held replies
 // one by one after the review and stops at the first failure, so when a
 // follow-up failed (a failure path or thread) only the first
-// PostedFileComments file comments and PostedReplies replies made it up;
-// GitLab publishes them with the review. A draft with no line to anchor
-// posts nothing and settles with the review.
-func postedReviewDraftsOf(drafts []store.DiffReviewComment, result SubmitPRReviewResult) []store.PostedDiffReviewDraft {
-	followUpFailed := result.PartialFailurePath != "" || result.PartialFailureThreadID != ""
-	fileLevel, replies := 0, 0
+// PostedFileComments file comments made it up. unposted are the ordinals
+// among the held replies that are not on the forge (GitHub's after a
+// failed follow-up, GitLab's that its publish dropped); they stay drafts.
+// A draft with no line to anchor posts nothing and settles with the
+// review.
+func postedReviewDraftsOf(drafts []store.DiffReviewComment, result SubmitPRReviewResult, unposted []int) []store.PostedDiffReviewDraft {
+	fileFailed := result.PartialFailurePath != ""
+	fileLevel, replies := 0, -1
 	out := make([]store.PostedDiffReviewDraft, 0, len(drafts))
 	for _, draft := range drafts {
 		switch {
 		case draft.ReplyThreadID != "":
 			replies++
-			if followUpFailed && replies > result.PostedReplies {
+			if slices.Contains(unposted, replies) {
 				continue
 			}
 		case draft.Side == "file":
 			fileLevel++
-			if followUpFailed && fileLevel > result.PostedFileComments {
+			if (fileFailed || result.PartialFailureThreadID != "") && fileLevel > result.PostedFileComments {
 				continue
 			}
 		}

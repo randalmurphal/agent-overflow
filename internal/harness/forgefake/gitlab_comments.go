@@ -194,6 +194,20 @@ func gitlabAppendNote(p *Pull, ref gitlabDiscussionRef, comment Comment) {
 	p.Comments[ref.conversation].Replies = append(p.Comments[ref.conversation].Replies, comment)
 }
 
+// glabDiscussion answers one discussion; an unknown one is GitLab's 404.
+func glabDiscussion(e *Engine, c *call, m []string) response {
+	_, p, fail, ok := e.glabMRFrom(c, m)
+	if !ok {
+		return fail
+	}
+	for _, discussion := range gitlabDiscussions(p) {
+		if discussion["id"] == m[3] {
+			return glabOK(jsonResponse(discussion))
+		}
+	}
+	return glabNotFound("Discussion")
+}
+
 // glabCreateDiscussionNote adds a note to a discussion; an unknown one is
 // GitLab's 404.
 func glabCreateDiscussionNote(e *Engine, c *call, m []string) response {

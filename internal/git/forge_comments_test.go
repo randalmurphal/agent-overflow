@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -354,52 +355,120 @@ func TestGitLabEditAndDeleteComment(t *testing.T) {
 	}
 }
 
-// A held reply is a draft note in reply to its discussion, published with
-// the rest; one whose discussion is gone fails the submit with the drafts
-// it created removed.
+// A GitLab held reply is a draft note in its discussion that keeps the
+// discussion resolved or open; its discussion is read before (gone: no
+// draft is created) and after the publish (a reply GitLab dropped is a
+// partial submit naming it). A 400 on the draft is the discussion gone
+// only when the discussion's own read says so.
 func TestGitLabSubmitReviewHeldReply(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
-	var gone atomic.Bool
+	var state atomic.Value // "ok", "gone-before", "refused-gone", "refused-other", "dropped"
+	state.Store("ok")
+	published := atomic.Bool{}
+	discussions := func() string {
+		replies := ""
+		if published.Load() && state.Load() != "dropped" {
+			replies = `,{"id":12,"body":"held","author":{"username":"me"}}`
+		}
+		open := `{"id":"d9","notes":[{"id":11,"body":"root","author":{"username":"rev"},"resolvable":true,"resolved":true}` + replies + `]}`
+		other := `{"id":"d8","notes":[{"id":21,"body":"open root","author":{"username":"rev"},"resolvable":true,"resolved":false}]}`
+		if state.Load() == "gone-before" {
+			return "[" + other + "]"
+		}
+		return "[" + open + "," + other + "]"
+	}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
 		case call.Method == http.MethodGet && call.Path == mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
-		case call.Method == http.MethodPost && call.Path == mr+"/draft_notes":
-			if gone.Load() && strings.Contains(string(call.Body), "in_reply_to_discussion_id") {
+		case call.Method == http.MethodGet && strings.HasPrefix(call.Path, mr+"/discussions?"):
+			return forgeAPIAnswer{Body: discussions()}
+		case call.Method == http.MethodGet && call.Path == mr+"/discussions/d9":
+			if state.Load() == "refused-gone" {
 				return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"404 Not found"}`}
+			}
+			return forgeAPIAnswer{Body: `{"id":"d9"}`}
+		case call.Method == http.MethodPost && call.Path == mr+"/draft_notes":
+			if st := state.Load(); (st == "refused-gone" || st == "refused-other") && strings.Contains(string(call.Body), "in_reply_to_discussion_id") {
+				return forgeAPIAnswer{Status: http.StatusBadRequest, Body: `{"message":"400 Bad request"}`}
 			}
 			return forgeAPIAnswer{Status: http.StatusCreated, Body: fmt.Sprintf(`{"id":%d}`, len(call.Body))}
 		case call.Method == http.MethodDelete && strings.HasPrefix(call.Path, mr+"/draft_notes/"):
 			return forgeAPIAnswer{Status: http.StatusNoContent}
 		case call.Method == http.MethodPost && call.Path == mr+"/draft_notes/bulk_publish":
+			published.Store(true)
 			return forgeAPIAnswer{Status: http.StatusNoContent}
+		case call.Path == "user":
+			return forgeAPIAnswer{Body: `{"id":1,"username":"me"}`}
 		}
 		return forgeUnexpected(t, call)
 	})
 	request := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "summary", Comments: []ReviewLineComment{
 		{Body: "held", InReplyTo: &ReviewThreadReply{ThreadID: "d9"}},
 	}}
-	if result, err := core.SubmitReview(t.Context(), gitlabTestRef(7), request); err != nil || !result.PostedReview {
+	draftBodies := func(from int) []string {
+		var notes []string
+		for _, call := range calls.all()[from:] {
+			if call.Method == http.MethodPost && call.Path == mr+"/draft_notes" {
+				notes = append(notes, string(call.Body))
+			}
+		}
+		return notes
+	}
+	result, err := core.SubmitReview(t.Context(), gitlabTestRef(7), request)
+	if err != nil || !result.PostedReview {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	var notes []string
-	for _, call := range calls.all() {
-		if call.Method == http.MethodPost && call.Path == mr+"/draft_notes" {
-			notes = append(notes, string(call.Body))
+	if got := strings.Join(draftBodies(0), "\n"); got != `{"note":"summary"}`+"\n"+`{"note":"held","in_reply_to_discussion_id":"d9","resolve_discussion":true}` {
+		t.Fatalf("draft notes = %v", got)
+	}
+	// An open discussion's reply keeps it open.
+	open := SubmitReviewRequest{Verdict: ReviewVerdictComment, Comments: []ReviewLineComment{{Body: "open root", InReplyTo: &ReviewThreadReply{ThreadID: "d8"}}}}
+	seen := len(calls.all())
+	published.Store(false)
+	_, _ = core.SubmitReview(t.Context(), gitlabTestRef(7), open)
+	if got := draftBodies(seen); len(got) != 1 || got[0] != `{"note":"open root","in_reply_to_discussion_id":"d8","resolve_discussion":false}` {
+		t.Fatalf("open discussion's draft = %v", got)
+	}
+
+	// Gone before the submit: nothing is created.
+	state.Store("gone-before")
+	published.Store(false)
+	seen = len(calls.all())
+	_, err = core.SubmitReview(t.Context(), gitlabTestRef(7), request)
+	if gone, ok := errors.AsType[*ReplyThreadGoneError](err); !ok || gone.ThreadID != "d9" || len(draftBodies(seen)) != 0 {
+		t.Fatalf("gone before = %v, drafts %v", err, draftBodies(seen))
+	}
+
+	// A 400 on the reply's draft is gone when the discussion's read is a
+	// 404, and the summary's draft is removed; another 400 is not gone.
+	for _, tc := range []struct {
+		state string
+		gone  bool
+	}{{"refused-gone", true}, {"refused-other", false}} {
+		state.Store(tc.state)
+		seen = len(calls.all())
+		_, err = core.SubmitReview(t.Context(), gitlabTestRef(7), request)
+		if _, ok := errors.AsType[*ReplyThreadGoneError](err); ok != tc.gone || err == nil {
+			t.Fatalf("%s = %v", tc.state, err)
+		}
+		if got := calls.ops()[seen:]; !strings.HasPrefix(got[len(got)-1], "DELETE "+mr+"/draft_notes/") {
+			t.Fatalf("%s requests = %v, want the summary's draft removed", tc.state, got)
 		}
 	}
-	if strings.Join(notes, "\n") != `{"note":"summary"}`+"\n"+`{"note":"held","in_reply_to_discussion_id":"d9"}` {
-		t.Fatalf("draft notes = %v", notes)
+
+	// GitLab published the review and dropped the reply: a partial naming
+	// its thread.
+	state.Store("dropped")
+	published.Store(false)
+	result, err = core.SubmitReview(t.Context(), gitlabTestRef(7), request)
+	partial, ok := errors.AsType[*PartialSubmitError](err)
+	if !ok || !partial.PostedReview || partial.FailedThreadID != "d9" || !slices.Equal(partial.UnpostedReplies, []int{0}) || !result.PostedReview {
+		t.Fatalf("dropped reply = %+v, %v", result, err)
 	}
-	gone.Store(true)
-	seen := len(calls.all())
-	_, err := core.SubmitReview(t.Context(), gitlabTestRef(7), request)
-	if gone, ok := errors.AsType[*ReplyThreadGoneError](err); !ok || gone.ThreadID != "d9" {
-		t.Fatalf("gone discussion = %v", err)
-	}
-	if got := calls.ops()[seen:]; len(got) != 4 || !strings.HasPrefix(got[3], "DELETE "+mr+"/draft_notes/") {
-		t.Fatalf("gone discussion requests = %v, want the summary's draft removed", got)
+	if _, ok := errors.AsType[*ReplyThreadGoneError](err); !ok {
+		t.Fatalf("dropped reply = %v, want the thread gone", err)
 	}
 }
 
