@@ -263,6 +263,14 @@ export class CIPipeline {
      */
     "actions": CIPipelineActions;
 
+    /**
+     * ActionsUnavailable is the sentence saying why some actions are not
+     * offered: a read behind their flags (GitHub's repository permission,
+     * a run's artifacts) failed, and the flags it would have set are
+     * absent. Empty when every flag was read.
+     */
+    "actionsUnavailable"?: string;
+
     /** Creates a new CIPipeline instance. */
     constructor($$source: Partial<CIPipeline> = {}) {
         if (!("status" in $$source)) {

@@ -4993,9 +4993,10 @@ export function SaveAttachment(threadID: string, attachmentID: string): $Cancell
 /**
  * SaveCIArtifacts downloads the artifacts req names (a GitLab job's
  * archive by JobID, a GitHub pipeline's by the RunIDs its jobs carry)
- * under the app-managed ci-artifacts directory and returns where they
- * are. subject is the job's name, or the pipeline's for a run download,
- * for the file names and sentences. A path is stable per (repository,
+ * under the app-managed ci-artifacts directory, in the repository's own
+ * directory (ciRepoDir), and returns where they are. subject is the
+ * job's name, or the pipeline's for a run download, for the file names
+ * and sentences. A path is stable per (repository,
  * job or artifact), so a re-save refreshes the same file. A failure after
  * some files were saved names them in its sentence.
  */
