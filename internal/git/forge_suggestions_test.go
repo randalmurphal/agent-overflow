@@ -13,6 +13,7 @@ import (
 // state and replaces exactly the anchored lines.
 func TestApplySuggestionToFile(t *testing.T) {
 	t.Parallel()
+	bom := "\xef\xbb\xbf"
 	for _, tc := range []struct {
 		name       string
 		file       string
@@ -21,22 +22,49 @@ func TestApplySuggestionToFile(t *testing.T) {
 		want       string
 	}{
 		{"single line in the middle", "a\nb\nc\n", 2, 2, []string{"B"}, "a\nB\nc\n"},
+		{"first line", "a\nb\nc\n", 1, 1, []string{"X"}, "X\nb\nc\n"},
 		{"range at the start", "a\nb\nc\n", 1, 2, []string{"X"}, "X\nc\n"},
 		{"range at the end", "a\nb\nc\n", 2, 3, []string{"Y", "Z", "W"}, "a\nY\nZ\nW\n"},
 		{"range in the middle", "a\nb\nc\nd\n", 2, 3, []string{"M"}, "a\nM\nd\n"},
-		{"no trailing newline, last line", "a\nb", 2, 2, []string{"c"}, "a\nc"},
-		{"no trailing newline, first line", "a\nb", 1, 1, []string{"z"}, "z\nb"},
+		{"whole file", "a\nb\n", 1, 2, []string{"z"}, "z\n"},
+		{"one-line file", "a\n", 1, 1, []string{"b", "c"}, "b\nc\n"},
+		{"no trailing newline, last line replaced", "a\nb", 2, 2, []string{"c", "d"}, "a\nc\nd"},
+		{"no trailing newline, last line deleted", "a\nb", 2, 2, []string{}, "a\n"},
+		{"no trailing newline, last line untouched", "a\nb", 1, 1, []string{"z"}, "z\nb"},
+		{"no trailing newline, one line, no ending anywhere", "a", 1, 1, []string{"b", "c"}, "b\nc"},
+		{"no trailing newline, CRLF before it", "a\r\nb", 2, 2, []string{"c", "d"}, "a\r\nc\r\nd"},
 		{"CRLF file", "a\r\nb\r\nc\r\n", 2, 2, []string{"B", "B2"}, "a\r\nB\r\nB2\r\nc\r\n"},
-		{"CRLF without a trailing newline", "a\r\nb", 2, 2, []string{"c"}, "a\r\nc"},
+		{"a CRLF line in an LF file", "a\nb\r\nc\n", 2, 2, []string{"x", "y"}, "a\nx\r\ny\r\nc\n"},
+		{"an LF line in a CRLF file", "a\r\nb\nc\r\n", 2, 2, []string{"x", "y"}, "a\r\nx\ny\nc\r\n"},
+		{"mixed endings outside the range kept", "a\r\nb\nc\r\nd", 3, 3, []string{"C"}, "a\r\nb\nC\r\nd"},
+		{"a CR-only line kept", "\r\na\n\r\n", 2, 2, []string{"b"}, "\r\nb\n\r\n"},
+		{"a lone CR inside a line is content", "a\rb\nc\n", 2, 2, []string{"C"}, "a\rb\nC\n"},
 		{"deletion", "a\nb\nc\n", 2, 2, []string{}, "a\nc\n"},
 		{"deleting every line", "a\n", 1, 1, []string{}, ""},
+		{"empty replacement of a range", "a\nb\nc\nd\n", 2, 3, []string{}, "a\nd\n"},
 		{"a blank replacement line", "a\nb\n", 1, 1, []string{""}, "\nb\n"},
+		{"BOM kept when line 1 is replaced", bom + "a\nb\n", 1, 1, []string{"z"}, bom + "z\nb\n"},
+		{"BOM untouched below line 1", bom + "a\nb\n", 2, 2, []string{"z"}, bom + "a\nz\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := applySuggestionToFile([]byte(tc.file), tc.start, tc.end, tc.lines)
 			if err != nil || string(got) != tc.want {
 				t.Fatalf("= %q, %v; want %q", got, err, tc.want)
+			}
+			// The bytes before line start and after line end's ending are
+			// the input's, counted independently of the code under test.
+			lines := strings.SplitAfter(tc.file, "\n")
+			if lines[len(lines)-1] == "" {
+				lines = lines[:len(lines)-1]
+			}
+			prefix := strings.Join(lines[:tc.start-1], "")
+			if tc.start == 1 && strings.HasPrefix(tc.file, bom) {
+				prefix = bom
+			}
+			suffix := strings.Join(lines[tc.end:], "")
+			if !strings.HasPrefix(string(got), prefix) || !strings.HasSuffix(string(got), suffix) {
+				t.Fatalf("%q does not keep prefix %q and suffix %q", got, prefix, suffix)
 			}
 		})
 	}

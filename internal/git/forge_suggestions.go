@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -201,38 +202,70 @@ func (c *Core) SetPRCommentReaction(ctx context.Context, ref PRReference, target
 }
 
 // applySuggestionToFile is the file content after replacing its lines
-// start to end (1-based, inclusive) with lines. The file keeps its line
-// ending (CRLF when its first line ending is CRLF, else LF) and whether
-// it ends with one. A file that is not UTF-8 text, holds a NUL byte, or
-// has fewer lines than end, is refused.
+// start to end (1-based, inclusive) with lines, as a byte splice: the
+// bytes before line start and after line end's ending are the input's.
+// A line ends at "\n", its ending "\r\n" when a CR precedes it. The
+// replacement lines are joined and ended with the last replaced line's
+// ending; when that line has none (the file's last, with no final
+// newline), they are joined with the nearest preceding line ending in
+// the file (LF when there is none) and the last gets none. A deletion
+// removes the lines with their endings. A UTF-8 byte order mark stays in
+// front when line 1 is replaced. A file that is not UTF-8 text, holds a
+// NUL byte, or has fewer lines than end, is refused.
 func applySuggestionToFile(content []byte, start, end int, lines []string) ([]byte, error) {
-	if !utf8.Valid(content) || strings.ContainsRune(string(content), 0) {
+	if !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
 		return nil, &SuggestionNotAppliedError{Reason: "the file is not text"}
 	}
-	text := string(content)
-	eol := "\n"
-	if i := strings.IndexByte(text, '\n'); i > 0 && text[i-1] == '\r' {
-		eol = "\r\n"
-	}
-	trailing := strings.HasSuffix(text, "\n")
-	body := strings.TrimSuffix(strings.TrimSuffix(text, "\n"), "\r")
-	var fileLines []string
-	if text != "" {
-		fileLines = strings.Split(body, "\n")
-		for i := range fileLines {
-			fileLines[i] = strings.TrimSuffix(fileLines[i], "\r")
+	// starts[i] is line i+1's first byte; a last line without an ending
+	// counts when it holds anything.
+	starts := []int{}
+	for at := 0; at < len(content); {
+		starts = append(starts, at)
+		i := bytes.IndexByte(content[at:], '\n')
+		if i < 0 {
+			break
 		}
+		at += i + 1
 	}
-	if start < 1 || end < start || end > len(fileLines) {
-		return nil, &SuggestionNotAppliedError{Reason: fmt.Sprintf("the file has %d lines, not the lines %d to %d the comment is on", len(fileLines), start, end)}
+	if start < 1 || end < start || end > len(starts) {
+		return nil, &SuggestionNotAppliedError{Reason: fmt.Sprintf("the file has %d lines, not the lines %d to %d the comment is on", len(starts), start, end)}
 	}
-	out := make([]string, 0, len(fileLines)-(end-start+1)+len(lines))
-	out = append(out, fileLines[:start-1]...)
-	out = append(out, lines...)
-	out = append(out, fileLines[end:]...)
-	result := strings.Join(out, eol)
-	if trailing && len(out) > 0 {
-		result += eol
+	lineEnding := func(n int) string { // line n's ending, 1-based
+		stop := len(content)
+		if n < len(starts) {
+			stop = starts[n]
+		}
+		switch {
+		case stop == 0 || content[stop-1] != '\n':
+			return ""
+		case stop >= 2 && content[stop-2] == '\r':
+			return "\r\n"
+		}
+		return "\n"
 	}
-	return []byte(result), nil
+	from, to := starts[start-1], len(content)
+	if end < len(starts) {
+		to = starts[end]
+	}
+	if start == 1 && bytes.HasPrefix(content, utf8BOM) {
+		from = len(utf8BOM)
+	}
+	var replacement strings.Builder
+	if len(lines) > 0 {
+		eol, last := lineEnding(end), lineEnding(end)
+		for n := end - 1; eol == "" && n >= 1; n-- {
+			eol = lineEnding(n)
+		}
+		if eol == "" {
+			eol = "\n"
+		}
+		replacement.WriteString(strings.Join(lines, eol))
+		replacement.WriteString(last)
+	}
+	out := make([]byte, 0, from+replacement.Len()+len(content)-to)
+	out = append(out, content[:from]...)
+	out = append(out, replacement.String()...)
+	return append(out, content[to:]...), nil
 }
+
+var utf8BOM = []byte{0xef, 0xbb, 0xbf}
