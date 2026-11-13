@@ -224,7 +224,9 @@ func graphQLName(tok string) bool {
 		return false
 	}
 	for j, r := range tok {
-		if r != '_' && !('a' <= r && r <= 'z') && !('A' <= r && r <= 'Z') && (j == 0 || !('0' <= r && r <= '9')) {
+		letter := r == '_' || ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z')
+		digit := j > 0 && '0' <= r && r <= '9'
+		if !letter && !digit {
 			return false
 		}
 	}
