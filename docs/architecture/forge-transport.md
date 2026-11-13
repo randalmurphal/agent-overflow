@@ -366,8 +366,10 @@ found too large for lines, fails the write before anything is posted. An
 unchanged line outside every hunk keeps the offset of the gap it is in.
 A thread read back takes a range's side and last line from its
 `line_range` end and its first line from the start's number on the
-start's own half, as GitHub's `startLine` is: a range from a removed line
-to an unchanged one reads on the right from the removed line's number.
+start's own half, as GitHub's `startLine` is, with that half as
+`startSide` (GitHub `startDiffSide`): a range from a removed line to an
+unchanged one reads on the right from the removed line's old number, with
+`startSide` left.
 
 Git status looks up a branch's open PR (`lookupOpenPR`,
 `internal/git/status_pr_cache.go`). The forges' head-branch filters also

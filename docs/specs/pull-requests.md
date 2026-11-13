@@ -203,7 +203,10 @@ with All commits picked, on both surfaces and both forges:
   is on both; a deleted line to an added one is refused), on lines the
   loaded diff has (not an expansion's) and inside one hunk; a refusal
   says which on the editor and leaves the editor on its line. A thread
-  the forge reports with a start line shows the same label and tint.
+  the forge reports with a start line shows the same label and tint. One
+  written on the forge from a removed line through an unchanged or added
+  one reads `-4 to +6` and tints the rows from the removed line through
+  the last one.
 - One "Comment…" field at the end of the Conversation feed posts a
   comment on the PR itself, now; it shows in the feed even after the feed
   froze.
