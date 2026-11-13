@@ -93,7 +93,9 @@ PR stores; components own presentation and interaction.
   rung of `utils/stepBack.ts` and the Pull requests page run first. The
   conversation refresh is on the Conversation section's header. The PR title bar (`ReviewPRTitleBar`) is four
   fixed-minimum-height lines: title, author and state, refs and verdicts,
-  CI with its refresh inside the wrapping chip row.
+  CI with its pipeline actions menu and refresh inside the wrapping chip
+  row. The CI actions contract is in
+  [pull requests](../../../../../docs/specs/pull-requests.md#ci-actions).
 - A jump to a row inside a file lands under the sticky file bar: scroll it
   with `offset: -REVIEW_FILE_HEADER_BAR_PX`.
 - A jump to a thread pulses the destination card once and leaves nothing

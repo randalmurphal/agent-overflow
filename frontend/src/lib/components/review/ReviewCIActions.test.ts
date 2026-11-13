@@ -141,7 +141,7 @@ describe('<ReviewCILogView> actions', () => {
     return render(ReviewCILogView, {
       view: { stageName: 'test', jobId: '20', job: JOBS[0]! },
       log: null,
-      fetchLines: async (from: number) => ({ from, lines: [] }),
+      fetchLines: async (from: number) => ({ from, lines: [], totalLines: 0, version: 0 }),
       loading: false,
       error: null,
       savedPath: null,
