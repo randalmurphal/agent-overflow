@@ -20,6 +20,7 @@ type gitlabAnchor struct {
 	Path, OldPath            string
 	Side                     string
 	Line, StartLine, OldLine *int
+	StartPoint               *LinePoint
 }
 
 // gitlabPositionAnchor reads a position against the pull's diff: a file,
@@ -63,14 +64,15 @@ func gitlabPositionAnchor(p *Pull, pos *gitlabDraftPositionIn) (gitlabAnchor, re
 	if !samePtr(end.OldLine, pos.OldLine) || !samePtr(end.NewLine, pos.NewLine) {
 		return gitlabAnchor{}, unhandled("line_range end does not name the position's line"), false
 	}
-	start := pos.LineRange.Start.NewLine
-	if anchor.Side == "left" {
-		start = pos.LineRange.Start.OldLine
+	// The first line may lie on the other half (a removed line through an
+	// unchanged one): kept as named, and as StartLine its number on its
+	// own half, as GitHub's startLine is.
+	first := pos.LineRange.Start
+	anchor.StartPoint = &LinePoint{Type: first.Type, OldLine: first.OldLine, NewLine: first.NewLine}
+	anchor.StartLine = first.NewLine
+	if first.Type == "old" {
+		anchor.StartLine = first.OldLine
 	}
-	if start == nil {
-		return gitlabAnchor{}, unhandled("line_range has no start line on side %s; the fake models a range on one half", anchor.Side), false
-	}
-	anchor.StartLine = start
 	return anchor, response{}, true
 }
 
@@ -138,7 +140,7 @@ func glabCreateDiscussion(e *Engine, c *call, m []string) response {
 		return fail
 	}
 	comment := Comment{ID: e.ids.next(), Author: e.viewer, Body: in.Body, CreatedAt: glabNow()}
-	thread := Thread{ID: e.ids.sha(), Path: anchor.Path, OldPath: anchor.OldPath, Side: anchor.Side, Line: anchor.Line, StartLine: anchor.StartLine, OldLine: anchor.OldLine, Comments: []Comment{comment}}
+	thread := Thread{ID: e.ids.sha(), Path: anchor.Path, OldPath: anchor.OldPath, Side: anchor.Side, Line: anchor.Line, StartLine: anchor.StartLine, StartPoint: anchor.StartPoint, OldLine: anchor.OldLine, Comments: []Comment{comment}}
 	p.Threads = append(p.Threads, thread)
 	return glabCreated(map[string]any{"id": thread.ID, "individual_note": false, "notes": []map[string]any{gitlabNote(comment, map[string]any{"type": "DiffNote"})}})
 }

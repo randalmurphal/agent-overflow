@@ -356,11 +356,7 @@ func gitlabDiscussions(p *Pull) []map[string]any {
 			}
 		}
 		if thread.StartLine != nil {
-			pointType := map[string]string{"new_line": "new", "old_line": "old"}[lineKey]
-			position["line_range"] = map[string]any{
-				"start": map[string]any{lineKey: *thread.StartLine, "type": pointType},
-				"end":   map[string]any{lineKey: *thread.Line, "type": pointType},
-			}
+			position["line_range"] = gitlabLineRange(p, thread)
 		}
 		notes := make([]map[string]any, 0, len(thread.Comments))
 		for _, comment := range thread.Comments {

@@ -229,8 +229,10 @@ type DraftNote struct {
 	Line      *int   `json:"line,omitempty"`
 	StartLine *int   `json:"startLine,omitempty"`
 	// OldLine is an unchanged line's old number beside Line (see Thread).
-	OldLine *int   `json:"oldLine,omitempty"`
-	Side    string `json:"side,omitempty"`
+	OldLine *int `json:"oldLine,omitempty"`
+	// StartPoint is a range's first line (see Thread).
+	StartPoint *LinePoint `json:"startPoint,omitempty"`
+	Side       string     `json:"side,omitempty"`
 	// InReplyTo is the discussion a draft reply answers; publishing adds
 	// the note to it. It has no path or line.
 	InReplyTo string `json:"inReplyTo,omitempty"`
@@ -337,6 +339,15 @@ type Comment struct {
 	discussion string
 }
 
+// LinePoint is one line of a GitLab diff as a line_range names it: Type
+// "old" a removed line by OldLine, "new" an added line by NewLine, empty
+// an unchanged line by both.
+type LinePoint struct {
+	Type    string `json:"type,omitempty"`
+	OldLine *int   `json:"oldLine,omitempty"`
+	NewLine *int   `json:"newLine,omitempty"`
+}
+
 // Thread is one review thread.
 type Thread struct {
 	// ID is the GitHub node id or GitLab discussion id. Generated when
@@ -352,6 +363,10 @@ type Thread struct {
 	// OldLine is an unchanged line's old number beside Line, its new one
 	// (GitLab positions name both); nil otherwise.
 	OldLine *int `json:"oldLine,omitempty"`
+	// StartPoint is a GitLab range's first line as its position named it,
+	// which may lie on the other half from Line (a removed line through an
+	// unchanged one). Nil names StartLine on Side.
+	StartPoint *LinePoint `json:"startPoint,omitempty"`
 	// Side is "right" (default), "left" or "file".
 	Side     string    `json:"side,omitempty"`
 	Resolved bool      `json:"resolved,omitempty"`
@@ -786,7 +801,7 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 			return fmt.Errorf("draftNotes[%d]: a reply has no path, line or side", i)
 		}
 		if draft.Path != "" {
-			probe := Thread{Path: draft.Path, Line: draft.Line, StartLine: draft.StartLine, OldLine: draft.OldLine, Side: draft.Side, ID: "-", Comments: []Comment{{Author: draft.Author, Body: draft.Note}}}
+			probe := Thread{Path: draft.Path, Line: draft.Line, StartLine: draft.StartLine, StartPoint: draft.StartPoint, OldLine: draft.OldLine, Side: draft.Side, ID: "-", Comments: []Comment{{Author: draft.Author, Body: draft.Note}}}
 			if err := probe.normalize(forge, draft.Author, "", ids); err != nil {
 				return fmt.Errorf("draftNotes[%d]: %w", i, err)
 			}
@@ -1019,8 +1034,11 @@ func (t *Thread) normalize(forge, author, authorName string, ids *idSource) erro
 	if t.Side != "file" && t.Line == nil {
 		return errors.New("a line thread needs line")
 	}
-	if t.OldLine != nil && (t.Side != "right" || t.StartLine != nil) {
-		return errors.New("oldLine names an unchanged line: a right-side thread on one line")
+	if t.OldLine != nil && t.Side != "right" {
+		return errors.New("oldLine names an unchanged line: a right-side thread")
+	}
+	if t.StartPoint != nil && t.StartLine == nil {
+		return errors.New("startPoint names a range's first line: give startLine too")
 	}
 	if t.ID == "" {
 		if forge == "github" {

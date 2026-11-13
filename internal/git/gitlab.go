@@ -675,21 +675,38 @@ func normalizeGitLabPosition(position *gitlabPositionRaw) (string, *int, *int, s
 	if strings.EqualFold(position.PositionType, "file") {
 		return path, nil, nil, "file"
 	}
+	// A range is its line_range: its side and last line are its end's,
+	// its first line the start's number on the start's own half (as
+	// GitHub's startLine), whichever numbers the position itself carries.
+	if lr := position.LineRange; lr != nil {
+		if side, line := gitlabPointLine(lr.End, ""); line != nil {
+			_, start := gitlabPointLine(lr.Start, side)
+			return path, line, start, side
+		}
+	}
 	side := "right"
 	line := position.NewLine
 	if position.NewLine == nil && position.OldLine != nil {
 		side = "left"
 		line = position.OldLine
 	}
-	var startLine *int
-	if position.LineRange != nil {
-		if side == "left" {
-			startLine = position.LineRange.Start.OldLine
-		} else {
-			startLine = position.LineRange.Start.NewLine
-		}
+	return path, line, nil, side
+}
+
+// gitlabPointLine is a line_range point's half and its number there: a
+// removed line (type old) on the left, an added one (type new) on the
+// right, an unchanged one on prefer's half ("right" when empty) when it
+// has that number, else on the half it has.
+func gitlabPointLine(point gitlabLineRangePoint, prefer string) (string, *int) {
+	switch {
+	case point.Type == "old":
+		return "left", point.OldLine
+	case point.Type == "new":
+		return "right", point.NewLine
+	case prefer == "left" && point.OldLine != nil, point.NewLine == nil:
+		return "left", point.OldLine
 	}
-	return path, line, startLine, side
+	return "right", point.NewLine
 }
 
 func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {

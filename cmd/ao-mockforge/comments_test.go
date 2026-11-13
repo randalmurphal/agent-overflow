@@ -12,11 +12,13 @@ import (
 
 // commentDiff is the diff commentFixture's pull changes: a.go adds lines
 // 3 to 8, b.go removes its old line 2, c.go changes its only line, and
-// old.go is renamed new.go with its line 2 replaced.
+// old.go is renamed new.go with its line 2 replaced, and d.go replaces
+// old lines 11 and 12 with new 11 and 12 between unchanged lines.
 const commentDiff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,8 @@\n o1\n o2\n+n3\n+n4\n+n5\n+n6\n+n7\n+n8\n" +
 	"diff --git a/b.go b/b.go\n--- a/b.go\n+++ b/b.go\n@@ -1,3 +1,2 @@\n x\n-y\n z\n" +
 	"diff --git a/c.go b/c.go\n--- a/c.go\n+++ b/c.go\n@@ -1 +1 @@\n-a\n+b\n" +
-	"diff --git a/old.go b/new.go\nsimilarity index 80%\nrename from old.go\nrename to new.go\n--- a/old.go\n+++ b/new.go\n@@ -1,3 +1,3 @@\n k\n-gone\n+came\n k2\n"
+	"diff --git a/old.go b/new.go\nsimilarity index 80%\nrename from old.go\nrename to new.go\n--- a/old.go\n+++ b/new.go\n@@ -1,3 +1,3 @@\n k\n-gone\n+came\n k2\n" +
+	"diff --git a/d.go b/d.go\n--- a/d.go\n+++ b/d.go\n@@ -10,5 +10,5 @@\n c10\n-r11\n-r12\n+a11\n+a12\n c13\n c14\n"
 
 // commentFixture adds to a merge fixture's first pull commentDiff, a
 // review thread and a conversation comment of another author's, which the
@@ -359,6 +361,49 @@ func TestGitLabCommentsOnARenamedFileThroughTheAppsForgeCode(t *testing.T) {
 	for _, body := range []string{"on the removed line", "on the added line", "on the renamed file", "held across the change"} {
 		if thread := threadByBody(read, body); thread == nil || thread.Path != "new.go" {
 			t.Fatalf("%q = %+v", body, thread)
+		}
+	}
+}
+
+// A GitLab range the app posts reads back as the same range on the same
+// side: removed lines on the left, added lines on the right, and a range
+// from a removed line to an unchanged one on the right from the removed
+// line's number, as GitHub reads a range across sides.
+func TestGitLabRangesReadBackAsPostedThroughTheAppsForgeCode(t *testing.T) {
+	r := newRig(t, commentFixture(gitlabMergeFixture("success")))
+	ctx := forgeapi.WithInteractive(t.Context())
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	n := func(v int) *int { return &v }
+	cases := []struct {
+		comment     gitops.ReviewLineComment
+		side        string
+		start, line int
+	}{
+		{gitops.ReviewLineComment{Path: "d.go", Body: "old side", Line: n(12), Side: "left", Start: &gitops.ReviewLineStart{Line: 11, Side: "left"}}, "left", 11, 12},
+		{gitops.ReviewLineComment{Path: "d.go", Body: "new side", Line: n(12), Side: "right", Start: &gitops.ReviewLineStart{Line: 11, Side: "right"}}, "right", 11, 12},
+		{gitops.ReviewLineComment{Path: "d.go", Body: "mixed", Line: n(13), OldLine: n(13), Side: "right", Start: &gitops.ReviewLineStart{Line: 11, Side: "left"}}, "right", 11, 13},
+		{gitops.ReviewLineComment{Path: "d.go", Body: "unchanged", Line: n(14), OldLine: n(14), Side: "right", Start: &gitops.ReviewLineStart{Line: 13, OldLine: 13, Side: "right"}}, "right", 13, 14},
+	}
+	for _, tc := range cases {
+		if err := r.core.PostPRLineComment(ctx, ref, strings.Repeat("4", 40), tc.comment); err != nil {
+			t.Fatalf("PostPRLineComment %q: %v", tc.comment.Body, err)
+		}
+	}
+	held := cases[2].comment
+	held.Body = "mixed, held"
+	if _, err := r.core.SubmitReview(ctx, ref, gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Comments: []gitops.ReviewLineComment{held}}); err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+	expectAllHandled(t, r)
+	read := mergeRead(t, r, ref)
+	for _, tc := range append(cases, struct {
+		comment     gitops.ReviewLineComment
+		side        string
+		start, line int
+	}{held, "right", 11, 13}) {
+		got := threadByBody(read, tc.comment.Body)
+		if got == nil || got.Side != tc.side || got.Line == nil || *got.Line != tc.line || got.StartLine == nil || *got.StartLine != tc.start {
+			t.Fatalf("%q reads back as %+v, want %s %d..%d", tc.comment.Body, got, tc.side, tc.start, tc.line)
 		}
 	}
 }

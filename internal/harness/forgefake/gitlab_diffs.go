@@ -190,3 +190,43 @@ func glabMRDiffs(e *Engine, c *call, m []string) response {
 func gitlabPositionInvalid() response {
 	return glabStatus(http.StatusBadRequest, "Note {:line_code=>[\"can't be blank\", \"must be a valid line code\"]}")
 }
+
+// gitlabLineRange is a range thread's line_range as GitLab answers it: its
+// first line as its position named it (StartPoint, or StartLine on Side),
+// its last the thread's line, each with its type, both numbers (null
+// where the half lacks the line) and its line code when the pull's diff
+// has the line.
+func gitlabLineRange(p *Pull, thread Thread) map[string]any {
+	start := thread.StartPoint
+	if start == nil {
+		start = &LinePoint{Type: "new", NewLine: thread.StartLine}
+		if thread.Side == "left" {
+			start = &LinePoint{Type: "old", OldLine: thread.StartLine}
+		}
+	}
+	end := &LinePoint{Type: "new", NewLine: thread.Line}
+	switch {
+	case thread.Side == "left":
+		end = &LinePoint{Type: "old", OldLine: thread.Line}
+	case thread.OldLine != nil:
+		end = &LinePoint{OldLine: thread.OldLine, NewLine: thread.Line}
+	}
+	file, inDiff := gitlabDiffFileOf(p, thread.Path)
+	point := func(at *LinePoint) map[string]any {
+		out := map[string]any{"type": nil, "old_line": nil, "new_line": nil, "line_code": nil}
+		if at.Type != "" {
+			out["type"] = at.Type
+		}
+		if at.OldLine != nil {
+			out["old_line"] = *at.OldLine
+		}
+		if at.NewLine != nil {
+			out["new_line"] = *at.NewLine
+		}
+		if oldCursor, newCursor, ok := file.cursors(at.OldLine, at.NewLine); inDiff && ok {
+			out["line_code"] = file.lineCode(oldCursor, newCursor)
+		}
+		return out
+	}
+	return map[string]any{"start": point(start), "end": point(end)}
+}

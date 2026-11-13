@@ -347,7 +347,7 @@ is its decimal id and its URL the merge request's page at `#note_<id>`.
 | `PostPRComment` | 1 `POST .../notes` |
 | `ReplyToThread` | 1 `POST .../discussions/D/notes`; a 404 is `*ReplyThreadGoneError` |
 | `EditComment`, `DeleteComment` | 1 `PUT` (`{body}`) or `DELETE .../discussions/D/notes/N` |
-| `SubmitReview` | The diffs read below when a comment is positioned, 1 `POST .../draft_notes` per comment, then `bulk_publish`. With held replies, 1 discussions read before (a discussion that is gone fails the submit with `*ReplyThreadGoneError` before any draft; each reply's draft carries `in_reply_to_discussion_id` and `resolve_discussion` set to its discussion's state, since publishing a reply without it reopens a resolved discussion) and 1 after the publish (GitLab drops a reply whose discussion went in between and answers success, so a reply that is not a new note of its discussion is a `*PartialSubmitError` naming its thread, `UnpostedReplies` its ordinal). A 400 on a reply's draft is the discussion gone when `GET .../discussions/D` answers 404 |
+| `SubmitReview` | The diffs read below when a comment is positioned, 1 `POST .../draft_notes` per comment, then `bulk_publish`. With held replies, 1 discussions read before (a discussion that is gone fails the submit with `*ReplyThreadGoneError` before any draft; each reply's draft carries `in_reply_to_discussion_id` and `resolve_discussion` set to its discussion's state, since publishing a reply without it reopens a resolved discussion) and 1 after the publish (GitLab drops a reply whose discussion went in between and answers success, so a reply that is not a new note of its discussion is a `*PartialSubmitError` naming its thread, `UnpostedReplies` its ordinal). A 400 on a reply's draft is the discussion gone when `GET .../discussions/D` answers 404. The publish posts every draft at once, so the result counts every file comment posted whatever becomes of the replies and the approval, and each draft is sent but the replies that check could not find. An approval that fails after that check failed or found a reply missing is reported beside it (`PartialSubmitError.ApproveErr`), not in its place |
 
 A position names its file by `old_path` and `new_path` and, in a
 `line_range`, each end by a `line_code` of `sha1(new_path)` and the old
@@ -356,11 +356,18 @@ the next old line, a removed line's new cursor the next new line) with
 `type` `new`, `old`, or none for an unchanged line. The caller names a
 file by one path and a line by its own numbers, so a positioned write
 first reads `GET .../merge_requests/:iid/diffs?per_page=100`
-(`readGitLabDiffFiles`, `internal/git/gitlab_diff.go`; pages until every
-named file is found, at most 30) and takes both paths and both cursors
-from it. A file or line that diff lacks, or a file GitLab collapsed or
+(`readGitLabDiffFiles`, `internal/git/gitlab_diff.go`; at most 30 pages)
+and takes both paths and both cursors from it. A named path is the entry
+whose new path it is; the entry whose old path it is (a file renamed
+away) stands in only when no entry has it as its new path, which is known
+once every page is read, so the read stops early only when every path
+was found as a new path. A file or line that diff lacks, or a file GitLab collapsed or
 found too large for lines, fails the write before anything is posted. An
 unchanged line outside every hunk keeps the offset of the gap it is in.
+A thread read back takes a range's side and last line from its
+`line_range` end and its first line from the start's number on the
+start's own half, as GitHub's `startLine` is: a range from a removed line
+to an unchanged one reads on the right from the removed line's number.
 
 Git status looks up a branch's open PR (`lookupOpenPR`,
 `internal/git/status_pr_cache.go`). The forges' head-branch filters also

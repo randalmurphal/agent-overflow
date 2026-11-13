@@ -70,7 +70,7 @@ func glabDraftCreate(e *Engine, c *call, m []string) response {
 		if !ok {
 			return fail
 		}
-		draft.Path, draft.OldPath, draft.Side, draft.Line, draft.StartLine, draft.OldLine = anchor.Path, anchor.OldPath, anchor.Side, anchor.Line, anchor.StartLine, anchor.OldLine
+		draft.Path, draft.OldPath, draft.Side, draft.Line, draft.StartLine, draft.StartPoint, draft.OldLine = anchor.Path, anchor.OldPath, anchor.Side, anchor.Line, anchor.StartLine, anchor.StartPoint, anchor.OldLine
 	}
 	draft.ID = e.ids.next()
 	p.DraftNotes = append(p.DraftNotes, draft)
@@ -175,7 +175,7 @@ func glabDraftPublish(e *Engine, c *call, m []string) response {
 			continue
 		}
 		p.Threads = append(p.Threads, Thread{
-			ID: e.ids.sha(), Path: draft.Path, OldPath: draft.OldPath, Line: draft.Line, StartLine: draft.StartLine, OldLine: draft.OldLine, Side: draft.Side,
+			ID: e.ids.sha(), Path: draft.Path, OldPath: draft.OldPath, Line: draft.Line, StartLine: draft.StartLine, StartPoint: draft.StartPoint, OldLine: draft.OldLine, Side: draft.Side,
 			Comments: []Comment{comment},
 		})
 	}
