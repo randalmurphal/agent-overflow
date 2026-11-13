@@ -5600,6 +5600,11 @@ describe('reviewPane store — runs of a PR\'s commits', () => {
     expect(state.selectedCommits).toBeNull();
     expect(whole.mock.calls.length).toBe(before + 1);
     expect(run).toHaveBeenCalledTimes(1);
+    // Changes from the first commit is the whole PR: to its first file.
+    await state.selectCommits({ first: C, last: B });
+    await state.showChangesFrom(C);
+    expect(state.selectedCommits).toBeNull();
+    expect(state.pendingJumpFilePath).toBe('src/app.ts');
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
   });
 

@@ -1782,7 +1782,10 @@ export function createReviewPaneState(
     const selection = commitSelectionFromHere(commits, sha);
     await selectCommits(selection, { userInitiated: true });
     if (disposed || !sameCommitSelection(selectedCommits, selection)) return;
-    pendingJumpRowKey = selection ? REVIEW_COMMIT_CARD_ROW_KEY : REVIEW_OVERVIEW_ROW_KEY;
+    // To the diff: a run's card leads it; the whole PR's diff starts at
+    // its first file (the overview above it is where the press was).
+    if (selection) pendingJumpRowKey = REVIEW_COMMIT_CARD_ROW_KEY;
+    else if (files.length > 0) requestFileJump(files[0].path);
   }
 
   // The whole PR's diff index of a head-ending run (reviewPRLineIndex):

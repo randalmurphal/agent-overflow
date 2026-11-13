@@ -116,7 +116,7 @@
            (an <img>, never inlined) when on. -->
       <button
         type="button"
-        class="mr-2 shrink-0 rounded-[var(--radius-field)] px-1.5 py-0.5 text-[0.6875rem] compact:select-none {rendered ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-surface-1 hover:text-fg'}"
+        class="mr-2 shrink-0 rounded-[var(--radius-field)] border px-1.5 py-px text-[0.6875rem] compact:select-none {rendered ? 'border-accent/40 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-1 hover:text-fg'}"
         aria-pressed={rendered}
         title={rendered ? 'Show the SVG\'s text diff' : 'Show the SVG as an image'}
         data-testid="review-svg-rendered"
