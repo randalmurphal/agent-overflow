@@ -401,26 +401,44 @@ func TestCIArtifactDownloads(t *testing.T) {
 	}
 }
 
-// A log view open on a retried job follows the job of the same stage,
-// name and run with the highest newer id.
+// A log view open on a retried job follows it only when the job left
+// the read, the read is the job's own pipeline (GitLab: the same pipeline
+// id; GitHub: the same workflow run), and exactly one job of the same
+// stage and name has a higher id. Otherwise it does not follow.
 func TestFindCIJobRetry(t *testing.T) {
 	t.Parallel()
-	pipeline := CIPipeline{Stages: []CIStage{
-		{Name: "test", Jobs: []CIJob{{ID: "20", Name: "unit"}, {ID: "35", Name: "unit"}, {ID: "30", Name: "unit"}, {ID: "40", Name: "lint"}}},
-		{Name: "other", Jobs: []CIJob{{ID: "50", Name: "unit"}}},
-	}}
-	if got := FindCIJobRetry(pipeline, "test", CIJob{ID: "20", Name: "unit"}); got == nil || got.ID != "35" {
-		t.Fatalf("retry of 20 = %+v, want 35", got)
+	gitlab := func(id string, jobs ...CIJob) CIPipeline {
+		return CIPipeline{ID: id, Stages: []CIStage{{Name: "test", Jobs: jobs}}}
 	}
-	if got := FindCIJobRetry(pipeline, "test", CIJob{ID: "35", Name: "unit"}); got != nil {
-		t.Fatalf("the newest attempt has a retry %+v", got)
+	old := CIJob{ID: "20", Name: "unit"}
+	if got := FindCIJobRetry(gitlab("77", CIJob{ID: "35", Name: "unit"}, CIJob{ID: "40", Name: "lint"}), "77", "test", old); got == nil || got.ID != "35" {
+		t.Fatalf("GitLab retry in the same pipeline = %+v, want 35", got)
 	}
-	// Two GitHub runs of one workflow share its stage and job names: the
-	// retry is the one in the old job's run.
-	runs := CIPipeline{Stages: []CIStage{{Name: "CI", Jobs: []CIJob{
-		{ID: "20", RunID: "1", Name: "unit"}, {ID: "60", RunID: "2", Name: "unit"}, {ID: "45", RunID: "1", Name: "unit"},
-	}}}}
-	if got := FindCIJobRetry(runs, "CI", CIJob{ID: "20", RunID: "1", Name: "unit"}); got == nil || got.ID != "45" {
-		t.Fatalf("retry of run 1's job = %+v, want 45 of the same run", got)
+	// A new commit's pipeline 78 holds a job of the same stage and name.
+	if got := FindCIJobRetry(gitlab("78", CIJob{ID: "21", Name: "unit"}), "77", "test", old); got != nil {
+		t.Fatalf("followed into another pipeline: %+v", got)
+	}
+	// The open job is still in the read: nothing replaced it.
+	if got := FindCIJobRetry(gitlab("77", old, CIJob{ID: "35", Name: "unit"}), "77", "test", old); got != nil {
+		t.Fatalf("followed while the job is still there: %+v", got)
+	}
+	// Two candidates: no telling which took over.
+	if got := FindCIJobRetry(gitlab("77", CIJob{ID: "35", Name: "unit"}, CIJob{ID: "36", Name: "unit"}), "77", "test", old); got != nil {
+		t.Fatalf("followed one of two candidates: %+v", got)
+	}
+
+	// GitHub: the run is the pipeline. A PR's checks have no id.
+	run := func(jobs ...CIJob) CIPipeline { return CIPipeline{Stages: []CIStage{{Name: "CI", Jobs: jobs}}} }
+	ghOld := CIJob{ID: "20", RunID: "1", Name: "unit"}
+	if got := FindCIJobRetry(run(CIJob{ID: "45", RunID: "1", Name: "unit"}, CIJob{ID: "60", RunID: "2", Name: "unit"}), "", "CI", ghOld); got == nil || got.ID != "45" {
+		t.Fatalf("GitHub retry in the same run = %+v, want 45", got)
+	}
+	if got := FindCIJobRetry(run(CIJob{ID: "60", RunID: "2", Name: "unit"}), "", "CI", ghOld); got != nil {
+		t.Fatalf("followed into another run: %+v", got)
+	}
+	// Two distinct jobs of one run share a display name and both remain.
+	twins := run(CIJob{ID: "20", RunID: "1", Name: "unit"}, CIJob{ID: "25", RunID: "1", Name: "unit"})
+	if got := FindCIJobRetry(twins, "", "CI", ghOld); got != nil {
+		t.Fatalf("followed a twin that is not a retry: %+v", got)
 	}
 }

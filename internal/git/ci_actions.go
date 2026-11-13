@@ -320,21 +320,25 @@ func (c *Core) StreamCIArtifact(ctx context.Context, repo RepoReference, artifac
 	return c.ForgeByID(repo.Forge).StreamCIArtifact(ctx, repo, artifact, dst, limit)
 }
 
-// FindCIJobRetry returns the job that took over from old in pipeline: the
-// one in the same stage with the same name (and, when old names its
-// GitHub workflow run, the same run, since two runs of one workflow share
-// a stage and may share job names) and the highest id above old's, or
-// nil. Both forges give a retried job a new, higher id and keep
-// its name and stage (GitHub: the new attempt's job; GitLab: the retry,
-// the old job dropping out of the read as retried), so this is how a log
-// view open on old follows its retry.
-func FindCIJobRetry(pipeline CIPipeline, stage string, old CIJob) *CIJob {
+// FindCIJobRetry returns the job that took over from old, which was a
+// job of stage in the pipeline oldPipelineID names, in pipeline, the read
+// applied since; nil when it cannot tell. It follows only when every one
+// of these holds: old is no longer in the read; the read is old's own
+// pipeline (GitLab: pipeline.ID is oldPipelineID; GitHub: a job of old's
+// workflow run, which a re-run keeps); and exactly one job of the same
+// stage and name has an id above old's. Both forges give a retried job a
+// new, higher id and keep its name and stage, and drop the old job from
+// the read. A new commit's pipeline, or two jobs that share a name, is
+// not a retry.
+func FindCIJobRetry(pipeline CIPipeline, oldPipelineID, stage string, old CIJob) *CIJob {
 	oldID, err := strconv.ParseInt(old.ID, 10, 64)
-	if err != nil {
+	if err != nil || FindCIJob(pipeline, old.ID) != nil {
+		return nil
+	}
+	if old.RunID == "" && (pipeline.ID == "" || pipeline.ID != oldPipelineID) {
 		return nil
 	}
 	var found *CIJob
-	var foundID int64
 	for i := range pipeline.Stages {
 		if pipeline.Stages[i].Name != stage {
 			continue
@@ -342,10 +346,13 @@ func FindCIJobRetry(pipeline CIPipeline, stage string, old CIJob) *CIJob {
 		for j := range pipeline.Stages[i].Jobs {
 			job := &pipeline.Stages[i].Jobs[j]
 			id, err := strconv.ParseInt(job.ID, 10, 64)
-			if err != nil || job.Name != old.Name || (old.RunID != "" && job.RunID != old.RunID) || id <= oldID || (found != nil && id < foundID) {
+			if err != nil || job.Name != old.Name || (old.RunID != "" && job.RunID != old.RunID) || id <= oldID {
 				continue
 			}
-			found, foundID = job, id
+			if found != nil {
+				return nil
+			}
+			found = job
 		}
 	}
 	return found

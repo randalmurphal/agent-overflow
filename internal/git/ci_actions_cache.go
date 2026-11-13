@@ -46,9 +46,34 @@ func (c *ciCapabilityCache[V]) put(key string, value V, until time.Time) {
 	c.store(key, ciCapabilityEntry[V]{value: value, until: until})
 }
 
+// ciCapabilityFailure is a failed capability read and when the cache
+// next lets it be asked again (RetryAt), which the CI phase schedules
+// its next read by (CIPipeline.ActionsRetryAt).
+type ciCapabilityFailure struct {
+	err     error
+	retryAt time.Time
+}
+
+func (e *ciCapabilityFailure) Error() string { return e.err.Error() }
+
+func (e *ciCapabilityFailure) Unwrap() error { return e.err }
+
+// ciRetryAt is the earliest retry due among errs' capability failures,
+// zero for none.
+func ciRetryAt(errs ...error) time.Time {
+	var at time.Time
+	for _, err := range errs {
+		if failure, ok := errors.AsType[*ciCapabilityFailure](err); ok && (at.IsZero() || failure.retryAt.Before(at)) {
+			at = failure.retryAt
+		}
+	}
+	return at
+}
+
 // fail remembers a failed read until its retry is due: delay(failures)
-// after now, or a rate limit's release when that is later.
-func (c *ciCapabilityCache[V]) fail(key string, err error, now time.Time, delay func(failures int) time.Duration) {
+// after now, or a rate limit's release when that is later. It answers
+// the failure as the cache will answer it, with its retry time.
+func (c *ciCapabilityCache[V]) fail(key string, err error, now time.Time, delay func(failures int) time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	failures := c.entries[key].failures + 1
@@ -56,7 +81,9 @@ func (c *ciCapabilityCache[V]) fail(key string, err error, now time.Time, delay 
 	if limited, ok := errors.AsType[*forgeapi.RateLimitedError](err); ok && limited.Until.After(until) {
 		until = limited.Until
 	}
-	c.storeLocked(key, ciCapabilityEntry[V]{err: err, until: until, failures: failures})
+	failure := &ciCapabilityFailure{err: err, retryAt: until}
+	c.storeLocked(key, ciCapabilityEntry[V]{err: failure, until: until, failures: failures})
+	return failure
 }
 
 // drop forgets every entry whose key starts with prefix.

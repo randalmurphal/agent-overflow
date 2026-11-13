@@ -217,8 +217,10 @@ test('GitHub: a refused artifacts read keeps the jobs and chips, and the CI head
     await review.getByTestId('review-ci-pipeline-actions').click();
     await expect(page.getByTestId('review-ci-pipeline-retry_failed')).toBeVisible();
     await expect(page.getByTestId('review-ci-pipeline-artifacts')).toHaveCount(0);
+    // Only the artifacts read failed, so the sentence names only what it
+    // took away; retry stays offered above it.
     await expect(page.getByTestId('review-ci-pipeline-unavailable')).toHaveText(
-      /^Retry, cancel and artifact downloads are not shown: this login cannot read the Actions permissions or artifacts of .+ on GitHub\.$/,
+      `Artifact downloads are not shown: this login cannot read the Actions artifacts of ${project} on GitHub.`,
     );
     await page.screenshot({ path: testInfo.outputPath('ci-actions-github-unavailable.png') });
     expect((await forgeInvocations(harness)).map((call) => call.route)).toContain('gh api run artifacts');

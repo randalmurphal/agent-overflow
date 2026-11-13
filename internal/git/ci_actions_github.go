@@ -116,23 +116,20 @@ func fillGitHubCIActions(pipeline *CIPipeline, permission CIAction, artifacts, s
 // is logged, and asked again when its backoff is due
 // (ciCapabilityCache). Only ctx's own end fails the read.
 func (f *githubForge) githubCICapabilities(ctx context.Context, client *forgeapi.Client, repo RepoReference, pipeline *CIPipeline, permission CIAction, readPermission bool, stale map[string]bool) error {
-	var failed error
+	var permErr error
 	if readPermission {
-		var err error
-		if permission, err = f.repoCIPermission(ctx, client, repo); err != nil {
-			permission, failed = "", err
+		if permission, permErr = f.repoCIPermission(ctx, client, repo); permErr != nil {
+			permission = ""
 		}
 	}
-	artifacts, err := f.runArtifacts(ctx, client, repo, *pipeline)
-	if failed == nil {
-		failed = err
-	}
-	if failed != nil {
+	artifacts, artErr := f.runArtifacts(ctx, client, repo, *pipeline)
+	if permErr != nil || artErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		pipeline.ActionsUnavailable = ciActionsUnavailableSentence(repo, failed)
-		log.Printf("forge: CI actions of %s on %s unavailable: %v", repo.Project(), repo.Host, failed)
+		pipeline.ActionsUnavailable = ciActionsUnavailableSentence(repo, permErr, artErr)
+		pipeline.ActionsRetryAt = ciRetryAt(permErr, artErr)
+		log.Printf("forge: CI actions of %s on %s unavailable: %v", repo.Project(), repo.Host, cmp.Or(permErr, artErr))
 	}
 	fillGitHubCIActions(pipeline, permission, artifacts, stale)
 	return nil
@@ -173,7 +170,7 @@ func (f *githubForge) repoCIPermission(ctx context.Context, client *forgeapi.Cli
 	resp, err := client.JSON(ctx, forgeapi.Request{Path: githubRepoPath(repo)}, &raw)
 	if err != nil {
 		if ctx.Err() == nil {
-			f.ciPermissions.fail(key(fp), err, f.core.nowFn(), f.core.prLookupErrorDelay)
+			err = f.ciPermissions.fail(key(fp), err, f.core.nowFn(), f.core.prLookupErrorDelay)
 		}
 		return "", err
 	}
@@ -224,7 +221,7 @@ func readGitHubRunArtifacts(ctx context.Context, client *forgeapi.Client, repo R
 			}
 		}
 		pages++
-		return !(untilUsable && usable) && len(raw.Artifacts) == githubCIJobsPerPage && len(out) < raw.TotalCount && pages < githubReadMaxPages, nil
+		return (!untilUsable || !usable) && len(raw.Artifacts) == githubCIJobsPerPage && len(out) < raw.TotalCount && pages < githubReadMaxPages, nil
 	})
 	return out, expires, err
 }
@@ -250,7 +247,7 @@ func (f *githubForge) runArtifacts(ctx context.Context, client *forgeapi.Client,
 		key := githubRunArtifactsKey(repo, run.id) + strings.Join(ids, ",")
 		if has, err, ok := f.ciArtifacts.get(key, f.core.nowFn()); ok {
 			if err != nil {
-				failed = cmp.Or(failed, err)
+				failed = earlierCIFailure(failed, err)
 				continue
 			}
 			out[run.id] = has
@@ -262,8 +259,7 @@ func (f *githubForge) runArtifacts(ctx context.Context, client *forgeapi.Client,
 			if ctx.Err() != nil {
 				return out, err
 			}
-			f.ciArtifacts.fail(key, err, now, f.core.prLookupErrorDelay)
-			failed = cmp.Or(failed, fmt.Errorf("workflow run %s artifacts: %w", run.id, err))
+			failed = earlierCIFailure(failed, fmt.Errorf("workflow run %s artifacts: %w", run.id, f.ciArtifacts.fail(key, err, now, f.core.prLookupErrorDelay)))
 			continue
 		}
 		has := slices.ContainsFunc(artifacts, func(a CIArtifact) bool { return !a.Expired })
@@ -277,6 +273,18 @@ func (f *githubForge) runArtifacts(ctx context.Context, client *forgeapi.Client,
 		out[run.id] = has
 	}
 	return out, failed
+}
+
+// earlierCIFailure keeps whichever capability failure is due for its
+// retry first, so the phase reads again as soon as any run may be asked.
+func earlierCIFailure(kept, next error) error {
+	if kept == nil {
+		return next
+	}
+	if at := ciRetryAt(next); !at.IsZero() && at.Before(ciRetryAt(kept)) {
+		return next
+	}
+	return kept
 }
 
 // githubRunArtifactsKey is the prefix of a run's remembered artifacts

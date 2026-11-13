@@ -56,7 +56,7 @@ func newCIActionsApp(t *testing.T, repos []forgefake.Repo) (*App, *forgefake.Eng
 
 // newCIActionsAppWith is newCIActionsApp with the fake forge behind wrap,
 // for a test that holds or loses an answer.
-func newCIActionsAppWith(t *testing.T, repos []forgefake.Repo, wrap func(http.Handler) http.Handler) (*App, *forgefake.Engine) {
+func newCIActionsAppWith(t *testing.T, repos []forgefake.Repo, wrap func(http.Handler) http.Handler, opts ...gitops.CoreOption) (*App, *forgefake.Engine) {
 	t.Helper()
 	app := NewApp()
 	// Registered first, so it runs after every subscription's release.
@@ -72,7 +72,7 @@ func newCIActionsAppWith(t *testing.T, repos []forgefake.Repo, wrap func(http.Ha
 	if wrap != nil {
 		handler = wrap(engine)
 	}
-	useForgefake(t, app, handler)
+	useForgefake(t, app, handler, opts...)
 	return app, engine
 }
 
@@ -184,7 +184,7 @@ func TestCIActionUnconfirmedWriteIsFollowed(t *testing.T) {
 		t.Fatalf("a lost answer = %v", err)
 	}
 	pipeline, seq := pipelineState(app, sub.ID)
-	if result.Seq == 0 || result.Seq != seq || gitops.FindCIJobRetry(pipeline, "test", *old) == nil {
+	if result.Seq == 0 || result.Seq != seq || gitops.FindCIJobRetry(pipeline, "40", "test", *old) == nil {
 		t.Fatalf("after the lost answer: seq %d (pump %d), pipeline %+v", result.Seq, seq, pipeline)
 	}
 	app.prUpdates.mu.Lock()
@@ -289,7 +289,7 @@ func TestCIActionsSettleOnThePumpsPoll(t *testing.T) {
 			t.Fatalf("%s retry: %v", tc.repo.Forge, err)
 		}
 		pipeline, seq := pipelineState(app, sub.ID)
-		retry := gitops.FindCIJobRetry(pipeline, tc.stage, *old)
+		retry := gitops.FindCIJobRetry(pipeline, tc.finished, tc.stage, *old)
 		if retry == nil || retry.Status != gitops.CIStatusPending || result.Seq != seq || result.Seq <= sub.Seq || countRoute(engine, tc.retryRoute) != 1 {
 			t.Fatalf("%s after the retry: seq %d (pump %d, subscribe %d), retry %+v, routes %v", tc.repo.Forge, result.Seq, seq, sub.Seq, retry, forgeRoutes(engine))
 		}
@@ -481,5 +481,80 @@ func TestCIArtifactFailureSentences(t *testing.T) {
 	err = app.explainArtifactFailure(ciActionsGitHub, "pipeline 400 of acme/acts", artifact, saved, gitops.ErrCIArtifactExpired)
 	if !errors.As(err, &sentence) || sentence.Kind != gitops.ForgeErrorNotFound || sentence.Message != "Saved 1 artifacts to /data/ci-artifacts before the download stopped. The artifacts of pipeline 400 of acme/acts have expired on GitHub." {
 		t.Fatalf("after a saved file = %v", err)
+	}
+}
+
+// A completed pipeline whose capability read failed is read again by its
+// pump when the capability's backoff is due, with no person asking and
+// no live job: the sentence and the absent flag clear, and with them the
+// phase's timer. Both a PR's CI and a Pipelines-tab pipeline.
+func TestCIPhaseRetriesAFailedCapabilityRead(t *testing.T) {
+	t.Parallel()
+	app, engine := newCIActionsAppWith(t, append(ciActionsRepos(), githubPRRunRepos()...), nil, gitops.WithPRLookupErrorBase(200*time.Millisecond))
+	githubPRRunReposArtifacts(t, engine)
+	if err := engine.SetRefusal(forgefake.Refusal{Route: "gh api run artifacts", Status: 403, Body: []byte(`{"message":"Resource not accessible by integration"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "runs", Number: 9}
+	sub, err := app.SubscribePRUpdates(context.Background(), pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.UnsubscribePRUpdates(context.Background(), sub.ID) })
+	waitPRCI(t, app, sub.ID)
+	tab := subscribeCIPipeline(t, app, ciActionsGitHub, "400")
+
+	phases := map[string]func() *ciPhase{
+		"PR":       func() *ciPhase { return &app.prUpdates.handles[sub.ID].pump.ciPhase },
+		"pipeline": func() *ciPhase { return &app.prUpdates.pipelineHandles[tab.ID].pump.ciPhase },
+	}
+	for name, phaseOf := range phases {
+		app.prUpdates.mu.Lock()
+		unavailable := phaseOf().ci.ActionsUnavailable
+		app.prUpdates.mu.Unlock()
+		if unavailable == "" {
+			t.Fatalf("%s: the refused artifacts read left no sentence", name)
+		}
+	}
+	// While the read keeps failing, each backoff step costs one read of
+	// the pipeline, not one per moment.
+	time.Sleep(1500 * time.Millisecond)
+	if n := countRoute(engine, "gh graphql PRTick"); n > 12 {
+		t.Fatalf("PRTick reads while the capability read kept failing = %d, want one per backoff step", n)
+	}
+	if err := engine.SetRefusal(forgefake.Refusal{Route: "gh api run artifacts"}); err != nil {
+		t.Fatal(err)
+	}
+	for name, phaseOf := range phases {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			app.prUpdates.mu.Lock()
+			pipeline := phaseOf().ci
+			app.prUpdates.mu.Unlock()
+			if pipeline.ActionsUnavailable == "" && pipeline.Actions.Artifacts == gitops.CIActionAllowed {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: the failed capability read was never retried: %+v", name, pipeline)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if next := app.ciInterval(phaseOf()); next != 0 {
+			t.Fatalf("%s: the phase still polls every %s once the capability read succeeded", name, next)
+		}
+	}
+	// Two phases, each read at 0.2, 0.6 and 1.4 s (doubling), then once more.
+	if n := countRoute(engine, "gh api run artifacts"); n > 12 {
+		t.Fatalf("artifacts reads = %d, want one per backoff step", n)
+	}
+}
+
+// githubPRRunReposArtifacts gives run 500 of acme/runs an artifact.
+func githubPRRunReposArtifacts(t *testing.T, engine *forgefake.Engine) {
+	t.Helper()
+	repos := githubPRRunRepos()
+	repos[0].Pulls[0].CI.Artifacts = []forgefake.Artifact{{ID: 81, Name: "coverage", Text: "PK"}}
+	if _, err := engine.Seed(forgefake.Fixture{Repos: repos}); err != nil {
+		t.Fatal(err)
 	}
 }

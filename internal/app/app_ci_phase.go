@@ -21,7 +21,9 @@ import (
 // the pipeline and every job are terminal (the owner re-arms it),
 // prCILiveInterval while the pipeline or a job is queued or running (a
 // followed running job's log included, unless its forge streams it) and
-// for ciActionFollowWindow after a CI action touched it,
+// for ciActionFollowWindow after a CI action touched it, at a failed
+// capability read's retry deadline while the pipeline carries
+// actionsUnavailable,
 // prCIFollowInterval while a followed job is live on a forge that streams
 // running logs, its final log is still being fetched or a download it was
 // cut off in resumes, and prCILogWaitInterval while a completed job's log
@@ -176,7 +178,23 @@ func (a *App) ciInterval(phase *ciPhase) time.Duration {
 	if (phase.ciKnown && gitops.CIPipelineLive(phase.ci)) || time.Since(phase.actedAt) < ciActionFollowWindow {
 		consider(a.prCILiveInterval())
 	}
+	if phase.ciKnown && phase.ci.ActionsUnavailable != "" {
+		consider(ciCapabilityRetryDelay(phase.ci.ActionsRetryAt))
+	}
 	return next
+}
+
+// ciCapabilityRetryMax caps the wait before a pipeline whose capability
+// read failed is read again, the capability backoff's own cap.
+const ciCapabilityRetryMax = 15 * time.Minute
+
+// ciCapabilityRetryDelay is the wait until a failed capability read may
+// be asked again (git's backoff deadline, retryAt), so the pipeline is
+// read once per backoff step and its flags return without a person
+// asking: at least a moment, so a deadline just passed is not a busy
+// loop, and at most ciCapabilityRetryMax.
+func ciCapabilityRetryDelay(retryAt time.Time) time.Duration {
+	return min(max(time.Until(retryAt), 10*time.Millisecond), ciCapabilityRetryMax)
 }
 
 func (a *App) ciWantsPoll(phase *ciPhase) bool {
@@ -232,6 +250,9 @@ func (a *App) pollCIPhase(ctx context.Context, phase *ciPhase, before func()) (c
 				return ciPollResult{}, false
 			}
 			unchanged := phase.ciKnown && string(encoded) == string(phase.ciLast) && !phase.ciFail.failing()
+			// The retry deadline is not on the wire, so it moves without a
+			// frame: a capability read failing again sets a later one.
+			phase.ci.ActionsRetryAt = pipeline.ActionsRetryAt
 			var seq uint64
 			if !unchanged {
 				phase.ci = pipeline

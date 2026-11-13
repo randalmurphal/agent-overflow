@@ -56,7 +56,7 @@ func TestGitHubCIActionsUnavailableKeepsTheJobs(t *testing.T) {
 	if unit == nil || unit.Actions.Retry != CIActionAllowed || pipeline.Actions != (CIPipelineActions{RetryFailed: CIActionAllowed}) {
 		t.Fatalf("the read without artifacts = %+v / %+v", unit, pipeline.Actions)
 	}
-	if want := "Retry, cancel and artifact downloads are not shown: this login cannot read the Actions permissions or artifacts of o/r on forge.example."; pipeline.ActionsUnavailable != want {
+	if want := "Artifact downloads are not shown: this login cannot read the Actions artifacts of o/r on forge.example."; pipeline.ActionsUnavailable != want {
 		t.Fatalf("ActionsUnavailable = %q, want %q", pipeline.ActionsUnavailable, want)
 	}
 	if _, err := core.ListPRCIJobs(t.Context(), githubTestRef(5), &pipeline, nil); err != nil {
@@ -76,9 +76,9 @@ func TestGitHubCIActionsUnavailableKeepsTheJobs(t *testing.T) {
 }
 
 // githubRunReadCore answers ReadPipeline of run 400 (completed, a failed
-// job 4001, created at created) with permission for GET repos/o/r and no
-// artifacts.
-func githubRunReadCore(t *testing.T, created string, permission forgeAPIAnswer) (*Core, *forgeAPICalls) {
+// job 4001, created at created) with permission for GET repos/o/r and
+// artifacts for its artifacts list (none when zero).
+func githubRunReadCore(t *testing.T, created string, permission forgeAPIAnswer, artifacts ...forgeAPIAnswer) (*Core, *forgeAPICalls) {
 	t.Helper()
 	return newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
@@ -88,6 +88,8 @@ func githubRunReadCore(t *testing.T, created string, permission forgeAPIAnswer) 
 			return forgeAPIAnswer{Body: `{"total_count":1,"jobs":[{"id":4001,"name":"unit","status":"completed","conclusion":"failure","started_at":"2026-10-20T10:00:00Z","completed_at":"2026-10-20T10:00:30Z","html_url":"https://github.com/o/r/actions/runs/400/job/4001","steps":[]}]}`}
 		case call.Path == "repos/o/r":
 			return permission
+		case call.Path == "repos/o/r/actions/runs/400/artifacts?per_page=100" && len(artifacts) > 0:
+			return artifacts[0]
 		case call.Path == "repos/o/r/actions/runs/400/artifacts?per_page=100":
 			return forgeAPIAnswer{Body: `{"total_count":0,"artifacts":[]}`}
 		}
@@ -109,11 +111,20 @@ func TestGitHubReadPipelineWithoutPermission(t *testing.T) {
 	if job := FindCIJob(pipeline, "4001"); job == nil || job.Actions != (CIJobActions{}) || pipeline.Actions != (CIPipelineActions{}) {
 		t.Fatalf("pipeline without its permission = %+v", pipeline)
 	}
-	if !strings.HasPrefix(pipeline.ActionsUnavailable, "Retry, cancel and artifact downloads are not shown for now. ") {
-		t.Fatalf("ActionsUnavailable = %q", pipeline.ActionsUnavailable)
+	if !strings.HasPrefix(pipeline.ActionsUnavailable, "Retry and cancel are not shown for now. ") {
+		t.Fatalf("ActionsUnavailable = %q, want it to name retry and cancel alone", pipeline.ActionsUnavailable)
 	}
 	if _, err := core.ReadPipeline(t.Context(), repo, "400", nil, nil); err != nil || countPath(calls, "repos/o/r") != 1 {
 		t.Fatalf("the permission was asked again before its backoff: %d reads, %v", countPath(calls, "repos/o/r"), err)
+	}
+
+	// Both reads failed: the sentence names everything they took away.
+	both, _ := githubRunReadCore(t, time.Now().UTC().Format(time.RFC3339),
+		forgeAPIAnswer{Status: http.StatusForbidden, Body: `{"message":"Resource not accessible by integration"}`},
+		forgeAPIAnswer{Status: http.StatusForbidden, Body: `{"message":"Resource not accessible by integration"}`})
+	pipeline, err = both.ReadPipeline(t.Context(), repo, "400", nil, nil)
+	if want := "Retry, cancel and artifact downloads are not shown: this login cannot read the repository permissions or Actions artifacts of o/r on forge.example."; err != nil || pipeline.ActionsUnavailable != want {
+		t.Fatalf("both refused = %q, %v; want %q", pipeline.ActionsUnavailable, err, want)
 	}
 }
 

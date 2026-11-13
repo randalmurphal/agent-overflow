@@ -56,7 +56,7 @@ func TestCIActionsThroughTheAppsForgeCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	retry := gitops.FindCIJobRetry(after, "CI", *unit)
+	retry := gitops.FindCIJobRetry(after, pipeline.ID, "CI", *unit)
 	if retry == nil || retry.Status != gitops.CIStatusPending || gitops.FindCIJob(after, "3001") != nil || after.Actions.Cancel != gitops.CIActionAllowed {
 		t.Fatalf("GitHub after the retry = %+v", after)
 	}
@@ -110,7 +110,7 @@ func TestCIActionsThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := gitops.FindCIJob(pipeline, "8001")
-	if retry := gitops.FindCIJobRetry(after, "test", *old); retry == nil || retry.Status != gitops.CIStatusPending || gitops.FindCIJob(after, "8001") != nil {
+	if retry := gitops.FindCIJobRetry(after, pipeline.ID, "test", *old); retry == nil || retry.Status != gitops.CIStatusPending || gitops.FindCIJob(after, "8001") != nil {
 		t.Fatalf("GitLab retry = %+v", after)
 	}
 	if release := gitops.FindCIJob(after, "8002"); release.Status != gitops.CIStatusPending {

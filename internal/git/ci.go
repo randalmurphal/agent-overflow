@@ -56,6 +56,10 @@ type CIPipeline struct {
 	// a run's artifacts) failed, and the flags it would have set are
 	// absent. Empty when every flag was read.
 	ActionsUnavailable string `json:"actionsUnavailable,omitempty"`
+	// ActionsRetryAt is when the failed read behind ActionsUnavailable may
+	// be asked again (its backoff's deadline), for the CI phase to read
+	// the pipeline then. Not on the wire.
+	ActionsRetryAt time.Time `json:"-"`
 }
 
 type CIStage struct {

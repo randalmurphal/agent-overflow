@@ -96,22 +96,30 @@ func joinClauses(parts []string) string {
 }
 
 // ciActionsUnavailableSentence words a failed read behind the CI action
-// flags (CIPipeline.ActionsUnavailable): the flags it would have set are
-// not shown.
-func ciActionsUnavailableSentence(repo RepoReference, err error) string {
+// flags (CIPipeline.ActionsUnavailable), naming only what it took away:
+// retry and cancel for the permission read (permErr), artifact downloads
+// for an artifacts read (artErr), all three when both failed.
+func ciActionsUnavailableSentence(repo RepoReference, permErr, artErr error) string {
 	labels := forgeLabels(repo.Forge)
 	host := labels.host(repo.Host)
+	what, read, err := "Retry, cancel and artifact downloads are", "the repository permissions or Actions artifacts", permErr
+	switch {
+	case artErr == nil:
+		what, read = "Retry and cancel are", "the repository permissions"
+	case permErr == nil:
+		what, read, err = "Artifact downloads are", "the Actions artifacts", artErr
+	}
 	if forbidden, ok := errors.AsType[*forgeapi.ForbiddenError](err); ok {
 		if forbidden.Scope != "" {
-			return fmt.Sprintf("Retry, cancel and artifact downloads are not shown: your %s token lacks the `%s` scope. Create a token with that scope and log %s in with it.", host, forbidden.Scope, labels.binary)
+			return fmt.Sprintf("%s not shown: your %s token lacks the `%s` scope. Create a token with that scope and log %s in with it.", what, host, forbidden.Scope, labels.binary)
 		}
-		return fmt.Sprintf("Retry, cancel and artifact downloads are not shown: this login cannot read the Actions permissions or artifacts of %s on %s.", repo.Project(), host)
+		return fmt.Sprintf("%s not shown: this login cannot read %s of %s on %s.", what, read, repo.Project(), host)
 	}
 	if errors.Is(err, forgeapi.ErrNotFound) {
-		return fmt.Sprintf("Retry, cancel and artifact downloads are not shown: this login cannot read the Actions permissions or artifacts of %s on %s.", repo.Project(), host)
+		return fmt.Sprintf("%s not shown: this login cannot read %s of %s on %s.", what, read, repo.Project(), host)
 	}
 	explained, _ := explainForgeError(repo, repo.Project(), ActionRead, err).(*ForgeActionError)
-	return "Retry, cancel and artifact downloads are not shown for now. " + explained.Message
+	return what + " not shown for now. " + explained.Message
 }
 
 // ciNoLongerSentence words GitLab's refusal of a job it no longer retries

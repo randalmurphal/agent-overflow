@@ -252,10 +252,14 @@ has every pump showing the run poll, so the flag clears with the
 sentence the user already got. A failed artifacts read (or, for
 `ReadPipeline`, permission read) leaves the CI read whole: the flags it
 would have set are absent, `CIPipeline.ActionsUnavailable` carries one
-sentence and the failure is logged. The failure is remembered as the
-open-PR lookup's are (20 seconds, doubling to 15 minutes, or a rate
-limit's release when later), so it is asked again when that is due, not
-every tick.
+sentence naming only what the failed read took away, and the failure is
+logged. The failure is remembered as the open-PR lookup's are (20
+seconds, doubling to 15 minutes, or a rate limit's release when later),
+so it is asked again when that is due, not every tick. The read carries
+that due time (`ActionsRetryAt`, not on the wire), and while the sentence
+stands the CI phase schedules its next read for it, capped at 15
+minutes, for a PR's CI and a Pipelines-tab pipeline alike, so a completed
+pipeline recovers once the read succeeds.
 
 | Tick | GitHub requests |
 |---|---|
@@ -611,9 +615,11 @@ run past it offers no retry; a PR's rollup does not, so no request is
 added and GitHub's refusal ("created over a month ago") reads as the run
 being too old. A retried job is a new job under a new id on both forges,
 and the old one drops out of the read; the log view follows the new
-attempt with `git.FindCIJobRetry` (same stage and name, the same GitHub
-workflow run when the old job names one, the highest id above the old
-one).
+attempt with `git.FindCIJobRetry` (and `findCIJobRetry` in
+`ciSubject.svelte.ts`, the same rule) only when the old job is gone from
+the read, the read is the old job's pipeline (the same GitLab pipeline id,
+or the same GitHub workflow run), and exactly one job of the same stage
+and name has a higher id.
 
 `SaveCIArtifacts(repo, req, subject)` (`app_ci_artifacts.go`) streams each
 artifact with `Stream` into a temp file under the app data directory's

@@ -264,7 +264,7 @@ func (a *App) pollCIPumpsShowing(repo gitops.RepoReference, skip *pumpCore, acte
 		if !pump.dead && match(&pump.pumpCore, &pump.ciPhase) {
 			cores = append(cores, &pump.pumpCore)
 			if acted {
-				pump.ciPhase.actedAt = now
+				pump.actedAt = now
 			}
 		}
 	}
@@ -272,7 +272,7 @@ func (a *App) pollCIPumpsShowing(repo gitops.RepoReference, skip *pumpCore, acte
 		if !pump.dead && match(&pump.pumpCore, &pump.ciPhase) {
 			cores = append(cores, &pump.pumpCore)
 			if acted {
-				pump.ciPhase.actedAt = now
+				pump.actedAt = now
 			}
 		}
 	}
