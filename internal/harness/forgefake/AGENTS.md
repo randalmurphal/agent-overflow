@@ -16,9 +16,10 @@ seeds. The CLI path is:
 3. `Engine.Handle` routes the call, answers from the seeded fixture and
    records it. `internal/harnessrpc` exposes `HarnessForgeSeed`,
    `HarnessForgeInvocations`, `HarnessForgeOffline`,
-   `HarnessForgeRateLimit`, `HarnessForgeRefuse`, `HarnessForgeAdvanceJob`
-   and the `harness:forge` event. `HarnessReset` clears the fixture, the
-   log, the offline state, the rate limits and the refusals.
+   `HarnessForgeRateLimit`, `HarnessForgeRefuse`, `HarnessForgeRelease`,
+   `HarnessForgeAdvanceJob` and the `harness:forge` event. `HarnessReset`
+   clears the fixture, the log, the offline state, the rate limits and the
+   refusals, and releases every held answer.
 
 The HTTP path: `harnessrpc.StartForgeAPI` serves `Engine.ServeHTTP` on its
 own loopback listener and hands its base URL and fixed token to the boot
@@ -71,7 +72,9 @@ inspection go through the harness wire with no fixture files.
   name (`glab api approve`), `gh graphql <operation>` or
   `glab graphql <operation>`. It is answered
   after the route matched and before its handler runs, so nothing
-  changes, and is recorded under the route. A 401 on a mutation is
+  changes, and is recorded under the route. With `hold` the request is
+  recorded at once and answered only on `ReleaseRefusal`
+  (`HarnessForgeRelease`), so a spec can act while it is in flight. A 401 on a mutation is
   retried once after the transport's token refresh and then probed with
   `GET user`, so drive one with `times` 0.
 - `routes.go` is the whole CLI and REST route table, `githubGraphQL` and

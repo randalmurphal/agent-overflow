@@ -172,6 +172,9 @@ type Engine struct {
 	rateLimits map[rateLimitKey]RateLimit
 	// refusals are the routes answering a refusal (SetRefusal), by name.
 	refusals map[string]*Refusal
+	// holds are the held refusals' gates by route, closed by
+	// ReleaseRefusal.
+	holds map[string]chan struct{}
 	// traceRequests counts the trace requests each running synthetic
 	// GitLab job answered, which is how far its trace has grown.
 	traceRequests map[int64]int
@@ -245,6 +248,10 @@ func (e *Engine) Reset() {
 	e.offline = false
 	clear(e.rateLimits)
 	clear(e.refusals)
+	for _, held := range e.holds {
+		close(held)
+	}
+	clear(e.holds)
 	clear(e.traceRequests)
 	e.log = nil
 	e.dropped = 0
@@ -321,6 +328,9 @@ func (e *Engine) Handle(fc control.ForgeCall) control.ForgeResult {
 		StdoutBytes: len(resp.stdout),
 	}
 	e.record(inv)
+	if resp.held != nil {
+		<-resp.held
+	}
 	return control.ForgeResult{Stdout: resp.stdout, Stderr: resp.stderr, ExitCode: resp.exit}
 }
 
@@ -396,6 +406,8 @@ type response struct {
 	// ranges is how the endpoint answers Range, for a route that lists
 	// the range flag.
 	ranges rangePolicy
+	// held, when set, is closed once a held refusal may be answered.
+	held <-chan struct{}
 }
 
 func unhandled(reason string, args ...any) response {

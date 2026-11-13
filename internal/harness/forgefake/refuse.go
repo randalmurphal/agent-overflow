@@ -20,13 +20,16 @@ import (
 // GitHub refuses a mutation. Times is how many requests it refuses, 0
 // until cleared. A refused request is answered after its route matched
 // and before its handler runs, so the fixture does not change, and is
-// recorded under its route.
+// recorded under its route. A held refusal (Hold) is recorded at once and
+// answered only once ReleaseRefusal names its route, so a spec can act
+// while the app's request is in flight.
 type Refusal struct {
 	Route  string            `json:"route"`
 	Status int               `json:"status"`
 	Header map[string]string `json:"header,omitempty"`
 	Body   json.RawMessage   `json:"body,omitempty"`
 	Times  int               `json:"times,omitempty"`
+	Hold   bool              `json:"hold,omitempty"`
 }
 
 // refusalStatuses are the statuses a refusal may answer.
@@ -76,6 +79,27 @@ func (e *Engine) SetRefusal(refusal Refusal) error {
 	stored := refusal
 	stored.Body = bytes.Clone(refusal.Body)
 	e.refusals[refusal.Route] = &stored
+	if refusal.Hold && e.holds[refusal.Route] == nil {
+		if e.holds == nil {
+			e.holds = make(map[string]chan struct{})
+		}
+		e.holds[refusal.Route] = make(chan struct{})
+	}
+	return nil
+}
+
+// ReleaseRefusal answers every request a held refusal on route is holding,
+// and those it holds from now on; one armed again with Hold holds anew.
+// Reset releases every route.
+func (e *Engine) ReleaseRefusal(route string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	held := e.holds[route]
+	if held == nil {
+		return fmt.Errorf("forge refusal: %q holds no answer", route)
+	}
+	close(held)
+	delete(e.holds, route)
 	return nil
 }
 
@@ -114,5 +138,9 @@ func (e *Engine) refusal(route string) (response, bool) {
 		header.Set(name, value)
 	}
 	body := bytes.Clone(armed.Body)
-	return response{route: route, status: armed.Status, header: header, stdout: body, stderr: fmt.Sprintf("refused (HarnessForgeRefuse): %d %s", armed.Status, body)}, true
+	resp := response{route: route, status: armed.Status, header: header, stdout: body, stderr: fmt.Sprintf("refused (HarnessForgeRefuse): %d %s", armed.Status, body)}
+	if armed.Hold {
+		resp.held = e.holds[route]
+	}
+	return resp, true
 }

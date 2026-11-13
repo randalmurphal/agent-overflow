@@ -2138,6 +2138,53 @@ func TestGitLabMergeRoutesTransitionTheMergeRequest(t *testing.T) {
 	}
 }
 
+// A held refusal is recorded when its request arrives and answered only
+// once released; Reset releases it too.
+func TestHeldRefusalAnswersOnRelease(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	const approve = "projects/grp%2Fmerge/merge_requests/2/approve"
+	body := `{"sha":"3333333333333333333333333333333333333333"}`
+	if err := e.ReleaseRefusal("glab api approve"); err == nil {
+		t.Fatal("a release with nothing held was accepted")
+	}
+	if err := e.SetRefusal(Refusal{Route: "glab api approve", Status: 409, Body: json.RawMessage(`{"message":"held"}`), Times: 1, Hold: true}); err != nil {
+		t.Fatal(err)
+	}
+	answered := make(chan httpAnswer, 1)
+	go func() { answered <- glabSend(t, srv, "POST", approve, body) }()
+	recorded := func() bool {
+		log := e.Invocations(0).Invocations
+		return len(log) > 0 && log[len(log)-1].Route == "glab api approve"
+	}
+	for deadline := time.Now().Add(5 * time.Second); !recorded(); {
+		if time.Now().After(deadline) {
+			t.Fatal("the held request was not recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case got := <-answered:
+		t.Fatalf("a held refusal answered before its release: %+v", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := e.ReleaseRefusal("glab api approve"); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-answered; got.status != http.StatusConflict || got.body != `{"message":"held"}` {
+		t.Fatalf("released = %+v", got)
+	}
+	if err := e.SetRefusal(Refusal{Route: "glab api approve", Status: 409, Hold: true}); err != nil {
+		t.Fatal(err)
+	}
+	go func() { answered <- glabSend(t, srv, "POST", approve, body) }()
+	time.Sleep(100 * time.Millisecond)
+	e.Reset()
+	if got := <-answered; got.status != http.StatusConflict {
+		t.Fatalf("held across Reset = %+v", got)
+	}
+}
+
 // The refusal knob answers one route as told, recorded under the route,
 // without running its handler, for its count or until cleared; it
 // refuses what it cannot be, and Reset clears it.
