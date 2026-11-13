@@ -1,19 +1,20 @@
 // Reading a pull request's diff in the review pane, on GitHub and GitLab,
 // in the desktop and compact projects, through the shipped UI, the real
-// backend and the fake forge, on `imagePullHistory` with three more
-// commits (a note added to the README and a 26 MiB image, a blob, the
-// note dropped and a line added to src/app.ts). Covered: a run picked by
-// shift+click (desktop) and by `From here`, the trigger's `N–M/T`, the
-// range card and leaving it, the diff holding only the run's files;
-// `Changes from here` on the Conversation's commit group (the whole PR
-// here: the fixture's commits share an author); in a run to the
-// head, Comment now on a line of the PR's diff and the agent-only hover
-// text on a line that is not; image rows of a changed, an added, a
-// deleted and an over-cap image with their captions, in unified and split
-// view; a non-image binary file's sizes; the SVG `Rendered` toggle; and
-// the gutter menu's link copied to the clipboard.
+// backend and the fake forge, on `imagePullHistory` with a base text file
+// changed by its first commit and three more commits by its second author
+// (a note added to the README and a 26 MiB image, a blob, the note dropped
+// and a line added to src/app.ts). Covered: a run picked by shift+click
+// (desktop) and by `From here`, the trigger's `N–M/T`, the range card and
+// leaving it, the diff holding only the run's files; `Changes from here`
+// on the Conversation's two commit groups (the first is the whole PR, the
+// second a run to the head); in a run to the head, Comment now on a line
+// of the PR's diff and the agent-only hover text on a line that is not;
+// image rows of a changed, an added, a deleted and an over-cap image with
+// their captions, in unified and split view; a non-image binary file's
+// sizes; the SVG `Rendered` toggle; and the gutter menu's link to an
+// added, a removed and an unchanged line, copied to the clipboard.
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
@@ -24,6 +25,7 @@ import {
   forgeRouteCalls,
   imagePullHistory,
   publishPullRequest,
+  SECOND_AUTHOR,
   solidPNG,
   type ForgeRepo,
 } from './forge-helpers.js';
@@ -48,11 +50,13 @@ function bigPNG(): Uint8Array {
 
 function history() {
   const base = imagePullHistory();
+  base.base = { ...base.base, 'notes.txt': 'alpha\nbeta\ngamma\n' };
+  base.commits[0].files = { ...base.commits[0].files, 'notes.txt': 'alpha\nBETA\ngamma\n' };
   const [blob] = base.commits.splice(base.commits.length - 1, 1);
   base.commits.push(
-    { message: 'note readme', files: { 'README.md': '# Seeded\nNote.\n', 'huge.png': bigPNG() } },
+    { message: 'note readme', author: SECOND_AUTHOR, files: { 'README.md': '# Seeded\nNote.\n', 'huge.png': bigPNG() } },
     blob,
-    { message: 'drop note', files: { 'README.md': '# Seeded\n', 'src/app.ts': 'export const app = 1;\nexport const moved = 2;\nexport const dropped = 3;\n' } },
+    { message: 'drop note', author: SECOND_AUTHOR, files: { 'README.md': '# Seeded\n', 'src/app.ts': 'export const app = 1;\nexport const moved = 2;\nexport const dropped = 3;\n' } },
   );
   return base;
 }
@@ -241,23 +245,40 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
       await expect(editor).toHaveCount(0, { timeout: 30_000 });
       await expect.poll(async () => (await forgeRouteCalls(harness, ROUTES[forge].lineComment)).length).toBe(1);
 
-      // Changes from here on the feed's commit group. The fixture's commits
-      // share one author, so the feed has one group, the whole PR: its run
-      // is All commits, and the view moves to its first file. (A group short
-      // of the whole list: ReviewConversationCommits.test.ts and the pane
-      // state's tests.)
+      // Changes from here on the feed's two commit groups: the second
+      // author's, a run to the head (its card leads the view), and the
+      // first's, from the PR's first commit (the whole PR: All commits, the
+      // view at its first file).
       await press(review.getByTestId('review-range-card-leave'));
       await expect(trigger).toHaveText(/All commits/);
       const conversation = await expandReviewSection(page, 'review-pr-conversation');
-      const group = conversation.getByTestId('review-conversation-commits');
-      await expect(group).toHaveCount(1);
-      await expect(group).toContainText('added 8 commits');
-      await group.scrollIntoViewIfNeeded();
-      if (!compact) await group.hover();
-      const changesFrom = group.getByTestId('review-conversation-changes-from');
-      await expect(changesFrom).toBeVisible();
-      await expect(changesFrom).toHaveCSS('opacity', '1');
-      await press(changesFrom);
+      const groups = conversation.getByTestId('review-conversation-commits');
+      await expect(groups).toHaveCount(2);
+      // Newest first: the second author's group leads.
+      await expect(groups.nth(0)).toContainText(`${SECOND_AUTHOR} added 4 commits`);
+      await expect(groups.nth(1)).toContainText('Agent Overflow Harness added 4 commits');
+      const changesFrom = async (index: number) => {
+        const group = groups.nth(index);
+        await group.scrollIntoViewIfNeeded();
+        if (!compact) await group.hover();
+        const button = group.getByTestId('review-conversation-changes-from');
+        await expect(button).toBeVisible();
+        await expect(button).toHaveCSS('opacity', '1');
+        await press(button);
+      };
+      await changesFrom(0);
+      await expect(trigger).toHaveText(/^\s*5–8\/8\s*$/);
+      const runCard = review.getByTestId('review-range-card');
+      await expect(runCard).toBeInViewport();
+      await expect(runCard.getByTestId('review-range-card-count')).toHaveText('4 commits');
+      await expect(runCard.getByTestId('review-range-card-ends')).toContainText('rename moved');
+      await expect(runCard.getByTestId('review-range-card-ends')).toContainText('drop note');
+      await expect.poll(() => shownPaths(review)).toEqual(['data.bin', 'huge.png', 'img/moved.png', 'src/app.ts']);
+      await review.screenshot({ path: shot(`${forge}-changes-from-run`) });
+      await press(runCard.getByTestId('review-range-card-leave'));
+      await expect(trigger).toHaveText(/All commits/);
+      await expandReviewSection(page, 'review-pr-conversation');
+      await changesFrom(1);
       await expect(trigger).toHaveText(/All commits/);
       await expect(review.getByTestId('review-range-card')).toHaveCount(0);
       // To the diff: its first file at the top.
@@ -328,20 +349,29 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
       await press(page.locator('[data-popover]').last().getByTestId('review-split-toggle'));
       await page.keyboard.press('Escape');
 
-      // The gutter's menu copies the line's link.
-      const appLine = await reach(review, 'src/app.ts', line(review, 'export const moved = 2;'), compact);
-      const gutter = appLine.getByTestId('review-line-gutter').first();
-      const item = page.getByTestId('review-copy-line-link');
-      if (compact) await longPress(page, gutter, item);
-      else await gutter.click({ button: 'right' });
-      await expect(item).toHaveText(forge === 'github' ? 'Copy link to line' : 'Copy link to file');
-      await page.screenshot({ path: shot(`${forge}-line-menu`) });
-      await press(item);
+      // The gutter's menu copies the line's place on the forge's diff page
+      // (the anchors its own page puts in the address bar): notes.txt is
+      // `@@ -1,3 +1,3 @@`, alpha, -beta, +BETA, gamma.
       const host = forge === 'github' ? 'github.com' : 'gitlab.com';
-      const expected = forge === 'github'
-        ? `https://${host}/${seeded.project}/blob/${seeded.headSha}/src/app.ts#L2`
-        : `https://${host}/${seeded.project}/-/blob/${seeded.headSha}/src/app.ts`;
-      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expected);
+      const prUrl = forge === 'github'
+        ? `https://${host}/${seeded.project}/pull/${PR_NUMBER}`
+        : `https://${host}/${seeded.project}/-/merge_requests/${PR_NUMBER}`;
+      const notes = (algorithm: string) => createHash(algorithm).update('notes.txt').digest('hex');
+      const lineLinks = forge === 'github'
+        ? { beta: `${prUrl}/files#diff-${notes('sha256')}L2`, BETA: `${prUrl}/files#diff-${notes('sha256')}R2`, gamma: `${prUrl}/files#diff-${notes('sha256')}R3` }
+        : { beta: `${prUrl}/diffs#${notes('sha1')}_2_2`, BETA: `${prUrl}/diffs#${notes('sha1')}_3_2`, gamma: `${prUrl}/diffs#${notes('sha1')}_3_3` };
+      const item = page.getByTestId('review-copy-line-link');
+      for (const [text, expected] of Object.entries(lineLinks)) {
+        const row = await reach(review, 'notes.txt', review.locator('[data-testid="review-line-block"] > div').filter({ hasText: new RegExp(`(?<![A-Za-z])${text}(?![A-Za-z])`) }), compact);
+        const gutter = row.getByTestId('review-line-gutter').first();
+        if (compact) await longPress(page, gutter, item);
+        else await gutter.click({ button: 'right' });
+        await expect(item).toHaveText('Copy link to line');
+        if (text === 'beta') await page.screenshot({ path: shot(`${forge}-line-menu`) });
+        await press(item);
+        await expect(item).toHaveCount(0);
+        await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expected);
+      }
       await expectEveryForgeCallHandled(harness);
     });
   }

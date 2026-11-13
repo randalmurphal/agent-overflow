@@ -271,17 +271,15 @@
     return { primary: review.primaryCommentAction, withheld: review.nowWithheldReason };
   }
 
-  // Copy link to line: the PR's whole diff only, the one the forge's own
-  // diff page shows.
+  // Copy link to line: the PR's whole diff (All commits) only, the one
+  // the forge's diff page shows; a picked commit's or run's numbers are
+  // not that page's.
   let lineMenu: ReviewLineMenu | undefined = $state();
   const lineLinkTarget = $derived.by(() => {
     const forge = review?.prRef?.forge;
     const url = review?.prDetail?.url ?? '';
-    // The commit the diff's new side shows: a picked commit or run's
-    // newest, else the head the diff was read at.
-    const commit = review?.selectedCommitSHA ?? review?.prHeadSHA ?? '';
-    if (review?.scope !== 'pr' || !url || !commit || (forge !== 'github' && forge !== 'gitlab')) return null;
-    return { forge, url, commit } as const;
+    if (review?.scope !== 'pr' || review.selectedCommitSHA || !url || (forge !== 'github' && forge !== 'gitlab')) return null;
+    return { forge, url } as const;
   });
   function openLineMenu(event: MouseEvent, path: string, lineIndex: number): boolean {
     const file = diffFiles.find((candidate) => candidate.path === path);
@@ -561,7 +559,7 @@
       </div>
     {/if}
     {#if lineLinkTarget}
-      <ReviewLineMenu bind:this={lineMenu} forge={lineLinkTarget.forge} prUrl={lineLinkTarget.url} commit={lineLinkTarget.commit} />
+      <ReviewLineMenu bind:this={lineMenu} forge={lineLinkTarget.forge} prUrl={lineLinkTarget.url} />
     {/if}
     {#if !review.conflictView && review.sendStripShown}
       <ReviewSendStrip {review} />

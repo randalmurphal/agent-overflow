@@ -452,6 +452,9 @@ export interface PullCommit {
    * feature with a merge commit (`merge <message>`), so the PR carries both
    * the side commit and the merge. */
   merge?: boolean;
+  /** The commit's author name (email `<name>@example.com`, lowercased
+   * and dashed); default the harness's git identity. */
+  author?: string;
 }
 
 /** A pull request's history: files committed on `main` first (the base
@@ -505,6 +508,10 @@ export const DIAGRAM_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="40" h
  *    adds a line to `src/app.ts`.
  * 5. `add blob` adds `data.bin`, a binary file that is not an image.
  */
+/** The author of `imagePullHistory`'s later commits, so the PR's
+ * Conversation has two commit groups. */
+export const SECOND_AUTHOR = 'Sam Lee';
+
 export function imagePullHistory(): PullHistory {
   return {
     base: {
@@ -516,8 +523,8 @@ export function imagePullHistory(): PullHistory {
       { message: 'add icon', files: { 'icon.png': solidPNG(24, 12, [240, 200, 0]), 'src/app.ts': 'export const app = 1;\n' } },
       { message: 'restyle logo', files: { 'logo.png': solidPNG(32, 32, [40, 200, 200]) }, remove: ['old.png'] },
       { message: 'add diagram', files: { 'diagram.svg': DIAGRAM_SVG }, merge: true },
-      { message: 'rename moved', rename: { 'moved.png': 'img/moved.png' }, files: { 'src/app.ts': 'export const app = 1;\nexport const moved = 2;\n' } },
-      { message: 'add blob', files: { 'data.bin': new Uint8Array([0, 1, 2, 3, 0, 255, 254, 0]) } },
+      { message: 'rename moved', author: SECOND_AUTHOR, rename: { 'moved.png': 'img/moved.png' }, files: { 'src/app.ts': 'export const app = 1;\nexport const moved = 2;\n' } },
+      { message: 'add blob', author: SECOND_AUTHOR, files: { 'data.bin': new Uint8Array([0, 1, 2, 3, 0, 255, 254, 0]) } },
     ],
   };
 }
@@ -544,10 +551,11 @@ async function commitFeatureFiles(workspace: string, env: GitEnv, files: Record<
 async function commitPullHistory(workspace: string, env: GitEnv, history: PullHistory): Promise<string> {
   const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, env, encoding: 'utf8' }).trim();
   let second = 0;
-  const dated = (...args: string[]) => {
+  const dated = (args: string[], author?: string) => {
     second += 1;
     const date = `2026-01-01T00:00:${String(second).padStart(2, '0')}Z`;
-    execFileSync('git', args, { cwd: workspace, env: { ...env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+    const identity = author ? { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: `${author.toLowerCase().replace(/\s+/g, '-')}@example.com` } : {};
+    execFileSync('git', args, { cwd: workspace, env: { ...env, ...identity, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
   };
   const write = async (files: Record<string, string | Uint8Array>) => {
     for (const [name, data] of Object.entries(files)) {
@@ -563,11 +571,11 @@ async function commitPullHistory(workspace: string, env: GitEnv, history: PullHi
       git('mv', '--', from, to);
     }
     if (step.remove?.length) git('rm', '--quiet', '--', ...step.remove);
-    dated('commit', '--quiet', '--allow-empty', '-m', step.message, ...(step.body ? ['-m', step.body] : []));
+    dated(['commit', '--quiet', '--allow-empty', '-m', step.message, ...(step.body ? ['-m', step.body] : [])], step.author);
   };
   if (history.base) {
     await write(history.base);
-    dated('commit', '--quiet', '-m', 'base files');
+    dated(['commit', '--quiet', '-m', 'base files']);
   }
   const baseSha = git('rev-parse', 'HEAD');
   git('checkout', '--quiet', '-b', 'feature');
@@ -580,7 +588,7 @@ async function commitPullHistory(workspace: string, env: GitEnv, history: PullHi
     git('checkout', '--quiet', '-b', side);
     await apply(step);
     git('checkout', '--quiet', 'feature');
-    dated('merge', '--quiet', '--no-ff', '-m', `merge ${step.message}`, side);
+    dated(['merge', '--quiet', '--no-ff', '-m', `merge ${step.message}`, side]);
     git('branch', '--quiet', '-D', side);
   }
   return baseSha;

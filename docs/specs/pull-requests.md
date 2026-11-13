@@ -584,12 +584,15 @@ screen is never reopened. A text SVG keeps its text diff, with one `Rendered` to
 in its header that shows it as an image (always an `<img>`, never
 inline).
 
-Line links. In the PR scope a line's number gutter has a context menu (a
-long press on compact). Neither forge documents an address for a line of
-a PR's diff, so the link is to the file at the commit the diff's new side
-shows: GitHub `<repo>/blob/<commit>/<path>#L<line>` (`Copy link to
-line`; GitHub documents `#L`), GitLab `<project>/-/blob/<commit>/<path>`
-(`Copy link to file`). A removed line has no link.
+Line links. In the PR scope with All commits shown, a line's number
+gutter has a context menu (a long press on compact) with `Copy link to
+line`: the line's place on the forge's own diff page, in the anchor that
+page puts in the address bar (neither forge documents one). GitHub:
+`<pr>/files#diff-<sha256 of the path>R<n>` for an added or unchanged line,
+`L<n>` for a removed one. GitLab: `<mr>/diffs#<sha1 of the path>_<old>_<new>`,
+where an added or removed line takes the other side's running number. A
+renamed file is named by its new path. A picked commit or run, and the
+workspace, branch and edits diffs, offer no link.
 
 ## Non-goals
 

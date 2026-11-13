@@ -157,9 +157,9 @@ PR stores; components own presentation and interaction.
   refusal offers (Retry or reloading the diff), is decided in
   `stores/reviewDiffFiles.ts` and nowhere else. The conflict view passes
   no media host and keeps git's line.
-- The number gutter's context menu (`ReviewLineMenu`, PR scope) copies a
-  link from `utils/reviewLineLink.ts`; a line it cannot link leaves the
-  native menu.
+- The number gutter's context menu (`ReviewLineMenu`, the PR's whole
+  diff only) copies the line's anchor on the forge's diff page from
+  `utils/reviewLineLink.ts`; elsewhere the native menu stays.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.
 
 Review mutations reconcile from authoritative responses and show partial or
