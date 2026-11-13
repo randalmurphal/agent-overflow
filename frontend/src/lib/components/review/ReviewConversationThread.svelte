@@ -14,6 +14,7 @@
   import { authorDisplayName, isBotLogin } from '../../utils/reviewIdentity';
   import {
     THREAD_CARD_CLASS,
+    CONFIRM_HIDES,
     THREAD_CHIP_CLASS,
     THREAD_HEAD_CLASS,
     THREAD_OUTDATED_CARD_CLASS,
@@ -104,18 +105,18 @@
     <ReviewAvatar login={first?.authorLogin ?? ''} name={first?.authorName} size={28} />
   </div>
   <div
-    class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]} {outdated ? THREAD_OUTDATED_CARD_CLASS : ''}"
+    class="group/thread min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]} {outdated ? THREAD_OUTDATED_CARD_CLASS : ''}"
     {@attach jumpPulse(pulse)}
   >
     <!-- Wraps so the chips land on a second line in a narrow feed instead
          of clipping. -->
-    <div class="group/comment flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 py-1.5 px-3 text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {firstBody === '' && !contextFile && !editingFirst ? '' : 'border-b border-border-subtle'}">
+    <div class="group/head flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 py-1.5 px-3 text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {firstBody === '' && !contextFile && !editingFirst ? '' : 'border-b border-border-subtle'}" data-first-comment>
       <span class="shrink-0 font-semibold text-fg" title={first ? `@${first.authorLogin}` : ''}>{first ? authorDisplayName(first) : ''}</span>
       {#if first && isBotLogin(first.authorLogin)}
         <span class="shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1 text-[0.625rem] leading-4 text-fg-muted">bot</span>
       {/if}
       {#if first?.authorName}
-        <span class="min-w-0 shrink truncate text-fg-subtle" title="@{first.authorLogin}">@{first.authorLogin}</span>
+        <span class="min-w-0 shrink truncate text-fg-subtle {CONFIRM_HIDES}" title="@{first.authorLogin}">@{first.authorLogin}</span>
       {/if}
       {#if location !== ''}
         <span class="shrink-0 text-fg-muted">on</span>
@@ -134,20 +135,20 @@
         <span class="shrink-0 text-fg-muted">commented</span>
       {/if}
       {#if firstTime}
-        <span class="shrink-0 text-fg-subtle">· {firstTime}</span>
+        <span class="shrink-0 text-fg-subtle {CONFIRM_HIDES}">· {firstTime}</span>
       {/if}
       {#if first?.editedAt}
-        <span class="shrink-0 text-fg-subtle" data-testid="review-comment-edited">edited</span>
+        <span class="shrink-0 text-fg-subtle {CONFIRM_HIDES}" data-testid="review-comment-edited">edited</span>
       {/if}
       <span class="min-w-0 flex-1"></span>
       {#if outdated}
-        <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_OUTDATED_CHIP_CLASS}" title={outdatedTitle(thread)} data-testid="review-thread-outdated">outdated</span>
+        <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_OUTDATED_CHIP_CLASS} {CONFIRM_HIDES}" title={outdatedTitle(thread)} data-testid="review-thread-outdated">outdated</span>
       {/if}
       {#if threadState !== 'none'}
-        <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_CHIP_CLASS[threadState]}">{threadState}</span>
+        <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_CHIP_CLASS[threadState]} {CONFIRM_HIDES}">{threadState}</span>
       {/if}
       {#if first}
-        <ReviewSentCommentActions {review} {thread} comment={first} />
+        <ReviewSentCommentActions {review} {thread} comment={first} first />
       {/if}
     </div>
 
@@ -157,7 +158,9 @@
 
     <div class={threadBodyClass(threadState)}>
       {#if first && (firstBody !== '' || editingFirst)}
-        <ReviewSentCommentBody {review} {thread} comment={first} class="px-3.5 py-3" />
+        <div data-first-comment>
+          <ReviewSentCommentBody {review} {thread} comment={first} class="px-3.5 py-3" />
+        </div>
       {/if}
 
       {#if replyCount > 0 && settled}

@@ -20,12 +20,12 @@
 <script lang="ts">
   import ReviewIconButton from './ReviewIconButton.svelte';
 
-  // A comment's actions at the right end of its header, revealed on hover
-  // or focus (always on compact, which has no hover). The icons hold their
+  // A comment's actions at the right end of its header, revealed while the
+  // comment (header or body) is hovered, or on focus (always on compact, which has no hover). The icons hold their
   // width while hidden and the in-place confirm lays over the header from
   // the right, so neither revealing nor confirming moves the header's
   // text. Which action awaits its confirm is the host's (a virtualized row
-  // can unmount mid-question). The header carries `group/comment`.
+  // can unmount mid-question).
 
   interface Props {
     actions: readonly CommentAction[];
@@ -34,9 +34,17 @@
     onConfirmingChange: (id: string | null) => void;
     /** A confirmed action is running or waiting for the forge's answer. */
     pending?: boolean;
+    /** What hovering reveals the icons: the comment (a `group/comment`
+     * ancestor), or a thread's first comment, whose header and body are
+     * apart (a `data-first-comment` element inside `group/thread`). */
+    reveal?: 'comment' | 'thread';
   }
 
-  let { actions, confirming, onConfirmingChange, pending = false }: Props = $props();
+  let { actions, confirming, onConfirmingChange, pending = false, reveal = 'comment' }: Props = $props();
+  const REVEAL = {
+    comment: 'group-hover/comment:opacity-100',
+    thread: 'group-has-[[data-first-comment]:hover]/thread:opacity-100',
+  } as const;
 
   const asking = $derived(actions.find((action) => action.id === confirming) ?? null);
 
@@ -51,7 +59,7 @@
 {#if actions.length > 0}
   <span class="relative flex shrink-0 items-center" data-testid="review-comment-actions" data-find-skip>
     <span
-      class="flex items-center opacity-0 transition-opacity duration-75 group-hover/comment:opacity-100 focus-within:opacity-100 compact:opacity-100 {asking ? 'invisible' : ''}"
+      class="flex items-center opacity-0 transition-opacity duration-75 {REVEAL[reveal]} focus-within:opacity-100 compact:opacity-100 {asking ? 'invisible' : ''}"
     >
       {#each actions as action (action.id)}
         <ReviewIconButton icon={action.icon} label={action.label} disabled={action.disabled || pending} disabledLabel={action.disabledLabel} testid={action.testid} onclick={() => press(action)} />
@@ -59,7 +67,7 @@
     </span>
     {#if asking}
       <span
-        class="absolute inset-y-0 right-0 flex items-center gap-1 whitespace-nowrap rounded-[var(--radius-control)] bg-surface-1 pl-2 text-[0.6875rem] text-fg"
+        class="absolute inset-y-0 right-0 flex items-center gap-1 whitespace-nowrap pl-2 text-[0.6875rem] text-fg"
         role="group"
         aria-label={asking.confirm}
         data-testid="review-comment-confirm"

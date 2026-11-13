@@ -7,6 +7,7 @@
   import { visibleBody } from '../../utils/reviewComments';
   import { findThreadCommentKey, reviewCommentKey } from '../../utils/reviewFindScan';
   import { authorDisplayName, isBotLogin } from '../../utils/reviewIdentity';
+  import { CONFIRM_HIDES } from '../../utils/reviewThreadStyle';
   import type { ReviewThread } from '../../types/models';
 
   // One PR thread's comment bodies, shared by the inline diff strip
@@ -47,22 +48,22 @@
   {@const shown = visibleBody(comment.body)}
   {#if shown !== '' || review?.sentComments.editBodyFor(thread, comment) != null}
     <div
-      class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2.5 border-t border-border-subtle px-3.5 py-3"
+      class="group/comment grid grid-cols-[auto_minmax(0,1fr)] gap-x-2.5 border-t border-border-subtle px-3.5 py-3"
       style:grid-template-columns="{avatarSize}px minmax(0, 1fr)"
       data-testid="review-thread-comment"
     >
       <ReviewAvatar login={comment.authorLogin} name={comment.authorName} size={avatarSize} />
-      <div class="group/comment flex min-w-0 items-center gap-1.5 text-[0.75rem]" style:min-height="{avatarSize}px">
+      <div class="group/head flex min-w-0 items-center gap-1.5 text-[0.75rem]" style:min-height="{avatarSize}px" data-testid="review-comment-header">
         <span class="truncate font-semibold text-fg">{authorDisplayName(comment)}</span>
         {#if isBotLogin(comment.authorLogin)}
           <span class="shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1 text-[0.625rem] leading-4 text-fg-muted">bot</span>
         {/if}
         {#if comment.authorName}
-          <span class="min-w-0 truncate text-fg-subtle" title="@{comment.authorLogin}">@{comment.authorLogin}</span>
+          <span class="min-w-0 truncate text-fg-subtle {CONFIRM_HIDES}" title="@{comment.authorLogin}">@{comment.authorLogin}</span>
         {/if}
-        <span class="shrink-0 text-fg-subtle">· {commentTime(comment.createdAt)}</span>
+        <span class="shrink-0 text-fg-subtle {CONFIRM_HIDES}">· {commentTime(comment.createdAt)}</span>
         {#if comment.editedAt}
-          <span class="shrink-0 text-fg-subtle" title="Edited {commentTime(comment.editedAt)}" data-testid="review-comment-edited">edited</span>
+          <span class="shrink-0 text-fg-subtle {CONFIRM_HIDES}" title="Edited {commentTime(comment.editedAt)}" data-testid="review-comment-edited">edited</span>
         {/if}
         <span class="min-w-0 flex-1"></span>
         {#if review}

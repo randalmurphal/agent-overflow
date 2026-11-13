@@ -8,134 +8,17 @@
 // whose delivered message quotes the thread. Each asserts the forge calls
 // the fake answered and what the pane shows from the forge's next state,
 // and that every forge call was handled.
-import { randomBytes } from 'node:crypto';
-import type { Locator, Page } from '@playwright/test';
-
-import type { HarnessApp } from '../src/harness.js';
-import { expect, test, type SeedResult } from './fixtures.js';
-import {
-  expandReviewSection,
-  expectEveryForgeCallHandled,
-  forgeRouteCalls,
-  openPullRequestReview,
-  publishPullRequest,
-  refuseForgeRoute,
-  type ForgeRepo,
-} from './forge-helpers.js';
-import { launchPullsHarness, openPinnedReview } from './pulls-page-flow.js';
-
-type Forge = ForgeRepo['forge'];
-
-const BASE = 'export const one = 1;\nexport const two = 2;\nexport const three = 3;\nexport const four = 4;\n';
-// Line 3 is added between two unchanged lines; line 6 is added at the end.
-const HEAD = 'export const one = 1;\nexport const two = 2;\nexport const half = 2.5;\nexport const three = 3;\nexport const four = 4;\nexport const five = 5;\n';
-
-const ROOT_ID = 9101;
-const REPLY_ID = 9102;
-const ONLY_ID = 9103;
-
-// The routes each forge's write lands on in the fake.
-const ROUTES: Record<Forge, {
-  lineComment: string; reply: string; prComment: string; edit: string; delete: string;
-  publish: string; heldReply: string;
-}> = {
-  github: {
-    lineComment: 'gh api pull comments',
-    reply: 'gh api pull comment reply',
-    prComment: 'gh api issue comments',
-    edit: 'gh graphql UpdateReviewComment',
-    delete: 'gh graphql DeleteReviewComment',
-    publish: 'gh api pull reviews',
-    // A held reply goes up after the review, as a reply to its thread.
-    heldReply: 'gh api pull comment reply',
-  },
-  gitlab: {
-    lineComment: 'glab api create discussion',
-    reply: 'glab api create discussion note',
-    prComment: 'glab api create note',
-    edit: 'glab api update discussion note',
-    delete: 'glab api delete discussion note',
-    publish: 'glab api publish draft notes',
-    // A held reply is a draft note in the thread's discussion.
-    heldReply: 'glab api create draft note',
-  },
-};
-
-interface Opened {
-  harness: HarnessApp;
-  review: Locator;
-}
-
-// A PR on `forge` changing src/values.ts, with two threads: one by
-// another user on line 1 that the viewer answered, and one on line 5
-// holding only the viewer's comment.
-async function seedPull(harness: HarnessApp, forge: Forge, name: string, threadTitle?: string): Promise<void> {
-  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-    projects: [{
-      name: `${name}-${forge}`,
-      repo: { commits: [{ message: 'init', files: { 'README.md': '# Comments\n', 'src/values.ts': BASE } }] },
-      threads: threadTitle ? [{ title: threadTitle, turns: [{ userText: 'Hello.', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }] : [],
-    }],
-  });
-  await publishPullRequest(harness, seed.projects[0].path, {
-    forge,
-    project: `ao-e2e/${name}-${randomBytes(4).toString('hex')}`,
-    pulls: [{
-      number: 7, title: 'Values', author: 'octo',
-      threads: [
-        { path: 'src/values.ts', line: 1, comments: [
-          { id: ROOT_ID, author: 'octo', body: 'Why start at one?' },
-          { id: REPLY_ID, author: 'ao-viewer', body: 'Counting starts there.' },
-        ] },
-        { path: 'src/values.ts', line: 5, comments: [{ id: ONLY_ID, author: 'ao-viewer', body: 'Only my note.' }] },
-      ],
-    }],
-  }, { 'src/values.ts': HEAD });
-}
-
-async function openPinned(page: Page, forge: Forge, name: string): Promise<Opened> {
-  const harness = await launchPullsHarness();
-  await seedPull(harness, forge, name);
-  await harness.open(page);
-  const review = await openPinnedReview(page, 7);
-  return { harness, review };
-}
-
-function line(review: Locator, text: string): Locator {
-  return review.locator('[data-testid="review-line-block"] > div').filter({ hasText: text });
-}
-
-async function openEditor(review: Locator, text: string): Promise<Locator> {
-  const row = line(review, text);
-  await row.hover();
-  await row.getByTestId('review-add-comment').click();
-  const editor = review.getByTestId('review-draft-editor');
-  await expect(editor).toBeVisible();
-  return editor;
-}
-
-function thread(review: Locator, text: string): Locator {
-  return review.getByTestId('review-pr-thread').filter({ hasText: text });
-}
-
-async function openReply(review: Locator, text: string): Promise<Locator> {
-  const card = thread(review, text);
-  await card.getByTestId('review-thread-reply').click();
-  const composer = card.getByTestId('review-thread-composer');
-  await expect(composer).toBeVisible();
-  return composer;
-}
-
-async function closeAll(page: Page, harness: HarnessApp): Promise<void> {
-  await page.close();
-  await harness.close();
-}
+import { expect, test } from './fixtures.js';
+import { expandReviewSection, expectEveryForgeCallHandled, forgeRouteCalls, openPullRequestReview, refuseForgeRoute } from './forge-helpers.js';
+import { launchPullsHarness } from './pulls-page-flow.js';
+import { centre, closeAll, line, ONLY_ID, openEditor, openPinned, openReply, REPLY_ID, ROOT_ID, ROUTES, seedPull, thread } from './review-comment-actions-flow.js';
 
 for (const forge of ['github', 'gitlab'] as const) {
   const routes = ROUTES[forge];
 
-  test(`on ${forge}, a line comment, a reply and a PR comment post now, and a refusal keeps the text`, async ({ page }) => {
+  test(`on ${forge}, a line comment, a reply and a PR comment post now, and a refusal keeps the text`, async ({ page }, testInfo) => {
     test.setTimeout(150_000);
+    await page.emulateMedia({ colorScheme: 'dark' });
     const { harness, review } = await openPinned(page, forge, 'now');
     try {
       // The forge refuses the first post: the editor keeps its text and
@@ -172,6 +55,8 @@ for (const forge of ['github', 'gitlab'] as const) {
 
       // A comment on the PR itself, from the end of the Conversation feed.
       const conversation = await expandReviewSection(page, 'review-pr-conversation');
+      await conversation.getByTestId('review-pr-comment-open').scrollIntoViewIfNeeded();
+      await conversation.screenshot({ path: testInfo.outputPath(`${forge}-conversation-comment-field.png`) });
       await conversation.getByTestId('review-pr-comment-open').click();
       const field = conversation.getByTestId('review-pr-comment-composer');
       await field.locator('textarea').fill('Ready once CI is green.');
@@ -185,8 +70,9 @@ for (const forge of ['github', 'gitlab'] as const) {
     }
   });
 
-  test(`on ${forge}, a draft and a held reply go up as one review`, async ({ page }) => {
+  test(`on ${forge}, a draft and a held reply go up as one review`, async ({ page }, testInfo) => {
     test.setTimeout(150_000);
+    await page.emulateMedia({ colorScheme: 'dark' });
     const { harness, review } = await openPinned(page, forge, 'hold');
     try {
       const editor = await openEditor(review, 'const half');
@@ -202,6 +88,8 @@ for (const forge of ['github', 'gitlab'] as const) {
       await composer.locator('textarea').press('ControlOrMeta+Enter');
       const held = thread(review, 'Why start at one?').getByTestId('review-held-replies');
       await expect(held).toContainText('Held until the review.');
+      await centre(thread(review, 'Why start at one?'));
+      await thread(review, 'Why start at one?').screenshot({ path: testInfo.outputPath(`${forge}-held-reply.png`) });
       await expect(strip).toContainText('2 drafts');
       expect(await forgeRouteCalls(harness, routes.reply)).toHaveLength(0);
 
@@ -227,8 +115,9 @@ for (const forge of ['github', 'gitlab'] as const) {
     }
   });
 
-  test(`on ${forge}, a sent comment is edited, a reply deleted and a thread's only comment deleted`, async ({ page }) => {
+  test(`on ${forge}, a sent comment is edited, a reply deleted and a thread's only comment deleted`, async ({ page }, testInfo) => {
     test.setTimeout(150_000);
+    await page.emulateMedia({ colorScheme: 'dark' });
     const { harness, review } = await openPinned(page, forge, 'edit');
     try {
       const card = thread(review, 'Why start at one?');
@@ -236,7 +125,12 @@ for (const forge of ['github', 'gitlab'] as const) {
       // GitHub lets a viewer with write access (the fixture's default)
       // edit another user's comment; GitLab only its author.
       await expect(card.locator('[data-testid="review-comment-edit"]')).toHaveCount(forge === 'github' ? 2 : 1);
+      await centre(card);
       await mine.hover();
+      await expect(mine.locator('[data-testid="review-comment-actions"] > span')).toHaveCSS('opacity', '1');
+      // A reply's hover reveals only its own actions, not the first comment's.
+      if (forge === 'github') await expect(card.locator('[data-first-comment] [data-testid="review-comment-actions"] > span')).toHaveCSS('opacity', '0');
+      await card.screenshot({ path: testInfo.outputPath(`${forge}-comment-hover-actions.png`) });
       await mine.getByTestId('review-comment-edit').click();
       // The open edit holds the text in its field, so find it by the card.
       const edit = card.getByTestId('review-comment-edit-editor');
@@ -257,14 +151,19 @@ for (const forge of ['github', 'gitlab'] as const) {
       await edited.hover();
       await edited.getByTestId('review-comment-delete').click();
       await expect(edited.getByTestId('review-comment-confirm')).toContainText('Delete?');
+      await card.screenshot({ path: testInfo.outputPath(`${forge}-delete-confirm.png`) });
       await edited.getByTestId('review-comment-confirm-yes').click();
       await expect(card.getByTestId('review-thread-comment').filter({ hasText: 'Counting starts at one.' })).toHaveCount(0, { timeout: 30_000 });
       await expect(card).toContainText('Why start at one?');
 
       // Deleting a thread's only comment takes the thread with it.
       const only = thread(review, 'Only my note.');
-      await only.hover();
+      // The first comment's body reveals the actions in the card's header.
+      await only.locator('[data-first-comment]').last().hover();
+      await expect(only.locator('[data-first-comment] [data-testid="review-comment-actions"] > span')).toHaveCSS('opacity', '1');
       await only.getByTestId('review-comment-delete').first().click();
+      await expect(only.getByTestId('review-comment-confirm')).toBeVisible();
+      await only.screenshot({ path: testInfo.outputPath(`${forge}-first-comment-delete-confirm.png`) });
       await only.getByTestId('review-comment-confirm-yes').click();
       await expect(thread(review, 'Only my note.')).toHaveCount(0, { timeout: 30_000 });
       const deletes = await forgeRouteCalls(harness, routes.delete);
@@ -279,8 +178,9 @@ for (const forge of ['github', 'gitlab'] as const) {
     }
   });
 
-  test(`on ${forge}, a range over unchanged and added lines posts with its span`, async ({ page }) => {
+  test(`on ${forge}, a range over unchanged and added lines posts with its span`, async ({ page }, testInfo) => {
     test.setTimeout(150_000);
+    await page.emulateMedia({ colorScheme: 'dark' });
     const { harness, review } = await openPinned(page, forge, 'range');
     try {
       const editor = await openEditor(review, 'const two');
@@ -294,6 +194,7 @@ for (const forge of ['github', 'gitlab'] as const) {
       expect(editorTop).toBeGreaterThan((await end.boundingBox())!.y);
 
       await editor.locator('textarea').fill('These three belong together.');
+      await review.screenshot({ path: testInfo.outputPath(`${forge}-range-editor.png`) });
       await editor.getByTestId('review-draft-editor-now').click();
       const posted = thread(review, 'These three belong together.');
       // The span comes back from the forge as the thread's start line.

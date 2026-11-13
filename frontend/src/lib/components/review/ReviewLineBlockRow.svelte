@@ -96,7 +96,7 @@
     if (!ranges || ranges.length === 0) return false;
     return ranges.some((range) => rowInRange(row.oldLine, row.newLine, half, range));
   }
-  const RANGE_CLASS = "after:pointer-events-none after:absolute after:inset-0 after:bg-accent/10 after:content-['']";
+  const RANGE_CLASS = "after:pointer-events-none after:absolute after:inset-0 after:bg-accent/15 after:content-['']";
   // The tree's selected-row wash.
   const TARGET_CLASS = 'before:bg-accent/15';
 

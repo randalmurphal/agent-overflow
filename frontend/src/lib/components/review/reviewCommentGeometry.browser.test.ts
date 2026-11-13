@@ -43,7 +43,7 @@ afterEach(() => {
 });
 
 function textBoxes(): { left: number; right: number; top: number }[] {
-  const header = target.querySelector('[data-testid="review-thread-comment"] .group\\/comment')!;
+  const header = target.querySelector('[data-testid="review-comment-header"]')!;
   return [...header.querySelectorAll(':scope > span')]
     .filter((span) => !span.matches('[data-testid="review-comment-actions"]') && span.textContent!.trim() !== '')
     .map((span) => {
@@ -72,7 +72,8 @@ describe('a sent comment\'s header actions', () => {
     const icons = target.querySelector<HTMLElement>('[data-testid="review-comment-actions"] > span')!;
     expect(getComputedStyle(icons).opacity).toBe('0');
 
-    await userEvent.hover(target.querySelector('[data-testid="review-thread-comment"] .group\\/comment')!);
+    // Hovering the body reveals them too: the comment is the hover group.
+    await userEvent.hover(target.querySelector('[data-testid="review-thread-comment"] [data-find-key], [data-testid="review-thread-comment"] .col-start-2')!);
     await expect.poll(() => getComputedStyle(icons).opacity).toBe('1');
     expect(textBoxes()).toEqual(before);
     expect(target.querySelector('[data-testid="review-comment-edited"]')?.textContent).toBe('edited');
@@ -82,6 +83,16 @@ describe('a sent comment\'s header actions', () => {
     const confirm = target.querySelector('[data-testid="review-comment-confirm"]')!;
     expect(confirm.textContent).toContain('Delete?');
     expect(textBoxes()).toEqual(before);
+    // The confirm is transparent over the header: the text it would cover
+    // hides, and what still shows ends before it.
+    await expect.poll(() => {
+      const left = confirm.getBoundingClientRect().left;
+      return [...target.querySelectorAll<HTMLElement>('[data-testid="review-comment-header"] > span')]
+        .filter((span) => !span.matches('[data-testid="review-comment-actions"]') && span.textContent!.trim() !== '' && getComputedStyle(span).visibility === 'visible')
+        .every((span) => span.getBoundingClientRect().right <= left);
+    }).toBe(true);
+    const time = [...target.querySelectorAll<HTMLElement>('[data-testid="review-comment-header"] > span')].find((span) => span.textContent!.startsWith('·'))!;
+    expect(getComputedStyle(time).visibility).toBe('hidden');
     writes.dispose();
   });
 });

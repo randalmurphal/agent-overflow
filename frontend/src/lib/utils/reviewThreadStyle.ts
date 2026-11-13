@@ -33,6 +33,15 @@ export const THREAD_CARD_CLASS: Record<ReviewThreadState, string> = {
 /** Layered on the card of an outdated thread: the edge goes dashed. */
 export const THREAD_OUTDATED_CARD_CLASS = 'border-dashed';
 
+/**
+ * A comment header's secondary text (handle, time, edited, location,
+ * chips at its right end) hides, keeping its place, while the header
+ * (`group/head`) asks a delete's confirm, which lays over that end: the
+ * confirm is transparent over the header's tint, and nothing shows
+ * half-covered under it.
+ */
+export const CONFIRM_HIDES = 'group-has-[[data-testid=review-comment-confirm]]/head:invisible';
+
 /** The header strip inside the card. */
 export const THREAD_HEAD_CLASS: Record<ReviewThreadState, string> = {
   unresolved: 'bg-warning/8',

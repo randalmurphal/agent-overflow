@@ -15,9 +15,11 @@
     review: Pick<ReviewPaneState, 'sentComments' | 'sentCommentActions' | 'nowWithheldReason'>;
     thread: ReviewThread;
     comment: ReviewComment;
+    /** The thread's first comment, shown as the card's header and body. */
+    first?: boolean;
   }
 
-  let { review, thread, comment }: Props = $props();
+  let { review, thread, comment, first = false }: Props = $props();
 
   const writes = $derived(review.sentComments);
   const editing = $derived(writes.editBodyFor(thread, comment) !== null);
@@ -41,4 +43,5 @@
   confirming={writes.confirmingDelete(thread, comment) ? 'delete' : null}
   onConfirmingChange={(id) => writes.setConfirmDelete(thread, comment, id === 'delete')}
   pending={writes.pending(deleteKey)}
+  reveal={first ? 'thread' : 'comment'}
 />
