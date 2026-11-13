@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	gitops "agent-overflow/internal/git"
@@ -249,7 +250,7 @@ func TestSubmitPRReviewReportsAHeldReplyWhoseThreadIsGone(t *testing.T) {
 		result, err := c.submit(review)
 		switch forge {
 		case "github":
-			if err != nil || !result.PostedReview || result.PartialFailureThreadID != theirs.ID || result.PartialFailureKind != gitops.ForgeErrorNotFound || result.PartialFailure == "" {
+			if err != nil || !result.PostedReview || result.PartialFailureThreadID != theirs.ID || result.PartialFailureKind != gitops.ForgeErrorNotFound || !strings.Contains(result.PartialFailure, "reply answers is no longer on") {
 				t.Fatalf("github: submit = %+v, %v", result, err)
 			}
 			if !slices.Equal(result.SentDraftIDs, []string{line.ID}) {
@@ -257,7 +258,7 @@ func TestSubmitPRReviewReportsAHeldReplyWhoseThreadIsGone(t *testing.T) {
 			}
 		case "gitlab":
 			var explained *gitops.ForgeActionError
-			if !errors.As(err, &explained) || explained.Kind != gitops.ForgeErrorNotFound || result.Posted {
+			if !errors.As(err, &explained) || explained.Kind != gitops.ForgeErrorNotFound || !strings.Contains(explained.Message, "reply answers is no longer on") || result.Posted {
 				t.Fatalf("gitlab: submit = %+v, %v", result, err)
 			}
 			if c.published() != 0 {
