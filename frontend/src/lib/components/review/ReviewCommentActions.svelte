@@ -93,8 +93,21 @@
 
   // A long press on the comment opens the menu: on a reply, anywhere in
   // its `group/comment`; on a thread's first comment, its header or body
-  // (`data-first-comment`), not a reply's. A link keeps the engine's own
-  // menu.
+  // (`data-first-comment`), not a reply's. A link, or text selected in
+  // the comment, keeps the engine's own menu (copy, share).
+  function selectedIn(scope: HTMLElement): boolean {
+    const selection = scope.ownerDocument.getSelection();
+    if (!selection || selection.isCollapsed) return false;
+    const parts = reveal === 'comment'
+      ? [scope]
+      : [...scope.querySelectorAll('[data-first-comment]')].filter((part) => !part.closest('.group\\/comment'));
+    for (let at = 0; at < selection.rangeCount; at++) {
+      const range = selection.getRangeAt(at);
+      if (!range.collapsed && parts.some((part) => range.intersectsNode(part))) return true;
+    }
+    return false;
+  }
+
   $effect(() => {
     const host = root;
     if (!compact || !host || actions.length === 0) return;
@@ -104,6 +117,7 @@
       const target = event.target;
       if (!(target instanceof Element) || target.closest('a[href]')) return;
       if (reveal === 'thread' && (!target.closest('[data-first-comment]') || target.closest('.group\\/comment'))) return;
+      if (selectedIn(scope)) return;
       event.preventDefault();
       event.stopPropagation();
       menuOpen = true;

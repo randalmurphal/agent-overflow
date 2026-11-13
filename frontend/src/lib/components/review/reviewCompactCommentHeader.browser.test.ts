@@ -2,6 +2,8 @@
 // comment action the viewer has, an unresolved and an outdated chip, a
 // display name, its login and a time stays on one line: the actions are
 // one `⋯` there, and the login and time shorten before the chips do.
+// A long press on the comment opens its menu, except on selected text or
+// a link, which keep the browser's own menu.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -86,5 +88,105 @@ describe('a compact comment header', () => {
     for (const button of header.querySelectorAll('button')) {
       expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(headBox.right + 0.5);
     }
+  });
+});
+
+describe('a long press on a compact comment', () => {
+  function mountRow(body: string): HTMLElement {
+    const thread = { ...THREAD, comments: [{ ...THREAD.comments[0], body }] };
+    app = mount(ReviewPRThreadRow, {
+      target,
+      props: {
+        thread, anchor: { filePath: 'src/values.ts', newLine: 5, side: 'new' }, collapsed: false, orphaned: false, body: '', replying: false,
+        error: null, sending: false, resolving: false, resolveError: null, onToggle: () => {}, onBodyChange: () => {}, onOpenReply: () => {},
+        onCloseReply: () => {}, onSendReply: () => {}, onResolve: () => {}, onJumpToConversation: () => {}, review: review(),
+      },
+    });
+    flushSync();
+    return target;
+  }
+
+  async function paragraph(): Promise<HTMLElement> {
+    await expect.poll(() => target.querySelector('[data-first-comment] p')).not.toBeNull();
+    return target.querySelector<HTMLElement>('[data-first-comment] p')!;
+  }
+
+  // What the long-press bridge raises: a cancelable contextmenu at the
+  // pressed element.
+  function press(at: Element): boolean {
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    at.dispatchEvent(event);
+    flushSync();
+    return event.defaultPrevented;
+  }
+
+  const menu = () => document.querySelector('[role="menu"][aria-label="Comment actions"]');
+
+  afterEach(() => {
+    document.getSelection()?.removeAllRanges();
+  });
+
+  it('opens the comment menu on unselected prose', async () => {
+    mountRow('Plain prose words.');
+    const prose = await paragraph();
+    expect(press(prose.firstChild!.parentElement!)).toBe(true);
+    await expect.poll(menu).not.toBeNull();
+  });
+
+  it('opens the comment menu while the selection is elsewhere', async () => {
+    const outside = document.body.appendChild(document.createElement('p'));
+    outside.textContent = 'Elsewhere.';
+    try {
+      mountRow('Plain prose words.');
+      const prose = await paragraph();
+      document.getSelection()!.selectAllChildren(outside);
+      expect(press(prose)).toBe(true);
+      await expect.poll(menu).not.toBeNull();
+    } finally {
+      outside.remove();
+    }
+  });
+
+  it('leaves the browser\'s menu to selected text in the comment', async () => {
+    mountRow('Plain prose words.');
+    const prose = await paragraph();
+    const range = document.createRange();
+    range.setStart(prose.firstChild!, 0);
+    range.setEnd(prose.firstChild!, 5);
+    document.getSelection()!.removeAllRanges();
+    document.getSelection()!.addRange(range);
+    expect(press(prose)).toBe(false);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(menu()).toBeNull();
+    // Collapsed, the selection is a caret, not selected text.
+    document.getSelection()!.collapseToStart();
+    expect(press(prose)).toBe(true);
+  });
+
+  it('leaves the browser\'s menu to selected text in a reply, and opens it on the reply otherwise', async () => {
+    const thread = { ...THREAD, comments: [THREAD.comments[0], { ...THREAD.comments[0], id: 'c2', databaseID: 2, body: 'Reply prose words.' }] };
+    app = mount(ReviewPRThreadRow, {
+      target,
+      props: {
+        thread, anchor: { filePath: 'src/values.ts', newLine: 5, side: 'new' }, collapsed: false, orphaned: false, body: '', replying: false,
+        error: null, sending: false, resolving: false, resolveError: null, onToggle: () => {}, onBodyChange: () => {}, onOpenReply: () => {},
+        onCloseReply: () => {}, onSendReply: () => {}, onResolve: () => {}, onJumpToConversation: () => {}, review: review(),
+      },
+    });
+    flushSync();
+    await expect.poll(() => target.querySelector('[data-testid="review-thread-comment"] p')).not.toBeNull();
+    const reply = target.querySelector<HTMLElement>('[data-testid="review-thread-comment"] p')!;
+    document.getSelection()!.selectAllChildren(reply);
+    expect(press(reply)).toBe(false);
+    document.getSelection()!.removeAllRanges();
+    expect(press(reply)).toBe(true);
+    await expect.poll(menu).not.toBeNull();
+  });
+
+  it('leaves the browser\'s menu to a link', async () => {
+    mountRow('See [the docs](https://example.test/docs).');
+    await paragraph();
+    const link = target.querySelector('[data-first-comment] a[href]')!;
+    expect(press(link)).toBe(false);
   });
 });

@@ -272,8 +272,10 @@ scope, on both surfaces and both forges:
   takes over.
 - On compact a comment's actions are one `⋯` that opens the shared menu
   with the same rows, order and withheld reasons; a long press on the
-  comment opens the same menu, and Add reaction's popover anchors to the
-  `⋯`. The thread's header line never wraps there: the login, time and
+  comment opens the same menu, except on a link or while text in the
+  comment is selected, which keep the browser's menu. Add reaction's
+  popover anchors to the `⋯`, and only the copy of the comment it was
+  opened from (Conversation or diff) shows it. The thread's header line never wraps there: the login, time and
   range shorten before the state chips do.
 - Reactions. Each reaction present is a chip with its emoji and count,
   accent-toned when the viewer reacted, with who reacted as hover text
