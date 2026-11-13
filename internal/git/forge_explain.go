@@ -114,7 +114,10 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	var refused *forgeapi.RefusalError
 	var moved *HeadMovedError
 	var gone *ReplyThreadGoneError
+	var elsewhere *CommentNotOnPRError
 	switch {
+	case errors.As(err, &elsewhere):
+		return wrap(ForgeErrorNotFound, fmt.Sprintf("That comment is not on %s, so it was not changed.", name))
 	case errors.As(err, &moved):
 		return wrap(ForgeErrorStaleHead, "The branch moved after you loaded this. Reload and try again.")
 	case errors.As(err, &gone):

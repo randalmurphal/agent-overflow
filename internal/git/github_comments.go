@@ -93,12 +93,57 @@ const (
 }`
 )
 
+// githubCommentOwnerQuery reads which pull request a comment's node id
+// belongs to. A node id is global, so a mutation on one names nothing
+// about the PR: an edit or delete reads the owner first and refuses a
+// comment of another PR or repository.
+const githubCommentOwnerQuery = `query CommentOwner($id: ID!) {
+  node(id: $id) {
+    __typename
+    ... on PullRequestReviewComment { pullRequest { number repository { nameWithOwner } } }
+    ... on IssueComment { pullRequest { number repository { nameWithOwner } } }
+  }
+}`
+
+// requireCommentOnPR reads target's owner and refuses, before any write,
+// a comment that is not of the kind target names or not on ref's pull
+// request (*CommentNotOnPRError).
+func requireCommentOnPR(ctx context.Context, client *forgeapi.Client, ref PRReference, target CommentTarget) error {
+	var raw struct {
+		Node *struct {
+			Typename    string `json:"__typename"`
+			PullRequest *struct {
+				Number     int `json:"number"`
+				Repository struct {
+					NameWithOwner string `json:"nameWithOwner"`
+				} `json:"repository"`
+			} `json:"pullRequest"`
+		} `json:"node"`
+	}
+	if _, err := client.GraphQL(ctx, "CommentOwner", githubCommentOwnerQuery, map[string]any{"id": target.CommentID}, &raw); err != nil {
+		return err
+	}
+	kind := "PullRequestReviewComment"
+	if githubConversationTarget(target) {
+		kind = "IssueComment"
+	}
+	node := raw.Node
+	if node == nil || node.Typename != kind || node.PullRequest == nil || node.PullRequest.Number != ref.Number ||
+		!strings.EqualFold(node.PullRequest.Repository.NameWithOwner, ref.Namespace+"/"+ref.Repo) {
+		return &CommentNotOnPRError{CommentID: target.CommentID}
+	}
+	return nil
+}
+
 // EditComment runs the comment's update mutation and checks that the
 // answer names the comment: a 200 that updated nothing must not read as
 // an edit.
 func (f *githubForge) EditComment(ctx context.Context, ref PRReference, target CommentTarget, body string) error {
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
+		return err
+	}
+	if err := requireCommentOnPR(ctx, client, ref, target); err != nil {
 		return err
 	}
 	operation, document, field, node := "UpdateReviewComment", githubUpdateReviewCommentMutation, "updatePullRequestReviewComment", "pullRequestReviewComment"
@@ -120,6 +165,9 @@ func (f *githubForge) EditComment(ctx context.Context, ref PRReference, target C
 func (f *githubForge) DeleteComment(ctx context.Context, ref PRReference, target CommentTarget) error {
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
+		return err
+	}
+	if err := requireCommentOnPR(ctx, client, ref, target); err != nil {
 		return err
 	}
 	operation, document, field := "DeleteReviewComment", githubDeleteReviewCommentMutation, "deletePullRequestReviewComment"

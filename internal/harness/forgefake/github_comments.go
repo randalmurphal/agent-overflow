@@ -65,6 +65,28 @@ func (e *Engine) githubCommentByNode(c *call, id string) (r *Repo, p *Pull, thre
 	return nil, nil, 0, 0, false
 }
 
+// ghCommentOwner answers `node(id)` for a comment: its type and the pull
+// request and repository it is on. An id no repository on the host has is
+// GitHub's NOT_FOUND beside a null node.
+func ghCommentOwner(e *Engine, c *call, v graphQLVars) response {
+	id, err := v.str("id")
+	if err != nil {
+		return unhandled("CommentOwner: %v", err)
+	}
+	r, p, thread, _, ok := e.githubCommentByNode(c, id)
+	if !ok {
+		return graphQLNotFound(map[string]any{"node": nil}, []string{"node"}, fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
+	}
+	typename := "PullRequestReviewComment"
+	if thread < 0 {
+		typename = "IssueComment"
+	}
+	return graphQLData(map[string]any{"node": map[string]any{
+		"__typename":  typename,
+		"pullRequest": map[string]any{"number": p.Number, "repository": map[string]any{"nameWithOwner": r.Project}},
+	}})
+}
+
 // ghCommentMutation is one of the four comment mutations: field is its
 // payload, issue whether it names a conversation comment, update whether
 // it edits (else deletes).

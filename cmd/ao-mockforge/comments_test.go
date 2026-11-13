@@ -269,3 +269,39 @@ func TestSubmitReviewHeldRepliesThroughTheAppsForgeCode(t *testing.T) {
 		})
 	}
 }
+
+// An edit or delete names its comment by a global id; one of another pull
+// request or another repository is refused through the app's own code and
+// the comment is unchanged, though the viewer could edit it there.
+func TestGitHubCommentWritesStayOnTheirPR(t *testing.T) {
+	fixture := githubMergeFixture("success")
+	mine := func(body string) []forgefake.Thread {
+		return []forgefake.Thread{{Path: "a.go", Line: intPtr(2), Side: "right", Comments: []forgefake.Comment{{Author: "alice", Body: body}}}}
+	}
+	fixture.Repos[0].Pulls[1].Threads = mine("on pull 10")
+	fixture.Repos[0].Pulls[1].Comments = []forgefake.Comment{{Author: "alice", Body: "note on pull 10"}}
+	fixture.Repos = append(fixture.Repos, forgefake.Repo{Forge: "github", Project: "acme/other", ID: 5151, Pulls: []forgefake.Pull{
+		{Number: 9, Title: "Elsewhere", Author: "octo", HeadRef: "x", Threads: mine("in another repository")},
+	}})
+	r := newRig(t, fixture)
+	ctx := forgeapi.WithInteractive(t.Context())
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
+	pull10 := mergeRead(t, r, gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 10})
+	other := mergeRead(t, r, gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "other", Number: 9})
+	for _, thread := range []*gitops.ReviewThread{threadByBody(pull10, "on pull 10"), threadByBody(pull10, "note on pull 10"), threadByBody(other, "in another repository")} {
+		for _, write := range []func() error{
+			func() error { return r.core.EditPRComment(ctx, ref, targetOf(thread, 0), "hijacked") },
+			func() error { return r.core.DeletePRComment(ctx, ref, targetOf(thread, 0)) },
+		} {
+			if got := explained(t, ref, gitops.ActionEdit, write()); got.Kind != gitops.ForgeErrorNotFound {
+				t.Fatalf("a write on %q = %+v", thread.Comments[0].Body, got)
+			}
+		}
+	}
+	pull10 = mergeRead(t, r, gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 10})
+	other = mergeRead(t, r, gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "other", Number: 9})
+	if threadByBody(pull10, "on pull 10") == nil || threadByBody(pull10, "note on pull 10") == nil || threadByBody(other, "in another repository") == nil {
+		t.Fatal("a write named by another PR changed its comment")
+	}
+	expectAllHandled(t, r)
+}

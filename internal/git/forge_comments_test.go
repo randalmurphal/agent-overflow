@@ -90,9 +90,18 @@ func TestGitHubPostPRComment(t *testing.T) {
 // An answer that names no comment is not an edit.
 func TestGitHubEditAndDeleteComment(t *testing.T) {
 	t.Parallel()
-	var answer atomic.Value
+	var answer, owner atomic.Value
 	answer.Store("")
+	owner.Store("o/r#5")
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op == "CommentOwner" {
+			repo, number, _ := strings.Cut(owner.Load().(string), "#")
+			typename := "PullRequestReviewComment"
+			if strings.HasPrefix(fmt.Sprint(call.Vars["id"]), "IC_") {
+				typename = "IssueComment"
+			}
+			return githubData(fmt.Sprintf(`{"node":{"__typename":%q,"pullRequest":{"number":%s,"repository":{"nameWithOwner":%q}}}}`, typename, number, repo))
+		}
 		if body := answer.Load().(string); body != "" {
 			return forgeAPIAnswer{Body: body}
 		}
@@ -121,12 +130,37 @@ func TestGitHubEditAndDeleteComment(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := strings.Join(calls.ops(), ","); got != "UpdateReviewComment,UpdateIssueComment,DeleteReviewComment,DeleteIssueComment" {
+	if got := strings.Join(calls.ops(), ","); got != "CommentOwner,UpdateReviewComment,CommentOwner,UpdateIssueComment,CommentOwner,DeleteReviewComment,CommentOwner,DeleteIssueComment" {
 		t.Fatalf("operations = %s", got)
 	}
-	if sent := calls.all(); sent[0].Vars["id"] != "PRRC_2" || sent[0].Vars["body"] != "new" || sent[3].Vars["id"] != "IC_3" {
-		t.Fatalf("variables = %v / %v", sent[0].Vars, sent[3].Vars)
+	if sent := calls.all(); sent[1].Vars["id"] != "PRRC_2" || sent[1].Vars["body"] != "new" || sent[7].Vars["id"] != "IC_3" {
+		t.Fatalf("variables = %v / %v", sent[1].Vars, sent[7].Vars)
 	}
+	// A comment of another PR, of another repository, or of the other kind
+	// than the target names is refused before any mutation.
+	for _, elsewhere := range []struct {
+		owner  string
+		target CommentTarget
+	}{{"o/r#6", review}, {"o/other#5", conversation}, {"o/r#5", CommentTarget{ThreadID: "PRRT_9", CommentID: "IC_9"}}} {
+		owner.Store(elsewhere.owner)
+		before := len(calls.all())
+		for _, write := range []func() error{
+			func() error { return core.EditPRComment(t.Context(), ref, elsewhere.target, "new") },
+			func() error { return core.DeletePRComment(t.Context(), ref, elsewhere.target) },
+		} {
+			err := write()
+			if _, ok := errors.AsType[*CommentNotOnPRError](err); !ok {
+				t.Fatalf("%s: a comment elsewhere = %v", elsewhere.owner, err)
+			}
+			if explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(ref, ActionEdit, err)); explained == nil || explained.Kind != ForgeErrorNotFound {
+				t.Fatalf("%s: explained = %v", elsewhere.owner, explained)
+			}
+		}
+		if got := calls.ops()[before:]; strings.Join(got, ",") != "CommentOwner,CommentOwner" {
+			t.Fatalf("%s: a comment elsewhere was written: %v", elsewhere.owner, got)
+		}
+	}
+	owner.Store("o/r#5")
 	answer.Store(`{"data":{"updatePullRequestReviewComment":null}}`)
 	if err := core.EditPRComment(t.Context(), ref, review, "new"); err == nil {
 		t.Fatal("an edit GitHub answered with no comment read as done")

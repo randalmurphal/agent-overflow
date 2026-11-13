@@ -45,6 +45,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "PRTimelinePage", required: []string{"owner", "name", "number", "before"}, run: ghPRTimelinePage},
 	{kind: "query", name: "ThreadCommentsPage", required: []string{"threadID", "after"}, run: ghThreadCommentsPage},
 	{kind: "query", name: "RollupContextsPage", required: []string{"commitID", "number", "after"}, run: ghRollupContextsPage},
+	{kind: "query", name: "CommentOwner", required: []string{"id"}, run: ghCommentOwner},
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
 	{kind: "query", name: "PullsSearch", required: []string{"query"}, optional: []string{"after"}, run: ghPullsSearch},
 	{kind: "query", name: "OpenPRsByHead", required: []string{"owner", "name", "head"}, optional: []string{"after"}, run: ghOpenPRsByHead},

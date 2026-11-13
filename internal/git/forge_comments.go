@@ -44,6 +44,16 @@ func (t CommentTarget) Validate() error {
 	return nil
 }
 
+// CommentNotOnPRError is an edit or delete refused before it reached the
+// forge because the comment it names is not on the PR the caller named.
+type CommentNotOnPRError struct {
+	CommentID string
+}
+
+func (e *CommentNotOnPRError) Error() string {
+	return fmt.Sprintf("comment %s is not on this pull request", e.CommentID)
+}
+
 // HeadMovedError is a write refused before it reached the forge because the
 // PR's head is no longer the one the caller's diff shows.
 type HeadMovedError struct {
