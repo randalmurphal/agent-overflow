@@ -89,7 +89,7 @@
 
 {#if manage.titleError}
   <Popover anchor={input} open={true} onClose={() => {}} placement="bottom-start" role="none">
-    <div class="max-w-sm rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 p-1.5 shadow-lg">
+    <div class="max-w-sm rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 p-1.5 shadow-menu">
       <ReviewManageError error={manage.titleError} testid="review-title-error" />
     </div>
   </Popover>

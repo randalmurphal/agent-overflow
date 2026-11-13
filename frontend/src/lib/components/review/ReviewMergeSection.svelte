@@ -82,13 +82,13 @@
   const offerMessage = $derived(!!detail.manage && methodHasCommitMessage(method));
   const showMessage = $derived(showMerge && armed === null && offerMessage && message.open);
   const dismissAnchors: Record<string, HTMLElement | undefined> = $state({});
-  const dismissing = $derived(manage.dismissDraft);
-  const dismissFor = $derived.by(() => {
-    const id = dismissing?.reviewId;
+  // The open Dismiss reason: its anchor and whose review it dismisses.
+  const dismissing = $derived.by(() => {
+    const id = manage.dismissDraft?.reviewId;
     if (!id) return null;
     for (const blocker of blockers) {
       const entry = blocker.changeRequests?.find((each) => each.reviewId === id);
-      if (entry) return entry;
+      if (entry) return { anchor: dismissAnchors[id], who: authorDisplayName({ authorLogin: entry.authorLogin, authorName: entry.authorName }) };
     }
     return null;
   });
@@ -405,8 +405,8 @@
   </span>
 {/snippet}
 
-{#if dismissing && dismissFor}
-  <ReviewDismissPopover {manage} anchor={dismissAnchors[dismissing.reviewId]} reviewer={authorDisplayName({ authorLogin: dismissFor.authorLogin, authorName: dismissFor.authorName })} />
+{#if dismissing}
+  <ReviewDismissPopover {manage} anchor={dismissing?.anchor} reviewer={dismissing?.who ?? ''} />
 {/if}
 
 {#if showMerge}
