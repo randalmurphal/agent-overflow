@@ -159,14 +159,14 @@ func TestFencedInterruptOfAnotherTurnLeavesParkedCalls(t *testing.T) {
 	parked, end := f.app.beginRemoteWait(t.Context(), receipt.TargetThreadID, "computer", "request")
 	defer end()
 
-	interrupted, err := f.app.interruptTurnAtIndex(t.Context(), receipt.TargetThreadID, index+5, nil)
+	interrupted, err := f.app.interruptTurnAtIndex(t.Context(), receipt.TargetThreadID, index+5, stopByWorkflow())
 	if err != nil || interrupted {
 		t.Fatalf("interrupt of another turn = %v, %v; want nothing sent", interrupted, err)
 	}
 	if parked.Err() != nil {
 		t.Fatalf("an interrupt of another turn ended the running turn's parked call: %v", context.Cause(parked))
 	}
-	if interrupted, err := f.app.interruptTurnAtIndex(t.Context(), receipt.TargetThreadID, index, nil); err != nil || !interrupted {
+	if interrupted, err := f.app.interruptTurnAtIndex(t.Context(), receipt.TargetThreadID, index, stopByWorkflow()); err != nil || !interrupted {
 		t.Fatalf("interrupt of the running turn = %v, %v", interrupted, err)
 	}
 	if parked.Err() == nil {

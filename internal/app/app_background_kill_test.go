@@ -454,16 +454,16 @@ func TestInterruptAndRevertIfClean_MainThreadShellKeepsTheExistingDecline(t *tes
 func TestUngatedInterruptsStopWithAgentsLive(t *testing.T) {
 	t.Parallel()
 	cases := map[string]func(*agentKillFixture) error{
-		// interruptTurnCtx is what the workflow runner is constructed with.
+		// interruptTurnForWorkflow is what the workflow runner is constructed with.
 		"workflow takeover": func(f *agentKillFixture) error {
-			return f.app.interruptTurnCtx(context.Background(), f.thread.ID)
+			return f.app.interruptTurnForWorkflow(context.Background(), f.thread.ID)
 		},
 		"thread tools cancel": func(f *agentKillFixture) error {
-			_, err := f.app.threadTools().interruptRunningThread(context.Background(), f.thread.ID)
+			_, err := f.app.threadTools().interruptRunningThread(context.Background(), f.thread.ID, stopByThread("Lead", "lead-id", ""))
 			return err
 		},
 		"request lifecycle cancel": func(f *agentKillFixture) error {
-			_, err := f.app.interruptRequestTurn(context.Background(), f.thread.ID, f.app.triage.OpenTurnIndex(f.thread.ID))
+			_, err := f.app.interruptRequestTurn(context.Background(), f.thread.ID, f.app.triage.OpenTurnIndex(f.thread.ID), stopByThread("Lead", "lead-id", ""))
 			return err
 		},
 	}

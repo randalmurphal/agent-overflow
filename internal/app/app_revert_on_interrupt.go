@@ -120,7 +120,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		}
 	}
 	if sess, ok := a.sessionManager().get(threadID); ok {
-		if err := a.refuseBackgroundKill(threadID, sess, personalStop(confirmedAgents)); err != nil {
+		if err := a.refuseBackgroundKill(threadID, sess, stopByUser(confirmedAgents).consent); err != nil {
 			return InterruptAndRevertResult{}, err
 		}
 	}
@@ -129,7 +129,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		// follow-up intent. Fall back to plain interrupt semantics so
 		// the user's Stop click still takes effect. The caller will
 		// undo any optimistic timeline / composer state.
-		if err := a.runPlainInterruptLocked(threadID); err != nil {
+		if err := a.runPlainInterruptLocked(threadID, stopByUser(confirmedAgents)); err != nil {
 			return InterruptAndRevertResult{Reverted: false, Reason: reason}, err
 		}
 		return InterruptAndRevertResult{Reverted: false, Reason: reason}, nil
@@ -151,6 +151,9 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		a.triage.MarkTurnReverted(threadID)
 		markedReverted = true
 	}
+	// The reverted turn ends however the provider ends it; a request it was
+	// answering was stopped by the user either way.
+	a.recordTurnStop(threadID, userItem.TurnIndex, stopByUser(confirmedAgents))
 
 	// Codex thread/revert owns active-turn shutdown and the history cut as one
 	// server-side operation. Sending turn/interrupt first splits that operation
@@ -167,6 +170,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 						if markedReverted {
 							a.triage.ClearTurnReverted(threadID)
 						}
+						a.dropTurnStop(threadID, userItem.TurnIndex)
 						return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: provider interrupt: %w", err)
 					}
 					// Headless Claude: the session stop below ends the turn
@@ -256,7 +260,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 // fallback branch of InterruptAndRevertIfClean. Caller holds the
 // thread lock. Tolerant of "no session" so a Stop click on a stale
 // thread is a no-op rather than an error.
-func (a *App) runPlainInterruptLocked(threadID string) error {
+func (a *App) runPlainInterruptLocked(threadID string, stop turnStop) error {
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		// No session — nothing to interrupt, nothing to revert.
@@ -275,7 +279,9 @@ func (a *App) runPlainInterruptLocked(threadID string) error {
 		interruptedTurn = a.triage.InterruptTurnIndex(threadID)
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
+	a.recordTurnStop(threadID, interruptedTurn, stop)
 	if err := providerSess.Interrupt(context.Background()); err != nil {
+		a.dropTurnStop(threadID, interruptedTurn)
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}

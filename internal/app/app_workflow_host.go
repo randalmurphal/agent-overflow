@@ -125,7 +125,7 @@ func (h workflowHostAdapter) ClaudeProjectsDir() (string, error) {
 // the seam exists.
 func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSource) *workflowhost.Runner {
 	return workflowhost.New(
-		workflowHostAdapter{app: app}, app.store, dataRoot, profiles, app.interruptTurnCtx,
+		workflowHostAdapter{app: app}, app.store, dataRoot, profiles, app.interruptTurnForWorkflow,
 	)
 }
 

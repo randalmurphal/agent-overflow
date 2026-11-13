@@ -138,6 +138,6 @@ func TestPlainInterruptFallbackRecordsStopInTurnStartGap(t *testing.T) {
 			return err
 		}
 		defer unlock()
-		return app.runPlainInterruptLocked(threadID)
+		return app.runPlainInterruptLocked(threadID, stopByUser(nil))
 	}))
 }

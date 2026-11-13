@@ -821,7 +821,7 @@ func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Cal
 	if !linked {
 		return threadtools.CancelReport{}, threadNotYoursToInterrupt(threadID)
 	}
-	effect, err := t.interruptRunningThread(ctx, thread.ID)
+	effect, err := t.interruptRunningThread(ctx, thread.ID, stopByThread(caller.Title, caller.ThreadID, ""))
 	if err != nil {
 		return threadtools.CancelReport{}, err
 	}
@@ -835,7 +835,7 @@ func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Cal
 // interruptRunningThread is what both cancel-by-thread doors do once lineage
 // is settled: a thread with no turn in flight has nothing to stop, and one
 // that is working gets that turn interrupted.
-func (t threadToolsApp) interruptRunningThread(ctx context.Context, threadID string) (string, error) {
+func (t threadToolsApp) interruptRunningThread(ctx context.Context, threadID string, stop turnStop) (string, error) {
 	live, err := t.LiveState(ctx, threadID)
 	if err != nil {
 		return "", err
@@ -843,7 +843,7 @@ func (t threadToolsApp) interruptRunningThread(ctx context.Context, threadID str
 	if !live.ActiveTurn {
 		return threadtools.EffectNothing, nil
 	}
-	if err := t.app.interruptTurnCtx(ctx, threadID); err != nil {
+	if err := t.app.interruptTurnCtx(ctx, threadID, stop); err != nil {
 		return "", err
 	}
 	return threadtools.EffectInterrupted, nil
@@ -872,7 +872,8 @@ func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threa
 	if !linked {
 		return "", threadNotYoursToInterrupt(threadID)
 	}
-	return t.interruptRunningThread(ctx, thread.ID)
+	caller := origin.caller
+	return t.interruptRunningThread(ctx, thread.ID, stopByThread(caller.Title, caller.ThreadID, caller.ComputerName))
 }
 
 // threadNotYoursToInterrupt is the refusal both lineage checks give. The

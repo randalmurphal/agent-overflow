@@ -135,7 +135,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 //
 //ao:scope threads:operate
 func (a *App) InterruptTurn(threadID string, confirmedAgents []string) error {
-	_, err := a.interruptTurnAtIndex(context.Background(), threadID, anyOpenTurn, personalStop(confirmedAgents))
+	_, err := a.interruptTurnAtIndex(context.Background(), threadID, anyOpenTurn, stopByUser(confirmedAgents))
 	return err
 }
 

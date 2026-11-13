@@ -48,7 +48,7 @@ type Runner struct {
 	// rather than a direct call for the tests that assert an interrupt was — or,
 	// for the late-interrupt guard, was NOT — asked for: the real body answers
 	// nil for a thread with no live session either way. Production wires it to
-	// `App.interruptTurnCtx` in the constructor.
+	// `App.interruptTurnForWorkflow` in the constructor.
 	interrupt func(context.Context, string) error
 	// wedgedStops counts bounded stop waits that expired and whose abandoned
 	// work has not yet completed. While it is non-zero, `Stop` skips its wait
@@ -178,7 +178,7 @@ func (a *workflowAttempt) failureDetail(fallback string) string {
 
 // New builds the runner. `interrupt` fires a provider-level interrupt on a
 // thread's active session, with ctx bounding only the thread-action-lock
-// acquisition; production passes `App.interruptTurnCtx`. See the field.
+// acquisition; production passes `App.interruptTurnForWorkflow`. See the field.
 func New(
 	host Host, dataStore *store.Store, dataRoot string,
 	profiles engine.ProfileSource, interrupt func(context.Context, string) error,

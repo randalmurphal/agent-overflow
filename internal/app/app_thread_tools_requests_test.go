@@ -910,8 +910,8 @@ func TestThreadRequestWaitEndsWhenTheCallersTurnIsInterrupted(t *testing.T) {
 	}()
 	waitUntil(t, 10*time.Second, func() bool { return f.app.requestWaitActive(ack.Token) })
 
-	if err := f.app.interruptTurnCtx(t.Context(), f.caller.ID); err != nil {
-		t.Fatalf("interruptTurnCtx: %v", err)
+	if err := f.app.interruptTurnForWorkflow(t.Context(), f.caller.ID); err != nil {
+		t.Fatalf("interruptTurnForWorkflow: %v", err)
 	}
 	select {
 	case got := <-done:

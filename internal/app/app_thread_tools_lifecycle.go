@@ -76,7 +76,7 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 		// cancel was running, or it reached the provider before the receipt
 		// moved to `running`. Either way a turn is starting from it, and
 		// stopping that turn is what the cancel promised.
-		return a.interruptDispatchedRequest(ctx, receipt.TargetThreadID, threadRequestSendID(token))
+		return a.interruptDispatchedRequest(ctx, receipt.TargetThreadID, threadRequestSendID(token), receiptCanceller(receipt))
 	case store.ThreadReceiptRunning:
 		index, ok := threadRequestTurnIndex(receipt.TargetThreadID, receipt.TurnID)
 		if !ok {
@@ -98,9 +98,20 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 		if found && turn.CompletedAt != nil {
 			return threadtools.EffectNothing, nil
 		}
-		return a.interruptRequestTurn(ctx, receipt.TargetThreadID, index)
+		return a.interruptRequestTurn(ctx, receipt.TargetThreadID, index, receiptCanceller(receipt))
 	}
 	return threadtools.EffectNothing, nil
+}
+
+// receiptCanceller is the stop of a request cancelled by its own sender.
+// The request itself is already settled cancelled; the cause reaches any
+// other request the same turn was answering.
+func receiptCanceller(receipt store.ThreadRequestReceipt) turnStop {
+	computer := ""
+	if receipt.OwnerDeviceID != threadReceiptLocalOwner {
+		computer = receipt.SourceComputerName
+	}
+	return stopByThread(receipt.SourceThreadTitle, receipt.SourceThreadID, computer)
 }
 
 // interruptDispatchedRequest stops the turn a request's message started, for
@@ -108,7 +119,7 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 // the message, and the row it produced names the turn: without that the
 // cancel would report that there was nothing to stop while the turn it was
 // asked to stop ran on.
-func (a *App) interruptDispatchedRequest(ctx context.Context, threadID, sendID string) (string, error) {
+func (a *App) interruptDispatchedRequest(ctx context.Context, threadID, sendID string, stop turnStop) (string, error) {
 	record, found, err := a.findRecordedSend(threadID, sendID)
 	if err != nil {
 		return "", err
@@ -117,13 +128,13 @@ func (a *App) interruptDispatchedRequest(ctx context.Context, threadID, sendID s
 		// The message was never sent, or it was restored into the composer.
 		return threadtools.EffectNothing, nil
 	}
-	return a.interruptRequestTurn(ctx, threadID, record.item.TurnIndex)
+	return a.interruptRequestTurn(ctx, threadID, record.item.TurnIndex, stop)
 }
 
 // interruptRequestTurn interrupts one thread only while the named turn is the
 // one it is running, and reports what happened in the cancel's vocabulary.
-func (a *App) interruptRequestTurn(ctx context.Context, threadID string, turnIndex int) (string, error) {
-	interrupted, err := a.interruptTurnAtIndex(ctx, threadID, turnIndex, nil)
+func (a *App) interruptRequestTurn(ctx context.Context, threadID string, turnIndex int, stop turnStop) (string, error) {
+	interrupted, err := a.interruptTurnAtIndex(ctx, threadID, turnIndex, stop)
 	if err != nil {
 		return "", err
 	}
