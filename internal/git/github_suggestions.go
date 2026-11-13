@@ -183,7 +183,7 @@ func (f *githubForge) ApplySuggestion(ctx context.Context, ref PRReference, req 
 		return elsewhere
 	}
 	members := githubThreadRaw{ID: thread.ID, Comments: thread.Comments}
-	if err := f.readThreadComments(ctx, client, &members); err != nil {
+	if err := f.readThreadComments(ctx, client, &members, false); err != nil {
 		return err
 	}
 	found := false
