@@ -418,6 +418,84 @@ the capability reads and the refusals are in
   A download that finds the artifacts gone clears the flag that offered
   it: the pipeline is read again at once.
 
+### Managing a PR
+
+The review pane manages the PR it shows, on both forges, through
+`stores/prManage.svelte.ts` (the editors, the Details pickers and the
+pending action) over the bound methods `EditPR`, `SetPRReviewers`,
+`SetPRAssignees`, `SetPRLabels`, `SetPRState`, `RerequestPRReview`,
+`DismissPRReview` (GitHub), `BypassPRRequestedChanges` (GitLab),
+`SearchPRCandidates` and `GetPRMergeMessage`. The forge requests, the
+permission reads and the refusals are in
+[forge transport](../architecture/forge-transport.md#managing-a-pr).
+
+- Which controls show is `PRDetail.manage.can`, one flag per control,
+  each from the forge's own answer and each decided alone (a row's Edit
+  by its own flag). A control the viewer may not use is absent. A detail
+  without `manage` (an older backend) shows no Details section and none
+  of these controls; that absence is the compatibility gate. A failed
+  management read sets `manage.unavailable`: every flag is false and the
+  Details section, collapsed, shows the sentence instead of its rows.
+- Edit affordances are icons revealed on hover (always shown on compact)
+  whose space is held, so nothing moves when they appear or go pending.
+- Title: the pencil at the end of the title line turns it into one
+  input of the line's own height; Enter saves, Escape cancels. A failure
+  floats under the input, so the title bar keeps its fixed lines.
+- Description: the pencil on the Description section's header opens the
+  raw body with Write and Preview (`ChatMarkdown`'s sanitized embedded
+  mode), Save and Cancel; Ctrl or Cmd+Enter saves. A save names the body
+  the editor opened with (`expectedDescription`); one changed since is
+  refused with "The description changed since you opened it. Copy your
+  text, reload the description and edit again." and the editor stays
+  open. An empty description shows the section when the viewer may edit
+  it. Task list items in the rendered description are not tickable: the
+  renderer has no seam that maps a rendered checkbox to its source.
+- Details, between Merge and Description: Reviewers (each with the
+  verdict vocabulary: approved, changes requested, commented, pending;
+  an outdated GitHub review is marked), Assignees and Labels (a neutral
+  chip with the forge's color as a dot). Collapsed by default while
+  every row is empty; the reader's choice lives in the review state. A
+  settled or outdated review has a Re-request icon. Each row's Edit opens
+  a searchable multi-select: results load on open and as the reader
+  types (250 ms debounce, an older query's answer dropped), the first
+  page only, "Type to narrow" when the forge has more. Teams are offered
+  only on a GitHub organization (`can.reviewerTeams`) and when the search
+  returns them. A GitHub reviewer whose review is in stays checked: only
+  a pending request can be withdrawn. Closing the picker (Escape, Tab, a
+  click outside, its trigger) applies the row's adds and removes as one
+  write, each person and label passed as the backend gave it; nothing is
+  written when nothing changed. A failed change shows its sentence on
+  the row (a partial one says what applied); the row shows the next
+  snapshot either way.
+- The title bar's `⋯` at the end of the state line holds Convert to
+  draft and Close on an open PR, Reopen on a closed one; a merged PR has
+  no menu. No confirm step: each is undone by the item that replaces it.
+  Mark ready stays the draft blocker's fix.
+- The changes-requested blocker row: GitHub offers Dismiss per review in
+  `blocker.changeRequests`, opening a reason field (required; Enter
+  dismisses); GitLab offers Bypass when `blocker.bypassable`. A bypass
+  stands as the settled row "Requested changes bypassed".
+- `Merge ▾` gains `Edit commit message…` for a method that makes a
+  commit (merge, squash): a title and body editor in the Merge section,
+  prefilled with the forge's default for the method, read when it opens
+  and when the method changes until the text is edited. Only an edited
+  message is sent with Merge now and Auto-merge (`commitMessage`); a
+  failed default read shows its sentence in the editor and the merge
+  goes on with the forge's default. The editor hides while auto-merge is
+  armed.
+- Every action follows the merge actions' contract: no optimistic state;
+  pending from the call until the pane has applied the snapshot whose
+  sequence reaches the answer's `seq` (0 settles at once), given up with
+  a new backend launch or a failing pump; one management action at a
+  time; withheld with the merge actions' reason as hover text. An editor
+  whose write is pending cannot be dismissed (Cancel disabled, saying it
+  is saving; Escape does nothing), a held key's repeat never submits,
+  and every popover and editor returns focus to the control that opened
+  it. An editor's failure shows its sentence with Details on the editor;
+  a state change, re-request or bypass that fails is a toast.
+- The close, reopen, draft, ready, review requested and review dismissed
+  events these cause are rows in the Conversation feed.
+
 ## State matrix (phase 1)
 
 Each row is a component test; the ones marked e2e also run against the
@@ -471,7 +549,7 @@ fake forge on desktop and compact.
 ## Non-goals
 
 - Merge queues and merge trains: the forge's own page.
-- Editing title, description, reviewers, labels, milestones.
+- Milestones, changing the target branch.
 - Creating MRs from the page (the chat header's create flow stays).
 - A full activity timeline: only the event kinds listed.
 - Notifications for attention-state changes.
@@ -495,7 +573,12 @@ user's own comment reading `Reviewed by you` and the author's reply
 after it `Your turn`, a refused project failing alone, "Open with agent" opening a
 thread on a worktree of the branch, and the Pipelines tab's filters
 remembered across a reload, stages and a GitLab and a GitHub job log.
-`review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a
+`review-manage.spec.ts` and its compact twin (`review-manage-flow.ts`)
+drive the management controls on both forges: a refused title edit and
+its retry, the stale-description refusal, each Details picker's change
+and the request it sent, re-request, close, reopen, draft and ready,
+dismiss (GitHub) and bypass (GitLab), and a merge with an edited commit
+message. `review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a
 GitHub PR (a refused retry, a retry followed to passed, cancel, a manual
 job, artifacts saved to disk, a refused artifacts read that keeps the
 jobs and says why in the menu), and `ci-actions-flow.ts` the same from
