@@ -223,6 +223,9 @@ type DraftNote struct {
 	// OldLine is an unchanged line's old number beside Line (see Thread).
 	OldLine *int   `json:"oldLine,omitempty"`
 	Side    string `json:"side,omitempty"`
+	// InReplyTo is the discussion a draft reply answers; publishing adds
+	// the note to it. It has no path or line.
+	InReplyTo string `json:"inReplyTo,omitempty"`
 }
 
 // Readiness is the merge box state a pull carries beyond its reviews, CI,
@@ -307,6 +310,20 @@ type Comment struct {
 	AuthorName string `json:"authorName,omitempty"`
 	Body       string `json:"body"`
 	CreatedAt  string `json:"createdAt,omitempty"`
+	// EditedAt is when the body was last edited, RFC 3339 (GitHub
+	// lastEditedAt; GitLab's REST notes do not report it, and answer it as
+	// updated_at). An edit sets it. Whether the viewer may edit or delete
+	// the comment follows from Author: GitHub and GitLab let the author
+	// edit, and the author or a maintainer (GitHub MAINTAIN or ADMIN,
+	// GitLab maintainer or owner) delete.
+	EditedAt string `json:"editedAt,omitempty"`
+	// Replies are the further notes of a GitLab conversation comment's
+	// discussion; a reply to one adds them. GitHub conversation comments
+	// have none.
+	Replies []Comment `json:"replies,omitempty"`
+	// discussion is the id of the GitLab discussion this comment leads
+	// once its first note was deleted; empty, it is the comment's own.
+	discussion string
 }
 
 // Thread is one review thread.
@@ -699,6 +716,9 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		if err := p.Comments[i].normalize(p.Author, p.AuthorName, ids); err != nil {
 			return fmt.Errorf("comments[%d]: %w", i, err)
 		}
+		if forge != "gitlab" && len(p.Comments[i].Replies) > 0 {
+			return fmt.Errorf("comments[%d]: a GitHub conversation comment has no replies", i)
+		}
 	}
 	for i := range p.Threads {
 		thread := &p.Threads[i]
@@ -726,6 +746,9 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		}
 		if draft.Author == "" || draft.Note == "" {
 			return fmt.Errorf("draftNotes[%d]: author and note are required", i)
+		}
+		if draft.InReplyTo != "" && (draft.Path != "" || draft.Line != nil || draft.Side != "") {
+			return fmt.Errorf("draftNotes[%d]: a reply has no path, line or side", i)
 		}
 		if draft.Path != "" {
 			probe := Thread{Path: draft.Path, Line: draft.Line, StartLine: draft.StartLine, OldLine: draft.OldLine, Side: draft.Side, ID: "-", Comments: []Comment{{Author: draft.Author, Body: draft.Note}}}
@@ -929,6 +952,14 @@ func (c *Comment) normalize(author, authorName string, ids *idSource) error {
 		c.Author, c.AuthorName = author, authorName
 	}
 	c.CreatedAt = defaultString(c.CreatedAt, "2026-01-01T00:00:00Z")
+	for i := range c.Replies {
+		if len(c.Replies[i].Replies) > 0 {
+			return fmt.Errorf("replies[%d]: a reply has no replies", i)
+		}
+		if err := c.Replies[i].normalize(author, authorName, ids); err != nil {
+			return fmt.Errorf("replies[%d]: %w", i, err)
+		}
+	}
 	return nil
 }
 
@@ -964,6 +995,9 @@ func (t *Thread) normalize(forge, author, authorName string, ids *idSource) erro
 		}
 	}
 	for i := range t.Comments {
+		if len(t.Comments[i].Replies) > 0 {
+			return fmt.Errorf("comments[%d]: a thread's replies are its comments", i)
+		}
 		if err := t.Comments[i].normalize(author, authorName, ids); err != nil {
 			return fmt.Errorf("comments[%d]: %w", i, err)
 		}

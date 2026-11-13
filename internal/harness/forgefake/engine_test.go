@@ -1021,17 +1021,17 @@ func TestHTTPRefusals(t *testing.T) {
 			t.Errorf("%s = %d, want an unhandled 404", path, got.status)
 		}
 	}
-	// GitLab's discussion writes have no handler: a request for one is
+	// GitLab's discussion resolve has no handler: a request for one is
 	// unhandled, not answered as if it changed something. So is a write
 	// whose body carries a parameter its handler does not implement.
 	if got := httpRequest(t, srv, "POST", "gitlab.com", "/gitlab/api/v4/projects/grp%2Fsub%2Ftool/merge_requests/3/approve", `{"sha":"x","approval_password":"p"}`, nil); got.status != 404 || !lastInvocation(t, e).Unhandled {
 		t.Errorf("approve with an unimplemented parameter = %d, want an unhandled 404", got.status)
 	}
-	for _, write := range [][2]string{
-		{"POST", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc/notes"},
-		{"PUT", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc"},
+	for _, write := range [][3]string{
+		{"POST", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc/notes", `{"body":"x","created_at":"2026-01-01T00:00:00Z"}`},
+		{"PUT", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc", `{}`},
 	} {
-		if got := httpRequest(t, srv, write[0], "gitlab.com", "/gitlab/api/v4/"+write[1], `{}`, nil); got.status != 404 || !lastInvocation(t, e).Unhandled {
+		if got := httpRequest(t, srv, write[0], "gitlab.com", "/gitlab/api/v4/"+write[1], write[2], nil); got.status != 404 || !lastInvocation(t, e).Unhandled {
 			t.Errorf("%s %s = %d, want an unhandled 404", write[0], write[1], got.status)
 		}
 	}

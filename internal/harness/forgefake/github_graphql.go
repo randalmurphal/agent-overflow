@@ -58,6 +58,10 @@ var githubGraphQL = []graphQLOp{
 	{kind: "mutation", name: "DismissReview", required: []string{"reviewID", "message"}, run: ghDismissReview},
 	{kind: "mutation", name: "UpdatePRBranch", required: []string{"pullRequestID", "expectedHeadOid"}, run: ghUpdatePRBranch},
 	{kind: "mutation", name: "MarkPRReady", required: []string{"pullRequestID"}, run: ghMarkPRReady},
+	{kind: "mutation", name: "UpdateReviewComment", required: []string{"id", "body"}, run: ghUpdateReviewComment},
+	{kind: "mutation", name: "UpdateIssueComment", required: []string{"id", "body"}, run: ghUpdateIssueComment},
+	{kind: "mutation", name: "DeleteReviewComment", required: []string{"id"}, run: ghDeleteReviewComment},
+	{kind: "mutation", name: "DeleteIssueComment", required: []string{"id"}, run: ghDeleteIssueComment},
 }
 
 // graphQLRequest is the body of a POST to /github/graphql.
@@ -281,8 +285,8 @@ func ghPRTick(e *Engine, c *call, v graphQLVars) response {
 		pull["commits"] = map[string]any{"nodes": []map[string]any{{"commit": map[string]any{"id": githubCommitNodeID(r, p), "oid": p.HeadSHA, "statusCheckRollup": rollup}}}}
 	}
 	if wantThreads {
-		pull["reviewThreads"] = graphQLConnection(githubThreadNodes(p), 0, githubGraphQLPageSize)
-		pull["comments"] = graphQLConnection(githubCommentNodes(p), 0, githubGraphQLPageSize)
+		pull["reviewThreads"] = graphQLConnection(e.githubThreadNodes(r, p), 0, githubGraphQLPageSize)
+		pull["comments"] = graphQLConnection(e.githubCommentNodes(r, p), 0, githubGraphQLPageSize)
 	}
 	if wantEvents {
 		items := githubTimelineNodes(p)
@@ -606,7 +610,7 @@ func nullable(s string) any {
 	return s
 }
 
-func githubThreadNodes(p *Pull) []map[string]any {
+func (e *Engine) githubThreadNodes(r *Repo, p *Pull) []map[string]any {
 	out := make([]map[string]any, 0, len(p.Threads))
 	for i := range p.Threads {
 		thread := &p.Threads[i]
@@ -641,13 +645,13 @@ func githubThreadNodes(p *Pull) []map[string]any {
 			"diffSide":          diffSide,
 			"startDiffSide":     startSide,
 			"subjectType":       subjectType,
-			"comments":          graphQLConnection(githubThreadCommentNodes(thread), 0, githubGraphQLPageSize),
+			"comments":          graphQLConnection(e.githubThreadCommentNodes(r, p, thread), 0, githubGraphQLPageSize),
 		})
 	}
 	return out
 }
 
-func githubThreadCommentNodes(thread *Thread) []map[string]any {
+func (e *Engine) githubThreadCommentNodes(r *Repo, p *Pull, thread *Thread) []map[string]any {
 	out := make([]map[string]any, 0, len(thread.Comments))
 	for i, comment := range thread.Comments {
 		var replyTo any
@@ -655,29 +659,33 @@ func githubThreadCommentNodes(thread *Thread) []map[string]any {
 			root := thread.Comments[0]
 			replyTo = map[string]any{"id": githubCommentNodeID("PRRC", root.ID), "databaseId": root.ID}
 		}
-		out = append(out, map[string]any{
+		node := map[string]any{
 			"id":         githubCommentNodeID("PRRC", comment.ID),
 			"databaseId": comment.ID,
 			"author":     githubActor(comment.Author, comment.AuthorName),
 			"body":       comment.Body,
 			"createdAt":  comment.CreatedAt,
 			"replyTo":    replyTo,
-		})
+		}
+		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#discussion_r%d", githubPullURL(r, p), comment.ID)))
+		out = append(out, node)
 	}
 	return out
 }
 
-func githubCommentNodes(p *Pull) []map[string]any {
+func (e *Engine) githubCommentNodes(r *Repo, p *Pull) []map[string]any {
 	out := make([]map[string]any, 0, len(p.Comments))
 	for _, comment := range p.Comments {
-		out = append(out, map[string]any{
+		node := map[string]any{
 			"id":          githubCommentNodeID("IC", comment.ID),
 			"databaseId":  comment.ID,
 			"author":      githubActor(comment.Author, comment.AuthorName),
 			"body":        comment.Body,
 			"createdAt":   comment.CreatedAt,
 			"isMinimized": false,
-		})
+		}
+		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#issuecomment-%d", githubPullURL(r, p), comment.ID)))
+		out = append(out, node)
 	}
 	return out
 }
@@ -688,32 +696,33 @@ func githubCommentNodeID(prefix string, id int64) string {
 
 // ghPullConnectionPage answers PRThreadsPage and PRCommentsPage: one page
 // of a pull's connection from the after cursor.
-func ghPullConnectionPage(e *Engine, c *call, v graphQLVars, connection string, nodes func(*Pull) []map[string]any) response {
+func ghPullConnectionPage(e *Engine, c *call, v graphQLVars, connection string, nodes func(*Repo, *Pull) []map[string]any) response {
 	project, number, err := v.pullVars()
 	offset, err1 := v.cursor("after")
 	if err := firstErr(err, err1); err != nil {
 		return unhandled("%v", err)
 	}
-	_, p, fail, ok := e.ghGraphQLPull(c, project, number, map[string]any{})
+	r, p, fail, ok := e.ghGraphQLPull(c, project, number, map[string]any{})
 	if !ok {
 		return fail
 	}
 	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
-		connection: graphQLConnection(nodes(p), offset, githubGraphQLPageSize),
+		connection: graphQLConnection(nodes(r, p), offset, githubGraphQLPageSize),
 	}}})
 }
 
 func ghPRThreadsPage(e *Engine, c *call, v graphQLVars) response {
-	return ghPullConnectionPage(e, c, v, "reviewThreads", githubThreadNodes)
+	return ghPullConnectionPage(e, c, v, "reviewThreads", e.githubThreadNodes)
 }
 
 func ghPRCommentsPage(e *Engine, c *call, v graphQLVars) response {
-	return ghPullConnectionPage(e, c, v, "comments", githubCommentNodes)
+	return ghPullConnectionPage(e, c, v, "comments", e.githubCommentNodes)
 }
 
 // githubThread finds a review thread by node id among the GitHub
-// repositories on the request's host. Callers hold mu.
-func (e *Engine) githubThread(c *call, id string) *Thread {
+// repositories on the request's host, with its repository and pull.
+// Callers hold mu.
+func (e *Engine) githubThread(c *call, id string) (*Repo, *Pull, *Thread) {
 	for _, key := range sortedKeys(e.repos) {
 		r := e.repos[key]
 		if r.Forge != "github" || !strings.EqualFold(r.Host, c.http.host) {
@@ -722,12 +731,12 @@ func (e *Engine) githubThread(c *call, id string) *Thread {
 		for i := range r.Pulls {
 			for j := range r.Pulls[i].Threads {
 				if r.Pulls[i].Threads[j].ID == id {
-					return &r.Pulls[i].Threads[j]
+					return r, &r.Pulls[i], &r.Pulls[i].Threads[j]
 				}
 			}
 		}
 	}
-	return nil
+	return nil, nil, nil
 }
 
 func graphQLNodeNotFound(id string) response {
@@ -740,12 +749,12 @@ func ghThreadCommentsPage(e *Engine, c *call, v graphQLVars) response {
 	if err := firstErr(err, err1); err != nil {
 		return unhandled("ThreadCommentsPage: %v", err)
 	}
-	thread := e.githubThread(c, id)
+	r, p, thread := e.githubThread(c, id)
 	if thread == nil {
 		return graphQLNodeNotFound(id)
 	}
 	return graphQLData(map[string]any{"node": map[string]any{
-		"comments": graphQLConnection(githubThreadCommentNodes(thread), offset, githubGraphQLPageSize),
+		"comments": graphQLConnection(e.githubThreadCommentNodes(r, p, thread), offset, githubGraphQLPageSize),
 	}})
 }
 
@@ -801,7 +810,7 @@ func ghSetThreadResolved(e *Engine, c *call, v graphQLVars) response {
 	if resolved {
 		alias = "resolve"
 	}
-	thread := e.githubThread(c, id)
+	_, _, thread := e.githubThread(c, id)
 	if thread == nil {
 		return graphQLNotFound(map[string]any{alias: nil}, []string{alias}, fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
 	}
@@ -1015,7 +1024,7 @@ func githubTimelineNodes(p *Pull) []map[string]any {
 // ghPRThreadStatesPage answers one page of the review threads'
 // resolution states from the after cursor.
 func ghPRThreadStatesPage(e *Engine, c *call, v graphQLVars) response {
-	return ghPullConnectionPage(e, c, v, "reviewThreads", githubThreadStateNodes)
+	return ghPullConnectionPage(e, c, v, "reviewThreads", func(_ *Repo, p *Pull) []map[string]any { return githubThreadStateNodes(p) })
 }
 
 // ghPRTimelinePage answers the timeline page before the before cursor,

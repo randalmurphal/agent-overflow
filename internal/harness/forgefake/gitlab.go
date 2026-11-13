@@ -355,9 +355,10 @@ func gitlabDiscussions(p *Pull) []map[string]any {
 			}
 		}
 		if thread.StartLine != nil {
+			pointType := map[string]string{"new_line": "new", "old_line": "old"}[lineKey]
 			position["line_range"] = map[string]any{
-				"start": map[string]any{lineKey: *thread.StartLine, "type": "new"},
-				"end":   map[string]any{lineKey: *thread.Line, "type": "new"},
+				"start": map[string]any{lineKey: *thread.StartLine, "type": pointType},
+				"end":   map[string]any{lineKey: *thread.Line, "type": pointType},
 			}
 		}
 		notes := make([]map[string]any, 0, len(thread.Comments))
@@ -368,11 +369,16 @@ func gitlabDiscussions(p *Pull) []map[string]any {
 		}
 		out = append(out, map[string]any{"id": thread.ID, "individual_note": false, "notes": notes})
 	}
+	// A conversation comment is its own discussion until a reply joins it.
 	for _, comment := range p.Comments {
+		notes := []map[string]any{gitlabNote(comment, map[string]any{"resolvable": false})}
+		for _, reply := range comment.Replies {
+			notes = append(notes, gitlabNote(reply, map[string]any{"resolvable": false}))
+		}
 		out = append(out, map[string]any{
-			"id":              fmt.Sprintf("%040x", comment.ID),
-			"individual_note": true,
-			"notes":           []map[string]any{gitlabNote(comment, map[string]any{"resolvable": false})},
+			"id":              gitlabConversationID(comment),
+			"individual_note": len(comment.Replies) == 0,
+			"notes":           notes,
 		})
 	}
 	// The system notes, oldest first, each its own discussion.
@@ -442,6 +448,7 @@ func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 		"body":       comment.Body,
 		"system":     false,
 		"created_at": comment.CreatedAt,
+		"updated_at": cmp.Or(comment.EditedAt, comment.CreatedAt),
 		"author":     gitlabUser(comment.Author, comment.AuthorName),
 	}
 	for key, value := range extra {

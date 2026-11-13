@@ -51,7 +51,7 @@ func (a *App) CreatePRDiffReviewComment(pr gitops.PRReference, input store.DiffR
 	}
 	created, err := a.store.CreateDiffReviewComment(newDiffReviewComment(owner, input))
 	if err != nil {
-		return store.DiffReviewComment{}, fmt.Errorf("create PR diff review comment: %w", err)
+		return store.DiffReviewComment{}, createDraftError("create PR diff review comment", err)
 	}
 	return created, nil
 }

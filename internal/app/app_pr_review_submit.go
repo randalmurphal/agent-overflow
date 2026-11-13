@@ -183,7 +183,7 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 		return SubmitPRReviewResult{}, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
 	}
 	// The one place a draft submit says it posted.
-	mapped.Posted = mapped.PostedReview || mapped.PostedFileComments > 0
+	mapped.Posted = mapped.PostedReview || mapped.PostedFileComments > 0 || mapped.PostedReplies > 0
 	if !mapped.Posted {
 		return mapped, nil
 	}
@@ -369,17 +369,26 @@ func (attempt *reviewAttempt) wait(ctx context.Context) (SubmitPRReviewResult, e
 func prDraftSource(pr gitops.PRReference) string { return "pr:" + pr.Key() }
 
 // postedReviewDraftsOf are the drafts a review that landed carried, as the
-// forge received them. File-level comments post one by one after the
-// review and stop at the first failure, so only the first
-// PostedFileComments of them made it up. A draft with no line to anchor
+// forge received them. GitHub posts file comments and then held replies
+// one by one after the review and stops at the first failure, so when a
+// follow-up failed (a failure path or thread) only the first
+// PostedFileComments file comments and PostedReplies replies made it up;
+// GitLab publishes them with the review. A draft with no line to anchor
 // posts nothing and settles with the review.
 func postedReviewDraftsOf(drafts []store.DiffReviewComment, result SubmitPRReviewResult) []store.PostedDiffReviewDraft {
-	fileLevel := 0
+	followUpFailed := result.PartialFailurePath != "" || result.PartialFailureThreadID != ""
+	fileLevel, replies := 0, 0
 	out := make([]store.PostedDiffReviewDraft, 0, len(drafts))
 	for _, draft := range drafts {
-		if draft.Side == "file" {
+		switch {
+		case draft.ReplyThreadID != "":
+			replies++
+			if followUpFailed && replies > result.PostedReplies {
+				continue
+			}
+		case draft.Side == "file":
 			fileLevel++
-			if result.PartialFailurePath != "" && fileLevel > result.PostedFileComments {
+			if followUpFailed && fileLevel > result.PostedFileComments {
 				continue
 			}
 		}
@@ -389,24 +398,39 @@ func postedReviewDraftsOf(drafts []store.DiffReviewComment, result SubmitPRRevie
 }
 
 // reviewLineCommentForDraft is a draft as the forge's review comment: a
-// file comment; an unchanged line, which a draft on either half or the
-// unified row saves with both numbers, on the right at its new number with
-// its old number beside it; a deleted line on the left at its old number;
-// an added line on the right at its new number. A context draft missing a
-// number is not sent.
+// held reply to its thread; a file comment; an unchanged line, which a
+// draft on either half or the unified row saves with both numbers, on the
+// right at its new number with its old number beside it; a deleted line
+// on the left at its old number; an added line on the right at its new
+// number; and a range's first line the same way. A context draft missing
+// a number is not sent.
 func reviewLineCommentForDraft(draft store.DiffReviewComment) (gitops.ReviewLineComment, bool) {
+	if draft.ReplyThreadID != "" {
+		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, InReplyTo: &gitops.ReviewThreadReply{ThreadID: draft.ReplyThreadID, RootDatabaseID: draft.ReplyRootID}}, true
+	}
 	line := func(n int) *int { return &n }
+	var comment gitops.ReviewLineComment
 	switch {
 	case draft.Side == "file":
 		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Side: "file"}, true
 	case draft.OldLine > 0 && draft.NewLine > 0:
-		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Line: line(draft.NewLine), OldLine: line(draft.OldLine), Side: "right"}, true
+		comment = gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Line: line(draft.NewLine), OldLine: line(draft.OldLine), Side: "right"}
 	case draft.Side == "old" && draft.OldLine > 0:
-		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Line: line(draft.OldLine), Side: "left"}, true
+		comment = gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Line: line(draft.OldLine), Side: "left"}
 	case draft.Side == "new" && draft.NewLine > 0:
-		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Line: line(draft.NewLine), Side: "right"}, true
+		comment = gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Line: line(draft.NewLine), Side: "right"}
+	default:
+		return gitops.ReviewLineComment{}, false
 	}
-	return gitops.ReviewLineComment{}, false
+	switch {
+	case draft.StartOldLine > 0 && draft.StartNewLine > 0:
+		comment.Start = &gitops.ReviewLineStart{Line: draft.StartNewLine, OldLine: draft.StartOldLine, Side: "right"}
+	case draft.StartOldLine > 0:
+		comment.Start = &gitops.ReviewLineStart{Line: draft.StartOldLine, Side: "left"}
+	case draft.StartNewLine > 0:
+		comment.Start = &gitops.ReviewLineStart{Line: draft.StartNewLine, Side: "right"}
+	}
+	return comment, true
 }
 
 func (a *App) reviewSubmitLocks() *keyedlock.Registry {

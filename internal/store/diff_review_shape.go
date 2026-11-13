@@ -102,3 +102,13 @@ func normalizeDiffReviewShape(comment *DiffReviewComment) error {
 	comment.FilePath, comment.Side = filePath, side
 	return nil
 }
+
+// NormalizeDiffReviewLineAnchor checks a line, range or file anchor as a
+// draft's is checked, for a comment posted now without a draft. A reply
+// is not an anchor.
+func NormalizeDiffReviewLineAnchor(comment *DiffReviewComment) error {
+	if comment.ReplyThreadID != "" || comment.Side == "reply" {
+		return fmt.Errorf("a reply to a thread is not a line comment")
+	}
+	return normalizeDiffReviewShape(comment)
+}

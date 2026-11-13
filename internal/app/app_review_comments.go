@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
 	"agent-overflow/internal/diffreview"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -267,7 +269,7 @@ func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCom
 	defer unlock()
 	created, err := a.store.CreateDiffReviewComment(newDiffReviewComment(store.ThreadReviewOwner(threadID), input))
 	if err != nil {
-		return store.DiffReviewComment{}, fmt.Errorf("create diff review comment: %w", err)
+		return store.DiffReviewComment{}, createDraftError("create diff review comment", err)
 	}
 	a.announceDiffCommentsChanged(threadID, created.Scope, created.SourceKey)
 	return created, nil
@@ -277,21 +279,38 @@ func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCom
 func newDiffReviewComment(owner store.DiffReviewOwner, input store.DiffReviewCommentInput) store.DiffReviewComment {
 	now := time.Now().UnixMilli()
 	return store.DiffReviewComment{
-		ID:           uuid.NewString(),
-		ThreadID:     owner.ThreadID,
-		PRKey:        owner.PRKey,
-		Scope:        input.Scope,
-		SourceKey:    input.SourceKey,
-		CommitSHA:    input.CommitSHA,
-		FilePath:     input.FilePath,
-		OldLine:      input.OldLine,
-		NewLine:      input.NewLine,
-		Side:         input.Side,
-		SelectedText: input.SelectedText,
-		Body:         input.Body,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:            uuid.NewString(),
+		ThreadID:      owner.ThreadID,
+		PRKey:         owner.PRKey,
+		Scope:         input.Scope,
+		SourceKey:     input.SourceKey,
+		CommitSHA:     input.CommitSHA,
+		FilePath:      input.FilePath,
+		OldLine:       input.OldLine,
+		NewLine:       input.NewLine,
+		Side:          input.Side,
+		StartOldLine:  input.StartOldLine,
+		StartNewLine:  input.StartNewLine,
+		ReplyThreadID: input.ReplyThreadID,
+		ReplyRootID:   input.ReplyRootID,
+		SelectedText:  input.SelectedText,
+		Body:          input.Body,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
+}
+
+// ReviewReplyExistsCode is the refusal of a second draft reply to a thread
+// that holds one: the pane edits the one it has.
+const ReviewReplyExistsCode = "review_reply_exists"
+
+// createDraftError is a draft create's failure for the caller: a second
+// draft reply to one thread is a public refusal, anything else wrapped.
+func createDraftError(action string, err error) error {
+	if errors.Is(err, store.ErrDiffReviewReplyExists) {
+		return errorsx.Public(ReviewReplyExistsCode, "This thread already has a draft reply; edit that one.", err)
+	}
+	return fmt.Errorf("%s: %w", action, err)
 }
 
 //ao:scope threads:operate

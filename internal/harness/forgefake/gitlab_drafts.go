@@ -36,11 +36,13 @@ type gitlabDraftLinePoint struct {
 }
 
 // glabDraftCreate adds one of the viewer's draft notes: a summary with no
-// position, or one positioned on a line, a line range or a file.
+// position, one positioned on a line, a line range or a file, or a reply
+// to a discussion (404 when the merge request has none by that id).
 func glabDraftCreate(e *Engine, c *call, m []string) response {
 	var in struct {
-		Note     string                 `json:"note"`
-		Position *gitlabDraftPositionIn `json:"position"`
+		Note      string                 `json:"note"`
+		Position  *gitlabDraftPositionIn `json:"position"`
+		InReplyTo string                 `json:"in_reply_to_discussion_id"`
 	}
 	if err := decodeRESTBody(c, &in, false); err != nil {
 		return unhandled("%v", err)
@@ -52,36 +54,20 @@ func glabDraftCreate(e *Engine, c *call, m []string) response {
 	if strings.TrimSpace(in.Note) == "" {
 		return glabStatus(http.StatusBadRequest, "note is missing")
 	}
-	draft := DraftNote{Author: e.viewer, Note: in.Note}
-	if pos := in.Position; pos != nil {
-		if pos.OldPath != pos.NewPath || pos.NewPath == "" {
-			return unhandled("draft position names old_path %q and new_path %q; the fake models one path", pos.OldPath, pos.NewPath)
+	draft := DraftNote{Author: e.viewer, Note: in.Note, InReplyTo: in.InReplyTo}
+	switch {
+	case in.InReplyTo != "" && in.Position != nil:
+		return unhandled("a draft reply carries no position")
+	case in.InReplyTo != "":
+		if _, found := gitlabFindDiscussion(p, in.InReplyTo); !found {
+			return glabNotFound("Discussion")
 		}
-		draft.Path = pos.NewPath
-		switch {
-		case pos.PositionType == "file" && pos.OldLine == nil && pos.NewLine == nil && pos.LineRange == nil:
-			draft.Side = "file"
-		case pos.PositionType == "text" && pos.OldLine != nil && pos.NewLine != nil && pos.LineRange == nil:
-			// An unchanged line: GitLab names it by both numbers.
-			draft.Side, draft.Line, draft.OldLine = "right", pos.NewLine, pos.OldLine
-		case pos.PositionType == "text" && (pos.OldLine == nil) != (pos.NewLine == nil):
-			draft.Side, draft.Line = "right", pos.NewLine
-			if pos.OldLine != nil {
-				draft.Side, draft.Line = "left", pos.OldLine
-			}
-			if pos.LineRange != nil {
-				start := pos.LineRange.Start.NewLine
-				if draft.Side == "left" {
-					start = pos.LineRange.Start.OldLine
-				}
-				if start == nil {
-					return unhandled("draft line_range has no start line on side %s", draft.Side)
-				}
-				draft.StartLine = start
-			}
-		default:
-			return glabStatus(http.StatusBadRequest, "position is invalid")
+	case in.Position != nil:
+		anchor, fail, ok := gitlabPositionAnchor(in.Position)
+		if !ok {
+			return fail
 		}
+		draft.Path, draft.Side, draft.Line, draft.StartLine, draft.OldLine = anchor.Path, anchor.Side, anchor.Line, anchor.StartLine, anchor.OldLine
 	}
 	draft.ID = e.ids.next()
 	p.DraftNotes = append(p.DraftNotes, draft)
@@ -96,7 +82,7 @@ func gitlabDraftJSON(r *Repo, p *Pull, draft DraftNote, position *gitlabDraftPos
 		"author_id":          1,
 		"merge_request_id":   r.ID*1000 + int64(p.Number),
 		"resolve_discussion": false,
-		"discussion_id":      nil,
+		"discussion_id":      nullable(draft.InReplyTo),
 		"note":               draft.Note,
 		"commit_id":          nil,
 		"line_code":          nil,
@@ -147,7 +133,8 @@ func glabDraftDelete(e *Engine, c *call, m []string) response {
 }
 
 // glabDraftPublish publishes every one of the viewer's draft notes: each
-// positioned one becomes a thread, each other a conversation comment.
+// reply joins its discussion, each positioned one becomes a thread, each
+// other a conversation comment.
 // Another author's drafts stay pending.
 func glabDraftPublish(e *Engine, c *call, m []string) response {
 	if err := noRESTBody(c); err != nil {
@@ -157,6 +144,13 @@ func glabDraftPublish(e *Engine, c *call, m []string) response {
 	if !ok {
 		return fail
 	}
+	// A reply whose discussion is gone fails the publish before any note
+	// is published.
+	for _, draft := range p.DraftNotes {
+		if _, found := gitlabFindDiscussion(p, draft.InReplyTo); draft.InReplyTo != "" && strings.EqualFold(draft.Author, e.viewer) && !found {
+			return glabNotFound("Discussion")
+		}
+	}
 	now := glabNow()
 	kept := p.DraftNotes[:0]
 	for _, draft := range p.DraftNotes {
@@ -165,6 +159,11 @@ func glabDraftPublish(e *Engine, c *call, m []string) response {
 			continue
 		}
 		comment := Comment{ID: e.ids.next(), Author: draft.Author, Body: draft.Note, CreatedAt: now}
+		if draft.InReplyTo != "" {
+			ref, _ := gitlabFindDiscussion(p, draft.InReplyTo)
+			gitlabAppendNote(p, ref, comment)
+			continue
+		}
 		if draft.Path == "" {
 			p.Comments = append(p.Comments, comment)
 			continue

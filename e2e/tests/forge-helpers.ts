@@ -19,6 +19,11 @@ export interface ForgeComment {
   authorName?: string;
   body: string;
   createdAt?: string;
+  /** RFC 3339; GitHub reads it as lastEditedAt. The viewer may edit its own
+   * comments and delete them, or any as a maintainer. */
+  editedAt?: string;
+  /** GitLab conversation comments only: the further notes of its discussion. */
+  replies?: ForgeComment[];
 }
 
 /** A review thread anchored to the diff; `side` defaults to right. */
