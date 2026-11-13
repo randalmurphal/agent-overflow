@@ -3902,8 +3902,9 @@ export function PairAgentComputer(pairingLink: string): $CancellablePromise<app$
 
 /**
  * ParseCommentSuggestions reads the suggestion blocks of a comment body as
- * the read does (mdsuggest.Parse), for an editor's preview. It
- * reads nothing else and changes nothing.
+ * the read does (mdsuggest.Parse), each with its fence lines in the body
+ * (StartLine, EndLine), for an editor's preview. It reads nothing else
+ * and changes nothing.
  */
 export function ParseCommentSuggestions(body: string): $CancellablePromise<mdsuggest$0.Block[]> {
     return $Call.ByID(3277517862, body).then(($result: any) => {

@@ -592,6 +592,18 @@ export class CommentSuggestion {
     "applied"?: boolean;
 
     /**
+     * BodyStartLine and BodyEndLine are the 0-based lines, in the
+     * comment's body split on "\n", of the block's opening and closing
+     * fences (mdsuggest.Block), when BodyPlaced: GitHub's always; GitLab's
+     * only when the body holds as many blocks as GitLab reports
+     * suggestions, block i being suggestion i. They are not part of the
+     * digest.
+     */
+    "bodyStartLine": number;
+    "bodyEndLine": number;
+    "bodyPlaced": boolean;
+
+    /**
      * Digest names what the user is shown and what an apply writes
      * (SuggestionDigest); the apply presents it and is refused when the
      * suggestion no longer has it.
@@ -608,6 +620,15 @@ export class CommentSuggestion {
         }
         if (!("appliable" in $$source)) {
             this["appliable"] = false;
+        }
+        if (!("bodyStartLine" in $$source)) {
+            this["bodyStartLine"] = 0;
+        }
+        if (!("bodyEndLine" in $$source)) {
+            this["bodyEndLine"] = 0;
+        }
+        if (!("bodyPlaced" in $$source)) {
+            this["bodyPlaced"] = false;
         }
         if (!("digest" in $$source)) {
             this["digest"] = "";
