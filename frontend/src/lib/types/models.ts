@@ -621,9 +621,38 @@ export interface CheckStatus {
 // Normalized CI shapes mirroring internal/git/ci.go. "Stage" is the
 // GitLab pipeline stage or the GitHub workflow name.
 export interface CIPipeline {
+  /** The forge's pipeline or workflow run id; empty for a GitHub PR's
+   * head checks, which span runs. */
+  id?: string;
   status: string;
   url?: string;
+  ref?: string;
+  sha?: string;
   stages: CIStage[];
+  /** Absent on a read from before the actions existed. */
+  actions?: CIPipelineActions;
+}
+
+/** Whether one CI action applies and whether the viewer may take it:
+ * absent or '' does not apply, 'allowed' may, 'denied' applies but this
+ * login may not (internal/git CIAction). */
+export type CIActionFlag = '' | 'allowed' | 'denied';
+
+export interface CIPipelineActions {
+  retryFailed?: CIActionFlag;
+  cancel?: CIActionFlag;
+  /** GitHub: a completed run of the pipeline keeps artifacts. */
+  artifacts?: CIActionFlag;
+}
+
+export interface CIJobActions {
+  retry?: CIActionFlag;
+  /** GitLab only. */
+  cancel?: CIActionFlag;
+  /** GitLab only: a manual job. */
+  play?: CIActionFlag;
+  /** GitLab only: the job holds an artifacts archive. */
+  artifacts?: CIActionFlag;
 }
 
 export interface CIStage {
@@ -641,6 +670,9 @@ export interface CIJob {
   allowFailure?: boolean;
   logsAvailable: boolean;
   steps?: CIStep[];
+  /** A GitHub Actions job's workflow run id. */
+  runId?: string;
+  actions?: CIJobActions;
 }
 
 export interface CIStep {

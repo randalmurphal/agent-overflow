@@ -73,6 +73,7 @@
         refreshing={ci.refreshing}
         onOpenJob={(stageName, job) => ci.openJobLog(stageName, job)}
         onRefresh={() => { void ci.refresh(); }}
+        actions={ci.actions}
       />
     </div>
     {#if ci.logView}
@@ -92,6 +93,8 @@
         onToggleSection={(sectionKey) => ci.toggleSection(sectionKey)}
         onSetSectionsOpen={(sectionKeys, open) => ci.setSectionsOpen(sectionKeys, open)}
         onCopySection={(section) => ci.copySection(section)}
+        actions={ci.actions}
+        retriedFrom={ci.logRetriedFrom}
       />
     {:else}
       <div class="flex flex-1 items-center justify-center px-6" data-testid="pipeline-view-empty">

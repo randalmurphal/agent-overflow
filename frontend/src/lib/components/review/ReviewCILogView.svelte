@@ -11,6 +11,7 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
+  import ReviewCIJobActions from './ReviewCIJobActions.svelte';
   import ReviewCILogBlockRow from './ReviewCILogBlockRow.svelte';
   import ReviewCISectionStatusIcon from './ReviewCISectionStatusIcon.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
@@ -19,6 +20,7 @@
   import { CI_LOG_BLOCK_LINES, CILogBlockCache, type CILogFetch } from '../../stores/ciLogBlocks.svelte';
   import type { PRCILogState } from '../../stores/prReviewCI.svelte';
   import type { CILogView } from '../../stores/ciSubject.svelte';
+  import type { CIActionsView } from '../../stores/ciSubjectActions.svelte';
   import type { CILogSection } from '../../types/models';
   import { ciJobLive, ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
@@ -81,6 +83,10 @@
     onCopySection: (section: CILogSection) => Promise<boolean>;
     /** Puts one section in the source chat; absent with no chat. */
     onSendSection?: (section: CILogSection) => void;
+    /** The open job's actions, beside Refresh; absent offers none. */
+    actions?: CIActionsView;
+    /** The log followed a retry of the job it was opened on. */
+    retriedFrom?: string | null;
   }
 
   let {
@@ -101,6 +107,8 @@
     onSetSectionsOpen,
     onCopySection,
     onSendSection,
+    actions,
+    retriedFrom = null,
   }: Props = $props();
 
   // Back closes the log; a host whose header owns Back steps here first.
@@ -351,6 +359,11 @@
     >
       <Icon icon={RefreshCw} size={12} class={loading ? 'animate-spin' : ''} />
     </button>
+    {#if actions}
+      <span class="flex shrink-0 items-center" data-testid="review-ci-log-actions">
+        <ReviewCIJobActions {actions} job={view.job} testPrefix="review-ci-log" />
+      </span>
+    {/if}
     <button
       type="button"
       class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
@@ -392,6 +405,11 @@
     {/if}
   </div>
 
+  {#if retriedFrom}
+    <div class="border-b border-border-subtle bg-surface-0/60 px-3 py-1.5 text-[0.6875rem] text-fg-muted" data-testid="review-ci-log-retried">
+      The job was retried; this is the new attempt's log.
+    </div>
+  {/if}
   {#if savedPath}
     <div class="border-b border-border-subtle bg-surface-0/60 px-3 py-1.5 font-mono text-[0.6875rem] text-fg-muted" data-testid="review-ci-log-saved">
       Saved to {savedPath}

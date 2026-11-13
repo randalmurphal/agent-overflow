@@ -71,6 +71,7 @@ import {
 } from './prReviewStore.svelte';
 import type { PRCILogState } from './prReviewCI.svelte';
 import { CI_SECTION_INLINE_MAX_BYTES, createCISubjectState, type CILogView } from './ciSubject.svelte';
+import type { CIActionsView } from './ciSubjectActions.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { TransportError } from '../transport/wsClient';
 import type { ForgeFailure } from '../utils/forgeFailure';
@@ -337,6 +338,10 @@ export interface ReviewPaneState {
   /** The kind of ciLogError; null for a local failure or none. */
   readonly ciLogFailure: ForgeFailure | null;
   readonly ciLogSavedPath: string | null;
+  /** The open log followed a retry of the job it was opened on. */
+  readonly ciLogRetriedFrom: string | null;
+  /** The PR's CI actions (ciSubjectActions.svelte.ts). */
+  readonly ciActions: CIActionsView;
   /** The open log's expanded sections, as `<job id>/<section key>`.
    * Empty when a log opens. */
   readonly ciLogOpenSections: ReadonlySet<string>;
@@ -3313,6 +3318,8 @@ export function createReviewPaneState(
     get ciLogError() { return ci.logError; },
     get ciLogFailure() { return ci.logFailure; },
     get ciLogSavedPath() { return ci.logSavedPath; },
+    get ciLogRetriedFrom() { return ci.logRetriedFrom; },
+    get ciActions() { return ci.actions; },
     get ciLogOpenSections() { return ci.logOpenSections; },
     get submitTarget() { return submitTarget; },
     get effectiveSubmitTarget() { return effectiveSubmitTarget; },

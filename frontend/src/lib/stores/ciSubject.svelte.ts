@@ -17,11 +17,18 @@
 // holds the subscription itself passes `sourceError`, the reason it cannot
 // hold it (its subscribe failing, or a missing grant), which the state
 // shows in place of the CI until it clears.
+//
+// A retry replaces a job with a new one under a new id. A log open on the
+// old job follows it: when a pipeline applied under the log's key holds a
+// job in the same stage with the same name, the same GitHub run, and a
+// higher id (`findCIJobRetry`), the log moves to
+// the highest such job and says so (`logRetriedFrom`).
 
 import { SvelteSet } from 'svelte/reactivity';
 import { SavePRCIJobLog, SavePRCIJobLogSection, SearchPRCILog } from './bindings';
 import { ciLogFetch, readCILogLines as readCILogRange } from './ciLogBlocks.svelte';
-import { peekPRCI, refreshPRCI, type PRCILogState } from './prReviewCI.svelte';
+import { createCIActionsView, type CIActionsView } from './ciSubjectActions.svelte';
+import { onCIPipelineApplied, peekPRCI, refreshPRCI, type PRCILogState } from './prReviewCI.svelte';
 import { prCILogFollowPending, refreshPRCILogFollows, setPRCILogFollow } from './prReviewCIFollows.svelte';
 import { addToast } from './toast.svelte';
 import type { BackendKey } from '../transport/backendKey';
@@ -71,6 +78,8 @@ export interface CILogOpen {
   readonly subject: CISubject;
   readonly stageName: string;
   readonly job: CIJob & { id: string };
+  /** The job this log was opened on, when it followed that job's retry. */
+  readonly retriedFrom: string | null;
 }
 
 export interface CISubjectState {
@@ -92,6 +101,10 @@ export interface CISubjectState {
   /** The kind of logError; null for a local failure or none. */
   readonly logFailure: ForgeFailure | null;
   readonly logSavedPath: string | null;
+  /** The open log followed a retry: the job id it was opened on. */
+  readonly logRetriedFrom: string | null;
+  /** The pipeline's and its jobs' actions. */
+  readonly actions: CIActionsView;
   /** Expanded sections, `<job id>/<section key>`. */
   readonly logOpenSections: ReadonlySet<string>;
   /** The open log's record; null with none. */
@@ -155,8 +168,47 @@ export function createCISubjectState(subject: () => CISubject | null, options: C
   });
   const log = $derived<PRCILogState | null>(opened ? (peekPRCI(opened.key).logs.get(opened.job.id) ?? null) : null);
 
+  const actions = createCIActionsView(
+    () => ({
+      key,
+      backend: current?.backend ?? null,
+      repo: current ? repoReferenceWire(subjectRepo(current)) : null,
+      pipeline: ci.pipeline,
+    }),
+    (job, saved) => {
+      const path = saved.paths.length === 1 ? saved.paths[0] : saved.dir;
+      // Where the reader is: the open log's saved line for its own job,
+      // otherwise a toast.
+      if (job?.id && opened?.job.id === job.id) savedPath = path;
+      else addToast('info', `Saved to ${path}`);
+    },
+  );
+
+  // Registered while a log is open: moves it to its job's retry.
+  let stopFollowingRetries: (() => void) | null = null;
+  function followRetries(): void {
+    stopFollowingRetries ??= onCIPipelineApplied((at, pipeline) => {
+      const open = opened;
+      if (!open || open.key !== at) return;
+      const retry = findCIJobRetry(pipeline, open.stageName, open.job);
+      if (!retry?.job.id) return;
+      opened = {
+        ...open,
+        stageName: retry.stageName,
+        job: { ...retry.job, id: retry.job.id },
+        retriedFrom: open.retriedFrom ?? open.job.id,
+      };
+      localError = null;
+      savedPath = null;
+      openSections.clear();
+      setPRCILogFollow(open.key, followToken, retry.job.id);
+    });
+  }
+
   function closeLogView(): void {
     if (opened) setPRCILogFollow(opened.key, followToken, null);
+    stopFollowingRetries?.();
+    stopFollowingRetries = null;
     opened = null;
     localError = null;
     savedPath = null;
@@ -209,6 +261,8 @@ export function createCISubjectState(subject: () => CISubject | null, options: C
     get logError() { return localError ?? log?.error ?? null; },
     get logFailure() { return localError === null ? (log?.failure ?? null) : null; },
     get logSavedPath() { return savedPath; },
+    get logRetriedFrom() { return opened?.retriedFrom ?? null; },
+    get actions() { return actions; },
     get logOpenSections() { return openSections; },
     get opened() { return opened; },
 
@@ -221,11 +275,12 @@ export function createCISubjectState(subject: () => CISubject | null, options: C
       const jobId = job.id;
       if (!at || !key || !job.logsAvailable || !jobId) return;
       if (opened && opened.key !== key) closeLogView();
-      opened = { key, subject: at, stageName, job: { ...job, id: jobId } };
+      opened = { key, subject: at, stageName, job: { ...job, id: jobId }, retriedFrom: null };
       localError = null;
       savedPath = null;
       openSections.clear();
       setPRCILogFollow(key, followToken, jobId);
+      followRetries();
     },
 
     closeLogView,
@@ -320,6 +375,36 @@ function findCIJob(pipeline: CIPipeline | null, jobId: string): { stageName: str
     if (job) return { stageName: stage.name, job };
   }
   return null;
+}
+
+/**
+ * The job that took over from `old` after a retry: in the stage named
+ * `stageName`, the one with old's name (and, for a GitHub job, old's
+ * workflow run) and the highest numeric id above old's; null when none
+ * has. Both forges give a retry a new, higher id and keep its name and
+ * stage; a GitHub re-run is a new attempt of the same run, and a PR can
+ * hold two runs of one workflow.
+ */
+export function findCIJobRetry(pipeline: CIPipeline | null, stageName: string, old: CIJob): { stageName: string; job: CIJob } | null {
+  const oldId = numericId(old.id);
+  if (oldId === null) return null;
+  let found: { stageName: string; job: CIJob } | null = null;
+  let foundId = oldId;
+  for (const stage of pipeline?.stages ?? []) {
+    if (stage.name !== stageName) continue;
+    for (const job of stage.jobs) {
+      const id = numericId(job.id);
+      if (id === null || job.name !== old.name || id <= foundId) continue;
+      if (old.runId && job.runId !== old.runId) continue;
+      found = { stageName: stage.name, job };
+      foundId = id;
+    }
+  }
+  return found;
+}
+
+function numericId(id: string | undefined): bigint | null {
+  return id && /^[0-9]+$/.test(id) ? BigInt(id) : null;
 }
 
 function userFacingError(err: unknown): string {

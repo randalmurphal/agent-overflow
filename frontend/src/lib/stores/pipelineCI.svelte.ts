@@ -19,8 +19,11 @@
 // A pipeline's followed logs ride `pr:ci_log` with the pipeline's key
 // (prReviewCIFollows.svelte.ts).
 
+import { SvelteMap } from 'svelte/reactivity';
+import type { CIActionRequest } from '../../../bindings/agent-overflow/internal/app/models';
 import {
   RefreshPipeline,
+  RunPipelineAction,
   SetPipelineActive,
   SetPipelineFollows,
   SubscribePipeline,
@@ -64,8 +67,9 @@ export interface PipelineCIAttachment {
 const localKeysByWireKey = new Map<string, Map<string, symbol>>();
 // The highest sequence applied per local key: the subscribe result's or a
 // frame's. Cleared when a source run starts, since a restarted backend's
-// pump numbers from one again.
-const appliedSeqByKey = new Map<string, number>();
+// pump numbers from one again. Reactive, so a CI action can wait on it
+// (ciActions.svelte.ts).
+const appliedSeqByKey = new SvelteMap<string, number>();
 // The latest source run per key, settled either way: a gap resync hands
 // the runs it started to the recovery fence.
 const sourceRunByKey = new Map<string, Promise<void>>();
@@ -170,6 +174,8 @@ async function subscribePipeline({ key, getCtx, apply, signal }: PipelineSourceA
     const handle: CIHandle = {
       follow: (jobIds) => withBackendTarget(backend, () => SetPipelineFollows(id, jobIds)),
       refresh: () => withBackendTarget(backend, () => RefreshPipeline(id)),
+      act: async (call) => ({ seq: Number((await withBackendTarget(backend, () => RunPipelineAction(id, call as unknown as CIActionRequest))).seq ?? 0) }),
+      appliedSeq: () => appliedSeqByKey.get(key) ?? 0,
     };
     const cleanup = async (): Promise<void> => {
       removeAlias(expected, key, owner);
