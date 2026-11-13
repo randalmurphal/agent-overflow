@@ -46,8 +46,11 @@ const (
 	ForgeErrorForbidden   = "forbidden"
 	ForgeErrorNotFound    = "not_found"
 	ForgeErrorStaleHead   = "stale_head"
-	ForgeErrorRefused     = "refused"
-	ForgeErrorForge       = "forge"
+	// ForgeErrorSuggestionChanged is an apply whose suggestion is no
+	// longer the one the pane showed (SuggestionChangedError).
+	ForgeErrorSuggestionChanged = "suggestion_changed"
+	ForgeErrorRefused           = "refused"
+	ForgeErrorForge             = "forge"
 	// ForgeErrorUnconfirmed is a write whose answer did not say whether
 	// the forge applied it (UnconfirmedWriteError, a PartialWriteError
 	// whose next step did not confirm): it may have, so it is not sent
@@ -159,7 +162,10 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	var gone *ReplyThreadGoneError
 	var elsewhere *CommentNotOnPRError
 	var notApplied *SuggestionNotAppliedError
+	var changed *SuggestionChangedError
 	switch {
+	case errors.As(err, &changed):
+		return wrap(ForgeErrorSuggestionChanged, "The suggestion changed since it was loaded. Reload the pull request.")
 	case errors.As(err, &notApplied):
 		return wrap(ForgeErrorRefused, fmt.Sprintf("The suggestion was not applied: %s.", notApplied.Reason))
 	case errors.As(err, &elsewhere):

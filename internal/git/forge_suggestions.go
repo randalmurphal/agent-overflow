@@ -1,7 +1,11 @@
 package git
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -38,19 +42,69 @@ type CommentSuggestion struct {
 	To        []string `json:"to"`
 	Appliable bool     `json:"appliable"`
 	Applied   bool     `json:"applied,omitempty"`
+	// BodyStartLine and BodyEndLine are the 0-based lines, in the
+	// comment's body split on "\n", of the block's opening and closing
+	// fences (mdsuggest.Block), when BodyPlaced: GitHub's always; GitLab's
+	// only when the body holds as many blocks as GitLab reports
+	// suggestions, block i being suggestion i. They are not part of the
+	// digest.
+	BodyStartLine int  `json:"bodyStartLine"`
+	BodyEndLine   int  `json:"bodyEndLine"`
+	BodyPlaced    bool `json:"bodyPlaced"`
+	// Digest names what the user is shown and what an apply writes
+	// (SuggestionDigest); the apply presents it and is refused when the
+	// suggestion no longer has it.
+	Digest string `json:"digest"`
+}
+
+// SuggestionDigest is the lowercase hex SHA-256 of a canonical encoding
+// of a suggestion as shown and as written: the forge, the first and last
+// replaced line, and the replacement lines, each length-prefixed so no
+// two suggestions encode alike. The read and the apply both use it.
+func SuggestionDigest(forge string, start, end int, to []string) string {
+	h := sha256.New()
+	field := func(s string) {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(s)))
+		h.Write(n[:])
+		h.Write([]byte(s))
+	}
+	field("ao-suggestion-v1")
+	field(forge)
+	field(strconv.Itoa(start))
+	field(strconv.Itoa(end))
+	field(strconv.Itoa(len(to)))
+	for _, line := range to {
+		field(line)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// SuggestionChangedError refuses an apply whose suggestion is no longer
+// the one the caller's pane showed: its digest differs, or its index or
+// GitLab id is gone. Nothing is written; the pane's read is stale.
+type SuggestionChangedError struct{}
+
+func (e *SuggestionChangedError) Error() string {
+	return "the suggestion changed since it was loaded"
 }
 
 // SuggestionApply names one suggestion to apply: the comment it is in
 // (Target), its Index in that comment's suggestions, GitLab's suggestion
-// ID, and HeadSHA, the head the caller's pane loaded. A head that moved
+// ID, the Digest the read gave it (CommentSuggestion.Digest; a
+// suggestion that no longer has it is *SuggestionChangedError), and
+// HeadSHA, the head the caller's pane loaded. A head that moved
 // is refused (*HeadMovedError) before anything is written; GitHub's
 // commit also names it as its expectedHeadOid.
 type SuggestionApply struct {
 	Target       CommentTarget `json:"target"`
 	Index        int           `json:"index"`
 	SuggestionID string        `json:"suggestionId,omitempty"`
+	Digest       string        `json:"digest"`
 	HeadSHA      string        `json:"headSha"`
 }
+
+var suggestionDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Validate checks the request's shape for forge.
 func (s SuggestionApply) Validate(forge string) error {
@@ -62,6 +116,9 @@ func (s SuggestionApply) Validate(forge string) error {
 	}
 	if s.Index < 0 {
 		return errors.New("a suggestion index is not negative")
+	}
+	if !suggestionDigestPattern.MatchString(s.Digest) {
+		return errors.New("applying a suggestion requires the digest the read gave it")
 	}
 	if forge == "gitlab" {
 		if id, err := strconv.ParseInt(s.SuggestionID, 10, 64); err != nil || id <= 0 {
@@ -80,9 +137,10 @@ const SuggestionCommitHeadline = "Apply suggestion from code review"
 const suggestionFileMaxBytes = 1 << 20
 
 // SuggestionNotAppliedError refuses an apply before anything is written:
-// the comment holds no such suggestion, the thread is outdated or not on
-// the new side, the PR is not open, or the file cannot be rewritten (past
-// suggestionFileMaxBytes, binary, not UTF-8, or shorter than the anchor).
+// the thread is outdated, resolved or not on the new side, the PR is not
+// open, or the file cannot be rewritten (no regular file at the path,
+// past suggestionFileMaxBytes, binary, not UTF-8, not the blob its tree
+// entry names, or shorter than the anchor).
 // Reason completes "The suggestion was not applied: ...".
 type SuggestionNotAppliedError struct {
 	Reason string
@@ -201,38 +259,70 @@ func (c *Core) SetPRCommentReaction(ctx context.Context, ref PRReference, target
 }
 
 // applySuggestionToFile is the file content after replacing its lines
-// start to end (1-based, inclusive) with lines. The file keeps its line
-// ending (CRLF when its first line ending is CRLF, else LF) and whether
-// it ends with one. A file that is not UTF-8 text, holds a NUL byte, or
-// has fewer lines than end, is refused.
+// start to end (1-based, inclusive) with lines, as a byte splice: the
+// bytes before line start and after line end's ending are the input's.
+// A line ends at "\n", its ending "\r\n" when a CR precedes it. The
+// replacement lines are joined and ended with the last replaced line's
+// ending; when that line has none (the file's last, with no final
+// newline), they are joined with the nearest preceding line ending in
+// the file (LF when there is none) and the last gets none. A deletion
+// removes the lines with their endings. A UTF-8 byte order mark stays in
+// front when line 1 is replaced. A file that is not UTF-8 text, holds a
+// NUL byte, or has fewer lines than end, is refused.
 func applySuggestionToFile(content []byte, start, end int, lines []string) ([]byte, error) {
-	if !utf8.Valid(content) || strings.ContainsRune(string(content), 0) {
+	if !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
 		return nil, &SuggestionNotAppliedError{Reason: "the file is not text"}
 	}
-	text := string(content)
-	eol := "\n"
-	if i := strings.IndexByte(text, '\n'); i > 0 && text[i-1] == '\r' {
-		eol = "\r\n"
-	}
-	trailing := strings.HasSuffix(text, "\n")
-	body := strings.TrimSuffix(strings.TrimSuffix(text, "\n"), "\r")
-	var fileLines []string
-	if text != "" {
-		fileLines = strings.Split(body, "\n")
-		for i := range fileLines {
-			fileLines[i] = strings.TrimSuffix(fileLines[i], "\r")
+	// starts[i] is line i+1's first byte; a last line without an ending
+	// counts when it holds anything.
+	starts := []int{}
+	for at := 0; at < len(content); {
+		starts = append(starts, at)
+		i := bytes.IndexByte(content[at:], '\n')
+		if i < 0 {
+			break
 		}
+		at += i + 1
 	}
-	if start < 1 || end < start || end > len(fileLines) {
-		return nil, &SuggestionNotAppliedError{Reason: fmt.Sprintf("the file has %d lines, not the lines %d to %d the comment is on", len(fileLines), start, end)}
+	if start < 1 || end < start || end > len(starts) {
+		return nil, &SuggestionNotAppliedError{Reason: fmt.Sprintf("the file has %d lines, not the lines %d to %d the comment is on", len(starts), start, end)}
 	}
-	out := make([]string, 0, len(fileLines)-(end-start+1)+len(lines))
-	out = append(out, fileLines[:start-1]...)
-	out = append(out, lines...)
-	out = append(out, fileLines[end:]...)
-	result := strings.Join(out, eol)
-	if trailing && len(out) > 0 {
-		result += eol
+	lineEnding := func(n int) string { // line n's ending, 1-based
+		stop := len(content)
+		if n < len(starts) {
+			stop = starts[n]
+		}
+		switch {
+		case stop == 0 || content[stop-1] != '\n':
+			return ""
+		case stop >= 2 && content[stop-2] == '\r':
+			return "\r\n"
+		}
+		return "\n"
 	}
-	return []byte(result), nil
+	from, to := starts[start-1], len(content)
+	if end < len(starts) {
+		to = starts[end]
+	}
+	if start == 1 && bytes.HasPrefix(content, utf8BOM) {
+		from = len(utf8BOM)
+	}
+	var replacement strings.Builder
+	if len(lines) > 0 {
+		eol, last := lineEnding(end), lineEnding(end)
+		for n := end - 1; eol == "" && n >= 1; n-- {
+			eol = lineEnding(n)
+		}
+		if eol == "" {
+			eol = "\n"
+		}
+		replacement.WriteString(strings.Join(lines, eol))
+		replacement.WriteString(last)
+	}
+	out := make([]byte, 0, from+replacement.Len()+len(content)-to)
+	out = append(out, content[:from]...)
+	out = append(out, replacement.String()...)
+	return append(out, content[to:]...), nil
 }
+
+var utf8BOM = []byte{0xef, 0xbb, 0xbf}

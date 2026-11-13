@@ -591,6 +591,25 @@ export class CommentSuggestion {
     "appliable": boolean;
     "applied"?: boolean;
 
+    /**
+     * BodyStartLine and BodyEndLine are the 0-based lines, in the
+     * comment's body split on "\n", of the block's opening and closing
+     * fences (mdsuggest.Block), when BodyPlaced: GitHub's always; GitLab's
+     * only when the body holds as many blocks as GitLab reports
+     * suggestions, block i being suggestion i. They are not part of the
+     * digest.
+     */
+    "bodyStartLine": number;
+    "bodyEndLine": number;
+    "bodyPlaced": boolean;
+
+    /**
+     * Digest names what the user is shown and what an apply writes
+     * (SuggestionDigest); the apply presents it and is refused when the
+     * suggestion no longer has it.
+     */
+    "digest": string;
+
     /** Creates a new CommentSuggestion instance. */
     constructor($$source: Partial<CommentSuggestion> = {}) {
         if (!("index" in $$source)) {
@@ -601,6 +620,18 @@ export class CommentSuggestion {
         }
         if (!("appliable" in $$source)) {
             this["appliable"] = false;
+        }
+        if (!("bodyStartLine" in $$source)) {
+            this["bodyStartLine"] = 0;
+        }
+        if (!("bodyEndLine" in $$source)) {
+            this["bodyEndLine"] = 0;
+        }
+        if (!("bodyPlaced" in $$source)) {
+            this["bodyPlaced"] = false;
+        }
+        if (!("digest" in $$source)) {
+            this["digest"] = "";
         }
 
         Object.assign(this, $$source);
@@ -2410,7 +2441,9 @@ export class ReviewVerdict {
 /**
  * SuggestionApply names one suggestion to apply: the comment it is in
  * (Target), its Index in that comment's suggestions, GitLab's suggestion
- * ID, and HeadSHA, the head the caller's pane loaded. A head that moved
+ * ID, the Digest the read gave it (CommentSuggestion.Digest; a
+ * suggestion that no longer has it is *SuggestionChangedError), and
+ * HeadSHA, the head the caller's pane loaded. A head that moved
  * is refused (*HeadMovedError) before anything is written; GitHub's
  * commit also names it as its expectedHeadOid.
  */
@@ -2418,6 +2451,7 @@ export class SuggestionApply {
     "target": CommentTarget;
     "index": number;
     "suggestionId"?: string;
+    "digest": string;
     "headSha": string;
 
     /** Creates a new SuggestionApply instance. */
@@ -2427,6 +2461,9 @@ export class SuggestionApply {
         }
         if (!("index" in $$source)) {
             this["index"] = 0;
+        }
+        if (!("digest" in $$source)) {
+            this["digest"] = "";
         }
         if (!("headSha" in $$source)) {
             this["headSha"] = "";

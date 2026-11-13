@@ -10,18 +10,28 @@ import { Create as $Create } from "@wailsio/runtime";
  * Lines are the replacement lines without their line endings; an empty
  * block deletes the anchored lines. Above and Below are a GitLab
  * `suggestion:-N+M` header's N and M (Widened set), which widen the
- * replaced lines past the anchor; GitHub has no such header.
+ * replaced lines past the anchor; GitHub has no such header. StartLine
+ * and EndLine are the 0-based indices, in the body split on "\n", of the
+ * opening and the closing fence lines.
  */
 export class Block {
     "lines": string[];
     "above"?: number;
     "below"?: number;
     "widened"?: boolean;
+    "startLine": number;
+    "endLine": number;
 
     /** Creates a new Block instance. */
     constructor($$source: Partial<Block> = {}) {
         if (!("lines" in $$source)) {
             this["lines"] = [];
+        }
+        if (!("startLine" in $$source)) {
+            this["startLine"] = 0;
+        }
+        if (!("endLine" in $$source)) {
+            this["endLine"] = 0;
         }
 
         Object.assign(this, $$source);

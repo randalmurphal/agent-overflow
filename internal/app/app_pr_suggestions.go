@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"unicode/utf8"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/mdsuggest"
@@ -41,19 +42,22 @@ func (a *App) SetPRCommentReaction(ctx context.Context, pr gitops.PRReference, t
 	})
 }
 
-// commentBodyMaxBytes bounds a body ParseCommentSuggestions reads: past
-// either forge's comment limit.
-const commentBodyMaxBytes = 1 << 20
+// commentBodyMaxChars bounds a body ParseCommentSuggestions reads: the
+// larger forge comment limit, GitLab's 1,000,000 characters for a note
+// (GitHub's is smaller). UTF-8 takes at most 4 bytes a character, so a
+// body past 4 bytes a character is refused before it is counted.
+const commentBodyMaxChars = 1_000_000
 
 // ParseCommentSuggestions reads the suggestion blocks of a comment body as
-// the read does (mdsuggest.Parse), for an editor's preview. It
-// reads nothing else and changes nothing.
+// the read does (mdsuggest.Parse), each with its fence lines in the body
+// (StartLine, EndLine), for an editor's preview. It reads nothing else
+// and changes nothing.
 //
 //ao:scope git:operate
 //ao:route home
 func (a *App) ParseCommentSuggestions(body string) ([]mdsuggest.Block, error) {
-	if len(body) > commentBodyMaxBytes {
-		return nil, fmt.Errorf("a comment body is at most %d bytes", commentBodyMaxBytes)
+	if len(body) > 4*commentBodyMaxChars || utf8.RuneCountInString(body) > commentBodyMaxChars {
+		return nil, fmt.Errorf("a comment body is at most %d characters", commentBodyMaxChars)
 	}
 	out := mdsuggest.Parse(body)
 	if out == nil {

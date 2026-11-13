@@ -827,6 +827,9 @@ func graphQLDocument(t *testing.T, op string) string {
 // graphQL sends one operation to the GitHub GraphQL mount for host.
 func graphQL(t *testing.T, srv *httptest.Server, host, op string, vars map[string]any) httpAnswer {
 	t.Helper()
+	if _, set := vars["wantReactions"]; !set && slices.Contains([]string{"PRTick", "PRThreadsPage", "PRCommentsPage", "ThreadCommentsPage"}, op) {
+		vars["wantReactions"] = true
+	}
 	return httpRequest(t, srv, "POST", host, "/github/graphql", mustJSON(t, map[string]any{
 		"query": graphQLDocument(t, op), "operationName": op, "variables": vars,
 	}), nil)
@@ -934,7 +937,7 @@ func TestHTTPMountsAnswerFromTheRouteTables(t *testing.T) {
 		t.Fatalf("PRTick = %+v", tick)
 	}
 	if got := lastInvocation(t, e); got.Path != "graphql" || got.Route != "gh graphql PRTick" || got.Operation != "PRTick" ||
-		string(got.Variables) != `{"name":"widgets","number":7,"owner":"acme","wantChecks":false,"wantDetail":false,"wantEvents":false,"wantThreads":true}` {
+		string(got.Variables) != `{"name":"widgets","number":7,"owner":"acme","wantChecks":false,"wantDetail":false,"wantEvents":false,"wantReactions":true,"wantThreads":true}` {
 		t.Fatalf("PRTick invocation = %+v (variables %s)", got, got.Variables)
 	}
 	missing := prTick(t, srv, "ghe.example:8443", "acme", "widgets", 7, true, true, true)

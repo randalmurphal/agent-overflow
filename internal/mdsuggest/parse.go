@@ -9,177 +9,175 @@
 package mdsuggest
 
 import (
-	"regexp"
+	"bytes"
 	"strconv"
 	"strings"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
 )
 
 // Block is one suggestion block of a body, in body order.
 // Lines are the replacement lines without their line endings; an empty
 // block deletes the anchored lines. Above and Below are a GitLab
 // `suggestion:-N+M` header's N and M (Widened set), which widen the
-// replaced lines past the anchor; GitHub has no such header.
+// replaced lines past the anchor; GitHub has no such header. StartLine
+// and EndLine are the 0-based indices, in the body split on "\n", of the
+// opening and the closing fence lines.
 type Block struct {
-	Lines   []string `json:"lines"`
-	Above   int      `json:"above,omitempty"`
-	Below   int      `json:"below,omitempty"`
-	Widened bool     `json:"widened,omitempty"`
+	Lines     []string `json:"lines"`
+	Above     int      `json:"above,omitempty"`
+	Below     int      `json:"below,omitempty"`
+	Widened   bool     `json:"widened,omitempty"`
+	StartLine int      `json:"startLine"`
+	EndLine   int      `json:"endLine"`
 }
 
 // headerMax bounds a -N+M header's numbers, as GitLab bounds
 // them (100 lines each way).
 const headerMax = 100
 
-var (
-	fenceOpenPattern  = regexp.MustCompile("^(`{3,}|~{3,})(.*)$")
-	fenceClosePattern = regexp.MustCompile("^(`{3,}|~{3,})[ \t]*$")
-	listMarkerPattern = regexp.MustCompile(`^([-+*]|\d{1,9}[.)])( +|$)`)
-	widenedPattern    = regexp.MustCompile(`^suggestion:-(\d+)\+(\d+)$`)
-)
+var markdown = goldmark.New()
 
-// fence is an open fenced code block: its marker character and length,
-// the column its content is relative to, and whether it is a top-level
-// suggestion being collected.
-type fence struct {
-	char       byte
-	length     int
-	indent     int
-	suggestion bool
-	header     Block
-	lines      []string
-}
-
-// Parse returns the suggestion blocks of body, in order, read
-// as CommonMark reads fenced code: a fence opens with three or more
-// backticks or tildes indented at most three columns, and closes with a
-// line of the same character, at least as long, carrying nothing else
-// (so a shorter or other fence inside, and a fence with an info string,
-// is content). Only a fence at the top level of the body is a
-// suggestion: one inside a blockquote or a list item is quoted or nested
-// text. A fence never closed is not a suggestion. CRLF bodies read as LF.
+// Parse returns the suggestion blocks of body, in order: the fenced code
+// blocks CommonMark reads at the top level of the body (goldmark's block
+// parse) whose info string's first word is `suggestion` or
+// `suggestion:-N+M`. A fence inside a blockquote, a list item or an HTML
+// block is not one, and neither is a fence the body never closes
+// (CommonMark closes it at the end of input; the forges do not apply it).
 func Parse(body string) []Block {
+	src := []byte(body)
+	doc := markdown.Parser().Parse(text.NewReader(src))
 	var out []Block
-	var open *fence
-	listContent := -1 // the content column of the list item the lines are in, -1 outside one
-	for raw := range strings.SplitSeq(body, "\n") {
-		line := strings.TrimSuffix(raw, "\r")
-		indent, rest := leadingColumns(line)
-		if open != nil {
-			rel := indent - open.indent
-			if rel >= 0 && rel <= 3 && fenceCloses(rest, open) {
-				if open.suggestion {
-					open.header.Lines = open.lines
-					if open.header.Lines == nil {
-						open.header.Lines = []string{}
-					}
-					out = append(out, open.header)
-				}
-				open = nil
-				continue
-			}
-			if open.suggestion {
-				open.lines = append(open.lines, stripColumns(line, open.indent))
-			}
+	// lineOf counts the line breaks before an offset, moving forward only:
+	// blocks come in body order, so the whole parse counts each byte once.
+	at, line := 0, 0
+	lineOf := func(offset int) int {
+		line += bytes.Count(src[at:offset], []byte{'\n'})
+		at = offset
+		return line
+	}
+	for node := doc.FirstChild(); node != nil; node = node.NextSibling() {
+		code, ok := node.(*ast.FencedCodeBlock)
+		if !ok || code.Info == nil {
 			continue
 		}
-		if strings.TrimSpace(line) == "" {
+		block, ok := header(string(code.Info.Segment.Value(src)))
+		if !ok {
 			continue
 		}
-		if listContent >= 0 && indent < listContent && !listMarkerPattern.MatchString(rest) {
-			listContent = -1
-		}
-		if indent <= 3 && listMarkerPattern.MatchString(rest) {
-			marker := listMarkerPattern.FindStringSubmatch(rest)
-			listContent = indent + len(marker[0])
-			if marker[2] == "" {
-				listContent++
-			}
-			// A fence can open on the item's own line: it is the item's.
-			indent, rest = leadingColumns(rest[len(marker[0]):])
-			indent += listContent
-			if f := openFence(rest, indent, false); f != nil {
-				open = f
-			}
+		openStart, closeStart, ok := fence(src, code)
+		if !ok {
 			continue
 		}
-		if indent <= 3 && strings.HasPrefix(rest, ">") {
-			// A blockquote's lines, fences included, are quoted text.
-			continue
+		block.StartLine, block.EndLine = lineOf(openStart), lineOf(closeStart)
+		block.Lines = []string{}
+		segments := code.Lines()
+		for i := 0; i < segments.Len(); i++ {
+			segment := segments.At(i)
+			block.Lines = append(block.Lines, trimLineEnding(string(segment.Value(src))))
 		}
-		inList := listContent >= 0 && indent >= listContent
-		base := 0
-		if inList {
-			base = listContent
-		}
-		if indent-base > 3 {
-			continue // an indented code block, or deeper list content
-		}
-		if f := openFence(rest, indent, !inList); f != nil {
-			open = f
-		}
+		out = append(out, block)
 	}
 	return out
 }
 
-// openFence reads rest, a line after its indent columns, as a fence
-// opener; topLevel decides whether a suggestion info string makes it a
-// suggestion. A backtick fence's info string may hold no backtick.
-func openFence(rest string, indent int, topLevel bool) *fence {
-	m := fenceOpenPattern.FindStringSubmatch(rest)
-	if m == nil {
-		return nil
-	}
-	info := strings.TrimSpace(m[2])
-	if m[1][0] == '`' && strings.Contains(info, "`") {
-		return nil
-	}
-	f := &fence{char: m[1][0], length: len(m[1]), indent: indent}
-	word, _, _ := strings.Cut(info, " ")
-	if !topLevel {
-		return f
-	}
+// header reads an info string's first word as a suggestion header.
+func header(info string) (Block, bool) {
+	word, _, _ := strings.Cut(strings.TrimSpace(info), " ")
+	word, _, _ = strings.Cut(word, "\t")
 	if word == "suggestion" {
-		f.suggestion = true
-	} else if w := widenedPattern.FindStringSubmatch(word); w != nil {
-		above, err1 := strconv.Atoi(w[1])
-		below, err2 := strconv.Atoi(w[2])
-		if err1 == nil && err2 == nil && above <= headerMax && below <= headerMax {
-			f.suggestion = true
-			f.header = Block{Above: above, Below: below, Widened: true}
+		return Block{}, true
+	}
+	rest, ok := strings.CutPrefix(word, "suggestion:-")
+	if !ok {
+		return Block{}, false
+	}
+	a, b, ok := strings.Cut(rest, "+")
+	above, err1 := strconv.Atoi(a)
+	below, err2 := strconv.Atoi(b)
+	if !ok || err1 != nil || err2 != nil || !digits(a) || !digits(b) || above > headerMax || below > headerMax {
+		return Block{}, false
+	}
+	return Block{Above: above, Below: below, Widened: true}, true
+}
+
+func digits(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
+}
+
+// fence answers the offsets of code's opening and closing fence lines in
+// src, ok false when the fence is not closed: the line after its last
+// content line (or after its opening line, with no content) must be a
+// closing fence of the opener's character, at least as long, indented at
+// most three columns, with nothing else on it.
+func fence(src []byte, code *ast.FencedCodeBlock) (openStart, closeStart int, ok bool) {
+	openStart = bytes.LastIndexByte(src[:code.Info.Segment.Start], '\n') + 1
+	char, length := fenceRun(src[openStart:])
+	after := lineEnd(src, code.Info.Segment.Stop)
+	if n := code.Lines().Len(); n > 0 {
+		after = lineEnd(src, code.Lines().At(n-1).Stop-1)
+	}
+	if after >= len(src) {
+		return 0, 0, false
+	}
+	line := src[after:]
+	if i := bytes.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	cols, i := 0, 0
+	for ; i < len(line) && (line[i] == ' ' || line[i] == '\t'); i++ {
+		if line[i] == '\t' {
+			cols += 4 - cols%4
+		} else {
+			cols++
 		}
 	}
-	return f
-}
-
-// fenceCloses reports whether rest closes f.
-func fenceCloses(rest string, f *fence) bool {
-	m := fenceClosePattern.FindStringSubmatch(rest)
-	return m != nil && m[1][0] == f.char && len(m[1]) >= f.length
-}
-
-// leadingColumns counts line's leading whitespace in columns (a tab
-// advances to the next multiple of four) and returns the rest.
-func leadingColumns(line string) (int, string) {
-	col := 0
-	for i := 0; i < len(line); i++ {
-		switch line[i] {
-		case ' ':
-			col++
-		case '\t':
-			col += 4 - col%4
-		default:
-			return col, line[i:]
-		}
+	if cols > 3 {
+		return 0, 0, false
 	}
-	return col, ""
+	j := i
+	for j < len(line) && line[j] == char {
+		j++
+	}
+	return openStart, after, j-i >= length && len(bytes.Trim(line[j:], " \t\r")) == 0
 }
 
-// stripColumns removes up to n columns of leading spaces from a content
-// line, as CommonMark strips a fence's indent from its content.
-func stripColumns(line string, n int) string {
+// fenceRun is the fence character and run length opening line.
+func fenceRun(line []byte) (byte, int) {
 	i := 0
-	for i < len(line) && i < n && line[i] == ' ' {
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
 		i++
 	}
-	return line[i:]
+	if i == len(line) {
+		return 0, 0
+	}
+	char, j := line[i], i
+	for j < len(line) && line[j] == char {
+		j++
+	}
+	return char, j - i
+}
+
+// lineEnd is the offset just past the line ending of the line holding
+// src[at], or len(src) when that line has none.
+func lineEnd(src []byte, at int) int {
+	if at < 0 {
+		at = 0
+	}
+	if i := bytes.IndexByte(src[at:], '\n'); i >= 0 {
+		return at + i + 1
+	}
+	return len(src)
+}
+
+func trimLineEnding(line string) string {
+	if s, ok := strings.CutSuffix(line, "\r\n"); ok {
+		return s
+	}
+	if s, ok := strings.CutSuffix(line, "\n"); ok {
+		return s
+	}
+	return strings.TrimSuffix(line, "\r")
 }

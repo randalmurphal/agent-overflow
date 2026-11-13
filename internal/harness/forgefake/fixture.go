@@ -173,11 +173,17 @@ type Pull struct {
 	// Diff is the PR's unified diff. The file and line counts the PR reads
 	// report are derived from it.
 	Diff string `json:"diff,omitempty"`
-	// Files are the head branch's file contents by path at HeadSHA: what a
-	// GitHub contents read answers, what a GitLab suggestion's
-	// from_content is read from, and what an applied suggestion rewrites
-	// (suggestions.go). A path absent here is not on the head branch.
+	// Files are the head branch's file contents by path at HeadSHA: the
+	// blobs GitHub's tree entry and blob reads answer, what a GitLab
+	// suggestion's from_content is read from, and what an applied
+	// suggestion rewrites (suggestions.go). A path absent here and from
+	// FileModes is not on the head branch.
 	Files map[string]string `json:"files,omitempty"`
+	// FileModes are tree entry modes by path on GitHub's head commit:
+	// "100644" (the default for a path in Files), "100755", "120000" (a
+	// symbolic link; Files holds its target), "160000" (a submodule) or
+	// "040000" (a directory); the last two need no Files entry.
+	FileModes map[string]string `json:"fileModes,omitempty"`
 	// Mergeable is "clean" (default), "conflicts" or "checking".
 	Mergeable string `json:"mergeable,omitempty"`
 	// Comments are PR-level conversation comments (GitHub issue comments,
@@ -361,6 +367,12 @@ type Comment struct {
 	// note's suggestions already applied.
 	Reactions          []Reaction `json:"reactions,omitempty"`
 	AppliedSuggestions []int      `json:"appliedSuggestions,omitempty"`
+	// suggestionsFrom is a GitLab thread note's suggestions' from_content
+	// as written, kept once a commit changes the files they were read
+	// from; suggestionsBody is the body it was read for, so an edit reads
+	// it again (suggestions.go).
+	suggestionsFrom []string
+	suggestionsBody string
 	// Replies are the further notes of a GitLab conversation comment's
 	// discussion; a reply to one adds them. GitHub conversation comments
 	// have none.
@@ -857,6 +869,14 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 			return fmt.Errorf("changeRequests[%d]: %q is not one of the reviewers", i, login)
 		case slices.ContainsFunc(p.Reviews, func(r Review) bool { return same(r.Author) }):
 			return fmt.Errorf("changeRequests[%d]: %q also approved", i, login)
+		}
+	}
+	for path, mode := range p.FileModes {
+		if _, known := githubFileModes[mode]; !known || forge != "github" {
+			return fmt.Errorf("fileModes[%q]: %q is not a GitHub file mode (100644, 100755, 120000, 160000, 040000)", path, mode)
+		}
+		if _, isFile := p.Files[path]; isFile != (githubFileModes[mode].entryType == "blob") {
+			return fmt.Errorf("fileModes[%q]: a %s mode needs %s files entry", path, githubFileModes[mode].entryType, map[bool]string{true: "a", false: "no"}[githubFileModes[mode].entryType == "blob"])
 		}
 	}
 	if err := p.normalizeReactions(forge, ids); err != nil {

@@ -133,7 +133,11 @@ func New(config Config) *Harness {
 		config.ShutdownTimeout = 10 * time.Second
 	}
 	h := &Harness{config: config, pageMarker: newHarnessPageMarker(), forgeToken: rand.Text()}
-	h.forge = forgefake.New(forgefake.Options{OnInvocation: h.onForgeInvocation, APIToken: h.forgeToken})
+	var commit func(forgefake.CommitRequest) (string, error)
+	if config.DataRoot != "" {
+		commit = forgeOriginCommit(forgeOriginRoot(config.DataRoot))
+	}
+	h.forge = forgefake.New(forgefake.Options{OnInvocation: h.onForgeInvocation, APIToken: h.forgeToken, Commit: commit})
 	return h
 }
 

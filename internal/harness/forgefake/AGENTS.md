@@ -142,10 +142,10 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | ssh | `-G -o CanonicalizeHostname=no -o PermitLocalCommand=no [-l U] H` | local SSH host resolution, from fixture `sshHosts` |
 | GitHub | `gh pr create --title T --body B [--base B] [--draft]` | GitCreatePR |
 | GitLab | `glab mr create --title T --description D --yes --no-editor [--target-branch B] [--draft]` | GitCreatePR |
-| GitHub | GraphQL `PRTick(owner, name, number, wantDetail, wantThreads, wantEvents, wantChecks)` (`gh graphql PRTick`) | ReadPR: detail and viewer with the repository's merge settings and the merge box (readiness, opinions, thread states, base protection, auto-merge), threads and comments, the newest 100 timeline items, head commit rollup (CI, each check's `isRequired`); `viewerPermission` on every read |
-| GitHub | GraphQL `PRThreadsPage`, `PRCommentsPage`, `PRThreadStatesPage(owner, name, number, after)` | ReadPR: review threads, comments and thread states past the first 100 |
+| GitHub | GraphQL `PRTick(owner, name, number, wantDetail, wantThreads, wantEvents, wantChecks, wantReactions)` (`gh graphql PRTick`) | ReadPR: detail and viewer with the repository's merge settings and the merge box (readiness, opinions, thread states, base protection, auto-merge), threads and comments (each comment's `reactionGroups` only while `wantReactions`), the newest 100 timeline items, head commit rollup (CI, each check's `isRequired`); `viewerPermission` on every read |
+| GitHub | GraphQL `PRThreadsPage`, `PRCommentsPage(owner, name, number, after, wantReactions)`, `PRThreadStatesPage(owner, name, number, after)` | ReadPR: review threads, comments and thread states past the first 100 |
 | GitHub | GraphQL `PRTimelinePage(owner, name, number, before)` | ReadPR events: older timeline pages, read backwards |
-| GitHub | GraphQL `ThreadCommentsPage(threadID, after)`, `RollupContextsPage(commitID, number, after)` | ReadPR: one thread's comments, the rollup's contexts past 100 |
+| GitHub | GraphQL `ThreadCommentsPage(threadID, after, wantReactions)`, `RollupContextsPage(commitID, number, after)` | ReadPR: one thread's comments, the rollup's contexts past 100 |
 | GitHub | GraphQL `PRMergeTarget(owner, name, number)`, `ViewerApproval(owner, name, number)` | merge actions: the pull's node id and head; Unapprove: the viewer's standing approval |
 | GitHub | GraphQL `MergePR`, `EnableAutoMerge(pullRequestID, method, expectedHeadOid)` | Merge now (merged, MergedEvent and ClosedEvent, head deleted when the repository does) and Auto-merge (armed, the method's enabled event); a head other than `expectedHeadOid` answers "Head branch was modified. Review and try the merge again." |
 | GitHub | GraphQL `DisableAutoMerge`, `MarkPRReady(pullRequestID)`, `UpdatePRBranch(pullRequestID, expectedHeadOid)`, `DismissReview(reviewID, message)` | Cancel auto-merge, Mark ready, Update branch (the head moves to a new commit), Unapprove (the review reads DISMISSED, a ReviewDismissedEvent) |
@@ -214,7 +214,8 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `GET projects/P/users?search=&per_page=N[&page=N]` (`glab api project users`), GraphQL `SearchProjectLabels(fullPath, search?)` | pickers: `members` matching search with `X-Next-Page` while more pages exist; the project's labels with their global ids, 20 with `hasNextPage` |
 | GitLab | `GET projects/P/merge_requests/N/resource_state_events?per_page=N[&page=N]` (`glab api state events`) | ReadPR events: the pull's `stateEvents` (`closed`, `opened` or `reopened` for a reopen, `merged`) |
 | GitHub | GraphQL `SuggestionTarget(threadID, commentID)` | ApplyPRSuggestion: the viewer, the thread with its anchor, pull (state, head branch and oid, repository, head repository) and first 100 comment ids, and the comment's body and author (`databaseId` and `name` for a user with a display name) |
-| GitHub | `GET repos/O/R/contents/PATH?ref=SHA` with `Accept: application/vnd.github.raw` (`gh api contents`) | ApplyPRSuggestion: the file at the head of a pull whose head repository is O/R (the repository or its `headRepo` fork), from the pull's `files`; another ref, path or media type is a 404 or unhandled |
+| GitHub | GraphQL `SuggestionFile(owner, name, oid, path)` | ApplyPRSuggestion: the tree entry at path on the head commit oid of a pull whose head repository is owner/name (the repository or its `headRepo` fork): `mode` (the mode's value, 33188 for 100644), `type`, `oid` (the blob's SHA-1 id) and the blob's `byteSize` and `isBinary`, from the pull's `files` and `fileModes`; a null `file` for a path the head lacks, a null `object` for another commit |
+| GitHub | `GET repos/O/R/git/blobs/SHA` with `Accept: application/vnd.github.raw+json` (`gh api blob`) | ApplyPRSuggestion: the bytes of a file of a pull whose head repository is O/R whose blob id is SHA; 404 otherwise, unhandled without the raw media type |
 | GitHub | GraphQL `SuggestionCommit(repository, branch, expectedHeadOid, headline, body?, path, contents)` | ApplyPRSuggestion's `createCommitOnBranch`: the file lands on the head branch, the head moves to a new sha and a thread on a changed line reads outdated; `FORBIDDEN` for a viewer who may not push or a fork head, `UNPROCESSABLE` "Expected branch to point to ..." for another head, `NOT_FOUND` for an unknown branch |
 | GitHub | GraphQL `ReactionTarget(id)`, `AddReaction`, `RemoveReaction(subjectID, content)` | SetPRCommentReaction: the comment's type, pull and `reactionGroups` (all eight contents); the viewer's reaction added or removed, a repeat changing nothing; an unknown id is `NOT_FOUND` |
 | GitLab | `PUT suggestions/ID/apply` (`glab api apply suggestion`) | ApplyPRSuggestion: the note's lines replaced in the pull's `files`, the head moved, the suggestion applied (`appliedSuggestions`); 403 below developer or `viewer.push` false, 400 "A suggestion is not applicable." when not appliable, 404 for an unknown id |
@@ -310,8 +311,25 @@ and then drops or truncates the response.
   change, answered as `old_path`. The e2e `publishPullRequest` seeds a
   GitLab pull's `diff` from the pushed change.
 - Suggestions and reactions: a pull's `files` (path to content) are
-  its head's files, which the contents route serves and a suggestion
-  commit or apply rewrites. A GitLab note's suggestions are derived from
+  its head's files, which the tree entry and blob routes serve and a
+  suggestion commit or apply rewrites. A GitHub pull's `fileModes`
+  (path to `100644`, `100755`, `120000`, `160000` or `040000`) make a
+  path executable, a symbolic link (its `files` entry the target), a
+  submodule or a directory (these two with no `files` entry). A commit
+  outdates the line threads on the lines it changed and moves those
+  wholly below them by its line delta. A commit goes through
+  `Options.Commit`: the harness (`internal/harnessrpc/forge_origin.go`)
+  writes it as a real commit (the file set on the head, its mode kept,
+  the message: GitHub's from the mutation, GitLab's "Apply 1
+  suggestion(s) to 1 file(s)" with a `Co-authored-by` trailer for the
+  note's author at `<login>@example.com`) to the bare repository the e2e
+  helpers publish the pull's head repository to
+  (`<data root>/forge-origin/<project>.git`, `publishPullRequest`),
+  moving the head branch and the pull's head ref, and the pull's new head
+  is that commit; a pull whose head repository is not there, or lacks
+  its head, gets a generated sha. A GitLab note's suggestions keep the
+  `from_content` they had when written: a commit fixes each note's
+  replaced text before it changes the files, and an edit reads it again. A GitLab note's suggestions are derived from
   its body (`internal/mdsuggest`) against its thread's lines in `files`
   (widened by a `-N+M` header), with id note id times 1000 plus the
   block's index, `from_content` from the file, appliable while the pull

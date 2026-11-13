@@ -1,10 +1,11 @@
 package forgefake
 
 import (
+	"crypto/sha1"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,7 +15,8 @@ import (
 )
 
 // Suggested changes. A pull's Files are its head branch at HeadSHA. On
-// GitHub the app reads a file through the contents API and commits the
+// GitHub the app reads the file's tree entry (SuggestionFile) and its
+// blob (git/blobs) and commits the
 // rewritten file with createCommitOnBranch (SuggestionCommit); on GitLab
 // the discussions carry each note's suggestions, derived as GitLab
 // derives them (the note's suggestion blocks over the thread's lines of
@@ -59,12 +61,16 @@ func gitlabNoteSuggestions(p *Pull, thread *Thread, comment Comment) []map[strin
 	content, onBranch := p.Files[thread.Path]
 	lines := fileLines(content)
 	out := []map[string]any{}
+	kept := comment.suggestionsBody == comment.Body && comment.suggestionsFrom != nil
 	for i, block := range mdsuggest.Parse(comment.Body) {
 		from, to := gitlabSuggestionRange(thread, block)
 		fromContent := ""
 		inFile := onBranch && from >= 1 && to <= len(lines) && from <= to
 		if inFile {
 			fromContent = strings.Join(lines[from-1:to], "\n") + "\n"
+		}
+		if kept && i < len(comment.suggestionsFrom) {
+			fromContent = comment.suggestionsFrom[i]
 		}
 		toContent := strings.Join(block.Lines, "\n")
 		if len(block.Lines) > 0 {
@@ -80,10 +86,44 @@ func gitlabNoteSuggestions(p *Pull, thread *Thread, comment Comment) []map[strin
 	return out
 }
 
-// commitFile writes content to path on p's head branch: a new head sha,
-// and every line thread on path whose lines the change touched becomes
-// outdated.
-func (e *Engine) commitFile(p *Pull, path, content string) string {
+// CommitRequest is one commit the fake makes on a pull's head branch:
+// Path set to Content on top of Parent, with Message.
+type CommitRequest struct {
+	Forge string `json:"forge"`
+	Host  string `json:"host"`
+	// Project is the head repository's project (a fork's for a pull from
+	// one), Number the pull's, Branch its head branch.
+	Project string `json:"project"`
+	Number  int    `json:"number"`
+	Branch  string `json:"branch"`
+	Parent  string `json:"parent"`
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Message string `json:"message"`
+}
+
+// commitFile writes content to path on p's head branch: a new head sha
+// (the real commit's when Options.Commit binds the pull to a
+// repository, else a generated one);
+// every line thread on path whose lines the change touched becomes
+// outdated, one wholly below them moves by the change's line delta, and
+// one above them stays.
+func (e *Engine) commitFile(r *Repo, p *Pull, path, content, message string) (string, error) {
+	sha := ""
+	if e.opts.Commit != nil {
+		var err error
+		sha, err = e.opts.Commit(CommitRequest{
+			Forge: r.Forge, Host: r.Host, Project: cmpOr(p.HeadRepo, r.Project), Number: p.Number, Branch: p.HeadRef,
+			Parent: p.HeadSHA, Path: path, Content: content, Message: message,
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	if sha == "" {
+		sha = e.ids.sha()
+	}
+	keepGitLabSuggestionsFrom(p)
 	before := fileLines(p.Files[path])
 	after := fileLines(content)
 	first := 0
@@ -106,7 +146,16 @@ func (e *Engine) commitFile(p *Pull, path, content string) string {
 		}
 		// Changed lines are first+1 .. lastBefore (1-based); a pure insert
 		// touches the line it lands before.
-		if start <= max(lastBefore, first+1) && *thread.Line >= first+1 {
+		switch {
+		case start > max(lastBefore, first+1):
+			delta := lastAfter - lastBefore
+			line := *thread.Line + delta
+			thread.Line = &line
+			if thread.StartLine != nil {
+				startLine := *thread.StartLine + delta
+				thread.StartLine = &startLine
+			}
+		case *thread.Line >= first+1:
 			thread.Outdated = true
 		}
 	}
@@ -114,35 +163,93 @@ func (e *Engine) commitFile(p *Pull, path, content string) string {
 		p.Files = map[string]string{}
 	}
 	p.Files[path] = content
-	p.HeadSHA = e.ids.sha()
-	return p.HeadSHA
+	p.HeadSHA = sha
+	return p.HeadSHA, nil
 }
 
-// ghContents answers GET repos/O/R/contents/PATH?ref=SHA with the raw
-// media type: the file's bytes on the head of a pull whose head
-// repository is O/R (the repository itself, or a pull's headRepo fork)
-// at that sha. The fake models no older commit: another ref is a 404.
-func ghContents(e *Engine, c *call, m []string) response {
-	if accept := c.flag("accept"); accept != "application/vnd.github.raw" {
-		return unhandled("gh api contents answers the raw media type only, not %q", accept)
+// File modes a pull's FileModes may give a path, as Git writes them.
+var githubFileModes = map[string]struct {
+	value      int
+	entryType  string
+	objectType string
+}{
+	"100644": {0o100644, "blob", "Blob"},
+	"100755": {0o100755, "blob", "Blob"},
+	"120000": {0o120000, "blob", "Blob"},
+	"160000": {0o160000, "commit", "Commit"},
+	"040000": {0o040000, "tree", "Tree"},
+}
+
+// gitBlobID is the SHA-1 object id Git gives content as a blob.
+func gitBlobID(content string) string {
+	h := sha1.New()
+	h.Write([]byte("blob " + strconv.Itoa(len(content)) + "\x00"))
+	h.Write([]byte(content))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ghSuggestionFile answers SuggestionFile: the tree entry at path on the
+// commit oid of a pull whose head repository is owner/name, from the
+// pull's Files and FileModes (a regular file by default; a tree or a
+// submodule needs only its mode). The fake models no other commit: an oid
+// other than a head is a null object, a path the head lacks a null file.
+func ghSuggestionFile(e *Engine, c *call, v graphQLVars) response {
+	owner, err := v.str("owner")
+	name, err1 := v.str("name")
+	oid, err2 := v.str("oid")
+	path, err3 := v.str("path")
+	if err := firstErr(err, err1, err2, err3); err != nil {
+		return unhandled("SuggestionFile: %v", err)
 	}
-	query, err := url.ParseQuery(m[3])
-	if err != nil || len(query) != 1 || query.Get("ref") == "" {
-		return unhandled("gh api contents takes ref alone: %q", m[3])
+	if e.repoOn("github", c.http.host, owner+"/"+name) == nil && e.githubHeadPull(c, owner+"/"+name, "", "") == nil {
+		return graphQLNotFound(map[string]any{"repository": nil}, []string{"repository"}, fmt.Sprintf("Could not resolve to a Repository with the name '%s/%s'.", owner, name))
 	}
-	path, err := url.PathUnescape(m[2])
-	if err != nil {
-		return unhandled("contents path %q", m[2])
-	}
-	p := e.githubHeadPull(c, m[1], "", query.Get("ref"))
+	p := e.githubHeadPull(c, owner+"/"+name, "", oid)
 	if p == nil {
-		return ghNotFound()
+		return graphQLData(map[string]any{"repository": map[string]any{"object": nil}})
 	}
-	content, ok := p.Files[path]
-	if !ok {
-		return ghNotFound()
+	var file any
+	content, isFile := p.Files[path]
+	mode, hasMode := p.FileModes[path]
+	if !hasMode {
+		mode = "100644"
 	}
-	return response{stdout: []byte(content), header: http.Header{"Content-Type": {"application/vnd.github.raw"}}}
+	kind := githubFileModes[mode]
+	switch {
+	case kind.entryType == "blob" && isFile:
+		file = map[string]any{"mode": kind.value, "type": "blob", "oid": gitBlobID(content), "object": map[string]any{
+			"__typename": "Blob", "byteSize": len(content), "isBinary": !utf8.ValidString(content) || strings.ContainsRune(content, 0),
+		}}
+	case kind.entryType != "blob" && hasMode:
+		file = map[string]any{"mode": kind.value, "type": kind.entryType, "oid": gitBlobID(path), "object": map[string]any{"__typename": kind.objectType}}
+	}
+	return graphQLData(map[string]any{"repository": map[string]any{"object": map[string]any{"__typename": "Commit", "file": file}}})
+}
+
+// ghBlob answers GET repos/O/R/git/blobs/SHA with the raw media type: a
+// file of a pull whose head repository is O/R whose blob id is SHA.
+func ghBlob(e *Engine, c *call, m []string) response {
+	if accept := c.flag("accept"); accept != "application/vnd.github.raw+json" {
+		return unhandled("gh api blob answers the raw media type only, not %q", accept)
+	}
+	for _, key := range sortedKeys(e.repos) {
+		r := e.repos[key]
+		if r.Forge != "github" || !strings.EqualFold(r.Host, c.http.host) {
+			continue
+		}
+		for i := range r.Pulls {
+			p := &r.Pulls[i]
+			if !strings.EqualFold(cmpOr(p.HeadRepo, r.Project), m[1]) {
+				continue
+			}
+			for _, path := range sortedKeys(p.Files) {
+				if gitBlobID(p.Files[path]) == strings.ToLower(m[2]) {
+					return response{stdout: []byte(p.Files[path]), header: http.Header{"Content-Type": {"application/vnd.github.raw+json"}}}
+				}
+			}
+		}
+	}
+	return ghNotFound()
 }
 
 func ghNotFound() response {
@@ -274,7 +381,14 @@ func ghSuggestionCommit(e *Engine, c *call, v graphQLVars) response {
 	case err != nil || !utf8.Valid(decoded):
 		return graphQLMutationError(field, "UNPROCESSABLE", "fileChanges.additions[0].contents is not valid base64.")
 	}
-	oid := e.commitFile(p, path, string(decoded))
+	message := headline
+	if body, _ := v["body"].(string); body != "" {
+		message += "\n\n" + body
+	}
+	oid, err := e.commitFile(r, p, path, string(decoded), message)
+	if err != nil {
+		return graphQLMutationError(field, "INTERNAL", "The commit could not be written: "+err.Error())
+	}
 	return graphQLData(map[string]any{field: map[string]any{"commit": map[string]any{"oid": oid}}})
 }
 
@@ -335,12 +449,44 @@ func glabApplySuggestion(e *Engine, c *call, m []string) response {
 				if len(next) > 0 && strings.HasSuffix(p.Files[thread.Path], "\n") {
 					content += "\n"
 				}
+				if _, err := e.commitFile(r, p, thread.Path, content, gitlabSuggestionCommitMessage(*comment)); err != nil {
+					return glabStatus(http.StatusInternalServerError, "500 Internal Server Error: "+err.Error())
+				}
 				comment.AppliedSuggestions = append(comment.AppliedSuggestions, index)
-				e.commitFile(p, thread.Path, content)
 				s["applied"], s["appliable"] = true, false
 				return jsonResponse(s)
 			}
 		}
 	}
 	return glabNotFound("Suggestion")
+}
+
+// keepGitLabSuggestionsFrom fixes each GitLab thread note's suggestions'
+// from_content as it reads now, before a commit changes the files: GitLab
+// keeps the replaced text from when a suggestion was written, and until
+// a commit the files are what they were then. A note edited later reads
+// its suggestions again from the files of that time.
+func keepGitLabSuggestionsFrom(p *Pull) {
+	for t := range p.Threads {
+		thread := &p.Threads[t]
+		for c := range thread.Comments {
+			comment := &thread.Comments[c]
+			if comment.suggestionsFrom != nil && comment.suggestionsBody == comment.Body {
+				continue
+			}
+			from := []string{}
+			for _, s := range gitlabNoteSuggestions(p, thread, *comment) {
+				from = append(from, s["from_content"].(string))
+			}
+			comment.suggestionsFrom, comment.suggestionsBody = from, comment.Body
+		}
+	}
+}
+
+// gitlabSuggestionCommitMessage is GitLab's default message for applying
+// one suggestion, with a trailer crediting the note's author (GitLab
+// credits the author's commit email, which the fixture has none of: the
+// fake writes login@example.com).
+func gitlabSuggestionCommitMessage(note Comment) string {
+	return fmt.Sprintf("Apply 1 suggestion(s) to 1 file(s)\n\nCo-authored-by: %s <%s@example.com>", cmpOr(note.AuthorName, note.Author), note.Author)
 }

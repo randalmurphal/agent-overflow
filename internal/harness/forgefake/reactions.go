@@ -153,10 +153,11 @@ func ghReaction(add bool) func(e *Engine, c *call, v graphQLVars) response {
 		if !ok {
 			return graphQLMutationError(field, "NOT_FOUND", fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
 		}
-		comment := &p.Comments[at]
+		comments := p.Comments
 		if thread >= 0 {
-			comment = &p.Threads[thread].Comments[at]
+			comments = p.Threads[thread].Comments
 		}
+		comment := &comments[at]
 		mine := slices.IndexFunc(comment.Reactions, func(r Reaction) bool { return r.Name == name && strings.EqualFold(r.User, e.viewer) })
 		switch {
 		case add && mine < 0:

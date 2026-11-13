@@ -1,9 +1,11 @@
 package forgefake
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -38,12 +40,12 @@ type graphQLOp struct {
 const githubGraphQLPageSize = 100
 
 var githubGraphQL = []graphQLOp{
-	{kind: "query", name: "PRTick", required: []string{"owner", "name", "number", "wantDetail", "wantThreads", "wantEvents", "wantChecks"}, run: ghPRTick},
-	{kind: "query", name: "PRThreadsPage", required: []string{"owner", "name", "number", "after"}, run: ghPRThreadsPage},
-	{kind: "query", name: "PRCommentsPage", required: []string{"owner", "name", "number", "after"}, run: ghPRCommentsPage},
+	{kind: "query", name: "PRTick", required: []string{"owner", "name", "number", "wantDetail", "wantThreads", "wantEvents", "wantChecks", "wantReactions"}, run: withReactionGroups(ghPRTick)},
+	{kind: "query", name: "PRThreadsPage", required: []string{"owner", "name", "number", "after", "wantReactions"}, run: withReactionGroups(ghPRThreadsPage)},
+	{kind: "query", name: "PRCommentsPage", required: []string{"owner", "name", "number", "after", "wantReactions"}, run: withReactionGroups(ghPRCommentsPage)},
 	{kind: "query", name: "PRThreadStatesPage", required: []string{"owner", "name", "number", "after"}, run: ghPRThreadStatesPage},
 	{kind: "query", name: "PRTimelinePage", required: []string{"owner", "name", "number", "before"}, run: ghPRTimelinePage},
-	{kind: "query", name: "ThreadCommentsPage", required: []string{"threadID", "after"}, run: ghThreadCommentsPage},
+	{kind: "query", name: "ThreadCommentsPage", required: []string{"threadID", "after", "wantReactions"}, run: withReactionGroups(ghThreadCommentsPage)},
 	{kind: "query", name: "RollupContextsPage", required: []string{"commitID", "number", "after"}, run: ghRollupContextsPage},
 	{kind: "query", name: "CommentOwner", required: []string{"id"}, run: ghCommentOwner},
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
@@ -79,6 +81,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "mutation", name: "DeleteReviewComment", required: []string{"id"}, run: ghDeleteReviewComment},
 	{kind: "mutation", name: "DeleteIssueComment", required: []string{"id"}, run: ghDeleteIssueComment},
 	{kind: "query", name: "SuggestionTarget", required: []string{"threadID", "commentID"}, run: ghSuggestionTarget},
+	{kind: "query", name: "SuggestionFile", required: []string{"owner", "name", "oid", "path"}, run: ghSuggestionFile},
 	{kind: "mutation", name: "SuggestionCommit", required: []string{"repository", "branch", "expectedHeadOid", "headline", "path", "contents"}, optional: []string{"body"}, run: ghSuggestionCommit},
 	{kind: "query", name: "ReactionTarget", required: []string{"id"}, run: ghReactionTarget},
 	{kind: "mutation", name: "AddReaction", required: []string{"subjectID", "content"}, run: ghReaction(true)},
@@ -1375,5 +1378,43 @@ func (r *Repo) branchExists(branch string) bool {
 func (r *Repo) deleteBranch(branch string) {
 	if !slices.Contains(r.DeletedBranches, branch) {
 		r.DeletedBranches = append(r.DeletedBranches, branch)
+	}
+}
+
+// withReactionGroups runs a read whose comments carry reactionGroups
+// under @include(if: $wantReactions): with it false, every comment's
+// reactionGroups key is dropped from the answer.
+func withReactionGroups(run func(e *Engine, c *call, v graphQLVars) response) func(e *Engine, c *call, v graphQLVars) response {
+	return func(e *Engine, c *call, v graphQLVars) response {
+		want, err := v.boolean("wantReactions")
+		if err != nil {
+			return unhandled("%v", err)
+		}
+		out := run(e, c, v)
+		if want || out.status != 0 && out.status != http.StatusOK {
+			return out
+		}
+		var body any
+		decoder := json.NewDecoder(bytes.NewReader(out.stdout))
+		decoder.UseNumber()
+		if err := decoder.Decode(&body); err != nil {
+			return out
+		}
+		var drop func(any)
+		drop = func(node any) {
+			switch n := node.(type) {
+			case map[string]any:
+				delete(n, "reactionGroups")
+				for _, child := range n {
+					drop(child)
+				}
+			case []any:
+				for _, child := range n {
+					drop(child)
+				}
+			}
+		}
+		drop(body)
+		return jsonResponse(body)
 	}
 }

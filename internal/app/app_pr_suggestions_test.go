@@ -32,7 +32,7 @@ func TestPRSuggestionAndReactionWritesHoldThePRLock(t *testing.T) {
 	target := gitops.CommentTarget{ThreadID: "d1", CommentID: "31"}
 	for name, write := range map[string]func(context.Context) error{
 		"apply": func(ctx context.Context) error {
-			_, err := app.ApplyPRSuggestion(ctx, testGitLabPR, gitops.SuggestionApply{Target: target, SuggestionID: "9", HeadSHA: "abcdef1"})
+			_, err := app.ApplyPRSuggestion(ctx, testGitLabPR, gitops.SuggestionApply{Target: target, SuggestionID: "9", HeadSHA: "abcdef1", Digest: strings.Repeat("a", 64)})
 			return err
 		},
 		"react": func(ctx context.Context) error {
@@ -124,14 +124,19 @@ func TestParseCommentSuggestions(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
 	got, err := app.ParseCommentSuggestions("Try\n```suggestion\nx\n```\n")
-	if err != nil || !reflect.DeepEqual(got, []mdsuggest.Block{{Lines: []string{"x"}}}) {
+	if err != nil || !reflect.DeepEqual(got, []mdsuggest.Block{{Lines: []string{"x"}, StartLine: 1, EndLine: 3}}) {
 		t.Fatalf("one block = %#v, %v", got, err)
 	}
 	// None is an empty list, not null, on the wire.
 	if got, err := app.ParseCommentSuggestions("plain"); err != nil || got == nil || len(got) != 0 {
 		t.Fatalf("no block = %#v, %v", got, err)
 	}
-	if _, err := app.ParseCommentSuggestions(strings.Repeat("a", commentBodyMaxBytes+1)); err == nil {
+	// The bound is characters: GitLab's limit in multi-byte text passes,
+	// one past it does not.
+	if _, err := app.ParseCommentSuggestions(strings.Repeat("é", commentBodyMaxChars)); err != nil {
+		t.Fatalf("a body at the limit: %v", err)
+	}
+	if _, err := app.ParseCommentSuggestions(strings.Repeat("a", commentBodyMaxChars+1)); err == nil {
 		t.Fatal("an oversized body was parsed")
 	}
 }

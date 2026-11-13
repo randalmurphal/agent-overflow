@@ -13,6 +13,7 @@ import (
 // state and replaces exactly the anchored lines.
 func TestApplySuggestionToFile(t *testing.T) {
 	t.Parallel()
+	bom := "\xef\xbb\xbf"
 	for _, tc := range []struct {
 		name       string
 		file       string
@@ -21,22 +22,49 @@ func TestApplySuggestionToFile(t *testing.T) {
 		want       string
 	}{
 		{"single line in the middle", "a\nb\nc\n", 2, 2, []string{"B"}, "a\nB\nc\n"},
+		{"first line", "a\nb\nc\n", 1, 1, []string{"X"}, "X\nb\nc\n"},
 		{"range at the start", "a\nb\nc\n", 1, 2, []string{"X"}, "X\nc\n"},
 		{"range at the end", "a\nb\nc\n", 2, 3, []string{"Y", "Z", "W"}, "a\nY\nZ\nW\n"},
 		{"range in the middle", "a\nb\nc\nd\n", 2, 3, []string{"M"}, "a\nM\nd\n"},
-		{"no trailing newline, last line", "a\nb", 2, 2, []string{"c"}, "a\nc"},
-		{"no trailing newline, first line", "a\nb", 1, 1, []string{"z"}, "z\nb"},
+		{"whole file", "a\nb\n", 1, 2, []string{"z"}, "z\n"},
+		{"one-line file", "a\n", 1, 1, []string{"b", "c"}, "b\nc\n"},
+		{"no trailing newline, last line replaced", "a\nb", 2, 2, []string{"c", "d"}, "a\nc\nd"},
+		{"no trailing newline, last line deleted", "a\nb", 2, 2, []string{}, "a\n"},
+		{"no trailing newline, last line untouched", "a\nb", 1, 1, []string{"z"}, "z\nb"},
+		{"no trailing newline, one line, no ending anywhere", "a", 1, 1, []string{"b", "c"}, "b\nc"},
+		{"no trailing newline, CRLF before it", "a\r\nb", 2, 2, []string{"c", "d"}, "a\r\nc\r\nd"},
 		{"CRLF file", "a\r\nb\r\nc\r\n", 2, 2, []string{"B", "B2"}, "a\r\nB\r\nB2\r\nc\r\n"},
-		{"CRLF without a trailing newline", "a\r\nb", 2, 2, []string{"c"}, "a\r\nc"},
+		{"a CRLF line in an LF file", "a\nb\r\nc\n", 2, 2, []string{"x", "y"}, "a\nx\r\ny\r\nc\n"},
+		{"an LF line in a CRLF file", "a\r\nb\nc\r\n", 2, 2, []string{"x", "y"}, "a\r\nx\ny\nc\r\n"},
+		{"mixed endings outside the range kept", "a\r\nb\nc\r\nd", 3, 3, []string{"C"}, "a\r\nb\nC\r\nd"},
+		{"a CR-only line kept", "\r\na\n\r\n", 2, 2, []string{"b"}, "\r\nb\n\r\n"},
+		{"a lone CR inside a line is content", "a\rb\nc\n", 2, 2, []string{"C"}, "a\rb\nC\n"},
 		{"deletion", "a\nb\nc\n", 2, 2, []string{}, "a\nc\n"},
 		{"deleting every line", "a\n", 1, 1, []string{}, ""},
+		{"empty replacement of a range", "a\nb\nc\nd\n", 2, 3, []string{}, "a\nd\n"},
 		{"a blank replacement line", "a\nb\n", 1, 1, []string{""}, "\nb\n"},
+		{"BOM kept when line 1 is replaced", bom + "a\nb\n", 1, 1, []string{"z"}, bom + "z\nb\n"},
+		{"BOM untouched below line 1", bom + "a\nb\n", 2, 2, []string{"z"}, bom + "a\nz\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := applySuggestionToFile([]byte(tc.file), tc.start, tc.end, tc.lines)
 			if err != nil || string(got) != tc.want {
 				t.Fatalf("= %q, %v; want %q", got, err, tc.want)
+			}
+			// The bytes before line start and after line end's ending are
+			// the input's, counted independently of the code under test.
+			lines := strings.SplitAfter(tc.file, "\n")
+			if lines[len(lines)-1] == "" {
+				lines = lines[:len(lines)-1]
+			}
+			prefix := strings.Join(lines[:tc.start-1], "")
+			if tc.start == 1 && strings.HasPrefix(tc.file, bom) {
+				prefix = bom
+			}
+			suffix := strings.Join(lines[tc.end:], "")
+			if !strings.HasPrefix(string(got), prefix) || !strings.HasSuffix(string(got), suffix) {
+				t.Fatalf("%q does not keep prefix %q and suffix %q", got, prefix, suffix)
 			}
 		})
 	}
@@ -92,8 +120,12 @@ func TestGitHubMarkSuggestions(t *testing.T) {
 		githubMarkSuggestions(threads, tc.pull)
 		got := threads[0].Comments[0].Suggestions
 		want := []CommentSuggestion{
-			{Index: 0, StartLine: tc.lines[0], EndLine: tc.lines[1], To: []string{"new"}, Appliable: tc.appliable},
-			{Index: 1, StartLine: tc.lines[0], EndLine: tc.lines[1], To: []string{}, Appliable: tc.appliable},
+			{Index: 0, StartLine: tc.lines[0], EndLine: tc.lines[1], To: []string{"new"}, Appliable: tc.appliable,
+				BodyStartLine: 0, BodyEndLine: 2, BodyPlaced: true,
+				Digest: SuggestionDigest("github", tc.lines[0], tc.lines[1], []string{"new"})},
+			{Index: 1, StartLine: tc.lines[0], EndLine: tc.lines[1], To: []string{}, Appliable: tc.appliable,
+				BodyStartLine: 6, BodyEndLine: 7, BodyPlaced: true,
+				Digest: SuggestionDigest("github", tc.lines[0], tc.lines[1], nil)},
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s: suggestions = %+v, want %+v", tc.name, got, want)
@@ -136,13 +168,30 @@ func TestGitLabSuggestionsAreTheForgesOwn(t *testing.T) {
 	got := gitlabSuggestions([]gitlabSuggestionRaw{
 		{ID: 11, FromLine: 4, ToLine: 5, Appliable: true, FromContent: "a\nb\n", ToContent: "c\n"},
 		{ID: 12, FromLine: 9, ToLine: 9, Applied: true, FromContent: "x\r\n", ToContent: ""},
-	})
+	}, "")
 	want := []CommentSuggestion{
-		{Index: 0, ID: "11", StartLine: 4, EndLine: 5, From: []string{"a", "b"}, FromKnown: true, To: []string{"c"}, Appliable: true},
-		{Index: 1, ID: "12", StartLine: 9, EndLine: 9, From: []string{"x"}, FromKnown: true, To: []string{}, Applied: true},
+		{Index: 0, ID: "11", StartLine: 4, EndLine: 5, From: []string{"a", "b"}, FromKnown: true, To: []string{"c"}, Appliable: true,
+			Digest: SuggestionDigest("gitlab", 4, 5, []string{"c"})},
+		{Index: 1, ID: "12", StartLine: 9, EndLine: 9, From: []string{"x"}, FromKnown: true, To: []string{}, Applied: true,
+			Digest: SuggestionDigest("gitlab", 9, 9, nil)},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("suggestions = %+v", got)
+	}
+	// Placed on the body's blocks when their counts match; else not, and
+	// placing changes no digest.
+	raw := []gitlabSuggestionRaw{{ID: 11, FromLine: 4, ToLine: 5, ToContent: "c\n"}, {ID: 12, FromLine: 9, ToLine: 9}}
+	placed := gitlabSuggestions(raw, "Two:\r\n```suggestion:-1+0\r\nc\r\n```\r\nand\r\n```suggestion\r\n```")
+	if p := placed; !p[0].BodyPlaced || p[0].BodyStartLine != 1 || p[0].BodyEndLine != 3 || !p[1].BodyPlaced || p[1].BodyStartLine != 5 || p[1].BodyEndLine != 6 ||
+		p[0].Digest != SuggestionDigest("gitlab", 4, 5, []string{"c"}) {
+		t.Fatalf("placed = %+v", placed)
+	}
+	for _, body := range []string{"```suggestion\nc\n```", "no fences", "```suggestion\na\n```\n```suggestion\nb\n```\n```suggestion\nc\n```"} {
+		for _, s := range gitlabSuggestions(raw, body) {
+			if s.BodyPlaced || s.BodyStartLine != 0 || s.BodyEndLine != 0 {
+				t.Fatalf("body %q placed %+v", body, s)
+			}
+		}
 	}
 	threads := []ReviewThread{{Comments: []ReviewComment{{Suggestions: got}}}}
 	gateGitLabSuggestions(threads, gitlabDeveloperAccess)
@@ -159,18 +208,22 @@ func TestSuggestionRequestsAndReactionNamesAreChecked(t *testing.T) {
 	t.Parallel()
 	head := strings.Repeat("a", 40)
 	target := CommentTarget{ThreadID: "t", CommentID: "c"}
+	digest := SuggestionDigest("github", 1, 1, []string{"x"})
 	for _, tc := range []struct {
 		forge string
 		req   SuggestionApply
 		ok    bool
 	}{
-		{"github", SuggestionApply{Target: target, HeadSHA: head}, true},
-		{"github", SuggestionApply{Target: target, HeadSHA: "abc"}, false},
-		{"github", SuggestionApply{Target: CommentTarget{ThreadID: "t"}, HeadSHA: head}, false},
-		{"github", SuggestionApply{Target: target, HeadSHA: head, Index: -1}, false},
-		{"gitlab", SuggestionApply{Target: target, HeadSHA: head, SuggestionID: "12"}, true},
-		{"gitlab", SuggestionApply{Target: target, HeadSHA: head}, false},
-		{"gitlab", SuggestionApply{Target: target, HeadSHA: head, SuggestionID: "x"}, false},
+		{"github", SuggestionApply{Target: target, HeadSHA: head, Digest: digest}, true},
+		{"github", SuggestionApply{Target: target, HeadSHA: "abc", Digest: digest}, false},
+		{"github", SuggestionApply{Target: CommentTarget{ThreadID: "t"}, HeadSHA: head, Digest: digest}, false},
+		{"github", SuggestionApply{Target: target, HeadSHA: head, Index: -1, Digest: digest}, false},
+		{"github", SuggestionApply{Target: target, HeadSHA: head}, false},
+		{"github", SuggestionApply{Target: target, HeadSHA: head, Digest: strings.ToUpper(digest)}, false},
+		{"github", SuggestionApply{Target: target, HeadSHA: head, Digest: digest[:63]}, false},
+		{"gitlab", SuggestionApply{Target: target, HeadSHA: head, SuggestionID: "12", Digest: digest}, true},
+		{"gitlab", SuggestionApply{Target: target, HeadSHA: head, Digest: digest}, false},
+		{"gitlab", SuggestionApply{Target: target, HeadSHA: head, SuggestionID: "x", Digest: digest}, false},
 	} {
 		if err := tc.req.Validate(tc.forge); (err == nil) != tc.ok {
 			t.Fatalf("%s %+v: %v", tc.forge, tc.req, err)
@@ -224,6 +277,31 @@ func TestSuggestionOutcomesAreExplained(t *testing.T) {
 	for _, e := range []*ForgeActionError{partial, lost} {
 		if strings.Contains(strings.ToLower(e.Message), "try again") {
 			t.Fatalf("a partial apply advises a retry: %q", e.Message)
+		}
+	}
+}
+
+// The digest encodes every field length-prefixed: lines that join to the
+// same text, a line moved across the boundary, or another forge or
+// anchor, differ.
+func TestSuggestionDigest(t *testing.T) {
+	t.Parallel()
+	base := SuggestionDigest("github", 2, 3, []string{"ab", "c"})
+	if len(base) != 64 || strings.ToLower(base) != base || base != SuggestionDigest("github", 2, 3, []string{"ab", "c"}) {
+		t.Fatalf("digest = %q", base)
+	}
+	for name, other := range map[string]string{
+		"lines split elsewhere": SuggestionDigest("github", 2, 3, []string{"a", "bc"}),
+		"lines joined":          SuggestionDigest("github", 2, 3, []string{"abc"}),
+		"an empty line added":   SuggestionDigest("github", 2, 3, []string{"ab", "c", ""}),
+		"no lines":              SuggestionDigest("github", 2, 3, nil),
+		"another start":         SuggestionDigest("github", 1, 3, []string{"ab", "c"}),
+		"another end":           SuggestionDigest("github", 2, 4, []string{"ab", "c"}),
+		"another forge":         SuggestionDigest("gitlab", 2, 3, []string{"ab", "c"}),
+		"digits across fields":  SuggestionDigest("github", 23, 3, []string{"ab", "c"}),
+	} {
+		if other == base {
+			t.Errorf("%s: same digest", name)
 		}
 	}
 }

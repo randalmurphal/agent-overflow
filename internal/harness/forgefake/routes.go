@@ -72,7 +72,7 @@ var githubAPI = []apiRoute{
 	{name: "gh api request reviewers", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/requested_reviewers$`), flags: []string{"hostname"}, run: ghRequestedReviewers},
 	{name: "gh api remove reviewers", method: "DELETE", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/requested_reviewers$`), flags: []string{"hostname"}, run: ghRequestedReviewers},
 	{name: "gh api add assignees", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/issues/(\d+)/assignees$`), flags: []string{"hostname"}, run: ghAssignees},
-	{name: "gh api contents", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/contents/([^?]+)\?(.*)$`), flags: []string{"hostname", "accept"}, run: ghContents},
+	{name: "gh api blob", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/git/blobs/([0-9a-fA-F]{40})$`), flags: []string{"hostname", "accept"}, run: ghBlob},
 	{name: "gh api remove assignees", method: "DELETE", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/issues/(\d+)/assignees$`), flags: []string{"hostname"}, run: ghAssignees},
 }
 
