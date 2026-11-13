@@ -199,14 +199,14 @@ func (a *App) SavePRCIJobLog(ctx context.Context, repo gitops.RepoReference, job
 	key := ciLogKey(repo, jobID)
 	store.Pin(key)
 	defer store.Unpin(key)
-	name := ciLogFileName(repo, jobID, jobName)
+	name := ciLogFileName(jobID, jobName)
 	for attempt := 0; ; attempt++ {
 		if !store.Has(key) {
 			if err := a.downloadCILog(forgeapi.WithInteractive(ctx), store, repo, jobID); err != nil {
 				return "", err
 			}
 		}
-		path, err := a.writeCILogFile(name, func(w io.Writer) error {
+		path, err := a.writeCILogFile(repo, name, func(w io.Writer) error {
 			_, err := store.CopyLog(key, w)
 			return err
 		})
@@ -247,10 +247,10 @@ func (a *App) SavePRCIJobLogSection(repo gitops.RepoReference, jobID, jobName, s
 	}
 	key := ciLogKey(repo, jobID)
 	var section cilog.Section
-	stem := strings.TrimSuffix(ciLogFileName(repo, jobID, jobName), ".log")
+	stem := strings.TrimSuffix(ciLogFileName(jobID, jobName), ".log")
 	// The name comes from the row the copy finds, so the copy goes to a
 	// temp file first and is renamed once the row is known.
-	path, err := a.writeCILogFileNamed(func(w io.Writer) (string, error) {
+	path, err := a.writeCILogFileNamed(repo, func(w io.Writer) (string, error) {
 		plain := cilog.NewPlainWriter(w)
 		var err error
 		section, err = store.CopySection(key, sectionKey, plain)
@@ -272,19 +272,49 @@ func (a *App) SavePRCIJobLogSection(repo gitops.RepoReference, jobID, jobName, s
 	return path, err
 }
 
-// writeCILogFile writes a saved log under the ci-logs directory through a
-// temp file renamed into place, so a failed write never leaves half a log
-// under the name.
-func (a *App) writeCILogFile(name string, write func(io.Writer) error) (string, error) {
-	return a.writeCILogFileNamed(func(w io.Writer) (string, error) {
+// writeCILogFile writes a saved log of repo under its directory in
+// ci-logs (ciRepoDir) through a temp file renamed into place, so a failed
+// write never leaves half a log under the name.
+func (a *App) writeCILogFile(repo gitops.RepoReference, name string, write func(io.Writer) error) (string, error) {
+	return a.writeCILogFileNamed(repo, func(w io.Writer) (string, error) {
 		return name, write(w)
 	})
 }
 
 // writeCILogFileNamed is writeCILogFile for a writer that learns the
 // file's name as it writes.
-func (a *App) writeCILogFileNamed(write func(io.Writer) (string, error)) (string, error) {
-	return a.writeCISavedFile("ci-logs", "CI log", write)
+func (a *App) writeCILogFileNamed(repo gitops.RepoReference, write func(io.Writer) (string, error)) (string, error) {
+	return a.writeCISavedFile(filepath.Join("ci-logs", ciRepoDir(repo)), "CI log", write)
+}
+
+// ciRepoDir is the directory, relative to a saved-file root, of one
+// repository's saved CI files: <forge>/<host>/<namespace...>/<repo>, each
+// segment escaped by escapeCIPathSegment, so the path is the repository's
+// whole identity (RepoReference.Key) and two repositories never share
+// one, whatever their names.
+func ciRepoDir(repo gitops.RepoReference) string {
+	parts := []string{escapeCIPathSegment(repo.Forge), escapeCIPathSegment(repo.Host)}
+	for _, segment := range strings.Split(repo.Namespace, "/") {
+		parts = append(parts, escapeCIPathSegment(segment))
+	}
+	return filepath.Join(append(parts, escapeCIPathSegment(repo.Repo))...)
+}
+
+// escapeCIPathSegment maps a name to a path segment one to one: letters,
+// digits, '-' and '_' stay, '.' stays unless it leads, and every other
+// byte (a separator, ':' of a port, '%' itself) is %XX.
+func escapeCIPathSegment(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_', c == '.' && i > 0:
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
 }
 
 // writeCISavedFile writes a file the user saves from the CI view (a log,
@@ -322,20 +352,15 @@ func (a *App) writeCISavedFile(subdir, what string, write func(io.Writer) (strin
 	return path, nil
 }
 
-// ciLogFileName builds a filesystem-safe, per-(repository, job) stable
-// name: <forge>-<namespace>-<repo>-<jobID>-<job name>.log. A job id is
+// ciLogFileName builds a filesystem-safe, per-job stable name within the
+// repository's directory (ciRepoDir): <jobID>-<job name>.log. A job id is
 // unique in its repository, so no PR or pipeline number is needed.
-func ciLogFileName(repo gitops.RepoReference, jobID, jobName string) string {
-	parts := []string{
-		repo.Forge,
-		sanitizeCIFileSegment(repo.Namespace),
-		sanitizeCIFileSegment(repo.Repo),
-		jobID,
-	}
+func ciLogFileName(jobID, jobName string) string {
+	name := jobID
 	if segment := sanitizeCIFileSegment(jobName); segment != "" {
-		parts = append(parts, segment)
+		name += "-" + segment
 	}
-	return strings.Join(parts, "-") + ".log"
+	return name + ".log"
 }
 
 const ciFileSegmentMaxLen = 60

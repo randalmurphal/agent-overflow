@@ -38,8 +38,8 @@ type CIArtifactsSaved struct {
 
 // SaveCIArtifacts downloads the artifacts req names (a GitLab job's
 // archive by JobID, a GitHub pipeline's by the RunIDs its jobs carry)
-// under the app-managed ci-artifacts directory and returns where they
-// are. subject is the job's name, or the pipeline's for a run download,
+// under the app-managed ci-artifacts directory, in the repository's own
+// directory (ciRepoDir), and returns where they are. subject is the job's name, or the pipeline's for a run download,
 // for the file names and sentences. A path is stable per (repository,
 // job or artifact), so a re-save refreshes the same file. A failure after
 // some files were saved names them in its sentence.
@@ -67,23 +67,51 @@ func (a *App) SaveCIArtifacts(ctx context.Context, repo gitops.RepoReference, re
 	core := a.gitCore()
 	artifacts, err := core.ListCIArtifacts(ctx, repo, req)
 	if err != nil {
+		a.refreshStaleArtifactsFlag(repo, req, err)
 		return CIArtifactsSaved{}, gitops.ExplainCIError(repo, explained, gitops.ActionArtifacts, err)
 	}
 	if len(artifacts) > maxCIArtifactsPerSave {
 		return CIArtifactsSaved{}, &gitops.ForgeActionError{Kind: gitops.ForgeErrorRefused, Message: fmt.Sprintf("%s has %d artifacts, more than the %d one download saves. Download them from the forge.", explained, len(artifacts), maxCIArtifactsPerSave)}
 	}
-	saved := CIArtifactsSaved{Dir: filepath.Join(a.configDir, "ci-artifacts"), Paths: []string{}}
+	subdir := filepath.Join("ci-artifacts", ciRepoDir(repo))
+	saved := CIArtifactsSaved{Dir: filepath.Join(a.configDir, subdir), Paths: []string{}}
 	for _, artifact := range artifacts {
-		name := ciArtifactFileName(repo, artifact, subject)
-		path, err := a.writeCISavedFile("ci-artifacts", "CI artifact", func(w io.Writer) (string, error) {
+		name := ciArtifactFileName(artifact, subject)
+		path, err := a.writeCISavedFile(subdir, "CI artifact", func(w io.Writer) (string, error) {
 			return name, core.StreamCIArtifact(ctx, repo, artifact, w, ciArtifactMaxBytes)
 		})
 		if err != nil {
+			a.refreshStaleArtifactsFlag(repo, req, err)
 			return saved, a.explainArtifactFailure(repo, explained, artifact, saved, err)
 		}
 		saved.Paths = append(saved.Paths, path)
 	}
 	return saved, nil
+}
+
+// refreshStaleArtifactsFlag has every pump showing the download's job or
+// runs poll when the download found nothing to save: the flag that
+// offered it is stale (git.Core dropped its remembered answer), and the
+// poll clears it with no timer.
+func (a *App) refreshStaleArtifactsFlag(repo gitops.RepoReference, req gitops.CIArtifactsRequest, err error) {
+	if !errors.Is(err, gitops.ErrNoCIArtifacts) && !errors.Is(err, gitops.ErrCIArtifactExpired) {
+		return
+	}
+	runs := make(map[string]bool, len(req.RunIDs))
+	for _, id := range req.RunIDs {
+		runs[id] = true
+	}
+	a.pollCIPumpsShowing(repo, nil, false, func(phase *ciPhase) bool {
+		if req.JobID != "" {
+			return gitops.FindCIJob(phase.ci, req.JobID) != nil
+		}
+		for id := range ciPipelineIDs(phase.ci) {
+			if runs[id] {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // explainArtifactFailure words a failed download: an artifact past the
@@ -104,12 +132,12 @@ func (a *App) explainArtifactFailure(repo gitops.RepoReference, subject string, 
 	return explained
 }
 
-// ciArtifactFileName builds a filesystem-safe name stable per
-// (repository, job or artifact): <forge>-<namespace>-<repo>-<job id>-<job
-// name>.zip for a GitLab archive, <forge>-<namespace>-<repo>-<run
-// id>-<artifact id>-<artifact name>.zip for a GitHub artifact.
-func ciArtifactFileName(repo gitops.RepoReference, artifact gitops.CIArtifact, subject string) string {
-	parts := []string{repo.Forge, sanitizeCIFileSegment(repo.Namespace), sanitizeCIFileSegment(repo.Repo)}
+// ciArtifactFileName builds a filesystem-safe name stable per job or
+// artifact within the repository's directory (ciRepoDir): <job id>-<job
+// name>.zip for a GitLab archive, <run id>-<artifact id>-<artifact
+// name>.zip for a GitHub artifact.
+func ciArtifactFileName(artifact gitops.CIArtifact, subject string) string {
+	var parts []string
 	label := subject
 	if artifact.JobID != "" {
 		parts = append(parts, artifact.JobID)

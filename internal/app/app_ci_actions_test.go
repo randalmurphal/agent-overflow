@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,6 +51,13 @@ var (
 // with repos, with the pumps' own cadences out of the way.
 func newCIActionsApp(t *testing.T, repos []forgefake.Repo) (*App, *forgefake.Engine) {
 	t.Helper()
+	return newCIActionsAppWith(t, repos, nil)
+}
+
+// newCIActionsAppWith is newCIActionsApp with the fake forge behind wrap,
+// for a test that holds or loses an answer.
+func newCIActionsAppWith(t *testing.T, repos []forgefake.Repo, wrap func(http.Handler) http.Handler) (*App, *forgefake.Engine) {
+	t.Helper()
 	app := NewApp()
 	// Registered first, so it runs after every subscription's release.
 	t.Cleanup(app.prUpdates.wg.Wait)
@@ -58,8 +68,162 @@ func newCIActionsApp(t *testing.T, repos []forgefake.Repo) (*App, *forgefake.Eng
 	if _, err := engine.Seed(forgefake.Fixture{Repos: repos}); err != nil {
 		t.Fatal(err)
 	}
-	useForgefake(t, app, engine)
+	var handler http.Handler = engine
+	if wrap != nil {
+		handler = wrap(engine)
+	}
+	useForgefake(t, app, handler)
 	return app, engine
+}
+
+// waitPRCI waits until a PR subscription's pump has read its pipeline.
+func waitPRCI(t *testing.T, app *App, subscriptionID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		app.prUpdates.mu.Lock()
+		known := app.prUpdates.handles[subscriptionID].pump.ciKnown
+		app.prUpdates.mu.Unlock()
+		if known {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the PR pump never read its pipeline")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// githubPRRunRepos is a GitHub pull whose head checks are run 500 (a
+// failed job), which the Pipelines tab can also open.
+func githubPRRunRepos() []forgefake.Repo {
+	return []forgefake.Repo{{Forge: "github", Project: "acme/runs", Pulls: []forgefake.Pull{{
+		Number: 9, Title: "Runs", HeadRef: "runs",
+		CI: &forgefake.Pipeline{ID: 500, Name: "CI", Jobs: []forgefake.Job{{ID: 5001, Name: "unit", Status: "failed"}, {ID: 5002, Name: "lint", Status: "failed"}}},
+	}}}}
+}
+
+var githubRunsRepo = gitops.RepoReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "runs"}
+
+// An action reserves the runs its writes reach, whichever surface asked:
+// while the review pane's job re-run of run 500 is at the forge, the
+// Pipelines tab's retry of run 500's failed jobs is refused before any
+// request, and is accepted once the first settled.
+func TestCIActionsReserveTheRunsTheyReach(t *testing.T) {
+	t.Parallel()
+	reached, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	app, engine := newCIActionsAppWith(t, githubPRRunRepos(), func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/actions/jobs/5001/rerun") {
+				once.Do(func() { close(reached) })
+				<-release
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "runs", Number: 9}
+	sub, err := app.SubscribePRUpdates(context.Background(), pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.UnsubscribePRUpdates(context.Background(), sub.ID) })
+	waitPRCI(t, app, sub.ID)
+	tab := subscribeCIPipeline(t, app, githubRunsRepo, "500")
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := app.RunPRCIAction(context.Background(), sub.ID, CIActionRequest{Kind: gitops.CIActionRetryJob, JobID: "5001"})
+		first <- err
+	}()
+	<-reached
+	_, err = app.RunPipelineAction(context.Background(), tab.ID, CIActionRequest{Kind: gitops.CIActionRetryFailed})
+	var sentence *gitops.ForgeActionError
+	if !errors.As(err, &sentence) || sentence.Message != "Another action on this pipeline is still running. Wait for it to finish." {
+		close(release)
+		t.Fatalf("an overlapping action from the other surface = %v", err)
+	}
+	if n := countRoute(engine, "gh api run rerun failed"); n != 0 {
+		close(release)
+		t.Fatalf("the overlapping action reached the forge %d times", n)
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("the first action: %v", err)
+	}
+	app.prUpdates.mu.Lock()
+	pending := len(app.prUpdates.ciActions)
+	app.prUpdates.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("a settled action still reserves %d identities", pending)
+	}
+}
+
+// A write whose answer was lost may have been applied: the action is
+// answered with the sentence saying so, after the pump polled, so the
+// pane shows what the forge did, and the phase follows at the live
+// cadence.
+func TestCIActionUnconfirmedWriteIsFollowed(t *testing.T) {
+	t.Parallel()
+	app, _ := newCIActionsAppWith(t, ciActionsRepos(), func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/jobs/4101/retry") {
+				// The forge applies the write; its answer is lost.
+				next.ServeHTTP(httptest.NewRecorder(), r)
+				http.Error(w, `{"message":"502 Bad Gateway"}`, http.StatusBadGateway)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	sub := subscribeCIPipeline(t, app, ciActionsGitLab, "40")
+	old := gitops.FindCIJob(*sub.Pipeline, "4101")
+	result, err := app.RunPipelineAction(context.Background(), sub.ID, CIActionRequest{Kind: gitops.CIActionRetryJob, JobID: "4101"})
+	var sentence *gitops.ForgeActionError
+	if !errors.As(err, &sentence) || sentence.Message != "GitLab did not confirm the request to retry job unit of grp/acts, so it may have been applied. The CI view shows what GitLab did." {
+		t.Fatalf("a lost answer = %v", err)
+	}
+	pipeline, seq := pipelineState(app, sub.ID)
+	if result.Seq == 0 || result.Seq != seq || gitops.FindCIJobRetry(pipeline, "test", *old) == nil {
+		t.Fatalf("after the lost answer: seq %d (pump %d), pipeline %+v", result.Seq, seq, pipeline)
+	}
+	app.prUpdates.mu.Lock()
+	acted := app.prUpdates.pipelineHandles[sub.ID].pump.actedAt
+	app.prUpdates.mu.Unlock()
+	if acted.IsZero() {
+		t.Fatal("the phase does not follow the unconfirmed write")
+	}
+}
+
+// A download that finds the artifacts gone clears the flag that offered
+// it: the remembered capability is dropped and the pump polls, with no
+// timer.
+func TestCIArtifactsGoneClearsTheFlag(t *testing.T) {
+	t.Parallel()
+	app, engine := newCIActionsApp(t, ciActionsRepos())
+	sub := subscribeCIPipeline(t, app, ciActionsGitHub, "400")
+	if sub.Pipeline.Actions.Artifacts != gitops.CIActionAllowed {
+		t.Fatalf("artifacts flag = %q", sub.Pipeline.Actions.Artifacts)
+	}
+	repos := ciActionsRepos()
+	repos[0].Pipelines[0].Artifacts[0].Expired = true
+	if _, err := engine.Seed(forgefake.Fixture{Repos: repos[:1]}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SaveCIArtifacts(context.Background(), ciActionsGitHub, gitops.CIArtifactsRequest{RunIDs: []string{"400"}}, "CI"); err == nil {
+		t.Fatal("a download of expired artifacts succeeded")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		pipeline, _ := pipelineState(app, sub.ID)
+		if pipeline.Actions.Artifacts == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the artifacts flag outlived the download that found none: %+v", pipeline.Actions)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func subscribeCIPipeline(t *testing.T, app *App, repo gitops.RepoReference, id string) PipelineSubscriptionResult {
@@ -194,31 +358,8 @@ func TestCIActionsRefusedBeforeTheForge(t *testing.T) {
 		t.Errorf("unknown subscription = %v", err)
 	}
 
-	// One action at a time per pipeline: a second, here on another
-	// subscription of the same pipeline, is refused while the first runs.
-	other := subscribeCIPipeline(t, app, ciActionsGitHub, "400")
-	app.prUpdates.mu.Lock()
-	app.prUpdates.ciActions = map[string]bool{pipelineKey(ciActionsGitHub, "400"): true}
-	app.prUpdates.mu.Unlock()
-	_, err := app.RunPipelineAction(context.Background(), other.ID, CIActionRequest{Kind: gitops.CIActionRetryJob, JobID: "4001"})
-	var sentence *gitops.ForgeActionError
-	if !errors.As(err, &sentence) || sentence.Message != "Another action on this pipeline is still running. Wait for it to finish." {
-		t.Fatalf("a second action while one is pending = %v", err)
-	}
 	if after := len(engine.Invocations(0).Invocations); after != before {
 		t.Fatalf("refused actions reached the forge: %v", forgeRoutes(engine)[before:])
-	}
-	app.prUpdates.mu.Lock()
-	clear(app.prUpdates.ciActions)
-	app.prUpdates.mu.Unlock()
-	if _, err := app.RunPipelineAction(context.Background(), other.ID, CIActionRequest{Kind: gitops.CIActionRetryJob, JobID: "4001"}); err != nil {
-		t.Fatalf("the action once the first settled: %v", err)
-	}
-	app.prUpdates.mu.Lock()
-	pending := len(app.prUpdates.ciActions)
-	app.prUpdates.mu.Unlock()
-	if pending != 0 {
-		t.Fatalf("a settled action is still pending: %d", pending)
 	}
 }
 
@@ -296,11 +437,12 @@ func TestSaveCIArtifacts(t *testing.T) {
 		name    string
 		content string
 	}{
-		{ciActionsGitHub, gitops.CIArtifactsRequest{RunIDs: []string{"400"}}, "CI", "github-acme-acts-400-71-coverage.zip", "PK-gh-coverage"},
-		{ciActionsGitLab, gitops.CIArtifactsRequest{JobID: "8101"}, "unit", "gitlab-grp-acts-8101-unit.zip", "PK-gl-unit"},
+		{ciActionsGitHub, gitops.CIArtifactsRequest{RunIDs: []string{"400"}}, "CI", "400-71-coverage.zip", "PK-gh-coverage"},
+		{ciActionsGitLab, gitops.CIArtifactsRequest{JobID: "8101"}, "unit", "8101-unit.zip", "PK-gl-unit"},
 	} {
 		saved, err := app.SaveCIArtifacts(context.Background(), tc.repo, tc.req, tc.subject)
-		if err != nil || len(saved.Paths) != 1 || filepath.Base(saved.Paths[0]) != tc.name || saved.Dir != filepath.Join(app.configDir, "ci-artifacts") {
+		dir := filepath.Join(app.configDir, "ci-artifacts", tc.repo.Forge, tc.repo.Host, tc.repo.Namespace, tc.repo.Repo)
+		if err != nil || len(saved.Paths) != 1 || saved.Paths[0] != filepath.Join(dir, tc.name) || saved.Dir != dir {
 			t.Fatalf("%s SaveCIArtifacts = %+v, %v", tc.repo.Forge, saved, err)
 		}
 		if body, err := os.ReadFile(saved.Paths[0]); err != nil || string(body) != tc.content {
@@ -312,7 +454,7 @@ func TestSaveCIArtifacts(t *testing.T) {
 	if !errors.As(err, &sentence) || sentence.Message != "Job lint of grp/acts has no artifacts to download on GitLab." {
 		t.Fatalf("a job without artifacts = %v", err)
 	}
-	entries, _ := os.ReadDir(filepath.Join(app.configDir, "ci-artifacts"))
+	entries, _ := os.ReadDir(filepath.Join(app.configDir, "ci-artifacts", "gitlab", "gitlab.com", "grp", "acts"))
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".save-") {
 			t.Fatalf("a failed download left %s", entry.Name())

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"slices"
 	"time"
 
 	"agent-overflow/internal/forgeapi"
@@ -145,38 +146,63 @@ func (a *App) runCIAction(ctx context.Context, req CIActionRequest, lookup func(
 		a.prUpdates.mu.Unlock()
 		return CIActionResult{}, ciActionRefusal(gitops.ForgeErrorRefused, "You can no longer "+string(action)+" "+subject+". Refresh to see its current state.")
 	}
-	key := ciActionKey(repo, pipeline, phase)
-	if a.prUpdates.ciActions[key] {
+	keys := ciActionKeys(repo, pipeline, job, phase)
+	if slices.ContainsFunc(keys, func(key string) bool { return a.prUpdates.ciActions[key] }) {
 		a.prUpdates.mu.Unlock()
 		return CIActionResult{}, ciActionRefusal(gitops.ForgeErrorRefused, "Another action on this pipeline is still running. Wait for it to finish.")
 	}
 	if a.prUpdates.ciActions == nil {
 		a.prUpdates.ciActions = make(map[string]bool)
 	}
-	a.prUpdates.ciActions[key] = true
+	for _, key := range keys {
+		a.prUpdates.ciActions[key] = true
+	}
 	a.prUpdates.mu.Unlock()
 	defer func() {
 		a.prUpdates.mu.Lock()
-		delete(a.prUpdates.ciActions, key)
+		for _, key := range keys {
+			delete(a.prUpdates.ciActions, key)
+		}
 		a.prUpdates.mu.Unlock()
 	}()
 
 	err := a.gitCore().RunCIAction(forgeapi.WithInteractive(ctx), repo, req.Kind, req.JobID, pipeline)
-	if _, partial := errors.AsType[*gitops.CIPartialError](err); err != nil && !partial {
+	// A write that took effect, or may have, is followed on the forge; one
+	// the forge refused in full changed nothing.
+	if partial, ok := errors.AsType[*gitops.CIPartialError](err); err != nil && (!ok || !partial.Applied()) {
 		return CIActionResult{}, gitops.ExplainCIError(repo, subject, action, err)
 	}
 	seq := a.refreshCIAfterAction(ctx, target, repo, pipeline)
 	return CIActionResult{Seq: seq}, gitops.ExplainCIError(repo, subject, action, err)
 }
 
-// ciActionKey names the pipeline an action is pending on: the repository's
-// pipeline by id, which the review pane and the Pipelines tab share, or a
-// GitHub PR's head checks (which span runs and have no id) by the PR.
-func ciActionKey(repo gitops.RepoReference, pipeline gitops.CIPipeline, phase *ciPhase) string {
-	if pipeline.ID != "" {
-		return pipelineKey(repo, pipeline.ID)
+// ciActionKeys are the forge identities an action reserves while it runs:
+// the workflow runs (GitHub) or the pipeline (GitLab) its writes reach.
+// A job action reaches its own run or pipeline, a pipeline action every
+// one the pipeline shows (ciPipelineIDs), so a PR's head checks and a
+// Pipelines-tab view of one of their runs share the run's key. Keys are
+// per repository; a pipeline with no identity at all (no run read yet)
+// is keyed by its PR.
+func ciActionKeys(repo gitops.RepoReference, pipeline gitops.CIPipeline, job *gitops.CIJob, phase *ciPhase) []string {
+	var ids []string
+	switch {
+	case job != nil && job.RunID != "":
+		ids = []string{job.RunID}
+	case job != nil && pipeline.ID != "":
+		ids = []string{pipeline.ID}
+	default:
+		for id := range ciPipelineIDs(pipeline) {
+			ids = append(ids, id)
+		}
 	}
-	return "pr:" + phase.prKey
+	keys := make([]string, 0, len(ids)+1)
+	for _, id := range ids {
+		keys = append(keys, "ci:"+repo.Key()+" "+id)
+	}
+	if len(keys) == 0 {
+		keys = append(keys, "pr:"+phase.prKey)
+	}
+	return keys
 }
 
 // ciPipelineIDs are the forge ids a pipeline read names: its own and, on
@@ -204,46 +230,58 @@ func ciPipelineIDs(pipeline gitops.CIPipeline) map[string]bool {
 // the pump reports it on its own channel.
 func (a *App) refreshCIAfterAction(ctx context.Context, target ciActionTarget, repo gitops.RepoReference, pipeline gitops.CIPipeline) uint64 {
 	touched := ciPipelineIDs(pipeline)
-	shows := func(phase *ciPhase) bool {
-		if phase.repo.Key() != repo.Key() || !phase.ciKnown {
-			return false
-		}
+	a.prUpdates.mu.Lock()
+	target.phase.actedAt = time.Now()
+	a.prUpdates.mu.Unlock()
+	a.pollCIPumpsShowing(repo, target.core, true, func(phase *ciPhase) bool {
 		for id := range ciPipelineIDs(phase.ci) {
 			if touched[id] {
 				return true
 			}
 		}
 		return false
-	}
-	now := time.Now()
-	a.prUpdates.mu.Lock()
-	target.phase.actedAt = now
-	var others []*pumpCore
-	for _, pump := range a.prUpdates.pumps {
-		if !pump.dead && &pump.pumpCore != target.core && shows(&pump.ciPhase) {
-			pump.ciPhase.actedAt = now
-			others = append(others, &pump.pumpCore)
-		}
-	}
-	for _, pump := range a.prUpdates.pipelines {
-		if !pump.dead && &pump.pumpCore != target.core && shows(&pump.ciPhase) {
-			pump.ciPhase.actedAt = now
-			others = append(others, &pump.pumpCore)
-		}
-	}
-	a.prUpdates.mu.Unlock()
-
-	for _, core := range others {
-		a.prUpdates.wg.Go(func() {
-			if err := a.requestPump(a.lifeCtx(), core, &prPumpRequest{ci: true}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, ErrShuttingDown) && !errors.Is(err, context.Canceled) {
-				log.Printf("pr updates: ci refresh after an action elsewhere failed: %v", err)
-			}
-		})
-	}
+	})
 	if err := a.requestPump(ctx, target.core, &prPumpRequest{ci: true}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, context.Canceled) {
 		log.Printf("pr updates: ci refresh after an action failed for %s: %v", target.phase.name(), err)
 	}
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
 	return target.core.seq
+}
+
+// pollCIPumpsShowing asks every live pump, PR or pipeline, whose phase
+// holds a pipeline of repo that shows selects, other than skip, to poll
+// its CI at once, without waiting for the polls. acted starts each one's
+// follow window (ciActionFollowWindow).
+func (a *App) pollCIPumpsShowing(repo gitops.RepoReference, skip *pumpCore, acted bool, shows func(*ciPhase) bool) {
+	match := func(core *pumpCore, phase *ciPhase) bool {
+		return core != skip && phase.repo.Key() == repo.Key() && phase.ciKnown && shows(phase)
+	}
+	now := time.Now()
+	a.prUpdates.mu.Lock()
+	var cores []*pumpCore
+	for _, pump := range a.prUpdates.pumps {
+		if !pump.dead && match(&pump.pumpCore, &pump.ciPhase) {
+			cores = append(cores, &pump.pumpCore)
+			if acted {
+				pump.ciPhase.actedAt = now
+			}
+		}
+	}
+	for _, pump := range a.prUpdates.pipelines {
+		if !pump.dead && match(&pump.pumpCore, &pump.ciPhase) {
+			cores = append(cores, &pump.pumpCore)
+			if acted {
+				pump.ciPhase.actedAt = now
+			}
+		}
+	}
+	a.prUpdates.mu.Unlock()
+	for _, core := range cores {
+		a.prUpdates.wg.Go(func() {
+			if err := a.requestPump(a.lifeCtx(), core, &prPumpRequest{ci: true}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, ErrShuttingDown) && !errors.Is(err, context.Canceled) {
+				log.Printf("pr updates: ci refresh of a pipeline another caller changed failed: %v", err)
+			}
+		})
+	}
 }
