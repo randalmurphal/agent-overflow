@@ -55,6 +55,7 @@ function fakeMedia() {
     requestSizes() {},
     sizes: () => null,
     readsSizes: false,
+    unavailable: null,
     image(file: ReviewFile, sides: readonly ImageSideName[]) {
       const handle = rawProps({ state: { kind: 'loading', sides } as ImageRowState, retry() {}, release() {} });
       handles.set(file.path, handle);

@@ -87,20 +87,21 @@ export function diffFilesReadSizes(target: DiffFilesTarget): boolean {
   return target.kind === 'git';
 }
 
-/** Why `file`'s sides cannot be read in this diff, or null when they can:
- * its row is the ordinary binary row with this sentence. */
-export function diffFileUnreadable(target: DiffFilesTarget, _file: ReviewFile): string | null {
+/** Why no file of this diff can be read, or null when they can: the pane
+ * says it once, and each file shows its ordinary binary row. */
+export function diffFilesUnavailable(target: DiffFilesTarget): string | null {
   return target.kind === 'git' ? target.opened.unavailable : null;
 }
 
 /** What a refused read offers on its row: a retry of the same read (the
  * backend was busy), or a reload of the diff (the file changed since the
- * diff was read, so the same read would be refused again). */
+ * diff was read, or the backend no longer holds the diff's files, so the
+ * same read would be refused again). */
 export type DiffReadAction = 'retry' | 'reload';
 
 export function diffReadFailure(err: unknown): { reason: string; action: DiffReadAction } {
   const reason = err instanceof Error ? err.message : String(err);
-  return { reason, action: /changed since the diff was read/i.test(reason) ? 'reload' : 'retry' };
+  return { reason, action: /changed since the diff was read|no longer held/i.test(reason) ? 'reload' : 'retry' };
 }
 
 // The file as its patch names it: paths and the index line's ids, all

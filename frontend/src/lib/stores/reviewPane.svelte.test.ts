@@ -45,7 +45,8 @@ import { diffSourceKey } from '../utils/diffSourceKey';
 import { PATCH_PARSE_CACHE_MAX_ENTRY_CHARS, type PatchDisplayRow, type PatchLine } from '../utils/patchFiles';
 import { displayRowCount, FILE_START, materializeRows } from '../utils/patchRows';
 import { keptText, parseReviewFiles, type ReviewFile } from '../utils/patchStore';
-import { buildReviewRows } from '../utils/reviewRows';
+import { buildReviewRows, REVIEW_COMMIT_CARD_ROW_KEY } from '../utils/reviewRows';
+import { RANGE_LINE_NOT_IN_PR } from './reviewRangeComments';
 import {
   getSpansForReviewLine,
   resetDiffSpanCacheForTest,
@@ -5542,5 +5543,118 @@ describe('reviewPane store — open new-comment editors of the PR on screen', ()
     } finally {
       __setTransportHelloForTest(null);
     }
+  });
+});
+
+describe('reviewPane store — runs of a PR\'s commits', () => {
+  const REVISION = { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-a' };
+  const B = 'b'.repeat(40);
+  const C = 'c'.repeat(40);
+  // Newest first: the head, then b, then c the first commit.
+  const COMMITS = [
+    { sha: 'sha-a', shortSha: 'sha-a', subject: 'head', author: 'r', authoredAt: 3 },
+    { sha: B, shortSha: 'bbbbbbb', subject: 'middle', author: 'r', authoredAt: 2 },
+    { sha: C, shortSha: 'ccccccc', subject: 'first', author: 'r', authoredAt: 1 },
+  ];
+  // The run b..head touches src/app.ts lines the whole PR has, and a file
+  // a later commit put back, so the whole PR does not change it.
+  const RUN_PATCH = [
+    patchFor('src/app.ts', 3),
+    'diff --git a/src/undone.ts b/src/undone.ts',
+    'index 2222222..3333333 100644',
+    '--- a/src/undone.ts',
+    '+++ b/src/undone.ts',
+    '@@ -1,2 +1,2 @@',
+    ' keep',
+    '-old',
+    '+new',
+  ].join('\n');
+
+  async function prPane() {
+    installPRMocks();
+    setBindingMock('ListPRCommits', async () => COMMITS);
+    const whole = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
+    const run = setReviewDiffMock('OpenPRCommitDiff', async () => RUN_PATCH);
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    return { state, whole, run };
+  }
+
+  it('opens a run by its two ends and keys its comments by the run', async () => {
+    const { state, run } = await prPane();
+    await state.selectCommits({ first: C, last: B });
+    expect(run).toHaveBeenLastCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), REVISION, C, B, false, false);
+    expect(state.selectedCommits).toEqual({ first: C, last: B });
+    expect(state.sourceKey).toBe(`range:${C}..${B}`);
+    expect(state.headRange).toBe(false);
+    // Not to the head: every line takes the view's own comments.
+    expect(state.lineComment({ filePath: 'src/app.ts', newLine: 1, side: 'new' })).toBeNull();
+  });
+
+  it('turns a run over the whole list into All commits, opening the whole diff', async () => {
+    const { state, whole, run } = await prPane();
+    const before = whole.mock.calls.length;
+    await state.selectCommits({ first: C, last: B });
+    await state.selectCommits({ first: C, last: 'sha-a' });
+    expect(state.selectedCommits).toBeNull();
+    expect(whole.mock.calls.length).toBe(before + 1);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(state.sourceKey).toBe(PR_SOURCE_KEY);
+  });
+
+  it('Changes from here runs from a commit to the head, takes the PR\'s comment home, and answers each line from the whole PR', async () => {
+    const { state, whole } = await prPane();
+    const wholeReads = whole.mock.calls.length;
+    await state.showChangesFrom(B);
+    expect(state.selectedCommits).toEqual({ first: B, last: 'sha-a' });
+    expect(state.headRange).toBe(true);
+    expect(state.sourceKey).toBe(PR_SOURCE_KEY);
+    expect(state.pendingJumpRowKey).toBe(REVIEW_COMMIT_CARD_ROW_KEY);
+    // Built from the whole diff that was on screen: no second read.
+    expect(state.prDiffIndexState).toBe('ready');
+    expect(whole.mock.calls.length).toBe(wholeReads);
+    expect(state.lineComment({ filePath: 'src/app.ts', newLine: 2, side: 'new' })).toEqual({ target: 'pr', reason: null });
+    expect(state.lineComment({ filePath: 'src/undone.ts', newLine: 2, side: 'new' })).toEqual({ target: 'agent', reason: RANGE_LINE_NOT_IN_PR });
+    expect(state.lineComment({ filePath: 'src/undone.ts', newLine: 0, side: 'old' })).toMatchObject({ target: 'none' });
+  });
+
+  it('reads the whole PR for a head run it holds no whole diff for, and a failed read leaves lines to the agent', async () => {
+    const { state, whole } = await prPane();
+    await state.selectCommits({ first: C, last: B });
+    // The whole diff shown before was read without -w: no seed for this.
+    await state.setIgnoreWhitespace(true);
+    let refuse = true;
+    const reads = setReviewDiffMock('OpenPRDiff', async () => {
+      if (refuse) throw new Error('fetch failed');
+      return patchFor('src/app.ts', 3);
+    });
+    void whole;
+    await state.selectCommits({ first: B, last: 'sha-a' });
+    await vi.waitFor(() => expect(state.prDiffIndexState).toBe('failed'));
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(state.prDiffIndexError).toContain('fetch failed');
+    expect(state.lineComment({ filePath: 'src/app.ts', newLine: 2, side: 'new' })).toMatchObject({ target: 'agent' });
+    refuse = false;
+    state.retryPRDiffIndex();
+    await vi.waitFor(() => expect(state.prDiffIndexState).toBe('ready'));
+    expect(state.lineComment({ filePath: 'src/app.ts', newLine: 2, side: 'new' })).toEqual({ target: 'pr', reason: null });
+    // Leaving the run drops the index.
+    await state.selectCommits(null);
+    expect(state.prDiffIndexState).toBe('closed');
+  });
+
+  it('falls back to All commits, saying so, when a held run\'s commits left the PR', async () => {
+    const { state, whole } = await prPane();
+    await state.selectCommits({ first: C, last: B });
+    setBindingMock('ListPRCommits', async () => COMMITS.filter((commit) => commit.sha !== B));
+    const before = whole.mock.calls.length;
+    await state.reload();
+    await waitLoaded(state);
+    expect(state.selectedCommits).toBeNull();
+    expect(state.commitSelectionLost).toBe(true);
+    expect(whole.mock.calls.length).toBe(before + 1);
+    state.dismissCommitSelectionLost();
+    expect(state.commitSelectionLost).toBe(false);
   });
 });

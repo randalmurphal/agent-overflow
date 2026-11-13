@@ -157,7 +157,7 @@ describe('a review diff\'s images', () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
-  it('shows a diff whose sides could not be pinned as binary rows with its sentence, reading nothing', async () => {
+  it('shows a diff whose files could not be pinned as plain binary rows, its sentence once on the media, reading nothing', async () => {
     const read = setBindingMock('GetReviewDiffImage', async () => answer('logo'));
     const sizes = setBindingMock('GetReviewDiffFileSizes', async () => []);
     const media = createReviewDiffMedia();
@@ -165,9 +165,24 @@ describe('a review diff\'s images', () => {
     const handle = media.image(files()['img/logo.png'], ['old', 'new']);
     media.requestSizes(files()['blob.bin']);
     await settle();
-    expect(handle.state).toEqual({ kind: 'binary', reason: 'The diff\'s sides could not be read.', action: null, sizes: null });
+    expect(media.unavailable).toBe('The diff\'s sides could not be read.');
+    expect(handle.state).toEqual({ kind: 'binary', reason: null, action: null, sizes: null });
     expect(read).not.toHaveBeenCalled();
     expect(sizes).not.toHaveBeenCalled();
+    media.setTarget(PR_TARGET, '2');
+    expect(media.unavailable).toBeNull();
+  });
+
+  it('offers reloading the diff when the backend no longer holds its files', async () => {
+    setBindingMock('GetReviewDiffImage', async () => {
+      throw new Error('This diff\'s files are no longer held; reload the diff.');
+    });
+    setBindingMock('GetReviewDiffFileSizes', async () => []);
+    const media = createReviewDiffMedia();
+    media.setTarget(PR_TARGET, '1');
+    const handle = media.image(files()['img/logo.png'], ['old', 'new']);
+    await settle();
+    expect(handle.state).toMatchObject({ kind: 'binary', action: 'reload' });
   });
 
   it('shows a busy refusal on the row with Retry, and a Retry is one fresh read', async () => {

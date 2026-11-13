@@ -64,6 +64,13 @@
     <button type="button" class="rounded border border-warning/40 px-2 py-0.5" onclick={() => review.dismissCommitSelectionLost()}>Dismiss</button>
   </div>
 {/if}
+{#if review.mediaHost.media.unavailable && review.files.some((file) => file.header?.binary)}
+  <!-- The diff's files could not be pinned when it opened: binary files
+       show git's line, and the reason is said here once. -->
+  <div class="border-b border-border-subtle bg-surface-1 px-3 py-2 text-xs text-fg-muted" data-testid="review-files-unavailable">
+    No images for this diff: {review.mediaHost.media.unavailable}
+  </div>
+{/if}
 {#if review.prStale}
   <div class="flex items-center justify-between gap-3 border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-stale">
     <span>PR updated.</span>

@@ -111,7 +111,9 @@
       <span class="shrink-0 tabular-nums text-fg-subtle" data-testid="review-binary-sizes">{sizesText(binarySizes)}</span>
     {/if}
     {#if reason}
-      <span class="min-w-0 flex-1 truncate text-warning" title={reason} data-testid="review-binary-reason">{reason}</span>
+      <!-- A refusal that offers an action warns; a side the backend does
+           not serve (LFS, a filter, a link) is a muted fact. -->
+      <span class="min-w-0 flex-1 truncate {action ? 'text-warning' : 'text-fg-subtle'}" title={reason} data-testid="review-binary-reason">{reason}</span>
     {/if}
     {#if action === 'retry'}
       <button type="button" class="ml-auto shrink-0 rounded-[var(--radius-field)] px-1.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg compact:select-none" data-testid="review-binary-retry" onclick={retry}>Retry</button>

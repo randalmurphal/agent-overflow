@@ -1,7 +1,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 import {
   diffFilesReadSizes,
-  diffFileUnreadable,
+  diffFilesUnavailable,
   diffImageBlobKey,
   diffReadFailure,
   DIFF_FILE_SIZES_BATCH,
@@ -70,6 +70,8 @@ export interface ReviewDiffMedia {
   sizes(path: string): SizesState | null;
   /** Whether this diff can read sizes at all. */
   readonly readsSizes: boolean;
+  /** Why none of this diff's files can be read, said once by the pane. */
+  readonly unavailable: string | null;
   /** The image row of `file`, loading its bytes until released. */
   image(file: ReviewFile, sides: readonly ImageSideName[]): ImageHandle;
   /** The pixel size a side's image decoded at, for its caption. */
@@ -95,6 +97,7 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
   let scopeKey = '';
   let generation = 0;
   let readsSizes = $state(false);
+  let unavailable = $state<string | null>(null);
   const sizesByPath = new SvelteMap<string, SizesState>();
   const factsByPath = new Map<string, AnswerFacts>();
   const pixelsByKey = new SvelteMap<string, { width: number; height: number }>();
@@ -161,9 +164,9 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
       const diff = target;
       releaseBlobs();
       if (!diff) return;
-      const unreadable = diffFileUnreadable(diff, file);
-      if (unreadable) {
-        state = { kind: 'binary', reason: unreadable, action: null, sizes: null };
+      // The pane says why once (`unavailable`).
+      if (diffFilesUnavailable(diff)) {
+        state = { kind: 'binary', reason: null, action: null, sizes: null };
         return;
       }
       // One read per mount serves both sides' first fetch.
@@ -253,13 +256,14 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
       target = next;
       scopeKey = key;
       readsSizes = next !== null && diffFilesReadSizes(next);
+      unavailable = next === null ? null : diffFilesUnavailable(next);
       sizesByPath.clear();
       factsByPath.clear();
       pixelsByKey.clear();
       pendingSizes = [];
     },
     requestSizes(file) {
-      if (!target || !diffFilesReadSizes(target) || sizesByPath.has(file.path) || diffFileUnreadable(target, file)) return;
+      if (!target || !diffFilesReadSizes(target) || sizesByPath.has(file.path) || diffFilesUnavailable(target)) return;
       sizesByPath.set(file.path, { kind: 'loading' });
       pendingSizes.push(file);
       if (sizesQueued) return;
@@ -268,6 +272,7 @@ export function createReviewDiffMedia(): ReviewDiffMedia {
     },
     sizes: (path) => sizesByPath.get(path) ?? null,
     get readsSizes() { return readsSizes; },
+    get unavailable() { return unavailable; },
     image,
     pixels: (path, side) => pixelsByKey.get(`${side}\u0000${path}`) ?? null,
     rememberPixels(path, side, width, height) {
