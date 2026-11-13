@@ -738,6 +738,27 @@ describe('Hide resolved threads never hides a thread in use', () => {
     await hiddenAtNextDecision(state);
   });
 
+  it('a delete in flight keeps its confirm, so its late failure still protects the thread', async () => {
+    const state = await open([OLD, DONE, MID]);
+    let fail: (err: Error) => void = () => {};
+    setBindingMock('DeletePRComment', () => new Promise<never>((_, reject) => { fail = reject; }));
+    state.sentComments.setConfirmDelete(DONE, COMMENT, true);
+    const deleting = state.sentComments.deleteComment(DONE, COMMENT);
+    // Cancel while the delete is out does nothing: the answer needs its
+    // place to show.
+    state.sentComments.setConfirmDelete(DONE, COMMENT, false);
+    expect(state.sentComments.confirmingDelete(DONE, COMMENT)).toBe(true);
+    fail(new Error('The forge refused.'));
+    await deleting;
+    expect(state.commentWriteError(`delete:${DONE.id}\u0000${COMMENT.id}`)).toContain('refused');
+    state.setHideResolved(true);
+    expect(ids(state)).toContain('t-done');
+    // Settled, Cancel closes it and the thread lets go.
+    state.sentComments.setConfirmDelete(DONE, COMMENT, false);
+    expect(state.sentComments.confirmingDelete(DONE, COMMENT)).toBe(false);
+    await hiddenAtNextDecision(state);
+  });
+
   it('a thread not in use is hidden by the same steps', async () => {
     const state = await open([OLD, DONE, MID]);
     state.setHideResolved(true);

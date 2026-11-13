@@ -266,6 +266,8 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       const key = sentKey(thread, comment);
       if (on) confirming.add(key);
       else {
+        // A delete that is out keeps its confirm: its answer shows there.
+        if (isPending(commentWriteKey.delete(thread.id, comment.id))) return;
         confirming.delete(key);
         errors.delete(commentWriteKey.delete(thread.id, comment.id));
       }
