@@ -47,16 +47,20 @@
   </div>
   <div class="group min-w-0 pt-1">
     <div class="flex min-w-0 items-center gap-1.5 text-[0.75rem]">
-      <span class="truncate font-semibold text-fg" title={author}>{author}</span>
-      <span class="shrink-0 text-fg-muted">added {commits.length} {commits.length === 1 ? 'commit' : 'commits'}</span>
-      {#if time}
-        <span class="shrink-0 text-fg-subtle">· {time}</span>
-      {/if}
+      <!-- The words give way (truncate) to the button, never the row's
+           width: the feed has nothing to scroll sideways. -->
+      <span class="flex min-w-0 flex-1 items-center gap-1.5">
+        <span class="min-w-0 truncate font-semibold text-fg" title={author}>{author}</span>
+        <span class="min-w-0 truncate text-fg-muted">added {commits.length} {commits.length === 1 ? 'commit' : 'commits'}</span>
+        {#if time}
+          <span class="min-w-0 truncate text-fg-subtle">· {time}</span>
+        {/if}
+      </span>
       {#if first}
         <!-- Revealed on hover; it holds its place, so nothing moves. -->
         <button
           type="button"
-          class="ml-auto shrink-0 rounded-[var(--radius-field)] px-1.5 text-[0.6875rem] text-fg-muted opacity-0 hover:bg-surface-2 hover:text-fg focus-visible:opacity-100 group-hover:opacity-100 compact:opacity-100 compact:select-none"
+          class="shrink-0 rounded-[var(--radius-field)] px-1.5 text-[0.6875rem] text-fg-muted opacity-0 hover:bg-surface-2 hover:text-fg focus-visible:opacity-100 group-hover:opacity-100 compact:opacity-100 compact:select-none"
           title="Show the changes from {first.shortSha} through the newest commit"
           data-testid="review-conversation-changes-from"
           onclick={showChangesFromFirst}
