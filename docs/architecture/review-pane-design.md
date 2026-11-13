@@ -49,6 +49,11 @@ Extended 2026-10-20: merge readiness, approve and merge live in a Merge
 section of the overview row, forge events join the Conversation feed, and
 the pane also opens from a Pull requests page with no thread
 ([pull requests](../specs/pull-requests.md)).
+Extended 2026-11-13: the PR scope's commit picker picks a run of commits,
+a run that ends at the head comments in the PR's own home on the lines the
+whole PR changes, binary files show their images or sizes, and a line's
+gutter menu copies its link
+([pull requests](../specs/pull-requests.md#reading-the-diff)).
 
 ## Goal
 
