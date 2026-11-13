@@ -379,6 +379,24 @@ func TestSubsequenceScore(t *testing.T) {
 	}
 }
 
+// TestGitCommandCannotAskForCredentials: the listing git runs with the
+// prompt policy over whatever the user configured.
+func TestGitCommandCannotAskForCredentials(t *testing.T) {
+	t.Setenv("GCM_INTERACTIVE", "auto")
+	t.Setenv("GIT_ASKPASS", "/usr/lib/ssh/user-askpass")
+	cmd := gitCommand(t.Context(), t.TempDir(), "ls-files")
+	last := map[string]string{}
+	for _, entry := range cmd.Env {
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			last[name] = value
+		}
+	}
+	if last["GCM_INTERACTIVE"] != "never" || last["GIT_ASKPASS"] != "" || last["GIT_TERMINAL_PROMPT"] != "0" {
+		t.Fatalf("listing git can still prompt: GCM_INTERACTIVE=%q GIT_ASKPASS=%q GIT_TERMINAL_PROMPT=%q",
+			last["GCM_INTERACTIVE"], last["GIT_ASKPASS"], last["GIT_TERMINAL_PROMPT"])
+	}
+}
+
 func TestBuildIndexRespectsMaxEntries(t *testing.T) {
 	root := setupWorkspace(t)
 	idx, err := buildIndex(root, 3)
