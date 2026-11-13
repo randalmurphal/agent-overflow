@@ -20,6 +20,7 @@ func githubActionsRollup() string {
 		githubCheckRun("unit", "CI", "COMPLETED", "FAILURE", "111", "901", "2026-07-06T14:00:00Z", "2026-07-06T14:01:00Z"),
 		githubCheckRun("lint", "CI", "COMPLETED", "SUCCESS", "111", "902", "2026-07-06T14:00:00Z", "2026-07-06T14:01:00Z"),
 		githubCheckRun("deploy", "Deploy", "IN_PROGRESS", "", "222", "903", "2026-07-06T14:02:00Z", ""),
+		githubCheckRun("smoke", "Deploy", "COMPLETED", "FAILURE", "222", "907", "2026-07-06T14:02:00Z", "2026-07-06T14:03:00Z"),
 		`{"__typename":"StatusContext","context":"codecov/patch","state":"FAILURE","targetUrl":"https://codecov.example/x","createdAt":"2026-07-06T14:08:19Z"}`,
 	}, ",")
 }
@@ -65,6 +66,9 @@ func TestGitHubCIActionFlags(t *testing.T) {
 	}
 	if lint.Actions != (CIJobActions{}) || deploy.Actions != (CIJobActions{}) {
 		t.Fatalf("passing and running jobs = %+v / %+v, want no action", lint.Actions, deploy.Actions)
+	}
+	if smoke := FindCIJob(pipeline, "907"); smoke.Actions != (CIJobActions{}) {
+		t.Fatalf("a failed job of a live run = %+v, want no retry until the run completes", smoke.Actions)
 	}
 	external := pipeline.Stages[len(pipeline.Stages)-1].Jobs[0]
 	if external.ID != "" || external.Actions != (CIJobActions{}) {

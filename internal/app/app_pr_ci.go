@@ -284,30 +284,38 @@ func (a *App) writeCILogFile(name string, write func(io.Writer) error) (string, 
 // writeCILogFileNamed is writeCILogFile for a writer that learns the
 // file's name as it writes.
 func (a *App) writeCILogFileNamed(write func(io.Writer) (string, error)) (string, error) {
+	return a.writeCISavedFile("ci-logs", "CI log", write)
+}
+
+// writeCISavedFile writes a file the user saves from the CI view (a log,
+// an artifacts archive) under the app data directory's subdir, streamed
+// through a temp file renamed into place once whole, so a failed write
+// never leaves half a file under the name; what names the file.
+func (a *App) writeCISavedFile(subdir, what string, write func(io.Writer) (string, error)) (string, error) {
 	if a.configDir == "" {
 		return "", errors.New("app data directory is not initialised")
 	}
-	dir := filepath.Join(a.configDir, "ci-logs")
+	dir := filepath.Join(a.configDir, subdir)
 	if err := ensureAppPrivateDir(dir); err != nil {
-		return "", fmt.Errorf("create ci-logs directory: %w", err)
+		return "", fmt.Errorf("create %s directory: %w", subdir, err)
 	}
 	temp, err := os.CreateTemp(dir, ".save-*")
 	if err != nil {
-		return "", fmt.Errorf("write CI log: %w", err)
+		return "", fmt.Errorf("write %s: %w", what, err)
 	}
 	name, err := write(temp)
 	if closeErr := temp.Close(); err == nil && closeErr != nil {
-		err = fmt.Errorf("write CI log: %w", closeErr)
+		err = fmt.Errorf("write %s: %w", what, closeErr)
 	}
 	path := filepath.Join(dir, name)
 	if err == nil {
 		if err = os.Rename(temp.Name(), path); err != nil {
-			err = fmt.Errorf("write CI log: %w", err)
+			err = fmt.Errorf("write %s: %w", what, err)
 		}
 	}
 	if err != nil {
 		if removeErr := os.Remove(temp.Name()); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
-			log.Printf("ci logs: remove unfinished saved log: %v", removeErr)
+			log.Printf("%s: remove unfinished saved %s: %v", subdir, what, removeErr)
 		}
 		return "", err
 	}

@@ -20,7 +20,8 @@ import (
 // observation once. Cadence follows what can still change: nothing while
 // the pipeline and every job are terminal (the owner re-arms it),
 // prCILiveInterval while the pipeline or a job is queued or running (a
-// followed running job's log included, unless its forge streams it),
+// followed running job's log included, unless its forge streams it) and
+// for ciActionFollowWindow after a CI action touched it,
 // prCIFollowInterval while a followed job is live on a forge that streams
 // running logs, its final log is still being fetched or a download it was
 // cut off in resumes, and prCILogWaitInterval while a completed job's log
@@ -70,6 +71,10 @@ type ciPhase struct {
 	follows map[string]*prCILogFollow
 	// retryDelay is the doubling delay while the pipeline fetch fails.
 	retryDelay time.Duration
+	// actedAt is when a CI action last touched the pipeline
+	// (app_ci_actions.go); for ciActionFollowWindow after it the phase
+	// polls at the live cadence.
+	actedAt time.Time
 }
 
 // name is the phase in log lines.
@@ -168,7 +173,7 @@ func (a *App) ciInterval(phase *ciPhase) time.Duration {
 			consider(a.prCILiveInterval())
 		}
 	}
-	if phase.ciKnown && gitops.CIPipelineLive(phase.ci) {
+	if (phase.ciKnown && gitops.CIPipelineLive(phase.ci)) || time.Since(phase.actedAt) < ciActionFollowWindow {
 		consider(a.prCILiveInterval())
 	}
 	return next
