@@ -3,9 +3,9 @@
  *
  * A Claude interrupt kills every live async agent the session holds, so
  * the backend refuses a person's Stop while such agents are live until the
- * caller confirms (transport/backgroundKillRefusal.ts). The askers are the
- * Stop flows in stores/revertOnInterrupt.svelte.ts and the thread.interrupt
- * builtin: plain async functions with no place to render, so this is the
+ * caller confirms (transport/backgroundKillRefusal.ts). The asker is the
+ * Stop in stores/threadInterrupt.svelte.ts, reached from the Stop button
+ * and the thread.interrupt builtin: plain async functions with no place to render, so this is the
  * promise-shaped door unsentMessageConfirmation.svelte.ts is, and
  * components/composer/BackgroundKillConfirmationHost.svelte mounts once at
  * the app root and settles whatever is pending.

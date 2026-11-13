@@ -1405,7 +1405,7 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 		}
 	}
 	// The echo confirms the CLI consumed the message, so the flush row gets
-	// its own message anchor — that row is now an un-send/fork target like
+	// its own message anchor — that row is now an edit/fork target like
 	// any other user message. Rolling back to it is safe at a shared turn
 	// because Claude truncation is item-granular
 	// (DeleteConversationFromItem): the original user:3 prompt and the

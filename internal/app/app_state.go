@@ -73,13 +73,13 @@ type appFlushDispatchState struct {
 	flushUnsettled map[string]struct{}
 	wg             sync.WaitGroup
 	// handoffMu serializes RegisterQueueItem's enqueue→flush handoff
-	// against the revert-on-interrupt predicate's read of the queued /
-	// in-flight counters. tryFlushQueue deletes a batch from the triage queue
-	// before the dispatcher records it as in-flight; in that window the item
-	// is invisible to every counter the predicate consults. Holding this mutex
+	// against pendingFlushWorkCount's read of the queued / in-flight
+	// counters. tryFlushQueue deletes a batch from the triage queue before
+	// the dispatcher records it as in-flight; in that window the item is
+	// invisible to every counter the read consults. Holding this mutex
 	// across both the handoff (RegisterQueueItem) and the counter read
-	// (pendingFlushWorkCount) makes the queued message observable to a
-	// concurrent Stop click as either still-queued or already-in-flight, never
+	// makes the queued message observable to idle eviction and transfer
+	// reservation as either still-queued or already-in-flight, never
 	// neither. Deliberately NOT the per-thread action lock: that lock is held
 	// for seconds by git / worktree ops, and queueing a message
 	// must stay responsive while those run. See RegisterQueueItem for the full

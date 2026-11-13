@@ -18,30 +18,13 @@ type Part struct {
 	SourceProposedPlan *store.ProposedPlanSourceRef
 }
 
-// FromUserItem composes a ThreadDraft row from a stored user_text item.
-// The user item's `Summary` becomes the draft body; attachments
-// referenced in the item's `Meta` (via usermessage.FromItem) are
-// echoed back as a JSON array of attachment IDs; the source-plan
-// linkage is preserved verbatim so the draft can re-link the
-// implementation to its originating plan.
-//
-// Returns an empty TerminalChips array — terminal chips are
-// composer-only context and not part of the persisted user item.
-//
-// Use this when the attachment IDs on the source item are valid for
-// targetThreadID (e.g. the Stop/Esc un-send, which rehydrates the
-// message into the composer of the same thread). Use the App-bound
-// clone variant in `app_draft.go` when you need to clone attachment
-// bytes across threads.
-func FromUserItem(targetThreadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {
-	part, err := PartFromUserItem(userItem)
-	if err != nil {
-		return store.ThreadDraft{}, err
-	}
-	return FromParts(targetThreadID, part.Content, part.AttachmentIDs, part.SourceProposedPlan, updatedAt)
-}
-
-// PartFromUserItem projects a stored user_text item into a draft part.
+// PartFromUserItem projects a stored user_text item into a draft part:
+// the item's `Summary` becomes the content, attachments referenced in
+// its `Meta` (via usermessage.FromItem) become attachment IDs with blank
+// ones skipped, and the source-plan linkage is kept so the draft can
+// re-link the implementation to its originating plan. The IDs are only
+// valid on the item's own thread; cross-thread callers clone the
+// attachments first (`app_draft.go`).
 func PartFromUserItem(userItem store.Item) (Part, error) {
 	meta, err := usermessage.FromItem(userItem)
 	if err != nil {
@@ -66,8 +49,8 @@ func PartFromUserItem(userItem store.Item) (Part, error) {
 // `app_draft.go` once the attachment IDs in targetThreadID's namespace
 // have been resolved.
 //
-// Returns an empty TerminalChips array (matching FromUserItem) so the
-// composer rehydrates with no inherited terminal context.
+// Returns an empty TerminalChips array so the composer rehydrates with
+// no inherited terminal context.
 func FromParts(
 	targetThreadID string,
 	content string,

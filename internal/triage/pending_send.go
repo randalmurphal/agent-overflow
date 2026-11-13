@@ -1433,18 +1433,6 @@ func (r *Router) ClearPendingSendsByItemIDs(threadID string, ids []string) {
 	})
 }
 
-// ClearPendingSendsFromTurn retires send correlations after a committed
-// conversation cut. A provider session retained across the cut must not assign
-// its next turn or user echo to a send removed from history.
-func (r *Router) ClearPendingSendsFromTurn(threadID string, turnIndex int) {
-	if threadID == "" || turnIndex < 0 {
-		return
-	}
-	r.clearPendingSendsMatching(threadID, func(entry pendingSend) bool {
-		return entry.TurnIndex >= turnIndex
-	})
-}
-
 func (r *Router) clearPendingSendsMatching(threadID string, drop func(pendingSend) bool) {
 	// Serialize removal with an in-flight echo's failed-write reinsert.
 	anchor := r.flushAnchor(threadID)

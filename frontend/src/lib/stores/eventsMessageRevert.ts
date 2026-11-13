@@ -1,12 +1,10 @@
 import { applyTimelineMutation } from './timelineSurfaces';
 import { fenceRevertedItemEvents } from './eventsItemStream';
 // User-message-revert event domain: truncating pane items on
-// user_message:reverted (the Stop/Esc un-send flow and the
-// edit-and-resend saga). Fan-in target of events.ts's
-// setupEventListeners.
+// user_message:reverted (the edit-and-resend saga). Fan-in target of
+// events.ts's setupEventListeners.
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { iterPanes } from './panes.svelte';
-import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { projectSendStarted, projectThreadReverted } from './threadStatuses.svelte';
 
 import { threadItemCache } from './threadItemCache';
@@ -23,10 +21,9 @@ function ingestPanes(): Iterable<ThreadPaneIngest> {
   return iterPanes();
 }
 
-// `user_message:reverted` fires after a successful conversation revert
-// (Stop/Esc un-send, or the edit-and-resend saga's committed revert).
-// The backend has truncated SQLite; this handler mirrors that cut exactly:
-// every turn after the anchor turn goes, and within the anchor turn
+// `user_message:reverted` fires after the edit-and-resend saga's committed
+// revert. The backend has truncated SQLite; this handler mirrors that cut
+// exactly: every turn after the anchor turn goes, and within the anchor turn
 // only the event's `keptAnchorTurnItemIds` survive (empty = whole turn
 // gone — the common case; non-empty = Claude's item-granular cut to a
 // mid-turn anchor kept the turn's prefix). Removing only the user item
@@ -34,16 +31,9 @@ function ingestPanes(): Iterable<ThreadPaneIngest> {
 // row; removing the whole anchor turn unconditionally would hide rows
 // SQLite kept.
 //
-// Responsibilities: (1) idempotently apply the cut for any pane viewing
-// the thread (confirms the un-send path's optimistic removal; defends
-// against a stale optimistic miss / cross-pane reflection); (2) refresh
-// the composer draft from disk so the reverted text reappears in the
-// input. `reloadFromBackend` is a no-op when the draft store is not
-// pointed at this thread, so we just fire it for every active draft.
-//
-// Replacement operations leave the composer draft alone. Their cut and prepared
-// replacement are applied in one task. Early un-send rehydrates other clients;
-// its initiating composer holds a local restoration until cleanup settles.
+// It idempotently applies the cut, and the prepared replacement row in the
+// same task, for any pane viewing the thread. The composer draft is left
+// alone: the saga resends the edited text rather than returning it.
 
 // Event markers supplement the structured RPC outcome. The event and reply may
 // arrive in either order; neither depends on the pane still showing this thread.
@@ -140,7 +130,6 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   // can rewind the counter.
   if (revision !== null && appliedRevision !== undefined && appliedRevision >= revision) return;
   fenceRevertedItemEvents(payload);
-  const rehydrateDrafts = payload.draftPendingResend !== true;
   clearResendRevertMarkersForThread(payload.threadId);
   if (payload.draftPendingResend === true && resendIsOurs(payload.connectionId)) {
     pendingResendReverts.set(
@@ -169,11 +158,6 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
     if (payload.replacement) pane.armStructuralSpring();
     pane.removeRevertedItems(payload.turnIndex, payload.keptAnchorTurnItemIds ?? []);
     if (payload.replacement?.threadId === payload.threadId) pane.applyProviderItemUpserts([payload.replacement]);
-    if (!rehydrateDrafts) continue;
-    const draft = getComposerDraftForPane(pane.paneId);
-    if (draft) {
-      void draft.reloadFromBackend(payload.threadId);
-    }
   }
   if (revision !== null) appliedRevertRevByThread.set(payload.threadId, revision);
 }

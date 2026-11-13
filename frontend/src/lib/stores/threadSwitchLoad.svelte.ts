@@ -450,7 +450,7 @@ export function createThreadSwitchLoad(
    * Drop every cached copy of a thread's window: the in-memory
    * snapshot, the measured-size priors, the durable replica entry, and
    * the history stamp that described them. Called wherever the pane
-   * mutates history structurally (revert, un-send, same-thread reload)
+   * mutates history structurally (revert, same-thread reload)
    * or learns the thread is gone — one door, so a new call site cannot
    * evict half of it and leave a stale paint behind the other half.
    */

@@ -42,7 +42,6 @@ import { captureTimelineAnchor, type ResolvedTimelineNode } from './timelineScro
 import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 import type { LoadUntilItemResult } from '../../stores/threadPaneShared';
-import { hiddenByInterruptCut, optimisticInterruptCut } from '../../stores/threadInterruptState.svelte';
 
 export interface TimelineRestoreOptions {
   getPane(): PaneSession & TimelineSource & TimelineWindow & ScrollHost;
@@ -103,7 +102,7 @@ function isSameRestoreEdge(a: RestoreEdge, b: RestoreEdge): boolean {
 }
 
 /** How an explicit jump ended; see `scrollToItem`. */
-type JumpOutcome = 'issued' | 'withheld' | 'missing' | 'hidden' | 'failed' | 'superseded' | 'cancelled' | 'unresolved';
+type JumpOutcome = 'issued' | 'withheld' | 'missing' | 'failed' | 'superseded' | 'cancelled' | 'unresolved';
 
 /** Lookups a jump repeats while window cuts keep superseding them. */
 const JUMP_LOOKUP_ATTEMPTS = 3;
@@ -610,8 +609,6 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
    * - `issued` / `withheld`: the write went out, to the row or, for a row
    *   the reveal gate still withholds, to the last revealed row.
    * - `missing`: the row is gone from the thread (warning toast).
-   * - `hidden`: an early Stop's un-send in flight keeps the row off the
-   *   screen (warning toast).
    * - `failed`: the window load failed and has already reported it.
    * - `superseded`: a newer navigation or a switch owns the viewport.
    * - `cancelled`: the reader moved the scroller while the row loaded.
@@ -653,10 +650,6 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     await tick();
     let interrupted = interruption();
     if (interrupted) return finishJump(id, interrupted);
-    if (hiddenByInterrupt(id)) {
-      addToast('warning', 'That message is being returned to the composer');
-      return finishJump(id, 'hidden');
-    }
     let target = locateJumpTarget(id);
     const node = target && !target.withheld ? options.getRevealedNodes()[target.index] : undefined;
     if (target && node?.kind === 'activity_run') {
@@ -698,15 +691,6 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     if (shown) return { ...shown, withheld: false };
     if (revealed.length === 0 || !options.resolveTimelineNode(id, options.getGroupedNodes())) return null;
     return { index: revealed.length - 1, itemId: id, withheld: true };
-  }
-
-  /** The row projection leaves these rows out, so no node can show one. */
-  function hiddenByInterrupt(id: string): boolean {
-    const pane = options.getPane();
-    const cut = optimisticInterruptCut(pane.threadId ?? '');
-    if (cut === null) return false;
-    const item = pane.getItemById(id);
-    return item !== undefined && hiddenByInterruptCut(item, cut);
   }
 
   function finishJump(

@@ -1755,7 +1755,7 @@ func waitForFileText(t *testing.T, path string, predicate func(string) bool) str
 // TestE2E_ClaudeStoppedThreadPreInitErrorResultSurfaces reproduces the
 // 2026-06-10 wedged-thread incident end-to-end: a thread whose session
 // was stopped (StopSession → CleanupThread sets the stopped-thread
-// marker, exactly what revert-on-interrupt does) is restarted by a
+// marker, exactly what a conversation rollback does) is restarted by a
 // send, and the replacement Claude process dies during startup —
 // emitting a single result{error_during_execution} BEFORE system/init,
 // then lingering alive (the real CLI does not exit after a failed

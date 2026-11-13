@@ -13,7 +13,7 @@ import (
 // just-persisted real user message. Runs synchronously at the send /
 // flush-confirmed sites — it is one SQLite upsert. Failure is logged,
 // not surfaced: the message itself is already durable, and a missing
-// anchor only degrades the later fork / revert-on-interrupt slice to
+// anchor only degrades the later fork / edit-and-resend slice to
 // the item-meta fallback candidates (resolveMessageAnchor synthesizes
 // one from the item row when no anchor exists).
 func (a *App) recordMessageAnchor(userItem store.Item) {

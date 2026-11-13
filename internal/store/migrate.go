@@ -331,7 +331,7 @@ ALTER TABLE payloads ADD COLUMN spans TEXT NOT NULL DEFAULT '';`,
 		Version: 23,
 		Name:    "message_anchors_replace_checkpoints",
 		// The per-message git-checkpoint machinery is gone. What fork-
-		// from-message and revert-on-interrupt still need from the old
+		// from-message and conversation rollback still need from the old
 		// thread_checkpoints row is pure provider correlation — turn
 		// index + Claude wire uuids — so the table slims into
 		// message_anchors and the git-side columns (ref_name,

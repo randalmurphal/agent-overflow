@@ -242,7 +242,7 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 	if handleErr != nil && !r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
 		// This confirmation IS the consumption boundary even though the
 		// write failed: record the message anchor now so fork /
-		// revert-on-interrupt can slice at this message without
+		// edit-and-resend can slice at this message without
 		// waiting for a retry or session-death self-heal. The
 		// anchor row doesn't depend on the failed stamp, only on
 		// the item row existing (FK) — so record for found rows

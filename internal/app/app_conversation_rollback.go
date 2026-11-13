@@ -5,68 +5,49 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/transport"
 	"agent-overflow/internal/usermessage"
 )
 
-// rollbackConversationLockedArgs bundles the parameters for the shared
-// conversation-rollback tail. Callers prepare the thread, user item,
-// message anchor, and composer draft, then hand off to
-// rollbackConversationLocked which owns the destructive sequence
-// (provider rollback → draft upsert → SQLite truncate). Event emission
-// stays with the caller.
+// rollbackConversationLockedArgs bundles the parameters for the
+// conversation-rollback tail. The caller prepares the thread, user item and
+// message anchor, then hands off to rollbackConversationLocked, which owns
+// the destructive sequence (provider rollback → SQLite truncate). Event
+// emission and the composer draft stay with the caller.
 type rollbackConversationLockedArgs struct {
 	thread   store.Thread
 	userItem store.Item
 	anchor   store.MessageAnchor
-	// promptDraft is the composer draft that replaces the rolled-back
-	// prompt, upserted BEFORE the truncation so the text is never
-	// homeless (see the call site below).
-	//
-	// nil means the CALLER owns the draft row and this tail must not
-	// write it at all — the edit-and-resend saga parks its own crash copy
-	// there before calling in, and restoring the old prompt would clobber
-	// it. Restoring a composer the user is about to replace would be
-	// meaningless there anyway.
-	promptDraft *store.ThreadDraft
 	// errorPrefix scopes wrapped errors so the calling surface is
 	// identifiable in logs and toasts.
 	errorPrefix string
 	// clearRunningBackgroundTasks terminates and hides still-running
 	// background tray work as part of the rollback. Set only when the
-	// user explicitly confirmed killing that work (the message-keyed
-	// revert path); the un-send path declines the revert instead when
-	// background tasks are live. Claude relies on stopSession's
-	// process-group close; Codex uses its thread-wide
+	// user explicitly confirmed killing that work. Claude relies on
+	// stopSession's process-group close; Codex uses its thread-wide
 	// background-terminal clean RPC before the history cut.
 	clearRunningBackgroundTasks bool
 }
 
-// rollbackConversationLocked is the destructive tail shared by the two
-// entry points that mutate the thread in place: revert-on-interrupt (the
-// Stop/Esc un-send) and the edit-and-resend saga
-// (RevertConversationAndResendMessage). Fork-from-message shares the
-// provider-slice helpers below but clones instead of truncating. The
-// caller is responsible for the per-thread action lock, loading the
-// user item + anchor, projecting the composer draft via
-// composerdraft.FromUserItem, AND emitting whatever post-rollback event
-// its surface needs once this returns nil.
+// rollbackConversationLocked is the destructive tail of the edit-and-resend
+// saga (RevertConversationAndResendMessage), which mutates the thread in
+// place. Fork-from-message shares the provider-slice helpers below but
+// clones instead of truncating. The caller is responsible for the
+// per-thread action lock, loading the user item + anchor, the composer
+// draft, AND emitting whatever post-rollback event its surface needs once
+// this returns nil. Only Claude and Codex threads are supported; any other
+// provider is refused before anything is stopped or cut.
 //
 // Sequence (in order — partial failures leave a clear cleanup point):
 //
 //  1. Provider rollback:
 //     - A live paginated Codex thread uses `thread/revert beforeTurnId`
-//     on its existing connection; upstream owns active-turn shutdown,
-//     persistence, the cut and runtime reload. Cold/legacy fallback stops
-//     first and uses a throwaway resume for `thread/revert` or
-//     `thread/fork lastTurnId`, repointing SessionRef only for the fork.
-//     - claude-tui reverts natively on the Esc the caller already
-//     delivered; AO only mirrors the cut in its own timeline + draft.
+//     on its existing connection; upstream owns persistence, the cut and
+//     runtime reload. Cold/legacy fallback stops first and uses a
+//     throwaway resume for `thread/revert` or `thread/fork lastTurnId`,
+//     repointing SessionRef only for the fork.
 //     - Claude stops the provider subprocess first, then writes a
 //     sliced session file.
-//  2. UpsertThreadDraft restores the composer draft — skipped entirely
-//     when the caller owns the draft row (promptDraft nil).
-//  3. SQLite truncation at the provider rollback's granularity: Codex
+//  2. SQLite truncation at the provider rollback's granularity: Codex
 //     deletes whole turns from the user-item's turnIndex (inclusive,
 //     matching the turn-boundary cut BOTH Codex truncations make);
 //     Claude deletes from the user item itself
@@ -89,10 +70,8 @@ type revertedConversationCut struct {
 
 // UserMessageRevertedEvent is the wire payload for the
 // `user_message:reverted` event emitted at the end of a successful
-// conversation revert. Two callers: the Stop/Esc un-send
-// (InterruptAndRevertIfClean) and the edit-and-resend saga
-// (RevertConversationAndResendMessage), which sets DraftPendingResend.
-// The frontend consumes this to truncate its timeline to match the
+// conversation revert by the edit-and-resend saga
+// (RevertConversationAndResendMessage). The frontend consumes this to truncate its timeline to match the
 // SQLite cut. Idempotent on the frontend: a removal of an
 // already-absent id is a no-op.
 type UserMessageRevertedEvent struct {
@@ -126,8 +105,9 @@ type UserMessageRevertedEvent struct {
 	// overstated stamp would show stale content as fresh (§3.4).
 	HistoryRev   int64 `json:"historyRev"`
 	HistoryEpoch int64 `json:"historyEpoch"`
-	// DraftPendingResend identifies a replacement operation. It leaves the
-	// ordinary composer draft alone; only the early un-send rehydrates it.
+	// DraftPendingResend marks the cut as a replacement that leaves the
+	// composer draft alone. Always true; older clients rehydrate the
+	// composer from a cut that lacks it.
 	DraftPendingResend bool `json:"draftPendingResend,omitempty"`
 	// ConnectionID attributes replacement recovery to the requesting page load.
 	// Every client applies the cut; only that connection records its local marker.
@@ -135,6 +115,9 @@ type UserMessageRevertedEvent struct {
 }
 
 func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (cut revertedConversationCut, err error) {
+	if args.thread.Provider != string(provider.Codex) && args.thread.Provider != string(provider.Claude) {
+		return cut, fmt.Errorf("%s: provider %q does not support conversation rollback", args.errorPrefix, args.thread.Provider)
+	}
 	if err := a.store.CheckThreadExecutionAccess(args.thread); err != nil {
 		return cut, err
 	}
@@ -158,18 +141,6 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		if err := a.rollbackCodexThreadToMessage(args.thread, args.anchor); err != nil {
 			return revertedConversationCut{}, fmt.Errorf("%s: %w", args.errorPrefix, err)
 		}
-	} else if args.thread.Provider == string(provider.ClaudeTUI) {
-		// The interactive TUI reverts the just-sent prompt natively when it
-		// receives the Esc: the Esc aborts the in-flight /v1/messages and the
-		// dropped turn does not re-enter the next request (LIVE-confirmed in
-		// the CLI capture spike hook_escrevert + hook_revertcontext).
-		// InterruptAndRevertIfClean already delivered that Esc via the provider
-		// Interrupt above, so — unlike headless Claude — AO must NOT stop the
-		// session (it stays live for the next turn) or rewrite a session file (the
-		// TUI owns its own conversation; AO has no fork file to write). AO only
-		// mirrors the native revert in its own timeline + draft below. claude-tui
-		// Send clears the composer before its next paste so the prompt the TUI
-		// restored can't fuse with the re-send.
 	} else {
 		// Mark BEFORE the stop, mirroring the Codex branch: the stop's
 		// teardown settles still-running background launches with
@@ -188,36 +159,26 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		if err := a.stopSession(args.thread.ID); err != nil {
 			return revertedConversationCut{}, fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
 		}
-		if err := a.rollbackProviderConversationToMessage(args.thread, args.anchor, args.userItem); err != nil {
+		if err := a.rollbackClaudeThreadToMessage(args.thread, args.anchor, args.userItem); err != nil {
 			return revertedConversationCut{}, fmt.Errorf("%s: %w", args.errorPrefix, err)
 		}
 	}
 
 	// The activity-rail todo list (threads.live_todo) deliberately survives
 	// the cut. Claude keys its task list by thread (claude.Config.TaskListID),
-	// so the next session still holds the same tasks, tail ones included,
-	// exactly as the native TUI's Esc-revert keeps them; clearing AO's copy
-	// would only make the rail disagree with what the agent has.
+	// so the next session still holds the same tasks, tail ones included;
+	// clearing AO's copy would only make the rail disagree with what the
+	// agent has.
 
-	// The prompt draft is restored BEFORE the destructive truncation: the
-	// provider slice above already removed the message from provider
-	// history, so from here on the composer draft is the user's only copy.
-	// If truncation then fails, the timeline still holds the rows and the
-	// anchor, and a retry converges — the provider rollback re-runs
-	// against the already-cut transcript (the already-cut detector clones
-	// it whole) and this upsert is idempotent (round-4 review, CT4-4).
-	// A nil promptDraft means the caller owns separate durable recovery.
-	if args.promptDraft != nil {
-		if err := a.writeThreadDraft(transport.ClientIdentity{}, *args.promptDraft); err != nil {
-			return revertedConversationCut{}, fmt.Errorf("%s: restore prompt draft: %w", args.errorPrefix, err)
-		}
-	}
+	// If truncation below fails, the timeline still holds the rows and the
+	// anchor, and a retry converges: the provider rollback re-runs against
+	// the already-cut transcript (the already-cut detector clones it whole).
 
 	// Truncation granularity must match the provider rollback above. Both
 	// Codex cuts — thread/fork's inclusive lastTurnId and thread/revert's
 	// exclusive beforeTurnId — land on the turn boundary before the
 	// anchor's turn, so SQLite drops the whole turn. Claude's session
-	// slice (and the TUI's native Esc-revert) cut at the message itself, so
+	// slice cuts at the message itself, so
 	// only the anchor row and what follows it go — a queued flush message
 	// that shares its turn with an earlier prompt keeps that prompt and the
 	// agent work that preceded the queued send. The Codex coarseness is an
@@ -230,7 +191,6 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 			return revertedConversationCut{}, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
 		}
 		if a.triage != nil {
-			a.triage.ClearPendingSendsFromTurn(args.thread.ID, args.userItem.TurnIndex)
 			// thread/revert keeps the session live across the cut.
 			a.triage.ForgetToolCallLinks(args.thread.ID)
 		}
@@ -243,20 +203,7 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 	if err != nil {
 		return revertedConversationCut{}, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
 	}
-	if a.triage != nil {
-		// The claude-tui native revert keeps the session live across the cut.
-		a.triage.ForgetToolCallLinks(args.thread.ID)
-	}
 	return revertedConversationCut{KeptAnchorTurnItemIDs: keptAnchorTurnItemIDs, Stamp: stamp}, nil
-}
-
-func (a *App) rollbackProviderConversationToMessage(thread store.Thread, anchor store.MessageAnchor, userItem store.Item) error {
-	switch thread.Provider {
-	case string(provider.Claude):
-		return a.rollbackClaudeThreadToMessage(thread, anchor, userItem)
-	default:
-		return fmt.Errorf("unsupported provider %q", thread.Provider)
-	}
 }
 
 // rollbackCodexThreadToMessage cuts Codex history at the last provider-backed

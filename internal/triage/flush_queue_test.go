@@ -434,12 +434,10 @@ func TestCleanupThread_IsolatedPerThread(t *testing.T) {
 // TestTryFlushQueue_BatchStaysCountedAcrossHandoff pins the round-14
 // close-out fix for the boundary-drain handoff window (C14-1): between
 // deleting a batch from queuedFlushItems and the App dispatcher
-// recording it in-flight, the batch must still be visible to the
-// revert-on-interrupt predicate through QueuedFlushItemCount (the
-// claim count). Without it, a Stop click landing inside the dispatcher
-// callback sees zero pending flush work on a turn with no durable
-// agent rows and wrongly reverts the turn-starting prompt while the
-// follow-up is delivered.
+// recording it in-flight, the batch must still be visible through
+// QueuedFlushItemCount (the claim count). Without it, the App's
+// pending-work count (idle eviction, transfer reservation) reads zero
+// while the follow-up is being delivered.
 func TestTryFlushQueue_BatchStaysCountedAcrossHandoff(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

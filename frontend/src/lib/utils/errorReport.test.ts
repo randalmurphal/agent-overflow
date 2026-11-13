@@ -8,21 +8,21 @@ import {
 } from './errorReport';
 
 const CHAIN = [
-  'interrupt-and-revert: claude rollback: uuid "8e78" is missing from session',
+  'revert and resend: claude rollback: uuid "8e78" is missing from session',
   'claude rollback: uuid "8e78" is missing from session',
   'uuid "8e78" is missing from session',
 ];
 
 function backendError(chain: string[], backend = ''): TransportError {
   return new TransportError('method_error', chain[0] ?? 'failed', {
-    detail: { ref: 'rKVz', method: 'InterruptAndRevertIfClean', at: Date.UTC(2026, 9, 8, 12), chain },
+    detail: { ref: 'rKVz', method: 'RevertConversationAndResendMessage', at: Date.UTC(2026, 9, 8, 12), chain },
     backend,
   });
 }
 
 describe('errorReport', () => {
   it('lists the backend chain', () => {
-    const report = errorReport(backendError(CHAIN), { context: 'Could not undo the message' });
+    const report = errorReport(backendError(CHAIN), { context: 'Could not resend the edited message' });
     expect(errorLayers(report)).toEqual(CHAIN);
     expect(errorHasDetails(report)).toBe(true);
   });
@@ -40,16 +40,16 @@ describe('errorReport', () => {
   });
 
   it('writes a report an agent can act on', () => {
-    const report = errorReport(backendError(CHAIN), { context: 'Could not undo the message', facts: [['thread', 't1']] });
+    const report = errorReport(backendError(CHAIN), { context: 'Could not resend the edited message', facts: [['thread', 't1']] });
     const text = errorReportText(report, {
       appVersion: '1.2.3',
       platform: 'Linux',
       backendLog: { lines: ['triage: dropping init event', 'transport: failed (id: rKVz): boom'], found: true },
     });
-    expect(text).toContain('Agent Overflow error: Could not undo the message');
+    expect(text).toContain('Agent Overflow error: Could not resend the edited message');
     expect(text).toContain('Reason: Uuid "8e78" is missing from session.');
     expect(text).toContain('- code: method_error');
-    expect(text).toContain('- method: InterruptAndRevertIfClean');
+    expect(text).toContain('- method: RevertConversationAndResendMessage');
     expect(text).toContain('- ref: rKVz');
     expect(text).toContain('- time: 2026-10-08T12:00:00.000Z');
     expect(text).toContain('- thread: t1');

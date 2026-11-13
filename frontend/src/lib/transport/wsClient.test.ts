@@ -382,7 +382,7 @@ describe('WSClient', () => {
     const [first, second] = ws.sent.filter((frame) => frame.type === 'rpc');
     ws.pushFrame({ type: 'rpc', id: first!.id, error: {
       code: 'method_error', message: `revert: ${longLayer}`,
-      detail: { ref: 'rKVz', method: 'InterruptAndRevertIfClean', at: 1, chain: ['revert', longLayer, 7] },
+      detail: { ref: 'rKVz', method: 'RevertConversationAndResendMessage', at: 1, chain: ['revert', longLayer, 7] },
     } });
     ws.pushFrame({ type: 'rpc', id: second!.id, error: {
       code: 'method_error', message: 'boom', detail: { ref: 42, method: 'X', at: 1 },
@@ -390,7 +390,7 @@ describe('WSClient', () => {
     await settled;
     const [withDetail, withoutDetail] = caught as TransportError[];
     expect(withDetail!.message.length).toBeLessThan(longLayer.length);
-    expect(withDetail!.detail).toEqual({ ref: 'rKVz', method: 'InterruptAndRevertIfClean', at: 1, chain: ['revert', longLayer], backend: '' });
+    expect(withDetail!.detail).toEqual({ ref: 'rKVz', method: 'RevertConversationAndResendMessage', at: 1, chain: ['revert', longLayer], backend: '' });
     expect(withoutDetail!.detail).toBeUndefined();
     client.close();
   });

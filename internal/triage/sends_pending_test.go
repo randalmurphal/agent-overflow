@@ -194,9 +194,6 @@ func TestSendsPendingClearsOnEveryExit(t *testing.T) {
 				t.Fatal("queue did not dispatch")
 			}
 		}},
-		{"sends cleared from a reverted turn", deferred, func(_ *testing.T, r *Router, _ *store.Store) {
-			r.ClearPendingSendsFromTurn("t1", 1)
-		}},
 		{"send anchored at an interrupt", quiet, func(_ *testing.T, r *Router, _ *store.Store) {
 			r.MarkPendingSendAnchoredAtInterrupt("t1", "user:0:flush:1")
 		}},

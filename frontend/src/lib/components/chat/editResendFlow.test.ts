@@ -399,7 +399,7 @@ describe('edit-and-resend flow — invalidation matrix', () => {
     await openMessageEditor(view);
     await fireEvent.click(view.getByTestId('user-message-edit-send'));
 
-    // An un-send, or a concurrent revert reflected from a second pane.
+    // A concurrent revert reflected from a second pane.
     pane.removeRevertedItems(item.turnIndex, []);
     await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
 
@@ -1140,7 +1140,7 @@ describe('edit-and-resend flow — transport-class failure', () => {
     // That void must NOT run the ordinary reclaim: the resent message, or
     // the crash-copy draft row, may own those ids now.
     expect(deleteAttachment).not.toHaveBeenCalled();
-    // No optimistic paint and no restoreDraftFor either: the edited text
+    // No paint and no restoreDraftFor: the edited text
     // may already be in the transcript as a sent message.
     expect(view.getByLabelText('Message Input')).toHaveValue('');
     expect(saveDraft.mock.calls.filter((call) => call[0] === thread.id)).toHaveLength(0);

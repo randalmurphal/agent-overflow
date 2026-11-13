@@ -33,7 +33,7 @@ import { compactingRevision, hydrateCompactingState } from './compactingState.sv
 import {
   beginSendsPendingRead,
   endSendsPendingRead,
-  getCanonicalActiveTurn as getActiveTurn,
+  getActiveTurn,
   hydrateSendsPending,
   interactiveRequestsRevision,
   projectTurnCompleted,

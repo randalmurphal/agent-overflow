@@ -282,7 +282,7 @@ func (a *App) writeForkedClaudeSession(srcPath, sourceThreadID string, atTurnInd
 // writeMessageForkedClaudeSession is the message-keyed-fork call
 // into writeClaudeSessionSlice. The slice anchor is the dropped user
 // message's wire uuid (claudeSliceAnchorUUID); midTurnAnchor comes from
-// the anchor item's position, same as the un-send path.
+// the anchor item's position, same as the edit-and-resend rollback.
 func (a *App) writeMessageForkedClaudeSession(srcPath string, anchor store.MessageAnchor, anchorItem store.Item, midTurnAnchor bool) (string, string, error) {
 	return writeClaudeSessionSlice(
 		srcPath, claudeSliceAnchorUUID(anchor, anchorItem), claudeSliceParentUUID(anchor, anchorItem),

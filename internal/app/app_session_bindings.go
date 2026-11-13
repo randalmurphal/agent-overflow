@@ -139,6 +139,29 @@ func (a *App) InterruptTurn(threadID string, confirmedAgents []string) error {
 	return err
 }
 
+// InterruptRevertOptions is InterruptAndRevertIfClean's second argument.
+// Older clients send {expectedSendId, draft}; the fields are ignored.
+type InterruptRevertOptions struct{}
+
+// InterruptAndRevertResult answers InterruptAndRevertIfClean. Older clients
+// read reverted:false as "the Stop was a plain interrupt; keep the message".
+type InterruptAndRevertResult struct {
+	Reverted bool   `json:"reverted"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// InterruptAndRevertIfClean is InterruptTurn, retained for wire
+// compatibility with clients that call it for a Stop on a just-sent message.
+// It never reverts.
+//
+//ao:scope threads:operate
+func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOptions, confirmedAgents []string) (InterruptAndRevertResult, error) {
+	if err := a.InterruptTurn(threadID, confirmedAgents); err != nil {
+		return InterruptAndRevertResult{}, err
+	}
+	return InterruptAndRevertResult{Reason: "plain interrupt"}, nil
+}
+
 // SwitchThread returns the requested thread. Provider sessions are
 // started lazily on first send, not on focus.
 //

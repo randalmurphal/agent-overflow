@@ -265,9 +265,9 @@ func TestSessionRevertTreatsAnAbsentHistoryModeAsUnsupported(t *testing.T) {
 	}
 }
 
-// TestSessionRevertAllowsMidTurn pins the upstream operation AO uses for an
-// Esc un-send: thread/revert owns active-turn shutdown and history replacement
-// as one server-side operation.
+// TestSessionRevertAllowsMidTurn pins the upstream contract: thread/revert
+// owns active-turn shutdown and history replacement as one server-side
+// operation.
 func TestSessionRevertAllowsMidTurn(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"

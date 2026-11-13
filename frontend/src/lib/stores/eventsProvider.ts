@@ -485,14 +485,10 @@ export function applyTurnCompleted(evt: TurnCompletedEvent, sequence?: number): 
     errorMessage: evt.errorMessage ?? '',
   };
   // Clear the turn from the sidebar projection. Errored turns flip the
-  // pill to Failed; clean aborts flip it to Interrupted UNLESS the
-  // backend marked this as a revert-on-interrupt, in which case the
-  // pill stays clean (nothing happened, so don't paint it like it did).
+  // pill to Failed; clean aborts flip it to Interrupted.
   projectTurnCompleted(evt.threadId, evt.turnId, {
-    turnIndex: evt.turnIndex,
     aborted: settled.aborted,
     errorMessage: settled.errorMessage,
-    revertedUserMessage: Boolean(evt.revertedUserMessage),
   });
   patchThreadDurableStatus(evt.threadId, {
     hasIncompleteTurn: false,

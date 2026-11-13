@@ -91,8 +91,8 @@ describe('userFacingError', () => {
 
   it('reads an unreviewed backend failure from its innermost cause, not the clamped message', () => {
     const inner = 'stored provider uuid "550e8400-e29b-41d4-a716-446655440000" is missing from session /home/u/s.jsonl: refusing a slice';
-    const err = new TransportError('method_error', 'interrupt-and-revert: write rolled-back session: claude rollback: stored provid…', {
-      detail: { ref: 'r1', method: 'InterruptAndRevertIfClean', at: 1, chain: ['interrupt-and-revert', 'claude rollback', inner] },
+    const err = new TransportError('method_error', 'revert and resend: write rolled-back session: claude rollback: stored provid…', {
+      detail: { ref: 'r1', method: 'RevertConversationAndResendMessage', at: 1, chain: ['revert and resend', 'claude rollback', inner] },
     });
     expect(userFacingError(err)).toBe('Stored provider uuid is missing from session /home/u/s.jsonl: refusing a slice.');
   });
@@ -106,7 +106,7 @@ describe('userFacingError', () => {
 
   it('does not show an off-host reference as the reason', () => {
     const err = new TransportError('method_error', 'method failed (id: rKVzmpRFjxI)', {
-      detail: { ref: 'rKVzmpRFjxI', method: 'InterruptAndRevertIfClean', at: 1 },
+      detail: { ref: 'rKVzmpRFjxI', method: 'RevertConversationAndResendMessage', at: 1 },
     });
     expect(userFacingError(err)).toBe('The backend could not complete this request.');
   });

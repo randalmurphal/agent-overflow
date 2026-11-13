@@ -598,7 +598,7 @@ describe('<ChatView>', () => {
     const view = render(ChatView, { props: { pane } });
     await openMessageEditor(view);
 
-    // Un-send, or a concurrent revert reflected from a second pane.
+    // A concurrent revert reflected from a second pane.
     pane.removeRevertedItems(item.turnIndex, []);
     await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
     expect(resend).not.toHaveBeenCalled();

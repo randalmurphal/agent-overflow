@@ -1786,9 +1786,8 @@ Five facts that decide how a client must call it:
 - **It is NOT refused mid-turn.** The handler subscribes to shutdown events,
   submits a shutdown, waits for both the runtime and listener to drain, reverts,
   then reloads the runtime with
-  `has_live_in_progress_turn = false`. AO uses that whole operation for an Esc
-  un-send. It does not send a separate `turn/interrupt` or replace the
-  app-server connection around the cut.
+  `has_live_in_progress_turn = false`. AO's in-place cut keeps the live
+  app-server connection around it (`rollbackCodexThreadToMessage`).
 - **Nothing is destroyed on disk.** `revert_thread` writes a NEW immutable
   rollout referencing the retained prefix and moves only the SQLite
   rollout pointer (`codex-rs/thread-store/src/local/revert_thread.rs`),

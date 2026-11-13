@@ -888,7 +888,7 @@ func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 }
 
 // TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho pins the
-// send-time-uuid fix. On a fast send→escape the un-send fires before
+// send-time-uuid fix. A rollback to the message can run before
 // Claude's replay echo arrives, and resolveMessageAnchor returns the
 // anchor as-is when one exists (the common case). So the minted uuid
 // must land on BOTH the row meta AND the anchor at send time — before
@@ -953,7 +953,7 @@ func TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho(t *testing.T) {
 		t.Fatalf("anchor missing after send: ok=%v err=%v", ok, err)
 	}
 	if anchor.ProviderUserMessageID != rowID {
-		t.Fatalf("anchor ProviderUserMessageID = %q, want %q (must mirror the pre-stamped row meta so a fast un-send keys on the UUID-slice path)", anchor.ProviderUserMessageID, rowID)
+		t.Fatalf("anchor ProviderUserMessageID = %q, want %q (must mirror the pre-stamped row meta so an early rollback keys on the UUID-slice path)", anchor.ProviderUserMessageID, rowID)
 	}
 }
 
@@ -1331,8 +1331,7 @@ func TestRespondToApprovalNoProviderError(t *testing.T) {
 
 // TestInterruptTurnMissingSessionIsNoOp pins the tolerant contract:
 // interrupting a thread with no live session returns nil instead of
-// erroring. This matches runPlainInterruptLocked's behavior and
-// closes the user-visible regression where a session that died on
+// erroring. It closes the user-visible regression where a session that died on
 // the readLoop's "disconnected" path produced a "No active session
 // for thread X" banner the moment the user clicked Stop — with no
 // session to stop, the action is a successful no-op and Reconnect

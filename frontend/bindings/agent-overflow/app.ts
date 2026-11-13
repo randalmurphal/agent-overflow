@@ -2838,32 +2838,9 @@ export function InspectProjectFolder(path: string): $CancellablePromise<projecta
 }
 
 /**
- * InterruptAndRevertIfClean is the unified Stop-button entry point.
- * When the predicate matches under the per-thread lock — exactly one
- * user_text in the latest turn, no assistant content yet, no queued
- * follow-up messages — the user message is reverted (provider
- * conversation rolled back, timeline truncated, composer draft
- * restored, `user_message:reverted` event emitted). When the predicate
- * does not match the method falls back to a plain interrupt
- * (provider Interrupt + triage.MarkInterrupt) so the caller can
- * roll back any optimistic UI it applied.
- * 
- * The frontend pre-checks its local predicate before calling so it
- * can paint instant optimistic state; this method re-checks under the
- * thread lock so a Send→Stop race resolves correctly. The two
- * predicates are intentionally independent — the frontend checks
- * composer draft + queue + pane items; the backend checks SQLite +
- * flush queue. Both must agree for revert to succeed.
- * 
- * Both branches interrupt the provider, and a Claude interrupt kills the
- * thread's live background agents (app_background_kill.go).
- * confirmedAgents names, by transcriptRootId, the agents the person
- * confirmed the Stop may kill. While a live agent is not among them the
- * call refuses with background_agents_running and every live agent once it
- * is known to interrupt, before anything is interrupted, reverted or
- * written. That refusal comes ahead of the predicate's own "running
- * background tasks" decline, which a confirmed call still takes to the
- * plain interrupt.
+ * InterruptAndRevertIfClean is InterruptTurn, retained for wire
+ * compatibility with clients that call it for a Stop on a just-sent message.
+ * It never reverts.
  */
 export function InterruptAndRevertIfClean(threadID: string, opts: app$0.InterruptRevertOptions, confirmedAgents: string[]): $CancellablePromise<app$0.InterruptAndRevertResult> {
     return $Call.ByID(753394581, threadID, opts, confirmedAgents).then(($result: any) => {
@@ -4998,20 +4975,11 @@ export function RetryThreadWorktreeSetup(threadID: string): $CancellablePromise<
  * intermediate state where the conversation is truncated and the user
  * still has to press Enter on a rehydrated composer.
  * 
- * It is the message-keyed, idle-thread counterpart to the two other
- * rollback entry points:
- * 
- *   - InterruptAndRevertIfClean un-sends the LATEST message while its
- *     turn is still live (Stop button); it interrupts the turn first and
- *     DOES restore the prompt to the composer, because it has no
- *     replacement to send.
- *   - ForkThreadFromMessage starts a NEW thread that shows the kept
- *     prefix and leaves the source thread untouched.
- * 
- * This one mutates the current thread and keeps it. It shares the whole
- * destructive tail (provider rollback -> truncate) with
- * InterruptAndRevertIfClean through rollbackConversationLocked and emits
- * the same `user_message:reverted` event. A prepared replacement travels with
+ * Unlike ForkThreadFromMessage, which starts a NEW thread that shows the
+ * kept prefix and leaves the source untouched, this one mutates the
+ * current thread and keeps it. Its destructive tail (provider rollback ->
+ * truncate) is rollbackConversationLocked, and it emits the
+ * `user_message:reverted` event. A prepared replacement travels with
  * its cut, so clients can replace the tail in one render transaction. Recovery
  * staging lives in thread_draft_recoveries, independently of composer autosaves.
  * 
@@ -5024,16 +4992,13 @@ export function RetryThreadWorktreeSetup(threadID: string): $CancellablePromise<
  * check is what makes an unconsented kill impossible); true additionally
  * runs the provider-appropriate cleanup and flips the persisted
  * "running" tray rows inactive so dead work doesn't survive the rollback
- * as stale spinners. Mirrors the un-send path's posture, which declines
- * the revert outright to preserve background work.
+ * as stale spinners.
  * 
- * Only claude and codex are supported: claude-tui reverts natively
- * inside the TUI (Esc), and rollbackConversationLocked's claude-tui
- * branch assumes that Esc was already delivered for a LIVE turn — an
- * assumption this idle-thread path can never satisfy. The UI never
- * wires the button for claude-tui (fork:false in the capability
- * matrix), but the guard below rejects it structurally too: a wire
- * caller reaching this method on a claude-tui thread would otherwise
+ * Only claude and codex are supported: claude-tui owns its conversation
+ * inside the TUI and AO has no session file to cut. The UI never wires
+ * the button for claude-tui (fork:false in the capability matrix);
+ * resolveRevertAndResendTarget refuses it before anything is staged, and
+ * rollbackConversationLocked refuses it again, so a wire caller cannot
  * truncate AO's history cache while the live TUI keeps the full
  * conversation.
  * 

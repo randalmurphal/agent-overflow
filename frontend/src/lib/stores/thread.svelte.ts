@@ -1191,7 +1191,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * Neither this nor `upsertItems` arms the structural spring: wire
      * appends route through `applyProviderItemUpserts` below, which
      * does. The un-armed paths are for rows that must NOT animate the
-     * viewport (revert-on-interrupt restores).
+     * viewport.
      */
     upsertItem(item: Item): boolean {
       return itemStream.upsertItemsBatch([item]) !== null;
@@ -1220,10 +1220,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     /**
      * Remove a single item from the pane's timeline by id. Returns the
-     * removed Item so optimistic callers (revert-on-interrupt) can
-     * re-insert it on rollback. Idempotent: returns null when the row
-     * is already gone, so a late `user_message:reverted` event after
-     * the optimistic remove is a no-op.
+     * removed Item. Idempotent: returns null when the row is already
+     * gone.
      *
      * `expectedThreadId` is required rather than optional because every
      * caller reaches here across an await or an event hop, and the pane
@@ -1247,25 +1245,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     /**
-     * Remove every item with `turnIndex >= fromTurnIndex` from the
-     * pane's timeline. Mirrors the backend `DeleteConversationFromTurn`
-     * truncate that revert-on-interrupt and explicit revert run under
-     * the thread lock — only `user_message:reverted` notifies the user
-     * row, so synthetic siblings on the same turn (thinking, api_retry,
-     * error, notification, terminal_interaction waits) would otherwise
-     * strand in the timeline without backing SQLite rows.
-     *
-     * Returns the removed items in their previous order so optimistic
-     * callers can restore them via `upsertItems` on rollback (the
-     * plain-interrupt fallback when the backend predicate disagrees).
-     * Idempotent: returns `[]` when no rows match.
-     */
-    removeItemsFromTurn(fromTurnIndex: number, expectedThreadId: string): Item[] {
-      if (thread?.id !== expectedThreadId || !Number.isFinite(fromTurnIndex)) return [];
-      return removeMatchedItems((it) => it.turnIndex >= fromTurnIndex);
-    },
-
-    /**
      * Mirror a backend conversation revert exactly: remove every item
      * with `turnIndex > turnIndex`, and within the anchor turn itself
      * remove everything NOT named in `keptAnchorTurnItemIds` — the
@@ -1273,8 +1252,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * `DeleteConversationFromItem`. The kept-set formulation (rather
      * than a removed-set) is load-bearing: pane-only rows that were
      * never persisted are absent from any backend enumeration, and a
-     * kept-set removes them for free. An empty list degenerates to
-     * `removeItemsFromTurn(turnIndex)`. Idempotent like its sibling.
+     * kept-set removes them for free. An empty list removes the whole
+     * anchor turn. Idempotent: returns `[]` when no rows match.
      */
     removeRevertedItems(turnIndex: number, keptAnchorTurnItemIds: string[]): Item[] {
       if (!Number.isFinite(turnIndex)) return [];

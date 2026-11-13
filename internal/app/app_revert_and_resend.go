@@ -51,20 +51,11 @@ type RevertAndResendResult struct {
 // intermediate state where the conversation is truncated and the user
 // still has to press Enter on a rehydrated composer.
 //
-// It is the message-keyed, idle-thread counterpart to the two other
-// rollback entry points:
-//
-//   - InterruptAndRevertIfClean un-sends the LATEST message while its
-//     turn is still live (Stop button); it interrupts the turn first and
-//     DOES restore the prompt to the composer, because it has no
-//     replacement to send.
-//   - ForkThreadFromMessage starts a NEW thread that shows the kept
-//     prefix and leaves the source thread untouched.
-//
-// This one mutates the current thread and keeps it. It shares the whole
-// destructive tail (provider rollback -> truncate) with
-// InterruptAndRevertIfClean through rollbackConversationLocked and emits
-// the same `user_message:reverted` event. A prepared replacement travels with
+// Unlike ForkThreadFromMessage, which starts a NEW thread that shows the
+// kept prefix and leaves the source untouched, this one mutates the
+// current thread and keeps it. Its destructive tail (provider rollback ->
+// truncate) is rollbackConversationLocked, and it emits the
+// `user_message:reverted` event. A prepared replacement travels with
 // its cut, so clients can replace the tail in one render transaction. Recovery
 // staging lives in thread_draft_recoveries, independently of composer autosaves.
 //
@@ -77,16 +68,13 @@ type RevertAndResendResult struct {
 // check is what makes an unconsented kill impossible); true additionally
 // runs the provider-appropriate cleanup and flips the persisted
 // "running" tray rows inactive so dead work doesn't survive the rollback
-// as stale spinners. Mirrors the un-send path's posture, which declines
-// the revert outright to preserve background work.
+// as stale spinners.
 //
-// Only claude and codex are supported: claude-tui reverts natively
-// inside the TUI (Esc), and rollbackConversationLocked's claude-tui
-// branch assumes that Esc was already delivered for a LIVE turn — an
-// assumption this idle-thread path can never satisfy. The UI never
-// wires the button for claude-tui (fork:false in the capability
-// matrix), but the guard below rejects it structurally too: a wire
-// caller reaching this method on a claude-tui thread would otherwise
+// Only claude and codex are supported: claude-tui owns its conversation
+// inside the TUI and AO has no session file to cut. The UI never wires
+// the button for claude-tui (fork:false in the capability matrix);
+// resolveRevertAndResendTarget refuses it before anything is staged, and
+// rollbackConversationLocked refuses it again, so a wire caller cannot
 // truncate AO's history cache while the live TUI keeps the full
 // conversation.
 //
@@ -177,8 +165,8 @@ func (a *App) RevertConversationAndResendMessage(
 
 	// resolveMessageAnchor synthesizes an anchor from the item row when
 	// the persisted one is missing or its turn index drifted, so the
-	// SQLite truncation and the provider cut agree. Same contract as the
-	// un-send and fork-from-message paths.
+	// SQLite truncation and the provider cut agree. Same contract as
+	// fork-from-message.
 	anchor := a.resolveMessageAnchor("revert and resend", threadID, item)
 
 	// Recovery is already durable; the ordinary composer draft stays editable.
@@ -186,7 +174,6 @@ func (a *App) RevertConversationAndResendMessage(
 		thread:                      thread,
 		userItem:                    item,
 		anchor:                      anchor,
-		promptDraft:                 nil,
 		errorPrefix:                 "revert and resend",
 		clearRunningBackgroundTasks: opts.KillRunningBackgroundTasks,
 	})
@@ -275,9 +262,7 @@ func (a *App) resolveRevertAndResendTarget(
 	// log (Claude JSONL) or in-memory turn (Codex). The editor is hidden
 	// while a turn runs (UserMessage's actionsTurnLocked); this guard is
 	// defense-in-depth for script callers and races, mirroring
-	// ForkThreadFromMessage. The live-turn un-send has its own entry
-	// point (InterruptAndRevertIfClean), whose Codex path lets
-	// thread/revert own active-turn shutdown.
+	// ForkThreadFromMessage.
 	if _, active, err := a.store.GetActiveTurn(threadID); err != nil {
 		return store.Thread{}, store.Item{}, fmt.Errorf("revert and resend: active turn check: %w", err)
 	} else if active {

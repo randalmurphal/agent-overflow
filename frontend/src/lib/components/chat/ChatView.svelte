@@ -426,8 +426,8 @@
   }
 
   // A thread switch voids the flow at any stage; an anchor row that
-  // disappears through another path (un-send, a concurrent revert
-  // reflected from a second pane) voids it too. Both passes read the
+  // disappears through another path (a concurrent revert reflected from
+  // a second pane) voids it too. Both passes read the
   // pane themselves — deliberately, so the second one only subscribes to
   // `pane.items` while a flow is actually parked against a row.
   $effect(() => {

@@ -51,7 +51,7 @@ func TestFromPartsWithAttachmentsAndPlan(t *testing.T) {
 	}
 }
 
-func TestFromUserItemRoundTripsAttachmentsAndSourcePlan(t *testing.T) {
+func TestPartFromUserItemRoundTripsAttachmentsAndSourcePlan(t *testing.T) {
 	src := &store.ProposedPlanSourceRef{ThreadID: "src", ItemID: "p1"}
 	meta, err := usermessage.Marshal(usermessage.Input{
 		Attachments: []store.Attachment{
@@ -71,29 +71,22 @@ func TestFromUserItemRoundTripsAttachmentsAndSourcePlan(t *testing.T) {
 		Meta:     meta,
 	}
 
-	draft, err := FromUserItem("t-target", item, 100)
+	part, err := PartFromUserItem(item)
 	if err != nil {
-		t.Fatalf("FromUserItem: %v", err)
+		t.Fatalf("PartFromUserItem: %v", err)
 	}
-	if draft.ThreadID != "t-target" {
-		t.Errorf("ThreadID = %q, want t-target", draft.ThreadID)
+	if part.Content != "hello there" {
+		t.Errorf("Content = %q, want %q", part.Content, "hello there")
 	}
-	if draft.Content != "hello there" {
-		t.Errorf("Content = %q, want %q", draft.Content, "hello there")
+	if len(part.AttachmentIDs) != 1 || part.AttachmentIDs[0] != "att-1" {
+		t.Errorf("attachments = %v, want [att-1]", part.AttachmentIDs)
 	}
-	var ids []string
-	if err := json.Unmarshal([]byte(draft.Attachments), &ids); err != nil {
-		t.Fatalf("decode attachments: %v", err)
-	}
-	if len(ids) != 1 || ids[0] != "att-1" {
-		t.Errorf("attachments = %v, want [att-1]", ids)
-	}
-	if draft.PendingPlanImplementation == "" {
-		t.Error("PendingPlanImplementation must round-trip the source plan ref")
+	if part.SourceProposedPlan == nil || *part.SourceProposedPlan != *src {
+		t.Errorf("SourceProposedPlan = %+v, want %+v", part.SourceProposedPlan, src)
 	}
 }
 
-func TestFromUserItemSkipsBlankAttachmentIDs(t *testing.T) {
+func TestPartFromUserItemSkipsBlankAttachmentIDs(t *testing.T) {
 	// Marshal directly using usermessage so the JSON shape stays
 	// authoritative; then patch in a blank-ID attachment to mimic an
 	// older / corrupt row.
@@ -108,18 +101,12 @@ func TestFromUserItemSkipsBlankAttachmentIDs(t *testing.T) {
 	}
 	item := store.Item{ID: "u-1", ThreadID: "t-src", Kind: "user_text", Role: "user", Summary: "x", Meta: meta}
 
-	draft, err := FromUserItem("t-target", item, 1)
+	part, err := PartFromUserItem(item)
 	if err != nil {
-		t.Fatalf("FromUserItem: %v", err)
+		t.Fatalf("PartFromUserItem: %v", err)
 	}
-	var ids []string
-	if err := json.Unmarshal([]byte(draft.Attachments), &ids); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	for _, id := range ids {
-		if id == "  " || id == "" {
-			t.Errorf("blank attachment id leaked through: %v", ids)
-		}
+	if len(part.AttachmentIDs) != 1 || part.AttachmentIDs[0] != "att-2" {
+		t.Errorf("attachments = %v, want [att-2]", part.AttachmentIDs)
 	}
 }
 

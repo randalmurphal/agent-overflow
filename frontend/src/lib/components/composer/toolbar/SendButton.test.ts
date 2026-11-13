@@ -193,7 +193,7 @@ describe('<SendButton>', () => {
   it('stays a disabled Send with an explanation while a revert is committing', async () => {
     const onSend = vi.fn();
     const onInterrupt = vi.fn();
-    const reason = 'Wait for the interrupted message to finish reverting';
+    const reason = 'Wait for the stop or message edit to finish';
     const { getByTestId, queryByTestId } = render(SendButton, {
       props: {
         canSend: false,

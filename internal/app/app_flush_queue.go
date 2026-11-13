@@ -202,6 +202,35 @@ func (a *App) flushDispatchItemCount(threadID string) int {
 	return a.flushDispatch.inflightItems[threadID]
 }
 
+// pendingFlushWorkCount sums every queued and in-flight follow-up message,
+// the work idle eviction and a conversation transfer must not lose. It
+// reads three counters that the flush handoff updates non-atomically
+// (triage queue length, deferred pending count, App inflight count), so it
+// holds a.flushDispatch.handoffMu across all three: the mutex
+// RegisterQueueItem holds across its enqueue-to-flush handoff. A message
+// mid-handoff is then counted as still queued or already in flight, never
+// neither.
+//
+// The lock-free boundary drains do not hold handoffMu; for them the triage
+// claim count (see tryFlushQueue) keeps a draining batch inside
+// QueuedFlushItemCount until the App inflight count has it. That overlap
+// closes the gap only if the triage counts are read first: a batch moving
+// from claimed to in flight between the reads is double-counted, never
+// missed. Do not reorder these reads.
+//
+// Callers hold the per-thread action lock, not handoffMu.
+func (a *App) pendingFlushWorkCount(threadID string) int {
+	a.flushDispatch.handoffMu.Lock()
+	defer a.flushDispatch.handoffMu.Unlock()
+	total := 0
+	if a.triage != nil {
+		total += a.triage.QueuedFlushItemCount(threadID)
+		total += a.triage.DeferredPendingFlushItemCount(threadID)
+	}
+	total += a.flushDispatchItemCount(threadID)
+	return total
+}
+
 func (a *App) ensureFlushDispatchMapsLocked() {
 	if a.flushDispatch.queues == nil {
 		a.flushDispatch.queues = make(map[string][]flushDispatchBatch)
@@ -1229,11 +1258,12 @@ func (a *App) registerQueueItem(
 	a.ensureTriageRouter()
 
 	// Hold a.flushDispatch.handoffMu across the queue append and the immediate flush
-	// handoff below: the revert predicate reads the same queued / in-flight
-	// counters under this mutex (pendingFlushWorkCount), so holding it here
-	// keeps a Stop click from observing tryFlushQueue's handoff window and
-	// discarding the turn-starting prompt. See the a.flushDispatch.handoffMu field doc
-	// (app.go) for the window and why this isn't the per-thread action lock.
+	// handoff below: idle eviction and transfer reservation read the same
+	// queued / in-flight counters under this mutex (pendingFlushWorkCount),
+	// so holding it here keeps them from observing tryFlushQueue's handoff
+	// window and treating the thread as having no queued work. See the
+	// a.flushDispatch.handoffMu field doc (app_state.go) for the window and
+	// why this isn't the per-thread action lock.
 	//
 	// Lock order: action -> ordinary mutation -> handoff -> triage/runtime.
 	// Queue admission holds only the mutation and handoff locks, so a slow
