@@ -58,44 +58,60 @@ type gitlabDiffRaw struct {
 	TooLarge  bool   `json:"too_large"`
 }
 
-// readGitLabDiffFiles reads the merge request's diffs until every path in
-// paths (a file's new or old path) is found, and returns the files by the
-// path the caller named. A path the diff lacks is an error naming it.
+// readGitLabDiffFiles reads the merge request's diffs and returns, by the
+// path the caller named, each path's file: the entry whose new path it is,
+// or, only when no entry has it as its new path, the entry whose old path
+// it is (a file renamed away). A path that is a new path stops the read
+// once all are found; an old-path alias holds only after every page that
+// could hold the path as a new path was read. A path the diff lacks is an
+// error naming it.
 func readGitLabDiffFiles(ctx context.Context, client *forgeapi.Client, ref PRReference, paths []string) (map[string]gitlabDiffFile, error) {
 	want := map[string]bool{}
 	for _, path := range paths {
 		want[path] = true
 	}
 	out := make(map[string]gitlabDiffFile, len(want))
+	aliases := map[string]gitlabDiffFile{}
 	request := forgeapi.Request{
 		Path:         gitlabMRPath(ref) + "/diffs",
 		Query:        url.Values{"per_page": {strconv.Itoa(gitlabDiffPageSize)}},
 		MaxBodyBytes: gitlabDiffMaxBody,
 	}
-	page := 1
+	page, complete := 1, false
 	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var files []gitlabDiffRaw
 		if err := json.Unmarshal(resp.Body, &files); err != nil {
 			return false, fmt.Errorf("GitLab merge request diffs: decode response: %w", err)
 		}
 		for _, raw := range files {
-			for _, path := range []string{raw.NewPath, raw.OldPath} {
-				if want[path] {
-					if _, seen := out[path]; !seen {
-						out[path] = parseGitLabDiffFile(raw)
-					}
-				}
+			if want[raw.NewPath] {
+				out[raw.NewPath] = parseGitLabDiffFile(raw)
+			}
+			if _, seen := aliases[raw.OldPath]; want[raw.OldPath] && raw.OldPath != raw.NewPath && !seen {
+				aliases[raw.OldPath] = parseGitLabDiffFile(raw)
 			}
 		}
-		return len(out) < len(want) && page < gitlabDiffMaxPages && advanceGitLabPage(resp, &page), nil
+		if len(out) == len(want) {
+			return false, nil
+		}
+		if !advanceGitLabPage(resp, &page) {
+			complete = true
+			return false, nil
+		}
+		return page <= gitlabDiffMaxPages, nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	for path := range want {
-		if _, ok := out[path]; !ok {
-			return nil, fmt.Errorf("%s is not in the merge request's diff", path)
+		if _, ok := out[path]; ok {
+			continue
 		}
+		if alias, ok := aliases[path]; ok && complete {
+			out[path] = alias
+			continue
+		}
+		return nil, fmt.Errorf("%s is not in the merge request's diff", path)
 	}
 	return out, nil
 }
