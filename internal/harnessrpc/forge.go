@@ -87,6 +87,15 @@ func (h *Harness) HarnessForgeRefuse(refusal forgefake.Refusal) error {
 	return h.forge.SetRefusal(refusal)
 }
 
+// HarnessForgeAdvanceJob moves one current CI job of a seeded repository
+// to a later state, as its runner would (forgefake.JobAdvance: {forge,
+// project, job (name) or id, status, log?, artifacts?}): a job a retry
+// left pending can be run and finished without re-seeding, since its id
+// is the fake's. Returns the job as it is now.
+func (h *Harness) HarnessForgeAdvanceJob(advance forgefake.JobAdvance) (forgefake.Job, error) {
+	return h.forge.AdvanceJob(advance)
+}
+
 // ForgeAPIEndpoint is where an isolated boot's forge API transport sends
 // its requests (forgeapi.Options.Isolated): the fake's base URL and the
 // fixed token it accepts.

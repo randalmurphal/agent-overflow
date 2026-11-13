@@ -100,12 +100,6 @@ func samePtr(a, b *int) bool {
 	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }
 
-func glabCreated(value any) response {
-	resp := glabOK(jsonResponse(value))
-	resp.status = http.StatusCreated
-	return resp
-}
-
 // gitlabConversationID is the discussion id of a conversation comment.
 func gitlabConversationID(comment Comment) string {
 	if comment.discussion != "" {

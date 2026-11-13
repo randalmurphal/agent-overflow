@@ -48,6 +48,18 @@ type CIPipeline struct {
 	Ref    string    `json:"ref,omitempty"`
 	SHA    string    `json:"sha,omitempty"`
 	Stages []CIStage `json:"stages"`
+	// Actions are the pipeline-level actions and whether the viewer may
+	// take them (see CIPipelineActions).
+	Actions CIPipelineActions `json:"actions"`
+	// ActionsUnavailable is the sentence saying why some actions are not
+	// offered: a read behind their flags (GitHub's repository permission,
+	// a run's artifacts) failed, and the flags it would have set are
+	// absent. Empty when every flag was read.
+	ActionsUnavailable string `json:"actionsUnavailable,omitempty"`
+	// ActionsRetryAt is when the failed read behind ActionsUnavailable may
+	// be asked again (its backoff's deadline), for the CI phase to read
+	// the pipeline then. Not on the wire.
+	ActionsRetryAt time.Time `json:"-"`
 }
 
 type CIStage struct {
@@ -68,6 +80,12 @@ type CIJob struct {
 	AllowFailure    bool     `json:"allowFailure,omitempty"`
 	LogsAvailable   bool     `json:"logsAvailable"`
 	Steps           []CIStep `json:"steps,omitempty"`
+	// RunID is a GitHub Actions job's workflow run id; empty on GitLab and
+	// for an external check.
+	RunID string `json:"runId,omitempty"`
+	// Actions are the job-level actions and whether the viewer may take
+	// them (see CIJobActions).
+	Actions CIJobActions `json:"actions"`
 }
 
 // CIStep is a per-step status inside a job (GitHub Actions only;

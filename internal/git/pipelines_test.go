@@ -622,6 +622,9 @@ func TestListPipelinesValidatesTheFilter(t *testing.T) {
 func TestGitHubReadPipelineReadsTheRunAndItsJobs(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if extra, ok := githubCIExtras(call); ok {
+			return extra
+		}
 		switch {
 		case call.Path == "repos/acme/widgets/actions/runs/9003":
 			return forgeAPIAnswer{Body: `{"id":9003,"name":"CI","head_branch":"feature","head_sha":"abc123","status":"in_progress","conclusion":null,"html_url":"https://github.com/acme/widgets/actions/runs/9003"}`}
@@ -661,8 +664,8 @@ func TestGitHubReadPipelineReadsTheRunAndItsJobs(t *testing.T) {
 	if last.ID != "7" || last.Status != CIStatusPending || last.LogsAvailable {
 		t.Errorf("queued job = %+v", last)
 	}
-	if ops := calls.ops(); len(ops) != 3 {
-		t.Fatalf("requests = %v, want the run and two jobs pages", ops)
+	if ops := calls.ops(); len(ops) != 4 || ops[3] != "GET repos/acme/widgets" {
+		t.Fatalf("requests = %v, want the run, two jobs pages and the viewer's permission (the run is live, so no artifacts read)", ops)
 	}
 }
 
@@ -740,6 +743,9 @@ func TestPRCIReadNamesTheRefAndCommit(t *testing.T) {
 		t.Fatalf("GitLab PR CI = %+v, %v", ci, err)
 	}
 	gh, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if extra, ok := githubCIExtras(call); ok {
+			return extra
+		}
 		if call.Op != "PRTick" {
 			return forgeUnexpected(t, call)
 		}

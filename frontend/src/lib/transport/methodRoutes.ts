@@ -381,9 +381,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2059566413: 'thread', // RevertConversationAndResendMessage
 	2945903583: 'home', // RevokeAccessDevice
 	2284519219: 'home', // RevokeAccessSession
+	1262689694: 'home', // RunPRCIAction
+	3964218798: 'home', // RunPipelineAction
 	651196145: 'thread', // RunThreadShellCommand
 	2886446326: 'thread', // RunningBackgroundAgents
 	2182723789: 'thread', // SaveAttachment
+	1986917811: 'selected', // SaveCIArtifacts
 	3025273299: 'thread', // SaveDraft
 	2960563266: 'selected', // SaveForgeAttachment
 	1040176720: 'selected', // SaveLocalImage

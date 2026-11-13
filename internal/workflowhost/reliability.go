@@ -303,7 +303,7 @@ func (r *Runner) interruptDetachedAttempt(runKey string, attempt *workflowAttemp
 		)
 		return
 	}
-	if err := r.interrupt(context.Background(), attempt.threadID); err != nil {
+	if err := r.interrupt(context.Background(), attempt.threadID, InterruptStoppedAttempt); err != nil {
 		log.Printf("workflow runner: interrupt %s: %v", runKey, err)
 	}
 }

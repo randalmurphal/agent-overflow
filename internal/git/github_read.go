@@ -66,7 +66,9 @@ const (
 		`... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }`
 	// githubRepositoryMergeFields is the repository half of the detail:
 	// the merge methods and settings the Merge menu offers.
-	githubRepositoryMergeFields = `mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed deleteBranchOnMerge autoMergeAllowed viewerPermission viewerDefaultMergeMethod`
+	// viewerPermission is selected beside it on every tick, since the CI
+	// actions read it too.
+	githubRepositoryMergeFields = `mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed deleteBranchOnMerge autoMergeAllowed viewerDefaultMergeMethod`
 	// githubTimelineItemTypes are the timeline items the Conversation feed
 	// shows as forge events (github_readiness.go maps them).
 	githubTimelineItemTypes = `PULL_REQUEST_REVIEW, REVIEW_DISMISSED_EVENT, MERGED_EVENT, CLOSED_EVENT, REOPENED_EVENT, ` +
@@ -94,13 +96,15 @@ const (
 
 // githubPRTickQuery reads a PR's detail, review threads and conversation
 // comments, timeline events, and the head commit's check rollup.
-// $wantDetail gates the detail, the viewer and the repository's merge
-// settings, $wantThreads the threads and comments, $wantEvents the newest
+// The repository's viewerPermission is always selected (the merge options
+// and the CI actions read it); $wantDetail gates the detail, the viewer
+// and the repository's merge settings, $wantThreads the threads and comments, $wantEvents the newest
 // page of timeline items, and $wantChecks the rollup, which both the
 // detail's check summary and readiness and the CI pipeline are built from.
 const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number: Int!, $wantDetail: Boolean!, $wantThreads: Boolean!, $wantEvents: Boolean!, $wantChecks: Boolean!) {
   viewer @include(if: $wantDetail) { login }
   repository(owner: $owner, name: $name) {
+    viewerPermission
     ... @include(if: $wantDetail) { ` + githubRepositoryMergeFields + ` }
     pullRequest(number: $number) {
       number headRefName
@@ -419,7 +423,7 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		}
 	}
 	if want.CI {
-		if out.CI, err = f.githubPipeline(ctx, client, ref.Repository(), checks, prev, stepsFor); err != nil {
+		if out.CI, err = f.githubPipeline(ctx, client, ref.Repository(), checks, githubCIPermission(raw.Repository.ViewerPermission), prev, stepsFor); err != nil {
 			return PRRead{}, err
 		}
 		if len(out.CI.Stages) > 0 {

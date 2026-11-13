@@ -94,6 +94,9 @@ type Forge interface {
 	// The comment actions: comment now, edit and delete a sent comment
 	// (forge_comments.go).
 	ForgeCommenter
+	// The CI actions: retry, cancel, run a manual job, artifacts
+	// (ci_actions.go).
+	ForgeCIActor
 }
 
 // PRReadParts names the parts of a PR one ReadPR decodes. Events are the

@@ -8,6 +8,7 @@ import {
 } from './diffReviewComments.svelte';
 import { projectTurnStarted } from './threadStatuses.svelte';
 import { CI_SECTION_INLINE_MAX_BYTES } from './ciSubject.svelte';
+import { peekCIAction } from './ciActions.svelte';
 import {
   __resetReviewPaneStateForTest,
   __setRelocationBudgetForTest,
@@ -1808,6 +1809,26 @@ describe('reviewPane store — PR scope', () => {
       disposeReviewStateForPane('pane-1', state);
       await flushPane();
       expect(follows).toHaveBeenLastCalledWith('sub-1', []);
+    } finally {
+      other.release();
+    }
+  });
+
+  it('drops a CI action it started when the pane is disposed', async () => {
+    installCIMocks();
+    setBindingMock('RunPRCIAction', async () => ({ seq: 40 }));
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    // A second pane on the same PR keeps its CI entry, so only the
+    // disposal can drop the action.
+    const other = attachPR(` ${PR_KEY}`, { ref: { forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 } });
+    try {
+      expect(await state.ciActions.run('cancel_pipeline', null)).toBe(true);
+      expect(peekCIAction(` ${PR_KEY}`)?.kind).toBe('cancel_pipeline');
+      disposeReviewStateForPane('pane-1', state);
+      await flushPane();
+      expect(peekCIAction(` ${PR_KEY}`)).toBeNull();
     } finally {
       other.release();
     }

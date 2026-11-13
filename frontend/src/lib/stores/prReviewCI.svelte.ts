@@ -15,6 +15,7 @@
 
 import { SvelteMap } from 'svelte/reactivity';
 import { untrack } from 'svelte';
+import { dropCIActions } from './ciActions.svelte';
 import { ciHandle } from './ciHandles';
 import { errString } from '../utils/errors';
 import type { CILogSection, CIPipeline } from '../types/models';
@@ -160,6 +161,7 @@ export function seedPRCI(key: string, pipeline: CIPipeline | null, ciError: stri
   if (pipeline) entry.pipeline = pipeline;
   entry.pumpError = ciError || null;
   entry.pumpFailure = ciError ? forgeFailureFrom(kind) : null;
+  if (pipeline) notifyPipelineApplied(key, pipeline);
 }
 
 /** A pipeline frame as the entry applies it: `pr:ci_updated` for a PR,
@@ -180,6 +182,27 @@ export function applyPRCIUpdated(key: string, event: CIFrame): void {
   entry.pumpError = null;
   entry.pumpFailure = null;
   entry.refreshError = null;
+  notifyPipelineApplied(key, event.pipeline);
+}
+
+export type CIPipelineObserver = (key: string, pipeline: CIPipeline) => void;
+
+const pipelineObservers = new Set<CIPipelineObserver>();
+
+/**
+ * Observes every pipeline applied under a key: the subscribe result's
+ * and each frame's. A log view open on a job a retry replaced follows the
+ * retry from here (ciSubject.svelte.ts). Returns the unsubscribe.
+ */
+export function onCIPipelineApplied(observer: CIPipelineObserver): () => void {
+  pipelineObservers.add(observer);
+  return () => {
+    pipelineObservers.delete(observer);
+  };
+}
+
+function notifyPipelineApplied(key: string, pipeline: CIPipeline): void {
+  for (const observer of pipelineObservers) observer(key, pipeline);
 }
 
 function logState(wire: PRCILogWireState): PRCILogState {
@@ -278,6 +301,7 @@ export async function refreshPRCI(key: string): Promise<void> {
  * entry, which nothing reads. */
 export function dropPRCI(key: string): void {
   ciByKey.delete(key);
+  dropCIActions(key);
 }
 
 /** Test seam: drop every entry, as a fresh module load would. */

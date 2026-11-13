@@ -316,6 +316,7 @@
         forge={review.prRef?.forge}
         onOpenCIJob={(stageName, job) => review?.openCIJobLog(stageName, job)}
         onRefreshCI={() => { void review?.refreshCI(); }}
+        ciActions={review.ciActions}
         {review}
         overviewOff={overviewShown && overviewOff}
       />
@@ -340,6 +341,8 @@
         onSetSectionsOpen={(sectionKeys, open) => review?.setCILogSectionsOpen(sectionKeys, open)}
         onCopySection={(section) => review?.copyCILogSection(section) ?? Promise.resolve(false)}
         onSendSection={review.pinned ? undefined : (section) => { void review?.sendCILogSectionToChat(section); }}
+        actions={review.ciActions}
+        retriedFrom={review.ciLogRetriedFrom}
       />
     {:else if review.conflictView}
       <ReviewConflictHeader {review} />

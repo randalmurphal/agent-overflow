@@ -154,7 +154,7 @@ Authoritative method list from
 | `account/updated`, `account/login/completed` | Recognised, no event. A SESSION never signs in, so neither is acted on there; the sign-in connection is a separate process that opts out of everything except `account/login/completed` and settles on it. See §Account sign-in. |
 | `model/rerouted` | Model reroute notice (Codex fell back to a different model). |
 | `model/verification` | Model-verification warning row. |
-| `model/safetyBuffering/updated` | Response held while OpenAI reviews the turn. Emits a notification row on the show edge only. |
+| `model/safetyBuffering/updated` | OpenAI held a response for review. Repeats on every stream frame of that response; one notification row per turn. |
 | `mcpServer/startupStatus/updated` | Per-server MCP startup delta. Side channel to the App's status cache, not a transcript event. |
 | `mcpServer/oauthLogin/completed` | Side channel: an MCP server finished its OAuth login. |
 | `serverRequest/resolved` | A previously-sent server request (approval / elicitation) was resolved. `EventApprovalResolved`. |
@@ -173,8 +173,8 @@ methods for that connection before serializing them
 an unrecognized entry is inert. Agent Overflow sends the complement of
 what it consumes. See `internal/provider/codex/notification_catalog.go`,
 whose catalogue is the `server_notification_definitions!` block at
-`codex-rs/app-server-protocol/src/protocol/common.rs` @ **rust-v0.149.0**
-(77 entries). A method upstream adds and the catalogue has not listed is
+`codex-rs/app-server-protocol/src/protocol/common.rs` @ **rust-v0.168.0**
+(88 entries). A method upstream adds and the catalogue has not listed is
 never opted out: it arrives, no classifier claims it, and the per-session
 drift log names it once.
 
@@ -1366,13 +1366,20 @@ no such rows and retires only its own legacy ones before the resume
             "showBufferingUi": true, "fasterModel": "gpt-5.6-luna"}}
 ```
 
-The model's response is being held while OpenAI reviews it. `reasons`
-and `useCases` are server-authored free-form strings, not a closed enum
+OpenAI held the model's response for review. `reasons` and `useCases`
+are server-authored free-form strings, not a closed enum
 (`codex-rs/core/src/session/turn.rs` passes the response's lists
 straight through), so render them verbatim rather than mapping them.
-`showBufferingUi: false` is the hold ending. The Codex TUI ignores this
-notification entirely; without surfacing it a client is
-indistinguishable from a hung app during the hold.
+
+The signal is a level, not an edge. Codex derives it from every stream
+frame that carries `safety_buffering` and forwards each one
+(`codex-rs/codex-api/src/sse/responses.rs`), so a held answer repeats it
+once per delta, and it arrives with the response rather than ahead of
+it. `showBufferingUi` is always `true` on the wire; nothing announces
+the hold ending. The session emits the first notice of each turn and
+drops the rest (`claimSafetyBufferingNotice`). The Codex TUI collapses
+the repeats the same way and stops reacting once the agent message
+starts (`codex-rs/tui/src/chatwidget/safety_buffering.rs`).
 
 ### `mcpServer/startupStatus/updated`
 
@@ -2113,7 +2120,8 @@ wrong-shape request from a refused one.
 
 ## Wire surface Agent Overflow declines
 
-Everything below exists at rust-v0.150.1 and is deliberately not consumed.
+Everything below exists at rust-v0.150.1, or at the later version its entry
+names, and is deliberately not consumed.
 Listed so a future sync can tell "we have not looked at this" from "we looked
 and declined". None of these methods is in `codexNotificationCatalog`'s
 consumed set, and the notification methods here are opted out at initialize.
@@ -2140,6 +2148,12 @@ consumed set, and the notification methods here are opted out at initialize.
 - `thread/realtime/item/started`, `thread/realtime/item/transcript/delta`,
   `thread/realtime/item/completed` (0.150): AO starts no realtime session.
   Historical `realtime_item` transcript segments are still imported.
+- `thread/attachment/updated` (0.155), `account/gatewayOAuth/changed`
+  (0.157), `thread/prediction/updated` (0.161), `thread/readState/changed`
+  (0.163), `thread/section/changed` (0.167): thread and account surfaces AO
+  has no UI for.
+- `modelProvider/authRecoveryStarted` / `authRecoveryCompleted` (0.152):
+  progress text for a credential refresh inside one request.
 - `thread/rollback`: deprecated upstream, mutates in place, and its `num_turns`
   counts user-MESSAGE boundaries rather than wire turns.
 - `close_agent` / `write_stdin`: model tools, not client-callable.

@@ -664,7 +664,7 @@ func TestHandleEventTurnComplete_InterruptedMapsCanonicalStopReason(t *testing.T
 	}
 }
 
-// TestMarkUserInterrupt_ExemptsBackgroundedLaunches pins invariant 24
+// TestMarkInterrupt_ExemptsBackgroundedLaunches pins invariant 24
 // on the user-interrupt (Esc) path. A user hitting stop mid-turn flips
 // every running/streaming NON-BACKGROUND item with a " — stopped"
 // suffix, but backgrounded tool_call launches must stay running — the
@@ -674,7 +674,7 @@ func TestHandleEventTurnComplete_InterruptedMapsCanonicalStopReason(t *testing.T
 // interrupted. Without the exemption the BackgroundTaskTray would
 // flip the launch badge to errored the moment the user presses Esc,
 // even though the task is still running in Claude.
-func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
+func TestMarkInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -713,10 +713,10 @@ func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 
 	errID, err := markUserInterruptForTest(router, "t1")
 	if err != nil {
-		t.Fatalf("MarkUserInterrupt: %v", err)
+		t.Fatalf("MarkInterrupt: %v", err)
 	}
 	if errID == "" {
-		t.Fatal("MarkUserInterrupt returned empty error id")
+		t.Fatal("MarkInterrupt returned empty error id")
 	}
 
 	// Backgrounded launch stays running — it must NOT be flipped.

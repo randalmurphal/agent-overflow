@@ -27,6 +27,7 @@ import (
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
+	"agent-overflow/internal/workflowhost"
 	"github.com/google/uuid"
 )
 
@@ -910,8 +911,8 @@ func TestThreadRequestWaitEndsWhenTheCallersTurnIsInterrupted(t *testing.T) {
 	}()
 	waitUntil(t, 10*time.Second, func() bool { return f.app.requestWaitActive(ack.Token) })
 
-	if err := f.app.interruptTurnCtx(t.Context(), f.caller.ID); err != nil {
-		t.Fatalf("interruptTurnCtx: %v", err)
+	if err := f.app.interruptTurnForWorkflow(t.Context(), f.caller.ID, workflowhost.InterruptStoppedAttempt); err != nil {
+		t.Fatalf("interruptTurnForWorkflow: %v", err)
 	}
 	select {
 	case got := <-done:
@@ -2428,6 +2429,9 @@ func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
 	receipt, found, err := after.app.store.GetThreadRequestReceipt(ack.Token)
 	if err != nil || !found || receipt.State != store.ThreadReceiptInterrupted {
 		t.Fatalf("receipt = %+v found=%v err=%v", receipt, found, err)
+	}
+	if body, err := after.app.threadWakeBody(row, false); err != nil || !strings.Contains(body, "was interrupted: "+threadReceiptRestarted) {
+		t.Errorf("wake = %q err=%v, want the restart as its cause", body, err)
 	}
 	// A scratch thread is a thread nobody can see; one left by a restart is
 	// swept with its row rather than kept forever.

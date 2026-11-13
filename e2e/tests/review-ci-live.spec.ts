@@ -22,16 +22,18 @@
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
-import type { Locator, Page } from '@playwright/test';
+import type { Locator } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
-import { expect, test, type SeedResult } from './fixtures.js';
+import { expect, test } from './fixtures.js';
 import {
   expectEveryForgeCallHandled,
   forgeInvocations,
   interceptCILogReads,
+  openCIJobLog,
   openPullRequestReview,
   publishPullRequest,
+  seedThreadProject,
   seedForge,
   type ForgeInvocation,
   type ForgeRepo,
@@ -77,17 +79,8 @@ function gitlabTrace(steps: number, finished = false): string {
   return text;
 }
 
-async function seedProject(harness: HarnessApp): Promise<string> {
-  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-    projects: [
-      {
-        name: `ci-${randomBytes(4).toString('hex')}`,
-        repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
-        threads: [{ title: TITLE, turns: [{ userText: 'Hello.', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }],
-      },
-    ],
-  });
-  return seed.projects[0].path;
+function seedProject(harness: HarnessApp): Promise<string> {
+  return seedThreadProject(harness, TITLE);
 }
 
 function countRoute(calls: ForgeInvocation[], route: string): number {
@@ -114,14 +107,6 @@ async function moveCI(harness: HarnessApp, repo: ForgeRepo, patch: Partial<NonNu
 /** How far the log view's scroll position is from its bottom, in pixels. */
 async function distanceFromBottom(scroll: Locator): Promise<number> {
   return scroll.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
-}
-
-async function openJobLog(page: Page, review: Locator, stage: string, job: string) {
-  await review.getByTestId('review-ci-chip').filter({ hasText: stage }).click();
-  await page.getByTestId('review-ci-job').filter({ hasText: job }).click();
-  const log = review.getByTestId('review-ci-log');
-  await expect(log).toBeVisible();
-  return log;
 }
 
 function section(log: Locator, key: string): Locator {
@@ -151,7 +136,7 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   await expect(chip).toHaveAttribute('title', /1 running/);
 
   // One row per section, plus the runner's line before them; none open.
-  const log = await openJobLog(page, review, 'test', 'unit');
+  const log = await openCIJobLog(page, review, 'test', 'unit');
   const scroll = log.getByTestId('review-ci-log-scroll');
   const prepare = section(log, `section:prepare_executor:${T0}`);
   const script = section(log, `section:step_script:${T0 + 4}`);
@@ -308,7 +293,7 @@ test('a running GitHub job lists its steps, waits out a log the forge has not pu
 
   // Every step is listed while the log is withheld, the ones not reached
   // as pending, and none has lines to open yet.
-  const log = await openJobLog(page, review, 'CI', 'build');
+  const log = await openCIJobLog(page, review, 'CI', 'build');
   const pending = log.getByTestId('review-ci-log-pending');
   const scroll = log.getByTestId('review-ci-log-scroll');
   await expect(pending).toHaveText('The log is available when the job completes.');

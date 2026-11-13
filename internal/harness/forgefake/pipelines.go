@@ -64,6 +64,9 @@ func (p *Pipeline) normalizeRun(forge string, pull *Pull, ids *idSource) error {
 		sources = gitlabSources
 	}
 	p.Source = defaultString(p.Source, sources[p.RefKind])
+	if err := p.normalizeForgeCI(forge); err != nil {
+		return err
+	}
 	if forge == "github" {
 		for i, job := range p.Jobs {
 			if job.Kind != "" {
@@ -72,7 +75,10 @@ func (p *Pipeline) normalizeRun(forge string, pull *Pull, ids *idSource) error {
 		}
 	}
 	p.Title = defaultString(p.Title, p.Name)
-	p.CreatedAt = defaultString(p.CreatedAt, "2026-01-01T00:00:00Z")
+	// A run is created when it is seeded unless the fixture says
+	// otherwise: GitHub re-runs a run only within 30 days of its creation
+	// (ghRerunWindow).
+	p.CreatedAt = defaultString(p.CreatedAt, time.Now().UTC().Format(time.RFC3339))
 	p.UpdatedAt = defaultString(p.UpdatedAt, p.CreatedAt)
 	for name, value := range map[string]string{"createdAt": p.CreatedAt, "updatedAt": p.UpdatedAt} {
 		if _, err := time.Parse(time.RFC3339, value); err != nil {
@@ -83,7 +89,7 @@ func (p *Pipeline) normalizeRun(forge string, pull *Pull, ids *idSource) error {
 }
 
 // normalizePipelines fills the repository's Pipelines and refuses a
-// pipeline id that two pipelines share.
+// pipeline id that two pipelines share, or a job id two jobs share.
 func (r *Repo) normalizePipelines(ids *idSource) error {
 	for i := range r.Pipelines {
 		pipeline := &r.Pipelines[i]
@@ -95,11 +101,20 @@ func (r *Repo) normalizePipelines(ids *idSource) error {
 		}
 	}
 	seen := map[int64]bool{}
+	jobs := map[int64]bool{}
 	for _, pipeline := range r.pipelines() {
 		if seen[pipeline.ID] {
 			return fmt.Errorf("pipeline id %d is declared twice", pipeline.ID)
 		}
 		seen[pipeline.ID] = true
+		// A job id is unique in its repository on both forges; the
+		// actions find a job by it.
+		for _, job := range pipeline.Jobs {
+			if jobs[job.ID] {
+				return fmt.Errorf("job id %d is declared twice", job.ID)
+			}
+			jobs[job.ID] = true
+		}
 	}
 	return nil
 }

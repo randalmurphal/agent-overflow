@@ -70,6 +70,9 @@ func TestForgeListReadsTakeAPageOverTheDefaultBodyBound(t *testing.T) {
 			return fmt.Sprintf(`{"id":%d,"name":"shard %d","status":"completed","conclusion":"success","started_at":"2026-10-20T10:00:00Z","completed_at":"2026-10-20T10:01:00Z","steps":%s}`, 100+i, i, pageOf(80, step))
 		})+`}`)
 		core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+			if extra, ok := githubCIExtras(call); ok {
+				return extra
+			}
 			switch {
 			case call.Path == "repos/acme/widgets/actions/runs/9003":
 				return forgeAPIAnswer{Body: `{"id":9003,"name":"CI","status":"completed","conclusion":"success"}`}

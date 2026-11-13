@@ -239,7 +239,7 @@ func classifyAccountNotification(threadID, method string, params json.RawMessage
 	case "model/verification":
 		return []provider.ProviderEvent{codexNotificationEvent(threadID, "model_verification", "Model verification warning", params, now)}, true
 
-	case "model/safetyBuffering/updated":
+	case safetyBufferingMethod:
 		return classifySafetyBuffering(threadID, params, now), true
 
 	case "account/updated", "account/login/completed":
@@ -248,16 +248,19 @@ func classifyAccountNotification(threadID, method string, params json.RawMessage
 	return nil, false
 }
 
+const safetyBufferingMethod = "model/safetyBuffering/updated"
+
 // classifySafetyBuffering turns `model/safetyBuffering/updated` into the
-// one user-facing fact it carries: the model's response is being held
-// while OpenAI reviews it. Without this the UI is indistinguishable from
-// a hung app during the hold (Core Principle 5 — errors and stalls are
-// user-facing state, not log entries).
+// one user-facing fact it carries: OpenAI held the model's response for
+// review, which is why the turn went quiet.
 //
-// Only the showBufferingUi=true edge produces a row. The false edge is the
-// hold ending, which needs no announcement, and emitting on both would
-// double every occurrence in the transcript. It still counts as handled so
-// the method stays subscribed (see notification_catalog.go).
+// The signal is a level, not an edge. Codex attaches it to the stream frames
+// of a held response, so it arrives with the response rather than ahead of
+// it, and the summary is past tense. Every showBufferingUi=true signal
+// classifies to a row here; the live session keeps the first of each turn
+// (claimSafetyBufferingNotice). showBufferingUi=false produces no row and
+// still counts as handled so the method stays subscribed (see
+// notification_catalog.go).
 //
 // Wire (`v2::ModelSafetyBufferingUpdatedNotification`): `{threadId, turnId,
 // model, useCases[], reasons[], showBufferingUi, fasterModel?}`. `reasons`
@@ -271,7 +274,7 @@ func classifySafetyBuffering(threadID string, params json.RawMessage, now time.T
 	if !readRawBool(fields, "showBufferingUi") {
 		return nil
 	}
-	summary := "OpenAI is reviewing this turn — the response is buffered"
+	summary := "OpenAI held this response for review"
 	if reasons := readRawStringArray(fields, "reasons"); len(reasons) > 0 {
 		summary += " (" + strings.Join(reasons, ", ") + ")"
 	}

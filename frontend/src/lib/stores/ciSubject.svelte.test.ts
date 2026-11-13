@@ -118,6 +118,18 @@ describe('a pipeline subject', () => {
     expect(state.pipeline).toBeNull();
   });
 
+  it('carries the read\'s actionsUnavailable sentence to its actions, and clears it with the next read', async () => {
+    const sentence = 'Retry, cancel and artifact downloads are not shown for now. GitLab could not be reached. Check the connection and try again.';
+    installMocks({ pipeline: { ...pipeline('failed'), actionsUnavailable: sentence }, seq: 3 });
+    const held = attachPipelineCI(HOME_BACKEND, REPO, '77');
+    const state = createCISubjectState(() => pipelineSubject());
+    await flush();
+    expect(state.actions.actionsUnavailable).toBe(sentence);
+    applyPipelineFrame({ key: WIRE_KEY, pipeline: pipeline('failed'), seq: 4 }, HOME_BACKEND);
+    expect(state.actions.actionsUnavailable).toBeNull();
+    held.release();
+  });
+
   it('pins every call to the computer that answered the subscribe', async () => {
     stageBackend();
     const mocks = installMocks();

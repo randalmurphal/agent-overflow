@@ -9,9 +9,8 @@ import (
 )
 
 // TestClassifySafetyBuffering_ShowEmitsUserFacingRow covers the state the
-// notification exists to make visible: the model's response is held while
-// OpenAI reviews it. Without a row the UI is indistinguishable from a hung
-// app, which is the Principle 5 violation item 3.8 fixes.
+// notification exists to make visible: OpenAI held the model's response for
+// review, which is why the turn went quiet.
 //
 // The summary carries the reasons because triage persists only `kind` and
 // `title` for notification rows — anything left in meta never reaches the
@@ -37,7 +36,7 @@ func TestClassifySafetyBuffering_ShowEmitsUserFacingRow(t *testing.T) {
 	if evt.TurnID != "turn-1" {
 		t.Errorf("turnId = %q, want turn-1", evt.TurnID)
 	}
-	if !strings.Contains(evt.Content, "reviewing this turn") {
+	if !strings.HasPrefix(evt.Content, "OpenAI held this response for review") {
 		t.Errorf("summary does not explain the hold: %q", evt.Content)
 	}
 	if !strings.Contains(evt.Content, "policy_review") || !strings.Contains(evt.Content, "high_risk") {
@@ -63,11 +62,10 @@ func TestClassifySafetyBuffering_ShowEmitsUserFacingRow(t *testing.T) {
 	}
 }
 
-// TestClassifySafetyBuffering_ClearIsHandledButSilent pins the other edge.
-// showBufferingUi=false is the hold ending; announcing it would double
-// every occurrence in the transcript. It still has to count as handled, or
-// the opt-out derivation would unsubscribe from the method and the
-// show=true edge would stop arriving too.
+// TestClassifySafetyBuffering_ClearIsHandledButSilent pins the other value.
+// showBufferingUi=false says nothing is held, so it gets no row. It still
+// has to count as handled, or the opt-out derivation would unsubscribe from
+// the method and the show=true signal would stop arriving too.
 func TestClassifySafetyBuffering_ClearIsHandledButSilent(t *testing.T) {
 	t.Parallel()
 	params := json.RawMessage(`{"threadId":"th","turnId":"turn-1","model":"gpt","reasons":[],"showBufferingUi":false}`)

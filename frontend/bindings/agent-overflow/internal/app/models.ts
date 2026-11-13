@@ -926,6 +926,94 @@ export class BusyThread {
 }
 
 /**
+ * CIActionRequest is one action on the caller's pipeline: Kind, and the
+ * job's id for a job action (retry_job, cancel_job, play_job).
+ */
+export class CIActionRequest {
+    "kind": git$0.CIActionKind;
+    "jobId"?: string;
+
+    /** Creates a new CIActionRequest instance. */
+    constructor($$source: Partial<CIActionRequest> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = git$0.CIActionKind.$zero;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIActionRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIActionRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CIActionRequest($$parsedSource as Partial<CIActionRequest>);
+    }
+}
+
+/**
+ * CIActionResult is an action's answer. Seq is the caller's pump sequence
+ * once the poll the action asked for ran: the CI frame that carried the
+ * forge's answer (pr:ci_updated or ci:pipeline_updated) has that sequence,
+ * or a smaller one when the poll found the pipeline unchanged, so a
+ * caller whose applied CI sequence has reached Seq shows the forge's
+ * answer.
+ */
+export class CIActionResult {
+    "seq": number;
+
+    /** Creates a new CIActionResult instance. */
+    constructor($$source: Partial<CIActionResult> = {}) {
+        if (!("seq" in $$source)) {
+            this["seq"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIActionResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIActionResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CIActionResult($$parsedSource as Partial<CIActionResult>);
+    }
+}
+
+/**
+ * CIArtifactsSaved answers SaveCIArtifacts: Dir is the directory the
+ * files went to and Paths every file saved, in the forge's order.
+ */
+export class CIArtifactsSaved {
+    "dir": string;
+    "paths": string[];
+
+    /** Creates a new CIArtifactsSaved instance. */
+    constructor($$source: Partial<CIArtifactsSaved> = {}) {
+        if (!("dir" in $$source)) {
+            this["dir"] = "";
+        }
+        if (!("paths" in $$source)) {
+            this["paths"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIArtifactsSaved instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIArtifactsSaved {
+        const $$createField1_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("paths" in $$parsedSource) {
+            $$parsedSource["paths"] = $$createField1_0($$parsedSource["paths"]);
+        }
+        return new CIArtifactsSaved($$parsedSource as Partial<CIArtifactsSaved>);
+    }
+}
+
+/**
  * ChannelParticipantState is one entry in ChannelStatePayload's
  * Participants list.
  */

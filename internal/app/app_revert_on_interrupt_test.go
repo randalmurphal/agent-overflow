@@ -479,7 +479,7 @@ func TestRunPlainInterruptLockedNoSessionIsNoOp(t *testing.T) {
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "no-session", "claude", t.TempDir())
 
-	if err := app.runPlainInterruptLocked(thread.ID); err != nil {
+	if err := app.runPlainInterruptLocked(thread.ID, stopByUser(nil)); err != nil {
 		t.Fatalf("runPlainInterruptLocked returned err = %v, want nil", err)
 	}
 }

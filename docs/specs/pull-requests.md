@@ -393,10 +393,79 @@ pipeline being one case. GitLab `projects/P/pipelines`, GitHub
 `actions/runs`. A GitLab pipeline's stages hold its builds, bridges and
 external commit statuses (an external pipeline holds only those); a
 bridge or status links out, as a GitHub external check does. The review pane's CI line stays the head pipeline only.
+The tab's pipeline view is the review pane's CI view, so it offers the
+same CI actions (below).
 The tab reads its list on open, on its refresh button and every
 PR-update interval while visible. Hidden, the interval, a reconnect and
 a regained grant read neither the list nor the stages; the one read they
 owe runs when the window shows.
+
+### CI actions
+
+The review pane's CI and the Pipelines tab act on a pipeline through one
+implementation (`stores/ciActions.svelte.ts`, `ciSubjectActions.svelte.ts`):
+retry a job, cancel a job and run a manual job (GitLab), retry the failed
+jobs and cancel the pipeline, and download artifacts. The forge requests,
+the capability reads and the refusals are in
+[forge transport](../architecture/forge-transport.md), "CI actions".
+
+- Which controls show is the CI read's flags, never a status string. A
+  flag of `allowed` shows the control; absent, `""` (does not apply) and
+  `denied` (this login may not) show nothing, so no control is dead. A
+  GitHub check that is not an Actions job has no flags and keeps "Open in
+  browser". A GitHub run created more than 30 days ago offers no retry
+  where its read carries its creation (the Pipelines tab); a PR's checks
+  do not, and GitHub's refusal reads "… is more than 30 days old, so it
+  can no longer be retried."
+- A read behind the flags that failed (GitHub's repository permission or
+  a run's artifacts) never costs the pipeline: its jobs and the other
+  flags stay, the flags it would have set are absent, and the pipeline
+  carries one sentence (`actionsUnavailable`), shown as a muted,
+  non-interactive row in the CI header's menu, whose trigger shows for it
+  alone. The sentence names only what the failed read took away: artifact
+  downloads for the artifacts read, retry and cancel for the permission
+  read, all three when both failed. The pipeline is read again when the
+  failed read is due again, finished or not, and the sentence clears with
+  the read that succeeds.
+- Job actions are icon buttons in the log view's header beside Refresh,
+  and on a job's row in a stage's list, revealed on hover (always shown on
+  compact). Pipeline actions (Retry failed jobs, Cancel pipeline, and on
+  GitHub Download artifacts, where artifacts are per run) are one menu on
+  the CI header, present only when one applies. GitLab artifacts are a
+  job's archive and download from the job.
+- No optimistic state. An action answers with its pump's CI sequence after
+  the poll it asked for; the pressed control stands pending (a stepped
+  spinner) until the applied CI sequence reaches it, the call fails or the
+  backend's launch changes. The pending action is held under the runs
+  (GitHub) or the pipeline (GitLab) it reaches, so it shows on every
+  surface whose pipeline shows one of them (a PR's checks and the
+  Pipelines tab's view of the same run alike), and while it is pending
+  the other actions there wait, their hover text saying why. It settles,
+  for every surface at once, by the surface that started it, and is
+  dropped when that surface goes. The backend
+  holds the runs (GitHub) or the pipeline (GitLab) an action reaches
+  while it runs, so a second action reaching any of them, from a PR's
+  checks or the Pipelines tab, is refused with "Another action on this
+  pipeline is still running."
+- A failure is a toast with the backend's one sentence and Details. A
+  write whose answer was lost may have been applied: it is never sent
+  again, its sentence says it may have been applied, and the pipeline is
+  read again as after a success, so the pane shows what the forge did.
+- A log open on a job a retry replaced follows the retry when the open
+  job is gone from the read, the read is the job's own pipeline (GitLab:
+  the same pipeline id; GitHub: the same workflow run), and exactly one
+  job in the same stage with the same name has a higher id. Otherwise the
+  log stays on the job it opened, so a new commit's pipeline, or another
+  job that shares the name, never takes it over. The view says so in a quiet line
+  under its header ("The job was retried; this is the new attempt's
+  log.") until another job opens.
+- A download runs through `SaveCIArtifacts` and shows its control pending
+  while it runs. The result shows where the reader is: on the open log's
+  "Saved to …" line when it is that job's archive, otherwise as a "Saved
+  to …" toast; a single file names the file, several their directory. A
+  download that stopped part way is a failure toast naming what was saved.
+  A download that finds the artifacts gone clears the flag that offered
+  it: the pipeline is read again at once.
 
 ## State matrix (phase 1)
 
@@ -475,6 +544,11 @@ user's own comment reading `Reviewed by you` and the author's reply
 after it `Your turn`, a refused project failing alone, "Open with agent" opening a
 thread on a worktree of the branch, and the Pipelines tab's filters
 remembered across a reload, stages and a GitLab and a GitHub job log.
+`review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a
+GitHub PR (a refused retry, a retry followed to passed, cancel, a manual
+job, artifacts saved to disk, a refused artifacts read that keeps the
+jobs and says why in the menu), and `ci-actions-flow.ts` the same from
+the Pipelines tab on desktop and compact.
 `pullsList.browser.test.ts` covers the lists' virtualization: the
 mounted rows stay bounded over thousands, a list at its top stays there
 when its rows move, a chosen sort opens from the top, and the Pipelines

@@ -627,7 +627,7 @@ func TestGitHubPumpReadIsOneRequest(t *testing.T) {
 	}
 	for _, gate := range []string{
 		"$wantEvents: Boolean!",
-		"repository(owner: $owner, name: $name) {\n    ... @include(if: $wantDetail) { mergeCommitAllowed",
+		"repository(owner: $owner, name: $name) {\n    viewerPermission\n    ... @include(if: $wantDetail) { mergeCommitAllowed",
 		"@include(if: $wantEvents)",
 		"timelineItems(last: 100, itemTypes: [PULL_REQUEST_REVIEW,",
 		"threadStates: reviewThreads(first: 100)",

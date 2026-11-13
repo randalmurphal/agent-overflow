@@ -20,7 +20,7 @@ import (
 // useForgefake serves engine (a forgefake.Engine, or a handler in front
 // of one) over HTTP as the app's isolated forge
 // transport.
-func useForgefake(t *testing.T, app *App, engine http.Handler) {
+func useForgefake(t *testing.T, app *App, engine http.Handler, opts ...gitops.CoreOption) {
 	t.Helper()
 	srv := httptest.NewServer(engine)
 	t.Cleanup(srv.Close)
@@ -29,7 +29,7 @@ func useForgefake(t *testing.T, app *App, engine http.Handler) {
 		t.Fatal(err)
 	}
 	t.Cleanup(svc.Close)
-	app.git = gitops.NewCore(gitops.WithForgeAPI(svc))
+	app.git = gitops.NewCore(append([]gitops.CoreOption{gitops.WithForgeAPI(svc)}, opts...)...)
 }
 
 // forgeProjectRepo is a checkout registered as a project whose origin is

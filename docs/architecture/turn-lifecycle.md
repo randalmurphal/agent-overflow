@@ -398,7 +398,7 @@ card (`collab_agent`); a Codex child's rows are settled by the parent
 turn (`internal/store/agent_rows.go`).
 
 - A turn's end (§Force-close safety net), a Stop's flip of the
-  interrupted turn (`MarkUserInterrupt`) and the boot sweep of an
+  interrupted turn (`MarkInterrupt`) and the boot sweep of an
   unfinished turn (§Crash behavior) settle only the rows no agent owns.
   The router's turn boundaries leave an agent's open streams, their
   counts, its queued rows and its open prompts alone

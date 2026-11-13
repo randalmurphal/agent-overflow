@@ -315,6 +315,9 @@ func (s *Session) classifyAndEmitNotification(
 		// replaces the event with an evidence-driven one.
 		events = s.reconcileThreadQueueChange(events)
 	}
+	if method == safetyBufferingMethod && len(events) > 0 && !s.claimSafetyBufferingNotice(events[0].TurnID) {
+		events = nil
+	}
 	events = s.scopeReviewEvents(events)
 	suppressSubagentNotificationCarrier := s.emitSubagentNotificationsFromUserCarrier(method, params, events)
 

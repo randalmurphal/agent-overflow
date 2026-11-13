@@ -27,8 +27,10 @@
 // has to route by subscription id.
 
 import { SvelteMap } from 'svelte/reactivity';
+import type { CIActionRequest } from '../../../bindings/agent-overflow/internal/app/models';
 import {
   RefreshPRCI,
+  RunPRCIAction,
   SetPRCILogFollows,
   SetPRUpdatesActive,
   SubscribePRUpdates,
@@ -344,6 +346,8 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       const ciHandle: CIHandle = {
         follow: (jobIds) => withBackendTarget(backend, () => SetPRCILogFollows(id, jobIds)),
         refresh: () => withBackendTarget(backend, () => RefreshPRCI(id)),
+        act: async (call) => ({ seq: Number((await withBackendTarget(backend, () => RunPRCIAction(id, call as unknown as CIActionRequest))).seq ?? 0) }),
+        appliedSeq: () => appliedSeqByKey.get(key) ?? 0,
       };
       const cleanup = async (): Promise<void> => {
         removeAlias(wireKey, key, owner);

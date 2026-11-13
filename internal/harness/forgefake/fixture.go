@@ -96,6 +96,12 @@ type RepoMerge struct {
 	// only_allow_merge_if_all_discussions_are_resolved.
 	PipelineMustSucceed    bool `json:"pipelineMustSucceed,omitempty"`
 	DiscussionsMustResolve bool `json:"discussionsMustResolve,omitempty"`
+	// CancelRole is a GitLab project's
+	// restrict_pipeline_cancellation_role: the least role that may cancel
+	// a job or pipeline, developer (default) or maintainer, or no_one.
+	// Retry and play still need developer, so cancel and update can
+	// differ.
+	CancelRole string `json:"cancelRole,omitempty"`
 }
 
 // Pull is one pull request (GitHub) or merge request (GitLab).
@@ -402,6 +408,8 @@ type Pipeline struct {
 	// Defaults to the aggregate of the jobs.
 	Status string `json:"status,omitempty"`
 	Jobs   []Job  `json:"jobs,omitempty"`
+	// Artifacts are a GitHub run's artifacts (ci_actions_github.go).
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 }
 
 // Job is one CI job.
@@ -411,7 +419,8 @@ type Job struct {
 	Name  string `json:"name"`
 	Stage string `json:"stage,omitempty"`
 	// Status is one of success, failed, running, pending, skipped,
-	// canceled. Each forge's handler spells it the way that forge does.
+	// canceled, and manual on GitLab (a job waiting for a manual start).
+	// Each forge's handler spells it the way that forge does.
 	Status       string `json:"status"`
 	AllowFailure bool   `json:"allowFailure,omitempty"`
 	StartedAt    string `json:"startedAt,omitempty"`
@@ -436,6 +445,12 @@ type Job struct {
 	// Downstream is a bridge's downstream pipeline path on the forge
 	// ("/grp/child/-/pipelines/9"); empty answers none yet.
 	Downstream string `json:"downstream,omitempty"`
+	// Retried marks a job a retry replaced: the reads leave it out, as
+	// GitLab's retried: false and GitHub's latest attempt do
+	// (ci_actions.go).
+	Retried bool `json:"retried,omitempty"`
+	// Artifacts is a GitLab build's artifacts archive.
+	Artifacts *Artifact `json:"artifacts,omitempty"`
 }
 
 // The GitLab pipeline row kinds past a build (Job.Kind).
@@ -492,7 +507,7 @@ var (
 		"approved": true, "unapproved": true, "merged": true, "closed": true, "reopened": true, "marked_draft": true,
 		"marked_ready": true, "auto_merge_set": true, "auto_merge_canceled": true, "base_changed": true, "review_requested": true,
 	}
-	jobStatuses  = map[string]bool{"success": true, "failed": true, "running": true, "pending": true, "skipped": true, "canceled": true}
+	jobStatuses  = map[string]bool{"success": true, "failed": true, "running": true, "pending": true, "skipped": true, "canceled": true, "manual": true}
 	reviewStates = map[string]bool{"APPROVED": true, "CHANGES_REQUESTED": true, "COMMENTED": true, "DISMISSED": true, "PENDING": true}
 )
 
@@ -618,8 +633,8 @@ func (r *Repo) normalize(ids *idSource) error {
 
 func (m *RepoMerge) normalize(forge string) error {
 	if forge == "github" {
-		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve {
-			return errors.New("mergeMethod, squashOption, pipelineMustSucceed and discussionsMustResolve are GitLab project settings")
+		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve || m.CancelRole != "" {
+			return errors.New("mergeMethod, squashOption, pipelineMustSucceed, discussionsMustResolve and cancelRole are GitLab project settings")
 		}
 		m.Permission = defaultString(m.Permission, "WRITE")
 		if githubRoles[m.Permission] == 0 {
@@ -661,7 +676,19 @@ func (m *RepoMerge) normalize(forge string) error {
 	default:
 		return fmt.Errorf("squashOption %q is not default_off, default_on, always or never", m.SquashOption)
 	}
+	m.CancelRole = defaultString(m.CancelRole, "developer")
+	switch m.CancelRole {
+	case "developer", "maintainer", "no_one":
+	default:
+		return fmt.Errorf("cancelRole %q is not developer, maintainer or no_one", m.CancelRole)
+	}
 	return nil
+}
+
+// gitlabMayCancel reports whether the viewer's role may cancel a job or
+// pipeline under the project's CancelRole.
+func (m *RepoMerge) gitlabMayCancel() bool {
+	return m.CancelRole != "no_one" && gitlabRoles[m.Permission] >= gitlabRoles[m.CancelRole]
 }
 
 // defaultNodeID gives a GitHub pull without one the node id derived from
@@ -1021,7 +1048,7 @@ func (p *Pipeline) normalize(ids *idSource) error {
 	for i := range p.Jobs {
 		job := &p.Jobs[i]
 		if job.Name == "" || !jobStatuses[job.Status] {
-			return fmt.Errorf("jobs[%d]: name and a status (success, failed, running, pending, skipped, canceled) are required", i)
+			return fmt.Errorf("jobs[%d]: name and a status (success, failed, running, pending, skipped, canceled, manual) are required", i)
 		}
 		for j := range job.Steps {
 			step := &job.Steps[j]
@@ -1057,12 +1084,18 @@ func (p *Pipeline) normalize(ids *idSource) error {
 			stage = "external"
 		}
 		job.Stage = defaultString(job.Stage, stage)
-		if job.StartedAt == "" && job.Status != "pending" && job.Status != "skipped" {
+		if err := job.normalizeArtifacts(); err != nil {
+			return fmt.Errorf("jobs[%d]: %w", i, err)
+		}
+		if job.StartedAt == "" && job.Status != "pending" && job.Status != "skipped" && job.Status != "manual" {
 			job.StartedAt = "2026-01-01T00:00:00Z"
 		}
 		if job.CompletedAt == "" && job.StartedAt != "" && job.Status != "running" {
 			job.CompletedAt = "2026-01-01T00:01:00Z"
 		}
+	}
+	if err := p.normalizeArtifacts(ids); err != nil {
+		return err
 	}
 	if p.Status == "" {
 		p.Status = aggregateJobStatus(p.Jobs)
