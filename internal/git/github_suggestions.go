@@ -65,7 +65,8 @@ func githubMarkSuggestions(threads []ReviewThread, pull *githubPullRaw) {
 		for j := range thread.Comments {
 			comment := &thread.Comments[j]
 			for index, block := range githubSuggestionBlocks(comment.Body) {
-				suggestion := CommentSuggestion{Index: index, To: block.Lines, Appliable: appliable}
+				suggestion := CommentSuggestion{Index: index, To: block.Lines, Appliable: appliable,
+					BodyStartLine: block.StartLine, BodyEndLine: block.EndLine, BodyPlaced: true}
 				if onNew {
 					suggestion.StartLine, suggestion.EndLine = start, end
 				}

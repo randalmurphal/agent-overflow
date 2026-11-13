@@ -121,8 +121,10 @@ func TestGitHubMarkSuggestions(t *testing.T) {
 		got := threads[0].Comments[0].Suggestions
 		want := []CommentSuggestion{
 			{Index: 0, StartLine: tc.lines[0], EndLine: tc.lines[1], To: []string{"new"}, Appliable: tc.appliable,
+				BodyStartLine: 0, BodyEndLine: 2, BodyPlaced: true,
 				Digest: SuggestionDigest("github", tc.lines[0], tc.lines[1], []string{"new"})},
 			{Index: 1, StartLine: tc.lines[0], EndLine: tc.lines[1], To: []string{}, Appliable: tc.appliable,
+				BodyStartLine: 6, BodyEndLine: 7, BodyPlaced: true,
 				Digest: SuggestionDigest("github", tc.lines[0], tc.lines[1], nil)},
 		}
 		if !reflect.DeepEqual(got, want) {
@@ -166,7 +168,7 @@ func TestGitLabSuggestionsAreTheForgesOwn(t *testing.T) {
 	got := gitlabSuggestions([]gitlabSuggestionRaw{
 		{ID: 11, FromLine: 4, ToLine: 5, Appliable: true, FromContent: "a\nb\n", ToContent: "c\n"},
 		{ID: 12, FromLine: 9, ToLine: 9, Applied: true, FromContent: "x\r\n", ToContent: ""},
-	})
+	}, "")
 	want := []CommentSuggestion{
 		{Index: 0, ID: "11", StartLine: 4, EndLine: 5, From: []string{"a", "b"}, FromKnown: true, To: []string{"c"}, Appliable: true,
 			Digest: SuggestionDigest("gitlab", 4, 5, []string{"c"})},
@@ -175,6 +177,21 @@ func TestGitLabSuggestionsAreTheForgesOwn(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("suggestions = %+v", got)
+	}
+	// Placed on the body's blocks when their counts match; else not, and
+	// placing changes no digest.
+	raw := []gitlabSuggestionRaw{{ID: 11, FromLine: 4, ToLine: 5, ToContent: "c\n"}, {ID: 12, FromLine: 9, ToLine: 9}}
+	placed := gitlabSuggestions(raw, "Two:\r\n```suggestion:-1+0\r\nc\r\n```\r\nand\r\n```suggestion\r\n```")
+	if p := placed; !p[0].BodyPlaced || p[0].BodyStartLine != 1 || p[0].BodyEndLine != 3 || !p[1].BodyPlaced || p[1].BodyStartLine != 5 || p[1].BodyEndLine != 6 ||
+		p[0].Digest != SuggestionDigest("gitlab", 4, 5, []string{"c"}) {
+		t.Fatalf("placed = %+v", placed)
+	}
+	for _, body := range []string{"```suggestion\nc\n```", "no fences", "```suggestion\na\n```\n```suggestion\nb\n```\n```suggestion\nc\n```"} {
+		for _, s := range gitlabSuggestions(raw, body) {
+			if s.BodyPlaced || s.BodyStartLine != 0 || s.BodyEndLine != 0 {
+				t.Fatalf("body %q placed %+v", body, s)
+			}
+		}
 	}
 	threads := []ReviewThread{{Comments: []ReviewComment{{Suggestions: got}}}}
 	gateGitLabSuggestions(threads, gitlabDeveloperAccess)

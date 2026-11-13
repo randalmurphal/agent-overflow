@@ -57,7 +57,12 @@ func TestParse(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := Parse(tc.body); !reflect.DeepEqual(got, tc.want) {
+			// Positions are TestParsePositions'; here only the content.
+			got := Parse(tc.body)
+			for i := range got {
+				got[i].StartLine, got[i].EndLine = 0, 0
+			}
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Parse(%q) = %#v, want %#v", tc.body, got, tc.want)
 			}
 		})
@@ -85,5 +90,42 @@ func TestParseLargeBodies(t *testing.T) {
 		if name == "closed blocks" && len(got) != limit/len(unit) {
 			t.Fatalf("closed blocks: %d, want %d", len(got), limit/len(unit))
 		}
+	}
+}
+
+// Each block names its opening and closing fence lines, 0-based in the
+// body split on "\n", whatever the line endings, indent or tabs.
+func TestParsePositions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		body string
+		want [][2]int
+	}{
+		{"first line", "```suggestion\nx\n```", [][2]int{{0, 2}}},
+		{"after prose", "Try:\n\n```suggestion\na\nb\n```\nthanks", [][2]int{{2, 5}}},
+		{"two blocks", "```suggestion\na\n```\nand\n~~~suggestion\n~~~\n", [][2]int{{0, 2}, {4, 5}}},
+		{"CRLF", "x\r\n```suggestion\r\na\r\n```\r\n", [][2]int{{1, 3}}},
+		{"indented fence", "x\n   ```suggestion\n   a\n ```\n", [][2]int{{1, 3}}},
+		{"tabs in content", "```suggestion\n\ta\n\t\tb\n```", [][2]int{{0, 3}}},
+		{"empty block", "a\n```suggestion\n```\n", [][2]int{{1, 2}}},
+		{"a code block before it", "```go\nx\n```\n```suggestion\ny\n```", [][2]int{{3, 5}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Parse(tc.body)
+			lines := strings.Split(tc.body, "\n")
+			var positions [][2]int
+			for _, block := range got {
+				positions = append(positions, [2]int{block.StartLine, block.EndLine})
+				open, close := strings.TrimSpace(lines[block.StartLine]), strings.TrimSpace(lines[block.EndLine])
+				if !strings.Contains(open, "suggestion") || strings.Trim(close, "`~\r") != "" {
+					t.Fatalf("lines %d and %d are %q and %q, not the fences", block.StartLine, block.EndLine, open, close)
+				}
+			}
+			if !reflect.DeepEqual(positions, tc.want) {
+				t.Fatalf("positions = %v, want %v", positions, tc.want)
+			}
+		})
 	}
 }

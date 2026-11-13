@@ -692,7 +692,7 @@ func normalizeGitLabDiscussion(discussion gitlabDiscussionRaw, at gitlabThreadCo
 		if at.webURL != "" {
 			comment.URL = at.webURL + "#note_" + comment.ID
 		}
-		comment.Suggestions = gitlabSuggestions(note.Suggestions)
+		comment.Suggestions = gitlabSuggestions(note.Suggestions, note.Body)
 		comments = append(comments, comment)
 	}
 	if root == nil || len(comments) == 0 {

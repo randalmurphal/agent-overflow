@@ -22,12 +22,16 @@ import (
 // Lines are the replacement lines without their line endings; an empty
 // block deletes the anchored lines. Above and Below are a GitLab
 // `suggestion:-N+M` header's N and M (Widened set), which widen the
-// replaced lines past the anchor; GitHub has no such header.
+// replaced lines past the anchor; GitHub has no such header. StartLine
+// and EndLine are the 0-based indices, in the body split on "\n", of the
+// opening and the closing fence lines.
 type Block struct {
-	Lines   []string `json:"lines"`
-	Above   int      `json:"above,omitempty"`
-	Below   int      `json:"below,omitempty"`
-	Widened bool     `json:"widened,omitempty"`
+	Lines     []string `json:"lines"`
+	Above     int      `json:"above,omitempty"`
+	Below     int      `json:"below,omitempty"`
+	Widened   bool     `json:"widened,omitempty"`
+	StartLine int      `json:"startLine"`
+	EndLine   int      `json:"endLine"`
 }
 
 // headerMax bounds a -N+M header's numbers, as GitLab bounds
@@ -46,15 +50,28 @@ func Parse(body string) []Block {
 	src := []byte(body)
 	doc := markdown.Parser().Parse(text.NewReader(src))
 	var out []Block
+	// lineOf counts the line breaks before an offset, moving forward only:
+	// blocks come in body order, so the whole parse counts each byte once.
+	at, line := 0, 0
+	lineOf := func(offset int) int {
+		line += bytes.Count(src[at:offset], []byte{'\n'})
+		at = offset
+		return line
+	}
 	for node := doc.FirstChild(); node != nil; node = node.NextSibling() {
 		code, ok := node.(*ast.FencedCodeBlock)
 		if !ok || code.Info == nil {
 			continue
 		}
 		block, ok := header(string(code.Info.Segment.Value(src)))
-		if !ok || !closed(src, code) {
+		if !ok {
 			continue
 		}
+		openStart, closeStart, ok := fence(src, code)
+		if !ok {
+			continue
+		}
+		block.StartLine, block.EndLine = lineOf(openStart), lineOf(closeStart)
 		block.Lines = []string{}
 		segments := code.Lines()
 		for i := 0; i < segments.Len(); i++ {
@@ -90,19 +107,20 @@ func digits(s string) bool {
 	return s != "" && strings.Trim(s, "0123456789") == ""
 }
 
-// closed reports whether code's fence is closed in src: the line after
-// its last content line (or after its opening line, with no content) is
-// a closing fence of the opener's character, at least as long, indented
-// at most three columns, with nothing else on it.
-func closed(src []byte, code *ast.FencedCodeBlock) bool {
-	openStart := bytes.LastIndexByte(src[:code.Info.Segment.Start], '\n') + 1
+// fence answers the offsets of code's opening and closing fence lines in
+// src, ok false when the fence is not closed: the line after its last
+// content line (or after its opening line, with no content) must be a
+// closing fence of the opener's character, at least as long, indented at
+// most three columns, with nothing else on it.
+func fence(src []byte, code *ast.FencedCodeBlock) (openStart, closeStart int, ok bool) {
+	openStart = bytes.LastIndexByte(src[:code.Info.Segment.Start], '\n') + 1
 	char, length := fenceRun(src[openStart:])
 	after := lineEnd(src, code.Info.Segment.Stop)
 	if n := code.Lines().Len(); n > 0 {
 		after = lineEnd(src, code.Lines().At(n-1).Stop-1)
 	}
 	if after >= len(src) {
-		return false
+		return 0, 0, false
 	}
 	line := src[after:]
 	if i := bytes.IndexByte(line, '\n'); i >= 0 {
@@ -117,13 +135,13 @@ func closed(src []byte, code *ast.FencedCodeBlock) bool {
 		}
 	}
 	if cols > 3 {
-		return false
+		return 0, 0, false
 	}
 	j := i
 	for j < len(line) && line[j] == char {
 		j++
 	}
-	return j-i >= length && len(bytes.Trim(line[j:], " \t\r")) == 0
+	return openStart, after, j-i >= length && len(bytes.Trim(line[j:], " \t\r")) == 0
 }
 
 // fenceRun is the fence character and run length opening line.

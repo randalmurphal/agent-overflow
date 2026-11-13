@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/forgeapi"
+	"agent-overflow/internal/mdsuggest"
 )
 
 // GitLab's suggestions: the discussions read carries each note's
@@ -30,9 +31,14 @@ type gitlabSuggestionRaw struct {
 }
 
 // gitlabSuggestions maps a note's suggestions, in GitLab's order (the
-// body's).
-func gitlabSuggestions(raw []gitlabSuggestionRaw) []CommentSuggestion {
+// body's), placing suggestion i on the body's block i when the body holds
+// as many blocks as GitLab reports suggestions.
+func gitlabSuggestions(raw []gitlabSuggestionRaw, body string) []CommentSuggestion {
 	var out []CommentSuggestion
+	var blocks []mdsuggest.Block
+	if len(raw) > 0 {
+		blocks = mdsuggest.Parse(body)
+	}
 	for i, s := range raw {
 		out = append(out, CommentSuggestion{
 			Index: i, ID: strconv.FormatInt(s.ID, 10), StartLine: s.FromLine, EndLine: s.ToLine,
@@ -40,6 +46,10 @@ func gitlabSuggestions(raw []gitlabSuggestionRaw) []CommentSuggestion {
 			Appliable: s.Appliable && !s.Applied, Applied: s.Applied,
 			Digest: SuggestionDigest("gitlab", s.FromLine, s.ToLine, splitContentLines(s.ToContent)),
 		})
+		if len(blocks) == len(raw) {
+			last := &out[len(out)-1]
+			last.BodyStartLine, last.BodyEndLine, last.BodyPlaced = blocks[i].StartLine, blocks[i].EndLine, true
+		}
 	}
 	return out
 }
@@ -117,7 +127,7 @@ func gitlabDiscussionSuggestion(discussion gitlabDiscussionRaw, req SuggestionAp
 		if strconv.FormatInt(note.ID, 10) != req.Target.CommentID {
 			continue
 		}
-		for _, s := range gitlabSuggestions(note.Suggestions) {
+		for _, s := range gitlabSuggestions(note.Suggestions, note.Body) {
 			if s.ID == req.SuggestionID {
 				return true, &s
 			}
