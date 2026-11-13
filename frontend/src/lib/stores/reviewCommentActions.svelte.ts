@@ -96,7 +96,7 @@ export interface ReviewCommentActionsHost {
   /** Opens a draft's edit unless it is open. */
   editDraft(draft: DiffReviewComment): void;
   refreshThreads(): Promise<void>;
-  revealConversation(): void;
+  showPostedComment(body: string): void;
 }
 
 export interface ReviewCommentActions {
@@ -161,7 +161,7 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     updateFailing: host.updateFailing,
     withheld: () => nowWithheldReason,
     refreshThreads: host.refreshThreads,
-    revealConversation: host.revealConversation,
+    showPostedComment: host.showPostedComment,
   });
 
   function closeEverywhere(threadId: string): void {
@@ -194,7 +194,11 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
       if (held) host.editDraft(held);
       else openReplies.add(`${surface}:${threadId}`);
     },
-    closeReply(threadId, surface) { openReplies.delete(`${surface}:${threadId}`); },
+    closeReply(threadId, surface) {
+      // A reply being posted stays open, so a failure shows in it.
+      if (writes.pending(commentWriteKey.reply(threadId))) return;
+      openReplies.delete(`${surface}:${threadId}`);
+    },
     // A reply posts now wherever the thread shows (a picked commit's too),
     // under the gates every now write has.
     async sendPRThreadReply(thread) {

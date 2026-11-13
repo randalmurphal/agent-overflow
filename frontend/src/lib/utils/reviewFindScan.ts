@@ -344,13 +344,14 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
             rowKey, line, place: { kind: 'thread', threadId: thread.id },
           })) return true;
         }
-        // The thread's held replies, at its foot.
+        // The thread's held replies, at its foot: shown, so revealed, with
+        // the thread.
         for (const draft of content.drafts) {
           if (draft.status !== 'draft' || draft.replyThreadId !== thread.id) continue;
           const rowKey = findDraftKey(draft.id);
           if (content.editing?.has(rowKey)) continue;
           await tick();
-          if (await emitText(draft.body, file, { kind: 'draft', commentId: draft.id }, { rowKey, line, place: { kind: 'draft', commentId: draft.id } })) return true;
+          if (await emitText(draft.body, file, { kind: 'draft', commentId: draft.id }, { rowKey, line, place: { kind: 'thread', threadId: thread.id } })) return true;
         }
         return false;
       };

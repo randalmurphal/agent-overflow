@@ -28,6 +28,7 @@ import ReviewSentCommentBody from '../components/review/ReviewSentCommentBody.sv
 import ReviewPRCommentField from '../components/review/ReviewPRCommentField.svelte';
 import ReviewThreadFooter from '../components/review/ReviewThreadFooter.svelte';
 import ReviewDraftEditor from '../components/review/ReviewDraftEditor.svelte';
+import ReviewHeldReplies from '../components/review/ReviewHeldReplies.svelte';
 
 const PROJECT = 'project-1';
 const REF: PRRef = { forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 };
@@ -494,6 +495,21 @@ describe('a comment on the PR itself', () => {
     expect(state.conversationNewCount).toBe(0);
   });
 
+  it('joins only the posted comment, at the feed\'s end; what else arrived stays behind "new"', async () => {
+    setBindingMock('PostPRComment', async () => ({ seq: 8 }));
+    const state = await open();
+    state.setConversationOpen(true);
+    state.freezeConversation();
+    const other: ReviewThread = { ...POSTED, id: 'pr-comment-2', comments: [comment({ id: 'node-10', authorLogin: 'bob', body: 'Another note.', createdAt: '2026-01-03T00:00:00Z', databaseID: 110 })] };
+    const line: ReviewThread = { ...THREAD, id: 'thread-2', comments: [comment({ id: 'node-11', authorLogin: 'bob', body: 'Line note.', createdAt: '2026-01-03T00:00:00Z', databaseID: 111 })] };
+    state.sentComments.setPRCommentBody('Looks good overall.');
+    await state.sentComments.postPRComment();
+    frame(8, { threads: [THREAD, POSTED, other, line] });
+    await settle();
+    expect(feedIds(state)).toEqual([`t:${THREAD.id}`, `t:${POSTED.id}`]);
+    expect(state.conversationNewCount).toBe(2);
+  });
+
   it('shows it after the threads\' re-read when the answer has no seq', async () => {
     setBindingMock('PostPRComment', async () => ({ seq: 0 }));
     const state = await open();
@@ -560,5 +576,176 @@ describe('editor text survives its row unmounting', () => {
     expect(editorAgain.container.querySelector('textarea')!.value).toBe('Range typed.');
     expect(editorAgain.getByTestId('review-draft-editor-range').textContent).toContain('Lines 10–12');
     editorAgain.unmount();
+  });
+});
+
+const UNCONFIRMED = 'GitHub may have posted this comment. Check the thread before sending it again.';
+
+/** A binding whose call waits until the test answers or refuses it. */
+function deferred(method: string) {
+  const calls: { resolve: (value: unknown) => void; reject: (err: unknown) => void }[] = [];
+  const mock = setBindingMock(method, () => new Promise((resolve, reject) => { calls.push({ resolve, reject }); }));
+  return { mock, refuse: () => calls.at(-1)!.reject(new TransportError('forge_unconfirmed', UNCONFIRMED)) };
+}
+
+function footerProps(state: ReviewPaneState) {
+  return {
+    thread: THREAD, body: state.replyBodyFor(THREAD.id), error: state.replyErrorFor(THREAD.id), sending: state.sendingReply(THREAD.id),
+    replying: state.replyOpen(THREAD.id, 'diff'), resolving: false, resolveError: null,
+    onOpenReply: () => state.openReply(THREAD.id, 'diff'), onCloseReply: () => state.closeReply(THREAD.id, 'diff'),
+    onBodyChange: (body: string) => state.setReplyBody(THREAD.id, body), onSendReply: () => state.sendPRThreadReply(THREAD),
+    hold: { primary: state.primaryCommentAction, onHold: () => state.holdPRThreadReply(THREAD) },
+  };
+}
+
+function editorProps(state: ReviewPaneState, id: string) {
+  const key = commentWriteKey.editor(id);
+  return {
+    editor: state.openEditors.find((editor) => editor.id === id)!, body: state.draftBodyFor(id),
+    onBodyChange: (editorId: string, body: string) => state.setDraftBody(editorId, body),
+    onCancel: (editorId: string) => state.closeDraftEditor(editorId),
+    onSubmit: (editorId: string, body: string, mode: 'draft' | 'now') => { void state.createComment(editorId, body, mode).catch(() => {}); },
+    post: { primary: state.primaryCommentAction, withheld: null }, pending: state.commentWritePending(key), error: state.commentWriteError(key),
+  };
+}
+
+const CHORD = { key: 'Enter', ctrlKey: true };
+
+describe('a held submit chord', () => {
+  // The press posts; its repeats do nothing, before or after the forge's
+  // unconfirmed failure, so the comment is never sent twice by them.
+  async function holdChord(textarea: HTMLTextAreaElement): Promise<void> {
+    await fireEvent.keyDown(textarea, CHORD);
+    await settle();
+    for (const shiftKey of [false, true]) {
+      for (let i = 0; i < 3; i += 1) await fireEvent.keyDown(textarea, { ...CHORD, shiftKey, repeat: true });
+    }
+    await settle();
+  }
+
+  it('posts a line comment, a reply and a PR comment once, and holds nothing', async () => {
+    const refuse = async () => { throw new TransportError('forge_unconfirmed', UNCONFIRMED); };
+    const line = setBindingMock('PostPRLineComment', refuse);
+    const reply = setBindingMock('ReplyToPRThread', refuse);
+    const prComment = setBindingMock('PostPRComment', refuse);
+    const state = await open();
+
+    const id = editorWith(state, added12, 'Rename this.');
+    const editor = render(ReviewDraftEditor, { props: editorProps(state, id) });
+    await holdChord(editor.container.querySelector('textarea')!);
+
+    state.openReply(THREAD.id, 'diff');
+    state.setReplyBody(THREAD.id, 'Agreed.');
+    const footer = render(ReviewThreadFooter, { props: footerProps(state) });
+    await holdChord(footer.container.querySelector('textarea')!);
+
+    state.sentComments.setPRCommentOpen(true);
+    state.sentComments.setPRCommentBody('Looks good.');
+    const field = render(ReviewPRCommentField, { props: { review: state } });
+    await holdChord(field.container.querySelector('textarea')!);
+
+    expect([line, reply, prComment].map((mock) => mock.mock.calls.length)).toEqual([1, 1, 1]);
+    expect(state.drafts).toEqual([]);
+    expect(state.commentWriteError(commentWriteKey.prComment)).toBe(UNCONFIRMED);
+  });
+});
+
+describe('an editor whose write is pending', () => {
+  it('cannot be cancelled or escaped, in the component or through the state', async () => {
+    deferred('PostPRLineComment');
+    deferred('ReplyToPRThread');
+    deferred('PostPRComment');
+    deferred('EditPRComment');
+    const state = await open();
+
+    const id = editorWith(state, added12, 'Rename this.');
+    void state.createComment(id, 'Rename this.', 'now');
+    await settle();
+    const editor = render(ReviewDraftEditor, { props: editorProps(state, id) });
+    state.openReply(THREAD.id, 'diff');
+    state.setReplyBody(THREAD.id, 'Agreed.');
+    void state.sendPRThreadReply(THREAD);
+    await settle();
+    const footer = render(ReviewThreadFooter, { props: footerProps(state) });
+    state.sentComments.setPRCommentOpen(true);
+    state.sentComments.setPRCommentBody('Looks good.');
+    void state.sentComments.postPRComment();
+    await settle();
+    const field = render(ReviewPRCommentField, { props: { review: state } });
+    const first = THREAD.comments[0];
+    state.sentComments.setEditBody(THREAD, first, 'Edited.');
+    void state.sentComments.saveEdit(THREAD, first);
+    await settle();
+    const edit = render(ReviewSentCommentBody, { props: { review: state, thread: THREAD, comment: first } });
+
+    for (const view of [editor, footer, field, edit]) {
+      const cancel = view.container.querySelector<HTMLButtonElement>('[data-editor-control="cancel"]')!;
+      expect(cancel.disabled).toBe(true);
+      expect(cancel.title).toBe('Still sending this comment.');
+      // Escape is not taken, so Back goes on to its next step.
+      expect(await fireEvent.keyDown(view.container.querySelector('textarea')!, { key: 'Escape' })).toBe(true);
+    }
+    state.closeDraftEditor(id);
+    state.closeReply(THREAD.id, 'diff');
+    state.sentComments.setPRCommentOpen(false);
+    state.sentComments.setEditBody(THREAD, first, null);
+    expect(state.openEditors.map((each) => each.id)).toEqual([id]);
+    expect(state.draftBodyFor(id)).toBe('Rename this.');
+    expect(state.replyOpen(THREAD.id, 'diff')).toBe(true);
+    expect(state.sentComments.prCommentOpen).toBe(true);
+    expect(state.sentComments.editBodyFor(THREAD, first)).toBe('Edited.');
+  });
+
+  it('that fails after its row unmounted shows its text and the sentence when shown again', async () => {
+    const line = deferred('PostPRLineComment');
+    const reply = deferred('ReplyToPRThread');
+    const edit = deferred('EditPRComment');
+    const state = await open();
+
+    const id = editorWith(state, added12, 'Rename this.');
+    const editor = render(ReviewDraftEditor, { props: editorProps(state, id) });
+    await fireEvent.keyDown(editor.container.querySelector('textarea')!, CHORD);
+    state.openReply(THREAD.id, 'diff');
+    state.setReplyBody(THREAD.id, 'Agreed.');
+    const footer = render(ReviewThreadFooter, { props: footerProps(state) });
+    await fireEvent.keyDown(footer.container.querySelector('textarea')!, CHORD);
+    const first = THREAD.comments[0];
+    state.sentComments.setEditBody(THREAD, first, 'Edited.');
+    const body = render(ReviewSentCommentBody, { props: { review: state, thread: THREAD, comment: first } });
+    await fireEvent.keyDown(body.container.querySelector('textarea')!, CHORD);
+    await settle();
+    editor.unmount();
+    footer.unmount();
+    body.unmount();
+    line.refuse();
+    reply.refuse();
+    edit.refuse();
+    await settle();
+
+    // The same line opens the same editor, with its text and the sentence.
+    expect(state.openDraftEditor(added12)).toBe(id);
+    const editorAgain = render(ReviewDraftEditor, { props: editorProps(state, id) });
+    expect(editorAgain.container.querySelector('textarea')!.value).toBe('Rename this.');
+    expect(editorAgain.container.querySelector('[data-testid="review-editor-error"]')?.textContent).toBe(UNCONFIRMED);
+    const footerAgain = render(ReviewThreadFooter, { props: footerProps(state) });
+    expect(footerAgain.container.querySelector('textarea')!.value).toBe('Agreed.');
+    expect(footerAgain.container.querySelector('[data-testid="review-editor-error"]')?.textContent).toBe(UNCONFIRMED);
+    const bodyAgain = render(ReviewSentCommentBody, { props: { review: state, thread: THREAD, comment: first } });
+    expect(bodyAgain.container.querySelector('textarea')!.value).toBe('Edited.');
+    expect(bodyAgain.container.querySelector('[data-testid="review-editor-error"]')?.textContent).toBe(UNCONFIRMED);
+  });
+});
+
+describe('held replies and find', () => {
+  it('carry find keys on the diff row, and none on the Conversation card', async () => {
+    const state = await open();
+    state.setReplyBody(THREAD.id, 'Held.');
+    await state.holdPRThreadReply(THREAD);
+    const replies = state.replyDraftsFor(THREAD.id);
+    expect(replies.length).toBe(1);
+    const row = render(ReviewHeldReplies, { props: { review: state, replies, findable: true } });
+    expect(row.container.querySelectorAll('[data-find-key]').length).toBe(1);
+    const card = render(ReviewHeldReplies, { props: { review: state, replies } });
+    expect(card.container.querySelectorAll('[data-find-key]').length).toBe(0);
   });
 });

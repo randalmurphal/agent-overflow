@@ -360,13 +360,15 @@
   // flight until that content shows; a match not present now is not
   // shown: the answer is false, and it stays owed.
   async function openDiffHit(hit: ReviewFindHit): Promise<boolean> {
-    if ((await presentDiff(hit)).kind !== 'present') return false;
+    const first = await presentDiff(hit);
+    if (first.kind !== 'present') return false;
     const conflicts = untrack(() => view) === 'conflicts';
     if (conflicts && review.conflictCollapsedPaths.has(hit.path)) await review.toggleConflictCollapsed(hit.path);
     else if (!conflicts && review.collapsedPaths.has(hit.path)) review.toggleCollapsed(hit.path);
-    const at = hit.at;
-    if (at.kind === 'thread') {
-      const thread = review.prThreads.find((t) => t.id === at.threadId);
+    // A thread's comment, or a held reply at its foot: a settled thread opens.
+    const place = first.at.place;
+    if (place.kind === 'thread') {
+      const thread = review.prThreads.find((t) => t.id === place.threadId);
       if (thread?.isResolved && !review.expandedPRThreadIds.has(thread.id)) review.togglePRThread(thread.id);
     }
     await tick();
@@ -387,9 +389,9 @@
     if (resolved.kind !== 'present' || resolved.at.place.kind === 'fold') return false;
     const conflicts = untrack(() => view) === 'conflicts';
     if ((conflicts ? review.conflictCollapsedPaths : review.collapsedPaths).has(hit.path)) return false;
-    const at = hit.at;
-    if (at.kind !== 'thread') return true;
-    const thread = review.prThreads.find((t) => t.id === at.threadId);
+    const place = resolved.at.place;
+    if (place.kind !== 'thread') return true;
+    const thread = review.prThreads.find((t) => t.id === place.threadId);
     return !thread?.isResolved || review.expandedPRThreadIds.has(thread.id);
   }
 

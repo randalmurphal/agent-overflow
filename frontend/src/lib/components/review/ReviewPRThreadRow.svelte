@@ -189,7 +189,7 @@
       {/if}
 
       {#if !collapsed && review}
-        <ReviewHeldReplies {review} replies={heldReplies} />
+        <ReviewHeldReplies {review} replies={heldReplies} findable />
       {/if}
 
       {#if !collapsed || replying}

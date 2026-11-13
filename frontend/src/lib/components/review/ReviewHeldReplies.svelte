@@ -10,9 +10,11 @@
   interface Props {
     review: Pick<ReviewPaneState, 'draftEditBodyFor' | 'setDraftEditBody' | 'updateComment' | 'deleteComment'>;
     replies: readonly DiffReviewComment[];
+    /** On the diff row, where find paints them; not in the Conversation. */
+    findable?: boolean;
   }
 
-  let { review, replies }: Props = $props();
+  let { review, replies, findable = false }: Props = $props();
 </script>
 
 {#if replies.length > 0}
@@ -24,6 +26,7 @@
         onEditBodyChange={(commentId, body) => review.setDraftEditBody(commentId, body)}
         onUpdate={(commentId, body) => review.updateComment(commentId, body)}
         onDelete={(commentId) => review.deleteComment(commentId)}
+        {findable}
       />
     {/each}
   </div>

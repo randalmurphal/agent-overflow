@@ -35,9 +35,10 @@ export interface CommentWritesHost {
   withheld(): string | null;
   /** Reads the PR's threads again, for an answer with no pump (seq 0). */
   refreshThreads(): Promise<void>;
-  /** Joins the Conversation's newly arrived entries into its frozen
-   * order, so a PR comment the user posted shows where they posted it. */
-  revealConversation(): void;
+  /** Shows the PR comment the viewer posted (`body`) in a Conversation
+   * feed that froze its order, at the feed's end; whatever else arrived
+   * stays behind "N new". */
+  showPostedComment(body: string): void;
 }
 
 interface Awaited {
@@ -72,7 +73,8 @@ export interface CommentWrites {
 
   /** A sent comment open in its editor: the unsaved text, or null. */
   editBodyFor(thread: ReviewThread, comment: ReviewComment): string | null;
-  /** Opens (a body), changes or, with null, closes a sent comment's edit. */
+  /** Opens (a body), changes or, with null, closes a sent comment's edit;
+   * an edit being saved stays open, so a failure shows in it. */
   setEditBody(thread: ReviewThread, comment: ReviewComment, body: string | null): void;
   /** The `threadId\0commentId` of every sent comment open in its editor. */
   readonly editing: ReadonlySet<string>;
@@ -132,13 +134,17 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
     });
   });
 
+  function isPending(key: string): boolean {
+    return inFlight.has(key) || awaiting.has(key);
+  }
+
   async function run(
     key: string,
     call: (ref: PRRef) => Promise<{ seq: number } | null | undefined>,
     onSettled: (shown: Promise<void>) => void,
     gate: string | null = host.withheld(),
   ): Promise<boolean> {
-    if (inFlight.has(key) || awaiting.has(key)) return false;
+    if (isPending(key)) return false;
     const ref = host.ref();
     const entity = host.entityKey();
     const withheld = gate;
@@ -176,7 +182,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
 
   return {
     run,
-    pending: (key) => inFlight.has(key) || awaiting.has(key),
+    pending: isPending,
     error: (key) => errors.get(key) ?? null,
     clearError: (key) => { errors.delete(key); },
 
@@ -184,6 +190,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
     setEditBody(thread, comment, body) {
       const key = sentKey(thread, comment);
       if (body === null) {
+        if (isPending(commentWriteKey.edit(thread.id, comment.id))) return;
         editBodies.delete(key);
         errors.delete(commentWriteKey.edit(thread.id, comment.id));
       } else {
@@ -225,14 +232,18 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
     get prCommentBody() { return prCommentBody; },
     setPRCommentBody(body) { prCommentBody = body; },
     get prCommentOpen() { return prCommentOpen; },
-    setPRCommentOpen(open) { prCommentOpen = open; },
+    setPRCommentOpen(open) {
+      // A comment being posted stays open, so a failure shows in it.
+      if (!open && isPending(commentWriteKey.prComment)) return;
+      prCommentOpen = open;
+    },
     async postPRComment() {
       const body = prCommentBody.trim();
       if (!body) return;
       await run(commentWriteKey.prComment, (ref) => PostPRComment(prReferenceWire(ref), body), (shown) => {
         if (prCommentBody.trim() === body) prCommentBody = '';
         prCommentOpen = false;
-        void shown.then(() => { if (!disposed) host.revealConversation(); });
+        void shown.then(() => { if (!disposed) host.showPostedComment(body); });
       });
     },
 

@@ -28,9 +28,12 @@
     onDelete: (commentId: string) => Promise<void> | void;
     /** The jump that landed here (utils/reviewJumpPulse); 0 for none. */
     pulse?: number;
+    /** Its body carries its find key: the diff's card does, the
+     * Conversation's (which find does not search) does not. */
+    findable?: boolean;
   }
 
-  let { comment, orphaned = false, editBody, onEditBodyChange, onUpdate, onDelete, pulse = 0 }: Props = $props();
+  let { comment, orphaned = false, editBody, onEditBodyChange, onUpdate, onDelete, pulse = 0, findable = true }: Props = $props();
   let busy = $state(false);
   const editing = $derived(editBody !== null);
   const canSave = $derived((editBody ?? '').trim().length > 0 && !busy);
@@ -116,7 +119,7 @@
           takeFocus={() => true}
         />
       {:else}
-        <p class="whitespace-pre-wrap leading-relaxed text-fg" data-find-key={findDraftKey(comment.id)}>{comment.body}</p>
+        <p class="whitespace-pre-wrap leading-relaxed text-fg" data-find-key={findable ? findDraftKey(comment.id) : undefined}>{comment.body}</p>
       {/if}
     </div>
   </div>

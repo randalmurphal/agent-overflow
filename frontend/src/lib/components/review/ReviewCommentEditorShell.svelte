@@ -23,9 +23,13 @@
   // the footer's buttons; its host owns the text (the review state, since
   // every editor is a virtualized row that can unmount) and what each
   // action does. Ctrl/Cmd+Enter runs the primary action, Ctrl/Cmd+Shift+
-  // Enter the secondary one, Escape cancels. A pending write (posted now,
-  // waiting for the forge's answer) holds the text read-only; a failure's
-  // sentence shows under the text, which stays.
+  // Enter the secondary one, Escape cancels. Only a key press submits: a
+  // held chord's repeated keydowns do not, so a failed write is never
+  // posted again by them. A pending write (posted now, waiting for the
+  // forge's answer) holds the text read-only and the editor open: Cancel
+  // is disabled and Escape passes on (Back, which sends one, goes on to
+  // the next step). A failure's sentence shows under the text, which
+  // stays.
 
   interface Props {
     body: string;
@@ -96,6 +100,7 @@
 
   function onKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
+      if (pending) return;
       event.preventDefault();
       (onEscape ?? onCancel)();
       return;
@@ -105,6 +110,7 @@
     if (event.key === 'Enter' && isImeComposingEvent(event)) return;
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
+      if (event.repeat) return;
       fire(event.shiftKey ? secondary : primary);
     }
   }
@@ -140,17 +146,24 @@
           Posting…
         </span>
       {/if}
-      <button type="button" class={quietButton} data-editor-control="cancel" onclick={onCancel}>{cancelLabel}</button>
+      <button
+        type="button"
+        class={quietButton}
+        data-editor-control="cancel"
+        disabled={pending}
+        title={pending ? 'Still sending this comment.' : undefined}
+        onclick={onCancel}
+      >{cancelLabel}</button>
       {#if secondary}
         <button
           type="button"
           class={quietButton}
           data-editor-control="secondary"
-          data-testid={secondary.testid}
-          disabled={secondary.disabled || pending}
-          title={secondary.title}
+          data-testid={secondary?.testid}
+          disabled={(secondary?.disabled ?? false) || pending}
+          title={secondary?.title}
           onclick={() => fire(secondary)}
-        >{secondary.label}</button>
+        >{secondary?.label}</button>
       {/if}
       <button
         type="button"

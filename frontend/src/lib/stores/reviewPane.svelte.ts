@@ -164,6 +164,7 @@ import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { ReviewSectionId } from './reviewSectionSizes.svelte';
 import { REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
 import { createReviewCommentActions, type ReviewCommentActionsState } from './reviewCommentActions.svelte';
+import { commentWriteKey } from './reviewCommentWrites.svelte';
 import { RANGE_REFUSAL_TEXT, rangesByFile, spanRange, type LineRange } from '../utils/reviewRange';
 
 export type ReviewScope = DiffReviewScope;
@@ -380,7 +381,8 @@ export interface ReviewPaneState extends ReviewCommentActionsState {
    * one `generation` names (the diff the reader pressed in). `anchor`'s
    * `lineIndex` names the row among several with its coordinate. */
   openDraftEditor(anchor: EditorAnchor, generation?: number): string | null;
-  /** Discards an open editor and its text. */
+  /** Discards an open editor and its text; not while its comment is being
+   * posted, so a failure has its editor and text to show in. */
   closeDraftEditor(editorId: string): void;
   /** Places a detached editor on its suggested row, as if it were opened
    * there now. False when that row is not on screen, or is not the one
@@ -1412,8 +1414,7 @@ export function createReviewPaneState(
       if (draftEditBodies.get(draft.id) === undefined) draftEditBodies.set(draft.id, { sourceKey, body: draft.body });
     },
     refreshThreads: () => refreshPRThreads(),
-    // Only a feed already frozen holds a posted comment back.
-    revealConversation: () => { if (conversationOrder.length > 0) captureConversationOrder(true); },
+    showPostedComment: (body) => joinPostedComment(body),
   });
 
   // The workspace's CURRENT open PR, read live from the shared git-status
@@ -2435,6 +2436,7 @@ export function createReviewPaneState(
   }
 
   function closeDraftEditor(editorId: string): void {
+    if (commentActions.writes.pending(commentWriteKey.editor(editorId))) return;
     openEditors = openEditors.filter((editor) => editor.id !== editorId);
     draftBodies.delete(editorId);
     if (pendingEditorFocusId === editorId) pendingEditorFocusId = null;
@@ -2979,6 +2981,18 @@ export function createReviewPaneState(
   // `preserveExpanded` keeps folds that were already open open — a reveal
   // must not fold a thread's replies away because it was remotely
   // resolved while the reader had them open.
+  // The viewer's own PR comment joins a frozen feed at its end, as it was
+  // posted from there; nothing else that arrived meanwhile does. It is the
+  // newest unknown PR-level entry with the posted text. A feed not frozen
+  // yet shows it in its live order.
+  function joinPostedComment(body: string): void {
+    if (conversationOrder.length === 0) return;
+    const known = new Set(conversationOrder);
+    const mine = conversationFeedSource.find(({ item }) => item.kind === 'thread' && !known.has(item.id)
+      && !item.thread.isResolvable && item.thread.comments[0]?.body.trim() === body);
+    if (mine) conversationOrder = [...conversationOrder, mine.item.id];
+  }
+
   function captureConversationOrder(preserveExpanded: boolean): void {
     conversationOrder = conversationFeedSource.map((entry) => entry.item.id);
     const expanded = new Set<string>();

@@ -233,7 +233,11 @@ export function resolveReviewFindHit(shown: ReviewFindShown, hit: ReviewFindHit,
     const rowKey = findDraftKey(at.commentId);
     const draft = shown.drafts.find((each) => each.id === at.commentId && each.status === 'draft' && each.filePath === file.path);
     if (!draft || shown.editing.has(rowKey) || hit.run !== 0 || !has(draft.body)) return ABSENT;
-    return present(rowKey, { kind: 'draft', commentId: at.commentId }, hit.occurrence);
+    if (!draft.replyThreadId) return present(rowKey, { kind: 'draft', commentId: at.commentId }, hit.occurrence);
+    // A held reply shows at its thread's foot, in this file's diff.
+    const thread = shown.prThreads.find((each) => each.id === draft.replyThreadId);
+    if (!thread || prThreadAnchor(thread).filePath !== file.path) return ABSENT;
+    return present(rowKey, { kind: 'thread', threadId: thread.id }, hit.occurrence);
   }
   if (at.kind === 'thread') {
     const thread = shown.prThreads.find((each) => each.id === at.threadId);
