@@ -141,14 +141,16 @@
         <span class="shrink-0 text-fg-subtle {CONFIRM_HIDES}" data-testid="review-comment-edited">edited</span>
       {/if}
       <span class="min-w-0 flex-1"></span>
-      {#if outdated}
-        <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_OUTDATED_CHIP_CLASS} {CONFIRM_HIDES}" title={outdatedTitle(thread)} data-testid="review-thread-outdated">outdated</span>
-      {/if}
-      {#if threadState !== 'none'}
-        <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_CHIP_CLASS[threadState]} {CONFIRM_HIDES}">{threadState}</span>
-      {/if}
+      <!-- The actions' slot sits left of the chips, so the chips keep the
+           right edge; its confirm lays over the text to its left. -->
       {#if first}
         <ReviewSentCommentActions {review} {thread} comment={first} first />
+      {/if}
+      {#if outdated}
+        <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_OUTDATED_CHIP_CLASS}" title={outdatedTitle(thread)} data-testid="review-thread-outdated">outdated</span>
+      {/if}
+      {#if threadState !== 'none'}
+        <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_CHIP_CLASS[threadState]}" data-testid="review-thread-state">{threadState}</span>
       {/if}
     </div>
 

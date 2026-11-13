@@ -285,3 +285,15 @@ describe('<ReviewConversationThread> code context', () => {
     }
   });
 });
+
+describe('the card header', () => {
+  it('keeps the state chip at its right edge, the comment actions\' slot left of it', () => {
+    const review = fakeReview({ sentCommentActions: true });
+    const mine = comment({ viewerCanEdit: true, viewerCanDelete: true });
+    const view = render(ReviewConversationThread, { review: review as unknown as ReviewPaneState, thread: thread({ comments: [mine] }), inDiff: false });
+    const header = view.container.querySelector('[data-first-comment]')!;
+    const children = [...header.children];
+    expect(children.at(-1)?.getAttribute('data-testid')).toBe('review-thread-state');
+    expect(children.at(-2)?.getAttribute('data-testid')).toBe('review-comment-actions');
+  });
+});
