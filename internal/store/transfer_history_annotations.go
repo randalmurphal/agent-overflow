@@ -10,6 +10,7 @@ import (
 )
 
 const transferDiffCommentColumns = `id,thread_id,scope,source_key,commit_sha,file_path,status,old_line,new_line,side,
+start_old_line,start_new_line,reply_thread_id,reply_root_id,
 selected_text,body,sent_at,sent_turn_id,created_at,updated_at`
 
 // transferDiffCommentExport reads a comment as a transfer carries it
@@ -19,7 +20,7 @@ selected_text,body,sent_at,sent_turn_id,created_at,updated_at`
 // source, and only a live send of the source settles or retires it.
 const transferDiffCommentExport = `id,thread_id,scope,source_key,commit_sha,file_path,
 CASE WHEN claim_settles <> '' AND status = 'sent' THEN 'draft' ELSE status END,
-old_line,new_line,side,selected_text,body,
+old_line,new_line,side,start_old_line,start_new_line,reply_thread_id,reply_root_id,selected_text,body,
 CASE WHEN claim_settles <> '' AND status = 'sent' THEN 0 ELSE sent_at END,
 CASE WHEN claim_settles <> '' AND status = 'sent' THEN '' ELSE sent_turn_id END,
 created_at,updated_at`
@@ -84,7 +85,7 @@ func importTransferAnnotation(tx *sql.Tx, targetID, sourceID string, record tran
 			p.ID = transferContentID(targetID, "diff_comment", p.ID)
 		}
 		p.SentTurnID = transferredTurnID(sourceID, targetID, p.SentTurnID)
-		_, err := tx.Exec(`INSERT INTO diff_review_comments (`+transferDiffCommentColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, p.ID, targetID, p.Scope, p.SourceKey, p.CommitSHA, p.FilePath, p.Status, p.OldLine, p.NewLine, p.Side, p.SelectedText, p.Body, p.SentAt, p.SentTurnID, p.CreatedAt, p.UpdatedAt)
+		_, err := tx.Exec(`INSERT INTO diff_review_comments (`+transferDiffCommentColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, p.ID, targetID, p.Scope, p.SourceKey, p.CommitSHA, p.FilePath, p.Status, p.OldLine, p.NewLine, p.Side, p.StartOldLine, p.StartNewLine, p.ReplyThreadID, p.ReplyRootID, p.SelectedText, p.Body, p.SentAt, p.SentTurnID, p.CreatedAt, p.UpdatedAt)
 		return err
 	default:
 		return fmt.Errorf("transfer: unsupported history record %q; update this computer first", record.Kind)
