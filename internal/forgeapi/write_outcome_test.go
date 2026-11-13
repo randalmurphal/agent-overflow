@@ -25,6 +25,7 @@ func TestWriteNotAppliedClassifiesWhatAWritesErrorProves(t *testing.T) {
 		{"401 after a refresh", &TransientError{Err: &StatusError{Status: http.StatusUnauthorized}}, true},
 		{"rate limited", &RateLimitedError{Host: "github.com"}, true},
 		{"login refused", &SetupError{Kind: SetupUnauthenticated}, true},
+		{"GraphQL refusal", &GraphQLError{Problems: []GraphQLProblem{{Type: "FORBIDDEN", Message: "no"}}}, true},
 		{"502", &StatusError{Status: http.StatusBadGateway}, false},
 		{"reset after sending", &TransientError{Err: errors.New("connection reset")}, false},
 		{"other", errors.New("decode response"), false},
