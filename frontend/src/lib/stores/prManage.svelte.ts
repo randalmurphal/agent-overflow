@@ -104,7 +104,7 @@ export interface PRManageError {
 }
 
 /** Hover text of a control that cannot be dismissed while it saves. */
-export const SAVING_TITLE = 'Saving. This closes when the forge has answered.';
+export const SAVING_TITLE = 'Still saving this change.';
 
 export interface PRManageView {
   /** The action in flight or waiting for the pump's answer. */

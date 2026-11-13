@@ -20,16 +20,16 @@
 // (GitLab), the blocker clears and focus lands on the Merge header;
 // Merge now sends the edited commit message the fake received; the
 // merged PR has no menu; and each action's event is in the Conversation
-// feed. On GitLab, on a backend of its own (a fresh schema probe, a 1 s
-// PR poll): a refused management read leaves the PR loaded with its
-// Merge, Description and Conversation, Details showing only the
+// feed. On GitLab: a refused management read leaves the PR loaded with
+// its Merge, Description and Conversation, Details showing only the
 // sentence and no management control anywhere, and the controls return
-// on the next snapshot once the read answers; and a host without the set
-// mutations' operationMode shows no Edit on the reviewers, assignees and
-// labels rows while the title, description and state controls stay.
-// A held Enter on the title bar's `⋯` opens the menu and activates
-// nothing. Closing the pane with Ctrl+W while a picker holds a change
-// writes that change (desktop). Screenshots (dark): the title bar's menu, the Details section
+// on the next read of the PR (the Conversation's refresh) once the read
+// answers; and a host without the set mutations' operationMode shows no
+// Edit on the reviewers, assignees and labels rows while the title,
+// description and state controls stay. A held Enter on the title bar's
+// `⋯` opens the menu and activates nothing. Closing the pane with Ctrl+W
+// while a picker holds a change writes that change (desktop).
+// Screenshots (dark): the title bar's menu, the Details section
 // collapsed and expanded, a picker with results, the description editor
 // and its preview, the blocker row with Dismiss and its reason (GitHub)
 // or Bypass (GitLab), and the commit message editor.
@@ -37,7 +37,7 @@
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   expandReviewSection,
@@ -565,83 +565,67 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     'review-merge-row-bypass',
   ];
 
-  // A backend of its own: the GitLab schema probe is cached per host, and
-  // the next snapshot comes within a second.
-  function launchManageHarness(): Promise<HarnessApp> {
-    return launchHarness({ env: { AO_HARNESS_TIMING: [...HARNESS_TIMING.split(','), 'pr-update=1s'].join(',') } });
-  }
-
-  test('gitlab: a refused management read leaves the PR, says why in Details and offers no management control until it answers', async ({ page }, testInfo: TestInfo) => {
+  test('gitlab: a refused management read leaves the PR, says why in Details and offers no management control until it answers', async ({ harness, page }, testInfo: TestInfo) => {
     test.setTimeout(180_000);
-    const harness = await launchManageHarness();
-    try {
-      const thread = 'Manage unavailable thread';
-      await seedPullRequest(harness, 'gitlab', thread);
-      const refusal = { status: 403, body: { message: '403 Forbidden' } };
-      await refuseForgeRoute(harness, { route: 'glab graphql PRManageChecks', ...refusal });
-      await refuseForgeRoute(harness, { route: 'glab graphql PRManage', ...refusal });
-      await page.emulateMedia({ colorScheme: 'dark' });
-      await harness.open(page);
-      const review = await openReview(page, thread, 'gitlab', compact);
-      const press = (target: Locator) => (compact ? target.tap() : target.click());
+    const thread = 'Manage unavailable thread';
+    await seedPullRequest(harness, 'gitlab', thread);
+    const refusal = { status: 403, body: { message: '403 Forbidden' } };
+    await refuseForgeRoute(harness, { route: 'glab graphql PRManageChecks', ...refusal });
+    await refuseForgeRoute(harness, { route: 'glab graphql PRManage', ...refusal });
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await harness.open(page);
+    const review = await openReview(page, thread, 'gitlab', compact);
+    const press = (target: Locator) => (compact ? target.tap() : target.click());
 
-      // The PR is there: its title, the Merge section with its blocker,
-      // the description and the conversation.
-      await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
-      const merge = await expandReviewSection(page, 'review-pr-merge');
-      await expect(merge.locator('[data-testid="review-merge-blocker"][data-kind="changes_requested"]')).toHaveCount(1);
-      await expect(await expandReviewSection(page, 'review-pr-description')).toContainText(BODY);
-      await expect(await expandReviewSection(page, 'review-pr-conversation')).toContainText('One question on the backoff.');
+    // The PR is there: its title, the Merge section with its blocker,
+    // the description and the conversation.
+    await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+    const merge = await expandReviewSection(page, 'review-pr-merge');
+    await expect(merge.locator('[data-testid="review-merge-blocker"][data-kind="changes_requested"]')).toHaveCount(1);
+    await expect(await expandReviewSection(page, 'review-pr-description')).toContainText(BODY);
+    await expect(await expandReviewSection(page, 'review-pr-conversation')).toContainText('One question on the backoff.');
 
-      // Details is collapsed and, opened, holds only the sentence.
-      const details = review.getByTestId('review-pr-details');
-      await expect(details).toHaveAttribute('data-open', 'false');
-      await press(details.locator('button[aria-expanded]').first());
-      await expect(details.getByTestId('review-details-unavailable')).not.toBeEmpty();
-      await expect(details.getByTestId('review-details-rows')).toHaveCount(0);
-      await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-unavailable.png`) });
-      for (const id of MANAGE_CONTROLS) await expect(page.getByTestId(id), id).toHaveCount(0);
+    // Details is collapsed and, opened, holds only the sentence.
+    const details = review.getByTestId('review-pr-details');
+    await expect(details).toHaveAttribute('data-open', 'false');
+    await press(details.locator('button[aria-expanded]').first());
+    await expect(details.getByTestId('review-details-unavailable')).not.toBeEmpty();
+    await expect(details.getByTestId('review-details-rows')).toHaveCount(0);
+    await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-unavailable.png`) });
+    for (const id of MANAGE_CONTROLS) await expect(page.getByTestId(id), id).toHaveCount(0);
 
-      // The read answers again: the controls return on the next snapshot.
-      await clearForgeRefusal(harness, 'glab graphql PRManageChecks');
-      await clearForgeRefusal(harness, 'glab graphql PRManage');
-      await expect(details.getByTestId('review-details-unavailable')).toHaveCount(0, { timeout: 30_000 });
-      await expect(details.getByTestId('review-details-rows')).toBeVisible();
-      for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-edit-reviewers', 'review-details-edit-assignees', 'review-details-edit-labels', 'review-merge-row-bypass']) {
-        await expect(page.getByTestId(id), id).toBeAttached();
-      }
-      await expectEveryForgeCallHandled(harness);
-    } finally {
-      await page.close();
-      await harness.close();
+    // The read answers again: the controls return with the next read of
+    // the PR, which the Conversation's refresh asks for.
+    await clearForgeRefusal(harness, 'glab graphql PRManageChecks');
+    await clearForgeRefusal(harness, 'glab graphql PRManage');
+    await press(review.getByTestId('review-refresh-comments'));
+    await expect(details.getByTestId('review-details-unavailable')).toHaveCount(0, { timeout: 30_000 });
+    await expect(details.getByTestId('review-details-rows')).toBeVisible();
+    for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-edit-reviewers', 'review-details-edit-assignees', 'review-details-edit-labels', 'review-merge-row-bypass']) {
+      await expect(page.getByTestId(id), id).toBeAttached();
     }
+    await expectEveryForgeCallHandled(harness);
   });
 
-  test('gitlab: a host without the set mutations offers no people or label edits, and keeps the rest', async ({ page }, testInfo: TestInfo) => {
+  test('gitlab: a host without the set mutations offers no people or label edits, and keeps the rest', async ({ harness, page }, testInfo: TestInfo) => {
     test.setTimeout(180_000);
-    const harness = await launchManageHarness();
-    try {
-      const thread = 'Manage older host thread';
-      await seedPullRequest(harness, 'gitlab', thread, (seed) => ({ ...seed, serverLacks: ['operationMode'] }));
-      await page.emulateMedia({ colorScheme: 'dark' });
-      await harness.open(page);
-      const review = await openReview(page, thread, 'gitlab', compact);
-      await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
-      const details = review.getByTestId('review-pr-details');
-      await (compact ? details.locator('button[aria-expanded]').first().tap() : details.locator('button[aria-expanded]').first().click());
-      await expect(details.getByTestId('review-details-rows')).toBeVisible();
-      await expect(details.locator('[data-testid="review-details-reviewer"][data-login="alee"]')).toBeVisible();
-      for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-rerequest']) {
-        await expect(page.getByTestId(id).first(), id).toBeAttached();
-      }
-      for (const row of ['reviewers', 'assignees', 'labels']) {
-        await expect(details.getByTestId(`review-details-edit-${row}`), row).toHaveCount(0);
-      }
-      await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
-      await expectEveryForgeCallHandled(harness);
-    } finally {
-      await page.close();
-      await harness.close();
+    const thread = 'Manage older host thread';
+    await seedPullRequest(harness, 'gitlab', thread, (seed) => ({ ...seed, serverLacks: ['operationMode'] }));
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await harness.open(page);
+    const review = await openReview(page, thread, 'gitlab', compact);
+    await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+    const details = review.getByTestId('review-pr-details');
+    await (compact ? details.locator('button[aria-expanded]').first().tap() : details.locator('button[aria-expanded]').first().click());
+    await expect(details.getByTestId('review-details-rows')).toBeVisible();
+    await expect(details.locator('[data-testid="review-details-reviewer"][data-login="alee"]')).toBeVisible();
+    for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-rerequest']) {
+      await expect(page.getByTestId(id).first(), id).toBeAttached();
     }
+    for (const row of ['reviewers', 'assignees', 'labels']) {
+      await expect(details.getByTestId(`review-details-edit-${row}`), row).toHaveCount(0);
+    }
+    await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
+    await expectEveryForgeCallHandled(harness);
   });
 }

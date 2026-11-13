@@ -5,6 +5,7 @@
   import ReviewIconButton from './ReviewIconButton.svelte';
   import ReviewManageError from './ReviewManageError.svelte';
   import { SAVING_TITLE, type PRManageView } from '../../stores/prManage.svelte';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
 
   // The title line's editor: one line in the title's own height, so the
   // title bar keeps its fixed lines. Enter saves and Escape cancels; a
@@ -42,13 +43,16 @@
     manage.cancelTitle();
   }
 
+  // As the comment editors: mid-composition keys belong to the IME, and
+  // while saving Escape passes on (Back goes to its next step).
   function onKeydown(event: KeyboardEvent): void {
-    if (event.isComposing) return;
+    if (isImeComposingEvent(event)) return;
     if (event.key === 'Enter') {
       event.preventDefault();
       if (event.repeat || blocked !== null) return;
       void manage.saveTitle();
     } else if (event.key === 'Escape') {
+      if (saving) return;
       event.preventDefault();
       event.stopPropagation();
       cancel();

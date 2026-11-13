@@ -268,10 +268,12 @@ describe('the editors while a write is pending', () => {
     expect(edit).not.toHaveBeenCalled();
     await fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(edit).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }), { title: 'Renamed' }));
-    await fireEvent.keyDown(input, { key: 'Escape' });
+    // While it saves, Escape is not taken: it passes on, as in the
+    // comment editors.
+    expect(await fireEvent.keyDown(input, { key: 'Escape' })).toBe(true);
     expect(view.getByTestId('review-title-input')).toBeInTheDocument();
     expect(view.getByTestId('review-title-cancel')).toBeDisabled();
-    expect(view.getByTestId('review-title-cancel').getAttribute('title')).toContain('Saving');
+    expect(view.getByTestId('review-title-cancel').getAttribute('title')).toBe('Still saving this change.');
     frame(detail(ALL, { title: 'Renamed' }), 2);
     await waitFor(() => expect(view.queryByTestId('review-title-input')).toBeNull());
     expect(view.getByTestId('review-pr-title')).toHaveTextContent('Renamed');
@@ -288,7 +290,8 @@ describe('the editors while a write is pending', () => {
     await fireEvent.click(view.getByTestId('review-description-save'));
     await waitFor(() => expect(edit).toHaveBeenCalledWith(expect.anything(), { description: 'New body', expectedDescription: 'The body.' }));
     expect(view.getByTestId('review-description-cancel')).toBeDisabled();
-    await fireEvent.keyDown(input, { key: 'Escape' });
+    expect(view.getByTestId('review-description-cancel').getAttribute('title')).toBe('Still saving this change.');
+    expect(await fireEvent.keyDown(input, { key: 'Escape' })).toBe(true);
     expect(view.getByTestId('review-description-editor')).toBeInTheDocument();
     frame(detail(ALL, { body: 'New body' }), 2);
     await waitFor(() => expect(view.queryByTestId('review-description-editor')).toBeNull());

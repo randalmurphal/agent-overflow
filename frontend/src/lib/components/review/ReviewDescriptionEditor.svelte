@@ -4,6 +4,8 @@
   import ReviewManageError from './ReviewManageError.svelte';
   import { SAVING_TITLE, type PRManageView } from '../../stores/prManage.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
+  import { isMacPlatform } from '../../utils/platform';
 
   // The Description section's editor: the raw body, a quiet Preview that
   // renders it as the section does (ChatMarkdown's sanitized embedded
@@ -47,19 +49,24 @@
     manage.cancelDescription();
   }
 
+  // As the comment editors: mid-composition keys belong to the IME, and
+  // while saving Escape passes on (Back goes to its next step).
   function onKeydown(event: KeyboardEvent): void {
-    if (event.isComposing) return;
+    if (isImeComposingEvent(event)) return;
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       if (event.repeat || blocked !== null) return;
       void manage.saveDescription();
     } else if (event.key === 'Escape') {
+      if (saving) return;
       event.preventDefault();
       event.stopPropagation();
       cancel();
     }
   }
 
+  // The comment editors' placeholder names the save chord the same way.
+  const placeholder = `Describe the change (${isMacPlatform() ? '⌘' : 'Ctrl'}+Enter to save)`;
   const toggleClass = 'h-6 rounded-[var(--radius-field)] px-2 text-[0.6875rem] font-medium compact:h-8';
 </script>
 
@@ -92,8 +99,9 @@
   {:else}
     <textarea
       bind:this={textarea}
-      class="min-h-24 w-full resize-y rounded-[var(--radius-field)] border border-border bg-surface-0 px-2.5 py-2 font-mono text-xs leading-relaxed text-fg outline-none focus:border-accent/60"
+      class="min-h-24 w-full resize-y rounded-[var(--radius-field)] border border-border bg-surface-0 px-2.5 py-2 font-mono text-xs leading-relaxed text-fg outline-none placeholder:text-fg-subtle focus:border-accent/60 read-only:opacity-70"
       rows="10"
+      {placeholder}
       aria-label="Pull request description"
       data-testid="review-description-input"
       value={manage.descriptionDraft ?? ''}

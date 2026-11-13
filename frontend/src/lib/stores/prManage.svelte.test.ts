@@ -482,12 +482,12 @@ describe('the picker', () => {
 
   it('shows a failed change on its row until the row is picked again', async () => {
     setBindingMock('SearchPRCandidates', async () => ({ people: [], labels: [{ name: 'feature', id: 'LA_9' }], more: false }));
-    setBindingMock('SetPRLabels', async () => { throw new TransportError('forge_transient', 'GitHub applied part of the change to the labels and then timed out. The pane shows what GitHub did.'); });
+    setBindingMock('SetPRLabels', async () => { throw new TransportError('forge_unconfirmed', 'Removed bug from the labels; adding feature may have applied. The pane shows what GitHub did.'); });
     view.picker.open('labels', { labels: [] });
     await settle();
     view.picker.toggle('l:LA_9');
     await view.picker.close();
-    expect(view.rowError('labels')?.message).toContain('applied part of the change');
+    expect(view.rowError('labels')?.message).toContain('may have applied');
     view.picker.open('labels', { labels: [] });
     expect(view.rowError('labels')).toBeNull();
   });
