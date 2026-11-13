@@ -58,7 +58,7 @@ func suggestionsEngine(t *testing.T) (*Engine, func(method, host, path, body str
 
 func gql(t *testing.T, kind, op, decl string, vars map[string]any) string {
 	t.Helper()
-	return mustJSON(t, map[string]any{"query": kind + " " + op + decl + " { x }", "operationName": op, "variables": vars})
+	return mustJSON(t, map[string]any{"query": testDocument(kind, op, decl), "operationName": op, "variables": vars})
 }
 
 // GitHub: the contents route serves the head's file in the raw media type

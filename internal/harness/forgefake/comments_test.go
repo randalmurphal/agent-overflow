@@ -53,11 +53,11 @@ func TestGitHubCommentRoutesRefuseAsGitHubDoes(t *testing.T) {
 	if got := send("POST", "github.com", "repos/acme/c/pulls/1/comments/51/replies", `{"body":"x"}`); got.status != http.StatusNotFound {
 		t.Fatalf("reply under no thread = %+v, want 404", got)
 	}
-	update := mustJSON(t, map[string]any{"query": "mutation UpdateReviewComment($id: ID!, $body: String!) { x }", "operationName": "UpdateReviewComment", "variables": map[string]any{"id": "PRRC_ao50", "body": "mine"}})
+	update := mustJSON(t, map[string]any{"query": testDocument("mutation", "UpdateReviewComment", "($id: ID!, $body: String!)"), "operationName": "UpdateReviewComment", "variables": map[string]any{"id": "PRRC_ao50", "body": "mine"}})
 	if got := send("POST", "github.com", "/github/graphql", update); !strings.Contains(got.body, "FORBIDDEN") {
 		t.Fatalf("edit of another author's comment = %+v", got)
 	}
-	issue := mustJSON(t, map[string]any{"query": "mutation UpdateIssueComment($id: ID!, $body: String!) { x }", "operationName": "UpdateIssueComment", "variables": map[string]any{"id": "PRRC_ao50", "body": "mine"}})
+	issue := mustJSON(t, map[string]any{"query": testDocument("mutation", "UpdateIssueComment", "($id: ID!, $body: String!)"), "operationName": "UpdateIssueComment", "variables": map[string]any{"id": "PRRC_ao50", "body": "mine"}})
 	if got := send("POST", "github.com", "/github/graphql", issue); !strings.Contains(got.body, "NOT_FOUND") {
 		t.Fatalf("an issue comment edit naming a review comment = %+v", got)
 	}
@@ -99,7 +99,7 @@ func TestGitHubCommentEditAndDeleteFollowWriteAccess(t *testing.T) {
 			}
 			srv := testServer(t, e)
 			graphql := func(operation, declared string, variables map[string]any) httpAnswer {
-				body := mustJSON(t, map[string]any{"query": "mutation " + operation + declared + " { x }", "operationName": operation, "variables": variables})
+				body := mustJSON(t, map[string]any{"query": testDocument("mutation", operation, declared), "operationName": operation, "variables": variables})
 				return httpRequest(t, srv, "POST", "github.com", "/github/graphql", body, http.Header{"Authorization": {"Bearer " + testAPIToken}})
 			}
 			edit := graphql("UpdateReviewComment", "($id: ID!, $body: String!)", map[string]any{"id": "PRRC_ao50", "body": "edited"})

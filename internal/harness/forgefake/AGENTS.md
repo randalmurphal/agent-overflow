@@ -44,7 +44,16 @@ inspection go through the harness wire with no fixture files.
   `detail` (HTTP), recorded with `unhandled: true`. So is a GraphQL
   request for an operation the fake does not implement, or whose
   document declares, or whose request supplies, other variables than the
-  operation's entry in `githubGraphQL` or `gitlabGraphQL`. An HTTP request with a token
+  operation's entry in `githubGraphQL` or `gitlabGraphQL`. A GraphQL
+  request the forges' validation refuses (`GraphQLRequestProblems`,
+  `graphql_check.go`: a variable used but not declared, declared but not
+  used or declared twice, a non-null one without a default missing or
+  null, one sent undeclared) is answered as GitHub and GitLab answer it,
+  200 with the errors and no data, and recorded as unhandled. The check
+  tokenizes the document; it does not check value types, fields,
+  arguments or directives, and refuses a document with a fragment or a
+  second operation. `cmd/ao-mockforge`'s `TestMain` fails when an
+  operation `internal/git` defines never reached a rig. An HTTP request with a token
   other than the fixed one is an unhandled 401; one with no token at all
   (the boot's dev-server scan probing its own listeners) is a 401 that is
   not recorded. Specs assert none occurred

@@ -97,15 +97,15 @@ type graphQLRequest struct {
 	vars graphQLVars
 }
 
-var (
-	graphQLSignature   = regexp.MustCompile(`^\s*(query|mutation)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?`)
-	graphQLDeclaredVar = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)\s*:`)
-)
-
 // graphQL answers one GraphQL request from its forge's operation table
-// (githubGraphQL, gitlabGraphQL). Callers hold mu.
+// (githubGraphQL, gitlabGraphQL). A request the forge would refuse as
+// invalid (GraphQLRequestProblems) answers the forge's validation errors
+// and is recorded as unhandled. Callers hold mu.
 func (e *Engine) graphQL(c *call) response {
 	req := c.graphQL
+	if problems := GraphQLRequestProblems(req.Query, req.vars); len(problems) > 0 {
+		return graphQLInvalid(req.OperationName, problems)
+	}
 	ops := githubGraphQL
 	if c.cli == "glab" {
 		ops = gitlabGraphQL
@@ -115,13 +115,13 @@ func (e *Engine) graphQL(c *call) response {
 		return unhandled("GraphQL operation %q is not implemented", req.OperationName)
 	}
 	op := ops[i]
-	m := graphQLSignature.FindStringSubmatch(req.Query)
-	if m == nil || m[1] != op.kind || m[2] != op.name {
+	doc, err := ParseGraphQLOperation(req.Query)
+	if err != nil || doc.Kind != op.kind || doc.Name != op.name {
 		return unhandled("GraphQL document does not declare %s %s", op.kind, op.name)
 	}
-	var declared []string
-	for _, v := range graphQLDeclaredVar.FindAllStringSubmatch(m[3], -1) {
-		declared = append(declared, v[1])
+	declared := make([]string, 0, len(doc.Variables))
+	for _, v := range doc.Variables {
+		declared = append(declared, v.Name)
 	}
 	want := append(slices.Clone(op.required), op.optional...)
 	slices.Sort(declared)
@@ -225,6 +225,26 @@ func (v graphQLVars) pullVars() (project string, number int, err error) {
 // graphQLData is a successful GraphQL answer.
 func graphQLData(data map[string]any) response {
 	return jsonResponse(map[string]any{"data": data})
+}
+
+// graphQLInvalid is how GitHub and GitLab refuse a request that fails
+// validation: 200 with the errors and no data, nothing run. invalid
+// records it as unhandled, so a spec's expectEveryForgeCallHandled fails
+// on a document the app should never send.
+func graphQLInvalid(operation string, problems []GraphQLProblem) response {
+	errs := make([]map[string]any, 0, len(problems))
+	messages := make([]string, 0, len(problems))
+	for _, p := range problems {
+		extensions := map[string]any{"code": p.Code}
+		if p.Variable != "" {
+			extensions["variableName"] = p.Variable
+		}
+		errs = append(errs, map[string]any{"message": p.Message, "extensions": extensions})
+		messages = append(messages, p.Message)
+	}
+	resp := jsonResponse(map[string]any{"errors": errs})
+	resp.invalid = fmt.Sprintf("GraphQL %s is invalid: %s", operation, strings.Join(messages, "; "))
+	return resp
 }
 
 // graphQLNotFound is GitHub's answer for an object that does not

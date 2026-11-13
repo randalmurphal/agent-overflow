@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -818,10 +819,25 @@ func graphQLDocument(t *testing.T, op string) string {
 		for _, name := range append(slices.Clone(candidate.required), candidate.optional...) {
 			params = append(params, "$"+name+": String")
 		}
-		return candidate.kind + " " + op + "(" + strings.Join(params, ", ") + ") { __typename }"
+		return testDocument(candidate.kind, op, "("+strings.Join(params, ", ")+")")
 	}
 	t.Fatalf("no GraphQL operation %s", op)
 	return ""
+}
+
+// testDocument is a document of kind op declaring decl ("($a: T, ...)",
+// or "" for none) whose selection uses each declared variable once, as
+// the forges' validation requires; the fake reads no field of it.
+func testDocument(kind, op, decl string) string {
+	var uses []string
+	for _, m := range regexp.MustCompile(`\$(\w+)\s*:`).FindAllStringSubmatch(decl, -1) {
+		uses = append(uses, m[1]+": $"+m[1])
+	}
+	selection := "{ x }"
+	if len(uses) > 0 {
+		selection = "{ x(" + strings.Join(uses, ", ") + ") }"
+	}
+	return kind + " " + op + decl + " " + selection
 }
 
 // graphQL sends one operation to the GitHub GraphQL mount for host.
@@ -1427,8 +1443,9 @@ func TestGraphQLPagesEveryConnection(t *testing.T) {
 
 // A request whose operation the fake does not implement as asked is
 // unhandled: an unknown operation, a document declaring other variables
-// or another kind, a variable the document does not declare, a missing
-// or mistyped one, a foreign cursor, a GET.
+// or another kind, a missing or mistyped variable, a foreign cursor, a
+// GET. A request the forge's validation refuses is
+// TestGraphQLValidation's.
 func TestGraphQLRefusesADriftedOperation(t *testing.T) {
 	t.Parallel()
 	e, _ := seeded(t, Options{})
@@ -1439,16 +1456,15 @@ func TestGraphQLRefusesADriftedOperation(t *testing.T) {
 	}
 	doc := graphQLDocument(t, "PRTick")
 	cases := map[string]httpAnswer{
-		"unknown operation":   send(`query Viewer { viewer { login } }`, "Viewer", nil),
-		"another kind":        send(strings.Replace(doc, "query", "mutation", 1), "PRTick", tick),
-		"another name":        send(strings.Replace(doc, "PRTick", "PRRead", 1), "PRTick", tick),
-		"undeclared variable": send(doc, "PRTick", map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false, "wantCI": true}),
-		"missing variable":    send(doc, "PRTick", map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false}),
-		"declared extra":      send(strings.Replace(doc, "(", "($wantCI: Boolean!, ", 1), "PRTick", tick),
-		"mistyped variable":   send(doc, "PRTick", map[string]any{"owner": "acme", "name": "widgets", "number": "7", "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false}),
-		"foreign cursor":      graphQL(t, srv, "github.com", "PRThreadsPage", map[string]any{"owner": "acme", "name": "widgets", "number": 7, "after": "Y3Vyc29y"}),
-		"no operation name":   send(doc, "", tick),
-		"GET":                 httpRequest(t, srv, "GET", "github.com", "/github/graphql", "", nil),
+		"unknown operation": send(`query Viewer { viewer { login } }`, "Viewer", nil),
+		"another kind":      send(strings.Replace(doc, "query", "mutation", 1), "PRTick", tick),
+		"another name":      send(strings.Replace(doc, "PRTick", "PRRead", 1), "PRTick", tick),
+		"missing variable":  send(doc, "PRTick", map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false}),
+		"declared extra":    send(strings.Replace(strings.Replace(doc, "(", "($wantCI: Boolean, ", 1), "x(", "x(wantCI: $wantCI, ", 1), "PRTick", tick),
+		"mistyped variable": send(doc, "PRTick", map[string]any{"owner": "acme", "name": "widgets", "number": "7", "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false}),
+		"foreign cursor":    graphQL(t, srv, "github.com", "PRThreadsPage", map[string]any{"owner": "acme", "name": "widgets", "number": 7, "after": "Y3Vyc29y"}),
+		"no operation name": send(doc, "", tick),
+		"GET":               httpRequest(t, srv, "GET", "github.com", "/github/graphql", "", nil),
 	}
 	for name, got := range cases {
 		if got.status != 404 || !strings.Contains(got.body, "unhandled") {
