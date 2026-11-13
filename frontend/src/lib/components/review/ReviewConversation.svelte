@@ -185,7 +185,9 @@
       void tick().then(() => {
         const scroller = scrollerOf();
         const el = entryOf(target);
-        if (scroller && el) scrollEntryIntoView(scroller, el);
+        if (!scroller || !el) return;
+        scrollEntryIntoView(scroller, el);
+        if (placed) recordPlace(scroller);
       });
     });
   });
@@ -263,6 +265,9 @@
       if (!el.isConnected) return;
       el.scrollIntoView({ block: 'nearest' });
       if (scroller) review.setOverviewSectionScrollTop('conversation', scroller.scrollTop);
+      // The jump is the reader's new place: held from here, before a
+      // late layout could be taken for growth above the old one.
+      if (scroller && placed) recordPlace(scroller);
     });
     untrack(() => {
       pulse = { threadId: target, generation: (pulse?.generation ?? 0) + 1 };
