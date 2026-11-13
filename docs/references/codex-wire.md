@@ -139,7 +139,7 @@ Authoritative method list from
 | `rawResponseItem/completed` | Raw response items: `spawn_agent` / `wait_agent` / `write_stdin` enrichment and the live mailbox carrier. Only available on a fresh `thread/start` with `experimentalRawEvents`. See §`<subagent_notification>`. |
 | `item/mcpToolCall/progress`, `item/autoApprovalReview/started`, `item/autoApprovalReview/completed` | Recognised and dropped (consumed, so never opted out). |
 | `autoApprovalReview/strictReviewRequired` | 0.149. Reachable only in the `auto` runtime mode: strict review replaced the cheap in-line assessment, so tool calls slow down. One warning row; the payload carries no reason. |
-| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each. |
+| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each. `run.eventName` and `run.status` are camelCase (`HookEventName`, `HookRunStatus`: `running`, `completed`, `failed`, `blocked`, `stopped`). `preModelRequest` and `postModelRequest` (0.164) fire around every model request, so they get no row on `hook/started` and a row on `hook/completed` only when the status is not `completed`. Codex does not write hook runs to the rollout. |
 | `thread/started` | Session-level. First notification on a new thread; emits `EventSessionInit`. |
 | `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
 | `thread/archived`, `thread/unarchived`, `thread/closed` | Recognised, no event. |

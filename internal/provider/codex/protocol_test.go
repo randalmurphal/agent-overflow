@@ -2573,6 +2573,56 @@ func TestHookNotificationAcceptsInterruptEventName(t *testing.T) {
 	}
 }
 
+// preModelRequest and postModelRequest hooks (codex 0.164+) run around every
+// model request. They show a row only when a run did not succeed; every other
+// hook event keeps one row per start and per completion.
+func TestModelRequestHooksShowOnlyUnsuccessfulRuns(t *testing.T) {
+	t.Parallel()
+	hook := func(eventName, status string) json.RawMessage {
+		return json.RawMessage(`{"threadId":"th","turnId":"t1","run":{"id":"h1","eventName":"` +
+			eventName + `","handlerType":"command","status":"` + status + `","entries":[]}}`)
+	}
+	cases := []struct {
+		method, eventName, status string
+		want                      string // "" means no row
+	}{
+		{"hook/started", "preModelRequest", "running", ""},
+		{"hook/started", "postModelRequest", "running", ""},
+		{"hook/completed", "preModelRequest", "completed", ""},
+		{"hook/completed", "postModelRequest", "completed", ""},
+		{"hook/completed", "preModelRequest", "failed", "preModelRequest hook (failed)"},
+		{"hook/completed", "postModelRequest", "blocked", "postModelRequest hook (blocked)"},
+		{"hook/completed", "preModelRequest", "stopped", "preModelRequest hook (stopped)"},
+		// Every other event is unchanged: a row per start and per completion.
+		{"hook/started", "preToolUse", "running", "preToolUse hook (running)"},
+		{"hook/completed", "preToolUse", "completed", "preToolUse hook (completed)"},
+		{"hook/completed", "postToolUse", "failed", "postToolUse hook (failed)"},
+		{"hook/started", "sessionStart", "running", "sessionStart hook (running)"},
+		{"hook/completed", "stop", "completed", "stop hook (completed)"},
+	}
+	for _, tc := range cases {
+		// Repeated delivery classifies the same way each time: the rule
+		// keeps no state between notifications.
+		for delivery := 0; delivery < 2; delivery++ {
+			events, handled := classifyNotification(testThread, tc.method, hook(tc.eventName, tc.status))
+			if !handled {
+				t.Fatalf("%s %s/%s delivery %d: not handled", tc.method, tc.eventName, tc.status, delivery)
+			}
+			if tc.want == "" {
+				if len(events) != 0 {
+					t.Fatalf("%s %s/%s delivery %d: events = %+v, want none",
+						tc.method, tc.eventName, tc.status, delivery, events)
+				}
+				continue
+			}
+			if len(events) != 1 || events[0].Content != tc.want {
+				t.Fatalf("%s %s/%s delivery %d: events = %+v, want one row %q",
+					tc.method, tc.eventName, tc.status, delivery, events, tc.want)
+			}
+		}
+	}
+}
+
 func TestThreadIDPassthrough(t *testing.T) {
 	t.Parallel()
 	params := json.RawMessage(`{"turn":{"id":"t1"}}`)
