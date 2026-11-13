@@ -114,13 +114,16 @@ func (a *App) admitPRAction(pr gitops.PRReference) error {
 // settlePRAction is the tail of every merge action: a failure is explained
 // for the user, a success asks the PR's pump (when one is live) to poll
 // the snapshot now and answers with the pump's sequence after that poll.
-// A merge whose branch delete failed changed the PR, so it refreshes too.
-// The poll's own failure does not fail the action: the forge accepted it,
-// and the pump reports its read failure on its own channel, where the
-// pane shows it.
+// A merge whose branch delete failed changed the PR, and a management
+// change the forge may have applied (git.UnconfirmedWriteError) may have,
+// so each refreshes too; neither is sent again. The poll's own failure
+// does not fail the action: the forge accepted it, and the pump reports
+// its read failure on its own channel, where the pane shows it.
 func (a *App) settlePRAction(ctx context.Context, pr gitops.PRReference, action gitops.ForgeAction, err error) (PRActionResult, error) {
 	if err != nil {
-		if _, merged := errors.AsType[*gitops.BranchKeptError](err); merged {
+		_, merged := errors.AsType[*gitops.BranchKeptError](err)
+		_, unconfirmed := errors.AsType[*gitops.UnconfirmedWriteError](err)
+		if merged || unconfirmed {
 			a.refreshPRSnapshot(ctx, pr)
 		}
 		return PRActionResult{}, gitops.ExplainForgeError(pr, action, err)
