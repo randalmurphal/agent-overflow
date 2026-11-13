@@ -223,6 +223,16 @@ func TestStoreCheckpointsCommitsInTheBackground(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The commit fills the file's free pages first (the migrations'
+	// rebuilds leave some), so the file grows by the commit less those.
+	var freePages, pageSize int64
+	if err := s.db.QueryRow(`PRAGMA freelist_count`).Scan(&freePages); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`PRAGMA page_size`).Scan(&pageSize); err != nil {
+		t.Fatal(err)
+	}
+	want := int64(4<<20) - freePages*pageSize
 	if err := s.SetUIState("client:checkpoint", map[string]string{"k": strings.Repeat("x", 4<<20)}); err != nil {
 		t.Fatal(err)
 	}
@@ -230,14 +240,14 @@ func TestStoreCheckpointsCommitsInTheBackground(t *testing.T) {
 		t.Fatal(err)
 	}
 	var after int64
-	for deadline := time.Now().Add(10 * time.Second); after-before < 4<<20 && time.Now().Before(deadline); {
+	for deadline := time.Now().Add(10 * time.Second); after-before < want && time.Now().Before(deadline); {
 		time.Sleep(5 * time.Millisecond)
 		if after, err = fileSize(s.path); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if after-before < 4<<20 {
-		t.Fatalf("database file grew %d bytes, want the 4 MiB commit copied into it", after-before)
+	if after-before < want {
+		t.Fatalf("database file grew %d bytes, want the 4 MiB commit copied into it (%d past the free pages)", after-before, want)
 	}
 }
 

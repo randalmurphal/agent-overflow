@@ -325,21 +325,32 @@ func (s *Store) CreateDiffReviewComment(comment DiffReviewComment) (DiffReviewCo
 	if comment.UpdatedAt == 0 {
 		comment.UpdatedAt = comment.CreatedAt
 	}
-	_, err = s.db.Exec(
+	// A held reply is the thread's only draft reply for its owner and
+	// source when created: the statement inserts it only when no other is
+	// a draft, in the one write. Recovery that returns a sent reply to
+	// draft may leave two; both are kept.
+	result, err := s.db.Exec(
 		`INSERT INTO diff_review_comments (
 			id, thread_id, pr_key, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
 			start_old_line, start_new_line, reply_thread_id, reply_root_id,
 			selected_text, body, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'draft', ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+		WHERE ?13 = '' OR NOT EXISTS (
+			SELECT 1 FROM diff_review_comments
+			WHERE thread_id IS ?2 AND pr_key IS ?3 AND scope = ?4 AND source_key = ?5
+				AND reply_thread_id = ?13 AND status = 'draft'
+		)`,
 		comment.ID, nullableText(owner.ThreadID), nullableText(owner.PRKey), comment.Scope, comment.SourceKey, comment.CommitSHA, comment.FilePath, comment.OldLine, comment.NewLine,
 		comment.Side, comment.StartOldLine, comment.StartNewLine, comment.ReplyThreadID, comment.ReplyRootID,
 		comment.SelectedText, comment.Body, comment.CreatedAt, comment.UpdatedAt,
 	)
-	if isUniqueConstraintError(err, "idx_diff_review_comments_held_reply") {
-		return DiffReviewComment{}, ErrDiffReviewReplyExists
-	}
 	if err != nil {
 		return DiffReviewComment{}, fmt.Errorf("store: create diff review comment %s: %w", comment.ID, err)
+	}
+	if inserted, err := result.RowsAffected(); err != nil {
+		return DiffReviewComment{}, fmt.Errorf("store: create diff review comment %s: %w", comment.ID, err)
+	} else if inserted == 0 {
+		return DiffReviewComment{}, ErrDiffReviewReplyExists
 	}
 	return s.GetDiffReviewComment(owner, comment.ID)
 }

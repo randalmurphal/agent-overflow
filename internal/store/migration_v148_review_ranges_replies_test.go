@@ -1,9 +1,6 @@
 package store
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 // The rebuild keeps every comment and its claim as it was, keeps the claim
 // trigger and every index, and admits a range or a held reply only in the
@@ -35,7 +32,7 @@ func TestReviewRangesRepliesMigrationKeepsCommentsAndAdmitsRangesAndReplies(t *t
 	if err := db.QueryRow(`SELECT claim_settles FROM diff_review_comments WHERE id='c'`).Scan(&settles); err != nil || settles != "" {
 		t.Fatalf("claim after its row = %q, %v; want the trigger to settle it", settles, err)
 	}
-	for _, index := range []string{"idx_diff_review_comments_scope", "idx_diff_review_comments_pr", "idx_diff_review_comments_claim", "idx_diff_review_comments_held_reply"} {
+	for _, index := range []string{"idx_diff_review_comments_scope", "idx_diff_review_comments_pr", "idx_diff_review_comments_claim"} {
 		var n int
 		if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&n); err != nil || n != 1 {
 			t.Fatalf("index %s = %d, %v", index, n, err)
@@ -45,7 +42,6 @@ func TestReviewRangesRepliesMigrationKeepsCommentsAndAdmitsRangesAndReplies(t *t
 	mustExec(t, db, `INSERT INTO diff_review_comments(id,pr_key,scope,source_key,file_path,side,reply_thread_id,reply_root_id,body,created_at,updated_at) VALUES ('h','k1','pr','k','','reply','PRRT_1',7,'b',1,1)`)
 	mustExec(t, db, `INSERT INTO diff_review_comments(id,pr_key,scope,source_key,file_path,side,reply_thread_id,body,created_at,updated_at) VALUES ('h2','k1','pr','other','','reply','PRRT_1','b',1,1)`)
 	for _, bad := range []string{
-		`INSERT INTO diff_review_comments(id,pr_key,scope,source_key,file_path,side,reply_thread_id,body,created_at,updated_at) VALUES ('dup','k1','pr','k','','reply','PRRT_1','b',1,1)`,
 		`INSERT INTO diff_review_comments(id,thread_id,scope,source_key,file_path,side,reply_thread_id,body,created_at,updated_at) VALUES ('scope','t','workspace','k','','reply','PRRT_1','b',1,1)`,
 		`INSERT INTO diff_review_comments(id,pr_key,scope,source_key,file_path,side,body,created_at,updated_at) VALUES ('nothread','k1','pr','k','','reply','b',1,1)`,
 		`INSERT INTO diff_review_comments(id,pr_key,scope,source_key,file_path,side,reply_thread_id,body,created_at,updated_at) VALUES ('notreply','k1','pr','k','a.go','file','PRRT_2','b',1,1)`,
@@ -56,10 +52,7 @@ func TestReviewRangesRepliesMigrationKeepsCommentsAndAdmitsRangesAndReplies(t *t
 			t.Fatalf("accepted %s", bad)
 		}
 	}
-	// A sent reply does not hold the thread's draft slot.
-	mustExec(t, db, `UPDATE diff_review_comments SET status='sent' WHERE id='h'`)
+	// Two draft replies to one thread are rows the table keeps: the create
+	// call refuses a second, recovery may make one.
 	mustExec(t, db, `INSERT INTO diff_review_comments(id,pr_key,scope,source_key,file_path,side,reply_thread_id,body,created_at,updated_at) VALUES ('again','k1','pr','k','','reply','PRRT_1','b',1,1)`)
-	if _, err := db.Exec(`UPDATE diff_review_comments SET status='draft' WHERE id='h'`); err == nil || !strings.Contains(err.Error(), "UNIQUE") {
-		t.Fatalf("a second draft reply to one thread = %v", err)
-	}
 }

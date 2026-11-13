@@ -79,10 +79,6 @@ CREATE INDEX idx_diff_review_comments_pr
 
 CREATE INDEX idx_diff_review_comments_claim ON diff_review_comments(claim_thread_id, claim_item_id) WHERE claim_item_id <> '';
 
-CREATE UNIQUE INDEX idx_diff_review_comments_held_reply
-	ON diff_review_comments(COALESCE(thread_id, ''), COALESCE(pr_key, ''), scope, source_key, reply_thread_id)
-	WHERE reply_thread_id <> '' AND status = 'draft';
-
 CREATE TRIGGER items_settle_diff_review_claims
 AFTER INSERT ON items
 WHEN NEW.kind = 'user_text'

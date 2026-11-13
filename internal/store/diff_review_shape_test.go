@@ -1,7 +1,10 @@
 package store
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -156,5 +159,98 @@ func TestDiffReviewPRContextValidate(t *testing.T) {
 		if err := c.Validate(); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// One held reply per thread is the create call's rule, not the table's:
+// every recovery transition that returns a sent reply to draft keeps it
+// beside a newer draft reply to the same thread, and both are listed.
+func TestHeldRepliesReturnToDraftBesideANewerReply(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("reply-recovery", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	owner := ThreadReviewOwner(thread.ID)
+	scope, source := string(DiffReviewScopePR), "pr:github:o/r:1"
+	reply := func(id string) {
+		t.Helper()
+		if _, err := s.CreateDiffReviewComment(DiffReviewComment{ID: id, ThreadID: thread.ID, Scope: scope, SourceKey: source, ReplyThreadID: "PRRT_1", ReplyRootID: 7, Body: id}); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	drafts := func() []string {
+		t.Helper()
+		listed, err := s.ListDiffReviewComments(owner, scope, source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, c := range listed {
+			if c.Status == "draft" {
+				out = append(out, c.Body)
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	userRow := func(id string) {
+		t.Helper()
+		if _, err := s.UpsertItem(Item{ID: id, ThreadID: thread.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed", Summary: id, CreatedAt: 1, UpdatedAt: 1}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A message the provider never consumed returns its reply.
+	reply("retired")
+	claimFor(t, s, owner, scope, source, "retired", thread.ID, "user:1", thread.ID+":1", true)
+	userRow("user:1")
+	reply("newer")
+	if _, err := s.CreateDiffReviewComment(DiffReviewComment{ID: "third", ThreadID: thread.ID, Scope: scope, SourceKey: source, ReplyThreadID: "PRRT_1", Body: "third"}); !errors.Is(err, ErrDiffReviewReplyExists) {
+		t.Fatalf("a second draft reply = %v", err)
+	}
+	if _, err := s.RetireUndeliveredUserRow(thread.ID, "user:1"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if got := drafts(); !slices.Equal(got, []string{"newer", "retired"}) {
+		t.Fatalf("drafts after the retire = %v", got)
+	}
+
+	// A claim no row settled returns at boot.
+	claimFor(t, s, owner, scope, source, "retired", thread.ID, "user:2", thread.ID+":1", false)
+	claimFor(t, s, owner, scope, source, "newer", thread.ID, "user:3", thread.ID+":1", false)
+	userRow("user:3")
+	reply("newest")
+	if released, err := s.ReleaseUnsettledDiffReviewClaims(); err != nil || released != 1 {
+		t.Fatalf("release = %d, %v", released, err)
+	}
+	if got := drafts(); !slices.Equal(got, []string{"newest", "retired"}) {
+		t.Fatalf("drafts after the release = %v", got)
+	}
+
+	// A transfer carries an unsettled claim's reply as a draft beside the
+	// draft reply written since.
+	claimFor(t, s, owner, scope, source, "retired", thread.ID, "user:4", thread.ID+":1", false)
+	var snapshot bytes.Buffer
+	if err := s.ExportThreadHistory(context.Background(), thread.ID, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	destination := newTestStore(t)
+	if err := destination.ImportThreadHistory(context.Background(), thread, bytes.NewReader(snapshot.Bytes())); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	listed, err := destination.ListDiffReviewComments(owner, scope, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var carried []string
+	for _, c := range listed {
+		if c.Status == "draft" {
+			carried = append(carried, c.Body)
+		}
+	}
+	slices.Sort(carried)
+	if !slices.Equal(carried, []string{"newest", "retired"}) {
+		t.Fatalf("drafts after the transfer = %v", carried)
 	}
 }
