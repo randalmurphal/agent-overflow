@@ -153,6 +153,12 @@ type Options struct {
 	// the create calls that open a pull or merge request from the
 	// checkout. Defaults to asking git.
 	Head func(cwd string) (CheckoutHead, error)
+	// Commit writes a commit the fake makes on a pull's head branch (an
+	// applied suggestion) to the git repository the pull's head is bound
+	// to, and answers its sha; "" when the pull is bound to none, which
+	// keeps a generated sha. Called with the engine lock held. Nil binds
+	// nothing.
+	Commit func(CommitRequest) (string, error)
 	// APIToken is the fixed token every request to the HTTP mounts must
 	// carry (Authorization: Bearer or Private-Token). Empty refuses every
 	// request.

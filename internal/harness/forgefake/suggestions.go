@@ -61,12 +61,16 @@ func gitlabNoteSuggestions(p *Pull, thread *Thread, comment Comment) []map[strin
 	content, onBranch := p.Files[thread.Path]
 	lines := fileLines(content)
 	out := []map[string]any{}
+	kept := comment.suggestionsBody == comment.Body && comment.suggestionsFrom != nil
 	for i, block := range mdsuggest.Parse(comment.Body) {
 		from, to := gitlabSuggestionRange(thread, block)
 		fromContent := ""
 		inFile := onBranch && from >= 1 && to <= len(lines) && from <= to
 		if inFile {
 			fromContent = strings.Join(lines[from-1:to], "\n") + "\n"
+		}
+		if kept && i < len(comment.suggestionsFrom) {
+			fromContent = comment.suggestionsFrom[i]
 		}
 		toContent := strings.Join(block.Lines, "\n")
 		if len(block.Lines) > 0 {
@@ -82,11 +86,44 @@ func gitlabNoteSuggestions(p *Pull, thread *Thread, comment Comment) []map[strin
 	return out
 }
 
-// commitFile writes content to path on p's head branch: a new head sha;
+// CommitRequest is one commit the fake makes on a pull's head branch:
+// Path set to Content on top of Parent, with Message.
+type CommitRequest struct {
+	Forge string `json:"forge"`
+	Host  string `json:"host"`
+	// Project is the head repository's project (a fork's for a pull from
+	// one), Number the pull's, Branch its head branch.
+	Project string `json:"project"`
+	Number  int    `json:"number"`
+	Branch  string `json:"branch"`
+	Parent  string `json:"parent"`
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Message string `json:"message"`
+}
+
+// commitFile writes content to path on p's head branch: a new head sha
+// (the real commit's when Options.Commit binds the pull to a
+// repository, else a generated one);
 // every line thread on path whose lines the change touched becomes
 // outdated, one wholly below them moves by the change's line delta, and
 // one above them stays.
-func (e *Engine) commitFile(p *Pull, path, content string) string {
+func (e *Engine) commitFile(r *Repo, p *Pull, path, content, message string) (string, error) {
+	sha := ""
+	if e.opts.Commit != nil {
+		var err error
+		sha, err = e.opts.Commit(CommitRequest{
+			Forge: r.Forge, Host: r.Host, Project: cmpOr(p.HeadRepo, r.Project), Number: p.Number, Branch: p.HeadRef,
+			Parent: p.HeadSHA, Path: path, Content: content, Message: message,
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	if sha == "" {
+		sha = e.ids.sha()
+	}
+	keepGitLabSuggestionsFrom(p)
 	before := fileLines(p.Files[path])
 	after := fileLines(content)
 	first := 0
@@ -126,8 +163,8 @@ func (e *Engine) commitFile(p *Pull, path, content string) string {
 		p.Files = map[string]string{}
 	}
 	p.Files[path] = content
-	p.HeadSHA = e.ids.sha()
-	return p.HeadSHA
+	p.HeadSHA = sha
+	return p.HeadSHA, nil
 }
 
 // File modes a pull's FileModes may give a path, as Git writes them.
@@ -344,7 +381,14 @@ func ghSuggestionCommit(e *Engine, c *call, v graphQLVars) response {
 	case err != nil || !utf8.Valid(decoded):
 		return graphQLMutationError(field, "UNPROCESSABLE", "fileChanges.additions[0].contents is not valid base64.")
 	}
-	oid := e.commitFile(p, path, string(decoded))
+	message := headline
+	if body, _ := v["body"].(string); body != "" {
+		message += "\n\n" + body
+	}
+	oid, err := e.commitFile(r, p, path, string(decoded), message)
+	if err != nil {
+		return graphQLMutationError(field, "INTERNAL", "The commit could not be written: "+err.Error())
+	}
 	return graphQLData(map[string]any{field: map[string]any{"commit": map[string]any{"oid": oid}}})
 }
 
@@ -405,12 +449,44 @@ func glabApplySuggestion(e *Engine, c *call, m []string) response {
 				if len(next) > 0 && strings.HasSuffix(p.Files[thread.Path], "\n") {
 					content += "\n"
 				}
+				if _, err := e.commitFile(r, p, thread.Path, content, gitlabSuggestionCommitMessage(*comment)); err != nil {
+					return glabStatus(http.StatusInternalServerError, "500 Internal Server Error: "+err.Error())
+				}
 				comment.AppliedSuggestions = append(comment.AppliedSuggestions, index)
-				e.commitFile(p, thread.Path, content)
 				s["applied"], s["appliable"] = true, false
 				return jsonResponse(s)
 			}
 		}
 	}
 	return glabNotFound("Suggestion")
+}
+
+// keepGitLabSuggestionsFrom fixes each GitLab thread note's suggestions'
+// from_content as it reads now, before a commit changes the files: GitLab
+// keeps the replaced text from when a suggestion was written, and until
+// a commit the files are what they were then. A note edited later reads
+// its suggestions again from the files of that time.
+func keepGitLabSuggestionsFrom(p *Pull) {
+	for t := range p.Threads {
+		thread := &p.Threads[t]
+		for c := range thread.Comments {
+			comment := &thread.Comments[c]
+			if comment.suggestionsFrom != nil && comment.suggestionsBody == comment.Body {
+				continue
+			}
+			from := []string{}
+			for _, s := range gitlabNoteSuggestions(p, thread, *comment) {
+				from = append(from, s["from_content"].(string))
+			}
+			comment.suggestionsFrom, comment.suggestionsBody = from, comment.Body
+		}
+	}
+}
+
+// gitlabSuggestionCommitMessage is GitLab's default message for applying
+// one suggestion, with a trailer crediting the note's author (GitLab
+// credits the author's commit email, which the fixture has none of: the
+// fake writes login@example.com).
+func gitlabSuggestionCommitMessage(note Comment) string {
+	return fmt.Sprintf("Apply 1 suggestion(s) to 1 file(s)\n\nCo-authored-by: %s <%s@example.com>", cmpOr(note.AuthorName, note.Author), note.Author)
 }

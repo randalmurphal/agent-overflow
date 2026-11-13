@@ -367,6 +367,12 @@ type Comment struct {
 	// note's suggestions already applied.
 	Reactions          []Reaction `json:"reactions,omitempty"`
 	AppliedSuggestions []int      `json:"appliedSuggestions,omitempty"`
+	// suggestionsFrom is a GitLab thread note's suggestions' from_content
+	// as written, kept once a commit changes the files they were read
+	// from; suggestionsBody is the body it was read for, so an edit reads
+	// it again (suggestions.go).
+	suggestionsFrom []string
+	suggestionsBody string
 	// Replies are the further notes of a GitLab conversation comment's
 	// discussion; a reply to one adds them. GitHub conversation comments
 	// have none.

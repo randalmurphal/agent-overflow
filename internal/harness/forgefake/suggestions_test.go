@@ -3,6 +3,7 @@ package forgefake
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -221,6 +222,11 @@ func TestGitLabSuggestionRoutes(t *testing.T) {
 	if got := send("PUT", "gitlab.com", "suggestions/"+id+"/apply", "", nil); got.status != http.StatusBadRequest {
 		t.Fatalf("a second apply = %+v", got)
 	}
+	// GitLab keeps the replaced text from when the suggestion was written.
+	after := send("GET", "gitlab.com", "projects/grp%2Fs/merge_requests/3/discussions?per_page=100", "", nil).body
+	if !strings.Contains(after, `"applied":true,"from_content":"one\ntwo\n","from_line":1,"id":`+id+`,"to_content":"ONE\nTWO\n"`) {
+		t.Fatalf("discussions after the apply = %s", after)
+	}
 }
 
 // GitLab reactions: the GraphQL read pages every note with its awards,
@@ -418,5 +424,74 @@ func TestCommitMovesTheThreadsBelowIt(t *testing.T) {
 	defer e.mu.Unlock()
 	if got := p.Files["a.go"]; got != "l1\nl2\nA\nB\nC\nl4\nL56\n" {
 		t.Fatalf("after the second apply = %q (from %q)", got, file)
+	}
+}
+
+// A commit the fake makes goes through Options.Commit: the request names
+// the head repository, branch, parent, file and message; its sha is the
+// pull's new head; "" keeps a generated sha; a failure answers the forge's
+// error and changes nothing.
+func TestCommitsGoThroughTheCommitSeam(t *testing.T) {
+	t.Parallel()
+	var got []CommitRequest
+	answer, fail := "", error(nil)
+	e := New(Options{APIToken: testAPIToken, Commit: func(req CommitRequest) (string, error) {
+		got = append(got, req)
+		return answer, fail
+	}})
+	if _, err := seedJSON(e, suggestionsFixture); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	srv := testServer(t, e)
+	commit := func(head string) httpAnswer {
+		body := gql(t, "mutation", "SuggestionCommit", "($repository: String!, $branch: String!, $expectedHeadOid: GitObjectID!, $headline: String!, $body: String, $path: String!, $contents: Base64String!)",
+			map[string]any{"repository": "acme/s", "branch": "feature", "expectedHeadOid": head, "headline": "Apply suggestion from code review",
+				"body": "Co-authored-by: X <1+x@users.noreply.github.com>", "path": "a.go", "contents": base64.StdEncoding.EncodeToString([]byte("one\nTWO\nthree\n"))})
+		return httpRequest(t, srv, "POST", "github.com", "/github/graphql", body, http.Header{"Authorization": {"Bearer " + testAPIToken}})
+	}
+	head := "1111111111111111111111111111111111111111"
+	fail = errors.New("disk full")
+	if res := commit(head); !strings.Contains(res.body, "INTERNAL") {
+		t.Fatalf("a failed commit = %s", res.body)
+	}
+	e.mu.Lock()
+	p := e.repoOn("github", "github.com", "acme/s").pull(1)
+	if p.HeadSHA != head || p.Files["a.go"] != "one\ntwo\nthree\n" || p.Threads[0].Outdated {
+		t.Fatalf("a failed commit changed the pull: %+v", p)
+	}
+	e.mu.Unlock()
+	fail, answer = nil, strings.Repeat("c", 40)
+	if res := commit(head); !strings.Contains(res.body, answer) {
+		t.Fatalf("commit = %s", res.body)
+	}
+	want := CommitRequest{Forge: "github", Host: "github.com", Project: "acme/s", Number: 1, Branch: "feature", Parent: head, Path: "a.go",
+		Content: "one\nTWO\nthree\n", Message: "Apply suggestion from code review\n\nCo-authored-by: X <1+x@users.noreply.github.com>"}
+	if len(got) != 2 || got[1] != want {
+		t.Fatalf("requests = %+v", got)
+	}
+	e.mu.Lock()
+	if p.HeadSHA != answer {
+		t.Fatalf("head = %s", p.HeadSHA)
+	}
+	e.mu.Unlock()
+	answer = ""
+	if res := commit(strings.Repeat("c", 40)); !strings.Contains(res.body, `"oid"`) {
+		t.Fatalf("an unbound commit = %s", res.body)
+	}
+	e.mu.Lock()
+	if p.HeadSHA == strings.Repeat("c", 40) || len(p.HeadSHA) != 40 {
+		t.Fatalf("an unbound commit kept head %s", p.HeadSHA)
+	}
+	e.mu.Unlock()
+
+	// GitLab's apply writes GitLab's message with the note author's trailer.
+	header := http.Header{"Private-Token": {testAPIToken}}
+	if res := httpRequest(t, srv, "PUT", "gitlab.com", "/gitlab/api/v4/suggestions/70000/apply", "", header); res.status != 200 {
+		t.Fatalf("apply = %+v", res)
+	}
+	last := got[len(got)-1]
+	if last.Forge != "gitlab" || last.Project != "grp/s" || last.Number != 3 || last.Message != "Apply 1 suggestion(s) to 1 file(s)\n\nCo-authored-by: someone <someone@example.com>" ||
+		last.Content != "ONE\nTWO\nthree\n" {
+		t.Fatalf("GitLab request = %+v", last)
 	}
 }
