@@ -54,12 +54,12 @@
   const settled = $derived<readonly MergeBlocker[]>(readiness?.settled ?? []);
   const methods = $derived<readonly string[]>(merge?.methods?.length ? merge.methods : ['merge']);
 
-  // The method lives in the review state with the commit message, so a
-  // remount keeps both: the project's default until the reader picks,
-  // falling back when a poll drops the pick's method. The branch delete
+  // The selected method lives in the review state with the commit
+  // message, so a remount keeps both, and the editor shows the same one a
+  // merge sends (stores/prMergeMessage.svelte.ts). The branch delete
   // toggle is the section's own.
   let pickedDelete: boolean | null = $state(null);
-  const method = $derived(review.manage.mergeMessage.selected(methods));
+  const method = $derived(review.manage.mergeMessage.method);
   const deleteBranch = $derived(merge?.deleteBranchOffered ? (pickedDelete ?? merge.deleteBranchDefault) : false);
 
   const showApprove = $derived(!settledPR && !!merge && (merge.viewerCanApprove || merge.viewerApproved));
@@ -127,13 +127,13 @@
   });
 
   function commitMessage() {
-    return showMessage ? message.messageFor(method) : undefined;
+    return showMessage ? message.commitMessage : undefined;
   }
 
   function openMessage(): void {
     menuOpen = false;
     review.setMergeOpen(true);
-    message.openFor(method);
+    message.openEditor();
   }
 
   async function messageClosed(): Promise<void> {

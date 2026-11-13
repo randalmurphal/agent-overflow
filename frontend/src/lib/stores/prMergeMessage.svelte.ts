@@ -1,21 +1,26 @@
-// The Merge section's method and commit message editor: the method the
-// reader picked in the Merge menu (it outlives the section's mount), and
-// the forge's default message for it, read when the editor opens and
-// when the method changes (never per tick), until the reader edits it.
-// Only an edited message is sent, and only with the method it was
-// written for; untouched, the forge's default applies as it does
-// without the editor. A method that makes no commit (rebase,
-// fast-forward) has no message. A failed default read shows its sentence
-// in the editor and never stands in the way of a merge. The editor
-// belongs to the PR it opened on: on another PR it reads closed and
-// sends nothing, and `discard` drops it with the pick.
+// The Merge section's method and commit message editor. The store holds
+// the one selected method: the project's default (the first offered),
+// re-resolved on every snapshot, until the reader picks a method or edits
+// the message; from then it changes only by a pick or by a snapshot that
+// stops offering it. The editor has no
+// method of its own; it shows the selected one, with the forge's default
+// message for it, read when the editor opens and when the selection
+// changes (never per tick), until the reader edits it. A merge sends the
+// edited text exactly when it is edited and the selected method makes a
+// commit (rebase and fast-forward make none); untouched, the forge's
+// default applies as it does without the editor. A failed default read
+// shows its sentence in the editor and never stands in the way of a
+// merge. The editor belongs to the PR it opened on: on another PR it
+// reads closed and sends nothing, and `discard` drops it with the
+// selection.
 //
-// A method the forge stops offering (a snapshot drops it) falls back to
-// the project's default through the same path as a pick, keeping edited
-// text, with a notice saying what happened: the message now goes with
-// the new method's commit, or, for a method that makes none, the editor
-// stays open with the text and the merge sends none. What the editor
-// shows is what a merge sends.
+// A selected method a snapshot stops offering falls back to the
+// project's default through the same path as a pick, keeping edited text,
+// with a notice saying what happened: the message now goes with the new
+// method's commit, or, for a method that makes none, the editor stays
+// open with the text and the merge sends none. A method that comes back
+// does not move the selection back; a pick or an unedited message ends
+// the notice.
 
 import { untrack } from 'svelte';
 import { GetPRMergeMessage } from './bindings';
@@ -53,15 +58,13 @@ export function fallbackNotice(was: string, next: string): string {
 }
 
 export interface PRMergeMessageView {
-  /** The method a merge uses: the reader's pick while `methods` offers
-   * it, else the project's default (the first). */
-  selected(methods: readonly string[]): string;
+  /** The method a merge uses and the editor shows: the reader's pick or
+   * the fallback a snapshot forced, else the project's default. */
+  readonly method: string;
   /** The reader picked `method` in the Merge menu: the editor follows,
    * reading its default unless the text was edited. */
   pick(method: string): void;
   readonly open: boolean;
-  /** The method the editor shows the message of. */
-  readonly method: string;
   readonly title: string;
   readonly body: string;
   /** The reader changed the text; it is what a merge sends. */
@@ -70,17 +73,19 @@ export interface PRMergeMessageView {
   readonly loading: boolean;
   /** The default read failed; the editor starts empty. */
   readonly error: PRManageError | null;
-  /** The method was no longer offered and the text moved to another. */
+  /** The selected method was no longer offered and the text moved to
+   * another. */
   readonly notice: string | null;
-  openFor(method: string): void;
+  /** Opens the editor on the selected method. */
+  openEditor(): void;
   setTitle(text: string): void;
   setBody(text: string): void;
   close(): void;
-  /** What a merge with `method` sends as its commit message: the edited
-   * text while the editor is open on this PR for that method, else
-   * nothing. */
-  messageFor(method: string): MergeMessage | undefined;
-  /** The PR changed: the editor closes and the pick is dropped. */
+  /** What a merge sends as its commit message: the edited text while the
+   * editor is open on this PR and the selected method makes a commit,
+   * else nothing. */
+  readonly commitMessage: MergeMessage | undefined;
+  /** The PR changed: the editor closes and the selection is re-resolved. */
   discard(): void;
   dispose(): void;
 }
@@ -89,8 +94,11 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
   let open = $state(false);
   // The PR the editor opened on.
   let openedOn = $state<{ ref: PRRef; key: string } | null>(null);
-  let method = $state('');
-  let picked = $state<string | null>(null);
+  // The selected method; null only before the first snapshot.
+  let selected = $state<string | null>(null);
+  // The reader has neither picked a method nor edited the message, so
+  // the selection is the project's default, wherever a snapshot moves it.
+  let followsDefault = true;
   let edited = $state<MergeMessage | null>(null);
   // The defaults read while this editor was open, per method.
   let defaults = $state.raw<ReadonlyMap<string, MergeMessage>>(new Map());
@@ -100,6 +108,7 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
   let generation = 0;
 
   const live = $derived(open && openedOn !== null && openedOn.key === host.identity);
+  const method = $derived(selected ?? 'merge');
 
   async function read(forMethod: string): Promise<void> {
     const ref = openedOn?.ref;
@@ -127,6 +136,7 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
 
   function edit(next: Partial<MergeMessage>): void {
     if (!live || loading) return;
+    followsDefault = false;
     edited = { ...shown, ...next };
   }
 
@@ -141,60 +151,52 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
     notice = null;
   }
 
-  // The one method-change path: a pick, or a fallback (`was` no longer
+  // The one selection change: a pick, or a fallback (`was` no longer
   // offered), which keeps edited text and says so.
-  function follow(next: string, was?: string): void {
-    if (!live || next === method) return;
-    method = next;
+  function select(next: string, was?: string): void {
+    if (next === selected) return;
+    selected = next;
     notice = was !== undefined && edited !== null ? fallbackNotice(was, next) : null;
-    if (edited === null) void read(next);
+    if (live && edited === null) void read(next);
   }
 
-  // The snapshot's methods: a pick or the editor's method it no longer
-  // offers falls back to the project's default.
-  function reconcile(offered: readonly string[]): void {
-    const fallback = offered[0];
-    if (picked !== null && !offered.includes(picked)) picked = fallback;
-    if (live && !offered.includes(method)) follow(picked ?? fallback, method);
+  // Every snapshot re-resolves the selection against what it offers.
+  function reconcile(methods: readonly string[] | null): void {
+    if (methods === null) return;
+    const offered = methods.length ? methods : ['merge'];
+    if (selected === null) selected = offered[0];
+    else if (!offered.includes(selected)) select(offered[0], selected);
+    else if (followsDefault) select(offered[0]);
   }
   const stopReconcile = $effect.root(() => {
     $effect(() => {
       const methods = host.methods;
-      if (methods === null) return;
-      const offered = methods.length ? methods : ['merge'];
-      untrack(() => reconcile(offered));
+      untrack(() => reconcile(methods));
     });
   });
 
   return {
-    selected(methods: readonly string[]): string {
-      return picked !== null && methods.includes(picked) ? picked : methods[0];
-    },
+    get method() { return method; },
     pick(next: string): void {
-      picked = next;
-      follow(next);
+      followsDefault = false;
+      select(next);
     },
     get open() { return live; },
     get notice() { return live ? notice : null; },
-    get method() { return method; },
     get title() { return shown.title; },
     get body() { return shown.body; },
     get edited() { return edited !== null; },
     get loading() { return loading; },
     get error() { return error; },
-    openFor(next: string): void {
-      if (live) {
-        follow(next);
-        return;
-      }
+    openEditor(): void {
+      if (live) return;
       const ref = host.prRef;
       const key = host.identity;
       if (!ref || key === null) return;
       reset();
       open = true;
       openedOn = { ref, key };
-      method = next;
-      void read(next);
+      void read(method);
     },
     setTitle(text: string): void {
       edit({ title: text.replace(/[\r\n]+/g, ' ') });
@@ -205,18 +207,20 @@ export function createPRMergeMessageState(host: PRMergeMessageHost): PRMergeMess
     close(): void {
       reset();
     },
-    messageFor(forMethod: string): MergeMessage | undefined {
-      if (!live || edited === null || forMethod !== method || !methodHasCommitMessage(forMethod)) return undefined;
+    get commitMessage(): MergeMessage | undefined {
+      if (!live || edited === null || !methodHasCommitMessage(method)) return undefined;
       return { title: edited.title.trim(), body: edited.body };
     },
     discard(): void {
       reset();
-      picked = null;
+      selected = null;
+      followsDefault = true;
+      reconcile(untrack(() => host.methods));
     },
     dispose(): void {
       stopReconcile();
       reset();
-      picked = null;
+      selected = null;
     },
   };
 }

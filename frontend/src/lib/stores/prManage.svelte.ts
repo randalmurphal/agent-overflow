@@ -117,6 +117,8 @@ export const SAVING_TITLE = 'Still saving this change.';
 export interface PRManageView {
   /** The action in flight or waiting for the pump's answer. */
   readonly pending: PRManagePending | null;
+  /** For tests: the waits for the pump this state holds. */
+  waitCountForTest(): number;
   /** Why no action may run now, for hover text, or null. */
   readonly blockedReason: string | null;
 
@@ -203,8 +205,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     const live = running.get(key);
     if (live) return { kind: live.kind, target: live.target };
     const wait = awaiting.get(key);
-    if (!wait || wait.key !== host.entityKey || wait.launch !== host.launch || host.updateFailing) return null;
-    return host.appliedSeq < wait.seq ? { kind: wait.kind, target: wait.target } : null;
+    return wait && wait.key === host.entityKey && !waitSettled(wait) ? { kind: wait.kind, target: wait.target } : null;
   });
   const blockedReason = $derived(
     host.withheldReason ?? (pending ? `${PR_MANAGE_ACTION_LABEL[pending.kind]}…` : null),
@@ -217,14 +218,32 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     return ref && key !== null ? { ref, key } : null;
   }
 
-  // Where an answer goes, chosen when it arrives: `gone` once the pane
-  // closed (a toast), `discarded` once the pane's PR became another
-  // (nothing), else `alive` (its surface, whether or not the PR is on
-  // screen this moment).
+  // Where an answer goes, chosen when it arrives: `discarded` once the
+  // pane's PR became another (nothing, for good, even if the pane then
+  // closed), `gone` once the pane closed (a toast), else `alive` (its
+  // surface, whether or not the PR is on screen this moment).
   function fate(started: number): 'alive' | 'gone' | 'discarded' {
-    if (disposed) return 'gone';
-    return started === epoch ? 'alive' : 'discarded';
+    if (started !== epoch) return 'discarded';
+    return disposed ? 'gone' : 'alive';
   }
+
+  // A wait the PR on screen has reached is settled, and every wait is
+  // given up with a new backend launch, or, for the PR on screen, a
+  // failing pump; either way it is dropped. A wait of a PR the pane left
+  // stays until the pane is back on it, since only then is its sequence
+  // known.
+  function waitSettled(wait: Await): boolean {
+    if (wait.launch !== host.launch) return true;
+    if (wait.key !== host.entityKey) return false;
+    return host.updateFailing || host.appliedSeq >= wait.seq;
+  }
+  const stopWaitPrune = $effect.root(() => {
+    $effect(() => {
+      for (const [key, wait] of awaiting) {
+        if (waitSettled(wait)) awaiting.delete(key);
+      }
+    });
+  });
 
   // Runs one write to `on`; answers how it went and the epoch it started
   // in. The caller shows a failure on the surface `fate` names.
@@ -245,7 +264,9 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     }
     if (running.get(on.key) !== op) return { ok: true };
     running.delete(on.key);
-    if (!disposed && host.launch === launch) awaiting.set(on.key, { ...op, key: on.key, seq: result.seq, launch });
+    // Seq 0 settles at once; a wait the PR on screen already reached goes
+    // with the next prune.
+    if (!disposed && result.seq !== 0) awaiting.set(on.key, { ...op, key: on.key, seq: result.seq, launch });
     return { ok: true };
   }
 
@@ -410,14 +431,16 @@ export function createPRManageState(host: PRManageHost): PRManageView {
         return;
       }
       titleError = null;
+      const started = epoch;
       const outcome = await run('edit_title', '', draft.on, (ref) => EditPR(prReferenceWire(ref), { title: text }));
+      const where = fate(started);
+      if (where === 'discarded') return;
       // Gone with the pane: the one toast, with the text to copy.
-      if (disposed) {
+      if (where === 'gone') {
         if ('err' in outcome) toastLostWrite({ body: text, subject: 'Your title edit', notDone: 'was not saved' }, outcome.err);
         return;
       }
-      // Settles its own editor, on screen this moment or not; a PR change
-      // dropped it.
+      // Settles its own editor, on screen this moment or not.
       if (title !== draft) return;
       if (outcome.ok) title = { ...draft, submitted: true };
       else titleError = failure(outcome);
@@ -447,8 +470,11 @@ export function createPRManageState(host: PRManageHost): PRManageView {
       // The description the editor opened with is the precondition: a
       // description changed since is refused, and the editor stays open
       // with the backend's sentence.
+      const started = epoch;
       const outcome = await run('edit_description', '', draft.on, (ref) => EditPR(prReferenceWire(ref), { description: draft.text, expectedDescription: draft.expected }));
-      if (disposed) {
+      const where = fate(started);
+      if (where === 'discarded') return;
+      if (where === 'gone') {
         if ('err' in outcome) toastLostWrite({ body: draft.text, subject: 'Your description edit', notDone: 'was not saved' }, outcome.err);
         return;
       }
@@ -533,12 +559,15 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     },
 
     mergeMessage,
+    waitCountForTest: () => awaiting.size,
 
     dispose(): void {
       stopIdentityWatch();
       // The open picker's change is written before the state goes.
       picker.dispose();
       disposed = true;
+      stopWaitPrune();
+      awaiting.clear();
       mergeMessage.dispose();
     },
   };
