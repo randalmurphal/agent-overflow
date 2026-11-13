@@ -14,12 +14,10 @@
   interface Props {
     removed: readonly string[] | null;
     added: readonly string[];
-    /** Quiet text before the lines: why the replaced lines are not shown. */
-    note?: string | null;
     footer?: Snippet;
   }
 
-  let { removed, added, note = null, footer }: Props = $props();
+  let { removed, added, footer }: Props = $props();
 </script>
 
 <div class="my-1.5 overflow-hidden rounded-[var(--radius-field)] border border-border-subtle bg-surface-0" data-testid="review-suggestion" data-find-skip>
@@ -40,10 +38,10 @@
       <div class="px-2.5 text-fg-subtle">Deletes the lines.</div>
     {/if}
   </div>
-  {#if note || footer}
-    <div class="flex min-h-7 flex-wrap items-center gap-x-2 border-t border-border-subtle px-2 py-0.5 text-[0.6875rem] text-fg-muted">
-      {#if note}<span class="min-w-0 truncate" title={note}>{note}</span>{/if}
-      <span class="min-w-0 flex-1"></span>
+  {#if footer}
+    <!-- One row, no taller than its tallest control: the footer puts its
+         state on the left and Apply on the right. -->
+    <div class="flex min-h-7 items-center gap-x-2 border-t border-border-subtle px-2 py-0.5 text-[0.6875rem] text-fg-muted compact:py-0">
       {@render footer?.()}
     </div>
   {/if}

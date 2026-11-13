@@ -5,15 +5,18 @@ import ReviewCommentEditorShell from './ReviewCommentEditorShell.svelte';
 import ReviewReactionChips from './ReviewReactionChips.svelte';
 import ReviewReactionPicker from './ReviewReactionPicker.svelte';
 import ReviewSentCommentActions from './ReviewSentCommentActions.svelte';
-import { suggestionStatus } from './ReviewSuggestionStatus.svelte';
+import ReviewSuggestionStatus, { suggestionStatus } from './ReviewSuggestionStatus.svelte';
 import { createEditorPreviews } from '../../stores/reviewEditorPreview.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import type { ReviewSuggestions } from '../../stores/reviewSuggestions.svelte';
 import type { ReviewReactions } from '../../stores/reviewReactions.svelte';
 import { SHARED_REACTIONS } from '../../utils/reactionEmoji';
 import type { ReviewComment, ReviewThread } from '../../types/models';
 
 // The comment controls a review pane adds: a suggestion's state, the
-// reaction chips and popover, the hover actions' order, and the editors'
-// Preview toggle, which keeps the text and the caret across a remount.
+// reaction chips and popover, the hover actions' order (one `⋯` menu on
+// compact, by tap or long press), and the editors' Preview toggle, which
+// keeps the text and the caret across a remount.
 
 const COMMENT: ReviewComment = {
   id: 'c1', authorLogin: 'octo', body: 'b', createdAt: '2026-01-01T00:00:00Z', databaseID: 1, url: 'https://example.test/c1',
@@ -119,6 +122,82 @@ describe('a sent comment\'s hover actions', () => {
     const { container } = render(ReviewSentCommentActions, { review, thread: THREAD, comment: COMMENT, first: true });
     const labels = [...container.querySelectorAll('[data-testid="review-comment-actions"] button')].map((button) => button.getAttribute('aria-label'));
     expect(labels).toEqual(['Add reaction', 'Copy link', 'Edit', 'Delete']);
+  });
+
+  function actionsReview(withheld: string | null = null) {
+    return {
+      sentComments: {
+        editBodyFor: () => null, confirmingDelete: () => false, setConfirmDelete: vi.fn(), pending: () => false,
+        setEditBody: vi.fn(), deleteComment: async () => {},
+      },
+      sentCommentActions: true,
+      nowWithheldReason: withheld,
+      reactions: reactionsStub(),
+    };
+  }
+
+  it('are one menu on compact, with the same rows, order and reasons', async () => {
+    setCompactLayoutForTest(true);
+    try {
+      const review = actionsReview('The pane is offline.');
+      const { container } = render(ReviewSentCommentActions, { review: review as never, thread: THREAD, comment: COMMENT });
+      const actions = container.querySelector('[data-testid="review-comment-actions"]')!;
+      expect([...actions.querySelectorAll('button')].map((button) => button.getAttribute('aria-label'))).toEqual(['Comment actions']);
+      await fireEvent.click(actions.querySelector('[data-testid="review-comment-menu"]')!);
+      const rows = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+      expect(rows().map((row) => row.textContent!.trim())).toEqual(['Add reaction', 'Copy link', 'Edit', 'Delete']);
+      const edit = rows()[2];
+      expect(edit.getAttribute('aria-disabled') === 'true' || (edit as HTMLButtonElement).disabled).toBe(true);
+      expect(edit.title).toBe('The pane is offline.');
+      await fireEvent.click(rows()[0]);
+      expect(review.reactions.setPickerOpen).toHaveBeenCalledWith(THREAD, COMMENT, true);
+      expect(rows()).toHaveLength(0);
+    } finally {
+      setCompactLayoutForTest(false);
+    }
+  });
+
+  it('open from a long press on the comment, on compact only', async () => {
+    const review = actionsReview();
+    const host = document.body.appendChild(document.createElement('div'));
+    host.className = 'group/comment';
+    const body = host.appendChild(document.createElement('p'));
+    try {
+      const desktop = render(ReviewSentCommentActions, { target: host, props: { review: review as never, thread: THREAD, comment: COMMENT } });
+      const plain = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+      body.dispatchEvent(plain);
+      expect(plain.defaultPrevented).toBe(false);
+      desktop.unmount();
+      setCompactLayoutForTest(true);
+      render(ReviewSentCommentActions, { target: host, props: { review: review as never, thread: THREAD, comment: COMMENT } });
+      flushSync();
+      const press = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 50 });
+      body.dispatchEvent(press);
+      flushSync();
+      expect(press.defaultPrevented).toBe(true);
+      expect([...document.querySelectorAll('[role="menuitem"]')].map((row) => row.textContent!.trim())).toEqual(['Add reaction', 'Copy link', 'Edit', 'Delete']);
+    } finally {
+      setCompactLayoutForTest(false);
+      host.remove();
+    }
+  });
+});
+
+describe('a suggestion\'s footer', () => {
+  it('puts a refusal\'s sentence on the left of the row and Apply on its right', () => {
+    const suggestions = {
+      available: true, withheld: null, pending: () => false, error: () => 'GitHub did not apply the suggestion.', apply: vi.fn(),
+      currentFile: () => null, threadSource: () => null, lineSource: () => null,
+    } satisfies ReviewSuggestions;
+    const row = document.body.appendChild(document.createElement('div'));
+    try {
+      render(ReviewSuggestionStatus, { target: row, props: { suggestions, thread: THREAD, comment: COMMENT, suggestion: { index: 0, to: ['x'], appliable: true } } });
+      const kids = [...row.children].filter((kid) => kid.tagName === 'SPAN');
+      expect(kids[0].querySelector('[data-testid="review-suggestion-error"]')).not.toBeNull();
+      expect(kids[1].querySelector('[data-testid="review-suggestion-apply"]')).not.toBeNull();
+    } finally {
+      row.remove();
+    }
   });
 });
 

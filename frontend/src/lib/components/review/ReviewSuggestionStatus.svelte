@@ -41,13 +41,20 @@
   const withheld = $derived(suggestions.withheld);
 </script>
 
-{#if status === 'applied'}
-  <span class="flex items-center gap-1 text-fg-muted" data-testid="review-suggestion-applied"><Icon icon={Check} size={11} />Applied</span>
-{:else if status === 'outdated'}
-  <span class="text-fg-subtle" title="The code this suggestion is on has changed since it was written." data-testid="review-suggestion-outdated">Outdated</span>
-{:else if status === 'apply'}
+<!-- The row's left: the state or a refusal's sentence, which wraps in
+     its own box; its right: Apply. -->
+<span class="min-w-0 flex-1">
+  {#if error}
+    <span class="block py-0.5 text-error" role="alert" data-testid="review-suggestion-error">{error}</span>
+  {:else if status === 'applied'}
+    <span class="flex items-center gap-1 text-fg-muted" data-testid="review-suggestion-applied"><Icon icon={Check} size={11} />Applied</span>
+  {:else if status === 'outdated'}
+    <span class="text-fg-subtle" title="The code this suggestion is on has changed since it was written." data-testid="review-suggestion-outdated">Outdated</span>
+  {/if}
+</span>
+{#if status === 'apply'}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <span class="contents" onkeydown={blockHeldActivation}>
+  <span class="flex shrink-0" onkeydown={blockHeldActivation}>
     <Button
       variant="secondary"
       size="xs"
@@ -58,7 +65,4 @@
       onclick={() => { void suggestions.apply(thread, comment, suggestion); }}
     >Apply</Button>
   </span>
-{/if}
-{#if error}
-  <p class="basis-full py-0.5 text-error" role="alert" data-testid="review-suggestion-error">{error}</p>
 {/if}
