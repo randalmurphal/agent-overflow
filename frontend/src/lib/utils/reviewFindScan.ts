@@ -35,7 +35,7 @@ import { findNeedle, foldFindText } from './findMatch';
 import type { FindRun } from './findHighlights';
 import { RowWalker } from './patchRows';
 import type { ReviewFile } from './patchStore';
-import { visibleBody } from './reviewComments';
+import { findableBody } from './suggestionMarks';
 import { reviewInsertsByFile, type InsertRow } from './reviewRows';
 
 /** `data-find-key` of a file header's path. */
@@ -342,7 +342,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
           // A sent comment open in its editor shows the editor, not its body.
           if (content.editing?.has(rowKey)) continue;
           await tick();
-          const shown = visibleBody(comment.body);
+          const shown = findableBody(comment);
           if (shown !== '' && await emitText(content.commentText(shown, rowKey), file, { kind: 'thread', threadId: thread.id, comment: key }, {
             rowKey, line, place: { kind: 'thread', threadId: thread.id },
           })) return true;

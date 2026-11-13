@@ -1,9 +1,11 @@
 package forgefake
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -38,12 +40,12 @@ type graphQLOp struct {
 const githubGraphQLPageSize = 100
 
 var githubGraphQL = []graphQLOp{
-	{kind: "query", name: "PRTick", required: []string{"owner", "name", "number", "wantDetail", "wantThreads", "wantEvents", "wantChecks"}, run: ghPRTick},
-	{kind: "query", name: "PRThreadsPage", required: []string{"owner", "name", "number", "after"}, run: ghPRThreadsPage},
-	{kind: "query", name: "PRCommentsPage", required: []string{"owner", "name", "number", "after"}, run: ghPRCommentsPage},
+	{kind: "query", name: "PRTick", required: []string{"owner", "name", "number", "wantDetail", "wantThreads", "wantEvents", "wantChecks", "wantReactions"}, run: withReactionGroups(ghPRTick)},
+	{kind: "query", name: "PRThreadsPage", required: []string{"owner", "name", "number", "after", "wantReactions"}, run: withReactionGroups(ghPRThreadsPage)},
+	{kind: "query", name: "PRCommentsPage", required: []string{"owner", "name", "number", "after", "wantReactions"}, run: withReactionGroups(ghPRCommentsPage)},
 	{kind: "query", name: "PRThreadStatesPage", required: []string{"owner", "name", "number", "after"}, run: ghPRThreadStatesPage},
 	{kind: "query", name: "PRTimelinePage", required: []string{"owner", "name", "number", "before"}, run: ghPRTimelinePage},
-	{kind: "query", name: "ThreadCommentsPage", required: []string{"threadID", "after"}, run: ghThreadCommentsPage},
+	{kind: "query", name: "ThreadCommentsPage", required: []string{"threadID", "after", "wantReactions"}, run: withReactionGroups(ghThreadCommentsPage)},
 	{kind: "query", name: "RollupContextsPage", required: []string{"commitID", "number", "after"}, run: ghRollupContextsPage},
 	{kind: "query", name: "CommentOwner", required: []string{"id"}, run: ghCommentOwner},
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
@@ -78,6 +80,12 @@ var githubGraphQL = []graphQLOp{
 	{kind: "mutation", name: "UpdateIssueComment", required: []string{"id", "body"}, run: ghUpdateIssueComment},
 	{kind: "mutation", name: "DeleteReviewComment", required: []string{"id"}, run: ghDeleteReviewComment},
 	{kind: "mutation", name: "DeleteIssueComment", required: []string{"id"}, run: ghDeleteIssueComment},
+	{kind: "query", name: "SuggestionTarget", required: []string{"threadID", "commentID"}, run: ghSuggestionTarget},
+	{kind: "query", name: "SuggestionFile", required: []string{"owner", "name", "oid", "path"}, run: ghSuggestionFile},
+	{kind: "mutation", name: "SuggestionCommit", required: []string{"repository", "branch", "expectedHeadOid", "headline", "path", "contents"}, optional: []string{"body"}, run: ghSuggestionCommit},
+	{kind: "query", name: "ReactionTarget", required: []string{"id"}, run: ghReactionTarget},
+	{kind: "mutation", name: "AddReaction", required: []string{"subjectID", "content"}, run: ghReaction(true)},
+	{kind: "mutation", name: "RemoveReaction", required: []string{"subjectID", "content"}, run: ghReaction(false)},
 }
 
 // graphQLRequest is the body of a POST to /github/graphql.
@@ -89,15 +97,15 @@ type graphQLRequest struct {
 	vars graphQLVars
 }
 
-var (
-	graphQLSignature   = regexp.MustCompile(`^\s*(query|mutation)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?`)
-	graphQLDeclaredVar = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)\s*:`)
-)
-
 // graphQL answers one GraphQL request from its forge's operation table
-// (githubGraphQL, gitlabGraphQL). Callers hold mu.
+// (githubGraphQL, gitlabGraphQL). A request the forge would refuse as
+// invalid (GraphQLRequestProblems) answers the forge's validation errors
+// and is recorded as unhandled. Callers hold mu.
 func (e *Engine) graphQL(c *call) response {
 	req := c.graphQL
+	if problems := GraphQLRequestProblems(req.Query, req.vars); len(problems) > 0 {
+		return graphQLInvalid(req.OperationName, problems)
+	}
 	ops := githubGraphQL
 	if c.cli == "glab" {
 		ops = gitlabGraphQL
@@ -107,13 +115,13 @@ func (e *Engine) graphQL(c *call) response {
 		return unhandled("GraphQL operation %q is not implemented", req.OperationName)
 	}
 	op := ops[i]
-	m := graphQLSignature.FindStringSubmatch(req.Query)
-	if m == nil || m[1] != op.kind || m[2] != op.name {
+	doc, err := ParseGraphQLOperation(req.Query)
+	if err != nil || doc.Kind != op.kind || doc.Name != op.name {
 		return unhandled("GraphQL document does not declare %s %s", op.kind, op.name)
 	}
-	var declared []string
-	for _, v := range graphQLDeclaredVar.FindAllStringSubmatch(m[3], -1) {
-		declared = append(declared, v[1])
+	declared := make([]string, 0, len(doc.Variables))
+	for _, v := range doc.Variables {
+		declared = append(declared, v.Name)
 	}
 	want := append(slices.Clone(op.required), op.optional...)
 	slices.Sort(declared)
@@ -219,6 +227,26 @@ func graphQLData(data map[string]any) response {
 	return jsonResponse(map[string]any{"data": data})
 }
 
+// graphQLInvalid is how GitHub and GitLab refuse a request that fails
+// validation: 200 with the errors and no data, nothing run. invalid
+// records it as unhandled, so a spec's expectEveryForgeCallHandled fails
+// on a document the app should never send.
+func graphQLInvalid(operation string, problems []GraphQLProblem) response {
+	errs := make([]map[string]any, 0, len(problems))
+	messages := make([]string, 0, len(problems))
+	for _, p := range problems {
+		extensions := map[string]any{"code": p.Code}
+		if p.Variable != "" {
+			extensions["variableName"] = p.Variable
+		}
+		errs = append(errs, map[string]any{"message": p.Message, "extensions": extensions})
+		messages = append(messages, p.Message)
+	}
+	resp := jsonResponse(map[string]any{"errors": errs})
+	resp.invalid = fmt.Sprintf("GraphQL %s is invalid: %s", operation, strings.Join(messages, "; "))
+	return resp
+}
+
 // graphQLNotFound is GitHub's answer for an object that does not
 // resolve: 200, the data with null at path, and a NOT_FOUND error.
 func graphQLNotFound(data map[string]any, path []string, message string) response {
@@ -304,6 +332,8 @@ func ghPRTick(e *Engine, c *call, v graphQLVars) response {
 		pull["commits"] = map[string]any{"nodes": []map[string]any{{"commit": map[string]any{"id": githubCommitNodeID(r, p), "oid": p.HeadSHA, "statusCheckRollup": rollup}}}}
 	}
 	if wantThreads {
+		pull["state"] = strings.ToUpper(p.State)
+		pull["viewerCanApplySuggestion"] = p.State == "open" && e.mayPush(r, p)
 		pull["reviewThreads"] = graphQLConnection(e.githubThreadNodes(r, p), 0, githubGraphQLPageSize)
 		pull["comments"] = graphQLConnection(e.githubCommentNodes(r, p), 0, githubGraphQLPageSize)
 	}
@@ -694,6 +724,7 @@ func (e *Engine) githubThreadCommentNodes(r *Repo, p *Pull, thread *Thread) []ma
 			"replyTo":    replyTo,
 		}
 		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#discussion_r%d", githubPullURL(r, p), comment.ID)))
+		node["reactionGroups"] = e.githubReactionGroups(comment)
 		out = append(out, node)
 	}
 	return out
@@ -711,6 +742,7 @@ func (e *Engine) githubCommentNodes(r *Repo, p *Pull) []map[string]any {
 			"isMinimized": false,
 		}
 		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#issuecomment-%d", githubPullURL(r, p), comment.ID)))
+		node["reactionGroups"] = e.githubReactionGroups(comment)
 		out = append(out, node)
 	}
 	return out
@@ -1366,5 +1398,43 @@ func (r *Repo) branchExists(branch string) bool {
 func (r *Repo) deleteBranch(branch string) {
 	if !slices.Contains(r.DeletedBranches, branch) {
 		r.DeletedBranches = append(r.DeletedBranches, branch)
+	}
+}
+
+// withReactionGroups runs a read whose comments carry reactionGroups
+// under @include(if: $wantReactions): with it false, every comment's
+// reactionGroups key is dropped from the answer.
+func withReactionGroups(run func(e *Engine, c *call, v graphQLVars) response) func(e *Engine, c *call, v graphQLVars) response {
+	return func(e *Engine, c *call, v graphQLVars) response {
+		want, err := v.boolean("wantReactions")
+		if err != nil {
+			return unhandled("%v", err)
+		}
+		out := run(e, c, v)
+		if want || out.status != 0 && out.status != http.StatusOK {
+			return out
+		}
+		var body any
+		decoder := json.NewDecoder(bytes.NewReader(out.stdout))
+		decoder.UseNumber()
+		if err := decoder.Decode(&body); err != nil {
+			return out
+		}
+		var drop func(any)
+		drop = func(node any) {
+			switch n := node.(type) {
+			case map[string]any:
+				delete(n, "reactionGroups")
+				for _, child := range n {
+					drop(child)
+				}
+			case []any:
+				for _, child := range n {
+					drop(child)
+				}
+			}
+		}
+		drop(body)
+		return jsonResponse(body)
 	}
 }

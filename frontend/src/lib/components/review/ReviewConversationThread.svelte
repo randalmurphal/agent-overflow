@@ -27,6 +27,7 @@
   import { relativeTime } from '../../utils/format';
   import { jumpPulse } from '../../utils/reviewJumpPulse';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
+  import { commentWriteKey } from '../../stores/reviewCommentWrites.svelte';
   import type { ReviewThread } from '../../types/models';
 
   // One thread's card in the Conversation feed: the author's avatar on
@@ -201,6 +202,8 @@
         onResolve={thread.isResolvable
           ? (resolved) => { void review.setPRThreadResolved(thread, resolved); }
           : undefined}
+        preview={review.editorPreviews.control(commentWriteKey.reply(thread.id))}
+        previewSource={replying ? review.suggestions.threadSource(thread) : null}
       />
     </div>
   </div>

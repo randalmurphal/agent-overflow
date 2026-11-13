@@ -19,6 +19,7 @@ import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.j
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   expectEveryForgeCallHandled,
+  forgeOrigin,
   openPullRequestReview,
   publishPullRequest,
   seedForge,
@@ -68,7 +69,7 @@ async function breakOrigin(harness: HarnessApp, workspace: string): Promise<() =
  * and re-seeds the forge so the PR reports it. */
 async function movePullHead(harness: HarnessApp, repo: ForgeRepo, file: string): Promise<void> {
   const git = gitIn(harness);
-  const bare = path.join(harness.bootstrap.dataRoot, 'forge-origin', `${repo.project}.git`);
+  const bare = (await forgeOrigin(harness, repo.project)).path;
   const scratch = await mkdtemp(path.join(harness.bootstrap.dataRoot, 'pusher-'));
   git(scratch, 'clone', '--quiet', '--branch', 'feature', bare, '.');
   await writeFile(path.join(scratch, file), `export const moved = '${file}';\n`);

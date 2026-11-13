@@ -496,6 +496,8 @@ func TestGitLabReadMarksTheViewersNotes(t *testing.T) {
 				return forgeAPIAnswer{Body: fmt.Sprintf(`{"permissions":{"project_access":null,"group_access":{"access_level":%d}}}`, tc.access)}
 			case call.Path == "user":
 				return forgeAPIAnswer{Body: `{"id":1,"username":"me"}`}
+			case call.Op == "MRNoteReactions":
+				return forgeAPIAnswer{Body: gitlabNoReactions}
 			}
 			return forgeUnexpected(t, call)
 		})

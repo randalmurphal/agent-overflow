@@ -41,7 +41,7 @@
   import { createRefreshScheduler } from '../../utils/refreshScheduler';
   import { createMarkdownFindTextCache, type MarkdownFindText } from '../chat/markdown/markdownFindText';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
-  import { visibleBody } from '../../utils/reviewComments';
+  import { findableBody, isSuggestionMark } from '../../utils/suggestionMarks';
   import { readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
   import { findDraftKey, findThreadCommentKey, findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
   import {
@@ -109,7 +109,7 @@
   let editing = new Set<string>();
 
   function commentTexts(): (source: string, open?: readonly boolean[]) => MarkdownFindText {
-    return (texts ??= createMarkdownFindTextCache({ embeddedHtml: true, forgeSource: readForgeSource?.() ?? null }));
+    return (texts ??= createMarkdownFindTextCache({ embeddedHtml: true, forgeSource: readForgeSource?.() ?? null, claimsCode: isSuggestionMark }));
   }
 
   function readDetails(): MountedCommentDetails {
@@ -117,7 +117,7 @@
     return readCommentDetails(root, (rowKey) => {
       const at = findThreadCommentOfKey(rowKey);
       const comment = at ? review.prThreads.find((thread) => thread.id === at.threadId)?.comments.find((each) => reviewCommentKey(each) === at.comment) : undefined;
-      return comment ? commentTexts()(visibleBody(comment.body)).details : null;
+      return comment ? commentTexts()(findableBody(comment)).details : null;
     });
   }
 

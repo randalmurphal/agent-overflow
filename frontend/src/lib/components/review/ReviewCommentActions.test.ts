@@ -49,11 +49,10 @@ describe('<ReviewCommentActions>', () => {
     expect(view.queryByTestId('review-comment-actions')).toBeNull();
   });
 
-  it('is revealed on hover and always on compact', () => {
+  it('is revealed on hover on desktop', () => {
     const { view } = setup();
     const icons = view.getByTestId('review-comment-actions').firstElementChild!;
     expect(icons.className).toContain('opacity-0');
     expect(icons.className).toContain('group-hover/comment:opacity-100');
-    expect(icons.className).toContain('compact:opacity-100');
   });
 });

@@ -15,7 +15,7 @@ import (
 )
 
 // maxRequestBody bounds what the fake reads of a request body.
-const maxRequestBody = 1 << 20
+const maxRequestBody = 4 << 20
 
 // ServeHTTP answers the forge API transport an isolated boot's forgeapi
 // Service sends (internal/forgeapi, Options.Isolated) from the REST and
@@ -77,7 +77,7 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case readErr != nil:
 		reason = "read request body: " + readErr.Error()
 	case len(body) > maxRequestBody:
-		reason = "request body over 1 MiB"
+		reason = "request body over 4 MiB"
 	}
 
 	e.mu.Lock()
@@ -123,9 +123,11 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	status, header, out := renderHTTP(resp)
 	inv.Route = resp.route
-	inv.Unhandled = resp.unhandled != ""
+	inv.Unhandled = resp.unhandled != "" || resp.invalid != ""
 	inv.Status = status
 	switch {
+	case resp.invalid != "":
+		inv.Detail = fmt.Sprintf("ao-mockforge: invalid http request (%s): %s %s.", resp.invalid, r.Method, inv.Path)
 	case inv.Unhandled:
 		inv.Detail = fmt.Sprintf("ao-mockforge: unhandled http request (%s): %s %s. Add a handler in internal/harness/forgefake (see its AGENTS.md).", resp.unhandled, r.Method, inv.Path)
 	case status >= 400:
@@ -143,7 +145,7 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if inv.Unhandled {
+	if resp.unhandled != "" {
 		// The detail names the request's own path: it goes out as plain
 		// text through http.Error, never as a body a browser could sniff.
 		http.Error(w, inv.Detail, status)
@@ -188,6 +190,11 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 	if spec := r.Header.Get("Range"); spec != "" {
 		// Only the log routes, which list it, answer Range.
 		c.flags["range"] = []string{spec}
+	}
+	if accept := r.Header.Get("Accept"); strings.HasPrefix(accept, "application/vnd.github.") {
+		// A GitHub media type of the request's own (the raw contents) is a
+		// flag only the route that serves it lists.
+		c.flags["accept"] = []string{accept}
 	}
 	if tag := r.Header.Get("If-None-Match"); tag != "" {
 		// A route that lists if-none-match answers it; any other refuses

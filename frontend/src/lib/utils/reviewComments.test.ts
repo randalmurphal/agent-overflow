@@ -118,6 +118,31 @@ describe('visibleBody', () => {
   it('drops an unterminated trailing comment', () => {
     expect(visibleBody('Prose first.\n<!-- truncated marker')).toBe('Prose first.');
   });
+
+  it('keeps fenced code whole: a comment opener there is code', () => {
+    const fenced = 'Before.\n```ts\nconst opener = "<!--";\n```\nAfter. <!-- gone -->\n~~~\n<!-- kept -->\n~~~';
+    expect(visibleBody(fenced)).toBe('Before.\n```ts\nconst opener = "<!--";\n```\nAfter. \n~~~\n<!-- kept -->\n~~~');
+    // A longer closer, CRLF, an indented fence, and a fence never closed.
+    expect(visibleBody('````\r\n<!--\r\n```\r\n`````\r\nx <!-- y -->')).toBe('````\r\n<!--\r\n```\r\n`````\r\nx');
+    expect(visibleBody('   ```\n<!--\n   ```\nx')).toBe('```\n<!--\n   ```\nx');
+    expect(visibleBody('a\n```\n<!-- to the end')).toBe('a\n```\n<!-- to the end');
+  });
+
+  it('reads a fence only where one opens', () => {
+    // A comment that opens first swallows the fence inside it.
+    expect(visibleBody('a <!--\n```\nx\n```\n--> b')).toBe('a  b');
+    // Backticks later on the line make it a code span, not a fence, and a
+    // fence opens only at the start of a line.
+    expect(visibleBody('```a``` <!-- x -->\ntail')).toBe('```a``` \ntail');
+    expect(visibleBody('<!-- x -->```\n<!-- y -->')).toBe('```');
+  });
+
+  it('stays linear over many comments ahead of a fence', () => {
+    const body = `${'<!-- m -->\n'.repeat(200000)}\`\`\`\n<!--\n\`\`\``;
+    const started = performance.now();
+    expect(visibleBody(body)).toBe('```\n<!--\n```');
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
 });
 
 describe('countReviewComments', () => {

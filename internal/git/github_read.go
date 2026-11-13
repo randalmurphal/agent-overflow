@@ -32,8 +32,15 @@ const (
 	githubActor          = `author { login ... on User { name } }`
 
 	// githubViewerCommentFields is what edit, delete and the "edited" mark
-	// read from a comment of either kind.
-	githubViewerCommentFields = `lastEditedAt url viewerCanUpdate viewerCanDelete`
+	// read from a comment of either kind, with its reaction groups while
+	// the read's $wantReactions is set: every document that selects it
+	// declares and sends that variable.
+	githubViewerCommentFields = `lastEditedAt url viewerCanUpdate viewerCanDelete reactionGroups @include(if: $wantReactions) ` + githubReactionGroupFields
+	// githubReactionFields is a comment's reaction groups: GitHub answers
+	// every content, so the count is the reactors' totalCount (no nodes:
+	// the names would cost a connection per comment).
+	githubReactionFields      = `reactionGroups ` + githubReactionGroupFields
+	githubReactionGroupFields = `{ content viewerHasReacted reactors { totalCount } }`
 	githubThreadCommentFields = `id databaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` replyTo { id databaseId }`
 	githubThreadFields        = `id isResolved isOutdated path line startLine originalLine originalStartLine diffSide startDiffSide subjectType ` +
 		`comments(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }`
@@ -102,7 +109,7 @@ const (
 // and the repository's merge settings, $wantThreads the threads and comments, $wantEvents the newest
 // page of timeline items, and $wantChecks the rollup, which both the
 // detail's check summary and readiness and the CI pipeline are built from.
-const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number: Int!, $wantDetail: Boolean!, $wantThreads: Boolean!, $wantEvents: Boolean!, $wantChecks: Boolean!) {
+const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number: Int!, $wantDetail: Boolean!, $wantThreads: Boolean!, $wantEvents: Boolean!, $wantChecks: Boolean!, $wantReactions: Boolean!) {
   viewer @include(if: $wantDetail) { login }
   repository(owner: $owner, name: $name) {
     viewerPermission
@@ -111,6 +118,7 @@ const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number
       number headRefName
       ... @include(if: $wantDetail) { ` + githubDetailFields + ` }
       commits(last: 1) @include(if: $wantChecks) { nodes { commit { id oid statusCheckRollup { contexts(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubContextFields + ` } } } } } }
+      ... @include(if: $wantThreads) { state viewerCanApplySuggestion }
       reviewThreads(first: 100) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubThreadFields + ` } }
       comments(first: 100) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubCommentFields + ` } }
       timelineItems(last: 100, itemTypes: [` + githubTimelineItemTypes + `]) @include(if: $wantEvents) { ` + githubTimelinePageInfoFields + ` nodes { ` + githubTimelineFields + ` } }
@@ -118,7 +126,7 @@ const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number
   }
 }`
 
-const githubPRThreadsPageQuery = `query PRThreadsPage($owner: String!, $name: String!, $number: Int!, $after: String!) {
+const githubPRThreadsPageQuery = `query PRThreadsPage($owner: String!, $name: String!, $number: Int!, $after: String!, $wantReactions: Boolean!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviewThreads(first: 100, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubThreadFields + ` } }
@@ -126,7 +134,7 @@ const githubPRThreadsPageQuery = `query PRThreadsPage($owner: String!, $name: St
   }
 }`
 
-const githubPRCommentsPageQuery = `query PRCommentsPage($owner: String!, $name: String!, $number: Int!, $after: String!) {
+const githubPRCommentsPageQuery = `query PRCommentsPage($owner: String!, $name: String!, $number: Int!, $after: String!, $wantReactions: Boolean!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       comments(first: 100, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubCommentFields + ` } }
@@ -134,7 +142,7 @@ const githubPRCommentsPageQuery = `query PRCommentsPage($owner: String!, $name: 
   }
 }`
 
-const githubThreadCommentsPageQuery = `query ThreadCommentsPage($threadID: ID!, $after: String!) {
+const githubThreadCommentsPageQuery = `query ThreadCommentsPage($threadID: ID!, $after: String!, $wantReactions: Boolean!) {
   node(id: $threadID) {
     ... on PullRequestReviewThread {
       comments(first: 100, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }
@@ -185,10 +193,20 @@ type githubActorRaw struct {
 // githubViewerCommentRaw is githubViewerCommentFields; lastEditedAt is
 // null for a comment never edited.
 type githubViewerCommentRaw struct {
-	LastEditedAt    string `json:"lastEditedAt"`
-	URL             string `json:"url"`
-	ViewerCanUpdate bool   `json:"viewerCanUpdate"`
-	ViewerCanDelete bool   `json:"viewerCanDelete"`
+	LastEditedAt    string                   `json:"lastEditedAt"`
+	URL             string                   `json:"url"`
+	ViewerCanUpdate bool                     `json:"viewerCanUpdate"`
+	ViewerCanDelete bool                     `json:"viewerCanDelete"`
+	ReactionGroups  []githubReactionGroupRaw `json:"reactionGroups"`
+}
+
+// githubReactionGroupRaw is one reactionGroups entry.
+type githubReactionGroupRaw struct {
+	Content          string `json:"content"`
+	ViewerHasReacted bool   `json:"viewerHasReacted"`
+	Reactors         struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"reactors"`
 }
 
 type githubThreadCommentRaw struct {
@@ -309,7 +327,10 @@ type githubPullRaw struct {
 	MergeStateStatus string         `json:"mergeStateStatus"`
 	ReviewDecision   string         `json:"reviewDecision"`
 	Author           githubActorRaw `json:"author"`
-	LatestReviews    struct {
+	// ViewerCanApplySuggestion is selected with the threads: whether the
+	// viewer may commit a suggestion to the head branch.
+	ViewerCanApplySuggestion bool `json:"viewerCanApplySuggestion"`
+	LatestReviews            struct {
 		Nodes []githubReviewRaw `json:"nodes"`
 	} `json:"latestReviews"`
 	Commits struct {
@@ -357,10 +378,28 @@ func githubPullVars(ref PRReference) (map[string]any, error) {
 	return map[string]any{"owner": owner, "name": repo, "number": ref.Number}, nil
 }
 
+// githubReactionsTooLarge is ReactionsUnavailable for a read that fits
+// only without the comments' reaction groups.
+const githubReactionsTooLarge = "Reactions are not shown: this pull request has too many comments to read them."
+
 // ReadPR answers the parts want names from one PRTick request, plus a
 // page request for each connection past its first page and, for CI, the
-// REST jobs lists the steps of stepsFor jobs need.
+// REST jobs lists the steps of stepsFor jobs need. GitHub answers every
+// reaction group of every comment, so reactions can take a threads read
+// past its body bound: then the whole read runs once more without them
+// and says so (githubReactionsTooLarge); reactions never shrink what the
+// read can load. Nothing remembers that outcome.
 func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadParts, prev *CIPipeline, stepsFor []string) (PRRead, error) {
+	out, err := f.readPR(ctx, ref, want, prev, stepsFor, want.Threads)
+	if want.Threads && errors.Is(err, forgeapi.ErrBodyTooLarge) {
+		if out, err = f.readPR(ctx, ref, want, prev, stepsFor, false); err == nil {
+			out.ReactionsUnavailable = githubReactionsTooLarge
+		}
+	}
+	return out, err
+}
+
+func (f *githubForge) readPR(ctx context.Context, ref PRReference, want PRReadParts, prev *CIPipeline, stepsFor []string, reactions bool) (PRRead, error) {
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
 		return PRRead{}, err
@@ -373,6 +412,7 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	vars["wantThreads"] = want.Threads
 	vars["wantEvents"] = want.Events
 	vars["wantChecks"] = want.Detail || want.CI
+	vars["wantReactions"] = reactions
 	var raw githubTickRaw
 	// An error confined to the management selections leaves the rest of
 	// the read standing; the detail says the controls are unavailable.
@@ -431,7 +471,7 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		}
 	}
 	if want.Threads {
-		if out.Threads, err = f.readThreads(ctx, client, ref, pull); err != nil {
+		if out.Threads, err = f.readThreads(ctx, client, ref, pull, reactions); err != nil {
 			return PRRead{}, err
 		}
 	}
@@ -486,11 +526,12 @@ func (f *githubForge) readRollupContexts(ctx context.Context, client *forgeapi.C
 // every connection past its first page. GitHub keeps PR conversation
 // comments (issue comments) flat, outside review threads; the review pane
 // lists them with the threads.
-func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw) ([]ReviewThread, error) {
+func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw, reactions bool) ([]ReviewThread, error) {
 	vars, err := githubPullVars(ref)
 	if err != nil {
 		return nil, err
 	}
+	vars["wantReactions"] = reactions
 	threads := pull.ReviewThreads.Nodes
 	page := pull.ReviewThreads.PageInfo
 	for pages := 1; page.HasNextPage && pages < githubReadMaxPages; pages++ {
@@ -506,7 +547,7 @@ func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, 
 		page = next.ReviewThreads.PageInfo
 	}
 	for i := range threads {
-		if err := f.readThreadComments(ctx, client, &threads[i]); err != nil {
+		if err := f.readThreadComments(ctx, client, &threads[i], reactions); err != nil {
 			return nil, err
 		}
 	}
@@ -526,12 +567,13 @@ func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, 
 		page = next.Comments.PageInfo
 	}
 	out := githubReviewThreads(threads)
+	githubMarkSuggestions(out, pull)
 	return append(out, githubConversationThreads(comments)...), nil
 }
 
 // readThreadComments completes one thread's comments past their first
-// page.
-func (f *githubForge) readThreadComments(ctx context.Context, client *forgeapi.Client, thread *githubThreadRaw) error {
+// page, with their reaction groups when reactions is set.
+func (f *githubForge) readThreadComments(ctx context.Context, client *forgeapi.Client, thread *githubThreadRaw, reactions bool) error {
 	page := thread.Comments.PageInfo
 	for pages := 1; page.HasNextPage && pages < githubReadMaxPages; pages++ {
 		if page.EndCursor == "" {
@@ -542,7 +584,7 @@ func (f *githubForge) readThreadComments(ctx context.Context, client *forgeapi.C
 				Comments *githubThreadCommentsRaw `json:"comments"`
 			} `json:"node"`
 		}
-		if _, err := client.GraphQL(ctx, "ThreadCommentsPage", githubThreadCommentsPageQuery, map[string]any{"threadID": thread.ID, "after": page.EndCursor}, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, "ThreadCommentsPage", githubThreadCommentsPageQuery, map[string]any{"threadID": thread.ID, "after": page.EndCursor, "wantReactions": reactions}, &raw); err != nil {
 			return err
 		}
 		if raw.Node == nil || raw.Node.Comments == nil {
@@ -830,10 +872,12 @@ func githubConversationThreads(nodes []githubCommentRaw) []ReviewThread {
 	return threads
 }
 
-// fill copies the viewer's permissions, the edit time and the URL onto out.
+// fill copies the viewer's permissions, the edit time, the URL and the
+// reactions onto out.
 func (raw githubViewerCommentRaw) fill(out *ReviewComment) {
 	out.EditedAt = raw.LastEditedAt
 	out.URL = raw.URL
 	out.ViewerCanEdit = raw.ViewerCanUpdate
 	out.ViewerCanDelete = raw.ViewerCanDelete
+	out.Reactions = githubReactions(raw.ReactionGroups)
 }

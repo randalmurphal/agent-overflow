@@ -293,6 +293,24 @@ polling.
   sit at its foot as on the forges: a reply field that opens the composer,
   **Copy** (the location and every comment as text, for pasting into an
   agent composer) and **Resolve** / **Unresolve**.
+- **Suggestions, reactions and preview.** With
+  `pr-suggestions-reactions.v1`, `stores/reviewCommentExtras.svelte.ts`
+  composes the pane's slice: Apply and reaction chips run through one
+  operation runner (`stores/reviewForgeOps.svelte.ts`) that keys each
+  write by the PR and its chip or suggestion, settles it by the pump's
+  seq as the posted writes do, and routes a failure to its surface, a
+  held toast (`stores/lostWrite.ts`) or nowhere. A comment body renders
+  through `ReviewCommentMarkdown` as one Markdown document: each fence
+  at the lines the backend reports (one parser, `internal/mdsuggest`,
+  also behind a preview's `ParseCommentSuggestions`) is marked in its
+  info string (`utils/suggestionMarks.ts`) and `ChatMarkdown`'s
+  `codeClaim` renders it as a `ReviewSuggestionDiff`; find skips the
+  marked fences through the same projection. The replaced lines come from the forge or the
+  diff's resident text (`utils/suggestionLines.ts`). Each editor's
+  Preview state (caret and box height) lives in
+  `stores/reviewEditorPreview.svelte.ts`, keyed as the editor's text is.
+  The product contract is in
+  [Pull requests](../specs/pull-requests.md#suggestions-reactions-and-preview).
 - **Transport classification.** Every new App method that reaches a forge
   or runs `glab`/`git` annotates `//ao:scope git:operate`, so only a
   session granted that scope reaches it.

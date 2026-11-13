@@ -21,7 +21,7 @@ import type { DiffReviewComment, ReviewThread } from '../types/models';
 import type { FindRun } from './findHighlights';
 import { RowWalker, splitRowCount } from './patchRows';
 import type { ReviewFile } from './patchStore';
-import { visibleBody } from './reviewComments';
+import { findableBody } from './suggestionMarks';
 import {
   countFindMatches,
   findDraftKey,
@@ -244,7 +244,7 @@ export function resolveReviewFindHit(shown: ReviewFindShown, hit: ReviewFindHit,
     const comment = thread && prThreadAnchor(thread).filePath === file.path
       ? thread.comments.find((each) => reviewCommentKey(each) === at.comment)
       : undefined;
-    const body = comment ? visibleBody(comment.body) : '';
+    const body = comment ? findableBody(comment) : '';
     const rowKey = findThreadCommentKey(at.threadId, at.comment);
     if (body === '' || shown.editing.has(rowKey)) return ABSENT;
     const runs = shown.commentRuns(body, rowKey);

@@ -26,6 +26,10 @@ export interface ForgeComment {
   editedAt?: string;
   /** GitLab conversation comments only: the further notes of its discussion. */
   replies?: ForgeComment[];
+  /** One per user and name, in GitLab's award names (GitHub: the eight shared). */
+  reactions?: { name: string; user: string; id?: number }[];
+  /** GitLab: the indexes of the comment's suggestions already applied. */
+  appliedSuggestions?: number[];
 }
 
 /** A review thread anchored to the diff; `side` defaults to right. */
@@ -117,7 +121,9 @@ export interface ForgePull {
   /** Names of the repository's `labels`. */
   labels?: string[];
   /** What the viewer may do here, each derived from the role and authorship when omitted. */
-  viewer?: { update?: boolean; label?: boolean; triage?: boolean; admin?: boolean };
+  viewer?: { update?: boolean; label?: boolean; triage?: boolean; admin?: boolean; push?: boolean };
+  /** The head's files by path, which a suggestion's apply rewrites. */
+  files?: Record<string, string>;
   /** GitLab: close, reopen and merge events (resource state events). */
   stateEvents?: { id?: number; state: 'closed' | 'reopened' | 'merged'; actor?: string; at?: string }[];
   /** GitLab: the requested changes were bypassed. */
@@ -296,7 +302,7 @@ export interface ForgeRepo {
   /** The repository's labels; color "#rrggbb". */
   labels?: { name: string; color?: string; id?: string }[];
   /** GitLab: what an older server lacks. */
-  serverLacks?: ('rereview' | 'overrideRequestedChanges' | 'operationMode')[];
+  serverLacks?: ('rereview' | 'overrideRequestedChanges' | 'operationMode' | 'awardEmoji')[];
 }
 
 interface ForgeInvocationCommon {
@@ -621,6 +627,17 @@ async function commitPullHistory(workspace: string, env: GitEnv, history: PullHi
 }
 
 /**
+ * The bare origin repository of a forge `project`, created by the harness
+ * on the first call (`HarnessForgeOrigin`) and answered again after: the
+ * fake forge writes an applied suggestion's commit only to an origin the
+ * harness created. `root` is the directory of every origin of this
+ * harness process, which the git proxy serves.
+ */
+export async function forgeOrigin(harness: HarnessApp, project: string): Promise<{ root: string; path: string }> {
+  return harness.rpc<{ root: string; path: string }>('HarnessForgeOrigin', project);
+}
+
+/**
  * Publish the seeded `workspace` as `repo`'s first pull request and seed
  * the fake forge with `repo`. The workspace gets a `feature` branch off
  * `main` (the fixture's default head and base refs): one commit that writes
@@ -643,12 +660,9 @@ export async function publishPullRequest(
   if (!pull) throw new Error(`publishPullRequest: ${repo.project} has no pull request to publish`);
   const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
-  const root = path.join(harness.bootstrap.dataRoot, 'forge-origin');
+  const { root, path: bare } = await forgeOrigin(harness, repo.project);
   const proxy = path.join(root, 'git-proxy.sh');
-  const bare = path.join(root, `${repo.project}.git`);
-  await mkdir(bare, { recursive: true });
   await writeFile(proxy, gitProxyScript(root), { mode: 0o755 });
-  git(bare, 'init', '--bare', '--quiet');
 
   const baseSha = 'commits' in content && Array.isArray(content.commits)
     ? await commitPullHistory(workspace, env, content as PullHistory)
@@ -697,12 +711,9 @@ export async function publishBranch(
 ): Promise<void> {
   const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
-  const root = path.join(harness.bootstrap.dataRoot, 'forge-origin');
+  const { root, path: bare } = await forgeOrigin(harness, repo.project);
   const proxy = path.join(root, 'git-proxy.sh');
-  const bare = path.join(root, `${repo.project}.git`);
-  await mkdir(bare, { recursive: true });
   await writeFile(proxy, gitProxyScript(root), { mode: 0o755 });
-  git(bare, 'init', '--bare', '--quiet');
   git(workspace, 'push', '--quiet', bare, 'main', branch);
 
   await seedForge(harness, [repo]);

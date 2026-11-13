@@ -238,6 +238,80 @@ control's hover text, under the merge actions' gates and when
 `git:operate` is not granted. Open editors' text lives in the review
 state, so it survives its row unmounting, and find skips an open edit.
 
+### Suggestions, reactions and preview
+
+On a backend with capability `pr-suggestions-reactions.v1`, in the PR
+scope, on both surfaces and both forges:
+
+- Suggest change. A new comment's editor on a new-side line or range,
+  where comments post now, offers `Suggest change`: it inserts a
+  `suggestion` fence at the caret on its own lines, holding the lines'
+  current text from the loaded diff (`whenResident`), with the caret
+  inside, and a fence one backtick longer than any run in the text.
+  Text the diff can no longer read inserts nothing and says so.
+- A suggestion reads as the small diff it proposes, in place of its
+  fence (the body lines the backend places it on, `bodyStartLine` to
+  `bodyEndLine`), inside the one rendered body, so a `<details>`,
+  list or footnote around it keeps its structure. A suggestion the
+  backend cannot place (GitLab's that do not match the body's fences one
+  to one), or whose fence there no longer holds its `to` lines, leaves
+  that fence as code and its diff follows the body. The removed lines are the
+  forge's `from` when `fromKnown` (GitLab); on GitHub, the thread's lines
+  from the diff the pane holds when that is the PR's whole diff at its
+  live head and the thread is not outdated; otherwise the additions
+  alone. A `to` of `[""]` is one empty added line, `[]` a deletion. Find
+  skips the diff.
+- Apply, where the forge says the suggestion applies, sends the loaded
+  head and the suggestion's own identity (`ApplyPRSuggestion`, built in
+  one place from the suggestion as read). Applied reads as a quiet
+  "Applied", an outdated thread's as muted "Outdated", on the left of the
+  suggestion's footer row with Apply on its right. A refusal shows its
+  sentence there; one whose code says the suggestion or the branch moved
+  (`forge_suggestion_changed`, `forge_stale_head`) also reads the PR
+  again. After an apply the head moves and the pane's stale-head banner
+  takes over.
+- On compact a comment's actions are one `⋯` that opens the shared menu
+  with the same rows, order and withheld reasons; a long press on the
+  comment opens the same menu, except on a link or while text in the
+  comment is selected, which keep the browser's menu. Add reaction's
+  popover anchors to the `⋯`, and only the copy of the comment it was
+  opened from (Conversation or diff) shows it. The thread's header line never wraps there: the login, time and
+  range shorten before the state chips do.
+- Reactions. Each reaction present is a chip with its emoji and count,
+  accent-toned when the viewer reacted, with who reacted as hover text
+  where the forge says (GitLab); a press toggles the viewer's own
+  (`SetPRCommentReaction`). Add reaction in the hover actions opens the
+  eight both forges take. A GitLab award with no known emoji shows as
+  `:name:`. No row for a comment without reactions. When the forge's
+  reactions read failed (`reactionsUnavailable`), one muted line at the
+  top of the Conversation says so, the chips stay as last read and Add
+  reaction is not offered.
+- Copy link copies the comment's `url` through the shared clipboard
+  helper; a refused copy is reported and toasted.
+- A sent comment's hover actions read Add reaction, Copy link, Edit,
+  Delete, under the rules of the edit and delete icons above.
+- Preview. Every editor (a new comment, a reply, an edit, the PR
+  comment, the review summary, the description) has one quiet Preview
+  toggle in its button row. It renders the text as a sent comment reads
+  (`ChatMarkdown`'s sanitized embedded mode, fences as diffs where
+  `ParseCommentSuggestions` places them) at the text box's height; until
+  the backend answers for this text, or when it refuses one (over
+  1,000,000 characters), the fences show as code. Off, the text returns
+  with its caret. The state is
+  per editor in the review state, so it survives a remount, and goes
+  when the editor closes.
+
+Apply and a chip follow the posted writes' rule: pending until the pane
+applies the frame at the answer's seq, one at a time per chip and per
+suggestion, withheld with the reason as hover text, a held key's repeat
+writing nothing. State and failures are keyed by the PR and the comment
+and reaction or suggestion. A failure shows where it was pressed while
+the review state lives, as one held toast once it was disposed ("Your
+👍 reaction on <where> was not added.", "The suggestion on <where> was
+not applied."; no Copy text), and nowhere once the pane's PR became
+another, which also closes the popover. `forge_unconfirmed` and a lost
+answer read as not confirmed.
+
 ### Forge events in the feed
 
 `PRRead.Events` carries `ReviewEvent{Kind, ActorLogin, ActorName, At,
@@ -517,8 +591,7 @@ permission reads and the refusals are in
   input of the line's own height; Enter saves, Escape cancels. A failure
   floats under the input, so the title bar keeps its fixed lines.
 - Description: the pencil on the Description section's header opens the
-  raw body with Write and Preview (`ChatMarkdown`'s sanitized embedded
-  mode), Save and Cancel; Ctrl or Cmd+Enter saves. A save names the body
+  raw body with the editors' Preview toggle, Save and Cancel; Ctrl or Cmd+Enter saves. A save names the body
   the editor opened with (`expectedDescription`); one changed since is
   refused with "The description changed since you opened it. Copy your
   text, reload the description and edit again." and the editor stays
@@ -815,6 +888,13 @@ refusal that keeps the text, a draft and a held reply submitted as one
 review, an edit, a reply's delete and a thread's only comment's delete,
 a range over unchanged and added lines, and a held reply sent to the
 agent quoting its thread.
+`review-suggestions-reactions.spec.ts` and its compact twin
+(`review-suggestions-reactions-flow.ts`) drive suggestions, reactions,
+Preview and Copy link on both forges: Suggest change on a range and its
+preview, a refused then landed Apply, Applied and Outdated, a chip
+toggled on and off, the popover's eight, GitLab's unknown awards, a
+refused GitLab reactions read, and the description and PR comment
+previews.
 `review-diff-reading.spec.ts` and its compact twin
 (`review-diff-reading-flow.ts`) drive reading the diff on both forges: a
 run by Shift+click and by `From here`, its card and leaving it, a head

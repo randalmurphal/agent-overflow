@@ -1,16 +1,18 @@
 // The comment actions on compact, on GitLab against the fake forge: a sent
-// comment's actions show without hover, a reply posts now, a draft is
-// added and sent as a review, a sent comment is edited, and the in-place
-// delete confirm fits its header at compact width. The fixture and steps
+// comment's actions are one `⋯` menu, opened by tap or long press, a
+// reply posts now, a draft is added and sent as a review, a sent comment
+// is edited, and the in-place delete confirm fits its header at compact
+// width. The fixture and steps
 // are in review-comment-actions-flow.ts; review-comment-actions.spec.ts is
 // the desktop twin on both forges.
 import { expect, test } from './fixtures.js';
 import { expectEveryForgeCallHandled, forgeRouteCalls } from './forge-helpers.js';
 import { centre, closeAll, openEditor, openPinned, openReply, ROUTES, thread } from './review-comment-actions-flow.js';
+import { longPress } from './touch-helpers.js';
 
 const FORGE = 'gitlab';
 
-test('on compact, comment actions show without hover, and reply, draft, edit and delete work by tap', async ({ page }, testInfo) => {
+test('on compact, comment actions are one menu, and reply, draft, edit and delete work by tap and long press', async ({ page }, testInfo) => {
   test.setTimeout(150_000);
   await page.emulateMedia({ colorScheme: 'dark' });
   const { harness, review } = await openPinned(page, FORGE, 'compact', true);
@@ -18,8 +20,9 @@ test('on compact, comment actions show without hover, and reply, draft, edit and
     const card = thread(review, 'Why start at one?');
     const mine = card.getByTestId('review-thread-comment').filter({ hasText: 'Counting starts there.' });
     await expect(mine).toBeVisible({ timeout: 30_000 });
-    // Nothing hovers on a touch screen: the actions are always shown.
-    await expect(mine.locator('[data-testid="review-comment-actions"] > span')).toHaveCSS('opacity', '1');
+    // Nothing hovers on a touch screen: the actions are one `⋯`, always shown.
+    await expect(mine.getByTestId('review-comment-menu')).toBeVisible();
+    await expect(mine.getByTestId('review-comment-edit')).toHaveCount(0);
     await centre(card);
     await card.screenshot({ path: testInfo.outputPath('compact-comment-actions.png') });
 
@@ -42,7 +45,8 @@ test('on compact, comment actions show without hover, and reply, draft, edit and
     expect(await forgeRouteCalls(harness, ROUTES[FORGE].publish)).toHaveLength(1);
 
     // Edit a sent comment.
-    await mine.getByTestId('review-comment-edit').tap();
+    await mine.getByTestId('review-comment-menu').tap();
+    await page.getByTestId('review-comment-edit').tap();
     const edit = card.getByTestId('review-comment-edit-editor');
     await edit.locator('textarea').fill('Counting starts at one.');
     await edit.getByTestId('review-comment-save').tap();
@@ -51,7 +55,9 @@ test('on compact, comment actions show without hover, and reply, draft, edit and
     expect(await forgeRouteCalls(harness, ROUTES[FORGE].edit)).toHaveLength(1);
 
     // The delete confirm sits inside the header, its controls whole.
-    await edited.getByTestId('review-comment-delete').tap();
+    // Delete from a long press on the comment's text: the same menu.
+    await longPress(page, edited.getByText('Counting starts at one.'), page.getByTestId('review-comment-delete'));
+    await page.getByTestId('review-comment-delete').tap();
     const confirm = edited.getByTestId('review-comment-confirm');
     await expect(confirm).toContainText('Delete?');
     const header = (await edited.getByTestId('review-comment-header').boundingBox())!;

@@ -204,7 +204,7 @@ force pushes), the CI phase for `CI` alone on its own cadence. A merge
 action (`ApprovePR`, `UnapprovePR`, `MergePR`, `CancelPRAutoMerge`,
 `UpdatePRBranch`, `MarkPRReady`) or comment action (`PostPRLineComment`,
 `PostPRComment`, `ReplyToPRThread`, `EditPRComment`, `DeletePRComment`,
-`internal/app/app_pr_comments.go`) that succeeds asks the PR's live pump for
+`internal/app/app_pr_comments.go`), management action ([Managing a PR](#managing-a-pr)) or suggestion or reaction action ([Suggestions and reactions](#suggestions-and-reactions)) that succeeds asks the PR's live pump for
 one snapshot poll at once (`prPumpRequest.snapshot`), so every pane on the
 PR follows the forge's answer without waiting out the interval, and
 answers with the pump's sequence after that poll (`PRActionResult.Seq`,
@@ -222,7 +222,7 @@ GitHub answers a read with one GraphQL request, `PRTick`:
 | `owner`, `name`, `number` | the pull request and the repository's `viewerPermission` (the merge box's and the CI actions' permission); both are always selected |
 | `wantDetail` | `viewer`, the detail fields, `latestReviews(first: 100)`, and what readiness and merge options derive from: the merge state and viewer flags, `autoMergeRequest`, `latestOpinionatedReviews(first: 100)`, `threadStates: reviewThreads(first: 100) { isResolved }`, `baseRef { refUpdateRule rules(first: 100) }`, and the repository's merge methods, `deleteBranchOnMerge`, `autoMergeAllowed`, `viewerDefaultMergeMethod` and `owner { __typename }`, and the management fields (`viewerCanUpdate`, `viewerCanClose`, `viewerCanReopen`, `viewerCanLabel`, `viewerCanAssign`, `reviewRequests`, `assignees` and `labels`, each `first: 100`, and each standing review's `commit { oid }`; see [Managing a PR](#managing-a-pr)) |
 | `wantChecks` | `commits(last: 1)`: the head commit's `id` and `statusCheckRollup.contexts(first: 100)`, each with `isRequired(pullRequestNumber: $number)`; true for `Detail` or `CI`, since the detail's check summary and readiness and the pipeline all come from the rollup |
-| `wantThreads` | `reviewThreads(first: 100)`, each with `comments(first: 100)`, and `comments(first: 100)` |
+| `wantThreads` | `reviewThreads(first: 100)`, each with `comments(first: 100)`, and `comments(first: 100)`, every comment with its `reactionGroups` while `wantReactions`; and the pull's `state` and `viewerCanApplySuggestion` (see [Suggestions and reactions](#suggestions-and-reactions)) |
 | `wantEvents` | `timelineItems(last: 100, itemTypes: [...])`: the review, merge, close, reopen, draft, auto-merge, force-push, base-change and review-request items `ReviewEvent` maps |
 
 The document is the same every tick; the parts are `@include` directives
@@ -267,6 +267,7 @@ pipeline recovers once the read succeeds.
 | Tick | GitHub requests |
 |---|---|
 | Pump, a PR within one page per connection | 1 (`PRTick`) |
+| Pump, threads past the body bound only with their reactions | 2 (`PRTick` with reactions, then without) |
 | CI phase, no followed job | 1 (`PRTick`); + 1 artifacts page per completed run per attempt per 10 minutes |
 | CI phase, a followed running job | 1 (`PRTick`) + 1 jobs-list page per run |
 | CI phase, a followed running job's log | 1 logs request (a 302, then the blob's 404 until it exists, in practice until the job completed) |
@@ -336,6 +337,7 @@ GitHub external check.
 | Tick | GitLab requests |
 |---|---|
 | Pump (`Detail`, `Threads`, `Events`), warm | 1 merge request + 1 discussions page per 100 discussions + 1 state events page per 100 events (at most 3) + 1 approvals + 1 `PRManage` (or `PRManageChecks`) |
+| Pump, the notes changed, the viewer reacted, or the reactions read is 2 minutes old | the warm requests + 1 `MRNoteReactions` per 100 notes (at most 10) |
 | Pump, cold host or project (first read, then every 10 minutes) | the warm requests + 1 `PRManageSchema` per host + 1 `projects/P` per login and project + 1 `user` per login and host |
 | CI phase, a head pipeline | 1 merge request + 1 `PipelineJobs` per 100 rows |
 | CI phase, no head pipeline | 1 merge request |
@@ -822,6 +824,128 @@ usernames with `operationMode` (`REPLACE`, `APPEND`, `REMOVE`);
 `MergeRequestSetDraftInput` takes `draft`;
 `MergeRequestReviewerRereviewInput` takes `userId`; and
 `mergeabilityChecks` reports the `REQUESTED_CHANGES` identifier.
+
+## Suggestions and reactions
+
+A comment's suggestions and reactions ride the threads read; applying a
+suggestion and changing a reaction are writes bound in
+`internal/app/app_pr_suggestions.go` (`ApplyPRSuggestion`,
+`SetPRCommentReaction`) that run as management writes do: under the PR's
+write lock, interactive, with the three outcomes and the pump's poll
+(`PRActionResult.Seq`). The adapters are `internal/git/github_suggestions.go`,
+`github_reactions.go`, `gitlab_suggestions.go` and `gitlab_reactions.go`.
+
+A suggestion is a fenced code block whose info string's first word is
+`suggestion` (`internal/mdsuggest`, read with goldmark's CommonMark
+block parse): only one at the top level of the body counts, so a fence
+in a blockquote, a list item or an HTML block (a `<!-- -->` comment, a
+`<details>` block before its blank line) is not one, and neither is a
+fence the body never closes. Each block carries the 0-based lines, in
+the body split on "\n", of its opening and closing fences (`StartLine`,
+`EndLine`), and each `CommentSuggestion` its block's
+(`BodyStartLine`, `BodyEndLine`, set when `BodyPlaced`): always on
+GitHub; on GitLab, whose suggestions come from the API, only when the
+note's body holds as many blocks as GitLab reports suggestions, block i
+being suggestion i. Positions are not part of the digest. GitLab's `suggestion:-N+M` widens the replaced lines (N
+and M at most 100); GitHub has no such header, so a widened block reads
+as no suggestion there. `ParseCommentSuggestions` is the same parser for
+an editor's preview, for a body of at most 1,000,000 characters
+(GitLab's note limit, the larger forge's).
+
+`ReviewComment.Suggestions` is one `CommentSuggestion` per block in body
+order, each with a `Digest`: the SHA-256 of the forge, the replaced
+lines and the replacement lines, length-prefixed (`SuggestionDigest`).
+An apply presents it (`SuggestionApply.Digest`), and a suggestion that
+no longer has it, or whose index or GitLab id is gone, is
+`*SuggestionChangedError` (code `forge_suggestion_changed`, "The
+suggestion changed since it was loaded. Reload the pull request."),
+refused before anything is read or written: the GitHub apply recomputes
+it from the comment's current body on the thread's current anchor; the
+GitLab apply re-reads the note's suggestions from its discussion. GitLab's
+apply takes no expected content, so an edit between that read and the
+apply is not caught by the app; GitLab refuses an apply whose lines
+changed. GitLab's come from the note's own `suggestions` in the discussions
+read (`from_content`, `to_content`, `appliable`, `applied`), so `From` is
+known; `Appliable` is GitLab's answer and the viewer at developer or
+above, as GitLab's suggestions API requires. GitHub's are parsed from the
+body and anchored on the thread's new-side lines (`StartLine`,
+`EndLine`); the replaced text is not read, since `diffHunk` on every
+thread would grow the one `PRTick` answer past its bound, so `From` is
+empty and `FromKnown` false. A GitHub suggestion is appliable when the
+pull is open, `viewerCanApplySuggestion`, and its thread is on the new
+side, not outdated and not resolved.
+
+| Action | GitHub requests | GitLab requests |
+|---|---|---|
+| Apply a suggestion | `SuggestionTarget(threadID, commentID)` (the viewer, the thread with its anchor and pull, its comment ids, the comment's body and author), `ThreadCommentsPage` past 100 comments, `SuggestionFile(owner, name, oid, path)` (the head commit's `file(path:)` tree entry: `mode`, `type`, `oid`, the blob's `byteSize` and `isBinary`), REST `GET repos/HEAD_REPO/git/blobs/OID` with `Accept: application/vnd.github.raw+json` (at most 1 MiB), `SuggestionCommit` (`createCommitOnBranch` with `expectedHeadOid` and one file addition), then `SetThreadResolved` | 1 merge request read, `GET .../discussions/D` (the suggestion must be one of its notes'), then `PUT suggestions/:id/apply` |
+| Add or remove a reaction | `ReactionTarget(id)` (the node's type, pull and `reactionGroups`), then `AddReaction` or `RemoveReaction` | `user` (cached), `GET .../notes/N/award_emoji?per_page=100` (paged), then `POST .../notes/N/award_emoji` with `{name}` or `DELETE .../award_emoji/ID` |
+
+Every write checks inside the adapter that the comment is on the PR it
+names; one that is not is `*CommentNotOnPRError` (kind `not_found`)
+before anything is written. An apply names the head the pane loaded: a
+head that moved is `*HeadMovedError` (kind `stale_head`). The GitHub
+apply refuses, before the commit, a pull that is not open, an outdated,
+resolved or old-side thread, and from the tree entry, before any
+content is read: no entry at the path, a symbolic link, a submodule, a
+directory, an executable file (`createCommitOnBranch` takes no file
+mode, and GitHub's reference does not say an addition keeps an existing
+one), any other mode than a regular file's, a blob past 1 MiB by
+`byteSize`, a blob GitHub calls binary, and an object id that is not
+SHA-1; then blob bytes whose `sha1("blob <len>\0" + bytes)` is not the
+entry's id, a file that is not UTF-8 or holds NUL, and lines past the
+file's end. Each is `*SuggestionNotAppliedError` (kind `refused`, "The
+suggestion was not applied: <reason>."). A Git LFS pointer is a regular
+blob and is rewritten as one. The apply is a byte splice: the bytes
+before the first replaced line and after the last one's line ending are
+the file's; the replacement lines are joined and ended with the last
+replaced line's ending, or, when it has none, joined with the nearest
+preceding line ending (LF when there is none) and left without one; a
+UTF-8 byte order mark stays in front. The commit has the headline `Apply suggestion from
+code review` and a `Co-authored-by: Name <ID+login@users.noreply.github.com>`
+trailer when the suggestion's author is a user with a name and id other
+than the viewer. A fork head is attempted; GitHub's refusal is explained
+as any refusal. A commit whose resolve then fails is a
+`*PartialWriteError` ("committed the suggestion to the head branch;
+resolving its thread ..."). GitLab answers an apply with the suggestion;
+one that does not read applied is unconfirmed.
+
+A reaction is named in GitLab's award vocabulary
+(`CommentReaction.Name`): GitHub's eight contents map to `thumbsup`,
+`thumbsdown`, `laughing`, `tada`, `confused`, `heart`, `rocket` and
+`eyes`, and a GitLab note may carry any award name. A reaction already
+in the asked state answers success with no write; GitLab's "has already
+been taken" on an add and its 404 on a delete count as that. GitHub's
+groups ride every comment of the threads read (`reactionGroups { content
+viewerHasReacted reactors { totalCount } }` under `@include(if:
+$wantReactions)`), with no request of their own and no names. GitHub
+answers all eight groups of every comment, so a threads read that passes
+its body bound with them runs once more, whole, without them, and says
+"Reactions are not shown: this pull request has too many comments to
+read them."; a read too large without them fails as any read does.
+Nothing remembers that outcome, so each tick may cost the failed
+request again. GitLab's discussions read has no awards, so the read
+adds `MRNoteReactions(fullPath, iid, after)`: the merge request's notes,
+100 per page with each note's first 100 `awardEmoji` (name and
+username), at most 10 pages. It is sent only when the note ids changed,
+after the viewer's own reaction write, or when the last answer is 2
+minutes old; concurrent reads of one merge request share it. The
+viewer's reaction write and `Core.ResetForgeCaches` each start a new
+generation of the memory: a read in flight across one is neither joined
+nor kept, nor is its failure or its finding that the server lacks the
+field. Its failure
+never fails the threads: the comments carry no reactions,
+`PRRead.ReactionsUnavailable` (on the subscription result and every
+frame as `reactionsUnavailable`) says "Reactions are not shown: GitLab's
+reactions could not be read.", the failure is logged with its retry
+time, and it is retried after 20 seconds, doubling to 15 minutes. A
+server whose schema lacks `Note.awardEmoji` says "Reactions are not
+shown: this GitLab server does not report them." and is not asked again
+for 10 minutes. Past the read's bounds the sentence is "Reactions are
+shown on the first 1000 comments only." or "Reactions are not shown on
+comments with more than 100."
+
+Every comment carries its forge link in `ReviewComment.URL`: GitHub's
+comment `url`, GitLab's merge request URL with `#note_<id>`.
 
 ## Merged PR worktree cleanup
 

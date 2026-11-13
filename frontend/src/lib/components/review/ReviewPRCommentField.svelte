@@ -10,7 +10,7 @@
   // are the review state's, since the overview row unmounts.
 
   interface Props {
-    review: Pick<ReviewPaneState, 'sentComments' | 'nowWithheldReason' | 'commentWritePending' | 'commentWriteError'>;
+    review: Pick<ReviewPaneState, 'sentComments' | 'nowWithheldReason' | 'commentWritePending' | 'commentWriteError' | 'editorPreviews'>;
   }
 
   let { review }: Props = $props();
@@ -36,6 +36,7 @@
       onCancel={() => writes.setPRCommentOpen(false)}
       pending={review.commentWritePending(commentWriteKey.prComment)}
       error={review.commentWriteError(commentWriteKey.prComment)}
+      preview={review.editorPreviews.control(commentWriteKey.prComment)}
       takeFocus={() => true}
     />
   {:else}

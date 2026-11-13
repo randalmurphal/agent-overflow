@@ -114,8 +114,8 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := gitlabPaths(calls)
-	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 9 {
-		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, PRManageSchema, PRManage, two discussion pages and one PipelineJobs page", paths)
+	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 10 {
+		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, PRManageSchema, PRManage, two discussion pages, one MRNoteReactions page and one PipelineJobs page", paths)
 	}
 	for _, call := range calls.all() {
 		if call.Host != testForgeHost || call.Header.Get("Private-Token") != "test-token" {
@@ -157,6 +157,8 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 			return forgeAPIAnswer{Body: gitlabSchemaBare}
 		case call.Op == "PRManage":
 			return forgeAPIAnswer{Body: gitlabManageEmpty}
+		case call.Op == "MRNoteReactions":
+			return forgeAPIAnswer{Body: gitlabNoReactions}
 		case call.Path == mr+"/resource_state_events?per_page=100":
 			return forgeAPIAnswer{Body: `[]`}
 		case call.Path == gitlabTestProject:
@@ -173,7 +175,9 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 	}{
 		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject, "GET user", "GRAPHQL PRManageSchema", "GRAPHQL PRManage"}},
 		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GRAPHQL PRManage"}},
-		{PRReadParts{Threads: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100"}},
+		// The first threads read reads the reactions; the next, with the
+		// same notes, answers them from memory.
+		{PRReadParts{Threads: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100", "GRAPHQL MRNoteReactions"}},
 		{PRReadParts{Events: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100", "GET " + mr + "/resource_state_events?per_page=100"}},
 		{PRReadParts{Threads: true, Events: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100", "GET " + mr + "/resource_state_events?per_page=100"}},
 		{PRReadParts{CI: true}, 77, []string{"GET " + mr, "GRAPHQL PipelineJobs"}},
@@ -216,6 +220,8 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
 		case call.Path == "user":
 			return forgeAPIAnswer{Body: `{"id":1,"username":"viewer"}`}
+		case call.Op == "MRNoteReactions":
+			return forgeAPIAnswer{Body: gitlabNoReactions}
 		}
 		return forgeUnexpected(t, call)
 	})
@@ -223,8 +229,8 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 	if err != nil || len(threads) != 1 {
 		t.Fatalf("ListReviewThreads = %+v, %v", threads, err)
 	}
-	if n := len(calls.all()); n != 4 {
-		t.Fatalf("requests = %q, want the MR, one discussions page, the project and the viewer", gitlabPaths(calls))
+	if n := len(calls.all()); n != 5 {
+		t.Fatalf("requests = %q, want the MR, one discussions page, the project, the viewer and the reactions", gitlabPaths(calls))
 	}
 }
 

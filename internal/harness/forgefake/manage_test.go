@@ -114,7 +114,7 @@ func TestManageRoutesRefuseAndDecodeStrictly(t *testing.T) {
 	}
 	bypass := func() httpAnswer {
 		return httpRequest(t, srv, "POST", "gitlab.com", "/gitlab/api/graphql", mustJSON(t, map[string]any{
-			"query":         "mutation PRBypassChanges($projectPath: ID!, $iid: String!) { x }",
+			"query":         testDocument("mutation", "PRBypassChanges", "($projectPath: ID!, $iid: String!)"),
 			"operationName": "PRBypassChanges", "variables": map[string]any{"projectPath": "grp/m", "iid": "1"},
 		}), gl)
 	}
@@ -146,7 +146,7 @@ func glabGraphQL(t *testing.T, srv *httptest.Server, op, kind string, vars map[s
 	}
 	slices.Sort(params)
 	got := httpRequest(t, srv, "POST", "gitlab.com", "/gitlab/api/graphql", mustJSON(t, map[string]any{
-		"query": kind + " " + op + "(" + strings.Join(params, ", ") + ") { x }", "operationName": op, "variables": vars,
+		"query": testDocument(kind, op, "("+strings.Join(params, ", ")+")"), "operationName": op, "variables": vars,
 	}), http.Header{"Private-Token": {testAPIToken}})
 	var out map[string]any
 	if err := json.Unmarshal([]byte(got.body), &out); err != nil {

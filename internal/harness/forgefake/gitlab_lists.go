@@ -33,6 +33,7 @@ var gitlabGraphQL = []graphQLOp{
 	{kind: "mutation", name: "PRSetLabels", required: []string{"projectPath", "iid", "labelIds", "mode"}, run: glabSetLabels},
 	{kind: "mutation", name: "PRSetDraft", required: []string{"projectPath", "iid", "draft"}, run: glabSetDraft},
 	{kind: "query", name: "SearchProjectLabels", required: []string{"fullPath"}, optional: []string{"search"}, run: glabSearchLabels},
+	{kind: "query", name: "MRNoteReactions", required: []string{"fullPath", "iid"}, optional: []string{"after"}, run: glabNoteReactions},
 }
 
 // glabPullsRead answers project(fullPath) { mergeRequests(<filter>Username:

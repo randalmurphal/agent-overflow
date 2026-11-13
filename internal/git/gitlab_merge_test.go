@@ -393,8 +393,8 @@ func TestGitLabReadPREvents(t *testing.T) {
 	if d.Readiness.State != MergeStateMerged || d.MergedAt != "2026-01-01T00:00:05.000Z" || d.MergedBy != "lead" || d.ClosedAt != "" || d.Merge.AutoMerge != nil {
 		t.Fatalf("merged detail = %+v", d)
 	}
-	if n := len(calls.all()); n != 8 {
-		t.Fatalf("requests = %q, want the MR, one discussions page, the state events, the approvals, the project, the viewer, PRManageSchema and PRManage", gitlabPaths(calls))
+	if n := len(calls.all()); n != 9 {
+		t.Fatalf("requests = %q, want the MR, one discussions page, the state events, the approvals, the project, the viewer, PRManageSchema, PRManage and MRNoteReactions", gitlabPaths(calls))
 	}
 
 	// A closed merge request's close comes from closed_at, its id from the
@@ -622,6 +622,18 @@ func TestGitLabCachesFollowTheLogin(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/graphql" {
+			var payload struct {
+				Query         string         `json:"query"`
+				OperationName string         `json:"operationName"`
+				Variables     map[string]any `json:"variables"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("GraphQL body: %v", err)
+			}
+			if invalid, ok := checkGraphQLRequest(t, payload.OperationName, payload.Query, payload.Variables); !ok {
+				_, _ = io.WriteString(w, invalid)
+				return
+			}
 			_, _ = io.WriteString(w, gitlabManageEmpty)
 			return
 		}

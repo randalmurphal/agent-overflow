@@ -886,7 +886,46 @@ export interface ReviewComment {
   /** The forge's answer for the signed-in viewer. */
   viewerCanEdit: boolean;
   viewerCanDelete: boolean;
+  /** The forge's link to the comment (GitLab: the MR's URL with `#note_<id>`). */
   url?: string;
+  /** The body's suggestion blocks, in body order (pr-suggestions-reactions.v1). */
+  suggestions?: CommentSuggestion[];
+  /** One entry per reaction present, by GitLab award name. */
+  reactions?: CommentReaction[];
+}
+
+/** One suggestion block of a comment (gitops.CommentSuggestion). `from`
+ * is the replaced text when `fromKnown` (GitLab); GitHub sends none and
+ * the pane reads it from the diff it holds. `startLine`/`endLine` are the
+ * new-side lines it replaces, absent when the anchor names none. */
+export interface CommentSuggestion {
+  index: number;
+  id?: string;
+  startLine?: number;
+  endLine?: number;
+  from?: string[];
+  fromKnown?: boolean;
+  to: string[];
+  appliable: boolean;
+  applied?: boolean;
+  /** The block's place in the comment's body: 0-based lines of the body
+   * split on "\n", its opening fence through its closing one. Meaningful
+   * only when `bodyPlaced` (GitLab places none when its suggestions do
+   * not match the body's fences one to one). */
+  bodyStartLine: number;
+  bodyEndLine: number;
+  bodyPlaced: boolean;
+  /** The block's identity as loaded (64 hex); Apply passes it as read. */
+  digest: string;
+}
+
+/** One reaction on a comment (gitops.CommentReaction): its GitLab award
+ * name, how many, whether the viewer reacted, and who (GitLab only). */
+export interface CommentReaction {
+  name: string;
+  count: number;
+  viewerReacted: boolean;
+  users?: string[];
 }
 
 export interface ReviewLineComment {

@@ -24,6 +24,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2190095592: 'thread', // AnswerThreadShellCommand
 	2562809680: 'selected', // AppendLiveDictation
 	2157691816: 'home', // AppendUIRenderTraceBatch
+	4291100369: 'selected', // ApplyPRSuggestion
 	580543372: 'selected', // ApprovePR
 	1352159878: 'project', // ArchiveProject
 	3655608409: 'thread', // ArchiveThread
@@ -309,6 +310,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4078889536: 'thread', // OpenTurnEditsDiff
 	3558532873: 'workspace', // OpenWorkspaceDiff
 	3436727647: 'selected', // PairAgentComputer
+	3277517862: 'home', // ParseCommentSuggestions
 	1748405812: 'thread', // PinThread
 	1315440605: 'selected', // PostChannelMessage
 	3141095494: 'selected', // PostPRComment
@@ -421,6 +423,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3915514446: 'home', // SetNetworkSettings
 	1016620183: 'selected', // SetPRAssignees
 	1675722685: 'home', // SetPRCILogFollows
+	2698361133: 'selected', // SetPRCommentReaction
 	2026774950: 'selected', // SetPRLabels
 	2324570575: 'home', // SetPRListActive
 	960122143: 'selected', // SetPRReviewers
