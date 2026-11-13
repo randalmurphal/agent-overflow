@@ -2055,6 +2055,9 @@ func withAssetHeaders(next http.Handler, csp ContentSecurityPolicy) http.Handler
 				// The only loopback consumer is the embedded webview,
 				// which loads the SPA once per process and never
 				// renavigates — a cached asset can never be reused.
+				// Images it remounts (the per-turn working sprite)
+				// stay loaded in the page instead: see
+				// frontend/src/lib/spinners/retain.ts.
 				// Cacheable scripts DO cost: Blink's in-memory HTTP
 				// cache retains their decoded text for the page's
 				// lifetime (~6 MB measured 2026-07-21, renderer

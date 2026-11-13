@@ -22,6 +22,9 @@ import { wailsEventOn } from './wailsEvents';
 import type { SpinnerSprite } from '../spinners/catalog';
 import { buildCustomSprite, parseCustomManifest, pngDimensions, MAX_LIBRARY_PIXELS } from '../spinners/customs';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
+import { getSettings } from './settings.svelte';
+import { showableSprites } from '../spinners/select';
+import { retainSpriteImages } from '../spinners/retain';
 
 const KEY = 'app';
 
@@ -150,6 +153,33 @@ export function peekCustomSpinners(): CustomSpinners {
 }
 
 export function customSpinnersError(): string | null { return store.peekError(KEY); }
+
+/**
+ * Ready the working-indicator sprites before any turn starts, for as long
+ * as animations are on: the custom list loads with the setting rather than
+ * on the first working chip (a list landing mid-turn would grow the pool
+ * and reroll that turn's sprite), and every showable bundled strip stays
+ * loaded between turns (spinners/retain.ts). Turning animations off, or
+ * the returned stop, releases the strips.
+ */
+export function installWorkingSpriteReadiness(): () => void {
+  return $effect.root(() => {
+    $effect(() => {
+      const settings = getSettings();
+      if (!settings.spinnerAnimationsEnabled) {
+        retainSpriteImages([]);
+        return;
+      }
+      ensureCustomSpinners();
+      retainSpriteImages(showableSprites(
+        peekCustomSpinners().sprites,
+        settings.spinnerDisabledAnimations ?? [],
+        settings.spinnerCompactionAnimation,
+      ));
+    });
+    return () => retainSpriteImages([]);
+  });
+}
 
 /** Test seam: drop the entry and the hold, as a fresh module load would. */
 export function __resetCustomSpinnersForTest(): void {
