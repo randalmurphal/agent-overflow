@@ -57,7 +57,7 @@ export function createReviewCommentExtras(host: ReviewCommentExtrasHost): Review
     diffIsCurrentHead: host.diffIsCurrentHead,
     files: host.files,
   });
-  const editorPreviews = createEditorPreviews(host.openEditorKeys);
+  const editorPreviews = createEditorPreviews(host.openEditorKeys, host.backend);
   const reactionsUnavailable = $derived(capable() && host.onPR() ? host.reactionsUnavailable() : null);
 
   return {

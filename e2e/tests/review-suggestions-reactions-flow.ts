@@ -62,11 +62,6 @@ export async function seedPull(harness: HarnessApp, forge: Forge, name: string):
     pulls: [{
       number: 7, title: 'Values', author: 'octo', body: 'Values change.',
       files: { 'README.md': '# Suggestions\n', 'src/values.ts': HEAD },
-      // The fake's GitHub AddReaction and RemoveReaction index the pull's
-      // conversation comments by the thread comment's position before
-      // choosing the thread (forgefake/reactions.go), so a pull with none
-      // panics: one conversation comment keeps the thread reaction reachable.
-      comments: [{ id: 9200, author: 'kchen', body: 'Looks fine overall.' }],
       threads: [
         { path: 'src/values.ts', line: 3, comments: [{
           id: SUGGEST_ID, author: 'octo', body: SUGGESTION_BODY,

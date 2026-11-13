@@ -250,7 +250,11 @@ scope, on both surfaces and both forges:
   inside, and a fence one backtick longer than any run in the text.
   Text the diff can no longer read inserts nothing and says so.
 - A suggestion reads as the small diff it proposes, in place of its
-  fence, with the markdown around it rendered. The removed lines are the
+  fence (the body lines the backend places it on, `bodyStartLine` to
+  `bodyEndLine`), with the markdown around it rendered. When the backend
+  cannot place every suggestion of a comment (GitLab's do not match the
+  body's fences one to one), the body renders whole, its fences as code,
+  and the diffs follow it. The removed lines are the
   forge's `from` when `fromKnown` (GitLab); on GitHub, the thread's lines
   from the diff the pane holds when that is the PR's whole diff at its
   live head and the thread is not outdated; otherwise the additions
@@ -259,10 +263,17 @@ scope, on both surfaces and both forges:
 - Apply, where the forge says the suggestion applies, sends the loaded
   head and the suggestion's own identity (`ApplyPRSuggestion`, built in
   one place from the suggestion as read). Applied reads as a quiet
-  "Applied", an outdated thread's as muted "Outdated". A refusal shows
-  its sentence under the suggestion and reads the PR again; a moved head
-  or a changed suggestion is fixed that way. After an apply the head
-  moves and the pane's stale-head banner takes over.
+  "Applied", an outdated thread's as muted "Outdated", on the left of the
+  suggestion's footer row with Apply on its right. A refusal shows its
+  sentence there; one whose code says the suggestion or the branch moved
+  (`forge_suggestion_changed`, `forge_stale_head`) also reads the PR
+  again. After an apply the head moves and the pane's stale-head banner
+  takes over.
+- On compact a comment's actions are one `⋯` that opens the shared menu
+  with the same rows, order and withheld reasons; a long press on the
+  comment opens the same menu, and Add reaction's popover anchors to the
+  `⋯`. The thread's header line never wraps there: the login, time and
+  range shorten before the state chips do.
 - Reactions. Each reaction present is a chip with its emoji and count,
   accent-toned when the viewer reacted, with who reacted as hover text
   where the forge says (GitLab); a press toggles the viewer's own
@@ -279,8 +290,11 @@ scope, on both surfaces and both forges:
 - Preview. Every editor (a new comment, a reply, an edit, the PR
   comment, the review summary, the description) has one quiet Preview
   toggle in its button row. It renders the text as a sent comment reads
-  (`ChatMarkdown`'s sanitized embedded mode, fences as diffs) at the
-  text box's height; off, the text returns with its caret. The state is
+  (`ChatMarkdown`'s sanitized embedded mode, fences as diffs where
+  `ParseCommentSuggestions` places them) at the text box's height; until
+  the backend answers for this text, or when it refuses one (over
+  1,000,000 characters), the fences show as code. Off, the text returns
+  with its caret. The state is
   per editor in the review state, so it survives a remount, and goes
   when the editor closes.
 

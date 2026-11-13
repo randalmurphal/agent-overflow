@@ -1,5 +1,9 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { untrack } from 'svelte';
+import { ParseCommentSuggestions } from './bindings';
+import { withBackendTarget } from '../transport/backends';
+import type { BackendKey } from '../transport/backendKey';
+import type { Block } from '../../../bindings/agent-overflow/internal/mdsuggest/models';
 
 // The Preview toggle of every review editor (a new comment, a reply, an
 // edit of a draft or a sent comment, the PR comment, the review summary,
@@ -8,7 +12,9 @@ import { untrack } from 'svelte';
 // where its caret was and how tall its text box stood, so turning
 // preview off puts the caret back and the preview holds the box's
 // height (the editor does not jump). An editor that closes loses its
-// preview: the host names which editors are open.
+// preview: the host names which editors are open. Where a previewed body's
+// suggestion fences are is the backend's answer (each control's `parse`, on the
+// pane's computer).
 
 /** An editor in preview: its caret's selection and the text box's height. */
 export interface EditorPreviewState {
@@ -17,6 +23,9 @@ export interface EditorPreviewState {
   readonly height: number;
 }
 
+/** The suggestion blocks of a body, as the backend reads them. */
+export type SuggestionParse = (body: string) => Promise<readonly Block[]>;
+
 /** One editor's preview, for its toggle and shell. */
 export interface EditorPreviewControl {
   /** Null while the editor shows its text. */
@@ -24,6 +33,8 @@ export interface EditorPreviewControl {
   open(state: EditorPreviewState): void;
   /** Leaves preview; answers where the caret was. */
   close(): EditorPreviewState | null;
+  /** Reads a previewed body's suggestion blocks. */
+  readonly parse: SuggestionParse;
 }
 
 export interface EditorPreviews {
@@ -38,8 +49,9 @@ export const EDITOR_PREVIEW_KEY = {
   draftEdit: (draftId: string) => `draft-edit:${draftId}`,
 } as const;
 
-export function createEditorPreviews(openKeys: () => ReadonlySet<string>): EditorPreviews {
+export function createEditorPreviews(openKeys: () => ReadonlySet<string>, backend: BackendKey): EditorPreviews {
   const states = new SvelteMap<string, EditorPreviewState>();
+  const parseSuggestions: SuggestionParse = async (body) => (await withBackendTarget(backend, () => ParseCommentSuggestions(body))) ?? [];
   const stopPrune = $effect.root(() => {
     $effect(() => {
       const open = openKeys();
@@ -58,6 +70,7 @@ export function createEditorPreviews(openKeys: () => ReadonlySet<string>): Edito
           states.delete(key);
           return was;
         },
+        parse: parseSuggestions,
       };
     },
     dispose: stopPrune,

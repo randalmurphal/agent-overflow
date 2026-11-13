@@ -4,12 +4,12 @@
 // the menu and anchored to the `⋯`, adds a reaction by tap; a new comment's
 // Suggest change and Preview fit the editor, its button row wrapping; Apply lands a
 // commit and the stale-head banner takes over; Copy link fills the
-// clipboard. The fixture and steps are in
+// clipboard; after Reload the diff shows the applied line. The fixture and steps are in
 // review-suggestions-reactions-flow.ts; review-suggestions-reactions.spec.ts
 // is the desktop twin on both forges.
 import { expect, test } from './fixtures.js';
 import { expectEveryForgeCallHandled, forgeRouteCalls } from './forge-helpers.js';
-import { centre, chip, closeAll, openEditor, openPinned, ROUTES, SUGGEST_ID, thread } from './review-suggestions-reactions-flow.js';
+import { centre, chip, closeAll, line, openEditor, openPinned, ROUTES, SUGGEST_ID, thread } from './review-suggestions-reactions-flow.js';
 
 const FORGE = 'gitlab';
 
@@ -88,6 +88,12 @@ test('on compact, reactions, suggestions, Preview and Copy link work by tap', as
     await suggestion.getByTestId('review-suggestion-apply').tap();
     await expect(review.getByTestId('review-pr-stale')).toBeVisible({ timeout: 30_000 });
     expect(await forgeRouteCalls(harness, ROUTES[FORGE].apply)).toHaveLength(1);
+    // Reloaded, the diff is the new head's, the suggestion Applied.
+    await review.getByTestId('review-pr-stale').getByRole('button', { name: 'Reload' }).tap();
+    await expect(line(review, 'export const half = 5 / 2;')).toBeVisible({ timeout: 30_000 });
+    await expect(card.getByTestId('review-suggestion-applied')).toBeVisible({ timeout: 30_000 });
+    await centre(card);
+    await page.screenshot({ path: testInfo.outputPath('compact-after-apply.png') });
     await expectEveryForgeCallHandled(harness);
   } finally {
     await closeAll(page, harness);

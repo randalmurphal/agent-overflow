@@ -294,8 +294,10 @@ polling.
   write by the PR and its chip or suggestion, settles it by the pump's
   seq as the posted writes do, and routes a failure to its surface, a
   held toast (`stores/lostWrite.ts`) or nowhere. A comment body renders
-  through `ReviewCommentMarkdown`, which splits it with the TS port of
-  `internal/mdsuggest` (`utils/suggestionFences.ts`) so each fence is a
+  through `ReviewCommentMarkdown`, which cuts it at the fence lines the
+  backend reports (`utils/suggestionPieces.ts`; one parser,
+  `internal/mdsuggest`, also behind a preview's
+  `ParseCommentSuggestions`) so each fence is a
   `ReviewSuggestionDiff`; the replaced lines come from the forge or the
   diff's resident text (`utils/suggestionLines.ts`). Each editor's
   Preview state (caret and box height) lives in

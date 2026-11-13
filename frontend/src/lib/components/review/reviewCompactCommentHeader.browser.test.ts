@@ -9,6 +9,7 @@ import { page } from 'vitest/browser';
 import '../../../app.css';
 import ReviewPRThreadRow from './ReviewPRThreadRow.svelte';
 import { createEditorPreviews } from '../../stores/reviewEditorPreview.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import type { ReviewThread } from '../../types/models';
@@ -23,7 +24,7 @@ const THREAD: ReviewThread = {
 
 let target: HTMLDivElement;
 let app: ReturnType<typeof mount> | undefined;
-const previews = createEditorPreviews(() => new Set());
+const previews = createEditorPreviews(() => new Set(), HOME_BACKEND);
 
 beforeEach(async () => {
   await page.viewport(360, 800);

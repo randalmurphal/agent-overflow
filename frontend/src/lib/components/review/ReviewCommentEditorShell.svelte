@@ -177,7 +177,7 @@
 <div data-testid={testid} aria-busy={pending ? 'true' : undefined}>
   {@render header?.()}
   {#if previewing}
-    <ReviewEditorPreview body={body} height={previewing?.height ?? 0} source={previewSource} />
+    <ReviewEditorPreview body={body} height={previewing?.height ?? 0} source={previewSource} parse={preview?.parse ?? null} />
   {:else}
   <textarea
     bind:this={textarea}

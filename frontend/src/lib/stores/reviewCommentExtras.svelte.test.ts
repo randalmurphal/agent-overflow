@@ -22,7 +22,7 @@ const REF_B = { ...REF, number: 6 };
 const COMMENT: ReviewComment = { id: 'c1', authorLogin: 'octo', body: 'b', createdAt: '2026-01-01T00:00:00Z', databaseID: 1, viewerCanEdit: false, viewerCanDelete: false, reactions: [{ name: 'thumbsup', count: 1, viewerReacted: false }] };
 const OTHER: ReviewComment = { ...COMMENT, id: 'c2' };
 const THREAD: ReviewThread = { id: 't1', path: 'src/a.ts', line: 3, side: 'right', isResolvable: true, isResolved: false, isOutdated: false, comments: [COMMENT, OTHER] };
-const SUGGESTION: CommentSuggestion = { index: 0, to: ['x'], appliable: true, digest: 'a'.repeat(64) };
+const SUGGESTION: CommentSuggestion = { index: 0, to: ['x'], appliable: true, bodyStartLine: 0, bodyEndLine: 2, bodyPlaced: true, digest: 'a'.repeat(64) };
 
 function hello(capable: boolean): void {
   __setTransportHelloForTest({
@@ -217,7 +217,7 @@ describe('a suggestion\'s Apply', () => {
     const { suggestions } = extras.state;
     await suggestions.apply(THREAD, COMMENT, SUGGESTION);
     expect(call).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }), expect.objectContaining({
-      target: { threadId: 't1', commentId: 'c1' }, index: 0, headSha: 'head1',
+      target: { threadId: 't1', commentId: 'c1' }, index: 0, headSha: 'head1', digest: 'a'.repeat(64),
     }));
     expect(suggestions.pending(THREAD, COMMENT, SUGGESTION)).toBe(true);
     expect(suggestions.pending(THREAD, COMMENT, { index: 1 })).toBe(false);
@@ -227,15 +227,25 @@ describe('a suggestion\'s Apply', () => {
     expect(suggestions.pending(THREAD, COMMENT, SUGGESTION)).toBe(false);
   });
 
-  it('shows a refusal under the suggestion and reads the PR again', async () => {
+  it('reads the PR again for a refusal that says the suggestion changed, by its code', async () => {
     setBindingMock('ApplyPRSuggestion', async () => {
-      throw new TransportError('forge_refused', 'The suggestion changed since it was loaded. Reload the pull request.');
+      throw new TransportError('forge_suggestion_changed', 'The suggestion changed since it was loaded. Reload the pull request.');
     });
     const { suggestions } = extras.state;
     await suggestions.apply(THREAD, COMMENT, SUGGESTION);
     expect(suggestions.error(THREAD, COMMENT, SUGGESTION)).toBe('The suggestion changed since it was loaded. Reload the pull request.');
     expect(suggestions.error(THREAD, COMMENT, { index: 1 })).toBeNull();
     expect(host.refreshes).toBe(1);
+  });
+
+  it('shows any other refusal under the suggestion without reading the PR again', async () => {
+    setBindingMock('ApplyPRSuggestion', async () => {
+      throw new TransportError('forge_refused', 'The suggestion was not applied: the file is a symbolic link.');
+    });
+    const { suggestions } = extras.state;
+    await suggestions.apply(THREAD, COMMENT, SUGGESTION);
+    expect(suggestions.error(THREAD, COMMENT, SUGGESTION)).toBe('The suggestion was not applied: the file is a symbolic link.');
+    expect(host.refreshes).toBe(0);
   });
 
   it('does nothing with a refusal that answers after the pane\'s PR changed', async () => {
@@ -245,7 +255,7 @@ describe('a suggestion\'s Apply', () => {
     const done = suggestions.apply(THREAD, COMMENT, SUGGESTION);
     host.ref = REF_B;
     flushSync();
-    answer.reject(new TransportError('forge_refused', 'Too late.'));
+    answer.reject(new TransportError('forge_suggestion_changed', 'Too late.'));
     await done;
     expect(host.refreshes).toBe(0);
     expect(getToasts()).toHaveLength(0);

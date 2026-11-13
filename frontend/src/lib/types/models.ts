@@ -908,8 +908,15 @@ export interface CommentSuggestion {
   to: string[];
   appliable: boolean;
   applied?: boolean;
+  /** The block's place in the comment's body: 0-based lines of the body
+   * split on "\n", its opening fence through its closing one. Meaningful
+   * only when `bodyPlaced` (GitLab places none when its suggestions do
+   * not match the body's fences one to one). */
+  bodyStartLine: number;
+  bodyEndLine: number;
+  bodyPlaced: boolean;
   /** The block's identity as loaded (64 hex); Apply passes it as read. */
-  digest?: string;
+  digest: string;
 }
 
 /** One reaction on a comment (gitops.CommentReaction): its GitLab award

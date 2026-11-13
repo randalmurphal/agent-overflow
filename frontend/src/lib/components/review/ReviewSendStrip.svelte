@@ -72,7 +72,7 @@
       <ReviewPreviewToggle control={preview} field={() => summary} testid="review-summary-preview-toggle" />
     </div>
     {#if preview.state}
-      <ReviewEditorPreview body={review.summaryBody} height={preview.state?.height ?? 0} class="mt-2" />
+      <ReviewEditorPreview body={review.summaryBody} height={preview.state?.height ?? 0} parse={preview.parse} class="mt-2" />
     {:else}
       <textarea
         bind:this={summary}

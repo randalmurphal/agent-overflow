@@ -1,5 +1,4 @@
 import type { DiffReviewComment, ReviewThread } from '../types/models';
-import { bodyWithoutSuggestions } from './suggestionFences';
 
 // Comment counts and comment text helpers for the review pane: the file
 // tree badges and the toolbar tally count every PR review thread
@@ -91,12 +90,6 @@ function stripInlineMarkdown(line: string): string {
  * marker. */
 export function visibleBody(body: string): string {
   return body.replace(/<!--[\s\S]*?(?:-->|$)/g, '').trim();
-}
-
-/** The text find reads in a sent comment: its visible body without the
- * suggestion blocks, which render as diffs find skips. */
-export function findableBody(body: string): string {
-  return bodyWithoutSuggestions(visibleBody(body));
 }
 
 /** Forge timestamps are ISO strings; unparseable input maps to null so

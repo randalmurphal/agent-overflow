@@ -7,6 +7,7 @@ import ReviewReactionPicker from './ReviewReactionPicker.svelte';
 import ReviewSentCommentActions from './ReviewSentCommentActions.svelte';
 import ReviewSuggestionStatus, { suggestionStatus } from './ReviewSuggestionStatus.svelte';
 import { createEditorPreviews } from '../../stores/reviewEditorPreview.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ReviewSuggestions } from '../../stores/reviewSuggestions.svelte';
 import type { ReviewReactions } from '../../stores/reviewReactions.svelte';
@@ -191,7 +192,7 @@ describe('a suggestion\'s footer', () => {
     } satisfies ReviewSuggestions;
     const row = document.body.appendChild(document.createElement('div'));
     try {
-      render(ReviewSuggestionStatus, { target: row, props: { suggestions, thread: THREAD, comment: COMMENT, suggestion: { index: 0, to: ['x'], appliable: true } } });
+      render(ReviewSuggestionStatus, { target: row, props: { suggestions, thread: THREAD, comment: COMMENT, suggestion: { index: 0, to: ['x'], appliable: true, bodyStartLine: 0, bodyEndLine: 2, bodyPlaced: true, digest: 'a'.repeat(64) } } });
       const kids = [...row.children].filter((kid) => kid.tagName === 'SPAN');
       expect(kids[0].querySelector('[data-testid="review-suggestion-error"]')).not.toBeNull();
       expect(kids[1].querySelector('[data-testid="review-suggestion-apply"]')).not.toBeNull();
@@ -204,7 +205,7 @@ describe('a suggestion\'s footer', () => {
 describe('an editor\'s Preview', () => {
   it('shows the rendered body in place of the text, and returns the caret after a remount', async () => {
     let body = 'Some **bold** text.';
-    const previews = createEditorPreviews(() => new Set(['editor:1']));
+    const previews = createEditorPreviews(() => new Set(['editor:1']), HOME_BACKEND);
     const props = {
       get body() { return body; },
       onBodyChange: (next: string) => { body = next; },

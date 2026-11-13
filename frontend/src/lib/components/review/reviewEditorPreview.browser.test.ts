@@ -12,6 +12,7 @@ import ReviewCommentEditorShell from './ReviewCommentEditorShell.svelte';
 import ReviewDescriptionEditor from './ReviewDescriptionEditor.svelte';
 import ReviewSendStrip from './ReviewSendStrip.svelte';
 import { createEditorPreviews } from '../../stores/reviewEditorPreview.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
 
 let target: HTMLDivElement;
 let app: ReturnType<typeof mount> | undefined;
@@ -38,7 +39,7 @@ function buttonsTop(): number {
 describe('an editor\'s Preview', () => {
   for (const [name, body] of [['a short body', 'Short.'], ['a grown body', Array.from({ length: 14 }, (_, i) => `Line ${i + 1}`).join('\n')]] as const) {
     it(`keeps the buttons where they were for ${name}`, async () => {
-      const previews = createEditorPreviews(() => new Set(['editor:1']));
+      const previews = createEditorPreviews(() => new Set(['editor:1']), HOME_BACKEND);
       stopPreviews = previews.dispose;
       app = mount(ReviewCommentEditorShell, {
         target,
@@ -79,7 +80,7 @@ async function heightAcrossToggle(toggleTestid: string): Promise<[number, number
 
 describe('the description and summary editors\' Preview', () => {
   it('keeps the description editor\'s height', async () => {
-    const previews = createEditorPreviews(() => new Set(['description']));
+    const previews = createEditorPreviews(() => new Set(['description']), HOME_BACKEND);
     stopPreviews = previews.dispose;
     const manage = {
       blockedReason: null, descriptionDraft: 'A **description**.\n\nWith two paragraphs.', descriptionError: null, descriptionSaving: false,
@@ -93,7 +94,7 @@ describe('the description and summary editors\' Preview', () => {
   });
 
   it('keeps the review summary\'s height', async () => {
-    const previews = createEditorPreviews(() => new Set(['summary']));
+    const previews = createEditorPreviews(() => new Set(['summary']), HOME_BACKEND);
     stopPreviews = previews.dispose;
     const review = {
       drafts: [], scope: 'pr', selectedCommitSHA: null, pinned: true, commentsGranted: true, sendingComments: false,

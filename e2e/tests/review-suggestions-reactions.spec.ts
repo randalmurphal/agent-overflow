@@ -3,8 +3,9 @@
 // written on a range with Suggest change (its fence holding the lines'
 // current text), previewed as the diff it will become and posted, then
 // rendered from the forge's answer; Apply landing a commit on the head
-// branch, the pane's stale-head banner taking over and the thread's
-// state following from the PR read; a refused apply's sentence under its
+// branch, the pane's stale-head banner taking over, and after Reload the
+// diff at the new head showing the suggested line and the thread
+// resolved (GitHub) or the suggestion Applied (GitLab); a refused apply's sentence under its
 // suggestion; Applied and Outdated suggestions; a reaction toggled on and
 // off from its chip and one added from the popover, each chip showing the
 // forge's answer; GitLab's unknown awards as chips; GitLab's reactions
@@ -117,15 +118,18 @@ for (const forge of ['github', 'gitlab'] as const) {
       await centre(card);
       await card.screenshot({ path: testInfo.outputPath(`${forge}-suggestion-refused.png`) });
 
-      // The second goes through: the head moves, so the pane's stale-head
-      // banner takes over, and the PR read the apply answered with shows
-      // the thread's new state. (The fake moves the head to a commit the
-      // test origin lacks, so the diff itself cannot reload here.)
+      // The second goes through: the fake commits it to the pull's origin,
+      // the head moves and the pane's stale-head banner takes over.
       await suggestion.getByTestId('review-suggestion-apply').click();
       await expect(review.getByTestId('review-pr-stale')).toBeVisible({ timeout: 30_000 });
       await expect(error).toHaveCount(0);
       // GitHub refuses a mutation with a 200, so its refused call counts.
       expect(await forgeRouteCalls(harness, routes.apply)).toHaveLength(forge === 'github' ? 2 : 1);
+      // Reloaded, the diff is the new head's and shows the suggested line.
+      await review.getByTestId('review-pr-stale').getByRole('button', { name: 'Reload' }).click();
+      await expect(line(review, 'export const half = 5 / 2;')).toBeVisible({ timeout: 30_000 });
+      await expect(line(review, 'export const half = 2.5;')).toHaveCount(0);
+      await expect(review.getByTestId('review-pr-stale')).toHaveCount(0);
       if (forge === 'github') {
         // GitHub resolves the thread an applied suggestion came from.
         await expect(card).toHaveAttribute('data-state', 'resolved', { timeout: 30_000 });
@@ -133,6 +137,8 @@ for (const forge of ['github', 'gitlab'] as const) {
         await expect(card.getByTestId('review-suggestion-applied')).toBeVisible({ timeout: 30_000 });
         await expect(card.getByTestId('review-suggestion-apply')).toHaveCount(0);
       }
+      await centre(line(review, 'export const half = 5 / 2;'));
+      await page.screenshot({ path: testInfo.outputPath(`${forge}-after-apply.png`) });
       await expectEveryForgeCallHandled(harness);
     } finally {
       await closeAll(page, harness);

@@ -79,7 +79,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div bind:this={root} class="flex flex-col gap-2 px-3 py-2.5" data-testid="review-description-editor" onkeydown={onKeydown}>
   {#if previewing}
-    <ReviewEditorPreview body={manage.descriptionDraft ?? ''} height={previewing?.height ?? 0} testid="review-description-preview-body" />
+    <ReviewEditorPreview body={manage.descriptionDraft ?? ''} height={previewing?.height ?? 0} parse={preview.parse} testid="review-description-preview-body" />
   {:else}
     <textarea
       bind:this={textarea}

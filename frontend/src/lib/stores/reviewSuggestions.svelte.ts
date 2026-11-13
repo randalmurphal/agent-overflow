@@ -1,4 +1,5 @@
 import { ApplyPRSuggestion } from './bindings';
+import { TransportError } from '../transport/wsClient';
 import type { SuggestionApply } from '../../../bindings/agent-overflow/internal/git/models';
 import { threadWhere } from './reviewCommentWrites.svelte';
 import type { ForgeOps } from './reviewForgeOps.svelte';
@@ -70,8 +71,17 @@ export function applyRequest(thread: ReviewThread, comment: ReviewComment, sugge
     target: { threadId: thread.id, commentId: comment.id },
     index: suggestion.index,
     suggestionId: suggestion.id || undefined,
+    digest: suggestion.digest,
     headSha,
   };
+}
+
+/** The refusals of an apply whose suggestion or branch moved since the
+ * pane read it. */
+const MOVED_CODES: ReadonlySet<string> = new Set(['forge_suggestion_changed', 'forge_stale_head']);
+
+function movedOn(err: unknown): boolean {
+  return err instanceof TransportError && MOVED_CODES.has(err.code);
 }
 
 export function createReviewSuggestions(host: ReviewSuggestionsHost): ReviewSuggestions {
@@ -98,11 +108,11 @@ export function createReviewSuggestions(host: ReviewSuggestionsHost): ReviewSugg
       const key = suggestionKey(thread, comment, suggestion.index);
       const request = applyRequest(thread, comment, suggestion, host.loadedHeadSHA());
       // A refusal because the branch or the suggestion moved is fixed by
-      // reading the PR again; every refusal reads it, nothing was written.
+      // reading the PR again; its sentence stays under the suggestion.
       await host.ops.run(key, key, (ref) => ApplyPRSuggestion(prReferenceWire(ref), request), {
         subject: `The suggestion on ${threadWhere(thread)}`,
         notDone: 'was not applied',
-      }, { refreshOnFailure: true });
+      }, { refreshOn: movedOn });
     },
     currentFile: (path) => filesByPath?.get(path) ?? null,
     threadSource(thread) {

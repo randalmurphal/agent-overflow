@@ -13,64 +13,43 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
-  import ReviewSuggestionBlock from './ReviewSuggestionBlock.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
-  import { suggestionSegments, type SuggestionSegment } from '../../utils/suggestionFences';
-  import type { CommentSuggestion } from '../../types/models';
+  import { layoutBody, type BodyRange } from '../../utils/suggestionPieces';
 
   // A comment body as the review pane renders it, sent or previewed: the
-  // markdown in ChatMarkdown's sanitized embedded mode, and each
-  // suggestion block in place as the diff it proposes (the fence is not
-  // shown as well). A sent comment passes the forge's suggestions, matched
-  // to the blocks by body order; a preview passes none and the blocks'
-  // own lines are the additions. `sourceFor` says where a block's
-  // replaced lines are read when the forge did not report them.
+  // markdown in ChatMarkdown's sanitized embedded mode, cut at the
+  // suggestion fences the backend placed (`ranges`), each block rendered
+  // in place by `block` as the diff it proposes. A body the blocks cannot
+  // all be placed in renders whole, its fences as code, and the blocks
+  // follow it (utils/suggestionPieces.ts).
 
   interface Props {
+    /** The raw body, as the forge holds it: the ranges count its lines. */
     body: string;
-    suggestions?: readonly CommentSuggestion[] | null;
-    sourceFor?: (block: Extract<SuggestionSegment, { kind: 'suggestion' }>, suggestion: CommentSuggestion | null) => SuggestionSource | null;
-    /** Under a block: its Apply, Applied or Outdated, and a refusal. */
-    footer?: Snippet<[CommentSuggestion]>;
-    /** Whether a block's footer has anything to show. */
-    showFooter?: (suggestion: CommentSuggestion) => boolean;
+    ranges?: readonly (BodyRange | null)[];
+    /** Renders block `at` (an index into `ranges`). */
+    block?: Snippet<[number]>;
     class?: string;
   }
 
-  let { body, suggestions = null, sourceFor, footer, showFooter, class: className = '' }: Props = $props();
+  let { body, ranges = [], block, class: className = '' }: Props = $props();
 
-  const segments = $derived(suggestionSegments(body));
-  // Segments have no ids of their own: a block is its index in the body
-  // (CommentSuggestion.index), the markdown before it is named by it.
-  function keyOf(segment: SuggestionSegment, at: number): string {
-    if (segment.kind === 'suggestion') return `suggestion:${segment.index}`;
-    const next = segments.slice(at + 1).find((each) => each.kind === 'suggestion');
-    return next?.kind === 'suggestion' ? `before:${next.index}` : 'tail';
-  }
+  const layout = $derived(layoutBody(body, ranges));
 </script>
 
-{#if segments.length === 1 && segments[0].kind === 'markdown'}
-  <ChatMarkdown source={body} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose {className}" />
+{#if layout.pieces.length === 1 && layout.pieces[0].kind === 'markdown' && layout.after.length === 0}
+  <ChatMarkdown source={layout.pieces[0].text} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose {className}" />
 {:else}
   <div class={className}>
-    {#each segments as segment, at (keyOf(segment, at))}
-      {#if segment.kind === 'markdown'}
-        <ChatMarkdown source={segment.text} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
+    {#each layout.pieces as piece (piece.key)}
+      {#if piece.kind === 'markdown'}
+        <ChatMarkdown source={piece.text} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
       {:else}
-        {@const suggestion = suggestions?.find((each) => each.index === segment.index) ?? null}
-        {@const source = suggestion?.fromKnown ? null : (sourceFor?.(segment, suggestion) ?? null)}
-        <ReviewSuggestionBlock
-          added={suggestion?.to ?? segment.lines}
-          removedKnown={suggestion?.fromKnown ? (suggestion.from ?? []) : null}
-          file={source?.file ?? null}
-          from={source?.from ?? 0}
-          to={source?.to ?? 0}
-          footer={suggestion && footer && (showFooter?.(suggestion) ?? true) ? suggestionFooter : undefined}
-        />
-        {#snippet suggestionFooter()}
-          {#if suggestion}{@render footer?.(suggestion)}{/if}
-        {/snippet}
+        {@render block?.(piece.at)}
       {/if}
+    {/each}
+    {#each layout.after as at (at)}
+      {@render block?.(at)}
     {/each}
   </div>
 {/if}

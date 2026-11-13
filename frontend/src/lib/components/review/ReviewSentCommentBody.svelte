@@ -2,10 +2,12 @@
   import ReviewCommentEditorShell from './ReviewCommentEditorShell.svelte';
   import ReviewCommentMarkdown, { type SuggestionSource } from './ReviewCommentMarkdown.svelte';
   import ReviewReactionChips from './ReviewReactionChips.svelte';
+  import ReviewSuggestionBlock from './ReviewSuggestionBlock.svelte';
   import ReviewSuggestionStatus, { suggestionStatus } from './ReviewSuggestionStatus.svelte';
   import { commentWriteKey } from '../../stores/reviewCommentWrites.svelte';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import { visibleBody } from '../../utils/reviewComments';
+  import { suggestionRanges } from '../../utils/suggestionPieces';
   import type { CommentSuggestion, ReviewComment, ReviewThread } from '../../types/models';
 
   // A sent comment's body, or its edit: the raw body in the editor shell
@@ -55,18 +57,36 @@
     const file = suggestions?.currentFile(thread.path) ?? null;
     return file ? { file, from: 0, to: 0 } : null;
   });
-  function sourceFor(_block: unknown, suggestion: CommentSuggestion | null): SuggestionSource | null {
-    const from = suggestion?.startLine ?? 0;
+  function sourceFor(suggestion: CommentSuggestion): SuggestionSource | null {
+    const from = suggestion.startLine ?? 0;
     if (!anchorSource || from <= 0) return null;
-    return { file: anchorSource.file, from, to: suggestion?.endLine ?? from };
+    return { file: anchorSource.file, from, to: suggestion.endLine ?? from };
+  }
+  const blocks = $derived(comment.suggestions ?? []);
+  const ranges = $derived(suggestionRanges(blocks));
+  function showFooter(suggestion: CommentSuggestion): boolean {
+    if (!suggestions) return false;
+    return suggestionStatus(thread, suggestion, suggestions.available) !== 'none' || suggestions.error(thread, comment, suggestion) !== null;
   }
   let focusOnce = true;
 </script>
 
-{#snippet suggestionFooter(suggestion: CommentSuggestion)}
-  {#if suggestions}
-    <ReviewSuggestionStatus {suggestions} {thread} {comment} {suggestion} />
-  {/if}
+{#snippet suggestionBlock(at: number)}
+  {@const suggestion = blocks[at]}
+  {@const source = suggestion.fromKnown ? null : sourceFor(suggestion)}
+  <ReviewSuggestionBlock
+    added={suggestion.to}
+    removedKnown={suggestion.fromKnown ? (suggestion.from ?? []) : null}
+    file={source?.file ?? null}
+    from={source?.from ?? 0}
+    to={source?.to ?? 0}
+    footer={suggestions && showFooter(suggestion) ? suggestionFooter : undefined}
+  />
+  {#snippet suggestionFooter()}
+    {#if suggestions}
+      <ReviewSuggestionStatus {suggestions} {thread} {comment} {suggestion} />
+    {/if}
+  {/snippet}
 {/snippet}
 
 {#if edit}
@@ -90,13 +110,7 @@
 {:else if shown !== ''}
   <div class={className}>
     <div data-find-key={findKey}>
-      <ReviewCommentMarkdown
-        body={shown}
-        suggestions={comment.suggestions ?? null}
-        {sourceFor}
-        footer={suggestionFooter}
-        showFooter={(suggestion) => (suggestions ? suggestionStatus(thread, suggestion, suggestions.available) !== 'none' || suggestions.error(thread, comment, suggestion) !== null : false)}
-      />
+      <ReviewCommentMarkdown body={comment.body} {ranges} block={suggestionBlock} />
     </div>
     {#if deleteError}
       <p class="mt-1 text-[0.6875rem] text-error" data-testid="review-comment-delete-error">{deleteError}</p>

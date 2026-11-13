@@ -48,9 +48,10 @@ export interface ForgeOpsHost {
 export type ForgeOpLost = Omit<LostWriteText, 'body'>;
 
 export interface ForgeOpOptions {
-  /** A refusal reads the PR again (a suggestion refused because the head
-   * or the suggestion moved): the pane then shows what the forge holds. */
-  refreshOnFailure?: boolean;
+  /** Which failures read the PR again (a suggestion refused because the
+   * head or the suggestion moved): the pane then shows what the forge
+   * holds. */
+  refreshOn?: (err: unknown) => boolean;
 }
 
 export interface ForgeOps {
@@ -138,7 +139,7 @@ export function createForgeOps(host: ForgeOpsHost): ForgeOps {
         }
         if (started !== epoch) return false;
         if (surfaceOwner.get(surfaceKey) === op.id) errors.set(surfaceKey, writeFailure(err).sentence);
-        if (options.refreshOnFailure) void host.refreshThreads();
+        if (options.refreshOn?.(err)) void host.refreshThreads();
         return false;
       }
       if (ops.get(opKey) !== op) return true;
