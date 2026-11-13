@@ -3426,8 +3426,9 @@ frame.**
   sniffed image type, and an SVG an attachment disposition. The sides of
   a review diff file ride the same route (`GetReviewDiffImage`,
   `GetEditDiffImage`, files:read): the bytes, at most 25 MiB a side,
-  sit in their own memory LRU (100 MiB, 10 min) the harness reset
-  clears ([review diff streaming](../architecture/review-diff-streaming.md#reading-a-diffs-files)).
+  sit in their own store, whose 100 MiB budget also covers loads in
+  flight and bodies still being sent (10 min, cleared by the harness
+  reset) ([review diff streaming](../architecture/review-diff-streaming.md#reading-a-diffs-files)).
   `SaveLocalImage` copies the original file to the host's Downloads
   directory.
 

@@ -158,3 +158,67 @@ export class Commit {
         return new Commit($$parsedSource as Partial<Commit>);
     }
 }
+
+/**
+ * Pin is what pins a diff's two sides for reads after the diff is closed:
+ * full object IDs of a commit or a tree. New is empty when the new side is
+ * the working tree, which no object pins; the diff's WorktreeBlobs pin its
+ * changed files instead.
+ */
+export class Pin {
+    "old": string;
+    "new": string;
+
+    /** Creates a new Pin instance. */
+    constructor($$source: Partial<Pin> = {}) {
+        if (!("old" in $$source)) {
+            this["old"] = "";
+        }
+        if (!("new" in $$source)) {
+            this["new"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Pin instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Pin {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Pin($$parsedSource as Partial<Pin>);
+    }
+}
+
+/**
+ * WorktreeBlob pins one changed file of a working-tree side: its path and
+ * the blob ID and size the snapshot recorded for it.
+ */
+export class WorktreeBlob {
+    "path": string;
+    "blob": string;
+    "size": number;
+
+    /** Creates a new WorktreeBlob instance. */
+    constructor($$source: Partial<WorktreeBlob> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("blob" in $$source)) {
+            this["blob"] = "";
+        }
+        if (!("size" in $$source)) {
+            this["size"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorktreeBlob instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorktreeBlob {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorktreeBlob($$parsedSource as Partial<WorktreeBlob>);
+    }
+}

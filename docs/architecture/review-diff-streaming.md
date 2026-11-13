@@ -26,39 +26,66 @@ text is read again.
 There is no size limit on any diff source.
 
 A diff's two sides are resolved once, by `gitdiff.Sides`, for the patch and
-for every blob read from the same diff. A PR's commit run
+for every file read from the same diff. A PR's commit run
 (`OpenPRCommitDiff(first, last)`) is the two-tree diff from `first`'s first
 parent (the empty tree for a root commit) to `last`, both in the commit
 list `ListPRCommits` answers at the same revision, `first` no newer than
 `last`; one commit is that commit's own change, and a run of several
 covering the whole list is refused in favor of `OpenPRDiff`
-(`gitdiff.CommitRangeSides`).
+(`gitdiff.CommitRangeSides`). The list holds the newest 300 commits of a
+longer PR: a run may start at the oldest listed commit and is then read
+(it is not the whole PR), and a commit past the list is refused. A run is
+a two-tree diff, so one holding a merge of the base branch shows what
+that merge brought in.
 
 ## Reading a diff's files
 
-The patch says a file is binary (`Binary files ... differ`) and names each
-side's blob on its `index <old>..<new>` line, all zeros for a side that does
-not exist; a pure rename or mode change has no index line.
-`GetReviewDiffFileSizes` (up to 100 files) and `GetReviewDiffImage` (one
-file, both sides) take the diff's source in its Open call's terms
-(`ReviewDiffSource`: workspace, branch, commit, or pr with its revision and
-run) and the file as its patch named it (`ReviewDiffFileRef`: paths and the
-index line). Each call resolves the diff's sides again, lists the requested
-paths the diff changes (`git diff --raw --no-renames`, literal pathspecs)
-and serves a side only when that path changes and its blob is the one the
-index line named, so a worktree file rewritten since the patch was read, or
-a path the diff does not touch, is refused. A file with no index line must
-hold one blob on both sides. A failed size read leaves the patch on screen;
-each file of a size batch fails alone.
+Every git-backed open answers what pins its two sides (`ReviewDiffOpened`):
 
-A side over 25 MiB answers its size and `overCap` without reading it; bytes
-that are not an image a browser displays answer `notImage`. Image bytes are
-held in a memory LRU keyed by blob ID (100 MiB, 10 minutes, cleared by the
-harness reset) and served once per ticket from the local-image route,
-where an SVG gets an attachment disposition and a policy that allows no
-script. The edits scope has no git sides: `GetEditDiffImage` serves the new
-side its context expansion would serve, verified against the file's patch,
-and never an old side.
+| Scope | `sides.old` | `sides.new` |
+|---|---|---|
+| commit, PR, PR run | commit or empty tree | commit |
+| workspace, commit dialog | `HEAD` commit at the open, or the empty tree | working tree |
+| branch | merge-base commit | working tree |
+
+Both are full object IDs the open already had; pinning writes nothing to
+the user's object database. A working-tree new side (`sides.new` empty)
+also answers `worktreeBlobs`: each changed regular file's blob ID and size
+in the open's snapshot (at most 5000; `worktreeBlobsTruncated` past it).
+When the pin cannot be read, `sidesError` says why and the patch still
+reads.
+
+`GetReviewDiffFileSizes` (up to 100 files) and `GetReviewDiffImage` (one
+file, both sides) take the open's `sides` and a `ReviewDiffFile`: its path,
+a rename's `oldPath`, and on a working-tree side the `newBlob` the open
+pinned. Each pinned ID must be a full ID of a commit or tree. Each path is
+one literal, canonical path whose entry on each side it exists on is a
+regular file the other side holds differently; a directory, a symlink, a
+submodule or a path the diff does not change is refused. A committed side
+is read as its blob, its size from the tree entry first; a working-tree
+side is read from disk and its blob ID computed, and bytes that are not
+the pinned blob are "changed since the diff was read". Sizes of a
+working-tree side are the file's size on disk; the image read proves
+content. A failed size read leaves the patch on screen; each file of a
+size batch fails alone.
+
+A side over 25 MiB answers its size and `overCap` and none of it is read;
+bytes that are not an image a browser displays answer `notImage`. Image
+bytes are held in `reviewimage.Store`, keyed by blob ID: one 100 MiB budget
+covers held entries, loads in flight and entries a response is still
+sending. A load reserves its size before it reads, concurrent loads of
+one blob share one read, an entry being sent is freed only when its last
+reader closes, and a load that finds no room waits up to 30 seconds, then
+refuses with a sentence. Entries expire after 10 minutes; the harness
+reset clears them. They are served once per ticket from the local-image
+route, where an SVG gets an attachment disposition and a policy that
+allows no script.
+
+The edits scope has no git sides: `GetEditDiffImage` takes the path and
+an edit's payload ID, or the turn index for the turn's last edit of the
+path, and serves only the content the edit recorded. The old side is
+always `unavailable` (a sentence), and so is the new side of an edit that
+recorded no content; the file on disk is never read.
 
 ## Holding the patch
 

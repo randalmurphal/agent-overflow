@@ -54,6 +54,18 @@ type ReviewDiffOpened struct {
 	// order; GetPayloadPatchSpans returns each one's highlight spans.
 	// Empty for every other diff.
 	PayloadIDs []string `json:"payloadIds,omitempty"`
+	// Sides pins a git-backed diff's two sides for its file reads
+	// (GetReviewDiffFileSizes, GetReviewDiffImage). Nil for an edits diff,
+	// and when the pin could not be read (SidesError says why).
+	Sides *ReviewDiffSides `json:"sides,omitempty"`
+	// WorktreeBlobs pins each changed regular file of a working-tree new
+	// side (Sides.New empty), at most maxPinnedWorktreeBlobs of them;
+	// WorktreeBlobsTruncated reports that more were left out.
+	WorktreeBlobs          []ReviewDiffWorktreeBlob `json:"worktreeBlobs,omitempty"`
+	WorktreeBlobsTruncated bool                     `json:"worktreeBlobsTruncated,omitempty"`
+	// SidesError is a sentence saying why the diff's files cannot be read
+	// while the diff itself can.
+	SidesError string `json:"sidesError,omitempty"`
 }
 
 // reviewDiffReader is an open review diff: a git diff or a thread's edit
@@ -82,19 +94,26 @@ type openReviewDiff struct {
 	scope transport.Scope
 }
 
-// openReviewDiff opens a git diff, returns its first chunk, and keeps it
-// open under a connection-owned handle when there is more to read. scope
-// is the calling Open method's //ao:scope.
-func (a *App) openReviewDiff(ctx context.Context, action string, scope transport.Scope, open func(tempRoot string) (*gitdiff.Diff, error)) (ReviewDiffOpened, error) {
+// openReviewDiff opens the patch between the sides open resolves, returns
+// its first chunk with the sides' pin, and keeps it open under a
+// connection-owned handle when there is more to read. scope is the calling
+// Open method's //ao:scope.
+func (a *App) openReviewDiff(ctx context.Context, action string, scope transport.Scope, opts gitdiff.Options, open func(tempRoot string) (*gitdiff.Sides, error)) (ReviewDiffOpened, error) {
 	tempRoot, err := a.reviewDiffSnapshotRoot()
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
 	}
-	diff, err := open(tempRoot)
+	sides, err := open(tempRoot)
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
 	}
-	return a.holdOpenedReviewDiff(ctx, action, scope, diff)
+	pin, blobs, truncated, failure := pinReviewDiff(ctx, sides)
+	opened, err := a.holdOpenedReviewDiff(ctx, action, scope, sides.OpenDiff(opts))
+	if err != nil {
+		return ReviewDiffOpened{}, err
+	}
+	opened.Sides, opened.WorktreeBlobs, opened.WorktreeBlobsTruncated, opened.SidesError = pin, blobs, truncated, failure
+	return opened, nil
 }
 
 // holdOpenedReviewDiff reads an open diff's first chunk and, when there is

@@ -47,8 +47,8 @@ func (a *App) OpenWorkspaceDiff(ctx context.Context, ws WorkspaceRef, ignoreWhit
 	if !gitdiff.IsGitRepository(ctx, workspace) {
 		return ReviewDiffOpened{Chunk: ReviewDiffChunk{EOF: true}}, nil
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, func(tempRoot string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenWorktreeDiff(ctx, workspace, tempRoot, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(tempRoot string) (*gitdiff.Sides, error) {
+		return gitdiff.WorktreeSides(ctx, workspace, tempRoot)
 	})
 }
 
@@ -73,8 +73,8 @@ func (a *App) OpenBranchBaseDiff(ctx context.Context, ws WorkspaceRef, baseBranc
 	if !gitdiff.IsGitRepository(ctx, workspace) {
 		return ReviewDiffOpened{Chunk: ReviewDiffChunk{EOF: true}}, nil
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, func(tempRoot string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenBranchBaseDiff(ctx, workspace, tempRoot, baseBranch, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(tempRoot string) (*gitdiff.Sides, error) {
+		return gitdiff.BranchBaseSides(ctx, workspace, tempRoot, baseBranch)
 	})
 }
 
@@ -148,8 +148,8 @@ func (a *App) OpenCommitDiff(ctx context.Context, ws WorkspaceRef, sha string, i
 	if !gitdiff.IsGitRepository(ctx, workspace) {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: workspace is not a git repository", action)
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, func(string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenCommitDiff(ctx, workspace, sha, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
+		return gitdiff.CommitSides(ctx, workspace, sha)
 	})
 }
 

@@ -4,5 +4,7 @@
 export {
     ChangedFile,
     Chunk,
-    Commit
+    Commit,
+    Pin,
+    WorktreeBlob
 } from "./models.js";
