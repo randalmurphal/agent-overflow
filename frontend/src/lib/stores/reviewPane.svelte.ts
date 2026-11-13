@@ -1419,7 +1419,7 @@ export function createReviewPaneState(
     scope: () => scope,
     selectedCommitSHA: () => selectedCommitSHA,
     ref: () => prRef,
-    appliedSeq: () => peekPRSeq(prEntityKey),
+    entityKey: () => prEntityKey,
     launch: () => backendLaunch,
     updateFailing: () => prUpdateError !== null,
     forgeGranted: () => (pinned ? hasScope('git:operate', backend) : threadHasScope('git:operate', threadId, workspace.projectId)),

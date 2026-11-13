@@ -19,7 +19,7 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 const REF = { forge: 'github' as const, host: 'github.com', namespace: 'o', repo: 'r', number: 5 };
 const REF_B = { ...REF, number: 6 };
 
-const COMMENT: ReviewComment = { id: 'c1', authorLogin: 'octo', body: 'b', createdAt: '2026-01-01T00:00:00Z', reactions: [{ name: 'thumbsup', count: 1, viewerReacted: false }] };
+const COMMENT: ReviewComment = { id: 'c1', authorLogin: 'octo', body: 'b', createdAt: '2026-01-01T00:00:00Z', databaseID: 1, viewerCanEdit: false, viewerCanDelete: false, reactions: [{ name: 'thumbsup', count: 1, viewerReacted: false }] };
 const OTHER: ReviewComment = { ...COMMENT, id: 'c2' };
 const THREAD: ReviewThread = { id: 't1', path: 'src/a.ts', line: 3, side: 'right', isResolvable: true, isResolved: false, isOutdated: false, comments: [COMMENT, OTHER] };
 const SUGGESTION: CommentSuggestion = { index: 0, to: ['x'], appliable: true, digest: 'a'.repeat(64) };

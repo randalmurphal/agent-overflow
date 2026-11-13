@@ -16,7 +16,7 @@ import type { ReviewComment, ReviewThread } from '../../types/models';
 // Preview toggle, which keeps the text and the caret across a remount.
 
 const COMMENT: ReviewComment = {
-  id: 'c1', authorLogin: 'octo', body: 'b', createdAt: '2026-01-01T00:00:00Z', url: 'https://example.test/c1',
+  id: 'c1', authorLogin: 'octo', body: 'b', createdAt: '2026-01-01T00:00:00Z', databaseID: 1, url: 'https://example.test/c1',
   viewerCanEdit: true, viewerCanDelete: true,
   reactions: [
     { name: 'thumbsup', count: 2, viewerReacted: true, users: ['octo', 'ao-viewer'] },
