@@ -139,10 +139,14 @@ func TestDiffReviewPRContextValidate(t *testing.T) {
 		"url line break":    func(c *DiffReviewPRContext) { c.URL = "https://x\ncomment: y" },
 		"path line break":   func(c *DiffReviewPRContext) { c.Comments[0].Thread.Path = "a.go\ncomment: y" },
 		"author line break": func(c *DiffReviewPRContext) { c.Comments[0].Thread.Comments[0].Author = "a\rcomment: y" },
-		"long author":       func(c *DiffReviewPRContext) { c.Comments[0].Thread.Comments[0].Author = strings.Repeat("a", MaxDiffReviewThreadAuthorBytes+1) },
-		"long body":         func(c *DiffReviewPRContext) { c.Comments[0].Thread.Comments[0].Body = strings.Repeat("a", MaxDiffReviewCommentBodyBytes+1) },
-		"negative line":     func(c *DiffReviewPRContext) { c.Comments[0].Thread.Line = -1 },
-		"inverted range":    func(c *DiffReviewPRContext) { c.Comments[0].Thread.StartLine = 9 },
+		"long author": func(c *DiffReviewPRContext) {
+			c.Comments[0].Thread.Comments[0].Author = strings.Repeat("a", MaxDiffReviewThreadAuthorBytes+1)
+		},
+		"long body": func(c *DiffReviewPRContext) {
+			c.Comments[0].Thread.Comments[0].Body = strings.Repeat("a", MaxDiffReviewCommentBodyBytes+1)
+		},
+		"negative line":  func(c *DiffReviewPRContext) { c.Comments[0].Thread.Line = -1 },
+		"inverted range": func(c *DiffReviewPRContext) { c.Comments[0].Thread.StartLine = 9 },
 		"many comments": func(c *DiffReviewPRContext) {
 			c.Comments[0].Thread.Comments = make([]DiffReviewThreadComment, MaxDiffReviewThreadComments+1)
 		},
