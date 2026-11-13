@@ -69,6 +69,8 @@
     streamdownComponentsFor,
   } from './markdown/streamdownConfig';
   import { MarkdownFenceUnwrapper } from './markdown/unwrapMarkdownFence';
+  import ClaimableCodeHost from './markdown/ClaimableCodeHost.svelte';
+  import { provideCodeClaim, type CodeClaim } from './markdown/codeClaim';
   import {
     ensureForgeAttachmentClickDelegate,
     ensureMarkdownCopyDelegate,
@@ -118,6 +120,7 @@
     threadId = '',
     liveCodeRow,
     embeddedHtml = false,
+    codeClaim = null,
     class: className = '',
   }: {
     source: string;
@@ -164,10 +167,26 @@
      *  as escaped literal text — never silently dropped. See
      *  `markdown/parser/extensions/embeddedHtml.ts`. */
     embeddedHtml?: boolean;
+    /** Fenced blocks the host renders itself, in place (codeClaim.ts). */
+    codeClaim?: CodeClaim | null;
     class?: string;
   } = $props();
 
   setLiveCodeRowContext(() => liveCodeRow);
+  provideCodeClaim(() => codeClaim);
+  // With a claim, code islands ask it first and a claimed block never
+  // retires to static HTML.
+  function streamdownComponents(parseIncomplete: boolean) {
+    const base = streamdownComponentsFor(parseIncomplete);
+    return codeClaim ? { ...base, code: ClaimableCodeHost } : base;
+  }
+  const staticRenderers = $derived.by(() => {
+    const claim = codeClaim;
+    if (!claim) return STREAMDOWN_STATIC_RENDERERS;
+    return {
+      code: (...args: Parameters<typeof STREAMDOWN_STATIC_RENDERERS.code>) => (claim.claims(args[0]) ? null : STREAMDOWN_STATIC_RENDERERS.code(...args)),
+    };
+  });
   // Path links resolve to an editor open on the host desktop, so a page
   // that cannot act there emits none.
   let noHost = $derived(!hasScope('host', threadMachine(threadId, null)));
@@ -528,11 +547,11 @@
     compactStaticHtml={true}
     {trimFirstBlockMargin}
     {trimLastBlockMargin}
-    staticRenderers={STREAMDOWN_STATIC_RENDERERS}
+    {staticRenderers}
     staticWorkScheduler={STREAMDOWN_STATIC_WORK_SCHEDULER}
     {extensions}
     onsettled={handleSettled}
-    components={streamdownComponentsFor(parseIncompleteMarkdown)}
+    components={streamdownComponents(parseIncompleteMarkdown)}
   >
     {#snippet inlineCitation({ token })}
       {token.text ?? token.raw}

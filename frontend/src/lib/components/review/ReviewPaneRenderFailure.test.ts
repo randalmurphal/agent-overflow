@@ -12,6 +12,7 @@ import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 import {
   frontendErrorCaptureStateForTest,
   resetFrontendErrorCaptureForTest,
@@ -40,9 +41,9 @@ beforeEach(() => {
   setBindingMock('GetGitStatus', async () => ({}));
   setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
   setReviewDiffMock('OpenBranchBaseDiff', async () => '');
-  setBindingMock('ListBranchCommits', async () => []);
+  setBindingMock('ListBranchCommits', async () => commitList([]));
   setReviewDiffMock('OpenCommitDiff', async () => '');
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setReviewDiffMock('OpenPRCommitDiff', async () => '');
   setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
   setReviewDiffMock('OpenTurnEditsDiff', async () => '');

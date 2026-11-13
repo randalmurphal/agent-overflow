@@ -55,17 +55,20 @@ var ErrTooManyPRUpdateSubscriptions = errors.New("pr updates: too many active su
 // pump state this result was read from, so the caller can tell a frame it
 // missed during the join from one already folded in.
 type PRUpdateSubscriptionResult struct {
-	ID        string                `json:"id"`
-	PRKey     string                `json:"prKey"`
-	Detail    gitops.PRDetail       `json:"detail"`
-	Threads   []gitops.ReviewThread `json:"threads"`
-	Events    []gitops.ReviewEvent  `json:"events"`
-	HeadSHA   string                `json:"headSHA"`
-	Error     string                `json:"error"`
-	ErrorKind string                `json:"errorKind"`
-	Reserve   bool                  `json:"reserve"`
-	ResumeAt  string                `json:"resumeAt"`
-	Seq       uint64                `json:"seq"`
+	ID      string                `json:"id"`
+	PRKey   string                `json:"prKey"`
+	Detail  gitops.PRDetail       `json:"detail"`
+	Threads []gitops.ReviewThread `json:"threads"`
+	Events  []gitops.ReviewEvent  `json:"events"`
+	// ReactionsUnavailable is the sentence saying the threads carry no
+	// reactions because their read failed (gitops.PRRead).
+	ReactionsUnavailable string `json:"reactionsUnavailable,omitempty"`
+	HeadSHA              string `json:"headSHA"`
+	Error                string `json:"error"`
+	ErrorKind            string `json:"errorKind"`
+	Reserve              bool   `json:"reserve"`
+	ResumeAt             string `json:"resumeAt"`
+	Seq                  uint64 `json:"seq"`
 	// CI is the pump's pipeline, nil until its first CI poll has answered
 	// (the frame then follows on pr:ci_updated); CIError is the CI poll's
 	// active failure, the same caller-safe summary as Error, with its kind
@@ -98,22 +101,25 @@ type PRUpdateSubscriptionResult struct {
 // Seq its SubscribePRUpdates result carried: anything at or below is
 // already in that snapshot, anything above is a frame the join missed.
 type PRUpdatedEvent struct {
-	PRKey     string                `json:"prKey"`
-	Detail    gitops.PRDetail       `json:"detail"`
-	Threads   []gitops.ReviewThread `json:"threads"`
-	Events    []gitops.ReviewEvent  `json:"events"`
-	HeadSHA   string                `json:"headSHA"`
-	Error     string                `json:"error,omitempty"`
-	ErrorKind string                `json:"errorKind,omitempty"`
-	Reserve   bool                  `json:"reserve,omitempty"`
-	ResumeAt  string                `json:"resumeAt,omitempty"`
-	Seq       uint64                `json:"seq"`
-}
-
-type prUpdateSnapshot struct {
+	PRKey   string                `json:"prKey"`
 	Detail  gitops.PRDetail       `json:"detail"`
 	Threads []gitops.ReviewThread `json:"threads"`
 	Events  []gitops.ReviewEvent  `json:"events"`
+	// ReactionsUnavailable is as on PRUpdateSubscriptionResult.
+	ReactionsUnavailable string `json:"reactionsUnavailable,omitempty"`
+	HeadSHA              string `json:"headSHA"`
+	Error                string `json:"error,omitempty"`
+	ErrorKind            string `json:"errorKind,omitempty"`
+	Reserve              bool   `json:"reserve,omitempty"`
+	ResumeAt             string `json:"resumeAt,omitempty"`
+	Seq                  uint64 `json:"seq"`
+}
+
+type prUpdateSnapshot struct {
+	Detail               gitops.PRDetail       `json:"detail"`
+	Threads              []gitops.ReviewThread `json:"threads"`
+	Events               []gitops.ReviewEvent  `json:"events"`
+	ReactionsUnavailable string                `json:"reactionsUnavailable,omitempty"`
 }
 
 // prUpdatePump is the App's per-PR poller: one ticker, one
@@ -229,38 +235,43 @@ func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRRefer
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenMergeBaseDiff(ctx, workspace, rev.BaseSHA, rev.HeadSHA,
-			gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
+		return gitdiff.MergeBaseSides(ctx, workspace, rev.BaseSHA, rev.HeadSHA)
 	})
 }
 
 // ListPRCommits returns the commits a PR carries at rev (`base..head`,
-// newest first), computed from the referenced clone. userInitiated is
-// whether a person asked for the read (prRevisionWorkspace).
+// newest first, capped) and how many it carries (BranchCommitList),
+// computed from the referenced clone. userInitiated is whether a person
+// asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, userInitiated bool) ([]BranchCommit, error) {
+func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, userInitiated bool) (BranchCommitList, error) {
 	workspace, err := a.prRevisionWorkspace("list PR commits", ws, pr, rev, userInitiated)
 	if err != nil {
-		return nil, err
+		return BranchCommitList{}, err
 	}
 	return gitdiff.ListCommitsRange(context.Background(), workspace, rev.BaseSHA, rev.HeadSHA)
 }
 
-// OpenPRCommitDiff opens the unified patch a single commit of the PR at rev
-// introduced (first-parent diff), read from the referenced clone.
-// userInitiated is whether a person asked for the read (prRevisionWorkspace).
+// OpenPRCommitDiff opens the patch of a contiguous run of the PR's commits
+// at rev: from the first parent of firstSHA (the older end) to lastSHA, read
+// from the referenced clone (gitdiff.CommitRangeSides). Both ends must be in
+// the commit list ListPRCommits answers for rev, firstSHA no newer than
+// lastSHA. firstSHA == lastSHA is one commit's own change (first-parent
+// diff); a run of more than one commit covering the whole list is refused,
+// because OpenPRDiff reads the whole PR. userInitiated is whether a person
+// asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, sha string, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
+func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, firstSHA, lastSHA string, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
 	const action = "open PR commit diff"
 	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenCommitDiff(ctx, workspace, sha, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
+		return gitdiff.CommitRangeSides(ctx, workspace, rev.BaseSHA, rev.HeadSHA, firstSHA, lastSHA)
 	})
 }
 
@@ -510,22 +521,23 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 	}
 
 	return PRUpdateSubscriptionResult{
-		ID:          ref.id,
-		PRKey:       prKey,
-		Detail:      ref.snapshot.Detail,
-		Threads:     ref.snapshot.Threads,
-		Events:      ref.snapshot.Events,
-		HeadSHA:     ref.snapshot.Detail.HeadSHA,
-		Error:       ref.fail.wire,
-		ErrorKind:   ref.fail.kind,
-		Reserve:     ref.fail.reserve,
-		ResumeAt:    ref.fail.resumeAt,
-		Seq:         ref.seq,
-		CI:          ref.ci,
-		CIError:     ref.ciFail.wire,
-		CIErrorKind: ref.ciFail.kind,
-		CIReserve:   ref.ciFail.reserve,
-		CIResumeAt:  ref.ciFail.resumeAt,
+		ID:                   ref.id,
+		PRKey:                prKey,
+		Detail:               ref.snapshot.Detail,
+		Threads:              ref.snapshot.Threads,
+		Events:               ref.snapshot.Events,
+		ReactionsUnavailable: ref.snapshot.ReactionsUnavailable,
+		HeadSHA:              ref.snapshot.Detail.HeadSHA,
+		Error:                ref.fail.wire,
+		ErrorKind:            ref.fail.kind,
+		Reserve:              ref.fail.reserve,
+		ResumeAt:             ref.fail.resumeAt,
+		Seq:                  ref.seq,
+		CI:                   ref.ci,
+		CIError:              ref.ciFail.wire,
+		CIErrorKind:          ref.ciFail.kind,
+		CIReserve:            ref.ciFail.reserve,
+		CIResumeAt:           ref.ciFail.resumeAt,
 	}, nil
 }
 
@@ -855,12 +867,13 @@ func (a *App) pollPRUpdate(ctx context.Context, pump *prUpdatePump) (PRUpdatedEv
 				return PRUpdatedEvent{}, false
 			}
 			return PRUpdatedEvent{
-				PRKey:   pump.prKey,
-				Detail:  snapshot.Detail,
-				Threads: snapshot.Threads,
-				Events:  snapshot.Events,
-				HeadSHA: snapshot.Detail.HeadSHA,
-				Seq:     seq,
+				PRKey:                pump.prKey,
+				Detail:               snapshot.Detail,
+				Threads:              snapshot.Threads,
+				Events:               snapshot.Events,
+				ReactionsUnavailable: snapshot.ReactionsUnavailable,
+				HeadSHA:              snapshot.Detail.HeadSHA,
+				Seq:                  seq,
 			}, true
 		}
 	}
@@ -1032,7 +1045,7 @@ func (a *App) fetchPRUpdateSnapshot(ctx context.Context, pr gitops.PRReference) 
 	if err != nil {
 		return prUpdateSnapshot{}, err
 	}
-	return prUpdateSnapshot{Detail: read.Detail, Threads: read.Threads, Events: read.Events}, nil
+	return prUpdateSnapshot{Detail: read.Detail, Threads: read.Threads, Events: read.Events, ReactionsUnavailable: read.ReactionsUnavailable}, nil
 }
 
 func (a *App) prUpdatePollInterval() time.Duration {

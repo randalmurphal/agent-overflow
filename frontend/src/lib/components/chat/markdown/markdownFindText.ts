@@ -56,6 +56,9 @@ export interface MarkdownFindTextOptions {
   embeddedHtml: boolean;
   /** The PR whose attachments ChatMarkdown claims (FORGE_ATTACHMENT_SOURCE_CONTEXT). */
   forgeSource?: ForgeAttachmentSource | null;
+  /** Fenced blocks ChatMarkdown's `codeClaim` renders as something find
+   * skips (codeClaim.ts), by their info string. */
+  claimsCode?: (lang: string) => boolean;
 }
 
 export interface MarkdownFindText {
@@ -164,7 +167,7 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
     switch (token.type) {
       case 'code':
         flush();
-        if (token.lang !== 'mermaid') push(token.text ?? '');
+        if (token.lang !== 'mermaid' && !options.claimsCode?.(token.lang ?? '')) push(token.text ?? '');
         return;
       case 'html':
         html(token);

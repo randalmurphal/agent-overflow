@@ -281,6 +281,11 @@ func (h *harnessHost) ResetSessionImporter() {
 	h.app.sessionImporter().Reset()
 }
 
+func (h *harnessHost) DropReviewDiffImages() {
+	h.app.reviewDiffImages().Clear()
+	h.app.dropReviewDiffRecords()
+}
+
 func (h *harnessHost) DropRetainedEvents() {
 	if bus := h.app.eventBus.Load(); bus != nil {
 		bus.DropRetained()

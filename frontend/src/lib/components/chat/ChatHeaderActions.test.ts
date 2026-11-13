@@ -12,6 +12,7 @@ import type { GitStatus } from '../../types/git';
 import type { Project, Thread } from '../../types/models';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import {
@@ -174,7 +175,7 @@ describe('<ChatHeaderActions> badge gating', () => {
     setBindingMock('ListPRReviewThreads', async () => []);
     setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
     setBindingMock('ListDiffReviewComments', async () => []);
-    const commits = setBindingMock('ListPRCommits', async () => []);
+    const commits = setBindingMock('ListPRCommits', async () => commitList([]));
     setBindingMock('OpenPRDiff', async () => ({ id: '', chunk: { data: '', offset: 0, nextOffset: 0, eof: true }, headSha: '' }));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();

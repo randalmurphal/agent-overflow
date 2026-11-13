@@ -480,6 +480,11 @@ export {
   ListRecentCommits,
   GetDiffContextLines,
   GetEditDiffContextLines,
+  // A review diff file's sizes, and its image bytes behind a single-use URL
+  // (the local-image byte route, utils/mediaBlobCache.ts).
+  GetReviewDiffFileSizes,
+  GetReviewDiffImage,
+  GetEditDiffImage,
   VerifyEditDiffs,
   ListThreadEditDiffs,
   OpenEditDiff,
@@ -565,6 +570,12 @@ export {
   PostPRComment,
   EditPRComment,
   DeletePRComment,
+  // A comment's reactions and its suggestions' apply: each success has
+  // the PR's pump poll at once.
+  SetPRCommentReaction,
+  ApplyPRSuggestion,
+  // An editor's preview: where the backend reads suggestion fences.
+  ParseCommentSuggestions,
   // The Merge section's actions (docs/specs/pull-requests.md): each is the
   // user's own, and a success has the PR's pump poll at once.
   ApprovePR,

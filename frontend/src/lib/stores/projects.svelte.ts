@@ -18,9 +18,9 @@ import { ListProjects } from './bindings';
 import { addErrorToast } from './toast.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
-  disambiguatedProjectLabels,
-  formatProjectLabel,
-  type ProjectLabel,
+  disambiguatedPathLabels,
+  formatPathLabel,
+  type PathLabel,
 } from '../utils/pathDisplay';
 import { groupRepositories } from '../utils/repoKey';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -198,7 +198,7 @@ export function projectSiblingOn(projectId: string, backend: BackendKey): Projec
 }
 
 // Labels for unfiltered project surfaces. Filtered lists derive their own
-// labels with disambiguatedProjectLabels so hidden rows cannot force prefixes.
+// labels with disambiguatedPathLabels so hidden rows cannot force prefixes.
 // Unique names label as-is; duplicates gain distinguishing parent dirs.
 // One shared $derived so the map is computed once per list change. Over
 // the ENTRIES, not the rows: two members of one repo share a name by
@@ -209,12 +209,12 @@ const projectLabels = $derived.by(() => {
   const archived: Project[] = [];
   for (const { project } of merged.entries) (project.archived ? archived : active).push(project);
   // Active pickers and the archive list are separate surfaces.
-  return new Map([...disambiguatedProjectLabels(active), ...disambiguatedProjectLabels(archived)]);
+  return new Map([...disambiguatedPathLabels(active), ...disambiguatedPathLabels(archived)]);
 });
 
 /** Structured display label for a project (prefix + name). Undefined when
  *  the id isn't in the store. */
-export function getProjectLabel(id: string): ProjectLabel | undefined {
+export function getProjectLabel(id: string): PathLabel | undefined {
   return projectLabels.get(entryIdFor(id));
 }
 
@@ -223,7 +223,7 @@ export function getProjectLabel(id: string): ProjectLabel | undefined {
  *  style placeholder should check getProjectLabel themselves. */
 export function getProjectLabelText(id: string): string {
   const label = projectLabels.get(entryIdFor(id));
-  return label ? formatProjectLabel(label) : '';
+  return label ? formatPathLabel(label) : '';
 }
 
 /** True once refreshProjects has completed at least one successful fetch. */

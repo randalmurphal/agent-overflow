@@ -15,7 +15,7 @@ import { __resetPinnedReviewStatesForTest, disposePRReviewStates } from '../../s
 import { applyPRUpdatedEvent } from '../../stores/prReviewStore.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import { resetPanesForTest } from '../../stores/panes.svelte';
-import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
+import { __setTransportHelloForTest, __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { resetForTest as resetDiffReviewComments } from '../../stores/diffReviewComments.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { PRDetail, ReviewThread } from '../../types/models';
@@ -55,6 +55,8 @@ const INITIAL = Array.from({ length: 12 }, (_, index) => note(`n${index + 1}`, i
 let threads: ReviewThread[] = INITIAL;
 let seq = 1;
 
+const HELLO = { launchId: 'l', protocolVersion: 1, capabilities: ['pr-review-drafts.v1', 'pr-comment-actions.v1', 'pr-suggestions-reactions.v1'], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 };
+
 let app: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 
@@ -65,6 +67,8 @@ beforeEach(() => {
   resetPanesForTest();
   resetDiffReviewComments();
   __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+  // Reactions show on a backend that serves them.
+  __setTransportHelloForTest(HELLO);
   threads = INITIAL;
   seq = 1;
   target = document.createElement('div');
@@ -194,6 +198,39 @@ describe('a reader scrolled into the Conversation feed', () => {
     expect(entry('n12').getBoundingClientRect().height).toBeGreaterThan(heightBefore);
     expect(Math.abs(offsetOf(top) - before)).toBeLessThanOrEqual(1);
     expect(testid('review-conversation-new')).toBeNull();
+  });
+
+  it('keeps the top card where it was when a reaction grows a card above it', async () => {
+    await openConversation();
+    const top = await scrollIntoFeed();
+    const before = offsetOf(top);
+    const heightBefore = entry('n12').getBoundingClientRect().height;
+    push(threads.map((each) => (each.id === 'n12'
+      ? { ...each, comments: [{ ...each.comments[0], reactions: [{ name: 'thumbsup', count: 2, viewerReacted: false }] }] }
+      : each)));
+    await frames(3);
+    expect(entry('n12').getBoundingClientRect().height).toBeGreaterThan(heightBefore);
+    expect(Math.abs(offsetOf(top) - before)).toBeLessThanOrEqual(1);
+  });
+
+  it('keeps the top card where it was when the reactions notice shows above the feed', async () => {
+    // The forge's reactions read failed, on a backend that does not serve
+    // reactions yet: no notice. The backend gains them (a reconnect to a
+    // newer one) with the feed unchanged, and the notice shows.
+    __setTransportHelloForTest({ ...HELLO, capabilities: ['pr-review-drafts.v1', 'pr-comment-actions.v1'] });
+    await openConversation();
+    seq += 1;
+    applyPRUpdatedEvent({ prKey: KEY, detail: detail(), threads, headSHA: 'sha-a', seq, reactionsUnavailable: 'GitHub did not answer the reactions.' });
+    flushSync();
+    await frames(2);
+    expect(testid('review-reactions-unavailable')).toBeNull();
+    const top = await scrollIntoFeed();
+    const before = offsetOf(top);
+    __setTransportHelloForTest(HELLO);
+    flushSync();
+    await frames(3);
+    expect(testid('review-reactions-unavailable')).not.toBeNull();
+    expect(Math.abs(offsetOf(top) - before)).toBeLessThanOrEqual(1);
   });
 
   it('loses the chip once the arrival is scrolled into view', async () => {

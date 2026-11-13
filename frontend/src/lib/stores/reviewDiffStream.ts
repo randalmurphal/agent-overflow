@@ -28,6 +28,9 @@ export interface ReviewDiffOpened {
   chunk: ReviewDiffChunk;
   /** Edits diffs: the payloads joined, in patch order. */
   payloadIds?: string[];
+  /** A git diff's handle for its file reads (every git-backed open
+   * answers one; an edits diff none). */
+  filesHandle?: string;
 }
 
 export interface ReviewDiffRead {
@@ -37,6 +40,9 @@ export interface ReviewDiffRead {
   onLost(listener: (err: PatchTextLost) => void): void;
   /** Releases the handle, if the read kept it, and the text's budget. */
   dispose(): void;
+  /** The files handle the open this patch came from answered ('' for
+   * an edits diff). */
+  files: string;
 }
 
 export interface ReviewDiffReadOptions {
@@ -59,6 +65,11 @@ export class ReviewDiffSource {
   constructor(
     readonly backend: BackendKey,
     private readonly openDiff: () => Promise<ReviewDiffOpened>,
+    /** The open's inputs are immutable revisions (a PR revision, or
+     * commits by sha), so opening it again answers the same diff and its
+     * file handle names the same bytes. False for an open that reads the
+     * working tree or resolves a branch name. */
+    readonly revisionPinned = false,
   ) {}
 
   /** Sends the Open call now, so it overlaps the caller's other requests. */
@@ -118,11 +129,21 @@ export class ReviewDiffSource {
         parser,
         onLost: (listener) => store.whenLost(listener),
         dispose: () => store.dispose(),
+        files: opened.filesHandle ?? '',
       };
       return read;
     } finally {
       if (!read) store.dispose();
     }
+  }
+
+  /** Opens the diff again for a new file handle, reading none of its
+   * patch (the server forgot the last one). */
+  async reopenFiles(): Promise<string> {
+    if (!this.revisionPinned) throw new Error('This diff reads the working tree; reload it to read its files again.');
+    const opened = await this.open();
+    this.release(opened.id);
+    return opened.filesHandle ?? '';
   }
 
   // Reads an evicted chunk again: the same offset and a window no larger

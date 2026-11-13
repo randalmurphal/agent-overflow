@@ -14,7 +14,7 @@ const COMMIT: BranchCommit = {
 
 describe('<ReviewCommitCard>', () => {
   it('shows the hash, whole subject, author, age, position and the body with its line breaks', () => {
-    const view = render(ReviewCommitCard, { commit: COMMIT, ordinal: 2, count: 12 });
+    const view = render(ReviewCommitCard, { commit: COMMIT, ordinal: 2, total: 12 });
     const card = view.getByTestId('review-commit-card');
     expect(card.getAttribute('data-sha')).toBe(COMMIT.sha);
     expect(card).toHaveTextContent('eeeeeee');
@@ -28,8 +28,13 @@ describe('<ReviewCommitCard>', () => {
   });
 
   it('omits the body block for a one-line message and the age for an unknown time', () => {
-    const view = render(ReviewCommitCard, { commit: { ...COMMIT, body: '', authoredAt: 0 }, ordinal: 1, count: 1 });
+    const view = render(ReviewCommitCard, { commit: { ...COMMIT, body: '', authoredAt: 0 }, ordinal: 1, total: 1 });
     expect(view.queryByTestId('review-commit-card-body')).toBeNull();
     expect(view.getByTestId('review-commit-card').textContent).toMatch(/Randy Murphy\s*·\s*1 of 1/);
+  });
+
+  it('leaves out its place when the PR\'s commits were not counted', () => {
+    const view = render(ReviewCommitCard, { commit: COMMIT, ordinal: null, total: null });
+    expect(view.getByTestId('review-commit-card').textContent).not.toMatch(/\d+ of \d+/);
   });
 });

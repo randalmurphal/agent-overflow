@@ -187,6 +187,12 @@ Mechanism in
   close, and one `worktree:removed` event moves draft placeholders on it to
   Base on every client. A project whose root is itself gone is left alone;
   there is nothing to reattach to.
+- A worktree git still registers whose directory is gone stays in the
+  workspace picker, marked missing. The app never prunes it: a directory
+  that is only unreachable (an unmounted drive) would lose its
+  registration. No thread can enter it, and its Remove deletes git's
+  registration alone, without the uncommitted-changes check a present
+  directory gets.
 - When a thread's pull request merges, its linked worktree is removed and
   its threads move to Base (user ruling 2026-10-13). The app tracks the PR
   a thread's worktree branch has OPEN when a lookup finds it (git status,

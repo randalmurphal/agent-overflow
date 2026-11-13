@@ -27,6 +27,7 @@
   import { findThreadCommentKey, reviewCommentKey } from '../../utils/reviewFindScan';
   import type { ReviewThread } from '../../types/models';
   import type { CommentAnchor, ReviewPaneState } from '../../stores/reviewPane.svelte';
+  import { commentWriteKey } from '../../stores/reviewCommentWrites.svelte';
 
   // A PR review thread on the diff surface: the same card as the
   // Conversation feed (avatar, author, state edge and chip, the actions at
@@ -125,7 +126,7 @@
     <div class="group/head flex min-w-0 items-center gap-1.5 py-1 pl-2.5 {onJumpToConversation ? 'pr-1' : 'pr-2.5'} text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {collapsed || (firstBody === '' && !editingFirst) ? '' : 'border-b border-border-subtle'}" data-first-comment>
       <button
         type="button"
-        class="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 overflow-hidden text-left"
+        class="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 overflow-hidden text-left compact:flex-nowrap"
         aria-expanded={!collapsed}
         title={location}
         onclick={onToggle}
@@ -140,7 +141,9 @@
         {#if outdated}
           <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_OUTDATED_CHIP_CLASS}" title={outdatedTitle(thread)} data-testid="review-thread-outdated">outdated</span>
         {/if}
-        <!-- Basis-0 so the summary only takes leftover width: with basis
+        <!-- On compact the line never wraps: the chips keep their width and
+             the login, time and range shorten with an ellipsis. Basis-0 so
+             the summary only takes leftover width: with basis
              auto its long text would absorb the row and crush the chips. -->
         {#if collapsed}
           <span class="min-w-0 flex-1 basis-0 truncate text-fg-muted">{summary}</span>
@@ -152,13 +155,13 @@
             <span class="min-w-0 shrink truncate text-fg-subtle {CONFIRM_HIDES}">@{first.authorLogin}</span>
           {/if}
           {#if firstTime}
-            <span class="shrink-0 text-fg-subtle {CONFIRM_HIDES}">· {firstTime}</span>
+            <span class="shrink-0 text-fg-subtle compact:min-w-0 compact:shrink compact:truncate {CONFIRM_HIDES}">· {firstTime}</span>
           {/if}
           {#if first?.editedAt}
-            <span class="shrink-0 text-fg-subtle {CONFIRM_HIDES}" data-testid="review-comment-edited">edited</span>
+            <span class="shrink-0 text-fg-subtle compact:min-w-0 compact:shrink compact:truncate {CONFIRM_HIDES}" data-testid="review-comment-edited">edited</span>
           {/if}
           {#if range}
-            <span class="shrink-0 text-fg-subtle {CONFIRM_HIDES}" data-testid="review-thread-range">{rangeLabel(range)}</span>
+            <span class="shrink-0 text-fg-subtle compact:min-w-0 compact:shrink compact:truncate {CONFIRM_HIDES}" data-testid="review-thread-range">{rangeLabel(range)}</span>
           {/if}
           <span class="min-w-0 flex-1 basis-0"></span>
         {/if}
@@ -208,6 +211,8 @@
           {onResolve}
           hold={review?.canHoldReply ? { primary: review.primaryCommentAction, onHold: () => review?.holdPRThreadReply(thread) } : null}
           nowWithheld={review?.nowWithheldReason ?? null}
+          preview={review?.editorPreviews.control(commentWriteKey.reply(thread.id)) ?? null}
+          previewSource={replying ? (review?.suggestions.threadSource(thread) ?? null) : null}
         />
       {/if}
     </div>

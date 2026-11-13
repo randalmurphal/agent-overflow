@@ -2,6 +2,8 @@
   import X from '@lucide/svelte/icons/x';
   import ReviewCommentEditorShell, { type EditorAction } from './ReviewCommentEditorShell.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
+  import type { SuggestionSource } from './ReviewCommentMarkdown.svelte';
+  import type { EditorPreviewControl } from '../../stores/reviewEditorPreview.svelte';
   import type { EditorRow } from '../../utils/reviewRows';
   import { copyToClipboard } from '../../utils/clipboard';
   import { seenActivation } from '../../utils/seenActivation';
@@ -50,9 +52,18 @@
     onCancelMove?: () => void;
     /** Back from a range to the line the editor was opened on. */
     onDropRange?: (editorId: string) => void;
+    /** The editor's Preview toggle and where a previewed suggestion
+     * reads the lines it replaces. */
+    preview?: EditorPreviewControl | null;
+    previewSource?: SuggestionSource | null;
+    /** `Suggest change` on its new-side line or range; absent elsewhere. */
+    suggest?: (() => Promise<string[] | null>) | null;
+    /** Why this line's comment goes to the agent only (a head-ending
+     * commit run's line outside the PR's diff); the save's hover text. */
+    agentOnlyReason?: string | null;
   }
 
-  let { editor, body, onBodyChange, onCancel, onSubmit, post = null, pending = false, error = null, consumeFocus, onUseLine, onMove, onCancelMove, onDropRange }: Props = $props();
+  let { editor, body, onBodyChange, onCancel, onSubmit, post = null, pending = false, error = null, consumeFocus, onUseLine, onMove, onCancelMove, onDropRange, preview = null, previewSource = null, suggest = null, agentOnlyReason = null }: Props = $props();
   let submitting = $state(false);
   let shell: HTMLDivElement | undefined = $state();
   const saveable = $derived(body.trim().length > 0 && !submitting && editor.state === 'placed' && !editor.repeated);
@@ -69,7 +80,7 @@
     }
   }
 
-  const draftAction = $derived<EditorAction>({ label: post ? 'Add draft' : 'Add comment', run: () => submit('draft'), disabled: !saveable, testid: 'review-draft-editor-add' });
+  const draftAction = $derived<EditorAction>({ label: post ? 'Add draft' : 'Add comment', run: () => submit('draft'), disabled: !saveable, title: agentOnlyReason ?? undefined, testid: 'review-draft-editor-add' });
   const nowAction = $derived<EditorAction | null>(post
     ? { label: 'Comment now', run: () => submit('now'), disabled: !saveable || post.withheld !== null, title: post.withheld ?? undefined, testid: 'review-draft-editor-now' }
     : null);
@@ -158,5 +169,8 @@
     header={rangeHeader}
     notes={placementNotes}
     hideActions={editor.state === 'gone' || editor.armed}
+    preview={editor.state === 'gone' ? null : preview}
+    {previewSource}
+    {suggest}
   />
 </div>

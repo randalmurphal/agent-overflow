@@ -72,6 +72,7 @@ var githubAPI = []apiRoute{
 	{name: "gh api request reviewers", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/requested_reviewers$`), flags: []string{"hostname"}, run: ghRequestedReviewers},
 	{name: "gh api remove reviewers", method: "DELETE", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/requested_reviewers$`), flags: []string{"hostname"}, run: ghRequestedReviewers},
 	{name: "gh api add assignees", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/issues/(\d+)/assignees$`), flags: []string{"hostname"}, run: ghAssignees},
+	{name: "gh api blob", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/git/blobs/([0-9a-fA-F]{40})$`), flags: []string{"hostname", "accept"}, run: ghBlob},
 	{name: "gh api remove assignees", method: "DELETE", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/issues/(\d+)/assignees$`), flags: []string{"hostname"}, run: ghAssignees},
 }
 
@@ -111,6 +112,10 @@ var gitlabAPI = []apiRoute{
 	{name: "glab api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"hostname"}, run: forgeUser},
 	{name: "glab api user events", method: "GET", pattern: regexp.MustCompile(`^users/(\d+)/events(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabUserEvents},
 	{name: "glab api project users", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/users(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabProjectUsers},
+	{name: "glab api apply suggestion", method: "PUT", pattern: regexp.MustCompile(`^suggestions/(\d+)/apply$`), flags: []string{"hostname"}, run: glabApplySuggestion},
+	{name: "glab api note award emoji", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/notes/(\d+)/award_emoji(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabNoteAwards},
+	{name: "glab api create note award emoji", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/notes/(\d+)/award_emoji$`), flags: []string{"hostname"}, run: glabCreateNoteAward},
+	{name: "glab api delete note award emoji", method: "DELETE", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/notes/(\d+)/award_emoji/(\d+)$`), flags: []string{"hostname"}, run: glabDeleteNoteAward},
 	{name: "glab api state events", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/resource_state_events(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabStateEvents},
 }
 

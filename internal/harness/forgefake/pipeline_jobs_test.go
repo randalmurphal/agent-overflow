@@ -44,7 +44,7 @@ func pipelineJobsCall(t *testing.T, srv *httptest.Server, host, fullPath string,
 		vars["after"] = *after
 	}
 	return httpRequest(t, srv, "POST", host, "/gitlab/api/graphql", mustJSON(t, map[string]any{
-		"query":         "query PipelineJobs($fullPath: ID!, $id: CiPipelineID!, $after: String) { project(fullPath: $fullPath) { id } }",
+		"query":         testDocument("query", "PipelineJobs", "($fullPath: ID!, $id: CiPipelineID!, $after: String)"),
 		"operationName": "PipelineJobs", "variables": vars,
 	}), http.Header{"Private-Token": {testAPIToken}})
 }
@@ -154,7 +154,7 @@ func TestGitLabPipelineJobsPageAndMiss(t *testing.T) {
 		t.Errorf("on another host = %+v, want a null project", other.Data)
 	}
 	bad := httpRequest(t, srv, "POST", "gitlab.com", "/gitlab/api/graphql", mustJSON(t, map[string]any{
-		"query":         "query PipelineJobs($fullPath: ID!, $id: CiPipelineID!, $after: String) { project(fullPath: $fullPath) { id } }",
+		"query":         testDocument("query", "PipelineJobs", "($fullPath: ID!, $id: CiPipelineID!, $after: String)"),
 		"operationName": "PipelineJobs", "variables": map[string]any{"fullPath": "grp/many", "id": "70"},
 	}), http.Header{"Private-Token": {testAPIToken}})
 	if bad.status != 404 || !lastInvocation(t, e).Unhandled {

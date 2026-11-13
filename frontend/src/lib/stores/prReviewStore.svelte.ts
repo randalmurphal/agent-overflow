@@ -81,6 +81,9 @@ export interface PRSnapshot {
   readonly threads: readonly ReviewThread[];
   /** The forge's activity rows (approvals, merges, draft flips, …). */
   readonly events: readonly ReviewEvent[];
+  /** Why the threads carry no reactions (the pump's reactions read
+   * failed or is bounded), one sentence; absent when they do. */
+  readonly reactionsUnavailable?: string;
   /** The PR's LIVE head OID — not the head any pane's diff was loaded at. */
   readonly headSHA: string;
 }
@@ -98,6 +101,7 @@ export interface PRUpdatedEvent {
   detail?: PRDetail | null;
   threads?: ReviewThread[] | null;
   events?: ReviewEvent[] | null;
+  reactionsUnavailable?: string;
   headSHA?: string;
   /** A fetch failure on the pump: user-facing state, not a log line. */
   error?: string;
@@ -384,6 +388,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
         detail,
         threads: (result.threads ?? []) as ReviewThread[],
         events: (result.events ?? []) as ReviewEvent[],
+        reactionsUnavailable: result.reactionsUnavailable || undefined,
         headSHA: String(result.headSHA ?? detail?.headSHA ?? ''),
       };
       apply(snapshot);
@@ -676,6 +681,7 @@ function applyPRUpdateToKey(key: string, event: PRUpdatedEvent): void {
     detail,
     threads: (event.threads ?? []) as ReviewThread[],
     events: (event.events ?? []) as ReviewEvent[],
+    reactionsUnavailable: event.reactionsUnavailable || undefined,
     headSHA: String(event.headSHA || detail?.headSHA || ''),
   });
 }
@@ -686,9 +692,15 @@ function applyPRCIToKey(key: string, event: PRCIUpdatedEvent): void {
 }
 
 /** Apply a freshly fetched detail + threads pair (comments-only refresh).
- * A refresh reads no events (only the pump does), so the held ones stay. */
+ * A refresh reads no events and no reactions verdict (only the pump
+ * does), so the held ones stay. */
 export function applyPRSnapshot(key: string, snapshot: Omit<PRSnapshot, 'events'> & { events?: readonly ReviewEvent[] }): void {
-  store.apply(key, { ...snapshot, events: snapshot.events ?? store.snapshot(key)?.events ?? EMPTY_PR_EVENTS });
+  const held = store.snapshot(key);
+  store.apply(key, {
+    ...snapshot,
+    events: snapshot.events ?? held?.events ?? EMPTY_PR_EVENTS,
+    reactionsUnavailable: 'reactionsUnavailable' in snapshot ? snapshot.reactionsUnavailable : held?.reactionsUnavailable,
+  });
 }
 
 const EMPTY_PR_EVENTS: readonly ReviewEvent[] = Object.freeze([]);
@@ -711,6 +723,7 @@ export function applyPRThreads(key: string, threads: readonly ReviewThread[]): v
       detail: current?.detail ?? null,
       threads,
       events: current?.events ?? EMPTY_PR_EVENTS,
+      reactionsUnavailable: current?.reactionsUnavailable,
       headSHA: current?.headSHA ?? '',
     },
     { preserveError: true },

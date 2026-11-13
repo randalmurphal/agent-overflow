@@ -49,6 +49,11 @@ type gitlabForge struct {
 	// stateEventRetries holds the merge requests whose state events read
 	// failed, until it is due again (gitlab_manage.go).
 	stateEventRetries gitlabStateEventRetries
+	// reactions is each login's reaction reads per merge request, and
+	// noNoteAwardEmoji marks a host whose GraphQL has no Note.awardEmoji
+	// (gitlab_reactions.go).
+	reactions        gitlabReactionMemory
+	noNoteAwardEmoji gitlabCache[bool]
 }
 
 // resetCaches forgets what the adapter remembers of each host and
@@ -62,6 +67,8 @@ func (f *gitlabForge) resetCaches() {
 	f.pipelineTags.forget()
 	f.probes.reset(f.schemas.clear)
 	f.stateEventRetries.clear()
+	f.reactions.clear()
+	f.noNoteAwardEmoji.clear()
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }
@@ -335,6 +342,8 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 			return PRRead{}, err
 		}
 		markGitLabViewerNotes(out.Threads, f.viewerLogin(ctx, client, ref.Host), settings.accessLevel())
+		gateGitLabSuggestions(out.Threads, settings.accessLevel())
+		out.ReactionsUnavailable = f.fillReactions(ctx, client, ref, out.Threads)
 	}
 	if want.CI {
 		if out.CI, err = f.readGitLabPipeline(ctx, client, ref.Repository(), mr.HeadPipeline); err != nil {
@@ -614,6 +623,8 @@ type gitlabNoteRaw struct {
 	Resolvable bool               `json:"resolvable"`
 	Resolved   *bool              `json:"resolved"`
 	Author     gitlabAuthorRaw    `json:"author"`
+	// Suggestions are the note's suggestion blocks as GitLab parsed them.
+	Suggestions []gitlabSuggestionRaw `json:"suggestions"`
 }
 
 // gitlabAuthorRaw is GitLab's user summary: MR author, note author and
@@ -682,6 +693,7 @@ func normalizeGitLabDiscussion(discussion gitlabDiscussionRaw, at gitlabThreadCo
 		if at.webURL != "" {
 			comment.URL = at.webURL + "#note_" + comment.ID
 		}
+		comment.Suggestions = gitlabSuggestions(note.Suggestions, note.Body)
 		comments = append(comments, comment)
 	}
 	if root == nil || len(comments) == 0 {

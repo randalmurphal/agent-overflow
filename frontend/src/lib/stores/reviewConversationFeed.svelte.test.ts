@@ -346,6 +346,32 @@ describe('Hide resolved threads', () => {
     expect(state.hiddenResolvedCount).toBe(0);
   });
 
+  it('a hidden thread\'s range tints no rows', async () => {
+    const ranged = thread('t-range', 2, { isResolved: true, startLine: 1, line: 2 });
+    const state = await open([OLD, ranged]);
+    state.togglePRThread('t-range');
+    expect(state.rangeTintsFor('src/a.ts')).toHaveLength(1);
+    state.setHideResolved(true);
+    expect(state.rangeTintsFor('src/a.ts')).toHaveLength(0);
+  });
+
+  it('never hides a thread that holds the reader\'s draft reply', async () => {
+    const state = await openWithResolved();
+    state.setReplyBody(DONE.id, 'One more thought.');
+    await state.holdPRThreadReply(DONE);
+    expect(state.drafts.map((draft) => draft.replyThreadId)).toEqual([DONE.id]);
+    state.setHideResolved(true);
+    expect(ids(state)).toEqual(['t-mid', 't-done', 't-old']);
+    expect(state.shownPRThreads.map((each) => each.id)).toContain(DONE.id);
+    expect(state.hiddenResolvedCount).toBe(0);
+    // The draft gone, it stays until the next decision, which hides it.
+    await state.deleteComment(state.drafts[0].id);
+    expect(ids(state)).toEqual(['t-mid', 't-done', 't-old']);
+    state.setHideResolved(false);
+    state.setHideResolved(true);
+    expect(ids(state)).toEqual(['t-mid', 't-old']);
+  });
+
   it('a jump to a hidden thread shows it, in the feed and the diff', async () => {
     const state = await openWithResolved();
     state.setHideResolved(true);

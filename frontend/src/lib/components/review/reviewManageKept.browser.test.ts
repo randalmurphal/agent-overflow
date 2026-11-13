@@ -24,6 +24,7 @@ import type { PRDetail, PRManageCan } from '../../types/models';
 import type { PRRef } from '../../utils/prReference';
 import { installPRDraftsFake } from '../../../test/helpers/prDraftsFake';
 import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 
 const LINES = 3000;
 const OWNER = 'tools-manage';
@@ -78,7 +79,7 @@ beforeEach(() => {
   setBindingMock('SubscribePRUpdates', async () => ({ id: 'sub-1', prKey: 'github:owner/repo:5', detail: detail(), threads: [], headSHA: 'sha-a', seq: 1 }));
   setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setReviewDiffMock('OpenPRDiff', async () => patch());
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setBindingMock('ListPRReviewThreads', async () => []);
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
   setBindingMock('ListPRDiffReviewComments', async () => []);

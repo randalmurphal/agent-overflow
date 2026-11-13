@@ -194,7 +194,7 @@ func TestSeedRejectsMalformedListFields(t *testing.T) {
 func gitlabGraphQLCall(t *testing.T, srv *httptest.Server, host, op string, vars map[string]any) httpAnswer {
 	t.Helper()
 	return httpRequest(t, srv, "POST", host, "/gitlab/api/graphql", mustJSON(t, map[string]any{
-		"query":         "query " + op + "($fullPath: ID!, $viewer: String!, $after: String) { project(fullPath: $fullPath) { id } }",
+		"query":         testDocument("query", op, "($fullPath: ID!, $viewer: String!, $after: String)"),
 		"operationName": op, "variables": vars,
 	}), http.Header{"Private-Token": {testAPIToken}})
 }

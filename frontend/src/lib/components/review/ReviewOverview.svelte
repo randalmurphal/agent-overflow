@@ -8,6 +8,7 @@
   import ReviewCollapsibleSection from './ReviewCollapsibleSection.svelte';
   import ReviewConversation from './ReviewConversation.svelte';
   import ReviewDescriptionEditor from './ReviewDescriptionEditor.svelte';
+  import { EDITOR_PREVIEW_KEY } from '../../stores/reviewEditorPreview.svelte';
   import ReviewDetailsSection from './ReviewDetailsSection.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
   import ReviewMergeSection from './ReviewMergeSection.svelte';
@@ -85,7 +86,7 @@
         {/if}
       {/snippet}
       {#if editingDescription}
-        <ReviewDescriptionEditor {manage} onClosed={() => { void focusDescriptionEdit(); }} />
+        <ReviewDescriptionEditor {manage} preview={review.editorPreviews.control(EDITOR_PREVIEW_KEY.description)} onClosed={() => { void focusDescriptionEdit(); }} />
       {:else if !detail.body}
         <div class="px-3.5 py-3 text-xs text-fg-subtle" data-testid="review-description-empty">No description.</div>
       {:else}

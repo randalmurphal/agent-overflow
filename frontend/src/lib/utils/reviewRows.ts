@@ -18,6 +18,7 @@ import type { LineRange } from './reviewRange';
 import { patchMemory, patchTextVersion } from './patchMemory.svelte';
 import { PatchTextLost, type ReviewFile } from './patchStore';
 import type { RowEstimate } from './virtual/types';
+import { imageRowHeight, imageSides, isImagePath, REVIEW_BINARY_ROW_PX } from './reviewImageRows';
 
 export const REVIEW_LINE_HEIGHT_PX = 20;
 // The file-header row paints the between-files separation gap INSIDE its
@@ -106,7 +107,10 @@ export type ReviewRow =
   | { kind: 'gone-group'; fileIndex: -1; count: number }
   | { kind: 'comment-thread'; fileIndex: number; threadKey: string; anchor: CommentAnchor }
   | { kind: 'pr-thread'; fileIndex: number; thread: ReviewThread; anchor: CommentAnchor; collapsed: boolean; orphaned: boolean }
-  | { kind: 'surface-end'; fileIndex: number };
+  | { kind: 'surface-end'; fileIndex: number }
+  /** A binary file's images or sizes, or a text SVG shown rendered, in
+   * place of its lines; `heightPx` is reserved (utils/reviewImageRows.ts). */
+  | { kind: 'media'; fileIndex: number; image: boolean; rendered: boolean; heightPx: number };
 
 /**
  * Up to REVIEW_LINE_BLOCK_MAX_LINES display rows of one file, as the walk
@@ -133,6 +137,12 @@ export interface ReviewRowsInput {
   expandedPRThreadIds?: ReadonlySet<string>;
   /** Lead the list with the PR overview or a commit card. */
   overview?: ReviewLeadRow;
+  /** Text SVGs shown rendered instead of their lines. */
+  renderedPaths?: ReadonlySet<string>;
+  /** The diff records no old side (edits): images show their new side. */
+  newSideOnly?: boolean;
+  /** Binary files get a media row (images, sizes) instead of git's line. */
+  media?: boolean;
 }
 
 export interface ReviewRowsResult {
@@ -196,7 +206,17 @@ export function buildReviewRows(input: ReviewRowsInput): ReviewRowsResult {
 
     const inserts = insertsByFile.get(file.path);
     for (const insert of inserts?.takeHead() ?? []) pushInsert(push, fileIndex, insert);
-    pushLineBlocks(push, fileIndex, file, input.viewMode, inserts);
+    const rendered = input.renderedPaths?.has(file.path) ?? false;
+    if (input.media && (file.header?.binary || rendered)) {
+      const image = rendered || isImagePath(file.path);
+      const sides = imageSides(file, input.newSideOnly ?? false).length;
+      push({
+        kind: 'media', fileIndex, image, rendered,
+        heightPx: image && sides > 0 ? imageRowHeight(sides, input.viewMode === 'split') : REVIEW_BINARY_ROW_PX,
+      }, `m:${file.path}`, fileIndex);
+    } else {
+      pushLineBlocks(push, fileIndex, file, input.viewMode, inserts);
+    }
     // Anchors whose line no longer exists in the diff (the source moved
     // under a draft) still render — flushed after the file's blocks, never
     // silently dropped.
@@ -219,6 +239,7 @@ export function reviewRowEstimate(result: ReviewRowsResult, wordWrap: boolean): 
       if (row.kind === 'file-header') return REVIEW_FILE_HEADER_PX;
       if (row.kind === 'surface-end') return REVIEW_SURFACE_END_PX;
       if (row.kind === 'overview') return row.lead === 'commit' ? REVIEW_COMMIT_CARD_ESTIMATE_PX : REVIEW_OVERVIEW_ESTIMATE_PX;
+      if (row.kind === 'media') return row.heightPx;
       // Split view renders side pairs, so the visual row count is
       // splitRows.length, not the stacked display-row count.
       if (row.kind === 'line-block') return (row.splitCount ?? row.count) * REVIEW_LINE_HEIGHT_PX;

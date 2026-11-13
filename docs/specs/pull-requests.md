@@ -239,6 +239,80 @@ control's hover text, under the merge actions' gates and when
 `git:operate` is not granted. Open editors' text lives in the review
 state, so it survives its row unmounting, and find skips an open edit.
 
+### Suggestions, reactions and preview
+
+On a backend with capability `pr-suggestions-reactions.v1`, in the PR
+scope, on both surfaces and both forges:
+
+- Suggest change. A new comment's editor on a new-side line or range,
+  where comments post now, offers `Suggest change`: it inserts a
+  `suggestion` fence at the caret on its own lines, holding the lines'
+  current text from the loaded diff (`whenResident`), with the caret
+  inside, and a fence one backtick longer than any run in the text.
+  Text the diff can no longer read inserts nothing and says so.
+- A suggestion reads as the small diff it proposes, in place of its
+  fence (the body lines the backend places it on, `bodyStartLine` to
+  `bodyEndLine`), inside the one rendered body, so a `<details>`,
+  list or footnote around it keeps its structure. A suggestion the
+  backend cannot place (GitLab's that do not match the body's fences one
+  to one), or whose fence there no longer holds its `to` lines, leaves
+  that fence as code and its diff follows the body. The removed lines are the
+  forge's `from` when `fromKnown` (GitLab); on GitHub, the thread's lines
+  from the diff the pane holds when that is the PR's whole diff at its
+  live head and the thread is not outdated; otherwise the additions
+  alone. A `to` of `[""]` is one empty added line, `[]` a deletion. Find
+  skips the diff.
+- Apply, where the forge says the suggestion applies, sends the loaded
+  head and the suggestion's own identity (`ApplyPRSuggestion`, built in
+  one place from the suggestion as read). Applied reads as a quiet
+  "Applied", an outdated thread's as muted "Outdated", on the left of the
+  suggestion's footer row with Apply on its right. A refusal shows its
+  sentence there; one whose code says the suggestion or the branch moved
+  (`forge_suggestion_changed`, `forge_stale_head`) also reads the PR
+  again. After an apply the head moves and the pane's stale-head banner
+  takes over.
+- On compact a comment's actions are one `⋯` that opens the shared menu
+  with the same rows, order and withheld reasons; a long press on the
+  comment opens the same menu, except on a link or while text in the
+  comment is selected, which keep the browser's menu. Add reaction's
+  popover anchors to the `⋯`, and only the copy of the comment it was
+  opened from (Conversation or diff) shows it. The thread's header line never wraps there: the login, time and
+  range shorten before the state chips do.
+- Reactions. Each reaction present is a chip with its emoji and count,
+  accent-toned when the viewer reacted, with who reacted as hover text
+  where the forge says (GitLab); a press toggles the viewer's own
+  (`SetPRCommentReaction`). Add reaction in the hover actions opens the
+  eight both forges take. A GitLab award with no known emoji shows as
+  `:name:`. No row for a comment without reactions. When the forge's
+  reactions read failed (`reactionsUnavailable`), one muted line at the
+  top of the Conversation says so, the chips stay as last read and Add
+  reaction is not offered.
+- Copy link copies the comment's `url` through the shared clipboard
+  helper; a refused copy is reported and toasted.
+- A sent comment's hover actions read Add reaction, Copy link, Edit,
+  Delete, under the rules of the edit and delete icons above.
+- Preview. Every editor (a new comment, a reply, an edit, the PR
+  comment, the review summary, the description) has one quiet Preview
+  toggle in its button row. It renders the text as a sent comment reads
+  (`ChatMarkdown`'s sanitized embedded mode, fences as diffs where
+  `ParseCommentSuggestions` places them) at the text box's height; until
+  the backend answers for this text, or when it refuses one (over
+  1,000,000 characters), the fences show as code. Off, the text returns
+  with its caret. The state is
+  per editor in the review state, so it survives a remount, and goes
+  when the editor closes.
+
+Apply and a chip follow the posted writes' rule: pending until the pane
+applies the frame at the answer's seq, one at a time per chip and per
+suggestion, withheld with the reason as hover text, a held key's repeat
+writing nothing. State and failures are keyed by the PR and the comment
+and reaction or suggestion. A failure shows where it was pressed while
+the review state lives, as one held toast once it was disposed ("Your
+👍 reaction on <where> was not added.", "The suggestion on <where> was
+not applied."; no Copy text), and nowhere once the pane's PR became
+another, which also closes the popover. `forge_unconfirmed` and a lost
+answer read as not confirmed.
+
 ### Forge events in the feed
 
 `PRRead.Events` carries `ReviewEvent{Kind, ActorLogin, ActorName, At,
@@ -552,8 +626,7 @@ permission reads and the refusals are in
   input of the line's own height; Enter saves, Escape cancels. A failure
   floats under the input, so the title bar keeps its fixed lines.
 - Description: the pencil on the Description section's header opens the
-  raw body with Write and Preview (`ChatMarkdown`'s sanitized embedded
-  mode), Save and Cancel; Ctrl or Cmd+Enter saves. A save names the body
+  raw body with the editors' Preview toggle, Save and Cancel; Ctrl or Cmd+Enter saves. A save names the body
   the editor opened with (`expectedDescription`); one changed since is
   refused with "The description changed since you opened it. Copy your
   text, reload the description and edit again." and the editor stays
@@ -723,6 +796,74 @@ fake forge on desktop and compact.
   any other; the branch delete toggle is absent since the branch is not
   the project's.
 
+### Reading the diff
+
+Commit runs. In the PR scope the commit picker picks one commit (a click)
+or a run (Shift+click on a second row, or a row's `From here`, which runs
+to the newest commit). Commits are numbered from the oldest: the trigger
+reads `All commits`, `N/T <short sha>` for one commit or `N–M/T` for a run,
+never a subject; its steppers are Older (left) and Newer (right). A run
+of the whole list is All commits, never sent. The backend lists at most
+the newest 300 commits with the PR's real count: ordinals and `T` count
+from the PR's first commit, the menu says once that only the newest N of
+T are listed, the oldest listed commit keeps `From here`, and a run of
+the whole truncated list stays a run. When the count is unknown there are
+no ordinals: a commit reads as its short hash and a run as
+`<sha>–<sha>`, at the same trigger width. The run is pane state like a
+picked commit: kept across a reload while its commits are listed, and
+when one is gone (a rebase, an amend) the pane shows All commits with a
+banner saying so. A run's card leads the diff in the commit card's place:
+its count, its ordinals (`· to the head` when it ends there), its first
+and last commits, and `All commits` to leave. Each commit group in the
+Conversation feed has `Changes from here`, the run from the group's
+first commit to the newest, landing on the diff.
+
+Comments in a run. A run that ends before the head comments as a single
+commit does (to the agent). A run of two or more commits that ends at the
+head is read against the whole PR's diff: a new-side line inside one of
+the whole PR's hunks takes the PR's comments (`Comment now`, PR drafts,
+saved in the whole diff's line numbers); any other new-side line takes an
+agent-only draft whose `+` says why on hover ("This line is not part of
+the pull request's diff, so a comment here goes to the agent only."); a
+removed line takes none. The whole diff's line index is built when the
+run opens (from the whole diff on screen, else read once) and dropped when
+it closes; until it is ready, or if its read failed (the card says so,
+with Retry), every line is agent-only. Nothing is guessed.
+
+Binary files. A binary file whose path is an image (png, jpg, jpeg, gif,
+webp, avif, bmp, ico, svg) shows its sides as images: two columns in split
+view, old above new in unified, one for an add or a delete, the new side
+alone for an edit. Each is captioned with its decoded pixel size and its
+byte size; a side over the cap shows its size and that it is too large.
+The row's height is reserved before any byte arrives, so nothing moves.
+Bytes are read only while the row is near the viewport and released when
+it leaves (the media cache's budget). Any other binary file, or an image
+the backend cannot serve, shows `Binary files differ` with both sizes and,
+when the backend says why, its sentence. A refused read says why on the
+row: Retry when the backend was busy, `Reload diff` when the file changed
+since the diff was read, and only the sentence when the diff's files
+cannot be read at all. The reads name the handle the diff's open
+answered, and the bytes are cached under it (an edits diff's under an
+id minted for its open), so no other diff, pane or load shares them. The server forgets a handle when it evicts it or the
+connection that opened it ends. A diff of immutable revisions (the PR, a
+picked commit or run, a branch commit) is then opened once more for a new
+handle, before the next read when the connection ended; a diff that reads
+the working tree is not, and its rows offer `Reload diff` without
+reading. A diff no longer on screen is never reopened. Rows published
+while the diff still streams read under its open from the start. A text SVG keeps its text diff, with one `Rendered` toggle
+in its header that shows it as an image (always an `<img>`, never
+inline).
+
+Line links. In the PR scope with All commits shown, a line's number
+gutter has a context menu (a long press on compact) with `Copy link to
+line`: the line's place on the forge's own diff page, in the anchor that
+page puts in the address bar (neither forge documents one). GitHub:
+`<pr>/files#diff-<sha256 of the path>R<n>` for an added or unchanged line,
+`L<n>` for a removed one. GitLab: `<mr>/diffs#<sha1 of the path>_<old>_<new>`,
+where an added or removed line takes the other side's running number. A
+renamed file is named by its new path. A picked commit or run, and the
+workspace, branch and edits diffs, offer no link.
+
 ## Non-goals
 
 - Merge queues and merge trains: the forge's own page.
@@ -782,3 +923,16 @@ refusal that keeps the text, a draft and a held reply submitted as one
 review, an edit, a reply's delete and a thread's only comment's delete,
 a range over unchanged and added lines, and a held reply sent to the
 agent quoting its thread.
+`review-suggestions-reactions.spec.ts` and its compact twin
+(`review-suggestions-reactions-flow.ts`) drive suggestions, reactions,
+Preview and Copy link on both forges: Suggest change on a range and its
+preview, a refused then landed Apply, Applied and Outdated, a chip
+toggled on and off, the popover's eight, GitLab's unknown awards, a
+refused GitLab reactions read, and the description and PR comment
+previews.
+`review-diff-reading.spec.ts` and its compact twin
+(`review-diff-reading-flow.ts`) drive reading the diff on both forges: a
+run by Shift+click and by `From here`, its card and leaving it, a head
+run's `Comment now` and agent-only line, `Changes from here`, image rows
+in unified and split view, an over-cap and a non-image binary file, the
+SVG toggle and a line's copied link.

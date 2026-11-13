@@ -46,8 +46,11 @@ type Label struct {
 // reopen (GitHub viewerCanClose, viewerCanReopen: WRITE or the author),
 // label (GitHub viewerCanLabel: TRIAGE), assign (GitHub viewerCanAssign:
 // TRIAGE), triage (GitHub review requests: TRIAGE), admin (GitLab
-// reviewers, assignees and labels: developer). Each write refuses as its
-// forge does when its flag is false.
+// reviewers, assignees and labels: developer), push (pushing to the head
+// branch, which a suggestion's commit needs: GitHub
+// viewerCanApplySuggestion, WRITE on a head in the repository itself,
+// none on a fork's; GitLab developer). Each write refuses as its forge
+// does when its flag is false.
 type ViewerCan struct {
 	Update *bool `json:"update,omitempty"`
 	Close  *bool `json:"close,omitempty"`
@@ -56,6 +59,7 @@ type ViewerCan struct {
 	Assign *bool `json:"assign,omitempty"`
 	Triage *bool `json:"triage,omitempty"`
 	Admin  *bool `json:"admin,omitempty"`
+	Push   *bool `json:"push,omitempty"`
 }
 
 // StateEvent is a GitLab resource state event: a close, a reopen
@@ -75,6 +79,8 @@ const (
 	lacksRereview      = "rereview"
 	lacksOverride      = "overrideRequestedChanges"
 	lacksOperationMode = "operationMode"
+	// lacksAwardEmoji is GraphQL's Note.awardEmoji (reactions.go).
+	lacksAwardEmoji = "awardEmoji"
 )
 
 // githubAssigneesMax is how many assignees GitHub keeps.
@@ -88,8 +94,8 @@ func (r *Repo) normalizeManage(ids *idSource) error {
 		return errors.New("serverLacks names what an older GitLab lacks")
 	}
 	for _, lack := range r.ServerLacks {
-		if lack != lacksRereview && lack != lacksOverride && lack != lacksOperationMode {
-			return fmt.Errorf("serverLacks %q is not %s, %s or %s", lack, lacksRereview, lacksOverride, lacksOperationMode)
+		if lack != lacksRereview && lack != lacksOverride && lack != lacksOperationMode && lack != lacksAwardEmoji {
+			return fmt.Errorf("serverLacks %q is not %s, %s, %s or %s", lack, lacksRereview, lacksOverride, lacksOperationMode, lacksAwardEmoji)
 		}
 	}
 	for i := range r.Members {
@@ -306,6 +312,14 @@ func (e *Engine) mayLabel(r *Repo, p *Pull) bool {
 // mayAdmin is GitLab's adminMergeRequest.
 func (e *Engine) mayAdmin(r *Repo, p *Pull) bool {
 	return viewerMay(p.viewer().Admin, gitlabRoles[r.Merge.Permission] >= gitlabRoles["developer"])
+}
+
+// mayPush is whether the viewer may push to the pull's head branch.
+func (e *Engine) mayPush(r *Repo, p *Pull) bool {
+	if r.Forge == "github" {
+		return viewerMay(p.viewer().Push, p.HeadRepo == "" && githubRoles[r.Merge.Permission] >= githubRoles["WRITE"])
+	}
+	return viewerMay(p.viewer().Push, gitlabRoles[r.Merge.Permission] >= gitlabRoles["developer"])
 }
 
 // matches is a search's substring match on a login or a name.

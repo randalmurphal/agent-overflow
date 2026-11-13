@@ -23,6 +23,7 @@ import { prKey, type PRRef } from '../utils/prReference';
 import type { DiffReviewComment, PRDetail, ReviewComment, ReviewThread } from '../types/models';
 import { installPRDraftsFake, type PRDraftsFake } from '../../test/helpers/prDraftsFake';
 import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
+import { commitList } from '../../test/helpers/commitList';
 import { TransportError } from '../transport/wsClient';
 import { resetToLocalPage } from '../../test/helpers/scopes';
 import { resetStagedBackends } from '../../test/helpers/backends';
@@ -128,7 +129,7 @@ beforeEach(() => {
   setBindingMock('SubscribePRUpdates', async () => ({ id: 'sub-5', prKey: KEY, detail: detail(), threads, headSHA: 'sha-5', seq: 1 }));
   setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setReviewDiffMock('OpenPRDiff', async () => PATCH);
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setBindingMock('ListPRReviewThreads', async () => threads);
   setBindingMock('GetPRDetail', async () => detail());
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));

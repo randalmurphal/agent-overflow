@@ -27,7 +27,8 @@
   // scroll is compensated here, for every engine alike). Under the feed:
   // the count Hide resolved hides, held replies whose thread is gone
   // (kept, to delete or keep out of the review) and the one "Comment…"
-  // field.
+  // field. Above it, once, why the comments show no reactions when the
+  // forge's read of them failed.
 
   interface Props {
     review: ReviewPaneState;
@@ -165,11 +166,13 @@
     untrack(holdPlace);
   });
 
+  // The whole section body, so growth above the list (the reactions
+  // notice) is held against as well as growth inside it.
   $effect(() => {
-    const list = listEl;
-    if (!list) return;
+    const root = rootEl;
+    if (!root) return;
     const observer = new ResizeObserver(() => holdPlace());
-    observer.observe(list);
+    observer.observe(root);
     return () => observer.disconnect();
   });
 
@@ -279,6 +282,9 @@
 </script>
 
 <div bind:this={rootEl} class="relative px-3 py-3.5 text-xs" data-testid="review-conversation">
+  {#if review.reactionsUnavailable}
+    <p class="mb-3 text-[0.6875rem] text-fg-subtle" data-testid="review-reactions-unavailable">{review.reactionsUnavailable}</p>
+  {/if}
   {#if review.conversationFeed.length > 1}
     <!-- The rail: avatar discs are 28px wide from x=12, so their center
          is x=26; the line runs from the first disc to the last. -->

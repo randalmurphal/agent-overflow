@@ -1,0 +1,512 @@
+package git
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"slices"
+	"strings"
+	"testing"
+
+	"agent-overflow/internal/forgeapi"
+)
+
+var githubTestHead = strings.Repeat("a", 40)
+
+// githubSuggestionTarget is a SuggestionTarget answer: thread T1 of o/r#5
+// on a.go lines 2 to 3, holding comment C1 by octo, at githubTestHead.
+func githubSuggestionTarget(mod func(thread, pull map[string]any)) string {
+	pull := map[string]any{"number": 5, "state": "OPEN", "headRefName": "feature", "headRefOid": githubTestHead,
+		"repository": map[string]any{"nameWithOwner": "o/r"}, "headRepository": map[string]any{"nameWithOwner": "o/r"}}
+	thread := map[string]any{"__typename": "PullRequestReviewThread", "id": "T1", "isResolved": false, "isOutdated": false, "path": "a.go",
+		"line": 3, "startLine": 2, "diffSide": "RIGHT", "startDiffSide": "RIGHT", "subjectType": "LINE", "pullRequest": pull,
+		"comments": map[string]any{"pageInfo": map[string]any{"hasNextPage": false}, "nodes": []map[string]any{{"id": "C0"}, {"id": "C1"}}}}
+	if mod != nil {
+		mod(thread, pull)
+	}
+	return mustJSON(map[string]any{"data": map[string]any{
+		"viewer":  map[string]any{"login": "me"},
+		"thread":  thread,
+		"comment": map[string]any{"__typename": "PullRequestReviewComment", "id": "C1", "body": "```suggestion\nTWO\n```", "author": map[string]any{"login": "octo", "databaseId": 42, "name": "Octo Cat"}},
+	}})
+}
+
+// githubSuggestionTargetBody is the default target with the comment's
+// body replaced.
+func githubSuggestionTargetBody(body string) string {
+	target := githubSuggestionTarget(nil)
+	out := strings.Replace(target, `"body":`+mustJSON("```suggestion\nTWO\n```"), `"body":`+mustJSON(body), 1)
+	if out == target {
+		panic("the default body is not in the target")
+	}
+	return out
+}
+
+// Prose around the block edited after the read leaves the suggestion
+// as shown, so it still applies.
+func TestGitHubApplySuggestionAfterAProseEdit(t *testing.T) {
+	t.Parallel()
+	core, calls := newGitHubApplyCore(t, githubApplyRig{target: githubSuggestionTargetBody("Please:\n```suggestion\nTWO\n```\nthanks")})
+	if err := core.ApplyPRSuggestion(t.Context(), githubTestRef(5), applyReq()); err != nil {
+		t.Fatal(err)
+	}
+	if lastOp(calls, "SuggestionCommit") == nil {
+		t.Fatal("no commit")
+	}
+}
+
+type githubApplyRig struct {
+	target string
+	// file is the blob request's answer; entry edits the tree entry the
+	// SuggestionFile read answers, by default the regular file whose blob
+	// is file's body; entryAnswer replaces that answer whole.
+	file        forgeAPIAnswer
+	entry       func(file map[string]any)
+	entryAnswer string
+	commit      forgeAPIAnswer
+	resolve     forgeAPIAnswer
+}
+
+const githubTestBlobPath = "repos/o/r/git/blobs/"
+
+func newGitHubApplyCore(t *testing.T, rig githubApplyRig) (*Core, *forgeAPICalls) {
+	t.Helper()
+	if rig.target == "" {
+		rig.target = githubSuggestionTarget(nil)
+	}
+	if rig.file.Body == "" && rig.file.Status == 0 {
+		rig.file = forgeAPIAnswer{Body: "one\ntwo\nthree\nfour\n"}
+	}
+	blobID := gitBlobID([]byte(rig.file.Body))
+	if rig.entryAnswer == "" {
+		file := map[string]any{"mode": 33188, "type": "blob", "oid": blobID,
+			"object": map[string]any{"__typename": "Blob", "byteSize": len(rig.file.Body), "isBinary": false}}
+		if rig.entry != nil {
+			rig.entry(file)
+		}
+		rig.entryAnswer = mustJSON(map[string]any{"data": map[string]any{"repository": map[string]any{"object": map[string]any{"__typename": "Commit", "file": file}}}})
+	}
+	if rig.commit.Body == "" && rig.commit.Status == 0 {
+		rig.commit = githubData(`{"createCommitOnBranch":{"commit":{"oid":"bbbb"}}}`)
+	}
+	if rig.resolve.Body == "" && rig.resolve.Status == 0 {
+		rig.resolve = githubData(`{"resolve":{"thread":{"isResolved":true}}}`)
+	}
+	return newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		switch {
+		case call.Op == "SuggestionTarget":
+			return forgeAPIAnswer{Body: rig.target}
+		case call.Op == "SuggestionCommit":
+			return rig.commit
+		case call.Op == "SetThreadResolved":
+			return rig.resolve
+		case call.Op == "SuggestionFile":
+			if call.Vars["owner"] != "o" || call.Vars["name"] != "r" || call.Vars["oid"] != githubTestHead || call.Vars["path"] != "a.go" {
+				t.Errorf("SuggestionFile variables = %v", call.Vars)
+			}
+			return forgeAPIAnswer{Body: rig.entryAnswer}
+		case call.Method == http.MethodGet && strings.HasPrefix(call.Path, githubTestBlobPath):
+			if call.Header.Get("Accept") != "application/vnd.github.raw+json" {
+				t.Errorf("blob read with Accept %q", call.Header.Get("Accept"))
+			}
+			return rig.file
+		}
+		return forgeUnexpected(t, call)
+	})
+}
+
+func applyReq() SuggestionApply {
+	return SuggestionApply{Target: CommentTarget{ThreadID: "T1", CommentID: "C1"}, Index: 0, HeadSHA: githubTestHead, Digest: SuggestionDigest("github", 2, 3, []string{"TWO"})}
+}
+
+func lastOp(calls *forgeAPICalls, op string) *forgeAPICall {
+	all := calls.all()
+	for i := len(all) - 1; i >= 0; i-- {
+		if all[i].Op == op {
+			return &all[i]
+		}
+	}
+	return nil
+}
+
+// The apply reads the file at the head the pane saw, commits the anchored
+// lines rewritten with the message and trailer GitHub writes, against
+// that head, then resolves the thread.
+func TestGitHubApplySuggestionCommitsAndResolves(t *testing.T) {
+	t.Parallel()
+	core, calls := newGitHubApplyCore(t, githubApplyRig{})
+	if err := core.ApplyPRSuggestion(t.Context(), githubTestRef(5), applyReq()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(calls.ops(), ","); got != "SuggestionTarget,SuggestionFile,GET "+githubTestBlobPath+gitBlobID([]byte("one\ntwo\nthree\nfour\n"))+",SuggestionCommit,SetThreadResolved" {
+		t.Fatalf("requests = %s", got)
+	}
+	commit := lastOp(calls, "SuggestionCommit").Vars
+	contents, _ := base64.StdEncoding.DecodeString(commit["contents"].(string))
+	if string(contents) != "one\nTWO\nfour\n" || commit["path"] != "a.go" || commit["branch"] != "feature" || commit["repository"] != "o/r" ||
+		commit["expectedHeadOid"] != githubTestHead || commit["headline"] != "Apply suggestion from code review" ||
+		commit["body"] != "Co-authored-by: Octo Cat <42+octo@users.noreply.github.com>" {
+		t.Fatalf("commit = %v (contents %q)", commit, contents)
+	}
+	if resolve := lastOp(calls, "SetThreadResolved").Vars; resolve["threadID"] != "T1" || resolve["resolved"] != true {
+		t.Fatalf("resolve = %v", resolve)
+	}
+}
+
+// The viewer's own suggestion, and an author GitHub gives no user id,
+// get no trailer.
+func TestGitHubApplySuggestionTrailerNeedsAnotherUser(t *testing.T) {
+	t.Parallel()
+	for _, author := range []string{`{"login":"me","databaseId":7,"name":"Me"}`, `{"login":"bot[bot]"}`, `null`} {
+		target := strings.Replace(githubSuggestionTarget(nil), `{"databaseId":42,"login":"octo","name":"Octo Cat"}`, author, 1)
+		core, calls := newGitHubApplyCore(t, githubApplyRig{target: target})
+		if err := core.ApplyPRSuggestion(t.Context(), githubTestRef(5), applyReq()); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := lastOp(calls, "SuggestionCommit").Vars["body"]; ok {
+			t.Fatalf("author %s: a trailer was sent", author)
+		}
+	}
+}
+
+// Everything checked before the commit refuses with nothing written.
+func TestGitHubApplySuggestionRefusals(t *testing.T) {
+	t.Parallel()
+	big := strings.Repeat("x\n", suggestionFileMaxBytes/2+1)
+	for _, tc := range []struct {
+		name   string
+		rig    githubApplyRig
+		req    func(*SuggestionApply)
+		ref    PRReference
+		expect func(error) bool
+	}{
+		{"moved head", githubApplyRig{target: githubSuggestionTarget(func(_, pull map[string]any) { pull["headRefOid"] = strings.Repeat("b", 40) })}, nil, githubTestRef(5),
+			func(err error) bool { return errors.As(err, new(*HeadMovedError)) }},
+		{"another PR's thread", githubApplyRig{}, nil, githubTestRef(6), notOnPR},
+		{"another repository's thread", githubApplyRig{target: githubSuggestionTarget(func(_, pull map[string]any) {
+			pull["repository"] = map[string]any{"nameWithOwner": "o/other"}
+		})}, nil, githubTestRef(5), notOnPR},
+		{"a comment of another thread", githubApplyRig{target: githubSuggestionTarget(func(thread, _ map[string]any) {
+			thread["comments"] = map[string]any{"pageInfo": map[string]any{"hasNextPage": false}, "nodes": []map[string]any{{"id": "C0"}}}
+		})}, nil, githubTestRef(5), notOnPR},
+		{"unknown node", githubApplyRig{target: `{"data":{"viewer":{"login":"me"},"thread":null,"comment":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve"}]}`}, nil, githubTestRef(5), notOnPR},
+		{"closed", githubApplyRig{target: githubSuggestionTarget(func(_, pull map[string]any) { pull["state"] = "CLOSED" })}, nil, githubTestRef(5), notApplied},
+		{"outdated", githubApplyRig{target: githubSuggestionTarget(func(thread, _ map[string]any) { thread["isOutdated"] = true })}, nil, githubTestRef(5), notApplied},
+		{"resolved", githubApplyRig{target: githubSuggestionTarget(func(thread, _ map[string]any) { thread["isResolved"] = true })}, nil, githubTestRef(5), notApplied},
+		{"old side", githubApplyRig{target: githubSuggestionTarget(func(thread, _ map[string]any) { thread["diffSide"] = "LEFT" })}, nil, githubTestRef(5), notApplied},
+		{"no such suggestion", githubApplyRig{}, func(r *SuggestionApply) { r.Index = 1 }, githubTestRef(5), changed},
+		{"the block edited", githubApplyRig{target: githubSuggestionTargetBody("```suggestion\nTHREE\n```")}, nil, githubTestRef(5), changed},
+		{"a block inserted before it", githubApplyRig{target: githubSuggestionTargetBody("```suggestion\nX\n```\n```suggestion\nTWO\n```")}, nil, githubTestRef(5), changed},
+		{"the anchor moved", githubApplyRig{target: githubSuggestionTarget(func(thread, _ map[string]any) { thread["line"], thread["startLine"] = 4, 3 })}, nil, githubTestRef(5), changed},
+		{"a digest of another forge", githubApplyRig{}, func(r *SuggestionApply) { r.Digest = SuggestionDigest("gitlab", 2, 3, []string{"TWO"}) }, githubTestRef(5), changed},
+		{"blob past the bound", githubApplyRig{file: forgeAPIAnswer{Body: big}, entry: func(file map[string]any) {
+			file["object"].(map[string]any)["byteSize"] = 10
+		}}, nil, githubTestRef(5), notApplied},
+		{"binary file", githubApplyRig{file: forgeAPIAnswer{Body: "one\x00\ntwo\nthree\n"}}, nil, githubTestRef(5), notApplied},
+		{"file shorter than the anchor", githubApplyRig{file: forgeAPIAnswer{Body: "one\ntwo\n"}}, nil, githubTestRef(5), notApplied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			core, calls := newGitHubApplyCore(t, tc.rig)
+			req := applyReq()
+			if tc.req != nil {
+				tc.req(&req)
+			}
+			err := core.ApplyPRSuggestion(t.Context(), tc.ref, req)
+			if !tc.expect(err) {
+				t.Fatalf("err = %v", err)
+			}
+			if lastOp(calls, "SuggestionCommit") != nil || lastOp(calls, "SetThreadResolved") != nil {
+				t.Fatalf("a refused apply wrote: %v", calls.ops())
+			}
+		})
+	}
+}
+
+func changed(err error) bool     { return errors.As(err, new(*SuggestionChangedError)) }
+func notOnPR(err error) bool     { return errors.As(err, new(*CommentNotOnPRError)) }
+func notApplied(err error) bool  { return errors.As(err, new(*SuggestionNotAppliedError)) }
+func unconfirmed(err error) bool { return errors.As(err, new(*UnconfirmedWriteError)) }
+
+// The commit's outcomes: refused (the head moved under it) is a refusal;
+// lost, or data beside errors, is unconfirmed and the thread is not
+// resolved; a resolve refused or lost after the commit is a partial write.
+func TestGitHubApplySuggestionOutcomes(t *testing.T) {
+	t.Parallel()
+	movedErr := `{"data":{"createCommitOnBranch":null},"errors":[{"type":"UNPROCESSABLE","path":["createCommitOnBranch"],"message":"Expected branch to point to \"x\" but it did not. Pull and try again."}]}`
+	for _, tc := range []struct {
+		name     string
+		rig      githubApplyRig
+		check    func(error) bool
+		resolved bool
+	}{
+		{"commit refused for a moved head", githubApplyRig{commit: forgeAPIAnswer{Body: movedErr}}, func(err error) bool {
+			var explained *ForgeActionError
+			return !unconfirmed(err) && forgeapi.WriteNotApplied(err) && errors.As(ExplainForgeError(githubTestRef(5), ActionApplySuggestion, err), &explained) && explained.Kind == ForgeErrorStaleHead
+		}, false},
+		{"commit unanswered", githubApplyRig{commit: forgeAPIAnswer{Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`}}, unconfirmed, false},
+		{"commit data beside errors", githubApplyRig{commit: forgeAPIAnswer{Body: `{"data":{"createCommitOnBranch":{"commit":{"oid":"b"}}},"errors":[{"message":"something"}]}`}}, unconfirmed, false},
+		{"commit answered without a commit", githubApplyRig{commit: githubData(`{"createCommitOnBranch":{"commit":null}}`)}, unconfirmed, false},
+		{"resolve refused", githubApplyRig{resolve: forgeAPIAnswer{Body: `{"data":{"resolve":null},"errors":[{"type":"FORBIDDEN","path":["resolve"],"message":"no"}]}`}}, func(err error) bool {
+			partial, ok := errors.AsType[*PartialWriteError](err)
+			return ok && !partial.Unconfirmed() && partial.Done == "committed the suggestion to the head branch"
+		}, true},
+		{"resolve unanswered", githubApplyRig{resolve: forgeAPIAnswer{Status: http.StatusInternalServerError, Body: `{}`}}, func(err error) bool {
+			partial, ok := errors.AsType[*PartialWriteError](err)
+			return ok && partial.Unconfirmed()
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			core, calls := newGitHubApplyCore(t, tc.rig)
+			err := core.ApplyPRSuggestion(t.Context(), githubTestRef(5), applyReq())
+			if !tc.check(err) {
+				t.Fatalf("err = %v", err)
+			}
+			commits := 0
+			for _, op := range calls.ops() {
+				if op == "SuggestionCommit" {
+					commits++
+				}
+			}
+			if commits != 1 || (lastOp(calls, "SetThreadResolved") != nil) != tc.resolved {
+				t.Fatalf("requests = %v", calls.ops())
+			}
+		})
+	}
+}
+
+// githubReactionTarget answers ReactionTarget for comment IC_1 (an issue
+// comment) of o/r#5 with the viewer's heart.
+func githubReactionTarget(typename string, number int) forgeAPIAnswer {
+	return githubData(fmt.Sprintf(`{"node":{"__typename":%q,"pullRequest":{"number":%d,"repository":{"nameWithOwner":"o/r"}},
+		"reactionGroups":[{"content":"THUMBS_UP","viewerHasReacted":false,"reactors":{"totalCount":1}},{"content":"HEART","viewerHasReacted":true,"reactors":{"totalCount":1}}]}}`, typename, number))
+}
+
+func TestGitHubReactionWrites(t *testing.T) {
+	t.Parallel()
+	issue := CommentTarget{ThreadID: "IC_1", CommentID: "IC_1"}
+	review := CommentTarget{ThreadID: "T1", CommentID: "RC_1"}
+	for _, tc := range []struct {
+		name    string
+		target  CommentTarget
+		answer  forgeAPIAnswer
+		reactTo string
+		reacted bool
+		ref     PRReference
+		ops     string
+		check   func(error) bool
+	}{
+		{"add", issue, githubReactionTarget("IssueComment", 5), "thumbsup", true, githubTestRef(5), "ReactionTarget,AddReaction", nil},
+		{"remove", issue, githubReactionTarget("IssueComment", 5), "heart", false, githubTestRef(5), "ReactionTarget,RemoveReaction", nil},
+		{"already reacted", issue, githubReactionTarget("IssueComment", 5), "heart", true, githubTestRef(5), "ReactionTarget", nil},
+		{"not reacted", issue, githubReactionTarget("IssueComment", 5), "thumbsup", false, githubTestRef(5), "ReactionTarget", nil},
+		{"review comment", review, githubReactionTarget("PullRequestReviewComment", 5), "rocket", true, githubTestRef(5), "ReactionTarget,AddReaction", nil},
+		{"another PR's comment", issue, githubReactionTarget("IssueComment", 6), "rocket", true, githubTestRef(5), "ReactionTarget", notOnPR},
+		{"a review comment named as an issue comment", issue, githubReactionTarget("PullRequestReviewComment", 5), "rocket", true, githubTestRef(5), "ReactionTarget", notOnPR},
+		{"unknown id", issue, forgeAPIAnswer{Body: `{"data":{"node":null},"errors":[{"type":"NOT_FOUND","message":"x"}]}`}, "rocket", true, githubTestRef(5), "ReactionTarget", notOnPR},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+				switch call.Op {
+				case "ReactionTarget":
+					return tc.answer
+				case "AddReaction":
+					return githubData(`{"addReaction":{"reaction":{"content":"THUMBS_UP"}}}`)
+				case "RemoveReaction":
+					return githubData(`{"removeReaction":{"reaction":{"content":"HEART"}}}`)
+				}
+				return forgeUnexpected(t, call)
+			})
+			err := core.SetPRCommentReaction(t.Context(), tc.ref, tc.target, tc.reactTo, tc.reacted)
+			if tc.check == nil && err != nil || tc.check != nil && !tc.check(err) {
+				t.Fatalf("err = %v", err)
+			}
+			if got := strings.Join(calls.ops(), ","); got != tc.ops {
+				t.Fatalf("requests = %s, want %s", got, tc.ops)
+			}
+			if write := lastOp(calls, "AddReaction"); write != nil && (write.Vars["subjectID"] != tc.target.CommentID || write.Vars["content"] != githubReactionContent[tc.reactTo]) {
+				t.Fatalf("add = %v", write.Vars)
+			}
+		})
+	}
+	// A write that may have applied is unconfirmed, never refused.
+	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op == "ReactionTarget" {
+			return githubReactionTarget("IssueComment", 5)
+		}
+		return forgeAPIAnswer{Body: `{"data":{"addReaction":{"reaction":{"content":"ROCKET"}}},"errors":[{"message":"partial"}]}`}
+	})
+	if err := core.SetPRCommentReaction(t.Context(), githubTestRef(5), issue, "rocket", true); !unconfirmed(err) {
+		t.Fatalf("data beside errors = %v", err)
+	}
+}
+
+func mustJSON(v any) string {
+	out, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(out)
+}
+
+// What the apply may rewrite is the regular file's blob at the thread's
+// path on the head commit, read by its id and checked against it. Every
+// other entry is refused, by its own sentence, before any content is
+// read; a blob within the bound applies at exactly the bound.
+func TestGitHubApplySuggestionFileEntry(t *testing.T) {
+	t.Parallel()
+	exact := "one\ntwo\nthree\n" + strings.Repeat("x", suggestionFileMaxBytes-len("one\ntwo\nthree\n"))
+	lfs := "version https://git-lfs.github.com/spec/v1\noid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393\nsize 12345\n"
+	commit := func(file map[string]any) map[string]any {
+		return map[string]any{"data": map[string]any{"repository": map[string]any{"object": map[string]any{"__typename": "Commit", "file": file}}}}
+	}
+	for _, tc := range []struct {
+		name   string
+		rig    githubApplyRig
+		reason string // empty: applies
+		blob   bool   // the blob was read
+	}{
+		{"a symbolic link to a file", githubApplyRig{entry: func(f map[string]any) { f["mode"] = 40960 }}, "the file is a symbolic link", false},
+		{"a symbolic link, mode as octal digits", githubApplyRig{entry: func(f map[string]any) { f["mode"] = 120000 }}, "the file is a symbolic link", false},
+		{"a submodule", githubApplyRig{entry: func(f map[string]any) {
+			f["mode"], f["type"], f["object"] = 57344, "commit", map[string]any{"__typename": "Commit"}
+		}}, "the path is a submodule", false},
+		{"a directory", githubApplyRig{entry: func(f map[string]any) {
+			f["mode"], f["type"], f["object"] = 16384, "tree", map[string]any{"__typename": "Tree"}
+		}}, "the path is a directory", false},
+		{"a missing path", githubApplyRig{entryAnswer: mustJSON(commit(nil))}, "the file is not on the head commit", false},
+		{"the head commit missing", githubApplyRig{entryAnswer: mustJSON(map[string]any{"data": map[string]any{"repository": map[string]any{"object": nil}}})},
+			"the head commit is not in the head branch's repository", false},
+		{"executable", githubApplyRig{entry: func(f map[string]any) { f["mode"] = 33261 }},
+			"the file is executable and GitHub's commit API cannot keep that; apply it from a checkout", false},
+		{"one byte past the bound", githubApplyRig{file: forgeAPIAnswer{Body: exact + "x"}}, "the file is larger than 1 MiB", false},
+		{"binary by GitHub's answer", githubApplyRig{entry: func(f map[string]any) { f["object"].(map[string]any)["isBinary"] = true }}, "the file is not text", false},
+		{"an object id of another format", githubApplyRig{entry: func(f map[string]any) { f["oid"] = strings.Repeat("a", 64) }}, "the repository's object format is not supported", false},
+		{"bytes that are not the blob", githubApplyRig{entry: func(f map[string]any) { f["oid"] = strings.Repeat("a", 40) }}, "the file read is not the file on the head commit", true},
+		{"exactly the bound", githubApplyRig{file: forgeAPIAnswer{Body: exact}}, "", true},
+		{"a Git LFS pointer is a regular file", githubApplyRig{file: forgeAPIAnswer{Body: lfs},
+			target: githubSuggestionTarget(func(thread, _ map[string]any) { thread["line"] = 2 })}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			core, calls := newGitHubApplyCore(t, tc.rig)
+			req := applyReq()
+			if strings.Contains(tc.name, "LFS") {
+				req.Digest = SuggestionDigest("github", 2, 2, []string{"TWO"})
+			}
+			err := core.ApplyPRSuggestion(t.Context(), githubTestRef(5), req)
+			var refused *SuggestionNotAppliedError
+			switch {
+			case tc.reason == "" && err != nil:
+				t.Fatalf("err = %v", err)
+			case tc.reason != "" && (!errors.As(err, &refused) || refused.Reason != tc.reason):
+				t.Fatalf("err = %v, want the reason %q", err, tc.reason)
+			}
+			blob := false
+			for _, op := range calls.ops() {
+				blob = blob || strings.HasPrefix(op, "GET "+githubTestBlobPath)
+			}
+			if blob != tc.blob {
+				t.Fatalf("blob read %t, want %t: %v", blob, tc.blob, calls.ops())
+			}
+			if (lastOp(calls, "SuggestionCommit") != nil) != (tc.reason == "") {
+				t.Fatalf("commit sent %t for reason %q", lastOp(calls, "SuggestionCommit") != nil, tc.reason)
+			}
+		})
+	}
+}
+
+func TestGitBlobID(t *testing.T) {
+	t.Parallel()
+	// git hash-object of "hello\n" and of the empty blob.
+	if got := gitBlobID([]byte("hello\n")); got != "ce013625030ba8dba906f756967f9e9ca394464a" {
+		t.Fatalf("hello = %s", got)
+	}
+	if got := gitBlobID(nil); got != "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" {
+		t.Fatalf("empty = %s", got)
+	}
+}
+
+// GitHub answers every reaction group of every comment, which can take
+// the threads read past its body bound: the read then runs once more
+// without reactions and says so. A read too large without them fails as
+// before; a read that fits sends one request.
+func TestGitHubReactionsNeverShrinkTheThreadsRead(t *testing.T) {
+	t.Parallel()
+	tick := func(bodyBytes int, reactions bool) string {
+		groups := []map[string]any{}
+		for _, content := range []string{"THUMBS_UP", "THUMBS_DOWN", "LAUGH", "HOORAY", "CONFUSED", "HEART", "ROCKET", "EYES"} {
+			groups = append(groups, map[string]any{"content": content, "viewerHasReacted": false, "reactors": map[string]any{"totalCount": 0}})
+		}
+		nodes := []map[string]any{}
+		for i := range 100 {
+			node := map[string]any{"id": fmt.Sprintf("IC_%d", i), "databaseId": i + 1, "author": map[string]any{"login": "octo"},
+				"body": strings.Repeat("x", bodyBytes), "createdAt": "2026-01-01T00:00:00Z", "lastEditedAt": nil, "url": "u",
+				"viewerCanUpdate": false, "viewerCanDelete": false, "isMinimized": false}
+			if reactions {
+				node["reactionGroups"] = groups
+			}
+			nodes = append(nodes, node)
+		}
+		return mustJSON(map[string]any{"data": map[string]any{"repository": map[string]any{"viewerPermission": "WRITE", "pullRequest": map[string]any{
+			"number": 5, "headRefName": "f", "state": "OPEN", "viewerCanApplySuggestion": true,
+			"reviewThreads": map[string]any{"pageInfo": map[string]any{"hasNextPage": false}, "nodes": []any{}},
+			"comments":      map[string]any{"pageInfo": map[string]any{"hasNextPage": false}, "nodes": nodes},
+		}}}})
+	}
+	// Each comment's eight groups add some 700 bytes: a body size that
+	// fits without them and not with them, and one that fits neither way.
+	without := len(tick(0, false))
+	with := len(tick(0, true))
+	fits := (forgeAPIDefaultBound - without - (with-without)/2) / 100
+	if len(tick(fits, false)) > forgeAPIDefaultBound || len(tick(fits, true)) <= forgeAPIDefaultBound {
+		t.Fatalf("fixture sizes %d and %d do not straddle the bound", len(tick(fits, false)), len(tick(fits, true)))
+	}
+	for _, tc := range []struct {
+		name      string
+		bodyBytes int
+		requests  []bool // wantReactions of each PRTick
+		fails     bool
+		sentence  string
+	}{
+		{"fits with reactions", 10, []bool{true}, false, ""},
+		{"fits only without reactions", fits, []bool{true, false}, false, githubReactionsTooLarge},
+		{"fits neither way", forgeAPIDefaultBound / 100, []bool{true, false}, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+				if call.Op != "PRTick" {
+					return forgeUnexpected(t, call)
+				}
+				return forgeAPIAnswer{Body: tick(tc.bodyBytes, call.Vars["wantReactions"] == true)}
+			})
+			read, err := core.ReadPR(t.Context(), githubTestRef(5), PRReadParts{Threads: true}, nil, nil)
+			if (err != nil) != tc.fails {
+				t.Fatalf("err = %v", err)
+			}
+			if tc.fails && !errors.Is(err, forgeapi.ErrBodyTooLarge) {
+				t.Fatalf("err = %v, want the body bound", err)
+			}
+			got := []bool{}
+			for _, call := range calls.all() {
+				got = append(got, call.Vars["wantReactions"] == true)
+			}
+			if !slices.Equal(got, tc.requests) {
+				t.Fatalf("PRTick wantReactions = %v, want %v", got, tc.requests)
+			}
+			if read.ReactionsUnavailable != tc.sentence {
+				t.Fatalf("ReactionsUnavailable = %q", read.ReactionsUnavailable)
+			}
+			if !tc.fails && len(read.Threads) != 100 {
+				t.Fatalf("threads = %d", len(read.Threads))
+			}
+		})
+	}
+}
+
+const forgeAPIDefaultBound = 1 << 20

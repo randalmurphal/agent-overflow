@@ -47,6 +47,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	code := providerpath.Run(m)
+	if code == 0 {
+		if err := checkEveryGraphQLOperationSent(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			code = 1
+		}
+	}
 	_ = os.RemoveAll(tmp)
 	os.Exit(code)
 }
@@ -61,7 +67,7 @@ type rig struct {
 
 func newRig(t *testing.T, fixture forgefake.Fixture) *rig {
 	t.Helper()
-	engine := forgefake.New(forgefake.Options{APIToken: rigAPIToken})
+	engine := forgefake.New(forgefake.Options{APIToken: rigAPIToken, OnInvocation: func(inv forgefake.Invocation) { recordRigInvocation(t, inv) }})
 	if _, err := engine.Seed(fixture); err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
@@ -1031,6 +1037,18 @@ func TestGitHubMergeActionsThroughTheAppsForgeCode(t *testing.T) {
 	if read.Detail.Merge.AutoMerge != nil || eventKinds(read.Events)[len(read.Events)-1] != "auto_merge_canceled" {
 		t.Fatalf("after cancel: merge %+v, events %+v", read.Detail.Merge, read.Events)
 	}
+	// Auto-merge with an edited commit message sends it
+	// (EnableAutoMergeMessage); cancel it again.
+	edited := gitops.MergeMessage{Title: "Ship it (#9)", Body: "Edited."}
+	if outcome, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "squash", HeadSHA: head, AutoMerge: true, CommitMessage: &edited}); err != nil || !outcome.AutoMerge {
+		t.Fatalf("auto-merge with a message = %+v, %v", outcome, err)
+	}
+	if vars := decodeRaw(t, lastInvocation(t, r, "gh graphql EnableAutoMergeMessage").Variables); vars["commitHeadline"] != edited.Title || vars["commitBody"] != edited.Body {
+		t.Fatalf("EnableAutoMergeMessage variables = %v", vars)
+	}
+	if err := r.core.CancelPRAutoMerge(ctx, ref); err != nil {
+		t.Fatalf("CancelPRAutoMerge: %v", err)
+	}
 
 	// The checks pass and a reviewer approved: ready. A merge naming a
 	// head the pull no longer has is refused and changes nothing.
@@ -1407,4 +1425,40 @@ func TestRefusalsReachTheAppsExplanations(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The detail's thread states and the timeline past their first page
+// (PRThreadStatesPage, PRTimelinePage): a base requiring conversation
+// resolution with the one unresolved thread past the first 100, and 150
+// events, read backwards.
+func TestGitHubReadsPastTheFirstPageThroughTheAppsForgeCode(t *testing.T) {
+	threads := manyThreads(105)
+	for i := range threads {
+		threads[i].Resolved = i != 104
+	}
+	events := make([]forgefake.Event, 150)
+	for i := range events {
+		events[i] = forgefake.Event{Kind: "review_requested", Ref: "bob", At: fmt.Sprintf("2026-01-01T00:%02d:%02dZ", i/60, i%60)}
+	}
+	r := newRig(t, forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{
+		Forge: "github", Project: "acme/long",
+		Pulls: []forgefake.Pull{{
+			Number: 4, Title: "Long", Author: "octo", HeadRef: "long",
+			Readiness: &forgefake.Readiness{ResolveThreads: true},
+			Threads:   threads, Events: events,
+		}},
+	}}})
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "long", Number: 4}
+	read, err := r.core.ReadPR(t.Context(), ref, gitops.PRReadParts{Detail: true, Events: true}, nil, nil)
+	if err != nil {
+		t.Fatalf("ReadPR: %v", err)
+	}
+	if got := read.Detail.Readiness; !slices.Contains(blockerKinds(got), "threads") {
+		t.Fatalf("readiness = %+v, want the unresolved thread past the first page to block", got)
+	}
+	if len(read.Events) != 150 || read.Events[0].At != events[0].At || read.Events[149].At != events[149].At {
+		t.Fatalf("events = %d, first %+v", len(read.Events), read.Events[0])
+	}
+	lastInvocation(t, r, "gh graphql PRThreadStatesPage")
+	lastInvocation(t, r, "gh graphql PRTimelinePage")
 }

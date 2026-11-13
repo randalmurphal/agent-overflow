@@ -1,8 +1,9 @@
 // A write that failed after the surface that made it went: the review
 // pane's comment writes and its title and description edits share this
-// one rule. What a failure reads as, and whether it may have landed
-// anyway; and the one toast that says so, held until dismissed, with the
-// text that was sent to copy. Nothing is kept for a later pane.
+// one rule, as do its reactions and suggestion applies. What a failure
+// reads as, and whether it may have landed anyway; and the one toast that
+// says so, held until dismissed, with the text that was sent to copy
+// where there is text. Nothing is kept for a later pane.
 
 import { addErrorToast, showToastText } from './toast.svelte';
 import { isTransportClassError } from './transportStatus.svelte';
@@ -11,7 +12,9 @@ import { copyToClipboard } from '../utils/clipboard';
 
 /** A write's text, for the toast when it fails after its surface is gone. */
 export interface LostWriteText {
-  readonly body: string;
+  /** The text that was sent, for `Copy text`; absent for a write that
+   * carries none (a reaction, a suggestion's apply). */
+  readonly body?: string;
   /** Who and where: `Your comment on src/a.ts:12`. */
   readonly subject: string;
   /** What did not happen: `was not sent` (a comment), `was not saved`
@@ -41,9 +44,14 @@ export function writeFailure(err: unknown): { unconfirmed: boolean; sentence: st
 export function toastLostWrite(text: LostWriteText, err: unknown): void {
   const failure = writeFailure(err);
   const message = `${text.subject} ${failure.unconfirmed ? 'was not confirmed' : (text.notDone ?? 'was not sent')}. ${failure.sentence}`;
+  const body = text.body;
+  if (body === undefined) {
+    addErrorToast(message, err, 0);
+    return;
+  }
   const id = addErrorToast(message, err, 0, { label: 'Copy text', keep: true, run: () => {
-    void copyToClipboard(text.body).then((copied) => {
-      if (!copied) showToastText(id, `${message} The text could not be copied, so it is below.`, text.body);
+    void copyToClipboard(body).then((copied) => {
+      if (!copied) showToastText(id, `${message} The text could not be copied, so it is below.`, body);
     });
   } });
 }

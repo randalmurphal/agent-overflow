@@ -87,12 +87,18 @@ PR stores; components own presentation and interaction.
   bar's stepper carry counts). Every selector is `ReviewToolbarMenu`, a
   bordered trigger over the shared `Menu`; a trigger never truncates on
   its own, a long value is shortened in the middle with the whole value as
-  hover text. The commit picker (`ReviewCommitPicker`) reads `All commits`
-  or `N/M <shortSha>` and never the subject; the subject, author, age and
-  body live in the menu rows and in the commit card (`ReviewCommitCard`),
-  which takes the overview's place as the diff list's lead row
-  (`lead: 'commit'`, key `REVIEW_COMMIT_CARD_ROW_KEY`) while a commit is
-  picked, so the fixed chrome never changes height for it. The
+  hover text. The commit picker (`ReviewCommitPicker`) reads `All commits`,
+  `N/T <shortSha>` or a run's `N–M/T`, numbered from the PR's first
+  commit by the backend's count even when only the newest are listed
+  (`utils/commitRange.ts`), and never the subject; the subject, author, age
+  and body live in the menu rows and in the commit card (`ReviewCommitCard`)
+  or a run's card (`ReviewRangeCard`), which takes the overview's place as
+  the diff list's lead row (`lead: 'commit'`, key
+  `REVIEW_COMMIT_CARD_ROW_KEY`) while a commit or run is picked, so the
+  fixed chrome never changes height for it. A run that ends at the head
+  reads each line's comment home from the whole PR's diff index
+  (`stores/reviewPRLineIndex.svelte.ts`, `stores/reviewRangeComments.ts`);
+  the line's `+` carries the answer (`lineComment`). The
   file-tree toggle lives in the rail (`ReviewRail`: the tree's header when
   open, a strip when closed; on compact the open rail covers the diff and
   a pick closes it). Back steps out of the CI log, the conflict view and
@@ -158,8 +164,29 @@ PR stores; components own presentation and interaction.
   loaded diff shows in the pane-level group, to copy or discard; a
   collapsed or filtered file hides its editors with it. The contract is
   in [review pane design](../../../../../docs/architecture/review-pane-design.md#open-new-comment-editors).
+  Every editor's Preview is `ReviewPreviewToggle` in its button row and
+  `ReviewEditorPreview` in the box's place at the box's height, its
+  state in `editorPreviews` under the editor's key. A sent comment's body
+  renders through `ReviewCommentMarkdown` (one document; the fences at
+  the lines the backend reports, never parsed here, claimed as
+  `ReviewSuggestionDiff`, the reaction chips under it), and its actions are Add reaction, Copy
+  link, Edit, Delete in that order: hover icons on desktop, one `⋯` menu
+  (and the long press) on compact. A
+  reaction or Apply never shows before the forge's answer
+  ([pull requests](../../../../../docs/specs/pull-requests.md#suggestions-reactions-and-preview)).
   Rows an expansion supplied carry no version proof; verified expansions
   are a backend change and out of scope here.
+- A binary file, or a text SVG shown `Rendered`, is one media row
+  (`kind: 'media'`, `ReviewImageDiff`) at a height reserved from the image
+  area's bound (`utils/reviewImageRows.ts`). Its sizes and bytes come from
+  the pane's `ReviewDiffMedia` (`stores/reviewDiffMedia.svelte.ts`) while
+  the row is mounted; every backend read of a diff's files, and what a
+  refusal offers (Retry or reloading the diff), is decided in
+  `stores/reviewDiffFiles.ts` and nowhere else. The conflict view passes
+  no media host and keeps git's line.
+- The number gutter's context menu (`ReviewLineMenu`, the PR's whole
+  diff only) copies the line's anchor on the forge's diff page from
+  `utils/reviewLineLink.ts`; elsewhere the native menu stays.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.
 
 Review mutations reconcile from authoritative responses and show partial or

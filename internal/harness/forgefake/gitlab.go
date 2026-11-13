@@ -364,6 +364,7 @@ func gitlabDiscussions(p *Pull) []map[string]any {
 		for _, comment := range thread.Comments {
 			notes = append(notes, gitlabNote(comment, map[string]any{
 				"type": "DiffNote", "position": position, "resolvable": true, "resolved": thread.Resolved,
+				"suggestions": gitlabNoteSuggestions(p, &thread, comment),
 			}))
 		}
 		out = append(out, map[string]any{"id": thread.ID, "individual_note": false, "notes": notes})

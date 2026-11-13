@@ -38,7 +38,7 @@
   import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
   import { workspaceRefForProject } from '../../../utils/workspaceKey';
-  import { pathBasename } from '../../../utils/pathDisplay';
+  import { disambiguatedPathLabels, formatPathLabel, pathBasename } from '../../../utils/pathDisplay';
   import {
     clearWorktreeIntent,
     setThreadEnvMode,
@@ -301,15 +301,38 @@
     }
   }
 
-  // Worktree directories are named after their branch by default, so the
-  // branch is shown only when it differs from the directory name.
-  function worktreeName(wt: WorktreeListItem): string {
+  function directoryName(wt: WorktreeListItem): string {
     return pathBasename(wt.path) || wt.path;
   }
 
+  // The project root has its own Base row above the list.
+  let linkedWorktrees = $derived(worktrees.filter((wt) => !sameNormalizedPath(wt.path, projectPath)));
+
+  // A row is named by its directory. Two worktrees in same-named directories
+  // gain the parent segments that tell them apart.
+  let nameLabels = $derived(disambiguatedPathLabels(
+    linkedWorktrees.map((wt) => ({ id: wt.path, name: directoryName(wt), path: wt.path })),
+  ));
+
+  function worktreeName(wt: WorktreeListItem): string {
+    const label = nameLabels.get(wt.path);
+    return label ? formatPathLabel(label) : directoryName(wt);
+  }
+
+  // Worktree directories are named after their branch by default, so the
+  // branch is shown only when it differs from the directory name.
   function distinctBranch(wt: WorktreeListItem): string {
     const branch = wt.branch ?? '';
-    return branch === worktreeName(wt) ? '' : branch;
+    return branch === directoryName(wt) ? '' : branch;
+  }
+
+  // A worktree git still registers whose directory is gone: nothing can run
+  // there, so its row only offers the removal that clears the registration.
+  const MISSING_REASON = "This worktree's folder no longer exists. Remove it to clear git's record of it.";
+
+  function rowDisabledReason(wt: WorktreeListItem): string | undefined {
+    if (wt.missing) return MISSING_REASON;
+    return workspaceChangingDisabled ? disabledReason : undefined;
   }
 
   function worktreeRowLabel(wt: WorktreeListItem): string {
@@ -482,108 +505,113 @@
       >
         Could not list worktrees: {listError}
       </div>
-    {:else if worktrees.length > 0}
+    {:else if linkedWorktrees.length > 0}
       <MenuDivider />
-      {#each worktrees as wt (wt.path)}
-        {#if !sameNormalizedPath(wt.path, projectPath)}
-          {#if confirm && confirm.path === wt.path}
-            <div
-              class="px-3 py-2 text-sm"
-              role="presentation"
-              data-testid="env-picker-confirm-row"
-            >
-              <div class="text-fg truncate">
-                Remove
-                {#if confirm.branch}
-                  <span class="text-fg-hint">{@render branchName(confirm.branch)} ·</span>
-                {/if}
-                <span class="font-medium">{confirm.label}</span>?
-              </div>
-              {#if confirm.loading}
-                <div class="mt-1 text-[0.6875rem] text-fg-hint">Checking…</div>
-              {:else if confirm.error}
-                <div class="mt-1 text-[0.6875rem] text-error truncate">{confirm.error}</div>
-              {:else if confirm.status}
-                {#if isRiskyStatus(confirm.status)}
-                  <div class="mt-1 text-[0.6875rem] text-warning truncate">
-                    {riskSummary(confirm.status)}
-                  </div>
-                {:else if confirm.status.attachedThreads > 0}
-                  <div class="mt-1 text-[0.6875rem] text-fg-hint truncate">
-                    {riskSummary(confirm.status)} — will move to project root.
-                  </div>
-                {/if}
-                {#if terminalsClosingNote(confirm.status.terminals)}
-                  <div class="mt-1 text-[0.6875rem] text-fg-hint truncate" data-testid="env-picker-confirm-terminals">
-                    {terminalsClosingNote(confirm.status.terminals)}
-                  </div>
-                {/if}
+      {#each linkedWorktrees as wt (wt.path)}
+        {#if confirm && confirm.path === wt.path}
+          <div
+            class="px-3 py-2 text-sm"
+            role="presentation"
+            data-testid="env-picker-confirm-row"
+          >
+            <div class="text-fg truncate">
+              Remove
+              {#if confirm.branch}
+                <span class="text-fg-hint">{@render branchName(confirm.branch)} ·</span>
               {/if}
-              <div class="mt-2 flex items-center justify-end gap-2">
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onclick={cancelRemove}
-                  disabled={confirm.pending}
-                >
-                  Cancel
-                </Button>
-                {#if confirm.status && isRiskyStatus(confirm.status)}
-                  <Button
-                    variant="danger"
-                    size="xs"
-                    onclick={() => performRemove(true)}
-                    disabled={confirm.pending || confirm.loading}
-                    testId="env-picker-confirm-force"
-                  >
-                    {confirm.pending ? 'Removing…' : 'Discard and remove'}
-                  </Button>
-                {:else}
-                  <Button
-                    variant="secondary"
-                    size="xs"
-                    onclick={() => performRemove(false)}
-                    disabled={confirm.pending || confirm.loading}
-                    testId="env-picker-confirm-remove"
-                  >
-                    {confirm.pending ? 'Removing…' : 'Remove'}
-                  </Button>
-                {/if}
-              </div>
+              <span class="font-medium">{confirm.label}</span>?
             </div>
-          {:else}
-            <MenuItem
-              label={worktreeRowLabel(wt)}
-              checked={sameNormalizedPath(currentWorkspace, wt.path) && !stagingNewWorktree}
-              disabled={workspaceChangingDisabled}
-              title={workspaceChangingDisabled ? disabledReason : undefined}
-              onSelect={() => selectPath(wt.path)}
-              actionLabel={`Remove worktree ${pathBasename(wt.path) || wt.path}`}
-              actionPosition="end"
-              actionDisabled={workspace === null || wt.deleteBlocked}
-              actionTitle={wt.deleteBlocked
-                ? 'This worktree cannot be removed while an attached thread is running.'
-                : `Remove worktree ${pathBasename(wt.path) || wt.path}`}
-              onAction={() => requestRemove(wt)}
-            >
-              {#snippet labelContent()}
-                {#if distinctBranch(wt)}{@render branchName(distinctBranch(wt))}{' · '}{/if}{worktreeName(wt)}
-              {/snippet}
-              {#snippet action()}
-                {#if wt.deleteBlocked}
-                  <!-- Same pulsing running-dot as the sidebar: a faded
-                       trash icon reads as deletable at a glance; a live
-                       activity marker doesn't. -->
-                  <span
-                    class="h-1.5 w-1.5 rounded-full bg-success animate-pulse"
-                    data-testid={`env-picker-busy-${pathBasename(wt.path) || wt.path}`}
-                  ></span>
-                {:else}
-                  <Icon icon={Trash2} size={12} strokeWidth={2} />
-                {/if}
-              {/snippet}
-            </MenuItem>
-          {/if}
+            {#if confirm.loading}
+              <div class="mt-1 text-[0.6875rem] text-fg-hint">Checking…</div>
+            {:else if confirm.error}
+              <div class="mt-1 text-[0.6875rem] text-error truncate">{confirm.error}</div>
+            {:else if confirm.status}
+              {#if confirm.status.missing}
+                <div class="mt-1 text-[0.6875rem] text-fg-hint" data-testid="env-picker-confirm-missing">
+                  Its folder is already gone. This clears git's record of it.
+                </div>
+              {/if}
+              {#if isRiskyStatus(confirm.status)}
+                <div class="mt-1 text-[0.6875rem] text-warning truncate">
+                  {riskSummary(confirm.status)}
+                </div>
+              {:else if confirm.status.attachedThreads > 0}
+                <div class="mt-1 text-[0.6875rem] text-fg-hint truncate">
+                  {riskSummary(confirm.status)} — will move to project root.
+                </div>
+              {/if}
+              {#if terminalsClosingNote(confirm.status.terminals)}
+                <div class="mt-1 text-[0.6875rem] text-fg-hint truncate" data-testid="env-picker-confirm-terminals">
+                  {terminalsClosingNote(confirm.status.terminals)}
+                </div>
+              {/if}
+            {/if}
+            <div class="mt-2 flex items-center justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="xs"
+                onclick={cancelRemove}
+                disabled={confirm.pending}
+              >
+                Cancel
+              </Button>
+              {#if confirm.status && isRiskyStatus(confirm.status)}
+                <Button
+                  variant="danger"
+                  size="xs"
+                  onclick={() => performRemove(true)}
+                  disabled={confirm.pending || confirm.loading}
+                  testId="env-picker-confirm-force"
+                >
+                  {confirm.pending ? 'Removing…' : 'Discard and remove'}
+                </Button>
+              {:else}
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  onclick={() => performRemove(false)}
+                  disabled={confirm.pending || confirm.loading}
+                  testId="env-picker-confirm-remove"
+                >
+                  {confirm.pending ? 'Removing…' : 'Remove'}
+                </Button>
+              {/if}
+            </div>
+          </div>
+        {:else}
+          <MenuItem
+            label={worktreeRowLabel(wt)}
+            checked={sameNormalizedPath(currentWorkspace, wt.path) && !stagingNewWorktree}
+            disabled={workspaceChangingDisabled || wt.missing}
+            title={rowDisabledReason(wt)}
+            onSelect={() => selectPath(wt.path)}
+            actionLabel={`Remove worktree ${worktreeName(wt)}`}
+            actionPosition="end"
+            actionDisabled={workspace === null || wt.deleteBlocked}
+            actionTitle={wt.deleteBlocked
+              ? 'This worktree cannot be removed while an attached thread is running.'
+              : `Remove worktree ${worktreeName(wt)}`}
+            onAction={() => requestRemove(wt)}
+          >
+            {#snippet labelContent()}
+              {#if distinctBranch(wt)}{@render branchName(distinctBranch(wt))}{' · '}{/if}{worktreeName(wt)}
+              <!-- The warning color keeps the marker legible on a dimmed row. -->
+              {#if wt.missing}<span class="ml-1.5 text-xs text-warning">missing</span>{/if}
+            {/snippet}
+            {#snippet action()}
+              {#if wt.deleteBlocked}
+                <!-- Same pulsing running-dot as the sidebar: a faded
+                     trash icon reads as deletable at a glance; a live
+                     activity marker doesn't. -->
+                <span
+                  class="h-1.5 w-1.5 rounded-full bg-success animate-pulse"
+                  data-testid={`env-picker-busy-${directoryName(wt)}`}
+                ></span>
+              {:else}
+                <Icon icon={Trash2} size={12} strokeWidth={2} />
+              {/if}
+            {/snippet}
+          </MenuItem>
         {/if}
       {/each}
     {/if}

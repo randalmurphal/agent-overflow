@@ -41,8 +41,8 @@ export interface CommentWritesHost {
   /** Reads the PR's threads again, for an answer with no pump (seq 0). */
   refreshThreads(): Promise<void>;
   /** Shows the PR comment the viewer posted (`commentId`, the forge's id
-   * for it as the read names it) in a Conversation feed that froze its
-   * order, at the feed's end; whatever else arrived stays behind "N new". */
+   * for it as the read names it): it counts as seen in the Conversation
+   * feed, never in "N new", and the section scrolls it into view. */
   showPostedComment(commentId: string): void;
 }
 
@@ -258,7 +258,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       const body = prCommentBody.trim();
       if (!body) return;
       // The answer names the created comment; one it does not name (an
-      // older backend) joins nothing and stays behind "N new".
+      // older backend) joins the feed as any arrival does.
       let created = '';
       await run(commentWriteKey.prComment, async (ref) => {
         const answer = await PostPRComment(prReferenceWire(ref), body);

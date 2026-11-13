@@ -573,6 +573,18 @@ writes when streaming resumed inside the settle window of an auto-collapse
 bottom restore (bug-report-20260731T211929Z; regression:
 `appendAfterQuiet.browser.test.ts`, the settle-window test).
 
+The same holds for a target past the end of the rows, at any alignment. The
+engine clamps it to that end, so it moves when the rows from the destination
+on grow. While one of those rows is an estimate, that movement is the
+correction the passes exist for. Once all are measured it is live content (a
+log's next line, a row appended): the first pass that finds the clamped
+target over a fully measured tail records the height from the destination's
+top to the end, and growth past it is kept out of the clamp. A view that
+landed at the end of a short list stays there until its owner moves it
+(regression: the "list's end stopped short" tests in
+`timelineVirtualizer.browser.test.ts`, the grown-log test in
+`reviewCILogFind.browser.test.ts`).
+
 **Bounded by the scrollback that exists.** Opening upward spends `scrollTop`,
 and a run near the top of a thread may not have enough. The write clamps at 0
 and the remainder falls downward. Inherent (nothing scrolls above the first

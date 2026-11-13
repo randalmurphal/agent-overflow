@@ -142,6 +142,8 @@ func TestForgeListReadsTakeAPageOverTheDefaultBodyBound(t *testing.T) {
 				return forgeAPIAnswer{Body: gitlabTestProjectSettings}
 			case call.Path == "user":
 				return forgeAPIAnswer{Body: `{"id":1,"username":"viewer"}`}
+			case call.Op == "MRNoteReactions":
+				return forgeAPIAnswer{Body: gitlabNoReactions}
 			}
 			return forgeUnexpected(t, call)
 		})

@@ -83,7 +83,7 @@ func openBranchBasePatch(t *testing.T, app *App, ref WorkspaceRef, base string, 
 func openPRCommitPatch(t *testing.T, app *App, ref WorkspaceRef, rev gitops.PRRevision, sha string) (string, error) {
 	t.Helper()
 	ctx, _ := reviewDiffConn(t)
-	opened, err := app.OpenPRCommitDiff(ctx, ref, prRef(), rev, sha, false, true)
+	opened, err := app.OpenPRCommitDiff(ctx, ref, prRef(), rev, sha, sha, false, true)
 	if err != nil {
 		return "", err
 	}
@@ -141,6 +141,8 @@ func TestOpenReviewDiffHoldsNothingForAPatchThatFitsTheFirstChunk(t *testing.T) 
 	if n := openReviewDiffCount(app); n != 0 {
 		t.Fatalf("%d diffs held after a one-chunk patch", n)
 	}
+	// The files pin holds the snapshot until it settles, then lets go.
+	app.reviewDiffFiles.pins.Wait()
 	if n := snapshotEntries(t, app); n != 0 {
 		t.Fatalf("%d snapshots left after a one-chunk patch", n)
 	}
@@ -180,6 +182,7 @@ func TestReviewDiffHandleReadsTheRestOnlyOnItsConnection(t *testing.T) {
 	if n := openReviewDiffCount(app); n != 0 {
 		t.Fatalf("%d diffs held after release", n)
 	}
+	app.reviewDiffFiles.pins.Wait()
 	if n := snapshotEntries(t, app); n != 0 {
 		t.Fatalf("%d snapshots left after release", n)
 	}

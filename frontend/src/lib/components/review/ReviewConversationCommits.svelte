@@ -8,8 +8,9 @@
   // One push's worth of commits in the Conversation feed: a dot on the
   // rail, "author added N commits", then the commits as one-liners, each
   // a button that shows that commit's diff (the toolbar commit
-  // selector's action). Commits are context, not the conversation, so
-  // they get no card and long runs fold past a few lines.
+  // selector's action), and `Changes from here` shows the group's first
+  // commit through the newest. Commits are context, not the conversation,
+  // so they get no card and long runs fold past a few lines.
 
   interface Props {
     review: ReviewPaneState;
@@ -23,6 +24,12 @@
   let showAll = $state(false);
   const visible = $derived(showAll ? commits : commits.slice(0, VISIBLE_COLLAPSED));
   const hiddenCount = $derived(commits.length - visible.length);
+  // The group's first commit: `Changes from here` runs from it to the head.
+  const first = $derived(commits.length > 0 ? commits[commits.length - 1] : null);
+  function showChangesFromFirst(): void {
+    const from = first;
+    if (from) void review.showChangesFrom(from.sha);
+  }
   const time = $derived.by(() => {
     const ms = commits[0]?.authoredAt ?? 0;
     return ms > 0 ? relativeTime(ms) : '';
@@ -38,12 +45,26 @@
       <Icon icon={GitCommitHorizontal} size={13} />
     </span>
   </div>
-  <div class="min-w-0 pt-1">
+  <div class="group min-w-0 pt-1">
     <div class="flex min-w-0 items-center gap-1.5 text-[0.75rem]">
-      <span class="truncate font-semibold text-fg" title={author}>{author}</span>
-      <span class="shrink-0 text-fg-muted">added {commits.length} {commits.length === 1 ? 'commit' : 'commits'}</span>
-      {#if time}
-        <span class="shrink-0 text-fg-subtle">· {time}</span>
+      <!-- The words give way (truncate) to the button, never the row's
+           width: the feed has nothing to scroll sideways. -->
+      <span class="flex min-w-0 flex-1 items-center gap-1.5">
+        <span class="min-w-0 truncate font-semibold text-fg" title={author}>{author}</span>
+        <span class="min-w-0 truncate text-fg-muted">added {commits.length} {commits.length === 1 ? 'commit' : 'commits'}</span>
+        {#if time}
+          <span class="min-w-0 truncate text-fg-subtle">· {time}</span>
+        {/if}
+      </span>
+      {#if first}
+        <!-- Revealed on hover; it holds its place, so nothing moves. -->
+        <button
+          type="button"
+          class="shrink-0 rounded-[var(--radius-field)] px-1.5 text-[0.6875rem] text-fg-muted opacity-0 hover:bg-surface-2 hover:text-fg focus-visible:opacity-100 group-hover:opacity-100 compact:opacity-100 compact:select-none"
+          title="Show the changes from {first.shortSha} through the newest commit"
+          data-testid="review-conversation-changes-from"
+          onclick={showChangesFromFirst}
+        >Changes from here</button>
       {/if}
     </div>
     <div class="mt-1.5 flex flex-col gap-0.5">

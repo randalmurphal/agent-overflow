@@ -100,6 +100,8 @@ type Forge interface {
 	// The management actions: title, description, reviewers, assignees,
 	// labels, state, reviews (forge_manage.go).
 	ForgeManager
+	// Suggestions and reactions on comments (forge_suggestions.go).
+	ForgeSuggester
 }
 
 // PRReadParts names the parts of a PR one ReadPR decodes. Events are the
@@ -116,12 +118,17 @@ func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI && !p
 // PRRead is one ReadPR answer. A part ReadPR was not asked for is zero.
 // HasCI reports that the CI part was read, so a caller can tell a PR
 // with no pipeline (HasCI, empty CI) from a read that did not ask.
+//
+// ReactionsUnavailable is the sentence saying the threads carry no
+// reactions because the read that has them failed (GitLab's award emoji
+// read, which is apart from its discussions); the threads stand.
 type PRRead struct {
-	Detail  PRDetail
-	Threads []ReviewThread
-	Events  []ReviewEvent
-	CI      CIPipeline
-	HasCI   bool
+	Detail               PRDetail
+	Threads              []ReviewThread
+	Events               []ReviewEvent
+	CI                   CIPipeline
+	HasCI                bool
+	ReactionsUnavailable string
 }
 
 // MergedPRHead is one merged PR/MR's head coordinates as returned by
@@ -265,20 +272,24 @@ type ReviewThread struct {
 // EditedAt is when the forge says the body was last edited (GitHub's
 // lastEditedAt), empty when it was not or the forge does not say (GitLab's
 // REST notes do not: their updated_at also moves on a resolve). URL is the
-// comment on the forge's web UI when the read carries it: GitHub's url,
-// GitLab's merge request page at the note's anchor.
+// comment on the forge's web UI, which the client copies as the comment's
+// link: GitHub's url, GitLab's merge request page at #note_<id>.
+// Suggestions are the comment's suggestion blocks and Reactions its
+// reaction groups with a count above zero (forge_suggestions.go).
 type ReviewComment struct {
-	ID              string         `json:"id"`
-	AuthorLogin     string         `json:"authorLogin"`
-	AuthorName      string         `json:"authorName,omitempty"`
-	Body            string         `json:"body"`
-	CreatedAt       string         `json:"createdAt"`
-	EditedAt        string         `json:"editedAt,omitempty"`
-	DatabaseID      int64          `json:"databaseID"`
-	ReplyTo         *ReviewReplyTo `json:"replyTo,omitempty"`
-	ViewerCanEdit   bool           `json:"viewerCanEdit"`
-	ViewerCanDelete bool           `json:"viewerCanDelete"`
-	URL             string         `json:"url,omitempty"`
+	ID              string              `json:"id"`
+	AuthorLogin     string              `json:"authorLogin"`
+	AuthorName      string              `json:"authorName,omitempty"`
+	Body            string              `json:"body"`
+	CreatedAt       string              `json:"createdAt"`
+	EditedAt        string              `json:"editedAt,omitempty"`
+	DatabaseID      int64               `json:"databaseID"`
+	ReplyTo         *ReviewReplyTo      `json:"replyTo,omitempty"`
+	ViewerCanEdit   bool                `json:"viewerCanEdit"`
+	ViewerCanDelete bool                `json:"viewerCanDelete"`
+	URL             string              `json:"url,omitempty"`
+	Suggestions     []CommentSuggestion `json:"suggestions,omitempty"`
+	Reactions       []CommentReaction   `json:"reactions,omitempty"`
 }
 
 type ReviewReplyTo struct {

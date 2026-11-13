@@ -196,6 +196,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.closeWorktreeWatch()
 		record("close worktree registry watcher", nil)
 	}
+	// Review diff pins run git in the background; stop and join them.
+	a.dropReviewDiffRecords()
+	record("stop review diff pins", nil)
 	// A tool command is stopped with SIGTERM first, so its reaper is joined
 	// here: before the engine it reports to closes, and so the process does
 	// not outlive the app inside the grace.

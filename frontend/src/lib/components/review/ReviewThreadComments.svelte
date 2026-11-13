@@ -33,7 +33,7 @@
     /** Mark each body for the diff's find (utils/reviewFindScan.ts). */
     findKeys?: boolean;
     /** The review whose comment actions these comments offer. */
-    review?: Pick<ReviewPaneState, 'sentComments' | 'sentCommentActions' | 'nowWithheldReason'> | null;
+    review?: Pick<ReviewPaneState, 'sentComments' | 'sentCommentActions' | 'nowWithheldReason' | 'reactions' | 'suggestions' | 'editorPreviews'> | null;
   }
 
   let { thread, skipFirst = false, avatarSize = 22, findKeys = false, review = null }: Props = $props();
