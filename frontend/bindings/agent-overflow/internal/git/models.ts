@@ -1702,6 +1702,13 @@ export class ReviewThread {
     "side": string;
 
     /**
+     * StartSide is the half StartLine (or OriginalStartLine) is on, "left"
+     * or "right", set with it. It differs from Side when a range starts on
+     * a removed line and ends on an unchanged or added one.
+     */
+    "startSide"?: string;
+
+    /**
      * IsResolvable distinguishes threads with a real resolve state from
      * flat comments (GitHub conversation comments, non-resolvable GitLab
      * notes) where IsResolved=false would misread as "needs attention".
@@ -1748,10 +1755,10 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField10_0 = $$createType30;
+        const $$createField11_0 = $$createType30;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
-            $$parsedSource["comments"] = $$createField10_0($$parsedSource["comments"]);
+            $$parsedSource["comments"] = $$createField11_0($$parsedSource["comments"]);
         }
         return new ReviewThread($$parsedSource as Partial<ReviewThread>);
     }
