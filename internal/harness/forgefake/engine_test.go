@@ -2145,7 +2145,7 @@ func TestHeldRefusalAnswersOnRelease(t *testing.T) {
 	e, srv := mergeEngine(t)
 	const approve = "projects/grp%2Fmerge/merge_requests/2/approve"
 	body := `{"sha":"3333333333333333333333333333333333333333"}`
-	if err := e.ReleaseRefusal("glab api approve"); err == nil {
+	if err := e.ReleaseRefusal(Release{Route: "glab api approve"}); err == nil {
 		t.Fatal("a release with nothing held was accepted")
 	}
 	if err := e.SetRefusal(Refusal{Route: "glab api approve", Status: 409, Body: json.RawMessage(`{"message":"held"}`), Times: 1, Hold: true}); err != nil {
@@ -2168,7 +2168,7 @@ func TestHeldRefusalAnswersOnRelease(t *testing.T) {
 		t.Fatalf("a held refusal answered before its release: %+v", got)
 	case <-time.After(200 * time.Millisecond):
 	}
-	if err := e.ReleaseRefusal("glab api approve"); err != nil {
+	if err := e.ReleaseRefusal(Release{Route: "glab api approve"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := <-answered; got.status != http.StatusConflict || got.body != `{"message":"held"}` {
@@ -2182,6 +2182,45 @@ func TestHeldRefusalAnswersOnRelease(t *testing.T) {
 	e.Reset()
 	if got := <-answered; got.status != http.StatusConflict {
 		t.Fatalf("held across Reset = %+v", got)
+	}
+}
+
+// A release that drops closes the held request with no reply: the answer
+// is lost.
+func TestHeldRefusalDroppedLosesTheAnswer(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	if err := e.SetRefusal(Refusal{Route: "glab api approve", Status: 409, Times: 1, Hold: true}); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), "POST", srv.URL+"/gitlab/api/v4/projects/grp%2Fmerge/merge_requests/2/approve", strings.NewReader(`{"sha":"3333333333333333333333333333333333333333"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "gitlab.com"
+	req.Header.Set("Private-Token", testAPIToken)
+	lost := make(chan error, 1)
+	go func() {
+		resp, err := srv.Client().Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			err = fmt.Errorf("answered %d", resp.StatusCode)
+			lost <- err
+			return
+		}
+		lost <- nil
+	}()
+	for deadline := time.Now().Add(5 * time.Second); len(e.Invocations(0).Invocations) == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the held request was not recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := e.ReleaseRefusal(Release{Route: "glab api approve", Drop: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-lost; err != nil {
+		t.Fatalf("a dropped answer was %v", err)
 	}
 }
 

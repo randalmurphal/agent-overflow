@@ -129,9 +129,12 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	e.record(inv)
 	if resp.held != nil {
 		select {
-		case <-resp.held:
+		case <-resp.held.done:
 		case <-r.Context().Done():
 			return
+		}
+		if resp.held.drop {
+			panic(http.ErrAbortHandler)
 		}
 	}
 

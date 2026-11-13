@@ -22,7 +22,8 @@ import (
 // and before its handler runs, so the fixture does not change, and is
 // recorded under its route. A held refusal (Hold) is recorded at once and
 // answered only once ReleaseRefusal names its route, so a spec can act
-// while the app's request is in flight.
+// while the app's request is in flight; a release that drops instead
+// closes the request with no reply, the answer lost.
 type Refusal struct {
 	Route  string            `json:"route"`
 	Status int               `json:"status"`
@@ -81,25 +82,40 @@ func (e *Engine) SetRefusal(refusal Refusal) error {
 	e.refusals[refusal.Route] = &stored
 	if refusal.Hold && e.holds[refusal.Route] == nil {
 		if e.holds == nil {
-			e.holds = make(map[string]chan struct{})
+			e.holds = make(map[string]*heldAnswer)
 		}
-		e.holds[refusal.Route] = make(chan struct{})
+		e.holds[refusal.Route] = &heldAnswer{done: make(chan struct{})}
 	}
 	return nil
 }
 
-// ReleaseRefusal answers every request a held refusal on route is holding,
-// and those it holds from now on; one armed again with Hold holds anew.
-// Reset releases every route.
-func (e *Engine) ReleaseRefusal(route string) error {
+// heldAnswer is a held refusal's gate: done closes on release, and drop
+// (set before) says the requests it held lose their answer.
+type heldAnswer struct {
+	done chan struct{}
+	drop bool
+}
+
+// Release ends a held refusal (HarnessForgeRelease): its requests are
+// answered with the refusal, or with Drop closed with no reply.
+type Release struct {
+	Route string `json:"route"`
+	Drop  bool   `json:"drop,omitempty"`
+}
+
+// ReleaseRefusal ends the held refusal on release.Route for every request
+// it is holding and those it holds from now on; one armed again with Hold
+// holds anew. Reset releases every route, answering.
+func (e *Engine) ReleaseRefusal(release Release) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	held := e.holds[route]
+	held := e.holds[release.Route]
 	if held == nil {
-		return fmt.Errorf("forge refusal: %q holds no answer", route)
+		return fmt.Errorf("forge refusal: %q holds no answer", release.Route)
 	}
-	close(held)
-	delete(e.holds, route)
+	held.drop = release.Drop
+	close(held.done)
+	delete(e.holds, release.Route)
 	return nil
 }
 

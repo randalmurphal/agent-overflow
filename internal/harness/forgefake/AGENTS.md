@@ -74,7 +74,9 @@ inspection go through the harness wire with no fixture files.
   after the route matched and before its handler runs, so nothing
   changes, and is recorded under the route. With `hold` the request is
   recorded at once and answered only on `ReleaseRefusal`
-  (`HarnessForgeRelease`), so a spec can act while it is in flight. A 401 on a mutation is
+  (`HarnessForgeRelease`, `{route, drop}`), so a spec can act while it is
+  in flight; with `drop` the held request is closed with no reply, its
+  answer lost. A 401 on a mutation is
   retried once after the transport's token refresh and then probed with
   `GET user`, so drive one with `times` 0.
 - `routes.go` is the whole CLI and REST route table, `githubGraphQL` and

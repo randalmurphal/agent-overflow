@@ -87,10 +87,11 @@ func (h *Harness) HarnessForgeRefuse(refusal forgefake.Refusal) error {
 	return h.forge.SetRefusal(refusal)
 }
 
-// HarnessForgeRelease answers the requests a refusal armed with hold is
-// holding on route (forgefake.ReleaseRefusal).
-func (h *Harness) HarnessForgeRelease(route string) error {
-	return h.forge.ReleaseRefusal(route)
+// HarnessForgeRelease ends the refusal armed with hold on its route
+// (forgefake.Release: {route, drop}): the requests it holds are answered
+// with the refusal, or with drop closed with no reply, their answer lost.
+func (h *Harness) HarnessForgeRelease(release forgefake.Release) error {
+	return h.forge.ReleaseRefusal(release)
 }
 
 // HarnessForgeAdvanceJob moves one current CI job of a seeded repository
