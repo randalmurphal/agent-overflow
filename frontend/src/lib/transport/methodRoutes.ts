@@ -133,6 +133,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1924583939: 'selected', // GetDiscussion
 	875977146: 'thread', // GetDraft
 	949275134: 'thread', // GetEditDiffContextLines
+	711021853: 'thread', // GetEditDiffImage
 	1655853383: 'selected', // GetEditorSettings
 	1581952506: 'home', // GetErrorLogLines
 	4123560639: 'workspace', // GetGitStatus
@@ -157,6 +158,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	447579616: 'home', // GetPushSenderStatus
 	3079581691: 'thread', // GetQueueState
 	3325141610: 'home', // GetRateLimitsSnapshots
+	2795814304: 'workspace', // GetReviewDiffFileSizes
+	3506270873: 'workspace', // GetReviewDiffImage
 	324671375: 'home', // GetSSHConnection
 	2230314013: 'selected', // GetServiceUpdateStatus
 	2554697378: 'home', // GetSettings

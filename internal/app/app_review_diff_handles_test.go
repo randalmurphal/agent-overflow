@@ -83,7 +83,7 @@ func openBranchBasePatch(t *testing.T, app *App, ref WorkspaceRef, base string, 
 func openPRCommitPatch(t *testing.T, app *App, ref WorkspaceRef, rev gitops.PRRevision, sha string) (string, error) {
 	t.Helper()
 	ctx, _ := reviewDiffConn(t)
-	opened, err := app.OpenPRCommitDiff(ctx, ref, prRef(), rev, sha, false, true)
+	opened, err := app.OpenPRCommitDiff(ctx, ref, prRef(), rev, sha, sha, false, true)
 	if err != nil {
 		return "", err
 	}

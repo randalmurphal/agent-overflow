@@ -702,6 +702,7 @@ func (h *Harness) HarnessReset() (err error) {
 	// launch the window before its first connection), so an activation one
 	// test sent would open its target, or toast its absence, on the next.
 	h.config.Host.DropRetainedEvents()
+	h.config.Host.DropReviewDiffImages()
 	// Generated seed workspaces live under <dataRoot>/workspaces only —
 	// removing the tree lets the next test seed the same project names
 	// (CreateRepo refuses a surviving .git). User-supplied Path projects

@@ -63,6 +63,9 @@ type Host interface {
 	// PauseMergedPRCleanup stops the merged pull request cleanup, joins it
 	// and drops its in-memory state; resume starts it again from nothing.
 	PauseMergedPRCleanup() (resume func())
+	// DropReviewDiffImages forgets the image bytes review diffs read, so a
+	// spec's URLs do not resolve in the next.
+	DropReviewDiffImages()
 	// DropRetainedEvents empties the event bus replay rings so nothing
 	// emitted before a reset is replayable by the next test's page.
 	DropRetainedEvents()

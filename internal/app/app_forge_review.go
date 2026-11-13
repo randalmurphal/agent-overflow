@@ -248,19 +248,25 @@ func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.P
 	return gitdiff.ListCommitsRange(context.Background(), workspace, rev.BaseSHA, rev.HeadSHA)
 }
 
-// OpenPRCommitDiff opens the unified patch a single commit of the PR at rev
-// introduced (first-parent diff), read from the referenced clone.
-// userInitiated is whether a person asked for the read (prRevisionWorkspace).
+// OpenPRCommitDiff opens the patch of a contiguous run of the PR's commits
+// at rev: from the first parent of firstSHA (the older end) to lastSHA, read
+// from the referenced clone (gitdiff.CommitRangeSides). Both ends must be in
+// the commit list ListPRCommits answers for rev, firstSHA no newer than
+// lastSHA. firstSHA == lastSHA is one commit's own change (first-parent
+// diff); a run of more than one commit covering the whole list is refused,
+// because OpenPRDiff reads the whole PR. userInitiated is whether a person
+// asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, sha string, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
+func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, firstSHA, lastSHA string, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
 	const action = "open PR commit diff"
 	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
 	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenCommitDiff(ctx, workspace, sha, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+		return gitdiff.OpenCommitRangeDiff(ctx, workspace, rev.BaseSHA, rev.HeadSHA, firstSHA, lastSHA,
+			gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
 	})
 }
 

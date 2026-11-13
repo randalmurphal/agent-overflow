@@ -757,7 +757,7 @@ describe('reviewPane store — PR scope', () => {
     await state.selectCommit(sha);
     expect(state.selectedCommitSHA).toBe(sha);
     expect(state.sourceKey).toBe(`commit:${sha}`);
-    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision, sha, false, false);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision, sha, sha, false, false);
 
     // Back to the whole PR.
     await state.selectCommit(null);
@@ -4470,9 +4470,9 @@ describe('reviewPane store — PR read intent', () => {
     expect(list).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false);
     expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
     await state.selectCommit(sha);
-    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, false, false);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, sha, false, false);
     await state.setIgnoreWhitespace(true);
-    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, true, false);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, sha, true, false);
   });
 
   it('reads attended for the entry points a person drove', async () => {
@@ -4488,9 +4488,9 @@ describe('reviewPane store — PR read intent', () => {
     expect(list).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, true);
     expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
     await state.selectCommit(sha, { userInitiated: true });
-    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, false, true);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, sha, false, true);
     await state.setIgnoreWhitespace(true, { userInitiated: true });
-    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, true, true);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, sha, true, true);
   });
 
   it('retries a failed user read unattended on the next pump frame', async () => {

@@ -336,6 +336,11 @@ type App struct {
 	// the reason forgeAttachCache is.
 	localImageOnce    sync.Once
 	localImageService *localimage.Service
+	// reviewDiffImageCache holds the image bytes of review diff files for
+	// the same byte route (app_review_diff_files.go). Lazy for the reason
+	// forgeAttachCache is.
+	reviewDiffImageOnce  sync.Once
+	reviewDiffImageCache *reviewDiffImageCache
 	// ciLogStore is the CI job log cache (app_ci_logs.go), opened on
 	// first use for the reason forgeAttachCache is lazy.
 	ciLogOnce  sync.Once

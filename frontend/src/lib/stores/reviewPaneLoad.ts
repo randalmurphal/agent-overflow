@@ -237,7 +237,7 @@ export async function loadPatch(
         : (((await ListPRCommits(workspace, pr, revision, userInitiated)) ?? []) as BranchCommit[]);
       const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
       const patch = commitSHA
-        ? diff(() => OpenPRCommitDiff(workspace, pr, revision, commitSHA, ignoreWhitespace, userInitiated))
+        ? diff(() => OpenPRCommitDiff(workspace, pr, revision, commitSHA, commitSHA, ignoreWhitespace, userInitiated))
         : diff(() => OpenPRDiff(workspace, pr, revision, ignoreWhitespace, userInitiated));
       return { patch, commits, selectedCommitSHA: commitSHA, prRevision: revision };
     }

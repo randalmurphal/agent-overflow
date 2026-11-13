@@ -205,3 +205,53 @@ func TestFailedPRReadMakesTheNextUnchangedPollEmit(t *testing.T) {
 		t.Fatal("a second unchanged poll emitted; the failure should cue one frame")
 	}
 }
+
+func openPRRunPatch(t *testing.T, app *App, ref WorkspaceRef, rev gitops.PRRevision, first, last string) (string, error) {
+	t.Helper()
+	ctx, _ := reviewDiffConn(t)
+	opened, err := app.OpenPRCommitDiff(ctx, ref, prRef(), rev, first, last, false, true)
+	if err != nil {
+		return "", err
+	}
+	return readOpenedReviewDiff(t, app, ctx, opened)
+}
+
+// A run of one commit is the single-commit read; the API refuses a run whose
+// ends are not the PR's commits at rev, are out of order, or cover the whole
+// PR (OpenPRDiff's read).
+func TestOpenPRCommitDiffReadsARunOfThePRsCommits(t *testing.T) {
+	t.Parallel()
+	app := newReviewDiffTestApp(t)
+	ref, clone, prSHAs := prCloneFixture(t, app)
+	rev := prRev(t, clone, prSHAs[0])
+	newest, oldest := prSHAs[0], prSHAs[1]
+
+	run, err := openPRRunPatch(t, app, ref, rev, oldest, oldest)
+	if err != nil {
+		t.Fatalf("one-commit run: %v", err)
+	}
+	ctx, _ := reviewDiffConn(t)
+	opened, err := app.OpenCommitDiff(ctx, ref, oldest, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	single, err := readOpenedReviewDiff(t, app, ctx, opened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run != single || !strings.Contains(run, "+first.txt content") {
+		t.Fatalf("one-commit run:\n%s\nsingle-commit read:\n%s", run, single)
+	}
+
+	for name, ends := range map[string][2]string{
+		"the whole PR":     {oldest, newest},
+		"out of order":     {newest, oldest},
+		"not a PR commit":  {rev.BaseSHA, newest},
+		"an abbreviation":  {oldest[:12], oldest},
+		"a missing commit": {strings.Repeat("e", 40), newest},
+	} {
+		if _, err := openPRRunPatch(t, app, ref, rev, ends[0], ends[1]); err == nil {
+			t.Errorf("%s: OpenPRCommitDiff accepted %v", name, ends)
+		}
+	}
+}
