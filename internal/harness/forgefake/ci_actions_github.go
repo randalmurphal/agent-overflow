@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"time"
 )
 
 // GitHub Actions' CI actions over REST: re-run a job, re-run a run's
@@ -57,6 +58,9 @@ func ghJobRerun(e *Engine, c *call, m []string) response {
 	if pipeline.live() || jobLive(job.Status) {
 		return ghStatus(http.StatusForbidden, "This job cannot be rerun while its workflow run is in progress.")
 	}
+	if fail, ok := ghRerunWindowOpen(pipeline); !ok {
+		return fail
+	}
 	e.retryJob(pipeline, job)
 	pipeline.refreshStatus()
 	return ghAccepted(http.StatusCreated)
@@ -81,6 +85,9 @@ func ghRunRerunFailed(e *Engine, c *call, m []string) response {
 		return ghStatus(http.StatusForbidden, "This workflow run cannot be rerun while it is in progress.")
 	case !slices.ContainsFunc(pipeline.current(), bad):
 		return ghStatus(http.StatusForbidden, "This workflow run has no failed jobs to rerun.")
+	}
+	if fail, ok := ghRerunWindowOpen(pipeline); !ok {
+		return fail
 	}
 	e.retryJobs(pipeline, bad)
 	pipeline.refreshStatus()
@@ -113,6 +120,33 @@ func ghRunCancel(e *Engine, c *call, m []string) response {
 		pipeline.Status = "canceled"
 	}
 	return ghAccepted(http.StatusAccepted)
+}
+
+// ghRerunWindow is how long after its creation GitHub re-runs a run.
+const ghRerunWindow = 30 * 24 * time.Hour
+
+// ghRerunWindowOpen refuses a re-run of a run created more than
+// ghRerunWindow ago with GitHub's 403.
+func ghRerunWindowOpen(pipeline *Pipeline) (response, bool) {
+	created, err := time.Parse(time.RFC3339, pipeline.CreatedAt)
+	if err == nil && time.Since(created) > ghRerunWindow {
+		return ghStatus(http.StatusForbidden, "Unable to re-run this workflow run because it was created over a month ago"), false
+	}
+	return response{}, true
+}
+
+// expiresAt is when GitHub stops keeping the artifact: its ExpiresAt, or
+// the run's creation for an expired one and 90 days after it (GitHub's
+// default retention) otherwise.
+func (a *Artifact) expiresAt(pipeline *Pipeline) string {
+	if a.ExpiresAt != "" {
+		return a.ExpiresAt
+	}
+	created, err := time.Parse(time.RFC3339, pipeline.CreatedAt)
+	if err != nil || a.Expired {
+		return pipeline.CreatedAt
+	}
+	return created.Add(90 * 24 * time.Hour).UTC().Format(time.RFC3339)
 }
 
 func (e *Engine) ghRunFrom(c *call, m []string) (*Repo, *Pipeline, response, bool) {
@@ -153,6 +187,7 @@ func ghRunArtifacts(e *Engine, c *call, m []string) response {
 			"url":                  fmt.Sprintf("https://api.%s/repos/%s/actions/artifacts/%d", r.Host, r.Project, artifact.ID),
 			"archive_download_url": fmt.Sprintf("https://api.%s/repos/%s/actions/artifacts/%d/zip", r.Host, r.Project, artifact.ID),
 			"expired":              artifact.Expired,
+			"expires_at":           artifact.expiresAt(pipeline),
 			"created_at":           pipeline.CreatedAt,
 			"updated_at":           pipeline.UpdatedAt,
 			"workflow_run":         map[string]any{"id": pipeline.ID, "head_branch": pipeline.Ref, "head_sha": pipeline.SHA},

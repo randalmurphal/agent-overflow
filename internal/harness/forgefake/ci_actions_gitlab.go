@@ -13,7 +13,8 @@ import (
 // job GitLab cannot retry is 403 "Job is not retryable", one it cannot
 // play 400 "Unplayable Job"; a cancel of a job that is not running is
 // answered with the job unchanged, as GitLab's is. Each needs the
-// developer role (GitLab's 403 otherwise).
+// developer role (GitLab's 403 otherwise), and a cancel the project's
+// cancelRole.
 
 // glabCIDeveloper refuses a viewer below developer.
 func (e *Engine) glabCIDeveloper(r *Repo) (response, bool) {
@@ -89,6 +90,9 @@ func glabJobCancel(e *Engine, c *call, m []string) response {
 	if !ok {
 		return fail
 	}
+	if !r.Merge.gitlabMayCancel() {
+		return glabStatus(http.StatusForbidden, "403 Forbidden")
+	}
 	if !job.Retried && jobLive(job.Status) {
 		cancelJob(job)
 		pipeline.refreshStatus()
@@ -150,6 +154,9 @@ func glabPipelineCancel(e *Engine, c *call, m []string) response {
 	if !ok {
 		return fail
 	}
+	if !r.Merge.gitlabMayCancel() {
+		return glabStatus(http.StatusForbidden, "403 Forbidden")
+	}
 	if pipeline.live() {
 		for _, job := range pipeline.current() {
 			if jobLive(job.Status) {
@@ -209,7 +216,7 @@ func gitlabJobActionFields(r *Repo, job Job) map[string]any {
 		"canPlayJob": playable && developer,
 		"userPermissions": map[string]any{
 			"updateBuild":      developer,
-			"cancelBuild":      developer,
+			"cancelBuild":      r.Merge.gitlabMayCancel(),
 			"readJobArtifacts": gitlabRoles[r.Merge.Permission] >= gitlabRoles["reporter"],
 		},
 		"artifacts": artifacts,
@@ -228,6 +235,6 @@ func gitlabPipelineActionFields(r *Repo, pipeline *Pipeline) map[string]any {
 	return map[string]any{
 		"retryable":       retryable,
 		"cancelable":      live,
-		"userPermissions": map[string]any{"updatePipeline": developer, "cancelPipeline": developer},
+		"userPermissions": map[string]any{"updatePipeline": developer, "cancelPipeline": r.Merge.gitlabMayCancel()},
 	}
 }

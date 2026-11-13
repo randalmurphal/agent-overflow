@@ -96,6 +96,12 @@ type RepoMerge struct {
 	// only_allow_merge_if_all_discussions_are_resolved.
 	PipelineMustSucceed    bool `json:"pipelineMustSucceed,omitempty"`
 	DiscussionsMustResolve bool `json:"discussionsMustResolve,omitempty"`
+	// CancelRole is a GitLab project's
+	// restrict_pipeline_cancellation_role: the least role that may cancel
+	// a job or pipeline, developer (default) or maintainer, or no_one.
+	// Retry and play still need developer, so cancel and update can
+	// differ.
+	CancelRole string `json:"cancelRole,omitempty"`
 }
 
 // Pull is one pull request (GitHub) or merge request (GitLab).
@@ -602,8 +608,8 @@ func (r *Repo) normalize(ids *idSource) error {
 
 func (m *RepoMerge) normalize(forge string) error {
 	if forge == "github" {
-		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve {
-			return errors.New("mergeMethod, squashOption, pipelineMustSucceed and discussionsMustResolve are GitLab project settings")
+		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve || m.CancelRole != "" {
+			return errors.New("mergeMethod, squashOption, pipelineMustSucceed, discussionsMustResolve and cancelRole are GitLab project settings")
 		}
 		m.Permission = defaultString(m.Permission, "WRITE")
 		if githubRoles[m.Permission] == 0 {
@@ -645,7 +651,19 @@ func (m *RepoMerge) normalize(forge string) error {
 	default:
 		return fmt.Errorf("squashOption %q is not default_off, default_on, always or never", m.SquashOption)
 	}
+	m.CancelRole = defaultString(m.CancelRole, "developer")
+	switch m.CancelRole {
+	case "developer", "maintainer", "no_one":
+	default:
+		return fmt.Errorf("cancelRole %q is not developer, maintainer or no_one", m.CancelRole)
+	}
 	return nil
+}
+
+// gitlabMayCancel reports whether the viewer's role may cancel a job or
+// pipeline under the project's CancelRole.
+func (m *RepoMerge) gitlabMayCancel() bool {
+	return m.CancelRole != "no_one" && gitlabRoles[m.Permission] >= gitlabRoles[m.CancelRole]
 }
 
 // defaultNodeID gives a GitHub pull without one the node id derived from

@@ -3,7 +3,9 @@ package forgefake
 import (
 	"encoding/base64"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
 
 // ciActionsFixture is a GitHub repository and a GitLab project whose CI
@@ -289,4 +291,89 @@ func mustDecode(t *testing.T, s string) []byte {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// Job ids are unique per repository on both forges: a fixture that
+// repeats one, in one pipeline or across two, is refused at seed.
+func TestSeedRefusesDuplicateJobIDs(t *testing.T) {
+	t.Parallel()
+	for name, fixture := range map[string]string{
+		"one pipeline":  `{"repos":[{"forge":"github","project":"a/b","pipelines":[{"id":1,"jobs":[{"id":7,"name":"x","status":"failed"},{"id":7,"name":"y","status":"failed"}]}]}]}`,
+		"two pipelines": `{"repos":[{"forge":"gitlab","project":"g/b","pipelines":[{"id":1,"jobs":[{"id":7,"name":"x","status":"failed"}]}],"pulls":[{"number":1,"title":"t","ci":{"id":2,"jobs":[{"id":7,"name":"y","status":"failed"}]}}]}]}`,
+	} {
+		if _, err := seedJSON(New(Options{APIToken: testAPIToken}), fixture); err == nil || !strings.Contains(err.Error(), "job id 7 is declared twice") {
+			t.Errorf("%s: seed = %v, want the duplicate job id refused", name, err)
+		}
+	}
+	if _, err := seedJSON(New(Options{APIToken: testAPIToken}), `{"repos":[{"forge":"github","project":"a/b","pipelines":[{"id":1,"jobs":[{"id":7,"name":"x","status":"failed"}]}]},{"forge":"github","project":"a/c","pipelines":[{"id":1,"jobs":[{"id":7,"name":"x","status":"failed"}]}]}]}`); err != nil {
+		t.Fatalf("the same job id in two repositories: %v", err)
+	}
+}
+
+// A GitLab project's cancelRole restricts cancel past update: the rows
+// answer cancelBuild and cancelPipeline false beside updateBuild true,
+// and a cancel is GitLab's 403 that changes nothing.
+func TestGitLabCancelRole(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"repos":[{"forge":"gitlab","project":"grp/ci","merge":{"cancelRole":"maintainer"},"pipelines":[{"id":20,"jobs":[{"id":2101,"name":"unit","status":"running"}]}]}]}`); err != nil {
+		t.Fatal(err)
+	}
+	nodes, pipeline := glabNodes(t, e, 20)
+	if got := mustJSON(t, nodes["unit"]["userPermissions"]); got != `{"cancelBuild":false,"readJobArtifacts":true,"updateBuild":true}` {
+		t.Fatalf("job permissions = %s", got)
+	}
+	if got := mustJSON(t, pipeline["userPermissions"]); got != `{"cancelPipeline":false,"updatePipeline":true}` {
+		t.Fatalf("pipeline permissions = %s", got)
+	}
+	srv := testServer(t, e)
+	for _, path := range []string{"jobs/2101/cancel", "pipelines/20/cancel"} {
+		if got := httpRequest(t, srv, "POST", "gitlab.com", "/gitlab/api/v4/projects/grp%2Fci/"+path, "", http.Header{"Private-Token": {testAPIToken}}); got.status != http.StatusForbidden {
+			t.Fatalf("%s by a developer under cancelRole maintainer = %d", path, got.status)
+		}
+	}
+	if nodes, _ := glabNodes(t, e, 20); nodes["unit"]["status"] != "RUNNING" {
+		t.Fatalf("a refused cancel moved the job: %v", nodes["unit"]["status"])
+	}
+	if _, err := seedJSON(New(Options{APIToken: testAPIToken}), `{"repos":[{"forge":"github","project":"a/b","merge":{"cancelRole":"maintainer"}}]}`); err == nil {
+		t.Fatal("a GitHub cancelRole was seeded")
+	}
+}
+
+// GitHub re-runs a run only within 30 days of its creation: an older
+// run's job and failed-jobs re-runs are its 403, and change nothing. A
+// run seeded without createdAt was created at the seed. Artifacts list
+// their expiry.
+func TestGitHubRerunWindowAndArtifactExpiry(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	old := time.Now().Add(-31 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	if _, err := seedJSON(e, `{"repos":[{"forge":"github","project":"acme/ci","pipelines":[
+		{"id":100,"createdAt":"`+old+`","jobs":[{"id":1001,"name":"unit","status":"failed"}]},
+		{"id":200,"jobs":[{"id":2001,"name":"unit","status":"failed"}],"artifacts":[{"id":9,"name":"coverage","text":"x","expiresAt":"2030-01-01T00:00:00Z"},{"id":10,"name":"default","text":"y"}]}]}]}`); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	for _, path := range []string{"jobs/1001/rerun", "runs/100/rerun-failed-jobs"} {
+		got := httpRequest(t, srv, "POST", "github.com", "/github/rest/repos/acme/ci/actions/"+path, "", nil)
+		if got.status != http.StatusForbidden || !strings.Contains(got.body, "created over a month ago") {
+			t.Fatalf("%s of a run past 30 days = %d %s", path, got.status, got.body)
+		}
+	}
+	if jobs := ghRunJobIDs(t, e, 100); jobs["unit"] != "1001 completed" {
+		t.Fatalf("a refused re-run moved the run: %v", jobs)
+	}
+	if got := httpRequest(t, srv, "POST", "github.com", "/github/rest/repos/acme/ci/actions/jobs/2001/rerun", "", nil); got.status != http.StatusCreated {
+		t.Fatalf("re-run of a run seeded now = %d", got.status)
+	}
+	var list struct {
+		Artifacts []map[string]any `json:"artifacts"`
+	}
+	decodeBody(t, httpRequest(t, srv, "GET", "github.com", "/github/rest/repos/acme/ci/actions/runs/200/artifacts?per_page=100", "", nil), &list)
+	if list.Artifacts[0]["expires_at"] != "2030-01-01T00:00:00Z" {
+		t.Fatalf("seeded expiry = %v", list.Artifacts[0]["expires_at"])
+	}
+	if at, err := time.Parse(time.RFC3339, list.Artifacts[1]["expires_at"].(string)); err != nil || time.Until(at) < 89*24*time.Hour {
+		t.Fatalf("default expiry = %v, %v", list.Artifacts[1]["expires_at"], err)
+	}
 }

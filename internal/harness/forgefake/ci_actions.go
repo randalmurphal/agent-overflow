@@ -30,6 +30,11 @@ type Artifact struct {
 	// Expired is a GitHub artifact past its retention: listed expired,
 	// its download a 410.
 	Expired bool `json:"expired,omitempty"`
+	// ExpiresAt is when a GitHub artifact expires (RFC 3339), as the list
+	// answers it; by default 90 days after its run was created, or the
+	// run's creation for an expired one. It is reported, not enforced:
+	// Expired decides.
+	ExpiresAt string `json:"expiresAt,omitempty"`
 
 	content []byte
 }
@@ -57,7 +62,7 @@ func (job *Job) normalizeArtifacts() error {
 	if job.Kind != "" {
 		return fmt.Errorf("a %s has no artifacts", job.Kind)
 	}
-	if job.Artifacts.ID != 0 || job.Artifacts.Expired {
+	if job.Artifacts.ID != 0 || job.Artifacts.Expired || job.Artifacts.ExpiresAt != "" {
 		return errors.New("a GitLab artifacts archive has no id and does not expire here")
 	}
 	job.Artifacts.Name = defaultString(job.Artifacts.Name, "artifacts.zip")
@@ -72,6 +77,11 @@ func (p *Pipeline) normalizeArtifacts(ids *idSource) error {
 		}
 		if artifact.ID == 0 {
 			artifact.ID = ids.next()
+		}
+		if artifact.ExpiresAt != "" {
+			if _, err := time.Parse(time.RFC3339, artifact.ExpiresAt); err != nil {
+				return fmt.Errorf("artifacts[%d]: expiresAt %q is not RFC 3339", i, artifact.ExpiresAt)
+			}
 		}
 		if err := artifact.normalize(); err != nil {
 			return fmt.Errorf("artifacts[%d]: %w", i, err)
