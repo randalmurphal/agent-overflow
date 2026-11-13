@@ -34,12 +34,17 @@ afterEach(() => {
   resetScrollIntentModuleStateForTest();
 });
 
-function setup(key: string, second = false) {
+// The long log every reveal case searches: one match, or two.
+function longLog(second: boolean): { lines: string[]; matchLines: number[] } {
   const lines = numberedLines(10_000);
   // Wrapped lines above the match: the per-line estimate lands far off.
   for (let at = MATCH_LINE - 199; at < MATCH_LINE; at += 1) lines[at] = `${'w'.repeat(400)} ${at}`;
   lines[MATCH_LINE] = '\x1b[31mzq\x1b[0m at the match';
   if (second) lines[SECOND_LINE] = 'zq at the second match';
+  return { lines, matchLines: second ? [MATCH_LINE, SECOND_LINE] : [MATCH_LINE] };
+}
+
+function setup(key: string, second = false, { lines, matchLines } = longLog(second), sectionOpen = true) {
   const fake = new FakeCILog(lines);
   // Reads of one block wait on its gate.
   const blockGates = new Map<number, Promise<void>>();
@@ -53,7 +58,7 @@ function setup(key: string, second = false) {
   const host = document.createElement('div');
   host.style.cssText = 'position:fixed;top:0;left:0;width:700px;height:400px;display:flex';
   document.body.appendChild(host);
-  const openSections = new SvelteSet<string>(['20/job']);
+  const openSections = new SvelteSet<string>(sectionOpen ? ['20/job'] : []);
   const logProps = rawProps({
     view: { stageName: 'test', jobId: '20', job: JOB },
     log: fake.state,
@@ -72,7 +77,7 @@ function setup(key: string, second = false) {
     onSendSection: () => {},
   });
   const logView = mount(ReviewCILogView, { target: host, props: logProps });
-  const hits = second ? [{ line: MATCH_LINE, count: 1 }, { line: SECOND_LINE, count: 1 }] : [{ line: MATCH_LINE, count: 1 }];
+  const hits = matchLines.map((line) => ({ line, count: 1 }));
   const search: CILogSearch = { version: fake.version, totalLines: lines.length, matches: hits.length, capped: false, hits };
   const review = {
     ciLog: fake.state,
@@ -103,7 +108,7 @@ function setup(key: string, second = false) {
     const view = scroll.getBoundingClientRect();
     return box.top >= view.top && box.bottom <= view.bottom;
   };
-  return { fake, scroll, find, painted, inView, blockGates, asked };
+  return { fake, scroll, find, painted, inView, blockGates, asked, logProps };
 }
 
 function deferred() {
@@ -205,6 +210,28 @@ describe('review find over a CI log', () => {
     await waitFor(() => !find.wants(find.selected!), 'the step answered', 600);
     expect(painted()?.startContainer.parentElement?.closest('[data-find-key]')?.textContent).toContain('the second match');
     expect(inView()).toBe(true);
+  });
+
+  it('a log that grows right after a reveal landed at its end leaves the view where the reveal put it', async () => {
+    // The match is the last line of a closed section: the reveal opens it
+    // and wants the line a third down, which the end of the log stops
+    // short. The log then grows while the list still holds that jump.
+    const lines = [...numberedLines(300), 'zq at the end'];
+    const { fake, scroll, find, painted, inView, logProps } = setup('pane-log-grow', false, { lines, matchLines: [300] }, false);
+    openPaneFind('pane-log-grow');
+    setPaneFindQuery('pane-log-grow', 'zq');
+    await waitFor(() => find.result.count === 1 && find.selected !== null, 'the answer');
+    await waitFor(() => !find.wants(find.selected!) && painted()?.toString() === 'zq' && inView(), 'the match shown', 600);
+    const at = scroll.scrollTop;
+    expect(at).toBe(scroll.scrollHeight - scroll.clientHeight);
+    expect(at).toBeGreaterThan(0);
+
+    fake.grow(['one more line']);
+    logProps.log = fake.state;
+    await waitFor(() => scroll.textContent?.includes('one more line') === true, 'the grown log');
+    for (let i = 0; i < 30; i += 1) await raf();
+    expect(scroll.scrollHeight - scroll.clientHeight).toBeGreaterThan(at);
+    expect(scroll.scrollTop).toBe(at);
   });
 
   it('a block that fails to load puts its error in the bar', async () => {
