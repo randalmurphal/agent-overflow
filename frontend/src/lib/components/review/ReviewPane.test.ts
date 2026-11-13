@@ -8,7 +8,8 @@ import { __resetReviewPaneStateForTest, reviewStateForPane, reviewSubjectForPane
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { CIPipeline, DiffReviewComment, DiffReviewCommentInput, PRDetail, ReviewThread, Thread } from '../../types/models';
-import { getBindingMock, setBindingMock, setReviewDiffMock, commitList } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from '../../stores/eventsPRReview';
 import { formatTimeOfDay } from '../../utils/format';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';

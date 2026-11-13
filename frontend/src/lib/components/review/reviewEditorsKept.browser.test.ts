@@ -23,7 +23,8 @@ import type { DiffReviewComment, PRDetail, ReviewThread } from '../../types/mode
 import type { PRRef } from '../../utils/prReference';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
 import { installPRDraftsFake } from '../../../test/helpers/prDraftsFake';
-import { setBindingMock, setReviewDiffMock, commitList } from '../../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 
 const LINES = 3000;
 const OWNER = 'tools-1';

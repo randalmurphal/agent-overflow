@@ -61,7 +61,8 @@ import {
   setProviderAccount,
 } from '../../lib/stores/accountInfo.svelte';
 import type { Thread } from '../../lib/types/models';
-import { setBindingMock, setReviewDiffMock, resetBindingMocks, commitList } from '../mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock, resetBindingMocks } from '../mocks/bindings-app';
+import { commitList } from '../helpers/commitList';
 import { installPaneMocks, makeItem } from '../helpers/chat';
 import type { Item } from '../../lib/types/models';
 import { idleWorkspaceActivity } from '../helpers/workspaceLock';

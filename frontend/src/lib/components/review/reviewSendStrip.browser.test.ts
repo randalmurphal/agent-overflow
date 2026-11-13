@@ -20,7 +20,8 @@ import { TransportError } from '../../transport/wsClient';
 import type { DiffReviewComment, PRDetail } from '../../types/models';
 import type { PRRef } from '../../utils/prReference';
 import { installPRDraftsFake } from '../../../test/helpers/prDraftsFake';
-import { setBindingMock, setReviewDiffMock, commitList } from '../../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 
 const OWNER = 'tools-1';
 const PR: PRRef = { forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 };

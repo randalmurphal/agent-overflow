@@ -11,7 +11,8 @@ import { makeStubPanelContext } from '../../../test/helpers/panelContext';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
-import { setBindingMock, setReviewDiffMock, commitList } from '../../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 import {
   frontendErrorCaptureStateForTest,
   resetFrontendErrorCaptureForTest,

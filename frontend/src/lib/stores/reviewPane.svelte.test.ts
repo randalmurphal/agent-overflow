@@ -52,7 +52,8 @@ import {
   resetDiffSpanCacheForTest,
   type PaintedSpans,
 } from '../utils/diffSpanCache.svelte';
-import { getBindingMock, setBindingMock, setReviewDiffMock, commitList } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
+import { commitList } from '../../test/helpers/commitList';
 import { REVIEW_DIFF_READ_BYTES } from './reviewDiffStream';
 import { patchTextHeldBytes, setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
 import { PatchTextLost } from '../utils/patchStore';

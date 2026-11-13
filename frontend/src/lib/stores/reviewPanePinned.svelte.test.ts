@@ -29,7 +29,8 @@ import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { prKey, type PRRef } from '../utils/prReference';
 import type { DiffReviewComment, PRDetail, PRReviewSubmitOutcome } from '../types/models';
 import { installPRDraftsFake, type PRDraftsFake } from '../../test/helpers/prDraftsFake';
-import { setBindingMock, setReviewDiffMock, commitList } from '../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
+import { commitList } from '../../test/helpers/commitList';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 

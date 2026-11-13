@@ -4,7 +4,8 @@
 // pipelines whose pipeline 77 has a job with a log.
 
 import { vi } from 'vitest';
-import { setBindingMock, setReviewDiffMock, commitList } from '../mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../mocks/bindings-app';
+import { commitList } from './commitList';
 import { installPRDraftsFake } from './prDraftsFake';
 import { __resetPullsPageForTest } from '../../lib/stores/pullsPage.svelte';
 import { __resetPullsPageAgentForTest } from '../../lib/stores/pullsPageAgent.svelte';

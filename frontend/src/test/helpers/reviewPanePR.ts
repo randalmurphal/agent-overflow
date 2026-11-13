@@ -11,7 +11,8 @@ import { __resetReviewPaneStateForTest } from '../../lib/stores/reviewPane.svelt
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../lib/stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../lib/stores/appStorage';
 import { resetToastsForTest } from '../../lib/stores/toast.svelte';
-import { setBindingMock, setReviewDiffMock, commitList } from '../mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../mocks/bindings-app';
+import { commitList } from './commitList';
 import { __seedGitStatusForTest } from '../../lib/stores/gitStatusStore.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../lib/stores/panes.svelte';
 import { createThreadPane } from '../../lib/stores/thread.svelte';

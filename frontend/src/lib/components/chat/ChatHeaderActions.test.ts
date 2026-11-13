@@ -11,7 +11,8 @@ import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Project, Thread } from '../../types/models';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { setBindingMock, getBindingMock, commitList } from '../../../test/mocks/bindings-app';
+import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import {

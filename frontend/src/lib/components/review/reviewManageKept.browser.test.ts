@@ -23,7 +23,8 @@ import { HOME_BACKEND } from '../../transport/backendKey';
 import type { PRDetail, PRManageCan } from '../../types/models';
 import type { PRRef } from '../../utils/prReference';
 import { installPRDraftsFake } from '../../../test/helpers/prDraftsFake';
-import { setBindingMock, setReviewDiffMock, commitList } from '../../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 
 const LINES = 3000;
 const OWNER = 'tools-manage';
