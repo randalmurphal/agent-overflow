@@ -71,24 +71,22 @@ export function selectionChange<T>(initial: ReadonlyMap<string, T>, selected: Re
   return { add, remove };
 }
 
-/** The wire shape of a people change: only the fields the forge reads. */
-export function peopleChange(change: { add: PRPerson[]; remove: PRPerson[] }): PRPeopleChange {
-  const wire = (person: PRPerson): PRPerson => ({
-    login: person.login,
-    ...(person.name ? { name: person.name } : {}),
-    ...(person.id ? { id: person.id } : {}),
-    ...(person.team ? { team: true } : {}),
-  });
-  return { add: change.add.map(wire), remove: change.remove.map(wire) };
+/** A person as the backend gave it (from `manage` or a search), without
+ * a reviewer's state: the forge adapter decides which field addresses
+ * it, so nothing is rebuilt from parts. */
+export function wirePerson(person: PRPerson | PRReviewer): PRPerson {
+  const { state: _state, stale: _stale, ...rest } = person as PRReviewer;
+  return rest;
 }
 
+/** The wire shape of a people change: each person as the backend gave it. */
+export function peopleChange(change: { add: PRPerson[]; remove: PRPerson[] }): PRPeopleChange {
+  return { add: change.add.map(wirePerson), remove: change.remove.map(wirePerson) };
+}
+
+/** The wire shape of a label change: each label as the backend gave it. */
 export function labelChange(change: { add: PRLabel[]; remove: PRLabel[] }): PRLabelChange {
-  const wire = (label: PRLabel): PRLabel => ({
-    name: label.name,
-    ...(label.id ? { id: label.id } : {}),
-    ...(label.color ? { color: label.color } : {}),
-  });
-  return { add: change.add.map(wire), remove: change.remove.map(wire) };
+  return { add: [...change.add], remove: [...change.remove] };
 }
 
 /** The backend reads at most this many bytes of a picker query. */

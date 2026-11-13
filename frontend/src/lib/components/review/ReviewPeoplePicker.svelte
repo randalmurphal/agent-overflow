@@ -36,8 +36,13 @@
   const options = $derived(picker.options);
   const activeIndex = $derived(Math.min(active, Math.max(0, options.length - 1)));
 
+  // The popover shows once it is placed, a frame after it mounts; a
+  // hidden field cannot take focus.
   $effect(() => {
-    input?.focus({ preventScroll: true });
+    const field = input;
+    if (!field) return;
+    const frame = requestAnimationFrame(() => field.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
   });
 
   function close(reason?: PopoverCloseReason): void {

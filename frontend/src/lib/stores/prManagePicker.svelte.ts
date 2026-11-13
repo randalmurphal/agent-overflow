@@ -28,6 +28,8 @@ export interface PRPickerHost {
   readonly prRef: PRRef | null;
   readonly backend: BackendKey;
   apply(row: PRManageRow, change: PRPickerChange): Promise<void>;
+  /** The row's picker opened. */
+  opened(row: PRManageRow): void;
 }
 
 export interface PRPickerOption {
@@ -159,6 +161,7 @@ export function createPRPickerState(host: PRPickerHost): PRPickerView {
     get error() { return error; },
     open(next: PRManageRow, shown: PRPickerOpen): void {
       reset();
+      host.opened(next);
       row = next;
       teams = !!shown.teams;
       const items: Item[] = next === 'labels'

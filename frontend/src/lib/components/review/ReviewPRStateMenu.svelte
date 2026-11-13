@@ -48,7 +48,8 @@
       haspopup="menu"
       expanded={open}
       pending={statePending}
-      disabled={manage.blockedReason !== null}
+      focusableWhilePending
+      disabled={manage.blockedReason !== null && !statePending}
       disabledLabel={statePending && pending ? `${PR_MANAGE_ACTION_LABEL[pending.kind]}…` : (manage.blockedReason ?? undefined)}
       onclick={() => { open = !open; }}
     />

@@ -523,6 +523,9 @@ export interface PRManage {
   assignees: PRPerson[];
   labels: PRLabel[];
   can: PRManageCan;
+  /** One sentence when the management read failed: every flag is false
+   *  and the lists are empty. */
+  unavailable?: string;
 }
 
 /** Mirrors git.PRManageCan: one flag per control, from the forge's answer. */

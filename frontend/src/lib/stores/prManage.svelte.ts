@@ -30,12 +30,11 @@ import {
 import { captureError, type CapturedError } from './errorReports.svelte';
 import { createPRMergeMessageState, type PRMergeMessageView } from './prMergeMessage.svelte';
 import { createPRPickerState, type PRPickerView } from './prManagePicker.svelte';
-import { peekPRSeq } from './prReviewStore.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import type { PRDetail, PRPerson } from '../types/models';
-import { labelChange, peopleChange, PR_STATE_LABEL, type PRManageRow, type PRStateChange } from '../utils/prManage';
+import { labelChange, peopleChange, PR_STATE_LABEL, wirePerson, type PRManageRow, type PRStateChange } from '../utils/prManage';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { userFacingError } from '../utils/userFacingError';
 
@@ -45,6 +44,8 @@ export interface PRManageHost {
   /** The PR's computer-scoped key (computerPRKey), whose applied
    * sequence settles a pending action; null outside the PR scope. */
   readonly entityKey: string | null;
+  /** The PR's applied sequence (peekPRSeq of entityKey). */
+  readonly appliedSeq: number;
   readonly backend: BackendKey;
   /** The backend's launch id (its hello's launchId). */
   readonly launch: string;
@@ -123,6 +124,9 @@ export interface PRManageView {
   readonly detailsOpen: boolean | null;
   setDetailsOpen(open: boolean): void;
   readonly picker: PRPickerView;
+  /** A row's failed change, shown on the row until its picker opens again
+   * or the next change of that row is accepted. */
+  rowError(row: PRManageRow): PRManageError | null;
 
   // The title bar's state changes and the reviews.
   setState(state: PRStateChange): Promise<void>;
@@ -160,7 +164,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     if (running) return running;
     const wait = awaiting;
     if (wait === null || wait.key !== host.entityKey || wait.launch !== host.launch || host.updateFailing) return null;
-    return peekPRSeq(wait.key) < wait.seq ? wait : null;
+    return host.appliedSeq < wait.seq ? wait : null;
   });
   const blockedReason = $derived(
     host.withheldReason ?? (pending ? `${PR_MANAGE_ACTION_LABEL[pending.kind]}…` : null),
@@ -188,7 +192,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     }
     if (disposed) return null;
     running = null;
-    if (host.launch === launch && peekPRSeq(key) < result.seq) awaiting = { kind, target, key, seq: result.seq, launch };
+    if (host.launch === launch && host.entityKey === key && untrack(() => host.appliedSeq) < result.seq) awaiting = { kind, target, key, seq: result.seq, launch };
     return { ok: true };
   }
 
@@ -219,6 +223,13 @@ export function createPRManageState(host: PRManageHost): PRManageView {
   const descriptionOpen = $derived(description !== null && !(description.submitted && !descriptionSaving));
 
   let detailsOpen = $state<boolean | null>(null);
+  let rowErrors = $state<Partial<Record<PRManageRow, PRManageError>>>({});
+  function setRowError(row: PRManageRow, error: PRManageError | null): void {
+    const next = { ...rowErrors };
+    if (error) next[row] = error;
+    else delete next[row];
+    rowErrors = next;
+  }
 
   let dismissState = $state<{ reviewId: string; text: string; submitted: boolean } | null>(null);
   let dismissError = $state<PRManageError | null>(null);
@@ -237,7 +248,13 @@ export function createPRManageState(host: PRManageHost): PRManageView {
         if (row === 'labels') return SetPRLabels(pr, wire as ReturnType<typeof labelChange>);
         return row === 'reviewers' ? SetPRReviewers(pr, wire as ReturnType<typeof peopleChange>) : SetPRAssignees(pr, wire as ReturnType<typeof peopleChange>);
       });
-      if (outcome && !outcome.ok) toastFailure(row, outcome);
+      if (outcome === null) return;
+      // The sentence as the backend gave it, on the row; a partial change
+      // says so, and the row shows the next snapshot either way.
+      setRowError(row, outcome.ok ? null : failure(outcome));
+    },
+    opened(row) {
+      setRowError(row, null);
     },
   });
 
@@ -317,13 +334,14 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     get detailsOpen() { return detailsOpen; },
     setDetailsOpen(open: boolean): void { detailsOpen = open; },
     picker,
+    rowError(row: PRManageRow): PRManageError | null { return rowErrors[row] ?? null; },
 
     async setState(state: PRStateChange): Promise<void> {
       const outcome = await run(state, '', (ref) => SetPRState(prReferenceWire(ref), state));
       if (outcome && !outcome.ok) toastFailure(state, outcome);
     },
     async rerequest(reviewer: PRPerson): Promise<void> {
-      const person: PRPerson = { login: reviewer.login, ...(reviewer.id ? { id: reviewer.id } : {}) };
+      const person = wirePerson(reviewer);
       const outcome = await run('rerequest', reviewer.login, (ref) => RerequestPRReview(prReferenceWire(ref), person));
       if (outcome && !outcome.ok) toastFailure('rerequest', outcome);
     },
@@ -373,5 +391,5 @@ export function createPRManageState(host: PRManageHost): PRManageView {
 export function detailsSectionOpen(choice: boolean | null, detail: PRDetail): boolean {
   if (choice !== null) return choice;
   const manage = detail.manage;
-  return !!manage && (manage.reviewers.length > 0 || manage.assignees.length > 0 || manage.labels.length > 0);
+  return !!manage && !manage.unavailable && (manage.reviewers.length > 0 || manage.assignees.length > 0 || manage.labels.length > 0);
 }

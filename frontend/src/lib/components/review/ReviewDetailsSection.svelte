@@ -6,6 +6,7 @@
   import ReviewAvatar from './ReviewAvatar.svelte';
   import ReviewCollapsibleSection from './ReviewCollapsibleSection.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
+  import ReviewManageError from './ReviewManageError.svelte';
   import ReviewPeoplePicker from './ReviewPeoplePicker.svelte';
   import { detailsSectionOpen, PR_MANAGE_ACTION_LABEL, type PRManageView } from '../../stores/prManage.svelte';
   import {
@@ -42,6 +43,8 @@
   const reviewers = $derived<readonly PRReviewer[]>(data?.reviewers ?? []);
   const assignees = $derived<readonly PRPerson[]>(data?.assignees ?? []);
   const labels = $derived(data?.labels ?? []);
+  // The management read failed: its sentence instead of empty rows.
+  const unavailable = $derived(data?.unavailable ?? '');
   const open = $derived(detailsSectionOpen(manage.detailsOpen, detail));
   const pending = $derived(manage.pending);
   const blocked = $derived(manage.blockedReason);
@@ -87,6 +90,8 @@
   const revealClass = 'inline-flex shrink-0 transition-opacity';
   const hiddenClass = 'opacity-0 focus-within:opacity-100 group-hover/row:opacity-100 compact:opacity-100';
   const rowClass = 'group/row flex min-h-9 items-start gap-2.5 px-3 py-1.5 text-xs';
+  // The values and, under them, a failed change's sentence.
+  const valuesClass = 'flex min-w-0 flex-1 flex-col gap-1';
   const nameClass = 'w-20 shrink-0 pt-1 text-fg-muted compact:pt-2';
   const noneClass = 'pt-1 text-fg-subtle compact:pt-2';
 </script>
@@ -102,11 +107,21 @@
         haspopup="dialog"
         expanded={picker.row === row}
         pending={rowPending(row)}
-        disabled={blocked !== null && picker.row !== row}
+        focusableWhilePending
+        disabled={blocked !== null && picker.row !== row && !rowPending(row)}
         disabledLabel={rowPending(row) ? `${PR_MANAGE_ACTION_LABEL[row]}…` : (blocked ?? undefined)}
         onclick={() => openPicker(row)}
       />
     </span>
+  {/if}
+{/snippet}
+
+{#snippet rowError(row: PRManageRow)}
+  {@const error = manage.rowError(row)}
+  {#if error}
+    <div data-testid="review-details-row-error" data-row={row}>
+      <ReviewManageError {error} testid="review-details-error-{row}" />
+    </div>
   {/if}
 {/snippet}
 
@@ -116,7 +131,7 @@
   {:else}
     <ReviewAvatar login={each.login} name={each.name} size={16} />
   {/if}
-  <span class="min-w-0 truncate text-fg" title="@{each.login}">{authorDisplayName({ authorLogin: each.login, authorName: each.name })}</span>
+  <span class="max-w-full truncate text-fg" title="@{each.login}">{authorDisplayName({ authorLogin: each.login, authorName: each.name })}</span>
 {/snippet}
 
 <ReviewCollapsibleSection
@@ -130,13 +145,17 @@
       <span class="min-w-0 truncate text-[0.6875rem] font-normal text-fg-subtle" data-testid="review-details-summary">{summary}</span>
     {/if}
   {/snippet}
+  {#if unavailable}
+    <div class="px-3 py-2 text-xs text-fg-muted" data-testid="review-details-unavailable">{unavailable}</div>
+  {:else}
   <div class="flex flex-col divide-y divide-border-subtle" data-testid="review-details-rows">
     <div class={rowClass} data-testid="review-details-row" data-row="reviewers">
       <span class={nameClass}>{ROW_LABEL.reviewers}</span>
-      <div class="flex min-w-0 flex-1 flex-col">
+      <div class={valuesClass}>
+        <div class="flex min-w-0 flex-col">
         {#each reviewers as reviewer (personKey(reviewer))}
           {@const rerequesting = pending?.kind === 'rerequest' && pending.target === reviewer.login}
-          <div class="group/reviewer flex min-h-6 min-w-0 items-center gap-1.5 compact:min-h-8" data-testid="review-details-reviewer" data-login={reviewer.login} data-state={reviewer.state}>
+          <div class="group/reviewer flex min-h-6 min-w-0 flex-wrap items-center gap-x-1.5 compact:min-h-8" data-testid="review-details-reviewer" data-login={reviewer.login} data-state={reviewer.state}>
             {@render person(reviewer)}
             <span class="shrink-0 rounded-full px-1.5 text-[0.6875rem] {reviewerStateClass(reviewer.state)}" data-testid="review-details-reviewer-state">{REVIEWER_STATE_LABEL[reviewer.state] ?? reviewer.state.toLowerCase()}</span>
             {#if reviewer.stale}
@@ -149,7 +168,8 @@
                   label="Re-request review from {authorDisplayName({ authorLogin: reviewer.login, authorName: reviewer.name })}"
                   testid="review-details-rerequest"
                   pending={rerequesting}
-                  disabled={blocked !== null}
+                  focusableWhilePending
+                  disabled={blocked !== null && !rerequesting}
                   disabledLabel={rerequesting ? `${PR_MANAGE_ACTION_LABEL.rerequest}…` : (blocked ?? undefined)}
                   onclick={() => { void manage.rerequest(reviewer); }}
                 />
@@ -159,12 +179,15 @@
         {:else}
           <span class={noneClass}>None</span>
         {/each}
+        </div>
+        {@render rowError('reviewers')}
       </div>
       {@render editButton('reviewers')}
     </div>
     <div class={rowClass} data-testid="review-details-row" data-row="assignees">
       <span class={nameClass}>{ROW_LABEL.assignees}</span>
-      <div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 pt-0.5 compact:pt-1.5">
+      <div class={valuesClass}>
+      <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 pt-0.5 compact:pt-1.5">
         {#each assignees as assignee (personKey(assignee))}
           <span class="inline-flex min-h-5 min-w-0 items-center gap-1.5" data-testid="review-details-assignee" data-login={assignee.login}>
             {@render person(assignee)}
@@ -173,11 +196,14 @@
           <span class="pt-0.5 text-fg-subtle">None</span>
         {/each}
       </div>
+      {@render rowError('assignees')}
+      </div>
       {@render editButton('assignees')}
     </div>
     <div class={rowClass} data-testid="review-details-row" data-row="labels">
       <span class={nameClass}>{ROW_LABEL.labels}</span>
-      <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1 pt-0.5 compact:pt-1.5">
+      <div class={valuesClass}>
+      <div class="flex min-w-0 flex-wrap items-center gap-1 pt-0.5 compact:pt-1.5">
         {#each labels as label (label.name)}
           {@const color = labelColor(label)}
           <!-- A neutral chip with the forge's color as a dot: a forge
@@ -190,9 +216,12 @@
           <span class="pt-0.5 text-fg-subtle">None</span>
         {/each}
       </div>
+      {@render rowError('labels')}
+      </div>
       {@render editButton('labels')}
     </div>
   </div>
+  {/if}
 </ReviewCollapsibleSection>
 
 {#if picker.row !== null}

@@ -26,6 +26,9 @@
     /** The button opens a menu or dialog popover. */
     haspopup?: 'menu' | 'dialog';
     expanded?: boolean;
+    /** Pending keeps the button focusable (aria-disabled, presses
+     * ignored), so focus returned to it after its popover applied stays. */
+    focusableWhilePending?: boolean;
   }
 
   let {
@@ -41,7 +44,10 @@
     element = $bindable(),
     haspopup,
     expanded,
+    focusableWhilePending = false,
   }: Props = $props();
+
+  const inert = $derived(pending && focusableWhilePending);
 </script>
 
 <button
@@ -54,8 +60,9 @@
   title={(disabled || pending) && disabledLabel ? disabledLabel : label}
   data-testid={testid}
   data-pending={pending || undefined}
-  disabled={disabled || pending}
-  onclick={() => onclick()}
+  aria-disabled={inert ? 'true' : undefined}
+  disabled={disabled || (pending && !focusableWhilePending)}
+  onclick={() => { if (!inert) onclick(); }}
 >
   {#if pending}
     <SteppedSpinner size={13} />

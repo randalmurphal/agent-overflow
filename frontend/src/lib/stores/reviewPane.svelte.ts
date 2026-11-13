@@ -1220,6 +1220,7 @@ export function createReviewPaneState(
   const manage = createPRManageState({
     get prRef() { return prRef; },
     get entityKey() { return prEntityKey; },
+    get appliedSeq() { return peekPRSeq(prEntityKey); },
     backend,
     get launch() { return backendLaunch; },
     get withheldReason() { return mergeWithheldReason; },
