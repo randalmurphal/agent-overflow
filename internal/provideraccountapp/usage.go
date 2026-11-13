@@ -383,6 +383,9 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 		if err != nil {
 			return commit, err
 		}
+		// Already written to the account the observation names, so the
+		// caller publishes it even when that is not the refreshed account.
+		commit.account = updated
 		if observedAccountID != refresh.accountID {
 			return commit, fmt.Errorf(
 				"Codex account %q authenticated as saved account %q",
@@ -390,7 +393,6 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 				observedAccountID,
 			)
 		}
-		commit.account = updated
 	}
 	// Everything above decides whether this probe measured refresh.accountID at
 	// all; the identity checks come first for that reason. Past this line the

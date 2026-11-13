@@ -32,10 +32,12 @@ import * as jsontext$0 from "../../../encoding/json/jsontext/models.js";
  * guaranteed: a Claude identity is replaced at adoption by the OAuth
  * profile answer for the credential's own token (the probe wire carries
  * only the display name, read from a shared config record that can
- * describe another login), Codex's `account/read` carries neither (the id is
- * parsed out of `auth.json` where the caller holds those bytes), and
- * API-key auth has no organization at all. Blank means UNKNOWN, never
- * "no organization" — matching must treat it as compatible with any.
+ * describe another login), Codex's `account/read` carries only the
+ * workspace name, from 0.166 (the id is parsed out of `auth.json` where the
+ * caller holds those bytes), and API-key auth has no organization at all.
+ * A blank OrgID is UNKNOWN, never "no organization", and matching treats it
+ * as compatible with any. A blank OrgName is unknown too, except under
+ * OrgNameReported.
  */
 export class AccountInfo {
     "email"?: string;

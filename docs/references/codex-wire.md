@@ -236,10 +236,13 @@ parent thread. AO's suppression and carve-out rules are in
 variant carries `email` (nullable), `planType` and, from 0.166,
 `workspaceName`: the display name of the selected ChatGPT workspace, `null`
 when unknown and absent on older versions. AO reads it as
-`AccountInfo.OrgName`. Codex has no other source for the name, so an
-observation without one clears the saved name rather than keeping it
-(`provideraccounts.mergeOrgFields`). AO takes the workspace id from
-`auth.json` (`CredentialOrgID`), not from this response.
+`AccountInfo.OrgName`. Codex has no other source for the name, so a
+successful `chatgpt` answer with an email is marked `OrgNameReported` and its
+blank clears the saved name (`provideraccounts.mergeOrgFields`); a failed
+read, a missing email or another account type leaves it. Every attributed
+answer, including an inactive account's usage refresh, records its name and
+plan on that account (`accountIDForObservedIdentity`). AO takes the workspace
+id from `auth.json` (`CredentialOrgID`), not from this response.
 
 ### `account/rateLimits/updated` and `account/rateLimits/read`
 

@@ -51,6 +51,11 @@ type Account struct {
 	RefreshTokenExpiresAt int64                        `json:"refreshTokenExpiresAt,omitempty"`
 	AddedAt               int64                        `json:"addedAt"`
 	RateLimits            *provider.RateLimitsSnapshot `json:"rateLimits,omitempty"`
+	// OrgNameReported is write intent, never stored state: the write carries
+	// a provider answer whose blank OrgName means "no organization name"
+	// (provider.AccountInfo.OrgNameReported), so it clears the saved one
+	// (mergeOrgFields). Rows the store keeps or returns never carry it.
+	OrgNameReported bool `json:"-"`
 }
 
 // ClaudeCatalogRecord is one account's persisted Claude model answer, together
@@ -489,9 +494,9 @@ func (s *Store) Remove(providerName, accountID, replacementAccountID string) err
 }
 
 // UpdateMetadata enriches one saved account without changing the active
-// selection, generation, timestamps, or cached rate limits. It is used when a
-// newer provider account/read response supplies identity fields that were
-// absent in legacy metadata.
+// selection, generation, timestamps, or cached rate limits. It records what a
+// provider identity answer reports about an already-attributed account. A
+// write that leaves the row unchanged persists nothing.
 func (s *Store) UpdateMetadata(account Account) (Account, error) {
 	if err := validateAccount(account); err != nil {
 		return Account{}, err
@@ -528,6 +533,12 @@ func (s *Store) UpdateMetadata(account Account) (Account, error) {
 	account.AddedAt = existing.AddedAt
 	account.RateLimits = existing.RateLimits
 	account.RefreshTokenExpiresAt = mergeRefreshTokenExpiry(account, existing)
+	account.OrgNameReported = false
+	if account == existing {
+		// Observations repeat on every probe; an unchanged row is not
+		// rewritten.
+		return cloneAccount(existing), nil
+	}
 	state.Accounts[index] = cloneAccount(account)
 	s.state.Providers[account.Provider] = state
 	if err := s.saveLocked(); err != nil {
@@ -759,6 +770,7 @@ func restoreProviderState(
 }
 
 func cloneAccount(account Account) Account {
+	account.OrgNameReported = false
 	if account.RateLimits != nil {
 		copy := cloneSnapshot(*account.RateLimits)
 		account.RateLimits = &copy

@@ -390,6 +390,10 @@ func (m *Manager) verifyCanonicalProviderCredentialLocked(
 // long as nothing observed CONTRADICTS it (Identity.Contradicts) — same
 // email on a provably different organization is a different login and
 // reassigns exactly like a different email does.
+//
+// Once attributed, the observation's metadata is recorded on that account.
+// The returned account is non-nil only when the stored row changed, so the
+// caller publishes a card only then.
 func (m *Manager) accountIDForObservedIdentity(
 	providerName string,
 	expectedAccountID string,
@@ -399,14 +403,34 @@ func (m *Manager) accountIDForObservedIdentity(
 	if email == "" || m.store == nil {
 		return expectedAccountID, nil, nil
 	}
+	saved, err := m.attributeObservedIdentity(providerName, expectedAccountID, info)
+	if err != nil {
+		return "", nil, err
+	}
+	updated, err := m.recordObservedMetadata(providerName, saved, info)
+	if err != nil {
+		return "", nil, err
+	}
+	return saved.ID, updated, nil
+}
+
+// attributeObservedIdentity names the saved account an observation that
+// carries an email describes: the expected account while the observation
+// confirms it, otherwise the saved account matching it, otherwise an
+// expected account saved before its email was known.
+func (m *Manager) attributeObservedIdentity(
+	providerName string,
+	expectedAccountID string,
+	info provider.AccountInfo,
+) (provideraccounts.Account, error) {
 	observed := provideraccounts.IdentityFromInfo(info)
-	if expected, ok := m.store.Get(providerName, expectedAccountID, time.Now()); ok &&
-		provideraccounts.AccountIdentity(expected).Confirms(observed) {
-		return expectedAccountID, nil, nil
+	expected, hasExpected := m.store.Get(providerName, expectedAccountID, time.Now())
+	if hasExpected && provideraccounts.AccountIdentity(expected).Confirms(observed) {
+		return expected, nil
 	}
 	resolved, found, err := m.findAccountByObservedIdentity(providerName, info)
 	if err != nil {
-		return "", nil, fmt.Errorf(
+		return provideraccounts.Account{}, fmt.Errorf(
 			"resolve observed %s account %s: %w",
 			providerName,
 			DescribeObservedAccount(info),
@@ -414,34 +438,59 @@ func (m *Manager) accountIDForObservedIdentity(
 		)
 	}
 	if found {
-		return resolved.ID, nil, nil
+		return resolved, nil
 	}
-	if expected, ok := m.store.Get(providerName, expectedAccountID, time.Now()); ok &&
-		strings.TrimSpace(expected.Email) == "" {
-		metadata := AccountFromInfo(expected.ID, providerName, info)
-		if metadata.DisplayName == "" {
-			metadata.DisplayName = expected.DisplayName
-		}
-		if metadata.SubscriptionType == "" {
-			metadata.SubscriptionType = expected.SubscriptionType
-		}
-		if metadata.TokenSource == "" {
-			metadata.TokenSource = expected.TokenSource
-		}
-		if metadata.APIProvider == "" {
-			metadata.APIProvider = expected.APIProvider
-		}
-		updated, err := m.store.UpdateMetadata(metadata)
-		if err != nil {
-			return "", nil, fmt.Errorf("save observed %s account identity: %w", providerName, err)
-		}
-		return updated.ID, &updated, nil
+	if hasExpected && strings.TrimSpace(expected.Email) == "" {
+		return expected, nil
 	}
-	return "", nil, fmt.Errorf(
+	return provideraccounts.Account{}, fmt.Errorf(
 		"%s identity probe returned unsaved account %s instead of selected account",
 		providerName,
 		DescribeObservedAccount(info),
 	)
+}
+
+// recordObservedMetadata writes what an attributed observation reports over
+// the saved row: each non-blank field replaces the saved value, a blank keeps
+// it, and the organization name follows the store's OrgNameReported rule.
+// It returns the stored row only when it changed.
+func (m *Manager) recordObservedMetadata(
+	providerName string,
+	saved provideraccounts.Account,
+	info provider.AccountInfo,
+) (*provideraccounts.Account, error) {
+	observed := AccountFromInfo(saved.ID, providerName, info)
+	metadata := saved
+	for _, field := range []struct {
+		saved    *string
+		observed string
+	}{
+		{&metadata.Email, observed.Email},
+		{&metadata.DisplayName, observed.DisplayName},
+		{&metadata.SubscriptionType, observed.SubscriptionType},
+		{&metadata.TokenSource, observed.TokenSource},
+		{&metadata.APIProvider, observed.APIProvider},
+		{&metadata.OrgID, observed.OrgID},
+		{&metadata.OrgName, observed.OrgName},
+	} {
+		if field.observed != "" {
+			*field.saved = field.observed
+		}
+	}
+	if observed.OrgNameReported {
+		metadata.OrgName = observed.OrgName
+		metadata.OrgNameReported = true
+	}
+	updated, err := m.store.UpdateMetadata(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("save observed %s account identity: %w", providerName, err)
+	}
+	before, after := saved, updated
+	before.RateLimits, after.RateLimits = nil, nil
+	if before == after {
+		return nil, nil
+	}
+	return &updated, nil
 }
 
 // ResolveObservedAccount attributes a provider-reported identity while

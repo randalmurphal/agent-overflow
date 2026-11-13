@@ -2,6 +2,8 @@ package provideraccounts
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -168,35 +170,77 @@ func TestUpsertEnrichesBlankOrgAndPreservesKnownOrg(t *testing.T) {
 	}
 }
 
-// Codex reports its workspace name on every account/read that names the
-// login, so a write without one is that observation: the saved name clears
-// instead of outliving the workspace (or the codex version) that reported it.
-func TestCodexWorkspaceNameFollowsTheLatestObservation(t *testing.T) {
+// A write marked OrgNameReported carries an answer that always states the
+// name when one exists (Codex's chatgpt account/read), so its blank clears the
+// saved name. Any other blank write keeps it, whatever the provider.
+func TestReportedOrgNameFollowsTheLatestObservation(t *testing.T) {
 	store := newIdentityTestStore(t)
 	mustUpsert(t, store, Account{ID: "a", Provider: "codex", Email: "e@x.com", OrgID: "org-1"})
 
-	named := Account{ID: "a", Provider: "codex", Email: "e@x.com", OrgName: "Acme"}
+	named := Account{ID: "a", Provider: "codex", Email: "e@x.com", OrgName: "Acme", OrgNameReported: true}
 	for i := 0; i < 2; i++ {
 		got := mustUpsert(t, store, named)
-		if got.OrgName != "Acme" || got.OrgID != "org-1" {
-			t.Fatalf("delivery %d: %+v, want OrgName Acme and preserved OrgID org-1", i, got)
+		if got.OrgName != "Acme" || got.OrgID != "org-1" || got.OrgNameReported {
+			t.Fatalf("delivery %d: %+v, want OrgName Acme, OrgID org-1 kept, no stored flag", i, got)
 		}
 	}
 
+	// An unmarked blank (a failed read, a saved row written back) keeps it.
+	kept := mustUpsert(t, store, Account{ID: "a", Provider: "codex", Email: "e@x.com"})
+	if kept.OrgName != "Acme" {
+		t.Fatalf("unmarked blank write: %+v, want OrgName Acme kept", kept)
+	}
+	kept, err := store.UpdateMetadata(Account{ID: "a", Provider: "codex", Email: "e@x.com"})
+	if err != nil || kept.OrgName != "Acme" {
+		t.Fatalf("unmarked blank UpdateMetadata: %+v, %v", kept, err)
+	}
+
+	reportedBlank := Account{ID: "a", Provider: "codex", Email: "e@x.com", OrgNameReported: true}
 	for i := 0; i < 2; i++ {
-		got := mustUpsert(t, store, Account{ID: "a", Provider: "codex", Email: "e@x.com"})
+		got := mustUpsert(t, store, reportedBlank)
 		if got.OrgName != "" || got.OrgID != "org-1" {
-			t.Fatalf("unnamed delivery %d: %+v, want OrgName cleared and OrgID org-1 kept", i, got)
+			t.Fatalf("reported blank delivery %d: %+v, want OrgName cleared and OrgID org-1 kept", i, got)
 		}
 	}
 
 	mustUpsert(t, store, named)
-	cleared, err := store.UpdateMetadata(Account{ID: "a", Provider: "codex", Email: "e@x.com"})
+	cleared, err := store.UpdateMetadata(reportedBlank)
 	if err != nil || cleared.OrgName != "" || cleared.OrgID != "org-1" {
-		t.Fatalf("UpdateMetadata without a name: %+v, %v", cleared, err)
+		t.Fatalf("UpdateMetadata reported blank: %+v, %v", cleared, err)
 	}
-	if saved, _ := store.Get("codex", "a", time.Now()); saved.OrgName != "" {
-		t.Fatalf("persisted OrgName = %q, want cleared", saved.OrgName)
+	saved, _ := store.Get("codex", "a", time.Now())
+	if saved.OrgName != "" || saved.OrgNameReported {
+		t.Fatalf("persisted %+v, want OrgName cleared and no stored flag", saved)
+	}
+	reloaded, err := NewStore(filepath.Dir(store.path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := reloaded.Get("codex", "a", time.Now()); got.OrgName != "" {
+		t.Fatalf("reloaded OrgName = %q, want cleared on disk", got.OrgName)
+	}
+}
+
+// UpdateMetadata with nothing new leaves the file alone.
+func TestUpdateMetadataSkipsAnUnchangedRow(t *testing.T) {
+	store := newIdentityTestStore(t)
+	saved := mustUpsert(t, store, Account{ID: "a", Provider: "codex", Email: "e@x.com", OrgName: "Acme"})
+	path := store.path
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	same, err := store.UpdateMetadata(Account{ID: "a", Provider: "codex", Email: "e@x.com", OrgName: "Acme", OrgNameReported: true})
+	if err != nil || same.OrgName != saved.OrgName {
+		t.Fatalf("UpdateMetadata unchanged: %+v, %v", same, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("unchanged UpdateMetadata rewrote the state file: %v", err)
+	}
+	if _, err := store.UpdateMetadata(Account{ID: "a", Provider: "codex", Email: "e@x.com", OrgName: "Acme Renamed"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("changed UpdateMetadata did not write the state file: %v", err)
 	}
 }
 

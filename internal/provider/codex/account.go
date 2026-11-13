@@ -44,5 +44,9 @@ func decodeAccountInfo(result json.RawMessage) (provider.AccountInfo, error) {
 		SubscriptionType: response.Account.PlanType,
 		APIProvider:      "openai",
 		OrgName:          strings.TrimSpace(response.Account.WorkspaceName),
+		// Only the chatgpt variant carries workspaceName, and only an answer
+		// that names the login can be attributed to a saved account.
+		OrgNameReported: response.Account.Type == "chatgpt" &&
+			strings.TrimSpace(response.Account.Email) != "",
 	}, nil
 }

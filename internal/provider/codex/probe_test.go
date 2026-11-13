@@ -101,8 +101,36 @@ func TestProbeAccountCarriesWorkspaceName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
-	if info.Email != "person@example.com" || info.OrgName != "Acme Team" {
-		t.Fatalf("info = %+v, want email person@example.com and OrgName Acme Team", info)
+	if info.Email != "person@example.com" || info.OrgName != "Acme Team" || !info.OrgNameReported {
+		t.Fatalf("info = %+v, want email person@example.com and reported OrgName Acme Team", info)
+	}
+}
+
+// A probe answer whose account/read failed, or never arrived before the
+// rate-limits answer settled it, says nothing about the workspace name.
+func TestProbeAccountWithoutAccountReadDoesNotReportWorkspaceName(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"account/read error": `printf '%s\n' '{"jsonrpc":"2.0","id":3,"error":{"code":-32603,"message":"boom"}}'` + "\n",
+		"no account/read":    "",
+	}
+	for name, accountFrame := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "mock-codex-no-account")
+			script := "#!/bin/bash\n" +
+				"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+				accountFrame +
+				`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"team"}}}'` + "\n"
+			mockexec.Write(t, path, script)
+			info, err := ProbeAccount(context.Background(), ProbeConfig{WorkDir: probeWorkDir, Binary: path})
+			if err != nil {
+				t.Fatalf("ProbeAccount: %v", err)
+			}
+			if info.OrgNameReported || info.OrgName != "" || info.SubscriptionType != "team" {
+				t.Fatalf("info = %+v, want plan team and no reported workspace name", info)
+			}
+		})
 	}
 }
 
