@@ -312,11 +312,15 @@ describe('PatchParser', () => {
       '+++ b/added.ts',
       '@@ -0,0 +1 @@',
       '+x',
+      'diff --git a/logo.png b/logo.png',
+      'index 6666666..7777777 100644',
+      'Binary files a/logo.png and b/logo.png differ',
     ].join('\n');
     const expected = [
-      { sections: 1, oldPath: 'src/old.ts', indexed: true, oldBlob: '1111111', newBlob: '2222222', submodule: false },
-      { sections: 1, oldPath: null, indexed: true, oldBlob: 'abcdef0', newBlob: '1234567', submodule: true },
-      { sections: 1, oldPath: null, indexed: true, oldBlob: null, newBlob: '5555555', submodule: false },
+      { sections: 1, oldPath: 'src/old.ts', indexed: true, oldBlob: '1111111', newBlob: '2222222', submodule: false, binary: false },
+      { sections: 1, oldPath: null, indexed: true, oldBlob: 'abcdef0', newBlob: '1234567', submodule: true, binary: false },
+      { sections: 1, oldPath: null, indexed: true, oldBlob: null, newBlob: '5555555', submodule: false, binary: false },
+      { sections: 1, oldPath: null, indexed: true, oldBlob: '6666666', newBlob: '7777777', submodule: false, binary: true },
     ];
     for (const size of [1, 7, 64, 10_000]) expect(parseInChunks(patch, () => size).files.map((file) => file.header)).toEqual(expected);
     expect(parsePatchFiles(patch).map((file) => reviewFileFromPatchFile(file).header)).toEqual(expected);

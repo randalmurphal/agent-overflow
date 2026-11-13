@@ -249,6 +249,10 @@ func TestHarnessResetClearsHarnessState(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(h.config.DataRoot, "workspaces")); !os.IsNotExist(err) {
 		t.Fatalf("generated workspaces survived reset (stat err %v)", err)
 	}
+	// Review diff images a spec read are not servable to the next spec.
+	if host.droppedImages != 1 {
+		t.Fatalf("reset dropped review diff images %d times, want 1", host.droppedImages)
+	}
 	// What the forge adapters remember of the cleared fixture goes too.
 	if host.forgeCachesReset != 1 {
 		t.Fatalf("forge caches reset %d times, want once", host.forgeCachesReset)

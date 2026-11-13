@@ -15,6 +15,9 @@ import type { CILogSearch, CILogSection } from '../../types/models';
 import { parseReviewFiles } from '../../utils/patchStore';
 import type { ReviewFindHit, ReviewFindPlace } from '../../utils/reviewFindScan';
 
+// The diff shows every draft as drafted and no file as an image.
+const NO_MEDIA_HOST = { renderedPaths: new Set<string>() };
+
 const KEY = 'pane-find-log';
 
 function section(key: string, start: number, end: number): CILogSection {
@@ -119,7 +122,7 @@ describe('review find over the diff', () => {
       },
       scrollFindBy: () => {},
     };
-    const review = { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState;
+    const review = { shownDrafts: [], mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState;
     const root = document.createElement('div');
     document.body.append(root);
     const { rerender } = render(ReviewPaneFind, {
@@ -170,7 +173,7 @@ describe('review find over the diff', () => {
       scrollFindBy: () => {},
     };
     const review = {
-      drafts: [reply], prThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: expanded, togglePRThread,
+      shownDrafts: [reply], mediaHost: NO_MEDIA_HOST, drafts: [reply], prThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: expanded, togglePRThread,
       draftEditBodyFor: () => null, sentComments: { editing: new Set<string>(), editBodyFor: () => null },
     } as unknown as ReviewPaneState;
     const root = document.createElement('div');

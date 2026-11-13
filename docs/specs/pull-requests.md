@@ -761,6 +761,74 @@ fake forge on desktop and compact.
   any other; the branch delete toggle is absent since the branch is not
   the project's.
 
+### Reading the diff
+
+Commit runs. In the PR scope the commit picker picks one commit (a click)
+or a run (Shift+click on a second row, or a row's `From here`, which runs
+to the newest commit). Commits are numbered from the oldest: the trigger
+reads `All commits`, `N/T <short sha>` for one commit or `N–M/T` for a run,
+never a subject; its steppers are Older (left) and Newer (right). A run
+of the whole list is All commits, never sent. The backend lists at most
+the newest 300 commits with the PR's real count: ordinals and `T` count
+from the PR's first commit, the menu says once that only the newest N of
+T are listed, the oldest listed commit keeps `From here`, and a run of
+the whole truncated list stays a run. When the count is unknown there are
+no ordinals: a commit reads as its short hash and a run as
+`<sha>–<sha>`, at the same trigger width. The run is pane state like a
+picked commit: kept across a reload while its commits are listed, and
+when one is gone (a rebase, an amend) the pane shows All commits with a
+banner saying so. A run's card leads the diff in the commit card's place:
+its count, its ordinals (`· to the head` when it ends there), its first
+and last commits, and `All commits` to leave. Each commit group in the
+Conversation feed has `Changes from here`, the run from the group's
+first commit to the newest, landing on the diff.
+
+Comments in a run. A run that ends before the head comments as a single
+commit does (to the agent). A run of two or more commits that ends at the
+head is read against the whole PR's diff: a new-side line inside one of
+the whole PR's hunks takes the PR's comments (`Comment now`, PR drafts,
+saved in the whole diff's line numbers); any other new-side line takes an
+agent-only draft whose `+` says why on hover ("This line is not part of
+the pull request's diff, so a comment here goes to the agent only."); a
+removed line takes none. The whole diff's line index is built when the
+run opens (from the whole diff on screen, else read once) and dropped when
+it closes; until it is ready, or if its read failed (the card says so,
+with Retry), every line is agent-only. Nothing is guessed.
+
+Binary files. A binary file whose path is an image (png, jpg, jpeg, gif,
+webp, avif, bmp, ico, svg) shows its sides as images: two columns in split
+view, old above new in unified, one for an add or a delete, the new side
+alone for an edit. Each is captioned with its decoded pixel size and its
+byte size; a side over the cap shows its size and that it is too large.
+The row's height is reserved before any byte arrives, so nothing moves.
+Bytes are read only while the row is near the viewport and released when
+it leaves (the media cache's budget). Any other binary file, or an image
+the backend cannot serve, shows `Binary files differ` with both sizes and,
+when the backend says why, its sentence. A refused read says why on the
+row: Retry when the backend was busy, `Reload diff` when the file changed
+since the diff was read, and only the sentence when the diff's files
+cannot be read at all. The reads name the handle the diff's open
+answered, and the bytes are cached under it (an edits diff's under an
+id minted for its open), so no other diff, pane or load shares them. The server forgets a handle when it evicts it or the
+connection that opened it ends. A diff of immutable revisions (the PR, a
+picked commit or run, a branch commit) is then opened once more for a new
+handle, before the next read when the connection ended; a diff that reads
+the working tree is not, and its rows offer `Reload diff` without
+reading. A diff no longer on screen is never reopened. Rows published
+while the diff still streams read under its open from the start. A text SVG keeps its text diff, with one `Rendered` toggle
+in its header that shows it as an image (always an `<img>`, never
+inline).
+
+Line links. In the PR scope with All commits shown, a line's number
+gutter has a context menu (a long press on compact) with `Copy link to
+line`: the line's place on the forge's own diff page, in the anchor that
+page puts in the address bar (neither forge documents one). GitHub:
+`<pr>/files#diff-<sha256 of the path>R<n>` for an added or unchanged line,
+`L<n>` for a removed one. GitLab: `<mr>/diffs#<sha1 of the path>_<old>_<new>`,
+where an added or removed line takes the other side's running number. A
+renamed file is named by its new path. A picked commit or run, and the
+workspace, branch and edits diffs, offer no link.
+
 ## Non-goals
 
 - Merge queues and merge trains: the forge's own page.
@@ -827,3 +895,9 @@ preview, a refused then landed Apply, Applied and Outdated, a chip
 toggled on and off, the popover's eight, GitLab's unknown awards, a
 refused GitLab reactions read, and the description and PR comment
 previews.
+`review-diff-reading.spec.ts` and its compact twin
+(`review-diff-reading-flow.ts`) drive reading the diff on both forges: a
+run by Shift+click and by `From here`, its card and leaving it, a head
+run's `Comment now` and agent-only line, `Changes from here`, image rows
+in unified and split view, an over-cap and a non-image binary file, the
+SVG toggle and a line's copied link.

@@ -7,6 +7,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { crc32, deflateSync } from 'node:zlib';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
@@ -469,6 +470,162 @@ export async function seedThreadProject(harness: HarnessApp, title: string, pref
   return seed.projects[0].path;
 }
 
+/** One commit of a pull request's history (`PullHistory`). */
+export interface PullCommit {
+  message: string;
+  body?: string;
+  /** Files written before the commit: text, or bytes for a binary file. */
+  files?: Record<string, string | Uint8Array>;
+  /** Paths deleted. */
+  remove?: string[];
+  /** Renames, old path to new path (`git mv`). */
+  rename?: Record<string, string>;
+  /** Commit this on a side branch off the feature tip and merge it into
+   * feature with a merge commit (`merge <message>`), so the PR carries both
+   * the side commit and the merge. */
+  merge?: boolean;
+  /** The commit's author name (email `<name>@example.com`, lowercased
+   * and dashed); default the harness's git identity. */
+  author?: string;
+}
+
+/** A pull request's history: files committed on `main` first (the base
+ * side of a delete, a change or a rename), then the feature commits, oldest
+ * first. Commit dates are one second apart in order, so the PR's commit
+ * list is the same on every run. */
+export interface PullHistory {
+  base?: Record<string, string | Uint8Array>;
+  commits: PullCommit[];
+}
+
+/** A solid `width` x `height` PNG of one RGB color, for an image a diff
+ * shows; different colors or sizes make different bytes. */
+export function solidPNG(width: number, height: number, rgb: [number, number, number]): Uint8Array {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB, no interlace
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: width }, () => rgb).flat())]);
+  const pixels = deflateSync(Buffer.concat(Array.from({ length: height }, () => row)));
+  return new Uint8Array(Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', header),
+    chunk('IDAT', pixels),
+    chunk('IEND', Buffer.alloc(0)),
+  ]));
+}
+
+/** A diagram SVG: text, so its diff has lines, and an image. */
+export const DIAGRAM_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">\n  <rect width="40" height="20" fill="#3a7"/>\n</svg>\n';
+
+/**
+ * A pull request history with images and a merge, for the commit range
+ * and image diff views. Base (on main): `logo.png` 16x16, `old.png`,
+ * `moved.png`. Feature commits, oldest first, each listed by the PR as its
+ * subject:
+ *
+ * 1. `add icon` adds `icon.png` 24x12 and `src/app.ts`.
+ * 2. `restyle logo` changes `logo.png` to 32x32 and deletes `old.png`.
+ * 3. `add diagram` on a side branch adds `diagram.svg`, and
+ *    `merge add diagram` merges it (the PR lists both).
+ * 4. `rename moved` renames `moved.png` to `img/moved.png` unchanged and
+ *    adds a line to `src/app.ts`.
+ * 5. `add blob` adds `data.bin`, a binary file that is not an image.
+ */
+/** The author of `imagePullHistory`'s later commits, so the PR's
+ * Conversation has two commit groups. */
+export const SECOND_AUTHOR = 'Sam Lee';
+
+export function imagePullHistory(): PullHistory {
+  return {
+    base: {
+      'logo.png': solidPNG(16, 16, [200, 40, 40]),
+      'old.png': solidPNG(8, 8, [40, 40, 200]),
+      'moved.png': solidPNG(10, 10, [40, 160, 40]),
+    },
+    commits: [
+      { message: 'add icon', files: { 'icon.png': solidPNG(24, 12, [240, 200, 0]), 'src/app.ts': 'export const app = 1;\n' } },
+      { message: 'restyle logo', files: { 'logo.png': solidPNG(32, 32, [40, 200, 200]) }, remove: ['old.png'] },
+      { message: 'add diagram', files: { 'diagram.svg': DIAGRAM_SVG }, merge: true },
+      { message: 'rename moved', author: SECOND_AUTHOR, rename: { 'moved.png': 'img/moved.png' }, files: { 'src/app.ts': 'export const app = 1;\nexport const moved = 2;\n' } },
+      { message: 'add blob', author: SECOND_AUTHOR, files: { 'data.bin': new Uint8Array([0, 1, 2, 3, 0, 255, 254, 0]) } },
+    ],
+  };
+}
+
+type GitEnv = Record<string, string | undefined>;
+
+/** The single feature commit: `files` added on a `feature` branch off
+ * `main`. Answers the base commit. */
+async function commitFeatureFiles(workspace: string, env: GitEnv, files: Record<string, string>): Promise<string> {
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, env, encoding: 'utf8' }).trim();
+  const baseSha = git('rev-parse', 'HEAD');
+  git('checkout', '--quiet', '-b', 'feature');
+  for (const [name, content] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(workspace, name)), { recursive: true });
+    await writeFile(path.join(workspace, name), content);
+  }
+  git('add', '--', ...Object.keys(files));
+  git('commit', '--quiet', '-m', 'feature work', '-m', 'Adds the mailer and its tests.');
+  return baseSha;
+}
+
+/** `history` committed: its base files on `main`, then its commits on a
+ * `feature` branch, one second apart. Answers the base commit. */
+async function commitPullHistory(workspace: string, env: GitEnv, history: PullHistory): Promise<string> {
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, env, encoding: 'utf8' }).trim();
+  let second = 0;
+  const dated = (args: string[], author?: string) => {
+    second += 1;
+    const date = new Date(Date.UTC(2026, 0, 1) + second * 1000).toISOString().replace('.000Z', 'Z');
+    const identity = author ? { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: `${author.toLowerCase().replace(/\s+/g, '-')}@example.com` } : {};
+    execFileSync('git', args, { cwd: workspace, env: { ...env, ...identity, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+  };
+  const write = async (files: Record<string, string | Uint8Array>) => {
+    for (const [name, data] of Object.entries(files)) {
+      await mkdir(path.dirname(path.join(workspace, name)), { recursive: true });
+      await writeFile(path.join(workspace, name), data);
+    }
+    if (Object.keys(files).length) git('add', '--', ...Object.keys(files));
+  };
+  const apply = async (step: PullCommit) => {
+    await write(step.files ?? {});
+    for (const [from, to] of Object.entries(step.rename ?? {})) {
+      await mkdir(path.dirname(path.join(workspace, to)), { recursive: true });
+      git('mv', '--', from, to);
+    }
+    if (step.remove?.length) git('rm', '--quiet', '--', ...step.remove);
+    dated(['commit', '--quiet', '--allow-empty', '-m', step.message, ...(step.body ? ['-m', step.body] : [])], step.author);
+  };
+  if (history.base) {
+    await write(history.base);
+    dated(['commit', '--quiet', '-m', 'base files']);
+  }
+  const baseSha = git('rev-parse', 'HEAD');
+  git('checkout', '--quiet', '-b', 'feature');
+  for (const [index, step] of history.commits.entries()) {
+    if (!step.merge) {
+      await apply(step);
+      continue;
+    }
+    const side = `side-${index}`;
+    git('checkout', '--quiet', '-b', side);
+    await apply(step);
+    git('checkout', '--quiet', 'feature');
+    dated(['merge', '--quiet', '--no-ff', '-m', `merge ${step.message}`, side]);
+    git('branch', '--quiet', '-D', side);
+  }
+  return baseSha;
+}
+
 /**
  * The bare origin repository of a forge `project`, created by the harness
  * on the first call (`HarnessForgeOrigin`) and answered again after: the
@@ -482,9 +639,10 @@ export async function forgeOrigin(harness: HarnessApp, project: string): Promise
 
 /**
  * Publish the seeded `workspace` as `repo`'s first pull request and seed
- * the fake forge with `repo`. The workspace gets a `feature` branch one
- * commit ahead of `main` (the fixture's default head and base refs) that
- * writes `files`, and an origin that publishes it the way the forge does. The origin URL is
+ * the fake forge with `repo`. The workspace gets a `feature` branch off
+ * `main` (the fixture's default head and base refs): one commit that writes
+ * `content` when it is a file map, or `content.commits` of a `PullHistory`.
+ * An origin publishes it the way the forge does. The origin URL is
  * `git://<forge host>/<project>.git`, so forge detection sees the forge's
  * own host, and the workspace's `core.gitProxy` answers every connection
  * from a bare repository under the harness data root: git opens no socket.
@@ -496,7 +654,7 @@ export async function publishPullRequest(
   harness: HarnessApp,
   workspace: string,
   repo: ForgeRepo,
-  files: Record<string, string> = { 'feature.md': 'Feature work.\n' },
+  content: Record<string, string> | PullHistory = { 'feature.md': 'Feature work.\n' },
 ): Promise<ForgeRepo> {
   const [pull, ...rest] = repo.pulls ?? [];
   if (!pull) throw new Error(`publishPullRequest: ${repo.project} has no pull request to publish`);
@@ -506,14 +664,9 @@ export async function publishPullRequest(
   const proxy = path.join(root, 'git-proxy.sh');
   await writeFile(proxy, gitProxyScript(root), { mode: 0o755 });
 
-  const baseSha = git(workspace, 'rev-parse', 'HEAD');
-  git(workspace, 'checkout', '--quiet', '-b', 'feature');
-  for (const [name, content] of Object.entries(files)) {
-    await mkdir(path.dirname(path.join(workspace, name)), { recursive: true });
-    await writeFile(path.join(workspace, name), content);
-  }
-  git(workspace, 'add', '--', ...Object.keys(files));
-  git(workspace, 'commit', '--quiet', '-m', 'feature work', '-m', 'Adds the mailer and its tests.');
+  const baseSha = 'commits' in content && Array.isArray(content.commits)
+    ? await commitPullHistory(workspace, env, content as PullHistory)
+    : await commitFeatureFiles(workspace, env, content as Record<string, string>);
   const headSha = git(workspace, 'rev-parse', 'HEAD');
   git(workspace, 'push', '--quiet', bare, 'main', 'feature');
   git(bare, 'update-ref', PULL_HEAD_REF[repo.forge](pull.number), headSha);

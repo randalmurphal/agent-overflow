@@ -154,8 +154,13 @@
   function diffContent(): ReviewFindLocateContent {
     return untrack(() => {
       const conflicts = view === 'conflicts';
-      return { files, drafts: conflicts ? [] : review.drafts, prThreads: conflicts ? [] : review.prThreads };
+      return { files, drafts: conflicts ? [] : review.shownDrafts, prThreads: conflicts ? [] : review.prThreads, showsMedia: conflicts ? undefined : showsMedia };
     });
+  }
+
+  // The diff list's media rows (utils/reviewRows.ts): their files show no lines.
+  function showsMedia(file: ReviewFile): boolean {
+    return file.header?.binary === true || review.mediaHost.renderedPaths.has(file.path);
   }
 
   // What the scan reads, as shown now: the reader's <details> and editors.
@@ -434,8 +439,9 @@
       editing = readEditing();
       const content = untrack(() => ({
         files,
-        drafts: conflicts ? [] : review.drafts,
+        drafts: conflicts ? [] : review.shownDrafts,
         prThreads: conflicts ? [] : review.prThreads,
+        showsMedia: conflicts ? undefined : showsMedia,
         foldLines: conflicts ? (path: string) => review.conflictFoldLines(path) : undefined,
         commentText: (body: string, rowKey: string) => commentTexts()(body, details.toggled.get(rowKey)).all,
         editing,
@@ -579,7 +585,7 @@
     const scope = scopeOf(shown);
     const content = shown === 'log'
       ? [review.ciLog?.version, review.ciLog?.sections]
-      : [files, shown === 'diff' ? review.drafts : null, shown === 'diff' ? review.prThreads : null];
+      : [files, shown === 'diff' ? review.shownDrafts : null, shown === 'diff' ? review.prThreads : null, shown === 'diff' ? review.mediaHost.renderedPaths.size : null];
     void content;
     untrack(() => {
       if (scope !== seenView) {

@@ -35,6 +35,7 @@ import { patchFileFromReviewFile, reviewFileFromPatchFile, whenResident, type Re
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { prRevision, type PRRevision } from '../utils/prRevision';
+import { commitList, resolveCommitSelection, type CommitSelection } from '../utils/commitRange';
 
 /** Whether the diff for this selection comes from `internal/gitdiff`, the
  * only source that can apply `-w`: every scope but edits, whose patches
@@ -84,11 +85,20 @@ export interface LoadedPatch {
   /** Edits: sections that repeat a path show as one file per path
    * (EditFileMerge). */
   mergesPaths?: boolean;
-  /** Commit selector rows for the loaded range; omitted → empty. */
+  /** Commit selector rows for the loaded range, the newest up to the
+   * backend's cap; omitted → empty. */
   commits?: BranchCommit[];
+  /** How many commits the range holds (null: uncounted); the list is
+   * complete when it equals `commits.length`. */
+  commitsTotal?: number | null;
   /** The commit the diff was actually computed for — a stale selection
    * that left the range resolves back to null (full range). */
   selectedCommitSHA?: string | null;
+  /** pr scope: the commit or run the diff was computed for (null: the
+   * whole PR), and whether a held pick fell back because its commits left
+   * the list. */
+  selectedCommits?: CommitSelection | null;
+  commitSelectionLost?: boolean;
   /** Edit selector rows (edits scope); omitted → empty. */
   edits?: EditDiffEntryView[];
   editTurnLabels?: ReadonlyMap<number, string>;
@@ -111,6 +121,7 @@ export interface EditDesire {
  * commit/edit lists are unchanged by picking an entry. */
 export interface ExistingLoad {
   commits: BranchCommit[];
+  commitsTotal: number | null;
   edits: EditDiffEntryView[];
   editTurnLabels: ReadonlyMap<number, string>;
   /** pr scope: the revision the commit list was computed at. */
@@ -203,7 +214,8 @@ export async function loadPatch(
   subject: DiffSubject,
   scope: DiffReviewScope,
   baseBranch: string | null,
-  selectedCommitSHA: string | null,
+  // The picked commit or, in pr scope, run of commits.
+  selectedCommits: CommitSelection | null,
   prRef: PRRef | null,
   // pr scope: the shared PR snapshot the caller already awaited. The diff
   // is computed at its revision, so it is an input here rather than
@@ -221,7 +233,12 @@ export async function loadPatch(
   userInitiated = false,
 ): Promise<LoadedPatch> {
   const { workspace, threadId, backend } = subject;
-  const diff = (open: ConstructorParameters<typeof ReviewDiffSource>[1]) => new ReviewDiffSource(backend, open);
+  const selectedCommitSHA = selectedCommits?.last ?? null;
+  // `pinned`: the open names only immutable revisions (ReviewDiffSource).
+  // These three are: a PR's recorded revision, a run of its commits by
+  // sha, and one commit by sha. The workspace and branch-base diffs read
+  // the working tree or resolve a branch, so they are not.
+  const diff = (open: ConstructorParameters<typeof ReviewDiffSource>[1], pinned = false) => new ReviewDiffSource(backend, open, pinned);
   switch (scope) {
     case 'pr': {
       // A selection-only reload stays at the revision its commit list was
@@ -232,14 +249,18 @@ export async function loadPatch(
       const pr = prReferenceWire(prRef);
       // The backend reads the revision from the local clone, fetching only
       // the commits the clone lacks.
-      const commits = existing
-        ? existing.commits
-        : (((await ListPRCommits(workspace, pr, revision, userInitiated)) ?? []) as BranchCommit[]);
-      const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
-      const patch = commitSHA
-        ? diff(() => OpenPRCommitDiff(workspace, pr, revision, commitSHA, ignoreWhitespace, userInitiated))
-        : diff(() => OpenPRDiff(workspace, pr, revision, ignoreWhitespace, userInitiated));
-      return { patch, commits, selectedCommitSHA: commitSHA, prRevision: revision };
+      const list = existing ?? commitList(await ListPRCommits(workspace, pr, revision, userInitiated));
+      const { commits, commitsTotal } = list;
+      // A run is of the list as it is now: one whose commits left it (a
+      // rebase, an amend) falls back to the whole PR, and says so.
+      const { selection, lost } = resolveCommitSelection(selectedCommits, commits, commitsTotal);
+      const patch = selection
+        ? diff(() => OpenPRCommitDiff(workspace, pr, revision, selection.first, selection.last, ignoreWhitespace, userInitiated), true)
+        : diff(() => OpenPRDiff(workspace, pr, revision, ignoreWhitespace, userInitiated), true);
+      return {
+        patch, commits, commitsTotal, selectedCommitSHA: selection?.last ?? null, selectedCommits: selection,
+        commitSelectionLost: lost, prRevision: revision,
+      };
     }
     case 'workspace':
       return { patch: diff(() => OpenWorkspaceDiff(workspace, ignoreWhitespace)) };
@@ -272,29 +293,29 @@ export async function loadPatch(
     case 'branch': {
       const branch = baseBranch?.trim() || await defaultBaseBranch(workspace);
       const branchDiff = (commitSHA: string | null) => commitSHA
-        ? diff(() => OpenCommitDiff(workspace, commitSHA, ignoreWhitespace))
+        ? diff(() => OpenCommitDiff(workspace, commitSHA, ignoreWhitespace), true)
         : diff(() => OpenBranchBaseDiff(workspace, branch, ignoreWhitespace));
       if (existing) {
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
-        return { patch: branchDiff(commitSHA), commits: existing.commits, selectedCommitSHA: commitSHA };
+        return { patch: branchDiff(commitSHA), commits: existing.commits, commitsTotal: existing.commitsTotal, selectedCommitSHA: commitSHA };
       }
       if (selectedCommitSHA) {
         // Sequenced: the selection must be validated against the fresh
         // list before deciding which diff to fetch.
-        const commits = ((await ListBranchCommits(workspace, branch)) ?? []) as BranchCommit[];
+        const { commits, commitsTotal } = commitList(await ListBranchCommits(workspace, branch));
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
-        return { patch: branchDiff(commitSHA), commits, selectedCommitSHA: commitSHA };
+        return { patch: branchDiff(commitSHA), commits, commitsTotal, selectedCommitSHA: commitSHA };
       }
       // The diff opens while the commit list loads.
       const patch = branchDiff(null).start();
-      let commits: BranchCommit[];
+      let list: { commits: BranchCommit[]; commitsTotal: number | null };
       try {
-        commits = ((await ListBranchCommits(workspace, branch)) ?? []) as BranchCommit[];
+        list = commitList(await ListBranchCommits(workspace, branch));
       } catch (err) {
         patch.abandon();
         throw err;
       }
-      return { patch, commits, selectedCommitSHA: null };
+      return { patch, ...list, selectedCommitSHA: null };
     }
   }
 }

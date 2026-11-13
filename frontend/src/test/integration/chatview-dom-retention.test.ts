@@ -62,6 +62,7 @@ import {
 } from '../../lib/stores/accountInfo.svelte';
 import type { Thread } from '../../lib/types/models';
 import { setBindingMock, setReviewDiffMock, resetBindingMocks } from '../mocks/bindings-app';
+import { commitList } from '../helpers/commitList';
 import { installPaneMocks, makeItem } from '../helpers/chat';
 import type { Item } from '../../lib/types/models';
 import { idleWorkspaceActivity } from '../helpers/workspaceLock';
@@ -200,9 +201,9 @@ describe.runIf(gc)('closed review companion DOM is collectable', () => {
     setBindingMock('GetGitStatus', async () => ({}));
     setReviewDiffMock('OpenWorkspaceDiff', async () => diff);
     setReviewDiffMock('OpenBranchBaseDiff', async () => '');
-    setBindingMock('ListBranchCommits', async () => []);
+    setBindingMock('ListBranchCommits', async () => commitList([]));
     setReviewDiffMock('OpenCommitDiff', async () => '');
-    setBindingMock('ListPRCommits', async () => []);
+    setBindingMock('ListPRCommits', async () => commitList([]));
     setReviewDiffMock('OpenPRCommitDiff', async () => '');
     setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
     setReviewDiffMock('OpenTurnEditsDiff', async () => '');

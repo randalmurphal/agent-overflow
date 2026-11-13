@@ -54,6 +54,11 @@ type ReviewDiffOpened struct {
 	// order; GetPayloadPatchSpans returns each one's highlight spans.
 	// Empty for every other diff.
 	PayloadIDs []string `json:"payloadIds,omitempty"`
+	// FilesHandle names what a git-backed open pinned for its file reads
+	// (GetReviewDiffFileSizes, GetReviewDiffImage), held on the server for
+	// the connection that opened it (app_review_diff_records.go). Every
+	// git-backed open answers one; empty for an edits diff.
+	FilesHandle string `json:"filesHandle,omitempty"`
 }
 
 // reviewDiffReader is an open review diff: a git diff or a thread's edit
@@ -82,19 +87,40 @@ type openReviewDiff struct {
 	scope transport.Scope
 }
 
-// openReviewDiff opens a git diff, returns its first chunk, and keeps it
-// open under a connection-owned handle when there is more to read. scope
-// is the calling Open method's //ao:scope.
-func (a *App) openReviewDiff(ctx context.Context, action string, scope transport.Scope, open func(tempRoot string) (*gitdiff.Diff, error)) (ReviewDiffOpened, error) {
+// openReviewDiff opens the patch between the sides open resolves, returns
+// its first chunk and a files handle at once, and keeps the diff open under
+// a connection-owned id when there is more to read. The handle's record is
+// pinned in the background (startReviewDiffPin); the open never waits for
+// it. scope is the calling Open method's //ao:scope.
+func (a *App) openReviewDiff(ctx context.Context, action string, scope transport.Scope, opts gitdiff.Options, open func(tempRoot string) (*gitdiff.Sides, error)) (ReviewDiffOpened, error) {
 	tempRoot, err := a.reviewDiffSnapshotRoot()
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
 	}
-	diff, err := open(tempRoot)
+	sides, err := open(tempRoot)
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
 	}
-	return a.holdOpenedReviewDiff(ctx, action, scope, diff)
+	// The pin holds the snapshot until it exits, whenever the diff closes.
+	releasePin := sides.Hold()
+	diff := sides.OpenDiff(opts)
+	owner := transport.ConnStateFromContext(ctx)
+	pinCtx, cancelPin := context.WithTimeout(context.Background(), a.reviewDiffPinWait())
+	record, evicted := a.reviewDiffFiles.reserve(sides.Workspace(), owner, scope, cancelPin)
+	a.startReviewDiffPin(pinCtx, record, sides, releasePin)
+	stopReviewDiffRecords(evicted...)
+	if owner != nil && !owner.BindCleanup(reviewDiffFilesCleanupKey(record.id), func() { a.dropReviewDiffRecord(record.id) }) {
+		a.dropReviewDiffRecord(record.id)
+		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, errors.Join(errors.New("connection closing"), diff.Close()))
+	}
+	opened, err := a.holdOpenedReviewDiff(ctx, action, scope, diff)
+	if err != nil {
+		owner.UnbindCleanup(reviewDiffFilesCleanupKey(record.id))
+		a.dropReviewDiffRecord(record.id)
+		return ReviewDiffOpened{}, err
+	}
+	opened.FilesHandle = record.id
+	return opened, nil
 }
 
 // holdOpenedReviewDiff reads an open diff's first chunk and, when there is

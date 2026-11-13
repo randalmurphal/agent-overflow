@@ -30,6 +30,7 @@ import { prKey, type PRRef } from '../utils/prReference';
 import type { DiffReviewComment, PRDetail, PRReviewSubmitOutcome } from '../types/models';
 import { installPRDraftsFake, type PRDraftsFake } from '../../test/helpers/prDraftsFake';
 import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
+import { commitList } from '../../test/helpers/commitList';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 
@@ -111,7 +112,7 @@ function installPRMocks(): PRMocks {
   });
   const unsubscribe = setBindingMock('UnsubscribePRUpdates', async () => undefined);
   const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setBindingMock('ListPRReviewThreads', async () => []);
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
   setBindingMock('UpdateThreadBranch', async () => []);
@@ -656,7 +657,7 @@ describe('pinned comments and actions', () => {
   it('takes no comment on a picked commit, and sends nothing to a chat', async () => {
     installPRMocks();
     const sha = 'c'.repeat(40);
-    setBindingMock('ListPRCommits', async () => [{ sha, shortSha: 'ccccccc', subject: 's', author: 'a', authoredAt: 1 }]);
+    setBindingMock('ListPRCommits', async () => commitList([{ sha, shortSha: 'ccccccc', subject: 's', author: 'a', authoredAt: 1 }]));
     setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
     const send = setBindingMock('SendDiffReviewComments', async () => ({}));
     const state = pinned(5);

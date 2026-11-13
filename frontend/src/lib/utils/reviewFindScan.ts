@@ -212,6 +212,9 @@ export interface ReviewFindContent {
   editing?: ReadonlySet<string>;
   /** The hidden lines of each collapsed fold of a conflict file, by fold id. */
   foldLines?(path: string): ReadonlyMap<number, readonly string[]> | null;
+  /** A file whose body shows as an image or its sizes (a binary file, a
+   * text SVG shown rendered): no line of it is shown. */
+  showsMedia?(file: ReviewFile): boolean;
 }
 
 export interface ReviewFindScanOptions {
@@ -363,7 +366,8 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
       const walker = new RowWalker(file);
       let markerRun = 0;
       let lastLine = -1;
-      while (walker.next()) {
+      const media = content.showsMedia?.(file) ?? false;
+      while (!media && walker.next()) {
         await tick();
         if (walker.type === 'gap') continue;
         const lineIndex = walker.lineIndex;

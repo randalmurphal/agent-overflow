@@ -424,9 +424,6 @@ func keyedLookups(th string) []keyedLookup {
 		}},
 		{name: "turn edit reads", turn: true, run: func(t *testing.T, s *Store) {
 			must[[]string](t, "payloads")(s.ListTurnEditDiffPayloads(th, 1))
-			if _, _, err := s.GetLatestTurnEditFileSnapshot(th, 1, "f"); err != nil {
-				t.Errorf("latest snapshot: %v", err)
-			}
 		}},
 		{name: "thread projection probes", run: func(t *testing.T, s *Store) {
 			var planned bool
@@ -590,17 +587,6 @@ func TestKeyedReadsUseTheirLocalKeyIndex(t *testing.T) {
 			},
 			want:      "idx_payloads_summary_only_diff (thread_id=?)",
 			forbidden: []string{"AUTOMATIC", "idx_items_thread_turn_item_unique", "SCAN items", "SCAN payloads"},
-		},
-		{
-			name: "latest turn edit snapshot",
-			run: func() {
-				content, found, err := s.GetLatestTurnEditFileSnapshot(keyedThreadID, 1, "f")
-				if err != nil || !found || content != "b\n" {
-					t.Errorf("latest snapshot = %q, %v, %v", content, found, err)
-				}
-			},
-			want:      "idx_items_thread_turn_item_unique (thread_id=? AND turn_index=?)",
-			forbidden: []string{"MATERIALIZE", "AUTOMATIC", "idx_items_payload_id"},
 		},
 		{
 			name: "codex digest previous completion",

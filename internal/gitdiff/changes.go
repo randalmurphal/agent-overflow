@@ -110,21 +110,14 @@ func WorktreeChanges(ctx context.Context, workspace, tempRoot string) (files []C
 }
 
 // OpenWorktreeFilesDiff is OpenWorktreeDiff limited to the given paths, each
-// matched literally. The returned diff owns its snapshot.
+// matched literally (WorktreeFilesSides). The returned diff owns its
+// snapshot.
 func OpenWorktreeFilesDiff(ctx context.Context, workspace, tempRoot string, paths []string, opts Options) (*Diff, error) {
-	if err := validatePaths(paths); err != nil {
-		return nil, err
-	}
-	snapshot, err := CaptureWorktree(ctx, workspace, tempRoot)
+	sides, err := WorktreeFilesSides(ctx, workspace, tempRoot, paths)
 	if err != nil {
 		return nil, err
 	}
-	diff, err := snapshot.FilesDiff(paths, opts)
-	if err != nil {
-		return nil, errors.Join(err, snapshot.Close())
-	}
-	diff.release = snapshot.Close
-	return diff, nil
+	return sides.OpenDiff(opts), nil
 }
 
 func validatePaths(paths []string) error {

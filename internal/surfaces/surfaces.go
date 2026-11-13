@@ -956,14 +956,16 @@ var Routes = []Route{
 		Credential: CredTransferTicket,
 		Posture:    PostureOpaqueMedia,
 		Why: "One local image rendered markdown references by path, " +
-			"streamed. These used to ride base64 inside a single RPC " +
+			"or one side of a review diff file (GetReviewDiffImage, " +
+			"GetEditDiffImage, files:read), streamed. These used to ride base64 inside a single RPC " +
 			"answer, the cost the attachment download route exists to " +
 			"remove, and could not be served smaller than the file. The " +
 			"backend that owns the thread gates the path through the " +
 			"editor-link gate, proves by signature that the bytes are an " +
 			"image a browser displays, and holds either the file's " +
-			"identity (path, size, modification time) or a display-size " +
-			"derivative under an opaque cache id; the files:read call " +
+			"identity (path, size, modification time), a display-size " +
+			"derivative, or a review diff side's bytes read at the " +
+			"diff's pinned sides, under an opaque cache id; the files:read call " +
 			"that did that mints the ticket. Admission is the same " +
 			"single-use, subject-bound ticket its siblings use, from a " +
 			"book of its own so no other route's ticket is spendable " +
@@ -972,9 +974,10 @@ var Routes = []Route{
 			"since it was resolved, answers the same 404 a spent ticket " +
 			"does. Nothing but an image reaches the route, under the type " +
 			"its bytes proved. An SVG also carries an attachment " +
-			"disposition: it is markup that can run script, and a " +
-			"navigation to this URL must download it rather than render " +
-			"it at the SPA origin. nosniff and Cache-Control: no-store " +
+			"disposition and a sandboxed policy that allows no script: " +
+			"it is markup that can run script, and a navigation to this " +
+			"URL must download it rather than render it at the SPA " +
+			"origin. nosniff and Cache-Control: no-store " +
 			"as on every ticketed transfer. Not Origin-guarded and not " +
 			"rate limited, for the reasons argued on the download row.",
 	},

@@ -21,6 +21,7 @@ import type { DiffReviewComment, PRDetail } from '../../types/models';
 import type { PRRef } from '../../utils/prReference';
 import { installPRDraftsFake } from '../../../test/helpers/prDraftsFake';
 import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 
 const OWNER = 'tools-1';
 const PR: PRRef = { forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 };
@@ -92,7 +93,7 @@ async function mountWithDraft(submit: (wire: unknown, review: { drafts?: { ids: 
   }));
   setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setReviewDiffMock('OpenPRDiff', async () => patch());
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setBindingMock('ListPRReviewThreads', async () => []);
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
   const fake = installPRDraftsFake();
@@ -137,7 +138,7 @@ describe('the send strip of a PR review', () => {
     }));
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
     setReviewDiffMock('OpenPRDiff', async () => patch());
-    setBindingMock('ListPRCommits', async () => []);
+    setBindingMock('ListPRCommits', async () => commitList([]));
     setBindingMock('ListPRReviewThreads', async () => []);
     setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
     const fake = installPRDraftsFake();

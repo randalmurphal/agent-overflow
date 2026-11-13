@@ -29,6 +29,7 @@ import {
   MarkPRReady,
   MergePR,
   ListPRReviewThreads,
+  OpenPRDiff,
   MarkDiffReviewCommentsSent,
   SetPRThreadResolved,
   SendDiffReviewComments,
@@ -98,7 +99,7 @@ import {
   type EditSelection,
   type LoadedPatch,
 } from './reviewPaneLoad';
-import type { ReviewDiffRead } from './reviewDiffStream';
+import { ReviewDiffSource, type ReviewDiffRead } from './reviewDiffStream';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { persistScope, readPersistedScope } from './reviewPaneScope';
 import { getSettings } from './settings.svelte';
@@ -145,8 +146,10 @@ import {
   type ExpandDirection,
 } from '../utils/diffContextExpansion';
 import type { DiffGap } from '../utils/patchFiles';
+import { createReviewDiffMedia, type ReviewMediaHost } from './reviewDiffMedia.svelte';
+import { DiffFilesHandle, type DiffFilesTarget } from './reviewDiffFiles';
 import { keptText, PatchTextLost, reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
-import { anchorRows, completeAnchor, namesOneRow } from '../utils/patchRows';
+import { anchorRow, anchorRows, completeAnchor, namesOneRow } from '../utils/patchRows';
 import { anchorKey, type CommentAnchor, type EditorRow, type EditorState } from '../utils/reviewRows';
 import {
   EDITOR_QUOTE_MAX_BYTES,
@@ -164,12 +167,16 @@ import {
 } from '../utils/editorPlacement';
 import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { ReviewSectionId } from './reviewSectionSizes.svelte';
-import { REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
+import { REVIEW_COMMIT_CARD_ROW_KEY, REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
 import { createReviewCommentActions, type ReviewCommentActionsState } from './reviewCommentActions.svelte';
 import { createReviewCommentExtras, type ReviewCommentExtrasState } from './reviewCommentExtras.svelte';
 import { EDITOR_PREVIEW_KEY } from './reviewEditorPreview.svelte';
 import { commentWriteKey } from './reviewCommentWrites.svelte';
 import { RANGE_REFUSAL_TEXT, rangesByFile, spanRange, type LineRange } from '../utils/reviewRange';
+import { commitSelectionFromHere, isCommitRange, resolveCommitSelection, sameCommitSelection, type CommitSelection } from '../utils/commitRange';
+import { createReviewPRLineIndex, type PRLineIndexState } from './reviewPRLineIndex.svelte';
+import { buildPRLineIndex, type PRLineIndex } from '../utils/prLineIndex';
+import { lineCommentReason, lineCommentTarget, rangePROrphans, rangeSaveAnchor, rangeShownDrafts, type LineCommentTarget } from './reviewRangeComments';
 
 export type ReviewScope = DiffReviewScope;
 
@@ -232,8 +239,35 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
   /** Commits the branch/PR carries (newest first); empty outside those
    * scopes and for non-git workspaces. Feeds the commit selector. */
   readonly commits: readonly BranchCommit[];
-  /** Selected single commit, or null for the full-range diff. */
+  /** How many commits the range holds: more than `commits` when the
+   * backend listed only the newest, null when it could not count them
+   * (utils/commitRange.ts). */
+  readonly commitsTotal: number | null;
+  /** Selected single commit, or null for the full-range diff. In pr
+   * scope with a run of commits picked, the run's newer end. */
   readonly selectedCommitSHA: string | null;
+  /** pr scope: the picked commit or run (`first` older), or null. */
+  readonly selectedCommits: CommitSelection | null;
+  /** A run of two or more commits ending at the PR's head is on screen:
+   * comments here are the PR's (stores/reviewRangeComments.ts). */
+  readonly headRange: boolean;
+  /** A held commit or run named commits the PR no longer lists, so the
+   * pane fell back to All commits; cleared by the next pick. */
+  readonly commitSelectionLost: boolean;
+  dismissCommitSelectionLost(): void;
+  /** The whole PR's diff index a head-ending run reads its PR lines from. */
+  readonly prDiffIndexState: PRLineIndexState;
+  readonly prDiffIndexError: string | null;
+  retryPRDiffIndex(): void;
+  /** In a head-ending run, what a line takes and why (hover text); null
+   * in every other view, where every line takes the view's comments. */
+  lineComment(anchor: Pick<CommentAnchor, 'filePath' | 'newLine' | 'side'>): { target: LineCommentTarget; reason: string | null } | null;
+  /** The drafts the diff shows: `drafts`, or in a head-ending run the
+   * PR's drafts placed by head line. */
+  readonly shownDrafts: readonly DiffReviewComment[];
+  /** The diff on screen's binary files (sizes, images) and the text SVGs
+   * shown rendered. */
+  readonly mediaHost: ReviewMediaHost;
   /** Edit tool calls of the thread (timeline order); populated in
    * edits scope only. Feeds the turn-grouped edit selector. */
   readonly edits: readonly EditDiffEntryView[];
@@ -377,6 +411,12 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
   setScope(scope: ReviewScope, opts?: { baseBranch?: string } & ReadIntent): Promise<void>;
   /** Switch the loaded diff to a single commit (null → full range). */
   selectCommit(sha: string | null, opts?: ReadIntent): Promise<void>;
+  /** Switch to a commit or, in pr scope, a run of commits (null → the
+   * whole diff). */
+  selectCommits(selection: CommitSelection | null, opts?: ReadIntent): Promise<void>;
+  /** The Conversation's `Changes from here`: the commit through the
+   * newest, then the diff's top. */
+  showChangesFrom(sha: string): Promise<void>;
   /** Switch the edits-scope diff (selector value encoding: `item:<id>`
    * or `turn:<n>`; null → default, the latest turn). */
   selectEdit(key: string | null, opts?: ReadIntent): Promise<void>;
@@ -731,6 +771,12 @@ function reviewSubjectKey(parts: { scope: ReviewScope; baseBranch: string | null
   return [parts.scope, parts.baseBranch ?? '', parts.commit ?? '', parts.edit ?? '', parts.pr].join('\u0000');
 }
 
+/** The subject segment of a commit pick: the commit, or a run's ends. */
+function commitSubject(selection: CommitSelection | null): string | null {
+  if (!selection) return null;
+  return selection.first === selection.last ? selection.last : `${selection.first}..${selection.last}`;
+}
+
 /** The diff on screen, committed with its files: comments open and save
  * against it, never against the controls' subject while another loads. */
 interface ShownDiff {
@@ -740,6 +786,10 @@ interface ShownDiff {
   readonly scope: ReviewScope;
   readonly sourceKey: string;
   readonly commitSha: string | undefined;
+  /** The `-w` it was read with. */
+  readonly ignoreWhitespace: boolean;
+  /** A run of commits ending at the PR's head (its comments are the PR's). */
+  readonly headRange: boolean;
 }
 
 function utf8Bytes(text: string): number {
@@ -987,14 +1037,42 @@ export function createReviewPaneState(
   let pendingConversationThreadId: string | null = $state(null);
   let expandedPRThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
   let commits: BranchCommit[] = $state([]);
+  let commitsTotal: number | null = $state(0);
   let selectedCommitSHA: string | null = $state(null);
+  // A run's older end, with `selectedCommitSHA` its newer; null for one
+  // commit. pr scope only.
+  let rangeFirstSHA: string | null = $state(null);
+  const selectedCommits = $derived<CommitSelection | null>(
+    selectedCommitSHA ? { first: rangeFirstSHA ?? selectedCommitSHA, last: selectedCommitSHA } : null,
+  );
+  // The head of the revision the commit list was read at.
+  let commitsHead = $state('');
+  let commitSelectionLost = $state(false);
+  const headRange = $derived(scope === 'pr' && isCommitRange(selectedCommits) && selectedCommits?.last === commitsHead);
+  const prLineIndex = createReviewPRLineIndex();
+  // The diff on screen's binary files; targeted at each load's commit.
+  const media = createReviewDiffMedia();
+  // Text SVGs shown as images, by path; a new subject clears them.
+  const renderedSvgPaths = new SvelteSet<string>();
+  const mediaHost: ReviewMediaHost = {
+    media,
+    get newSideOnly() { return shown?.scope === 'edits'; },
+    renderedPaths: renderedSvgPaths,
+    toggleRendered(path) {
+      if (renderedSvgPaths.has(path)) renderedSvgPaths.delete(path);
+      else renderedSvgPaths.add(path);
+    },
+    reloadDiff() {
+      void reload({ userInitiated: true });
+    },
+  };
   let edits: EditDiffEntryView[] = $state([]);
   let editTurnLabels: ReadonlyMap<number, string> = $state(new Map());
   let selectedEdit: EditSelection | null = $state(null);
   let pendingEditItemID: string | null = null;
   // A pinned review has no agent: its drafts only ever post to the PR.
   const effectiveSubmitTarget = $derived<'agent' | 'pr'>(
-    pinned ? 'pr' : scope === 'pr' && !selectedCommitSHA ? submitTarget : 'agent',
+    pinned ? 'pr' : scope === 'pr' && (!selectedCommitSHA || headRange) ? submitTarget : 'agent',
   );
   let pendingJumpFilePath: string | null = $state(null);
   let pendingJumpRowKey: string | null = $state(null);
@@ -1250,10 +1328,12 @@ export function createReviewPaneState(
         ? `edit:${selectedEdit.payloadId}`
         : `edit-turn:${selectedEdit.turnIndex}`;
     }
-    if (selectedCommitSHA) {
+    if (selectedCommitSHA && !headRange) {
       // A single commit's content is immutable — the SHA itself is the
-      // stable identity, in both branch and pr scope.
-      return `commit:${selectedCommitSHA}`;
+      // stable identity, in both branch and pr scope; a run's is its ends.
+      // A run ending at the head shows the head's lines: its comments are
+      // the PR's, below.
+      return rangeFirstSHA ? `range:${rangeFirstSHA}..${selectedCommitSHA}` : `commit:${selectedCommitSHA}`;
     }
     if (scope === 'pr' && pr) {
       // Stable across PR head movement: drafts must survive pushes; each
@@ -1266,7 +1346,7 @@ export function createReviewPaneState(
   const requestedSubject = $derived(reviewSubjectKey({
     scope,
     baseBranch: scope === 'branch' ? baseBranch : null,
-    commit: selectedCommitSHA,
+    commit: commitSubject(selectedCommits),
     edit: scope === 'edits' ? editSelectionKey(selectedEdit) : null,
     pr: scope === 'pr' && prRef ? computerPRKey(prRef) : '',
   }));
@@ -1403,8 +1483,9 @@ export function createReviewPaneState(
   const commentsGranted = $derived(
     pinned ? hasScope('git:operate', backend) : threadHasScope('threads:operate', threadId, workspace.projectId),
   );
-  const canDraftComments = $derived(pinned ? scope === 'pr' && selectedCommitSHA === null : threadId !== null);
+  const canDraftComments = $derived(pinned ? scope === 'pr' && (selectedCommitSHA === null || headRange) : threadId !== null);
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
+  const shownDrafts = $derived.by(() => (shown?.headRange ? rangeShownDrafts(drafts) : drafts));
   // A summary or verdict kept for the next PR review needs the strip to
   // send it, drafts or not.
   const sendStripShown = $derived(
@@ -1417,7 +1498,8 @@ export function createReviewPaneState(
   const commentActions = createReviewCommentActions({
     backend,
     scope: () => scope,
-    selectedCommitSHA: () => selectedCommitSHA,
+    // A head-ending run posts to the PR as All commits does, line by line.
+    selectedCommitSHA: () => (headRange ? null : selectedCommitSHA),
     ref: () => prRef,
     entityKey: () => prEntityKey,
     launch: () => backendLaunch,
@@ -1545,6 +1627,15 @@ export function createReviewPaneState(
     // The screen moving (compact navigation) takes or releases the permit.
     $effect(() => syncConflictPermit());
     $effect(() => {
+      const key = shownHeadRangeKey;
+      untrack(() => {
+        const ref = prRef;
+        const revision = loadedPRRevision;
+        if (key === null || ref === null || revision === null) prLineIndex.close();
+        else prLineIndex.open(key, readWholePRDiff(ref, revision, shown?.ignoreWhitespace ?? false));
+      });
+    });
+    $effect(() => {
       if (!awaitingPRRef || prRef === null) return;
       awaitingPRRef = false;
       void reload({ userInitiated: awaitedUserInitiated });
@@ -1618,6 +1709,8 @@ export function createReviewPaneState(
 
   function dispose(): void {
     disposed = true;
+    prLineIndex.close();
+    media.setTarget(null);
     commentActions.dispose();
     extras.dispose();
     showRead(null);
@@ -1713,6 +1806,8 @@ export function createReviewPaneState(
     // range.
     if (scopeChanged) {
       selectedCommitSHA = null;
+      rangeFirstSHA = null;
+      commitSelectionLost = false;
       selectedEdit = null;
     }
     if (subjectChanged) draftEditBodies.clear();
@@ -1723,13 +1818,70 @@ export function createReviewPaneState(
   }
 
   async function selectCommit(sha: string | null, opts?: ReadIntent): Promise<void> {
-    if (sha === selectedCommitSHA) return;
+    await selectCommits(sha ? { first: sha, last: sha } : null, opts);
+  }
+
+  async function selectCommits(selection: CommitSelection | null, opts?: ReadIntent): Promise<void> {
+    // A run is a pr-scope pick; a run equal to the whole list is the
+    // whole diff (commitSelectionBetween), never sent.
+    const asked = selection && (scope === 'pr' || selection.first === selection.last) ? selection : null;
+    const next = scope === 'pr' ? resolveCommitSelection(asked, commits, commitsTotal).selection : asked;
+    commitSelectionLost = false;
+    if (sameCommitSelection(next, selectedCommits)) return;
     navigationSeq++;
+    seedPRLineIndex();
     retireDiffSubject();
-    selectedCommitSHA = sha;
+    selectedCommitSHA = next?.last ?? null;
+    rangeFirstSHA = next && next.first !== next.last ? next.first : null;
     keepEditorsOf(requestedSubject);
     collapseOverrides.clear();
     await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
+  }
+
+  async function showChangesFrom(sha: string): Promise<void> {
+    const selection = commitSelectionFromHere(commits, commitsTotal, sha);
+    await selectCommits(selection, { userInitiated: true });
+    if (disposed || !sameCommitSelection(selectedCommits, selection)) return;
+    // To the diff: a run's card leads it; the whole PR's diff starts at
+    // its first file (the overview above it is where the press was).
+    if (selection) pendingJumpRowKey = REVIEW_COMMIT_CARD_ROW_KEY;
+    else if (files.length > 0) requestFileJump(files[0].path);
+  }
+
+  // The whole PR's diff index of a head-ending run (reviewPRLineIndex):
+  // keyed by the PR, the revision and `-w` the run was read at, open
+  // exactly while such a run is on screen.
+  function prLineIndexKey(revision: PRRevision, whitespace: boolean): string {
+    return [prEntityKey ?? '', revision.headSHA, revision.baseSHA, whitespace ? 'w' : ''].join('\u0000');
+  }
+  // Leaving the whole diff for a run: its files are the index, so a run
+  // to the head needs no second read of them.
+  function seedPRLineIndex(): void {
+    if (shown?.scope !== 'pr' || selectedCommitSHA !== null || loadedPRRevision === null || loadedFiles.length === 0) return;
+    prLineIndex.seed(prLineIndexKey(loadedPRRevision, shown.ignoreWhitespace), loadedFiles);
+  }
+  const shownHeadRangeKey = $derived.by(() => {
+    const bundle = shown;
+    return bundle?.headRange && loadedPRRevision !== null ? prLineIndexKey(loadedPRRevision, bundle.ignoreWhitespace) : null;
+  });
+  function readWholePRDiff(ref: PRRef, revision: PRRevision, whitespace: boolean): () => Promise<PRLineIndex> {
+    return async () => {
+      const source = new ReviewDiffSource(backend, () => OpenPRDiff(workspace, prReferenceWire(ref), revision, whitespace, false));
+      const read = await source.read({ cancelled: () => disposed });
+      if (!read) throw new Error('The review closed.');
+      // Kinds and hunk starts are all the index keeps; the text goes.
+      try {
+        return buildPRLineIndex(read.parser.files);
+      } finally {
+        read.dispose();
+      }
+    };
+  }
+
+  function lineComment(anchor: Pick<CommentAnchor, 'filePath' | 'newLine' | 'side'>): { target: LineCommentTarget; reason: string | null } | null {
+    if (!headRange) return null;
+    const target = lineCommentTarget(prLineIndex, anchor, !pinned);
+    return { target, reason: lineCommentReason(prLineIndex, target, anchor) };
   }
 
   async function setIgnoreWhitespace(ignore: boolean, opts?: ReadIntent): Promise<void> {
@@ -1765,6 +1917,8 @@ export function createReviewPaneState(
   // anchors or span context. Same-subject refreshes intentionally retain it.
   function retireDiffSubject(): void {
     revealedPaths.clear();
+    renderedSvgPaths.clear();
+    media.setTarget(null);
     loadedFiles = [];
     shown = null;
     armedEditorId = null;
@@ -1850,7 +2004,7 @@ export function createReviewPaneState(
         { workspace, threadId, backend },
         scope,
         baseBranch,
-        selectedCommitSHA,
+        selectedCommits,
         loadingPRRef ?? prRef,
         snapshot,
         { pinnedItemId: pinnedEditItemID, current: selectedEdit },
@@ -1858,7 +2012,7 @@ export function createReviewPaneState(
         // toggle on while the new source can't honor it, and passing it
         // anyway would make the button's state a lie.
         ignoreWhitespace && canIgnoreWhitespace,
-        selectionOnly ? { commits, edits, editTurnLabels, prRevision: loadedPRRevision } : undefined,
+        selectionOnly ? { commits, commitsTotal, edits, editTurnLabels, prRevision: loadedPRRevision } : undefined,
         userInitiated,
       );
       if (seq !== loadSeq || disposed) {
@@ -1887,8 +2041,11 @@ export function createReviewPaneState(
         subject: committed,
         scope,
         sourceKey: sourceKeyFor(loadingPRRef),
-        commitSha: selectedCommitSHA ?? (scope === 'pr' ? loaded.prRevision?.headSHA : undefined),
+        commitSha: (headRange ? undefined : selectedCommitSHA) ?? (scope === 'pr' ? loaded.prRevision?.headSHA : undefined),
+        ignoreWhitespace: requestedIgnoreWhitespace,
+        headRange,
       };
+      media.setTarget(read.target);
       applyPlacements(committed, placements);
       // Fresh defaults for the new patch, with the user's explicit
       // collapse/expand choices layered back on top.
@@ -1994,10 +2151,17 @@ export function createReviewPaneState(
       arrival.applied = true;
       const { loaded } = arrival;
       commits = loaded.commits ?? [];
+      commitsTotal = loaded.commits ? (loaded.commitsTotal ?? null) : 0;
       edits = loaded.edits ?? [];
       editTurnLabels = loaded.editTurnLabels ?? new Map();
       if (loaded.selectedEdit !== undefined) selectedEdit = loaded.selectedEdit;
-      if (loaded.selectedCommitSHA !== undefined) selectedCommitSHA = loaded.selectedCommitSHA;
+      if (loaded.selectedCommitSHA !== undefined) {
+        selectedCommitSHA = loaded.selectedCommitSHA;
+        const run = loaded.selectedCommits;
+        rangeFirstSHA = run && run.first !== run.last ? run.first : null;
+      }
+      if (loaded.commitSelectionLost) commitSelectionLost = true;
+      commitsHead = loaded.prRevision?.headSHA ?? '';
       clearContextExpansions();
     }
     loadedFiles = sortFilesTreeOrder(next);
@@ -2011,13 +2175,22 @@ export function createReviewPaneState(
   async function readPatch(
     seq: number,
     arrival: Arrival,
-  ): Promise<{ files: readonly ReviewFile[]; read: ReviewDiffRead | null; patchKey: string } | null> {
+  ): Promise<{ files: readonly ReviewFile[]; read: ReviewDiffRead | null; patchKey: string; target: DiffFilesTarget | null } | null> {
     const { patch, mergesPaths } = arrival.loaded;
-    if (patch === null) return { files: [], read: null, patchKey: '' };
+    if (patch === null) return { files: [], read: null, patchKey: '', target: null };
     const merge = mergesPaths ? new EditFileMerge() : null;
     const view = (sections: readonly ReviewFile[]): readonly ReviewFile[] => merge?.files(sections) ?? sections;
     const cancelled = (): boolean => seq !== loadSeq || disposed;
     const progressive = loadedFiles.length === 0;
+    // The open whose files this diff's rows read. Rows published while it
+    // streams (an empty pane) read under it from the first one; otherwise
+    // the rows on screen are another diff's, and it is attached with this
+    // diff's files when the read completes.
+    let target: DiffFilesTarget | null = null;
+    const attach = (next: DiffFilesTarget | null): void => {
+      target = next;
+      if (progressive && !cancelled()) media.setTarget(next);
+    };
     let sectionsShown = 0;
     let filesShown = 0;
     let publishedAt = 0;
@@ -2043,6 +2216,10 @@ export function createReviewPaneState(
       cancelled,
       onProgress,
       onOpened: (opened) => {
+        // Each open, a retry's included, is its own target: a git diff's
+        // by the files handle it answers, an edits diff's by an id minted
+        // here.
+        attach(arrival.loaded.selectedEdit ? editsTarget(arrival.loaded) : gitTarget(patch, opened.filesHandle ?? ''));
         if (threadId !== null && opened.payloadIds?.length) {
           void seedEditPatchSpans(threadId, patch.backend, opened.payloadIds, cancelled);
         }
@@ -2064,7 +2241,7 @@ export function createReviewPaneState(
         return null;
       }
     }
-    return { files: view(read.parser.files), read, patchKey: read.parser.sourceKey() };
+    return { files: view(read.parser.files), read, patchKey: read.parser.sourceKey(), target };
   }
 
   if (!deferInitialLoad) void reload({ userInitiated: initialUserInitiated });
@@ -2116,6 +2293,31 @@ export function createReviewPaneState(
       };
     }
     return { scope, commitSHA: '', headSHA: '', workspace };
+  }
+
+  // The open a load's rows read files through: a git diff's files handle
+  // (reopened when the server forgets it only for an open of immutable
+  // revisions, ReviewDiffSource.revisionPinned), or the edit it replayed.
+  function gitTarget(patch: ReviewDiffSource, handle: string): DiffFilesTarget {
+    return {
+      kind: 'git',
+      backend,
+      workspace,
+      files: new DiffFilesHandle(handle, patch.revisionPinned ? () => patch.reopenFiles() : null),
+    };
+  }
+
+  function editsTarget(loaded: LoadedPatch): DiffFilesTarget | null {
+    const edit = loaded.selectedEdit;
+    if (!edit || threadId === null) return null;
+    return {
+      kind: 'edits',
+      backend,
+      openId: randomId(),
+      threadId,
+      editPayloadId: edit.kind === 'item' ? edit.payloadId : '',
+      editTurnIndex: edit.kind === 'turn' ? edit.turnIndex : -1,
+    };
   }
 
   // One file's patch text, serialized from its merged lines — the ONLY
@@ -2266,7 +2468,9 @@ export function createReviewPaneState(
   // The subject of a diff a load is committing, by the selection the load
   // resolved (it can replace the one the controls asked for).
   function committedSubject(loaded: LoadedPatch, prKeyOfLoad: string | null): string {
-    const commit = loaded.selectedCommitSHA !== undefined ? loaded.selectedCommitSHA : selectedCommitSHA;
+    const commit = loaded.selectedCommits !== undefined
+      ? commitSubject(loaded.selectedCommits)
+      : loaded.selectedCommitSHA !== undefined ? loaded.selectedCommitSHA : commitSubject(selectedCommits);
     const edit = loaded.selectedEdit !== undefined ? loaded.selectedEdit : selectedEdit;
     return reviewSubjectKey({
       scope,
@@ -2537,7 +2741,16 @@ export function createReviewPaneState(
     const editor = openEditors.find((candidate) => candidate.id === editorId) ?? null;
     const start = editor?.rangeStart ?? null;
     try {
-      const anchor = saveableAnchor(editor, bundle);
+      let anchor = saveableAnchor(editor, bundle);
+      if (bundle.headRange) {
+        // A head-ending run saves in the whole diff's numbers, or by head
+        // line for the agent (stores/reviewRangeComments.ts); never a
+        // line range.
+        const saved = rangeSaveAnchor(prLineIndex, anchor, !pinned);
+        if (!saved || start) throw new Error(lineCommentReason(prLineIndex, 'none', anchor) ?? 'This line takes no comment here.');
+        if (mode === 'now' && saved.target !== 'pr') throw new Error(lineCommentReason(prLineIndex, saved.target, anchor) ?? 'This line takes no comment here.');
+        anchor = saved.anchor;
+      }
       // Posted from the diff on screen, at the head it was loaded at.
       if (mode === 'now') return await commentActions.postLineComment(editorId, anchor, start, trimmed, () => closeDraftEditor(editorId));
       if (pinnedDrafts !== null && !canDraftComments) throw new Error('Comment on the whole pull request: pick All commits.');
@@ -2637,7 +2850,7 @@ export function createReviewPaneState(
 
   async function sendDraftsToThread(target: string): Promise<Thread | null> {
     if (!pinnedDrafts) throw new Error('Only a review pinned to a pull request sends its drafts to a thread.');
-    if (scope !== 'pr' || selectedCommitSHA) throw new Error('Send the whole pull request\'s comments: pick All commits.');
+    if (scope !== 'pr' || (selectedCommitSHA && !headRange)) throw new Error('Send the whole pull request\'s comments: pick All commits.');
     if (!sourceKey || drafts.length === 0 || sendingComments) return null;
     sendingComments = true;
     try {
@@ -2661,7 +2874,7 @@ export function createReviewPaneState(
     // diff, which SubmitPRReview would anchor against the PR head diff —
     // wrong lines or hard failures. The UI hides the 'pr' target there;
     // this guard backs it up.
-    if (scope !== 'pr' || selectedCommitSHA || !prRef || !sourceKey || sendingComments) return;
+    if (scope !== 'pr' || (selectedCommitSHA && !headRange) || !prRef || !sourceKey || sendingComments) return;
     if (openSubmit !== null) {
       const lost = openSubmit;
       sendingComments = true;
@@ -2672,7 +2885,13 @@ export function createReviewPaneState(
       }
       return;
     }
-    const orphaned = orphanedDraftIds();
+    // From a head-ending run, the drafts the whole diff has no row for
+    // (agent-only ones) stay out, as orphans do from All commits.
+    if (headRange && prLineIndex.state !== 'ready') {
+      submitError = 'The pull request\'s diff is still loading. Send the review once it has loaded.';
+      return;
+    }
+    const orphaned = headRange ? rangePROrphans(prLineIndex, drafts) : orphanedDraftIds();
     const submitDrafts = drafts.filter((comment) => !orphaned.has(comment.id));
     // A bare Approve is a valid review; comment and request-changes need
     // content (GitHub's API rejects those events without a body).
@@ -3346,15 +3565,17 @@ export function createReviewPaneState(
   const orphanedIds = $derived.by(() => {
     const out = new SvelteSet<string>();
     if (!sourceKeyOutlivesPatch) return out;
-    for (const comment of drafts) {
+    // A head-ending run places the PR's drafts by head line, loosely.
+    for (const comment of shownDrafts) {
       if (comment.side === 'reply') continue;
-      if (!draftAnchorExists(files, comment)) out.add(comment.id);
+      const anchor = { side: comment.side, oldLine: comment.oldLine, newLine: comment.newLine };
+      if (headRange ? !files.some((file) => file.path === comment.filePath && anchorRow(file, anchor, true) >= 0) : !draftAnchorExists(files, comment)) out.add(comment.id);
     }
     for (const comment of commentActions.state.orphanedReplyDrafts) out.add(comment.id);
     return out;
   });
 
-  const rangeTints = $derived(rangesByFile(shownEditors, drafts, prThreads, (id) => expandedPRThreadIds.has(id), files));
+  const rangeTints = $derived(rangesByFile(shownEditors, shownDrafts, prThreads, (id) => expandedPRThreadIds.has(id), files));
 
   function orphanedDraftIds(): SvelteSet<string> {
     return orphanedIds;
@@ -3379,7 +3600,18 @@ export function createReviewPaneState(
     get armedEditorId() { return armedEditorId; },
     get shownGeneration() { return shown?.generation ?? 0; },
     get commits() { return commits; },
+    get commitsTotal() { return commitsTotal; },
     get selectedCommitSHA() { return selectedCommitSHA; },
+    get selectedCommits() { return selectedCommits; },
+    get headRange() { return headRange; },
+    get commitSelectionLost() { return commitSelectionLost; },
+    dismissCommitSelectionLost(): void { commitSelectionLost = false; },
+    get prDiffIndexState() { return prLineIndex.state; },
+    mediaHost,
+    get prDiffIndexError() { return prLineIndex.error; },
+    retryPRDiffIndex: () => prLineIndex.retry(),
+    lineComment,
+    get shownDrafts() { return shownDrafts; },
     get edits() { return edits; },
     get editTurnLabels() { return editTurnLabels; },
     get selectedEditKey() { return editSelectionKey(selectedEdit); },
@@ -3461,6 +3693,8 @@ export function createReviewPaneState(
 
     setScope,
     selectCommit,
+    selectCommits,
+    showChangesFrom,
     selectEdit,
     reload,
     consumePendingJumpFilePath(): void {

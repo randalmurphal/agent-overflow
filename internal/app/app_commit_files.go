@@ -169,8 +169,8 @@ func (a *App) OpenCommitFileDiff(ctx context.Context, ws WorkspaceRef, paths []s
 	if !gitdiff.IsGitRepository(ctx, workspace) {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: workspace is not a git repository", action)
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, func(tempRoot string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenWorktreeFilesDiff(ctx, workspace, tempRoot, paths, gitdiff.Options{})
+	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{}, func(tempRoot string) (*gitdiff.Sides, error) {
+		return gitdiff.WorktreeFilesSides(ctx, workspace, tempRoot, paths)
 	})
 }
 

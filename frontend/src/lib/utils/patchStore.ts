@@ -1036,6 +1036,9 @@ export interface PatchHeader {
   newBlob: string | null;
   /** A mode line or the `index` line gives a gitlink's mode. */
   submodule: boolean;
+  /** git said the file is binary (`Binary files … differ`): its body has
+   * that line and no hunk. */
+  binary: boolean;
 }
 
 const ZERO_ID = /^0+$/;
@@ -1044,7 +1047,7 @@ const MODE_LINE = /^(?:new file|deleted file|old|new) mode ([0-7]+)$/;
 const SUBMODULE_MODE = '160000';
 
 function emptyHeader(): PatchHeader {
-  return { sections: 0, oldPath: null, indexed: false, oldBlob: null, newBlob: null, submodule: false };
+  return { sections: 0, oldPath: null, indexed: false, oldBlob: null, newBlob: null, submodule: false, binary: false };
 }
 
 /** Records one leading metadata line in `header`. */
@@ -1071,7 +1074,9 @@ export function reviewFileFromPatchFile(file: PatchFile): ReviewFile {
     body: PatchBody.fromPatchLines(file.lines),
   };
   const header = emptyHeader();
-  for (let index = 0; index < file.lines.length && file.lines[index].type === 'meta'; index += 1) readHeaderLine(header, file.lines[index].content);
+  let index = 0;
+  for (; index < file.lines.length && file.lines[index].type === 'meta'; index += 1) readHeaderLine(header, file.lines[index].content);
+  if (isBinaryLine(file.lines[index]?.content ?? '')) header.binary = true;
   if (file.lines.length > 0 && file.lines[0].type === 'meta') out.header = header;
   if (file.conflicts !== undefined) out.conflicts = file.conflicts;
   if (file.conflictLabel !== undefined) out.conflictLabel = file.conflictLabel;
@@ -1226,6 +1231,9 @@ export class PatchParser {
       if (current?.leading) readHeaderLine(current.header, text.slice(offset, offset + length));
       return;
     } else {
+      // git's one line for a binary file stays a line of the body, as it
+      // always rendered; the header says what it is.
+      if (current?.leading && isBinaryLine(text.slice(offset, offset + Math.min(length, BINARY_PREFIX_MAX)))) current.header.binary = true;
       store.setKind(line, LINE_CONTEXT);
     }
     if (current) current.leading = false;
@@ -1290,6 +1298,11 @@ export class PatchParser {
       header: deleted.header,
     };
   }
+}
+
+const BINARY_PREFIX_MAX = 16;
+function isBinaryLine(text: string): boolean {
+  return text.startsWith('Binary files ') || text.startsWith('GIT binary patch');
 }
 
 function startsAt(text: string, offset: number, length: number, prefix: string): boolean {

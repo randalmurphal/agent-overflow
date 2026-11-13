@@ -8,6 +8,8 @@
   import ReviewPaneFind, { type ReviewFindView } from './ReviewPaneFind.svelte';
   import ReviewCommentThread from './ReviewCommentThread.svelte';
   import ReviewCommitCard from './ReviewCommitCard.svelte';
+  import ReviewRangeCard from './ReviewRangeCard.svelte';
+  import ReviewLineMenu from './ReviewLineMenu.svelte';
   import ReviewDiffBody from './ReviewDiffBody.svelte';
   import ReviewDraftEditor from './ReviewDraftEditor.svelte';
   import ReviewOverview from './ReviewOverview.svelte';
@@ -35,6 +37,7 @@
   import type { DiffReviewComment } from '../../types/models';
   import type { PRRef } from '../../utils/prReference';
   import { countReviewComments, type CommentCounts } from '../../utils/reviewComments';
+  import { commitOrdinal, commitSelectionIndexes } from '../../utils/commitRange';
   import type { EditorRow, ReviewLeadRow } from '../../utils/reviewRows';
   import { filterReviewFiles } from '../../utils/reviewTree';
   import { forgeLabels } from '../../utils/forgeLabels';
@@ -178,11 +181,10 @@
   const commentCounts = $derived(
     review ? countReviewComments({ prThreads: review.prThreads, drafts: review.drafts }) : EMPTY_COUNTS,
   );
-  // The picked commit, when the list holds it (branch and pr scope).
-  const selectedCommitIndex = $derived(
-    review?.selectedCommitSHA ? review.commits.findIndex((commit) => commit.sha === review.selectedCommitSHA) : -1,
-  );
-  const selectedCommit = $derived(selectedCommitIndex >= 0 ? review!.commits[selectedCommitIndex] : null);
+  // The picked commit or run, when the list holds it (branch and pr scope).
+  const selectedAt = $derived(commitSelectionIndexes(review?.commits ?? [], review?.selectedCommits ?? null));
+  const selectedCommit = $derived(selectedAt && selectedAt.newer === selectedAt.older ? (review?.commits[selectedAt.newer] ?? null) : null);
+  const selectedRun = $derived(selectedAt && selectedAt.newer !== selectedAt.older ? (review?.commits.slice(selectedAt.newer, selectedAt.older + 1) ?? null) : null);
 
   // The diff list's first row: the picked commit's card (its subject,
   // author and message live there, not in the toolbar); else, in PR
@@ -190,7 +192,7 @@
   // section always has something to say about a PR, so the row exists
   // for every one; else nothing.
   const leadRow = $derived.by((): ReviewLeadRow | null => {
-    if (selectedCommit) return 'commit';
+    if (selectedCommit || selectedRun) return 'commit';
     if (review?.scope === 'pr' && review.prDetail !== null) return 'overview';
     return null;
   });
@@ -274,6 +276,32 @@
   function suggestFor(editor: EditorRow): (() => Promise<string[] | null>) | null {
     const source = editorSource(editor);
     return source ? () => readNewSideLines(source.file, source.from, source.to) : null;
+  }
+
+  // In a head-ending run an editor posts now only on a PR line.
+  function editorLineComment(editor: EditorRow): { target: string; reason: string | null } | null {
+    return editor.anchor ? (review?.lineComment(editor.anchor) ?? null) : null;
+  }
+  function postFor(editor: EditorRow): { primary: 'now' | 'draft'; withheld: string | null } | null {
+    if (!review?.canPostNow) return null;
+    const line = editorLineComment(editor);
+    if (line && line.target !== 'pr') return null;
+    return { primary: review.primaryCommentAction, withheld: review.nowWithheldReason };
+  }
+
+  // Copy link to line: the PR's whole diff (All commits) only, the one
+  // the forge's diff page shows; a picked commit's or run's numbers are
+  // not that page's.
+  let lineMenu: ReviewLineMenu | undefined = $state();
+  const lineLinkTarget = $derived.by(() => {
+    const forge = review?.prRef?.forge;
+    const url = review?.prDetail?.url ?? '';
+    if (review?.scope !== 'pr' || review.selectedCommitSHA || !url || (forge !== 'github' && forge !== 'gitlab')) return null;
+    return { forge, url } as const;
+  });
+  function openLineMenu(event: MouseEvent, path: string, lineIndex: number): boolean {
+    const file = diffFiles.find((candidate) => candidate.path === path);
+    return file ? (lineMenu?.open(event, file, lineIndex) ?? false) : false;
   }
 
   function commentById(commentId: string): DiffReviewComment | null {
@@ -432,7 +460,16 @@
         {/if}
         {#snippet leadRowContent()}
           {#if selectedCommit}
-            <ReviewCommitCard commit={selectedCommit} ordinal={selectedCommitIndex + 1} count={review?.commits.length ?? 0} />
+            <ReviewCommitCard commit={selectedCommit} ordinal={commitOrdinal(selectedAt?.newer ?? 0, review?.commitsTotal ?? null)} total={review?.commitsTotal ?? null} />
+          {:else if selectedRun}
+            <ReviewRangeCard
+              commits={selectedRun}
+              olderIndex={selectedAt?.older ?? 0}
+              total={review?.commitsTotal ?? null}
+              onLeave={() => { void review?.selectCommits(null, { userInitiated: true }); }}
+              indexError={review?.headRange && review.prDiffIndexState === 'failed' ? review.prDiffIndexError : null}
+              onRetryIndex={() => review?.retryPRDiffIndex()}
+            />
           {:else if review?.prDetail}
             <ReviewOverview {review} detail={review.prDetail} hasWorkspace={workspace !== null} />
           {/if}
@@ -449,13 +486,16 @@
           painted={review.paintedSpans}
           collapsedPaths={review.collapsedPaths}
           onToggleCollapsed={review.toggleCollapsed}
-          drafts={review.drafts}
+          drafts={review.shownDrafts}
+          mediaHost={review.mediaHost}
           openEditors={review.openEditors}
           prThreads={review.prThreads}
           expandedPRThreadIds={review.expandedPRThreadIds}
           generation={review.shownGeneration}
           onAddComment={review.canDraftComments && review.commentsGranted ? (anchor, generation) => review?.openDraftEditor(anchor, generation) : undefined}
-          onExtendRange={review.canDraftComments && review.commentsGranted && review.canPostNow ? (anchor, generation) => review?.extendEditorRange(anchor, generation) : undefined}
+          onExtendRange={review.canDraftComments && review.commentsGranted && review.canPostNow && !review.headRange ? (anchor, generation) => review?.extendEditorRange(anchor, generation) : undefined}
+          lineComment={review.headRange ? (anchor) => review?.lineComment(anchor) ?? null : undefined}
+          onLineMenu={lineLinkTarget ? openLineMenu : undefined}
           rangesFor={(path) => review?.rangeTintsFor(path) ?? []}
           onExpandGap={(path, gap, dir) => { void review?.expandDiffContext(path, gap, dir); }}
           jumpToFilePath={jumpFilePath ?? review.pendingJumpFilePath}
@@ -481,7 +521,8 @@
               onBodyChange={(editorId, body) => review?.setDraftBody(editorId, body)}
               onCancel={(editorId) => review?.closeDraftEditor(editorId)}
               onSubmit={(editorId, body, mode) => review?.createComment(editorId, body, mode)}
-              post={review?.canPostNow ? { primary: review.primaryCommentAction, withheld: review.nowWithheldReason } : null}
+              post={postFor(editor)}
+              agentOnlyReason={editorLineComment(editor)?.reason ?? null}
               pending={review?.commentWritePending(commentWriteKey.editor(editor.id)) ?? false}
               error={review?.commentWriteError(commentWriteKey.editor(editor.id)) ?? null}
               onDropRange={(editorId) => review?.dropEditorRange(editorId)}
@@ -539,6 +580,9 @@
           {/snippet}
         </ReviewDiffBody>
       </div>
+    {/if}
+    {#if lineLinkTarget}
+      <ReviewLineMenu bind:this={lineMenu} forge={lineLinkTarget.forge} prUrl={lineLinkTarget.url} />
     {/if}
     {#if !review.conflictView && review.sendStripShown}
       <ReviewSendStrip {review} />

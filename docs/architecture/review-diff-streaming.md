@@ -25,6 +25,111 @@ text is read again.
 
 There is no size limit on any diff source.
 
+A diff's two sides are resolved once, by `gitdiff.Sides`, for the patch and
+for every file read from the same diff. A PR's commit run
+(`OpenPRCommitDiff(first, last)`) is the two-tree diff from `first`'s first
+parent (the empty tree for a root commit) to `last`, both in the commit
+list `ListPRCommits` answers at the same revision, `first` no newer than
+`last`; one commit is that commit's own change, and a run of several
+covering the whole list is refused in favor of `OpenPRDiff`
+(`gitdiff.CommitRangeSides`). The list (`ListPRCommits`, and the branch
+scope's `ListBranchCommits`) answers `{commits, total}`: the newest 300
+commits and the range's real count, from `git rev-list --count` within 5
+seconds only when the list is cut short, or `null` when that count fails.
+The list is complete exactly when `total` equals the number of commits. A
+run may start at the oldest listed commit of a cut list and is then read
+(it is not the whole PR), and a commit past the list is refused. A run is
+a two-tree diff, so one holding a merge of the base branch shows what
+that merge brought in.
+
+## Reading a diff's files
+
+Every git-backed open pins its two sides and keeps the pin on the server:
+
+| Scope | Old side | New side |
+|---|---|---|
+| commit, PR, PR run | commit or empty tree | commit |
+| workspace, commit dialog | `HEAD` commit at the open, or the empty tree | working tree |
+| branch | merge-base commit | working tree |
+
+Both are object IDs the open already had; pinning writes nothing to the
+user's object database. A working-tree side is pinned by the open's
+snapshot: each path it changes, with its mode and, for a regular file, the
+blob ID and size the snapshot recorded. The snapshot hashes a changed
+file's bytes as they are on disk, without filters, so a read proves a
+file by hashing its bytes the same way.
+
+The open reserves a record and answers its `filesHandle` with the first
+chunk at once; pinning settles the record in the background under its own
+5 second bound, parses git's raw output as it arrives and stops git after
+5000 paths. The pin holds the snapshot until it exits, so a diff that
+closes first does not remove it; the last holder does. A record is as
+strict as a diff id: it belongs to the connection that opened it, a read
+rechecks the scope the open required, and the owner's teardown, the
+record's eviction, the harness reset and shutdown cancel and join its
+pin, which then publishes nothing. The store holds at most 64 records,
+least recently used first out, counted from reservation, and at most
+20000 paths and 8 MiB of names across all records: a settling pin that
+needs room evicts least recently used records, never itself, until it
+fits. Only a pin past 5000 paths or 8 MiB of names on its own fails with a
+sentence (`app_review_diff_records.go`); an evicted record's reads answer
+`review_diff_files_gone`.
+
+`GetReviewDiffFileSizes` (up to 100 files) and `GetReviewDiffImage` (one
+file, both sides) take the workspace, the handle and each file's `path`
+(and a rename's `oldPath`). A read of a pending record waits for its pin,
+within the caller's context. A handle the caller's connection does not
+hold, in that workspace, answers `review_diff_files_gone` ("This diff's
+files are no longer held; reload the diff."), whoever else holds it; a
+record whose pin failed answers `review_diff_files_unreadable` ("This
+diff's files cannot be read: <why>."), which reopening would not change. Each path is one literal name: no empty, `.` or
+`..` segment, no backslash, no NUL; spaces at either end and pathspec
+magic are part of the name. Each side it exists on must be a regular file
+the other side holds differently; a directory, a symlink, a submodule or
+a path the diff does not change is refused with
+`review_diff_file_refused` (the reason), which neither a retry nor a
+reload changes. A committed side is read as
+its blob, its size from the tree entry first. A working-tree side is read
+through the workspace as a root, so a symlink swapped in cannot lead
+outside it, its type and size taken from the opened file; bytes that are
+not the recorded blob answer `review_diff_files_changed` ("This file
+changed since the diff was read; reload the diff."). Sizes of a
+working-tree side are the recorded ones, so only an image read answers
+it. Each file of a size batch fails alone, with its `error` and `code`.
+Every origin, a connected browser included, gets the code and sentence;
+the client branches on the code (`reviewDiffFiles.ts`).
+
+A side over 25 MiB answers its size and `overCap` and none of it is read;
+bytes that are not an image a browser displays answer `notImage`. A side
+holding a Git LFS pointer answers `unavailable` ("Stored with Git LFS; the
+image is not in the repository."), and a working-tree file with a
+`filter` attribute ("This file passes through a git filter, so its image
+is not shown."); nothing is downloaded or smudged. Image bytes are held in
+`reviewimage.Store`, keyed by the blob the record names: one 100 MiB
+budget covers held entries, loads in flight and entries a response is
+still sending. A load reserves its size before it reads, concurrent loads
+of one key share one read, an entry being sent is freed only when its last
+reader closes, and a load that finds no room waits up to 30 seconds, then
+refuses with a sentence. A panicking load releases what it holds, and a
+load that finishes after a reset publishes nothing. Entries expire after
+10 minutes. They are served once per ticket from the local-image route,
+where an SVG gets an attachment disposition and a policy that allows no
+script.
+
+The edits scope has no handle: `GetEditDiffImage` takes the path and an
+edit's payload ID, or the turn index for the turn's last edit of the path
+(found by scanning the turn's patches from the end), and serves only that
+edit's recorded snapshot. Every read reads the snapshot row; the image is
+held under the SHA-256 of its compressed bytes, so a hit skips only the
+decompression and a replaced or cleared snapshot is never served from
+the cache. A load reserves the snapshot capture limit (4 MiB, enforced by
+`PutEditFileSnapshot`) first, decompresses into a buffer of the recorded
+size and shrinks the reservation to it. The old side is
+always `unavailable` ("An edit does not record the file before it."), as
+is the new side of an edit that recorded nothing ("This edit's file
+content was not recorded.") or a path the turn does not edit ("This turn
+does not edit this file."); the file on disk is never read.
+
 ## Holding the patch
 
 `ReviewDiffSource` (`frontend/src/lib/stores/reviewDiffStream.ts`) reads the
