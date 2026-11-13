@@ -48,6 +48,9 @@ type CIPipeline struct {
 	Ref    string    `json:"ref,omitempty"`
 	SHA    string    `json:"sha,omitempty"`
 	Stages []CIStage `json:"stages"`
+	// Actions are the pipeline-level actions and whether the viewer may
+	// take them (see CIPipelineActions).
+	Actions CIPipelineActions `json:"actions"`
 }
 
 type CIStage struct {
@@ -68,6 +71,12 @@ type CIJob struct {
 	AllowFailure    bool     `json:"allowFailure,omitempty"`
 	LogsAvailable   bool     `json:"logsAvailable"`
 	Steps           []CIStep `json:"steps,omitempty"`
+	// RunID is a GitHub Actions job's workflow run id; empty on GitLab and
+	// for an external check.
+	RunID string `json:"runId,omitempty"`
+	// Actions are the job-level actions and whether the viewer may take
+	// them (see CIJobActions).
+	Actions CIJobActions `json:"actions"`
 }
 
 // CIStep is a per-step status inside a job (GitHub Actions only;

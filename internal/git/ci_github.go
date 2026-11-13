@@ -46,7 +46,11 @@ type githubCIRun struct {
 // request (more only for a run past 100 jobs) per run holding a stepsFor
 // job whose steps can still change: a job prev observed terminal with
 // settled steps keeps them. Jobs outside stepsFor carry no steps.
-func (f *githubForge) githubPipeline(ctx context.Context, client *forgeapi.Client, repo RepoReference, checks []CheckStatus, prev *CIPipeline, stepsFor []string) (CIPipeline, error) {
+//
+// Actions come from the same read: permission is the viewer's
+// (githubCIPermission over PRTick's viewerPermission), and which
+// completed runs keep artifacts is runArtifacts' remembered answer.
+func (f *githubForge) githubPipeline(ctx context.Context, client *forgeapi.Client, repo RepoReference, checks []CheckStatus, permission CIAction, prev *CIPipeline, stepsFor []string) (CIPipeline, error) {
 	runs, external := splitGitHubChecks(checks)
 	if len(runs) > githubCIMaxRuns {
 		runs = runs[:githubCIMaxRuns]
@@ -85,10 +89,16 @@ func (f *githubForge) githubPipeline(ctx context.Context, client *forgeapi.Clien
 	if len(stages) == 0 {
 		return CIPipeline{}, nil
 	}
-	return CIPipeline{
+	pipeline := CIPipeline{
 		Status: AggregateCIStatus(stageStatuses),
 		Stages: stages,
-	}, nil
+	}
+	artifacts, err := f.runArtifacts(ctx, client, repo, pipeline)
+	if err != nil {
+		return CIPipeline{}, err
+	}
+	fillGitHubCIActions(&pipeline, permission, artifacts)
+	return pipeline, nil
 }
 
 // splitGitHubChecks separates Actions-backed check runs, grouped into
@@ -108,6 +118,7 @@ func splitGitHubChecks(checks []CheckStatus) (runs []githubCIRun, external []CIJ
 				status := NormalizeCIStatus(check.Status, check.Conclusion)
 				runs[index].jobs = append(runs[index].jobs, CIJob{
 					ID:              match[2],
+					RunID:           match[1],
 					Name:            check.Name,
 					Status:          status,
 					DurationSeconds: ciDurationSeconds(check.StartedAt, check.CompletedAt),
@@ -359,7 +370,9 @@ func (run githubRunRaw) summary() PipelineSummary {
 // ReadPipeline reads one workflow run and its jobs (one request per 100
 // jobs, at most githubReadMaxPages) into one stage named after the
 // workflow. The jobs list carries every job's steps, so stepsFor costs
-// nothing more and prev is not needed.
+// nothing more and prev is not needed. The actions take the viewer's
+// permission from repoCIPermission and a completed run's artifacts from
+// runArtifacts, each remembered past the first read.
 func (f *githubForge) ReadPipeline(ctx context.Context, repo RepoReference, id string, _ *CIPipeline, stepsFor []string) (CIPipeline, error) {
 	if _, _, err := splitGitHubProject(repo.Project()); err != nil {
 		return CIPipeline{}, err
@@ -399,6 +412,9 @@ func (f *githubForge) ReadPipeline(ctx context.Context, repo RepoReference, id s
 		Ref:    run.HeadBranch,
 		SHA:    run.HeadSHA,
 	}
+	for i := range jobs {
+		jobs[i].RunID = id
+	}
 	if len(jobs) > 0 {
 		name := run.Name
 		if name == "" {
@@ -410,6 +426,15 @@ func (f *githubForge) ReadPipeline(ctx context.Context, repo RepoReference, id s
 		}
 		pipeline.Stages = []CIStage{{Name: name, Status: AggregateCIStatus(statuses), Jobs: jobs}}
 	}
+	permission, err := f.repoCIPermission(ctx, client, repo)
+	if err != nil {
+		return CIPipeline{}, err
+	}
+	artifacts, err := f.runArtifacts(ctx, client, repo, pipeline)
+	if err != nil {
+		return CIPipeline{}, err
+	}
+	fillGitHubCIActions(&pipeline, permission, artifacts)
 	return pipeline, nil
 }
 

@@ -28,7 +28,12 @@ import (
 // kind (Ci::Build, Ci::Bridge, GenericCommitStatus), a commit status's
 // detailsPath is its target URL and a bridge's downstreamPipeline.path
 // its child; rows come newest first; retried: false drops retried rows
-// as the REST list does; the query costs 38 of the 250 complexity limit.
+// as the REST list does; the query costs 38 of the 250 complexity limit
+// before the action fields (retryable, cancelable, playable, canPlayJob,
+// userPermissions, the archive among artifacts), which are GitLab's own
+// answer to whether each action applies and whether the viewer may take
+// it (CiJob, JobPermissions, PipelinePermissions in the GraphQL
+// reference).
 
 // gitlabCIJobsMaxPages bounds the PipelineJobs pages read of one
 // pipeline. A pipeline past it shows its newest
@@ -40,6 +45,8 @@ const gitlabCIJobsMaxPages = 5
 const gitlabPipelineJobsQuery = `query PipelineJobs($fullPath: ID!, $id: CiPipelineID!, $after: String) {
   project(fullPath: $fullPath) {
     pipeline(id: $id) {
+      retryable cancelable
+      userPermissions { updatePipeline cancelPipeline }
       stages { nodes { name } }
       jobs(first: 100, after: $after, retried: false) {
         pageInfo { hasNextPage endCursor }
@@ -48,6 +55,9 @@ const gitlabPipelineJobsQuery = `query PipelineJobs($fullPath: ID!, $id: CiPipel
           stage { name }
           detailedStatus { detailsPath }
           downstreamPipeline { path }
+          retryable cancelable playable canPlayJob
+          userPermissions { updateBuild cancelBuild readJobArtifacts }
+          artifacts { nodes { fileType } }
         }
       }
     }
@@ -79,6 +89,32 @@ type gitlabCIJobNode struct {
 	DownstreamPipeline *struct {
 		Path *string `json:"path"`
 	} `json:"downstreamPipeline"`
+	Retryable       bool `json:"retryable"`
+	Cancelable      bool `json:"cancelable"`
+	Playable        bool `json:"playable"`
+	CanPlayJob      bool `json:"canPlayJob"`
+	UserPermissions struct {
+		UpdateBuild      bool `json:"updateBuild"`
+		CancelBuild      bool `json:"cancelBuild"`
+		ReadJobArtifacts bool `json:"readJobArtifacts"`
+	} `json:"userPermissions"`
+	Artifacts *struct {
+		Nodes []gitlabArtifactNode `json:"nodes"`
+	} `json:"artifacts"`
+}
+
+type gitlabArtifactNode struct {
+	FileType string `json:"fileType"`
+}
+
+// gitlabCIPipelineNode is PipelineJobs' pipeline-level action fields.
+type gitlabCIPipelineNode struct {
+	Retryable       bool `json:"retryable"`
+	Cancelable      bool `json:"cancelable"`
+	UserPermissions struct {
+		UpdatePipeline bool `json:"updatePipeline"`
+		CancelPipeline bool `json:"cancelPipeline"`
+	} `json:"userPermissions"`
 }
 
 // gitlabCIRow is a decoded row with the numeric part of its gid, which
@@ -102,11 +138,13 @@ func readGitLabPipeline(ctx context.Context, client *forgeapi.Client, repo RepoR
 	}
 	var stageOrder []string
 	var rows []gitlabCIRow
+	var actions gitlabCIPipelineNode
 	var after any
 	for page := range gitlabCIJobsMaxPages {
 		var raw struct {
 			Project *struct {
 				Pipeline *struct {
+					gitlabCIPipelineNode
 					Stages struct {
 						Nodes []struct {
 							Name string `json:"name"`
@@ -131,6 +169,7 @@ func readGitLabPipeline(ctx context.Context, client *forgeapi.Client, repo RepoR
 			return CIPipeline{}, fmt.Errorf("GitLab answered no pipeline %d for %s on %s", pipeline.ID, repo.Project(), repo.Host)
 		}
 		if page == 0 {
+			actions = raw.Project.Pipeline.gitlabCIPipelineNode
 			for _, stage := range raw.Project.Pipeline.Stages.Nodes {
 				stageOrder = append(stageOrder, stage.Name)
 			}
@@ -148,14 +187,57 @@ func readGitLabPipeline(ctx context.Context, client *forgeapi.Client, repo RepoR
 		}
 		after = info.EndCursor
 	}
-	return CIPipeline{
+	out := CIPipeline{
 		ID:     strconv.FormatInt(pipeline.ID, 10),
 		Status: NormalizeCIStatus(pipeline.Status, ""),
 		URL:    pipeline.WebURL,
 		Ref:    pipeline.Ref,
 		SHA:    pipeline.SHA,
 		Stages: groupGitLabRowsByStage(stageOrder, rows),
-	}, nil
+	}
+	out.Actions = gitlabPipelineActions(out, actions)
+	return out, nil
+}
+
+// gitlabPipelineActions applies GitLab's own answer to the pipeline:
+// Retry failed for a finished pipeline holding a failed or canceled job
+// that GitLab calls retryable, Cancel for a live one it calls cancelable.
+func gitlabPipelineActions(pipeline CIPipeline, node gitlabCIPipelineNode) CIPipelineActions {
+	var out CIPipelineActions
+	live := CIPipelineLive(pipeline)
+	bad := false
+	for _, stage := range pipeline.Stages {
+		bad = bad || ciHasFinishedBadJob(stage.Jobs)
+	}
+	if !live && bad && node.Retryable {
+		out.RetryFailed = ciPermitted(node.UserPermissions.UpdatePipeline)
+	}
+	if live && node.Cancelable {
+		out.Cancel = ciPermitted(node.UserPermissions.CancelPipeline)
+	}
+	return out
+}
+
+// gitlabJobActions applies GitLab's own answer to a build: Retry for a
+// failed or canceled job it calls retryable, Cancel for a live one it
+// calls cancelable, Play for a manual job it calls playable (the viewer's
+// canPlayJob), Artifacts for one holding an archive.
+func gitlabJobActions(job CIJob, node gitlabCIJobNode) CIJobActions {
+	var out CIJobActions
+	perms := node.UserPermissions
+	if ciJobFinishedBad(job.Status) && node.Retryable {
+		out.Retry = ciPermitted(perms.UpdateBuild)
+	}
+	if CIJobLive(job.Status) && node.Cancelable {
+		out.Cancel = ciPermitted(perms.CancelBuild || perms.UpdateBuild)
+	}
+	if job.Status == CIStatusManual && node.Playable {
+		out.Play = ciPermitted(node.CanPlayJob)
+	}
+	if node.Artifacts != nil && slices.ContainsFunc(node.Artifacts.Nodes, func(a gitlabArtifactNode) bool { return a.FileType == "ARCHIVE" }) {
+		out.Artifacts = ciPermitted(perms.ReadJobArtifacts)
+	}
+	return out
 }
 
 // gitlabRow decodes one PipelineJobs node. A build keeps its job id, its
@@ -186,6 +268,7 @@ func gitlabRow(node gitlabCIJobNode, web *url.URL) (gitlabCIRow, error) {
 		row.job.ID = strconv.FormatInt(number, 10)
 		row.job.URL = gitlabWebURL(web, node.WebPath)
 		row.job.LogsAvailable = node.StartedAt != nil && *node.StartedAt != ""
+		row.job.Actions = gitlabJobActions(row.job, node)
 	case gitlabGIDBridge:
 		if node.DownstreamPipeline != nil {
 			row.job.URL = gitlabWebURL(web, node.DownstreamPipeline.Path)
