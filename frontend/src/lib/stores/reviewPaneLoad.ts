@@ -242,7 +242,7 @@ export async function loadPatch(
       // the commits the clone lacks.
       const commits = existing
         ? existing.commits
-        : (((await ListPRCommits(workspace, pr, revision, userInitiated)) ?? []) as BranchCommit[]);
+        : ((await ListPRCommits(workspace, pr, revision, userInitiated))?.commits ?? []);
       // A run is of the list as it is now: one whose commits left it (a
       // rebase, an amend) falls back to the whole PR, and says so.
       const { selection, lost } = resolveCommitSelection(selectedCommits, commits);
@@ -294,7 +294,7 @@ export async function loadPatch(
       if (selectedCommitSHA) {
         // Sequenced: the selection must be validated against the fresh
         // list before deciding which diff to fetch.
-        const commits = ((await ListBranchCommits(workspace, branch)) ?? []) as BranchCommit[];
+        const commits = (await ListBranchCommits(workspace, branch))?.commits ?? [];
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
         return { patch: branchDiff(commitSHA), commits, selectedCommitSHA: commitSHA };
       }
@@ -302,7 +302,7 @@ export async function loadPatch(
       const patch = branchDiff(null).start();
       let commits: BranchCommit[];
       try {
-        commits = ((await ListBranchCommits(workspace, branch)) ?? []) as BranchCommit[];
+        commits = (await ListBranchCommits(workspace, branch))?.commits ?? [];
       } catch (err) {
         patch.abandon();
         throw err;

@@ -23,7 +23,7 @@ import type { DiffReviewComment, PRDetail, ReviewThread } from '../../types/mode
 import type { PRRef } from '../../utils/prReference';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
 import { installPRDraftsFake } from '../../../test/helpers/prDraftsFake';
-import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock, commitList } from '../../../test/mocks/bindings-app';
 
 const LINES = 3000;
 const OWNER = 'tools-1';
@@ -238,7 +238,7 @@ describe('open comment editors across a row unmount', () => {
     }));
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
     setReviewDiffMock('OpenPRDiff', async () => patch());
-    setBindingMock('ListPRCommits', async () => []);
+    setBindingMock('ListPRCommits', async () => commitList([]));
     setBindingMock('ListPRReviewThreads', async () => [THREAD]);
     setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
     const fake = installPRDraftsFake();
@@ -301,7 +301,7 @@ describe('open comment editors across a row unmount', () => {
     setReviewDiffMock('OpenPRDiff', async () => patch());
     setReviewDiffMock('OpenPRCommitDiff', async () => patch());
     const commit = 'c'.repeat(40);
-    setBindingMock('ListPRCommits', async () => [{ sha: commit, shortSha: 'ccccccc', subject: 'One', author: 'octocat', authoredAt: 1 }]);
+    setBindingMock('ListPRCommits', async () => commitList([{ sha: commit, shortSha: 'ccccccc', subject: 'One', author: 'octocat', authoredAt: 1 }]));
     setBindingMock('ListPRReviewThreads', async () => []);
     setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
     const fake = installPRDraftsFake();
@@ -345,7 +345,7 @@ describe('open comment editors across a row unmount', () => {
     setBindingMock('GetGitStatus', async () => ({}));
     setReviewDiffMock('OpenWorkspaceDiff', async () => patch());
     setReviewDiffMock('OpenBranchBaseDiff', async () => patch());
-    setBindingMock('ListBranchCommits', async () => []);
+    setBindingMock('ListBranchCommits', async () => commitList([]));
     setBindingMock('GitListBranches', async () => [{ name: 'main', isCurrent: true, isDefault: true }]);
     setBindingMock('ListDiffReviewComments', async (_thread: string, scope: string, sourceKey: string) =>
       held.map((comment) => ({ ...comment, scope, sourceKey })));

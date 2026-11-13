@@ -82,28 +82,35 @@ func (a *App) OpenBranchBaseDiff(ctx context.Context, ws WorkspaceRef, baseBranc
 // per-commit selector.
 type BranchCommit = gitdiff.Commit
 
+// BranchCommitList is the review pane's per-commit selector: the newest
+// commits up to the cap, and the range's real total (null when it could
+// not be counted). The list is complete exactly when total equals the
+// number of commits.
+type BranchCommitList = gitdiff.CommitList
+
 // ListBranchCommits returns the commits a PR from the workspace HEAD
 // onto baseBranch would carry (`base..HEAD`, newest first). Empty for
 // non-git workspaces.
 //
 //ao:scope git:operate
-func (a *App) ListBranchCommits(ws WorkspaceRef, baseBranch string) ([]BranchCommit, error) {
+func (a *App) ListBranchCommits(ws WorkspaceRef, baseBranch string) (BranchCommitList, error) {
 	const action = "list branch commits"
 	if strings.TrimSpace(baseBranch) == "" {
-		return nil, fmt.Errorf("%s: base branch is required", action)
+		return BranchCommitList{}, fmt.Errorf("%s: base branch is required", action)
 	}
 	workspace, err := a.reviewWorkspace(action, ws)
 	if err != nil {
-		return nil, err
+		return BranchCommitList{}, err
 	}
 	if !gitdiff.IsGitRepository(context.Background(), workspace) {
-		return []BranchCommit{}, nil
+		none := 0
+		return BranchCommitList{Commits: []BranchCommit{}, Total: &none}, nil
 	}
-	commits, err := gitdiff.ListCommits(context.Background(), workspace, baseBranch)
+	list, err := gitdiff.ListCommits(context.Background(), workspace, baseBranch)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
+		return BranchCommitList{}, fmt.Errorf("%s: %w", action, err)
 	}
-	return commits, nil
+	return list, nil
 }
 
 // recentCommitLimit matches codex's own "Review a commit" picker

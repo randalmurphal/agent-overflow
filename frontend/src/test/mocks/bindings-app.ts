@@ -23,6 +23,12 @@ export const __bindingMocksInternal = mocks;
  * Install (or replace) a mock implementation for a binding.
  * Returns the underlying vi.fn so tests can inspect call args.
  */
+/** A commit list answer (ListPRCommits, ListBranchCommits) holding every
+ * commit of its range. */
+export function commitList<T>(commits: T[]): { commits: T[]; total: number } {
+  return { commits, total: commits.length };
+}
+
 export function setBindingMock(
   name: string,
   impl: (...args: never[]) => unknown,

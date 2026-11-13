@@ -55,7 +55,9 @@ for (const forge of ['github', 'gitlab'] as const) {
     const pr = { Forge: forge, Host: forge === 'github' ? 'github.com' : 'gitlab.com', Namespace: 'ao-e2e', Repo: repo.project.split('/')[1], Number: 7 };
     const revision = { baseRef: 'main', baseSHA: pull.baseSha!, headSHA: pull.headSha! };
 
-    const commits = await harness.rpc<Commit[]>('ListPRCommits', ws, pr, revision, true);
+    const listed = await harness.rpc<{ commits: Commit[]; total: number | null }>('ListPRCommits', ws, pr, revision, true);
+    const { commits } = listed;
+    expect(listed.total).toBe(commits.length);
     expect(commits.map((c) => c.subject)).toEqual(['add blob', 'rename moved', 'merge add diagram', 'add diagram', 'restyle logo', 'add icon']);
     const [blob, , merge, , restyle, icon] = commits;
 

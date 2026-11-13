@@ -62,9 +62,13 @@ func TestListPRCommitsFromLocalClone(t *testing.T) {
 	app := newTestAppWithStore(t)
 	ref, clone, prSHAs := prCloneFixture(t, app)
 
-	commits, err := app.ListPRCommits(ref, prRef(), prRev(t, clone, prSHAs[0]), true)
+	list, err := app.ListPRCommits(ref, prRef(), prRev(t, clone, prSHAs[0]), true)
 	if err != nil {
 		t.Fatalf("ListPRCommits() error = %v", err)
+	}
+	commits := list.Commits
+	if list.Total == nil || *list.Total != 2 {
+		t.Fatalf("total = %v, want 2: the list is complete", list.Total)
 	}
 	if len(commits) != 2 {
 		t.Fatalf("expected 2 PR commits, got %d: %+v", len(commits), commits)
@@ -98,10 +102,11 @@ func TestPRReadsSkipTheNetworkWhenCommitsAreLocal(t *testing.T) {
 	rev := prRev(t, clone, prSHAs[0])
 	testutil.RunGit(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone"))
 
-	commits, err := app.ListPRCommits(ref, prRef(), rev, true)
+	list, err := app.ListPRCommits(ref, prRef(), rev, true)
 	if err != nil {
 		t.Fatalf("ListPRCommits() error = %v", err)
 	}
+	commits := list.Commits
 	if len(commits) != 2 || commits[0].SHA != prSHAs[0] {
 		t.Fatalf("expected the local listing, got %+v", commits)
 	}
@@ -253,5 +258,25 @@ func TestOpenPRCommitDiffReadsARunOfThePRsCommits(t *testing.T) {
 		if _, err := openPRRunPatch(t, app, ref, rev, ends[0], ends[1]); err == nil {
 			t.Errorf("%s: OpenPRCommitDiff accepted %v", name, ends)
 		}
+	}
+}
+
+// The branch scope's list says how many commits the branch carries; a
+// workspace that is not a repository carries none.
+func TestListBranchCommitsCarriesItsTotal(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "checkout", "-qb", "feature")
+	writeRepoBytes(t, repo, "one.txt", []byte("1\n"))
+	testutil.RunGit(t, repo, "add", "-A")
+	testutil.RunGit(t, repo, "commit", "-qm", "one")
+	list, err := app.ListBranchCommits(testWorkspaceRef(t, app, repo), "main")
+	if err != nil || len(list.Commits) != 1 || list.Total == nil || *list.Total != 1 {
+		t.Fatalf("ListBranchCommits() = %d commits of %v, %v; want 1 of 1", len(list.Commits), list.Total, err)
+	}
+	none, err := app.ListBranchCommits(testWorkspaceRef(t, app, t.TempDir()), "main")
+	if err != nil || none.Commits == nil || len(none.Commits) != 0 || none.Total == nil || *none.Total != 0 {
+		t.Fatalf("a workspace that is not a repository = %+v, %v; want an empty, complete list", none, err)
 	}
 }

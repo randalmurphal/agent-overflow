@@ -4,7 +4,7 @@
 // pipelines whose pipeline 77 has a job with a log.
 
 import { vi } from 'vitest';
-import { setBindingMock, setReviewDiffMock } from '../mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock, commitList } from '../mocks/bindings-app';
 import { installPRDraftsFake } from './prDraftsFake';
 import { __resetPullsPageForTest } from '../../lib/stores/pullsPage.svelte';
 import { __resetPullsPageAgentForTest } from '../../lib/stores/pullsPageAgent.svelte';
@@ -134,7 +134,7 @@ export function installPullsPaneMocks(snapshot: PRListSnapshot = pullsSnapshot()
   }));
   setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setReviewDiffMock('OpenPRDiff', async () => patch());
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setBindingMock('ListPRReviewThreads', async () => []);
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
   setBindingMock('GetPRMergeConflicts', async () => ({ conflicted: false, paths: [], baseLabel: 'origin/main', headLabel: 'feature' }));

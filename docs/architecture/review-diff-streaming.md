@@ -32,8 +32,12 @@ parent (the empty tree for a root commit) to `last`, both in the commit
 list `ListPRCommits` answers at the same revision, `first` no newer than
 `last`; one commit is that commit's own change, and a run of several
 covering the whole list is refused in favor of `OpenPRDiff`
-(`gitdiff.CommitRangeSides`). The list holds the newest 300 commits of a
-longer PR: a run may start at the oldest listed commit and is then read
+(`gitdiff.CommitRangeSides`). The list (`ListPRCommits`, and the branch
+scope's `ListBranchCommits`) answers `{commits, total}`: the newest 300
+commits and the range's real count, from `git rev-list --count` within 5
+seconds only when the list is cut short, or `null` when that count fails.
+The list is complete exactly when `total` equals the number of commits. A
+run may start at the oldest listed commit of a cut list and is then read
 (it is not the whole PR), and a commit past the list is refused. A run is
 a two-tree diff, so one holding a merge of the base branch shows what
 that merge brought in.

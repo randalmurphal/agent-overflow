@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/testutil"
 )
@@ -60,7 +61,7 @@ func newPRHistory(t *testing.T) prHistory {
 	testutil.RunGit(t, repo, "add", "b.txt")
 	h.c4 = commitAt(t, repo, "c4", 5)
 
-	commits, err := ListCommitsRange(context.Background(), repo, h.base, h.c4)
+	commits, err := commitsOf(ListCommitsRange(context.Background(), repo, h.base, h.c4))
 	if err != nil {
 		t.Fatalf("ListCommitsRange: %v", err)
 	}
@@ -233,28 +234,55 @@ func fastImportCommits(t *testing.T, repo string, count int) {
 	}
 }
 
-// Past maxListedCommits the selector lists the newest 300: a range may end
-// anywhere in them and start at the oldest listed commit (it is not the
-// whole PR, so it is read), and a commit past the list is refused.
+// commitsOf answers a list's commits.
+func commitsOf(list CommitList, err error) ([]Commit, error) { return list.Commits, err }
+
+// Past the cap the selector lists the newest commits and the range's real
+// total: a range may end anywhere in them and start at the oldest listed
+// commit (it is not the whole PR, so that run is read), and a commit past
+// the list is refused. A count that cannot be had is no total, never the
+// listed number.
 func TestCommitRangeOfATruncatedList(t *testing.T) {
 	t.Parallel()
+	const limit = 3
 	repo := testutil.InitGitRepo(t)
 	base := headSHA(t, repo)
-	fastImportCommits(t, repo, maxListedCommits+2)
+	fastImportCommits(t, repo, limit+2)
 	head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "feature"))
-	listed, err := ListCommitsRange(context.Background(), repo, base, head)
-	if err != nil || len(listed) != maxListedCommits {
-		t.Fatalf("listed %d commits (err %v), want %d", len(listed), err, maxListedCommits)
+	list, err := listCommitRange(context.Background(), repo, base, head, limit, time.Minute)
+	if err != nil || len(list.Commits) != limit || list.Total == nil || *list.Total != limit+2 {
+		t.Fatalf("listed %d commits of %v (err %v), want %d of %d", len(list.Commits), list.Total, err, limit, limit+2)
 	}
-	oldestListed := listed[len(listed)-1].SHA
-	diff, err := OpenCommitRangeDiff(context.Background(), repo, base, head, oldestListed, head, Options{})
-	patch, err := openAndRead(t, diff, err)
-	if err != nil || !strings.Contains(patch, "+302") || !strings.Contains(patch, "-2") {
+	whole, err := listCommitRange(context.Background(), repo, base, head, limit+2, time.Minute)
+	if err != nil || len(whole.Commits) != limit+2 || whole.Total == nil || *whole.Total != limit+2 {
+		t.Fatalf("a list at the cap = %d commits of %v (err %v), want it complete", len(whole.Commits), whole.Total, err)
+	}
+	unknown, err := listCommitRange(context.Background(), repo, base, head, limit, time.Nanosecond)
+	if err != nil || len(unknown.Commits) != limit || unknown.Total != nil {
+		t.Fatalf("a count past its bound = %d commits of %v (err %v), want the list with no total", len(unknown.Commits), unknown.Total, err)
+	}
+	oldestListed := list.Commits[limit-1].SHA
+	sides, err := commitRangeSides(context.Background(), repo, base, head, oldestListed, head, limit)
+	if err != nil {
+		t.Fatalf("the oldest listed commit through the head: %v", err)
+	}
+	patch, err := openAndRead(t, sides.OpenDiff(Options{}), nil)
+	if err != nil || !strings.Contains(patch, "+5") || !strings.Contains(patch, "-2") {
 		t.Fatalf("the oldest listed commit through the head: err %v, patch:\n%s", err, patch)
 	}
+	if pin := sides.Pin(); pin.Old != strings.TrimSpace(gitOutput(t, repo, "rev-parse", oldestListed+"~1")) || pin.New != head {
+		t.Fatalf("the run is %s..%s, not the oldest listed commit's parent to the head", pin.Old, pin.New)
+	}
 	pastTheList := strings.TrimSpace(gitOutput(t, repo, "rev-parse", oldestListed+"~1"))
-	if _, err := rangePatch(t, prHistory{repo: repo, base: base, c4: head}, pastTheList, head); err == nil || !strings.Contains(err.Error(), "is not one of the pull request's commits") {
+	if _, err := commitRangeSides(context.Background(), repo, base, head, pastTheList, head, limit); err == nil || !strings.Contains(err.Error(), "is not one of the pull request's commits") {
 		t.Fatalf("a commit past the list: %v", err)
+	}
+	if _, err := commitRangeSides(context.Background(), repo, base, head, oldestListed, head, limit+2); err != nil {
+		t.Fatalf("a run inside a complete list: %v", err)
+	}
+	firstOfAll := whole.Commits[limit+1].SHA
+	if _, err := commitRangeSides(context.Background(), repo, base, head, firstOfAll, head, limit+2); err == nil || !strings.Contains(err.Error(), "covers every commit") {
+		t.Fatalf("the whole complete list as a run: %v", err)
 	}
 }
 

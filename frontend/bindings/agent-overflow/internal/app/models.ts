@@ -677,6 +677,22 @@ export const BranchCommit = gitdiff$0.Commit;
 export type BranchCommit = gitdiff$0.Commit;
 
 /**
+ * BranchCommitList is the review pane's per-commit selector: the newest
+ * commits up to the cap, and the range's real total (null when it could
+ * not be counted). The list is complete exactly when total equals the
+ * number of commits.
+ */
+export const BranchCommitList = gitdiff$0.CommitList;
+
+/**
+ * BranchCommitList is the review pane's per-commit selector: the newest
+ * commits up to the cap, and the range's real total (null when it could
+ * not be counted). The list is complete exactly when total equals the
+ * number of commits.
+ */
+export type BranchCommitList = gitdiff$0.CommitList;
+
+/**
  * BranchPruneCandidate is one local branch the prune preview offers for
  * deletion. Safe=true rows pre-check in the dialog: either the tip is
  * reachable from the default branch, or a merged PR/MR's head SHA

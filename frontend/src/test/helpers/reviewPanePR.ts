@@ -11,7 +11,7 @@ import { __resetReviewPaneStateForTest } from '../../lib/stores/reviewPane.svelt
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../lib/stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../lib/stores/appStorage';
 import { resetToastsForTest } from '../../lib/stores/toast.svelte';
-import { setBindingMock, setReviewDiffMock } from '../mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock, commitList } from '../mocks/bindings-app';
 import { __seedGitStatusForTest } from '../../lib/stores/gitStatusStore.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../lib/stores/panes.svelte';
 import { createThreadPane } from '../../lib/stores/thread.svelte';
@@ -77,9 +77,9 @@ export function resetReviewPanePR(): void {
   setBindingMock('UpdateThreadBranch', async () => []);
   setReviewDiffMock('OpenWorkspaceDiff', async () => patch());
   setReviewDiffMock('OpenBranchBaseDiff', async () => '');
-  setBindingMock('ListBranchCommits', async () => []);
+  setBindingMock('ListBranchCommits', async () => commitList([]));
   setReviewDiffMock('OpenCommitDiff', async () => '');
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setReviewDiffMock('OpenPRCommitDiff', async () => '');
   setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
   setReviewDiffMock('OpenTurnEditsDiff', async () => '');

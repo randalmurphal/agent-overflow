@@ -52,7 +52,7 @@ import {
   resetDiffSpanCacheForTest,
   type PaintedSpans,
 } from '../utils/diffSpanCache.svelte';
-import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock, setReviewDiffMock, commitList } from '../../test/mocks/bindings-app';
 import { REVIEW_DIFF_READ_BYTES } from './reviewDiffStream';
 import { patchTextHeldBytes, setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
 import { PatchTextLost } from '../utils/patchStore';
@@ -169,9 +169,9 @@ function installDefaultMocks(): void {
   setBindingMock('UpdateThreadBranch', async () => []);
   setReviewDiffMock('OpenWorkspaceDiff', async () => '');
   setReviewDiffMock('OpenBranchBaseDiff', async () => '');
-  setBindingMock('ListBranchCommits', async () => []);
+  setBindingMock('ListBranchCommits', async () => commitList([]));
   setReviewDiffMock('OpenCommitDiff', async () => '');
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setReviewDiffMock('OpenPRCommitDiff', async () => '');
   setBindingMock('GitListBranches', async () => [{ name: 'develop', isCurrent: false, isDefault: true }]);
   setBindingMock('ListDiffReviewComments', async () => []);
@@ -279,7 +279,7 @@ describe('reviewPane store', () => {
     await refresh;
 
     setReviewDiffMock('OpenBranchBaseDiff', async () => patch);
-    setBindingMock('ListBranchCommits', async () => [{ sha: 'commit-a', subject: 'change' }]);
+    setBindingMock('ListBranchCommits', async () => commitList([{ sha: 'commit-a', subject: 'change' }]));
     await state.setScope('branch', { baseBranch: 'main' });
     setReviewDiffMock('OpenCommitDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
     const selecting = state.selectCommit('commit-a');
@@ -294,10 +294,10 @@ describe('reviewPane store', () => {
   it('loads the binding for each scope', async () => {
     const workspace = setReviewDiffMock('OpenWorkspaceDiff', async () => patchFor('workspace.go', 1));
     const branch = setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
-    setBindingMock('ListBranchCommits', async () => [
+    setBindingMock('ListBranchCommits', async () => commitList([
       { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
       { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'second', author: 'r', authoredAt: 2 },
-    ]);
+    ]));
     setBindingMock('GitListBranches', async () => [
       { name: 'develop', isCurrent: false, isDefault: true },
     ]);
@@ -348,9 +348,9 @@ describe('reviewPane store', () => {
   it('selects a single commit in branch scope and keys comments by its SHA', async () => {
     const sha = 'a'.repeat(40);
     setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
-    setBindingMock('ListBranchCommits', async () => [
+    setBindingMock('ListBranchCommits', async () => commitList([
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     const commitDiff = setReviewDiffMock('OpenCommitDiff', async () => patchFor('commit.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
@@ -373,9 +373,9 @@ describe('reviewPane store', () => {
   it('drops a selected commit that left the range and reloads the full diff', async () => {
     const sha = 'a'.repeat(40);
     setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
-    setBindingMock('ListBranchCommits', async () => [
+    setBindingMock('ListBranchCommits', async () => commitList([
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenCommitDiff', async () => patchFor('commit.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
@@ -385,7 +385,7 @@ describe('reviewPane store', () => {
     expect(state.files.map((f) => f.path)).toEqual(['commit.go']);
 
     // Rebase: the SHA is gone from base..HEAD.
-    setBindingMock('ListBranchCommits', async () => []);
+    setBindingMock('ListBranchCommits', async () => commitList([]));
     await state.reload();
     expect(state.selectedCommitSHA).toBeNull();
     expect(state.files.map((f) => f.path)).toEqual(['branch.go']);
@@ -394,9 +394,9 @@ describe('reviewPane store', () => {
   it('resets the selected commit when the scope changes', async () => {
     const sha = 'a'.repeat(40);
     setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
-    setBindingMock('ListBranchCommits', async () => [
+    setBindingMock('ListBranchCommits', async () => commitList([
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenCommitDiff', async () => patchFor('commit.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
@@ -742,9 +742,9 @@ describe('reviewPane store — PR scope', () => {
   it('selects a single PR commit and keys comments by its SHA', async () => {
     const sha = 'b'.repeat(40);
     installPRMocks();
-    const list = setBindingMock('ListPRCommits', async () => [
+    const list = setBindingMock('ListPRCommits', async () => commitList([
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     const commitDiff = setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
 
     const state = reviewStateForPane('pane-1', prSubject());
@@ -769,9 +769,9 @@ describe('reviewPane store — PR scope', () => {
   it('commit selection reuses the live subscription and commit list (fast path)', async () => {
     const sha = 'b'.repeat(40);
     const { subscribe, unsubscribe } = installPRMocks();
-    const list = setBindingMock('ListPRCommits', async () => [
+    const list = setBindingMock('ListPRCommits', async () => commitList([
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
 
     const state = reviewStateForPane('pane-1', prSubject());
@@ -792,9 +792,9 @@ describe('reviewPane store — PR scope', () => {
   it('single-commit view forces the agent target and blocks PR submission', async () => {
     const sha = 'b'.repeat(40);
     installPRMocks();
-    setBindingMock('ListPRCommits', async () => [
+    setBindingMock('ListPRCommits', async () => commitList([
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
     const submit = setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
 
@@ -819,9 +819,9 @@ describe('reviewPane store — PR scope', () => {
   it('drops a selected PR commit that left the range (force-push) and reloads the full diff', async () => {
     const sha = 'b'.repeat(40);
     installPRMocks();
-    setBindingMock('ListPRCommits', async () => [
+    setBindingMock('ListPRCommits', async () => commitList([
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
     const fullDiff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
 
@@ -831,7 +831,7 @@ describe('reviewPane store — PR scope', () => {
     await state.selectCommit(sha);
     expect(state.selectedCommitSHA).toBe(sha);
 
-    setBindingMock('ListPRCommits', async () => []);
+    setBindingMock('ListPRCommits', async () => commitList([]));
     await state.reload();
     expect(state.selectedCommitSHA).toBeNull();
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
@@ -3862,9 +3862,9 @@ describe('reviewPane hide-whitespace toggle', () => {
     // from the diff body while still counting toward the tally.
     const sha = 'a'.repeat(40);
     setReviewDiffMock('OpenBranchBaseDiff', async () => CANONICAL_PATCH);
-    setBindingMock('ListBranchCommits', async () => [
+    setBindingMock('ListBranchCommits', async () => commitList([
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenCommitDiff',
       async (_threadId: string, _sha: string, ignoreWhitespace: boolean) =>
         (ignoreWhitespace ? IGNORED_PATCH : CANONICAL_PATCH),
@@ -4003,10 +4003,10 @@ describe('reviewPane store — conversation section and resolve', () => {
     }));
     // Newest first, one author: one contiguous push row, timed by its
     // newest commit and keyed by its oldest.
-    setBindingMock('ListPRCommits', async () => [
+    setBindingMock('ListPRCommits', async () => commitList([
       { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'second', author: 'ann', authoredAt: Date.parse('2026-01-04T00:00:00Z') },
       { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'first', author: 'ann', authoredAt: Date.parse('2026-01-01T12:00:00Z') },
-    ]);
+    ]));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -4451,9 +4451,9 @@ describe('reviewPane store — PR read intent', () => {
   const pr = expect.objectContaining({ Number: 5 });
   function installIntentMocks() {
     installPRMocks();
-    const list = setBindingMock('ListPRCommits', async () => [
+    const list = setBindingMock('ListPRCommits', async () => commitList([
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
     const commitDiff = setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
     return { list, diff, commitDiff };
@@ -5405,7 +5405,7 @@ describe('reviewPane store — open new-comment editors', () => {
   });
 
   it('commits the subject the load resolved, not the one asked for', async () => {
-    setBindingMock('ListBranchCommits', async () => [{ sha: 'commit-a', subject: 'change' }]);
+    setBindingMock('ListBranchCommits', async () => commitList([{ sha: 'commit-a', subject: 'change' }]));
     setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('src/app.ts', 1));
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
@@ -5572,7 +5572,7 @@ describe('reviewPane store — runs of a PR\'s commits', () => {
 
   async function prPane() {
     installPRMocks();
-    setBindingMock('ListPRCommits', async () => COMMITS);
+    setBindingMock('ListPRCommits', async () => commitList(COMMITS));
     const whole = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
     const run = setReviewDiffMock('OpenPRCommitDiff', async () => RUN_PATCH);
     const state = reviewStateForPane('pane-1', prSubject());
@@ -5652,7 +5652,7 @@ describe('reviewPane store — runs of a PR\'s commits', () => {
   it('falls back to All commits, saying so, when a held run\'s commits left the PR', async () => {
     const { state, whole } = await prPane();
     await state.selectCommits({ first: C, last: B });
-    setBindingMock('ListPRCommits', async () => COMMITS.filter((commit) => commit.sha !== B));
+    setBindingMock('ListPRCommits', async () => commitList(COMMITS.filter((commit) => commit.sha !== B)));
     const before = whole.mock.calls.length;
     await state.reload();
     await waitLoaded(state);
