@@ -17,9 +17,14 @@ configuration.
 
 Patches have no size limit and are never held whole. An `Open*` function
 resolves both endpoints to object IDs through `Sides` (`sides.go`) and returns
-a `Diff`, read in chunks by byte offset (`stream.go`). The same `Sides` lists
-the paths the diff changes and reads their blobs under a byte cap, so a blob
-read always describes the diff it belongs to. A worktree diff's snapshot lives in a directory
+a `Diff`, read in chunks by byte offset (`stream.go`). `Sides.Pin` answers
+the sides as object IDs, `WorktreeBlobs` what a working-tree side's
+snapshot recorded for each changed path (streamed, stopped at its bound),
+and `OpenedSides` reopens a pin for file reads (`pin.go`): one literal path
+per entry, a blob read into a buffer of its known size, a working-tree
+file opened through the workspace as a root and proven by the ID of its
+bytes on disk. Pins come from the server's own opens, never from a client.
+Pinning writes nothing to the repository. A worktree diff's snapshot lives in a directory
 under the caller's root until `Close`. A failed Git exit is an error, never a
 short patch. Closing a diff or cancelling a read terminates and reaps Git.
 Tests use temporary real repositories for worktree states, unusual paths,

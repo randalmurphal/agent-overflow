@@ -4,16 +4,16 @@ import (
 	"bytes"
 	"compress/gzip"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 )
 
-// maxEditFileSnapshotBytes bounds a decompressed snapshot read. Writes
-// are capped well below this by the persist tap (highlight prime-size
-// limits), so hitting it means the row is corrupt — fail loudly rather
-// than hand a truncated file to verification.
-const maxEditFileSnapshotBytes = 32 << 20
+// MaxEditFileSnapshotBytes is the capture limit of an edit file snapshot:
+// PutEditFileSnapshot refuses longer content, and a read of a longer row
+// fails as corrupt rather than hand a truncated file to its caller.
+const MaxEditFileSnapshotBytes = 4 << 20
 
 // PutEditFileSnapshot stores the gzip-compressed new-side content of
 // path as it stood right after the edit payload's diff applied. The
@@ -22,6 +22,9 @@ const maxEditFileSnapshotBytes = 32 << 20
 // sql.ErrNoRows (a benign drop for the caller) instead of a foreign-key
 // violation. Re-persisting the same payload overwrites the row.
 func (s *Store) PutEditFileSnapshot(threadID, payloadID, path, content string, createdAt int64) error {
+	if len(content) > MaxEditFileSnapshotBytes {
+		return fmt.Errorf("store: edit file snapshot %s %s: %d bytes exceeds the %d byte capture limit", payloadID, path, len(content), MaxEditFileSnapshotBytes)
+	}
 	blob, err := gzipSnapshotContent(content)
 	if err != nil {
 		return fmt.Errorf("store: compress edit file snapshot %s %s: %w", payloadID, path, err)
@@ -90,47 +93,63 @@ func (s *Store) GetEditFileSnapshot(threadID, payloadID, path string) (string, b
 	return content, true, nil
 }
 
-// GetLatestTurnEditFileSnapshot returns the decompressed snapshot of
-// path from the LAST edit payload of a turn that touched it — the same
-// item order ListTurnEditDiffPayloads lists, so the snapshot
-// matches the final merged section the whole-turn Edits view renders.
-// The turn's rows drive the read; each probes its payload's snapshot of
-// path, so the thread's other snapshots are never read.
-func (s *Store) GetLatestTurnEditFileSnapshot(threadID string, turnIndex int, path string) (string, bool, error) {
+// ReadEditFileSnapshot is GetEditFileSnapshot for a caller that holds the
+// content in a buffer of its own: it reads the stored size first (the
+// gzip trailer), refuses one past MaxEditFileSnapshotBytes, asks take for a
+// buffer of exactly that size and decompresses into it, failing on content
+// of any other length. take is not called for empty content. Only the
+// compressed row is allocated here.
+func (s *Store) ReadEditFileSnapshot(threadID, payloadID, path string, take func(n int64) ([]byte, error)) (size int64, found bool, err error) {
 	var blob []byte
-	q := s.reader()
-	turnRows, turnArgs, err := timelineArms(q, threadID, timelineSelection{
-		Columns: func(string, string) string {
-			return "items.payload_id AS payload_id, items.item_index AS item_index"
-		},
-		Turn: "?", TurnArgs: []any{turnIndex},
-	})
-	if err != nil {
-		return "", false, err
-	}
-	err = q.QueryRow(
-		`SELECT content FROM (
-		   SELECT i.item_index AS item_index,
-		          (SELECT s.content FROM timeline_edit_file_snapshots s
-		            WHERE s.thread_id = ? AND s.payload_id = i.payload_id AND s.path = ?) AS content
-		     FROM (`+turnRows+`) i
-		 )
-		  WHERE content IS NOT NULL
-		  ORDER BY item_index DESC
-		  LIMIT 1`,
-		append([]any{threadID, path}, turnArgs...)...,
+	err = s.reader().QueryRow(
+		`SELECT content
+		   FROM timeline_edit_file_snapshots
+		  WHERE thread_id = ? AND payload_id = ? AND path = ?`,
+		threadID, payloadID, path,
 	).Scan(&blob)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return 0, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("store: get latest turn edit file snapshot %s/%d %s: %w", threadID, turnIndex, path, err)
+		return 0, false, fmt.Errorf("store: read edit file snapshot %s %s: %w", payloadID, path, err)
 	}
-	content, err := gunzipSnapshotContent(blob)
+	if size, err = readSnapshotInto(blob, take); err != nil {
+		return 0, false, fmt.Errorf("store: decompress edit file snapshot %s %s: %w", payloadID, path, err)
+	}
+	return size, true, nil
+}
+
+// readSnapshotInto decompresses a snapshot blob into the buffer take
+// answers for its recorded size (gzip's ISIZE trailer, the length mod 2^32,
+// exact below the capture limit).
+func readSnapshotInto(blob []byte, take func(n int64) ([]byte, error)) (int64, error) {
+	if len(blob) < 18 {
+		return 0, errors.New("snapshot is not gzip")
+	}
+	size := int64(binary.LittleEndian.Uint32(blob[len(blob)-4:]))
+	if size > MaxEditFileSnapshotBytes {
+		return 0, fmt.Errorf("snapshot exceeds %d byte cap", MaxEditFileSnapshotBytes)
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(blob))
 	if err != nil {
-		return "", false, fmt.Errorf("store: decompress latest turn edit file snapshot %s/%d %s: %w", threadID, turnIndex, path, err)
+		return 0, err
 	}
-	return content, true, nil
+	// Closing a gzip.Reader releases nothing the read below has not checked.
+	defer func() { _ = zr.Close() }()
+	var buf []byte
+	if size > 0 {
+		if buf, err = take(size); err != nil {
+			return 0, err
+		}
+	}
+	if _, err := io.ReadFull(zr, buf); err != nil {
+		return 0, fmt.Errorf("snapshot is shorter than its recorded %d bytes: %w", size, err)
+	}
+	var probe [1]byte
+	if n, err := zr.Read(probe[:]); n != 0 || !errors.Is(err, io.EOF) {
+		return 0, fmt.Errorf("snapshot is not its recorded %d bytes", size)
+	}
+	return size, nil
 }
 
 func gzipSnapshotContent(content string) ([]byte, error) {
@@ -151,12 +170,12 @@ func gunzipSnapshotContent(blob []byte) (string, error) {
 		return "", err
 	}
 	defer zr.Close()
-	content, err := io.ReadAll(io.LimitReader(zr, maxEditFileSnapshotBytes+1))
+	content, err := io.ReadAll(io.LimitReader(zr, MaxEditFileSnapshotBytes+1))
 	if err != nil {
 		return "", err
 	}
-	if len(content) > maxEditFileSnapshotBytes {
-		return "", fmt.Errorf("snapshot exceeds %d byte cap", maxEditFileSnapshotBytes)
+	if len(content) > MaxEditFileSnapshotBytes {
+		return "", fmt.Errorf("snapshot exceeds %d byte cap", MaxEditFileSnapshotBytes)
 	}
 	return string(content), nil
 }

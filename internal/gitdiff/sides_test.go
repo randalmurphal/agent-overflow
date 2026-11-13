@@ -1,7 +1,6 @@
 package gitdiff
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -181,9 +180,82 @@ func TestCommitRangeAllowsTheOnlyCommit(t *testing.T) {
 	}
 }
 
-// pngHeader is enough of a PNG for git to call the file binary.
-func pngBytes(seed byte) []byte {
-	return append([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"), bytes.Repeat([]byte{seed, 0}, 64)...)
+// A range holding a merge of the base branch shows what that merge brought
+// in, as the merge's own single-commit view does: the range is a two-tree
+// diff, not a diff against the base.
+func TestCommitRangeOverAMergeOfTheBaseShowsTheMergedBaseChanges(t *testing.T) {
+	t.Parallel()
+	repo := testutil.InitGitRepo(t)
+	base := headSHA(t, repo)
+	testutil.RunGit(t, repo, "checkout", "--quiet", "-b", "feature")
+	writeFile(t, repo, "feature.txt", "feature\n")
+	testutil.RunGit(t, repo, "add", "feature.txt")
+	first := commitAt(t, repo, "feature work", 1)
+	testutil.RunGit(t, repo, "checkout", "--quiet", "main")
+	writeFile(t, repo, "upstream.txt", "upstream\n")
+	testutil.RunGit(t, repo, "add", "upstream.txt")
+	commitAt(t, repo, "upstream work", 2)
+	testutil.RunGit(t, repo, "checkout", "--quiet", "feature")
+	date := "2026-01-01T00:00:03Z"
+	if _, _, _, err := runGit(context.Background(), repo, []string{"GIT_AUTHOR_DATE=" + date, "GIT_COMMITTER_DATE=" + date}, false,
+		"merge", "--quiet", "--no-ff", "-m", "merge main", "main"); err != nil {
+		t.Fatal(err)
+	}
+	merge := headSHA(t, repo)
+	writeFile(t, repo, "after.txt", "after\n")
+	testutil.RunGit(t, repo, "add", "after.txt")
+	head := commitAt(t, repo, "after", 4)
+
+	diff, err := OpenCommitRangeDiff(context.Background(), repo, base, head, merge, head, Options{})
+	patch, err := openAndRead(t, diff, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(patch, "+upstream") || !strings.Contains(patch, "+after") || strings.Contains(patch, "+feature") {
+		t.Fatalf("merge..head:\n%s\nwant the merged base change and the later commit only", patch)
+	}
+	_ = first
+}
+
+// fastImportCommits makes count commits on feature off main in one
+// fast-import, each changing n.txt, dated one second apart.
+func fastImportCommits(t *testing.T, repo string, count int) {
+	t.Helper()
+	var stream strings.Builder
+	fmt.Fprintf(&stream, "reset refs/heads/feature\nfrom refs/heads/main\n")
+	for i := 1; i <= count; i++ {
+		content := fmt.Sprintf("%d\n", i)
+		fmt.Fprintf(&stream, "commit refs/heads/feature\ncommitter A <a@example.com> %d +0000\ndata %d\nc%d\nM 100644 inline n.txt\ndata %d\n%s\n",
+			1_700_000_000+i, len(fmt.Sprintf("c%d", i)), i, len(content), content)
+	}
+	if _, _, _, err := runGitWithStdin(context.Background(), repo, nil, []byte(stream.String()), false, "fast-import", "--quiet"); err != nil {
+		t.Fatalf("fast-import: %v", err)
+	}
+}
+
+// Past maxListedCommits the selector lists the newest 300: a range may end
+// anywhere in them and start at the oldest listed commit (it is not the
+// whole PR, so it is read), and a commit past the list is refused.
+func TestCommitRangeOfATruncatedList(t *testing.T) {
+	t.Parallel()
+	repo := testutil.InitGitRepo(t)
+	base := headSHA(t, repo)
+	fastImportCommits(t, repo, maxListedCommits+2)
+	head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "feature"))
+	listed, err := ListCommitsRange(context.Background(), repo, base, head)
+	if err != nil || len(listed) != maxListedCommits {
+		t.Fatalf("listed %d commits (err %v), want %d", len(listed), err, maxListedCommits)
+	}
+	oldestListed := listed[len(listed)-1].SHA
+	diff, err := OpenCommitRangeDiff(context.Background(), repo, base, head, oldestListed, head, Options{})
+	patch, err := openAndRead(t, diff, err)
+	if err != nil || !strings.Contains(patch, "+302") || !strings.Contains(patch, "-2") {
+		t.Fatalf("the oldest listed commit through the head: err %v, patch:\n%s", err, patch)
+	}
+	pastTheList := strings.TrimSpace(gitOutput(t, repo, "rev-parse", oldestListed+"~1"))
+	if _, err := rangePatch(t, prHistory{repo: repo, base: base, c4: head}, pastTheList, head); err == nil || !strings.Contains(err.Error(), "is not one of the pull request's commits") {
+		t.Fatalf("a commit past the list: %v", err)
+	}
 }
 
 func writeBytes(t *testing.T, repo, name string, data []byte) {
@@ -193,168 +265,5 @@ func writeBytes(t *testing.T, repo, name string, data []byte) {
 	}
 	if err := os.WriteFile(filepath.Join(repo, name), data, 0o644); err != nil {
 		t.Fatalf("write %s: %v", name, err)
-	}
-}
-
-func readSide(t *testing.T, sides *Sides, blob Blob) []byte {
-	t.Helper()
-	data, err := sides.ReadBlob(context.Background(), blob, 1<<20)
-	if err != nil {
-		t.Fatalf("ReadBlob: %v", err)
-	}
-	return data
-}
-
-// Each side of an added, deleted, changed and renamed image is the blob at
-// that side, with its size; a rename is its old path deleted and its new
-// path added.
-func TestChangedPathsReadsBothSidesOfEachImage(t *testing.T) {
-	t.Parallel()
-	repo := testutil.InitGitRepo(t)
-	writeBytes(t, repo, "deleted.png", pngBytes(1))
-	writeBytes(t, repo, "changed.png", pngBytes(2))
-	writeBytes(t, repo, "old/name.png", pngBytes(3))
-	writeBytes(t, repo, "same.png", pngBytes(4))
-	testutil.RunGit(t, repo, "add", "-A")
-	testutil.RunGit(t, repo, "commit", "-qm", "images")
-	testutil.RunGit(t, repo, "rm", "-q", "deleted.png")
-	writeBytes(t, repo, "added.png", pngBytes(5))
-	writeBytes(t, repo, "changed.png", pngBytes(6))
-	testutil.RunGit(t, repo, "mv", "old/name.png", "new name.png")
-	testutil.RunGit(t, repo, "add", "-A")
-	testutil.RunGit(t, repo, "commit", "-qm", "change images")
-
-	sides, err := CommitSides(context.Background(), repo, headSHA(t, repo))
-	if err != nil {
-		t.Fatalf("CommitSides: %v", err)
-	}
-	changed, err := sides.ChangedPaths(context.Background(), []string{"added.png", "deleted.png", "changed.png", "old/name.png", "new name.png", "same.png", "missing.png"})
-	if err != nil {
-		t.Fatalf("ChangedPaths: %v", err)
-	}
-	expect := func(path string, old, current []byte) {
-		t.Helper()
-		entry, ok := changed[path]
-		if !ok {
-			t.Fatalf("%s is not reported", path)
-		}
-		for _, side := range []struct {
-			name string
-			blob Blob
-			want []byte
-		}{{"old", entry.Old, old}, {"new", entry.New, current}} {
-			if side.blob.Exists != (side.want != nil) {
-				t.Fatalf("%s %s side exists = %v", path, side.name, side.blob.Exists)
-			}
-			if side.want == nil {
-				continue
-			}
-			if side.blob.Size != int64(len(side.want)) || !side.blob.IsFile() {
-				t.Fatalf("%s %s side = %+v, want a %d byte file", path, side.name, side.blob, len(side.want))
-			}
-			if got := readSide(t, sides, side.blob); !bytes.Equal(got, side.want) {
-				t.Fatalf("%s %s side read %q", path, side.name, got)
-			}
-		}
-	}
-	expect("added.png", nil, pngBytes(5))
-	expect("deleted.png", pngBytes(1), nil)
-	expect("changed.png", pngBytes(2), pngBytes(6))
-	expect("old/name.png", pngBytes(3), nil)
-	expect("new name.png", nil, pngBytes(3))
-	for _, unchanged := range []string{"same.png", "missing.png"} {
-		if _, ok := changed[unchanged]; ok {
-			t.Errorf("%s is reported, but the diff does not change it", unchanged)
-		}
-	}
-}
-
-// A worktree side reads the snapshot, untracked files included, and never
-// an ignored file the diff leaves out.
-func TestWorktreeSidesReadTheSnapshot(t *testing.T) {
-	t.Parallel()
-	repo := testutil.InitGitRepo(t)
-	writeFile(t, repo, ".gitignore", "secret.png\n")
-	testutil.RunGit(t, repo, "add", ".gitignore")
-	testutil.RunGit(t, repo, "commit", "-qm", "ignore")
-	writeBytes(t, repo, "untracked.png", pngBytes(7))
-	writeBytes(t, repo, "secret.png", pngBytes(8))
-
-	sides, err := WorktreeSides(context.Background(), repo, t.TempDir())
-	if err != nil {
-		t.Fatalf("WorktreeSides: %v", err)
-	}
-	defer func() {
-		if err := sides.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	}()
-	changed, err := sides.ChangedPaths(context.Background(), []string{"untracked.png", "secret.png"})
-	if err != nil {
-		t.Fatalf("ChangedPaths: %v", err)
-	}
-	if _, ok := changed["secret.png"]; ok {
-		t.Fatal("an ignored file is reported")
-	}
-	entry := changed["untracked.png"]
-	if entry.Old.Exists || !entry.New.Exists {
-		t.Fatalf("untracked.png = %+v, want an added file", entry)
-	}
-	if got := readSide(t, sides, entry.New); !bytes.Equal(got, pngBytes(7)) {
-		t.Fatalf("read %q", got)
-	}
-}
-
-func TestReadBlobRefusesOverTheCapBeforeReading(t *testing.T) {
-	t.Parallel()
-	repo := testutil.InitGitRepo(t)
-	writeBytes(t, repo, "big.png", pngBytes(9))
-	testutil.RunGit(t, repo, "add", "big.png")
-	testutil.RunGit(t, repo, "commit", "-qm", "big")
-	sides, err := CommitSides(context.Background(), repo, headSHA(t, repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-	changed, err := sides.ChangedPaths(context.Background(), []string{"big.png"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	blob := changed["big.png"].New
-	if _, err := sides.ReadBlob(context.Background(), blob, blob.Size-1); err == nil || !strings.Contains(err.Error(), "over") {
-		t.Fatalf("ReadBlob under the size = %v, want the cap refusal", err)
-	}
-	// A size the caller misstates is caught by the read, not trusted.
-	lied := blob
-	lied.Size = 3
-	if _, err := sides.ReadBlob(context.Background(), lied, 1<<20); err == nil {
-		t.Fatal("ReadBlob served a blob whose size disagrees with its bytes")
-	}
-}
-
-func TestChangedPathsBoundsItsArguments(t *testing.T) {
-	t.Parallel()
-	repo := testutil.InitGitRepo(t)
-	sides, err := CommitSides(context.Background(), repo, headSHA(t, repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-	many := make([]string, MaxChangedPaths+1)
-	for i := range many {
-		many[i] = fmt.Sprintf("f%d", i)
-	}
-	for name, paths := range map[string][]string{
-		"too many": many,
-		"too long": {strings.Repeat("x", MaxChangedPathBytes+1)},
-		"empty":    {""},
-		"nul":      {"a\x00b"},
-	} {
-		if _, err := sides.ChangedPaths(context.Background(), paths); err == nil {
-			t.Errorf("%s: ChangedPaths accepted it", name)
-		}
-	}
-	// A pattern is a literal path, never a glob over the tree.
-	changed, err := sides.ChangedPaths(context.Background(), []string{"*.txt"})
-	if err != nil || len(changed) != 0 {
-		t.Fatalf("a glob matched %v (err %v)", changed, err)
 	}
 }

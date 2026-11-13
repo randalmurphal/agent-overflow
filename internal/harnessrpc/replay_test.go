@@ -222,7 +222,7 @@ func TestHarnessRecordStopDetectsRotation(t *testing.T) {
 // primitive — scenario rules, the in-flight recording, and generated
 // seed workspaces must not survive it.
 func TestHarnessResetClearsHarnessState(t *testing.T) {
-	h, _ := newHarnessTestHost(t)
+	h, host := newHarnessTestHost(t)
 
 	if _, err := h.HarnessSetScenario(HarnessScenarioSpec{Name: "streaming-text"}); err != nil {
 		t.Fatalf("HarnessSetScenario: %v", err)
@@ -248,6 +248,10 @@ func TestHarnessResetClearsHarnessState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(h.config.DataRoot, "workspaces")); !os.IsNotExist(err) {
 		t.Fatalf("generated workspaces survived reset (stat err %v)", err)
+	}
+	// Review diff images a spec read are not servable to the next spec.
+	if host.droppedImages != 1 {
+		t.Fatalf("reset dropped review diff images %d times, want 1", host.droppedImages)
 	}
 	// The aborted recording released its slot: a new one can start.
 	if _, err := h.HarnessRecordStart("fresh", "thread-r"); err != nil {

@@ -41,6 +41,7 @@ import (
 	"agent-overflow/internal/providerlifecycleapp"
 	"agent-overflow/internal/readaloud"
 	"agent-overflow/internal/remotejobs"
+	"agent-overflow/internal/reviewimage"
 	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellrun"
@@ -336,11 +337,16 @@ type App struct {
 	// the reason forgeAttachCache is.
 	localImageOnce    sync.Once
 	localImageService *localimage.Service
-	// reviewDiffImageCache holds the image bytes of review diff files for
+	// reviewDiffImageStore holds the image bytes of review diff files for
 	// the same byte route (app_review_diff_files.go). Lazy for the reason
 	// forgeAttachCache is.
 	reviewDiffImageOnce  sync.Once
-	reviewDiffImageCache *reviewDiffImageCache
+	reviewDiffImageStore *reviewimage.Store
+	// reviewDiffFiles remembers what each git-backed review diff open
+	// pinned, for its file reads (app_review_diff_records.go).
+	reviewDiffFiles reviewDiffRecords
+	// reviewDiffPinTimeout overrides reviewDiffPinTimeout in tests.
+	reviewDiffPinTimeout time.Duration
 	// ciLogStore is the CI job log cache (app_ci_logs.go), opened on
 	// first use for the reason forgeAttachCache is lazy.
 	ciLogOnce  sync.Once

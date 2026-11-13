@@ -1,59 +1,31 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
-	"strings"
+	"log"
 	"time"
 
 	"agent-overflow/internal/attachment"
-	"agent-overflow/internal/contentcache"
-	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitdiff"
-	"agent-overflow/internal/transport"
+	"agent-overflow/internal/highlight"
+	"agent-overflow/internal/reviewimage"
+	"agent-overflow/internal/store"
 )
 
-// The files of a git-backed review diff, read at the two revisions the diff
-// compares: their sizes for every binary file the patch names, and the image
-// bytes of a file the pane renders. The caller restates which diff it shows
-// (ReviewDiffSource) and names a file by what its patch printed; every read
-// recomputes the diff's sides and serves only blobs that diff changes, at
-// the object IDs the patch's index line named.
+// The files of a git-backed review diff, read at the two sides the diff was
+// opened at. Every Open*Diff keeps what it pinned on the server
+// (app_review_diff_records.go) and answers a FilesHandle; a file read names
+// the handle and a path, so it reads exactly what the diff compared,
+// however HEAD or the working tree moved since.
 
-// ReviewDiffSource names the diff a file read belongs to, in the terms the
-// Open*Diff call that read it took.
-type ReviewDiffSource struct {
-	// Scope is "workspace" (OpenWorkspaceDiff), "branch"
-	// (OpenBranchBaseDiff), "commit" (OpenCommitDiff) or "pr" (OpenPRDiff,
-	// OpenPRCommitDiff).
-	Scope string `json:"scope"`
-	// BaseBranch is the branch scope's base.
-	BaseBranch string `json:"baseBranch,omitempty"`
-	// CommitSHA is the commit scope's commit.
-	CommitSHA string `json:"commitSha,omitempty"`
-	// Revision is the pr scope's pinned revision.
-	Revision *gitops.PRRevision `json:"revision,omitempty"`
-	// FirstSHA and LastSHA are the pr scope's commit run (OpenPRCommitDiff);
-	// both empty is the whole PR (OpenPRDiff).
-	FirstSHA string `json:"firstSha,omitempty"`
-	LastSHA  string `json:"lastSha,omitempty"`
-}
-
-// ReviewDiffFileRef names one file of a review diff by its patch: its
-// paths, and the two abbreviated blob IDs of its `index <old>..<new>` line,
-// all zeros for a side that does not exist. A file whose patch has no index
-// line (a pure rename, a mode change) leaves both IDs empty; its two sides
-// then must hold the same blob.
-type ReviewDiffFileRef struct {
+// ReviewDiffFile names one file of an opened diff.
+type ReviewDiffFile struct {
 	// Path is the file's path on the new side, or a deleted file's path.
 	Path string `json:"path"`
 	// OldPath is a renamed file's old path; empty when it is Path.
 	OldPath string `json:"oldPath,omitempty"`
-	OldOID  string `json:"oldOid"`
-	NewOID  string `json:"newOid"`
 }
 
 // ReviewDiffFileSide is one side of a review diff file.
@@ -62,7 +34,7 @@ type ReviewDiffFileSide struct {
 	Size   int64 `json:"size"`
 }
 
-// ReviewDiffFileSizes answers one ReviewDiffFileRef. Error is set, and the
+// ReviewDiffFileSizes answers one ReviewDiffFile. Error is set, and the
 // sides zero, when this file could not be read; the other files of the
 // same request are still answered.
 type ReviewDiffFileSizes struct {
@@ -79,17 +51,20 @@ type ReviewDiffImageSide struct {
 	Size   int64 `json:"size"`
 	// URL is the relative, single-use, ticketed URL of the bytes
 	// (internal/transport/localimageroutes.go); empty when the side does
-	// not exist, is over the cap, or is not an image.
+	// not exist, is over the cap, is not an image or is unavailable.
 	URL      string `json:"url,omitempty"`
 	MimeType string `json:"mimeType,omitempty"`
-	// OverCap is set when the side is larger than MaxBytes: no bytes are
+	// OverCap is set when the side is larger than MaxBytes: none of it is
 	// read.
 	OverCap bool `json:"overCap,omitempty"`
 	// NotImage is set when the bytes are not an image a browser displays.
 	NotImage bool `json:"notImage,omitempty"`
+	// Unavailable is a sentence saying why this side's image cannot be
+	// shown at all; nothing else but Exists and Size is then set.
+	Unavailable string `json:"unavailable,omitempty"`
 }
 
-// ReviewDiffImage answers GetReviewDiffImage: both sides of one file.
+// ReviewDiffImage answers GetReviewDiffImage and GetEditDiffImage.
 type ReviewDiffImage struct {
 	Old ReviewDiffImageSide `json:"old"`
 	New ReviewDiffImageSide `json:"new"`
@@ -97,91 +72,135 @@ type ReviewDiffImage struct {
 	MaxBytes int64 `json:"maxBytes"`
 }
 
+// EditDiffImageRequest names one file of an edits diff: one edit
+// (EditPayloadID), or else the last edit of Path in turn EditTurnIndex.
+type EditDiffImageRequest struct {
+	Path          string `json:"path"`
+	EditPayloadID string `json:"editPayloadId,omitempty"`
+	EditTurnIndex int    `json:"editTurnIndex"`
+}
+
+// The unavailable sentences.
+const (
+	unavailableEditOld        = "An edit does not record the file before it."
+	unavailableEditUnrecorded = "This edit's file content was not recorded."
+	unavailableTurnNoEdit     = "This turn does not edit this file."
+	unavailableLFS            = "Stored with Git LFS; the image is not in the repository."
+	unavailableFilter         = "This file passes through a git filter, so its image is not shown."
+)
+
 // reviewDiffImageMaxBytes caps one side's bytes: the cap a markdown image
 // read for display has.
 const reviewDiffImageMaxBytes = attachment.DisplayImageMaxBytes
 
-// maxReviewDiffFileRefs bounds one GetReviewDiffFileSizes call; each file
-// names at most two paths, which ride one git argument list.
-const maxReviewDiffFileRefs = gitdiff.MaxChangedPaths / 2
+// The review diff image store's bounds: every byte it owns (held, loading
+// or being sent) fits in four images at the cap; an entry is servable for
+// ten minutes; a load waits at most thirty seconds for room.
+const (
+	reviewDiffImageBudget  = 4 * reviewDiffImageMaxBytes
+	reviewDiffImageTTL     = 10 * time.Minute
+	reviewDiffImageMaxWait = 30 * time.Second
+)
 
-var abbreviatedOIDPattern = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+// reviewDiffPinTimeout bounds pinning an open's sides; past it the open
+// answers SidesError.
+const reviewDiffPinTimeout = 5 * time.Second
+
+// maxReviewDiffFiles bounds one GetReviewDiffFileSizes call: each file
+// names at most two paths.
+const maxReviewDiffFiles = gitdiff.MaxEntryPaths / 2
+
+var (
+	// errNotImage marks bytes that are not an image a browser displays.
+	errNotImage = errors.New("not an image a browser displays")
+	// errLFSPointer marks bytes that are a Git LFS pointer.
+	errLFSPointer = errors.New("a Git LFS pointer")
+	// errEditUnrecorded marks an edit that recorded no content.
+	errEditUnrecorded = errors.New("no recorded content")
+)
 
 // GetReviewDiffFileSizes answers the byte size and existence of each side of
-// the named files of a git-backed review diff, at most 100 per call. A
-// failure to resolve the diff fails the call; a file the diff does not
-// change, or whose blobs are not the ones its patch named, is answered with
-// its Error.
+// the named files of an opened git-backed review diff, at most 100 per
+// call, from what the open pinned under handle. A handle that is gone
+// fails the call; each file that cannot be answered gets its own Error. A
+// working-tree side answers the size the open's snapshot recorded.
 //
 //ao:scope files:read
-func (a *App) GetReviewDiffFileSizes(ctx context.Context, ws WorkspaceRef, source ReviewDiffSource, files []ReviewDiffFileRef) ([]ReviewDiffFileSizes, error) {
+func (a *App) GetReviewDiffFileSizes(ctx context.Context, ws WorkspaceRef, handle string, files []ReviewDiffFile) ([]ReviewDiffFileSizes, error) {
 	const action = "read review diff file sizes"
-	if len(files) > maxReviewDiffFileRefs {
-		return nil, fmt.Errorf("%s: %d files exceeds %d", action, len(files), maxReviewDiffFileRefs)
+	if len(files) > maxReviewDiffFiles {
+		return nil, fmt.Errorf("%s: %d files exceeds %d", action, len(files), maxReviewDiffFiles)
 	}
-	sides, err := a.reviewDiffSides(ctx, action, ws, source)
+	record, sides, err := a.reviewDiffRecord(action, ws, handle)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { logReviewDiffCloseError(sides.Close()) }()
-	paths := make([]string, 0, 2*len(files))
-	for _, file := range files {
-		paths = append(paths, file.Path)
-		if file.OldPath != "" && file.OldPath != file.Path {
-			paths = append(paths, file.OldPath)
-		}
-	}
-	changed, err := sides.ChangedPaths(ctx, paths)
+	answers := make([]ReviewDiffFileSizes, len(files))
+	resolved, err := resolveReviewDiffFiles(ctx, record, sides, files)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
-	answers := make([]ReviewDiffFileSizes, 0, len(files))
-	for _, file := range files {
-		answer := ReviewDiffFileSizes{Path: file.Path, OldPath: file.OldPath}
-		old, current, err := reviewDiffFileBlobs(changed, file)
-		if err != nil {
-			answer.Error = err.Error()
-		} else {
-			answer.Old = ReviewDiffFileSide{Exists: old.Exists, Size: old.Size}
-			answer.New = ReviewDiffFileSide{Exists: current.Exists, Size: current.Size}
+	for i, file := range files {
+		answers[i] = ReviewDiffFileSizes{Path: file.Path, OldPath: file.OldPath}
+		if resolved[i].err != nil {
+			answers[i].Error = resolved[i].err.Error()
+			continue
 		}
-		answers = append(answers, answer)
+		answers[i].Old = ReviewDiffFileSide{Exists: resolved[i].old.Exists, Size: resolved[i].old.Size}
+		answers[i].New = ReviewDiffFileSide{Exists: resolved[i].new.Exists, Size: resolved[i].new.Size}
 	}
 	return answers, nil
 }
 
-// GetReviewDiffImage reads both sides of one file of a git-backed review
-// diff for display and mints a single-use URL for each side that is an
-// image within the cap. A file the diff does not change, or whose blobs are
-// not the ones its patch named, is refused. Pixel sizes are the client's to
+// GetReviewDiffImage reads both sides of one file of an opened git-backed
+// review diff for display, from what the open pinned under handle, and
+// mints a single-use URL for each side that is an image within the cap. A
+// side's size is known before anything is read: over the cap nothing is.
+// A working-tree file that is no longer the blob the open recorded is
+// "changed since the diff was read". Pixel sizes are the client's to
 // measure.
 //
 //ao:scope files:read
-func (a *App) GetReviewDiffImage(ctx context.Context, ws WorkspaceRef, source ReviewDiffSource, file ReviewDiffFileRef) (ReviewDiffImage, error) {
+func (a *App) GetReviewDiffImage(ctx context.Context, ws WorkspaceRef, handle string, file ReviewDiffFile) (ReviewDiffImage, error) {
 	const action = "read review diff image"
-	sides, err := a.reviewDiffSides(ctx, action, ws, source)
+	record, sides, err := a.reviewDiffRecord(action, ws, handle)
 	if err != nil {
 		return ReviewDiffImage{}, err
 	}
-	defer func() { logReviewDiffCloseError(sides.Close()) }()
-	paths := []string{file.Path}
-	if file.OldPath != "" && file.OldPath != file.Path {
-		paths = append(paths, file.OldPath)
-	}
-	changed, err := sides.ChangedPaths(ctx, paths)
+	resolved, err := resolveReviewDiffFiles(ctx, record, sides, []ReviewDiffFile{file})
 	if err != nil {
 		return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
 	}
-	old, current, err := reviewDiffFileBlobs(changed, file)
-	if err != nil {
-		return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
+	if resolved[0].err != nil {
+		return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, resolved[0].err)
 	}
+	old, current := resolved[0].old, resolved[0].new
 	answer := ReviewDiffImage{MaxBytes: reviewDiffImageMaxBytes}
-	for _, side := range []struct {
-		blob gitdiff.Blob
-		into *ReviewDiffImageSide
-	}{{old, &answer.Old}, {current, &answer.New}} {
-		*side.into, err = a.reviewDiffImageSide(ctx, sides, side.blob)
+	if old.Exists {
+		answer.Old, err = a.reviewDiffBlobSide(ctx, old, func(buf []byte) error {
+			return sides.ReadBlob(ctx, old.OID, buf)
+		})
+		if err != nil {
+			return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
+		}
+	}
+	if current.Exists {
+		if record.blobs != nil {
+			filtered, err := sides.HasFilter(ctx, file.Path)
+			if err != nil {
+				return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
+			}
+			if filtered {
+				answer.New = ReviewDiffImageSide{Exists: true, Size: current.Size, Unavailable: unavailableFilter}
+				return answer, nil
+			}
+		}
+		answer.New, err = a.reviewDiffBlobSide(ctx, current, func(buf []byte) error {
+			if record.blobs != nil {
+				return sides.ReadWorktreeFile(file.Path, current.OID, buf)
+			}
+			return sides.ReadBlob(ctx, current.OID, buf)
+		})
 		if err != nil {
 			return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
 		}
@@ -189,185 +208,242 @@ func (a *App) GetReviewDiffImage(ctx context.Context, ws WorkspaceRef, source Re
 	return answer, nil
 }
 
-// GetEditDiffImage reads the new side of one file of an edits diff for
-// display: the snapshot persisted with the edit, or the thread's workspace
-// file, served only when it matches the file's patch as context expansion
-// requires (GetEditDiffContextLines). An edit records no old side, and an
-// edit diff is text, so this serves an SVG's rendering; the answer's old
-// side never exists.
+// GetEditDiffImage reads one file of an edits diff for display from the
+// content an edit recorded: the named edit's snapshot, or the snapshot of
+// the turn's last edit of the path. An edit records no content before it,
+// so the old side is always unavailable, and so is the new side of an edit
+// that recorded none; nothing is read from disk, which may hold later
+// content.
 //
 //ao:scope files:read
-func (a *App) GetEditDiffImage(threadID string, req DiffContextRequest) (ReviewDiffImage, error) {
+func (a *App) GetEditDiffImage(ctx context.Context, threadID string, req EditDiffImageRequest) (ReviewDiffImage, error) {
 	const action = "read edit diff image"
 	if a.shuttingDown.Load() {
 		return ReviewDiffImage{}, ErrShuttingDown
 	}
-	if req.Scope != "edits" {
-		return ReviewDiffImage{}, fmt.Errorf("%s: scope %q is not an edits scope", action, req.Scope)
-	}
-	workspace, err := a.threadDiffWorkspace(action, threadID)
-	if err != nil {
+	if err := a.store.CheckForkReady(threadID); err != nil {
 		return ReviewDiffImage{}, err
 	}
-	// Read past the cap so an over-cap file answers its size; past this
-	// the read itself refuses.
-	content, _, err := a.diffContextContent(action, workspace, threadID, req, 4*reviewDiffImageMaxBytes)
-	if err != nil {
-		return ReviewDiffImage{}, err
+	if _, err := a.store.GetThread(threadID); err != nil {
+		return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
 	}
-	// No dedupe key: the same path holds other content at another edit.
-	side, err := a.reviewDiffImageBytes([]byte(content), "")
+	if _, err := gitdiff.CleanPath(req.Path); err != nil {
+		return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
+	}
+	answer := ReviewDiffImage{
+		Old:      ReviewDiffImageSide{Unavailable: unavailableEditOld},
+		MaxBytes: reviewDiffImageMaxBytes,
+	}
+	payloadID := req.EditPayloadID
+	if payloadID == "" {
+		last, found, err := a.lastTurnEditOfPath(ctx, threadID, req.EditTurnIndex, req.Path)
+		if err != nil {
+			return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
+		}
+		if !found {
+			answer.New = ReviewDiffImageSide{Unavailable: unavailableTurnNoEdit}
+			return answer, nil
+		}
+		payloadID = last
+	}
+	// The snapshot store's capture limit is reserved before anything is
+	// read, the content decompressed straight into a buffer of its
+	// recorded size, and the reservation shrunk to it.
+	var size int64
+	held, err := a.reviewDiffImages().LoadWithin(ctx, "edit\x00"+threadID+"\x00"+payloadID+"\x00"+req.Path, store.MaxEditFileSnapshotBytes,
+		func(take func(int64) ([]byte, error)) (string, error) {
+			var buf []byte
+			n, found, err := a.store.ReadEditFileSnapshot(threadID, payloadID, req.Path, func(n int64) ([]byte, error) {
+				var takeErr error
+				buf, takeErr = take(n)
+				return buf, takeErr
+			})
+			size = n
+			switch {
+			case err != nil:
+				return "", err
+			case !found:
+				return "", errEditUnrecorded
+			}
+			return displayImageMIME(buf)
+		})
+	answer.New, err = a.mintReviewDiffSide(held, size, err)
+	if errors.Is(err, errEditUnrecorded) {
+		answer.New, err = ReviewDiffImageSide{Unavailable: unavailableEditUnrecorded}, nil
+	}
 	if err != nil {
 		return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
 	}
-	return ReviewDiffImage{New: side, MaxBytes: reviewDiffImageMaxBytes}, nil
+	return answer, nil
 }
 
-// reviewDiffSides resolves the two sides of the diff source names, the way
-// its Open*Diff call does. A pr source reads objects already present: the
-// Open call fetched them.
-func (a *App) reviewDiffSides(ctx context.Context, action string, ws WorkspaceRef, source ReviewDiffSource) (*gitdiff.Sides, error) {
+// reviewDiffRecord looks up what the open behind handle pinned, in the
+// workspace ws resolves to.
+func (a *App) reviewDiffRecord(action string, ws WorkspaceRef, handle string) (*reviewDiffRecord, *gitdiff.Sides, error) {
 	if a.shuttingDown.Load() {
-		return nil, ErrShuttingDown
+		return nil, nil, ErrShuttingDown
 	}
 	workspace, err := a.reviewWorkspace(action, ws)
 	if err != nil {
+		return nil, nil, err
+	}
+	record, err := a.reviewDiffFiles.get(handle, workspace)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", action, err)
+	}
+	return record, gitdiff.OpenedSides(workspace, record.pin), nil
+}
+
+// resolvedReviewDiffFile is one file's two sides, or why it cannot be read.
+type resolvedReviewDiffFile struct {
+	old, new gitdiff.Entry
+	err      error
+}
+
+// resolveReviewDiffFiles answers each file's old side (at OldPath, or Path)
+// and new side (at Path) from the record: committed sides from their
+// trees, a working-tree side from the blobs the open recorded. Each side
+// that exists is a regular file the diff changes: the other side holds
+// another blob or mode at that path, or nothing. A file that fails gets
+// its own error; only a failed tree read fails the call.
+func resolveReviewDiffFiles(ctx context.Context, record *reviewDiffRecord, sides *gitdiff.Sides, files []ReviewDiffFile) ([]resolvedReviewDiffFile, error) {
+	resolved := make([]resolvedReviewDiffFile, len(files))
+	var paths []string
+	for i, file := range files {
+		if _, err := gitdiff.CleanPath(file.Path); err != nil {
+			resolved[i].err = err
+			continue
+		}
+		if file.OldPath != "" {
+			if _, err := gitdiff.CleanPath(file.OldPath); err != nil {
+				resolved[i].err = err
+				continue
+			}
+		}
+		paths = append(paths, file.Path)
+		if file.OldPath != "" && file.OldPath != file.Path {
+			paths = append(paths, file.OldPath)
+		}
+	}
+	oldEntries, err := sides.OldEntries(ctx, paths)
+	if err != nil {
 		return nil, err
 	}
-	if !gitdiff.IsGitRepository(ctx, workspace) {
-		return nil, fmt.Errorf("%s: workspace is not a git repository", action)
+	newEntries := map[string]gitdiff.Entry{}
+	if record.blobs == nil {
+		if newEntries, err = sides.NewEntries(ctx, paths); err != nil {
+			return nil, err
+		}
 	}
-	var sides *gitdiff.Sides
-	switch source.Scope {
-	case "workspace":
-		root, rootErr := a.reviewDiffSnapshotRoot()
-		if rootErr != nil {
-			return nil, fmt.Errorf("%s: %w", action, rootErr)
+	newAt := func(path string) (gitdiff.Entry, error) {
+		if record.blobs == nil {
+			return newEntries[path], nil
 		}
-		sides, err = gitdiff.WorktreeSides(ctx, workspace, root)
-	case "branch":
-		if strings.TrimSpace(source.BaseBranch) == "" {
-			return nil, fmt.Errorf("%s: base branch is required", action)
-		}
-		root, rootErr := a.reviewDiffSnapshotRoot()
-		if rootErr != nil {
-			return nil, fmt.Errorf("%s: %w", action, rootErr)
-		}
-		sides, err = gitdiff.BranchBaseSides(ctx, workspace, root, source.BaseBranch)
-	case "commit":
-		sides, err = gitdiff.CommitSides(ctx, workspace, source.CommitSHA)
-	case "pr":
-		if source.Revision == nil {
-			return nil, fmt.Errorf("%s: the PR revision is required", action)
-		}
-		rev := *source.Revision
-		if err := rev.Validate(); err != nil {
-			return nil, fmt.Errorf("%s: %w", action, err)
-		}
+		blob, ok := record.blobs[path]
 		switch {
-		case source.FirstSHA == "" && source.LastSHA == "":
-			sides, err = gitdiff.MergeBaseSides(ctx, workspace, rev.BaseSHA, rev.HeadSHA)
-		case source.FirstSHA == "" || source.LastSHA == "":
-			return nil, fmt.Errorf("%s: a commit range needs both ends", action)
-		default:
-			sides, err = gitdiff.CommitRangeSides(ctx, workspace, rev.BaseSHA, rev.HeadSHA, source.FirstSHA, source.LastSHA)
+		case !ok && record.truncated:
+			return gitdiff.Entry{}, fmt.Errorf("this diff changes more than %d files, and %s is not among those its files were kept for", maxPinnedWorktreeBlobs, path)
+		case !ok:
+			// The working tree holds this path as the old side does.
+			return oldEntries[path], nil
+		case blob.Mode == "000000":
+			return gitdiff.Entry{}, nil
 		}
-	default:
-		return nil, fmt.Errorf("%s: %q is not a git review scope", action, source.Scope)
+		return gitdiff.Entry{Exists: true, Mode: blob.Mode, OID: blob.Blob, Size: blob.Size}, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
+	changed := func(a, b gitdiff.Entry) bool {
+		return a.Exists != b.Exists || a.Mode != b.Mode || a.OID != b.OID
 	}
-	return sides, nil
+	for i, file := range files {
+		if resolved[i].err != nil {
+			continue
+		}
+		oldPath := file.OldPath
+		if oldPath == "" {
+			oldPath = file.Path
+		}
+		current, err := newAt(file.Path)
+		if err != nil {
+			resolved[i].err = err
+			continue
+		}
+		newAtOld, err := newAt(oldPath)
+		if err != nil {
+			resolved[i].err = err
+			continue
+		}
+		old := oldEntries[oldPath]
+		if !old.Exists && !current.Exists {
+			resolved[i].err = fmt.Errorf("%s is not a file this diff changes", file.Path)
+			continue
+		}
+		for _, side := range []struct {
+			entry, other gitdiff.Entry
+			path         string
+		}{{old, newAtOld, oldPath}, {current, oldEntries[file.Path], file.Path}} {
+			if !side.entry.Exists {
+				continue
+			}
+			if !side.entry.IsFile() {
+				resolved[i].err = fmt.Errorf("%s is not a file", side.path)
+				break
+			}
+			if !changed(side.entry, side.other) {
+				resolved[i].err = fmt.Errorf("%s is not a file this diff changes", side.path)
+				break
+			}
+		}
+		resolved[i].old, resolved[i].new = old, current
+	}
+	return resolved, nil
 }
 
-// reviewDiffFileBlobs validates file against the paths the diff changes and
-// answers its two sides: the old side at OldPath (or Path), the new side at
-// Path, each one the diff changes, holding the blobs the patch's index line
-// named.
-func reviewDiffFileBlobs(changed map[string]gitdiff.ChangedPath, file ReviewDiffFileRef) (old, current gitdiff.Blob, err error) {
-	oldPath := file.OldPath
-	if oldPath == "" {
-		oldPath = file.Path
+// reviewDiffBlobSide answers one side of a git-backed file for display:
+// over the cap nothing is read; else its bytes, keyed by the blob the
+// record names, through the image store.
+func (a *App) reviewDiffBlobSide(ctx context.Context, entry gitdiff.Entry, read func([]byte) error) (ReviewDiffImageSide, error) {
+	if entry.Size > reviewDiffImageMaxBytes {
+		return ReviewDiffImageSide{Exists: true, Size: entry.Size, OverCap: true}, nil
 	}
-	oldEntry, oldChanged := changed[oldPath]
-	newEntry, newChanged := changed[file.Path]
-	if !oldChanged || !newChanged {
-		return old, current, fmt.Errorf("%s is not a file this diff changes", file.Path)
+	if entry.Size == 0 {
+		return ReviewDiffImageSide{Exists: true, NotImage: true}, nil
 	}
-	old, current = oldEntry.Old, newEntry.New
-	if !old.Exists && !current.Exists {
-		return old, current, fmt.Errorf("%s is not a file this diff changes", file.Path)
-	}
-	if file.OldOID == "" && file.NewOID == "" {
-		// No index line: a pure rename or a mode change, the same content
-		// on both sides.
-		if !old.Exists || !current.Exists || old.OID != current.OID {
-			return old, current, fmt.Errorf("%s changed since the diff was read", file.Path)
+	held, err := a.reviewDiffImages().Load(ctx, "blob\x00"+entry.OID, entry.Size, func(buf []byte) (string, error) {
+		if err := read(buf); err != nil {
+			return "", err
 		}
-		return old, current, nil
-	}
-	for _, side := range []struct {
-		blob gitdiff.Blob
-		want string
-	}{{old, file.OldOID}, {current, file.NewOID}} {
-		if !abbreviatedOIDPattern.MatchString(side.want) {
-			return old, current, fmt.Errorf("%s: %q is not an abbreviated object ID", file.Path, side.want)
-		}
-		absent := strings.Trim(side.want, "0") == ""
-		if absent == side.blob.Exists || (!absent && !strings.HasPrefix(side.blob.OID, side.want)) {
-			return old, current, fmt.Errorf("%s changed since the diff was read", file.Path)
-		}
-	}
-	return old, current, nil
+		return displayImageMIME(buf)
+	})
+	return a.mintReviewDiffSide(held, entry.Size, err)
 }
 
-// reviewDiffImageSide reads one side for display. A blob's bytes are cached
-// by object ID, which names the same bytes in every repository; a caller
-// reaches the entry only through a diff that holds the blob.
-func (a *App) reviewDiffImageSide(ctx context.Context, sides *gitdiff.Sides, blob gitdiff.Blob) (ReviewDiffImageSide, error) {
-	if !blob.Exists {
-		return ReviewDiffImageSide{}, nil
+// displayImageMIME answers the MIME type of bytes a browser displays as an
+// image, errLFSPointer for a Git LFS pointer, errNotImage otherwise.
+func displayImageMIME(buf []byte) (string, error) {
+	if gitdiff.IsLFSPointer(buf) {
+		return "", errLFSPointer
 	}
-	if !blob.IsFile() {
-		return ReviewDiffImageSide{Exists: true, Size: blob.Size, NotImage: true}, nil
-	}
-	if blob.Size > reviewDiffImageMaxBytes {
-		return ReviewDiffImageSide{Exists: true, Size: blob.Size, OverCap: true}, nil
-	}
-	key := "blob\x00" + blob.OID
-	if held, ok := a.reviewDiffImages().cache.Lookup(key); ok {
-		return a.mintReviewDiffImage(held)
-	}
-	data, err := sides.ReadBlob(ctx, blob, reviewDiffImageMaxBytes)
+	mime, err := attachment.DetectDisplayImageMIME(buf)
 	if err != nil {
+		return "", errNotImage
+	}
+	if _, _, err := attachment.ValidateDisplayImage(buf, mime); err != nil {
+		return "", errNotImage
+	}
+	return mime, nil
+}
+
+// mintReviewDiffSide answers a load's outcome: a URL for held bytes, the
+// size and a reason for bytes that are not shown, or the load's error.
+func (a *App) mintReviewDiffSide(held reviewimage.Entry, size int64, err error) (ReviewDiffImageSide, error) {
+	switch {
+	case errors.Is(err, errNotImage):
+		return ReviewDiffImageSide{Exists: true, Size: size, NotImage: true}, nil
+	case errors.Is(err, errLFSPointer):
+		return ReviewDiffImageSide{Exists: true, Size: size, Unavailable: unavailableLFS}, nil
+	case err != nil:
 		return ReviewDiffImageSide{}, err
 	}
-	return a.reviewDiffImageBytes(data, key)
-}
-
-// reviewDiffImageBytes classifies bytes read for display, caches an image
-// under key (none when empty), and mints its URL.
-func (a *App) reviewDiffImageBytes(data []byte, key string) (ReviewDiffImageSide, error) {
-	size := int64(len(data))
-	if size > reviewDiffImageMaxBytes {
-		return ReviewDiffImageSide{Exists: true, Size: size, OverCap: true}, nil
-	}
-	mime, err := attachment.DetectDisplayImageMIME(data)
-	if err != nil {
-		return ReviewDiffImageSide{Exists: true, Size: size, NotImage: true}, nil
-	}
-	if _, _, err := attachment.ValidateDisplayImage(data, mime); err != nil {
-		return ReviewDiffImageSide{Exists: true, Size: size, NotImage: true}, nil
-	}
-	held, err := a.reviewDiffImages().cache.Put(key, reviewDiffImage{data: data, mime: mime})
-	if err != nil {
-		return ReviewDiffImageSide{}, err
-	}
-	return a.mintReviewDiffImage(held)
-}
-
-func (a *App) mintReviewDiffImage(held contentcache.Entry[reviewDiffImage]) (ReviewDiffImageSide, error) {
 	server := a.transportServer.Load()
 	if server == nil {
 		return ReviewDiffImageSide{}, errors.New("transport is not serving")
@@ -376,54 +452,112 @@ func (a *App) mintReviewDiffImage(held contentcache.Entry[reviewDiffImage]) (Rev
 	if err != nil {
 		return ReviewDiffImageSide{}, err
 	}
-	return ReviewDiffImageSide{
-		Exists:   true,
-		Size:     int64(len(held.Value.data)),
-		URL:      url,
-		MimeType: held.Value.mime,
-	}, nil
+	// held may be an earlier read of the same blob, which the record binds
+	// to this path: its bytes and size are the blob's.
+	return ReviewDiffImageSide{Exists: true, Size: held.Size, URL: url, MimeType: held.MimeType}, nil
 }
 
-// reviewDiffImage is one cached side's bytes and the image type sniffed
-// from them.
-type reviewDiffImage struct {
-	data []byte
-	mime string
+func (a *App) reviewDiffImages() *reviewimage.Store {
+	a.reviewDiffImageOnce.Do(func() {
+		a.reviewDiffImageStore = reviewimage.New(reviewDiffImageBudget, reviewDiffImageTTL, reviewDiffImageMaxWait)
+	})
+	return a.reviewDiffImageStore
 }
 
-// reviewDiffImageCache holds review diff image bytes between the bound
-// method that read them and the local-image byte route that serves them.
-type reviewDiffImageCache struct {
-	cache *contentcache.Cache[reviewDiffImage]
+func (a *App) reviewDiffPinWait() time.Duration {
+	if a.reviewDiffPinTimeout > 0 {
+		return a.reviewDiffPinTimeout
+	}
+	return reviewDiffPinTimeout
 }
 
-// Bounds of the review diff image cache: room for a pane's images at the
-// per-side cap, and long enough for a pane that stays open.
+// reviewDiffPinned is what pinning an open answered.
+type reviewDiffPinned struct {
+	handle  string
+	failure string
+}
+
+// pinReviewDiff records sides' pin, made in record generation gen, and
+// answers its handle, or why the diff's files cannot be read.
+func (a *App) pinReviewDiff(ctx context.Context, gen uint64, sides *gitdiff.Sides) reviewDiffPinned {
+	blobs, truncated, err := sides.WorktreeBlobs(ctx, maxPinnedWorktreeBlobs)
+	if err != nil {
+		log.Printf("review diff: pin worktree blobs: %v", err)
+		if ctx.Err() != nil {
+			return reviewDiffPinned{failure: "The diff's files took too long to list; reload the diff to read them."}
+		}
+		return reviewDiffPinned{failure: "The diff's files cannot be read: " + err.Error()}
+	}
+	handle := a.reviewDiffFiles.put(gen, sides.Workspace(), sides.Pin(), blobs, truncated)
+	if handle == "" {
+		return reviewDiffPinned{failure: errReviewDiffFilesGone.Error()}
+	}
+	return reviewDiffPinned{handle: handle}
+}
+
+// lastTurnEditOfPath answers the turn's last edit that changes path: its
+// payload, scanned from the end of the turn, each patch read in chunks.
+func (a *App) lastTurnEditOfPath(ctx context.Context, threadID string, turnIndex int, path string) (string, bool, error) {
+	payloadIDs, err := a.store.ListTurnEditDiffPayloads(threadID, turnIndex)
+	if err != nil {
+		return "", false, err
+	}
+	for i := len(payloadIDs) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return "", false, err
+		}
+		edits, err := a.payloadEditsPath(threadID, payloadIDs[i], path)
+		if err != nil {
+			return "", false, err
+		}
+		if edits {
+			return payloadIDs[i], true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// Bounds of payloadEditsPath: the read size, and how much of one line is
+// kept (a header line naming a path fits in it).
 const (
-	reviewDiffImageCacheBytes = 4 * reviewDiffImageMaxBytes
-	reviewDiffImageCacheTTL   = 10 * time.Minute
+	editScanChunkBytes = 256 << 10
+	editScanLineBytes  = 16 << 10
 )
 
-func (a *App) reviewDiffImages() *reviewDiffImageCache {
-	a.reviewDiffImageOnce.Do(func() {
-		a.reviewDiffImageCache = &reviewDiffImageCache{cache: contentcache.New(contentcache.Config[reviewDiffImage]{
-			MaxBytes: reviewDiffImageCacheBytes,
-			TTL:      reviewDiffImageCacheTTL,
-			Size:     func(image reviewDiffImage) int64 { return int64(len(image.data)) },
-		})}
-	})
-	return a.reviewDiffImageCache
-}
-
-// open resolves a content id the cache minted, for the byte route.
-func (c *reviewDiffImageCache) open(contentID string) (transport.LocalImageContent, bool) {
-	held, ok := c.cache.Get(contentID)
-	if !ok {
-		return transport.LocalImageContent{}, false
+// payloadEditsPath reports whether the patch in payload changes path,
+// keyed as highlight.SplitPatchFiles keys its files.
+func (a *App) payloadEditsPath(threadID, payloadID, path string) (bool, error) {
+	var paths highlight.PatchPaths
+	var line []byte
+	feed := func() bool {
+		closed, ok := paths.Line(string(line))
+		line = line[:0]
+		return ok && closed == path
 	}
-	return transport.LocalImageContent{
-		MimeType: held.Value.mime,
-		ModTime:  held.StoredAt,
-		Content:  nopCloserReader{bytes.NewReader(held.Value.data)},
-	}, true
+	for offset := 0; ; {
+		data, total, _, err := a.store.GetPayloadChunk(threadID, payloadID, offset, editScanChunkBytes)
+		if err != nil {
+			return false, fmt.Errorf("read edit payload %s: %w", payloadID, err)
+		}
+		for _, b := range data {
+			if b == '\n' {
+				if feed() {
+					return true, nil
+				}
+				continue
+			}
+			if len(line) < editScanLineBytes {
+				line = append(line, b)
+			}
+		}
+		offset += len(data)
+		if len(data) == 0 || offset >= total {
+			break
+		}
+	}
+	if len(line) > 0 && feed() {
+		return true, nil
+	}
+	closed, ok := paths.End()
+	return ok && closed == path, nil
 }

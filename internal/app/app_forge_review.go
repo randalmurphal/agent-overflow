@@ -229,9 +229,8 @@ func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRRefer
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenMergeBaseDiff(ctx, workspace, rev.BaseSHA, rev.HeadSHA,
-			gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
+		return gitdiff.MergeBaseSides(ctx, workspace, rev.BaseSHA, rev.HeadSHA)
 	})
 }
 
@@ -264,9 +263,8 @@ func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.P
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenCommitRangeDiff(ctx, workspace, rev.BaseSHA, rev.HeadSHA, firstSHA, lastSHA,
-			gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
+		return gitdiff.CommitRangeSides(ctx, workspace, rev.BaseSHA, rev.HeadSHA, firstSHA, lastSHA)
 	})
 }
 

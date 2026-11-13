@@ -1647,14 +1647,14 @@ export function GetEditDiffContextLines(threadID: string, req: app$0.DiffContext
 }
 
 /**
- * GetEditDiffImage reads the new side of one file of an edits diff for
- * display: the snapshot persisted with the edit, or the thread's workspace
- * file, served only when it matches the file's patch as context expansion
- * requires (GetEditDiffContextLines). An edit records no old side, and an
- * edit diff is text, so this serves an SVG's rendering; the answer's old
- * side never exists.
+ * GetEditDiffImage reads one file of an edits diff for display from the
+ * content an edit recorded: the named edit's snapshot, or the snapshot of
+ * the turn's last edit of the path. An edit records no content before it,
+ * so the old side is always unavailable, and so is the new side of an edit
+ * that recorded none; nothing is read from disk, which may hold later
+ * content.
  */
-export function GetEditDiffImage(threadID: string, req: app$0.DiffContextRequest): $CancellablePromise<app$0.ReviewDiffImage> {
+export function GetEditDiffImage(threadID: string, req: app$0.EditDiffImageRequest): $CancellablePromise<app$0.ReviewDiffImage> {
     return $Call.ByID(711021853, threadID, req).then(($result: any) => {
         return $$createType56($result);
     });
@@ -1984,26 +1984,28 @@ export function GetRateLimitsSnapshots(): $CancellablePromise<provider$0.RateLim
 
 /**
  * GetReviewDiffFileSizes answers the byte size and existence of each side of
- * the named files of a git-backed review diff, at most 100 per call. A
- * failure to resolve the diff fails the call; a file the diff does not
- * change, or whose blobs are not the ones its patch named, is answered with
- * its Error.
+ * the named files of an opened git-backed review diff, at most 100 per
+ * call, from what the open pinned under handle. A handle that is gone
+ * fails the call; each file that cannot be answered gets its own Error. A
+ * working-tree side answers the size the open's snapshot recorded.
  */
-export function GetReviewDiffFileSizes(ws: app$0.WorkspaceRef, source: app$0.ReviewDiffSource, files: app$0.ReviewDiffFileRef[]): $CancellablePromise<app$0.ReviewDiffFileSizes[]> {
-    return $Call.ByID(2795814304, ws, source, files).then(($result: any) => {
+export function GetReviewDiffFileSizes(ws: app$0.WorkspaceRef, handle: string, files: app$0.ReviewDiffFile[]): $CancellablePromise<app$0.ReviewDiffFileSizes[]> {
+    return $Call.ByID(2795814304, ws, handle, files).then(($result: any) => {
         return $$createType83($result);
     });
 }
 
 /**
- * GetReviewDiffImage reads both sides of one file of a git-backed review
- * diff for display and mints a single-use URL for each side that is an
- * image within the cap. A file the diff does not change, or whose blobs are
- * not the ones its patch named, is refused. Pixel sizes are the client's to
+ * GetReviewDiffImage reads both sides of one file of an opened git-backed
+ * review diff for display, from what the open pinned under handle, and
+ * mints a single-use URL for each side that is an image within the cap. A
+ * side's size is known before anything is read: over the cap nothing is.
+ * A working-tree file that is no longer the blob the open recorded is
+ * "changed since the diff was read". Pixel sizes are the client's to
  * measure.
  */
-export function GetReviewDiffImage(ws: app$0.WorkspaceRef, source: app$0.ReviewDiffSource, file: app$0.ReviewDiffFileRef): $CancellablePromise<app$0.ReviewDiffImage> {
-    return $Call.ByID(3506270873, ws, source, file).then(($result: any) => {
+export function GetReviewDiffImage(ws: app$0.WorkspaceRef, handle: string, file: app$0.ReviewDiffFile): $CancellablePromise<app$0.ReviewDiffImage> {
+    return $Call.ByID(3506270873, ws, handle, file).then(($result: any) => {
         return $$createType56($result);
     });
 }

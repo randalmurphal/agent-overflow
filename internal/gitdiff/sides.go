@@ -1,16 +1,11 @@
 package gitdiff
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"slices"
-	"strconv"
 	"strings"
-
-	"agent-overflow/internal/procutil"
 )
 
 // Sides are the two trees a review diff compares: old and new are commit or
@@ -22,7 +17,16 @@ type Sides struct {
 	env       []string
 	old       string
 	new       string
-	release   func() error
+	// worktree marks a new side that is the working tree: new names a
+	// snapshot tree in a temporary object directory (env), or nothing for
+	// Sides reopened from a Pin.
+	worktree bool
+	// paths limits the diff to these literal paths; nil is every path.
+	paths   []string
+	release func() error
+	// beforeWorktreeOpen, set only by tests, runs in ReadWorktreeFile
+	// after the path is checked and before the file is opened.
+	beforeWorktreeOpen func(path string)
 }
 
 // Close removes a worktree snapshot's temporary objects. Closing Sides that
@@ -40,7 +44,11 @@ func (s *Sides) Close() error {
 // snapshot: it is removed when the diff is closed, and Close on s then does
 // nothing.
 func (s *Sides) OpenDiff(opts Options) *Diff {
-	diff := newDiff(s.workspace, s.env, s.release, opts.gitArgs("diff", s.old, s.new, "--"))
+	args := opts.gitArgs("diff", s.old, s.new, "--")
+	if s.paths != nil {
+		args = append(append([]string{"--literal-pathspecs"}, args...), s.paths...)
+	}
+	diff := newDiff(s.workspace, s.env, s.release, args)
 	s.release = nil
 	return diff
 }
@@ -52,7 +60,21 @@ func WorktreeSides(ctx context.Context, workspace, tempRoot string) (*Sides, err
 	if err != nil {
 		return nil, err
 	}
-	return &Sides{workspace: workspace, env: snapshot.tree.env, old: snapshot.oldSide, new: snapshot.tree.oid, release: snapshot.Close}, nil
+	return &Sides{workspace: workspace, env: snapshot.tree.env, old: snapshot.oldSide, new: snapshot.tree.oid, worktree: true, release: snapshot.Close}, nil
+}
+
+// WorktreeFilesSides is WorktreeSides limited to the given literal paths:
+// the sides of OpenWorktreeFilesDiff. Pass both paths of a rename.
+func WorktreeFilesSides(ctx context.Context, workspace, tempRoot string, paths []string) (*Sides, error) {
+	if err := validatePaths(paths); err != nil {
+		return nil, err
+	}
+	sides, err := WorktreeSides(ctx, workspace, tempRoot)
+	if err != nil {
+		return nil, err
+	}
+	sides.paths = paths
+	return sides, nil
 }
 
 // BranchBaseSides compares the merge base of baseBranch and HEAD with a
@@ -75,7 +97,7 @@ func BranchBaseSides(ctx context.Context, workspace, tempRoot, baseBranch string
 	if err != nil {
 		return nil, errors.Join(err, snapshot.release())
 	}
-	return &Sides{workspace: workspace, env: snapshot.env, old: mergeBase, new: snapshot.oid, release: snapshot.release}, nil
+	return &Sides{workspace: workspace, env: snapshot.env, old: mergeBase, new: snapshot.oid, worktree: true, release: snapshot.release}, nil
 }
 
 // MergeBaseSides compares the merge base of base and head with head, the
@@ -196,141 +218,4 @@ func emptyTree(ctx context.Context, workspace string) (string, error) {
 		return "", fmt.Errorf("gitdiff: empty tree: %w", err)
 	}
 	return strings.TrimSpace(stdout), nil
-}
-
-// Blob is one side of a changed path. Exists is false where the path is
-// absent on that side (an added file's old side, a deleted file's new side).
-type Blob struct {
-	Exists bool
-	OID    string
-	// Mode is git's octal mode: 100644 or 100755 for a file, 120000 for a
-	// symlink, 160000 for a submodule.
-	Mode string
-	Size int64
-}
-
-// IsFile reports whether the side is a regular file's content.
-func (b Blob) IsFile() bool {
-	return b.Exists && (b.Mode == "100644" || b.Mode == "100755")
-}
-
-// ChangedPath is one path the diff between the sides changes, each side on
-// its own: a rename is its old path deleted and its new path added.
-type ChangedPath struct {
-	Old Blob
-	New Blob
-}
-
-// MaxChangedPaths and MaxChangedPathBytes bound one ChangedPaths call: the
-// paths ride git's argument list.
-const (
-	MaxChangedPaths     = 200
-	MaxChangedPathBytes = 64 << 10
-)
-
-// ChangedPaths answers, for each of paths the diff between the sides
-// changes, its blob on each side with the blob's size. A path the diff does
-// not change is absent from the answer. Paths match literally, never as
-// patterns.
-func (s *Sides) ChangedPaths(ctx context.Context, paths []string) (map[string]ChangedPath, error) {
-	if len(paths) > MaxChangedPaths {
-		return nil, fmt.Errorf("gitdiff: %d paths exceeds %d", len(paths), MaxChangedPaths)
-	}
-	total := 0
-	for _, p := range paths {
-		if p == "" || strings.ContainsRune(p, 0) {
-			return nil, fmt.Errorf("gitdiff: invalid path %q", p)
-		}
-		total += len(p)
-	}
-	if total > MaxChangedPathBytes {
-		return nil, fmt.Errorf("gitdiff: paths exceed %d bytes", MaxChangedPathBytes)
-	}
-	changed := map[string]ChangedPath{}
-	if len(paths) == 0 {
-		return changed, nil
-	}
-	args := append([]string{"--literal-pathspecs", "diff", "-z", "--raw", "--no-abbrev", "--no-renames",
-		"--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", s.old, s.new, "--"}, paths...)
-	stdout, _, _, err := runGit(ctx, s.workspace, s.env, false, args...)
-	if err != nil {
-		return nil, fmt.Errorf("gitdiff: list changed paths: %w", err)
-	}
-	tokens := strings.Split(strings.TrimSuffix(stdout, "\x00"), "\x00")
-	var oids []string
-	for i := 0; i+1 < len(tokens); i += 2 {
-		fields := strings.Fields(tokens[i])
-		if len(fields) != 5 || !strings.HasPrefix(fields[0], ":") {
-			return nil, fmt.Errorf("gitdiff: malformed raw record %q", tokens[i])
-		}
-		side := func(mode, oid string) Blob {
-			if strings.Trim(oid, "0") == "" {
-				return Blob{}
-			}
-			oids = append(oids, oid)
-			return Blob{Exists: true, OID: oid, Mode: mode}
-		}
-		changed[tokens[i+1]] = ChangedPath{Old: side(fields[0][1:], fields[2]), New: side(fields[1], fields[3])}
-	}
-	if len(oids) == 0 {
-		return changed, nil
-	}
-	sizes, err := s.blobSizes(ctx, oids)
-	if err != nil {
-		return nil, err
-	}
-	for path, entry := range changed {
-		entry.Old.Size = sizes[entry.Old.OID]
-		entry.New.Size = sizes[entry.New.OID]
-		changed[path] = entry
-	}
-	return changed, nil
-}
-
-// blobSizes reads the size of each object in one `git cat-file
-// --batch-check`.
-func (s *Sides) blobSizes(ctx context.Context, oids []string) (map[string]int64, error) {
-	input := strings.Join(oids, "\n") + "\n"
-	stdout, _, _, err := runGitWithStdin(ctx, s.workspace, s.env, []byte(input), false,
-		"cat-file", "--batch-check=%(objectname) %(objectsize)")
-	if err != nil {
-		return nil, fmt.Errorf("gitdiff: read blob sizes: %w", err)
-	}
-	sizes := make(map[string]int64, len(oids))
-	for _, line := range strings.Split(strings.TrimSuffix(stdout, "\n"), "\n") {
-		oid, size, ok := strings.Cut(line, " ")
-		if !ok {
-			return nil, fmt.Errorf("gitdiff: malformed batch-check line %q", line)
-		}
-		n, err := strconv.ParseInt(size, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("gitdiff: object %s: %q", oid, line)
-		}
-		sizes[oid] = n
-	}
-	return sizes, nil
-}
-
-// ReadBlob returns the content of a blob ChangedPaths reported, refusing
-// one larger than maxBytes before reading it.
-func (s *Sides) ReadBlob(ctx context.Context, blob Blob, maxBytes int64) ([]byte, error) {
-	if !blob.Exists || !commitSHAPattern.MatchString(blob.OID) {
-		return nil, fmt.Errorf("gitdiff: no blob to read")
-	}
-	if blob.Size > maxBytes {
-		return nil, fmt.Errorf("gitdiff: blob %s is %d bytes, over %d", blob.OID, blob.Size, maxBytes)
-	}
-	cmd := exec.CommandContext(ctx, "git", "cat-file", "blob", blob.OID)
-	cmd.Dir = s.workspace
-	cmd.Env = gitEnv(s.env)
-	out := &boundedBuffer{limit: int(maxBytes) + 1}
-	errOut := &boundedBuffer{limit: maxStreamStderrBytes}
-	runErr := procutil.RunDrained(ctx, cmd, out, errOut, gitPipeWaitDelay)
-	if _, err := gitResult(ctx, runErr, false, cmd.Args[1:], errOut.String()); err != nil {
-		return nil, fmt.Errorf("gitdiff: read blob %s: %w", blob.OID, err)
-	}
-	if int64(len(out.buf)) != blob.Size {
-		return nil, fmt.Errorf("gitdiff: blob %s read %d bytes, expected %d", blob.OID, len(out.buf), blob.Size)
-	}
-	return bytes.Clone(out.buf), nil
 }

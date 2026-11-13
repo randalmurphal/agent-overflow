@@ -3,15 +3,19 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/gitdiff"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 )
@@ -51,10 +55,13 @@ func writeRepoBytes(t *testing.T, repo, name string, data []byte) {
 	}
 }
 
-const diagramSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><script>alert(1)</script></svg>` + "\n"
+// diagramSVG spans lines, so an edit to one line leaves others outside any
+// hunk.
+const diagramSVG = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\">\n<script>alert(1)</script>\n<rect width=\"4\" height=\"4\"/>\n</svg>\n"
 
-// imageHistory is a repository whose feature branch, one commit off main,
-// adds, deletes, changes and renames images.
+// imageHistory is a repository, with core.abbrev=4 so nothing may lean on
+// an abbreviation, whose feature branch, one commit off main, adds,
+// deletes, changes and renames images.
 type imageHistory struct {
 	repo       string
 	base, head string
@@ -64,6 +71,7 @@ type imageHistory struct {
 func newImageHistory(t *testing.T) imageHistory {
 	t.Helper()
 	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "config", "core.abbrev", "4")
 	h := imageHistory{repo: repo, images: map[string][]byte{
 		"old:deleted.png": sizedPNG(t, 3, 2),
 		"old:changed.png": sizedPNG(t, 5, 4),
@@ -95,25 +103,16 @@ func newImageHistory(t *testing.T) imageHistory {
 	return h
 }
 
-var indexLine = regexp.MustCompile(`(?m)^index ([0-9a-f]+)\.\.([0-9a-f]+)`)
-
-// fileRef names a file as the pane does: by its paths and the index line of
-// its section of patch, as the patch printed it.
-func fileRef(t *testing.T, patch, path, oldPath string) ReviewDiffFileRef {
+// filesHandle answers the handle an open kept its pin under.
+func filesHandle(t *testing.T, opened ReviewDiffOpened, err error) string {
 	t.Helper()
-	for _, section := range strings.Split(patch, "\ndiff --git ") {
-		header, _, _ := strings.Cut(section, "\n")
-		if !strings.HasSuffix(header, " b/"+path) {
-			continue
-		}
-		ref := ReviewDiffFileRef{Path: path, OldPath: oldPath}
-		if match := indexLine.FindStringSubmatch(section); match != nil {
-			ref.OldOID, ref.NewOID = match[1], match[2]
-		}
-		return ref
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("the patch has no section for %s:\n%s", path, patch)
-	return ReviewDiffFileRef{}
+	if opened.FilesHandle == "" || opened.SidesError != "" {
+		t.Fatalf("the open kept no pin: %q", opened.SidesError)
+	}
+	return opened.FilesHandle
 }
 
 func fetchImage(t *testing.T, base string, side ReviewDiffImageSide) (*http.Response, []byte) {
@@ -134,7 +133,7 @@ func expectSide(t *testing.T, base, label string, got ReviewDiffImageSide, want 
 		}
 		return
 	}
-	if !got.Exists || got.Size != int64(len(want)) || got.MimeType != mime || got.OverCap || got.NotImage {
+	if !got.Exists || got.Size != int64(len(want)) || got.MimeType != mime || got.OverCap || got.NotImage || got.Unavailable != "" {
 		t.Fatalf("%s = %+v, want %d bytes of %s", label, got, len(want), mime)
 	}
 	resp, body := fetchImage(t, base, got)
@@ -144,28 +143,24 @@ func expectSide(t *testing.T, base, label string, got ReviewDiffImageSide, want 
 }
 
 // Every side of an added, deleted, changed and renamed image is served at
-// the revision the diff read it at, in the commit, pr and range scopes.
-func TestGetReviewDiffImageServesBothRevisions(t *testing.T) {
+// the sides the diff was opened at, in the commit, PR and PR range scopes,
+// in a repository whose abbreviations are four digits.
+func TestGetReviewDiffImageServesBothSidesOfEachImmutableScope(t *testing.T) {
 	t.Parallel()
 	app, base := reviewDiffFilesApp(t)
 	h := newImageHistory(t)
 	ref := testWorkspaceRef(t, app, h.repo)
 	ctx, _ := reviewDiffConn(t)
-	rev := &gitops.PRRevision{BaseRef: "main", BaseSHA: h.base, HeadSHA: h.head}
+	rev := gitops.PRRevision{BaseRef: "main", BaseSHA: h.base, HeadSHA: h.head}
+	handles := map[string]string{}
 	opened, err := app.OpenCommitDiff(ctx, ref, h.head, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	patch, err := readOpenedReviewDiff(t, app, ctx, opened)
-	if err != nil {
-		t.Fatal(err)
-	}
+	handles["commit"] = filesHandle(t, opened, err)
+	opened, err = app.OpenPRDiff(ctx, ref, prRef(), rev, false, false)
+	handles["pr"] = filesHandle(t, opened, err)
+	opened, err = app.OpenPRCommitDiff(ctx, ref, prRef(), rev, h.head, h.head, false, false)
+	handles["range"] = filesHandle(t, opened, err)
 	png := "image/png"
-	for _, source := range map[string]ReviewDiffSource{
-		"commit": {Scope: "commit", CommitSHA: h.head},
-		"pr":     {Scope: "pr", Revision: rev},
-		"range":  {Scope: "pr", Revision: rev, FirstSHA: h.head, LastSHA: h.head},
-	} {
+	for scope, handle := range handles {
 		for _, tc := range []struct {
 			path, oldPath string
 			old, new      []byte
@@ -177,52 +172,73 @@ func TestGetReviewDiffImageServesBothRevisions(t *testing.T) {
 			{"moved/to.png", "moved.png", h.images["old:moved.png"], h.images["moved/to.png"], png},
 			{"diagram.svg", "", nil, []byte(diagramSVG), "image/svg+xml"},
 		} {
-			got, err := app.GetReviewDiffImage(ctx, ref, source, fileRef(t, patch, tc.path, tc.oldPath))
+			got, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: tc.path, OldPath: tc.oldPath})
 			if err != nil {
-				t.Fatalf("%s %s: %v", source.Scope, tc.path, err)
+				t.Fatalf("%s %s: %v", scope, tc.path, err)
 			}
 			if got.MaxBytes != reviewDiffImageMaxBytes {
 				t.Fatalf("MaxBytes = %d", got.MaxBytes)
 			}
-			expectSide(t, base, source.Scope+" "+tc.path+" old", got.Old, tc.old, tc.mime)
-			expectSide(t, base, source.Scope+" "+tc.path+" new", got.New, tc.new, tc.mime)
+			expectSide(t, base, scope+" "+tc.path+" old", got.Old, tc.old, tc.mime)
+			expectSide(t, base, scope+" "+tc.path+" new", got.New, tc.new, tc.mime)
 		}
 	}
-	got, err := app.GetReviewDiffImage(ctx, ref, ReviewDiffSource{Scope: "commit", CommitSHA: h.head}, fileRef(t, patch, "fake.png", ""))
+	got, err := app.GetReviewDiffImage(ctx, ref, handles["commit"], ReviewDiffFile{Path: "fake.png"})
 	if err != nil || !got.New.NotImage || got.New.URL != "" || got.New.Size != int64(len(h.images["fake.png"])) {
 		t.Fatalf("a .png that is not an image = %+v (err %v), want its size and no URL", got.New, err)
 	}
 }
 
-// The patch names a binary file by its index line; the sides of a pure
-// rename, which has none, must hold the same blob.
-func TestBinaryFilesCarryTheirIndexLine(t *testing.T) {
+// A read answers the sides the diff was opened at, never what HEAD holds
+// now: a mode-only change (no index line) serves its one blob on both
+// sides after HEAD moves to another image, and a working-tree file
+// rewritten after the open is refused.
+func TestGetReviewDiffImageReadsTheOpenedSidesNotHEAD(t *testing.T) {
 	t.Parallel()
-	app, _ := reviewDiffFilesApp(t)
-	h := newImageHistory(t)
-	ref := testWorkspaceRef(t, app, h.repo)
+	app, base := reviewDiffFilesApp(t)
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "config", "core.abbrev", "4")
+	first := sizedPNG(t, 4, 4)
+	writeRepoBytes(t, repo, "mode.png", first)
+	testutil.RunGit(t, repo, "add", "mode.png")
+	testutil.RunGit(t, repo, "commit", "-qm", "add")
+	testutil.RunGit(t, repo, "update-index", "--chmod=+x", "mode.png")
+	testutil.RunGit(t, repo, "commit", "-qm", "mode only")
+	modeOnly := revParseIn(t, repo, "HEAD")
+	ref := testWorkspaceRef(t, app, repo)
 	ctx, _ := reviewDiffConn(t)
-	opened, err := app.OpenCommitDiff(ctx, ref, h.head, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	opened, err := app.OpenCommitDiff(ctx, ref, modeOnly, false)
+	handle := filesHandle(t, opened, err)
 	patch, err := readOpenedReviewDiff(t, app, ctx, opened)
+	if err != nil || strings.Contains(patch, "\nindex ") {
+		t.Fatalf("a mode-only change printed an index line (err %v):\n%s", err, patch)
+	}
+
+	writeRepoBytes(t, repo, "mode.png", sizedPNG(t, 9, 9))
+	testutil.RunGit(t, repo, "commit", "-qam", "another image")
+
+	got, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "mode.png"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"added.png", "deleted.png", "changed.png", "fake.png"} {
-		if ref := fileRef(t, patch, name, ""); ref.OldOID == "" || ref.NewOID == "" {
-			t.Errorf("%s has no index line:\n%s", name, patch)
-		}
-	}
-	if ref := fileRef(t, patch, "moved/to.png", "moved.png"); ref.OldOID != "" || ref.NewOID != "" {
-		t.Fatalf("a pure rename printed an index line %+v", ref)
+	expectSide(t, base, "mode-only old", got.Old, first, "image/png")
+	expectSide(t, base, "mode-only new", got.New, first, "image/png")
+
+	writeRepoBytes(t, repo, "wt.png", sizedPNG(t, 5, 7))
+	opened, err = app.OpenWorkspaceDiff(ctx, ref, false)
+	handle = filesHandle(t, opened, err)
+	testutil.RunGit(t, repo, "add", "wt.png")
+	testutil.RunGit(t, repo, "commit", "-qm", "wt")
+	writeRepoBytes(t, repo, "wt.png", sizedPNG(t, 3, 3))
+	if _, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "wt.png"}); err == nil || !strings.Contains(err.Error(), "changed since the diff was read") {
+		t.Fatalf("a working-tree file rewritten after HEAD moved = %v, want the changed refusal", err)
 	}
 }
 
-// The worktree scopes read the snapshot: an untracked image is served, and
-// a file that moved on since the patch was read is refused, never served as
-// the diff's.
+// The working-tree scopes read what the open recorded: an untracked image
+// is served, a file rewritten since is refused unless the blob the record
+// binds to that path is already held, and the branch scope's old side is
+// the merge base.
 func TestGetReviewDiffImageReadsTheWorktreeScopes(t *testing.T) {
 	t.Parallel()
 	app, base := reviewDiffFilesApp(t)
@@ -231,31 +247,24 @@ func TestGetReviewDiffImageReadsTheWorktreeScopes(t *testing.T) {
 	ctx, _ := reviewDiffConn(t)
 	fresh := sizedPNG(t, 13, 12)
 	writeRepoBytes(t, h.repo, "fresh.png", fresh)
-	for _, source := range []ReviewDiffSource{{Scope: "workspace"}, {Scope: "branch", BaseBranch: "main"}} {
-		var opened ReviewDiffOpened
-		var err error
-		if source.Scope == "workspace" {
-			opened, err = app.OpenWorkspaceDiff(ctx, ref, false)
-		} else {
-			opened, err = app.OpenBranchBaseDiff(ctx, ref, "main", false)
-		}
+	opens := map[string]func() (ReviewDiffOpened, error){
+		"workspace": func() (ReviewDiffOpened, error) { return app.OpenWorkspaceDiff(ctx, ref, false) },
+		"branch":    func() (ReviewDiffOpened, error) { return app.OpenBranchBaseDiff(ctx, ref, "main", false) },
+		"commit dialog": func() (ReviewDiffOpened, error) {
+			return app.OpenCommitFileDiff(ctx, ref, []string{"fresh.png"})
+		},
+	}
+	for scope, open := range opens {
+		opened, err := open()
+		handle := filesHandle(t, opened, err)
+		got, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "fresh.png"})
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", scope, err)
 		}
-		patch, err := readOpenedReviewDiff(t, app, ctx, opened)
-		if err != nil {
-			t.Fatal(err)
-		}
-		file := fileRef(t, patch, "fresh.png", "")
-		got, err := app.GetReviewDiffImage(ctx, ref, source, file)
-		if err != nil {
-			t.Fatalf("%s: %v", source.Scope, err)
-		}
-		expectSide(t, base, source.Scope+" old", got.Old, nil, "")
-		expectSide(t, base, source.Scope+" new", got.New, fresh, "image/png")
-		if source.Scope == "branch" {
-			changed := fileRef(t, patch, "changed.png", "")
-			got, err := app.GetReviewDiffImage(ctx, ref, source, changed)
+		expectSide(t, base, scope+" old", got.Old, nil, "")
+		expectSide(t, base, scope+" new", got.New, fresh, "image/png")
+		if scope == "branch" {
+			got, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "changed.png"})
 			if err != nil {
 				t.Fatalf("branch changed.png: %v", err)
 			}
@@ -263,66 +272,146 @@ func TestGetReviewDiffImageReadsTheWorktreeScopes(t *testing.T) {
 			expectSide(t, base, "branch changed new", got.New, h.images["changed.png"], "image/png")
 		}
 	}
-	writeRepoBytes(t, h.repo, "fresh.png", sizedPNG(t, 2, 2))
 	opened, err := app.OpenWorkspaceDiff(ctx, ref, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	patch, err := readOpenedReviewDiff(t, app, ctx, opened)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stale := fileRef(t, patch, "fresh.png", "")
+	handle := filesHandle(t, opened, err)
 	writeRepoBytes(t, h.repo, "fresh.png", sizedPNG(t, 3, 3))
-	if _, err := app.GetReviewDiffImage(ctx, ref, ReviewDiffSource{Scope: "workspace"}, stale); err == nil || !strings.Contains(err.Error(), "changed since the diff was read") {
-		t.Fatalf("a file rewritten since the patch = %v, want the changed refusal", err)
+	got, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "fresh.png"})
+	if err != nil {
+		t.Fatalf("a held blob rewritten since: %v", err)
+	}
+	expectSide(t, base, "a held blob rewritten since", got.New, fresh, "image/png")
+
+	writeRepoBytes(t, h.repo, "fresh.png", sizedPNG(t, 6, 5))
+	opened, err = app.OpenWorkspaceDiff(ctx, ref, false)
+	handle = filesHandle(t, opened, err)
+	writeRepoBytes(t, h.repo, "fresh.png", sizedPNG(t, 3, 3))
+	if _, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "fresh.png"}); err == nil || !strings.Contains(err.Error(), "changed since the diff was read") {
+		t.Fatalf("a file rewritten since the open = %v, want the changed refusal", err)
+	}
+	if err := os.Remove(filepath.Join(h.repo, "fresh.png")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "fresh.png"}); err == nil || !strings.Contains(err.Error(), "changed since the diff was read") {
+		t.Fatalf("a file deleted since the open = %v, want the changed refusal", err)
 	}
 }
 
-func TestGetReviewDiffImageRefusesWhatTheDiffDoesNotReport(t *testing.T) {
+// A held image is reachable only through a record whose open bound its
+// blob to the path read: not through a record of another workspace, not
+// through a path the record does not bind, and not through another
+// workspace's handle.
+func TestAHeldImageIsReachableOnlyThroughTheRecordThatBindsIt(t *testing.T) {
+	t.Parallel()
+	app, base := reviewDiffFilesApp(t)
+	ctx, _ := reviewDiffConn(t)
+	first, second := testutil.InitGitRepo(t), testutil.InitGitRepo(t)
+	firstRef, secondRef := testWorkspaceRef(t, app, first), testWorkspaceRef(t, app, second)
+	held, other := sizedPNG(t, 8, 8), sizedPNG(t, 2, 9)
+	writeRepoBytes(t, first, "same.png", held)
+	opened, err := app.OpenWorkspaceDiff(ctx, firstRef, false)
+	firstHandle := filesHandle(t, opened, err)
+	got, err := app.GetReviewDiffImage(ctx, firstRef, firstHandle, ReviewDiffFile{Path: "same.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectSide(t, base, "the first workspace's image", got.New, held, "image/png")
+
+	writeRepoBytes(t, second, "same.png", other)
+	writeRepoBytes(t, second, "README.txt", held)
+	opened, err = app.OpenWorkspaceDiff(ctx, secondRef, false)
+	secondHandle := filesHandle(t, opened, err)
+	got, err = app.GetReviewDiffImage(ctx, secondRef, secondHandle, ReviewDiffFile{Path: "same.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectSide(t, base, "the second workspace's image", got.New, other, "image/png")
+	// The second open bound README.txt to the held image's blob, so the
+	// held entry is that blob's bytes.
+	if got, err := app.GetReviewDiffImage(ctx, secondRef, secondHandle, ReviewDiffFile{Path: "README.txt"}); err != nil {
+		t.Fatal(err)
+	} else {
+		expectSide(t, base, "README.txt", got.New, held, "image/png")
+	}
+	for name, read := range map[string]func() error{
+		"the first handle in the second workspace": func() error {
+			_, err := app.GetReviewDiffImage(ctx, secondRef, firstHandle, ReviewDiffFile{Path: "same.png"})
+			return err
+		},
+		"a path the record does not bind": func() error {
+			_, err := app.GetReviewDiffImage(ctx, firstRef, firstHandle, ReviewDiffFile{Path: "README.txt"})
+			return err
+		},
+	} {
+		if err := read(); err == nil {
+			t.Errorf("%s was served", name)
+		}
+	}
+}
+
+func TestGetReviewDiffImageRefusesWhatTheOpenedDiffDoesNotChange(t *testing.T) {
 	t.Parallel()
 	app, _ := reviewDiffFilesApp(t)
 	h := newImageHistory(t)
 	ref := testWorkspaceRef(t, app, h.repo)
 	ctx, _ := reviewDiffConn(t)
-	commit := ReviewDiffSource{Scope: "commit", CommitSHA: h.head}
 	opened, err := app.OpenCommitDiff(ctx, ref, h.head, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	patch, err := readOpenedReviewDiff(t, app, ctx, opened)
-	if err != nil {
-		t.Fatal(err)
-	}
-	changed := fileRef(t, patch, "changed.png", "")
-	rev := &gitops.PRRevision{BaseRef: "main", BaseSHA: h.base, HeadSHA: h.head}
+	commit := filesHandle(t, opened, err)
+	writeRepoBytes(t, h.repo, "fresh.png", sizedPNG(t, 2, 2))
+	opened, err = app.OpenWorkspaceDiff(ctx, ref, false)
+	workspace := filesHandle(t, opened, err)
 	for _, tc := range []struct {
 		name   string
-		source ReviewDiffSource
-		file   ReviewDiffFileRef
+		handle string
+		file   ReviewDiffFile
 		want   string
 	}{
-		{"a file the diff leaves alone", commit, ReviewDiffFileRef{Path: "README.txt", OldOID: "0000000", NewOID: "1234567"}, "not a file this diff changes"},
-		{"a path outside the repository", commit, ReviewDiffFileRef{Path: "../../etc/passwd", OldOID: "0000000", NewOID: "1234567"}, "outside repository"},
-		{"another blob than the patch named", commit, ReviewDiffFileRef{Path: "changed.png", OldOID: changed.OldOID, NewOID: "abcdef0"}, "changed since the diff was read"},
-		{"a side the patch says is absent", commit, ReviewDiffFileRef{Path: "changed.png", OldOID: "0000000", NewOID: changed.NewOID}, "changed since the diff was read"},
-		{"no index line for a changed file", commit, ReviewDiffFileRef{Path: "changed.png"}, "changed since the diff was read"},
-		{"an index line that is not one", commit, ReviewDiffFileRef{Path: "changed.png", OldOID: "zz", NewOID: changed.NewOID}, "not an abbreviated object ID"},
-		{"a rename source of another file", commit, ReviewDiffFileRef{Path: "added.png", OldPath: "README.txt", OldOID: "1234567", NewOID: "1234567"}, "not a file this diff changes"},
-		{"an unknown scope", ReviewDiffSource{Scope: "edits"}, changed, "not a git review scope"},
-		{"a pr scope without its revision", ReviewDiffSource{Scope: "pr"}, changed, "revision is required"},
-		{"half a range", ReviewDiffSource{Scope: "pr", Revision: rev, FirstSHA: h.head}, changed, "needs both ends"},
-		{"a range outside the PR", ReviewDiffSource{Scope: "pr", Revision: rev, FirstSHA: h.base, LastSHA: h.head}, changed, "not one of the pull request's commits"},
-		{"a branch scope without its base", ReviewDiffSource{Scope: "branch"}, changed, "base branch is required"},
+		{"a file the diff leaves alone", commit, ReviewDiffFile{Path: "README.txt"}, "not a file this diff changes"},
+		{"a directory", commit, ReviewDiffFile{Path: "moved"}, "not a file"},
+		{"a directory with a trailing slash", commit, ReviewDiffFile{Path: "moved/"}, "empty segment"},
+		{"a glob", commit, ReviewDiffFile{Path: "*.png"}, "not a file this diff changes"},
+		{"a path outside the repository", commit, ReviewDiffFile{Path: "../../etc/passwd"}, `".." segment`},
+		{"a backslash path", commit, ReviewDiffFile{Path: `moved\to.png`}, "separators"},
+		{"a rename source of another file", commit, ReviewDiffFile{Path: "added.png", OldPath: "README.txt"}, "not a file this diff changes"},
+		{"a working-tree file the diff leaves alone", workspace, ReviewDiffFile{Path: "README.txt"}, "not a file this diff changes"},
+		{"an unknown handle", "no-such-handle", ReviewDiffFile{Path: "fresh.png"}, "This diff's files are no longer held; reload the diff."},
 	} {
-		if _, err := app.GetReviewDiffImage(ctx, ref, tc.source, tc.file); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if _, err := app.GetReviewDiffImage(ctx, ref, tc.handle, tc.file); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: error = %v, want %q", tc.name, err, tc.want)
 		}
 	}
+	if _, err := app.GetReviewDiffImage(ctx, ref, "no-such-handle", ReviewDiffFile{Path: "fresh.png"}); !errors.Is(err, errReviewDiffFilesGone) {
+		t.Fatalf("an unknown handle = %v, want errReviewDiffFilesGone", err)
+	}
 }
 
-// Over the cap a side answers its size and nothing is read or served.
-func TestGetReviewDiffImageAnswersTheSizeOverTheCap(t *testing.T) {
+// Names are literal: spaces at either end and pathspec magic are part of
+// a file's name.
+func TestGetReviewDiffImageReadsLiteralNames(t *testing.T) {
+	t.Parallel()
+	app, base := reviewDiffFilesApp(t)
+	repo := testutil.InitGitRepo(t)
+	images := map[string][]byte{" logo.png": sizedPNG(t, 3, 3), "logo.png ": sizedPNG(t, 4, 3), ":(top)icon.png": sizedPNG(t, 5, 3)}
+	for name, data := range images {
+		writeRepoBytes(t, repo, name, data)
+	}
+	testutil.RunGit(t, repo, "add", "-A")
+	testutil.RunGit(t, repo, "commit", "-qm", "names")
+	ref := testWorkspaceRef(t, app, repo)
+	ctx, _ := reviewDiffConn(t)
+	opened, err := app.OpenCommitDiff(ctx, ref, revParseIn(t, repo, "HEAD"), false)
+	handle := filesHandle(t, opened, err)
+	for name, data := range images {
+		got, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: name})
+		if err != nil {
+			t.Fatalf("%q: %v", name, err)
+		}
+		expectSide(t, base, name, got.New, data, "image/png")
+	}
+}
+
+// Over the cap a side answers its size and nothing is read or held, for a
+// committed blob and a working-tree file alike.
+func TestGetReviewDiffImageReadsNothingOverTheCap(t *testing.T) {
 	t.Parallel()
 	app, _ := reviewDiffFilesApp(t)
 	repo := testutil.InitGitRepo(t)
@@ -334,23 +423,66 @@ func TestGetReviewDiffImageAnswersTheSizeOverTheCap(t *testing.T) {
 	ref := testWorkspaceRef(t, app, repo)
 	ctx, _ := reviewDiffConn(t)
 	opened, err := app.OpenCommitDiff(ctx, ref, head, false)
+	handle := filesHandle(t, opened, err)
+	want := ReviewDiffImageSide{Exists: true, Size: int64(len(big)), OverCap: true}
+	got, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "big.png"})
+	if err != nil || got.New != want {
+		t.Fatalf("a committed side over the cap = %+v (err %v), want %+v", got.New, err, want)
+	}
+	writeRepoBytes(t, repo, "wt-big.png", big)
+	opened, err = app.OpenWorkspaceDiff(ctx, ref, false)
+	handle = filesHandle(t, opened, err)
+	got, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "wt-big.png"})
+	if err != nil || got.New != want {
+		t.Fatalf("a working-tree side over the cap = %+v (err %v), want %+v", got.New, err, want)
+	}
+	if held := app.reviewDiffImages().Held(); held != 0 {
+		t.Fatalf("the image store holds %d bytes after over-cap answers", held)
+	}
+}
+
+// A committed Git LFS pointer and a working-tree file under a filter are
+// unavailable with their reason; a CRLF file under core.autocrlf is
+// served as the bytes on disk.
+func TestFilteredAndLFSFilesAreUnavailable(t *testing.T) {
+	t.Parallel()
+	app, base := reviewDiffFilesApp(t)
+	repo := testutil.InitGitRepo(t)
+	pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 4096\n"
+	writeRepoBytes(t, repo, ".gitattributes", []byte("*.png filter=lfs diff=lfs merge=lfs -text\n"))
+	writeRepoBytes(t, repo, "stored.png", []byte(pointer))
+	testutil.RunGit(t, repo, "add", "-A")
+	testutil.RunGit(t, repo, "commit", "-qm", "lfs")
+	testutil.RunGit(t, repo, "config", "core.autocrlf", "true")
+	ref := testWorkspaceRef(t, app, repo)
+	ctx, _ := reviewDiffConn(t)
+	opened, err := app.OpenCommitDiff(ctx, ref, revParseIn(t, repo, "HEAD"), false)
+	got, err := app.GetReviewDiffImage(ctx, ref, filesHandle(t, opened, err), ReviewDiffFile{Path: "stored.png"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	patch, err := readOpenedReviewDiff(t, app, ctx, opened)
+	if want := (ReviewDiffImageSide{Exists: true, Size: int64(len(pointer)), Unavailable: "Stored with Git LFS; the image is not in the repository."}); got.New != want {
+		t.Fatalf("a committed LFS pointer = %+v, want %+v", got.New, want)
+	}
+
+	smudged := sizedPNG(t, 6, 6)
+	writeRepoBytes(t, repo, "drawn.png", smudged)
+	crlf := []byte("<svg xmlns=\"http://www.w3.org/2000/svg\">\r\n<rect/>\r\n</svg>\r\n")
+	writeRepoBytes(t, repo, "crlf.svg", crlf)
+	opened, err = app.OpenWorkspaceDiff(ctx, ref, false)
+	handle := filesHandle(t, opened, err)
+	got, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "drawn.png"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := app.GetReviewDiffImage(ctx, ref, ReviewDiffSource{Scope: "commit", CommitSHA: head}, fileRef(t, patch, "big.png", ""))
+	if want := (ReviewDiffImageSide{Exists: true, Size: int64(len(smudged)), Unavailable: "This file passes through a git filter, so its image is not shown."}); got.New != want {
+		t.Fatalf("a filtered working-tree file = %+v, want %+v", got.New, want)
+	}
+	got, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "crlf.svg"})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("a CRLF file under core.autocrlf: %v", err)
 	}
-	if want := (ReviewDiffImageSide{Exists: true, Size: int64(len(big)), OverCap: true}); got.New != want {
-		t.Fatalf("over the cap = %+v, want %+v", got.New, want)
-	}
-	if held := app.reviewDiffImages().cache.Bytes(); held != 0 {
-		t.Fatalf("the cache holds %d bytes after an over-cap answer", held)
-	}
+	expectSide(t, base, "crlf.svg", got.New, crlf, "image/svg+xml")
 }
 
 // An SVG is served as an image that can run nothing at the app's origin.
@@ -361,14 +493,7 @@ func TestReviewDiffSVGIsServedSandboxed(t *testing.T) {
 	ref := testWorkspaceRef(t, app, h.repo)
 	ctx, _ := reviewDiffConn(t)
 	opened, err := app.OpenCommitDiff(ctx, ref, h.head, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	patch, err := readOpenedReviewDiff(t, app, ctx, opened)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := app.GetReviewDiffImage(ctx, ref, ReviewDiffSource{Scope: "commit", CommitSHA: h.head}, fileRef(t, patch, "diagram.svg", ""))
+	got, err := app.GetReviewDiffImage(ctx, ref, filesHandle(t, opened, err), ReviewDiffFile{Path: "diagram.svg"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,35 +510,32 @@ func TestReviewDiffSVGIsServedSandboxed(t *testing.T) {
 	}
 }
 
+// A sizes batch answers each file on its own: a file that cannot be read,
+// committed or working-tree, does not fail the others.
 func TestGetReviewDiffFileSizesAnswersEachFile(t *testing.T) {
 	t.Parallel()
 	app, _ := reviewDiffFilesApp(t)
 	h := newImageHistory(t)
 	ref := testWorkspaceRef(t, app, h.repo)
 	ctx, _ := reviewDiffConn(t)
-	rev := &gitops.PRRevision{BaseRef: "main", BaseSHA: h.base, HeadSHA: h.head}
-	opened, err := app.OpenPRDiff(ctx, ref, prRef(), *rev, false, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	patch, err := readOpenedReviewDiff(t, app, ctx, opened)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := app.GetReviewDiffFileSizes(ctx, ref, ReviewDiffSource{Scope: "pr", Revision: rev}, []ReviewDiffFileRef{
-		fileRef(t, patch, "changed.png", ""),
-		fileRef(t, patch, "fake.png", ""),
-		{Path: "README.txt", OldOID: "0000000", NewOID: "1234567"},
-		fileRef(t, patch, "deleted.png", ""),
+	rev := gitops.PRRevision{BaseRef: "main", BaseSHA: h.base, HeadSHA: h.head}
+	opened, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false, false)
+	handle := filesHandle(t, opened, err)
+	size := func(name string) int64 { return int64(len(h.images[name])) }
+	got, err := app.GetReviewDiffFileSizes(ctx, ref, handle, []ReviewDiffFile{
+		{Path: "changed.png"}, {Path: "fake.png"}, {Path: "README.txt"}, {Path: "moved"},
+		{Path: "a/../b"}, {Path: "moved/to.png", OldPath: "moved.png"}, {Path: "deleted.png"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	size := func(name string) int64 { return int64(len(h.images[name])) }
 	want := []ReviewDiffFileSizes{
 		{Path: "changed.png", Old: ReviewDiffFileSide{true, size("old:changed.png")}, New: ReviewDiffFileSide{true, size("changed.png")}},
 		{Path: "fake.png", New: ReviewDiffFileSide{true, size("fake.png")}},
 		{Path: "README.txt", Error: "README.txt is not a file this diff changes"},
+		{Path: "moved", Error: "moved is not a file"},
+		{Path: "a/../b", Error: `gitdiff: invalid path "a/../b": ".." segment`},
+		{Path: "moved/to.png", OldPath: "moved.png", Old: ReviewDiffFileSide{true, size("old:moved.png")}, New: ReviewDiffFileSide{true, size("moved/to.png")}},
 		{Path: "deleted.png", Old: ReviewDiffFileSide{true, size("old:deleted.png")}},
 	}
 	if len(got) != len(want) {
@@ -424,62 +546,266 @@ func TestGetReviewDiffFileSizesAnswersEachFile(t *testing.T) {
 			t.Errorf("file %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
-	if _, err := app.GetReviewDiffFileSizes(ctx, ref, ReviewDiffSource{Scope: "pr", Revision: rev}, make([]ReviewDiffFileRef, maxReviewDiffFileRefs+1)); err == nil {
+	if _, err := app.GetReviewDiffFileSizes(ctx, ref, handle, make([]ReviewDiffFile, maxReviewDiffFiles+1)); err == nil {
 		t.Fatal("an over-long batch was accepted")
 	}
-}
 
-// The edits scope serves the new side its context expansion would, verified
-// against the file's patch; an edit records no old side.
-func TestGetEditDiffImageServesTheVerifiedNewSide(t *testing.T) {
-	t.Parallel()
-	app, base := reviewDiffFilesApp(t)
-	workspace := t.TempDir()
-	thread := testThread("thread-edit-diff-image")
-	thread.WorkspacePath = workspace
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
+	fresh := sizedPNG(t, 7, 7)
+	writeRepoBytes(t, h.repo, "fresh.png", fresh)
+	if err := os.Remove(filepath.Join(h.repo, "added.png")); err != nil {
+		t.Fatal(err)
 	}
-	writeRepoBytes(t, workspace, "diagram.svg", []byte(diagramSVG))
-	verify := "diff --git a/diagram.svg b/diagram.svg\n--- /dev/null\n+++ b/diagram.svg\n@@ -0,0 +1 @@\n+" + strings.TrimSuffix(diagramSVG, "\n") + "\n"
-	req := DiffContextRequest{Scope: "edits", Path: "diagram.svg", VerifyPatch: verify}
-	got, err := app.GetEditDiffImage(thread.ID, req)
+	opened, err = app.OpenWorkspaceDiff(ctx, ref, false)
+	handle = filesHandle(t, opened, err)
+	// The working tree moves on after the open; the sizes are the open's.
+	if err := os.Remove(filepath.Join(h.repo, "fresh.png")); err != nil {
+		t.Fatal(err)
+	}
+	got, err = app.GetReviewDiffFileSizes(ctx, ref, handle, []ReviewDiffFile{
+		{Path: "fresh.png"}, {Path: "README.txt"}, {Path: "added.png"}, {Path: "dir//x"},
+	})
 	if err != nil {
-		t.Fatalf("GetEditDiffImage: %v", err)
+		t.Fatal(err)
 	}
-	expectSide(t, base, "edit old", got.Old, nil, "")
-	expectSide(t, base, "edit new", got.New, []byte(diagramSVG), "image/svg+xml")
-
-	writeRepoBytes(t, workspace, "diagram.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`+"\n"))
-	if _, err := app.GetEditDiffImage(thread.ID, req); err == nil {
-		t.Fatal("a file that drifted from the edit's patch was served")
+	want = []ReviewDiffFileSizes{
+		{Path: "fresh.png", New: ReviewDiffFileSide{true, int64(len(fresh))}},
+		{Path: "README.txt", Error: "README.txt is not a file this diff changes"},
+		{Path: "added.png", Old: ReviewDiffFileSide{true, size("added.png")}},
+		{Path: "dir//x", Error: `gitdiff: invalid path "dir//x": empty segment`},
 	}
-	if _, err := app.GetEditDiffImage(thread.ID, DiffContextRequest{Scope: "pr", Path: "diagram.svg"}); err == nil {
-		t.Fatal("a non-edits scope was accepted")
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("working-tree file %d = %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }
 
-// The harness reset forgets every image a spec read.
-func TestDropReviewDiffImagesForgetsServedImages(t *testing.T) {
+// The record store keeps at most its bounds, least recently used first
+// out, and keeps nothing pinned across a clear.
+func TestReviewDiffRecordsAreBounded(t *testing.T) {
+	t.Parallel()
+	var records reviewDiffRecords
+	committed := gitdiff.Pin{Old: strings.Repeat("a", 40), New: strings.Repeat("b", 40)}
+	worktree := gitdiff.Pin{Old: strings.Repeat("a", 40)}
+	first := records.put(records.generation(), "/w", committed, nil, false)
+	for i := 1; i < maxReviewDiffRecords; i++ {
+		records.put(records.generation(), "/w", committed, nil, false)
+	}
+	if _, err := records.get(first, "/w"); err != nil {
+		t.Fatalf("the first record went before the bound: %v", err)
+	}
+	second := records.put(records.generation(), "/w", committed, nil, false)
+	if records.len() != maxReviewDiffRecords {
+		t.Fatalf("%d records, want %d", records.len(), maxReviewDiffRecords)
+	}
+	if _, err := records.get(second, "/w"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := records.get(first, "/other"); err == nil || errors.Is(err, errReviewDiffFilesGone) {
+		t.Fatalf("another workspace = %v, want its own refusal", err)
+	}
+
+	many := make([]gitdiff.WorktreeBlob, maxPinnedWorktreeBlobs)
+	for i := range many {
+		many[i] = gitdiff.WorktreeBlob{Path: fmt.Sprintf("f%d", i), Mode: "100644"}
+	}
+	var handles []string
+	for range maxReviewDiffRecordBindings/maxPinnedWorktreeBlobs + 1 {
+		handles = append(handles, records.put(records.generation(), "/w", worktree, many, false))
+	}
+	if _, err := records.get(handles[0], "/w"); !errors.Is(err, errReviewDiffFilesGone) {
+		t.Fatalf("the oldest record past the binding bound = %v, want gone", err)
+	}
+	if records.bindings > maxReviewDiffRecordBindings {
+		t.Fatalf("%d bindings held, over %d", records.bindings, maxReviewDiffRecordBindings)
+	}
+
+	gen := records.generation()
+	records.clear()
+	if records.len() != 0 {
+		t.Fatal("clear kept records")
+	}
+	if handle := records.put(gen, "/w", committed, nil, false); handle != "" {
+		t.Fatal("a pin made before the clear was kept")
+	}
+}
+
+// An open whose pinning cannot finish in its bound answers SidesError with
+// its patch intact, and a reset forgets every record.
+func TestOpenWithoutAPinKeepsItsPatch(t *testing.T) {
+	t.Parallel()
+	app, _ := reviewDiffFilesApp(t)
+	h := newImageHistory(t)
+	ref := testWorkspaceRef(t, app, h.repo)
+	ctx, _ := reviewDiffConn(t)
+	writeRepoBytes(t, h.repo, "fresh.png", sizedPNG(t, 2, 2))
+	app.reviewDiffPinTimeout = time.Nanosecond
+	opened, err := app.OpenWorkspaceDiff(ctx, ref, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.FilesHandle != "" || opened.SidesError == "" {
+		t.Fatalf("handle %q, sidesError %q; want no handle and a reason", opened.FilesHandle, opened.SidesError)
+	}
+	patch, err := readOpenedReviewDiff(t, app, ctx, opened)
+	if err != nil || !strings.Contains(patch, "b/fresh.png") {
+		t.Fatalf("the patch without a pin (err %v):\n%s", err, patch)
+	}
+}
+
+// The harness reset forgets every image a spec read and every record its
+// opens kept.
+func TestDropReviewDiffImagesForgetsImagesAndRecords(t *testing.T) {
 	t.Parallel()
 	app, base := reviewDiffFilesApp(t)
 	h := newImageHistory(t)
 	ref := testWorkspaceRef(t, app, h.repo)
 	ctx, _ := reviewDiffConn(t)
 	opened, err := app.OpenCommitDiff(ctx, ref, h.head, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	patch, err := readOpenedReviewDiff(t, app, ctx, opened)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := app.GetReviewDiffImage(ctx, ref, ReviewDiffSource{Scope: "commit", CommitSHA: h.head}, fileRef(t, patch, "added.png", ""))
+	handle := filesHandle(t, opened, err)
+	got, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "added.png"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	(&harnessHost{app: app}).DropReviewDiffImages()
 	if resp, _ := fetchImage(t, base, got.New); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("an image read before the reset answered %d, want 404", resp.StatusCode)
+	}
+	if held := app.reviewDiffImages().Held(); held != 0 {
+		t.Fatalf("the store holds %d bytes after the reset", held)
+	}
+	if _, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "added.png"}); !errors.Is(err, errReviewDiffFilesGone) {
+		t.Fatalf("a handle from before the reset = %v, want errReviewDiffFilesGone", err)
+	}
+}
+
+// editThread is a thread whose turn 0 holds the given edits, in order,
+// each a payload editing diagram.svg.
+func editThread(t *testing.T, app *App, id string, payloads ...string) string {
+	t.Helper()
+	thread := testThread(id)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	patch := "diff --git a/diagram.svg b/diagram.svg\n--- a/diagram.svg\n+++ b/diagram.svg\n@@ -2 +2 @@\n-<script>alert(0)</script>\n+<script>alert(1)</script>\n"
+	for _, payload := range payloads {
+		insertDiffSpanPayload(t, app, thread.ID, "item-"+payload, payload, "tool_result", patch)
+	}
+	return thread.ID
+}
+
+// An edit's image is the content the edit recorded, never the file on
+// disk: without a snapshot the side is unavailable with a sentence, even
+// when the disk holds a file a patch would match outside its hunks.
+func TestGetEditDiffImageServesOnlyRecordedContent(t *testing.T) {
+	t.Parallel()
+	app, base := reviewDiffFilesApp(t)
+	ctx, _ := reviewDiffConn(t)
+	threadID := editThread(t, app, "thread-edit-diff-image", "payload-recorded", "payload-unrecorded")
+	if err := app.store.PutEditFileSnapshot(threadID, "payload-recorded", "diagram.svg", diagramSVG, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := app.store.GetThread(threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRepoBytes(t, thread.WorkspacePath, "diagram.svg", []byte(strings.Replace(diagramSVG, `width="4" height="4"/>`, `width="1" height="1"/>`, 1)))
+
+	got, err := app.GetEditDiffImage(ctx, threadID, EditDiffImageRequest{Path: "diagram.svg", EditPayloadID: "payload-recorded"})
+	if err != nil {
+		t.Fatalf("GetEditDiffImage: %v", err)
+	}
+	if got.Old != (ReviewDiffImageSide{Unavailable: "An edit does not record the file before it."}) {
+		t.Fatalf("old = %+v", got.Old)
+	}
+	expectSide(t, base, "recorded new", got.New, []byte(diagramSVG), "image/svg+xml")
+
+	got, err = app.GetEditDiffImage(ctx, threadID, EditDiffImageRequest{Path: "diagram.svg", EditPayloadID: "payload-unrecorded"})
+	if err != nil {
+		t.Fatalf("GetEditDiffImage: %v", err)
+	}
+	if got.New != (ReviewDiffImageSide{Unavailable: "This edit's file content was not recorded."}) {
+		t.Fatalf("an edit with no recorded content = %+v, want unavailable", got.New)
+	}
+	got, err = app.GetEditDiffImage(ctx, threadID, EditDiffImageRequest{Path: "other.svg", EditTurnIndex: 0})
+	if err != nil || got.New != (ReviewDiffImageSide{Unavailable: "This turn does not edit this file."}) {
+		t.Fatalf("a path the turn does not edit = %+v (err %v)", got.New, err)
+	}
+	for name, req := range map[string]EditDiffImageRequest{
+		"a path outside the workspace": {Path: "../x.svg", EditPayloadID: "payload-recorded"},
+		"a directory path":             {Path: "dir/", EditPayloadID: "payload-recorded"},
+	} {
+		if _, err := app.GetEditDiffImage(ctx, threadID, req); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	if _, err := app.GetEditDiffImage(ctx, "no-such-thread", EditDiffImageRequest{Path: "diagram.svg"}); err == nil {
+		t.Fatal("an unknown thread was accepted")
+	}
+}
+
+// A whole turn's file is its last edit's: an earlier recorded edit never
+// stands in for a later unrecorded one, for the image and for context
+// lines alike.
+func TestATurnsFileIsItsLastEdit(t *testing.T) {
+	t.Parallel()
+	app, base := reviewDiffFilesApp(t)
+	ctx, _ := reviewDiffConn(t)
+	threadID := editThread(t, app, "thread-superseded-edit", "payload-e1", "payload-e2")
+	if err := app.store.PutEditFileSnapshot(threadID, "payload-e1", "diagram.svg", diagramSVG, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := app.GetEditDiffImage(ctx, threadID, EditDiffImageRequest{Path: "diagram.svg", EditTurnIndex: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.New != (ReviewDiffImageSide{Unavailable: "This edit's file content was not recorded."}) {
+		t.Fatalf("the turn's image after an unrecorded later edit = %+v, want unavailable", got.New)
+	}
+	verify := "diff --git a/diagram.svg b/diagram.svg\n--- a/diagram.svg\n+++ b/diagram.svg\n@@ -2 +2 @@\n-<script>alert(0)</script>\n+<script>alert(1)</script>\n"
+	if _, err := app.GetEditDiffContextLines(threadID, DiffContextRequest{
+		Scope: "edits", Path: "diagram.svg", StartLine: 1, EndLine: 1, VerifyPatch: verify, EditTurnIndex: 0,
+	}); err == nil {
+		t.Fatal("the turn's context lines came from an earlier edit's snapshot")
+	}
+
+	if err := app.store.PutEditFileSnapshot(threadID, "payload-e2", "diagram.svg", diagramSVG, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	got, err = app.GetEditDiffImage(ctx, threadID, EditDiffImageRequest{Path: "diagram.svg", EditTurnIndex: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectSide(t, base, "the turn's last edit", got.New, []byte(diagramSVG), "image/svg+xml")
+}
+
+// An edit image reserves the snapshot capture limit, then decompresses
+// straight into the store's buffer: the bytes allocated outside it stay a
+// small fraction of the content. Serial: it measures the process's
+// allocations.
+func TestGetEditDiffImageAllocatesItsContentOnlyInTheStore(t *testing.T) {
+	app, _ := reviewDiffFilesApp(t)
+	ctx, _ := reviewDiffConn(t)
+	threadID := editThread(t, app, "thread-edit-image-allocations", "payload-big")
+	content := "<svg xmlns=\"http://www.w3.org/2000/svg\">\n" + strings.Repeat("<g/>\n", (3<<20)/5) + "</svg>\n"
+	if len(content) > store.MaxEditFileSnapshotBytes {
+		t.Fatal("the content is past the capture limit")
+	}
+	if err := app.store.PutEditFileSnapshot(threadID, "payload-big", "diagram.svg", content, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	app.reviewDiffImages() // created outside the measure
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	got, err := app.GetEditDiffImage(ctx, threadID, EditDiffImageRequest{Path: "diagram.svg", EditPayloadID: "payload-big"})
+	runtime.ReadMemStats(&after)
+	if err != nil || got.New.Size != int64(len(content)) || got.New.URL == "" {
+		t.Fatalf("the edit image = %+v, err %v", got.New, err)
+	}
+	outside := int64(after.TotalAlloc-before.TotalAlloc) - app.reviewDiffImages().Held()
+	if outside > 1<<20 {
+		t.Fatalf("%d bytes were allocated outside the store for %d bytes of content", outside, len(content))
 	}
 }

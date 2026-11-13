@@ -26,39 +26,84 @@ text is read again.
 There is no size limit on any diff source.
 
 A diff's two sides are resolved once, by `gitdiff.Sides`, for the patch and
-for every blob read from the same diff. A PR's commit run
+for every file read from the same diff. A PR's commit run
 (`OpenPRCommitDiff(first, last)`) is the two-tree diff from `first`'s first
 parent (the empty tree for a root commit) to `last`, both in the commit
 list `ListPRCommits` answers at the same revision, `first` no newer than
 `last`; one commit is that commit's own change, and a run of several
 covering the whole list is refused in favor of `OpenPRDiff`
-(`gitdiff.CommitRangeSides`).
+(`gitdiff.CommitRangeSides`). The list holds the newest 300 commits of a
+longer PR: a run may start at the oldest listed commit and is then read
+(it is not the whole PR), and a commit past the list is refused. A run is
+a two-tree diff, so one holding a merge of the base branch shows what
+that merge brought in.
 
 ## Reading a diff's files
 
-The patch says a file is binary (`Binary files ... differ`) and names each
-side's blob on its `index <old>..<new>` line, all zeros for a side that does
-not exist; a pure rename or mode change has no index line.
-`GetReviewDiffFileSizes` (up to 100 files) and `GetReviewDiffImage` (one
-file, both sides) take the diff's source in its Open call's terms
-(`ReviewDiffSource`: workspace, branch, commit, or pr with its revision and
-run) and the file as its patch named it (`ReviewDiffFileRef`: paths and the
-index line). Each call resolves the diff's sides again, lists the requested
-paths the diff changes (`git diff --raw --no-renames`, literal pathspecs)
-and serves a side only when that path changes and its blob is the one the
-index line named, so a worktree file rewritten since the patch was read, or
-a path the diff does not touch, is refused. A file with no index line must
-hold one blob on both sides. A failed size read leaves the patch on screen;
-each file of a size batch fails alone.
+Every git-backed open pins its two sides and keeps the pin on the server:
 
-A side over 25 MiB answers its size and `overCap` without reading it; bytes
-that are not an image a browser displays answer `notImage`. Image bytes are
-held in a memory LRU keyed by blob ID (100 MiB, 10 minutes, cleared by the
-harness reset) and served once per ticket from the local-image route,
+| Scope | Old side | New side |
+|---|---|---|
+| commit, PR, PR run | commit or empty tree | commit |
+| workspace, commit dialog | `HEAD` commit at the open, or the empty tree | working tree |
+| branch | merge-base commit | working tree |
+
+Both are object IDs the open already had; pinning writes nothing to the
+user's object database. A working-tree side is pinned by the open's
+snapshot: each path it changes, with its mode and, for a regular file, the
+blob ID and size the snapshot recorded. The snapshot hashes a changed
+file's bytes as they are on disk, without filters, so a read proves a
+file by hashing its bytes the same way. Pinning runs beside the first
+chunk's read under its own 5 second bound, parses git's raw output as it
+arrives and stops git after 5000 paths. The record goes into a store of
+at most 64 records, 20000 working-tree paths and 8 MiB of their names,
+least recently used first out, cleared by the harness reset
+(`app_review_diff_records.go`). The open answers its `filesHandle`, or
+`sidesError` with the patch intact.
+
+`GetReviewDiffFileSizes` (up to 100 files) and `GetReviewDiffImage` (one
+file, both sides) take the workspace, the handle and each file's `path`
+(and a rename's `oldPath`). A handle that is gone answers "This diff's
+files are no longer held; reload the diff."; one opened in another
+workspace is refused. Each path is one literal name: no empty, `.` or
+`..` segment, no backslash, no NUL; spaces at either end and pathspec
+magic are part of the name. Each side it exists on must be a regular file
+the other side holds differently; a directory, a symlink, a submodule or
+a path the diff does not change is refused. A committed side is read as
+its blob, its size from the tree entry first. A working-tree side is read
+through the workspace as a root, so a symlink swapped in cannot lead
+outside it, its type and size taken from the opened file; bytes that are
+not the recorded blob are "changed since the diff was read". Sizes of a
+working-tree side are the recorded ones. Each file of a size batch fails
+alone.
+
+A side over 25 MiB answers its size and `overCap` and none of it is read;
+bytes that are not an image a browser displays answer `notImage`. A side
+holding a Git LFS pointer answers `unavailable` ("Stored with Git LFS; the
+image is not in the repository."), and a working-tree file with a
+`filter` attribute ("This file passes through a git filter, so its image
+is not shown."); nothing is downloaded or smudged. Image bytes are held in
+`reviewimage.Store`, keyed by the blob the record names: one 100 MiB
+budget covers held entries, loads in flight and entries a response is
+still sending. A load reserves its size before it reads, concurrent loads
+of one key share one read, an entry being sent is freed only when its last
+reader closes, and a load that finds no room waits up to 30 seconds, then
+refuses with a sentence. A panicking load releases what it holds, and a
+load that finishes after a reset publishes nothing. Entries expire after
+10 minutes. They are served once per ticket from the local-image route,
 where an SVG gets an attachment disposition and a policy that allows no
-script. The edits scope has no git sides: `GetEditDiffImage` serves the new
-side its context expansion would serve, verified against the file's patch,
-and never an old side.
+script.
+
+The edits scope has no handle: `GetEditDiffImage` takes the path and an
+edit's payload ID, or the turn index for the turn's last edit of the path
+(found by scanning the turn's patches from the end), and serves only that
+edit's recorded snapshot. It reserves the snapshot capture limit (4 MiB,
+enforced by `PutEditFileSnapshot`) first, decompresses into a buffer of
+the recorded size and shrinks the reservation to it. The old side is
+always `unavailable` ("An edit does not record the file before it."), as
+is the new side of an edit that recorded nothing ("This edit's file
+content was not recorded.") or a path the turn does not edit ("This turn
+does not edit this file."); the file on disk is never read.
 
 ## Holding the patch
 
