@@ -112,3 +112,64 @@ func NormalizeDiffReviewLineAnchor(comment *DiffReviewComment) error {
 	}
 	return normalizeDiffReviewShape(comment)
 }
+
+// Bounds of the PR context a send carries for the agent.
+const (
+	MaxDiffReviewThreadAuthorBytes = 256
+	MaxDiffReviewThreadComments    = 500
+	MaxDiffReviewPRURLBytes        = 2048
+)
+
+// Validate checks the PR context a send carries: it is the client's
+// account of other people's text, so every one-line field is one line of
+// bounded length, every line number is a line, and each list is bounded.
+// The renderer quotes the bodies; this keeps the metadata it puts on a
+// header line from carrying a line of its own.
+func (c *DiffReviewPRContext) Validate() error {
+	if c == nil {
+		return nil
+	}
+	switch {
+	case c.Number < 0:
+		return fmt.Errorf("the PR number must be positive")
+	case len(c.URL) > MaxDiffReviewPRURLBytes || hasControlCharacter(c.URL):
+		return fmt.Errorf("the PR url must be one line of at most %d bytes", MaxDiffReviewPRURLBytes)
+	case len(c.Comments) > MaxDiffReviewCommentIDs:
+		return fmt.Errorf("the PR context names too many comments")
+	}
+	for i, entry := range c.Comments {
+		if len(entry.CommentID) > 128 || hasControlCharacter(entry.CommentID) {
+			return fmt.Errorf("comments[%d]: the comment id must be one short line", i)
+		}
+		if len(entry.HunkExcerpt) > MaxDiffReviewSelectedTextBytes {
+			return fmt.Errorf("comments[%d]: the hunk excerpt is too large", i)
+		}
+		if err := entry.Thread.validate(); err != nil {
+			return fmt.Errorf("comments[%d].thread: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (t *DiffReviewThreadContext) validate() error {
+	if t == nil {
+		return nil
+	}
+	switch {
+	case len(t.Path) > MaxDiffReviewFilePathBytes || hasControlCharacter(t.Path):
+		return fmt.Errorf("the path must be one line of at most %d bytes", MaxDiffReviewFilePathBytes)
+	case t.Line < 0 || t.StartLine < 0 || (t.StartLine > 0 && t.StartLine > t.Line):
+		return fmt.Errorf("the lines must be a line or a range")
+	case len(t.Comments) > MaxDiffReviewThreadComments:
+		return fmt.Errorf("the thread has more than %d comments", MaxDiffReviewThreadComments)
+	}
+	for i, comment := range t.Comments {
+		switch {
+		case len(comment.Author) > MaxDiffReviewThreadAuthorBytes || hasControlCharacter(comment.Author):
+			return fmt.Errorf("comments[%d]: the author must be one line of at most %d bytes", i, MaxDiffReviewThreadAuthorBytes)
+		case len(comment.Body) > MaxDiffReviewCommentBodyBytes:
+			return fmt.Errorf("comments[%d]: the body is too large", i)
+		}
+	}
+	return nil
+}

@@ -142,6 +142,7 @@ func writeReply(b *strings.Builder, comment store.DiffReviewComment, thread *sto
 			lines = strconv.Itoa(thread.Line)
 		}
 	}
+	path = oneLine(path)
 	if path == "" {
 		path = "PR conversation"
 	}
@@ -153,22 +154,47 @@ func writeReply(b *strings.Builder, comment store.DiffReviewComment, thread *sto
 	}
 	if thread == nil {
 		b.WriteString(" reply to thread ")
-		b.WriteString(comment.ReplyThreadID)
+		b.WriteString(oneLine(comment.ReplyThreadID))
 	} else {
 		b.WriteString(" reply to this thread")
 		for _, said := range thread.Comments {
-			text := strings.TrimSpace(said.Body)
+			text := strings.TrimSpace(normalizeLineBreaks(said.Body))
 			if text == "" {
 				continue
 			}
-			b.WriteString("\n> ")
-			b.WriteString(strings.TrimSpace(said.Author))
-			b.WriteString(": ")
-			b.WriteString(strings.ReplaceAll(text, "\n", "\n> "))
+			b.WriteString("\n")
+			writeQuoted(b, oneLine(said.Author)+": "+text)
 		}
 	}
 	b.WriteString("\ncomment: ")
-	b.WriteString(strings.TrimSpace(comment.Body))
+	b.WriteString(strings.TrimSpace(normalizeLineBreaks(comment.Body)))
+}
+
+// normalizeLineBreaks makes every CRLF and lone CR a LF, so a line break
+// the quote must prefix is never one it misses.
+func normalizeLineBreaks(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
+}
+
+// oneLine is a header field on one line: its line breaks become spaces.
+func oneLine(s string) string {
+	return strings.TrimSpace(strings.ReplaceAll(normalizeLineBreaks(s), "\n", " "))
+}
+
+// writeQuoted writes text with every line quoted ("> "; a blank line ">").
+func writeQuoted(b *strings.Builder, text string) {
+	for i, line := range strings.Split(text, "\n") {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		line = strings.TrimRight(line, " \t")
+		if line == "" {
+			b.WriteString(">")
+			continue
+		}
+		b.WriteString("> ")
+		b.WriteString(line)
+	}
 }
 
 // CommentLine returns the line number to use as the comment's anchor.

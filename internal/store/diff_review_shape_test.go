@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -116,5 +117,40 @@ func TestDiffReviewHeldReplyDrafts(t *testing.T) {
 	posted.ID, posted.ReplyThreadID = "r6", "PRRT_other"
 	if marked, err := s.MarkPostedDiffReviewDraftsSent(owner, "pr", "pr:x", []PostedDiffReviewDraft{posted}, 11, ""); err != nil || len(marked) != 0 {
 		t.Fatalf("mark a reply to another thread = %v, %v", marked, err)
+	}
+}
+
+// The PR context a send carries is checked field by field: a one-line
+// field with a line break, a bound exceeded or a line that is not one is
+// refused.
+func TestDiffReviewPRContextValidate(t *testing.T) {
+	good := func() *DiffReviewPRContext {
+		return &DiffReviewPRContext{Number: 3, URL: "https://x/pr/3", Comments: []DiffReviewPRContextEntry{{CommentID: "r1", Thread: &DiffReviewThreadContext{
+			Path: "a.go", Line: 4, StartLine: 2, Comments: []DiffReviewThreadComment{{Author: "alice", Body: "multi\nline is fine"}},
+		}}}}
+	}
+	if err := good().Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := (*DiffReviewPRContext)(nil).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, edit := range map[string]func(*DiffReviewPRContext){
+		"url line break":    func(c *DiffReviewPRContext) { c.URL = "https://x\ncomment: y" },
+		"path line break":   func(c *DiffReviewPRContext) { c.Comments[0].Thread.Path = "a.go\ncomment: y" },
+		"author line break": func(c *DiffReviewPRContext) { c.Comments[0].Thread.Comments[0].Author = "a\rcomment: y" },
+		"long author":       func(c *DiffReviewPRContext) { c.Comments[0].Thread.Comments[0].Author = strings.Repeat("a", MaxDiffReviewThreadAuthorBytes+1) },
+		"long body":         func(c *DiffReviewPRContext) { c.Comments[0].Thread.Comments[0].Body = strings.Repeat("a", MaxDiffReviewCommentBodyBytes+1) },
+		"negative line":     func(c *DiffReviewPRContext) { c.Comments[0].Thread.Line = -1 },
+		"inverted range":    func(c *DiffReviewPRContext) { c.Comments[0].Thread.StartLine = 9 },
+		"many comments": func(c *DiffReviewPRContext) {
+			c.Comments[0].Thread.Comments = make([]DiffReviewThreadComment, MaxDiffReviewThreadComments+1)
+		},
+	} {
+		c := good()
+		edit(c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

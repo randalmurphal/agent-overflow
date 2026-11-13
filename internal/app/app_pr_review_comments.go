@@ -123,6 +123,9 @@ func (a *App) SendPRDiffReviewComments(ctx context.Context, pr gitops.PRReferenc
 	if err != nil {
 		return store.Thread{}, err
 	}
+	if err := input.PR.Validate(); err != nil {
+		return store.Thread{}, fmt.Errorf("send diff review comments: %w", err)
+	}
 	scope, err = store.NormalizeDiffReviewScope(scope)
 	if err != nil {
 		return store.Thread{}, err

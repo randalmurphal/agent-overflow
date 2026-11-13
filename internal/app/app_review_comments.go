@@ -376,6 +376,9 @@ func (a *App) SendDiffReviewComments(threadID, scope, sourceKey string, commentI
 	if len(store.UniqueNonEmptyStringsForApp(commentIDs)) > store.MaxDiffReviewCommentIDs {
 		return store.Thread{}, fmt.Errorf("send diff review comments: too many comments selected")
 	}
+	if err := input.PR.Validate(); err != nil {
+		return store.Thread{}, fmt.Errorf("send diff review comments: %w", err)
+	}
 	if _, err := a.sendMessageWithOptions(context.Background(), threadID, "", sendMessageOptions{
 		RevisionSourceDiffReview:     &SourceDiffReview{ThreadID: threadID, Scope: scope, SourceKey: sourceKey, PR: input.PR},
 		RevisionSourceDiffCommentIDs: commentIDs,
@@ -401,6 +404,9 @@ func diffReviewSourceOwner(source *SourceDiffReview) store.DiffReviewOwner {
 func (a *App) appendDiffReviewCommentsToContent(owner store.DiffReviewOwner, content, scope, sourceKey string, commentIDs []string, pr *store.DiffReviewPRContext, heldBy store.DiffReviewMessageRows) (string, []store.DiffReviewCommentSnapshot, error) {
 	if len(store.UniqueNonEmptyStringsForApp(commentIDs)) > store.MaxDiffReviewCommentIDs {
 		return "", nil, fmt.Errorf("too many diff review comments selected")
+	}
+	if err := pr.Validate(); err != nil {
+		return "", nil, fmt.Errorf("diff review PR context: %w", err)
 	}
 	comments, err := a.store.ListDraftDiffReviewCommentsByID(owner, scope, sourceKey, commentIDs, heldBy)
 	if err != nil {
