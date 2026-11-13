@@ -56,6 +56,14 @@
     </div>
   {/if}
 {/if}
+{#if review.commitSelectionLost}
+  <!-- A held commit or run named commits the PR no longer lists (a
+       rebase, an amend): the pane shows All commits instead. -->
+  <div class="flex items-center justify-between gap-3 border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-commits-gone">
+    <span>PR updated. The picked commits are gone, so this is all commits.</span>
+    <button type="button" class="rounded border border-warning/40 px-2 py-0.5" onclick={() => review.dismissCommitSelectionLost()}>Dismiss</button>
+  </div>
+{/if}
 {#if review.prStale}
   <div class="flex items-center justify-between gap-3 border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-stale">
     <span>PR updated.</span>

@@ -32,6 +32,7 @@
     buildReviewRows,
     REVIEW_FILE_GAP_PX,
     REVIEW_FILE_HEADER_BAR_PX,
+    REVIEW_COMMIT_CARD_ROW_KEY,
     REVIEW_OVERVIEW_ROW_KEY,
     reviewRowEstimate,
     type CommentAnchor,
@@ -41,6 +42,7 @@
   } from '../../utils/reviewRows';
   import type { RowEstimate } from '../../utils/virtual/types';
   import type { LineRange } from '../../utils/reviewRange';
+  import type { LineCommentGate } from '../../stores/reviewRangeComments';
 
   // The continuous virtualized review surface: every file's header +
   // line blocks + comment rows in ONE LongListVirtualizer, with a
@@ -110,6 +112,10 @@
     onAddComment?: (anchor: EditorAnchor, generation?: number) => void;
     /** Shift+click on a line's add button (a range comment). */
     onExtendRange?: (anchor: EditorAnchor, generation?: number) => void;
+    /** A head-ending commit run: what each line takes. */
+    lineComment?: LineCommentGate;
+    /** A line's number gutter menu (Copy link to line). */
+    onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => void;
     /** The line ranges a file's rows tint. */
     rangesFor?: (path: string) => readonly LineRange[];
     /** Conflict view only: expands a fold row's hidden lines. */
@@ -155,6 +161,8 @@
     generation,
     onAddComment,
     onExtendRange,
+    lineComment,
+    onLineMenu,
     rangesFor,
     onExpandFold,
     onExpandGap,
@@ -463,9 +471,10 @@
     untrack(() => {
       onJumpRowConsumed?.();
       if (rowIndex < 0) return;
-      // The overview is a destination, not a find: no pulse, and it
-      // sits above every file so nothing overlays its top.
-      if (key === REVIEW_OVERVIEW_ROW_KEY) {
+      // The lead row (the overview, a commit's or run's card) is a
+      // destination, not a find: no pulse, and it sits above every file
+      // so nothing overlays its top.
+      if (key === REVIEW_OVERVIEW_ROW_KEY || key === REVIEW_COMMIT_CARD_ROW_KEY) {
         navigateToIndex(rowIndex);
         return;
       }
@@ -601,6 +610,8 @@
             {generation}
             {onAddComment}
             {onExtendRange}
+            {lineComment}
+            {onLineMenu}
             {rangesFor}
             {onExpandFold}
             {onExpandGap}

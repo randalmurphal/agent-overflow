@@ -221,9 +221,10 @@
   {#if review && (review.scope === 'branch' || review.scope === 'pr') && review.commits.length > 0}
     <ReviewCommitPicker
       commits={review.commits}
-      selectedSha={review.selectedCommitSHA}
+      selection={review.selectedCommits}
+      ranges={review.scope === 'pr'}
       disabled={review.loading}
-      onSelect={(sha) => { void review?.selectCommit(sha, { userInitiated: true }); }}
+      onSelect={(selection) => { void review?.selectCommits(selection, { userInitiated: true }); }}
     />
   {/if}
 

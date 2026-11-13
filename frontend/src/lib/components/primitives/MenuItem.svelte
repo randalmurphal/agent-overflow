@@ -34,6 +34,9 @@
     actionPosition?: 'start' | 'end';
     actionDisabled?: boolean;
     actionTitle?: string;
+    /** `hover`: the action shows while the row is hovered or focused (and
+     * always on compact), holding its place so nothing shifts. */
+    actionReveal?: 'always' | 'hover';
     onAction?: () => void;
     variant?: 'default' | 'danger';
   }
@@ -68,6 +71,7 @@
     actionPosition = 'end',
     actionDisabled = false,
     actionTitle,
+    actionReveal = 'always',
     onAction,
     variant = 'default',
   }: Props = $props();
@@ -144,6 +148,7 @@
         ? 'opacity-50 cursor-not-allowed'
         : 'hover:bg-surface-2/70 hover:text-fg',
       actionPressed ? 'text-warning' : '',
+      actionReveal === 'hover' ? 'opacity-0 group-hover/menuitem:opacity-100 group-focus/menuitem:opacity-100 focus-visible:opacity-100 compact:opacity-100' : '',
     ].join(' ')}
   >
     {#if actionText}{actionText}{:else if action}{@render action()}{/if}
@@ -166,7 +171,7 @@
   onclick={handleClick}
   onkeydown={handleKeydown}
   class={[
-    'w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left compact:py-2.5',
+    'group/menuitem w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left compact:py-2.5',
     'cursor-pointer select-none',
     'focus-visible:outline-none',
     'hover:bg-surface-2/40 focus:bg-surface-2/40',
