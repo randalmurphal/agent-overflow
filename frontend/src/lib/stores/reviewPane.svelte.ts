@@ -1493,6 +1493,8 @@ export function createReviewPaneState(
     updateFailing: () => prUpdateError !== null,
     withheld: () => nowWithheldReason,
     refreshThreads: () => refreshPRThreads(),
+    // Only a feed already frozen holds the comment back.
+    revealConversation: () => { if (conversationOrder.length > 0) captureConversationOrder(true); },
   });
 
   // The workspace's CURRENT open PR, read live from the shared git-status

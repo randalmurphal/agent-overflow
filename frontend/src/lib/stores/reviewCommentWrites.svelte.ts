@@ -35,6 +35,9 @@ export interface CommentWritesHost {
   withheld(): string | null;
   /** Reads the PR's threads again, for an answer with no pump (seq 0). */
   refreshThreads(): Promise<void>;
+  /** Joins the Conversation's newly arrived entries into its frozen
+   * order, so a PR comment the user posted shows where they posted it. */
+  revealConversation(): void;
 }
 
 interface Awaited {
@@ -42,7 +45,7 @@ interface Awaited {
   readonly entity: string;
   readonly seq: number;
   readonly launch: string;
-  readonly onSettled: () => void;
+  readonly onSettled: (shown: Promise<void>) => void;
 }
 
 /** What each write is keyed by, so its editor reads its state. */
@@ -57,9 +60,11 @@ export const commentWriteKey = {
 export interface CommentWrites {
   /** Runs `call` unless withheld; resolves true once it was accepted (the
    * settle may still be waiting for its frame), false when it failed or
-   * was withheld. `onSettled` runs once the answer is on screen.
+   * was withheld. `onSettled` runs once the editor may close: when the
+   * answer is on screen, or at once for a write with no seq to wait for,
+   * whose answer is on screen when `shown` resolves (the threads' re-read).
    * `withheld` replaces the host's gate for a write that has its own. */
-  run(key: string, call: (ref: PRRef) => Promise<{ seq: number } | null | undefined>, onSettled: () => void, withheld?: string | null): Promise<boolean>;
+  run(key: string, call: (ref: PRRef) => Promise<{ seq: number } | null | undefined>, onSettled: (shown: Promise<void>) => void, withheld?: string | null): Promise<boolean>;
   /** In flight, or waiting for its frame. */
   pending(key: string): boolean;
   error(key: string): string | null;
@@ -121,7 +126,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       untrack(() => {
         for (const [key, wait] of done) {
           awaiting.delete(key);
-          wait.onSettled();
+          wait.onSettled(Promise.resolve());
         }
       });
     });
@@ -130,7 +135,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
   async function run(
     key: string,
     call: (ref: PRRef) => Promise<{ seq: number } | null | undefined>,
-    onSettled: () => void,
+    onSettled: (shown: Promise<void>) => void,
     gate: string | null = host.withheld(),
   ): Promise<boolean> {
     if (inFlight.has(key) || awaiting.has(key)) return false;
@@ -158,12 +163,11 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
     if (seq <= 0) {
       // Nothing to wait for (no pump, or its refresh was not observed):
       // the editor closes now, and a read of the threads brings the answer.
-      onSettled();
-      void host.refreshThreads().catch(() => {});
+      onSettled(host.refreshThreads().catch(() => {}));
       return true;
     }
     if (host.launch() !== launch || peekPRSeq(entity) >= seq) {
-      onSettled();
+      onSettled(Promise.resolve());
       return true;
     }
     awaiting.set(key, { entity, seq, launch, onSettled });
@@ -225,9 +229,10 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
     async postPRComment() {
       const body = prCommentBody.trim();
       if (!body) return;
-      await run(commentWriteKey.prComment, (ref) => PostPRComment(prReferenceWire(ref), body), () => {
+      await run(commentWriteKey.prComment, (ref) => PostPRComment(prReferenceWire(ref), body), (shown) => {
         if (prCommentBody.trim() === body) prCommentBody = '';
         prCommentOpen = false;
+        void shown.then(() => { if (!disposed) host.revealConversation(); });
       });
     },
 

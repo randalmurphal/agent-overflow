@@ -335,6 +335,12 @@ export async function forgeInvocations(harness: HarnessApp): Promise<ForgeInvoca
   return log.invocations;
 }
 
+/** The fake's answered HTTP requests on `route` (status below 300), oldest first. */
+export async function forgeRouteCalls(harness: HarnessApp, route: string): Promise<ForgeHTTPInvocation[]> {
+  return (await forgeInvocations(harness))
+    .filter((call): call is ForgeHTTPInvocation => call.via === 'http' && call.route === route && call.status < 300);
+}
+
 /** Fail on any invocation the fake has no handler for, naming the call. */
 export async function expectEveryForgeCallHandled(harness: HarnessApp): Promise<void> {
   const unhandled = (await forgeInvocations(harness)).filter((call) => call.unhandled);

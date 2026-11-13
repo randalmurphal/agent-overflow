@@ -171,6 +171,19 @@ export async function openPage(page: Page): Promise<Locator> {
   return pane;
 }
 
+/**
+ * Open PR `number` from the Pull requests page (filter All) as a pinned
+ * review and wait for its diff. Answers the review pane.
+ */
+export async function openPinnedReview(page: Page, number: number): Promise<Locator> {
+  const pane = await openPage(page);
+  await pickFilter(page, pane, 'all');
+  await row(page, number).getByRole('button').first().click();
+  const review = page.getByTestId('review-pane');
+  await expect(review.getByTestId('review-diff-stats')).toBeVisible({ timeout: 60_000 });
+  return review;
+}
+
 export function registerPullsPageFlow({ compact }: PullsSurface): void {
   test('the page groups merge requests by what they need, remembers its filters, and opens one beside the list', async ({ page }, testInfo) => {
     test.setTimeout(120_000);

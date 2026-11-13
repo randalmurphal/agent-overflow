@@ -442,6 +442,39 @@ describe('a comment on the PR itself', () => {
     expect(state.sentComments.prCommentOpen).toBe(false);
     expect(state.sentComments.prCommentBody).toBe('');
   });
+
+  const POSTED: ReviewThread = {
+    id: 'pr-comment-1', path: '', side: 'file', isResolvable: false, isResolved: false, isOutdated: false,
+    comments: [comment({ id: 'node-9', body: 'Looks good overall.', createdAt: '2026-01-02T00:00:00Z', databaseID: 109 })],
+  };
+  const feedIds = (state: ReviewPaneState) => state.conversationFeed.map((item) => item.id);
+
+  it('shows the posted comment in a frozen feed, not behind "new"', async () => {
+    setBindingMock('PostPRComment', async () => ({ seq: 8 }));
+    const state = await open();
+    state.setConversationOpen(true);
+    state.freezeConversation();
+    expect(feedIds(state)).toEqual([`t:${THREAD.id}`]);
+    state.sentComments.setPRCommentBody('Looks good overall.');
+    await state.sentComments.postPRComment();
+    frame(8, { threads: [THREAD, POSTED] });
+    await settle();
+    expect(feedIds(state)).toContain(`t:${POSTED.id}`);
+    expect(state.conversationNewCount).toBe(0);
+  });
+
+  it('shows it after the threads\' re-read when the answer has no seq', async () => {
+    setBindingMock('PostPRComment', async () => ({ seq: 0 }));
+    const state = await open();
+    state.setConversationOpen(true);
+    state.freezeConversation();
+    threads = [THREAD, POSTED];
+    state.sentComments.setPRCommentBody('Looks good overall.');
+    await state.sentComments.postPRComment();
+    expect(state.sentComments.prCommentOpen).toBe(false);
+    await vi.waitFor(() => expect(feedIds(state)).toContain(`t:${POSTED.id}`));
+    expect(state.conversationNewCount).toBe(0);
+  });
 });
 
 describe('editor text survives its row unmounting', () => {

@@ -174,6 +174,15 @@ describe('<ReviewDraftEditor> send now or hold', () => {
     expect(onSubmit).toHaveBeenLastCalledWith('e1', 'draft text', 'draft');
   });
 
+  it('names the primary chord while the field is empty and the primary is disabled', () => {
+    const view = render(ReviewDraftEditor, {
+      props: { editor, body: '', onBodyChange: vi.fn(), onCancel: vi.fn(), onSubmit: vi.fn(), post: { primary: 'now', withheld: null } },
+    });
+    const textarea = view.container.querySelector('textarea')!;
+    expect(view.container.querySelector<HTMLButtonElement>('[data-editor-control="primary"]')!.disabled).toBe(true);
+    expect(textarea.placeholder).toMatch(/\+Enter to comment now\)$/);
+  });
+
   it('makes Add draft primary once the pane holds a draft', async () => {
     const { onSubmit, primaryButton, secondaryButton, textarea } = renderPost('draft');
     expect(primaryButton.textContent).toBe('Add draft');

@@ -76,7 +76,9 @@
 
   let textarea: HTMLTextAreaElement | undefined = $state();
   const chord = isMacPlatform() ? '⌘' : 'Ctrl';
-  const shownPlaceholder = $derived(primary.disabled && !body ? placeholder : `${placeholder}${placeholder ? ' ' : ''}(${chord}+Enter to ${primary.label.toLowerCase()})`);
+  // The placeholder shows only while the field is empty, so it names the
+  // primary's chord even though the primary is disabled until there is text.
+  const shownPlaceholder = $derived(`${placeholder}${placeholder ? ' ' : ''}(${chord}+Enter to ${primary.label.toLowerCase()})`);
 
   let cancelFocus: (() => void) | null = null;
   $effect(() => {

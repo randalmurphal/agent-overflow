@@ -62,6 +62,7 @@ describe('a sent comment\'s header actions', () => {
       updateFailing: () => false,
       withheld: () => null,
       refreshThreads: async () => {},
+      revealConversation: () => {},
     });
     const review = { sentComments: writes, sentCommentActions: true, nowWithheldReason: null };
     app = mount(ReviewThreadComments, { target, props: { thread: THREAD, review } });
