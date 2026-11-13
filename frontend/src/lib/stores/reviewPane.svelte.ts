@@ -57,6 +57,7 @@ import {
 import {
   applyPRSnapshot,
   applyPRThreads,
+  prReadStart,
   attachPR,
   clearPRThreadResolveOverride,
   overriddenPRThreads,
@@ -294,6 +295,8 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
   readonly pendingJumpRowKey: string | null;
   readonly loading: boolean;
   readonly error: string | null;
+  /** The PR threads read's failure, apart from the load's `error`. */
+  readonly threadsError: string | null;
   readonly sendingComments: boolean;
   /** Whether the send strip shows: a draft, a summary or verdict kept for
    * the next submit, or a submit in flight or unresolved. */
@@ -1109,6 +1112,10 @@ export function createReviewPaneState(
   let patchKey = $state('');
   let loading = $state(false);
   let error: string | null = $state(null);
+  // The PR threads read's failure (the Conversation refresh, a reload's
+  // re-read, a write's re-read): shown beside the load's, cleared only by
+  // the read's own success.
+  let threadsError: string | null = $state(null);
   // Hunk-gap expansions, per file path. The map itself is plain state:
   // merges mutate entries in place and bump the version counter, which
   // is the sole reactive signal the `files` derived reads.
@@ -1252,7 +1259,7 @@ export function createReviewPaneState(
     out.sort((a, b) => b.timeMs - a.timeMs || a.item.id.localeCompare(b.item.id));
     return out;
   });
-  const hideResolved = createHideResolved(() => prThreads, () => heldReplyThreadIds, hideResolvedPreference(backend));
+  const hideResolved = createHideResolved(() => prThreads, threadInUse, hideResolvedPreference(backend));
   const conversation = createConversationFeed({
     source: () => conversationFeedSource,
     subjectKey: () => prEntityKey,
@@ -1480,7 +1487,6 @@ export function createReviewPaneState(
   );
   const canDraftComments = $derived(pinned ? scope === 'pr' && (selectedCommitSHA === null || headRange) : threadId !== null);
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
-  const heldReplyThreadIds = $derived(new Set(drafts.flatMap((draft) => (draft.replyThreadId ? [draft.replyThreadId] : []))));
   const shownDrafts = $derived.by(() => (shown?.headRange ? rangeShownDrafts(drafts) : drafts));
   // A summary or verdict kept for the next PR review needs the strip to
   // send it, drafts or not.
@@ -1547,6 +1553,19 @@ export function createReviewPaneState(
     openEditorKeys: () => openEditorKeys,
     reactionsUnavailable: () => prSnapshot?.reactionsUnavailable ?? null,
   });
+
+  // The one answer to "is the reader using this thread": an open reply
+  // composer or held reply text, a sent comment open for edit or a
+  // delete being confirmed, a held draft reply, or a write on it (reply,
+  // edit, delete, resolve, reaction, suggestion apply) in flight,
+  // waiting for its frame or failed. Hide resolved threads never hides
+  // a thread in use, so its editor and its failure stay on screen.
+  function threadInUse(threadId: string): boolean {
+    return commentActions.threadsInUse.has(threadId)
+      || extras.activeThreads.has(threadId)
+      || resolvingThreadIds.has(threadId)
+      || resolveErrors.has(threadId);
+  }
 
   // The workspace's CURRENT open PR, read live from the shared git-status
   // store. Not memoized: a PR opened while this pane sat open must become
@@ -2034,8 +2053,10 @@ export function createReviewPaneState(
       // state, patch key, head, subject or editor lines.
       showFiles(arrival, read.files);
       showRead(read.read);
-      // A load is a moment Hide resolved decides what it hides.
-      hideResolved.decide();
+      // The reader's load, or one with nothing on screen yet, is a
+      // moment Hide resolved decides what it hides; a load nobody asked
+      // for keeps what the reader sees.
+      if (userInitiated || !keepsShownFiles) hideResolved.decide({ adopt: true });
       patchKey = read.patchKey;
       shownIgnoreWhitespace = requestedIgnoreWhitespace;
       shown = {
@@ -3064,7 +3085,9 @@ export function createReviewPaneState(
       // Through the store: a posted review is now part of the PR, so
       // every pane looking at it shows the new threads.
       if (settlement.kind === 'posted') {
-        applyPRThreads(computerPRKey(attempt.ref), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(attempt.ref)))) ?? []) as ReviewThread[]);
+        const key = computerPRKey(attempt.ref);
+        const from = prReadStart(key);
+        applyPRThreads(key, ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(attempt.ref)))) ?? []) as ReviewThread[], from);
       }
     } catch (err) {
       error = userFacingError(err);
@@ -3113,8 +3136,13 @@ export function createReviewPaneState(
   }
 
   // True when its answer was applied.
+  // Its failure is its own (`threadsError`): a diff load's success never
+  // clears it, and it never clears the diff load's.
   async function readPRThreads(ref: PRRef): Promise<boolean> {
     const key = computerPRKey(ref);
+    // What the read started from, so an answer older than a frame that
+    // landed meanwhile keeps that frame's threads and comments.
+    const from = prReadStart(key);
     try {
       const pr = prReferenceWire(ref);
       const [detail, threads] = await Promise.all([
@@ -3126,12 +3154,12 @@ export function createReviewPaneState(
         detail: detail ?? null,
         threads: threads ?? [],
         headSHA: String(detail?.headSHA ?? ''),
-      });
-      error = null;
+      }, from);
+      threadsError = null;
       return prEntityKey === key;
     } catch (err) {
       if (disposed) return false;
-      error = userFacingError(err);
+      threadsError = userFacingError(err);
       return false;
     }
   }
@@ -3601,6 +3629,7 @@ export function createReviewPaneState(
     get pendingJumpRowKey() { return pendingJumpRowKey; },
     get loading() { return loading; },
     get error() { return error; },
+    get threadsError() { return threadsError; },
     get sendingComments() { return sendingComments; },
     get sendStripShown() { return sendStripShown; },
     get prDetail() { return prSnapshot?.detail ?? null; },

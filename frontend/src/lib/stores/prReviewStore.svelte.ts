@@ -73,7 +73,7 @@ import {
 import { documentHidden } from '../utils/pageVisibility';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
-import type { CIPipeline, PRDetail, ReviewEvent, ReviewThread } from '../types/models';
+import type { CIPipeline, PRDetail, ReviewComment, ReviewEvent, ReviewThread } from '../types/models';
 
 /** The polled half of a PR: what `SubscribePRUpdates` observes. */
 export interface PRSnapshot {
@@ -691,13 +691,61 @@ function applyPRCIToKey(key: string, event: PRCIUpdatedEvent): void {
   applyPRCIUpdated(key, event);
 }
 
+// A thread read (GetPRDetail, ListPRReviewThreads) carries no pump
+// sequence, so the watermark cannot rank its answer against the frames
+// that landed while it ran: the answer may predate one of them, and the
+// pump will not send that frame again. It is reconciled by content
+// instead. A thread, or a comment of a thread, the held snapshot has
+// that the read's starting snapshot did not arrived during the read; an
+// answer missing it keeps it. The limit: a field a frame changed during
+// the read (a resolve, an edited body, a removed comment) takes the
+// answer's value until the next frame.
+
+/** What a thread read started from; taken before its call. */
+export interface PRReadStart {
+  readonly threads: readonly ReviewThread[] | null;
+}
+
+export function prReadStart(key: string): PRReadStart {
+  return { threads: store.snapshot(key)?.threads ?? null };
+}
+
+function byCreatedAt(a: ReviewComment, b: ReviewComment): number {
+  return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+}
+
+function keepArrivals(key: string, answer: readonly ReviewThread[], from: PRReadStart | undefined): readonly ReviewThread[] {
+  const held = from ? store.snapshot(key)?.threads : undefined;
+  if (!held || held === from?.threads) return answer;
+  const before = new Map((from?.threads ?? []).map((thread) => [thread.id, new Set(thread.comments.map((comment) => comment.id))]));
+  const answered = new Map(answer.map((thread, index) => [thread.id, index]));
+  let out: ReviewThread[] | null = null;
+  for (const thread of held) {
+    const known = before.get(thread.id);
+    const at = answered.get(thread.id);
+    if (at === undefined) {
+      if (known === undefined) (out ??= [...answer]).push(thread);
+      continue;
+    }
+    const current = (out ?? answer)[at];
+    const has = new Set(current.comments.map((comment) => comment.id));
+    const missing = thread.comments.filter((comment) => !has.has(comment.id) && !known?.has(comment.id));
+    if (missing.length === 0) continue;
+    out ??= [...answer];
+    out[at] = { ...current, comments: [...current.comments, ...missing].sort(byCreatedAt) };
+  }
+  return out ?? answer;
+}
+
 /** Apply a freshly fetched detail + threads pair (comments-only refresh).
  * A refresh reads no events and no reactions verdict (only the pump
- * does), so the held ones stay. */
-export function applyPRSnapshot(key: string, snapshot: Omit<PRSnapshot, 'events'> & { events?: readonly ReviewEvent[] }): void {
+ * does), so the held ones stay. `from` reconciles the answer with frames
+ * that landed during the read (above). */
+export function applyPRSnapshot(key: string, snapshot: Omit<PRSnapshot, 'events'> & { events?: readonly ReviewEvent[] }, from?: PRReadStart): void {
   const held = store.snapshot(key);
   store.apply(key, {
     ...snapshot,
+    threads: keepArrivals(key, snapshot.threads, from),
     events: snapshot.events ?? held?.events ?? EMPTY_PR_EVENTS,
     reactionsUnavailable: 'reactionsUnavailable' in snapshot ? snapshot.reactionsUnavailable : held?.reactionsUnavailable,
   });
@@ -715,13 +763,13 @@ const EMPTY_PR_EVENTS: readonly ReviewEvent[] = Object.freeze([]);
  * identical failures — so no later event would have restored it. Only a
  * successful pump observation (or a full-detail refresh) clears it.
  */
-export function applyPRThreads(key: string, threads: readonly ReviewThread[]): void {
+export function applyPRThreads(key: string, threads: readonly ReviewThread[], from?: PRReadStart): void {
   const current = store.snapshot(key);
   store.apply(
     key,
     {
       detail: current?.detail ?? null,
-      threads,
+      threads: keepArrivals(key, threads, from),
       events: current?.events ?? EMPTY_PR_EVENTS,
       reactionsUnavailable: current?.reactionsUnavailable,
       headSHA: current?.headSHA ?? '',

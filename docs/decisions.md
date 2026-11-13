@@ -624,9 +624,11 @@ and anti-changes that live only here:
   up at the arrivals, already in the feed; at the top, an arrival simply
   pushes the cards down. "Hide resolved threads" is remembered on the
   computer so it need not be ticked per PR, and hides only what was
-  resolved when the view was last loaded; a review already open takes up
-  a change made elsewhere only at its own refresh or reload, so nothing
-  vanishes under the cursor. Each section fits its content up to a cap and is
+  resolved at the last decision point and never a thread the reader is
+  using; between decision points the hidden set only shrinks, and a
+  review already open takes up a change made elsewhere only at its own
+  refresh or reload, so nothing vanishes under the cursor. A thread
+  read never removes a card a push brought while it ran. Each section fits its content up to a cap and is
   user-resizable (bottom drag handle, remembered height). Mechanism:
   `frontend/src/lib/components/review/AGENTS.md`.
 - Forge attachments referenced by PR/MR bodies and comments (images,

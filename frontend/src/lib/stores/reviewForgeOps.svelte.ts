@@ -66,6 +66,9 @@ export interface ForgeOps {
   error(surface: string): string | null;
   /** Bumps when the pane's PR becomes another: open popovers close. */
   readonly epoch: number;
+  /** The keys of the PR on screen with an operation pending, and the
+   * surfaces showing a failure, unscoped. */
+  readonly activeKeys: readonly string[];
   dispose(): void;
 }
 
@@ -116,6 +119,16 @@ export function createForgeOps(host: ForgeOpsHost): ForgeOps {
     });
   });
 
+  const activeKeys = $derived.by<readonly string[]>(() => {
+    const identity = host.identity();
+    if (identity === null) return [];
+    const prefix = `${identity}${SEP}`;
+    const out: string[] = [];
+    for (const [key, op] of ops) if (key.startsWith(prefix) && opPending(op)) out.push(key.slice(prefix.length));
+    for (const key of errors.keys()) if (key.startsWith(prefix)) out.push(key.slice(prefix.length));
+    return out;
+  });
+
   return {
     async run(key, surface, call, lost, options = {}) {
       const ref = host.ref();
@@ -160,6 +173,7 @@ export function createForgeOps(host: ForgeOpsHost): ForgeOps {
       return surfaceKey === null ? null : (errors.get(surfaceKey) ?? null);
     },
     get epoch() { return epoch; },
+    get activeKeys() { return activeKeys; },
     dispose() {
       disposed = true;
       stopWatch();

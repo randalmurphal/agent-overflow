@@ -21,7 +21,7 @@ import { resetPanesForTest } from './panes.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { prKey, type PRRef } from '../utils/prReference';
-import type { PRDetail, ReviewThread } from '../types/models';
+import type { CommentSuggestion, PRDetail, ReviewThread } from '../types/models';
 import { installPRDraftsFake } from '../../test/helpers/prDraftsFake';
 import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
 import { resetToLocalPage } from '../../test/helpers/scopes';
@@ -495,3 +495,233 @@ describe('Hide resolved threads', () => {
     });
   });
 });
+
+describe('a thread read converges with the frames that landed during it', () => {
+  const REPLY = { ...MID.comments[0], id: 'c-reply', body: 'A pushed reply.', createdAt: '2026-01-04T00:00:00Z' };
+  const midWithReply = { ...MID, comments: [...MID.comments, REPLY] };
+  const midComments = (state: ReviewPaneState) => state.prThreads.find((each) => each.id === 't-mid')!.comments.map((each) => each.id);
+
+  it('an older answer landing after a pushed thread and reply keeps both', async () => {
+    const state = await open();
+    const reads = deferThreadReads();
+    const refresh = state.refreshPRThreads({ explicit: true });
+    await vi.waitFor(() => expect(reads.calls()).toBe(1));
+    push([OLD, midWithReply, thread('t-pushed', 6)]);
+    expect(ids(state)).toEqual(['t-pushed', 't-mid', 't-old']);
+    reads.answer([OLD, MID]);
+    await refresh;
+    await settle();
+    expect(ids(state)).toEqual(['t-pushed', 't-mid', 't-old']);
+    expect(midComments(state)).toEqual(['c-t-mid', 'c-reply']);
+  });
+
+  it('so does the reader\'s reload, whose re-read answers late', async () => {
+    const state = await open();
+    const reads = deferThreadReads();
+    const reload = state.reload({ userInitiated: true });
+    await vi.waitFor(() => expect(reads.calls()).toBe(1));
+    push([OLD, midWithReply, thread('t-pushed', 6)]);
+    reads.answer([OLD, MID]);
+    await reload;
+    await settle();
+    expect(ids(state)).toEqual(['t-pushed', 't-mid', 't-old']);
+    expect(midComments(state)).toEqual(['c-t-mid', 'c-reply']);
+  });
+
+  it('a read that fails after a push keeps the push and says so apart from the diff', async () => {
+    const state = await open();
+    const reads = deferThreadReads();
+    const refresh = state.refreshPRThreads({ explicit: true });
+    await vi.waitFor(() => expect(reads.calls()).toBe(1));
+    push([OLD, MID, thread('t-pushed', 6)]);
+    reads.fail();
+    await refresh;
+    await settle();
+    expect(ids(state)).toEqual(['t-pushed', 't-mid', 't-old']);
+    expect(state.threadsError).toContain('did not answer');
+    expect(state.error).toBeNull();
+  });
+});
+
+describe('the thread read and the diff load each own their failure', () => {
+  const failThreads = () => setBindingMock('ListPRReviewThreads', async () => { throw new Error('The threads did not load.'); });
+  const failDiff = () => setReviewDiffMock('OpenPRDiff', async () => { throw new Error('The diff did not load.'); });
+
+  it('a failed thread read stays through a diff load that succeeds', async () => {
+    const state = await open();
+    failThreads();
+    await state.refreshPRThreads({ explicit: true });
+    expect(state.threadsError).toContain('threads did not load');
+    await state.reload();
+    await settle();
+    expect(state.error).toBeNull();
+    expect(state.threadsError).toContain('threads did not load');
+  });
+
+  it('a failed diff load stays through a thread read that succeeds', async () => {
+    const state = await open();
+    failDiff();
+    await state.reload();
+    await settle();
+    expect(state.error).toContain('diff did not load');
+    // The read finds the head moved, so the failed load is not retried
+    // on its snapshot (the stale banner's to reload): what shows is only
+    // what the read itself did.
+    const list = setBindingMock('ListPRReviewThreads', async () => threads);
+    setBindingMock('GetPRDetail', async () => ({ ...detail(), headSHA: 'sha-6' }));
+    await state.refreshPRThreads({ explicit: true });
+    await settle();
+    expect(list).toHaveBeenCalled();
+    expect(state.threadsError).toBeNull();
+    expect(state.error).toContain('diff did not load');
+  });
+
+  it('both failing show both, and each success clears only its own', async () => {
+    const state = await open();
+    failThreads();
+    failDiff();
+    await state.refreshPRThreads({ explicit: true });
+    await state.reload();
+    await settle();
+    expect(state.threadsError).toContain('threads did not load');
+    expect(state.error).toContain('diff did not load');
+    setReviewDiffMock('OpenPRDiff', async () => PATCH);
+    await state.reload();
+    await settle();
+    expect(state.error).toBeNull();
+    expect(state.threadsError).toContain('threads did not load');
+    setBindingMock('ListPRReviewThreads', async () => threads);
+    failDiff();
+    await state.reload();
+    await state.refreshPRThreads({ explicit: true });
+    await settle();
+    expect(state.threadsError).toBeNull();
+    expect(state.error).toContain('diff did not load');
+  });
+});
+
+describe('Hide resolved threads never hides a thread in use', () => {
+  const DONE = thread('t-done', 2, { isResolved: true });
+  const COMMENT = DONE.comments[0];
+  const SUGGESTION: CommentSuggestion = { index: 0, to: ['x'], appliable: true, digest: 'digest-0', bodyStartLine: 0, bodyEndLine: 2, bodyPlaced: true };
+  const never = () => new Promise<never>(() => {});
+  const refuse = async () => { throw new Error('The forge refused.'); };
+
+  beforeEach(() => {
+    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: ['pr-review-drafts.v1', 'pr-comment-actions.v1', 'pr-suggestions-reactions.v1'], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+  });
+
+  const REASONS: { name: string; use: (state: ReviewPaneState) => unknown }[] = [
+    { name: 'a reply composer open on the diff', use: (state) => state.openReply(DONE.id, 'diff') },
+    { name: 'a reply composer open in the Conversation', use: (state) => state.openReply(DONE.id, 'conversation') },
+    { name: 'reply text held with the composer closed', use: (state) => state.setReplyBody(DONE.id, 'Not yet.') },
+    { name: 'a sent comment open for edit', use: (state) => state.sentComments.setEditBody(DONE, COMMENT, 'Edited.') },
+    { name: 'a delete being confirmed', use: (state) => state.sentComments.setConfirmDelete(DONE, COMMENT, true) },
+    { name: 'a delete in flight', use: (state) => { setBindingMock('DeletePRComment', never); void state.sentComments.deleteComment(DONE, COMMENT); } },
+    { name: 'a delete waiting for its frame', use: async (state) => { setBindingMock('DeletePRComment', async () => ({ seq: 99 })); await state.sentComments.deleteComment(DONE, COMMENT); } },
+    { name: 'a failed delete', use: async (state) => { setBindingMock('DeletePRComment', refuse); await state.sentComments.deleteComment(DONE, COMMENT); } },
+    { name: 'a reply being held as a draft', use: (state) => { state.setReplyBody(DONE.id, 'Held.'); void state.holdPRThreadReply(DONE); } },
+    { name: 'a held draft reply', use: async (state) => { state.setReplyBody(DONE.id, 'Held.'); await state.holdPRThreadReply(DONE); state.setReplyBody(DONE.id, ''); } },
+    { name: 'a resolve in flight', use: (state) => { setBindingMock('SetPRThreadResolved', never); void state.setPRThreadResolved(DONE, true); } },
+    { name: 'a failed resolve', use: async (state) => { setBindingMock('SetPRThreadResolved', refuse); await state.setPRThreadResolved(DONE, true); } },
+    { name: 'a reaction in flight', use: (state) => { setBindingMock('SetPRCommentReaction', never); void state.reactions.toggle(DONE, COMMENT, 'THUMBS_UP', true); } },
+    { name: 'a failed reaction', use: async (state) => { setBindingMock('SetPRCommentReaction', refuse); await state.reactions.toggle(DONE, COMMENT, 'THUMBS_UP', true); } },
+    { name: 'a suggestion apply in flight', use: (state) => { setBindingMock('ApplyPRSuggestion', never); void state.suggestions.apply(DONE, COMMENT, SUGGESTION); } },
+    { name: 'a failed suggestion apply', use: async (state) => { setBindingMock('ApplyPRSuggestion', refuse); await state.suggestions.apply(DONE, COMMENT, SUGGESTION); } },
+  ];
+
+  for (const reason of REASONS) {
+    it(`${reason.name}: on the toggle and on a refresh, in the feed and the diff`, async () => {
+      const state = await open([OLD, DONE, MID]);
+      await reason.use(state);
+      await settle();
+      state.setHideResolved(true);
+      expect(ids(state)).toContain('t-done');
+      expect(state.shownPRThreads.map((each) => each.id)).toContain('t-done');
+      expect(state.hiddenResolvedCount).toBe(0);
+      await state.refreshPRThreads({ explicit: true });
+      await settle();
+      expect(ids(state)).toContain('t-done');
+      expect(state.shownPRThreads.map((each) => each.id)).toContain('t-done');
+    });
+  }
+
+  it('a thread not in use is hidden by the same steps', async () => {
+    const state = await open([OLD, DONE, MID]);
+    state.setHideResolved(true);
+    expect(ids(state)).not.toContain('t-done');
+    expect(state.shownPRThreads.map((each) => each.id)).not.toContain('t-done');
+  });
+});
+
+describe('Hide resolved threads: between decisions the hidden set only shrinks', () => {
+  // A small seeded generator, so a failure names its sequence.
+  function random(seed: number): () => number {
+    let value = seed >>> 0;
+    return () => {
+      value = (value + 0x6d2b79f5) >>> 0;
+      let t = value;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  it('a hidden thread unresolved and resolved again stays shown; so does one used and left', async () => {
+    const DONE = thread('t-done', 2, { isResolved: true });
+    const GONE = thread('t-gone', 4, { isResolved: true });
+    const state = await open([OLD, DONE, MID, GONE]);
+    state.setHideResolved(true);
+    expect(ids(state)).toEqual(['t-mid', 't-old']);
+    push([OLD, { ...DONE, isResolved: false }, MID, GONE]);
+    expect(ids(state)).toContain('t-done');
+    push([OLD, DONE, MID, GONE]);
+    expect(ids(state)).toContain('t-done');
+    state.openReply('t-gone', 'conversation');
+    expect(ids(state)).toContain('t-gone');
+    state.closeReply('t-gone', 'conversation');
+    expect(ids(state)).toContain('t-gone');
+  });
+
+  for (const seed of [1, 7, 42, 99, 2026]) {
+    it(`no thread shown since the decision is hidden again (seed ${seed})`, async () => {
+      const next = random(seed);
+      const initial = Array.from({ length: 6 }, (_, index) => thread(`t-${index}`, index + 1, { isResolved: index % 2 === 0 }));
+      const state = await open(initial);
+      state.setHideResolved(true);
+      let current = initial;
+      let arrivals = 0;
+      const shownSince = new Set<string>();
+      const look = () => {
+        const shown = new Set(state.shownPRThreads.map((each) => each.id));
+        for (const id of shownSince) {
+          expect(shown.has(id), `${id} hid again`).toBe(true);
+          expect(ids(state)).toContain(id);
+        }
+        for (const id of shown) shownSince.add(id);
+      };
+      look();
+      for (let step = 0; step < 200; step += 1) {
+        const target = current[Math.floor(next() * current.length)];
+        const move = Math.floor(next() * 6);
+        if (move === 0 || move === 1) {
+          current = current.map((each) => (each.id === target.id ? { ...each, isResolved: move === 0 } : each));
+          push(current);
+        } else if (move === 2) {
+          state.openConversationAt(target.id);
+        } else if (move === 3) {
+          state.openReply(target.id, 'conversation');
+        } else if (move === 4) {
+          state.closeReply(target.id, 'conversation');
+        } else {
+          arrivals += 1;
+          current = [...current, thread(`t-new-${arrivals}`, 10 + arrivals, { isResolved: next() < 0.5 })];
+          push(current);
+        }
+        flushSync();
+        look();
+      }
+    });
+  }
+});
+

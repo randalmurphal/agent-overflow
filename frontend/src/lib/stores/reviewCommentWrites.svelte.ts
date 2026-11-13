@@ -73,6 +73,18 @@ export const commentWriteKey = {
   prComment: 'pr-comment',
 } as const;
 
+/** The thread a write's key belongs to: every key of a thread's write
+ * starts `<kind>:<threadId>` (a reply, an edit, a delete, and
+ * reviewForgeOps' reactions and suggestions). Null for a key that is
+ * no thread's (a new comment's editor, the PR comment). */
+export function threadOfWriteKey(key: string): string | null {
+  const colon = key.indexOf(':');
+  if (colon < 0 || !THREAD_WRITE_KINDS.has(key.slice(0, colon))) return null;
+  return key.slice(colon + 1).split('\u0000')[0] || null;
+}
+
+const THREAD_WRITE_KINDS: ReadonlySet<string> = new Set(['reply', 'edit', 'delete', 'reaction', 'reactions', 'suggestion']);
+
 export interface CommentWrites {
   /** Runs `call` unless withheld; resolves true once it was accepted (the
    * settle may still be waiting for its frame), false when it failed or
@@ -97,6 +109,10 @@ export interface CommentWrites {
   setEditBody(thread: ReviewThread, comment: ReviewComment, body: string | null): void;
   /** The `threadId\0commentId` of every sent comment open in its editor. */
   readonly editing: ReadonlySet<string>;
+  /** Threads with a reply, edit or delete in flight, waiting for its
+   * frame or failed, a sent comment open in its editor, or a delete
+   * being confirmed. */
+  readonly activeThreads: ReadonlySet<string>;
   saveEdit(thread: ReviewThread, comment: ReviewComment): Promise<void>;
   confirmingDelete(thread: ReviewThread, comment: ReviewComment): boolean;
   setConfirmDelete(thread: ReviewThread, comment: ReviewComment, confirming: boolean): void;
@@ -145,6 +161,18 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
         }
       });
     });
+  });
+
+  const activeThreads = $derived.by<ReadonlySet<string>>(() => {
+    const out = new Set<string>();
+    for (const keys of [inFlight, awaiting.keys(), errors.keys()]) {
+      for (const key of keys) {
+        const thread = threadOfWriteKey(key);
+        if (thread !== null) out.add(thread);
+      }
+    }
+    for (const keys of [editBodies.keys(), confirming]) for (const key of keys) out.add(key.split('\u0000')[0]);
+    return out;
   });
 
   function isPending(key: string): boolean {
@@ -213,6 +241,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       }
     },
     get editing() { return new Set(editBodies.keys()); },
+    get activeThreads() { return activeThreads; },
     async saveEdit(thread, comment) {
       const key = sentKey(thread, comment);
       const body = (editBodies.get(key) ?? '').trim();

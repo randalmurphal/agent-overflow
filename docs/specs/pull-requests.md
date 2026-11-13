@@ -341,7 +341,13 @@ The chip only points at entries already in the feed. An explicit
 re-read of the threads (the Conversation header's refresh, the
 toolbar's reload and a stale-head Reload, which re-read the threads of a
 PR on screen) shows everything it read: when its answer lands, nothing
-up to it is counted.
+up to it is counted. A thread read carries no pump sequence, so its
+answer is reconciled with the frames that landed while it ran: a thread
+or comment that arrived by push during the read stays even when the
+answer, read earlier, lacks it. A field a frame changed during the read
+(a resolve, an edit) takes the answer's value until the next frame. A
+failed thread read shows its own banner with Retry; a diff load neither
+clears nor replaces it, and it never clears the diff load's error.
 
 "Hide resolved threads" in the toolbar's view-options menu (shown in the
 PR scope) leaves resolved threads out of the feed and the diff's thread
@@ -350,11 +356,18 @@ until first ticked: a review starts from it, and the toggle and the
 "N resolved hidden" line write it. A review already open adopts a
 change made in another review only at its own explicit refresh or
 reload. A failed save shows the layout-save toast, and the choice still
-applies to the review. What it hides is decided when the view is loaded: on the
-toggle, an explicit refresh or reload, and each diff load. A thread
-resolved after that stays on screen, shown resolved, until the next such
-moment; one unresolved since shows again; an arrival shows whatever its
-state. The header's count is what the feed shows, and "N resolved
+applies to the review. What it hides is decided at a decision point:
+the toggle, an explicit refresh or reload, and a load with nothing on
+screen (the review's first); a load nobody asked for is not one.
+Between two decision points the hidden set only shrinks: a thread
+resolved since stays on screen, shown resolved; a hidden thread that
+shows for any reason (unresolved, a jump, the reader using it) stays
+shown even if it is resolved again; an arrival shows whatever its
+state. A thread the reader is using is never hidden: a reply composer
+open or reply text kept, a sent comment open for edit or a delete being
+confirmed, a held draft reply, or a reply, edit, delete, resolve,
+reaction or suggestion apply in flight, waiting for its frame or
+failed. The header's count is what the feed shows, and "N resolved
 hidden" at the feed's end turns the option off. The file tree's badges
 and the unresolved stepper count unresolved threads and are unaffected.
 Find does not match a hidden thread, and a jump to one shows it until

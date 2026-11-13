@@ -11,7 +11,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import '../../../app.css';
 import ReviewPane from './ReviewPane.svelte';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
-import { __resetPinnedReviewStatesForTest, disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
+import { __resetPinnedReviewStatesForTest, disposePRReviewStates, reviewStateForPR, reviewSubjectForPR } from '../../stores/reviewPanePinned.svelte';
 import { applyPRUpdatedEvent } from '../../stores/prReviewStore.svelte';
 import { appStorageGet, resetAppStorageForTest } from '../../stores/appStorage';
 import { HIDE_RESOLVED_KEY } from '../../stores/reviewHideResolved.svelte';
@@ -341,5 +341,29 @@ describe('Hide resolved threads', () => {
     testid('review-reload')!.click();
     await vi.waitFor(() => expect(target.querySelectorAll('[data-testid="review-pr-thread"]').length).toBe(0));
     expect(testid('review-conversation-hidden-resolved')!.textContent).toContain('2 resolved hidden');
+  });
+});
+
+describe('a failed thread read', () => {
+  it('shows its own banner, kept through a diff reload, and its Retry reads again', async () => {
+    await openConversation();
+    setBindingMock('ListPRReviewThreads', async () => { throw new Error('The threads did not load.'); });
+    testid('review-refresh-comments')!.click();
+    const banner = await vi.waitFor(() => {
+      const found = testid('review-threads-error');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    expect(banner.textContent).toContain('The threads did not load.');
+    expect(testid('review-error')).toBeNull();
+
+    // A diff load nobody asked for succeeds; the threads' failure stays.
+    setBindingMock('ListPRReviewThreads', async () => threads);
+    await reviewStateForPR(OWNER, reviewSubjectForPR({ ownerPaneId: OWNER, backend: HOME_BACKEND, projectId: 'project-1', pr: PR })).reload();
+    await frames(2);
+    expect(testid('review-threads-error')).not.toBeNull();
+
+    testid('review-threads-error-retry')!.click();
+    await vi.waitFor(() => expect(testid('review-threads-error')).toBeNull());
   });
 });

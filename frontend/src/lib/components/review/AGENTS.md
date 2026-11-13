@@ -82,7 +82,8 @@ PR stores; components own presentation and interaction.
   counts, collapse-all, the view-options menu (whitespace, wrap, split,
   and in the PR scope Hide resolved threads, `stores/reviewHideResolved.svelte.ts`,
   a remembered preference in `appStorage` whose `shownPRThreads` the diff
-  rows and find read),
+  rows and find read; it never hides a thread the review state's
+  `threadInUse` names, the one answer to that question),
   reload and close (Back on a pinned review); no
   comment tally (the tree badges, the Conversation header and the title
   bar's stepper carry counts). Every selector is `ReviewToolbarMenu`, a

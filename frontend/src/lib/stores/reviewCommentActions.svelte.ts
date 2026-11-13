@@ -104,6 +104,11 @@ export interface ReviewCommentActions {
   /** Its members keep their getters: merge with Object.defineProperties. */
   readonly state: ReviewCommentActionsState;
   readonly writes: CommentWrites;
+  /** Threads the reader is using here: a reply composer open on either
+   * surface, reply text kept (a reply being sent or held as a draft
+   * keeps its text until it lands, and after a failure), a held draft
+   * reply, or any write on the thread (`writes.activeThreads`). */
+  readonly threadsInUse: ReadonlySet<string>;
   /** Posts a new comment's line (a range from `start`) now, keyed by its
    * editor; `onSettled` closes the editor once the answer is on screen.
    * Throws where comments cannot post now. */
@@ -172,6 +177,14 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     withheld: () => nowWithheldReason,
     refreshThreads: host.refreshThreads,
     showPostedComment: host.showPostedComment,
+  });
+
+  const threadsInUse = $derived.by<ReadonlySet<string>>(() => {
+    const out = new Set<string>(writes.activeThreads);
+    for (const key of openReplies) out.add(key.slice(key.indexOf(':') + 1));
+    for (const [threadId, body] of replyBodies) if (body.trim() !== '') out.add(threadId);
+    for (const threadId of replyDrafts.keys()) out.add(threadId);
+    return out;
   });
 
   function closeEverywhere(threadId: string): void {
@@ -261,6 +274,7 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
   return {
     state,
     writes,
+    get threadsInUse() { return threadsInUse; },
     async postLineComment(editorId, anchor, start, body, onSettled) {
       if (!canPostNow) throw new Error('Comments post to the pull request only on its whole diff.');
       const request = {

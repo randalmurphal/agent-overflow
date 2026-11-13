@@ -97,8 +97,11 @@ queued replay, and later live events must not extend that recovery wait.
 A PR's `pr:updated` and `pr:ci_updated` frames carry its pump's one
 sequence, so both rank against one watermark per PR key, seeded by the
 `SubscribePRUpdates` result, and a join replays buffered frames in sequence
-order. A merge action answers with the pump's sequence after the poll it
-asked for; the pane reads as pending until the watermark reaches it, and
+order. A PR thread read (`GetPRDetail` with `ListPRReviewThreads`)
+carries no sequence: take `prReadStart` before the call and pass it to
+`applyPRSnapshot` or `applyPRThreads`, which keep what a frame brought
+during the read. A merge action answers with the pump's sequence after
+the poll it asked for; the pane reads as pending until the watermark reaches it, and
 gives the wait up when the backend's launch (its hello's `launchId`) changes, since
 a restarted backend's pump numbers from one again, while a re-subscribe to
 the same process keeps it. CI is sourced only by

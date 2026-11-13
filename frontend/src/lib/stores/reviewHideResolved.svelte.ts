@@ -10,14 +10,15 @@
 // reader was not touching. A failed save is appStorage's toast; the
 // toggle still applies to the review.
 //
-// What is hidden is decided when the view is (re)loaded: on the toggle,
-// on an explicit refresh or reload, and on each diff load. A thread
-// resolved after that moment (the reader's Resolve or a remote one)
-// stays on screen, shown as resolved, until the next such moment, so
-// nothing vanishes under the cursor; one unresolved since shows again.
-// A thread that arrived since the moment shows whatever its state, and
-// one holding the reader's draft reply always shows, so the draft stays
-// where it is written.
+// What is hidden is decided at a decision point: the toggle, an
+// explicit refresh or reload, and a load with nothing on screen (the
+// review's first). Between two of them the hidden set only shrinks: a
+// thread resolved since stays on screen, shown resolved; a hidden one
+// that shows for any reason (unresolved, a jump to it, the reader using
+// it) stays shown even if it is resolved again; an arrival shows
+// whatever its state. A thread the reader is using (the review state's
+// `threadInUse`) is never hidden, so its editor and its failure stay
+// where they are.
 
 import { untrack } from 'svelte';
 import type { BackendKey } from '../transport/backendKey';
@@ -65,18 +66,25 @@ function settled(thread: ReviewThread): boolean {
 
 export function createHideResolved(
   threads: () => readonly ReviewThread[],
-  /** Threads that hold a draft reply: never hidden. */
-  heldReplies: () => ReadonlySet<string>,
+  /** The review state's one answer to "the reader is using this thread". */
+  inUse: (threadId: string) => boolean,
   preference: HideResolvedPreference,
 ): HideResolvedState {
   let on = $state(preference.read());
   let decided: ReadonlySet<string> = $state.raw(NONE);
+  // Threads of `decided` that have shown since the decision. Not
+  // reactive: written by the derived below as it finds one shown, so a
+  // thread once shown stays shown until the next decision.
+  let left = new Set<string>();
 
   const hidden = $derived.by<ReadonlySet<string>>(() => {
     if (!on || decided.size === 0) return NONE;
     const out = new Set<string>();
-    const held = heldReplies();
-    for (const thread of threads()) if (decided.has(thread.id) && settled(thread) && !held.has(thread.id)) out.add(thread.id);
+    for (const thread of threads()) {
+      if (!decided.has(thread.id) || left.has(thread.id)) continue;
+      if (settled(thread) && !inUse(thread.id)) out.add(thread.id);
+      else left.add(thread.id);
+    }
     return out.size === 0 ? NONE : out;
   });
 
@@ -87,12 +95,13 @@ export function createHideResolved(
 
   function decide(opts?: { adopt?: boolean }): void {
     if (opts?.adopt) on = preference.read();
+    left = new Set();
     if (!on) {
       decided = NONE;
       return;
     }
-    const held = untrack(heldReplies);
-    decided = new Set(untrack(threads).filter((thread) => settled(thread) && !held.has(thread.id)).map((thread) => thread.id));
+    // A thread in use now joins `left` the first time the set is read.
+    decided = new Set(untrack(threads).filter(settled).map((thread) => thread.id));
   }
 
   return {
