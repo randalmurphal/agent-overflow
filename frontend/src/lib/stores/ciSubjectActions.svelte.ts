@@ -42,6 +42,9 @@ export interface CIActionsView {
   readonly pipelineActions: readonly CIPipelineActionKind[];
   /** A GitHub pipeline's artifacts can be downloaded. */
   readonly pipelineHasArtifacts: boolean;
+  /** The sentence saying why some actions are not offered (the read's
+   * actionsUnavailable); null when every flag was read. */
+  readonly actionsUnavailable: string | null;
   jobActions(job: CIJob): readonly CIJobActionKind[];
   /** A GitLab job's archive can be downloaded. */
   jobHasArtifacts(job: CIJob): boolean;
@@ -85,6 +88,7 @@ export function createCIActionsView(
     get pending() { return pending; },
     get pipelineActions() { return ciPipelineActionKinds(at.pipeline); },
     get pipelineHasArtifacts() { return ciPipelineHasArtifacts(at.pipeline) && ciArtifactRunIds(at.pipeline).length > 0; },
+    get actionsUnavailable() { return at.pipeline?.actionsUnavailable || null; },
     jobActions: ciJobActionKinds,
     jobHasArtifacts: ciJobHasArtifacts,
 

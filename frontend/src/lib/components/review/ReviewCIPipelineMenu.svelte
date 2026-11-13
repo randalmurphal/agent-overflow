@@ -10,9 +10,11 @@
 
   // The CI header's one menu of pipeline actions: Retry failed jobs,
   // Cancel pipeline and, on GitHub, Download artifacts, each only when the
-  // read's flags show it. With none to offer there is no trigger at all.
-  // While a pipeline action is pending, the trigger shows it and its rows
-  // wait with the reason.
+  // read's flags show it. When a read behind the flags failed, a muted,
+  // non-interactive row says why (actionsUnavailable), and the trigger
+  // shows for it alone. With nothing to offer or say there is no trigger
+  // at all. While a pipeline action is pending, the trigger shows it and
+  // its rows wait with the reason.
 
   interface Props {
     actions: CIActionsView;
@@ -32,7 +34,8 @@
   );
   const busy = $derived(actions.pending !== null);
   const pendingLabel = $derived(pendingKind ? CI_ACTION_PENDING_LABEL[pendingKind] : downloading ? 'Downloading the artifacts…' : null);
-  const shown = $derived(kinds.length > 0 || artifacts || pendingLabel !== null);
+  const unavailable = $derived(actions.actionsUnavailable);
+  const shown = $derived(kinds.length > 0 || artifacts || pendingLabel !== null || unavailable !== null);
 
   function close(): void {
     open = false;
@@ -83,6 +86,15 @@
           testId="review-ci-pipeline-artifacts"
           onSelect={() => pick(() => { void actions.saveArtifacts(null); })}
         />
+      {/if}
+      {#if unavailable !== null}
+        <div
+          role="presentation"
+          class="max-w-[280px] px-3 py-1.5 text-xs text-text-secondary select-none"
+          data-testid="review-ci-pipeline-unavailable"
+        >
+          {unavailable}
+        </div>
       {/if}
     </Menu>
   </Popover>

@@ -631,6 +631,10 @@ export interface CIPipeline {
   stages: CIStage[];
   /** Absent on a read from before the actions existed. */
   actions?: CIPipelineActions;
+  /** Why some actions are not offered: a read behind their flags failed
+   * and the flags it would have set are absent. Absent when every flag
+   * was read. */
+  actionsUnavailable?: string;
 }
 
 /** Whether one CI action applies and whether the viewer may take it:

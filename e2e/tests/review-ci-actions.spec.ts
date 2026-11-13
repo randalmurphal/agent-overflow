@@ -8,7 +8,9 @@
 // manual job runs from its row (GitLab); a retry from a job's row
 // (GitHub); artifacts download to a file whose contents are the forge's,
 // a job's archive shown on its log's saved line (GitLab) and a run's
-// artifacts from the CI header's menu as a toast (GitHub). The same
+// artifacts from the CI header's menu as a toast (GitHub); a refused
+// artifacts read keeps the jobs and says why in the CI header's menu
+// (GitHub). The same
 // actions from the Pipelines tab are ci-actions-flow.ts.
 
 import { randomBytes } from 'node:crypto';
@@ -19,6 +21,7 @@ import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures.js';
 import {
   advanceForgeJob,
+  clearForgeRefusal,
   expectEveryForgeCallHandled,
   forgeInvocations,
   openCIJobLog,
@@ -180,6 +183,49 @@ test('GitHub: a refused retry reads as its sentence, a run\'s artifacts download
     expect(routes, route).toContain(route);
   }
   await expectEveryForgeCallHandled(harness);
+});
+
+test('GitHub: a refused artifacts read keeps the jobs and chips, and the CI header\'s menu says why artifacts are missing', async ({ harness, page }, testInfo) => {
+  test.setTimeout(120_000);
+  const workspace = await seedThreadProject(harness, TITLE, 'ci-actions');
+  const project = `ao-e2e/ci-actions-${randomBytes(4).toString('hex')}`;
+  await refuseForgeRoute(harness, { route: 'gh api run artifacts', status: 403, body: { message: 'Resource not accessible by integration' }, times: 0 });
+  try {
+    await publishPullRequest(harness, workspace, {
+      forge: 'github',
+      project,
+      pulls: [{
+        number: 62,
+        title: 'Act on CI',
+        ci: {
+          id: 46_400,
+          name: 'CI',
+          jobs: [
+            { id: 9_201, name: 'unit', status: 'failed', log: 'unit failed\n' },
+            { id: 9_202, name: 'lint', status: 'success', log: 'lint ok\n' },
+          ],
+          artifacts: [{ name: 'coverage', text: 'github coverage\n' }],
+        },
+      }],
+    });
+    await harness.open(page);
+    const review = await openPullRequestReview(page, TITLE);
+    await review.getByTestId('review-ci-chip').filter({ hasText: 'CI' }).click();
+    await expect(page.getByTestId('review-ci-job')).toHaveCount(2);
+    await expect(jobRow(page, 'unit').row.getByTestId('review-ci-job')).toContainText('failed');
+
+    await review.getByTestId('review-ci-pipeline-actions').click();
+    await expect(page.getByTestId('review-ci-pipeline-retry_failed')).toBeVisible();
+    await expect(page.getByTestId('review-ci-pipeline-artifacts')).toHaveCount(0);
+    await expect(page.getByTestId('review-ci-pipeline-unavailable')).toHaveText(
+      /^Retry, cancel and artifact downloads are not shown: this login cannot read the Actions permissions or artifacts of .+ on GitHub\.$/,
+    );
+    await page.screenshot({ path: testInfo.outputPath('ci-actions-github-unavailable.png') });
+    expect((await forgeInvocations(harness)).map((call) => call.route)).toContain('gh api run artifacts');
+    await expectEveryForgeCallHandled(harness);
+  } finally {
+    await clearForgeRefusal(harness, 'gh api run artifacts');
+  }
 });
 
 registerCIActionsFlow({ compact: false });

@@ -36,6 +36,7 @@ function fakeActions(read: CIPipeline, pending: CIPendingAction | null = null, d
     pending,
     pipelineActions: ciPipelineActionKinds(read),
     pipelineHasArtifacts: ciPipelineHasArtifacts(read),
+    actionsUnavailable: read.actionsUnavailable || null,
     jobActions: ciJobActionKinds,
     jobHasArtifacts: ciJobHasArtifacts,
     isPending: (kind, at) => pending !== null && pending.kind === kind && pending.jobId === (at?.id ?? null),
@@ -73,6 +74,17 @@ describe('<ReviewCIChips> actions', () => {
     unmount();
     render(ReviewCIChips, { pipeline: read, loading: false, error: null, onOpenJob: vi.fn(), actions: fakeActions(read).actions });
     expect(screen.queryByTestId('review-ci-pipeline-actions')).toBeNull();
+  });
+
+  it('shows why actions are unavailable as a muted row, the trigger shown for it alone', async () => {
+    const sentence = 'Retry, cancel and artifact downloads are not shown: this login cannot read the Actions permissions or artifacts of o/r on GitHub.';
+    const read = { ...pipeline({ retryFailed: '' }, JOBS), actionsUnavailable: sentence };
+    render(ReviewCIChips, { pipeline: read, loading: false, error: null, onOpenJob: vi.fn(), actions: fakeActions(read).actions });
+    await fireEvent.click(screen.getByTestId('review-ci-pipeline-actions'));
+    const row = await screen.findByTestId('review-ci-pipeline-unavailable');
+    expect(row.textContent?.trim()).toBe(sentence);
+    expect(row.getAttribute('role')).toBe('presentation');
+    expect(within(screen.getByRole('menu')).queryAllByRole('menuitem')).toHaveLength(0);
   });
 
   it('runs a pipeline action from the CI header\'s menu', async () => {
