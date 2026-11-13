@@ -315,6 +315,9 @@ describe('Hide resolved threads', () => {
     expect(testid('review-pr-conversation')!.textContent).toContain('1');
     const note = testid('review-conversation-hidden-resolved')!;
     expect(note.textContent).toContain('1 resolved hidden');
+    // The note sits in the card column, clear of the avatar rail.
+    const card = target.querySelector('[data-testid="review-conversation-thread"]')!.children[1] as HTMLElement;
+    expect(note.getBoundingClientRect().left).toBe(card.getBoundingClientRect().left);
 
     note.click();
     await vi.waitFor(() => expect(target.querySelectorAll('[data-testid="review-pr-thread"]').length).toBe(2));

@@ -362,10 +362,11 @@
   {/if}
 
   {#if review.hiddenResolvedCount > 0}
-    <!-- Pressed, it turns Hide resolved threads off. -->
+    <!-- Pressed, it turns Hide resolved threads off. It sits in the card
+         column (disc 28px + gap 12px) so the rail does not cross it. -->
     <button
       type="button"
-      class="{review.conversationFeed.length > 0 ? 'mt-3' : ''} rounded px-1 py-0.5 text-[0.6875rem] text-fg-subtle hover:text-fg compact:select-none"
+      class="{review.conversationFeed.length > 0 ? 'mt-3 ml-10' : ''} rounded px-1 py-0.5 text-[0.6875rem] text-fg-subtle hover:text-fg compact:select-none"
       title="Show resolved threads"
       data-testid="review-conversation-hidden-resolved"
       onclick={() => review.setHideResolved(false)}
