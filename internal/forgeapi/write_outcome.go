@@ -19,7 +19,7 @@ func (e *NotSentError) Unwrap() error { return e.Err }
 // WriteNotApplied reports whether err, the error of one write (POST, PUT,
 // PATCH, DELETE), proves the forge did not apply it: the request was
 // never sent (NotSentError), or the forge answered it in full with a 4xx
-// (a *StatusError, a rate limit, a refused login), or a GraphQL answer
+// (a *StatusError, a rate limit whose answer carried no data, a refused login), or a GraphQL answer
 // that refused it (GraphQLError.Refused). Every other error
 // cannot say: a reset or timeout after the request was written, a body
 // cut short, a 5xx, or a success whose body did not decode.
@@ -38,8 +38,10 @@ func WriteNotApplied(err error) bool {
 	if status, ok := errors.AsType[*StatusError](err); ok {
 		return status.Status >= 400 && status.Status < 500
 	}
-	if _, ok := errors.AsType[*RateLimitedError](err); ok {
-		return true
+	if limited, ok := errors.AsType[*RateLimitedError](err); ok {
+		// A GraphQL answer whose operation produced data ran, whatever
+		// the quota headers say.
+		return limited.GraphQL == nil || !limited.GraphQL.ProducedData()
 	}
 	if gql, ok := errors.AsType[*GraphQLError](err); ok {
 		return gql.Refused()

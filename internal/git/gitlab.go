@@ -43,9 +43,24 @@ type gitlabForge struct {
 	pipelineTags gitlabPipelineTags
 	// schemas is each host's management schema (gitlab_manage.go).
 	schemas gitlabCache[gitlabSchema]
+	// probes is the schema probe in flight per host (gitlab_manage.go).
+	probes gitlabSchemaProbes
 	// stateEventRetries holds the merge requests whose state events read
 	// failed, until it is due again (gitlab_manage.go).
 	stateEventRetries gitlabStateEventRetries
+}
+
+// resetCaches forgets what the adapter remembers of each host and
+// project (Core.ResetForgeCaches).
+func (f *gitlabForge) resetCaches() {
+	f.projects.clear()
+	f.viewers.clear()
+	f.noApprovalState.clear()
+	f.noCIJobCancelPermission.clear()
+	f.routes.clear()
+	f.pipelineTags.forget()
+	f.schemas.clear()
+	f.stateEventRetries.clear()
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }

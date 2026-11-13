@@ -2,6 +2,7 @@ package git
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -94,6 +95,84 @@ func TestGitLabPeopleChangeWritesInOrder(t *testing.T) {
 				t.Fatalf("an unconfirmed write advises a retry: %q", explained.Message)
 			}
 		})
+	}
+}
+
+// A batch is read against the list GitLab answered: some added and some
+// missing from a whole list is a partial change naming both, also as the
+// first write; missing from a list with a next page may have applied.
+func TestGitLabSetBatchOutcomes(t *testing.T) {
+	t.Parallel()
+	page := func(more bool, usernames ...string) forgeAPIAnswer {
+		nodes := make([]string, 0, len(usernames))
+		for _, name := range usernames {
+			nodes = append(nodes, `{"username":"`+name+`"}`)
+		}
+		return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"mergeRequestSetReviewers":{"errors":[],"mergeRequest":{"reviewers":{"pageInfo":{"hasNextPage":%v},"nodes":[%s]}}}}}`, more, strings.Join(nodes, ","))}
+	}
+	for _, tc := range []struct {
+		name          string
+		change        PRPeopleChange
+		remove, add   forgeAPIAnswer
+		want          string
+		partial, sure bool
+	}{
+		{name: "some added, the rest refused", change: PRPeopleChange{Add: []PRPerson{{Login: "bob"}, {Login: "eve"}}}, add: page(false, "bob"),
+			want: "Added bob to the reviewers of grp/sub/app!7; adding eve was refused: GitLab did not add eve to the reviewers", partial: true, sure: true},
+		{name: "some added, the rest past the page", change: PRPeopleChange{Add: []PRPerson{{Login: "bob"}, {Login: "eve"}}}, add: page(true, "bob"),
+			want: "Added bob to the reviewers of grp/sub/app!7; adding eve may have applied.", partial: true},
+		{name: "none shown, more pages", change: PRPeopleChange{Add: []PRPerson{{Login: "eve"}}}, add: page(true, "bob"),
+			want: "GitLab did not confirm the request to change the reviewers of grp/sub/app!7"},
+		{name: "a removal past the page", change: PRPeopleChange{Remove: []PRPerson{{Login: "eve"}}}, remove: page(true, "bob"),
+			want: "GitLab did not confirm the request to change the reviewers of grp/sub/app!7"},
+		{name: "after a removal, a batch in part", change: PRPeopleChange{Remove: []PRPerson{{Login: "carol"}}, Add: []PRPerson{{Login: "bob"}, {Login: "eve"}}},
+			remove: page(false), add: page(false, "bob"),
+			want: "Removed carol from the reviewers; added bob to the reviewers of grp/sub/app!7; adding eve was refused: ", partial: true, sure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+				switch {
+				case call.Op == "PRManageSchema":
+					return forgeAPIAnswer{Body: gitlabSchemaAll}
+				case call.Op == "PRSetReviewers" && call.Vars["mode"] == "REMOVE":
+					return tc.remove
+				case call.Op == "PRSetReviewers":
+					return tc.add
+				}
+				return forgeUnexpected(t, call)
+			})
+			ref := gitlabTestRef(7)
+			err := core.SetPRPeople(t.Context(), ref, true, tc.change)
+			_, partial := errors.AsType[*PartialWriteError](err)
+			explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(ref, ActionReviewers, err))
+			if partial != tc.partial || explained == nil || !strings.HasPrefix(explained.Message, tc.want) || (explained.Kind != ForgeErrorTransient) != tc.sure {
+				t.Fatalf("err = %v, explained %+v; want partial %v, sure %v, %q", err, explained, tc.partial, tc.sure, tc.want)
+			}
+		})
+	}
+}
+
+// A label addition missing from a list of labels with a next page may
+// have applied; missing from a whole list it was refused.
+func TestGitLabLabelAdditionPastThePage(t *testing.T) {
+	t.Parallel()
+	for _, more := range []bool{true, false} {
+		core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+			switch call.Op {
+			case "PRManageSchema":
+				return forgeAPIAnswer{Body: gitlabSchemaAll}
+			case "PRSetLabels":
+				return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"mergeRequestSetLabels":{"errors":[],"mergeRequest":{"labels":{"pageInfo":{"hasNextPage":%v},"nodes":[{"id":"gid://gitlab/ProjectLabel/9"}]}}}}}`, more)}
+			}
+			return forgeUnexpected(t, call)
+		})
+		err := core.SetPRLabels(t.Context(), gitlabTestRef(7), PRLabelChange{Add: []PRLabel{{ID: "gid://gitlab/ProjectLabel/1", Name: "bug"}}})
+		_, unsure := errors.AsType[*UnconfirmedWriteError](err)
+		_, refused := errors.AsType[*ForgeActionError](err)
+		if unsure != more || refused == more {
+			t.Fatalf("more %v: err = %v", more, err)
+		}
 	}
 }
 

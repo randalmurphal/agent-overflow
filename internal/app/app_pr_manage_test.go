@@ -15,9 +15,27 @@ import (
 
 // Two description edits of one PR opened on the same text: the second
 // waits for the first's write and then re-reads, so the precondition
-// refuses it instead of both passing it.
+// refuses it instead of both passing it. The PR is one PR however its
+// owner and repository are cased, as both forges resolve them.
 func TestOverlappingDescriptionEditsRunOneAtATime(t *testing.T) {
 	t.Parallel()
+	shouted := testGitLabPR
+	shouted.Namespace, shouted.Repo = "Group", "Widget"
+	for _, tc := range []struct {
+		name          string
+		first, second gitops.PRReference
+	}{
+		{"one spelling", testGitLabPR, testGitLabPR},
+		{"two spellings", testGitLabPR, shouted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			overlappingDescriptionEdits(t, tc.first, tc.second)
+		})
+	}
+}
+
+func overlappingDescriptionEdits(t *testing.T, firstPR, secondPR gitops.PRReference) {
 	var mu sync.Mutex
 	description := "old"
 	inPut := make(chan struct{})
@@ -59,16 +77,16 @@ func TestOverlappingDescriptionEditsRunOneAtATime(t *testing.T) {
 	})
 	app := NewApp()
 	isolatedForgeCore(t, app, handler)
-	edit := func(text string) error {
+	edit := func(pr gitops.PRReference, text string) error {
 		expected := "old"
-		_, err := app.EditPR(context.Background(), testGitLabPR, gitops.PREdit{Description: &text, ExpectedDescription: &expected})
+		_, err := app.EditPR(context.Background(), pr, gitops.PREdit{Description: &text, ExpectedDescription: &expected})
 		return err
 	}
 	first := make(chan error, 1)
-	go func() { first <- edit("from A") }()
+	go func() { first <- edit(firstPR, "from A") }()
 	<-inPut
 	second := make(chan error, 1)
-	go func() { second <- edit("from B") }()
+	go func() { second <- edit(secondPR, "from B") }()
 	// B waits on A's write; give it the time to (wrongly) read.
 	time.Sleep(100 * time.Millisecond)
 	close(release)
@@ -119,5 +137,62 @@ func TestPRManageLocks(t *testing.T) {
 	}
 	if n := locks.size(); n != 0 {
 		t.Fatalf("entries after every release = %d", n)
+	}
+}
+
+// A caller whose context ended takes no lock and starts no write, with
+// the slot free before it asked or freed as its context ended; its entry
+// is forgotten.
+func TestPRManageLocksRefuseAnEndedContext(t *testing.T) {
+	t.Parallel()
+	var locks prManageLocks
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	// It never enters the wait, so it can never take the slot.
+	locks.woke = func() { t.Error("a call whose context had ended waited for the lock") }
+	for range 20 {
+		if _, err := locks.acquire(canceled, "a"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("an ended context on a free lock = %v, want its error", err)
+		}
+	}
+	if n := locks.size(); n != 0 {
+		t.Fatalf("entries after a refused call = %d", n)
+	}
+	locks.woke = nil
+	// The context ends as the waiter takes the slot its holder released.
+	release, err := locks.acquire(context.Background(), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	locks.woke = cancel
+	got := make(chan error, 1)
+	go func() {
+		next, err := locks.acquire(ctx, "a")
+		if err == nil {
+			next()
+		}
+		got <- err
+	}()
+	for locks.users("a") < 2 {
+		time.Sleep(time.Millisecond)
+	}
+	release()
+	if err := <-got; !errors.Is(err, context.Canceled) {
+		t.Fatalf("a waiter whose context ended as it took the slot = %v, want its error", err)
+	}
+	if n := locks.size(); n != 0 {
+		t.Fatalf("entries after the waiter left = %d", n)
+	}
+	if next, err := locks.acquire(context.Background(), "a"); err != nil {
+		t.Fatalf("the lock after the waiter left = %v", err)
+	} else {
+		next()
+	}
+	var app App
+	wrote := false
+	if _, err := app.runPRManage(canceled, testGitLabPR, gitops.ActionEdit, func(context.Context) error { wrote = true; return nil }); !errors.Is(err, context.Canceled) || wrote {
+		t.Fatalf("a canceled management call = %v, wrote %v", err, wrote)
 	}
 }

@@ -123,11 +123,11 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	}
 	if partial, ok := errors.AsType[*PartialWriteError](err); ok {
 		if partial.Unconfirmed() {
-			return wrap(ForgeErrorTransient, fmt.Sprintf("%s %s; %s may have applied. The pane shows what %s did.", capitalize(partial.Done), name, partial.Next, labels.name))
+			return wrap(ForgeErrorTransient, fmt.Sprintf("%s of %s; %s may have applied. The pane shows what %s did.", capitalize(partial.Done), name, partial.Next, labels.name))
 		}
 		var cause *ForgeActionError
 		errors.As(explainForgeError(ref, name, action, partial.Err), &cause)
-		return wrap(cause.Kind, fmt.Sprintf("%s %s; %s was refused: %s", capitalize(partial.Done), name, partial.Next, cause.Message))
+		return wrap(cause.Kind, fmt.Sprintf("%s of %s; %s was refused: %s", capitalize(partial.Done), name, partial.Next, cause.Message))
 	}
 	if _, ok := errors.AsType[*UnconfirmedWriteError](err); ok {
 		return wrap(ForgeErrorTransient, fmt.Sprintf("%s did not confirm the request to %s %s, so it may have been applied. The pane shows what %s did.", labels.name, action, name, labels.name))

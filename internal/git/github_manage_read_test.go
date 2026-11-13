@@ -2,6 +2,7 @@ package git
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -69,6 +70,8 @@ func TestGitHubManageControlsFollowTheirViewerFields(t *testing.T) {
 			PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Labels: true, Close: true, ConvertToDraft: true, Rerequest: true}},
 		{"cannot label", `{"state":"OPEN","viewerCanUpdate":true,"viewerCanAssign":true}`, "READ",
 			PRManageCan{EditTitle: true, EditDescription: true, Assignees: true, ConvertToDraft: true}},
+		{"the author with read access", `{"state":"OPEN","viewerDidAuthor":true,"viewerCanUpdate":true}`, "READ",
+			PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, ConvertToDraft: true, Rerequest: true}},
 		{"closed, may reopen", `{"state":"CLOSED",` + all + `}`, "WRITE",
 			PRManageCan{EditTitle: true, EditDescription: true, Assignees: true, Labels: true, Reopen: true}},
 		{"closed, may not reopen", `{"state":"CLOSED","viewerCanUpdate":true}`, "WRITE",
@@ -78,6 +81,57 @@ func TestGitHubManageControlsFollowTheirViewerFields(t *testing.T) {
 			t.Parallel()
 			if got := githubManageOf(t, tc.pull, `{"viewerPermission":"`+tc.role+`"}`).Can; got != tc.want {
 				t.Fatalf("can = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A PRTick answer whose errors all lie under the management selections
+// publishes the PR with its controls unavailable; an error anywhere else
+// fails the read.
+func TestGitHubManageFieldErrorHidesOnlyTheControls(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		errors string
+		fails  bool
+		labels any
+	}{
+		{"labels refused", `[{"type":"FORBIDDEN","message":"Resource not accessible by integration","path":["repository","pullRequest","labels"]}]`, false, nil},
+		{"assignees and a viewer flag", `[{"message":"Something went wrong","path":["repository","pullRequest","assignees"]},{"message":"x","path":["repository","pullRequest","viewerCanLabel"]}]`, false, nil},
+		{"review requests", `[{"type":"FORBIDDEN","message":"no","path":["repository","pullRequest","reviewRequests","nodes",0,"requestedReviewer"]}]`, false, nil},
+		{"elsewhere too", `[{"type":"FORBIDDEN","message":"no","path":["repository","pullRequest","labels"]},{"message":"no","path":["repository","pullRequest","latestReviews"]}]`, true, nil},
+		{"no path", `[{"message":"Something went wrong"}]`, true, nil},
+		{"data that does not decode", `[{"type":"FORBIDDEN","message":"no","path":["repository","pullRequest","labels"]}]`, true, "not a connection"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pull := githubMergePull(map[string]any{"labels": tc.labels, "viewerCanUpdate": true, "viewerCanLabel": true})
+			body := githubTickJSON(t, githubMergeRepo(nil), pull)
+			body = body[:len(body)-1] + `,"errors":` + tc.errors + `}`
+			core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+				if call.Op != "PRTick" {
+					return forgeUnexpected(t, call)
+				}
+				return forgeAPIAnswer{Body: body}
+			})
+			read, err := core.ReadPR(t.Context(), githubTestRef(7), PRReadParts{Detail: true}, nil, nil)
+			if tc.fails {
+				if err == nil {
+					t.Fatal("an error outside the management fields was published")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReadPR = %v, want the PR without its controls", err)
+			}
+			m := read.Detail.Manage
+			if read.Detail.Number != 7 || read.Detail.HeadSHA != "abc1234" {
+				t.Fatalf("detail = %+v", read.Detail)
+			}
+			if !strings.HasPrefix(m.Unavailable, "Reviewers, assignees, labels and the PR's edit controls are not shown") ||
+				m.Can != (PRManageCan{}) || len(m.Reviewers)+len(m.Assignees)+len(m.Labels) != 0 {
+				t.Fatalf("manage = %+v", m)
 			}
 		})
 	}

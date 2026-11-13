@@ -355,7 +355,7 @@ func glabSetPeople(reviewers bool) func(e *Engine, c *call, v graphQLVars) respo
 		for _, login := range *current {
 			nodes = append(nodes, map[string]any{"username": login})
 		}
-		return graphQLData(map[string]any{field: map[string]any{"errors": []string{}, "mergeRequest": map[string]any{list: map[string]any{"nodes": nodes}}}})
+		return graphQLData(map[string]any{field: map[string]any{"errors": []string{}, "mergeRequest": map[string]any{list: glabFirstPage(nodes)}}})
 	}
 }
 
@@ -385,7 +385,21 @@ func glabSetLabels(e *Engine, c *call, v graphQLVars) response {
 	for _, node := range gitlabLabelNodes(r, p.Labels) {
 		nodes = append(nodes, map[string]any{"id": node["id"]})
 	}
-	return graphQLData(map[string]any{field: map[string]any{"errors": []string{}, "mergeRequest": map[string]any{"labels": map[string]any{"nodes": nodes}}}})
+	return graphQLData(map[string]any{field: map[string]any{"errors": []string{}, "mergeRequest": map[string]any{"labels": glabFirstPage(nodes)}}})
+}
+
+// glabSetListFirst is the first: the app's set mutations select on the
+// list they answer.
+const glabSetListFirst = 100
+
+// glabFirstPage is a connection of the first glabSetListFirst nodes, with
+// hasNextPage when there are more, as GitLab answers the selection.
+func glabFirstPage(nodes []map[string]any) map[string]any {
+	more := len(nodes) > glabSetListFirst
+	if more {
+		nodes = nodes[:glabSetListFirst]
+	}
+	return map[string]any{"pageInfo": map[string]any{"hasNextPage": more}, "nodes": nodes}
 }
 
 // glabSetDraft answers PRSetDraft: the draft prefix added to or dropped

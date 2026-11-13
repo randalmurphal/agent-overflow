@@ -28,6 +28,30 @@ const githubManageFields = `viewerCanUpdate viewerCanClose viewerCanReopen viewe
 	`assignees(first: 100) { nodes { login name } } ` +
 	`labels(first: 100) { nodes { id name color } }`
 
+// githubManageSelections are the pull request fields githubManageFields
+// selects.
+var githubManageSelections = map[string]bool{"viewerCanUpdate": true, "viewerCanClose": true, "viewerCanReopen": true, "viewerCanLabel": true,
+	"viewerCanAssign": true, "reviewRequests": true, "assignees": true, "labels": true}
+
+// githubManageOnly reports whether err is a GraphQL answer whose data
+// decoded and whose every error lies under a management selection of
+// the pull request: what the read can publish without its controls.
+func githubManageOnly(err error) bool {
+	gql, ok := errors.AsType[*forgeapi.GraphQLError](err)
+	if !ok || gql.Undecoded || len(gql.Problems) == 0 {
+		return false
+	}
+	for _, p := range gql.Problems {
+		if len(p.Path) < 3 || p.Path[0] != "repository" || p.Path[1] != "pullRequest" {
+			return false
+		}
+		if field, ok := p.Path[2].(string); !ok || !githubManageSelections[field] {
+			return false
+		}
+	}
+	return true
+}
+
 // githubPullManageRaw is the Details half of a PR's detail.
 type githubPullManageRaw struct {
 	ViewerCanUpdate bool `json:"viewerCanUpdate"`
@@ -138,19 +162,22 @@ func (in githubMergeInputs) manage() PRManage {
 		out.Labels = append(out.Labels, label.label())
 	}
 	// Requesting a review and dismissing one have no viewer field: GitHub
-	// gives them to triage and write access.
-	triage := githubRoleAtLeast(repo.ViewerPermission, "TRIAGE")
+	// gives requests to triage access and to the PR's author ("Pull
+	// request authors and repository owners and collaborators can request
+	// a pull request review", the review requests reference), dismissals
+	// to write access.
+	request := githubRoleAtLeast(repo.ViewerPermission, "TRIAGE") || pull.ViewerDidAuthor
 	write := githubRoleAtLeast(repo.ViewerPermission, "WRITE")
 	out.Can = PRManageCan{
 		EditTitle:       pull.ViewerCanUpdate,
 		EditDescription: pull.ViewerCanUpdate,
-		Reviewers:       open && triage,
+		Reviewers:       open && request,
 		Assignees:       pull.ViewerCanAssign,
 		Labels:          pull.ViewerCanLabel,
 		Close:           open && pull.ViewerCanClose,
 		Reopen:          closed && pull.ViewerCanReopen,
 		ConvertToDraft:  open && !pull.IsDraft && pull.ViewerCanUpdate,
-		Rerequest:       open && triage,
+		Rerequest:       open && request,
 		Dismiss:         open && write,
 		ReviewerTeams:   repo.Owner != nil && repo.Owner.Typename == "Organization",
 	}
@@ -297,9 +324,9 @@ func (f *githubForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 	if err != nil {
 		return err
 	}
-	path, list := fmt.Sprintf("%s/issues/%d/assignees", githubRepoPath(ref.Repository()), ref.Number), "assignees of"
+	path, list := fmt.Sprintf("%s/issues/%d/assignees", githubRepoPath(ref.Repository()), ref.Number), "assignees"
 	if reviewers {
-		path, list = githubPullPath(ref)+"/requested_reviewers", "reviewers of"
+		path, list = githubPullPath(ref)+"/requested_reviewers", "reviewers"
 	}
 	removeBody, err := githubPeopleBody(ref, reviewers, change.Remove)
 	if err != nil {
@@ -396,7 +423,7 @@ func (f *githubForge) SetPRLabels(ctx context.Context, ref PRReference, change P
 	}
 	pullID := raw.Repository.PullRequest.ID
 	step := func(verb, op, doc string, labels []PRLabel) changeStep {
-		done, next := stepWords(verb, labelNames(labels), "labels of")
+		done, next := stepWords(verb, labelNames(labels), "labels")
 		return changeStep{done: done, next: next, run: func() error {
 			_, err := client.GraphQL(ctx, op, doc, map[string]any{"labelableID": pullID, "labelIDs": ids(labels)}, nil)
 			return writeOutcome(err)

@@ -72,6 +72,47 @@ func TestWriteNotAppliedOnTheWire(t *testing.T) {
 	}
 }
 
+// A GraphQL answer that is also a rate-limit refusal proves a write not
+// applied only while it carried no data: a mutation that produced data
+// ran, whatever the quota headers say.
+func TestWriteNotAppliedRateLimitedGraphQLOnTheWire(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"data beside an execution error, quota spent", `{"data":{"m":{"id":"1"}},"errors":[{"message":"Something went wrong while executing your query."}]}`, false},
+		{"rate limited, no data", `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, true},
+		{"rate limited, null data", `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, true},
+		{"rate limited, null field", `{"data":{"m":null},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-RateLimit-Limit", "5000")
+				w.Header().Set("X-RateLimit-Remaining", "0")
+				w.Header().Set("X-RateLimit-Reset", "4102444800")
+				w.Header().Set("X-RateLimit-Resource", "graphql")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			t.Cleanup(srv.Close)
+			var out struct {
+				M *struct {
+					ID string `json:"id"`
+				} `json:"m"`
+			}
+			_, err := isolatedService(t, srv).GitHub("github.com").GraphQL(t.Context(), "M", "mutation M { m { id } }", nil, &out)
+			if _, limited := errors.AsType[*RateLimitedError](err); !limited {
+				t.Fatalf("err = %v, want the rate limit", err)
+			}
+			if got := WriteNotApplied(err); got != tc.want {
+				t.Fatalf("WriteNotApplied(%v) = %v, want %v", err, got, tc.want)
+			}
+		})
+	}
+}
+
 // On the wire, a GraphQL answer with errors proves a write not applied
 // only when it carried no data or a null field, every error is a known
 // refusal, and its data decoded.

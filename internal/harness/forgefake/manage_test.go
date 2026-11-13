@@ -191,7 +191,7 @@ func TestGitLabSetMutations(t *testing.T) {
 		return out
 	}
 	got := glabGraphQL(t, srv, "PRSetAssignees", "mutation", with(map[string]any{"usernames": []string{"bob", "eve"}, "mode": "APPEND"}))
-	if nodes := mustJSON(t, got["data"].(map[string]any)["mergeRequestSetAssignees"].(map[string]any)["mergeRequest"]); nodes != `{"assignees":{"nodes":[{"username":"bob"}]}}` {
+	if nodes := mustJSON(t, got["data"].(map[string]any)["mergeRequestSetAssignees"].(map[string]any)["mergeRequest"]); nodes != `{"assignees":{"nodes":[{"username":"bob"}],"pageInfo":{"hasNextPage":false}}}` {
 		t.Fatalf("append assignees = %s", nodes)
 	}
 	glabGraphQL(t, srv, "PRSetReviewers", "mutation", with(map[string]any{"usernames": []string{"bob"}, "mode": "REMOVE"}))

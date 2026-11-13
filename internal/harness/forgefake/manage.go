@@ -292,9 +292,10 @@ func (e *Engine) mayAssign(r *Repo, p *Pull) bool {
 	return viewerMay(p.viewer().Assign, githubRoles[r.Merge.Permission] >= githubRoles["TRIAGE"])
 }
 
-// mayTriage is GitHub's triage access to request reviews.
+// mayTriage is GitHub's right to request reviews: triage access, or the
+// pull's author.
 func (e *Engine) mayTriage(r *Repo, p *Pull) bool {
-	return viewerMay(p.viewer().Triage, githubRoles[r.Merge.Permission] >= githubRoles["TRIAGE"])
+	return viewerMay(p.viewer().Triage, githubRoles[r.Merge.Permission] >= githubRoles["TRIAGE"] || strings.EqualFold(p.Author, e.viewer))
 }
 
 // mayLabel is GitHub's viewerCanLabel.

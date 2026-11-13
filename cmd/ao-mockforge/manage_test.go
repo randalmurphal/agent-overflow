@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -303,6 +304,28 @@ func TestGitHubManageRefusalsThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
+// A PR's author may request reviews with read access: GitHub's review
+// requests reference says pull request authors can. Dismissing stays
+// with write access.
+func TestGitHubAuthorWithReadRequestsReviews(t *testing.T) {
+	fixture := githubManageFixture()
+	fixture.Viewer = "octo"
+	fixture.Repos[0].Merge = &forgefake.RepoMerge{Permission: "READ"}
+	r := newRig(t, fixture)
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "manage", Number: 3}
+	ctx := forgeapi.WithInteractive(t.Context())
+	m := mergeRead(t, r, ref).Detail.Manage
+	if !m.Can.Reviewers || !m.Can.Rerequest || m.Can.Dismiss {
+		t.Fatalf("the author's flags = %+v", m.Can)
+	}
+	if err := r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "carol"}}}); err != nil {
+		t.Fatalf("the author requesting a review: %v", err)
+	}
+	if got := reviewerStates(mergeRead(t, r, ref).Detail.Manage.Reviewers)["carol"]; got != gitops.ReviewerPending {
+		t.Fatalf("carol after the author's request = %q", got)
+	}
+}
+
 func peopleOf(reviewers []gitops.PRReviewer) []gitops.PRPerson {
 	out := []gitops.PRPerson{}
 	for _, r := range reviewers {
@@ -568,6 +591,52 @@ func TestGitLabManageMissesAreRefusals(t *testing.T) {
 	}
 	if got := logins(peopleOf(mergeRead(t, r, ref).Detail.Manage.Reviewers)); !slices.Equal(got, []string{"carol"}) {
 		t.Fatalf("reviewers after the partial change = %v", got)
+	}
+}
+
+// A batch GitLab applied in part is a partial change naming both halves;
+// an addition the answered list cannot show (it has a next page) may
+// have applied, never a refusal.
+func TestGitLabManagePartialAndInconclusiveBatches(t *testing.T) {
+	fixture := gitlabManageFixture()
+	r := newRig(t, fixture)
+	ref := gitlabManageRef()
+	ctx := forgeapi.WithInteractive(t.Context())
+
+	err := r.core.SetPRPeople(ctx, ref, false, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "octo"}, {Login: "eve"}}})
+	got := explained(t, ref, gitops.ActionAssignees, err)
+	if _, partial := errors.AsType[*gitops.PartialWriteError](err); !partial || got.Kind != gitops.ForgeErrorRefused ||
+		!strings.HasPrefix(got.Message, "Added octo to the assignees of grp/manage!2; adding eve was refused: GitLab did not add eve") {
+		t.Fatalf("a batch applied in part = %v (%+v)", err, got)
+	}
+
+	// 100 reviewers: the answered list is full and has a next page.
+	members := []forgefake.Member{}
+	reviewers := []string{}
+	for i := range 100 {
+		login := fmt.Sprintf("m%03d", i)
+		members = append(members, forgefake.Member{Login: login})
+		reviewers = append(reviewers, login)
+	}
+	fixture.Repos[0].Members = append(fixture.Repos[0].Members, append(members, forgefake.Member{Login: "zed"})...)
+	fixture.Repos[0].Pulls[0].Reviewers = reviewers
+	fixture.Repos[0].Pulls[0].ChangeRequests = nil
+	if _, err := r.engine.Seed(fixture); err != nil {
+		t.Fatal(err)
+	}
+	err = r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "zed"}}})
+	got = explained(t, ref, gitops.ActionReviewers, err)
+	if _, unsure := errors.AsType[*gitops.UnconfirmedWriteError](err); !unsure || got.Kind != gitops.ForgeErrorTransient || strings.Contains(got.Message, "refused") {
+		t.Fatalf("an addition the answer cannot show = %v (%+v)", err, got)
+	}
+	var full []any
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Route == "glab graphql PRSetReviewers" {
+			full = append(full, inv)
+		}
+	}
+	if len(full) != 1 {
+		t.Fatalf("PRSetReviewers sent %d times", len(full))
 	}
 }
 

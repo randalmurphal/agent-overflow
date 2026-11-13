@@ -95,22 +95,23 @@ func gitlabUnsupported(ref PRReference, what string) error {
 }
 
 const gitlabSetReviewersMutation = `mutation PRSetReviewers($projectPath: ID!, $iid: String!, $usernames: [String!]!, $mode: MutationOperationMode!) {
-  mergeRequestSetReviewers(input: {projectPath: $projectPath, iid: $iid, reviewerUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { reviewers(first: 100) { nodes { username } } } }
+  mergeRequestSetReviewers(input: {projectPath: $projectPath, iid: $iid, reviewerUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { reviewers(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
 }`
 
 const gitlabSetAssigneesMutation = `mutation PRSetAssignees($projectPath: ID!, $iid: String!, $usernames: [String!]!, $mode: MutationOperationMode!) {
-  mergeRequestSetAssignees(input: {projectPath: $projectPath, iid: $iid, assigneeUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { assignees(first: 100) { nodes { username } } } }
+  mergeRequestSetAssignees(input: {projectPath: $projectPath, iid: $iid, assigneeUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { assignees(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
 }`
+
+type gitlabUserConnection struct {
+	PageInfo githubPageInfo      `json:"pageInfo"`
+	Nodes    []gitlabGraphQLUser `json:"nodes"`
+}
 
 type gitlabPeoplePayload struct {
 	Errors       []string `json:"errors"`
 	MergeRequest *struct {
-		Reviewers *struct {
-			Nodes []gitlabGraphQLUser `json:"nodes"`
-		} `json:"reviewers"`
-		Assignees *struct {
-			Nodes []gitlabGraphQLUser `json:"nodes"`
-		} `json:"assignees"`
+		Reviewers *gitlabUserConnection `json:"reviewers"`
+		Assignees *gitlabUserConnection `json:"assignees"`
 	} `json:"mergeRequest"`
 }
 
@@ -134,7 +135,7 @@ func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 	}
 	step := func(mode string, people []PRPerson) changeStep {
 		names := logins(people)
-		done, next := stepWords(strings.ToLower(mode), names, list+" of")
+		done, next := stepWords(strings.ToLower(mode), names, list)
 		return changeStep{done: done, next: next, run: func() error {
 			vars := gitlabMRVars(ref)
 			vars["usernames"], vars["mode"] = names, mode
@@ -145,30 +146,27 @@ func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 			if payload.MergeRequest == nil {
 				return &UnconfirmedWriteError{Err: fmt.Errorf("GitLab answered no merge request after setting its %s", list)}
 			}
-			var now []gitlabGraphQLUser
-			if reviewers && payload.MergeRequest.Reviewers != nil {
-				now = payload.MergeRequest.Reviewers.Nodes
-			} else if !reviewers && payload.MergeRequest.Assignees != nil {
-				now = payload.MergeRequest.Assignees.Nodes
+			now := payload.MergeRequest.Assignees
+			if reviewers {
+				now = payload.MergeRequest.Reviewers
 			}
-			var missed []string
-			for _, name := range names {
-				present := slices.ContainsFunc(now, func(u gitlabGraphQLUser) bool { return strings.EqualFold(u.Username, name) })
-				if present != (mode == "APPEND") {
-					missed = append(missed, name)
+			if now == nil {
+				return &UnconfirmedWriteError{Err: fmt.Errorf("GitLab answered no %s after setting them", list)}
+			}
+			present := make([]bool, len(names))
+			for i, name := range names {
+				present[i] = slices.ContainsFunc(now.Nodes, func(u gitlabGraphQLUser) bool { return strings.EqualFold(u.Username, name) })
+			}
+			return gitlabSetOutcome(mode, names, present, now.PageInfo.HasNextPage, list, func(missed []string) error {
+				if mode == "REMOVE" {
+					return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab kept %s on the %s.", joinClauses(missed), list)}
 				}
-			}
-			if len(missed) == 0 {
-				return nil
-			}
-			if mode == "REMOVE" {
-				return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab kept %s on the %s.", joinClauses(missed), list)}
-			}
-			why := "they may not be members of the project"
-			if !reviewers {
-				why = "they may not be members of the project, or the project takes fewer assignees"
-			}
-			return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab did not add %s to the %s: %s.", joinClauses(missed), list, why)}
+				why := "they may not be members of the project"
+				if !reviewers {
+					why = "they may not be members of the project, or the project takes fewer assignees"
+				}
+				return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab did not add %s to the %s: %s.", joinClauses(missed), list, why)}
+			})
 		}}
 	}
 	var steps []changeStep
@@ -179,6 +177,49 @@ func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 		steps = append(steps, step("APPEND", change.Add))
 	}
 	return runSteps(steps)
+}
+
+// gitlabSetOutcome is a set mutation's result read from the list it
+// answered (present[i] for names[i]; more when the list has a next page,
+// which the answer does not show). An addition listed, or a removal not
+// listed in a whole list, applied; an addition missing from a whole list,
+// or a removal still listed, was refused (refusal words those); one the
+// list cannot show (not listed in a list with more) is unknown. All
+// applied is nil. None applied is the refusal, or unconfirmed when any is
+// unknown. Some applied is a PartialWriteError naming both, whose cause
+// is the refusal or, when any is unknown, unconfirmed.
+func gitlabSetOutcome(mode string, names []string, present []bool, more bool, list string, refusal func(missed []string) error) error {
+	var applied, refused, unknown []string
+	for i, name := range names {
+		listed := present[i]
+		switch {
+		case mode == "APPEND" && listed, mode == "REMOVE" && !listed && !more:
+			applied = append(applied, name)
+		case mode == "APPEND" && !more, mode == "REMOVE" && listed:
+			refused = append(refused, name)
+		default:
+			unknown = append(unknown, name)
+		}
+	}
+	if len(refused) == 0 && len(unknown) == 0 {
+		return nil
+	}
+	var cause error
+	if len(unknown) > 0 {
+		cause = &UnconfirmedWriteError{Err: fmt.Errorf("GitLab answered a partial list of the %s, without %s", list, joinClauses(unknown))}
+	} else {
+		cause = refusal(refused)
+	}
+	if len(applied) == 0 {
+		return cause
+	}
+	verb := "add"
+	if mode == "REMOVE" {
+		verb = "remove"
+	}
+	done, _ := stepWords(verb, applied, list)
+	_, next := stepWords(verb, append(refused, unknown...), list)
+	return &PartialWriteError{Done: done, Next: next, Err: cause}
 }
 
 func logins(people []PRPerson) []string {
@@ -198,14 +239,15 @@ func labelNames(labels []PRLabel) []string {
 }
 
 const gitlabSetLabelsMutation = `mutation PRSetLabels($projectPath: ID!, $iid: String!, $labelIds: [LabelID!]!, $mode: MutationOperationMode!) {
-  mergeRequestSetLabels(input: {projectPath: $projectPath, iid: $iid, labelIds: $labelIds, operationMode: $mode}) { errors mergeRequest { labels(first: 100) { nodes { id } } } }
+  mergeRequestSetLabels(input: {projectPath: $projectPath, iid: $iid, labelIds: $labelIds, operationMode: $mode}) { errors mergeRequest { labels(first: 100) { pageInfo { hasNextPage } nodes { id } } } }
 }`
 
 type gitlabLabelsPayload struct {
 	Errors       []string `json:"errors"`
 	MergeRequest *struct {
-		Labels struct {
-			Nodes []gitlabLabelNode `json:"nodes"`
+		Labels *struct {
+			PageInfo githubPageInfo    `json:"pageInfo"`
+			Nodes    []gitlabLabelNode `json:"nodes"`
 		} `json:"labels"`
 	} `json:"mergeRequest"`
 }
@@ -224,7 +266,7 @@ func (f *gitlabForge) SetPRLabels(ctx context.Context, ref PRReference, change P
 		return gitlabUnsupported(ref, "labels")
 	}
 	step := func(mode string, labels []PRLabel) changeStep {
-		done, next := stepWords(strings.ToLower(mode), labelNames(labels), "labels of")
+		done, next := stepWords(strings.ToLower(mode), labelNames(labels), "labels")
 		return changeStep{done: done, next: next, run: func() error {
 			ids := make([]string, 0, len(labels))
 			for _, label := range labels {
@@ -236,23 +278,20 @@ func (f *gitlabForge) SetPRLabels(ctx context.Context, ref PRReference, change P
 			if err != nil {
 				return err
 			}
-			if payload.MergeRequest == nil {
-				return &UnconfirmedWriteError{Err: errors.New("GitLab answered no merge request after setting its labels")}
+			if payload.MergeRequest == nil || payload.MergeRequest.Labels == nil {
+				return &UnconfirmedWriteError{Err: errors.New("GitLab answered no merge request labels after setting them")}
 			}
-			var missed []string
-			for _, label := range labels {
-				present := slices.ContainsFunc(payload.MergeRequest.Labels.Nodes, func(n gitlabLabelNode) bool { return n.ID == label.ID })
-				if present != (mode == "APPEND") {
-					missed = append(missed, firstNonEmpty(label.Name, label.ID))
+			now := payload.MergeRequest.Labels
+			present := make([]bool, len(labels))
+			for i, label := range labels {
+				present[i] = slices.ContainsFunc(now.Nodes, func(n gitlabLabelNode) bool { return n.ID == label.ID })
+			}
+			return gitlabSetOutcome(mode, labelNames(labels), present, now.PageInfo.HasNextPage, "labels", func(missed []string) error {
+				if mode == "REMOVE" {
+					return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab kept the label %s.", joinClauses(missed))}
 				}
-			}
-			switch {
-			case len(missed) == 0:
-				return nil
-			case mode == "REMOVE":
-				return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab kept the label %s.", joinClauses(missed))}
-			}
-			return &ForgeActionError{Kind: ForgeErrorNotFound, Message: fmt.Sprintf("GitLab did not add the label %s: it is not one of %s's labels. Search the labels again.", joinClauses(missed), ref.Project())}
+				return &ForgeActionError{Kind: ForgeErrorNotFound, Message: fmt.Sprintf("GitLab did not add the label %s: it is not one of %s's labels. Search the labels again.", joinClauses(missed), ref.Project())}
+			})
 		}}
 	}
 	var steps []changeStep

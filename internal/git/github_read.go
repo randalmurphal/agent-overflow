@@ -360,12 +360,18 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	vars["wantEvents"] = want.Events
 	vars["wantChecks"] = want.Detail || want.CI
 	var raw githubTickRaw
+	// An error confined to the management selections leaves the rest of
+	// the read standing; the detail says the controls are unavailable.
+	var manageErr error
 	if _, err := client.GraphQL(ctx, "PRTick", githubPRTickQuery, vars, &raw); err != nil {
-		return PRRead{}, err
+		if !want.Detail || !githubManageOnly(err) {
+			return PRRead{}, err
+		}
+		manageErr = err
 	}
 	pull, err := raw.pull(ref)
 	if err != nil {
-		return PRRead{}, err
+		return PRRead{}, errors.Join(manageErr, err)
 	}
 	var checks []CheckStatus
 	var contexts []githubContextRaw
@@ -391,6 +397,10 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		out.Detail.Readiness = merge.readiness()
 		out.Detail.Merge = merge.options(out.Detail.Readiness)
 		out.Detail.Manage = merge.manage()
+		if manageErr != nil {
+			out.Detail.Manage = emptyManage()
+			out.Detail.Manage.Unavailable = manageUnavailableSentence(ref, manageErr)
+		}
 		if pull.Merged || strings.EqualFold(pull.State, "MERGED") {
 			out.Detail.MergedAt = pull.MergedAt
 			if pull.MergedBy != nil {

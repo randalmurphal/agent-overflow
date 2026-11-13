@@ -293,8 +293,8 @@ is cached as an unknown viewer), `Threads` and `Events` its discussions
 (`per_page=100`, paged by `X-Next-Page`, positions normalized against
 `diff_refs.head_sha`; one read serves both, system notes are the events),
 `Events` also the resource state events (`resource_state_events?per_page=100`,
-at most 3 pages: every page while they fit, else the newest 3 by
-`X-Total-Pages`): GitLab records a close, a reopen (`opened`, or
+at most 3 requests: every page while they fit; past them page 1 and the
+last two by `X-Total-Pages`, or the first 3 without it): GitLab records a close, a reopen (`opened`, or
 `reopened` on some servers) and a merge as these rather than as notes,
 and the merge request's `merged_at`/`closed_at` stand in for a merge or
 close without one. A failed state events read leaves the events without
@@ -650,8 +650,11 @@ follow the merge actions' contract: each write is interactive, validated
 in `git.Core`, checked inside the adapter against the PR it names, and on
 success the PR's pump polls at once (`PRActionResult.Seq`). The app runs
 the management writes of one PR one at a time (`prManageLocks`, keyed by
-the PR, waiting bounded by the call's context, an entry dropped once no
-call holds or waits on it); merge actions are outside it. The two reads
+the PR's identity, `PRReference.Identity`: owner and repository
+lowercased, as both forges resolve them; waiting bounded by the call's
+context, which is checked before and after the wait; an entry dropped
+once no call holds or waits on it); merge actions are outside it. A
+review submit's lock keys on the same identity. The two reads
 outside the tick, a picker's search (`SearchPRCandidates`) and the default
 merge commit message (`GetPRMergeMessage`), are their own calls; their
 failure never touches the PR's read.
@@ -664,7 +667,9 @@ refusal (`forgeapi.WriteNotApplied`) only when the answer had no data or
 the mutation's field was null, its data decoded, and every error is a
 known refusal: GitHub `FORBIDDEN`, `NOT_FOUND`, `UNPROCESSABLE` or
 `INSUFFICIENT_SCOPES`, a validation error before execution (no `data`), or
-GitLab's permission answer. A people or label change removes first, then
+GitLab's permission answer. A rate-limited GraphQL answer is a refusal
+only while its operation produced no data: data beside the rate limit
+means the operation ran. A people or label change removes first, then
 adds, one write per non-empty side; a failure of the second write is a
 `git.PartialWriteError` that names what the first did and whether the
 second was refused ("removed X; adding Y was refused: ...") or may have
@@ -675,9 +680,12 @@ The read rides the detail (`PRDetail.Manage`): reviewers with their state
 labels and one capability flag per control (`PRManageCan`), from the
 forge's own answer. A GitHub reviewer's state and staleness come from the
 same review: the standing approval or change request when one stands,
-else the latest review. A failed GitLab management read never fails or
-hides the PR: `PRManage.Unavailable` says so in one sentence, every flag
-is false and the lists are empty. The changes-requested blocker carries
+else the latest review. A failed management read never fails or hides
+the PR: `PRManage.Unavailable` says so in one sentence, every flag is
+false and the lists are empty. On GitLab that is the `PRManage` read or
+its probe; on GitHub, a PRTick answer whose every error lies under the
+management selections (the viewer flags, `reviewRequests`, `assignees`,
+`labels`) with the rest decoded; an error anywhere else fails the read. The changes-requested blocker carries
 the reviews a dismissal needs (`MergeBlocker.ChangeRequests`) and whether
 a GitLab bypass is offered (`Bypassable`); a GitLab bypass that stands is
 a settled row (`Bypassed`).
@@ -710,14 +718,19 @@ removal is sent as asked, even of someone or something the last read did
 not show. GitHub ignores an assignee it cannot assign without an error, so
 the next read is the answer. A GitLab set mutation skips a non-member or
 an unknown label id without an error; the adapter checks the list the
-mutation answers, and a miss is a refusal naming who or what was not
-applied.
+mutation answers (`first: 100` with `pageInfo { hasNextPage }`). A miss
+from a whole list is a refusal naming who or what was not applied; one
+the list cannot show (it has a next page) may have applied; some applied
+and some not is a partial change naming both, also as the first write.
 
 GitHub's capability flags come from its viewer fields: edit and convert to
 draft from `viewerCanUpdate`, close from `viewerCanClose`, reopen from
 `viewerCanReopen`, labels from `viewerCanLabel`, assignees from
 `viewerCanAssign`. Requesting and re-requesting reviews follow triage
-access and dismissing write access, which have no viewer field; team
+access or the viewer's authorship of the PR (`viewerDidAuthor`; GitHub's
+review requests reference: "Pull request authors and repository owners
+and collaborators can request a pull request review"), and dismissing
+write access, which have no viewer field; team
 reviewers need an organization owner. GHES before 3.10 is outside
 support. GitLab's: edit, close, reopen, draft and re-request from
 `userPermissions.updateMergeRequest`; reviewers, assignees and labels from
@@ -731,7 +744,11 @@ re-request), `MergeRequestUpdateInput`'s `overrideRequestedChanges`
 `MergeRequestSetAssigneesInput` and `MergeRequestSetLabelsInput` (each
 gates its control; a host without it offers none and refuses the write).
 The answer, either way, is cached per host for 10 minutes; a failed probe
-is not cached and makes the read unavailable. A host with the override is
+is not cached and makes the read unavailable. Concurrent cold reads of a
+host share one probe, which runs past the caller that started it, each
+waiting bounded by its own context. A harness reset forgets the answers
+with the adapters' other per-host and per-project memory
+(`Core.ResetForgeCaches`). A host with the override is
 read with `PRManageChecks`, which adds `mergeabilityChecks`: the
 `REQUESTED_CHANGES` check failing is what blocks (elsewhere the
 `detailed_merge_status` `requested_changes`), and the check passing while
