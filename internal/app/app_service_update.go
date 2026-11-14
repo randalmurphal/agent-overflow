@@ -75,7 +75,12 @@ type ServiceUpdateDeps struct {
 // over all of it, because every field is read by the status RPC and written
 // by the flow, and two locks would be two answers to "what is happening".
 type serviceUpdateState struct {
-	mu sync.Mutex
+	// publish orders status frames: every publisher takes it before mu and
+	// holds it from its mutation through its emit, so frames leave in
+	// mutation order. mu is released before the emit, so a status read never
+	// waits on a subscriber.
+	publish sync.Mutex
+	mu      sync.Mutex
 	// request asks the supervisor to run an already-staged version. Installed
 	// by SetServiceUpdateRequester from a supervised `serve` boot and nil
 	// everywhere else, which is what makes "this install has no supervisor" an
@@ -93,6 +98,16 @@ type serviceUpdateState struct {
 	cancelRequested bool
 	// status is the last published frame, minus the fields derived per read.
 	status ServiceUpdateStatus
+	// checks joins the release check loop. stopChecks ends its lifetime,
+	// which ConfigureServiceUpdates creates because it runs before Start
+	// assigns the app context. checksStopped refuses a loop once Shutdown
+	// has stopped them.
+	checks        workGroup
+	stopChecks    context.CancelFunc
+	checksStopped bool
+	// checkTicks replaces the hourly ticker when non-nil. Test seam, set
+	// before ConfigureServiceUpdates.
+	checkTicks <-chan time.Time
 }
 
 // The phases a flow moves through, in order. Strings on the wire because the
@@ -116,8 +131,12 @@ const (
 // published unconditionally, so the throttle can never swallow the last one.
 const serviceUpdateProgressInterval = 250 * time.Millisecond
 
-// serviceUpdateCheckTimeout bounds the metadata round trips: the boot-time
-// passive check and the picker's ListServiceReleases. It is the release
+// serviceUpdateCheckInterval paces the passive release check after the one at
+// boot, so a host left running learns of a later release.
+const serviceUpdateCheckInterval = time.Hour
+
+// serviceUpdateCheckTimeout bounds the metadata round trips: each passive
+// release check and the picker's ListServiceReleases. It is the release
 // LISTING, not a download, so a host that cannot reach GitHub finds out in
 // seconds instead of holding an RPC open.
 const serviceUpdateCheckTimeout = 30 * time.Second
@@ -171,8 +190,9 @@ type ServiceUpdateStatus struct {
 	// CurrentVersion is this build's version. Always answered, including on a
 	// host that can do nothing else here.
 	CurrentVersion string `json:"currentVersion"`
-	// LatestVersion is the boot-time passive check's answer, empty when this
-	// host is up to date, when the check failed, or when it never ran.
+	// LatestVersion is the passive release check's answer, empty when this
+	// host is up to date or no check has succeeded yet. A failed check keeps
+	// the previous answer.
 	LatestVersion string `json:"latestVersion,omitempty"`
 	// LatestTag is that release's tag, which is what RequestServiceUpdate
 	// takes.
@@ -204,8 +224,9 @@ type ServiceUpdateStatus struct {
 	Unavailable string `json:"unavailable,omitempty"`
 }
 
-// ConfigureServiceUpdates installs the remote update seam and starts the one
-// passive release check this process makes.
+// ConfigureServiceUpdates installs the remote update seam and starts the
+// passive release check: once at boot, then every serviceUpdateCheckInterval
+// until shutdown.
 //
 // Bootstrap-boundary function rather than a method, for the reason every input
 // in bootstrap.go is one: an exported method on App is a wire RPC by
@@ -220,46 +241,102 @@ func ConfigureServiceUpdates(a *App, deps ServiceUpdateDeps) {
 		deps.Log = func(string, ...any) {}
 	}
 	a.serviceUpdate.mu.Lock()
+	defer a.serviceUpdate.mu.Unlock()
 	a.serviceUpdate.deps = deps
 	if a.serviceUpdate.status.Phase == "" {
 		a.serviceUpdate.status.Phase = serviceUpdatePhaseIdle
 	}
-	a.serviceUpdate.mu.Unlock()
-
+	// A configuration replaces the previous one whole: its loop ends, and
+	// without a source there is no answer left to report.
+	if a.serviceUpdate.stopChecks != nil {
+		a.serviceUpdate.stopChecks()
+		a.serviceUpdate.stopChecks = nil
+	}
 	if deps.Source == nil {
+		a.serviceUpdate.status.LatestVersion, a.serviceUpdate.status.LatestTag = "", ""
+	}
+	if deps.Source == nil || a.serviceUpdate.checksStopped {
 		return
 	}
-	// The passive check: ONE goroutine, one call, never retried. It is
-	// deliberately NOT in the activation gate's parked set, and the membership
-	// rule is why — the gate parks work a database restore could not undo, and
-	// a read of a public release list undoes itself by ending. A trial that
-	// learns there is a newer version has done nothing a rollback has to
-	// reverse. Parking it would instead mean a trial's status surface reported
-	// no known release for as long as the trial ran, which is a worse answer
-	// for no property gained.
-	go func() {
-		ctx, cancel := context.WithTimeout(a.lifeCtx(), serviceUpdateCheckTimeout)
-		defer cancel()
-		latest, err := deps.Source.Latest(ctx)
-		if err != nil {
-			// Logged and dropped. A host that cannot reach the release feed at
-			// boot is a host whose owner can still ask for a specific version
-			// later, and a retry loop on an unattended machine is a network
-			// call nobody asked for repeating forever.
+	ticks := a.serviceUpdate.checkTicks
+	// Its own lifetime rather than lifeCtx: a supervised boot configures this
+	// before Start creates the app context.
+	ctx, stop := context.WithCancel(context.Background())
+	a.serviceUpdate.stopChecks = stop
+	// The passive check is deliberately NOT in the activation gate's parked
+	// set, and the membership rule is why: the gate parks work a database
+	// restore could not undo, and a read of a public release list undoes
+	// itself by ending. A trial that learns there is a newer version has done
+	// nothing a rollback has to reverse. Parking it would instead mean a
+	// trial's status surface reported no known release for as long as the
+	// trial ran, which is a worse answer for no property gained.
+	//
+	// It runs beside an update flow rather than skipping a tick: it only
+	// lists releases, which never touches the source's by-tag target, and a
+	// flow carries LatestVersion and LatestTag through its own status writes.
+	a.serviceUpdate.checks.Go(func() {
+		if ticks == nil {
+			ticker := time.NewTicker(serviceUpdateCheckInterval)
+			defer ticker.Stop()
+			ticks = ticker.C
+		}
+		for {
+			a.checkServiceUpdate(ctx, deps)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticks:
+			}
+		}
+	})
+}
+
+// checkServiceUpdate asks the release source for the newest installable
+// release and publishes a status frame when the answer changed. A failed
+// check keeps the previous answer.
+func (a *App) checkServiceUpdate(ctx context.Context, deps ServiceUpdateDeps) {
+	checkCtx, cancel := context.WithTimeout(ctx, serviceUpdateCheckTimeout)
+	latest, err := deps.Source.Latest(checkCtx)
+	cancel()
+	if err != nil {
+		if ctx.Err() == nil {
 			deps.Log("serve: could not check for a newer release: %v", err)
-			return
 		}
-		if latest == nil {
-			return
+		return
+	}
+	var version, tag string
+	if latest != nil {
+		version, tag = latest.Version, latest.Tag
+	}
+	changed := a.publishServiceUpdateIf(func(status *ServiceUpdateStatus) bool {
+		// A loop is ended under mu, so an answer that arrives after that
+		// belongs to a configuration that is gone.
+		if ctx.Err() != nil || (status.LatestVersion == version && status.LatestTag == tag) {
+			return false
 		}
-		a.serviceUpdate.mu.Lock()
-		a.serviceUpdate.status.LatestVersion = latest.Version
-		a.serviceUpdate.status.LatestTag = latest.Tag
-		status := a.serviceUpdateStatusLocked()
-		a.serviceUpdate.mu.Unlock()
-		deps.Log("serve: version %s is available (this backend is %s)", latest.Version, a.version)
-		a.emit(eventchan.ServiceUpdateStatus, status)
-	}()
+		status.LatestVersion, status.LatestTag = version, tag
+		return true
+	})
+	switch {
+	case !changed:
+	case latest != nil:
+		deps.Log("serve: version %s is available (this backend is %s)", version, a.version)
+	default:
+		deps.Log("serve: no newer release is published (this backend is %s)", a.version)
+	}
+}
+
+// stopServiceUpdateChecks ends the release check loop and waits for it.
+// Safe when ConfigureServiceUpdates never ran, and refuses a later one.
+func (a *App) stopServiceUpdateChecks() {
+	a.serviceUpdate.mu.Lock()
+	a.serviceUpdate.checksStopped = true
+	stop := a.serviceUpdate.stopChecks
+	a.serviceUpdate.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	a.serviceUpdate.checks.Close()
 }
 
 // serviceUpdateStatusLocked builds the wire shape from the state plus the
@@ -281,16 +358,33 @@ func (a *App) serviceUpdateStatusLocked() ServiceUpdateStatus {
 	return status
 }
 
-// publishServiceUpdate records a mutation to the flow's state and publishes
-// the resulting frame. mutate runs under the lock; the emit happens after it
-// is released, so a subscriber's work never runs inside the fence a concurrent
-// status read is waiting on.
-func (a *App) publishServiceUpdate(mutate func(status *ServiceUpdateStatus)) {
+// publishServiceUpdateIf records a mutation to the update state and, when
+// mutate reports a change, publishes the resulting frame. mutate runs under
+// mu. The publication lock is held through the emit so frames leave in
+// mutation order; mu is released before it, so a subscriber's work never runs
+// inside the fence a concurrent status read is waiting on. Callers hold
+// neither lock.
+func (a *App) publishServiceUpdateIf(mutate func(status *ServiceUpdateStatus) bool) bool {
+	a.serviceUpdate.publish.Lock()
+	defer a.serviceUpdate.publish.Unlock()
 	a.serviceUpdate.mu.Lock()
-	mutate(&a.serviceUpdate.status)
+	if !mutate(&a.serviceUpdate.status) {
+		a.serviceUpdate.mu.Unlock()
+		return false
+	}
 	status := a.serviceUpdateStatusLocked()
 	a.serviceUpdate.mu.Unlock()
 	a.emit(eventchan.ServiceUpdateStatus, status)
+	return true
+}
+
+// publishServiceUpdate is publishServiceUpdateIf for a mutation that always
+// publishes.
+func (a *App) publishServiceUpdate(mutate func(status *ServiceUpdateStatus)) {
+	a.publishServiceUpdateIf(func(status *ServiceUpdateStatus) bool {
+		mutate(status)
+		return true
+	})
 }
 
 // GetServiceUpdateStatus reports what this backend knows about updating
@@ -394,37 +488,44 @@ func (a *App) RequestServiceUpdate(ctx context.Context, tag string) error {
 		return ErrServiceUpdateAlreadyRunning
 	}
 
-	a.serviceUpdate.mu.Lock()
-	if a.serviceUpdate.request == nil {
-		a.serviceUpdate.mu.Unlock()
-		return errNoSupervisor
+	// The claim runs as a publication, so its frame is ordered with every
+	// other publisher's. A refusal publishes nothing.
+	var (
+		deps    ServiceUpdateDeps
+		flowCtx context.Context
+		refusal error
+	)
+	a.publishServiceUpdateIf(func(status *ServiceUpdateStatus) bool {
+		deps = a.serviceUpdate.deps
+		switch {
+		case a.serviceUpdate.request == nil:
+			refusal = errNoSupervisor
+		case deps.Source == nil:
+			refusal = ErrServiceUpdateUnavailable
+		case a.serviceUpdate.busy || status.Phase == serviceUpdatePhaseRequested:
+			refusal = ErrServiceUpdateBusy
+		}
+		if refusal != nil {
+			return false
+		}
+		a.serviceUpdate.busy = true
+		flowCtx, a.serviceUpdate.cancel = context.WithCancel(a.lifeCtx())
+		a.serviceUpdate.committing = false
+		a.serviceUpdate.cancelRequested = false
+		// The whole previous flow's record is replaced, not patched: a stale
+		// target version or a stale error beside a fresh phase is a client
+		// rendering two updates at once.
+		*status = ServiceUpdateStatus{
+			LatestVersion: status.LatestVersion,
+			LatestTag:     status.LatestTag,
+			Phase:         serviceUpdatePhaseResolving,
+			TargetTag:     tag,
+		}
+		return true
+	})
+	if refusal != nil {
+		return refusal
 	}
-	deps := a.serviceUpdate.deps
-	if deps.Source == nil {
-		a.serviceUpdate.mu.Unlock()
-		return ErrServiceUpdateUnavailable
-	}
-	if a.serviceUpdate.busy || a.serviceUpdate.status.Phase == serviceUpdatePhaseRequested {
-		a.serviceUpdate.mu.Unlock()
-		return ErrServiceUpdateBusy
-	}
-	a.serviceUpdate.busy = true
-	flowCtx, cancel := context.WithCancel(a.lifeCtx())
-	a.serviceUpdate.cancel = cancel
-	a.serviceUpdate.committing = false
-	a.serviceUpdate.cancelRequested = false
-	// The whole previous flow's record is replaced, not patched: a stale
-	// target version or a stale error beside a fresh phase is a client
-	// rendering two updates at once.
-	a.serviceUpdate.status = ServiceUpdateStatus{
-		LatestVersion: a.serviceUpdate.status.LatestVersion,
-		LatestTag:     a.serviceUpdate.status.LatestTag,
-		Phase:         serviceUpdatePhaseResolving,
-		TargetTag:     tag,
-	}
-	status := a.serviceUpdateStatusLocked()
-	a.serviceUpdate.mu.Unlock()
-	a.emit(eventchan.ServiceUpdateStatus, status)
 
 	go a.runServiceUpdate(flowCtx, deps, tag)
 	return nil

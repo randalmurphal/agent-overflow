@@ -107,6 +107,29 @@ describe('App integration — settings launcher', () => {
     });
   });
 
+  // The launch check's answer reaches the sidebar as a button of its own,
+  // which opens Settings on the Updates page rather than wherever Settings
+  // was last.
+  it('offers Update in the sidebar once a release is found, and opens Updates from it', async () => {
+    setBindingMock('CheckForUpdate', async () => ({
+      supported: true,
+      available: true,
+      currentVersion: '1.0.0',
+      latestVersion: '2.0.0',
+    }));
+    const rendered = render(App);
+
+    const update = await waitFor(() => rendered.getByTestId('sidebar-update-button'));
+    expect(update).toHaveTextContent('Update');
+    await fireEvent.click(update);
+
+    await waitFor(() => {
+      expect(rendered.getByTestId(SETTINGS_TESTID)).toBeInTheDocument();
+      expect(rendered.getByRole('tab', { name: /^Updates/ })).toHaveAttribute('aria-selected', 'true');
+    });
+    expect(rendered.getByText('Version 2.0.0 available')).toBeInTheDocument();
+  });
+
   // Esc is keybinding-driven (`settings.close`, gated on `settingsOpen`). The
   // command is editableReachable so the chord survives a focused text field,
   // and the store's closer blurs BEFORE unmounting — settings fields commit on

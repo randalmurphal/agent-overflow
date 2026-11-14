@@ -435,7 +435,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     void loadAppearance();
     const cleanupAppearance = installAppearanceEvents();
     const cleanupLayoutMode = installLayoutMode();
-    // Passive on-launch update check + updater:* event bridge. No-op on builds
+    // Launch and hourly update checks + updater:* event bridge. No-op on builds
     // without an updater; never downloads or installs without an explicit click.
     const cleanupUpdates = initUpdates();
     // Which voices this device can read replies aloud in; replies offer
