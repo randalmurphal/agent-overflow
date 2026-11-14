@@ -256,16 +256,21 @@ func agentWakeToolState(row store.AgentWake) threadtools.WakeState {
 // cancelAgentWakesForThread cancels every loop and watch of a thread that is
 // being archived, deleted or moved, and stops what they have running. Rows a
 // delete has already cascaded away still have their runs stopped by thread.
-// It may run under the thread's action lock, as a delete's does, so the
-// callers that keep the thread withdraw its queued wakes themselves
-// (withdrawCancelledAgentWakes); a deleted thread's queue goes with it.
-func (a *App) cancelAgentWakesForThread(threadID, outcome string) {
-	if ids, err := a.store.CancelAgentWakesForThread(threadID, "", outcome); err != nil {
-		log.Printf("agent wakes: cancel the loops and watches of %s: %v", threadID, err)
-	} else if len(ids) > 0 {
+// It may run under the thread's locks, as a delete's and an archive's do,
+// and stopping a run does not wait for it. So the callers that keep the
+// thread withdraw its queued wakes themselves (withdrawCancelledAgentWakes);
+// a deleted thread's queue goes with it. The runs stop even when the rows
+// could not be cancelled, and that failure is returned.
+func (a *App) cancelAgentWakesForThread(threadID, outcome string) error {
+	ids, err := a.store.CancelAgentWakesForThread(threadID, "", outcome)
+	if len(ids) > 0 {
 		a.emitAgentWakesRemoved(threadID, ids)
 	}
 	a.stopAgentWakeRunsForThread(threadID)
+	if err != nil {
+		return fmt.Errorf("cancel the loops and watches of %s: %w", threadID, err)
+	}
+	return nil
 }
 
 // noteAgentWakeDispatch records whether the turn a flush dispatch starts is a

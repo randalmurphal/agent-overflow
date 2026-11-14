@@ -40,7 +40,9 @@ func TestWakeChangesCarryTheRow(t *testing.T) {
 
 	watch := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "poll", Command: "true", IntervalSeconds: 3600, NextAt: next})
 	before := len(wakeChanges(rec, thread.ID))
-	a.cancelAgentWakesForThread(thread.ID, "cancelled: archived")
+	if err := a.cancelAgentWakesForThread(thread.ID, "cancelled: archived"); err != nil {
+		t.Fatal(err)
+	}
 	removed := map[string]bool{}
 	for _, change := range wakeChanges(rec, thread.ID)[before:] {
 		if !change.Removed || change.Row != nil {

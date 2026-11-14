@@ -77,15 +77,18 @@ func (w archivedThreadWork) held(sendID string) bool {
 }
 
 // captureArchivedThreadWork runs in the critical section that commits the
-// archive, under the thread's mutation lock, which remote command
-// admission and every queue write also take. It ends the thread's parked
-// calls, disarms its wakes and names the work open and the messages queued
-// at that moment. A later wait or thread_status re-arms the wakes, and
+// archive, under the thread's action and mutation locks, which unarchive,
+// remote command admission and every queue write also take. It ends the
+// thread's parked calls, disarms its wakes, cancels its loops and watches
+// and stops their runs, and names the work open and the messages queued at
+// that moment. A later wait or thread_status re-arms the wakes, and
 // delivering one unarchives the thread.
 //
 // Nothing keeps new work from starting on an archived thread afterwards: a
-// wake unarchives it and a remote command is admitted to it whatever its
-// archive state. So only the archive that changes the row captures, and
+// wake unarchives it, a remote command is admitted to it whatever its
+// archive state, and a loop or watch registered after an unarchive reuses
+// its label's row. So only the archive that changes the row captures, the
+// schedule is cancelled here rather than after the locks are released, and
 // the stop acts on these identities alone, never on what the thread is
 // running or holds queued by the time it gets there.
 func (a *App) captureArchivedThreadWork(id string) archivedThreadWork {
@@ -95,6 +98,7 @@ func (a *App) captureArchivedThreadWork(id string) archivedThreadWork {
 	if askErr != nil {
 		log.Printf("thread tools: archive %s: cancel requests: %v", id, askErr)
 	}
+	wakesErr := a.cancelAgentWakesForThread(id, "cancelled: the thread was archived")
 	rows, queueErr := a.store.ListFlushQueueItems(id)
 	if queueErr != nil {
 		queueErr = fmt.Errorf("archive %s: read its queue: %w", id, queueErr)
@@ -102,7 +106,7 @@ func (a *App) captureArchivedThreadWork(id string) archivedThreadWork {
 	for _, row := range rows {
 		work.queued = append(work.queued, row.SendID)
 	}
-	work.asks, work.commands, work.err = asks, commands, errors.Join(commandErr, queueErr)
+	work.asks, work.commands, work.err = asks, commands, errors.Join(commandErr, wakesErr, queueErr)
 	return work
 }
 
@@ -117,11 +121,9 @@ func (a *App) stopArchivedThreadWork(work archivedThreadWork) error {
 		return work.err
 	}
 	ctx, id := a.lifeCtx(), work.threadID
-	// Loops and watches are cancelled outright: nothing re-arms them, and
-	// an archived thread's schedule is over. What the app had queued for
-	// the thread goes too, live session or not, so nothing of it reaches
-	// the agent when the thread is next started.
-	a.cancelAgentWakesForThread(id, "cancelled: the thread was archived")
+	// What the app had queued for the thread goes, live session or not, so
+	// nothing of it reaches the agent when the thread is next started. Its
+	// loops and watches were cancelled with the capture.
 	withdrawErr := a.withdrawQueuedAgentMessages(id, work.held, "the thread was archived before the agent took it in")
 	// A request's answer or reminder goes back to its request, disarmed
 	// with it, so the retry cannot bring the thread back.

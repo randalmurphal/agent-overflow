@@ -344,7 +344,10 @@ func (a *App) settleReceiptsForThread(threadID, state, reason string) {
 // half: the thread is about to stop existing, so it is both a caller whose
 // requests must be cancelled and a target whose receipts must be settled.
 func (a *App) stopThreadRequestsForDeletedThread(ctx context.Context, threadID string) error {
-	a.cancelAgentWakesForThread(threadID, "cancelled: the thread was deleted")
+	// The delete cascades the rows away whether or not this cancel lands.
+	if err := a.cancelAgentWakesForThread(threadID, "cancelled: the thread was deleted"); err != nil {
+		log.Printf("agent wakes: %v", err)
+	}
 	a.settleReceiptsForThread(threadID, store.ThreadReceiptErrored, "The thread was deleted before it answered.")
 	return a.cancelThreadRequests(ctx, threadID)
 }
@@ -357,7 +360,9 @@ func (a *App) stopThreadRequestsForMovedThread(ctx context.Context, threadID, de
 	reason := threadtools.InterruptMoved(destination)
 	// Loops and watches are this computer's clock and processes; they do
 	// not travel with the conversation.
-	a.cancelAgentWakesForThread(threadID, "cancelled: the thread was moved to another computer")
+	if err := a.cancelAgentWakesForThread(threadID, "cancelled: the thread was moved to another computer"); err != nil {
+		log.Printf("agent wakes: %v", err)
+	}
 	withdrawErr := a.withdrawCancelledAgentWakes(threadID)
 	a.settleReceiptsForThread(threadID, store.ThreadReceiptInterrupted, reason)
 	return errors.Join(withdrawErr, a.cancelThreadRequests(ctx, threadID))
