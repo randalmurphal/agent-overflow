@@ -119,9 +119,10 @@ func ProjectKey(userHome, projectPath string) (string, error) {
 // none, before the session that reads them starts: each provider is given
 // folders that exist, and a session can write a scope nothing wrote before.
 // It returns the folders the session may be given as writable: each one a
-// folder, not a link to one, and no project folder that records another
-// project, which Build reports as a clash. A folder it cannot create or
-// vouch for is left out with an error.
+// folder, not a link to one, and no project folder Build turns off: one
+// whose marker records another project, is not one path or could not be
+// read (projectOwner). A folder it cannot create or vouch for is left out
+// with an error.
 func Prepare(plan Plan) (writable []string, err error) {
 	if err := plan.validate(); err != nil {
 		return nil, err
@@ -140,8 +141,15 @@ func Prepare(plan Plan) (writable []string, err error) {
 		if err == nil {
 			err = recordProjectPath(project)
 		}
-		if err == nil && !ownsFolder(project) {
-			continue
+		if err == nil {
+			// A folder Build turns off is not writable either. A marker
+			// that is not a path is Build's to report.
+			if owner := ownerOf(project); !owner.owns(project) {
+				if err := errors.Join(owner.folderErr, owner.err); err != nil && !errors.Is(err, errBadMarker) {
+					errs = append(errs, fmt.Errorf("check whose the memory folder %s is: %w", project.Dir, err))
+				}
+				continue
+			}
 		}
 		keep(project.Dir, err)
 	}
@@ -198,12 +206,6 @@ func folderError(dir string, info fs.FileInfo) error {
 		return fmt.Errorf("the memory folder %s is not a folder", dir)
 	}
 	return nil
-}
-
-// ownsFolder reports whether project's folder records project's own path.
-func ownsFolder(project Project) bool {
-	recorded, err := recordedPath(project.Dir)
-	return err == nil && recorded == filepath.Clean(project.Path)
 }
 
 // recordProjectPath writes project's path in its folder unless the folder

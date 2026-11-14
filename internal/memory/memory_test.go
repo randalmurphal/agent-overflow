@@ -582,3 +582,46 @@ func TestDeliveredTextCannotEndTheDelivery(t *testing.T) {
 		t.Fatalf("delivered:\n%s", text)
 	}
 }
+
+// requireProjectOff checks that the project's memory is off for a marker
+// that could not be read: no facts, no write rule for the folder, the
+// notice and the assistant's warning, and no writable folder.
+func requireProjectOff(t *testing.T, s scopes) {
+	t.Helper()
+	write(t, s.project, "a.md", factText("ruling", "Possibly another project's ruling."))
+	text, errs := Build(s.plan, day)
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), ProjectPathFile) {
+		t.Errorf("errors %v, want the marker's read", errs)
+	}
+	if strings.Contains(text, "Possibly another project's ruling.") {
+		t.Errorf("delivered the folder's facts:\n%s", text)
+	}
+	if !strings.Contains(text, "[Project memory is off for this project: its folder's .project-path could not be read.]") ||
+		!strings.Contains(text, "Project memory of app (/Users/u/repos/app) is off: "+filepath.Join(s.project, ProjectPathFile)+" could not be read") {
+		t.Errorf("no notice or warning:\n%s", text)
+	}
+	if strings.Contains(block(t, text, "### Keeping memory"), "project's folder") {
+		t.Errorf("the rules name the project folder:\n%s", text)
+	}
+	writable, err := Prepare(s.plan)
+	if slices.Contains(writable, s.project) {
+		t.Errorf("the folder is writable: %q", writable)
+	}
+	if err == nil || !strings.Contains(err.Error(), "check whose the memory folder "+s.project+" is") {
+		t.Errorf("Prepare error %v, want the failed check", err)
+	}
+}
+
+// A .project-path that is a folder is a marker that could not be read.
+func TestAProjectPathMarkerThatIsAFolder(t *testing.T) {
+	t.Parallel()
+	s := newScopes(t)
+	marker := filepath.Join(s.project, ProjectPathFile)
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(marker, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	requireProjectOff(t, s)
+}

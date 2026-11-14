@@ -251,42 +251,80 @@ func projectName(project Project) string {
 	return oneLine(agenthome.CleanText(project.Name), projectNameRunes)
 }
 
-// clash is what replaces a project's index when its folder records another
-// project's path, or a ProjectPathFile that is not a path, "" when it
-// records the project's own or none. A clash is a maintenance warning.
+// clash is what replaces a project's index when the project does not own
+// its folder (ownerOf), "" when it does. It is a maintenance warning, and a
+// marker that could not be read is a failure the caller reports as well.
 func (d *delivery) clash(project Project) string {
-	recorded, err := recordedPath(project.Dir)
+	owner := ownerOf(project)
 	marker := filepath.Join(project.Dir, ProjectPathFile)
 	switch {
-	case errors.Is(err, errBadMarker):
+	case owner.folderErr != nil:
+		d.errs = append(d.errs, fmt.Errorf("read the memory folder %s: %w", project.Dir, owner.folderErr))
+		return fmt.Sprintf("[%s could not be read: %v.]", folderShown(project.Dir), owner.folderErr)
+	case errors.Is(owner.err, errBadMarker):
 		d.problems = append(d.problems, fmt.Sprintf(
 			"Project memory of %s (%s) is off: %s %v. Write the project's path in it, or delete it.",
-			projectName(project), project.Path, marker, err))
+			projectName(project), project.Path, marker, owner.err))
 		return "[Project memory is off for this project: its folder's " + ProjectPathFile + " does not name a project.]"
-	case err != nil:
-		d.errs = append(d.errs, fmt.Errorf("read %s: %w", marker, err))
-		return ""
-	case recorded == "" || recorded == filepath.Clean(project.Path):
+	case owner.err != nil:
+		d.errs = append(d.errs, fmt.Errorf("read %s: %w", marker, owner.err))
+		d.problems = append(d.problems, fmt.Sprintf(
+			"Project memory of %s (%s) is off: %s could not be read (%v), so the folder may belong to another project. Make it a file holding the project's path, or delete it.",
+			projectName(project), project.Path, marker, owner.err))
+		return "[Project memory is off for this project: its folder's " + ProjectPathFile + " could not be read.]"
+	case owner.owns(project):
 		return ""
 	}
 	d.problems = append(d.problems, fmt.Sprintf(
 		"Project memory of %s (%s) is off: its folder %s records %s in %s, a project whose path has the same key. Tell the user; renaming either project's folder ends the clash.",
-		projectName(project), project.Path, folderShown(project.Dir), recorded, ProjectPathFile))
-	return "[Project memory is off for this project: its folder belongs to the project at " + recorded + ".]"
+		projectName(project), project.Path, folderShown(project.Dir), owner.recorded, ProjectPathFile))
+	return "[Project memory is off for this project: its folder belongs to the project at " + owner.recorded + ".]"
+}
+
+// projectOwner is whose a project memory folder is, by its ProjectPathFile.
+// Distinct project paths can share a folder key, so a folder whose marker
+// cannot be read is nobody's: neither a delivery nor a session's writable
+// roots include it.
+type projectOwner struct {
+	// recorded is the path the marker holds, "" when the folder or its
+	// marker does not exist.
+	recorded string
+	// folderErr is the failure to open the folder, which then holds
+	// nothing to deliver either.
+	folderErr error
+	// err is why the marker could not be read as one path: errBadMarker,
+	// or the failure to read it.
+	err error
+}
+
+// ownerOf reads the owner of project's folder.
+func ownerOf(project Project) projectOwner {
+	root, err := openFolder(project.Dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return projectOwner{}
+	}
+	if err != nil {
+		return projectOwner{folderErr: err}
+	}
+	recorded, err := recordedPath(root)
+	if closeErr := root.Close(); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
+	return projectOwner{recorded: recorded, err: err}
+}
+
+// owns reports whether project may read and write the folder: its marker
+// holds project's own path, or there is none yet, which Prepare writes.
+func (o projectOwner) owns(project Project) bool {
+	return o.folderErr == nil && o.err == nil && (o.recorded == "" || o.recorded == filepath.Clean(project.Path))
 }
 
 // errBadMarker is a ProjectPathFile that does not hold one absolute path.
 var errBadMarker = errors.New("does not hold one absolute path on one line")
 
-// recordedPath is the project path a memory folder records, "" when it
-// records none or the folder cannot be opened, which the folder's own read
-// reports.
-func recordedPath(dir string) (_ string, err error) {
-	root, err := openFolder(dir)
-	if err != nil {
-		return "", nil
-	}
-	defer closeInto(root, &err)
+// recordedPath is the project path the memory folder root records, "" when
+// its marker does not exist.
+func recordedPath(root *os.Root) (_ string, err error) {
 	file, err := agenthome.OpenRegular(root, ProjectPathFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil

@@ -77,11 +77,13 @@ naming the clash. The project the folder records keeps it.
 
 The app creates a scope's folder, and the project folder's
 `.project-path`, before the session that reads it starts. `.project-path`
-holds one absolute path on one line; anything else in it is a
-maintenance warning and turns the project's memory off as a clash does.
-A scope folder that is a symbolic link or not a folder is a warning on
-the thread and is never passed to the provider as writable, and neither
-is a project folder that records another project.
+holds one absolute path on one line; anything else in it, and a
+`.project-path` or project folder that cannot be read (not a regular
+file, unreadable), is a maintenance warning and turns the project's
+memory off as a clash does. A scope folder that is a symbolic link or
+not a folder is a warning on the thread and is never passed to the
+provider as writable, and neither is a project folder whose memory is
+off.
 
 ## Facts
 

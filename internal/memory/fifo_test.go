@@ -61,3 +61,32 @@ func TestAFIFOIsRefusedWithoutBlocking(t *testing.T) {
 		}
 	}
 }
+
+// A .project-path that is a FIFO, or that cannot be opened, is a marker
+// that could not be read.
+func TestAProjectPathMarkerThatCannotBeRead(t *testing.T) {
+	t.Parallel()
+	t.Run("fifo", func(t *testing.T) {
+		t.Parallel()
+		s := newScopes(t)
+		marker := filepath.Join(s.project, ProjectPathFile)
+		if err := os.Remove(marker); err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Mkfifo(marker, 0o600); err != nil {
+			t.Skip("no FIFOs here:", err)
+		}
+		requireProjectOff(t, s)
+	})
+	t.Run("unreadable", func(t *testing.T) {
+		t.Parallel()
+		if os.Geteuid() == 0 {
+			t.Skip("root reads any file")
+		}
+		s := newScopes(t)
+		if err := os.Chmod(filepath.Join(s.project, ProjectPathFile), 0); err != nil {
+			t.Fatal(err)
+		}
+		requireProjectOff(t, s)
+	})
+}
