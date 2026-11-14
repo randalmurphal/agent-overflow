@@ -11,8 +11,7 @@ const (
 	// on every flush, so a release waits for the stream to stop.
 	releaseIdle = time.Second
 
-	// releaseMaxDelay bounds how long freed memory stays resident while
-	// computations keep arriving without an idle gap.
+	// releaseMaxDelay is the maxDelay of a Cache's heapRelease.
 	releaseMaxDelay = 30 * time.Second
 )
 
@@ -26,6 +25,9 @@ const (
 // MiB) and then fault its pages back in; it never affects correctness.
 type heapRelease struct {
 	release func()
+	// maxDelay bounds how long freed memory stays resident while
+	// computations keep arriving without an idle gap.
+	maxDelay time.Duration
 
 	mu     sync.Mutex
 	active int       // computations in flight
@@ -55,7 +57,7 @@ func (h *heapRelease) end() {
 func (h *heapRelease) fire() {
 	h.mu.Lock()
 	now := time.Now()
-	if now.Sub(h.first) < releaseMaxDelay {
+	if now.Sub(h.first) < h.maxDelay {
 		wait := releaseIdle - now.Sub(h.last)
 		if h.active > 0 {
 			wait = releaseIdle
