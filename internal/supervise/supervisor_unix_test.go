@@ -131,6 +131,10 @@ type rig struct {
 
 	mu   sync.Mutex
 	logs []string
+	// returned is closed when the latest run's Run has returned, after
+	// runErr holds its result. Both are guarded by mu.
+	returned chan struct{}
+	runErr   error
 }
 
 func newRig(t *testing.T) *rig {
@@ -270,7 +274,18 @@ func (r *rig) run(config Config) (stop func(), done <-chan error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	results := make(chan error, 1)
-	go func() { results <- supervisor.Run(ctx) }()
+	returned := make(chan struct{})
+	r.mu.Lock()
+	r.returned = returned
+	r.mu.Unlock()
+	go func() {
+		err := supervisor.Run(ctx)
+		r.mu.Lock()
+		r.runErr = err
+		r.mu.Unlock()
+		close(returned)
+		results <- err
+	}()
 	stopped := false
 	return func() {
 		if stopped {
@@ -318,11 +333,16 @@ func (r *rig) lines(name string) []string {
 }
 
 // waitForLog blocks until the child log holds at least count lines equal to
-// want. A missing line is a test failure, never a silent pass.
+// want. A missing line is a test failure, never a silent pass. A supervisor
+// that has already returned fails the wait at once with its result: no line
+// can arrive after that.
 func (r *rig) waitForLog(want string, count int) {
 	r.t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
+		// Read before the log: a line the child wrote before the supervisor
+		// returned is then in the log this pass reads.
+		returned, runErr := r.supervisorReturned()
 		seen := 0
 		for _, line := range r.lines("log") {
 			if line == want {
@@ -332,9 +352,29 @@ func (r *rig) waitForLog(want string, count int) {
 		if seen >= count {
 			return
 		}
+		if returned {
+			r.t.Fatalf("the supervisor returned (%v) before the child log held %d x %q; saw %v",
+				runErr, count, want, r.lines("log"))
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	r.t.Fatalf("waited for %d x %q in the child log; saw %v", count, want, r.lines("log"))
+}
+
+// supervisorReturned reports whether the latest run's Run has returned, and
+// its result.
+func (r *rig) supervisorReturned() (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.returned == nil {
+		return false, nil
+	}
+	select {
+	case <-r.returned:
+		return true, r.runErr
+	default:
+		return false, nil
+	}
 }
 
 func (r *rig) state() State {
