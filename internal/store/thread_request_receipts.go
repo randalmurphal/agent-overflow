@@ -79,8 +79,10 @@ type ThreadRequestReceipt struct {
 	CreatedAt         int64 `json:"createdAt"`
 	UpdatedAt         int64 `json:"updatedAt"`
 	// AnswerAgent is the target thread as a standing agent when the answer
-	// or the late reply was written; nil for any other thread.
+	// was written; nil for any other thread.
 	AnswerAgent *ThreadAnswerAgent `json:"-"`
+	// LateReplyAgent is AnswerAgent for the late reply.
+	LateReplyAgent *ThreadAnswerAgent `json:"-"`
 }
 
 const threadReceiptColumns = `token, owner_device_id, source_computer_id, source_computer_name,
@@ -88,12 +90,13 @@ const threadReceiptColumns = `token, owner_device_id, source_computer_id, source
     message_item_id, turn_id, state, answer, answer_kind, late_reply,
     COALESCE(late_reply_at, 0), revision, COALESCE(settled_at, 0),
     collected_revision, COALESCE(collected_at, 0), COALESCE(expires_at, 0),
-    created_at, updated_at, answer_agent, answer_agent_role, own_turn`
+    created_at, updated_at, answer_agent, answer_agent_role, own_turn,
+    late_reply_agent, late_reply_agent_role`
 
 func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 	var r ThreadRequestReceipt
-	var answerAgent int64
-	var answerAgentRole string
+	var answerAgent, lateReplyAgent int64
+	var answerAgentRole, lateReplyAgentRole string
 	err := row.Scan(
 		&r.Token, &r.OwnerDeviceID, &r.SourceComputerID, &r.SourceComputerName,
 		&r.SourceThreadID, &r.SourceThreadTitle, &r.Kind, &r.TargetThreadID,
@@ -101,8 +104,10 @@ func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 		&r.LateReplyAt, &r.Revision, &r.SettledAt,
 		&r.CollectedRevision, &r.CollectedAt, &r.ExpiresAt,
 		&r.CreatedAt, &r.UpdatedAt, &answerAgent, &answerAgentRole, &r.OwnTurn,
+		&lateReplyAgent, &lateReplyAgentRole,
 	)
 	r.AnswerAgent = answerAgentOf(answerAgent, answerAgentRole)
+	r.LateReplyAgent = answerAgentOf(lateReplyAgent, lateReplyAgentRole)
 	return r, err
 }
 
@@ -625,7 +630,7 @@ const threadAnswerHoldMillis = 24 * 60 * 60 * 1000
 // source stops polling once the hold on the first answer runs out, so a reply
 // after that would never be collected. Every other state is refused by the
 // caller with its state as the reason. agent is the replying thread as a
-// standing agent, and replaces the one the first answer recorded.
+// standing agent, kept beside the first answer's (LateReplyAgent).
 func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64, agent *ThreadAnswerAgent) (bool, error) {
 	action := fmt.Sprintf("store: store thread receipt late reply %s", token)
 	if at == 0 {
@@ -634,7 +639,7 @@ func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64
 	isAgent, role := answerAgentColumns(agent)
 	result, err := s.db.Exec(
 		`UPDATE thread_request_receipts
-		    SET late_reply = ?, late_reply_at = ?, answer_agent = ?, answer_agent_role = ?, revision = revision + 1,
+		    SET late_reply = ?, late_reply_at = ?, late_reply_agent = ?, late_reply_agent_role = ?, revision = revision + 1,
 		        expires_at = ?, updated_at = ?
 		  WHERE token = ? AND state = 'finished' AND late_reply IS NULL
 		    AND expires_at > ?`,

@@ -52,9 +52,9 @@ func mustGetThreadRequest(t *testing.T, s *Store, token string) ThreadRequest {
 }
 
 // The settlement records the answering thread as a standing agent, an agent
-// with no role line apart from an ordinary thread; a late reply replaces it
-// with the agent it was written under; a settlement with no agent records
-// none. A receipt records it the same way, and a new row is never read as
+// with no role line apart from an ordinary thread; a late reply records the
+// agent it was written under beside the answer's, which it leaves; a
+// settlement with no agent records none. A receipt records it the same way, and a new row is never read as
 // written before v156.
 func TestThreadRequestRecordsTheAnsweringAgent(t *testing.T) {
 	s := newTestStore(t)
@@ -87,14 +87,15 @@ func TestThreadRequestRecordsTheAnsweringAgent(t *testing.T) {
 	if stored, err := s.StoreThreadRequestLateReply("tok-agent", []byte("more"), 300, &ThreadAnswerAgent{Role: "Second role"}); err != nil || !stored {
 		t.Fatalf("late reply: stored=%v err=%v", stored, err)
 	}
-	if row := mustGetThreadRequest(t, s, "tok-agent"); row.AnswerAgent == nil || row.AnswerAgent.Role != "Second role" {
-		t.Errorf("agent after the late reply = %+v", row.AnswerAgent)
+	if row := mustGetThreadRequest(t, s, "tok-agent"); row.AnswerAgent == nil || row.AnswerAgent.Role != "Reviewer" ||
+		row.LateReplyAgent == nil || row.LateReplyAgent.Role != "Second role" {
+		t.Errorf("agents after the late reply = answer %+v late reply %+v", row.AnswerAgent, row.LateReplyAgent)
 	}
 	if stored, err := s.StoreThreadRequestLateReply("tok-roleless", []byte("more"), 300, nil); err != nil || !stored {
 		t.Fatalf("late reply: stored=%v err=%v", stored, err)
 	}
-	if row := mustGetThreadRequest(t, s, "tok-roleless"); row.AnswerAgent != nil {
-		t.Errorf("agent after a late reply from an ordinary thread = %+v", row.AnswerAgent)
+	if row := mustGetThreadRequest(t, s, "tok-roleless"); row.AnswerAgent == nil || row.AnswerAgent.Role != "" || row.LateReplyAgent != nil {
+		t.Errorf("agents after a late reply from an ordinary thread = answer %+v late reply %+v", row.AnswerAgent, row.LateReplyAgent)
 	}
 
 	for _, token := range []string{"tok-agent", "tok-roleless", "tok-ordinary"} {
@@ -133,14 +134,15 @@ func TestThreadRequestRecordsTheAnsweringAgent(t *testing.T) {
 	if stored, err := s.StoreThreadReceiptLateReply("rcpt-agent", []byte("more"), 0, &ThreadAnswerAgent{Role: "Second role"}); err != nil || !stored {
 		t.Fatalf("receipt late reply: stored=%v err=%v", stored, err)
 	}
-	if got := receipt("rcpt-agent").AnswerAgent; got == nil || got.Role != "Second role" {
-		t.Errorf("receipt agent after the late reply = %+v", got)
+	if got := receipt("rcpt-agent"); got.AnswerAgent == nil || got.AnswerAgent.Role != "Reviewer" ||
+		got.LateReplyAgent == nil || got.LateReplyAgent.Role != "Second role" {
+		t.Errorf("receipt agents after the late reply = answer %+v late reply %+v", got.AnswerAgent, got.LateReplyAgent)
 	}
 	if stored, err := s.StoreThreadReceiptLateReply("rcpt-roleless", []byte("more"), 0, nil); err != nil || !stored {
 		t.Fatalf("receipt late reply: stored=%v err=%v", stored, err)
 	}
-	if got := receipt("rcpt-roleless").AnswerAgent; got != nil {
-		t.Errorf("receipt agent after an ordinary thread's late reply = %+v", got)
+	if got := receipt("rcpt-roleless"); got.AnswerAgent == nil || got.LateReplyAgent != nil {
+		t.Errorf("receipt agents after an ordinary thread's late reply = answer %+v late reply %+v", got.AnswerAgent, got.LateReplyAgent)
 	}
 }
 
@@ -936,7 +938,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		t.Errorf("the kept spawn row is not marked lineage-only: %+v", lineage)
 	}
 	if len(lineage.Answer) != 0 || lineage.AnswerKind != "" || len(lineage.LateReply) != 0 || lineage.LateReplyAt != 0 || lineage.Notify ||
-		lineage.AnswerAgent != nil || lineage.NestedOpen || lineage.TargetProvider != "" {
+		lineage.AnswerAgent != nil || lineage.LateReplyAgent != nil || lineage.NestedOpen || lineage.TargetProvider != "" {
 		t.Errorf("lineage row past the floor = answer %q kind %q late reply %q at %d notify %v agent %+v; want its payload cleared",
 			lineage.Answer, lineage.AnswerKind, lineage.LateReply, lineage.LateReplyAt, lineage.Notify, lineage.AnswerAgent)
 	}

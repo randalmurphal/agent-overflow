@@ -427,10 +427,15 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 			wake.Now = current
 		}
 	}
-	// A standing agent that answered is named as one, from what the
-	// settlement recorded, so a thread on either computer reads the same.
-	if row.AnswerAgent != nil {
-		wake.Agent = &threadtools.SenderAgent{Role: row.AnswerAgent.Role}
+	// A standing agent that answered is named as one, from what the answer
+	// this wake carries recorded, so a thread on either computer reads the
+	// same.
+	answerAgent := row.AnswerAgent
+	if late {
+		answerAgent = row.LateReplyAgent
+	}
+	if answerAgent != nil {
+		wake.Agent = &threadtools.SenderAgent{Role: answerAgent.Role}
 	}
 	if row.TargetComputerID != "" {
 		// A thread on another computer has no row here: its title is what

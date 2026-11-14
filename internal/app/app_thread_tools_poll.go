@@ -732,7 +732,7 @@ func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer T
 	}
 	if answer.LateReply != "" && len(current.LateReply) == 0 {
 		stored, err := a.store.StoreThreadRequestLateReply(row.Token, []byte(answer.LateReply), answer.LateReplyAt,
-			remoteAnswerAgent(answer.AnswerAgent))
+			remoteAnswerAgent(answer.LateReplyAgent))
 		if err != nil {
 			return wake, false, err
 		}

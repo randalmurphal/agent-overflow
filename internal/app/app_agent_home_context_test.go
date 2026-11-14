@@ -251,8 +251,9 @@ func TestWakeFromAStandingAgentNamesIt(t *testing.T) {
 		t.Fatalf("late Reply: %+v, %v", late, err)
 	}
 	row = f.request(t, ack.Token)
-	if row.AnswerAgent == nil || row.AnswerAgent.Role != "Second role." {
-		t.Fatalf("answer agent after the late reply = %+v", row.AnswerAgent)
+	if row.AnswerAgent == nil || row.AnswerAgent.Role != "Reviewer of the parser." ||
+		row.LateReplyAgent == nil || row.LateReplyAgent.Role != "Second role." {
+		t.Fatalf("agents after the late reply = answer %+v late reply %+v", row.AnswerAgent, row.LateReplyAgent)
 	}
 	body, err = f.app.threadWakeBody(row, true)
 	if err != nil {
@@ -260,6 +261,15 @@ func TestWakeFromAStandingAgentNamesIt(t *testing.T) {
 	}
 	if want := `That thread is a standing agent. Its role, in its own words: "Second role."`; wakeAgentLine(t, body) != want {
 		t.Fatalf("late wake:\n%s", body)
+	}
+	// A first answer's wake rendered after the late reply, as a delayed
+	// delivery renders it, keeps the role the answer was written under.
+	body, err = f.app.threadWakeBody(row, false)
+	if err != nil {
+		t.Fatalf("threadWakeBody(first, after the late reply): %v", err)
+	}
+	if line := wakeAgentLine(t, body); line != reviewerAgentLine {
+		t.Fatalf("first wake after the late reply = %q, want %q", line, reviewerAgentLine)
 	}
 }
 
@@ -361,18 +371,34 @@ func TestWakeFromARemoteStandingAgentNamesItAsALocalOneDoes(t *testing.T) {
 		t.Fatalf("carried role recorded as %+v", row.AnswerAgent)
 	}
 
-	// A late reply records the agent it was reported with.
+	// A late reply records the agent it was reported with, beside the first
+	// answer's, whether it is collected after the answer or in one poll
+	// with it.
 	late := state
 	late.LateReply, late.LateReplyAt, late.Revision = "on reflection", time.Now().UnixMilli(), state.Revision+1
-	late.AnswerAgent = &ThreadPeerAgent{Role: "Second role."}
+	late.LateReplyAgent = &ThreadPeerAgent{Role: "Second role."}
 	row = collect(state)
 	late.Token = row.Token
 	if _, err := caller.app.collectRemoteThreadRequest(row, late); err != nil {
 		t.Fatalf("collect late reply: %v", err)
 	}
-	row = caller.request(t, row.Token)
-	if row.AnswerAgent == nil || row.AnswerAgent.Role != "Second role." || string(row.LateReply) != "on reflection" {
-		t.Fatalf("after the late reply: agent %+v late reply %q", row.AnswerAgent, row.LateReply)
+	both := func(row store.ThreadRequest, what string) {
+		t.Helper()
+		if row.AnswerAgent == nil || row.AnswerAgent.Role != "Reviewer of the parser." ||
+			row.LateReplyAgent == nil || row.LateReplyAgent.Role != "Second role." || string(row.LateReply) != "on reflection" {
+			t.Fatalf("%s: answer agent %+v late reply agent %+v late reply %q", what, row.AnswerAgent, row.LateReplyAgent, row.LateReply)
+		}
+		if body, err := caller.app.threadWakeBody(row, false); err != nil || wakeAgentLine(t, body) != reviewerAgentLine {
+			t.Fatalf("%s: first wake = %v\n%s", what, err, body)
+		}
+	}
+	both(caller.request(t, row.Token), "after the late reply")
+	both(collect(late), "both collected in one poll")
+	// A late reply from an ordinary thread after an agent's answer.
+	plain := late
+	plain.LateReplyAgent = nil
+	if row := collect(plain); row.AnswerAgent == nil || row.LateReplyAgent != nil {
+		t.Fatalf("an ordinary late reply: answer agent %+v late reply agent %+v", row.AnswerAgent, row.LateReplyAgent)
 	}
 
 	// An older computer reports no agent.

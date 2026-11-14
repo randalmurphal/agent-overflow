@@ -149,6 +149,8 @@ type ThreadRequest struct {
 	// AnswerAgentUnrecorded is true on a row written before v156, which
 	// recorded nothing about the thread that answered.
 	AnswerAgentUnrecorded bool `json:"-"`
+	// LateReplyAgent is AnswerAgent for the late reply, recorded with it.
+	LateReplyAgent *ThreadAnswerAgent `json:"-"`
 	// MadeInThreadID is the assistant's past thread that made this request
 	// when New Thread, Same Assistant moved it to CallerThreadID; empty
 	// when the caller made it.
@@ -234,7 +236,8 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     polling, next_check, attempts, issue,
     wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at,
     COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
-    target_provider, nested_open, late_delivered_how, made_in_thread_id`
+    target_provider, nested_open, late_delivered_how, made_in_thread_id,
+    late_reply_agent, late_reply_agent_role`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	return scanThreadRequestWith(row, nil, nil)
@@ -248,7 +251,8 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 	var r ThreadRequest
 	var notify, polling, lineageOnly, nestedOpen int
 	var answerAgent sql.NullInt64
-	var answerAgentRole string
+	var answerAgentRole, lateReplyAgentRole string
+	var lateReplyAgent int64
 	if answer == nil {
 		answer = &r.Answer
 	}
@@ -265,9 +269,11 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
+		&lateReplyAgent, &lateReplyAgentRole,
 	}, extra...)...)
 	r.NestedOpen = nestedOpen != 0
 	r.AnswerAgent = answerAgentOf(answerAgent.Int64, answerAgentRole)
+	r.LateReplyAgent = answerAgentOf(lateReplyAgent, lateReplyAgentRole)
 	r.AnswerAgentUnrecorded = !answerAgent.Valid
 	r.Notify = notify != 0
 	r.Polling = polling != 0
@@ -409,8 +415,8 @@ func ThreadRequestOpenStates() []string {
 // second message. Only the first late reply is stored, and never on a
 // lineage-only row, whose token the ledger no longer knows. agent is the
 // replying thread as a standing agent, recorded by the receipt with the
-// reply; it replaces the one the first answer recorded, since the late
-// reply's wake names it.
+// reply; it is kept beside the first answer's (LateReplyAgent), each wake
+// naming its own.
 func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64, agent *ThreadAnswerAgent) (bool, error) {
 	action := fmt.Sprintf("store: store thread request late reply %s", token)
 	if at == 0 {
@@ -419,7 +425,7 @@ func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64
 	isAgent, role := answerAgentColumns(agent)
 	result, err := s.db.Exec(
 		`UPDATE thread_requests
-		    SET late_reply = ?, late_reply_at = ?, answer_agent = ?, answer_agent_role = ?, revision = revision + 1, updated_at = ?
+		    SET late_reply = ?, late_reply_at = ?, late_reply_agent = ?, late_reply_agent_role = ?, revision = revision + 1, updated_at = ?
 		  WHERE token = ? AND settled_at IS NOT NULL AND late_reply IS NULL AND lineage_only = 0`,
 		nilIfEmptyBytes(reply), at, isAgent, role, nowMillis(), token,
 	)
@@ -1032,7 +1038,7 @@ const spawnLineageSQL = `kind = 'spawn' AND target_computer_id = ''
 // already marked.
 const clearLineagePayloadSQL = `UPDATE thread_requests
 	SET lineage_only = 1, answer = NULL, answer_kind = '', late_reply = NULL, late_reply_at = NULL,
-	    answer_agent = 0, answer_agent_role = '', notify = 0, issue = '', wake_issue = '', expires_at = NULL,
+	    answer_agent = 0, answer_agent_role = '', late_reply_agent = 0, late_reply_agent_role = '', notify = 0, issue = '', wake_issue = '', expires_at = NULL,
 	    nested_open = 0, target_provider = ''
 	WHERE lineage_only = 0`
 
