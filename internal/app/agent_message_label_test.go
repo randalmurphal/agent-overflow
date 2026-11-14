@@ -53,21 +53,17 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	appWake := func(text string, origin *usermessage.OriginWake) (string, string) {
 		return text, marshal(usermessage.Meta{Origin: usermessage.OriginAgentWake, OriginWake: origin, SendID: "agent-wake:w1:1"})
 	}
-	// joined records its members as a join does (usermessage.RecordMembers).
+	// joined is the row a join makes of its members (usermessage.Join).
 	joined := func(texts []string, metas []string) (string, string) {
-		parts := make([]usermessage.TextPart, len(texts))
-		members := make([]usermessage.Meta, len(metas))
+		members := make([]usermessage.JoinMember, len(texts))
 		for i := range texts {
-			parts[i] = usermessage.TextPart{Text: texts[i]}
 			decoded, err := usermessage.FromItem(store.Item{Meta: metas[i]})
 			if err != nil {
 				t.Fatal(err)
 			}
-			members[i] = decoded
+			members[i] = usermessage.JoinMember{Meta: decoded, Text: texts[i]}
 		}
-		text, lengths := usermessage.JoinRenumberedTextLengths(parts)
-		meta := usermessage.JoinMetas(members)
-		meta.RecordMembers(members, texts, lengths)
+		text, meta := usermessage.Join(members)
 		return text, marshal(meta)
 	}
 	worker := "Worker"
