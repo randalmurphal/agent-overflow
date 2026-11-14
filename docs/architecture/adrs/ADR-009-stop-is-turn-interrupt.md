@@ -72,6 +72,10 @@ Considered alternatives:
 - The synthetic "Stopped by user" row takes the turn's next free error
   id (`error:<turn_index>:<seq>`), so it never replaces a saved row and
   a later error on the turn never replaces it.
+- A Stop that lands after a message reached the provider and before its
+  turn opened cuts that turn. The row is written at once on the turn the
+  message was dispatched to open, and `thread_cancel` treats that turn
+  as running.
 - The interrupt queue drains on stop. Deferred events after the
   stop don't land as completed; they land as errored.
 - Stop drains pending approval and user-input requests for the

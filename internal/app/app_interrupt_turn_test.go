@@ -398,8 +398,16 @@ func TestInterruptTurnStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 	if got, want := f.app.turnStopCause(f.thread.ID, 1), stopByUser(nil).cause; got != want {
 		t.Fatalf("cause of turn 1 = %q, want %q", got, want)
 	}
+	requireOneStopRowOnTurn(t, f.app.store, f.thread.ID, 1)
 	f.handle(t, provider.ProviderEvent{Kind: provider.EventInit}, nil)
-	items, err := f.app.store.ListItems(f.thread.ID)
+	requireOneStopRowOnTurn(t, f.app.store, f.thread.ID, 1)
+}
+
+// requireOneStopRowOnTurn asserts the thread has exactly one "Stopped by
+// user" row, on turnIndex.
+func requireOneStopRowOnTurn(t *testing.T, st *store.Store, threadID string, turnIndex int) {
+	t.Helper()
+	items, err := st.ListItems(threadID)
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
@@ -409,8 +417,38 @@ func TestInterruptTurnStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 			stopped = append(stopped, item)
 		}
 	}
-	if len(stopped) != 1 || stopped[0].TurnIndex != 1 {
-		t.Fatalf("stop rows = %+v, want one on turn 1", stopped)
+	if len(stopped) != 1 || stopped[0].TurnIndex != turnIndex {
+		t.Fatalf("stop rows = %+v, want one on turn %d", stopped, turnIndex)
+	}
+}
+
+// An interrupt fenced on one turn leaves a send waiting to open another
+// turn alone, and stops the waiting send whose turn it names.
+func TestInterruptTurnAtIndexFencesOnTheTurnOfASendWaitingForIt(t *testing.T) {
+	t.Parallel()
+	f := newClaudeAgentKillFixture(t)
+	f.app.triage = triage.NewRouter(f.app.store, func(eventchan.Channel, any) {})
+	insertUserItem(t, f.app.store, f.thread.ID, "u:2", 2, "someone else's send")
+	f.app.triage.RegisterPendingSendWithExpectation(f.thread.ID, "u:2", 2, triage.PendingSendExpectation{})
+
+	stop := stopByThread("caller", "caller-id", "")
+	interrupted, err := f.app.interruptTurnAtIndex(context.Background(), f.thread.ID, 1, stop)
+	if err != nil || interrupted {
+		t.Fatalf("interrupt fenced on turn 1 = %v, %v; want it refused", interrupted, err)
+	}
+	if got := f.interrupts(t); got != 0 {
+		t.Fatalf("interrupts = %d, want 0", got)
+	}
+	if got := f.app.turnStopCause(f.thread.ID, 2); got != turnStoppedUnknown {
+		t.Fatalf("cause of turn 2 = %q, want none recorded", got)
+	}
+
+	interrupted, err = f.app.interruptTurnAtIndex(context.Background(), f.thread.ID, 2, stop)
+	if err != nil || !interrupted {
+		t.Fatalf("interrupt fenced on turn 2 = %v, %v; want it sent", interrupted, err)
+	}
+	if got := f.interrupts(t); got != 1 {
+		t.Fatalf("interrupts = %d, want 1", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -45,9 +46,10 @@ func requireOneStoppedRow(t *testing.T, st *store.Store, threadID string, turnIn
 	return rows[0].ID
 }
 
-// The sample names the waiting send's turn, and its stop row is written
-// once the turn opens. The turn after it is not marked.
-func TestMarkInterrupt_WaitingSendMarkedWhenItsTurnOpens(t *testing.T) {
+// The sample names the waiting send's turn and the stop row is written
+// on it at once. The row survives the turn opening and a later error in
+// it, and the turn after it is not marked.
+func TestMarkInterrupt_WaitingSendMarkedBeforeItsTurnOpens(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
@@ -58,12 +60,10 @@ func TestMarkInterrupt_WaitingSendMarkedWhenItsTurnOpens(t *testing.T) {
 	}
 	tok := router.MarkFlushSendsInterrupted("t1", sample.Turn)
 	errID, err := router.MarkInterrupt("t1", sample, tok, StoppedByUser)
-	if err != nil || errID != "" {
-		t.Fatalf("MarkInterrupt = %q, %v; want the row deferred to the turn start", errID, err)
+	if err != nil {
+		t.Fatalf("MarkInterrupt: %v", err)
 	}
-	if rows := stoppedRows(t, st, "t1"); len(rows) != 0 {
-		t.Fatalf("stop row written before its turn opened: %+v", rows)
-	}
+	requireStoppedByUserRow(t, st, "t1", errID, 1)
 
 	if err := router.Handle(initEvent("t1")); err != nil {
 		t.Fatalf("init: %v", err)
@@ -71,7 +71,7 @@ func TestMarkInterrupt_WaitingSendMarkedWhenItsTurnOpens(t *testing.T) {
 	if got := router.OpenTurnIndex("t1"); got != 1 {
 		t.Fatalf("open turn = %d, want 1", got)
 	}
-	errID = requireOneStoppedRow(t, st, "t1", 1)
+	requireOneStoppedRow(t, st, "t1", 1)
 	requireMarkerSurvivesLaterError(t, router, st, "t1", errID, 1)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -88,8 +88,8 @@ func TestMarkInterrupt_WaitingSendMarkedWhenItsTurnOpens(t *testing.T) {
 	requireOneStoppedRow(t, st, "t1", 1)
 }
 
-// The waiting send's turn opened during the ack wait: the row is
-// written by MarkInterrupt itself, on that turn.
+// The waiting send's turn opened during the ack wait: the row lands on
+// that turn.
 func TestMarkInterrupt_WaitingSendOpenedDuringAck(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -109,9 +109,44 @@ func TestMarkInterrupt_WaitingSendOpenedDuringAck(t *testing.T) {
 	requireMarkerSurvivesLaterError(t, router, st, "t1", errID, 1)
 }
 
-// The waiting send's turn start is in progress when MarkInterrupt runs:
-// it waits for the open turn rather than writing a row whose id the
-// start's setOpenTurn would reuse.
+// The waiting send's echo opens its turn before any init does: the stop
+// row is the turn's own, and the init that follows adds nothing.
+func TestMarkInterrupt_WaitingSendOpenedByItsEcho(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	now := time.Now().UnixMilli()
+	if _, err := st.AppendItem(store.Item{
+		ID: "user:1", ThreadID: "t1", TurnIndex: 1, Kind: "user_text", Role: "user",
+		Status: "completed", Summary: "just sent", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("append user row: %v", err)
+	}
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: "echo-1"})
+
+	sample := router.SampleInterrupt("t1")
+	tok := router.MarkFlushSendsInterrupted("t1", sample.Turn)
+	errID, err := router.MarkInterrupt("t1", sample, tok, StoppedByUser)
+	if err != nil {
+		t.Fatalf("MarkInterrupt: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: "t1", Content: "just sent",
+		Meta: json.RawMessage(`{"provider_item_id":"echo-1"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	if got := router.OpenTurnIndex("t1"); got != 1 {
+		t.Fatalf("open turn after the echo = %d, want 1", got)
+	}
+	if err := router.Handle(initEvent("t1")); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	requireOneStoppedRow(t, st, "t1", 1)
+	requireMarkerSurvivesLaterError(t, router, st, "t1", errID, 1)
+}
+
+// A stop row written while the waiting send's turn start is in progress
+// survives the start.
 func TestMarkInterrupt_WaitingSendStartInProgress(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -120,17 +155,20 @@ func TestMarkInterrupt_WaitingSendStartInProgress(t *testing.T) {
 	sample := router.SampleInterrupt("t1")
 	tok := router.MarkFlushSendsInterrupted("t1", sample.Turn)
 	held := holdTurnStart(t, router, initEvent("t1"), false)
-	res, startErr := runThroughHeldStart(t, router, "t1", held, func() interruptResult {
-		errID, err := router.MarkInterrupt("t1", sample, tok, StoppedByUser)
-		return interruptResult{errID: errID, err: err}
-	})
-	if startErr != nil {
-		t.Fatalf("init: %v", startErr)
+	errID, err := router.MarkInterrupt("t1", sample, tok, StoppedByUser)
+	if err != nil {
+		t.Fatalf("MarkInterrupt: %v", err)
 	}
-	if res.err != nil {
-		t.Fatalf("MarkInterrupt: %v", res.err)
+	held.release()
+	select {
+	case startErr := <-held.handled:
+		if startErr != nil {
+			t.Fatalf("init: %v", startErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("released turn start never returned")
 	}
-	requireStoppedByUserRow(t, st, "t1", res.errID, 1)
+	requireStoppedByUserRow(t, st, "t1", errID, 1)
 	requireOneStoppedRow(t, st, "t1", 1)
-	requireMarkerSurvivesLaterError(t, router, st, "t1", res.errID, 1)
+	requireMarkerSurvivesLaterError(t, router, st, "t1", errID, 1)
 }

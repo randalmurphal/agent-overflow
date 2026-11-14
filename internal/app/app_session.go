@@ -980,20 +980,22 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	// by an earlier interrupt still carries that interrupt's valid
 	// stamp.
 	pendingTUISendTurn := a.claudeTUIPendingSendTurn(threadID, sess)
-	interruptedTurn := anyOpenTurn
-	// The turn this stop cuts: the open one, or the turn of a send the
-	// provider holds whose turn has not opened yet.
-	cutTurn := anyOpenTurn
-	var sample triage.InterruptSample
-	var stampToken triage.FlushStampToken
+	sample := triage.InterruptSample{Turn: anyOpenTurn}
 	if a.triage != nil {
 		sample = a.triage.SampleInterrupt(threadID)
-		interruptedTurn, cutTurn = sample.Turn, sample.CutTurn()
-		if expectTurnIndex != anyOpenTurn && interruptedTurn != anyOpenTurn && interruptedTurn != expectTurnIndex {
-			// The thread has moved on to a turn this caller does not own.
-			// Stopping it would take work away from whoever started it.
-			return false, nil
-		}
+	}
+	// interruptedTurn is the open turn. cutTurn is the turn this stop
+	// cuts: the open one, or the turn of a send the provider holds whose
+	// turn has not opened yet.
+	interruptedTurn, cutTurn := sample.Turn, sample.CutTurn()
+	if expectTurnIndex != anyOpenTurn && cutTurn != anyOpenTurn && cutTurn != expectTurnIndex {
+		// The thread has moved on to a turn this caller does not own, open
+		// or about to open. Stopping it would take work away from whoever
+		// started it.
+		return false, nil
+	}
+	var stampToken triage.FlushStampToken
+	if a.triage != nil {
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
 	discardsMessage := a.claudeTUIStopDiscardsMessage(threadID, sess, interruptedTurn, pendingTUISendTurn)

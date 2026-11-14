@@ -73,7 +73,7 @@ type Router struct {
 	// out. Read under mu. Nil in production.
 	turnRowWrittenGate func(threadID string)
 	// interruptWaitHook is a test-only hook (SetInterruptWaitHook) called
-	// by SampleInterrupt and MarkInterrupt right before it waits on a turn start in
+	// by SampleInterrupt right before it waits on a turn start in
 	// progress (woke false) and right after that start ends, before the
 	// state is read again (woke true). Read under mu. Nil in production.
 	interruptWaitHook func(threadID string, woke bool)
@@ -426,9 +426,9 @@ func (r *Router) SetTurnRowWrittenGate(gate func(threadID string)) {
 }
 
 // SetInterruptWaitHook installs a test-only hook that SampleInterrupt
-// and MarkInterrupt call right before they wait on a turn start in
-// progress (woke false) and right after that start ends, before they
-// read the state again (woke true). A test can release a held start only once the interrupt
+// calls right before it waits on a turn start in progress (woke false)
+// and right after that start ends, before it reads the state again
+// (woke true). A test can release a held start only once the interrupt
 // is waiting on it, and hold the woken interrupt while the event worker
 // moves on. Production code must leave this nil. Pass nil to clear.
 func (r *Router) SetInterruptWaitHook(hook func(threadID string, woke bool)) {

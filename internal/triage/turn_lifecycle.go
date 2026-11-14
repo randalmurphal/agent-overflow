@@ -45,7 +45,6 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 	started := r.beginTurnStart(evt.ThreadID)
 	defer started()
 	turnIndex, err := resolve()
-	stopSummary := r.takeStartStop(evt.ThreadID)
 	if err != nil {
 		return err
 	}
@@ -100,27 +99,7 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 	}
 	r.setOpenRoundSnapshot(snapshot)
 	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
-	if stopSummary != "" {
-		// A Stop cut this turn before it opened (MarkInterrupt).
-		if _, err := r.writeStopRow(evt.ThreadID, turnIndex, stopSummary); err != nil {
-			openErr = errors.Join(openErr, fmt.Errorf("triage: stop row of turn %s/%d: %w", evt.ThreadID, turnIndex, err))
-		}
-	}
 	return openErr
-}
-
-// takeStartStop returns and clears the stop the running turn start
-// claimed with its pending send.
-func (r *Router) takeStartStop(threadID string) string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	st := r.threadStateIfPresent(threadID)
-	if st == nil {
-		return ""
-	}
-	summary := st.startStop
-	st.startStop = ""
-	return summary
 }
 
 // resolveTurnIndexOnStart picks the right turn index for an incoming
@@ -1050,17 +1029,16 @@ func (r *Router) OpenTurnIndex(threadID string) int {
 type InterruptSample struct {
 	// Turn is the open turn, or -1 when none was open.
 	Turn int
-	// waitingSend is the row id of the send the provider held whose turn
-	// had not opened, when Turn is -1, and waitingTurn the turn it was
-	// dispatched to open. Empty when there was none.
-	waitingSend string
+	// waiting reports a send the provider held whose turn had not opened,
+	// when Turn is -1; waitingTurn is the turn it was dispatched to open.
+	waiting     bool
 	waitingTurn int
 }
 
 // CutTurn is the turn the interrupt cuts: the open turn, else the turn
 // the waiting send opens, else -1.
 func (s InterruptSample) CutTurn() int {
-	if s.Turn < 0 && s.waitingSend != "" {
+	if s.Turn < 0 && s.waiting {
 		return s.waitingTurn
 	}
 	return s.Turn
@@ -1099,30 +1077,21 @@ func (s InterruptSample) CutTurn() int {
 func (r *Router) SampleInterrupt(threadID string) InterruptSample {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	st := r.awaitTurnStartLocked(threadID)
-	if st == nil {
-		return InterruptSample{Turn: -1}
-	}
-	if st.openTurnSet {
-		return InterruptSample{Turn: st.openTurn}
-	}
-	for _, entry := range st.pendingSends {
-		if entry.canOpenTurn() {
-			return InterruptSample{Turn: -1, waitingSend: entry.AOItemID, waitingTurn: entry.TurnIndex}
-		}
-	}
-	return InterruptSample{Turn: -1}
-}
-
-// awaitTurnStartLocked waits until threadID has no turn start in
-// progress and returns its state, nil when it has none. The caller holds
-// r.mu, which is released while waiting; interruptWaitHook runs around
-// each wait.
-func (r *Router) awaitTurnStartLocked(threadID string) *threadState {
 	for {
 		st := r.threadStateIfPresent(threadID)
-		if st == nil || st.turnStarting == nil {
-			return st
+		if st == nil {
+			return InterruptSample{Turn: -1}
+		}
+		if st.turnStarting == nil {
+			if st.openTurnSet {
+				return InterruptSample{Turn: st.openTurn}
+			}
+			for _, entry := range st.pendingSends {
+				if entry.canOpenTurn() {
+					return InterruptSample{Turn: -1, waiting: true, waitingTurn: entry.TurnIndex}
+				}
+			}
+			return InterruptSample{Turn: -1}
 		}
 		// The event worker can finish this start, complete its turn and
 		// begin the next one before this waiter resumes, so the state is
@@ -1142,9 +1111,9 @@ func (r *Router) awaitTurnStartLocked(threadID string) *threadState {
 }
 
 // beginTurnStart marks threadID as starting a turn and returns the
-// function that ends the mark, releasing SampleInterrupt and
-// MarkInterrupt waiters. Ending is idempotent: handleTurnStart ends it
-// once the open turn is set and again, as a no-op, when it returns.
+// function that ends the mark, releasing SampleInterrupt waiters.
+// Ending is idempotent: handleTurnStart ends it once the open turn is
+// set and again, as a no-op, when it returns.
 func (r *Router) beginTurnStart(threadID string) func() {
 	starting := make(chan struct{})
 	r.mu.Lock()
@@ -1776,18 +1745,18 @@ const StoppedByUser = "Stopped by user"
 // "current turn" read would land the stopped flips and the error row on
 // that new turn, which drains naturally (round-11, C11-1). A sample with
 // no open turn and no waiting send is a no-op — nothing was cut
-// (round-12, CT12-1). A sample whose cut turn is a waiting send's marks
-// that turn once it is open: now when it opened during the ack wait,
-// else when the turn start claims the send (StopSummary). The flip is
-// idempotent against the echo path's own interrupted-predecessor flip
-// (R10-4): rows it already moved out of streaming/running are skipped.
-// tok fences the whole call against session replacement, like the rest
-// of the post-ack block (round-11, CT11-1).
+// (round-12, CT12-1). A sample whose cut turn is a waiting send's writes
+// the stop row on that turn whether or not it has opened yet: the row's
+// id is reserved against the store, so nothing the turn writes later
+// replaces it. The flip is idempotent against the echo path's own
+// interrupted-predecessor flip (R10-4): rows it already moved out of
+// streaming/running are skipped. tok fences the whole call against
+// session replacement, like the rest of the post-ack block (round-11,
+// CT11-1).
 //
 // Returns the error id that was persisted so the caller can surface
 // diagnostics or correlate with downstream emissions; empty string
-// when no turn could be resolved, the row waits for its turn to open,
-// or the session was replaced.
+// when no turn could be resolved or the session was replaced.
 func (r *Router) MarkInterrupt(threadID string, sample InterruptSample, tok FlushStampToken, summary string) (string, error) {
 	if summary == "" {
 		return "", fmt.Errorf("triage: mark interrupt of %s: no stop summary", threadID)
@@ -1806,36 +1775,6 @@ func (r *Router) MarkInterrupt(threadID string, sample InterruptSample, tok Flus
 		// "Stopped by user" (round-12, CT12-1).
 		return "", nil
 	}
-	if sample.Turn < 0 && r.deferStopToWaitingSend(threadID, sample.waitingSend, summary) {
-		return "", nil
-	}
-	return r.writeStopRow(threadID, turnIndex, summary)
-}
-
-// deferStopToWaitingSend leaves summary on the waiting send's entry when
-// its turn has not opened, for the turn start that claims it, and
-// reports whether it did. A turn start in progress is waited out first,
-// as SampleInterrupt does.
-func (r *Router) deferStopToWaitingSend(threadID, aoItemID, summary string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	st := r.awaitTurnStartLocked(threadID)
-	if st == nil {
-		return false
-	}
-	for i := range st.pendingSends {
-		if st.pendingSends[i].AOItemID == aoItemID && st.pendingSends[i].canOpenTurn() {
-			st.pendingSends[i].StopSummary = summary
-			return true
-		}
-	}
-	return false
-}
-
-// writeStopRow flips the stopped turn's running rows and writes its stop
-// row reading summary. The turn must be open or settled: a turn's index
-// is final only once its start has resolved it (upsertTurnRow).
-func (r *Router) writeStopRow(threadID string, turnIndex int, summary string) (string, error) {
 	now := time.Now().UnixMilli()
 	if err := r.flipTurnItemsErrored(threadID, turnIndex, now, stoppedSummary); err != nil {
 		return "", err

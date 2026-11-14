@@ -45,9 +45,6 @@ type threadState struct {
 	// when it returns. SampleInterrupt waits on it so an interrupt
 	// never samples the turn between its row and its open turn.
 	turnStarting chan struct{}
-	// startStop is the StopSummary of the pending send the running turn
-	// start claimed; startTurn writes it once the turn is open.
-	startStop string
 
 	// interruptQueue holds persistence work deferred behind an active
 	// stream (invariant 11), drained once the thread stops streaming.

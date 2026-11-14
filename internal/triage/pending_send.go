@@ -139,12 +139,6 @@ type pendingSend struct {
 	// next queued message and must settle as "end_turn".
 	InterruptedTurnIndex int
 
-	// StopSummary is the stop row of an interrupt that cut this send's
-	// turn before the turn opened (MarkInterrupt). The turn start that
-	// claims the entry writes it once the turn is open
-	// (claimTurnOpeningPendingSend, startTurn).
-	StopSummary string
-
 	// EchoConsumed marks an entry that was reinserted after its echo's
 	// store write failed: the provider PROVABLY consumed the message
 	// (the echo arrived), only AO's write didn't stick. A session-death
@@ -413,10 +407,6 @@ func (r *Router) claimTurnOpeningPendingSend(threadID string) (int, bool) {
 		if queue[i].canOpenTurn() {
 			queue[i].OpenedTurn = true
 			queue[i].StartedAtClaim = queue[i].Started
-			if queue[i].StopSummary != "" {
-				r.state(threadID).startStop = queue[i].StopSummary
-				queue[i].StopSummary = ""
-			}
 			return queue[i].TurnIndex, true
 		}
 	}
