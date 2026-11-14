@@ -843,11 +843,12 @@ func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Cal
 // that is working gets that turn interrupted.
 //
 // "In flight" is the turn the interrupt itself would cut
-// (InterruptTurnIndex), which waits out a turn start in progress. The live
-// state's active round opens later in that start, so a stop gated on it
-// would report nothing to stop for a turn that then runs to its end.
+// (SampleInterrupt): the open turn after any turn start in progress, or
+// the turn of a send the provider already holds. The live state's active
+// round opens later than both, so a stop gated on it would report nothing
+// to stop for a turn that then runs to its end.
 func (t threadToolsApp) interruptRunningThread(ctx context.Context, threadID string, stop turnStop) (string, error) {
-	if t.app.triage == nil || t.app.triage.InterruptTurnIndex(threadID) < 0 {
+	if t.app.triage == nil || t.app.triage.SampleInterrupt(threadID).CutTurn() < 0 {
 		return threadtools.EffectNothing, nil
 	}
 	if err := t.app.interruptTurnCtx(ctx, threadID, stop); err != nil {
