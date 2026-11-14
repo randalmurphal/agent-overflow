@@ -43,6 +43,8 @@ type requestFixture struct {
 	app    *App
 	bus    *capturedEventBus
 	caller store.Thread
+	// callerHeld carries holdCallerTurn's session hold across restart.
+	callerHeld bool
 }
 
 func newRequestFixture(t *testing.T) *requestFixture {
@@ -795,13 +797,7 @@ func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	release := f.mockClaudeAfterTheAck(t, "the migration is reversible")
-	// The caller is mid-turn, so the wake queues at the turn boundary and
-	// stays there to be read instead of racing a session start.
-	if err := f.app.store.InsertTurn(store.Turn{
-		TurnID: "caller-open", ThreadID: f.caller.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
+	f.holdCallerTurn(t)
 
 	// A person's half-written message must survive an agent's wake.
 	if _, err := f.app.store.UpsertThreadDraft(store.ThreadDraft{
@@ -1591,12 +1587,7 @@ func TestThreadLateReplyArrivesAsASecondWake(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	release := f.mockClaudeAfterTheAck(t, "looking into it")
-	// The caller is mid-turn so both wakes stay in the queue to be read.
-	if err := f.app.store.InsertTurn(store.Turn{
-		TurnID: "caller-open", ThreadID: f.caller.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
+	f.holdCallerTurn(t)
 	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
 		Prompt: "what did the profiler say?", WaitSeconds: 0, Notify: true,
 	})
@@ -2131,17 +2122,38 @@ func (f *requestFixture) restart(t *testing.T) *requestFixture {
 		app.threadRequestsWG.Wait()
 	})
 	app.installThreadRequestObserver()
-	return &requestFixture{app: app, bus: bus, caller: f.caller}
+	after := &requestFixture{app: app, bus: bus, caller: f.caller}
+	if f.callerHeld {
+		after.holdCallerSession()
+	}
+	return after
 }
 
-// holdCallerTurn keeps the caller mid-turn so wakes queue where the test can
-// read them instead of racing a session start.
+// holdCallerTurn puts the caller mid-turn with no session that can take a
+// message, so a wake stays in the caller's durable queue where the test can
+// read it. Call it before anything can deliver a wake.
 func (f *requestFixture) holdCallerTurn(t *testing.T) {
 	t.Helper()
 	if err := f.app.store.InsertTurn(store.Turn{
 		TurnID: f.caller.ID + "-open", ThreadID: f.caller.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("InsertTurn: %v", err)
+	}
+	f.holdCallerSession()
+}
+
+// holdCallerSession makes a start of the caller's session spawn nothing.
+// The open turn row alone does not hold a wake: a wake to a caller with no
+// session starts one, and that start dispatches the queue to the provider
+// and deletes the durable row. Other threads start as usual.
+func (f *requestFixture) holdCallerSession() {
+	f.callerHeld = true
+	app, caller := f.app, f.caller.ID
+	app.startSessionFn = func(threadID string) error {
+		if threadID == caller {
+			return nil
+		}
+		return app.startSessionNow(threadID)
 	}
 }
 
@@ -2313,8 +2325,6 @@ func TestArchivingThroughTheOrganizePatchStopsTheCallersRequests(t *testing.T) {
 func TestThreadReminderSweepFiresOnItsOwn(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
-	// The reminder wakes the thread, and waking a thread starts its agent.
-	f.mockClaude(t, "noted")
 	f.holdCallerTurn(t)
 	f.app.appCtx, f.app.appCancel = context.WithCancel(context.Background())
 	t.Cleanup(func() {
@@ -2997,8 +3007,6 @@ func TestThreadStatusSaysTheQueuedMessageIsStillComing(t *testing.T) {
 	t.Run("waiting in the queue", func(t *testing.T) {
 		f := newRequestFixture(t)
 		f.mockClaudeHoldingTheTurn(t, "starting on it")
-		// No session on the caller, so the wake sits in the durable queue
-		// until the thread has somewhere to put it.
 		f.holdCallerTurn(t)
 		ack := f.runningRequest(t, "how many rows did the backfill touch?")
 		if _, err := f.adapter().Reply(t.Context(), f.targetIdentity(t, ack.ThreadID), threadtools.ReplyCall{
