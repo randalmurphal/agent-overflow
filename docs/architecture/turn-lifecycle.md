@@ -1164,7 +1164,9 @@ working indicator clears and the user gets actionable copy:
    suppresses the queued-send flush so deferred sends aren't
    dispatched into a dead session. Settled turns are excluded: a late
    wire `result` folding into a soft-closed round still routes to
-   `persistLateTurnPayload`, never here. The app layer additionally
+   `persistLateTurnPayload`, never here. So is a result from a session a
+   replacement has retired, whose empty ledger is the replacement's: it
+   writes nothing (`claimOrphanError`). The app layer additionally
    reaps the never-inited session (`teardownDeadPreInitSession`,
    Claude-only, since the lingering-process failure mode is the Claude
    CLI's; token- and epoch-guarded so a racing user retry's

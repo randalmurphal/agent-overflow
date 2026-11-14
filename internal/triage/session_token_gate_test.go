@@ -830,3 +830,47 @@ func TestARetiredSessionsResultLeavesTheReplacementsTurnAlone(t *testing.T) {
 		t.Fatalf("the retired session's result folded into the replacement's turn: %+v", turn)
 	}
 }
+
+// The same, with the replacement committed and not yet started: it has no
+// round, turn or settlement for the result to take, and its message is
+// waiting to open a turn. The dead session's error is not the
+// replacement's to show, and is not written.
+func TestARetiredSessionsErrorResultBeforeTheReplacementStartsWritesNothing(t *testing.T) {
+	const threadID = "thread-retired-orphan"
+	st := storetest.Clone(t)
+	createTestThread(t, st, threadID)
+	var r *Router
+	replaced := false
+	itemEvents := 0
+	r = NewRouter(st, func(channel eventchan.Channel, _ any) {
+		if channel == eventchan.ProviderItemEvent {
+			itemEvents++
+		}
+		if channel != eventchan.ProviderFastMode || replaced {
+			return
+		}
+		replaced = true
+		r.MarkThreadActive(threadID, "session-b")
+		r.RegisterPendingSendWithExpectation(threadID, "user:0", 0, PendingSendExpectation{})
+	})
+	holdWireRefresh(r)
+	t.Cleanup(r.flushAllUsage)
+	t.Cleanup(r.DrainWireItemRefresh)
+	r.MarkThreadActive(threadID, "session-a")
+	failed := &provider.WireTurnCompleteMeta{
+		StopReason: "error", ErrorMessage: "the dead session failed", FastMode: &provider.FastModeStatus{State: "on"},
+	}
+	if err := r.handleTurnComplete(fromSession(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: threadID, TurnComplete: failed, Timestamp: time.Now()}, "session-a")); err != nil {
+		t.Fatal(err)
+	}
+	if !replaced {
+		t.Fatal("the result emitted no fast-mode report to commit the replacement in")
+	}
+	items, err := st.ListItems(threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 || itemEvents != 0 {
+		t.Fatalf("the retired session's error was written into the replacement's thread: items %+v, %d item events", items, itemEvents)
+	}
+}

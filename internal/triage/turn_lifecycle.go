@@ -479,7 +479,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// provider:item_event upsert it emits is the surface the frontend
 	// already clears its optimistic pending-send "Working" state on.
 	//
-	// The isTurnSettled guard — checked against the event's NATURAL turn
+	// The settled-turn guard — checked against the event's NATURAL turn
 	// (currentTurnIndex fallback) — keeps the legitimate late-fold case
 	// flowing past this branch: a trailing result{is_error} after a soft
 	// close settled the turn must reach persistLateTurnPayload below, not
@@ -489,12 +489,16 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// start; deferred flush items are not in SQLite yet, so LastTurnIndex
 	// would point one turn early). The entry is NOT consumed —
 	// CleanupThread or its confirmation owns the pop.
-	if err == nil && meta.Error != "" && !hasRound && !r.isTurnSettled(evt.ThreadID, turnIndex) {
-		if _, open := r.openTurnIndex(evt.ThreadID); !open {
-			attributedTurn := turnIndex
-			if pending, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
-				attributedTurn = pending.TurnIndex
-			}
+	//
+	// A retired session's result is no orphan of the replacement's, whose
+	// empty ledger only makes it look like one, and writes nothing
+	// (claimOrphanError).
+	if err == nil && meta.Error != "" && !hasRound {
+		switch attributedTurn, claim := r.claimOrphanError(evt.ThreadID, turnIndex, evt.SessionToken); claim {
+		case orphanErrorRetired:
+			flushQueueAtBoundary = false
+			return nil
+		case orphanErrorClaimed:
 			// A session that just reported a hard failure cannot serve
 			// queued sends — leave the flush queue for the next session.
 			flushQueueAtBoundary = false
@@ -1529,6 +1533,43 @@ func (r *Router) claimTurnSettlement(threadID string, turnIndex int, sessionToke
 	}
 	st.settledTurns[turnIndex] = true
 	return settlementClaimed
+}
+
+// orphanErrorClaim is the outcome of claimOrphanError.
+type orphanErrorClaim uint8
+
+const (
+	// orphanErrorNone: a turn is open or settled, and the result is its.
+	orphanErrorNone orphanErrorClaim = iota
+	// orphanErrorClaimed: the result is an orphan error of this session.
+	orphanErrorClaimed
+	// orphanErrorRetired: the frame's session was replaced; nothing on
+	// the thread is its own.
+	orphanErrorRetired
+)
+
+// claimOrphanError reports whether an error result with no round is an
+// orphan (no open turn, and turnIndex not settled) of the session that
+// sent it, and the turn its error item is attributed to: the pending send
+// still to open a turn when there is one, otherwise turnIndex. It reads
+// the retirement and the ledger under one r.mu, so a replacement's commit,
+// which resets the ledger, cannot make a retired session's result look
+// like an orphan of the replacement's.
+func (r *Router) claimOrphanError(threadID string, turnIndex int, sessionToken string) (int, orphanErrorClaim) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return 0, orphanErrorRetired
+	}
+	if st := r.threadStateIfPresent(threadID); st != nil && (st.openTurnSet || st.settledTurns[turnIndex]) {
+		return 0, orphanErrorNone
+	}
+	for _, entry := range r.pendingSendsLocked(threadID) {
+		if entry.canOpenTurn() {
+			return entry.TurnIndex, orphanErrorClaimed
+		}
+	}
+	return turnIndex, orphanErrorClaimed
 }
 
 // isTurnSettled reports whether logical-turn settlement has already run
