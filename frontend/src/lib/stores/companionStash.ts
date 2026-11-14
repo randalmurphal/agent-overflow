@@ -325,6 +325,23 @@ export function followAssistantHandOffInStash(oldThreadId: string, successor: Th
   }
 }
 
+/**
+ * `successorOf` names the thread that replaced one by a handoff whose frame
+ * this client missed (reconcileThreadRows): an agent thread companion
+ * hidden showing it reopens on the successor.
+ */
+export function followAssistantHandOffsInStash(successorOf: (thread: Thread) => Thread | undefined): void {
+  const moved = (entry: StashedCompanion): Thread | undefined =>
+    (entry.kind === 'agent-thread' && entry.thread ? successorOf(entry.thread) : undefined);
+  for (const [ownerId, entries] of stashByThread) {
+    if (!entries.some((entry) => moved(entry))) continue;
+    stashByThread.set(ownerId, entries.map((entry) => {
+      const current = moved(entry);
+      return current ? { ...entry, thread: current } : entry;
+    }));
+  }
+}
+
 export function installCompanionStash(): void {
   uninstall?.();
   const offMounted = addPaneThreadMountedObserver(reopenStashedCompanions);

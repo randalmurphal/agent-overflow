@@ -496,9 +496,12 @@ while its own handoff of the assistant runs.
    step 4 interrupted, and to read the previous thread with `thread_show`
    before acting on what it was doing, then tell the user in one short
    paragraph what it picked up. The old thread's unlisted frame names the
-   successor (`handOffTo`); only that marker moves the panes that showed
+   successor (`handOffTo`); that marker moves the panes that showed
    the old thread, and a hidden agent thread companion, to the successor.
-   Any other unlisted frame closes them.
+   Any other unlisted frame closes them. A client that missed the frame
+   moves them when a thread catalog answer names another current thread
+   for the assistant whose current thread they showed
+   (`reconcileThreadRows`); one opened on a past thread stays.
 
 The old thread is then a past thread: it keeps its history, lists in the
 assistant's done footer with the time it was superseded, and is never

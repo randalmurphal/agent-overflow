@@ -12,7 +12,7 @@ import { closePanesShowingThread, findPaneShowingThread, iterPanes, moveAssistan
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { refreshAgentWakes } from './threadWakes.svelte';
-import { followAssistantHandOffInStash } from './companionStash';
+import { followAssistantHandOffInStash, followAssistantHandOffsInStash } from './companionStash';
 import { addErrorToast, addToast } from './toast.svelte';
 import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
@@ -225,11 +225,27 @@ export function reconcileThreadRows(rows: Thread[]): void {
   const merged = rows.map((row) => mergeThreadRowWithLocal(row, cachedById.get(row.id)));
   replaceAllThreads(merged);
   const mergedById = new Map(merged.map((thread) => [thread.id, thread]));
+  // A thread this client held as an assistant's current thread, while the
+  // answer names another current thread of that assistant, was replaced
+  // by a handoff whose frame this client missed (lost, or sent while it was
+  // away): what showed it moves as the frame would have moved it. One held
+  // as a past thread was opened as one and stays.
+  const currentByAgent = new Map(merged.flatMap((thread) => (thread.agentId ? [[thread.agentId, thread] as const] : [])));
+  const successorOf = (thread: Thread): Thread | undefined => {
+    const agentId = (cachedById.get(thread.id) ?? thread).agentId;
+    const current = agentId ? currentByAgent.get(agentId) : undefined;
+    return current && current.id !== thread.id ? current : undefined;
+  };
+  const handedOff = new Map<string, Thread>();
   for (const pane of ingestPanes()) {
     if (!pane.threadId || !pane.thread) continue;
+    const successor = successorOf(pane.thread);
+    if (successor) handedOff.set(pane.threadId, successor);
     const row = mergedById.get(pane.threadId);
     if (row) pane.replaceThread(row);
   }
+  followAssistantHandOffsInStash(successorOf);
+  for (const [oldThreadId, successor] of handedOff) moveAssistantPanes(oldThreadId, successor);
 }
 
 let sidebarRefreshQueued = false;

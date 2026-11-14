@@ -29,7 +29,7 @@ import {
   resetPanesForTest,
 } from './panes.svelte';
 import { removeThread, replaceAllThreads } from './threads.svelte';
-import { applyThreadUpdated } from './eventsThreadRows';
+import { applyThreadUpdated, reconcileThreadRows } from './eventsThreadRows';
 import type { Thread } from '../types/models';
 import { installPaneMocks, makeThread } from '../../test/helpers/chat';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
@@ -179,6 +179,21 @@ describe('the agent thread companion in the stash', () => {
     const current = makeThread({ id: 'assistant-2', title: 'Ops', agentId: 'agent-ops' });
     applyThreadUpdated({ action: 'listed', thread: current });
     applyThreadUpdated({ action: 'unlisted', thread: { ...past, agentId: undefined, pastAgentId: 'agent-ops', archived: true }, handOffTo: current.id });
+    await openThreadInPane(SOURCE, 'main');
+
+    await vi.waitFor(() => expect(getPane('agent-thread-main')?.threadId).toBe(current.id));
+  });
+
+  it('follows a handoff whose frames were lost, from the catalog naming the current thread', async () => {
+    const past = makeThread({ id: 'assistant-1', title: 'Ops', agentId: 'agent-ops' });
+    replaceAllThreads([SOURCE, OTHER, past]);
+    await source();
+    await openAgentThreadCompanion(getPane('main')!, past);
+    await openThreadInPane(OTHER, 'main');
+
+    // The old thread was archived by the handoff: the catalog no longer has it.
+    const current = makeThread({ id: 'assistant-2', title: 'Ops', agentId: 'agent-ops' });
+    reconcileThreadRows([SOURCE, OTHER, current]);
     await openThreadInPane(SOURCE, 'main');
 
     await vi.waitFor(() => expect(getPane('agent-thread-main')?.threadId).toBe(current.id));

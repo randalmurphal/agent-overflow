@@ -2082,6 +2082,59 @@ describe('setupEventListeners', () => {
       expect(getThreads().find((t) => t.id === 'thread-1')?.pastAgentId).toBe('agent-1');
     });
 
+    it("moves a pane on a handoff whose frame was lost, from the catalog naming the assistant's new thread", async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+
+      // No frame: the next catalog lists the new thread and not the old one.
+      setBindingMock('ListThreads', async () => [successor]);
+      await refreshThreads();
+
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+    });
+
+    it('keeps a pane a live handoff moved when a catalog read from before the handoff lands', async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+      let answer!: (rows: unknown[]) => void;
+      setBindingMock('ListThreads', () => new Promise((resolve) => { answer = resolve; }));
+      const read = refreshThreads();
+      await vi.waitFor(() => expect(answer).toBeDefined());
+
+      emitWailsEvent('thread:updated', { action: 'listed', thread: successor });
+      emitWailsEvent('thread:updated', {
+        action: 'unlisted',
+        thread: makeThread({ id: 'thread-1', title: 'Ops', archived: true, pastAgentId: 'agent-1' }),
+        handOffTo: 'thread-2',
+      });
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+      answer([makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await read;
+
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-2']);
+      expect(pane.threadId).toBe('thread-2');
+    });
+
+    it("leaves a pane opened on an assistant's past thread where it is when the catalog lands", async () => {
+      setBindingMock('ListThreads', async () => [
+        makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }),
+        makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' }),
+      ]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }));
+
+      await refreshThreads();
+
+      expect(pane.threadId).toBe('thread-1');
+      expect(findPaneShowingThread('thread-2')).toBeNull();
+    });
+
     it("closes the pane of an assistant's past thread archived again, which no handoff names", async () => {
       setBindingMock('ListThreads', async () => [
         makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }),
