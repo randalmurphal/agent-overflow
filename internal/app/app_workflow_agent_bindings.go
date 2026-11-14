@@ -1307,15 +1307,6 @@ func (a *App) resolveAgentWorkflow(scope transport.CallerScope, workflowID, work
 	return calls.ResolveCall(workflowID)
 }
 
-// workflowAgentRunStatus is run_status and the read behind every tool wait.
-func (a *App) workflowAgentRunStatus(ctx context.Context, itemID string) (WorkflowAgentRunView, error) {
-	view, err := a.workflowApplication().RunStatus(ctx, itemID)
-	if err != nil {
-		return WorkflowAgentRunView{}, err
-	}
-	return projectWorkflowRunView(view), nil
-}
-
 // workflowAgentListRuns is run_list, scoped to the caller's project.
 func (a *App) workflowAgentListRuns(ctx context.Context, activeOnly bool) ([]WorkflowAgentRunView, error) {
 	views, err := a.workflowApplication().ListRuns(ctx, activeOnly)

@@ -42,6 +42,16 @@ inputs:
     schema:
       type: string`
 
+// workflowAgentRunStatus is run_status's document, as the tool adapter
+// projects it.
+func (a *App) workflowAgentRunStatus(ctx context.Context, itemID string) (WorkflowAgentRunView, error) {
+	observed, err := workflowToolsAdapter{a: a}.RunStatus(ctx, itemID)
+	if err != nil {
+		return WorkflowAgentRunView{}, err
+	}
+	return observed.Result.(WorkflowAgentRunView), nil
+}
+
 // newCLIFixture boots the tool-driver workflow fixture with a command that
 // always succeeds, so a run itself reaches `done` without any provider
 // process. A run BOUND to a thread still wakes that thread on rest, and wake

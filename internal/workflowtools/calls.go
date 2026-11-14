@@ -221,11 +221,11 @@ func (c *call) runStatus(ctx context.Context, raw json.RawMessage) (any, error) 
 
 // wait blocks until the run rests or the wait passes, then reads its status.
 // The wait is spent in the app's own bounded holds, so a client that goes away
-// ends it at the next hold rather than at the deadline. A wait that ends at
-// rest also names the rest it read.
+// ends it at the next hold rather than at the deadline. The outcome, the
+// document and the rest returned all come from that one status read: a watch
+// only decides when to read, so a run that moved between the two is reported
+// as the read found it. A wait that ends at rest also names the rest it read.
 func (c *call) wait(ctx context.Context, runID string, args waitArgs) (Wait, *Rest, error) {
-	resting := false
-	var rest *Rest
 	if args.WaitSeconds > 0 {
 		deadline := c.clock().Add(time.Duration(args.WaitSeconds) * time.Second)
 		var cursor int64
@@ -235,12 +235,7 @@ func (c *call) wait(ctx context.Context, runID string, args waitArgs) (Wait, *Re
 				return Wait{}, nil, failed(err)
 			}
 			cursor = watched.Cursor
-			resting = watched.Resting
-			if resting {
-				rest = &Rest{Cursor: watched.Cursor, State: watched.State, Reason: watched.Reason, PhaseID: watched.PhaseID}
-				break
-			}
-			if !c.clock().Before(deadline) {
+			if watched.Resting || !c.clock().Before(deadline) {
 				break
 			}
 			if err := ctx.Err(); err != nil {
@@ -252,13 +247,9 @@ func (c *call) wait(ctx context.Context, runID string, args waitArgs) (Wait, *Re
 	if err != nil {
 		return Wait{}, nil, failed(err)
 	}
-	if args.WaitSeconds == 0 {
-		// No wait was spent, so the state comes from the status read alone.
-		resting = statusResting(status)
-	}
-	result := Wait{Run: status, Outcome: OutcomeRunning}
+	result := Wait{Run: status.Result, Outcome: OutcomeRunning}
 	switch {
-	case resting:
+	case status.Resting:
 		result.Outcome = OutcomeResting
 	case args.WaitSeconds > 0:
 		result.Outcome = OutcomeBackgrounded
@@ -272,23 +263,7 @@ func (c *call) wait(ctx context.Context, runID string, args waitArgs) (Wait, *Re
 		}
 		result.Notify = &notify
 	}
-	return result, rest, nil
-}
-
-// statusResting reads the resting flag off the app's status document. The
-// document is the app's; this is the one field the tool reads back.
-func statusResting(status any) bool {
-	encoded, err := json.Marshal(status)
-	if err != nil {
-		return false
-	}
-	var view struct {
-		Resting bool `json:"resting"`
-	}
-	if err := json.Unmarshal(encoded, &view); err != nil {
-		return false
-	}
-	return view.Resting
+	return result, status.rest(), nil
 }
 
 // The three notify answers. A run's rest reaches a thread only through its
@@ -496,9 +471,9 @@ func (c *call) runControl(ctx context.Context, raw json.RawMessage) (any, error)
 		return ActionDone{RunID: runID, Action: args.Action, Done: true, ArmedAt: done.ArmedAt, ReadError: publicMessage(err)}, nil
 	}
 	if done.ArmedAt != "" {
-		return ScheduledResume{ArmedAt: done.ArmedAt, Run: status}, nil
+		return ScheduledResume{ArmedAt: done.ArmedAt, Run: status.Result}, nil
 	}
-	return status, nil
+	return status.Result, nil
 }
 
 // ScheduledResume is run_control resume with at: the moment the resume armed,
@@ -595,7 +570,7 @@ func (c *call) runResolve(ctx context.Context, raw json.RawMessage) (any, error)
 	if err != nil {
 		return ActionDone{RunID: runID, Action: args.Decision, Done: true, ReadError: publicMessage(err)}, nil
 	}
-	return status, nil
+	return status.Result, nil
 }
 
 func (c *call) memoryAdd(ctx context.Context, raw json.RawMessage) (any, error) {

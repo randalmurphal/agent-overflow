@@ -24,7 +24,9 @@ type App interface {
 	ScaffoldWorkflow(ctx context.Context, starter, id string, project bool) (catalog.ScaffoldResult, error)
 
 	StartRun(ctx context.Context, input StartInput) (Started, error)
-	RunStatus(ctx context.Context, runID string) (any, error)
+	// RunStatus reads the run once: its status document and the facts a
+	// wait decides on, from the same read.
+	RunStatus(ctx context.Context, runID string) (Observed, error)
 	// HoldWake keeps the run's rests from waking the calling thread while a
 	// call waits on it, until the hold is released. A rest the call returned
 	// is delivered; any other rest the hold kept back wakes the thread on
@@ -109,10 +111,27 @@ type Watched struct {
 	Cursor      int64
 	Transitions int
 	Resting     bool
-	State       string
-	Reason      string
-	PhaseID     string
 	Result      any
+}
+
+// Observed is one read of a run's status: the app's document and the facts
+// a wait decides on, taken from that document. Cursor is the watch ring head
+// read before the run, so a rest it shows is named as a watch names one.
+type Observed struct {
+	Cursor  int64
+	Resting bool
+	State   string
+	Reason  string
+	PhaseID string
+	Result  any
+}
+
+// rest is the rest the read shows, nil when the run is not resting.
+func (o Observed) rest() *Rest {
+	if !o.Resting {
+		return nil
+	}
+	return &Rest{Cursor: o.Cursor, State: o.State, Reason: o.Reason, PhaseID: o.PhaseID}
 }
 
 // InspectInput is run_inspect's request.

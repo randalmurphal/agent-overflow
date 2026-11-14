@@ -27,11 +27,11 @@ type fakeApp struct {
 	watches []Watched
 	// watchInputs records every WatchRun request.
 	watchInputs []WatchInput
-	// statusResting is the resting flag RunStatus's document carries.
-	statusResting bool
-	control       ControlInput
-	resolve       ResolveInput
-	err           error
+	// status is what RunStatus reads; its document is built from it.
+	status  Observed
+	control ControlInput
+	resolve ResolveInput
+	err     error
 	// fail answers the named method with an error, after the calls before it
 	// succeeded.
 	fail map[string]error
@@ -106,9 +106,14 @@ func (f *fakeApp) StartRun(_ context.Context, input StartInput) (Started, error)
 	return started, nil
 }
 
-func (f *fakeApp) RunStatus(_ context.Context, runID string) (any, error) {
+func (f *fakeApp) RunStatus(_ context.Context, runID string) (Observed, error) {
 	f.record("RunStatus")
-	return map[string]any{"itemId": runID, "resting": f.statusResting}, f.errFor("RunStatus")
+	if err := f.errFor("RunStatus"); err != nil {
+		return Observed{}, err
+	}
+	observed := f.status
+	observed.Result = map[string]any{"itemId": runID, "resting": observed.Resting, "state": observed.State}
+	return observed, nil
 }
 
 func (f *fakeApp) WatchRun(_ context.Context, input WatchInput) (Watched, error) {
@@ -343,7 +348,7 @@ func TestInstructionsNameOnlyTheCallersTools(t *testing.T) {
 }
 
 func TestStatusWithoutAWaitReadsOnce(t *testing.T) {
-	app := &fakeApp{statusResting: true}
+	app := &fakeApp{status: Observed{Resting: true}}
 	result, err := New(app).Call(context.Background(), interactive, "run_status", json.RawMessage(`{"run_id":"run-1"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -355,26 +360,66 @@ func TestStatusWithoutAWaitReadsOnce(t *testing.T) {
 }
 
 func TestWaitReturnsWhenTheRunRests(t *testing.T) {
-	app := &fakeApp{watches: []Watched{
-		{Cursor: 4}, {Cursor: 6, Transitions: 1, State: "running"},
-		{Cursor: 7, Transitions: 1, Resting: true, State: "needs-human", Reason: "gate", PhaseID: "review"},
-	}}
+	app := &fakeApp{
+		watches: []Watched{{Cursor: 4}, {Cursor: 6, Transitions: 1}, {Cursor: 7, Transitions: 1, Resting: true}},
+		status:  Observed{Cursor: 7, Resting: true, State: "needs-human", Reason: "gate", PhaseID: "review"},
+	}
 	result, err := New(app).Call(context.Background(), interactive, "run_status", json.RawMessage(`{"run_id":"run-1","wait_seconds":600}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	wait := result.(Wait)
-	if wait.Outcome != OutcomeResting || wait.Notify != nil {
+	if wait.Outcome != OutcomeResting || wait.Notify != nil || wait.Run.(map[string]any)["resting"] != true {
 		t.Fatalf("wait = %+v", wait)
 	}
 	// Each hold continues from the cursor the previous one returned.
 	if len(app.watchInputs) != 3 || app.watchInputs[0].Cursor != 0 || app.watchInputs[1].Cursor != 4 || app.watchInputs[2].Cursor != 6 {
 		t.Fatalf("watch inputs = %+v", app.watchInputs)
 	}
-	// The rest it hands back is the one the last watch read, at that cursor.
+	// The rest it hands back is the one the status read shows, at its cursor.
 	want := Rest{Cursor: 7, State: "needs-human", Reason: "gate", PhaseID: "review"}
 	if len(app.holds) != 1 || app.holds[0].returned == nil || *app.holds[0].returned != want {
 		t.Fatalf("holds = %+v, want released with %+v", app.holds, want)
+	}
+}
+
+// The outcome, the document and the rest handed back come from one status
+// read, whatever the watch before it saw: a gate resumed after the watch
+// read the rest is reported backgrounded and hands back nothing, and a run
+// that came to rest after the last watch timed out is reported resting with
+// that rest.
+func TestWaitAnswersFromTheStatusItReturns(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		watched Watched
+		status  Observed
+		outcome string
+		rest    *Rest
+	}{
+		{"resumed after the watch", Watched{Cursor: 7, Resting: true}, Observed{Cursor: 9, State: "running"}, OutcomeBackgrounded, nil},
+		{"rested after the watch", Watched{Cursor: 7}, Observed{Cursor: 8, Resting: true, State: "needs-human", Reason: "gate", PhaseID: "review"},
+			OutcomeResting, &Rest{Cursor: 8, State: "needs-human", Reason: "gate", PhaseID: "review"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Unix(1000, 0)
+			app := &fakeApp{watches: []Watched{test.watched}, status: test.status}
+			server := New(app)
+			server.now = func() time.Time { now = now.Add(31 * time.Second); return now }
+			result, err := server.Call(context.Background(), interactive, "run_status", json.RawMessage(`{"run_id":"run-1","wait_seconds":30}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wait := result.(Wait)
+			if wait.Outcome != test.outcome || wait.Run.(map[string]any)["resting"] != test.status.Resting {
+				t.Fatalf("wait = %+v, want outcome %s with the status document", wait, test.outcome)
+			}
+			if len(app.holds) != 1 || app.holds[0].releases != 1 {
+				t.Fatalf("holds = %+v", app.holds)
+			}
+			if got := app.holds[0].returned; (got == nil) != (test.rest == nil) || (got != nil && *got != *test.rest) {
+				t.Fatalf("returned rest %+v, want %+v", got, test.rest)
+			}
+		})
 	}
 }
 
@@ -426,7 +471,7 @@ func TestNotifyWithoutAWait(t *testing.T) {
 	if wait := result.(Wait); wait.Outcome != OutcomeRunning || wait.Notify == nil || !wait.Notify.Armed {
 		t.Fatalf("wait = %+v", wait)
 	}
-	app = &fakeApp{statusResting: true}
+	app = &fakeApp{status: Observed{Resting: true}}
 	result, err = New(app).Call(context.Background(), interactive, "run_status", json.RawMessage(`{"run_id":"run-1","notify":true}`))
 	if err != nil {
 		t.Fatal(err)
@@ -575,7 +620,7 @@ func TestActionsReportDoneWhenReadingTheRunBackFails(t *testing.T) {
 func TestWaitingCallsHoldTheWake(t *testing.T) {
 	ctx := context.Background()
 	t.Run("start that returns the rest", func(t *testing.T) {
-		app := &fakeApp{watches: []Watched{{Cursor: 1, Resting: true}}}
+		app := &fakeApp{watches: []Watched{{Cursor: 1, Resting: true}}, status: Observed{Cursor: 1, Resting: true}}
 		if _, err := New(app).Call(ctx, interactive, "run_start", json.RawMessage(`{"workflow_id":"flow","wait_seconds":60}`)); err != nil {
 			t.Fatal(err)
 		}
@@ -596,7 +641,7 @@ func TestWaitingCallsHoldTheWake(t *testing.T) {
 		}
 	})
 	t.Run("status that returns the rest", func(t *testing.T) {
-		app := &fakeApp{watches: []Watched{{Cursor: 1, Resting: true}}}
+		app := &fakeApp{watches: []Watched{{Cursor: 1, Resting: true}}, status: Observed{Cursor: 1, Resting: true}}
 		if _, err := New(app).Call(ctx, interactive, "run_status", json.RawMessage(`{"run_id":"run-1","wait_seconds":60}`)); err != nil {
 			t.Fatal(err)
 		}

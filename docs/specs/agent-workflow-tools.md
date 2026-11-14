@@ -188,6 +188,11 @@ waiting call watches the run without polling and answers with `outcome`:
 - `unknown`: `run_start` only, the run started and could not be read back
   (`readError` says why).
 
+The outcome, the run document and the rest a call returns come from one
+status read made after the wait, so they always agree: a run resumed after
+the watch saw it rest answers `backgrounded`, and one that came to rest after
+the last watch answers `resting`.
+
 The transport keeps a long call alive, so a wait never times out the
 provider's tool call.
 
@@ -207,8 +212,8 @@ hold stands is kept back.
 The hold is released once the call's response has left the transport
 (`threadmcp.AfterResponse`), on the wake queue behind any wake job already
 queued, so such a job still finds it. A call that returned the run at rest
-names the rest it read: the watch cursor it read the run at, and the state
-and reason it saw. That rest counts as delivered only if the response was
+names the rest it read: the watch ring head read before that status read,
+and the state and reason it saw. That rest counts as delivered only if the response was
 written and the run has not moved since: the watch ring holds no transition
 of the run after that cursor, and the stored state and reason are the ones
 returned. A delivered rest is recorded as the thread's last delivered wake,

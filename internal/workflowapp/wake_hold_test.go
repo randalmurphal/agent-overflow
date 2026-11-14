@@ -91,16 +91,15 @@ func (f *holdFixture) rest() {
 	f.service.WaitWake()
 }
 
-// read is what a waiting call reads: the ring head, then the run's state as
-// the watch reports it.
+// read is what a waiting call reads: the run's status, and the rest it
+// shows at the watch cursor the status was read after.
 func (f *holdFixture) read() *ReturnedRest {
 	f.t.Helper()
-	cursor := f.service.watch.Head()
-	item, err := f.store.GetWorkItemSummary(f.item.ID)
+	view, err := f.service.RunStatus(f.ctx(), f.item.ID)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	return &ReturnedRest{Cursor: cursor, State: item.State, Reason: item.Reason, PhaseID: item.CurrentPhaseID}
+	return &ReturnedRest{Cursor: view.WatchCursor, State: view.State, Reason: view.Reason, PhaseID: view.CurrentPhaseID}
 }
 
 func (f *holdFixture) release(hold *WakeHold, returned *ReturnedRest) {

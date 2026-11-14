@@ -237,8 +237,15 @@ func (w workflowToolsAdapter) StartRun(ctx context.Context, input workflowtools.
 	return started, nil
 }
 
-func (w workflowToolsAdapter) RunStatus(ctx context.Context, runID string) (any, error) {
-	return w.a.workflowAgentRunStatus(ctx, runID)
+func (w workflowToolsAdapter) RunStatus(ctx context.Context, runID string) (workflowtools.Observed, error) {
+	view, err := w.a.workflowApplication().RunStatus(ctx, runID)
+	if err != nil {
+		return workflowtools.Observed{}, err
+	}
+	return workflowtools.Observed{
+		Cursor: view.WatchCursor, Resting: view.Resting, State: view.State, Reason: view.Reason,
+		PhaseID: view.CurrentPhaseID, Result: projectWorkflowRunView(view),
+	}, nil
 }
 
 // HoldWake holds the run's wakes to the calling session's thread. A caller
@@ -287,8 +294,7 @@ func (w workflowToolsAdapter) WatchRun(ctx context.Context, input workflowtools.
 		return workflowtools.Watched{}, err
 	}
 	return workflowtools.Watched{
-		Cursor: result.Cursor, Transitions: len(result.Transitions), Resting: result.Run.Resting,
-		State: result.Run.State, Reason: result.Run.Reason, PhaseID: result.Run.PhaseID, Result: result,
+		Cursor: result.Cursor, Transitions: len(result.Transitions), Resting: result.Run.Resting, Result: result,
 	}, nil
 }
 
