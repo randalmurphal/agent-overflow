@@ -380,7 +380,7 @@ func TestOwnDeviceSelfRowPersistsWithoutRoutesAndReadsLiveOnes(t *testing.T) {
 	// Move b's listener. The catalog read follows the live listener while
 	// the stored row stays exactly as it was.
 	before := ComputerRoutes(b.app)
-	if _, err := b.app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: true, ListenPort: freeLoopbackPort(t)}); err != nil {
+	if _, _, err := saveOnFreeLoopbackPort(b.app, network.Settings{BindAll: true}); err != nil {
 		t.Fatal(err)
 	}
 	after := ComputerRoutes(b.app)
