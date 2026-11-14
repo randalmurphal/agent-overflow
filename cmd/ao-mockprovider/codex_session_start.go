@@ -164,7 +164,7 @@ func (a *codexAdapter) runPromptHooks(vars scenario.Vars, prompt string) {
 	}
 	runs := make([]sessionStartRun, len(hooks))
 	for i, hook := range hooks {
-		runs[i] = runPromptHook(hook, threadID, a.e.cwd, prompt)
+		runs[i] = a.e.runPromptHook(hook, threadID, prompt)
 	}
 	a.e.reportSessionStartRuns(threadID, promptSource, runs)
 	for i, hook := range hooks {
@@ -191,7 +191,7 @@ func (a *codexAdapter) runPendingSessionStart(vars scenario.Vars) {
 	}
 	runs := make([]sessionStartRun, len(hooks))
 	for i, hook := range hooks {
-		runs[i] = runSessionStartHook(hook, threadID, a.e.cwd, source)
+		runs[i] = a.e.runSessionStartHook(hook, threadID, source)
 	}
 	a.e.reportSessionStartRuns(threadID, source, runs)
 	for i, hook := range hooks {

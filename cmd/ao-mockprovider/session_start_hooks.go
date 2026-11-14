@@ -5,13 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
+	"agent-overflow/internal/procutil"
 )
 
 // SessionStart hooks as both CLIs run the ones a session's configuration
@@ -136,43 +140,116 @@ type sessionStartRun struct {
 // UserPromptSubmit hooks (control.SessionStartRun).
 const promptSource = "prompt"
 
-// runSessionStartHook runs hook in cwd for source.
-func runSessionStartHook(hook sessionStartHook, sessionRef, cwd, source string) sessionStartRun {
-	return runHook(hook, cwd, map[string]string{
+// runSessionStartHook runs hook in the session's cwd for source.
+func (e *engine) runSessionStartHook(hook sessionStartHook, sessionRef, source string) sessionStartRun {
+	return e.hooks.run(hook, e.cwd, map[string]string{
 		"session_id":      sessionRef,
-		"cwd":             cwd,
+		"cwd":             e.cwd,
 		"hook_event_name": "SessionStart",
 		"source":          source,
 	})
 }
 
-// runPromptHook runs a UserPromptSubmit hook in cwd for prompt.
-func runPromptHook(hook sessionStartHook, sessionRef, cwd, prompt string) sessionStartRun {
-	return runHook(hook, cwd, map[string]string{
+// runPromptHook runs a UserPromptSubmit hook in the session's cwd for prompt.
+func (e *engine) runPromptHook(hook sessionStartHook, sessionRef, prompt string) sessionStartRun {
+	return e.hooks.run(hook, e.cwd, map[string]string{
 		"session_id":      sessionRef,
-		"cwd":             cwd,
+		"cwd":             e.cwd,
 		"hook_event_name": "UserPromptSubmit",
 		"prompt":          prompt,
 	})
 }
 
-// runHook runs hook in cwd with fields as its input.
-func runHook(hook sessionStartHook, cwd string, fields map[string]string) sessionStartRun {
+const (
+	// hookDrainLinger bounds reading a hook's output once its shell exited:
+	// only a process it left behind keeps the pipes open that long, and the
+	// sweep after the run stops it.
+	hookDrainLinger = time.Second
+	// hookStopWait bounds how long terminate waits for the hook runs it
+	// stopped.
+	hookStopWait = 5 * time.Second
+)
+
+// hookRuns owns the hook commands in flight. Each leads its own process
+// group (procutil.ConfigureGroup), so its timeout stops everything the hook
+// started, and the stop the app sends this process does not reach it:
+// terminate stops them before the process exits. Zero value ready.
+type hookRuns struct {
+	mu     sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc
+	closed bool
+	wg     sync.WaitGroup
+}
+
+// begin admits one run: its context ends at stop. ok is false once stop has
+// begun.
+func (h *hookRuns) begin() (ctx context.Context, done func(), ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return nil, nil, false
+	}
+	if h.ctx == nil {
+		h.ctx, h.cancel = context.WithCancel(context.Background())
+	}
+	h.wg.Add(1)
+	return h.ctx, h.wg.Done, true
+}
+
+// stop cancels every run, admits no more and waits a bounded time for them
+// to end.
+func (h *hookRuns) stop() {
+	h.mu.Lock()
+	h.closed = true
+	if h.cancel != nil {
+		h.cancel()
+	}
+	h.mu.Unlock()
+	ended := make(chan struct{})
+	go func() {
+		h.wg.Wait()
+		close(ended)
+	}()
+	select {
+	case <-ended:
+	case <-time.After(hookStopWait):
+		log.Printf("hook runs did not stop within %s", hookStopWait)
+	}
+}
+
+// errHooksStopped is a run asked for after the process began to exit.
+var errHooksStopped = errors.New("the mock provider is exiting")
+
+// run runs hook in cwd with fields as its input, bounded by the hook's
+// timeout and the process's own exit. What the hook left running when its
+// shell exited is stopped with it.
+func (h *hookRuns) run(hook sessionStartHook, cwd string, fields map[string]string) sessionStartRun {
 	run := sessionStartRun{hook: hook, startedAt: time.Now(), exitCode: -1}
 	input, err := json.Marshal(fields)
 	if err != nil {
 		run.err = err
 		return run
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), hook.timeout)
+	life, done, ok := h.begin()
+	if !ok {
+		run.err = errHooksStopped
+		return run
+	}
+	defer done()
+	ctx, cancel := context.WithTimeout(life, hook.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", hook.command)
 	cmd.Dir = cwd
 	cmd.Stdin = bytes.NewReader(input)
+	procutil.ConfigureGroup(cmd)
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
+	err = procutil.RunDrained(ctx, cmd, &stdout, &stderr, hookDrainLinger)
+	if cmd.Process != nil {
+		if sweepErr := procutil.KillConfiguredGroup(cmd); sweepErr != nil && !errors.Is(sweepErr, os.ErrProcessDone) {
+			log.Printf("stop what hook %q left running: %v", hook.command, sweepErr)
+		}
+	}
 	run.duration = time.Since(run.startedAt)
 	run.stdout, run.stderr = stdout.String(), stderr.String()
 	var exit *exec.ExitError

@@ -94,6 +94,8 @@ type engine struct {
 	adapter     protocolAdapter
 	// exitFn is os.Exit in production; tests substitute a recorder.
 	exitFn func(code int)
+	// hooks is the hook commands in flight, stopped before an exit.
+	hooks hookRuns
 
 	mu   sync.Mutex
 	base scenario.Vars // SESSION_ID / THREAD_ID / CWD
@@ -713,9 +715,10 @@ func gateMatches(gateName, advanceName string) bool {
 	return advanceName == "" || gateName == "" || advanceName == gateName
 }
 
-// terminate reports and exits. The exiting report is synchronous so it
-// lands before the process dies.
+// terminate stops the hook runs, reports and exits. The exiting report is
+// synchronous so it lands before the process dies.
 func (e *engine) terminate(code int) {
+	e.hooks.stop()
 	e.rep.report(control.Report{Kind: control.ReportExiting, Detail: strconv.Itoa(code)})
 	e.exitFn(code)
 }

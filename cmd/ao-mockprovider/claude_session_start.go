@@ -69,7 +69,7 @@ func (a *claudeAdapter) runSessionStartHooks(vars scenario.Vars, source string) 
 	runs := make([]sessionStartRun, len(hooks))
 	a.writeHookRuns("SessionStart", "SessionStart:"+source, sessionID, runs, func() {
 		for i, hook := range hooks {
-			runs[i] = runSessionStartHook(hook, sessionID, a.e.cwd, source)
+			runs[i] = a.e.runSessionStartHook(hook, sessionID, source)
 		}
 		a.e.reportSessionStartRuns(sessionID, source, runs)
 	})
@@ -86,7 +86,7 @@ func (a *claudeAdapter) runPromptHooks(vars scenario.Vars, prompt string) {
 	runs := make([]sessionStartRun, len(a.promptHooks))
 	a.writeHookRuns("UserPromptSubmit", "UserPromptSubmit", sessionID, runs, func() {
 		for i, hook := range a.promptHooks {
-			runs[i] = runPromptHook(hook, sessionID, a.e.cwd, prompt)
+			runs[i] = a.e.runPromptHook(hook, sessionID, prompt)
 		}
 		a.e.reportSessionStartRuns(sessionID, promptSource, runs)
 	})
