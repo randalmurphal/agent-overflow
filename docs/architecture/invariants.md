@@ -59,7 +59,7 @@ token of the session that produced it. Once a session start commits the
 thread to a new token, an earlier session's frame is refused at triage's
 gate if it is still queued; if it was already being handled, every writer of
 process-bound state refuses it under the lock it writes under, and the host
-does none of its own work on it. Triage's `processBoundState` lists that
+does none of its own work on it. Triage's `processBound` type holds that
 state ([triage routing](triage-routing.md#pre-dispatch-rewrites)). This holds when that drain
 gives up on a stalled worker. Rows a frame already being handled has
 persisted stay in the thread's history.

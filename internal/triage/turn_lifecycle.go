@@ -2005,8 +2005,8 @@ func (r *Router) CleanupThread(threadID string) {
 
 // EndReplacedSessionTurn ends, as truncated, the turn a session being
 // replaced left open, as CleanupThread does for a stop. A start that replaces
-// a live session keeps the rest of the thread's state live
-// (processBoundState), but the process that ran this turn is closed and its
+// a live session keeps the thread's state live apart from its process's
+// (processBound), but the process that ran this turn is closed and its
 // replacement never continues it: left open, the replacement's first output
 // would land in it and complete it. The caller has closed that session and
 // drained its frames.
@@ -2232,8 +2232,8 @@ func (r *Router) frameRefusalLocked(evt provider.ProviderEvent) string {
 // frameRetiredLocked reports whether the session that produced a frame
 // (its token) no longer owns the thread: a replacement committed the
 // thread to another session, or a stop marked it stopped. Host-originated
-// writes carry no token and are never retired. Every writer of an entry
-// of processBoundState asks it under the r.mu it writes under, so a frame
+// writes carry no token and are never retired. Every writer of
+// process-bound state, and of a turn, round, stream or prompt, asks it under the r.mu it writes under, so a frame
 // that passed Handle's gate before a replacement committed cannot write
 // that state for the replacement. Caller holds r.mu.
 func (r *Router) frameRetiredLocked(threadID, sessionToken string) bool {
@@ -2277,7 +2277,7 @@ func (r *Router) SessionCurrent(threadID, sessionToken string) bool {
 // longer matches, even when the host's drain of the prior session gave
 // up at its stall bound and left that session's frames queued. A frame
 // already being handled when this call lands is refused by every writer
-// of process-bound state (processBoundState). No wire event may clear
+// of process-bound state (processBound). No wire event may clear
 // the stopped flag: see the threadIdentity.stopped field comment.
 //
 // Reactivation also resets the thread's logical-turn settlement ledger.
@@ -2304,14 +2304,18 @@ func (r *Router) MarkThreadActive(threadID, sessionToken string) {
 	// This is NOT the cleanup sweep: a start that replaces a live session
 	// reaches here without CleanupThread, so the thread's state entry can be fully
 	// live and must survive. Only the state bound to the process that
-	// just died is cleared, and processBoundState is that list.
+	// just died is replaced (processBound).
 	st := r.threadStateIfPresent(threadID)
 	hadEffectiveModel := st != nil && st.effectiveModelSet
-	for _, entry := range processBoundState {
-		if entry.clear != nil {
-			entry.clear(st, identity)
-		}
+	if st != nil {
+		st.processBound = processBound{}
 	}
+	// An in-flight echo cannot survive the session whose read loop carries
+	// it, and a replacement after revert reuses turn indexes, so a
+	// lingering mark would settle a reused-index predecessor
+	// "interrupted". Entries are keyed by router-unique seqs, so a stale
+	// restore's removal against the fresh list finds nothing.
+	identity.interruptMarks = nil
 	var effectiveModelRevision uint64
 	if hadEffectiveModel {
 		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)

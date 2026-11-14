@@ -1,81 +1,115 @@
 package triage
 
-// processBoundState is the thread state that belongs to one provider
-// process: what a frame of a retired session must not write. It is the
-// single list of that state. Every writer of an entry takes the frame's
-// session token and refuses a retired one under the r.mu it writes under
-// (frameRetiredLocked). MarkThreadActive runs each entry's clear when it
-// commits the thread to a new session. An entry without a clear is not
-// reset by the commit: a start that replaces a live session
-// (stopExistingSessionLocked, such as the session-config restart
-// reconcileSessionConfig schedules) reaches MarkThreadActive without
-// CleanupThread and keeps it live, and its own lifecycle or CleanupThread
-// ends it. The open turn is the exception that is not cleared but ended:
-// the host ends it as truncated when it closes the replaced session
-// (EndReplacedSessionTurn). TestMarkThreadActiveClearsOnlyThroughProcessBoundState fails
-// when MarkThreadActive clears anything outside this list.
+import "agent-overflow/internal/provider"
+
+// processBound is the thread state that belongs to one provider process.
+// MarkThreadActive replaces it whole when it commits the thread to a new
+// session, so a field added here is reset with the rest. Every writer of
+// it takes the frame's session token and refuses a retired one under the
+// r.mu it writes under (frameRetiredLocked).
 //
-// TestProcessStateWritersRefuseARetiredSessionsFrame is keyed by these
-// names and fails when an entry has no refusal case, so state added here
-// cannot go unguarded.
-var processBoundState = []processBoundEntry{
-	// A stale settlement marker would misroute a replacement session's
-	// first error result into persistLateTurnPayload (see MarkThreadActive).
-	// The soft-closed turn is the dead process's: only its own result or
-	// continuation could have resumed it.
-	{name: "turn settlement", clear: stateClear(func(st *threadState) { st.settledTurns, st.softClosedTurnSet = nil, false })},
-	{name: "effective model", clear: stateClear(func(st *threadState) { st.effectiveModel, st.effectiveModelSet = "", false })},
-	// A pending wakeup and armed cron jobs live in the previous CLI
-	// process. A stale deadline would shield the replacement from the
-	// idle reaper.
-	{name: "schedule", clear: stateClear((*threadState).clearProcessSchedule)},
-	// A dead process never delivers the terminal that would consume its
-	// ticks.
-	{name: "subagent progress", clear: stateClear(func(st *threadState) { st.subagentProgress = nil })},
-	// A replacement process is never mid-compaction.
-	{name: "compacting window", clear: stateClear(func(st *threadState) { st.compactingSince, st.compactingSinceSet = 0, false })},
-	// The acks the correlation waits on can only come from the dead
-	// process.
-	{name: "command lifecycle", clear: stateClear(func(st *threadState) { st.commandLifecycle = nil })},
-	// A delivery waiting for a turn start waits on the dead process's
-	// turn; a replacement's first turn is not it.
-	{name: "deliveries awaiting a turn", clear: stateClear(func(st *threadState) { st.deliveriesAwaitingTurn = nil })},
-	// A death announced for the previous process says nothing about this
-	// one's.
-	{name: "death announcement", clear: stateClear(func(st *threadState) { st.announcedDeath = "" })},
-	// The directory is the dead process's. Its replacement launches from
-	// the thread row's workspace, wherever the last one moved to.
-	{name: "workspace path", clear: stateClear(func(st *threadState) { st.workspacePath, st.workspacePathSet = "", false })},
-	// An in-flight echo cannot survive the session whose read loop carries
-	// it, and a replacement after revert reuses turn indexes, so a
-	// lingering mark would settle a reused-index predecessor
-	// "interrupted". Entries are keyed by router-unique seqs, so a stale
-	// restore's removal against the fresh list finds nothing.
-	{name: "interrupt marks", hostWritten: true, clear: func(_ *threadState, id *threadIdentity) { id.interruptMarks = nil }},
-	{name: "open turn and round"},
-	// The queue's contents are the host's; a frame's boundary is what
-	// sends them. Only the live session's boundary may.
-	{name: "queued sends dispatch"},
-	{name: "streams"},
-	{name: "approvals"},
-	{name: "user inputs"},
-	{name: "codex live tray"},
-}
+// State that outlives a replacement stays on threadState or threadIdentity:
+// the queue and its sends, which the host owns; the open turn and round,
+// which the host ends as truncated when it closes the replaced session
+// (EndReplacedSessionTurn); streams and prompts, which their own
+// settlement or CleanupThread ends; and the thread's identity and locks.
+// A start that replaces a live session (stopExistingSessionLocked, such as
+// the session-config restart reconcileSessionConfig schedules) reaches
+// MarkThreadActive without CleanupThread, so none of that may be reset
+// here. Interrupt marks are host-written state on threadIdentity that
+// MarkThreadActive clears beside this.
+type processBound struct {
+	// softClosedTurn is the turn a soft round close settled while its CLI
+	// turn's `result` is still to come (softClosedTurnSet).
+	// Parent content before the result continues it
+	// (reopenSoftClosedTurn); the result and every turn start clear it. Only
+	// the dead process's own result or continuation could resume it.
+	softClosedTurn    int
+	softClosedTurnSet bool
 
-type processBoundEntry struct {
-	name string
-	// clear resets the entry when a session commits. st is nil when the
-	// thread has no state entry. Runs under r.mu.
-	clear func(st *threadState, id *threadIdentity)
-	// hostWritten is state only host calls write. They carry no session
-	// token, so there is no frame writer to refuse.
-	hostWritten bool
-}
+	// settledTurns marks turns whose settlement has run (turns row
+	// UPDATE-d, streaming items settled): handleTurnComplete's, or the
+	// predecessor settle when the next turn starts. A later
+	// EventTurnComplete for a settled turn (the synthetic-truncate-then-
+	// real race) is a persistence no-op apart from its late payload, so
+	// the turns row isn't re-stamped. Cleared by setOpenTurn (so a
+	// re-init can re-settle the same turn). A stale marker would misroute a
+	// replacement session's first error result into persistLateTurnPayload.
+	// Key = turnIndex. The session has settled a turn when it is
+	// non-empty (sessionSettledATurn).
+	//
+	// This gate operates at LOGICAL-TURN granularity; the frontend-facing
+	// `provider:turn_completed` emission is gated per ROUND via
+	// currentRound/takeOpenRound below.
+	settledTurns map[int]bool
 
-func stateClear(clear func(*threadState)) func(*threadState, *threadIdentity) {
-	return func(st *threadState, _ *threadIdentity) {
-		if st != nil {
-			clear(st)
-		}
-	}
+	// effectiveModel is the session-scoped model actually serving the
+	// thread after a provider fallback. The durable threads.model remains
+	// the user's requested model; this live projection is cleared with the
+	// provider session and included in GetThreadLiveState hydration. Its
+	// monotonic revision counter lives on threadIdentity — it must
+	// survive the session that produced it.
+	effectiveModel    string
+	effectiveModelSet bool
+
+	// announcedDeath is the id of the session_died notice this thread's
+	// session last announced on provider:session_died. It dedupes a
+	// replayed death whose notice the store refused, so no saved row can
+	// (handleSessionDied). A death announced for the previous process says
+	// nothing about this one's.
+	announcedDeath string
+
+	// deliveriesAwaitingTurn are queued sends delivered while no turn was
+	// open: Claude acks `started` for a held message before the init of the
+	// turn it runs in. The next turn start reports them against its index.
+	// It waits on the dead process's turn; a replacement's first turn is
+	// not it.
+	deliveriesAwaitingTurn []SendDelivery
+
+	// pendingWakeupAt is the fire time (epoch ms) of the Claude harness's
+	// pending ScheduleWakeup timer. The timer is in-process CLI state with
+	// no task lifecycle, so this field and scheduledJobs are the only
+	// record that an idle-looking session will resume itself; the
+	// idle-session reaper
+	// reads it via PendingWakeupAt. A stale deadline would shield a
+	// replacement process from the reaper. See session_wakeup.go.
+	pendingWakeupAt  int64
+	pendingWakeupSet bool
+	// scheduledJobs is the provider's latest list of armed scheduled jobs
+	// (Claude CronCreate), each with the latest time it can next fire.
+	// Same in-process lifetime and same sweeps as pendingWakeupAt; the
+	// provider bounds the list. See session_wakeup.go.
+	scheduledJobs []provider.ScheduledJob
+
+	// subagentProgress is the latest live progress tick per launch
+	// tool_use, keyed by itemID. Live UI state only; the terminal path
+	// consumes it into the launch row's meta, and a dead process never
+	// delivers that terminal. See subagent_progress.go.
+	subagentProgress map[string]provider.SubagentProgressMeta
+
+	// compactingSince is the open compacting window: the epoch-ms
+	// timestamp of the frame that opened it. Live-only projection behind
+	// `provider:compacting` (compaction_status.go); closed by the explicit
+	// close frame, the compact boundary, or turn completion. A replacement
+	// process is never mid-compaction.
+	compactingSince    int64
+	compactingSinceSet bool
+
+	// commandLifecycle correlates Claude's `command_lifecycle` acks back
+	// to the AO row and the wire round each stdin user message was queued
+	// into, keyed by command_uuid. Send-time carry-over, released on the
+	// terminal ack; the acks it waits on can only come from its process.
+	// Bounded per thread by
+	// maxCommandLifecycleEntriesPerThread. See command_lifecycle.go for
+	// why neither value can be recovered lazily.
+	commandLifecycle map[string]commandLifecycleEntry
+
+	// workspacePath caches the directory the thread's provider process
+	// works in, for path-ref enrichment: every streaming text flush and
+	// every prose settle reads it, 10-30 times in a heavy turn. It is read
+	// from the thread row at first use, follows the process's own move
+	// (followWorkspaceChange). A replacement launches from the thread row's
+	// workspace. Every other checkout move restarts the session.
+	workspacePath    string
+	workspacePathSet bool
 }

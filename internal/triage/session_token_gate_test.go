@@ -131,7 +131,7 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 	}
 	launch := store.Item{ID: "launch-1", ThreadID: threadID, Kind: itemKindToolCall, IsBackground: true}
 	cases := []struct {
-		// state names the processBoundState entry the writer writes.
+		// state names what the writer writes.
 		state string
 		name  string
 		write func(t *testing.T, r *Router, token string)
@@ -364,22 +364,6 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 		{"open turn and round", "queued echo turn", func(t *testing.T, r *Router, token string) {
 			r.openQueuedEchoTurn(threadID, 1, time.Now().UnixMilli(), -1, token)
 		}, func(r *Router) bool { return r.HasInFlightTurnOrRound(threadID) }},
-	}
-	// processBoundState is the list of what a retired frame must not
-	// write: every entry a frame can write has a case here, and every case
-	// names an entry.
-	covered := make(map[string]bool)
-	for _, c := range cases {
-		covered[c.state] = true
-	}
-	for _, entry := range processBoundState {
-		if covered[entry.name] == entry.hostWritten {
-			t.Errorf("processBoundState %q (hostWritten=%v) has refusal cases=%v: a frame-written entry needs one, a host-written entry has no frame writer", entry.name, entry.hostWritten, covered[entry.name])
-		}
-		delete(covered, entry.name)
-	}
-	for state := range covered {
-		t.Errorf("a case names %q, which is not in processBoundState", state)
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

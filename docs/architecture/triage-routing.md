@@ -89,16 +89,12 @@ to every kind, which is why they live above the switch rather than in a
 handler.
 
 A frame that passed the gate can have its session retired while it is
-being handled. `processBoundState` (`process_state.go`) is the one list of
-state that belongs to the provider process, and it is the contract: every
-writer of an entry takes the frame's token and refuses a retired one under
-the `r.mu` it writes under (`frameRetiredLocked`), and `MarkThreadActive`
-clears the entries the list marks for clearing at a commit.
-`TestProcessStateWritersRefuseARetiredSessionsFrame` is keyed by the same
-names and fails when an entry has no refusal case, so state added to the
-list needs a guarded writer, and
-`TestMarkThreadActiveClearsOnlyThroughProcessBoundState` fails when
-`MarkThreadActive` clears any field outside the list. An execution's
+being handled. The state that belongs to the provider process is one type,
+`processBound` (`process_state.go`), which `MarkThreadActive` replaces whole
+at a commit. Every writer of it, and of a turn, round, stream or prompt,
+takes the frame's token and refuses a retired one under the `r.mu` it writes
+under (`frameRetiredLocked`); `TestProcessStateWritersRefuseARetiredSessionsFrame`
+holds a case per writer. An execution's
 tool count carries the token of the session that started it, since the row
 writes that feed it have no frame. A boundary that sends queued messages
 (`tryFlushQueue`) sends them only from a frame of the live session. A stream's count is released only on
