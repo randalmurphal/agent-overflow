@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { patchMemory, patchTextHeldBytes, patchTextVersion, setPatchTextBudgetForTest } from './patchMemory.svelte';
+import {
+  patchMemory,
+  patchTextEvictableChunks,
+  patchTextHeldBytes,
+  patchTextVersion,
+  setPatchTextBudgetForTest,
+} from './patchMemory.svelte';
 import { parsePatchFiles } from './patchFiles';
 import {
   PatchParser,
@@ -227,6 +233,33 @@ describe('patch text past the memory budget', () => {
     parser.store.dispose();
     expect(source.release).toHaveBeenCalledTimes(1);
     expect(patchTextHeldBytes()).toBe(base);
+  });
+
+  it('keeps no chunk of a store that was disposed or detached, read or not', () => {
+    const base = patchTextEvictableChunks();
+    for (let round = 0; round < 3; round += 1) {
+      const closed = stream(patchOf(20, 6), 160);
+      closed.files[3].body.text(2);
+      expect(patchTextEvictableChunks()).toBeGreaterThan(base);
+      closed.parser.store.dispose();
+      expect(patchTextEvictableChunks()).toBe(base);
+
+      const finished = stream(patchOf(20, 6), 160);
+      finished.files[3].body.text(2);
+      finished.parser.store.detachSource();
+      expect(patchTextEvictableChunks()).toBe(base);
+    }
+  });
+
+  it('keeps one entry for a chunk however often it is read or offered again', async () => {
+    const base = patchTextEvictableChunks();
+    setPatchTextBudgetForTest(1600);
+    const { files } = stream(patchOf(20, 6), 160);
+    const held = patchTextEvictableChunks() - base;
+    for (let round = 0; round < 3; round += 1) {
+      for (const file of files) await file.body.loadLines(0, file.body.lineCount);
+    }
+    expect(patchTextEvictableChunks() - base).toBeLessThanOrEqual(held);
   });
 
   it('a disposed store reads nothing again', async () => {
