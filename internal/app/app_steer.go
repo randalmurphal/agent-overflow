@@ -11,7 +11,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
-	"agent-overflow/internal/triage"
 )
 
 // SteerMessageWithOptions injects a user message into the active Codex
@@ -258,20 +257,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		// running on the wire — DO NOT emit a synthetic
 		// EventTurnComplete here; the active turn settles on its own
 		// via the wire `turn/completed` notification.
-		errSeq := a.triage.NextErrorSequence(threadID, turnIndex, "")
-		errNow := time.Now().UnixMilli()
-		errorItem := store.Item{
-			ID:        triage.NewErrorID(turnIndex, "", errSeq),
-			ThreadID:  threadID,
-			TurnIndex: turnIndex,
-			Kind:      triage.ItemKindError,
-			Role:      "system",
-			Status:    "completed",
-			Summary:   fmt.Sprintf("Failed to steer: %v", steerErr),
-			CreatedAt: errNow,
-			UpdatedAt: errNow,
-		}
-		if persistErr := a.triage.PersistItem(errorItem, nil); persistErr != nil {
+		if persistErr := a.triage.PersistTurnError(threadID, turnIndex, fmt.Sprintf("Failed to steer: %v", steerErr)); persistErr != nil {
 			log.Printf("steer message: persist steer-failure error: %v", persistErr)
 		}
 		// Surface the error verbatim, including codex.ErrNoActiveTurn

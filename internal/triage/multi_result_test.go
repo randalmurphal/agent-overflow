@@ -1581,9 +1581,8 @@ func TestParentContentResumeReArmsAfterSoftClose(t *testing.T) {
 // rows.
 //
 // The emission-only tests cannot catch this: a reopen that reset
-// counters (e.g. by calling setOpenTurn) would still emit the right
-// turn_started events while the resumed segment collided with
-// text:0:0.
+// counters would still emit the right turn_started events while the
+// resumed segment collided with text:0:0.
 //
 // It also asserts the round cadence directly: exactly one
 // provider:turn_completed per soft-close plus one for the result

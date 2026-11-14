@@ -1077,11 +1077,8 @@ func (s InterruptSample) CutTurn() int {
 // whether or not a turn is already open. That handler writes the active
 // turns row before it sets the open turn, and GetActiveTurn-gated callers
 // (workflow takeover, revert) can interrupt in between; an immediate
-// sample would read -1 and lose the user's stop. A marker written before
-// setOpenTurn would not hold either, even on a turn a queued echo already
-// opened at the same index: setOpenTurn resets the turn's error sequence
-// (its re-init contract), so the turn's next error row would reuse the
-// marker's id.
+// sample would read -1 and lose the user's stop. A turn a queued echo
+// already opened at the same index is waited out the same way.
 //
 // The store's row is never consulted. An active row with no open turn
 // and no start in progress is a turn the router already closed: a fatal
@@ -1215,17 +1212,8 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
 	st.openTurn = turnIndex
 	st.openTurnSet = true
 	st.softClosedTurnSet = false
-	key := scopeCounterKey(turnIndex, "")
-	if st.segmentIndexByScope == nil {
-		st.segmentIndexByScope = make(map[string]int)
-	}
-	if st.blockIndexByScope == nil {
-		st.blockIndexByScope = make(map[string]int)
-	}
-	st.segmentIndexByScope[key] = -1
-	st.blockIndexByScope[key] = -1
+	st.seedStreamIndexes(turnIndex)
 	r.dropTurnStreamsLocked(threadID, st, turnIndex, true, agentScopes)
-	delete(st.errorSeqByScope, key)
 	// Clear the settled marker so a re-init (Claude resend system.init
 	// after an interrupt; Codex resend turn/started) can settle the
 	// same turn again. A synthetic complete followed by the real result
@@ -1309,19 +1297,7 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	st.openTurn = turnIndex
 	st.openTurnSet = true
 	st.softClosedTurnSet = false
-	key := scopeCounterKey(turnIndex, "")
-	if st.segmentIndexByScope == nil {
-		st.segmentIndexByScope = make(map[string]int)
-	}
-	if st.blockIndexByScope == nil {
-		st.blockIndexByScope = make(map[string]int)
-	}
-	if _, ok := st.segmentIndexByScope[key]; !ok {
-		st.segmentIndexByScope[key] = -1
-	}
-	if _, ok := st.blockIndexByScope[key]; !ok {
-		st.blockIndexByScope[key] = -1
-	}
+	st.seedStreamIndexes(turnIndex)
 	delete(st.settledTurns, turnIndex)
 	// The thread-level mark list covers the entry the per-entry stamp
 	// structurally cannot: one POPPED from the FIFO just before
@@ -1594,8 +1570,11 @@ func (r *Router) activeRoundTurnIndex(threadID string) (int, bool) {
 //     agent's rows wait for the agent's own streams.
 //   - **Id-allocating counters** (segmentIndexByScope, blockIndexByScope,
 //     errorSeqByScope, compactionSeqByScope, terminalInteractionSeq):
-//     cleared at CleanupThread, with a selective re-init reset in
-//     setOpenTurn. Wiping HERE would
+//     cleared at CleanupThread and never restarted while the state
+//     lives, a repeated turn start included (seedStreamIndexes). A row
+//     id built from a sequence counter also goes through reserveItemID,
+//     so a counter that CleanupThread restarted cannot name a saved row.
+//     Wiping HERE would
 //     cause id collisions when the wire emits two `result` envelopes
 //     for one logical turn (Claude task_notification → CLI-synthesized
 //     `user` envelope → second result, fatal-error synthetic-truncate
@@ -1854,30 +1833,14 @@ func (r *Router) deferStopToWaitingSend(threadID, aoItemID, summary string) bool
 }
 
 // writeStopRow flips the stopped turn's running rows and writes its stop
-// row reading summary. The turn must be open or settled: an error row
-// written before setOpenTurn would have its id reused (SampleInterrupt).
+// row reading summary. The turn must be open or settled: a turn's index
+// is final only once its start has resolved it (upsertTurnRow).
 func (r *Router) writeStopRow(threadID string, turnIndex int, summary string) (string, error) {
 	now := time.Now().UnixMilli()
 	if err := r.flipTurnItemsErrored(threadID, turnIndex, now, stoppedSummary); err != nil {
 		return "", err
 	}
-	seq := r.nextErrorSequence(threadID, turnIndex, "")
-	errID := ErrorItemID(turnIndex, "", seq)
-	item := store.Item{
-		ID:        errID,
-		ThreadID:  threadID,
-		TurnIndex: turnIndex,
-		Kind:      ItemKindError,
-		Role:      "system",
-		Status:    statusCompleted,
-		Summary:   summary,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := r.persistItem(item, nil); err != nil {
-		return "", err
-	}
-	return errID, nil
+	return r.persistTurnError(threadID, turnIndex, summary, now)
 }
 
 // Wait blocks until every in-flight Handle call has returned and every

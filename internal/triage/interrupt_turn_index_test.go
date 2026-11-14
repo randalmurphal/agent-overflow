@@ -251,10 +251,9 @@ func TestSampleInterrupt_LiveRevertReusedIndexIsCut(t *testing.T) {
 }
 
 // A queued echo can open turn N before the provider's start for N
-// arrives. The turn is already open while that start is held, but the
-// start's setOpenTurn will still reset the turn's error sequence, so
-// the interrupt waits for it too and its marker survives the turn's
-// next error.
+// arrives. The turn is already open while that start is held; the
+// interrupt waits for it too, and its marker survives the turn's next
+// error.
 func TestSampleInterrupt_WaitsOutStartOfEchoOpenedTurn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
