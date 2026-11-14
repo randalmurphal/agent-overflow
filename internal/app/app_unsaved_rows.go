@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,13 +20,10 @@ import (
 // `thread:unsaved_rows` instead, so the user still sees it, marked as not
 // saved, with its severity and the reason. It is not history: nothing here
 // is written to the store or replayed from it, it dies with the process,
-// and the list is the thread's last few rows. GetThreadLiveState mirrors it
-// for a client that opens the thread later; DismissSessionBanner with kind
-// `unsaved_rows` clears it for every client; deleting the thread forgets it.
-
-// unsavedRowsBannerKind is the DismissSessionBanner kind that clears a
-// thread's unsaved rows.
-const unsavedRowsBannerKind = "unsaved_rows"
+// and the list is the thread's last few rows. GetThreadUnsavedRows answers
+// it for a client that opens the thread later. An entry leaves when a later
+// write of its row succeeds, when DismissUnsavedThreadRows names it, or with
+// the thread's deletion.
 
 // maxUnsavedThreadRows bounds the rows kept per thread. Older ones are
 // dropped and counted in Omitted.
@@ -87,10 +85,21 @@ func cloneUnsavedRows(entry *UnsavedThreadRowsEvent) *UnsavedThreadRowsEvent {
 // triage router exists: there was no write to try.
 var errEventRouterNotWired = errors.New("the event router is not wired yet")
 
+// unsavedRowSink is the App's triage.UnsavedRowObserver. A separate
+// unexported type, so its methods are not candidate RPCs.
+type unsavedRowSink struct{ app *App }
+
+func (s unsavedRowSink) RowRefused(row triage.UnsavedRow, err error) {
+	s.app.deliverUnsavedThreadRow(row, err)
+}
+
+func (s unsavedRowSink) RowSaved(threadID, itemID string) {
+	s.app.withdrawSavedThreadRow(threadID, itemID)
+}
+
 // deliverUnsavedThreadRow keeps a row the store refused and pushes the
-// thread's list to every client. Triage calls it for every refused error or
-// notification row (Router.SetUnsavedRowObserver). A row with the id of one
-// already kept replaces it at the end of the list.
+// thread's list to every client. A row with the id of one already kept
+// replaces it at the end of the list.
 func (a *App) deliverUnsavedThreadRow(row triage.UnsavedRow, saveErr error) {
 	if row.ThreadID == "" {
 		return
@@ -136,17 +145,96 @@ func (a *App) deliverUnsavedThreadRow(row triage.UnsavedRow, saveErr error) {
 	a.emit(eventchan.ThreadUnsavedRows, *cloneUnsavedRows(entry))
 }
 
-// dismissUnsavedThreadRows clears the thread's list and pushes the empty
-// list to every client. A no-op when the thread has none.
-func (a *App) dismissUnsavedThreadRows(threadID string) {
+// withdrawSavedThreadRow drops the entry of a row whose write has now
+// succeeded, so it no longer reads as unsaved, and pushes the list. Called
+// for every saved error or notification row: a thread with nothing kept
+// costs one map lookup and pushes nothing.
+func (a *App) withdrawSavedThreadRow(threadID, itemID string) {
 	s := &a.unsavedRows
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.threads[threadID]; !ok {
+	entry, ok := s.threads[threadID]
+	if !ok {
 		return
 	}
-	s.forgetLocked(threadID)
-	a.emit(eventchan.ThreadUnsavedRows, UnsavedThreadRowsEvent{ThreadID: threadID, Rows: []UnsavedThreadRow{}})
+	if !removeUnsavedRows(entry, map[string]bool{itemID: true}) {
+		return
+	}
+	s.publishLocked(a, entry)
+}
+
+// removeUnsavedRows drops the rows whose ids are in ids and reports
+// whether any was there.
+func removeUnsavedRows(entry *UnsavedThreadRowsEvent, ids map[string]bool) bool {
+	kept := entry.Rows[:0:0]
+	for _, row := range entry.Rows {
+		if !ids[row.ID] {
+			kept = append(kept, row)
+		}
+	}
+	removed := len(kept) != len(entry.Rows)
+	entry.Rows = kept
+	return removed
+}
+
+// publishLocked pushes the thread's list, forgetting it once empty.
+// Caller holds s.mu.
+func (s *appUnsavedRowState) publishLocked(a *App, entry *UnsavedThreadRowsEvent) {
+	if len(entry.Rows) == 0 {
+		s.forgetLocked(entry.ThreadID)
+		a.emit(eventchan.ThreadUnsavedRows, UnsavedThreadRowsEvent{ThreadID: entry.ThreadID, Rows: []UnsavedThreadRow{}})
+		return
+	}
+	a.emit(eventchan.ThreadUnsavedRows, *cloneUnsavedRows(entry))
+}
+
+// GetThreadUnsavedRows returns the thread's errors and notices AO could
+// not save to history, newest last: the snapshot leg of
+// `thread:unsaved_rows`, at the same scope. A thread with none answers an
+// empty list.
+//
+//ao:scope threads:read
+func (a *App) GetThreadUnsavedRows(threadID string) (UnsavedThreadRowsEvent, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return UnsavedThreadRowsEvent{}, fmt.Errorf("get unsaved rows: empty thread id")
+	}
+	if retained := a.unsavedRows.snapshot(threadID); retained != nil {
+		return *retained, nil
+	}
+	return UnsavedThreadRowsEvent{ThreadID: threadID, Rows: []UnsavedThreadRow{}}, nil
+}
+
+// DismissUnsavedThreadRows removes the entries named by rowIDs, the ones
+// the caller displayed, and pushes what remains to every client. A row
+// that arrived after the caller's screen last updated is not named, so it
+// stays. The dismiss also clears the omitted count: the note about older
+// rows was displayed with them. Ids no longer kept are ignored.
+//
+//ao:scope threads:operate
+func (a *App) DismissUnsavedThreadRows(threadID string, rowIDs []string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return fmt.Errorf("dismiss unsaved rows: empty thread id")
+	}
+	ids := make(map[string]bool, len(rowIDs))
+	for _, id := range rowIDs {
+		ids[id] = true
+	}
+	s := &a.unsavedRows
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.threads[threadID]
+	if !ok {
+		return nil
+	}
+	removed := removeUnsavedRows(entry, ids)
+	clearedOmitted := entry.Omitted != 0
+	entry.Omitted = 0
+	if removed || clearedOmitted {
+		s.publishLocked(a, entry)
+	}
+	return nil
 }
 
 // forgetUnsavedThreadRows drops a deleted thread's list. Nothing is pushed:

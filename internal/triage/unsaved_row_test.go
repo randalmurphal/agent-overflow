@@ -22,12 +22,25 @@ type unsavedRowReport struct {
 type unsavedRowRecorder struct {
 	mu      sync.Mutex
 	reports []unsavedRowReport
+	saved   []string
 }
 
-func (r *unsavedRowRecorder) observe(row UnsavedRow, err error) {
+func (r *unsavedRowRecorder) RowRefused(row UnsavedRow, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.reports = append(r.reports, unsavedRowReport{row: row, err: err})
+}
+
+func (r *unsavedRowRecorder) RowSaved(threadID, itemID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.saved = append(r.saved, threadID+"/"+itemID)
+}
+
+func (r *unsavedRowRecorder) savedIDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.saved...)
 }
 
 func (r *unsavedRowRecorder) snapshot() []unsavedRowReport {
@@ -48,7 +61,7 @@ func newUnsavedRowRouter(t *testing.T) (*Router, *store.Store, *sql.DB, *unsaved
 	router := NewRouter(st, func(name eventchan.Channel, data any) { emissions.add(emitted{name.String(), data}) })
 	t.Cleanup(router.DrainWireItemRefresh)
 	recorder := &unsavedRowRecorder{}
-	router.SetUnsavedRowObserver(recorder.observe)
+	router.SetUnsavedRowObserver(recorder)
 	createTestThread(t, st, "t1")
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -187,6 +200,57 @@ func TestSessionDeathWhoseNoticeIsRefusedIsStillAnnounced(t *testing.T) {
 	reports = recorder.snapshot()
 	if len(reports) != 2 || reports[1].row.ItemID != reports[0].row.ItemID {
 		t.Fatalf("replay reports = %+v, want the same row id again", reports)
+	}
+	// The replay is the same death: announced once, so a Reconnect banner
+	// the user dismissed does not come back.
+	if died := filterEmissions(emissions.snapshot(), eventchan.ProviderSessionDied.String()); len(died) != 1 {
+		t.Fatalf("provider:session_died after the replay = %d, want 1", len(died))
+	}
+
+	// A replacement session's death is its own, even at the same turn.
+	router.MarkThreadActive("t1")
+	if err := router.Handle(death); err != nil {
+		t.Fatalf("next session's death: %v", err)
+	}
+	if died := filterEmissions(emissions.snapshot(), eventchan.ProviderSessionDied.String()); len(died) != 2 {
+		t.Fatalf("provider:session_died after a new session died = %d, want 2", len(died))
+	}
+}
+
+// A refused row that a later write saves is reported saved by id, so it
+// stops reading as unsaved. Rows of other kinds report nothing.
+func TestARefusedRowThatLaterSavesIsReportedSaved(t *testing.T) {
+	router, st, raw, recorder, _ := newUnsavedRowRouter(t)
+	refuseRows(t, raw, "notification", "database or disk is full")
+	exitMeta, _ := json.Marshal(provider.ProcessExitInfo{ExitCode: 1})
+	death := provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: "t1", Content: "error", Meta: exitMeta, Timestamp: time.Now()}
+	if err := router.Handle(death); err != nil {
+		t.Fatalf("session death: %v", err)
+	}
+	refused := recorder.snapshot()
+	if len(refused) != 1 {
+		t.Fatalf("refused = %+v, want the death notice", refused)
+	}
+	if _, err := raw.Exec(`DROP TRIGGER refuse_notification`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := router.Handle(death); err != nil {
+		t.Fatalf("replayed session death: %v", err)
+	}
+
+	if got := recorder.savedIDs(); len(got) != 1 || got[0] != "t1/"+refused[0].row.ItemID {
+		t.Fatalf("saved = %v, want the refused notice's id", got)
+	}
+	if rows := findItemsByKind(t, st, "t1", itemKindNotification); len(rows) != 1 {
+		t.Fatalf("notification rows = %+v, want the saved death", rows)
+	}
+
+	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1})
+	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: "t1", Content: "an answer"})
+	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta()})
+	if got := recorder.savedIDs(); len(got) != 1 {
+		t.Fatalf("saved = %v, want nothing for rows of other kinds", got)
 	}
 }
 

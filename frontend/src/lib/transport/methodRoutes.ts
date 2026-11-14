@@ -105,6 +105,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1185171749: 'selected', // DismissPRReview
 	1317713039: 'thread', // DismissSessionBanner
 	41472159: 'thread', // DismissThreadWorktreeSetup
+	1456387330: 'thread', // DismissUnsavedThreadRows
 	115027584: 'home', // DownloadUpdate
 	1579042384: 'selected', // EditOpenAIKeyFile
 	679416267: 'selected', // EditPR
@@ -186,6 +187,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	316516814: 'thread', // GetThreadTransferStatus
 	670257333: 'selected', // GetThreadTransfers
 	1512475224: 'thread', // GetThreadTurnPreview
+	2312582214: 'thread', // GetThreadUnsavedRows
 	3340938325: 'thread', // GetThreadUserMessageHistory
 	556088547: 'thread', // GetThreadUserMessageTicks
 	49371251: 'thread', // GetThreadWorktreeSetup

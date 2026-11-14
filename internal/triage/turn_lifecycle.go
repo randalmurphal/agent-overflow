@@ -2146,6 +2146,9 @@ func (r *Router) MarkThreadActive(threadID string) {
 		// The ticks belong to the provider PROCESS: a dead process will
 		// never deliver the terminal that would consume them.
 		st.subagentProgress = nil
+		// A death announced for the previous process says nothing about
+		// this one's.
+		st.announcedDeath = ""
 		// A replacement process is never mid-compaction; a stale window
 		// would pin a "Compacting" label onto the fresh session.
 		st.compactingSince, st.compactingSinceSet = 0, false

@@ -228,11 +228,11 @@ type Router struct {
 	// implementations must not block. Wired via SetCommandSettledObserver
 	// at router construction; nil disables it.
 	commandSettled func(threadID, command string)
-	// unsavedRow is the app-layer observer of an error or notification
-	// row the store refused (unsaved_rows.go). May run on the provider
-	// read loop; implementations must not block. Wired via
+	// unsavedRows is the app-layer observer of error and notification
+	// rows the store refused or later saved (unsaved_rows.go). May run on
+	// the provider read loop; implementations must not block. Wired via
 	// SetUnsavedRowObserver at router construction.
-	unsavedRow func(row UnsavedRow, err error)
+	unsavedRows UnsavedRowObserver
 	// codeSpanEnricher builds the persisted `codeSpans` meta value for
 	// a settled assistant text (see code_spans.go). Wired via
 	// SetCodeSpanEnricher at router construction; nil disables it.
@@ -268,10 +268,10 @@ func (r *Router) SetCommandSettledObserver(fn func(threadID, command string)) {
 }
 
 // SetUnsavedRowObserver wires the unsaved row observer (see the
-// unsavedRow field). Call before the router handles events: it is read
+// unsavedRows field). Call before the router handles events: it is read
 // without synchronization on the persist paths.
-func (r *Router) SetUnsavedRowObserver(fn func(row UnsavedRow, err error)) {
-	r.unsavedRow = fn
+func (r *Router) SetUnsavedRowObserver(observer UnsavedRowObserver) {
+	r.unsavedRows = observer
 }
 
 // notifyCommandSettled reports a persisted shell command row that has
@@ -1514,6 +1514,7 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 		r.reportUnsavedRow(item, err)
 		return store.Item{}, err
 	}
+	r.reportSavedRow(persisted)
 	r.noteToolCallLink(persisted)
 	r.notifyCommandSettled(persisted)
 	r.countCodexExecutionToolCall(persisted)

@@ -16,8 +16,8 @@ import type {
   ProviderSessionAccountEvent,
   SubagentProgressEvent,
 } from '../types/events';
-import type { ThreadLiveState } from '../../../bindings/agent-overflow/internal/app/models';
-import { GetThreadItem, GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
+import type { ThreadLiveState, UnsavedThreadRowsEvent } from '../../../bindings/agent-overflow/internal/app/models';
+import { GetThreadItem, GetThreadLiveState, GetThreadUnsavedRows, ListPendingInteractiveRequests } from './bindings';
 import type { LiveStateHydrationGuard } from './threadPaneShared';
 import { cursorFromItem } from './threadItems';
 import {
@@ -233,9 +233,6 @@ export function createThreadLiveStateHydration(
       snapshot.installedCliVersion ?? '',
     );
     options.hydratePromptStaleBanner(snapshot.promptStale ? (snapshot.promptStaleRevision ?? 1) : 0);
-    // Replaces, clearing included: the backend's list is the whole answer,
-    // and a push that landed during the read wins.
-    options.unsavedRows.hydrateSnapshotIfUnchanged(snapshot.unsavedRows, guard.unsavedRowsRevisionAtRequest);
   }
 
   async function startLiveStateFetch(
@@ -287,6 +284,21 @@ export function createThreadLiveStateHydration(
     // Before HOME's manifest the grants are unknown, so neither leg is
     // decided; the switch refreshes once they land (runGatedLegsOnGrants).
     const grantsPending = backend === HOME_BACKEND && !pageGrantsKnown();
+    // Unsaved rows ride `thread:unsaved_rows`, a threads:read channel, so
+    // their snapshot leg is the threads:read GetThreadUnsavedRows rather
+    // than the operate snapshot: a view-only session reads them too. Read
+    // beside the snapshot, applied by the same token.
+    let unsavedRows: UnsavedThreadRowsEvent | null = null;
+    const unsavedRowsRead = !grantsPending && threadHasScope('threads:read', threadID)
+      ? withBackendTarget(backend, () => GetThreadUnsavedRows(threadID)).then(
+        (rows) => {
+          unsavedRows = rows as UnsavedThreadRowsEvent;
+        },
+        (err: unknown) => {
+          if (currentTarget()) console.error('Failed to read unsaved thread rows:', err);
+        },
+      )
+      : Promise.resolve();
     if (!grantsPending && threadHasScope('threads:operate', threadID)) {
       try {
         snapshot = (await withBackendTarget(backend, () => GetThreadLiveState(threadID))) as ThreadLiveState;
@@ -336,6 +348,8 @@ export function createThreadLiveStateHydration(
       }
     }
 
+    await unsavedRowsRead;
+
     let tokenConsumed = false;
     return {
       error: snapshotError,
@@ -354,6 +368,11 @@ export function createThreadLiveStateHydration(
             if (queueStale) onStaleQueue();
           } else if (fallbackInteractive) {
             applyInteractive(fallbackInteractive);
+          }
+          // Replaces, clearing included: the backend's list is the whole
+          // answer, and a push that landed during the read wins.
+          if (unsavedRows) {
+            options.unsavedRows.hydrateSnapshotIfUnchanged(unsavedRows, guard.unsavedRowsRevisionAtRequest);
           }
         } finally {
           tokenConsumed = true;

@@ -4,11 +4,11 @@
   import type { ErrorSurface } from '../../stores/threadPaneRoles';
   import {
     DismissSessionBanner,
+    DismissUnsavedThreadRows,
     GetProviderStatuses,
     ReconnectSession,
   } from '../../stores/bindings';
   import type { SessionBannerKind } from '../../types/events';
-  import { UNSAVED_ROWS_BANNER_KIND } from '../../stores/threadUnsavedRows.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import ErrorReportActions from '../shared/ErrorReportActions.svelte';
   import ErrorReportDetails from '../shared/ErrorReportDetails.svelte';
@@ -136,8 +136,9 @@
   }
 
   // Thread errors and notices the backend could not save to history. Not a
-  // session claim: the list stays until dismissed, which is backend-owned
-  // like the session banners so every screen on the thread clears together.
+  // session claim. A dismiss names the rows on screen, so one that arrived
+  // since stays; the backend's push is the only writer of the list, so
+  // every screen clears together and a newer push is never undone here.
   // Each entry keeps its own tone; the frame takes the most severe one.
   const UNSAVED_TONE_TEXT: Record<string, string> = { error: 'text-error', warning: 'text-warning' };
   let unsavedFrameClasses = $derived(
@@ -149,8 +150,8 @@
     if (!threadID || dismissingUnsaved || operateUngranted) return;
     dismissingUnsaved = true;
     try {
-      await DismissSessionBanner(threadID, UNSAVED_ROWS_BANNER_KIND);
-      if (pane.threadId === threadID) pane.applyUnsavedRows({ threadId: threadID, rows: [] });
+      const displayed = (pane.unsavedRows?.rows ?? []).map((row) => row.id);
+      await DismissUnsavedThreadRows(threadID, displayed);
     } catch (err) {
       console.error('Failed to dismiss unsaved rows:', err);
       if (pane.threadId === threadID) pane.setGeneralError(userFacingError(err), err);

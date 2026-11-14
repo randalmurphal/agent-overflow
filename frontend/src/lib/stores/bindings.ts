@@ -93,6 +93,8 @@ export {
   StopSession,
   ReconnectSession,
   DismissSessionBanner,
+  DismissUnsavedThreadRows,
+  GetThreadUnsavedRows,
   SendMessage,
   InterruptTurn,
   GetConversationMutationState,

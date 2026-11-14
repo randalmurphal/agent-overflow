@@ -167,6 +167,13 @@ type threadState struct {
 	effectiveModel    string
 	effectiveModelSet bool
 
+	// announcedDeath is the id of the session_died notice this thread's
+	// session last announced on provider:session_died. It dedupes a
+	// replayed death whose notice the store refused, so no saved row can
+	// (handleSessionDied). Bound to the provider process: cleared when a
+	// replacement session starts (MarkThreadActive).
+	announcedDeath string
+
 	// tasks is the per-thread mirror of the Claude Task* family task
 	// list. Survives any number of Parser recreations within the process
 	// lifetime so a TaskUpdate against an id created before session

@@ -712,40 +712,37 @@ describe('createThreadPane', () => {
   // Unsaved thread rows are live state: the snapshot is the backend's
   // whole list, so it replaces (and clears) the pane's copy on open and on
   // reload, and nothing carries across a thread switch.
-  it('hydrates unsaved rows from live state and drops them on reload and switch', async () => {
+  it('hydrates unsaved rows from their snapshot and drops them on reload and switch', async () => {
     const pane = createThreadPane();
-    const unsaved = {
-      threadId: 'thread-unsaved',
-      rows: [{ id: 'unsaved-1', severity: 'error', message: 'boom', saveError: 'database or disk is full', occurredAt: 1 }],
-    };
-    let snapshot: { unsavedRows?: typeof unsaved } = { unsavedRows: unsaved };
-    setBindingMock('GetThreadLiveState', async (threadId: string) => ({ threadId, ...snapshot }));
+    const rows = [{ id: 'unsaved-1', severity: 'error', message: 'boom', saveError: 'database or disk is full', occurredAt: 1 }];
+    let kept = rows;
+    setBindingMock('GetThreadUnsavedRows', async (threadId: string) => ({ threadId, rows: kept }));
 
     await pane.switchThread(makeThread({ id: 'thread-unsaved', provider: 'claude' }));
     expect(pane.unsavedRows?.rows.map((entry) => entry.message)).toEqual(['boom']);
 
-    snapshot = {};
+    kept = [];
     await pane.refreshFromBackend();
     expect(pane.unsavedRows).toBeNull();
 
-    snapshot = { unsavedRows: unsaved };
+    kept = rows;
     await pane.refreshFromBackend();
     expect(pane.unsavedRows).not.toBeNull();
     // The switch itself drops them, even when the new thread's read fails.
-    setBindingMock('GetThreadLiveState', async () => {
-      throw new Error('live state unavailable');
+    setBindingMock('GetThreadUnsavedRows', async () => {
+      throw new Error('unsaved rows unavailable');
     });
     await pane.switchThread(makeThread({ id: 'thread-other', provider: 'claude' }));
     expect(pane.unsavedRows).toBeNull();
   });
 
-  it('keeps an unsaved row pushed while the live-state read was in flight', async () => {
+  it('keeps an unsaved row pushed while the snapshot read was in flight', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-race', provider: 'claude' }));
     let release: (() => void) | null = null;
-    setBindingMock('GetThreadLiveState', (threadId: string) =>
+    setBindingMock('GetThreadUnsavedRows', (threadId: string) =>
       new Promise((resolve) => {
-        release = () => resolve({ threadId });
+        release = () => resolve({ threadId, rows: [] });
       }),
     );
 

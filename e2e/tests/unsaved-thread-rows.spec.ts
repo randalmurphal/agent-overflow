@@ -4,15 +4,26 @@
 // an error or dies.
 // Covers: an error reaches the open thread live in the error tone, marked as
 // not saved and with the write's failure; no error row is written; a reload
-// shows it again from GetThreadLiveState; a dismiss clears it, also across a
-// reload. A session death whose notice is refused still lights the session
-// Reconnect row, and its notice is listed in the warning tone.
+// shows it again from GetThreadUnsavedRows; a dismiss removes the rows it
+// names, also across a reload. A session death whose notice is refused
+// still lights the session Reconnect row, and its notice is listed in the
+// warning tone. A view-only device reads the list, cannot dismiss it, and
+// sees another client's dismiss live.
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { test as pwTest, type BrowserContext, type Locator } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { openThread } from './worktree-removal-helpers.js';
 import { mockSessions } from './workflows-helpers.js';
-import type { HarnessApp } from '../src/harness.js';
+import {
+  PAIRED_APP_MOUNT_MS,
+  confirmOnHost,
+  instrument,
+  mintInvite,
+  nonLoopbackIPv4,
+  redeemOnScreen,
+} from './offhost-helpers.js';
+import { launchHarness, type HarnessApp } from '../src/harness.js';
 
 const seededTurn = { userText: 'hello', items: [{ kind: 'assistant_text', summary: 'Ready.' }] };
 
@@ -75,7 +86,27 @@ async function liveThreadRefusing(
   }
 }
 
-test('an error AO cannot save is shown live as not saved, until dismissed', async ({ harness, page }) => {
+// The mock session reports a provider error: a model refusal with no
+// fallback, whose row is an `error` row.
+async function emitRefusal(harness: HarnessApp, mockId: string, model: string, explanation: string): Promise<void> {
+  await harness.rpc('HarnessMockCommand', mockId, {
+    type: 'emit',
+    lines: [
+      JSON.stringify({
+        type: 'system',
+        subtype: 'model_refusal_no_fallback',
+        original_model: model,
+        api_refusal_explanation: explanation,
+      }),
+    ],
+  });
+}
+
+function entries(banner: Locator): Locator {
+  return banner.getByTestId('unsaved-row');
+}
+
+test('an error AO cannot save is shown live as not saved, until dismissed',async ({ harness, page }) => {
   const title = 'Claude on a full disk';
   const { threadId, mockId, cleanup } = await liveThreadRefusing(harness, title, 'error');
   try {
@@ -84,17 +115,7 @@ test('an error AO cannot save is shown live as not saved, until dismissed', asyn
     const banner = page.getByTestId('unsaved-rows-banner');
     await expect(banner).toHaveCount(0);
 
-    await harness.rpc('HarnessMockCommand', mockId, {
-      type: 'emit',
-      lines: [
-        JSON.stringify({
-          type: 'system',
-          subtype: 'model_refusal_no_fallback',
-          original_model: 'claude-opus-4-7',
-          api_refusal_explanation: 'Disk test refusal.',
-        }),
-      ],
-    });
+    await emitRefusal(harness, mockId, 'claude-opus-4-7', 'Disk test refusal.');
 
     await expect(banner).toBeVisible();
     await expect(banner).toContainText("Not saved to this thread's history");
@@ -110,6 +131,21 @@ test('an error AO cannot save is shown live as not saved, until dismissed', asyn
     await openThread(page, title);
     await expect(banner).toBeVisible();
     await expect(banner).toContainText('Disk test refusal.');
+
+    // A dismiss removes only the rows it names: a client that displayed
+    // only the first leaves the second for every screen, also across a
+    // reload.
+    await emitRefusal(harness, mockId, 'claude-sonnet-4-6', 'Second refusal.');
+    await expect(entries(banner)).toHaveCount(2);
+    const kept = await harness.rpc<{ rows: Array<{ id: string }> }>('GetThreadUnsavedRows', threadId);
+    expect(new Set(kept.rows.map((row) => row.id)).size).toBe(2);
+    await harness.rpc('DismissUnsavedThreadRows', threadId, [kept.rows[0].id]);
+    await expect(entries(banner)).toHaveCount(1);
+    await expect(entries(banner)).toContainText('Second refusal.');
+    await harness.open(page);
+    await openThread(page, title);
+    await expect(entries(banner)).toHaveCount(1);
+    await expect(entries(banner)).toContainText('Second refusal.');
 
     await banner.getByTestId('unsaved-rows-dismiss').click();
     await expect(banner).toHaveCount(0);
@@ -144,4 +180,55 @@ test('a session death whose notice AO cannot save still shows, as a warning', as
   } finally {
     await cleanup();
   }
+});
+
+// A view-only device holds threads:read, the grant of the push and its
+// snapshot, but not threads:operate. It owns its backend because the LAN
+// bind persists to the settings file, which `harness.reset()` does not undo.
+pwTest.describe('on a view-only device', () => {
+  const lanIP = nonLoopbackIPv4();
+  pwTest.skip(lanIP === null, 'outside the test network namespace, so no off-host peer can be produced without LAN traffic');
+
+  pwTest('unsaved rows show from the snapshot and clear live, with dismiss inert', async ({ browser }) => {
+    const harness = await launchHarness();
+    let phoneContext: BrowserContext | undefined;
+    let cleanup = async () => {};
+    try {
+      const network = await harness.rpc<{ bindAll: boolean }>('SetNetworkSettings', { bindAll: true });
+      expect(network.bindAll).toBe(true);
+      const title = 'Claude on a full disk, watched';
+      const live = await liveThreadRefusing(harness, title, 'error');
+      cleanup = live.cleanup;
+      await emitRefusal(harness, live.mockId, 'claude-opus-4-7', 'Watched refusal.');
+      await expect
+        .poll(async () => (await harness.rpc<{ rows: unknown[] }>('GetThreadUnsavedRows', live.threadId)).rows.length)
+        .toBe(1);
+
+      phoneContext = await browser.newContext();
+      const phone = await phoneContext.newPage();
+      const surfaced = await instrument(phone);
+      const invite = await mintInvite(harness, 'view-only');
+      await confirmOnHost(harness, await redeemOnScreen(phone, invite, 'Watching phone'));
+      await expect(phone.getByTestId('view-only-indicator')).toBeVisible({ timeout: PAIRED_APP_MOUNT_MS });
+
+      // Kept before this device opened the thread, so only the snapshot
+      // read can show it.
+      await phone.getByTestId('thread-row').filter({ hasText: title }).click();
+      const banner = phone.getByTestId('unsaved-rows-banner');
+      await expect(entries(banner)).toHaveCount(1);
+      await expect(entries(banner)).toContainText('Watched refusal.');
+      await expect(banner.getByTestId('unsaved-rows-dismiss')).toBeDisabled();
+
+      // Another client's dismiss reaches this one as a push.
+      const kept = await harness.rpc<{ rows: Array<{ id: string }> }>('GetThreadUnsavedRows', live.threadId);
+      await harness.rpc('DismissUnsavedThreadRows', live.threadId, kept.rows.map((row) => row.id));
+      await expect(banner).toHaveCount(0);
+      expect(surfaced.refusals, 'a view-only device reads unsaved rows without a refusal').toEqual([]);
+    } finally {
+      await cleanup();
+      await phoneContext?.close();
+      await harness.rpc('SetNetworkSettings', { bindAll: false }).catch(() => undefined);
+      await harness.close();
+    }
+  });
 });

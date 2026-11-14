@@ -448,15 +448,48 @@ describe('<ProviderStatusBanner>', () => {
       expect(queryByTestId('unsaved-rows-banner')).toBeNull();
     });
 
-    it('dismisses through the backend for every screen', async () => {
+    // The backend answers a dismiss with the push of what remains, before
+    // the RPC response; the push is what clears the screen.
+    it('dismisses the displayed rows by id through the backend', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
-      const dismiss = setBindingMock('DismissSessionBanner', async () => {});
-      emitUnsaved([{ id: 'unsaved-1', message: 'boom', saveError: 'full' }]);
+      const dismiss = setBindingMock('DismissUnsavedThreadRows', async () => {
+        emitUnsaved([]);
+      });
+      emitUnsaved([
+        { id: 'unsaved-1', message: 'boom', saveError: 'full' },
+        { id: 'unsaved-2', message: 'bang', saveError: 'full' },
+      ]);
 
       const { getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
       await fireEvent.click(getByTestId('unsaved-rows-dismiss'));
-      expect(dismiss).toHaveBeenCalledWith('thread-1', 'unsaved_rows');
+      expect(dismiss).toHaveBeenCalledWith('thread-1', ['unsaved-1', 'unsaved-2']);
       await waitFor(() => expect(queryByTestId('unsaved-rows-banner')).toBeNull());
+    });
+
+    // A row that arrives after the click is not named and its push is the
+    // newest state, so the RPC response does not clear it.
+    it('keeps a row pushed between the dismiss and its response', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      let respond: (() => void) | null = null;
+      setBindingMock('DismissUnsavedThreadRows', () =>
+        new Promise<void>((resolve) => {
+          respond = resolve;
+        }),
+      );
+      emitUnsaved([{ id: 'unsaved-1', message: 'boom', saveError: 'full' }]);
+
+      const { getByTestId, getAllByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      await fireEvent.click(getByTestId('unsaved-rows-dismiss'));
+      await waitFor(() => expect(respond).not.toBeNull());
+      emitUnsaved([{ id: 'unsaved-2', message: 'arrived after the click', saveError: 'full' }]);
+      respond!();
+      // Let the click handler run past its await.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await tick();
+
+      const rows = getAllByTestId('unsaved-row');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].textContent).toContain('arrived after the click');
     });
 
     it('clears when another screen dismisses', async () => {
@@ -481,7 +514,7 @@ describe('<ProviderStatusBanner>', () => {
 
     it('keeps a failed dismiss visible as a pane error', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
-      setBindingMock('DismissSessionBanner', async () => {
+      setBindingMock('DismissUnsavedThreadRows', async () => {
         throw new Error('backend away');
       });
       emitUnsaved([{ id: 'unsaved-1', message: 'boom', saveError: 'full' }]);

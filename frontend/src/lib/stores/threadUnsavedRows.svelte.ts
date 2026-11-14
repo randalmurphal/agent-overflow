@@ -2,12 +2,11 @@ import type { UnsavedThreadRowsEvent } from '../../../bindings/agent-overflow/in
 
 /**
  * A pane's thread errors and notices that the backend could not save to
- * history (`thread:unsaved_rows`, mirrored in
- * `GetThreadLiveState.unsavedRows`). Live state, not history: every frame is
- * the thread's whole list, newest last and bounded by the backend, and the
- * pane drops it when it leaves or reloads the thread. Dismissal is
- * backend-owned (`DismissSessionBanner` with kind `unsaved_rows`), so every
- * screen on the thread agrees.
+ * history (`thread:unsaved_rows`, read back by `GetThreadUnsavedRows`). Live
+ * state, not history: every frame is the thread's whole list, newest last
+ * and bounded by the backend, and the pane drops it when it leaves or
+ * reloads the thread. Only backend answers write it: a dismiss
+ * (`DismissUnsavedThreadRows`) arrives back as a push.
  */
 export interface ThreadUnsavedRows {
   /** The thread's current list, null when it has none. */
@@ -20,8 +19,6 @@ export interface ThreadUnsavedRows {
   hydrateSnapshotIfUnchanged(snapshot: UnsavedThreadRowsEvent | null | undefined, revisionAtRequest: number): void;
   clear(): void;
 }
-
-export const UNSAVED_ROWS_BANNER_KIND = 'unsaved_rows';
 
 export function createThreadUnsavedRows(): ThreadUnsavedRows {
   let current = $state<UnsavedThreadRowsEvent | null>(null);

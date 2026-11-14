@@ -1,12 +1,15 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/triage"
 )
 
@@ -43,13 +46,21 @@ func unsavedRowFrames(rec *emitRecorder) []UnsavedThreadRowsEvent {
 	return frames
 }
 
+// liveUnsavedRows reads the thread's list the way a client that opens the
+// thread does, nil when it is empty.
 func liveUnsavedRows(t *testing.T, app *App, threadID string) *UnsavedThreadRowsEvent {
 	t.Helper()
-	state, err := app.GetThreadLiveState(threadID)
+	got, err := app.GetThreadUnsavedRows(threadID)
 	if err != nil {
-		t.Fatalf("GetThreadLiveState: %v", err)
+		t.Fatalf("GetThreadUnsavedRows: %v", err)
 	}
-	return state.UnsavedRows
+	if got.ThreadID != threadID || got.Rows == nil {
+		t.Fatalf("GetThreadUnsavedRows = %+v, want the thread's list, never a nil one", got)
+	}
+	if len(got.Rows) == 0 && got.Omitted == 0 {
+		return nil
+	}
+	return &got
 }
 
 func TestUnsavedThreadErrorIsDeliveredLive(t *testing.T) {
@@ -148,31 +159,110 @@ func TestUnsavedThreadRowsStayBounded(t *testing.T) {
 	}
 }
 
-func TestDismissClearsUnsavedThreadRows(t *testing.T) {
+// A dismiss removes only the rows the client displayed: one that arrived
+// after the click is not named, so it stays for every client.
+func TestDismissRemovesOnlyTheNamedRows(t *testing.T) {
 	t.Parallel()
 	app, dbPath, rec := newUnsavedRowApp(t, "thread-dismiss")
 	failErrorRowWrites(t, dbPath)
-	app.emitErrorToThread("thread-dismiss", "reconnect failed")
+	app.emitErrorToThread("thread-dismiss", "shown")
+	shown := liveUnsavedRows(t, app, "thread-dismiss").Rows[0].ID
+	app.emitErrorToThread("thread-dismiss", "arrived after the click")
 	rec.reset()
 
-	if err := app.DismissSessionBanner("thread-dismiss", unsavedRowsBannerKind); err != nil {
-		t.Fatalf("DismissSessionBanner: %v", err)
+	if err := app.DismissUnsavedThreadRows("thread-dismiss", []string{shown}); err != nil {
+		t.Fatalf("DismissUnsavedThreadRows: %v", err)
 	}
 
 	frames := unsavedRowFrames(rec)
-	if len(frames) != 1 || frames[0].ThreadID != "thread-dismiss" || len(frames[0].Rows) != 0 || frames[0].Rows == nil {
-		t.Fatalf("dismiss frames = %+v, want one empty list for every client", frames)
+	if len(frames) != 1 || len(frames[0].Rows) != 1 || frames[0].Rows[0].Message != "arrived after the click" {
+		t.Fatalf("dismiss frames = %+v, want the newer row left for every client", frames)
 	}
-	if live := liveUnsavedRows(t, app, "thread-dismiss"); live != nil {
-		t.Fatalf("live state after dismiss = %+v, want none", live)
+	live := liveUnsavedRows(t, app, "thread-dismiss")
+	if live == nil || len(live.Rows) != 1 || live.Rows[0].Message != "arrived after the click" {
+		t.Fatalf("after dismiss = %+v, want the newer row", live)
 	}
 
+	// The last row named empties the list; a dismiss naming nothing kept
+	// pushes nothing.
 	rec.reset()
-	if err := app.DismissSessionBanner("thread-dismiss", unsavedRowsBannerKind); err != nil {
-		t.Fatalf("second DismissSessionBanner: %v", err)
+	if err := app.DismissUnsavedThreadRows("thread-dismiss", []string{live.Rows[0].ID}); err != nil {
+		t.Fatalf("second DismissUnsavedThreadRows: %v", err)
+	}
+	frames = unsavedRowFrames(rec)
+	if len(frames) != 1 || frames[0].Rows == nil || len(frames[0].Rows) != 0 {
+		t.Fatalf("frames = %+v, want one empty list", frames)
+	}
+	if live := liveUnsavedRows(t, app, "thread-dismiss"); live != nil {
+		t.Fatalf("after the last dismiss = %+v, want none", live)
+	}
+	rec.reset()
+	if err := app.DismissUnsavedThreadRows("thread-dismiss", []string{shown}); err != nil {
+		t.Fatalf("stale DismissUnsavedThreadRows: %v", err)
 	}
 	if frames := unsavedRowFrames(rec); len(frames) != 0 {
-		t.Fatalf("a dismiss with nothing shown emitted %+v", frames)
+		t.Fatalf("a dismiss of rows no longer kept emitted %+v", frames)
+	}
+}
+
+// A dismiss clears the omitted count with the rows it names.
+func TestDismissClearsTheOmittedCount(t *testing.T) {
+	t.Parallel()
+	app, dbPath, _ := newUnsavedRowApp(t, "thread-omitted")
+	failErrorRowWrites(t, dbPath)
+	for i := range maxUnsavedThreadRows + 2 {
+		app.emitErrorToThread("thread-omitted", fmt.Sprintf("failure %d", i))
+	}
+	live := liveUnsavedRows(t, app, "thread-omitted")
+	ids := []string{live.Rows[0].ID}
+
+	if err := app.DismissUnsavedThreadRows("thread-omitted", ids); err != nil {
+		t.Fatalf("DismissUnsavedThreadRows: %v", err)
+	}
+
+	after := liveUnsavedRows(t, app, "thread-omitted")
+	if after == nil || after.Omitted != 0 || len(after.Rows) != maxUnsavedThreadRows-1 {
+		t.Fatalf("after = %+v, want the other rows and no omitted count", after)
+	}
+}
+
+// Unsaved rows are not a session claim, so the session banner dismiss does
+// not take their kind.
+func TestSessionBannerDismissDoesNotTakeUnsavedRows(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	if err := app.DismissSessionBanner("thread-1", "unsaved_rows"); err == nil {
+		t.Fatal("DismissSessionBanner accepted unsaved_rows")
+	}
+}
+
+// A row refused once and saved by a later write leaves the list, so a
+// notice that is in history no longer reads as not saved.
+func TestARowThatLaterSavesLeavesTheList(t *testing.T) {
+	t.Parallel()
+	app, dbPath, rec := newUnsavedRowApp(t, "thread-saved-later")
+	execOnFile(t, dbPath, `CREATE TRIGGER refuse_notice BEFORE INSERT ON items WHEN NEW.kind = 'notification' BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`)
+	exitMeta, _ := json.Marshal(provider.ProcessExitInfo{ExitCode: 1})
+	death := provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: "thread-saved-later", Content: "error", Meta: exitMeta, Timestamp: time.Now()}
+	if err := app.triage.Handle(death); err != nil {
+		t.Fatalf("session death: %v", err)
+	}
+	if live := liveUnsavedRows(t, app, "thread-saved-later"); live == nil || len(live.Rows) != 1 {
+		t.Fatalf("setup: unsaved = %+v, want the death notice", live)
+	}
+	execOnFile(t, dbPath, `DROP TRIGGER refuse_notice`)
+	rec.reset()
+
+	if err := app.triage.Handle(death); err != nil {
+		t.Fatalf("replayed session death: %v", err)
+	}
+
+	if live := liveUnsavedRows(t, app, "thread-saved-later"); live != nil {
+		t.Fatalf("unsaved after the row saved = %+v, want none", live)
+	}
+	frames := unsavedRowFrames(rec)
+	if len(frames) != 1 || len(frames[0].Rows) != 0 {
+		t.Fatalf("frames = %+v, want the emptied list pushed", frames)
 	}
 }
 
@@ -197,6 +287,27 @@ func TestDeletingAThreadForgetsItsUnsavedRows(t *testing.T) {
 func failNoticeRowWrites(t *testing.T, dbPath string) {
 	t.Helper()
 	execOnFile(t, dbPath, `CREATE TRIGGER fail_notice_row BEFORE INSERT ON items WHEN NEW.kind = 'notification' BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`)
+}
+
+// A saved row whose id was never refused leaves the kept rows alone and
+// pushes nothing.
+func TestASavedRowNeverRefusedPushesNothing(t *testing.T) {
+	t.Parallel()
+	app, dbPath, rec := newUnsavedRowApp(t, "thread-other-saved")
+	failErrorRowWrites(t, dbPath)
+	app.emitErrorToThread("thread-other-saved", "refused")
+	rec.reset()
+
+	if err := app.emitNoticeToThread("thread-other-saved", noticeKindWorktreeCleanup, "Removed worktree feature."); err != nil {
+		t.Fatalf("emitNoticeToThread: %v", err)
+	}
+
+	if frames := unsavedRowFrames(rec); len(frames) != 0 {
+		t.Fatalf("frames = %+v, want none for a row that was never refused", frames)
+	}
+	if live := liveUnsavedRows(t, app, "thread-other-saved"); live == nil || len(live.Rows) != 1 {
+		t.Fatalf("unsaved = %+v, want the refused error kept", live)
+	}
 }
 
 // The app's notices reach the same list as warnings, from every caller,

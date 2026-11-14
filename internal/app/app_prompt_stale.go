@@ -268,8 +268,6 @@ func (a *App) dismissPromptStale(threadID string) {
 // the next start would use changes again, `binary_stale` until the
 // installed CLI version changes again. Either way the change still applies
 // when the session next restarts. Every attached client gets the withdraw.
-// `unsaved_rows` clears the thread's errors and notices AO could not save
-// to history (app_unsaved_rows.go) for every client.
 //
 //ao:scope threads:operate
 func (a *App) DismissSessionBanner(threadID, kind string) error {
@@ -282,8 +280,6 @@ func (a *App) DismissSessionBanner(threadID, kind string) error {
 		a.dismissPromptStale(threadID)
 	case providerstatus.KindBinaryStale:
 		a.dismissBinaryStale(threadID)
-	case unsavedRowsBannerKind:
-		a.dismissUnsavedThreadRows(threadID)
 	default:
 		return fmt.Errorf("dismiss session banner: unknown banner kind %q", kind)
 	}
