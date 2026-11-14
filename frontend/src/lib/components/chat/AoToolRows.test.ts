@@ -191,7 +191,7 @@ describe('AO thread tool rows', () => {
 
     // A lost frame reads every token again.
     const again = ledger({ [TOKEN]: '' });
-    applyThreadAgentRowsGap('home');
+    applyThreadAgentRowsGap(HOME_BACKEND);
     await waitFor(() => expect(again).toHaveBeenCalledWith(THREAD, [TOKEN]));
     await waitFor(() => expect(hint(view)).not.toBe('(answer arrived)'));
   });

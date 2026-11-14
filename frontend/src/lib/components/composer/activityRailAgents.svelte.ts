@@ -4,7 +4,9 @@
 // ListThreadAgentRows when its thread opens, after its computer reconnects or
 // loses a `thread:agent_rows_changed` frame, and on a frame that names its
 // thread or a thread its list nests, which the backend sends after each
-// change to a request or to the thread it went to. Frames about rows it
+// change to a request or to the thread it went to; a frame that lands during
+// a list read about a thread the answer nests reads the list again, since
+// the answer may predate it. Frames about rows it
 // lists that run here read those rows alone, in one read of at most
 // MAX_ROW_READ (GetThreadAgentRows), and keep their places; more rows than
 // that, any other frame, and a row the read says left the listing read the
@@ -119,8 +121,12 @@ export function createAgentController(
   let settledSeen: ReadonlyMap<string, number> = $state.raw(new Map());
   let dismissed: ReadonlySet<string> = $state.raw(new Set());
   // The threads whose frames can change this list; read by the frame
-  // filter, not rendered.
+  // filter, not rendered. Always the tray's own thread.
   let callers = new Set<string>();
+  // The threads frames named while a list read was in flight that the
+  // list then held did not: the read's answer may nest one of them, and
+  // may predate its change.
+  let heardDuringList: Set<string> | null = null;
   // What the next read reads: the list, or the rows named by frames since.
   let listDue = true;
   const rowsDue = new Set<string>();
@@ -221,10 +227,16 @@ export function createAgentController(
       }
       listDue = false;
       rowsDue.clear();
+      const heard = new Set<string>();
+      heardDuringList = heard;
       try {
         const agents = await ListThreadAgentRows(id);
         if (!token.isCurrent() || id !== threadId) return;
         replace(id, agents?.rows ?? [], agents?.hidden ?? false);
+        if ([...heard].some((caller) => callers.has(caller))) {
+          listDue = true;
+          refresh.request();
+        }
       } catch (err) {
         if (!token.isCurrent() || id !== threadId) return;
         // A failed read says nothing about the requests. Keep the last list
@@ -232,6 +244,8 @@ export function createAgentController(
         // the list.
         listDue = true;
         console.error('ActivityRail: ListThreadAgentRows failed:', err);
+      } finally {
+        if (heardDuringList === heard) heardDuringList = null;
       }
     },
   });
@@ -250,7 +264,8 @@ export function createAgentController(
       // Not replace(): an empty list would forget what kept holds.
       listed = [];
       hidden = false;
-      callers = new Set();
+      callers = id ? new Set([id]) : new Set();
+      heardDuringList = null;
       refresh.reset();
       refresh.request({ immediate: true });
     });
@@ -295,7 +310,12 @@ export function createAgentController(
       // are the backend's.
       const cancelChanged = onThreadAgentRowsChanged((change, backend) => {
         if (!threadId) return;
-        if (change === null ? threadBackend(threadId) !== backend : !callers.has(change.threadId)) return;
+        if (change === null) {
+          if (threadBackend(threadId) !== backend) return;
+        } else if (!callers.has(change.threadId)) {
+          heardDuringList?.add(change.threadId);
+          return;
+        }
         if (change?.id && !listDue && patchable(change.id)) rowsDue.add(change.id);
         else listDue = true;
         if (rowsDue.size > MAX_ROW_READ) {

@@ -203,6 +203,44 @@ describe('agents controller', () => {
     expect(readRow).not.toHaveBeenCalled();
   });
 
+  it('reads the list again for a frame that lands during a list read, about its thread or a thread the answer nests', async () => {
+    vi.useFakeTimers();
+    const pane = await buildPane();
+    noteThread(pane.threadId!, '', 2);
+    const answers: ((rows: ThreadAgentRow[]) => void)[] = [];
+    const read = setBindingMock('ListThreadAgentRows', () => new Promise((resolve) => {
+      answers.push((rows) => resolve({ rows, hidden: false }));
+    }));
+    stopEvents = setupEventListeners();
+    let controller!: AgentController;
+    release = $effect.root(() => {
+      controller = createAgentController(() => pane, () => Date.now());
+      return controller.mount();
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    // The first read's only frame: a spawn the answer predates.
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'child' });
+    answers[0]([]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(read).toHaveBeenCalledTimes(2);
+    // A frame about a thread the second answer nests, while it is out.
+    emitWailsEvent('thread:agent_rows_changed', { threadId: 't-child', id: 'grand' });
+    answers[1]([row('child')]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(read).toHaveBeenCalledTimes(3);
+    answers[2]([row('child'), row('grand', { callerThreadId: 't-child', depth: 1 })]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(controller.rows.map((r) => r.token)).toEqual(['child', 'grand']);
+    // A frame during a read about a thread the answer does not nest reads nothing more.
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId });
+    await vi.advanceTimersByTimeAsync(500);
+    emitWailsEvent('thread:agent_rows_changed', { threadId: 'unrelated', id: 'x' });
+    answers[3]([row('child')]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(read).toHaveBeenCalledTimes(4);
+  });
+
   it('reads the rows a burst named in one read and keeps their places in the tree', async () => {
     const { pane, read, controller } = await mountAgents([
       row('child', { nestedHidden: true }),

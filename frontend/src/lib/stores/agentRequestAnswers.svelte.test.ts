@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { __resetAgentRequestAnswersForTest, requestAnswered, watchRequestAnswer } from './agentRequestAnswers.svelte';
 import { applyThreadAgentRowsChanged } from './eventsThreadAgentRows';
+import { __setBackendStatusForTest } from './transportStatus.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
 
 afterEach(() => {
   __resetAgentRequestAnswersForTest();
@@ -119,6 +121,64 @@ describe('agent request answers', () => {
     await settle();
     expect(requestAnswered('lead', undefined, 'inline')).toBe(true);
     expect(requestAnswered('lead', undefined, 'owed')).toBe(false);
+  });
+
+  it('reads again for a frame that lands during the first read, after it, and lets the newer answer stand', async () => {
+    const replies: ((answered: boolean) => void)[] = [];
+    const read = vi.fn((_thread: string, asked: string[]) => new Promise((resolve) => {
+      replies.push((answered) => resolve(asked.map((token) => ({ token, state: 'finished', wakeItemId: '', answered }))));
+    }));
+    setBindingMock('GetThreadRequestStates', read);
+    const release = watchRequestAnswer('lead', 'tok');
+    await settle();
+    expect(read).toHaveBeenCalledTimes(1);
+    // The only frame: the answer landed while the first read was out.
+    applyThreadAgentRowsChanged({ threadId: 'lead', id: 'tok' }, 'home');
+    await settle();
+    // One read per thread at a time: the second waits for the first.
+    expect(read).toHaveBeenCalledTimes(1);
+    replies[0](false);
+    await settle();
+    expect(read).toHaveBeenCalledTimes(2);
+    replies[1](true);
+    await settle();
+    expect(requestAnswered('lead', undefined, 'tok')).toBe(true);
+    release();
+  });
+
+  it('reads a computer\'s threads again when it reconnects, after a read that failed', async () => {
+    let fail = true;
+    const read = vi.fn(async (_thread: string, asked: string[]) => {
+      if (fail) throw new Error('offline');
+      return asked.map((token) => ({ token, state: 'finished', wakeItemId: '', answered: true }));
+    });
+    setBindingMock('GetThreadRequestStates', read);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const release = watchRequestAnswer('lead', 'tok');
+    await settle();
+    expect(read).toHaveBeenCalledTimes(1);
+    fail = false;
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await settle();
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(requestAnswered('lead', undefined, 'tok')).toBe(true);
+    release();
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'disconnected', nextAttemptAt: null });
+  });
+
+  it('applies nothing from a read that was out when the cache reset', async () => {
+    let reply!: () => void;
+    setBindingMock('GetThreadRequestStates', vi.fn((_thread: string, asked: string[]) => new Promise((resolve) => {
+      reply = () => resolve(asked.map((token) => ({ token, state: 'finished', wakeItemId: '', answered: true })));
+    })));
+    requestAnswered('lead', undefined, 'tok');
+    await settle();
+    __resetAgentRequestAnswersForTest();
+    setBindingMock('GetThreadRequestStates', vi.fn(() => new Promise(() => {})));
+    reply();
+    await settle();
+    expect(requestAnswered('lead', undefined, 'tok')).toBe(false);
   });
 
   it('lets a released token go once the bound needs room', async () => {

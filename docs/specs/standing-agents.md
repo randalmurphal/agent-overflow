@@ -1349,7 +1349,9 @@ closes up their spacing so the row holds at a phone width.
   (`GetThreadAgentRows`), and the pane keeps each row's place, depth and
   nesting marks; past 32, or when the read says a row is no longer
   listed, the pane reads the list. Reads go through the rate-bounded
-  refresh scheduler, so a burst of frames is one read.
+  refresh scheduler, so a burst of frames is one read. A frame that
+  lands during a list read, about the thread or a thread that read's
+  answer nests, reads the list again after it.
 - **Reads.** A listing is a constant number of statements whatever the
   tree's size: the tree's shape with each row's depth in one recursive
   read, the listed rows in one, the targets' titles and providers in one,

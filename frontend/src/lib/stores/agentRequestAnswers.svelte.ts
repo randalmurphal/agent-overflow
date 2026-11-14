@@ -3,6 +3,8 @@ import { SvelteMap } from 'svelte/reactivity';
 import type { Item } from '../types/models';
 import { GetThreadRequestStates } from './bindings';
 import { onThreadAgentRowsChanged, type ThreadAgentRowChange } from './eventsThreadAgentRows';
+import { onBackendStatusChange } from './transportStatus.svelte';
+import { threadBackend } from '../transport/entityIndex';
 import { answeredRequestTokens } from '../utils/answeredRequestTokens';
 
 // Whether the answer to each request a thread made has reached that thread,
@@ -11,7 +13,11 @@ import { answeredRequestTokens } from '../utils/answeredRequestTokens';
 // and so left no wake row). A mounted tool row watches
 // its own token; the asks of one task are read in one call per thread, in
 // reads of at most MAX_TOKENS, and a change frame naming a token, or the
-// thread, or a lost frame, reads them again. A token the ledger does not
+// thread, a lost frame or its computer reconnecting, reads them again. A
+// token is asked from when a row asks, so a frame during its first read
+// reads it again; a thread has one read in flight at a time, and what is
+// asked meanwhile reads after it, so an older answer never lands last.
+// A token the ledger does not
 // know, a request from before it, falls back to the answer rows the pane
 // has loaded.
 //
@@ -34,8 +40,14 @@ const answered = new SvelteMap<string, SvelteMap<string, Ledger>>();
 const recency = new Map<string, Set<string>>();
 // The mounted rows watching each token, by thread.
 const watched = new Map<string, Map<string, number>>();
-// Tokens to read, by thread, until the next microtask.
+// Tokens to read, by thread: until the next microtask, or until the
+// thread's read in flight settles.
 const due = new Map<string, Set<string>>();
+// Threads with a read in flight. One read per thread at a time, so an older
+// answer never lands over a newer one; what is asked meanwhile reads after.
+const reading = new Set<string>();
+// Bumped by a reset, so a read from before it applies nothing.
+let epoch = 0;
 let unsubscribe: (() => void) | null = null;
 
 /**
@@ -79,54 +91,87 @@ export function watchRequestAnswer(threadId: string | null | undefined, token: s
   };
 }
 
+/**
+ * Asks for tokens' answers. A token counts as asked from here, before its
+ * read starts, so a frame naming it during that read reads it again.
+ */
 function ask(threadId: string, tokens: readonly string[]): void {
-  unsubscribe ??= onThreadAgentRowsChanged(readAgain);
+  if (!unsubscribe) {
+    const stopFrames = onThreadAgentRowsChanged(readAgain);
+    const stopStatus = onBackendStatusChange((backend, status) => {
+      if (status.status === 'connected') readComputerAgain(backend);
+    });
+    unsubscribe = () => {
+      stopFrames();
+      stopStatus();
+    };
+  }
+  const order = recency.get(threadId) ?? new Set<string>();
+  recency.delete(threadId);
+  recency.set(threadId, order);
   let set = due.get(threadId);
   if (!set) {
-    if (due.size === 0) queueMicrotask(flush);
+    if (![...due.keys()].some((id) => !reading.has(id))) queueMicrotask(flush);
     set = new Set();
     due.set(threadId, set);
   }
-  for (const token of tokens) set.add(token);
+  // Plain maps only: a row asks while its answer is being derived.
+  for (const token of tokens) {
+    order.delete(token);
+    order.add(token);
+    set.add(token);
+  }
 }
 
 function flush(): void {
-  const batch = [...due];
-  due.clear();
-  for (const [threadId, tokens] of batch) {
-    const list = [...tokens];
-    for (let at = 0; at < list.length; at += MAX_TOKENS) void read(threadId, list.slice(at, at + MAX_TOKENS));
+  for (const [threadId, tokens] of [...due]) {
+    if (reading.has(threadId)) continue;
+    due.delete(threadId);
+    void read(threadId, [...tokens]);
   }
 }
 
+/** One read of a thread's tokens, in calls of at most MAX_TOKENS; then what was asked meanwhile. */
 async function read(threadId: string, tokens: string[]): Promise<void> {
-  let states;
-  try {
-    states = await GetThreadRequestStates(threadId, tokens);
-  } catch (err) {
-    // The rows keep what they showed; the next frame or gap reads again.
-    console.warn('agent request answers: read', threadId, err);
-    return;
-  }
-  const byToken = new Map((states ?? []).map((state) => [state.token, state.answered]));
+  const at = epoch;
+  reading.add(threadId);
+  const call = async (chunk: string[]) => {
+    try {
+      const states = await GetThreadRequestStates(threadId, chunk);
+      if (at === epoch) apply(threadId, chunk, states ?? []);
+    } catch (err) {
+      // The rows keep what they showed; the next frame, gap or reconnect reads again.
+      console.warn('agent request answers: read', threadId, err);
+    }
+  };
+  const calls: Promise<void>[] = [];
+  for (let from = 0; from < tokens.length; from += MAX_TOKENS) calls.push(call(tokens.slice(from, from + MAX_TOKENS)));
+  await Promise.all(calls);
+  if (at !== epoch) return;
+  reading.delete(threadId);
+  if (due.has(threadId)) flush();
+}
+
+function apply(threadId: string, tokens: readonly string[], states: readonly { token: string; answered: boolean }[]): void {
+  const order = recency.get(threadId);
+  // The thread left the cache while it was read.
+  if (!order) return;
   let thread = answered.get(threadId);
   if (!thread) {
     thread = new SvelteMap();
     answered.set(threadId, thread);
   }
-  const order = recency.get(threadId) ?? new Set<string>();
-  recency.delete(threadId);
-  recency.set(threadId, order);
+  const byToken = new Map(states.map((state) => [state.token, state.answered]));
   for (const token of tokens) {
-    order.delete(token);
-    order.add(token);
+    // A token trimmed while it was read stays out.
+    if (!order.has(token)) continue;
     const state = byToken.get(token) ?? null;
     if (!thread.has(token) || thread.get(token) !== state) thread.set(token, state);
   }
   trim(thread, order, watched.get(threadId));
   for (const id of recency.keys()) {
     if (recency.size <= MAX_THREADS) break;
-    if (watched.has(id)) continue;
+    if (watched.has(id) || id === threadId) continue;
     answered.delete(id);
     recency.delete(id);
   }
@@ -145,9 +190,18 @@ function trim(thread: SvelteMap<string, Ledger>, order: Set<string>, watching: R
   }
 }
 
-function readAgain(change: ThreadAgentRowChange | null): void {
+/** Every cached thread of `backend` reads again: its frames may have been lost, or a read failed while it was away. */
+function readComputerAgain(backend: string): void {
+  // A snapshot: asking moves each thread to the end of recency.
+  for (const [threadId, order] of [...recency]) {
+    const owner = threadBackend(threadId);
+    if (owner === undefined || owner === backend) ask(threadId, [...order]);
+  }
+}
+
+function readAgain(change: ThreadAgentRowChange | null, backend: string): void {
   if (!change) {
-    for (const [threadId, order] of recency) ask(threadId, [...order]);
+    readComputerAgain(backend);
     return;
   }
   const order = recency.get(change.threadId);
@@ -161,6 +215,8 @@ export function __resetAgentRequestAnswersForTest(): void {
   recency.clear();
   watched.clear();
   due.clear();
+  reading.clear();
+  epoch++;
   unsubscribe?.();
   unsubscribe = null;
 }

@@ -1341,7 +1341,10 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
   (`GetThreadRequestStates` `answered`: the confirmed wake row, loaded in
   the pane or not, however long ago it settled, or the recorded inline
   delivery), read for the rows' tokens
-  and again on each `thread:agent_rows_changed` frame naming one. A
+  and again on each `thread:agent_rows_changed` frame naming one, a lost
+  frame and a reconnect. A token counts from when a row asks, so a frame
+  during its first read reads it again, and a thread has one read in
+  flight at a time, so an older answer never lands last. A
   mounted row keeps its token's answer cached. A token the ledger does
   not know, a request from before it, falls back to the answer rows the
   pane has loaded.
