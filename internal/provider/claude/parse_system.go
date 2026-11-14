@@ -34,6 +34,9 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		// price anyway, so skip the assignment.
 		if p != nil {
 			p.model = strings.TrimSpace(info.Model)
+			if version := strings.TrimSpace(info.Version); version != "" {
+				p.cliVersion = version
+			}
 			info.TurnOpener = p.turnOpener()
 		}
 		meta, _ := json.Marshal(info)
@@ -997,6 +1000,9 @@ func (p *Parser) parseTaskStartedEvent(
 	if reannounced && len(ExtractAllTaskNotificationFields(start.prompt)) > 0 {
 		events = append(events, p.parseTaskWakeEvent(threadID, taskID, raw, now)...)
 	}
+	if taskType == "local_agent" {
+		events = append(events, p.takePendingRunEffort(threadID, taskID, toolUseID, now)...)
+	}
 	return events, nil
 }
 
@@ -1055,8 +1061,8 @@ func (p *Parser) beginTaskResume(threadID, carrier, resumesToolUseID string, sta
 	if root != "" && root != carrier {
 		fields["transcript_root_id"] = root
 	}
-	// The resumed round runs at its launch's named effort, else at its
-	// sender's effort now (claude-wire.md §Agent effort).
+	// The resumed round runs at its launch's named effort, else at the
+	// effort resumeInheritedEffort can prove (claude-wire.md §Agent effort).
 	if effort, alternatives := p.resumeInheritedEffort(p.toolUseParent(carrier), root); effort != "" {
 		fields[inheritedEffortMetaKey] = effort
 		if len(alternatives) > 0 {

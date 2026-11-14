@@ -7,6 +7,7 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -109,6 +110,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// api_error row (see TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent).
 	errorEnum := assistantErrorEnum(raw, msg)
 	p.observeRequestEffort(raw, parentToolUseID, msg.Model)
+	p.observeMainLoopModel(parentToolUseID, msg.Model)
 
 	// CLI-generated local command output. The CLI runs `/usage`, `/context`,
 	// a skill, a plugin command etc. itself — no API call, num_turns 0 — and
@@ -148,9 +150,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// the model never changes mid-subagent.
 	model := strings.TrimSpace(msg.Model)
 	if parentToolUseID != "" && model != "" && !p.hasStampedSubagentModel(parentToolUseID) {
-		modelMeta, _ := json.Marshal(map[string]any{
-			"subagent_model": model,
-		})
+		modelMeta, _ := json.Marshal(p.subagentModelReport(raw, parentToolUseID, model))
 		events = append(events, provider.ProviderEvent{
 			Kind:      provider.EventToolStart,
 			ThreadID:  threadID,
@@ -927,15 +927,7 @@ func marshalToolMeta(toolName string, input json.RawMessage, isBackground, isAge
 	if assistantMessageID != "" {
 		fields["assistant_message_id"] = assistantMessageID
 	}
-	if stamps.inheritedEffort != "" {
-		fields[inheritedEffortMetaKey] = stamps.inheritedEffort
-	}
-	if stamps.requestedModel != "" {
-		fields[requestedModelMetaKey] = stamps.requestedModel
-	}
-	if stamps.inheritedEffort != "" && len(stamps.inheritedEffortAlternatives) > 0 {
-		fields[inheritedEffortAlternativesMetaKey] = stamps.inheritedEffortAlternatives
-	}
+	maps.Copy(fields, stamps.fields())
 	out, _ := json.Marshal(fields)
 	return out
 }
