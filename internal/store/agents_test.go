@@ -452,9 +452,8 @@ func TestThreadRowsFollowAHandOff(t *testing.T) {
 	if got := row("child"); got.SpawnedByThreadID != "new" || !got.SpawnedByAgent {
 		t.Errorf("worker row = spawnedBy %q agent %v", got.SpawnedByThreadID, got.SpawnedByAgent)
 	}
-	listed, err := s.ListArchivedSpawnedThreads("new")
-	if err != nil || len(listed) != 1 || listed[0].ID != "old" {
-		t.Errorf("archived children of the current thread = %+v %v", listed, err)
+	if listed := archivedChildrenIn(t, s, "new", "", defaultTestProjectID); len(listed) != 1 || listed[0].ID != "old" {
+		t.Errorf("archived children of the current thread = %+v", listed)
 	}
 }
 
@@ -683,6 +682,25 @@ func TestHelpersLiveUnderTheirAssistant(t *testing.T) {
 
 // archivedTotal is how many archived threads live under the assistant
 // whose current thread this row is, over all its containers.
+// archivedChildrenIn reads every page of the done footer filed under scopes.
+func archivedChildrenIn(t *testing.T, s *Store, spawnerID string, scopes ...string) []Thread {
+	t.Helper()
+	var all []Thread
+	after := ArchivedChildrenCursor{}
+	for {
+		page, err := s.ListArchivedSpawnedThreads(spawnerID, scopes, after, MaxArchivedChildrenPage)
+		if err != nil {
+			t.Fatalf("list archived children of %s in %q: %v", spawnerID, scopes, err)
+		}
+		all = append(all, page.Threads...)
+		if !page.More {
+			return all
+		}
+		last := page.Threads[len(page.Threads)-1]
+		after = ArchivedChildrenCursor{UpdatedAt: last.UpdatedAt, ID: last.ID}
+	}
+}
+
 func archivedTotal(thread Thread) int {
 	total := 0
 	for _, n := range thread.ArchivedChildCounts {
@@ -755,17 +773,29 @@ func TestArchivedChildrenAreCountedByContainer(t *testing.T) {
 			t.Fatalf("counts = %v, want %v", row.ArchivedChildCounts, want)
 		}
 	}
-	listed, err := s.ListArchivedSpawnedThreads("new")
-	if err != nil {
-		t.Fatal(err)
+	ids := func(threads []Thread) []string {
+		out := []string{}
+		for _, thread := range threads {
+			out = append(out, thread.ID)
+		}
+		slices.Sort(out)
+		return out
 	}
-	var ids []string
-	for _, thread := range listed {
-		ids = append(ids, thread.ID)
+	listed := archivedChildrenIn(t, s, "new", "", defaultTestProjectID, "other")
+	if got := ids(listed); !slices.Equal(got, []string{"helper", "helper-standalone", "here", "old", "there"}) {
+		t.Fatalf("listed = %q", got)
 	}
-	slices.Sort(ids)
-	if !slices.Equal(ids, []string{"helper", "helper-standalone", "here", "old", "there"}) {
-		t.Fatalf("listed = %q", ids)
+	// Each footer lists what its count counts, and a footer for an entry
+	// that merges projects lists theirs together.
+	for scopes, want := range map[string][]string{
+		"":                              {"helper", "helper-standalone", "old"},
+		defaultTestProjectID:            {"here"},
+		"other":                         {"there"},
+		defaultTestProjectID + ",other": {"here", "there"},
+	} {
+		if got := ids(archivedChildrenIn(t, s, "new", strings.Split(scopes, ",")...)); !slices.Equal(got, want) {
+			t.Errorf("footer %q lists %q, want %q", scopes, got, want)
+		}
 	}
 	if plain, err := s.GetThread("here"); err != nil || plain.ArchivedChildCounts != nil {
 		t.Fatalf("a child's row carries counts: %v %v", plain.ArchivedChildCounts, err)

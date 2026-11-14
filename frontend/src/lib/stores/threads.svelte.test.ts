@@ -24,8 +24,9 @@ import {
   toggleAgentDone,
 } from './sidebar.svelte';
 import {
+  archivedChildrenKey,
   getArchivedChildren,
-  loadArchivedChildren,
+  holdArchivedChildren,
   resetArchivedChildrenForTest,
 } from './agentArchivedChildren.svelte';
 import {
@@ -319,30 +320,34 @@ describe('standing agent state on removal', () => {
     for (let i = 0; i < 6; i += 1) await Promise.resolve();
   }
 
+  // The sidebar list holding the agent's open done footer.
+  const footers = {};
+  const DONE_KEY = archivedChildrenKey('agent', 'agent');
+
   async function primeAgentState(): Promise<void> {
     resetSidebarForTest();
     resetArchivedChildrenForTest();
     resetThreadWakesForTest();
-    setBindingMock('ListArchivedSpawnedThreads', async () => [makeThread('done', { archived: true, spawnedByThreadId: 'agent' })]);
+    setBindingMock('ListArchivedSpawnedThreads', async () => ({ threads: [makeThread('done', { archived: true, spawnedByThreadId: 'agent' })], more: false }));
     setBindingMock('ListThreadWakes', async () => ({
       rows: [{ id: 'l1', kind: 'loop', label: 'beat', state: 'armed' }], moreReminders: false,
     }));
     prependThread(agent(true));
     setAgentExpanded('agent', false);
     toggleAgentDone('agent');
-    loadArchivedChildren('agent', 1);
+    holdArchivedChildren(footers, new Map([[DONE_KEY, { agentThreadId: 'agent', scopes: [''], count: 1, needed: 1 }]]));
     ensureAgentWakes('agent');
     await settle();
     expect(isAgentExpanded('agent')).toBe(false);
     expect(isAgentDoneExpanded('agent')).toBe(true);
-    expect(getArchivedChildren('agent', 1)?.length).toBe(1);
+    expect(getArchivedChildren(DONE_KEY)?.threads.length).toBe(1);
     expect(getAgentWakeRows('agent').length).toBe(1);
   }
 
   function expectCleared(): void {
     expect(isAgentExpanded('agent')).toBe(true);
     expect(isAgentDoneExpanded('agent')).toBe(false);
-    expect(getArchivedChildren('agent', 1)).toBeNull();
+    expect(getArchivedChildren(DONE_KEY)).toBeNull();
     expect(getAgentWakeRows('agent')).toEqual([]);
   }
 
@@ -366,7 +371,7 @@ describe('standing agent state on removal', () => {
     removeThread('agent');
     expect(isAgentExpanded('agent')).toBe(false);
     expect(isAgentDoneExpanded('agent')).toBe(true);
-    expect(getArchivedChildren('agent', 1)).toBeNull();
+    expect(getArchivedChildren(DONE_KEY)).toBeNull();
     expect(getAgentWakeRows('agent')).toEqual([]);
   });
 
@@ -403,7 +408,7 @@ describe('standing agent state on removal', () => {
     expect(getThreads().some((t) => t.id === 'agent')).toBe(false);
     expect(isAgentExpanded('agent')).toBe(false);
     expect(isAgentDoneExpanded('agent')).toBe(true);
-    expect(getArchivedChildren('agent', 1)?.length).toBe(1);
+    expect(getArchivedChildren(DONE_KEY)?.threads.length).toBe(1);
     expect(getAgentWakeRows('agent').length).toBe(1);
   });
 });

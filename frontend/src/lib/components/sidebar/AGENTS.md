@@ -22,8 +22,9 @@ which adds the project's empty state and drop targets.
   by `agentContainerKey`), and offer no pin or group item. The card's
   state line reads `stores/threadWakes.svelte.ts`; each row's `N done` footer
   (`AgentDoneFooter.svelte`) counts the settled idle children the view folds
-  (`utils/sidebarTreeView.ts`) and reads the archived ones from
-  `stores/agentArchivedChildren.svelte.ts`. Groups and agent rows share one
+  (`utils/sidebarTreeView.ts`) and reads the archived ones, only as far
+  as it shows them, from `stores/agentArchivedChildren.svelte.ts`, held
+  by the list while the footer is open. Groups and agent rows share one
   member bound (`boundContainerMembers`, `ContainerShowMore.svelte`).
   Rules: [standing agents](../../../../../docs/specs/standing-agents.md#sidebar).
 - `sidebarBuckets.ts` decides where each thread lists: an assistant's

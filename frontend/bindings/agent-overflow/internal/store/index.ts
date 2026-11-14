@@ -6,6 +6,8 @@ export {
     ActivityRunGroupKey,
     ActivityRunMembers,
     ActivityRunStub,
+    ArchivedChildrenCursor,
+    ArchivedChildrenPage,
     AsyncQuestion,
     AsyncQuestionAnswer,
     Attachment,

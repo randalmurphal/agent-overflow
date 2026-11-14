@@ -213,8 +213,8 @@ func TestASpawnedThreadsArchiveMovesItsAgentsRow(t *testing.T) {
 	if got := fullFrameFor(f.threadFrames(t), plainSpawner.ID); got != nil {
 		t.Errorf("a plain spawner was broadcast: %+v", got)
 	}
-	if listed, err := f.app.ListArchivedSpawnedThreads(plainSpawner.ID); err != nil || len(listed) != 1 || listed[0].ID != plainChild.ID {
-		t.Errorf("archived spawned threads of the plain spawner = %+v, %v", listed, err)
+	if page, err := f.app.ListArchivedSpawnedThreads(plainSpawner.ID, []string{plainChild.ProjectID}, store.ArchivedChildrenCursor{}, 20); err != nil || len(page.Threads) != 1 || page.Threads[0].ID != plainChild.ID || page.More {
+		t.Errorf("archived spawned threads of the plain spawner = %+v, %v", page, err)
 	}
 }
 

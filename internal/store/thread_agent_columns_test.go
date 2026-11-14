@@ -83,8 +83,8 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	if got := archivedTotal(row("agent")); got != 0 {
 		t.Errorf("archived children with the child standalone = %d, want 0", got)
 	}
-	if listed, err := s.ListArchivedSpawnedThreads("agent"); err != nil || len(listed) != 0 {
-		t.Errorf("archived threads with the child standalone = %+v, %v; want none", listed, err)
+	if listed := archivedChildrenIn(t, s, "agent", "", defaultTestProjectID); len(listed) != 0 {
+		t.Errorf("archived threads with the child standalone = %+v; want none", listed)
 	}
 	if _, err := s.SetThreadPlacement([]string{"child-1"}, PlacementNested); err != nil {
 		t.Fatal(err)
@@ -96,11 +96,11 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	if got := archivedTotal(row("far-spawner")); got != 0 {
 		t.Errorf("plain spawner archived children = %d, want 0", got)
 	}
-	if listed, err := s.ListArchivedSpawnedThreads("agent"); err != nil || len(listed) != 1 || listed[0].ID != "child-1" {
-		t.Errorf("archived threads spawned by the agent = %+v, %v; want child-1 alone", listed, err)
+	if listed := archivedChildrenIn(t, s, "agent", "", defaultTestProjectID); len(listed) != 1 || listed[0].ID != "child-1" {
+		t.Errorf("archived threads spawned by the agent = %+v; want child-1 alone", listed)
 	}
-	if listed, err := s.ListArchivedSpawnedThreads("far-spawner"); err != nil || len(listed) != 0 {
-		t.Errorf("archived threads spawned on another computer = %+v, %v; want none", listed, err)
+	if listed := archivedChildrenIn(t, s, "far-spawner", "", defaultTestProjectID); len(listed) != 0 {
+		t.Errorf("archived threads spawned on another computer = %+v; want none", listed)
 	}
 	// Listing reads the same columns as a point read.
 	listed, err := s.ListThreads()
@@ -164,7 +164,7 @@ func TestACreatedAssistantIsNeverItsCreatorsChild(t *testing.T) {
 	if archivedTotal(creator) != 1 {
 		t.Errorf("archived children = %d, want the worker alone", archivedTotal(creator))
 	}
-	if listed, err := s.ListArchivedSpawnedThreads("creator"); err != nil || len(listed) != 1 || listed[0].ID != "worker" {
-		t.Errorf("archived threads spawned by the creator = %+v, %v; want the worker alone", listed, err)
+	if listed := archivedChildrenIn(t, s, "creator", "", defaultTestProjectID); len(listed) != 1 || listed[0].ID != "worker" {
+		t.Errorf("archived threads spawned by the creator = %+v; want the worker alone", listed)
 	}
 }

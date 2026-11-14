@@ -254,8 +254,8 @@ func TestNewAssistantToolCreatesAnAssistantThatReportsToItsCreator(t *testing.T)
 	if caller, err := f.app.store.GetThread(f.caller.ID); err != nil || archivedTotal(caller.ArchivedChildCounts) != 0 {
 		t.Fatalf("creator row = %+v %v", caller, err)
 	}
-	if listed, err := f.app.ListArchivedSpawnedThreads(f.caller.ID); err != nil || len(listed) != 0 {
-		t.Fatalf("archived children = %+v %v", listed, err)
+	if page, err := f.app.ListArchivedSpawnedThreads(f.caller.ID, []string{"", f.caller.ProjectID, thread.ProjectID}, store.ArchivedChildrenCursor{}, 20); err != nil || len(page.Threads) != 0 {
+		t.Fatalf("archived children = %+v %v", page, err)
 	}
 
 	if _, err := f.adapter().NewAssistant(t.Context(), f.callerIdentity(), threadtools.NewAssistantCall{Name: "scout", Role: "again"}); err == nil || !strings.Contains(err.Error(), `"Scout"`) {

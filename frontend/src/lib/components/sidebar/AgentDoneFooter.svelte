@@ -6,8 +6,7 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
   import type { SidebarAgentDoneNode } from '../../utils/sidebarTreeView';
-  import { isAgentDoneExpanded, revealMoreAgentDone, toggleAgentDone } from '../../stores/sidebar.svelte';
-  import { forgetArchivedChildren } from '../../stores/agentArchivedChildren.svelte';
+  import { revealMoreAgentDone, toggleAgentDone } from '../../stores/sidebar.svelte';
   import { THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
   import { GROUP_MEMBER_PIN_SLOT_LEFT_PX, sidebarGroupMemberPaddingLeftPx } from '../../utils/sidebarRowMetrics';
 
@@ -26,7 +25,7 @@
 <div class="flex items-center gap-1 pr-1" data-testid="thread-row-agent-done" data-expanded={node.expanded}>
   <button
     type="button"
-    onclick={(e) => { e.stopPropagation(); if (!isAgentDoneExpanded(node.containerKey)) forgetArchivedChildren(node.agent.id); toggleAgentDone(node.containerKey); }}
+    onclick={(e) => { e.stopPropagation(); toggleAgentDone(node.containerKey); }}
     aria-expanded={node.expanded}
     aria-label={node.expanded ? 'Hide finished threads' : 'Show finished threads'}
     data-testid="thread-row-agent-done-toggle"

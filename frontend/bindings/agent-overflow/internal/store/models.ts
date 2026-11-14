@@ -321,6 +321,75 @@ export class ActivityRunStub {
     }
 }
 
+/**
+ * ArchivedChildrenCursor is where a page starts: after the thread it names,
+ * in page order. The zero cursor starts at the newest.
+ */
+export class ArchivedChildrenCursor {
+    "updatedAt": number;
+    "id": string;
+
+    /** Creates a new ArchivedChildrenCursor instance. */
+    constructor($$source: Partial<ArchivedChildrenCursor> = {}) {
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
+        }
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ArchivedChildrenCursor instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ArchivedChildrenCursor {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ArchivedChildrenCursor($$parsedSource as Partial<ArchivedChildrenCursor>);
+    }
+}
+
+/**
+ * ArchivedChildrenPage is one page of the archived threads one done footer
+ * of an assistant's rows holds.
+ */
+export class ArchivedChildrenPage {
+    /**
+     * Threads are newest activity first, ties by id descending.
+     */
+    "threads": Thread[];
+
+    /**
+     * More is true when the footer holds threads past this page.
+     */
+    "more": boolean;
+
+    /** Creates a new ArchivedChildrenPage instance. */
+    constructor($$source: Partial<ArchivedChildrenPage> = {}) {
+        if (!("threads" in $$source)) {
+            this["threads"] = [];
+        }
+        if (!("more" in $$source)) {
+            this["more"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ArchivedChildrenPage instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ArchivedChildrenPage {
+        const $$createField0_0 = $$createType9;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("threads" in $$parsedSource) {
+            $$parsedSource["threads"] = $$createField0_0($$parsedSource["threads"]);
+        }
+        return new ArchivedChildrenPage($$parsedSource as Partial<ArchivedChildrenPage>);
+    }
+}
+
 export class AsyncQuestion {
     "itemId": string;
     "index": number;
@@ -467,7 +536,7 @@ export class Attachment {
      * Creates a new Attachment instance from a string or object.
      */
     static createFrom($$source: any = {}): Attachment {
-        const $$createField8_0 = $$createType8;
+        const $$createField8_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("shell" in $$parsedSource) {
             $$parsedSource["shell"] = $$createField8_0($$parsedSource["shell"]);
@@ -752,7 +821,7 @@ export class DiffReviewPRContext {
      * Creates a new DiffReviewPRContext instance from a string or object.
      */
     static createFrom($$source: any = {}): DiffReviewPRContext {
-        const $$createField2_0 = $$createType10;
+        const $$createField2_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField2_0($$parsedSource["comments"]);
@@ -786,7 +855,7 @@ export class DiffReviewPRContextEntry {
      * Creates a new DiffReviewPRContextEntry instance from a string or object.
      */
     static createFrom($$source: any = {}): DiffReviewPRContextEntry {
-        const $$createField2_0 = $$createType12;
+        const $$createField2_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("thread" in $$parsedSource) {
             $$parsedSource["thread"] = $$createField2_0($$parsedSource["thread"]);
@@ -823,7 +892,7 @@ export class DiffReviewSourceRef {
      * Creates a new DiffReviewSourceRef instance from a string or object.
      */
     static createFrom($$source: any = {}): DiffReviewSourceRef {
-        const $$createField4_0 = $$createType14;
+        const $$createField4_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
             $$parsedSource["pr"] = $$createField4_0($$parsedSource["pr"]);
@@ -884,7 +953,7 @@ export class DiffReviewThreadContext {
      * Creates a new DiffReviewThreadContext instance from a string or object.
      */
     static createFrom($$source: any = {}): DiffReviewThreadContext {
-        const $$createField3_0 = $$createType16;
+        const $$createField3_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField3_0($$parsedSource["comments"]);
@@ -1087,7 +1156,7 @@ export class Item {
      * Creates a new Item instance from a string or object.
      */
     static createFrom($$source: any = {}): Item {
-        const $$createField0_0 = $$createType17;
+        const $$createField0_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("completionLaunch" in $$parsedSource) {
             $$parsedSource["completionLaunch"] = $$createField0_0($$parsedSource["completionLaunch"]);
@@ -1176,11 +1245,11 @@ export class PagedItems {
      * Creates a new PagedItems instance from a string or object.
      */
     static createFrom($$source: any = {}): PagedItems {
-        const $$createField0_0 = $$createType19;
+        const $$createField0_0 = $$createType21;
         const $$createField1_0 = $$createType1;
-        const $$createField2_0 = $$createType20;
-        const $$createField3_0 = $$createType21;
-        const $$createField4_0 = $$createType21;
+        const $$createField2_0 = $$createType22;
+        const $$createField3_0 = $$createType23;
+        const $$createField4_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("scope" in $$parsedSource) {
             $$parsedSource["scope"] = $$createField0_0($$parsedSource["scope"]);
@@ -1316,7 +1385,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType22;
+        const $$createField0_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -1939,10 +2008,10 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField28_0 = $$createType24;
-        const $$createField36_0 = $$createType25;
+        const $$createField28_0 = $$createType26;
+        const $$createField36_0 = $$createType27;
         const $$createField42_0 = $$createType5;
-        const $$createField45_0 = $$createType26;
+        const $$createField45_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attention" in $$parsedSource) {
             $$parsedSource["attention"] = $$createField28_0($$parsedSource["attention"]);
@@ -2281,8 +2350,8 @@ export class TimelineDigestContext {
      * Creates a new TimelineDigestContext instance from a string or object.
      */
     static createFrom($$source: any = {}): TimelineDigestContext {
-        const $$createField0_0 = $$createType27;
-        const $$createField1_0 = $$createType27;
+        const $$createField0_0 = $$createType29;
+        const $$createField1_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("after" in $$parsedSource) {
             $$parsedSource["after"] = $$createField0_0($$parsedSource["after"]);
@@ -2323,8 +2392,8 @@ export class TimelineScopeContext {
     static createFrom($$source: any = {}): TimelineScopeContext {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
-        const $$createField2_0 = $$createType17;
-        const $$createField3_0 = $$createType29;
+        const $$createField2_0 = $$createType19;
+        const $$createField3_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("root" in $$parsedSource) {
             $$parsedSource["root"] = $$createField0_0($$parsedSource["root"]);
@@ -2880,25 +2949,27 @@ const $$createType4 = $Create.Array($$createType3);
 const $$createType5 = $Create.Array($Create.Any);
 const $$createType6 = ActivityRunGroupKey.createFrom;
 const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = AttachmentShell.createFrom;
-const $$createType9 = DiffReviewPRContextEntry.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = DiffReviewThreadContext.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = DiffReviewPRContext.createFrom;
+const $$createType8 = Thread.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = AttachmentShell.createFrom;
+const $$createType11 = DiffReviewPRContextEntry.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = DiffReviewThreadContext.createFrom;
 const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = DiffReviewThreadComment.createFrom;
-const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = $Create.Nullable($$createType0);
-const $$createType18 = TimelineScopeContext.createFrom;
-const $$createType19 = $Create.Nullable($$createType18);
-const $$createType20 = $Create.Array($$createType2);
-const $$createType21 = TimelineCursor.createFrom;
-const $$createType22 = Project.createFrom;
-const $$createType23 = ThreadAttention.createFrom;
-const $$createType24 = $Create.Nullable($$createType23);
-const $$createType25 = ThreadOrigin.createFrom;
-const $$createType26 = $Create.Map($Create.Any, $Create.Any);
-const $$createType27 = $Create.Nullable($$createType21);
-const $$createType28 = TimelineDigestContext.createFrom;
-const $$createType29 = $Create.Nullable($$createType28);
+const $$createType15 = DiffReviewPRContext.createFrom;
+const $$createType16 = $Create.Nullable($$createType15);
+const $$createType17 = DiffReviewThreadComment.createFrom;
+const $$createType18 = $Create.Array($$createType17);
+const $$createType19 = $Create.Nullable($$createType0);
+const $$createType20 = TimelineScopeContext.createFrom;
+const $$createType21 = $Create.Nullable($$createType20);
+const $$createType22 = $Create.Array($$createType2);
+const $$createType23 = TimelineCursor.createFrom;
+const $$createType24 = Project.createFrom;
+const $$createType25 = ThreadAttention.createFrom;
+const $$createType26 = $Create.Nullable($$createType25);
+const $$createType27 = ThreadOrigin.createFrom;
+const $$createType28 = $Create.Map($Create.Any, $Create.Any);
+const $$createType29 = $Create.Nullable($$createType23);
+const $$createType30 = TimelineDigestContext.createFrom;
+const $$createType31 = $Create.Nullable($$createType30);

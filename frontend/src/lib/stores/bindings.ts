@@ -759,6 +759,7 @@ export {
 } from '../../../bindings/agent-overflow/internal/provider/models.js';
 
 // Structured response types surfaced to components.
+export type { ArchivedChildrenCursor, ArchivedChildrenPage } from '../../../bindings/agent-overflow/internal/store/models.js';
 export {
   ChatBarFavorite,
   ThreadMessageHit,

@@ -285,14 +285,14 @@ describe('standing agent rows', () => {
       thread('done-new', { spawnedByThreadId: 'agent', archived: true, updatedAt: 9 }),
       thread('done-old', { spawnedByThreadId: 'agent', archived: true, updatedAt: 8 }),
     ];
-    const list = setBindingMock('ListArchivedSpawnedThreads', async () => archived);
+    const list = setBindingMock('ListArchivedSpawnedThreads', async () => ({ threads: archived, more: false }));
     const view = render(ProjectThreadList, agentListProps(threads, createThreadPane()));
     view.container.style.width = '360px';
     await settled(view.container);
 
     view.getByTestId('thread-row-agent-done-toggle').click();
     await waitFor(() => expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(2));
-    expect(list).toHaveBeenCalledWith('agent');
+    expect(list).toHaveBeenCalledWith('agent', ['project'], { updatedAt: 0, id: '' }, 20);
     const rows = Array.from(view.container.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]'), (el) => el.dataset.sidebarThreadId);
     expect(rows).toEqual(['agent', 'worker-a', 'worker-b', 'done-new', 'done-old', 'loose']);
     expect(view.getByTestId('thread-row-agent-done').dataset.expanded).toBe('true');
@@ -304,7 +304,7 @@ describe('standing agent rows', () => {
     }
 
     // A third child archived: the row's count moves and the list is read again.
-    list.mockImplementation(async () => [thread('done-newest', { spawnedByThreadId: 'agent', archived: true, updatedAt: 11 }), ...archived]);
+    list.mockImplementation(async () => ({ threads: [thread('done-newest', { spawnedByThreadId: 'agent', archived: true, updatedAt: 11 }), ...archived], more: false }));
     await view.rerender(agentListProps(
       threads.map((t) => t.id === 'agent' ? { ...t, archivedChildCounts: { project: 3 } } : t),
       createThreadPane(),
@@ -320,23 +320,32 @@ describe('standing agent rows', () => {
     expect(view.getByTestId('thread-row-agent-done').dataset.expanded).toBe('false');
   });
 
-  it('pages a long done list by the preview limit', async () => {
-    const threads = agentThreads().map((t) => t.id === 'agent' ? { ...t, archivedChildCounts: { project: THREAD_PREVIEW_LIMIT + 3 } } : t);
+  it('pages a long done list by the preview limit, reading each page as it is shown', async () => {
+    const threads = agentThreads().map((t) => t.id === 'agent' ? { ...t, archivedChildCounts: { project: THREAD_PREVIEW_LIMIT + 25 } } : t);
     replaceAllThreads(threads);
-    const archived = Array.from({ length: THREAD_PREVIEW_LIMIT + 3 }, (_, i) =>
+    const archived = Array.from({ length: THREAD_PREVIEW_LIMIT + 25 }, (_, i) =>
       thread(`done-${i}`, { spawnedByThreadId: 'agent', archived: true, updatedAt: 100 - i }));
-    setBindingMock('ListArchivedSpawnedThreads', async () => archived);
+    // The computer answers a page at a time, as many as the footer asks for.
+    const list = setBindingMock('ListArchivedSpawnedThreads', async (_id: string, _scopes: string[], after: { id: string }, limit: number) => {
+      const from = after.id === '' ? 0 : archived.findIndex((t) => t.id === after.id) + 1;
+      return { threads: archived.slice(from, from + limit), more: from + limit < archived.length };
+    });
     const view = render(ProjectThreadList, agentListProps(threads, createThreadPane()));
     view.container.style.width = '360px';
     await settled(view.container);
     view.getByTestId('thread-row-agent-done-toggle').click();
     await waitFor(() => expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(THREAD_PREVIEW_LIMIT));
     const more = view.getByTestId('thread-row-agent-done-more');
-    expect(more.textContent?.trim()).toBe('Show 3 More');
+    // One page read, not the whole archive.
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(more.textContent?.trim()).toBe('Show 20 More (25)');
     more.click();
-    await settled(view.container);
-    expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(THREAD_PREVIEW_LIMIT + 3);
+    await waitFor(() => expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(THREAD_PREVIEW_LIMIT + 20));
+    expect(list).toHaveBeenCalledTimes(2);
+    view.getByTestId('thread-row-agent-done-more').click();
+    await waitFor(() => expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(THREAD_PREVIEW_LIMIT + 25));
     expect(view.queryByTestId('thread-row-agent-done-more')).toBeNull();
+    expect(list).toHaveBeenCalledTimes(2);
   });
 
   it('shows the card\'s soonest loop and served projects under its name, and keeps them off plain rows', async () => {

@@ -11,6 +11,7 @@ import { agentContainerKey, buildSidebarThreadTree, nestingAgentThreadId, type S
 import {
   agentArchivedCount,
   agentArchivedTotal,
+  archivedChildScopes,
   archivedCountsByContainer,
   agentDoneCount,
   agentLiveChildCount,
@@ -110,7 +111,7 @@ describe('done fold', () => {
       nodes: [node],
       openThreadIds: new Set(['open']),
       expandedDoneAgentIds: new Set(['ops']),
-      archivedChildrenOf: () => archived,
+      archivedChildrenOf: () => ({ threads: archived, more: false }),
       doneLimitOf: () => 3,
     });
     const tail = ids(open).slice(ids(open).indexOf('open') + 1);
@@ -143,10 +144,16 @@ describe('done fold', () => {
         nodes,
         entryOf,
         expandedDoneAgentIds: new Set([agentContainerKey(node)]),
-        archivedChildrenOf: () => archived,
+        // The computer answers a footer by the scopes it files them under.
+        archivedChildrenOf: (agentNode) => ({
+          threads: archived.filter((t) => archivedChildScopes(agentNode, entryOf).includes(t.helperOfAgentId ? '' : t.projectId ?? '')),
+          more: false,
+        }),
       });
       return { node, rows };
     };
+    expect(archivedChildScopes(rowsOf('').node, entryOf)).toEqual(['']);
+    expect(archivedChildScopes(rowsOf('project-1').node, entryOf)).toEqual(['project-1', 'project-2']);
     const card = rowsOf('');
     expect(agentArchivedCount(card.node, entryOf)).toBe(1);
     expect(ids(card.rows).filter((id) => id !== 'live')).toEqual(['agent:ops', 'helper', 'agent:ops:done']);

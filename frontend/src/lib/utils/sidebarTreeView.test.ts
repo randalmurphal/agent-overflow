@@ -653,7 +653,7 @@ describe('flattenSidebarThreadTree with standing agents', () => {
       entryOf: ownEntry,
       nodes: tree(),
       expandedDoneAgentIds: new Set(['ops']),
-      archivedChildrenOf: () => archived,
+      archivedChildrenOf: () => ({ threads: archived, more: false }),
       doneLimitOf: () => 1,
     });
     expect(rows.map(sidebarVisibleNodeId)).toEqual(['agent:ops', 'child-a', 'child-b', 'done-1', 'agent:ops:done', 'plain']);
@@ -672,6 +672,49 @@ describe('flattenSidebarThreadTree with standing agents', () => {
     const footer = rows[3];
     if (footer.kind !== 'agent-done') throw new Error('no footer');
     expect(footer).toMatchObject({ expanded: true, loading: true, hiddenCount: 0 });
+  });
+
+  it('builds only the archived rows an open footer shows, and asks for as many as its limit needs', () => {
+    const many = Array.from({ length: 500 }, (_, i) => mkThread(`old-${i}`, { spawnedByThreadId: 'agent', archived: true, updatedAt: 500 - i }));
+    const big = { ...agent, archivedChildCounts: { '': 1000 } };
+    const nodes = buildSidebarThreadTree({ threads: [big, ...children, plain], liveStatusOf: working });
+    let reads = 0;
+    const rows = flattenSidebarThreadTree({
+      entryOf: ownEntry,
+      nodes,
+      expandedDoneAgentIds: new Set(['ops']),
+      archivedChildrenOf: () => { reads += 1; return { threads: many, more: true }; },
+      doneLimitOf: () => 8,
+    });
+    const shown = rows.filter((row) => row.kind === 'thread' && row.archived === true);
+    expect(shown.map((row) => row.kind === 'thread' && row.thread.id)).toEqual(many.slice(0, 8).map((t) => t.id));
+    const footer = rows.find((row) => row.kind === 'agent-done');
+    if (footer?.kind !== 'agent-done') throw new Error('no footer');
+    expect(footer).toMatchObject({ loading: false, hiddenCount: 992, archivedWant: { scopes: [''], count: 1000, needed: 8 } });
+    expect(reads).toBe(1);
+    // Fewer read than the limit, with more on the computer: loading the next page.
+    const short = flattenSidebarThreadTree({
+      entryOf: ownEntry, nodes, expandedDoneAgentIds: new Set(['ops']),
+      archivedChildrenOf: () => ({ threads: many.slice(0, 3), more: true }), doneLimitOf: () => 8,
+    }).find((row) => row.kind === 'agent-done');
+    expect(short).toMatchObject({ loading: true, hiddenCount: 992 });
+    // A closed footer asks for nothing.
+    const closed = flattenSidebarThreadTree({ entryOf: ownEntry, nodes }).find((row) => row.kind === 'agent-done');
+    expect(closed).toMatchObject({ archivedWant: null });
+  });
+
+  it('asks a footer for one more archived row for each it read that is still listed live', () => {
+    const successor = mkThread('agent-next', { agentId: 'ops', archivedChildCounts: { '': 5 } });
+    const past = mkThread('agent', { pastAgentId: 'ops', updatedAt: 10 });
+    const footer = flattenSidebarThreadTree({
+      entryOf: ownEntry,
+      nodes: buildSidebarThreadTree({ threads: [successor, past, plain] }),
+      expandedDoneAgentIds: new Set(['ops']),
+      archivedChildrenOf: () => ({ threads: [{ ...past, archived: true }, archived[0]], more: true }),
+      doneLimitOf: () => 3,
+    }).find((row) => row.kind === 'agent-done');
+    // The live past row takes one place; of the two read, one shows.
+    expect(footer).toMatchObject({ loading: true, archivedWant: { needed: 3 } });
   });
 
   it('keeps an agent above the preview cut and floats a hidden row for an open child', () => {
@@ -703,7 +746,7 @@ describe('flattenSidebarThreadTree with standing agents', () => {
       entryOf: ownEntry,
       nodes: buildSidebarThreadTree({ threads: [successor, past, plain] }),
       expandedDoneAgentIds: new Set(['ops']),
-      archivedChildrenOf: () => [{ ...past, archived: true }, archived[0]],
+      archivedChildrenOf: () => ({ threads: [{ ...past, archived: true }, archived[0]], more: false }),
     });
     expect(rows.map(sidebarVisibleNodeId)).toEqual(['agent:ops', 'agent', 'done-1', 'agent:ops:done', 'plain']);
     expect(rows[1].kind === 'thread' && rows[1].archived !== true).toBe(true);
@@ -720,7 +763,7 @@ describe('flattenSidebarThreadTree with standing agents', () => {
       entryOf: ownEntry,
       nodes: buildSidebarThreadTree({ threads: [kid, loose], agents: [ops], scope: 'p1' }),
       expandedDoneAgentIds: new Set(['ops@p1']),
-      archivedChildrenOf: () => [{ ...loose, archived: true }, done],
+      archivedChildrenOf: () => ({ threads: [{ ...loose, archived: true }, done], more: false }),
     });
     const ids = rows.map(sidebarVisibleNodeId);
     expect(new Set(ids).size).toBe(ids.length);
@@ -733,7 +776,7 @@ describe('flattenSidebarThreadTree with standing agents', () => {
   it('cuts off on the fields an agent row and its footer render', () => {
     const base = flattenSidebarThreadTree({ entryOf: ownEntry, nodes: tree() });
     expect(sameSidebarVisibleNodes(base, flattenSidebarThreadTree({ entryOf: ownEntry, nodes: tree() }))).toBe(true);
-    const opened = flattenSidebarThreadTree({ entryOf: ownEntry, nodes: tree(), expandedDoneAgentIds: new Set(['ops']), archivedChildrenOf: () => [] });
+    const opened = flattenSidebarThreadTree({ entryOf: ownEntry, nodes: tree(), expandedDoneAgentIds: new Set(['ops']), archivedChildrenOf: () => ({ threads: [], more: false }) });
     expect(sameSidebarVisibleNodes(base, opened)).toBe(false);
     const counted = flattenSidebarThreadTree({
       entryOf: ownEntry,

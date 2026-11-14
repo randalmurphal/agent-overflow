@@ -838,11 +838,14 @@ Mechanics, as built:
   when that computer answers, however late, with the frames that landed
   meanwhile replayed over its answer; a newer read of the computer
   supersedes it.
-- `ListArchivedSpawnedThreads` (every container's, newest first, the
-  same rows `archivedChildCounts` counts) feeds the done footers
-  through `stores/agentArchivedChildren.svelte.ts`, keyed by the total
-  of `archivedChildCounts` so a changed count reads again; each row
-  lists its own container's. The fold state lives in
+- `ListArchivedSpawnedThreads` feeds each open done footer its own
+  container's archived threads (the rows `archivedChildCounts` counts
+  for it: '' for the card, else every project id of the row's entry), a
+  page at a time, newest first by `(updatedAt, id)` cursor, at most 100
+  rows a page, through `stores/agentArchivedChildren.svelte.ts`: as many
+  as the footer shows, and more on Show More. A change of the
+  container's count reads it again from the newest, and a footer that
+  closes drops what it read. The fold state lives in
   `sidebar:collapsedAgents`, keyed by assistant id for the card and
   `<id>@<entry>` for a project row; an open done footer and its paging
   are session state, and both reset when the

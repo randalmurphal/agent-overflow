@@ -51,7 +51,13 @@
     setContainerVisibleLimit,
     setThreadListVisibleLimit,
   } from '../../stores/sidebar.svelte';
-  import { getArchivedChildren, loadArchivedChildren } from '../../stores/agentArchivedChildren.svelte';
+  import {
+    archivedChildrenKey,
+    getArchivedChildren,
+    holdArchivedChildren,
+    releaseArchivedChildren,
+    type ArchivedChildrenWant,
+  } from '../../stores/agentArchivedChildren.svelte';
   import { isThreadSelected, toggleThreadSelection } from '../../stores/threadFilter.svelte';
   import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
@@ -61,7 +67,6 @@
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import { agentContainerKey, buildSidebarThreadTree } from '../../utils/sidebarTree';
   import {
-    agentArchivedTotal,
     agentDoneCount,
     agentLiveChildCount,
     flattenSidebarThreadTree,
@@ -175,7 +180,7 @@
       collapsedAgentIds: getCollapsedAgents(),
       activeThreadId: pane?.threadId ?? null,
       expandedDoneAgentIds: getExpandedDoneAgents(),
-      archivedChildrenOf: (agent) => getArchivedChildren(agent.id, agentArchivedTotal(agent)),
+      archivedChildrenOf: (node) => getArchivedChildren(archivedChildrenKey(node.thread.id, agentContainerKey(node))),
       entryOf: entryIdFor,
       doneLimitOf: getAgentDoneVisibleLimit,
       openThreadIds: openIds,
@@ -186,12 +191,23 @@
     return next;
   });
 
-  // An open done footer reads its agent's archived children, and reads
-  // them again when the row's count moves (a child archived, unarchived or
-  // deleted on any client). A footer whose count, settled idle children
-  // and archived ones together, reaches zero leaves the list, and its open
-  // state goes with it.
-  //
+  // An open done footer reads its container's archived children as far as
+  // it shows them, and reads them again when the container's count moves
+  // (a child archived, unarchived or deleted on any client); this list
+  // holds them while the footer is open. A footer whose count, settled idle
+  // children and archived ones together, reaches zero leaves the list, and
+  // its open state goes with it.
+  const archivedHolder = {};
+  $effect(() => {
+    const wanted = new Map<string, ArchivedChildrenWant>();
+    for (const node of visibleNodes) {
+      if (node.kind !== 'agent-done' || node.archivedWant === null) continue;
+      wanted.set(archivedChildrenKey(node.agent.id, node.containerKey), { agentThreadId: node.agent.id, ...node.archivedWant });
+    }
+    holdArchivedChildren(archivedHolder, wanted);
+  });
+  onDestroy(() => releaseArchivedChildren(archivedHolder));
+
   // The zero is checked again after a settle window before the footer
   // closes: archiving a folded child removes its row (locally, or by its
   // `unlisted` frame) before the agent row's count says it was archived,
@@ -217,10 +233,7 @@
             if (doneCountOf(key) === 0) closeAgentDone(key);
           }, DONE_CLOSE_SETTLE_MS));
         }
-        continue;
       }
-      const archived = agentArchivedTotal(node.thread);
-      if (archived > 0) loadArchivedChildren(node.thread.id, archived);
     }
   });
   onDestroy(() => {

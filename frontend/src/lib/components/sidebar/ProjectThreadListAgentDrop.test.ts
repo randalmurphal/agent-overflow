@@ -66,7 +66,7 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     resetThreadWakesForTest();
     endThreadRowDrag();
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
-    setBindingMock('ListArchivedSpawnedThreads', async () => [thread('done', { spawnedByThreadId: 'agent', archived: true })]);
+    setBindingMock('ListArchivedSpawnedThreads', async () => ({ threads: [thread('done', { spawnedByThreadId: 'agent', archived: true })], more: false }));
   });
 
   // The child is pinned, so it stays a live row rather than folding into
@@ -162,7 +162,7 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
   });
 
   it('opens the done footer by reading the list fresh', async () => {
-    const list = setBindingMock('ListArchivedSpawnedThreads', vi.fn(async () => [thread('done', { spawnedByThreadId: 'agent', archived: true })]));
+    const list = setBindingMock('ListArchivedSpawnedThreads', vi.fn(async () => ({ threads: [thread('done', { spawnedByThreadId: 'agent', archived: true })], more: false })));
     const { container } = renderList();
     await flush();
     toggleAgentDone(ROW);
@@ -261,13 +261,15 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
   });
 
   it('forgets the fold, the open footer and its list when the agent is demoted', async () => {
-    const list = setBindingMock('ListArchivedSpawnedThreads', vi.fn(async () => [thread('done', { spawnedByThreadId: 'agent', archived: true })]));
+    const list = setBindingMock('ListArchivedSpawnedThreads', vi.fn(async () => ({ threads: [thread('done', { spawnedByThreadId: 'agent', archived: true })], more: false })));
     const view = renderList();
     await flush();
-    setAgentExpanded(ROW, false);
     toggleAgentDone(ROW);
     await flush();
     expect(list).toHaveBeenCalledTimes(1);
+    // Folded, the row shows no footer and holds none of its list.
+    setAgentExpanded(ROW, false);
+    await flush();
     const rows = (promoted: boolean) => [
       thread('agent', promoted ? { agentId: 'agent', archivedChildCounts: { project: 1 } } : {}),
       thread('child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),

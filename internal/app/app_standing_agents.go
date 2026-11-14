@@ -382,14 +382,18 @@ func (a *App) assistantHomeForDelete(threadID string) (func() error, error) {
 	}, nil
 }
 
-// ListArchivedSpawnedThreads lists the archived threads an assistant's
-// current thread spawned on this computer and the assistant's archived past
-// threads, newest activity first: what the agent row's done footer opens.
+// ListArchivedSpawnedThreads lists one page of the archived threads one done
+// footer of an assistant's rows holds: its archived past threads and
+// helpers for the card (the empty scope), and the archived threads its current
+// thread spawned on this computer for its row in a project (that project's
+// id; a sidebar entry that merges projects names each). Newest activity
+// first, from after the cursor, at most limit (1 to
+// store.MaxArchivedChildrenPage) rows.
 //
 //ao:scope threads:read
 //ao:route thread
-func (a *App) ListArchivedSpawnedThreads(threadID string) ([]store.Thread, error) {
-	return a.store.ListArchivedSpawnedThreads(threadID)
+func (a *App) ListArchivedSpawnedThreads(threadID string, scopes []string, after store.ArchivedChildrenCursor, limit int) (store.ArchivedChildrenPage, error) {
+	return a.store.ListArchivedSpawnedThreads(threadID, scopes, after, limit)
 }
 
 // broadcastSpawnedThreadRows re-emits the live threads spawnerID spawned:
