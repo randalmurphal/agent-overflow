@@ -313,13 +313,13 @@ func settleThreadRequest(db sqlExecutor, token string, from []string, settlement
 // caller's own tool call returns: a request refused before any thread ran it
 // is answered by that call's error, so no message is owed for it and no pass
 // may find the row settled and undelivered in between.
-func (s *Store) SettleThreadRequestDelivered(token string, from []string, settlement ThreadRequestSettlement) (bool, error) {
+func (s *Store) SettleThreadRequestDelivered(token string, from []string, settlement ThreadRequestSettlement) (_ bool, err error) {
 	action := fmt.Sprintf("store: settle delivered thread request %s", token)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, fmt.Errorf("%s: begin: %w", action, err)
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx, action, &err)
 	settled, err := settleThreadRequest(tx, token, from, settlement)
 	if err != nil || !settled {
 		return false, err
@@ -960,7 +960,7 @@ var ErrThreadWakeNotOwed = errors.New("store: a request in this wake no longer o
 //
 // `late` marks the second wake (a late reply) instead of the first, and
 // takes no riders.
-func (s *Store) QueueThreadWake(token string, riders []string, late bool, item FlushQueueItem) error {
+func (s *Store) QueueThreadWake(token string, riders []string, late bool, item FlushQueueItem) (err error) {
 	action := fmt.Sprintf("store: queue thread wake %s", token)
 	if token == "" {
 		return fmt.Errorf("%s: token is required", action)
@@ -981,7 +981,7 @@ func (s *Store) QueueThreadWake(token string, riders []string, late bool, item F
 		return fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer release()
-	defer tx.Rollback()
+	defer rollbackTx(tx, action, &err)
 	if err := markThreadWakeQueuedTx(tx, token, "", late, item); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
@@ -1048,13 +1048,13 @@ const threadWakeRidersToDraftSQL = `UPDATE thread_requests SET delivered_how = ?
 // already `queued`; this is the correction, so it applies to a delivered
 // row rather than an undelivered one. The requests that rode with a first
 // wake (`delivered_with`) are in the same message and are corrected with it.
-func (s *Store) MarkThreadRequestDeliveredAsDraft(token string, late bool) (bool, error) {
+func (s *Store) MarkThreadRequestDeliveredAsDraft(token string, late bool) (_ bool, err error) {
 	action := fmt.Sprintf("store: mark thread request %s restored to draft", token)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, fmt.Errorf("%s: begin: %w", action, err)
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx, action, &err)
 	query := `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
 	           WHERE token = ? AND delivered_at IS NOT NULL AND delivered_how = ?`
 	if late {

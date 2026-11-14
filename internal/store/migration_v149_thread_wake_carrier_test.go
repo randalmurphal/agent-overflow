@@ -36,7 +36,11 @@ func TestThreadWakeCarrierMigrationDefaultsToTheRowsOwnMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("explain the rider lookup: %v", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Errorf("close the plan rows: %v", err)
+		}
+	}()
 	for rows.Next() {
 		var id, parent, unused int
 		var detail string
