@@ -172,3 +172,28 @@ func TestMarkInterrupt_WaitingSendStartInProgress(t *testing.T) {
 	requireOneStoppedRow(t, st, "t1", 1)
 	requireMarkerSurvivesLaterError(t, router, st, "t1", errID, 1)
 }
+
+// A steer the provider never confirmed is no waiting send: it joined a
+// turn that has since ended and opens none. The direct send registered
+// after it is the one an interrupt cuts.
+func TestSampleInterrupt_UnconfirmedSteerIsNotAWaitingSend(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 1)
+	router.RegisterPendingSteerSendWithExpectation("t1", "user:1:steer:1", 1, PendingSendExpectation{ByClientID: true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "interrupted"},
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	if sample := router.SampleInterrupt("t1"); sample.Turn != -1 || sample.CutTurn() != -1 {
+		t.Fatalf("sample with only the steer = open %d cut %d, want nothing to cut", sample.Turn, sample.CutTurn())
+	}
+	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{ByClientID: true})
+	if sample := router.SampleInterrupt("t1"); sample.CutTurn() != 2 {
+		t.Fatalf("cut turn = %d, want the direct send's turn 2", sample.CutTurn())
+	}
+}

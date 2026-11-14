@@ -472,11 +472,12 @@ func (r *Router) turnOpeningPendingSend(threadID string) (pendingSend, bool) {
 	return pendingSend{}, false
 }
 
-// canOpenTurn: an entry whose consumption was already observed (a reinsert
-// after a failed write) or whose index a turn start already used has no
-// turn left to open.
+// canOpenTurn: a steer joins a running turn and never opens one, and an
+// entry whose consumption was already observed (a reinsert after a failed
+// write) or whose index a turn start already used has no turn left to
+// open.
 func (p pendingSend) canOpenTurn() bool {
-	return !p.OpenedTurn && !p.EchoConsumed
+	return p.Shape != sendShapeSteer && !p.OpenedTurn && !p.EchoConsumed
 }
 
 // markPendingSendStarted records `started` on the entry registered under
