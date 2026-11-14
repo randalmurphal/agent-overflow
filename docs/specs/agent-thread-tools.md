@@ -300,14 +300,26 @@ a request token. Locally it inherits the caller's project, workspace,
 provider, model, effort, mode, and runtime mode; each has an override
 param, plus `title`. `workspace_path` names a checkout git has for the
 project, the root or any linked worktree, including one made outside the
-app. `worktree` (optional branch name) runs the thread on that branch
+app. `worktree` (optional branch or tag name) runs the thread on that branch
 instead of inheriting the workspace. A branch already checked out runs in
 that checkout, the project root included, because git checks a branch out
 in one place. A worktree git still registers whose folder is gone is
-refused, named in the error. A branch that exists locally, or on origin after a fetch,
-gets a fresh worktree that checks it out as it is (tracking origin's when
-only origin has it), the same checkout the composer's branch picker makes;
-`base` and `base_local` are refused for an existing branch. A branch that
+refused, named in the error. A branch that exists locally, or on a remote
+after a fetch of origin, gets a fresh worktree that checks it out as it is,
+the same checkout the composer's branch picker makes: one only a remote has
+becomes a local branch tracking origin's, else the one remote's that has
+it, and one only several remotes other than origin have is refused.
+`base` and `base_local` are refused for an existing branch. A name that is
+no branch but is a tag, bare or spelled `refs/tags/<name>`, gets a fresh
+worktree detached at the tag, the thread on no branch, the same checkout
+the branch picker makes for a tag; `base` and `base_local` are refused for
+it. Branch versus tag is decided once, after the fetch, so a tag that
+fetch brings counts. That fetch is a plain bounded `git fetch origin`,
+skipped when origin was fetched recently, so it brings only the tags on
+the commits it fetches; a tag spelling no tag on this computer has is
+refused as missing as of the last fetch. In `worktree` and `base`, `refs/heads/<name>` names a
+branch only, which addresses a branch whose own name starts with
+`refs/`. A branch that
 does not exist is created in a fresh worktree through the existing
 draft-worktree path. `base` names the branch it starts from, default the
 project's current branch; the cut starts from origin's head of that
@@ -316,10 +328,12 @@ worktree, unless `base_local` asks for the local head with no fetch.
 A fetch that fails leaves the tracking ref as it stands, so the cut
 falls back to the local branch of that name, and to the stale tracking
 ref when there is no local branch: a base that exists only on origin
-still cuts from origin.
-A `base` the project has neither locally nor on origin (or, with
-`base_local`, not locally) is refused before a request exists, through
-`git.Core.BaseBranchKnown`. `group` (optional name) puts the new thread in
+still cuts from origin. A `base` that is no branch but is a tag (or
+`refs/tags/<name>`) cuts from the tag locally, with or without
+`base_local`, and the new branch has no upstream.
+A `base` the project has as neither a branch, locally or on origin (or,
+with `base_local`, locally), nor a tag is refused before a request
+exists, through `git.Core.ResolveRef`. `group` (optional name) puts the new thread in
 that sidebar group inside its own project, creating the group when it
 does not exist, through the same organize patch `thread_update` uses.
 A group name is unique per project, compared without case, and the
@@ -563,8 +577,10 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > Starting work. `thread_spawn` opens a new visible thread and runs
 > your `prompt` there; `from_thread` gives it an existing thread's
 > history first, `worktree` runs it on that branch, checked out as it
-> is when the branch exists here or on origin and otherwise created from
-> `base` (origin's head of it unless `base_local`), and `group` files it
+> is when the branch exists here or on a remote, detached at the tag when
+> the name is no branch but a tag, and otherwise created from `base` (a
+> branch or tag; origin's head of a branch unless `base_local`), and
+> `group` files it
 > in a sidebar group beside the threads of one sweep.
 > `thread_send` continues an existing thread as if the
 > user typed your `message`, queued after its current turn. `thread_ask`

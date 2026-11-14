@@ -131,7 +131,7 @@ func (a *App) newThreadDefaultsProfile(ctx context.Context, update NewThreadDefa
 			return store.ChatModelProfile{}, fmt.Errorf("update new thread defaults: fast mode unsupported for %s/%s", profile.Provider, profile.Model)
 		}
 		profile.FastMode = *update.FastMode
-	} else if profile.FastMode && !a.supportsFastModeForModel(profile.Provider, profile.Model) {
+	} else if profile.FastMode && !a.savedFastModeStands(profile.Provider, profile.Model) {
 		profile.FastMode = false
 	}
 

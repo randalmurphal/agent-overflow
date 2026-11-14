@@ -24,9 +24,6 @@ import (
 type DriftKind string
 
 const (
-	// DriftCapability — the catalog's capability flags for a model the wire
-	// also lists disagree with the wire. The wire won; fix the catalog.
-	DriftCapability DriftKind = "capability"
 	// DriftEffort — the catalog's reasoning-effort options disagree with the
 	// wire's. The wire won; fix the catalog.
 	DriftEffort DriftKind = "effort"
@@ -101,10 +98,11 @@ func FormatDrift(drift []Drift) string {
 //     context)" are two rows for one model, so adopting them would rename
 //     models arbitrarily. A wire-only model is named from its slug instead
 //     (newWireOnlyModel).
-//  3. **The wire owns capability flags** for models it lists: fast-mode
-//     support and the reasoning-effort set. It is the running binary's own
-//     answer; a catalog that disagrees is stale, and the disagreement is
-//     reported as drift so it gets fixed at the source.
+//  3. **The wire owns capability flags** for models it lists: fast-mode and
+//     auto-mode support and the reasoning-effort set. It is the running
+//     binary's own answer. The catalog states efforts, so an effort
+//     disagreement is reported as drift to fix at the source; it never
+//     states fast or auto mode, so those are set from the row alone.
 //  4. **Wire-only models are added**, named from their slug and with context
 //     windows resolved by family fallback. That is the maintenance win: a
 //     model the CLI ships before AO's catalog learns about it is selectable
@@ -200,37 +198,18 @@ func sameCapabilities(a, b claude.WireModel) bool {
 }
 
 // applyWireCapabilities overwrites one catalog model's capability flags with
-// the running binary's answer, reporting every change as drift.
+// the running binary's answer, reporting an effort disagreement as drift.
 func applyWireCapabilities(model *provider.ModelInfo, group wireGroup) []Drift {
 	var drift []Drift
 
-	// Three-state on purpose: the catalog never states auto-mode
-	// support, so a wire row that says it is the first (and only)
-	// source. An absent key leaves the model at "unknown" — consumers
+	// The catalog never states fast-mode or auto-mode support, so the row is
+	// the only source and setting either from it is no drift. Auto mode is
+	// three-state: an absent key leaves the model at "unknown", and consumers
 	// restrict Auto only on an explicit false.
+	setFastMode(model, group.capabilities.SupportsFastMode)
 	if group.capabilities.SupportsAutoMode != nil {
 		supports := *group.capabilities.SupportsAutoMode
 		model.SupportsAutoMode = &supports
-	}
-
-	wantsFast := group.capabilities.SupportsFastMode
-	hasFast := slices.Contains(model.Capabilities, provider.ModelCapabilityFastMode)
-	if wantsFast != hasFast {
-		drift = append(drift, Drift{
-			Model:  model.Slug,
-			Kind:   DriftCapability,
-			Detail: fmt.Sprintf("catalog fast_mode=%t, wire says %t", hasFast, wantsFast),
-		})
-		if wantsFast {
-			model.Capabilities = append(model.Capabilities, provider.ModelCapabilityFastMode)
-		} else {
-			model.Capabilities = slices.DeleteFunc(model.Capabilities, func(capability string) bool {
-				return capability == provider.ModelCapabilityFastMode
-			})
-			if len(model.Capabilities) == 0 {
-				model.Capabilities = nil
-			}
-		}
 	}
 
 	levels := knownEffortLevels(group.capabilities)
@@ -264,6 +243,42 @@ func applyWireCapabilities(model *provider.ModelInfo, group wireGroup) []Drift {
 	}
 	model.ReasoningEfforts = merged
 	return drift
+}
+
+// setFastMode adds or removes the fast-mode capability.
+func setFastMode(model *provider.ModelInfo, fast bool) {
+	if fast == slices.Contains(model.Capabilities, provider.ModelCapabilityFastMode) {
+		return
+	}
+	if fast {
+		model.Capabilities = append(model.Capabilities, provider.ModelCapabilityFastMode)
+		return
+	}
+	model.Capabilities = slices.DeleteFunc(model.Capabilities, func(capability string) bool {
+		return capability == provider.ModelCapabilityFastMode
+	})
+	if len(model.Capabilities) == 0 {
+		model.Capabilities = nil
+	}
+}
+
+// carriesReportedFlags reports whether a shipped model holds a flag only a
+// wire row can state: fast mode, or a known auto-mode answer.
+func carriesReportedFlags(model provider.ModelInfo) bool {
+	return model.SupportsAutoMode != nil ||
+		slices.Contains(model.Capabilities, provider.ModelCapabilityFastMode)
+}
+
+// appliedWireSlugs is the models whose rows Merge applied: every named,
+// non-disabled group.
+func appliedWireSlugs(wire []claude.WireModel) map[string]bool {
+	applied := make(map[string]bool, len(wire))
+	for _, group := range groupWireRows(wire) {
+		if !group.disabled {
+			applied[group.slug] = true
+		}
+	}
+	return applied
 }
 
 // newWireOnlyModel builds the catalog entry for a model the wire lists and the
@@ -544,8 +559,10 @@ type catalogEntry struct {
 	// binary is the ProbeCacheKey.Binary this entry was learned from, kept
 	// so DropBinary can void every claim about a binary that changed.
 	binary string
-	// learned is the wire-only models this identity has accumulated: the
-	// current wire's plus any earlier ones the wire has since omitted.
+	// learned is what this identity's answers have reported beyond the
+	// shipped catalog: wire-only models, and shipped models carrying a flag
+	// only the wire states (fast mode, a known auto-mode answer). It holds
+	// the current wire's and any earlier ones the wire has since omitted.
 	// Absence is no information (see DriftRetained), so these survive a
 	// degraded probe answer and die only with the entry or the binary.
 	learned []provider.ModelInfo
@@ -655,24 +672,38 @@ func (c *Catalog) Store(key provider.ProbeCacheKey, wire []claude.WireModel, wir
 
 // mergeRetainingLocked is the one merge-plus-retention step both Store and
 // Seed build an entry from: the wire folded into the shipped catalog, then
-// every model in retain that this wire omits appended back, because wire
-// absence carries no information (DriftRetained). Caller holds mu.
+// every model in retain that this wire omits kept, because wire absence
+// carries no information (DriftRetained). A retained wire-only model is
+// appended; a retained shipped model gets back the fast-mode and auto-mode
+// flags its earlier answer reported, since the shipped catalog states
+// neither. Caller holds mu.
 func (c *Catalog) mergeRetainingLocked(
 	wire []claude.WireModel,
 	retain []provider.ModelInfo,
 ) (models, learned []provider.ModelInfo, drift []Drift) {
 	models, drift = Merge(c.base, wire)
+	applied := appliedWireSlugs(wire)
 	for _, model := range models {
-		if !c.baseSlugs[model.Slug] {
+		if !c.baseSlugs[model.Slug] || (applied[model.Slug] && carriesReportedFlags(model)) {
 			learned = append(learned, model)
 		}
 	}
 	for _, kept := range retain {
-		if slices.ContainsFunc(models, func(m provider.ModelInfo) bool { return m.Slug == kept.Slug }) {
+		if applied[kept.Slug] {
 			continue
 		}
-		models = append(models, kept)
-		learned = append(learned, kept)
+		at := slices.IndexFunc(models, func(m provider.ModelInfo) bool { return m.Slug == kept.Slug })
+		switch {
+		case at < 0:
+			models = append(models, kept)
+			learned = append(learned, kept)
+		case c.baseSlugs[kept.Slug] && carriesReportedFlags(kept):
+			setFastMode(&models[at], slices.Contains(kept.Capabilities, provider.ModelCapabilityFastMode))
+			models[at].SupportsAutoMode = cloneBool(kept.SupportsAutoMode)
+			learned = append(learned, models[at])
+		default:
+			continue
+		}
 		drift = append(drift, Drift{
 			Model:  kept.Slug,
 			Kind:   DriftRetained,
@@ -682,10 +713,18 @@ func (c *Catalog) mergeRetainingLocked(
 	return models, learned, drift
 }
 
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+
 // Snapshot is one entry's evidence, in the shape a caller can persist and hand
 // back to Seed in the next process: the wire rows the last non-empty probe of
-// that identity reported, plus the wire-only models the identity had
-// accumulated by then.
+// that identity reported, plus the models the identity had learned by then
+// (catalogEntry.learned).
 type Snapshot struct {
 	Wire    []claude.WireModel
 	Learned []provider.ModelInfo

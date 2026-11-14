@@ -155,6 +155,52 @@ func TestFindPresentRefusesAWorktreeWhoseDirectoryIsGone(t *testing.T) {
 	}
 }
 
+// A worktree detached at a tag lists the tag and counts the commits made
+// there that no ref reaches; one on a branch counts none, and a missing
+// detached worktree still counts its orphans from the project root.
+func TestDetachedWorktreeReportsItsTagAndOrphanCommits(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "tag", "v1")
+	atTag := filepath.Join(t.TempDir(), "at-tag")
+	testutil.RunGit(t, repo, "worktree", "add", "--detach", atTag, "refs/tags/v1")
+	pastTag := filepath.Join(t.TempDir(), "past-tag")
+	testutil.RunGit(t, repo, "worktree", "add", "--detach", pastTag, "refs/tags/v1")
+	testutil.RunGit(t, pastTag, "commit", "--allow-empty", "-m", "one")
+	testutil.RunGit(t, pastTag, "commit", "--allow-empty", "-m", "two")
+	gone := filepath.Join(t.TempDir(), "gone")
+	testutil.RunGit(t, repo, "worktree", "add", "--detach", gone, "refs/tags/v1")
+	testutil.RunGit(t, gone, "commit", "--allow-empty", "-m", "lost")
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+	service, database := newTestService(t, nil, nil)
+	seedProject(t, database, "project", repo)
+
+	items, err := service.List(repo)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	tags := map[string]string{}
+	for _, item := range items {
+		tags[filepath.Base(item.Path)] = item.Tag
+	}
+	if tags["at-tag"] != "v1" || tags["past-tag"] != "" || tags[filepath.Base(repo)] != "" {
+		t.Fatalf("list tags = %v; want v1 only for the worktree at the tag", tags)
+	}
+	for _, tc := range []struct {
+		path string
+		want int
+	}{{atTag, 0}, {pastTag, 2}, {gone, 1}, {repo, 0}} {
+		status, err := service.Status(repo, tc.path)
+		if err != nil {
+			t.Fatalf("Status(%s): %v", tc.path, err)
+		}
+		if status.OrphanCommits != tc.want {
+			t.Fatalf("Status(%s).OrphanCommits = %d, want %d", filepath.Base(tc.path), status.OrphanCommits, tc.want)
+		}
+	}
+}
+
 func TestActivityRefusesBlankPath(t *testing.T) {
 	service, _ := newTestService(t, nil, nil)
 	if _, err := service.Activity("   "); err == nil {

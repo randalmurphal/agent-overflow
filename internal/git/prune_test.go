@@ -2,6 +2,7 @@ package git
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/testutil"
@@ -70,6 +71,39 @@ func TestListPruneCandidatesFallsBackToLocalMainWithoutOriginHead(t *testing.T) 
 	}
 	if squashed := byName["squashed-gone"]; squashed.MergedIntoDefault {
 		t.Fatalf("squashed-gone must stay unmerged, got %+v", squashed)
+	}
+}
+
+// A branch that shares its name with a tag is a candidate by its own name,
+// and the merged check reads the default branch, never a tag of its name.
+func TestListPruneCandidatesReadBranchesThatShareATagsName(t *testing.T) {
+	t.Parallel()
+	repo := testutil.GonePruneRepo(t)
+	out, _, err := NewCore().Execute(repo, "rev-list", "--max-parents=0", "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := strings.TrimSpace(out)
+	testutil.RunGit(t, repo, "tag", "merged-gone", root)
+	testutil.RunGit(t, repo, "tag", "squashed-gone", root)
+	testutil.RunGit(t, repo, "tag", "main", root)
+
+	candidates, err := NewCore().ListPruneCandidates(repo)
+	if err != nil {
+		t.Fatalf("ListPruneCandidates: %v", err)
+	}
+	byName := make(map[string]PruneCandidate, len(candidates))
+	for _, c := range candidates {
+		byName[c.Name] = c
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %+v, want merged-gone and squashed-gone by name", candidates)
+	}
+	if merged, ok := byName["merged-gone"]; !ok || !merged.MergedIntoDefault {
+		t.Fatalf("merged-gone = %+v (found %v), want a merged candidate", merged, ok)
+	}
+	if squashed, ok := byName["squashed-gone"]; !ok || squashed.MergedIntoDefault {
+		t.Fatalf("squashed-gone = %+v (found %v), want an unmerged candidate", squashed, ok)
 	}
 }
 

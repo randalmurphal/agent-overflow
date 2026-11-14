@@ -122,6 +122,13 @@ const CapabilityPRCommentActions = "pr-comment-actions.v1"
 // offers no Apply, no reaction controls and no Suggest change.
 const CapabilityPRSuggestionsReactions = "pr-suggestions-reactions.v1"
 
+// CapabilityGitTags names tag checkout: GitListTags, GitRefreshTags, a
+// "refs/tags/<name>" ref wherever a branch name travels, the tag and
+// headCommit of GitStatus, GitWorkspaceState's status and
+// leftBehind, WorktreeStatus.orphanCommits and WorktreeListItem.tag. A
+// client reading a backend without it offers no tags.
+const CapabilityGitTags = "git-tags.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -141,6 +148,7 @@ var serverCapabilities = []string{
 	CapabilityPRReviewDrafts,
 	CapabilityPRCommentActions,
 	CapabilityPRSuggestionsReactions,
+	CapabilityGitTags,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

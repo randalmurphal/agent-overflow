@@ -4297,9 +4297,13 @@ AO's consumer is `internal/claudemodels`, which merges the array into the
 hand-maintained catalog under those constraints (`internal/claudemodels/AGENTS.md`
 carries the policy). The rows are also AO's only source for what an alias
 means (`claude.ModelAliases`), used to read an alias the CLI reports back,
-such as a project `settings.json` naming `opus`. One real discrepancy the
-array settled: **Haiku reports no
-effort support at all**, under both subscription and API-key auth, while AO's
+such as a project `settings.json` naming `opus`. They are also AO's only
+source for fast mode: the shipped catalog states it for no model, because
+Claude withdraws fast mode from older models (Opus 4.7 already, Opus 4.8 on
+2026-11-30) and a fast request on such a model fails. A model the array has
+never marked `supportsFastMode` is therefore not fast, including an older
+model the shortlist omits. One real discrepancy the array settled: **Haiku
+reports no effort support at all**, under both subscription and API-key auth, while AO's
 catalog declared low/medium/high, and the catalog was corrected.
 
 ---

@@ -31,7 +31,11 @@ func (m *testModels) CoerceReasoningEffort(providerName, model, effort string) s
 	return string(provider.CoerceReasoningEffortForModel(providerName, model, provider.NormalizeReasoningEffort(effort)))
 }
 func (m *testModels) SupportsFastMode(providerName, model string) bool {
-	return chatmodel.SupportsStoredFastMode(providerName, model)
+	candidate, found := provider.FindModel(providerName, model)
+	return found && chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
+}
+func (m *testModels) SavedFastModeStands(providerName, model string) bool {
+	return m.SupportsFastMode(providerName, model)
 }
 func (m *testModels) ContextWindowOptions(providerName, model string) []provider.ContextWindowOption {
 	return chatmodel.ContextWindowOptions(providerName, model)
@@ -133,6 +137,35 @@ func newServiceFixture(t *testing.T) (*Service, *store.Store, *testModels) {
 	return service, database, models
 }
 
+// newBranchCut is the cut of a new branch named name from the current branch.
+func newBranchCut(name string) *WorktreeCut {
+	return &WorktreeCut{Target: gitops.WorktreeTarget{Ref: gitops.BranchRef(name)}}
+}
+
+// Branch is recorded exactly as given, and a name git would refuse is an
+// error rather than a row naming no branch, for an inherited worktree and
+// for the plain workspace alike.
+func TestCreateRecordsBranchVerbatimAndRefusesAnInvalidOne(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	service.deps.Workspace = &testWorkspace{findPath: "/repo-worktrees/feature", findBranch: "feature/one"}
+	for _, opts := range []CreateOptions{
+		{ProjectID: "project", Branch: "bad..name"},
+		{ProjectID: "project", Branch: "--orphan"},
+		{ProjectID: "project", WorktreePath: "/repo-worktrees/feature", Branch: "a..b"},
+	} {
+		if thread, err := service.Create(opts); err == nil {
+			t.Errorf("Create(branch %q) = thread on %q, want a refusal", opts.Branch, thread.Branch)
+		}
+	}
+	if threads, err := database.ListThreads(); err != nil || len(threads) != 0 {
+		t.Fatalf("threads = %d (%v), want none", len(threads), err)
+	}
+	thread, err := service.Create(CreateOptions{ProjectID: "project", Branch: "  _wip/x  "})
+	if err != nil || thread.Branch != "_wip/x" {
+		t.Fatalf("Create(_wip/x) = branch %q, %v; want it verbatim", thread.Branch, err)
+	}
+}
+
 func TestCreatePreservesProjectAndWorkspaceDistinction(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	setup := &setupRecorder{store: database}
@@ -175,10 +208,8 @@ func TestCreateStartsSetupOnlyForWorktreeItCuts(t *testing.T) {
 	service.deps.Workspace = workspace
 	service.deps.WorktreeSetup = setup
 	thread, err := service.Create(CreateOptions{
-		ProjectID:         "project",
-		WorktreeBranch:    "feature/new",
-		WorktreeBase:      "  release/2  ",
-		WorktreeBaseLocal: true,
+		ProjectID: "project",
+		Worktree:  &WorktreeCut{Target: gitops.WorktreeTarget{Ref: gitops.BranchRef("feature/new")}, Base: "release/2", BaseLocal: true},
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -189,7 +220,7 @@ func TestCreateStartsSetupOnlyForWorktreeItCuts(t *testing.T) {
 	if len(setup.started) != 1 {
 		t.Fatalf("setup calls = started %v", setup.started)
 	}
-	want := WorktreeCut{Branch: "feature/new", Base: "release/2", BaseLocal: true}
+	want := WorktreeCut{Target: gitops.WorktreeTarget{Ref: gitops.BranchRef("feature/new")}, Base: "release/2", BaseLocal: true}
 	if len(workspace.cuts) != 1 || workspace.cuts[0] != want {
 		t.Fatalf("cuts = %+v, want one %+v", workspace.cuts, want)
 	}
@@ -204,7 +235,7 @@ func TestCreateFailsWhenTheWorktreeCannotBeCut(t *testing.T) {
 	service.deps.Workspace = &testWorkspace{createErr: errors.New("branch already checked out")}
 	service.deps.WorktreeSetup = setup
 
-	_, err := service.Create(CreateOptions{ProjectID: "project", WorktreeBranch: "feature/new"})
+	_, err := service.Create(CreateOptions{ProjectID: "project", Worktree: newBranchCut("feature/new")})
 	if err == nil {
 		t.Fatal("Create reported a thread for a worktree git refused to cut")
 	}
@@ -236,7 +267,7 @@ func TestCreateUndoesTheCutWhenTheThreadCannotBeWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, cut, err := service.CreateWithWorktree(CreateOptions{ProjectID: "project", WorktreeBranch: "feature/new"})
+	_, cut, err := service.CreateWithWorktree(CreateOptions{ProjectID: "project", Worktree: newBranchCut("feature/new")})
 	if err == nil {
 		t.Fatal("Create reported a thread whose row was never written")
 	}
@@ -538,7 +569,7 @@ func TestCreateUndoesEverythingWhenTheCreatedRowCannotBeRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	thread, cut, err := service.CreateWithWorktree(CreateOptions{ProjectID: "project", WorktreeBranch: "feature/new"})
+	thread, cut, err := service.CreateWithWorktree(CreateOptions{ProjectID: "project", Worktree: newBranchCut("feature/new")})
 	if err == nil {
 		t.Fatalf("CreateWithWorktree = %+v, want the read's failure", thread)
 	}

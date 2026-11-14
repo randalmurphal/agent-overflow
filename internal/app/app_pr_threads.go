@@ -13,6 +13,7 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 )
@@ -205,7 +206,11 @@ func (a *App) OpenPRThread(ctx context.Context, req OpenPRThreadRequest) (OpenPR
 	}
 	// A failed creation has already taken back the worktree it cut and a
 	// branch the cut made; what is left to undo is the pr/N fetched above.
-	thread, cut, err := a.createThreadWithWorktree(ctx, CreateThreadOptions{ProjectID: project.ID, WorktreeBranch: branch}, false)
+	// The branch is known to exist, so it is cut as that branch and never
+	// read as a typed name (a head literally named refs/tags/x stays a
+	// branch).
+	head := threadapp.WorktreeCut{Target: gitops.WorktreeTarget{Ref: gitops.BranchRef(branch), Exists: true}}
+	thread, cut, err := a.createThreadCutting(ctx, CreateThreadOptions{ProjectID: project.ID}, &head, false)
 	if err != nil {
 		return OpenPRThreadResult{}, errors.Join(fmt.Errorf("open PR thread: %w", err), a.dropPRBranch(project.Path, branch, createdBranch))
 	}

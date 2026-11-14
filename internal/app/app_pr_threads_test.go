@@ -146,6 +146,26 @@ func TestOpenPRThreadOnABranchOfTheRepository(t *testing.T) {
 	}
 }
 
+// A head branch is checked out as that branch whatever its name spells: one
+// literally named refs/tags/v1 is not read as the tag v1.
+func TestOpenPRThreadOnAHeadBranchNamedLikeATagRef(t *testing.T) {
+	t.Parallel()
+	c := newPRThreadCase(t)
+	c.push(t, "refs/heads/refs/tags/v1")
+	testutil.RunGit(t, c.repo, "tag", "v1", "main")
+
+	result, err := c.app.OpenPRThread(context.Background(), c.request("refs/tags/v1", false))
+	if err != nil {
+		t.Fatalf("OpenPRThread: %v", err)
+	}
+	if result.Branch != "refs/tags/v1" {
+		t.Fatalf("result = %+v, want branch refs/tags/v1", result)
+	}
+	if out := c.app.gitCore().CurrentBranch(result.WorktreePath); out != "refs/tags/v1" {
+		t.Fatalf("worktree branch = %q, want refs/tags/v1", out)
+	}
+}
+
 // A head branch origin does not have is refused before anything is made:
 // the create path would cut a new branch of that name from main.
 func TestOpenPRThreadRefusesAHeadBranchOriginLacks(t *testing.T) {

@@ -415,6 +415,8 @@ export class ElicitationResolution {
  * spawn flag with no wire tier, and any Codex catalog entry that predates the
  * field. The ModelCapabilityFastMode marker on Capabilities remains the support
  * gate for both providers; this only carries the WHICH, never the WHETHER.
+ * No shipped Claude model carries the marker: which Claude models run fast is
+ * known only from the CLI's reported model list (internal/claudemodels).
  */
 export class FastModeTier {
     "id": string;

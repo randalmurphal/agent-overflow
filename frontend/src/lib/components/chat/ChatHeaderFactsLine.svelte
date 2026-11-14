@@ -15,7 +15,6 @@
   // Staging a new worktree adds the branch-name row beneath the line.
   import Folder from '@lucide/svelte/icons/folder';
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
-  import GitBranchIcon from '@lucide/svelte/icons/git-branch';
   import Icon from '../primitives/Icon.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MachinePicker from '../composer/workspace/MachinePicker.svelte';
@@ -27,6 +26,7 @@
   import { createWorkspaceChangeLockState } from '../../stores/workspaceChangeLock.svelte';
   import { hasMultipleBackends } from '../../stores/attachedBackends.svelte';
   import { worktreeIntentForThread } from '../../stores/worktreeIntent.svelte';
+  import { checkoutDisplay, checkoutIcon, paneCheckout, type CheckoutKind } from '../../utils/checkout';
 
   interface Props {
     pane: ThreadPane;
@@ -39,7 +39,7 @@
   let branchEl: HTMLButtonElement | undefined = $state(undefined);
   let worktreeEl: HTMLButtonElement | undefined = $state(undefined);
   let machinePicker: { openPicker(): void; label(): string; canPick(): boolean } | undefined = $state();
-  let branchPicker: { openPicker(): void; label(): string } | undefined = $state();
+  let branchPicker: { openPicker(): void; label(): string; kind(): CheckoutKind; title(): string } | undefined = $state();
   let envPicker: { openPicker(): void; label(): string; atBase(): boolean } | undefined = $state();
 
   // Machine mounts only with a second backend attached, the same rule as
@@ -48,7 +48,11 @@
   let machineLabel = $derived(machinePicker?.label() ?? 'Computer');
   let machinePickable = $derived(machinePicker?.canPick() ?? false);
   let hasProject = $derived(Boolean(pane.thread?.projectId));
-  let branchLabel = $derived(branchPicker?.label() ?? pane.thread?.branch ?? 'No branch');
+  // The picker names the segment once mounted; until then, the checkout.
+  let checkoutNamed = $derived(checkoutDisplay(paneCheckout(pane)));
+  let branchLabel = $derived(branchPicker?.label() ?? checkoutNamed.label);
+  let branchKind = $derived<CheckoutKind>(branchPicker?.kind() ?? checkoutNamed.kind);
+  let branchTitle = $derived(branchPicker?.title() ?? checkoutNamed.title);
   let worktreeLabel = $derived(envPicker?.label() ?? 'Base');
   let atBase = $derived(envPicker?.atBase() ?? true);
   let intent = $derived(worktreeIntentForThread(pane.thread));
@@ -88,11 +92,12 @@
       type="button"
       onclick={() => branchPicker?.openPicker()}
       aria-haspopup="menu"
-      title={`Branch: ${branchLabel}`}
+      title={branchTitle}
       data-testid="chat-header-branch"
+      data-checkout-kind={branchKind}
       class="{headerSegmentClasses} min-w-0 text-text-secondary"
     >
-      <Icon icon={GitBranchIcon} size={11} strokeWidth={2} class="shrink-0 opacity-70" />
+      <Icon icon={checkoutIcon(branchKind)} size={11} strokeWidth={2} class="shrink-0 opacity-70" />
       <span class="truncate">{branchLabel}</span>
     </button>
     <BranchPicker bind:this={branchPicker} {pane} hideTrigger anchor={branchEl} />
@@ -120,7 +125,7 @@
   </div>
   {#if namingBranch}
     <div class="flex w-full min-w-0 items-center pl-7" data-testid="chat-header-worktree-naming">
-      <WorktreeNameInput {pane} workspaceDirty={false} {workspaceLock} />
+      <WorktreeNameInput {pane} {workspaceLock} />
     </div>
   {/if}
 {/if}

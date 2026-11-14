@@ -15,7 +15,7 @@
 // stays keyed on what the frontend actually knows: the workspace path a
 // pane is pointed at — a persisted thread's or a draft placeholder's alike.
 
-import type { GitStatus, WorkspaceRef } from '../types/git';
+import type { GitStatus, GitWorkspaceState, WorkspaceRef } from '../types/git';
 import type { Thread } from '../types/models';
 import {
   GetGitStatus,
@@ -32,6 +32,7 @@ import { errString } from '../utils/errors';
 import {
   composeWorkspaceKey,
   workspaceKeyBackend,
+  workspaceKeyForRef,
   workspaceKeyForThread,
   workspaceKeyPath,
   workspaceRefForThread,
@@ -100,6 +101,13 @@ function removeAlias(cwdKey: string, key: string, owner: AliasOwner): void {
   if (keys.size === 0) localKeysByCwd.delete(cwdKey);
 }
 
+// The latest status applied to each held key, from any source, as a number
+// no other apply ever has: a key released and reacquired never repeats one.
+// `withCheckoutAnswer` reads it to tell whether a status landed while its
+// mutation was in flight.
+const lastApplyByKey = new Map<string, number>();
+let applySequence = 0;
+
 const store = createEntityStore<GitStatus, GitStatusCtx>({
   name: 'gitStatus',
   backendForKey: workspaceKeyBackend,
@@ -138,6 +146,7 @@ const store = createEntityStore<GitStatus, GitStatusCtx>({
     };
   },
   onApply: (key, value, prev) => {
+    lastApplyByKey.set(key, ++applySequence);
     if (!value.isRepo) return;
     const branch = value.branch ?? '';
     // First observation for a key always writes: the thread rows' cached
@@ -147,6 +156,9 @@ const store = createEntityStore<GitStatus, GitStatusCtx>({
     // nothing back and returns no rows for this side to sync.
     if (prev !== null && (prev.branch ?? '') === branch) return;
     queueBranchPersist(key, branch);
+  },
+  onDrop: (key) => {
+    lastApplyByKey.delete(key);
   },
 });
 
@@ -333,6 +345,35 @@ export async function refreshGitStatus(
     if (currentKey() !== key) return;
     store.applyError(key, err);
   }
+}
+
+/**
+ * Runs a checkout mutation (GitCheckout, GitCreateBranchFrom) in `ws` and
+ * applies the status it answers with to the status held for `ws`: the
+ * workspace's real status right after the change, so every pane on the
+ * workspace shows the new checkout and its upstream, counts and default flag
+ * at once. Returns the answer.
+ *
+ * A status that landed during the call stands instead. The backend pushes
+ * the checkout's status as well, with the open-PR lookup the answer leaves
+ * pending, and the answer can be the older of the two; whatever landed, that
+ * push follows it. An answer without a status (an older backend) changes
+ * nothing, and neither does one for a workspace no one holds.
+ */
+export async function withCheckoutAnswer<T extends GitWorkspaceState | null>(
+  ws: WorkspaceRef,
+  mutate: () => Promise<T>,
+): Promise<T> {
+  const key = workspaceKeyForRef(ws);
+  const before = key === null ? undefined : lastApplyByKey.get(key);
+  const state = await mutate();
+  const status = state?.status;
+  // `before` is undefined for a workspace that held no status when the call
+  // began; one acquired since has a status newer than the answer.
+  if (status && key !== null && before !== undefined && lastApplyByKey.get(key) === before) {
+    store.apply(key, status);
+  }
+  return state;
 }
 
 /**

@@ -244,11 +244,13 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GitCreateWorktree", ID: 3327650914, Scope: "git:operate", Route: "thread"},                                        // main.App.GitCreateWorktree
 	{Name: "GitListBranchPruneCandidates", ID: 3795082615, Scope: "git:operate", Route: "workspace"},                          // main.App.GitListBranchPruneCandidates
 	{Name: "GitListBranches", ID: 2693102179, Scope: "git:operate", Route: "workspace"},                                       // main.App.GitListBranches
+	{Name: "GitListTags", ID: 3443522126, Scope: "git:operate", Route: "workspace"},                                           // main.App.GitListTags
 	{Name: "GitListWorktrees", ID: 3232495403, Scope: "git:operate", Route: "workspace"},                                      // main.App.GitListWorktrees
 	{Name: "GitMaybeFetchRemotes", ID: 2000020570, Scope: "git:operate", Route: "workspace"},                                  // main.App.GitMaybeFetchRemotes
 	{Name: "GitPruneBranches", ID: 3331815821, Scope: "git:operate", Route: "workspace"},                                      // main.App.GitPruneBranches
 	{Name: "GitPull", ID: 3933172764, Scope: "git:operate", Route: "workspace"},                                               // main.App.GitPull
 	{Name: "GitPush", ID: 4036251239, Scope: "git:operate", Route: "workspace"},                                               // main.App.GitPush
+	{Name: "GitRefreshTags", ID: 1116232271, Scope: "git:operate", Route: "workspace"},                                        // main.App.GitRefreshTags
 	{Name: "GitRemoveWorktree", ID: 4002429606, Scope: "git:operate", Route: "thread"},                                        // main.App.GitRemoveWorktree
 	{Name: "GitStatusSubscribe", ID: 3282404643, Scope: "git:operate", Route: "workspace"},                                    // main.App.GitStatusSubscribe
 	{Name: "GitStatusUnsubscribe", ID: 3263989430, Scope: "git:operate", Route: "home"},                                       // main.App.GitStatusUnsubscribe

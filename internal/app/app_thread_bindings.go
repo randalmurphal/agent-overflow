@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -124,14 +125,50 @@ func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememb
 
 // createThreadWithWorktree is createThread that also reports the worktree
 // it cut, for a caller that undoes the thread and so owns what the cut made.
+// opts.WorktreeBranch is resolved here, once (resolveWorktreeTarget).
 func (a *App) createThreadWithWorktree(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, threadapp.CutWorktree, error) {
+	cut, err := a.wireWorktreeCut(opts)
+	if err != nil {
+		return store.Thread{}, threadapp.CutWorktree{}, err
+	}
+	return a.createThreadCutting(ctx, opts, cut, rememberDefaults)
+}
+
+// wireWorktreeCut is the fresh worktree opts names by WorktreeBranch,
+// resolved; nil when it names none or inherits WorktreePath.
+func (a *App) wireWorktreeCut(opts CreateThreadOptions) (*threadapp.WorktreeCut, error) {
+	name := strings.TrimSpace(opts.WorktreeBranch)
+	if name == "" || strings.TrimSpace(opts.WorktreePath) != "" {
+		return nil, nil
+	}
+	projectID := strings.TrimSpace(opts.ProjectID)
+	if projectID == "" {
+		return nil, fmt.Errorf("create thread: projectId is required")
+	}
+	project, err := a.store.GetProject(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("create thread: resolve project %s: %w", projectID, err)
+	}
+	target, err := a.resolveWorktreeTarget(a.lifeCtx(), project.Path, name)
+	if err != nil {
+		return nil, fmt.Errorf("create thread: worktree: %w", err)
+	}
+	return &threadapp.WorktreeCut{Target: target, Base: strings.TrimSpace(opts.WorktreeBase), BaseLocal: opts.WorktreeBaseLocal}, nil
+}
+
+// createThreadCutting creates the thread, cutting cut (nil for none). opts'
+// WorktreeBranch, WorktreeBase and WorktreeBaseLocal are not read: cut is
+// the worktree, already resolved.
+func (a *App) createThreadCutting(
+	ctx context.Context, opts CreateThreadOptions, cut *threadapp.WorktreeCut, rememberDefaults bool,
+) (store.Thread, threadapp.CutWorktree, error) {
 	endWork, admitErr := a.workAdmission.begin(ctx)
 	if admitErr != nil {
 		return store.Thread{}, threadapp.CutWorktree{}, admitErr
 	}
 	defer endWork()
 	settingsBucket, settingsClass := a.callerSettingsScreen(ctx)
-	thread, cut, err := a.threadApplication().CreateWithWorktree(threadapp.CreateOptions{
+	thread, made, err := a.threadApplication().CreateWithWorktree(threadapp.CreateOptions{
 		ProjectID:                  opts.ProjectID,
 		GroupID:                    opts.GroupID,
 		Title:                      opts.Title,
@@ -144,9 +181,7 @@ func (a *App) createThreadWithWorktree(ctx context.Context, opts CreateThreadOpt
 		AutoCompactStandardPercent: opts.AutoCompactStandardPercent,
 		AutoCompactExtendedPercent: opts.AutoCompactExtendedPercent,
 		RuntimeMode:                opts.RuntimeMode,
-		WorktreeBranch:             opts.WorktreeBranch,
-		WorktreeBase:               opts.WorktreeBase,
-		WorktreeBaseLocal:          opts.WorktreeBaseLocal,
+		Worktree:                   cut,
 		WorkspaceOverride:          opts.WorkspaceOverride,
 		WorktreePath:               opts.WorktreePath,
 		Branch:                     opts.Branch,
@@ -167,7 +202,7 @@ func (a *App) createThreadWithWorktree(ctx context.Context, opts CreateThreadOpt
 		profileErr = a.rememberCreatedThreadProfile(thread, opts)
 	}
 	a.announceThread(triage.ThreadActionListed, thread.ID)
-	return thread, cut, profileErr
+	return thread, made, profileErr
 }
 
 // StartTerminal mints a terminal-mode thread and returns it.

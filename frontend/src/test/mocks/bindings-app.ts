@@ -559,6 +559,8 @@ export class GitStatusSubscriptionResult {
   }
 }
 export const GitListBranches = dispatch('GitListBranches');
+export const GitListTags = dispatch('GitListTags');
+export const GitRefreshTags = dispatch('GitRefreshTags');
 export const GitListWorktrees = dispatch('GitListWorktrees');
 export const GitCommit = dispatch('GitCommit');
 export const GitPush = dispatch('GitPush');
@@ -585,6 +587,7 @@ export class WorktreeStatus {
   dirty: boolean;
   uncommittedCount: number;
   unpushedCommits: number;
+  orphanCommits: number;
   hasUpstream: boolean;
   attachedThreads: number;
   terminals: number;
@@ -594,6 +597,7 @@ export class WorktreeStatus {
     this.dirty = s.dirty ?? false;
     this.uncommittedCount = s.uncommittedCount ?? 0;
     this.unpushedCommits = s.unpushedCommits ?? 0;
+    this.orphanCommits = s.orphanCommits ?? 0;
     this.hasUpstream = s.hasUpstream ?? false;
     this.attachedThreads = s.attachedThreads ?? 0;
     this.terminals = s.terminals ?? 0;

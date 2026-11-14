@@ -28,17 +28,32 @@ func workspaceRefForThread(thread store.Thread) WorkspaceRef {
 
 // GitWorkspaceState is the caller's checkout after a mutation that may have
 // moved its branch. WorktreePath is empty when the workspace is the project
-// root.
+// root; Branch is empty on a detached HEAD. Status, set by a checkout
+// (GitCheckout, GitCreateBranchFrom), is the checkout's git status as it
+// produced it, read without waiting on the forge (gitops.Core.StatusFast).
+// LeftBehind is set when the mutation moved a detached HEAD away from
+// commits no ref reaches.
 type GitWorkspaceState struct {
-	WorkspacePath string `json:"workspacePath"`
-	WorktreePath  string `json:"worktreePath,omitempty"`
-	Branch        string `json:"branch"`
+	WorkspacePath string             `json:"workspacePath"`
+	WorktreePath  string             `json:"worktreePath,omitempty"`
+	Branch        string             `json:"branch"`
+	Status        *gitops.GitStatus  `json:"status,omitempty"`
+	LeftBehind    *gitops.LeftBehind `json:"leftBehind,omitempty"`
 }
 
 // workspaceState projects a resolved (project, workspace) pair plus the
 // checkout's live branch into the wire shape.
-func (a *App) workspaceState(project, workspace string) GitWorkspaceState {
-	state := GitWorkspaceState{WorkspacePath: workspace, Branch: a.gitCore().CurrentBranch(workspace)}
+func (a *App) workspaceState(project, workspace string) (GitWorkspaceState, error) {
+	head, err := a.gitCore().Head(workspace)
+	if err != nil {
+		return GitWorkspaceState{}, err
+	}
+	return newWorkspaceState(project, workspace, head.Branch), nil
+}
+
+// newWorkspaceState is the wire shape of workspace in project on branch.
+func newWorkspaceState(project, workspace, branch string) GitWorkspaceState {
+	state := GitWorkspaceState{WorkspacePath: workspace, Branch: branch}
 	if !gitops.SameFilesystemPath(workspace, project) {
 		state.WorktreePath = workspace
 	}
@@ -148,13 +163,15 @@ func (a *App) GitPull(ws WorkspaceRef) (gitops.GitActionResult, error) {
 	return a.gitApplication().Pull(ws)
 }
 
-// GitCheckout switches the workspace to an existing branch and returns the
-// checkout's resulting state.
+// GitCheckout switches the workspace to an existing branch, or to a tag
+// ("refs/tags/<name>") which leaves it detached there, and returns the
+// checkout's resulting state. Moving a detached HEAD away from commits no
+// ref reaches is not refused; the state reports them as LeftBehind.
 //
 // Every thread row in the directory is re-branched through the same
 // workspace-keyed write UpdateThreadBranch uses (and broadcast the same way),
 // so a sibling thread sharing the worktree syncs without the frontend
-// guessing which rows moved.
+// guessing which rows moved. A tag checkout leaves them with no branch.
 //
 //ao:scope git:operate
 func (a *App) GitCheckout(ws WorkspaceRef, branch string) (GitWorkspaceState, error) {
@@ -162,8 +179,11 @@ func (a *App) GitCheckout(ws WorkspaceRef, branch string) (GitWorkspaceState, er
 	if err != nil {
 		return GitWorkspaceState{}, err
 	}
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
+	ref, err := gitops.ParseRef(branch)
+	if err != nil {
+		return GitWorkspaceState{}, fmt.Errorf("git checkout: %w", err)
+	}
+	if ref.IsZero() {
 		return GitWorkspaceState{}, fmt.Errorf("git checkout branch is required")
 	}
 
@@ -173,7 +193,12 @@ func (a *App) GitCheckout(ws WorkspaceRef, branch string) (GitWorkspaceState, er
 	}
 	defer release()
 
-	if err := a.gitCore().Checkout(workspace, branch); err != nil {
+	core := a.gitCore()
+	leftBehind, err := core.DetachedOrphans(workspace)
+	if err != nil {
+		return GitWorkspaceState{}, fmt.Errorf("git checkout: %w", err)
+	}
+	if err := core.CheckoutRef(workspace, ref); err != nil {
 		return GitWorkspaceState{}, err
 	}
 
@@ -182,28 +207,50 @@ func (a *App) GitCheckout(ws WorkspaceRef, branch string) (GitWorkspaceState, er
 	if a.workspaceFiles != nil {
 		a.workspaceFiles.Invalidate(workspace)
 	}
+	return a.recordWorkspaceCheckout("git checkout", project, workspace, leftBehind)
+}
 
-	state := a.workspaceState(project, workspace)
-	if _, err := a.UpdateThreadBranch(workspace, state.Branch); err != nil {
-		return GitWorkspaceState{}, fmt.Errorf("git checkout: record branch on threads: %w", err)
+// recordWorkspaceCheckout reads the workspace's status after a branch
+// change without waiting on the forge, writes its branch onto every thread
+// row in the directory, and answers with the status and what the change
+// left behind. It asks the workspace's status stream to refresh, so every
+// other client sees the change and the open-PR lookup StatusFast left
+// pending is answered there.
+func (a *App) recordWorkspaceCheckout(label, project, workspace string, leftBehind *gitops.LeftBehind) (GitWorkspaceState, error) {
+	status, err := a.gitCore().StatusFast(workspace)
+	if err != nil {
+		return GitWorkspaceState{}, fmt.Errorf("%s: read status: %w", label, err)
 	}
+	a.gitApplication().RequestRefresh(workspace)
+	if _, err := a.UpdateThreadBranch(workspace, status.Branch); err != nil {
+		return GitWorkspaceState{}, fmt.Errorf("%s: record branch on threads: %w", label, err)
+	}
+	state := newWorkspaceState(project, workspace, status.Branch)
+	state.Status = &status
+	state.LeftBehind = leftBehind
 	return state, nil
 }
 
 // GitCreateBranchFrom creates a new branch in the referenced workspace
 // (project root or one of its worktrees), pointed at baseBranch, then checks
-// it out.
+// it out. baseBranch may be a tag ref. An empty base is the workspace's
+// current ref: its branch, else the tag at HEAD, else the detached HEAD
+// itself, so a branch made there keeps the commits made on no branch.
+//
+// A base is the current ref when it is the branch HEAD is on or, for a
+// detached HEAD, any ref at its commit.
 //
 // carryLocalChanges has three meaningful combinations with baseBranch:
-//   - base = current branch, carry = true: the "Local with changes" path —
+//   - base = current ref, carry = true: the "Local with changes" path —
 //     `git checkout -b <name>` from HEAD; uncommitted changes stay attached.
-//   - base = current branch, carry = false: same git command; carry is a
+//   - base = current ref, carry = false: same git command; carry is a
 //     no-op since there's no checkout that would clobber the working tree.
-//   - base != current branch, carry = false: the destructive path — stash
+//   - base != current ref, carry = false: the destructive path — stash
 //     the working tree, checkout the base, branch off it, drop the stash.
 //     The frontend gates this behind an explicit "discards uncommitted
-//     changes" confirmation; we trust the caller has confirmed.
-//   - base != current branch, carry = true: rejected. "Local with changes"
+//     changes" confirmation; we trust the caller has confirmed. Commits a
+//     detached HEAD leaves behind are reported as for GitCheckout.
+//   - base != current ref, carry = true: rejected. "Local with changes"
 //     only makes sense when both ends agree on the base.
 //
 // Thread rows in the workspace are re-branched as for GitCheckout. Does not
@@ -215,6 +262,10 @@ func (a *App) GitCreateBranchFrom(ws WorkspaceRef, name, baseBranch string, carr
 	if err != nil {
 		return GitWorkspaceState{}, err
 	}
+	base, err := gitops.ParseRef(baseBranch)
+	if err != nil {
+		return GitWorkspaceState{}, fmt.Errorf("create branch: base: %w", err)
+	}
 
 	_, release, err := a.lockWorkspaceThreads(workspace)
 	if err != nil {
@@ -223,14 +274,17 @@ func (a *App) GitCreateBranchFrom(ws WorkspaceRef, name, baseBranch string, carr
 	defer release()
 
 	core := a.gitCore()
-	sanitized, resolvedBase, baseIsCurrent, err := resolveBranchCreatePlan(
-		core.CurrentBranch(workspace), name, baseBranch, carryLocalChanges)
+	sanitized, resolvedBase, baseIsCurrent, err := resolveBranchCreatePlan(core, workspace, name, base, carryLocalChanges)
 	if err != nil {
 		return GitWorkspaceState{}, err
 	}
 
+	var leftBehind *gitops.LeftBehind
 	if !baseIsCurrent {
 		if err := core.EnsureLocalBranchDoesNotExist(workspace, sanitized); err != nil {
+			return GitWorkspaceState{}, fmt.Errorf("create branch: %w", err)
+		}
+		if leftBehind, err = core.DetachedOrphans(workspace); err != nil {
 			return GitWorkspaceState{}, fmt.Errorf("create branch: %w", err)
 		}
 	}
@@ -242,11 +296,7 @@ func (a *App) GitCreateBranchFrom(ws WorkspaceRef, name, baseBranch string, carr
 	if a.workspaceFiles != nil {
 		a.workspaceFiles.Invalidate(workspace)
 	}
-	state := a.workspaceState(project, workspace)
-	if _, err := a.UpdateThreadBranch(workspace, state.Branch); err != nil {
-		return GitWorkspaceState{}, fmt.Errorf("create branch: record branch on threads: %w", err)
-	}
-	return state, nil
+	return a.recordWorkspaceCheckout("create branch", project, workspace, leftBehind)
 }
 
 // errCarryRequiresCurrentBase is the ONE refusal every "Local with changes"
@@ -265,28 +315,34 @@ var errCarryRequiresCurrentBase = errors.New("'Local with changes' only applies 
 // base-is-current decision that selects between the two git sequences in
 // createBranchInWorkspace, and the carry refusal.
 //
-// currentBranch is the branch of the checkout the caller is about to mutate —
-// the one thing that must not be guessed at from the project root when the
-// caller is in a worktree.
-func resolveBranchCreatePlan(currentBranch, name, base string, carryLocalChanges bool) (string, string, bool, error) {
+// workspace is the checkout the caller is about to mutate, whose HEAD is the
+// one thing that must not be guessed at from the project root when the
+// caller is in a worktree. The base is current by gitops.Core.IsCurrentBase:
+// a branch and a tag of one name are different bases, and two tags of a
+// detached HEAD's commit are one.
+func resolveBranchCreatePlan(core *gitops.Core, workspace, name string, base gitops.Ref, carryLocalChanges bool) (string, gitops.Ref, bool, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return "", "", false, fmt.Errorf("create branch: name is required")
+		return "", gitops.Ref{}, false, fmt.Errorf("create branch: name is required")
 	}
 	sanitized := gitops.SanitizeBranchNamePreservingSlashes(name)
 	if sanitized == "" {
-		return "", "", false, fmt.Errorf("create branch: name %q is not a valid branch name", name)
+		return "", gitops.Ref{}, false, fmt.Errorf("create branch: name %q is not a valid branch name", name)
 	}
-	resolvedBase := strings.TrimSpace(base)
-	if resolvedBase == "" {
-		resolvedBase = currentBranch
+	head, err := core.Head(workspace)
+	if err != nil {
+		return "", gitops.Ref{}, false, fmt.Errorf("create branch: read HEAD: %w", err)
 	}
-	if resolvedBase == "" {
-		return "", "", false, fmt.Errorf("create branch: base branch is required")
+	resolvedBase := base
+	if resolvedBase.IsZero() {
+		resolvedBase = head.Ref()
 	}
-	baseIsCurrent := resolvedBase == currentBranch
+	baseIsCurrent, err := core.IsCurrentBase(workspace, head, resolvedBase)
+	if err != nil {
+		return "", gitops.Ref{}, false, fmt.Errorf("create branch: base: %w", err)
+	}
 	if carryLocalChanges && !baseIsCurrent {
-		return "", "", false, fmt.Errorf("create branch: %w", errCarryRequiresCurrentBase)
+		return "", gitops.Ref{}, false, fmt.Errorf("create branch: %w", errCarryRequiresCurrentBase)
 	}
 	return sanitized, resolvedBase, baseIsCurrent, nil
 }
@@ -294,16 +350,16 @@ func resolveBranchCreatePlan(currentBranch, name, base string, carryLocalChanges
 // createBranchInWorkspace performs the checkout half of "branch off base" in a
 // checkout the caller has already decided it may mutate. name must already be
 // sanitized, and baseIsCurrent must already have been computed against that
-// checkout's current branch. This helper owns the two git sequences, not the
+// checkout's current ref. This helper owns the two git sequences, not the
 // policy that chooses between them.
 //
 // The destructive branch (baseIsCurrent == false) stashes everything, checks
 // out the base, branches off it, and drops the stash. The frontend has surfaced
 // the "discards uncommitted changes" warning by the time we get here. Both
-// checkout calls route through the package's typed wrappers (Checkout /
-// CheckoutNewBranch) so flag injection in the base branch name is impossible
+// checkout calls route through the package's typed wrappers (CheckoutRef /
+// CheckoutNewBranch) so flag injection in the base name is impossible
 // regardless of the caller's input.
-func (a *App) createBranchInWorkspace(workspace, name, resolvedBase string, baseIsCurrent bool) error {
+func (a *App) createBranchInWorkspace(workspace, name string, resolvedBase gitops.Ref, baseIsCurrent bool) error {
 	core := a.gitCore()
 	if baseIsCurrent {
 		// Working tree (clean or dirty) stays attached to the new branch.
@@ -320,11 +376,11 @@ func (a *App) createBranchInWorkspace(workspace, name, resolvedBase string, base
 	if err != nil {
 		return fmt.Errorf("create branch: stash before discard: %w", err)
 	}
-	if err := core.Checkout(workspace, resolvedBase); err != nil {
+	if err := core.CheckoutRef(workspace, resolvedBase); err != nil {
 		if stashed {
 			a.restoreStashOnError(workspace, stashMessage)
 		}
-		return fmt.Errorf("create branch: checkout base %s: %w", resolvedBase, err)
+		return fmt.Errorf("create branch: checkout base %s: %w", resolvedBase.Label(), err)
 	}
 	if err := core.CheckoutNewBranch(workspace, name); err != nil {
 		if stashed {

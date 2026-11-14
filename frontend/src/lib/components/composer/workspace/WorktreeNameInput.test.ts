@@ -17,6 +17,7 @@ import {
 import { resetWorktreeIntentMaterializeForTest } from '../../../stores/worktreeIntentMaterialize';
 import { buildPane, makeThread } from '../../../../test/helpers/chat';
 import { idleWorkspaceActivity, makeWorkspaceLock } from '../../../../test/helpers/workspaceLock';
+import { __resetGitStatusStoreForTest, __seedGitStatusForTest } from '../../../stores/gitStatusStore.svelte';
 
 // Workspace interaction materializes a draft before this component can apply
 // anything. Draft and committed rows therefore use the same thread-scoped
@@ -43,12 +44,13 @@ describe('<WorktreeNameInput>', () => {
     resetBindingMocks();
     resetWorktreeIntent();
     resetWorktreeIntentMaterializeForTest();
+    __resetGitStatusStoreForTest();
   });
 
   it('renders nothing without a staged intent', async () => {
     const pane = await buildWorktreePane();
     const { queryByTestId } = render(WorktreeNameInput, {
-      props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
+      props: { pane, workspaceLock: makeWorkspaceLock() },
     });
     expect(queryByTestId('apply-worktree-intent-button')).toBeNull();
     expect(queryByTestId('new-branch-toggle')).toBeNull();
@@ -65,7 +67,7 @@ describe('<WorktreeNameInput>', () => {
     }));
 
     const { getByTestId, queryByTestId } = render(WorktreeNameInput, {
-      props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
+      props: { pane, workspaceLock: makeWorkspaceLock() },
     });
     await fireEvent.click(getByTestId('apply-worktree-intent-button'));
 
@@ -79,7 +81,7 @@ describe('<WorktreeNameInput>', () => {
   it('applies a staged new-branch worktree intent with the typed name', async () => {
     const pane = await buildWorktreePane();
     setThreadEnvMode(pane.thread!, 'new-worktree');
-    enterCreateBranchMode(pane.thread!, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread!, 'main');
     setNewBranchName(pane.thread!, 'feat/button');
     const prepare = setBindingMock('PrepareThreadWorktree', async () => ({
       ...pane.thread,
@@ -89,7 +91,7 @@ describe('<WorktreeNameInput>', () => {
     }));
 
     const { getByTestId, queryByTestId } = render(WorktreeNameInput, {
-      props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
+      props: { pane, workspaceLock: makeWorkspaceLock() },
     });
     await fireEvent.click(getByTestId('apply-worktree-intent-button'));
 
@@ -107,7 +109,7 @@ describe('<WorktreeNameInput>', () => {
 
   it('applies on Enter inside the branch-name input', async () => {
     const pane = await buildWorktreePane();
-    enterCreateBranchMode(pane.thread!, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread!, 'main');
     setNewBranchName(pane.thread!, 'feat/enter');
     const create = setBindingMock('GitCreateBranchFrom', async () => ({
       ...pane.thread,
@@ -117,7 +119,7 @@ describe('<WorktreeNameInput>', () => {
     }));
 
     const { getByTestId } = render(WorktreeNameInput, {
-      props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
+      props: { pane, workspaceLock: makeWorkspaceLock() },
     });
     await fireEvent.keyDown(getByTestId('worktree-branch-name-input'), { key: 'Enter' });
 
@@ -137,7 +139,6 @@ describe('<WorktreeNameInput>', () => {
     const { getByTestId } = render(WorktreeNameInput, {
       props: {
         pane,
-        workspaceDirty: false,
         workspaceLock: makeWorkspaceLock({
           locked: true,
           reason: 'turn 0 is active',
@@ -159,7 +160,6 @@ describe('<WorktreeNameInput>', () => {
     const { getByTestId } = render(WorktreeNameInput, {
       props: {
         pane,
-        workspaceDirty: false,
         workspaceLock: makeWorkspaceLock({ locked: true, reason: 'turn 0 is active' }),
       },
     });
@@ -171,12 +171,11 @@ describe('<WorktreeNameInput>', () => {
   // so the directory view gates it even when this thread is idle.
   it('disables a local branch create while the directory is busy', async () => {
     const pane = await buildWorktreePane();
-    enterCreateBranchMode(pane.thread!, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread!, 'main');
     setNewBranchName(pane.thread!, 'feat');
     const { getByTestId } = render(WorktreeNameInput, {
       props: {
         pane,
-        workspaceDirty: false,
         workspaceLock: makeWorkspaceLock({ locked: true, reason: 'turn 0 is active' }),
       },
     });
@@ -187,9 +186,9 @@ describe('<WorktreeNameInput>', () => {
 
   it('disables the confirm button when the branch name is empty', async () => {
     const pane = await buildWorktreePane();
-    enterCreateBranchMode(pane.thread!, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread!, 'main');
     const { getByTestId } = render(WorktreeNameInput, {
-      props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
+      props: { pane, workspaceLock: makeWorkspaceLock() },
     });
     const button = getByTestId('apply-worktree-intent-button') as HTMLButtonElement;
     expect(button.disabled).toBe(true);
@@ -209,7 +208,7 @@ describe('<WorktreeNameInput>', () => {
     });
 
     const { getByTestId } = render(WorktreeNameInput, {
-      props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
+      props: { pane, workspaceLock: makeWorkspaceLock() },
     });
     const button = getByTestId('apply-worktree-intent-button');
     await fireEvent.click(button);
@@ -228,7 +227,7 @@ describe('<WorktreeNameInput>', () => {
     });
 
     const { getByTestId } = render(WorktreeNameInput, {
-      props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
+      props: { pane, workspaceLock: makeWorkspaceLock() },
     });
     await fireEvent.click(getByTestId('apply-worktree-intent-button'));
 
@@ -252,7 +251,7 @@ describe('<WorktreeNameInput>', () => {
     }));
 
     const { getByTestId } = render(WorktreeNameInput, {
-      props: { pane, workspaceDirty: false, workspaceLock: makeWorkspaceLock() },
+      props: { pane, workspaceLock: makeWorkspaceLock() },
     });
     await fireEvent.click(getByTestId('apply-worktree-intent-button'));
 
@@ -262,5 +261,30 @@ describe('<WorktreeNameInput>', () => {
     // The thread-scoped engine moved the row itself, so nothing is left
     // pending.
     expect(worktreeIntentForThread(pane.thread).mode).toBe('local');
+  });
+
+  it('branches from the current checkout and attaches the live one, not the cached branch', async () => {
+    __seedGitStatusForTest('/repo', {
+      isRepo: true, branch: '', isDefaultBranch: false, hasChanges: false,
+      insertions: 0, deletions: 0, fileCount: 0, hasUpstream: false,
+      aheadCount: 0, behindCount: 0, hasOriginRemote: false, tag: 'v2', headCommit: 'abc1234',
+    });
+    setBindingMock('UpdateThreadBranch', async () => []);
+    const pane = await buildWorktreePane();
+    setThreadEnvMode(pane.thread!, 'new-worktree');
+    const attach = setBindingMock('AttachThreadWorktree', async () => ({
+      ...pane.thread, worktreePath: '/wt/v2', workspacePath: '/wt/v2', branch: '',
+    }));
+    const { getByTestId } = render(WorktreeNameInput, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+
+    await fireEvent.click(getByTestId('new-branch-toggle'));
+    expect(worktreeIntentForThread(pane.thread)).toMatchObject({ creatingBranch: true, newBranchBase: '' });
+
+    setThreadEnvMode(pane.thread!, 'new-worktree');
+    await waitFor(() => expect(getByTestId('new-branch-toggle')).toBeTruthy());
+    await fireEvent.click(getByTestId('apply-worktree-intent-button'));
+    await waitFor(() => expect(attach).toHaveBeenCalledWith('thread-1', 'refs/tags/v2'));
   });
 });

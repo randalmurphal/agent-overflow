@@ -373,11 +373,12 @@ func (c *Core) checkTransferWorktree(plan TransferWorktree, directory string) er
 	if strings.TrimSpace(head) != plan.Head {
 		return errors.New("transfer: prepared workspace HEAD changed")
 	}
-	branch, err := c.run(directory, "symbolic-ref", "--quiet", "--short", "HEAD")
+	// Read as readTransferWorkspace records it: the full ref, trimmed.
+	branch, err := c.run(directory, "symbolic-ref", "--quiet", "HEAD")
 	if err != nil {
 		return err
 	}
-	if (branch.exitCode != 0 && branch.exitCode != 1) || strings.TrimSpace(branch.stdout) != plan.Branch || (plan.Branch == "" && branch.exitCode != 1) {
+	if (branch.exitCode != 0 && branch.exitCode != 1) || trimBranchRef(strings.TrimSpace(branch.stdout)) != plan.Branch || (plan.Branch == "" && branch.exitCode != 1) {
 		return errors.New("transfer: prepared workspace branch changed")
 	}
 	return nil

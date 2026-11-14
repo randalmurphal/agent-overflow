@@ -1175,7 +1175,7 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
     if (!pane.thread) throw new Error('missing test thread');
     setThreadEnvMode(pane.thread, 'new-worktree');
-    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread, 'main');
     setNewBranchBase(pane.thread, 'release');
     setNewBranchName(pane.thread, 'feature/custom');
     const prepare = setBindingMock('PrepareThreadWorktree', async () => {
@@ -1538,7 +1538,7 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
     if (!pane.thread) throw new Error('missing test thread');
     setThreadEnvMode(pane.thread, 'new-worktree');
-    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread, 'main');
     setNewBranchBase(pane.thread, 'release');
     setNewBranchName(pane.thread, 'feature/custom');
     setBindingMock('ListProposedPlanComments', async () => []);
@@ -1760,7 +1760,7 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
     if (!pane.thread) throw new Error('missing test thread');
     setThreadEnvMode(pane.thread, 'new-worktree');
-    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread, 'main');
     setNewBranchBase(pane.thread, 'release');
     setNewBranchName(pane.thread, 'feature/custom');
     setBindingMock('ListProposedPlanComments', async () => []);
@@ -1871,7 +1871,7 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
     if (!pane.thread) throw new Error('missing test thread');
     setThreadEnvMode(pane.thread, 'new-worktree');
-    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread, 'main');
     setNewBranchBase(pane.thread, 'release');
     setNewBranchName(pane.thread, 'feature/custom');
     setBindingMock('ListProposedPlanComments', async () => []);
@@ -1932,7 +1932,7 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
     if (!pane.thread) throw new Error('missing test thread');
     setThreadEnvMode(pane.thread, 'new-worktree');
-    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread, 'main');
     setNewBranchBase(pane.thread, 'release');
     setNewBranchName(pane.thread, 'feature/custom');
     setBindingMock('ListProposedPlanComments', async () => []);
@@ -2088,7 +2088,7 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
     if (!pane.thread) throw new Error('missing test thread');
     setThreadEnvMode(pane.thread, 'new-worktree');
-    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread, 'main');
     setNewBranchBase(pane.thread, 'release');
     setNewBranchName(pane.thread, 'feature/custom');
 
@@ -2130,7 +2130,7 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
     if (!pane.thread) throw new Error('missing test thread');
     setThreadEnvMode(pane.thread, 'new-worktree');
-    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread, 'main');
     setNewBranchBase(pane.thread, 'release');
     setNewBranchName(pane.thread, 'feature/custom');
 
@@ -3982,7 +3982,7 @@ describe('<Composer>', () => {
       const pane = await buildPane(makeTestThread({ branch: 'main', projectId: 'project-1' }));
       const draft = await buildDraft();
       setThreadEnvMode(pane.thread!, 'new-worktree');
-      enterCreateBranchMode(pane.thread!, { workspaceDirty: false, currentBranch: 'main' });
+      enterCreateBranchMode(pane.thread!, 'main');
       setNewBranchBase(pane.thread!, 'release');
       setNewBranchName(pane.thread!, 'feature/custom');
       const prepared = deferred<ReturnType<typeof makeTestThread>>();

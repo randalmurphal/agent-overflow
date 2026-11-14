@@ -107,30 +107,6 @@ func TestFallbackProfile_RoutesBlankProviderViaAvailability(t *testing.T) {
 	}
 }
 
-func TestProfileFromThread_DropsFastModeWhenUnsupported(t *testing.T) {
-	thread := store.Thread{
-		Provider: string(provider.Claude),
-		Model:    "claude-haiku-4-5",
-		FastMode: true,
-	}
-	got := ProfileFromThread(thread)
-	if got.FastMode {
-		t.Fatalf("Haiku doesn't advertise fast-mode; expected FastMode=false, got true")
-	}
-}
-
-func TestProfileFromThread_KeepsFastModeWhenSupported(t *testing.T) {
-	thread := store.Thread{
-		Provider: string(provider.Claude),
-		Model:    "claude-opus-4-7",
-		FastMode: true,
-	}
-	got := ProfileFromThread(thread)
-	if !got.FastMode {
-		t.Fatalf("Opus 4.7 advertises fast-mode; expected FastMode=true")
-	}
-}
-
 func TestSameProfile_NormalizesRuntimeMode(t *testing.T) {
 	a := store.ChatModelProfile{Provider: "claude", Model: "x", RuntimeMode: "  approval_required  "}
 	b := store.ChatModelProfile{Provider: "claude", Model: "x", RuntimeMode: "approval_required"}
@@ -147,15 +123,21 @@ func TestSameProfile_RejectsContextWindowMismatch(t *testing.T) {
 	}
 }
 
-func TestSanitizeProfile_DropsUnsupportedFastMode(t *testing.T) {
-	in := store.ChatModelProfile{
-		Provider: string(provider.Claude),
-		Model:    "claude-haiku-4-5",
-		FastMode: true,
-	}
-	got := SanitizeProfile(in)
-	if got.FastMode {
-		t.Fatalf("SanitizeProfile should clear FastMode for non-fast-mode model")
+// The static registry does not know what the running provider supports, so
+// the pure sanitizers leave the fast-mode flag to the catalog-aware caller:
+// for a model the registry lists without it, and for one it does not list.
+func TestSanitizersLeaveFastModeToTheCaller(t *testing.T) {
+	for _, tc := range []struct{ provider, model string }{
+		{string(provider.Claude), "claude-haiku-4-5"},
+		{string(provider.Claude), "claude-newer-than-the-registry-1"},
+		{string(provider.Codex), "gpt-future-model"},
+	} {
+		if got := SanitizeProfile(store.ChatModelProfile{Provider: tc.provider, Model: tc.model, FastMode: true}); !got.FastMode {
+			t.Fatalf("SanitizeProfile cleared FastMode for %s", tc.model)
+		}
+		if got := SanitizeThread(store.Thread{Provider: tc.provider, Model: tc.model, FastMode: true}); !got.FastMode {
+			t.Fatalf("SanitizeThread cleared FastMode for %s", tc.model)
+		}
 	}
 }
 
@@ -187,21 +169,16 @@ func TestSanitizeContextWindow_FallsBackToDefaultWhenZeroAndRegistryEmpty(t *tes
 }
 
 func TestSanitizeThreadClampsModelFields(t *testing.T) {
-	// Bogus stored thread: an obviously-wrong context window and a
-	// fast-mode flag on a non-fast-mode model.
+	// Bogus stored thread: an obviously-wrong context window.
 	in := store.Thread{
 		Provider:        string(provider.Claude),
 		Model:           "claude-haiku-4-5",
 		ContextWindow:   1, // registry will reject
-		FastMode:        true,
 		ReasoningEffort: "high",
 	}
 	got := SanitizeThread(in)
 	if got.ContextWindow == 1 {
 		t.Fatalf("SanitizeThread left bogus ContextWindow untouched: %+v", got)
-	}
-	if got.FastMode {
-		t.Fatalf("SanitizeThread did not clear FastMode on non-fast-mode model: %+v", got)
 	}
 }
 
@@ -325,37 +302,6 @@ func TestIsValidContextWindow(t *testing.T) {
 	}
 }
 
-func TestSupportsStoredFastMode_RegistryHit(t *testing.T) {
-	if !SupportsStoredFastMode(string(provider.Claude), "claude-opus-4-7") {
-		t.Fatalf("Opus 4.7 advertises fast-mode")
-	}
-	if SupportsStoredFastMode(string(provider.Claude), "claude-haiku-4-5") {
-		t.Fatalf("Haiku 4.5 does not advertise fast-mode")
-	}
-}
-
-func TestSupportsStoredFastMode_CodexUnknownModelPermissive(t *testing.T) {
-	// Codex's live model catalog (not the static registry) is the source
-	// of truth for Codex fast-mode. An unknown Codex model returns true
-	// so a remembered-favorite slug isn't silently dropped on startup
-	// before the live catalog has loaded.
-	if !SupportsStoredFastMode(string(provider.Codex), "gpt-future-model") {
-		t.Fatalf("unknown Codex model should be permissive")
-	}
-}
-
-func TestSupportsStoredFastMode_CodexEmptyModelRejected(t *testing.T) {
-	if SupportsStoredFastMode(string(provider.Codex), "  ") {
-		t.Fatalf("empty Codex model should not be permissive")
-	}
-}
-
-func TestSupportsStoredFastMode_UnknownProviderRejected(t *testing.T) {
-	if SupportsStoredFastMode("bogus", "something") {
-		t.Fatalf("unknown provider should be rejected")
-	}
-}
-
 func TestHasCapability(t *testing.T) {
 	m := provider.ModelInfo{Capabilities: []string{"a", "b"}}
 	if !HasCapability(m, "a") {
@@ -408,18 +354,6 @@ func TestStoredContextWindowSurvivesLargeModelDefaultFlip(t *testing.T) {
 
 	t.Run("SanitizeThread", func(t *testing.T) {
 		got := SanitizeThread(store.Thread{
-			Provider:        string(provider.Claude),
-			Model:           model,
-			ContextWindow:   provider.ClaudeStandardContextWindow,
-			ReasoningEffort: "xhigh",
-		})
-		if got.ContextWindow != provider.ClaudeStandardContextWindow {
-			t.Fatalf("stored 200k rewritten to %d", got.ContextWindow)
-		}
-	})
-
-	t.Run("ProfileFromThread", func(t *testing.T) {
-		got := ProfileFromThread(store.Thread{
 			Provider:        string(provider.Claude),
 			Model:           model,
 			ContextWindow:   provider.ClaudeStandardContextWindow,

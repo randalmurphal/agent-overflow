@@ -14,7 +14,6 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Folder from '@lucide/svelte/icons/folder';
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
-  import GitBranchIcon from '@lucide/svelte/icons/git-branch';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
@@ -58,6 +57,7 @@
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
   import Button from '../../primitives/Button.svelte';
+  import { checkoutDisplay, checkoutIcon, checkoutOf, type CheckoutDisplay } from '../../../utils/checkout';
 
   interface Props {
     pane: ThreadPane;
@@ -69,7 +69,7 @@
   interface ConfirmState {
     path: string;
     label: string;
-    branch: string;
+    ref: CheckoutDisplay | null;
     status: WorktreeStatus | null;
     loading: boolean;
     pending: boolean;
@@ -319,11 +319,23 @@
     return label ? formatPathLabel(label) : directoryName(wt);
   }
 
-  // Worktree directories are named after their branch by default, so the
-  // branch is shown only when it differs from the directory name.
-  function distinctBranch(wt: WorktreeListItem): string {
-    const branch = wt.branch ?? '';
-    return branch === directoryName(wt) ? '' : branch;
+  // What a worktree is checked out on, or null when nothing is known.
+  function worktreeCheckout(wt: WorktreeListItem): CheckoutDisplay | null {
+    const display = checkoutDisplay(checkoutOf({ branch: wt.branch, tag: wt.tag, headCommit: wt.head }));
+    return display.kind === 'none' ? null : display;
+  }
+
+  // Worktree directories are named after their branch or tag by default, so
+  // the checkout leads the row only when it differs from the directory name.
+  // A tag of the same name still shows as the trailing tag icon: it is the
+  // only sign the worktree is on no branch.
+  function leadingRef(wt: WorktreeListItem): CheckoutDisplay | null {
+    const ref = worktreeCheckout(wt);
+    return ref && ref.name !== directoryName(wt) ? ref : null;
+  }
+
+  function trailingTag(wt: WorktreeListItem): boolean {
+    return worktreeCheckout(wt)?.kind === 'tag' && !leadingRef(wt);
   }
 
   // A worktree git still registers whose directory is gone: nothing can run
@@ -336,8 +348,8 @@
   }
 
   function worktreeRowLabel(wt: WorktreeListItem): string {
-    const branch = distinctBranch(wt);
-    return branch ? `${branch} · ${worktreeName(wt)}` : worktreeName(wt);
+    const ref = leadingRef(wt);
+    return ref ? `${ref.label} · ${worktreeName(wt)}` : worktreeName(wt);
   }
 
   async function requestRemove(wt: WorktreeListItem): Promise<void> {
@@ -346,7 +358,7 @@
     confirm = {
       path: wt.path,
       label: worktreeName(wt),
-      branch: distinctBranch(wt),
+      ref: leadingRef(wt),
       status: null,
       loading: true,
       pending: false,
@@ -380,7 +392,7 @@
   // riskSummary instead.
   function isRiskyStatus(s: WorktreeStatus | null): boolean {
     if (!s) return false;
-    return s.dirty || s.unpushedCommits > 0;
+    return s.dirty || s.unpushedCommits > 0 || s.orphanCommits > 0;
   }
 
   function riskSummary(s: WorktreeStatus | null): string {
@@ -391,6 +403,9 @@
     }
     if (s.unpushedCommits > 0) {
       parts.push(`${s.unpushedCommits} unpushed commit${s.unpushedCommits === 1 ? '' : 's'}`);
+    }
+    if (s.orphanCommits > 0) {
+      parts.push(`${s.orphanCommits} commit${s.orphanCommits === 1 ? '' : 's'} on no branch`);
     }
     if (!s.hasUpstream && s.branch) {
       parts.push('no upstream');
@@ -443,10 +458,13 @@
   }
 </script>
 
-<!-- The icon trails the branch so every worktree row's text starts at the
-     same column whether or not it shows a branch. -->
-{#snippet branchName(branch: string)}
-  {branch}<span class="ml-1 inline-flex align-[-0.125em] text-fg-hint" aria-hidden="true"><Icon icon={GitBranchIcon} size={12} strokeWidth={2} /></span>
+<!-- The icon trails the ref so every worktree row's text starts at the
+     same column whether or not it shows one. -->
+{#snippet refIcon(kind: CheckoutDisplay['kind'])}
+  <span class="ml-1 inline-flex align-[-0.125em] text-fg-hint" aria-hidden="true" data-checkout-kind={kind}><Icon icon={checkoutIcon(kind)} size={12} strokeWidth={2} /></span>
+{/snippet}
+{#snippet refName(ref: CheckoutDisplay)}
+  {ref.label}{@render refIcon(ref.kind)}
 {/snippet}
 
 {#if !hideTrigger}
@@ -516,8 +534,8 @@
           >
             <div class="text-fg truncate">
               Remove
-              {#if confirm.branch}
-                <span class="text-fg-hint">{@render branchName(confirm.branch)} ·</span>
+              {#if confirm.ref}
+                <span class="text-fg-hint">{@render refName(confirm.ref)} ·</span>
               {/if}
               <span class="font-medium">{confirm.label}</span>?
             </div>
@@ -594,7 +612,8 @@
             onAction={() => requestRemove(wt)}
           >
             {#snippet labelContent()}
-              {#if distinctBranch(wt)}{@render branchName(distinctBranch(wt))}{' · '}{/if}{worktreeName(wt)}
+              {@const ref = leadingRef(wt)}
+              {#if ref}{@render refName(ref)}{' · '}{/if}{worktreeName(wt)}{#if trailingTag(wt)}{@render refIcon('tag')}{/if}
               <!-- The warning color keeps the marker legible on a dimmed row. -->
               {#if wt.missing}<span class="ml-1.5 text-xs text-warning">missing</span>{/if}
             {/snippet}

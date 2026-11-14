@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -22,7 +23,11 @@ type ModelPolicy interface {
 	Sanitize(profile store.ChatModelProfile) store.ChatModelProfile
 	SupportsReasoningEffort(providerName, model, effort string) bool
 	CoerceReasoningEffort(providerName, model, effort string) string
+	// SupportsFastMode judges a fast-mode choice the caller makes now;
+	// SavedFastModeStands judges one inherited from a remembered profile,
+	// which also stands while the provider has reported no capabilities.
 	SupportsFastMode(providerName, model string) bool
+	SavedFastModeStands(providerName, model string) bool
 	// ContextWindowOptions resolves the selectable context windows against the
 	// best catalog available (merged/live, not just the static registry), so a
 	// wire-only model's windows validate and default correctly.
@@ -36,21 +41,23 @@ type ModelPolicy interface {
 	DefaultModel(providerName string) string
 }
 
-// WorktreeCut describes one fresh worktree. Branch is the branch it checks
-// out, or empty for a generated name. With no Base and no BaseLocal, a
-// Branch that already exists, locally or on origin, is checked out as it
-// is. Otherwise Branch is created from Base, empty for the project's
-// current branch. BaseLocal starts from Base's local head with no fetch;
-// otherwise the cut starts from origin's head of Base when origin can be
-// reached and has it.
+// WorktreeCut describes one fresh worktree. Target is what the name typed
+// for it resolved to (gitops.Core.ResolveWorktreeTarget), and the cut
+// decides nothing about it again: an existing branch or tag is checked out
+// as it is, a tag detached and with no branch, and takes no Base; a branch
+// that does not exist is created, named exactly Target.Ref.Name, from
+// Base, a branch name or tag wire ref, empty for the project's current
+// branch. BaseLocal starts from Base's local head with no fetch; otherwise
+// the cut starts from origin's head of a branch Base when origin can be
+// reached and has it. A tag Base is cut locally.
 type WorktreeCut struct {
-	Branch    string
+	Target    gitops.WorktreeTarget
 	Base      string
 	BaseLocal bool
 }
 
 // CutWorktree is a worktree a cut made: where it is, the branch it checks
-// out, and whether the cut made that branch (a new one, or the local branch
+// out ("" for a tag), and whether the cut made that branch (a new one, or the local branch
 // of one only origin had), which undoing the cut deletes.
 type CutWorktree struct {
 	Path          string

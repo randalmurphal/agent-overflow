@@ -29,15 +29,16 @@ type CreateOptions struct {
 	AutoCompactStandardPercent *int
 	AutoCompactExtendedPercent *int
 	RuntimeMode                string
-	WorktreeBranch             string
-	// WorktreeBase is the branch WorktreeBranch starts from; empty means
-	// the project's current branch. WorktreeBaseLocal starts from its local
-	// head with no fetch instead of origin's head.
-	WorktreeBase      string
-	WorktreeBaseLocal bool
+	// Worktree, when set, is the fresh worktree to cut for the thread.
+	// WorktreePath, when set, takes precedence.
+	Worktree          *WorktreeCut
 	WorkspaceOverride string
 	WorktreePath      string
-	Branch            string
+	// Branch is a branch name git or a thread row already holds (a
+	// worktree's checkout, a sibling thread's branch), recorded verbatim:
+	// tidying it would name a different branch. A name git would refuse is
+	// an error.
+	Branch string
 	// CreatedByDevice names the screen this call came from, or "" when the
 	// backend created the thread on its own behalf. Root reads it off the
 	// connection; this package only records it.
@@ -79,8 +80,8 @@ type Defaults struct {
 	WorkspacePath   string
 }
 
-// Create creates a thread, cutting its worktree when opts.WorktreeBranch
-// names one. A failure after the cut removes the worktree and a branch the
+// Create creates a thread, cutting its worktree when opts.Worktree
+// describes one. A failure after the cut removes the worktree and a branch the
 // cut made: the row is written and read back in one transaction, the last
 // step that can fail, so a failed creation leaves no row either.
 func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
@@ -189,11 +190,14 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 	} else {
 		effort = models.CoerceReasoningEffort(providerName, model, effort)
 	}
-	if fastMode && !models.SupportsFastMode(providerName, model) {
+	if fastMode {
 		if opts.FastMode != nil {
-			return store.Thread{}, fmt.Errorf("create thread: fast mode unsupported for %s/%s", providerName, model)
+			if !models.SupportsFastMode(providerName, model) {
+				return store.Thread{}, fmt.Errorf("create thread: fast mode unsupported for %s/%s", providerName, model)
+			}
+		} else if !models.SavedFastModeStands(providerName, model) {
+			fastMode = false
 		}
-		fastMode = false
 	}
 	contextOptions := models.ContextWindowOptions(providerName, model)
 	if opts.ContextWindow != 0 && len(contextOptions) > 0 && !chatmodel.ContextWindowSupported(contextOptions, contextWindow) {
@@ -209,6 +213,12 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 		return store.Thread{}, fmt.Errorf("create thread: auto-compact extended percent must be between 0 and 90")
 	}
 
+	explicitBranch := strings.TrimSpace(opts.Branch)
+	if explicitBranch != "" {
+		if err := gitops.ValidateBranchName(explicitBranch); err != nil {
+			return store.Thread{}, fmt.Errorf("create thread: branch: %w", err)
+		}
+	}
 	workspace := strings.TrimSpace(opts.WorkspaceOverride)
 	if workspace == "" {
 		workspace = project.Path
@@ -231,23 +241,15 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 		}
 		workspace = path
 		worktreePath = path
-		branch = strings.TrimSpace(opts.Branch)
+		branch = explicitBranch
 		if branch == "" {
 			branch = worktreeBranch
-		} else {
-			branch = gitops.SanitizeBranchNamePreservingSlashes(branch)
 		}
-	case strings.TrimSpace(opts.WorktreeBranch) != "":
+	case opts.Worktree != nil:
 		if s.deps.Workspace == nil {
 			return store.Thread{}, fmt.Errorf("create thread: worktree: workspace resolver unavailable")
 		}
-		made, createErr := s.deps.Workspace.CreateWorktree(
-			s.deps.LifeContext(), project.Path, WorktreeCut{
-				Branch:    strings.TrimSpace(opts.WorktreeBranch),
-				Base:      strings.TrimSpace(opts.WorktreeBase),
-				BaseLocal: opts.WorktreeBaseLocal,
-			},
-		)
+		made, createErr := s.deps.Workspace.CreateWorktree(s.deps.LifeContext(), project.Path, *opts.Worktree)
 		if createErr != nil {
 			return store.Thread{}, fmt.Errorf("create thread: worktree: %w", createErr)
 		}
@@ -257,9 +259,7 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 		branch = made.Branch
 		cutWorktree = true
 	default:
-		if explicit := strings.TrimSpace(opts.Branch); explicit != "" {
-			branch = gitops.SanitizeBranchNamePreservingSlashes(explicit)
-		}
+		branch = explicitBranch
 	}
 	if branch == "" && s.deps.Workspace != nil {
 		branch = s.deps.Workspace.CurrentBranch(workspace)
