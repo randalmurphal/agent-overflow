@@ -378,7 +378,7 @@ func (a *App) notePersonStop(threadID string, turnIndex int) {
 func (a *App) turnSettlesAReceipt(threadID string, turnIndex int) bool {
 	tokens, _ := a.runningReceiptTokens(threadID)
 	for _, token := range tokens {
-		receipt, found, err := a.store.GetThreadRequestReceipt(token)
+		receipt, found, err := a.deliveredReceipt(token)
 		if err != nil {
 			log.Printf("thread tools: read request %s of %s: %v", token, threadID, err)
 			continue

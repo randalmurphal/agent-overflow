@@ -596,7 +596,15 @@ func (a *App) settleReadRequestsForHandOff(oldThreadID string) []string {
 			continue
 		}
 		if receipt.TurnID == "" && !a.receiptTakenIn(oldThreadID, receipt.Token) {
-			continue
+			// Unread, unless a delivery whose binding failed to write
+			// named the turn that read it.
+			delivered, found, err := a.deliveredReceipt(receipt.Token)
+			if err != nil {
+				log.Printf("assistants: hand off %s: read request %s: %v", oldThreadID, receipt.Token, err)
+			}
+			if err != nil || !found || delivered.TurnID == "" {
+				continue
+			}
 		}
 		applied, err := a.settleThreadReceiptNoScratch(receipt.Token, []string{store.ThreadReceiptRunning}, store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptInterrupted,

@@ -708,7 +708,7 @@ func (t threadToolsApp) requestDispatched(token, targetThreadID string) {
 func (t threadToolsApp) returnRequestNotTakenIn(threadID, token string) bool {
 	unlock := t.app.threadRequestSettleLock(token)
 	defer unlock()
-	receipt, found, err := t.app.store.GetThreadRequestReceipt(token)
+	receipt, found, err := t.app.deliveredReceiptLocked(token)
 	if err != nil {
 		log.Printf("thread tools: return request %s: %v", token, err)
 		return false

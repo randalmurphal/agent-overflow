@@ -1,13 +1,18 @@
 package app
 
-import "log"
+import (
+	"log"
+
+	"agent-overflow/internal/store"
+)
 
 // Triage reports a delivery fact once: the turn a request's message was
 // delivered into (bindDeliveredRequests) and the echo of an answer, a
 // reminder or a completion (confirmOwnedDeliveries). The report is the only
 // evidence there will be, so a store write that records it and fails keeps
-// the fact here, as resolved, until a write lands: a turn's end or a
-// session's end tries a receipt's binding again, and a later echo, a turn
+// the fact here, as resolved, until a write lands: every read of a
+// receipt's turn tries its binding again and reads the kept one while the
+// write fails (deliveredReceiptLocked), and a later echo, a turn
 // end or a give-back tries an echo's confirmation again. Nothing is sent to
 // the provider again. Each entry goes once its write lands or its receipt
 // settles, so the maps hold only facts whose write is failing.
@@ -71,19 +76,42 @@ func (a *App) keptReceiptBinding(token string) (receiptBinding, bool) {
 	return b, ok
 }
 
-// retryKeptReceiptBindingLocked writes again the binding a failed write
-// left for token. kept is false when there is none. Caller holds the
-// token's settle lock.
-func (a *App) retryKeptReceiptBindingLocked(token string) (b receiptBinding, kept bool, err error) {
-	b, kept = a.keptReceiptBinding(token)
-	if !kept {
-		return receiptBinding{}, false, nil
+// deliveredReceiptLocked reads token's receipt as its deliveries bound it:
+// a binding or rebind a failed write kept is written again first, and while
+// that write keeps failing the kept binding is still the receipt's turn.
+// Every reader that picks a receipt's turn under the settle lock reads it
+// here, so none settles, stops or gives back a request against a turn its
+// delivery moved it from. Caller holds the token's settle lock.
+func (a *App) deliveredReceiptLocked(token string) (store.ThreadRequestReceipt, bool, error) {
+	b, kept := a.keptReceiptBinding(token)
+	if kept {
+		if _, err := a.writeReceiptBindingLocked(token, b); err != nil {
+			log.Printf("thread tools: bind receipt %s to turn %d again: %v", token, b.turnIndex, err)
+		} else {
+			kept = false
+		}
 	}
-	_, err = a.writeReceiptBindingLocked(token, b)
-	if err != nil {
-		log.Printf("thread tools: bind receipt %s to turn %d again: %v", token, b.turnIndex, err)
+	receipt, found, err := a.store.GetThreadRequestReceipt(token)
+	if err != nil || !found || !kept {
+		return receipt, found, err
 	}
-	return b, true, err
+	// As the write would leave it (BindThreadReceiptTurn,
+	// RebindThreadReceiptTurn). A binding is kept only for an open receipt
+	// it could still move: a write that finds one bound elsewhere or
+	// settled lands, changing nothing, and a settlement forgets it.
+	receipt.State = store.ThreadReceiptRunning
+	receipt.MessageItemID = b.itemID
+	receipt.TurnID = threadRequestTurnKey(b.threadID, b.turnIndex)
+	receipt.OwnTurn = b.ownTurn
+	return receipt, true, nil
+}
+
+// deliveredReceipt is deliveredReceiptLocked for a reader that holds no
+// settle lock.
+func (a *App) deliveredReceipt(token string) (store.ThreadRequestReceipt, bool, error) {
+	unlock := a.threadRequestSettleLock(token)
+	defer unlock()
+	return a.deliveredReceiptLocked(token)
 }
 
 // confirmOwnedEcho writes the confirmation of an echoed answer, reminder or
