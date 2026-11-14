@@ -172,12 +172,16 @@ func (a *App) recoverAgentWakesAtBoot() {
 // fireAgentWake claims one interval row and runs it off the sweep's
 // goroutine: a watch script can take minutes, and a loop's delivery takes the
 // thread's lock and can start its session. It reports whether the run
-// started: false is a lost claim, a failed one (logged) or a shutdown.
+// started: false is a lost claim, a failed one (logged) or a shutdown. The
+// claim and the run's registration are one step under the wake lifecycle
+// lock, so a cancel never lands between them.
 func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFire) bool {
 	_, next := agentWakeElapsed(row.NextAt, now.UnixMilli(), row.IntervalSeconds*1000)
 	if next <= now.UnixMilli() {
 		next = now.UnixMilli() + row.IntervalSeconds*1000
 	}
+	a.agentWakes.lifecycle.Lock()
+	defer a.agentWakes.lifecycle.Unlock()
 	claimedRow, claimed, err := a.store.ClaimAgentWake(row, now.UnixMilli(), next, fire.missed)
 	if err != nil {
 		logThreadRequestSweep("claim "+row.Kind+" "+row.ID, err)
@@ -188,9 +192,12 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 	}
 	a.emitAgentWakeRow(row.ThreadID, claimedRow)
 	row = claimedRow
+	if a.agentWakeClaimedForTest != nil {
+		a.agentWakeClaimedForTest(row)
+	}
 	// False when shutting down: the row stays `running`, and the next
 	// boot records the cut and runs it again.
-	return a.startAgentWakeRun(row, func(ctx context.Context, run *agentWakeRun) {
+	return a.registerAgentWakeRunLocked(row, func(ctx context.Context, run *agentWakeRun) {
 		select {
 		case a.agentWakeSlots() <- struct{}{}:
 		case <-ctx.Done():
@@ -646,6 +653,14 @@ func readAgentWatchLines(stdout io.Reader, lines chan<- agentWatchLine) {
 // run writes its row when it ends. False, with nothing run, when one is
 // already registered for it or the app is shutting down.
 func (a *App) startAgentWakeRun(row store.AgentWake, body func(ctx context.Context, run *agentWakeRun)) bool {
+	a.agentWakes.lifecycle.Lock()
+	defer a.agentWakes.lifecycle.Unlock()
+	return a.registerAgentWakeRunLocked(row, body)
+}
+
+// registerAgentWakeRunLocked is startAgentWakeRun for a caller that holds
+// the wake lifecycle lock.
+func (a *App) registerAgentWakeRunLocked(row store.AgentWake, body func(ctx context.Context, run *agentWakeRun)) bool {
 	a.agentWakes.mu.Lock()
 	defer a.agentWakes.mu.Unlock()
 	if a.shuttingDown.Load() || a.lifeCtx().Err() != nil {

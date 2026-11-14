@@ -89,6 +89,75 @@ func TestAnArchiveLeavesSchedulesRegisteredAfterTheThreadCameBack(t *testing.T) 
 	}
 }
 
+// A cancel that lands while a fire has claimed its watch but not yet
+// registered the run still stops that run, whichever door cancels: the
+// cancel waits for the registration, so no run outlives it uncancelled.
+func TestACancelDuringAFiresAdmissionStopsItsRun(t *testing.T) {
+	t.Parallel()
+	for _, door := range []struct {
+		name   string
+		cancel func(a *App, row store.AgentWake) error
+	}{
+		{"archive", func(a *App, row store.AgentWake) error { return a.ArchiveThread(row.ThreadID) }},
+		{"thread_cancel", func(a *App, row store.AgentWake) error {
+			_, _, err := a.cancelAgentWake(row.ThreadID, row.Label, row.Kind)
+			return err
+		}},
+		{"move", func(a *App, row store.AgentWake) error {
+			return a.cancelAgentWakesForThread(row.ThreadID, "cancelled: the thread was moved to another computer")
+		}},
+	} {
+		t.Run(door.name, func(t *testing.T) {
+			t.Parallel()
+			a, _ := newAppForFlushQueueRPC(t)
+			a.startSessionFn = func(string) error { return nil }
+			thread := noticeTestThread(t, a, "admission-"+door.name)
+			row := registerTestWake(t, a, store.AgentWake{
+				ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "poll", Command: "true",
+				IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli(),
+			})
+			// Every slot taken: an admitted run waits for one until it is
+			// stopped, so it stays registered for the check below.
+			slots := a.agentWakeSlots()
+			for range cap(slots) {
+				slots <- struct{}{}
+			}
+			defer func() {
+				for range cap(slots) {
+					<-slots
+				}
+			}()
+			cancelled := make(chan error, 1)
+			a.agentWakeClaimedForTest = func(store.AgentWake) {
+				go func() { cancelled <- door.cancel(a, row) }()
+				// The cancel cannot finish here: it waits for the
+				// registration. Give it the time it would take otherwise.
+				select {
+				case err := <-cancelled:
+					cancelled <- err
+				case <-time.After(200 * time.Millisecond):
+				}
+			}
+			if !a.fireAgentWake(row, time.UnixMilli(row.NextAt+1), agentWakeFire{at: row.NextAt + 1}) {
+				t.Fatal("the fire did not start")
+			}
+			if err := <-cancelled; err != nil {
+				t.Fatalf("cancel: %v", err)
+			}
+			a.agentWakes.mu.Lock()
+			run := a.agentWakes.runs[row.ID]
+			a.agentWakes.mu.Unlock()
+			if run != nil && !run.wasStopped() {
+				t.Fatal("the run admitted around the cancel is still running")
+			}
+			stored, found, err := a.store.GetAgentWake(row.ID)
+			if err != nil || !found || stored.State != store.AgentWakeCancelled {
+				t.Fatalf("row %+v found %v, %v; want cancelled", stored, found, err)
+			}
+		})
+	}
+}
+
 // An archive whose loops and watches could not be cancelled says so, though
 // the archive itself landed, and still stops what they had running.
 func TestAnArchiveReportsSchedulesItCouldNotCancel(t *testing.T) {

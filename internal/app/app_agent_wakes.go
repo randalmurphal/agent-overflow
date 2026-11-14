@@ -36,7 +36,13 @@ const (
 
 // agentWakeState is the supervisor's in-process state. Zero value ready.
 type agentWakeState struct {
-	mu sync.Mutex
+	// lifecycle orders a run's admission against every cancel: a fire's
+	// claim and its run's registration are one step under it, and so are a
+	// cancel's durable write and its stop of the runs. A cancel therefore
+	// either comes first, and the claim fails, or finds the run registered
+	// and stops it. Taken before mu, and never while holding it.
+	lifecycle sync.Mutex
+	mu        sync.Mutex
 	// floorOverride replaces agentWakeFloor on a harness boot.
 	floorOverride time.Duration
 	// runs is every run in flight by wake id: an interval run between its
@@ -172,12 +178,16 @@ func (t threadToolsApp) CancelWake(_ context.Context, caller threadtools.Caller,
 // Not cancelled is no live row of that kind under that label. A wake that
 // could not be taken back is an error, with the row already cancelled.
 func (a *App) cancelAgentWake(threadID, label, kind string) (store.AgentWake, bool, error) {
+	a.agentWakes.lifecycle.Lock()
 	row, cancelled, err := a.store.CancelAgentWake(threadID, label, kind, agentWakeOutcomeCancelled)
+	if err == nil && cancelled {
+		a.emitAgentWakeChanged(threadID, row.ID)
+		a.stopAgentWakeRun(row.ID)
+	}
+	a.agentWakes.lifecycle.Unlock()
 	if err != nil || !cancelled {
 		return store.AgentWake{}, false, err
 	}
-	a.emitAgentWakeChanged(threadID, row.ID)
-	a.stopAgentWakeRun(row.ID)
 	if err := a.withdrawCancelledAgentWakes(row.ThreadID, row.ID); err != nil {
 		log.Printf("agent wakes: %v", err)
 		return store.AgentWake{}, false, fmt.Errorf("the %s %q is cancelled, but its wake already queued could not be taken back and may still arrive", row.Kind, row.Label)
@@ -245,11 +255,13 @@ func agentWakeToolState(row store.AgentWake) threadtools.WakeState {
 // a deleted thread's queue goes with it. The runs stop even when the rows
 // could not be cancelled, and that failure is returned.
 func (a *App) cancelAgentWakesForThread(threadID, outcome string) error {
+	a.agentWakes.lifecycle.Lock()
 	ids, err := a.store.CancelAgentWakesForThread(threadID, "", outcome)
 	if len(ids) > 0 {
 		a.emitAgentWakesRemoved(threadID, ids)
 	}
 	a.stopAgentWakeRunsForThread(threadID)
+	a.agentWakes.lifecycle.Unlock()
 	if err != nil {
 		return fmt.Errorf("cancel the loops and watches of %s: %w", threadID, err)
 	}

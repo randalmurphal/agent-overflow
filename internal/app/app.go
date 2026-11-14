@@ -703,6 +703,10 @@ type App struct {
 	// remoteReplySettledForTest, when set, runs in a parked remote call's
 	// after-response work between the dismissal and the end of its wait.
 	remoteReplySettledForTest func()
+	// agentWakeClaimedForTest, when set, runs in a fire between its claim
+	// and its run's registration (fireAgentWake), under the wake lifecycle
+	// lock, so a test can cancel the row at that moment.
+	agentWakeClaimedForTest func(row store.AgentWake)
 	// cancelReadForTest, when set, runs in a request cancel between its read
 	// of the receipt and its settlement (stopThreadRequestWorkFor), so a
 	// test can settle the receipt at that moment.

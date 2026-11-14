@@ -966,7 +966,9 @@ Kinds:
   running and wakes the thread once per stdout line, batching lines
   that arrive within one second. Stderr is captured and shown with the
   wake; a non-zero exit is an outcome, not a wake, and shows as an
-  error on the row. Watches are limited to an assistant's current
+  error on the row. Cancelling a watch, by any door, stops a run in
+  flight with its process group, one whose fire has just claimed the
+  row included. Watches are limited to an assistant's current
   thread. A handoff moves both kinds to the successor
   ([Next thread](#next-thread)).
 
