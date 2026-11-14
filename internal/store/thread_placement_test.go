@@ -2,20 +2,20 @@ package store
 
 import (
 	"errors"
-	"maps"
+	"slices"
 	"testing"
 )
 
 // spawnLocal records a local spawn of target by caller, as the naming write
-// leaves it, nested when nest is set.
-func spawnLocal(t *testing.T, s *Store, token, caller, target string, nest bool) {
+// leaves it, owned when own is set.
+func spawnLocal(t *testing.T, s *Store, token, caller, target string, own bool) {
 	t.Helper()
 	if _, err := s.AcceptLocalThreadRequest(ThreadRequest{
 		Token: token, CallerThreadID: caller, Kind: ThreadRequestSpawn, State: ThreadRequestUnconfirmed,
 	}, ThreadRequestReceipt{Token: token, OwnerDeviceID: "device", Kind: ThreadRequestSpawn, SourceThreadID: caller}); err != nil {
 		t.Fatalf("accept %s: %v", token, err)
 	}
-	if err := s.NameLocalThreadRequestTarget(token, target, nest); err != nil {
+	if err := s.NameLocalThreadRequestTarget(token, target, own); err != nil {
 		t.Fatalf("name %s: %v", token, err)
 	}
 }
@@ -49,7 +49,8 @@ func TestPlacementCheckRefusesInvalidCombinations(t *testing.T) {
 	}{
 		"grouped without a group":  {`UPDATE threads SET placement = 'grouped' WHERE id = 'plain'`, nil},
 		"a group while standalone": {`UPDATE threads SET group_id = ? WHERE id = 'plain'`, []any{group.ID}},
-		"a group while nested":     {`UPDATE threads SET placement = 'nested' WHERE id = 'member'`, nil},
+		"a group while owned":      {`UPDATE threads SET placement = 'owned' WHERE id = 'member'`, nil},
+		"the retired nested value": {`UPDATE threads SET placement = 'nested' WHERE id = 'plain'`, nil},
 		"ungrouped while grouped":  {`UPDATE threads SET group_id = NULL WHERE id = 'member'`, nil},
 		"an unknown placement":     {`UPDATE threads SET placement = 'floating' WHERE id = 'plain'`, nil},
 	} {
@@ -75,8 +76,8 @@ func TestSpawnedChildMovesBetweenPlacements(t *testing.T) {
 	}
 	mustCreateAssistant(t, s, "agent", "/h/agent")
 	spawnLocal(t, s, "tok", "agent", "child", true)
-	if got, _ := placementOf(t, s, "child"); got != PlacementNested {
-		t.Fatalf("spawned child = %s, want nested", got)
+	if got, _ := placementOf(t, s, "child"); got != PlacementOwned {
+		t.Fatalf("spawned child = %s, want owned", got)
 	}
 	group, err := s.CreateThreadGroup(defaultTestProjectID, "Sweep")
 	if err != nil {
@@ -96,29 +97,29 @@ func TestSpawnedChildMovesBetweenPlacements(t *testing.T) {
 	if got, groupID := placementOf(t, s, "child"); got != PlacementStandalone || groupID != "" {
 		t.Errorf("ungrouped child = %s in %q, want standalone", got, groupID)
 	}
-	if _, err := s.SetThreadPlacement([]string{"child"}, PlacementNested); err != nil {
+	if _, err := s.SetThreadPlacement([]string{"child"}, PlacementOwned); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SetThreadGroup([]string{"child"}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := placementOf(t, s, "child"); got != PlacementNested {
-		t.Errorf("an ungroup of a nested child made it %s", got)
+	if got, _ := placementOf(t, s, "child"); got != PlacementOwned {
+		t.Errorf("an ungroup of an owned child made it %s", got)
 	}
-	// Grouped to standalone or nested through SetThreadPlacement leaves the group.
+	// Grouped to standalone or owned through SetThreadPlacement leaves the group.
 	if _, err := s.SetThreadGroup([]string{"child"}, group.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SetThreadPlacement([]string{"child"}, PlacementNested); err != nil {
+	if _, err := s.SetThreadPlacement([]string{"child"}, PlacementOwned); err != nil {
 		t.Fatal(err)
 	}
-	if got, groupID := placementOf(t, s, "child"); got != PlacementNested || groupID != "" {
-		t.Errorf("nested from a group = %s in %q", got, groupID)
+	if got, groupID := placementOf(t, s, "child"); got != PlacementOwned || groupID != "" {
+		t.Errorf("owned from a group = %s in %q", got, groupID)
 	}
 }
 
 // SetThreadPlacement refuses what the schema cannot say and what nothing
-// would nest under, and rolls the whole call back.
+// would own, and rolls the whole call back.
 func TestSetThreadPlacementRefusals(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"agent", "child", "plain"} {
@@ -127,19 +128,19 @@ func TestSetThreadPlacementRefusals(t *testing.T) {
 	mustCreateAssistant(t, s, "agent", "/h/agent")
 	spawnLocal(t, s, "tok", "agent", "child", false)
 	if got, _ := placementOf(t, s, "child"); got != PlacementStandalone {
-		t.Fatalf("a spawn named without nest = %s, want standalone", got)
+		t.Fatalf("a spawn named without own = %s, want standalone", got)
 	}
 	for name, tc := range map[string]struct {
 		ids       []string
 		placement string
 		want      error
 	}{
-		"nested with no link":        {[]string{"plain"}, PlacementNested, ErrThreadNotSpawned},
+		"owned with no link":         {[]string{"plain"}, PlacementOwned, ErrThreadNotSpawned},
 		"the assistant's own":        {[]string{"agent"}, PlacementStandalone, ErrStandingAgentPlaced},
 		"grouped with no group":      {[]string{"child"}, PlacementGrouped, ErrPlacementNeedsGroup},
 		"an unknown placement":       {[]string{"child"}, "floating", ErrInvalidPlacement},
 		"a missing thread":           {[]string{"gone"}, PlacementStandalone, ErrThreadGone},
-		"one refusal in a bulk call": {[]string{"child", "plain"}, PlacementNested, ErrThreadNotSpawned},
+		"one refusal in a bulk call": {[]string{"child", "plain"}, PlacementOwned, ErrThreadNotSpawned},
 	} {
 		if _, err := s.SetThreadPlacement(tc.ids, tc.placement); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", name, err, tc.want)
@@ -160,7 +161,7 @@ func TestPlacementChangeUnpins(t *testing.T) {
 	if _, _, err := s.PinThread("child"); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := s.SetThreadPlacement([]string{"child"}, PlacementNested)
+	rows, err := s.SetThreadPlacement([]string{"child"}, PlacementOwned)
 	if err != nil || rows[0].PinnedAt == nil {
 		t.Fatalf("an unchanged placement = %+v, %v; want the pin kept", rows, err)
 	}
@@ -209,12 +210,12 @@ func TestInsertDerivesPlacementFromGroup(t *testing.T) {
 	}
 	grouped := makeThread("grouped", "claude")
 	grouped.GroupID = group.ID
-	grouped.Placement = PlacementNested
+	grouped.Placement = PlacementOwned
 	if err := s.CreateThread(grouped); err != nil {
 		t.Fatal(err)
 	}
 	plain := makeThread("plain", "claude")
-	plain.Placement = PlacementNested
+	plain.Placement = PlacementOwned
 	if err := s.CreateThread(plain); err != nil {
 		t.Fatal(err)
 	}
@@ -226,11 +227,11 @@ func TestInsertDerivesPlacementFromGroup(t *testing.T) {
 	}
 }
 
-// The spawn's naming write nests its thread only when asked, and never
-// pulls a thread the spawn put in a group out of it.
-func TestNamingWriteNestsOnRequest(t *testing.T) {
+// The spawn's naming write makes its thread owned only when asked, and
+// never pulls a thread the spawn put in a group out of it.
+func TestNamingWriteOwnsOnRequest(t *testing.T) {
 	s := newTestStore(t)
-	for _, id := range []string{"agent", "nested", "standalone", "grouped"} {
+	for _, id := range []string{"agent", "owned", "standalone", "grouped"} {
 		mustCreateThread(t, s, id)
 	}
 	group, err := s.CreateThreadGroup(defaultTestProjectID, "Sweep")
@@ -240,19 +241,19 @@ func TestNamingWriteNestsOnRequest(t *testing.T) {
 	if _, err := s.SetThreadGroup([]string{"grouped"}, group.ID); err != nil {
 		t.Fatal(err)
 	}
-	spawnLocal(t, s, "tok-n", "agent", "nested", true)
+	spawnLocal(t, s, "tok-n", "agent", "owned", true)
 	spawnLocal(t, s, "tok-s", "agent", "standalone", false)
 	spawnLocal(t, s, "tok-g", "agent", "grouped", true)
-	for id, want := range map[string]string{"nested": PlacementNested, "standalone": PlacementStandalone, "grouped": PlacementGrouped} {
+	for id, want := range map[string]string{"owned": PlacementOwned, "standalone": PlacementStandalone, "grouped": PlacementGrouped} {
 		if got, _ := placementOf(t, s, id); got != want {
 			t.Errorf("%s = %s, want %s", id, got, want)
 		}
 	}
 }
 
-// When the last link a nested thread has is deleted, the trigger leaves it
-// standalone; a thread with another link stays nested.
-func TestNestedThreadLosingItsLinkBecomesStandalone(t *testing.T) {
+// When the last link an owned thread has is deleted, the trigger leaves it
+// standalone; a thread with another link stays owned.
+func TestOwnedThreadLosingItsLinkBecomesStandalone(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"spawner", "other", "child", "shared"} {
 		mustCreateThread(t, s, id)
@@ -269,8 +270,8 @@ func TestNestedThreadLosingItsLinkBecomesStandalone(t *testing.T) {
 	if got, _ := placementOf(t, s, "child"); got != PlacementStandalone {
 		t.Errorf("child after its spawner's delete = %s, want standalone", got)
 	}
-	if got, _ := placementOf(t, s, "shared"); got != PlacementNested {
-		t.Errorf("a thread another spawn row still names = %s, want nested", got)
+	if got, _ := placementOf(t, s, "shared"); got != PlacementOwned {
+		t.Errorf("a thread another spawn row still names = %s, want owned", got)
 	}
 }
 
@@ -308,10 +309,10 @@ func TestApplyThreadOrganizeWritesPlacement(t *testing.T) {
 	if err != nil || !result.Changed || result.Thread.Placement != PlacementStandalone || result.Thread.PinnedAt == nil {
 		t.Fatalf("organize = %+v, %v; want standalone and pinned", result, err)
 	}
-	nested := PlacementNested
+	owned := PlacementOwned
 	title := "Renamed"
-	if _, err := s.ApplyThreadOrganize("plain", ThreadOrganizeWrite{Title: &title, Placement: &nested}); !errors.Is(err, ErrThreadNotSpawned) {
-		t.Fatalf("nesting a plain thread = %v, want ErrThreadNotSpawned", err)
+	if _, err := s.ApplyThreadOrganize("plain", ThreadOrganizeWrite{Title: &title, Placement: &owned}); !errors.Is(err, ErrThreadNotSpawned) {
+		t.Fatalf("owning a plain thread = %v, want ErrThreadNotSpawned", err)
 	}
 	if row, err := s.GetThread("plain"); err != nil || row.Title == title {
 		t.Errorf("a refused organize write renamed the thread: %+v, %v", row, err)
@@ -319,9 +320,9 @@ func TestApplyThreadOrganizeWritesPlacement(t *testing.T) {
 }
 
 // A deleted thread its forks still read is kept as a holder, out of its
-// group and nested under nothing.
+// group and owned by nothing.
 func TestRetiredHolderIsStandalone(t *testing.T) {
-	for _, placement := range []string{PlacementGrouped, PlacementNested} {
+	for _, placement := range []string{PlacementGrouped, PlacementOwned} {
 		t.Run(placement, func(t *testing.T) {
 			s := readersFixture(t, 20, 1)
 			mustCreateThread(t, s, "agent")
@@ -350,9 +351,9 @@ func TestRetiredHolderIsStandalone(t *testing.T) {
 	}
 }
 
-// The naming write nests only under a source row that is there: a spawn
+// The naming write owns only under a source row that is there: a spawn
 // whose caller was deleted while its thread was being created names the
-// thread on the receipt and leaves it standalone, with no link to nest it.
+// thread on the receipt and leaves it standalone, with no link to own it.
 func TestNamingWriteWithoutItsSourceRowLeavesTheThreadStandalone(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "agent")
@@ -373,9 +374,8 @@ func TestNamingWriteWithoutItsSourceRowLeavesTheThreadStandalone(t *testing.T) {
 	}
 }
 
-// An assistant's archived past thread counts on its card, and, outside
-// every project, it takes no placement.
-func TestAnArchivedPastThreadCountsOnTheCard(t *testing.T) {
+// An assistant's past thread, outside every project, takes no placement.
+func TestAPastThreadTakesNoPlacement(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "old")
 	mustCreateThread(t, s, "new")
@@ -384,19 +384,137 @@ func TestAnArchivedPastThreadCountsOnTheCard(t *testing.T) {
 	if _, err := s.HandOffAssistant("old", "new", 10); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.ArchiveThread("old"); err != nil {
-		t.Fatal(err)
-	}
-	row, err := s.GetThread("new")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := map[string]int{"": 1}; !maps.Equal(row.ArchivedChildCounts, want) {
-		t.Fatalf("archived children = %v, want %v", row.ArchivedChildCounts, want)
-	}
-	for _, placement := range []string{PlacementStandalone, PlacementNested} {
+	for _, placement := range []string{PlacementStandalone, PlacementOwned} {
 		if _, err := s.SetThreadPlacement([]string{"old"}, placement); !errors.Is(err, ErrPlacementOutsideProjects) {
 			t.Errorf("%s for a past thread = %v, want ErrPlacementOutsideProjects", placement, err)
 		}
+	}
+}
+
+// An assistant's helper is owned from its spawn and stays owned when its
+// spawn row goes: outside every project it has no sidebar row to return to,
+// and its assistant's delete deletes it.
+func TestAHelperStaysOwnedWithoutItsLink(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "agent")
+	mustCreateAssistant(t, s, "agent", "/h/agent")
+	homeThread(t, s, "helper", "agent")
+	spawnLocal(t, s, "tok", "agent", "helper", true)
+	if got, _ := placementOf(t, s, "helper"); got != PlacementOwned {
+		t.Fatalf("spawned helper = %s, want owned", got)
+	}
+	if _, err := s.db.Exec(`DELETE FROM thread_requests WHERE token = 'tok'`); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := placementOf(t, s, "helper"); got != PlacementOwned {
+		t.Errorf("helper without its spawn row = %s, want owned", got)
+	}
+}
+
+// The sidebar's catalog reads leave an owned thread out, active or
+// archived, and so do the project's thread counts; search and the by-project
+// listing find it like any other thread. Placed standalone it is back.
+func TestCatalogLeavesOwnedThreadsOut(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"spawner", "worker", "plain"} {
+		mustCreateThread(t, s, id)
+		if err := s.InsertItem(Item{ID: id + "-msg", ThreadID: id, Kind: "user_text", Role: "user", Summary: "needle " + id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spawnLocal(t, s, "tok", "spawner", "worker", true)
+	listed := func() []string {
+		t.Helper()
+		rows, err := s.ListThreadsWithItems()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, row := range rows {
+			ids = append(ids, row.ID)
+		}
+		slices.Sort(ids)
+		return ids
+	}
+	count := func() int {
+		t.Helper()
+		projects, err := s.ListProjectsWithThreadCounts()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, project := range projects {
+			if project.Project.ID == defaultTestProjectID {
+				return project.ThreadCount
+			}
+		}
+		t.Fatalf("project %s is not listed", defaultTestProjectID)
+		return 0
+	}
+	if got := listed(); !slices.Equal(got, []string{"plain", "spawner"}) {
+		t.Errorf("catalog = %v, want the owned worker left out", got)
+	}
+	if got := count(); got != 2 {
+		t.Errorf("project thread count = %d, want 2", got)
+	}
+	hits, err := s.SearchThreadMessages("needle worker", 10)
+	if err != nil || !slices.ContainsFunc(hits, func(hit ThreadMessageHit) bool { return hit.ThreadID == "worker" }) {
+		t.Errorf("search for the owned worker = %+v, %v; want it found", hits, err)
+	}
+	if byProject, err := s.ListThreadsByProject(defaultTestProjectID); err != nil || !slices.ContainsFunc(byProject, func(row Thread) bool { return row.ID == "worker" }) {
+		t.Errorf("by-project listing = %v; want the owned worker", err)
+	}
+	for _, id := range []string{"worker", "plain"} {
+		if _, _, err := s.ArchiveThread(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archived, err := s.ListArchivedThreads()
+	if err != nil || len(archived) != 1 || archived[0].ID != "plain" {
+		t.Errorf("archived list = %+v, %v; want only plain", archived, err)
+	}
+	for _, id := range []string{"worker", "plain"} {
+		if _, _, err := s.UnarchiveThread(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.SetThreadPlacement([]string{"worker"}, PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
+	if got := listed(); !slices.Equal(got, []string{"plain", "spawner", "worker"}) {
+		t.Errorf("catalog after Show in Sidebar = %v, want the worker listed", got)
+	}
+	if got := count(); got != 3 {
+		t.Errorf("project thread count after Show in Sidebar = %d, want 3", got)
+	}
+}
+
+// ListOwnedWorkerIDs names the unarchived owned threads whose newest local
+// spawn names the owner: not a standalone or archived worker, not one a
+// later spawn row gave another owner, not a worker's own worker.
+func TestListOwnedWorkerIDs(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"owner", "other", "owned", "deep", "placed", "archived", "moved"} {
+		mustCreateThread(t, s, id)
+	}
+	spawnLocal(t, s, "tok-owned", "owner", "owned", true)
+	spawnLocal(t, s, "tok-deep", "owned", "deep", true)
+	spawnLocal(t, s, "tok-placed", "owner", "placed", false)
+	spawnLocal(t, s, "tok-archived", "owner", "archived", true)
+	spawnLocal(t, s, "tok-moved", "owner", "moved", true)
+	if _, err := s.db.Exec(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, state, lineage_only, created_at, updated_at)
+		VALUES ('tok-moved-later', 'other', 'spawn', '', 'moved', 'finished', 1, ?1, ?1)`, nowMillis()+60_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ArchiveThread("archived"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ListOwnedWorkerIDs("owner"); err != nil || !slices.Equal(got, []string{"owned"}) {
+		t.Errorf("owner's workers = %v, %v; want [owned]", got, err)
+	}
+	if got, err := s.ListOwnedWorkerIDs("owned"); err != nil || !slices.Equal(got, []string{"deep"}) {
+		t.Errorf("a worker's workers = %v, %v; want [deep]", got, err)
+	}
+	if got, err := s.ListOwnedWorkerIDs("other"); err != nil || !slices.Equal(got, []string{"moved"}) {
+		t.Errorf("the later spawner's workers = %v, %v; want [moved]", got, err)
 	}
 }

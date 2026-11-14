@@ -207,7 +207,7 @@ func (s *Store) ListAllProjects() ([]Project, error) {
 // text. A plan that materializes the view here scans `items` once per
 // sidebar thread.
 func listProjectsWithThreadCountsQuery() (string, []any) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
+	hiddenClause, hiddenArgs := catalogThreadClause("t")
 	return `SELECT p.id, p.path, p.name, p.slug, p.color, p.sort_position,
 		        p.created_at, p.updated_at, p.archived, p.identity_error, p.repository_id, p.identity_source,
 		        COALESCE(COUNT(t.id), 0) AS thread_count,

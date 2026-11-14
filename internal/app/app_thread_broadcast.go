@@ -56,6 +56,14 @@ func (a *App) announceThread(action, threadID string) {
 	a.threadAnnouncer().Announce(a.emitEvent, action, threadID)
 }
 
+// announcePlaced emits threadID's row after a write that may have given it
+// a sidebar row or taken its row away by placement or group: `listed` or
+// `full` by the row it reads, never the archive's pane-closing `unlisted`
+// (triage.ThreadAnnouncer.AnnouncePlaced).
+func (a *App) announcePlaced(threadID string) {
+	a.threadAnnouncer().AnnouncePlaced(a.emitEvent, threadID)
+}
+
 // announceThreadIfChanged is the guard every mutation binding routes
 // through: the store's changed flag decides whether anything is said at all.
 func (a *App) announceThreadIfChanged(action, threadID string, changed bool) {

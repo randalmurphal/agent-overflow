@@ -64,6 +64,30 @@ func (an *ThreadAnnouncer) AnnounceWithin(ctx context.Context, emit func(eventch
 	emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: action, Thread: &row})
 }
 
+// AnnouncePlaced emits threadID's current row after a write that may have
+// moved it into or out of the sidebar by placement or group, its action
+// following the row read: `listed` while the sidebar lists it (unarchived
+// and not owned), so a client that lacks the row inserts it, and `full`
+// otherwise, so a client holding it converges in place and drops an owned
+// row from its sidebar. Never `unlisted`, which is an archive's frame and
+// closes the panes that show the thread; a pane on a worker stays open.
+func (an *ThreadAnnouncer) AnnouncePlaced(emit func(eventchan.Channel, any), threadID string) {
+	if threadID == "" {
+		return
+	}
+	defer an.locks.Lock(threadID)()
+	row, err := an.read(threadID)
+	if err != nil {
+		log.Printf("announce thread %s placement: %v", threadID, err)
+		return
+	}
+	action := ThreadActionFull
+	if !row.Archived && row.Placement != store.PlacementOwned {
+		action = ThreadActionListed
+	}
+	emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: action, Thread: &row})
+}
+
 // AnnounceHandOff emits threadID's current row with HandOffTo naming
 // successorID: an assistant moved from this thread to successorID, so a
 // client moves the panes showing it there instead of closing them. The

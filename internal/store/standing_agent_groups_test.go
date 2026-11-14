@@ -8,40 +8,35 @@ import (
 	"testing"
 )
 
-// A done footer pages its archived threads newest first by a stable
-// cursor: every thread once, ties at one instant by id, each page bounded.
-func TestArchivedChildrenPageByCursor(t *testing.T) {
+// An assistant's past threads page newest superseded first by a stable
+// cursor: every thread once, ties at one instant by id, each page bounded,
+// another assistant's past threads never among them. The page reads the
+// past threads' index in its order, with no sort of its own.
+func TestAssistantPastThreadsPageByCursor(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	mustCreateThread(t, s, "agent")
+	mustCreateThread(t, s, "other")
 	mustCreateAssistant(t, s, "agent", "/h/agent")
-	const children = 250
+	mustCreateAssistant(t, s, "other", "/h/other")
+	const past = 75
 	var want []string
-	for i := range children {
-		id := fmt.Sprintf("child-%03d", i)
-		mustCreateThread(t, s, id)
-		token := "tok-" + id
-		seedThreadRequest(t, s, token, "agent", ThreadRequestSpawn, 10)
-		if _, err := s.SetThreadRequestTarget(token, "", id, "", ""); err != nil {
+	for i := range past {
+		id := fmt.Sprintf("past-%03d", i)
+		homeThread(t, s, id, "")
+		// Three instants, so most of a page shares its neighbor's.
+		if _, err := s.db.Exec(`INSERT INTO agent_past_threads (thread_id, agent_id, superseded_at) VALUES (?, 'agent', ?)`, id, 1000+i%3); err != nil {
 			t.Fatal(err)
 		}
 		want = append(want, id)
 	}
-	if _, err := s.SetThreadPlacement(want, PlacementNested); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range want {
-		if _, _, err := s.ArchiveThread(id); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// Three instants, so most of a page shares its neighbor's.
-	if _, err := s.db.Exec(`UPDATE threads SET updated_at = 1000 + (CAST(substr(id, 7) AS INTEGER) % 3) WHERE id LIKE 'child-%'`); err != nil {
+	homeThread(t, s, "elsewhere", "")
+	if _, err := s.db.Exec(`INSERT INTO agent_past_threads (thread_id, agent_id, superseded_at) VALUES ('elsewhere', 'other', 1001)`); err != nil {
 		t.Fatal(err)
 	}
 	instant := func(id string) int {
 		var n int
-		if _, err := fmt.Sscanf(id, "child-%d", &n); err != nil {
+		if _, err := fmt.Sscanf(id, "past-%d", &n); err != nil {
 			t.Fatal(err)
 		}
 		return n % 3
@@ -53,40 +48,55 @@ func TestArchivedChildrenPageByCursor(t *testing.T) {
 		return strings.Compare(b, a)
 	})
 	var got []string
-	after := ArchivedChildrenCursor{}
+	after := PastThreadsCursor{}
 	for pages := 0; ; pages++ {
-		if pages > children {
+		if pages > past {
 			t.Fatal("paging does not end")
 		}
-		page, err := s.ListArchivedSpawnedThreads("agent", []string{defaultTestProjectID}, after, 20)
+		page, err := s.ListAssistantPastThreads("agent", after, 20)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(page.Threads) > 20 || page.More && len(page.Threads) != 20 {
-			t.Fatalf("page %d holds %d threads, more %v", pages, len(page.Threads), page.More)
+		if len(page.Threads) > 20 || page.Next != nil && len(page.Threads) != 20 {
+			t.Fatalf("page %d holds %d threads, next %+v", pages, len(page.Threads), page.Next)
 		}
 		for _, thread := range page.Threads {
+			if thread.PastAgentID != "agent" || thread.AgentSupersededAt == nil {
+				t.Fatalf("listed %s = past agent %q superseded %v", thread.ID, thread.PastAgentID, thread.AgentSupersededAt)
+			}
 			got = append(got, thread.ID)
 		}
-		if !page.More {
+		if page.Next == nil {
 			break
 		}
-		last := page.Threads[len(page.Threads)-1]
-		after = ArchivedChildrenCursor{UpdatedAt: last.UpdatedAt, ID: last.ID}
+		after = *page.Next
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("paged %d threads, want %d in order; first %q, want %q", len(got), len(want), got[:min(5, len(got))], want[:5])
 	}
-	// The card holds none of them.
-	if page, err := s.ListArchivedSpawnedThreads("agent", []string{""}, ArchivedChildrenCursor{}, 20); err != nil || len(page.Threads) != 0 || page.More {
-		t.Fatalf("card page = %+v %v", page, err)
+	if page, err := s.ListAssistantPastThreads("nobody", PastThreadsCursor{}, 20); err != nil || len(page.Threads) != 0 || page.Next != nil {
+		t.Fatalf("an assistant with no past threads = %+v %v", page, err)
 	}
-	for _, bad := range []struct {
-		scopes []string
-		limit  int
-	}{{nil, 20}, {[]string{""}, 0}, {[]string{""}, MaxArchivedChildrenPage + 1}} {
-		if _, err := s.ListArchivedSpawnedThreads("agent", bad.scopes, ArchivedChildrenCursor{}, bad.limit); !errors.Is(err, ErrArchivedChildrenPage) {
-			t.Errorf("page of %q limit %d: err = %v, want ErrArchivedChildrenPage", bad.scopes, bad.limit, err)
+	for _, limit := range []int{0, MaxPastThreadsPage + 1} {
+		if _, err := s.ListAssistantPastThreads("agent", PastThreadsCursor{}, limit); !errors.Is(err, ErrPastThreadsPage) {
+			t.Errorf("limit %d: err = %v, want ErrPastThreadsPage", limit, err)
+		}
+	}
+	for _, cursor := range []PastThreadsCursor{{}, {SupersededAt: 1001, ThreadID: "past-040"}} {
+		query, args := pastThreadsPageQuery("agent", cursor, 20)
+		rows := explainPlan(t, s, query, args...)
+		searched, sorted := false, false
+		for _, row := range rows {
+			// Parent 0 is the page's own loop; the row columns' correlated
+			// subqueries sort inside themselves.
+			if row.parent != 0 {
+				continue
+			}
+			searched = searched || strings.Contains(row.detail, "SEARCH past USING COVERING INDEX idx_agent_past_threads_agent (agent_id=?")
+			sorted = sorted || strings.Contains(row.detail, "TEMP B-TREE")
+		}
+		if !searched || sorted {
+			t.Errorf("page after %+v plan:\n%s", cursor, planText(rows))
 		}
 	}
 }

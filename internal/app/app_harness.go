@@ -282,8 +282,6 @@ func (h *harnessHost) MakeAssistant(threadID string) (store.StandingAgent, error
 	if err != nil {
 		return store.StandingAgent{}, err
 	}
-	// The threads it spawned are agent-bound now.
-	h.app.broadcastSpawnedThreadRows(threadID)
 	return agent, nil
 }
 

@@ -57,9 +57,9 @@ func proposedPlanItemSQL() string {
 // (proposedPlanItemSQL). The agent columns read the assistant records and
 // the local spawn requests (idx_thread_requests_spawn_target for the
 // spawner). An assistant's current thread reads its record once, as one
-// JSON object (threadAgentColumn) that also carries the projects it serves
-// and its archived children by container (idx_thread_requests_caller), and
-// any other thread reads NULL there, so only an agent row pays for them.
+// JSON object (threadAgentColumn) that also carries the projects it serves,
+// and any other thread reads NULL there, so only an assistant's row pays
+// for them.
 var threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
@@ -119,10 +119,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
         'id', agents.id,
         'allProjects', agents.all_projects,
         'projectIds', json((SELECT json_group_array(project_id) FROM (
-          SELECT project_id FROM agent_projects WHERE agent_projects.agent_id = agents.id ORDER BY project_id))),
-        'archivedChildCounts', json((SELECT json_group_object(scope, n) FROM (SELECT scope, COUNT(*) AS n FROM (
-          ` + archivedAgentChildrenSQL("threads.id") + `
-        ) GROUP BY scope))))
+          SELECT project_id FROM agent_projects WHERE agent_projects.agent_id = agents.id ORDER BY project_id))))
        FROM agents WHERE agents.thread_id = threads.id),
     COALESCE((SELECT agent_id FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id), ''),
     (SELECT superseded_at FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id),
@@ -132,49 +129,14 @@ var threadColumns = `id, COALESCE(project_id, ''),
        WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
        ORDER BY created_at DESC LIMIT 1
     ), ''),
-    EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = (
-      SELECT caller_thread_id FROM thread_requests
-       WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
-       ORDER BY created_at DESC LIMIT 1
-    )),
     attention_kind, attention_reason, attention_at`
 
 // threadAgentColumn is the record column threadColumns reads for an
 // assistant's current thread.
 type threadAgentColumn struct {
-	ID                  string         `json:"id"`
-	AllProjects         int            `json:"allProjects"`
-	ProjectIDs          []string       `json:"projectIds"`
-	ArchivedChildCounts map[string]int `json:"archivedChildCounts"`
-}
-
-// archivedAgentChildrenSQL lists the archived threads an agent row's done
-// footers hold, for the assistant whose current thread is agentThread (a
-// column or a placeholder), each with the container it belongs to
-// (docs/specs/standing-agents.md, "Sidebar"): the empty scope is the
-// assistant's card, holding its helpers and its past threads; a project id
-// is its row in that project, holding the nested threads it spawned there
-// that live under no assistant.
-func archivedAgentChildrenSQL(agentThread string) string {
-	return `
-        SELECT child.id AS id, '' AS scope FROM agent_helpers
-          JOIN agents ON agents.id = agent_helpers.agent_id
-          JOIN owned_threads AS child ON child.id = agent_helpers.thread_id
-         WHERE agents.thread_id = ` + agentThread + ` AND child.archived = 1
-        UNION ALL
-        SELECT child.id, '' FROM agent_past_threads
-          JOIN agents ON agents.id = agent_past_threads.agent_id
-          JOIN owned_threads AS child ON child.id = agent_past_threads.thread_id
-         WHERE agents.thread_id = ` + agentThread + ` AND child.archived = 1
-        UNION ALL
-        SELECT child.id, child.project_id FROM thread_requests
-          JOIN owned_threads AS child ON child.id = thread_requests.target_thread_id
-         WHERE thread_requests.caller_thread_id = ` + agentThread + `
-           AND thread_requests.kind = 'spawn' AND thread_requests.target_computer_id = ''
-           AND child.archived = 1 AND child.placement = 'nested' AND child.project_id IS NOT NULL
-           AND NOT EXISTS (SELECT 1 FROM agents AS created WHERE created.thread_id = child.id)
-           AND NOT EXISTS (SELECT 1 FROM agent_past_threads AS past WHERE past.thread_id = child.id)
-           AND NOT EXISTS (SELECT 1 FROM agent_helpers AS helper WHERE helper.thread_id = child.id)`
+	ID          string   `json:"id"`
+	AllProjects int      `json:"allProjects"`
+	ProjectIDs  []string `json:"projectIds"`
 }
 
 // -- Validation errors for enum fields. Each binding checks against the
@@ -273,7 +235,7 @@ func validAutoCompactPercent(percent int) bool {
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft, spawnedByAgent int
+	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft int
 	var agentRecord sql.NullString
 	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt, attentionAt sql.NullInt64
 	var attentionKind, attentionReason string
@@ -290,7 +252,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
-		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID, &spawnedByAgent,
+		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID,
 		&attentionKind, &attentionReason, &attentionAt,
 	); err != nil {
 		return Thread{}, err
@@ -301,7 +263,6 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	t.HasIncompleteTurn = hasIncompleteTurn != 0
 	t.HasFailedTurn = hasFailedTurn != 0
 	t.IsDraft = isDraft != 0
-	t.SpawnedByAgent = spawnedByAgent != 0
 	if latestTurnCompletedAt.Valid {
 		v := latestTurnCompletedAt.Int64
 		t.LatestTurnCompletedAt = &v
@@ -333,9 +294,6 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		t.AgentID, t.AgentAllProjects = agent.ID, agent.AllProjects != 0
 		if len(agent.ProjectIDs) > 0 {
 			t.AgentProjectIDs = agent.ProjectIDs
-		}
-		if len(agent.ArchivedChildCounts) > 0 {
-			t.ArchivedChildCounts = agent.ArchivedChildCounts
 		}
 	}
 	return t, nil
@@ -566,11 +524,15 @@ type ThreadNotificationFacts struct {
 	// flag was raised.
 	Attention   string
 	AttentionAt int64
-	Exists      bool
+	// Owned is a thread the thread that spawned it owns
+	// (PlacementOwned): it has no sidebar row, and its answer goes to that
+	// thread rather than to the user.
+	Owned  bool
+	Exists bool
 }
 
-// GetThreadNotificationFacts reads only the title, mode and pending
-// attention flag. It is the narrow read for the OS-notification mapping,
+// GetThreadNotificationFacts reads only the title, mode, placement and
+// pending attention flag. It is the narrow read for the OS-notification mapping,
 // which is allowed to say a thread's title and to know whether the thread
 // is on the sidebar, and nothing more about it — and it exists for the same reason
 // GetThreadProviderWorkspace does: GetThread's projection computes four
@@ -588,8 +550,8 @@ func (s *Store) GetThreadNotificationFacts(id string) (ThreadNotificationFacts, 
 		attentionAt sql.NullInt64
 		lastReadAt  sql.NullInt64
 	)
-	err := s.reader().QueryRow(`SELECT title, mode, attention_kind, attention_at, last_read_at
-	  FROM threads WHERE id = ?`, id).Scan(&facts.Title, &facts.Mode, &kind, &attentionAt, &lastReadAt)
+	err := s.reader().QueryRow(`SELECT title, mode, placement = '`+PlacementOwned+`', attention_kind, attention_at, last_read_at
+	  FROM threads WHERE id = ?`, id).Scan(&facts.Title, &facts.Mode, &facts.Owned, &kind, &attentionAt, &lastReadAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ThreadNotificationFacts{}, nil
 	}
@@ -650,7 +612,8 @@ func (s *Store) ListThreads() ([]Thread, error) {
 // or a pending plan implementation) it is visible so the sidebar reflects work
 // the user would otherwise lose track of. Terminal-mode threads are always
 // included: they are first-class sidebar fixtures that never carry items or
-// drafts, so the item/draft gates would otherwise hide them.
+// drafts, so the item/draft gates would otherwise hide them. A hidden-mode
+// or owned thread is never listed (catalogThreadClause).
 func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 	query, args := listThreadsWithItemsQuery()
 	rows, err := s.reader().Query(query, args...)
@@ -670,11 +633,13 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 	return threads, rows.Err()
 }
 
-// ListArchivedThreads returns every archived thread, newest-touched first.
-// Used by the settings panel to surface threads that have been hidden from
-// the sidebar so the user can unarchive or permanently delete them.
+// ListArchivedThreads returns every archived thread the sidebar would list
+// unarchived (catalogThreadClause), newest-touched first. Used by the
+// settings panel to surface threads that have been hidden from the sidebar
+// so the user can unarchive or permanently delete them; an archived owned
+// thread is its owner's to show.
 func (s *Store) ListArchivedThreads() ([]Thread, error) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
+	hiddenClause, hiddenArgs := catalogThreadClause("threads")
 	rows, err := s.reader().Query(
 		`SELECT `+threadColumns+` FROM owned_threads AS threads
 		 WHERE archived = 1 AND `+hiddenClause+` ORDER BY updated_at DESC`, hiddenArgs...,
@@ -721,6 +686,17 @@ func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
 		threads = append(threads, t)
 	}
 	return threads, rows.Err()
+}
+
+// catalogThreadClause is the one rule for which threads the sidebar's
+// catalog reads list (ListThreadsWithItems, the project thread counts and
+// ListArchivedThreads), over the threads alias: not a hidden mode, and not
+// owned by the thread that spawned it (thread_placement.go). Search and the
+// thread tools read owned threads like any other and apply
+// hiddenThreadModesClause alone.
+func catalogThreadClause(alias string) (string, []any) {
+	hidden, args := hiddenThreadModesClause(alias + ".mode")
+	return hidden + " AND " + alias + ".placement <> '" + PlacementOwned + "'", args
 }
 
 func hiddenThreadModesClause(column string) (string, []any) {
@@ -2099,7 +2075,7 @@ var listThreadsQuery = `SELECT ` + threadColumns + ` FROM owned_threads AS threa
 // ALL, the one shape where SQLite can decline to push the term into the
 // arms and scan `items` once per sidebar row (see importedItemRevExpr).
 func listThreadsWithItemsQuery() (string, []any) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
+	hiddenClause, hiddenArgs := catalogThreadClause("threads")
 	return `SELECT ` + threadColumns + ` FROM owned_threads AS threads
 		 WHERE archived = 0 AND ` + hiddenClause + `
 		   AND (

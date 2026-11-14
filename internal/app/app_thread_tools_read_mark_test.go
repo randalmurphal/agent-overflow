@@ -206,8 +206,8 @@ func TestAssistantPinsItsSpawnedThreadAndThePinKeepsTheDot(t *testing.T) {
 	first := f.awaitThread(t, ack.ThreadID, "the worker marked read", func(row store.Thread) bool {
 		return row.LatestTurnCompletedAt != nil && !threadUnread(row)
 	})
-	if !first.SpawnedByAgent {
-		t.Fatalf("worker row = %+v, want it bound to the assistant", first)
+	if first.SpawnedByThreadID != f.caller.ID || first.Placement != store.PlacementOwned {
+		t.Fatalf("worker row = %+v, want it owned by the assistant", first)
 	}
 
 	report, err := f.adapter().UpdateThreads(t.Context(), f.callerIdentity(), threadtools.UpdateCall{
@@ -373,8 +373,8 @@ func TestAnAnswerMarksAPlacedSpawnRead(t *testing.T) {
 			row := f.awaitThread(t, ack.ThreadID, "the worker marked read", func(row store.Thread) bool {
 				return row.LatestTurnCompletedAt != nil && !threadUnread(row)
 			})
-			if row.Placement == store.PlacementNested {
-				t.Errorf("the worker is nested; the spawn asked for %+v", call)
+			if row.Placement == store.PlacementOwned {
+				t.Errorf("the worker is owned; the spawn asked for %+v", call)
 			}
 		})
 	}

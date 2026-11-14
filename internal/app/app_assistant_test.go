@@ -250,12 +250,9 @@ func TestNewAssistantToolCreatesAnAssistantThatReportsToItsCreator(t *testing.T)
 	if err != nil || !strings.Contains(agent.Block, `You report to the standing agent "`+f.caller.Title+`" (thread `+f.caller.ID+`), which created you.`) {
 		t.Fatalf("session block = %q, %v", agent.Block, err)
 	}
-	// An assistant it created is its own row, never the creator's child.
-	if caller, err := f.app.store.GetThread(f.caller.ID); err != nil || archivedTotal(caller.ArchivedChildCounts) != 0 {
-		t.Fatalf("creator row = %+v %v", caller, err)
-	}
-	if page, err := f.app.ListArchivedSpawnedThreads(f.caller.ID, []string{"", f.caller.ProjectID, thread.ProjectID}, store.ArchivedChildrenCursor{}, 20); err != nil || len(page.Threads) != 0 {
-		t.Fatalf("archived children = %+v %v", page, err)
+	// An assistant it created is its own row, never the creator's worker.
+	if thread.Placement == store.PlacementOwned {
+		t.Fatalf("created assistant = placement %s, want a row of its own", thread.Placement)
 	}
 
 	if _, err := f.adapter().NewAssistant(t.Context(), f.callerIdentity(), threadtools.NewAssistantCall{Name: "scout", Role: "again"}); err == nil || !strings.Contains(err.Error(), `"Scout"`) {
@@ -373,7 +370,7 @@ func TestStartNextAssistantThreadCarriesItsWork(t *testing.T) {
 	if row, _, _ := f.app.store.GetAgentWake(loop.ID); row.ThreadID != successor.ID {
 		t.Fatalf("loop on %s", row.ThreadID)
 	}
-	if worker, err := f.app.store.GetThread(ack.ThreadID); err != nil || worker.SpawnedByThreadID != successor.ID || !worker.SpawnedByAgent {
+	if worker, err := f.app.store.GetThread(ack.ThreadID); err != nil || worker.SpawnedByThreadID != successor.ID {
 		t.Fatalf("worker = %+v %v", worker, err)
 	}
 	first := awaitAppMessage(t, sent, func(text string) bool {

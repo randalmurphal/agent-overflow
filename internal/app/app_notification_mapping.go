@@ -312,8 +312,9 @@ func (a *App) withdrawSessionStartFailed(threadID string) {
 	})
 }
 
-// notificationThreadRef reads the two things a notification may know about a
-// thread: its title, and whether the sidebar lists it.
+// notificationThreadRef reads what a notification may know about a thread:
+// its title, whether the sidebar lists it, whether the thread that spawned
+// it owns it, and its pending attention flag.
 //
 // A thread with no row is HIDDEN: the sidebar cannot show it, so its
 // completion is judged by the same opt-in as a workflow-owned thread's
@@ -334,6 +335,7 @@ func (a *App) notificationThreadRef(threadID string) notify.ThreadRef {
 	}
 	ref.Title = facts.Title
 	ref.Hidden = !facts.Exists || threadmode.IsHidden(facts.Mode)
+	ref.Owned = facts.Owned
 	ref.Attention, ref.AttentionAt = facts.Attention, facts.AttentionAt
 	return ref
 }

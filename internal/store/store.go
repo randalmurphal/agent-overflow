@@ -540,12 +540,13 @@ type Thread struct {
 	// DeleteThreadGroup ungroups its members before the group row goes.
 	GroupID string `json:"groupId,omitempty"`
 	// Placement is where the sidebar shows the row (migration v149):
-	// PlacementNested under the standing agent that spawned it,
-	// PlacementGrouped in GroupID's group, PlacementStandalone as a plain
-	// row of its project. The schema makes it grouped exactly when GroupID
-	// is set. Its writers are SetThreadGroup, SetThreadPlacement, the write
-	// that names a local spawn's thread and a handoff; an insert derives it
-	// from GroupID, so the field is ignored there.
+	// PlacementOwned nowhere, as a worker of the thread that spawned it
+	// (SpawnedByThreadID); PlacementGrouped in GroupID's group;
+	// PlacementStandalone as a plain row of its project. The schema makes
+	// it grouped exactly when GroupID is set. Its writers are
+	// SetThreadGroup, SetThreadPlacement, the write that names a local
+	// spawn's thread and a handoff; an insert derives it from GroupID, so
+	// the field is ignored there.
 	Placement string `json:"placement"`
 	// WorktreeSetupState is the durable half of the per-project worktree
 	// setup run this thread's worktree was cut with (migration v47):
@@ -586,7 +587,7 @@ type Thread struct {
 	PastAgentID       string `json:"pastAgentId,omitempty"`
 	AgentSupersededAt *int64 `json:"agentSupersededAt,omitempty"`
 	// HelperOfAgentID names the assistant this thread is a helper of: a
-	// thread it spawned without a project, which lives under it
+	// thread it spawned without a project, always owned by it
 	// (agent_helpers). Read like the three above; CreateThread and a fork
 	// record it from this field.
 	HelperOfAgentID string `json:"helperOfAgentId,omitempty"`
@@ -598,24 +599,10 @@ type Thread struct {
 	AgentProjectIDs  []string `json:"agentProjectIds,omitempty"`
 	// SpawnedByThreadID names the local thread whose thread_spawn made this
 	// one, read from the newest spawn request that targets it, or "" when
-	// the user started it. Derived, like the two below: the spawn request
+	// the user started it; an owned thread's owner. Derived: the spawn request
 	// row is the record, and it outlives the retention floor while this
 	// thread exists (spawnLineageSQL).
 	SpawnedByThreadID string `json:"spawnedByThreadId,omitempty"`
-	// SpawnedByAgent is true when SpawnedByThreadID names an assistant's current thread,
-	// archived or not. The agent's row may be absent from a client's list
-	// (archived, another project) while the group refusal still holds, so
-	// the row says it is bound rather than leaving the client to look up
-	// the spawner.
-	SpawnedByAgent bool `json:"spawnedByAgent,omitempty"`
-	// ArchivedChildCounts counts, by container, the archived threads that
-	// live under the assistant whose current thread this is
-	// (archivedAgentChildrenSQL): key "" for its card (helpers and past
-	// threads), a project id for its row in that project (the nested
-	// threads it spawned there). Only an assistant's current thread
-	// carries it; the sidebar's agent rows show each count and list the
-	// threads on demand.
-	ArchivedChildCounts map[string]int `json:"archivedChildCounts,omitempty"`
 	// HasActionableProposedPlan is derived for sidebar boot state. It is
 	// true when the latest assistant proposed plan is completed and has
 	// not been implemented yet. It is not a persisted threads column.

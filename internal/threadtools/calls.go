@@ -36,8 +36,8 @@ type SpawnCall struct {
 	// created there when it does not exist. Empty leaves the thread
 	// ungrouped.
 	Group string `json:"group,omitempty"`
-	// Placement is nested, grouped or standalone: where the new thread's
-	// sidebar row appears when a standing agent spawns it. Empty when the
+	// Placement is owned, grouped or standalone: whether the new thread has
+	// a sidebar row, and where. Empty when the
 	// call omitted it: the destination resolves it (ResolveSpawnPlacement)
 	// and reads the omission to decide what a fork does with its source's
 	// group.
@@ -144,7 +144,7 @@ type UpdateCall struct {
 	// Group is a group name in the thread's own project, created when it
 	// does not exist. A set pointer to an empty string ungroups.
 	Group *string `json:"group,omitempty"`
-	// Placement is nested, grouped or standalone. Grouped needs Group,
+	// Placement is owned, grouped or standalone. Grouped needs Group,
 	// unless the thread is in a group already.
 	Placement *string `json:"placement,omitempty"`
 }

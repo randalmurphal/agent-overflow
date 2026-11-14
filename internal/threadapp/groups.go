@@ -69,7 +69,7 @@ func (s *Service) SetGroup(threadIDs []string, groupID string) ([]store.Thread, 
 	return database.SetThreadGroup(threadIDs, groupID)
 }
 
-// SetPlacement makes threads nested or standalone, out of any group they
+// SetPlacement makes threads owned or standalone, out of any group they
 // were in (store.SetThreadPlacement); grouped is SetGroup. The rows come
 // back from the store's own transaction.
 func (s *Service) SetPlacement(threadIDs []string, placement string) ([]store.Thread, error) {

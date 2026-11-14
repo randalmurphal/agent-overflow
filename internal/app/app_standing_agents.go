@@ -1,7 +1,6 @@
 package app
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -382,71 +381,32 @@ func (a *App) assistantHomeForDelete(threadID string) (func() error, error) {
 	}, nil
 }
 
-// ListArchivedSpawnedThreads lists one page of the archived threads one done
-// footer of an assistant's rows holds: its archived past threads and
-// helpers for the card (the empty scope), and the archived threads its current
-// thread spawned on this computer for its row in a project (that project's
-// id; a sidebar entry that merges projects names each). Newest activity
-// first, from after the cursor, at most limit (1 to
-// store.MaxArchivedChildrenPage) rows.
+// ListAssistantPastThreads lists one page of an assistant's past threads,
+// the threads its handoffs superseded, newest superseded first, from after
+// the cursor, at most limit (1 to store.MaxPastThreadsPage) rows, for its
+// Previous Threads dialog. The client sends it to the computer that holds
+// the assistant.
 //
 //ao:scope threads:read
-//ao:route thread
-func (a *App) ListArchivedSpawnedThreads(threadID string, scopes []string, after store.ArchivedChildrenCursor, limit int) (store.ArchivedChildrenPage, error) {
-	return a.store.ListArchivedSpawnedThreads(threadID, scopes, after, limit)
+//ao:route home
+func (a *App) ListAssistantPastThreads(agentID string, after store.PastThreadsCursor, limit int) (store.PastThreadsPage, error) {
+	return a.store.ListAssistantPastThreads(agentID, after, limit)
 }
 
-// broadcastSpawnedThreadRows re-emits the live threads spawnerID spawned:
-// their rows' spawnedByAgent follows whether the spawner is an assistant's
-// current thread, so creation or a handoff of it changes what their menus
-// and drags allow. A delete passes the ids itself
-// (broadcastThreadRowsByID), since the cascade has already dropped the
-// spawn rows this reads. Log-and-continue, as announceThread.
+// broadcastSpawnedThreadRows re-emits the live threads spawnerID spawned,
+// after a handoff moved their spawn rows to it: their rows' spawnedByThreadId
+// follows the newest spawn row. A delete reads the ids before its drop
+// takes the spawn rows (threadapp.DeletePorts.Deleted) and announces them
+// itself. Log-and-continue, as announceThread.
 func (a *App) broadcastSpawnedThreadRows(spawnerID string) {
 	ids, err := a.store.ListSpawnedThreadIDs(spawnerID)
 	if err != nil {
 		log.Printf("broadcast the threads spawned by %s: %v", spawnerID, err)
 		return
 	}
-	a.broadcastThreadRowsByID(ids)
-}
-
-func (a *App) broadcastThreadRowsByID(ids []string) {
 	for _, id := range ids {
 		a.announceThread(triage.ThreadActionFull, id)
 	}
-}
-
-// broadcastSpawnerRow re-emits the assistant that spawned child, or whose
-// past thread or helper child is: the agent row's archivedChildCounts move
-// when such a thread is archived, unarchived or deleted. Any other spawner
-// carries no count, so nothing is said for it. Log-and-continue, as
-// announceThread: the child's change is already durable and the sidebar
-// converges on the next ListThreads.
-func (a *App) broadcastSpawnerRow(child store.Thread) {
-	parentID := child.SpawnedByThreadID
-	if owner := cmp.Or(child.PastAgentID, child.HelperOfAgentID); owner != "" {
-		agent, found, err := a.store.GetAgent(owner)
-		if err != nil {
-			log.Printf("broadcast the assistant of thread %s: %v", child.ID, err)
-			return
-		}
-		if found {
-			parentID = agent.ThreadID
-		}
-	}
-	if parentID == "" {
-		return
-	}
-	parent, err := a.store.GetThread(parentID)
-	if err != nil {
-		log.Printf("broadcast spawner %s of thread %s: %v", parentID, child.ID, err)
-		return
-	}
-	if parent.AgentID == "" {
-		return
-	}
-	a.announceThread(triage.ThreadActionFull, parent.ID)
 }
 
 // SetAssistantProjects sets the projects the assistant whose current

@@ -508,9 +508,9 @@ func TestHandOffAssistantKeepsTheCurrentIdentity(t *testing.T) {
 	}
 }
 
-// The agent columns follow a handoff: the past thread is the assistant's
-// archived child, the workers nest under the current thread, and an
-// assistant another created is never a child of its creator.
+// The agent columns follow a handoff: the old thread is the assistant's
+// past thread, an assistant another created is not, and the workers name
+// the current thread as their spawner.
 func TestThreadRowsFollowAHandOff(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -543,14 +543,14 @@ func TestThreadRowsFollowAHandOff(t *testing.T) {
 		}
 		return got
 	}
-	if got := row("new"); got.AgentID != "old" || archivedTotal(got) != 1 {
-		t.Errorf("current row = agent %q archived children %d, want the past thread alone", got.AgentID, archivedTotal(got))
+	if got := row("new"); got.AgentID != "old" {
+		t.Errorf("current row = agent %q", got.AgentID)
 	}
-	if got := row("child"); got.SpawnedByThreadID != "new" || !got.SpawnedByAgent {
-		t.Errorf("worker row = spawnedBy %q agent %v", got.SpawnedByThreadID, got.SpawnedByAgent)
+	if got := row("child"); got.SpawnedByThreadID != "new" {
+		t.Errorf("worker row = spawnedBy %q", got.SpawnedByThreadID)
 	}
-	if listed := archivedChildrenIn(t, s, "new", "", defaultTestProjectID); len(listed) != 1 || listed[0].ID != "old" {
-		t.Errorf("archived children of the current thread = %+v", listed)
+	if page, err := s.ListAssistantPastThreads("old", PastThreadsCursor{}, 20); err != nil || len(page.Threads) != 1 || page.Threads[0].ID != "old" {
+		t.Errorf("past threads of the assistant = %+v, %v", page, err)
 	}
 }
 
@@ -765,7 +765,7 @@ func TestHelpersLiveUnderTheirAssistant(t *testing.T) {
 	if err != nil || !slices.Equal(ids, []string{"ops", "helper", "helper-fork"}) {
 		t.Fatalf("threads under the assistant = %q %v", ids, err)
 	}
-	for _, placement := range []string{PlacementStandalone, PlacementNested} {
+	for _, placement := range []string{PlacementStandalone, PlacementOwned} {
 		if _, err := s.SetThreadPlacement([]string{"helper"}, placement); !errors.Is(err, ErrPlacementOutsideProjects) {
 			t.Fatalf("placing a helper %s = %v", placement, err)
 		}
@@ -775,129 +775,6 @@ func TestHelpersLiveUnderTheirAssistant(t *testing.T) {
 	}
 	if ids, err := s.AssistantDependentThreadIDs(agent.ID); err != nil || !slices.Equal(ids, []string{"ops", "helper-fork"}) {
 		t.Fatalf("after deleting a helper = %q %v", ids, err)
-	}
-}
-
-// archivedTotal is how many archived threads live under the assistant
-// whose current thread this row is, over all its containers.
-// archivedChildrenIn reads every page of the done footer filed under scopes.
-func archivedChildrenIn(t *testing.T, s *Store, spawnerID string, scopes ...string) []Thread {
-	t.Helper()
-	var all []Thread
-	after := ArchivedChildrenCursor{}
-	for {
-		page, err := s.ListArchivedSpawnedThreads(spawnerID, scopes, after, MaxArchivedChildrenPage)
-		if err != nil {
-			t.Fatalf("list archived children of %s in %q: %v", spawnerID, scopes, err)
-		}
-		all = append(all, page.Threads...)
-		if !page.More {
-			return all
-		}
-		last := page.Threads[len(page.Threads)-1]
-		after = ArchivedChildrenCursor{UpdatedAt: last.UpdatedAt, ID: last.ID}
-	}
-}
-
-func archivedTotal(thread Thread) int {
-	total := 0
-	for _, n := range thread.ArchivedChildCounts {
-		total += n
-	}
-	return total
-}
-
-// An assistant's archived threads are counted by the container that holds
-// them: its card (helpers, and past threads nested or outside every
-// project) and its row in each project (the nested threads it spawned
-// there). The listing returns each of them once.
-func TestArchivedChildrenAreCountedByContainer(t *testing.T) {
-	t.Parallel()
-	s := newTestStore(t)
-	if _, err := s.CreateProject(Project{ID: "other", Path: "/tmp/other", Name: "Other"}); err != nil {
-		t.Fatal(err)
-	}
-	homeThread(t, s, "old", "")
-	mustRetitle(t, s, "old", "Ops")
-	agent := StandingAgent{ID: "a-ops", ThreadID: "old", Home: "/h/old", CreatedAt: 1}
-	if err := s.CreateStandingAgent(agent, defaultTestProjectID, "other"); err != nil {
-		t.Fatal(err)
-	}
-	homeThread(t, s, "helper", agent.ID)
-	homeThread(t, s, "helper-standalone", agent.ID)
-	mustCreateThread(t, s, "here")
-	other := makeThread("there", "claude")
-	other.ProjectID = "other"
-	if err := s.CreateThread(other); err != nil {
-		t.Fatal(err)
-	}
-	mustCreateThread(t, s, "grouped")
-	for token, target := range map[string]string{"t-helper": "helper", "t-here": "here", "t-there": "there", "t-grouped": "grouped"} {
-		seedThreadRequest(t, s, token, "old", ThreadRequestSpawn, 10)
-		if _, err := s.SetThreadRequestTarget(token, "", target, "", ""); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := s.SetThreadPlacement([]string{"here", "there"}, PlacementNested); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.SetThreadPlacement([]string{"grouped"}, PlacementStandalone); err != nil {
-		t.Fatal(err)
-	}
-	// A helper whose spawn row went is standalone by the placement trigger; it
-	// is still the assistant's.
-	if _, err := s.db.Exec(`UPDATE threads SET placement = 'standalone' WHERE id = 'helper-standalone'`); err != nil {
-		t.Fatal(err)
-	}
-	homeThread(t, s, "new", "")
-	mustPlaceInHome(t, s, "new", "/h/old")
-	if _, err := s.HandOffAssistant("old", "new", 20); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"helper", "helper-standalone", "here", "there", "grouped"} {
-		if _, _, err := s.ArchiveThread(id); err != nil {
-			t.Fatal(err)
-		}
-	}
-	row, err := s.GetThread("new")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]int{"": 3, defaultTestProjectID: 1, "other": 1}
-	if len(row.ArchivedChildCounts) != len(want) {
-		t.Fatalf("counts = %v, want %v", row.ArchivedChildCounts, want)
-	}
-	for scope, n := range want {
-		if row.ArchivedChildCounts[scope] != n {
-			t.Fatalf("counts = %v, want %v", row.ArchivedChildCounts, want)
-		}
-	}
-	ids := func(threads []Thread) []string {
-		out := []string{}
-		for _, thread := range threads {
-			out = append(out, thread.ID)
-		}
-		slices.Sort(out)
-		return out
-	}
-	listed := archivedChildrenIn(t, s, "new", "", defaultTestProjectID, "other")
-	if got := ids(listed); !slices.Equal(got, []string{"helper", "helper-standalone", "here", "old", "there"}) {
-		t.Fatalf("listed = %q", got)
-	}
-	// Each footer lists what its count counts, and a footer for an entry
-	// that merges projects lists theirs together.
-	for scopes, want := range map[string][]string{
-		"":                              {"helper", "helper-standalone", "old"},
-		defaultTestProjectID:            {"here"},
-		"other":                         {"there"},
-		defaultTestProjectID + ",other": {"here", "there"},
-	} {
-		if got := ids(archivedChildrenIn(t, s, "new", strings.Split(scopes, ",")...)); !slices.Equal(got, want) {
-			t.Errorf("footer %q lists %q, want %q", scopes, got, want)
-		}
-	}
-	if plain, err := s.GetThread("here"); err != nil || plain.ArchivedChildCounts != nil {
-		t.Fatalf("a child's row carries counts: %v %v", plain.ArchivedChildCounts, err)
 	}
 }
 

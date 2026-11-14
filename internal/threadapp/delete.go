@@ -62,9 +62,10 @@ type DeletePorts struct {
 	// reports the row, and the next boot finishes it
 	// (store.ListPendingThreadDeletes). Root broadcasts it on
 	// `thread:updated` so every attached client drops the row without a
-	// refresh. spawned lists the live threads a standing agent spawned,
-	// read before the drop took their spawn rows: their rows lost the
-	// agent bond and go out again. Empty for any other thread.
+	// refresh. spawned lists the live threads the thread spawned on this
+	// computer, read before the drop took their spawn rows: an owned one
+	// is standalone now (trg_thread_placement_spawn_gone) and joins the
+	// sidebar, and each row lost its spawner, so they go out again.
 	Deleted func(thread store.Thread, spawned []string)
 	Logf    func(format string, args ...any)
 	// ChunkPause, when set, runs between the bounded item-delete chunks
@@ -156,7 +157,7 @@ func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 		}
 	}
 	var spawned []string
-	if threadFound && thread.AgentID != "" {
+	if threadFound {
 		if spawned, err = database.ListSpawnedThreadIDs(threadID); err != nil {
 			return fmt.Errorf("delete thread %s: %w", threadID, err)
 		}

@@ -307,8 +307,10 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 		},
 		Deleted: func(thread store.Thread, spawned []string) {
 			a.broadcastThreadDeleted(thread.ID)
-			a.broadcastSpawnerRow(thread)
-			a.broadcastThreadRowsByID(spawned)
+			// Its owned workers are standalone now and join the sidebar.
+			for _, id := range spawned {
+				a.announcePlaced(id)
+			}
 		},
 	}
 }

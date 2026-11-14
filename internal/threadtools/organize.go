@@ -138,7 +138,7 @@ func updatePatch(args updateArgs) (UpdateCall, error) {
 	if args.Placement != nil {
 		placement := trim(*args.Placement)
 		if placement == "" {
-			return UpdateCall{}, invalidf("placement must be nested, grouped or standalone.")
+			return UpdateCall{}, invalidf("placement must be owned, grouped or standalone.")
 		}
 		if err := checkPlacement(placement, patch.Group); err != nil {
 			return UpdateCall{}, err

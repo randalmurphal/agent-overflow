@@ -54,6 +54,17 @@ func TestEveryKindMapsFromItsMoment(t *testing.T) {
 			route: Target{Kind: "thread", ThreadID: threadID},
 		},
 		{
+			name: "an owned worker that raised a flag reaches the user",
+			got: func() (Notification, bool) {
+				owned := thread()
+				owned.Owned, owned.Attention, owned.AttentionAt = true, "review", 1_000
+				return MapTurnRest(TurnRest{Thread: owned, TopLevel: true, StartedAt: 500})
+			},
+			kind: KindThreadAttention, id: "thread:" + threadID,
+			title: "Fix the parser", body: "Ready for your review",
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
 			name: "provider exited",
 			got: func() (Notification, bool) {
 				return MapProviderExit(ProviderExit{Thread: thread()})
@@ -327,6 +338,22 @@ func TestMomentsThatMustNotNotify(t *testing.T) {
 			name: "a routine loop or watch tick finishing is not news",
 			got: func() (Notification, bool) {
 				return MapTurnRest(TurnRest{Thread: thread(), TopLevel: true, QuietTick: true})
+			},
+		},
+		{
+			name: "an owned worker finishing answers its owner, not the user",
+			got: func() (Notification, bool) {
+				owned := thread()
+				owned.Owned = true
+				return MapTurnRest(TurnRest{Thread: owned, TopLevel: true})
+			},
+		},
+		{
+			name: "an owned worker failing answers its owner, not the user",
+			got: func() (Notification, bool) {
+				owned := thread()
+				owned.Owned = true
+				return MapTurnRest(TurnRest{Thread: owned, TopLevel: true, Failed: true})
 			},
 		},
 		{

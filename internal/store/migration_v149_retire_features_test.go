@@ -26,7 +26,8 @@ import (
 //
 // Discussion threads and the scratch return mode become chat, the automation
 // run becomes a manual run with no source_ref, the ungrouped spawned thread
-// is nested and the grouped ones grouped, every other value survives, the
+// is standalone (no thread from before keeps out of the sidebar) and the
+// grouped ones grouped, every other value survives, the
 // queued watch reads confirmed at its creation and every kept watch launched
 // by its own thread, the orphan watch is gone, the retired columns, tables
 // and indexes are gone, the rebuilt tables restate every other declaration,
@@ -108,7 +109,7 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 	}
 	addedChecks := map[string][]string{
 		"threads": {
-			"placementIN('nested','grouped','standalone')AND(placement='grouped')=(group_idISNOTNULL)",
+			"placementIN('owned','grouped','standalone')AND(placement='grouped')=(group_idISNOTNULL)",
 			"attention_kindIN('','decision','review','problem')",
 		},
 	}
@@ -199,7 +200,7 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 		t.Fatal(err)
 	}
 	if want := []string{
-		"disc-child-a=standalone|||NULL", "disc-child-b=nested|||NULL", "disc-parent=standalone|||NULL", "fork=standalone|||NULL",
+		"disc-child-a=standalone|||NULL", "disc-child-b=standalone|||NULL", "disc-parent=standalone|||NULL", "fork=standalone|||NULL",
 		"grp-child=grouped|||NULL", "grp-parent=grouped|||NULL", "scratch=standalone|||NULL",
 	}; !slices.Equal(placements, want) {
 		t.Errorf("placements after v149:\n got %q\nwant %q", placements, want)
@@ -328,7 +329,8 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 		{"work_items.source", `UPDATE work_items SET source = 'automation' WHERE id = 'run-auto'`},
 		{"grouped without a group", `UPDATE threads SET placement = 'grouped' WHERE id = 'fork'`},
 		{"a group while standalone", `UPDATE threads SET group_id = 'g' WHERE id = 'fork'`},
-		{"a group while nested", `UPDATE threads SET placement = 'nested' WHERE id = 'grp-child'`},
+		{"a group while owned", `UPDATE threads SET placement = 'owned' WHERE id = 'grp-child'`},
+		{"the retired nested value", `UPDATE threads SET placement = 'nested' WHERE id = 'fork'`},
 		{"an unknown placement", `UPDATE threads SET placement = 'floating' WHERE id = 'fork'`},
 		{"an unknown attention kind", `UPDATE threads SET attention_kind = 'urgent' WHERE id = 'fork'`},
 		{"a half-linked call", `UPDATE work_items SET parent_phase_id = '' WHERE id = 'run-call'`},

@@ -28,15 +28,13 @@ import (
 // the sidebar's own grouping uses, so the group is created in the NEW
 // thread's project: a fork's source project, or the destination's. The
 // spawn's placement wins over the group a fork inherits from its source:
-// a fork spawned nested or standalone leaves that group (standalone), and
-// the naming write then nests a nested one. keepSourceGroup is a fork the
-// call did not place, made by a thread that is not a standing agent: it
-// stays in its source's group.
+// a fork spawned owned or standalone leaves that group (standalone), and
+// the naming write then makes an owned one owned.
 func (t threadToolsApp) createSpawnedThread(
-	ctx context.Context, call threadtools.SpawnCall, create spawnOptions, keepSourceGroup bool,
+	ctx context.Context, call threadtools.SpawnCall, create spawnOptions,
 ) (store.Thread, error) {
 	thread, err := t.createSpawned(ctx, call, create)
-	if err != nil || (call.Group == "" && (thread.GroupID == "" || keepSourceGroup)) {
+	if err != nil || (call.Group == "" && thread.GroupID == "") {
 		return thread, err
 	}
 	group := call.Group
@@ -217,9 +215,9 @@ func (t threadToolsApp) placeAssistantSpawn(opts *CreateThreadOptions, owner sto
 			return errorsx.Public(threadtools.CodeInvalidRequest,
 				"A spawn without project_id is a helper of your own work in your home, so it takes no worktree or workspace_path. Name a project_id you serve to work in a checkout.", nil)
 		}
-		if call.Group != "" || (call.Placement != "" && call.Placement != threadtools.PlacementNested) {
+		if call.Group != "" || (call.Placement != "" && call.Placement != threadtools.PlacementOwned) {
 			return errorsx.Public(threadtools.CodeInvalidRequest,
-				"A spawn without project_id is a helper of your own work, listed under you outside every project, so it takes no group or placement. Name a project_id you serve to group or place the thread there.", nil)
+				"A spawn without project_id is a helper of your own work, outside every project and always your worker, so it takes no group or placement. Name a project_id you serve to give the thread a sidebar row there.", nil)
 		}
 		opts.ProjectID, opts.home, opts.helperOfAgentID = "", owner.Home, owner.ID
 		return nil

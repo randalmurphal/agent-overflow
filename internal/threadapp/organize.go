@@ -40,7 +40,7 @@ var ErrEmptyThreadTitle = errors.New("threadapp: a thread title cannot be empty"
 var ErrThreadHasNoProject = errors.New("threadapp: a thread with no project cannot join a group")
 
 // ErrPlacementContradictsGroup is a patch whose placement and group say two
-// things: a group name with nested or standalone, or an ungroup with
+// things: a group name with owned or standalone, or an ungroup with
 // grouped.
 var ErrPlacementContradictsGroup = errors.New("threadapp: a group name means grouped, and an ungroup cannot be grouped")
 
@@ -57,7 +57,7 @@ type OrganizePatch struct {
 	// group of that name is there. The empty string ungroups, leaving the
 	// thread standalone.
 	Group *string
-	// Placement is store.PlacementNested, PlacementGrouped or
+	// Placement is store.PlacementOwned, PlacementGrouped or
 	// PlacementStandalone. Grouped without Group keeps a grouped thread
 	// where it is and refuses an ungrouped one (store.ErrPlacementNeedsGroup).
 	Placement *string
@@ -89,7 +89,7 @@ func (p OrganizePatch) Validate() error {
 	}
 	if p.Placement != nil {
 		switch *p.Placement {
-		case store.PlacementNested, store.PlacementGrouped, store.PlacementStandalone:
+		case store.PlacementOwned, store.PlacementGrouped, store.PlacementStandalone:
 		default:
 			return fmt.Errorf("%w: %q", store.ErrInvalidPlacement, *p.Placement)
 		}
@@ -104,7 +104,7 @@ func (p OrganizePatch) Validate() error {
 }
 
 // OrganizeResult is what one applied patch leaves behind: the row as it now
-// stands, whether anything durable moved, and the two facts root needs to
+// stands, whether anything durable moved, and the facts root needs to
 // announce it correctly.
 type OrganizeResult struct {
 	// Thread is the current row, whether or not the patch changed it.
@@ -116,6 +116,10 @@ type OrganizeResult struct {
 	// decides between the `listed` and `unlisted` sidebar frames and what
 	// tells root to release the thread's provider session.
 	ArchivedChanged bool
+	// PlacementChanged says the placement moved, by a group move or a
+	// placement write, which can give the thread a sidebar row or take it
+	// away (store.PlacementOwned).
+	PlacementChanged bool
 	// CreatedGroup is the group this patch had to create, if any. A client
 	// holding no row for it has nowhere to render the moved thread, so
 	// root announces it exactly as the sidebar's own create does.
@@ -161,10 +165,11 @@ func (s *Service) ApplyOrganizePatch(threadID string, patch OrganizePatch) (Orga
 		return OrganizeResult{}, err
 	}
 	return OrganizeResult{
-		Thread:          applied.Thread,
-		Changed:         applied.Changed,
-		ArchivedChanged: applied.ArchivedChanged,
-		CreatedGroup:    applied.CreatedGroup,
+		Thread:           applied.Thread,
+		Changed:          applied.Changed,
+		ArchivedChanged:  applied.ArchivedChanged,
+		PlacementChanged: applied.Thread.Placement != thread.Placement,
+		CreatedGroup:     applied.CreatedGroup,
 	}, nil
 }
 
@@ -181,7 +186,7 @@ type organizePlan struct {
 	// be created under groupName, in the thread's own project.
 	createGroup bool
 	groupName   string
-	// placement is nested or standalone to write after the group move, or
+	// placement is owned or standalone to write after the group move, or
 	// empty for "leave it alone". Grouped is the group move itself.
 	placement string
 	// pin is the tier to write, or empty for "leave it alone".
@@ -245,8 +250,8 @@ func planOrganizePatch(database *store.Store, thread store.Thread, patch Organiz
 		}
 	}
 	if patch.Placement != nil && patch.Group != nil && *patch.Group == "" && *patch.Placement != thread.Placement {
-		// An ungroup with nested: the store's ungroup leaves the row
-		// standalone, and the placement write then nests it.
+		// An ungroup with owned: the store's ungroup leaves the row
+		// standalone, and the placement write then makes it owned.
 		plan.placement = *patch.Placement
 	}
 

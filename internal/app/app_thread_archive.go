@@ -36,7 +36,8 @@ import (
 
 // ArchiveThread flips archived to true so the thread leaves the active
 // sidebar, and closes the thread's provider session so the host stops
-// carrying it.
+// carrying it. The workers it owns are archived after it, each the same
+// way (archiveOwnedWorkers); unarchiving it unarchives none of them.
 //
 // The row flip commits first and the close follows. A failed close is
 // logged rather than returned: the archive itself has already succeeded
@@ -110,12 +111,13 @@ func (a *App) captureArchivedThreadWork(id string) archivedThreadWork {
 	return work
 }
 
-// stopArchivedThreadWork stops exactly the work its archive captured. Both
-// doors that archive (this binding and the agents' thread_update patch)
-// run it, so a thread archived from either one is left in the same state.
-// It runs on the app's lifetime, not its caller's, because the archive is
-// already durable, and outside the locks because reaching the other
-// computer may take a while.
+// stopArchivedThreadWork stops exactly the work its archive captured, then
+// archives the workers the thread owns. Both doors that archive (this
+// binding and the agents' thread_update patch) run it, so a thread archived
+// from either one is left in the same state. It runs on the app's
+// lifetime, not its caller's, because the archive is already durable, and
+// outside the locks because reaching the other computer may take a while
+// and each worker's archive takes that worker's own.
 func (a *App) stopArchivedThreadWork(work archivedThreadWork) error {
 	if !work.archived {
 		return work.err
@@ -133,7 +135,29 @@ func (a *App) stopArchivedThreadWork(work archivedThreadWork) error {
 	// A finished job's completion is kept for the thread: the cancel keeps
 	// its watch, and one already held in the queue goes back to its watch
 	// after the cancel has run. It arrives once the thread is unarchived.
-	return errors.Join(work.err, withdrawErr, wakesErr, remoteErr, a.withdrawHeldRemoteCompletions(id, work.held))
+	completionsErr := a.withdrawHeldRemoteCompletions(id, work.held)
+	return errors.Join(work.err, withdrawErr, wakesErr, remoteErr, completionsErr, a.archiveOwnedWorkers(id))
+}
+
+// archiveOwnedWorkers archives the unarchived threads ownerID owns
+// (docs/specs/standing-agents.md, "Owned workers"), each through
+// ArchiveThread: its locks, its session stop and its disarmed requests, and
+// in turn the workers it owns, down the lineage. A worker that fails is
+// reported, naming it, and the others are still archived. An owner's
+// archive that changed nothing archives nothing, so the walk ends at
+// threads already archived.
+func (a *App) archiveOwnedWorkers(ownerID string) error {
+	workers, err := a.store.ListOwnedWorkerIDs(ownerID)
+	if err != nil {
+		return fmt.Errorf("archive the workers of %s: %w", ownerID, err)
+	}
+	var errs []error
+	for _, worker := range workers {
+		if err := a.ArchiveThread(worker); err != nil {
+			errs = append(errs, fmt.Errorf("archive worker %s of %s: %w", worker, ownerID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (a *App) archiveThreadLocked(id string) (archivedThreadWork, error) {
@@ -144,7 +168,7 @@ func (a *App) archiveThreadLocked(id string) (archivedThreadWork, error) {
 	requestedAt := time.Now().UnixMilli()
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
-	work, row, changed, err := a.commitArchive(id)
+	work, changed, err := a.commitArchive(id)
 	if err != nil {
 		return archivedThreadWork{}, err
 	}
@@ -152,9 +176,6 @@ func (a *App) archiveThreadLocked(id string) (archivedThreadWork, error) {
 	// from its sidebar too; re-archiving an already-archived thread
 	// changes nothing and says nothing.
 	a.announceThreadIfChanged(triage.ThreadActionUnlisted, id, changed)
-	if changed {
-		a.broadcastSpawnerRow(row)
-	}
 	a.stopArchivedThreadSession(id, requestedAt)
 	return work, nil
 }
@@ -166,17 +187,17 @@ func (a *App) archiveThreadLocked(id string) (archivedThreadWork, error) {
 // round, never between its check and its write. The lock is released
 // before the session stops: the teardown's queue drop takes it, and it is
 // not reentrant.
-func (a *App) commitArchive(id string) (archivedThreadWork, store.Thread, bool, error) {
+func (a *App) commitArchive(id string) (archivedThreadWork, bool, error) {
 	unlock, err := a.threadApplication().LockMutable(a.lifeCtx(), id)
 	if err != nil {
-		return archivedThreadWork{}, store.Thread{}, false, err
+		return archivedThreadWork{}, false, err
 	}
 	defer unlock()
-	row, changed, err := a.threadApplication().Archive(id)
+	_, changed, err := a.threadApplication().Archive(id)
 	if err != nil || !changed {
-		return archivedThreadWork{threadID: id}, row, changed, err
+		return archivedThreadWork{threadID: id}, changed, err
 	}
-	return a.captureArchivedThreadWork(id), row, true, nil
+	return a.captureArchivedThreadWork(id), true, nil
 }
 
 // UnarchiveThread flips archived back to false so the thread reappears in the
@@ -211,9 +232,6 @@ func (a *App) UnarchiveThread(id string) (store.Thread, error) {
 	// Broadcast as `listed` so every other attached client puts the row
 	// back in its sidebar.
 	a.announceThreadIfChanged(triage.ThreadActionListed, row.ID, changed)
-	if changed {
-		a.broadcastSpawnerRow(row)
-	}
 	return row, nil
 }
 

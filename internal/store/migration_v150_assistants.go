@@ -103,8 +103,15 @@ import (
 // idx_thread_requests_lineage the lineage rows, which the sweep deletes once
 // their spawned thread is gone.
 //
-// trg_thread_placement_spawn_gone makes a nested thread standalone when the
-// last local spawn row naming it is deleted, as a spawner's delete does.
+// trg_thread_placement_spawn_gone makes an owned thread of a project
+// standalone when the last local spawn row naming it is deleted, as a
+// spawner's delete does, so the thread gains a sidebar row rather than
+// being left owned by nothing. An assistant's helper, outside every
+// project, stays owned: its assistant's delete deletes it.
+//
+// idx_agent_past_threads_agent orders an assistant's past threads newest
+// superseded first, ties by thread id, the page order of
+// ListAssistantPastThreads.
 const assistantsMigrationVersion = 150
 
 const assistantsV150SQL = `
@@ -134,7 +141,7 @@ CREATE TABLE agent_past_threads (
     moved_draft      TEXT NOT NULL DEFAULT '',
     moved_draft_attachments TEXT NOT NULL DEFAULT '[]'
 );
-CREATE INDEX idx_agent_past_threads_agent ON agent_past_threads(agent_id, superseded_at DESC);
+CREATE INDEX idx_agent_past_threads_agent ON agent_past_threads(agent_id, superseded_at DESC, thread_id DESC);
 CREATE TABLE agent_wakes (
     id               TEXT PRIMARY KEY,
     thread_id        TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -454,7 +461,7 @@ CREATE TRIGGER trg_thread_placement_spawn_gone AFTER DELETE ON thread_requests
 WHEN OLD.kind = 'spawn' AND OLD.target_computer_id = '' AND OLD.target_thread_id <> ''
 BEGIN
   UPDATE threads SET placement = 'standalone'
-   WHERE id = OLD.target_thread_id AND placement = 'nested'
+   WHERE id = OLD.target_thread_id AND placement = 'owned' AND project_id IS NOT NULL
      AND NOT EXISTS (SELECT 1 FROM thread_requests
                       WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = OLD.target_thread_id);
 END;

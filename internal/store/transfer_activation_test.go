@@ -213,9 +213,9 @@ func TestTransferActivationRefusesAnExistingUnretiredConversation(t *testing.T) 
 	}
 }
 
-// A nested thread comes back nested: the link it nests by is this
+// An owned thread comes back owned: the link that owns it is this
 // computer's own spawn row, which the move did not take.
-func TestReturningTransferKeepsANestedThreadNested(t *testing.T) {
+func TestReturningTransferKeepsAnOwnedThreadOwned(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "agent")
 	mustCreateThread(t, s, "returning")
@@ -244,7 +244,7 @@ func TestReturningTransferKeepsANestedThreadNested(t *testing.T) {
 		t.Fatal(err)
 	}
 	returned, err := s.GetThread(target.ID)
-	if err != nil || returned.Placement != PlacementNested {
-		t.Fatalf("returned nested thread = %+v, %v; want nested", returned.Placement, err)
+	if err != nil || returned.Placement != PlacementOwned {
+		t.Fatalf("returned owned thread = %+v, %v; want owned", returned.Placement, err)
 	}
 }

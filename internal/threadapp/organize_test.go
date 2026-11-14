@@ -126,7 +126,7 @@ func TestApplyOrganizePatchPinsGroupedThreads(t *testing.T) {
 }
 
 // spawnedChild makes a thread spawned by another one on this computer and
-// nested under it, the only kind of thread a placement patch moves.
+// owned by it, the only kind of thread a placement patch moves.
 func spawnedChild(t *testing.T, service *Service, database *store.Store, id string) store.Thread {
 	t.Helper()
 	service.deps.NewID = func() string { return id + "-spawner" }
@@ -149,16 +149,17 @@ func spawnedChild(t *testing.T, service *Service, database *store.Store, id stri
 		t.Fatalf("NameLocalThreadRequestTarget: %v", err)
 	}
 	child, err = database.GetThread(child.ID)
-	if err != nil || child.Placement != store.PlacementNested {
-		t.Fatalf("spawned child = %+v, %v; want it nested", child, err)
+	if err != nil || child.Placement != store.PlacementOwned {
+		t.Fatalf("spawned child = %+v, %v; want it owned", child, err)
 	}
 	return child
 }
 
-// An ungroup with placement nested takes a grouped child out of its group
-// and back under its spawner in one patch: the store's ungroup leaves it
-// standalone, and the plan's placement write nests it.
-func TestApplyOrganizePatchUngroupsAndNestsInOnePatch(t *testing.T) {
+// An ungroup with placement owned takes a grouped child out of its group
+// and back to its spawner in one patch: the store's ungroup leaves it
+// standalone, and the plan's placement write makes it owned. The result
+// says the placement moved; a rename alone says it did not.
+func TestApplyOrganizePatchUngroupsAndOwnsInOnePatch(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	child := spawnedChild(t, service, database, "child")
 	group, err := database.CreateThreadGroup("project", "Sweep")
@@ -170,13 +171,17 @@ func TestApplyOrganizePatchUngroupsAndNestsInOnePatch(t *testing.T) {
 	}
 	result, err := service.ApplyOrganizePatch(child.ID, OrganizePatch{
 		Group:     patchString(""),
-		Placement: patchString(store.PlacementNested),
+		Placement: patchString(store.PlacementOwned),
 	})
 	if err != nil {
 		t.Fatalf("ApplyOrganizePatch: %v", err)
 	}
-	if result.Thread.GroupID != "" || result.Thread.Placement != store.PlacementNested {
-		t.Errorf("child = %s in group %q, want nested with no group", result.Thread.Placement, result.Thread.GroupID)
+	if result.Thread.GroupID != "" || result.Thread.Placement != store.PlacementOwned || !result.PlacementChanged {
+		t.Errorf("child = %s in group %q (moved %v), want owned with no group", result.Thread.Placement, result.Thread.GroupID, result.PlacementChanged)
+	}
+	renamed, err := service.ApplyOrganizePatch(child.ID, OrganizePatch{Title: patchString("Renamed")})
+	if err != nil || !renamed.Changed || renamed.PlacementChanged {
+		t.Errorf("rename = changed %v placement moved %v, %v; want a change that moves no placement", renamed.Changed, renamed.PlacementChanged, err)
 	}
 }
 

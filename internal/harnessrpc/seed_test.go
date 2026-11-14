@@ -197,8 +197,8 @@ func TestHarnessSeedMakesAnAssistant(t *testing.T) {
 		t.Fatalf("broadcast rows = %v, want the assistant's row announced", host.broadcastRows)
 	}
 	worker, err := host.store.GetThread(ids[1])
-	if err != nil || worker.SpawnedByThreadID != ids[0] || !worker.SpawnedByAgent || worker.Placement != store.PlacementNested {
-		t.Fatalf("worker = spawnedBy %q agent %v placement %s (%v)", worker.SpawnedByThreadID, worker.SpawnedByAgent, worker.Placement, err)
+	if err != nil || worker.SpawnedByThreadID != ids[0] || worker.Placement != store.PlacementOwned {
+		t.Fatalf("worker = spawnedBy %q placement %s (%v)", worker.SpawnedByThreadID, worker.Placement, err)
 	}
 }
 

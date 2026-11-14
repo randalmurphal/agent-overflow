@@ -12,8 +12,9 @@ package store
 //     thread and its participants stay as independent chat threads. It
 //     gains `placement`, where the sidebar shows the row, and the attention
 //     flag an agent raises (attention_kind, attention_reason, attention_at).
-//     A thread in a group is grouped; an ungrouped thread a local spawn row
-//     names is nested under its spawner; every other thread is standalone.
+//     A thread in a group is grouped and every other thread is standalone,
+//     so no thread that existed before loses its sidebar row; only a later
+//     spawn makes a thread owned (thread_placement.go).
 //     Every other column, index and trigger is restated as v139 left it, and
 //     owned_threads and trg_threads_fork_source_delete are restated around
 //     the rebuild as v139 does.
@@ -103,7 +104,7 @@ CREATE TABLE threads_new (
     newest_turn_error_turn   INTEGER,
     deleting                 INTEGER NOT NULL DEFAULT 0 CHECK(deleting IN (0,1)),
     placement                TEXT    NOT NULL DEFAULT 'standalone'
-        CHECK(placement IN ('nested','grouped','standalone')
+        CHECK(placement IN ('owned','grouped','standalone')
           AND (placement = 'grouped') = (group_id IS NOT NULL)),
     attention_kind           TEXT    NOT NULL DEFAULT ''
         CHECK(attention_kind IN ('', 'decision', 'review', 'problem')),
@@ -138,12 +139,7 @@ SELECT
     created_remote_url, created_head_commit, fork_preparing,
     fork_source_thread_id, fork_cut_turn_index, fork_cut_item_index,
     fork_source_title, newest_turn_error_at, newest_turn_error_turn, deleting,
-    CASE
-        WHEN group_id IS NOT NULL THEN 'grouped'
-        WHEN EXISTS (SELECT 1 FROM thread_requests
-                      WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id) THEN 'nested'
-        ELSE 'standalone'
-    END
+    CASE WHEN group_id IS NOT NULL THEN 'grouped' ELSE 'standalone' END
 FROM threads;
 
 DROP TABLE threads;

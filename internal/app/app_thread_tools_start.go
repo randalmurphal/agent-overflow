@@ -232,10 +232,6 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 // the source row it advances exists only on the computer that made the
 // request.
 func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOrigin, token string, call threadtools.SpawnCall) (string, error) {
-	// A fork made by a thread that is not a standing agent keeps its
-	// source's group unless the call places it (ruling 36 governs the
-	// threads a standing agent spawns).
-	keepSourceGroup := origin.agent == nil && call.Placement == "" && call.Group == ""
 	placement, err := threadtools.ResolveSpawnPlacement(call.Placement, call.Group)
 	if err != nil {
 		return "", t.failRequest(token, err)
@@ -252,11 +248,11 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 		OriginThreadID: call.FromThread,
 		Notify:         call.Notify,
 	}, func() (store.Thread, error) {
-		return t.createSpawnedThread(ctx, call, create, keepSourceGroup)
-		// The naming write nests a nested spawn's thread. A paired
-		// computer's spawn has no spawn row here to nest under, so its
-		// thread is standalone, or grouped by its group.
-	}, call.Placement == threadtools.PlacementNested)
+		return t.createSpawnedThread(ctx, call, create)
+		// The naming write makes an owned spawn's thread owned. A paired
+		// computer's spawn has no spawn row here to own it, so its thread
+		// is standalone, or grouped by its group.
+	}, call.Placement == threadtools.PlacementOwned)
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
@@ -481,7 +477,7 @@ func (t threadToolsApp) refuseSelf(caller threadtools.Caller, threadID, verb str
 // either. A local token is fresh, so it is never a retry.
 func (t threadToolsApp) acceptRequest(
 	origin threadRequestOrigin, request store.ThreadRequest,
-	create func() (store.Thread, error), nest bool,
+	create func() (store.Thread, error), own bool,
 ) (target string, fresh bool, err error) {
 	token, kind := request.Token, request.Kind
 	receiptRow := threadReceiptFor(origin, token, kind, request.TargetThreadID)
@@ -527,7 +523,7 @@ func (t threadToolsApp) acceptRequest(
 			if _, err := t.app.store.SetThreadReceiptTarget(token, target); err != nil {
 				return "", false, err
 			}
-		} else if err := t.app.store.NameLocalThreadRequestTarget(token, target, nest); err != nil {
+		} else if err := t.app.store.NameLocalThreadRequestTarget(token, target, own); err != nil {
 			// One write names the thread on both rows and accepts the source
 			// row; a request a settlement already moved keeps its state.
 			return "", false, err
@@ -539,7 +535,7 @@ func (t threadToolsApp) acceptRequest(
 	if !origin.foreign {
 		if kind == store.ThreadRequestSpawn {
 			// The row went out at creation without a spawner; now the
-			// request names it, so the sidebar can nest the thread.
+			// request names it, and an owned row leaves the sidebar.
 			t.app.announceThread(triage.ThreadActionFull, target)
 		}
 	} else {

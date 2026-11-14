@@ -212,9 +212,9 @@ func (s *Store) AcceptLocalThreadRequest(request ThreadRequest, receipt ThreadRe
 // must still have no target, or it is an error and nothing is written. A
 // source row that is gone, its caller deleted while the thread was being
 // created, is not an error: the thread exists and runs, and the receipt
-// names it. nest makes a spawn's thread nested under its spawner in the
-// same transaction, when the source row is there to nest it under.
-func (s *Store) NameLocalThreadRequestTarget(token, threadID string, nest bool) error {
+// names it. own makes a spawn's thread owned by its spawner in the same
+// transaction, when the source row is there to own it.
+func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) error {
 	action := fmt.Sprintf("store: name local thread request %s target", token)
 	if threadID == "" {
 		return fmt.Errorf("%s: thread id is required", action)
@@ -244,8 +244,8 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string, nest bool) 
 		threadID, now, ThreadRequestUnconfirmed, ThreadRequestAccepted, token).Scan(&caller); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%s: source: %w", action, err)
 	}
-	if nest && caller != "" {
-		if err := nestSpawnedThreadTx(tx, threadID); err != nil {
+	if own && caller != "" {
+		if err := ownSpawnedThreadTx(tx, threadID); err != nil {
 			return fmt.Errorf("%s: %w", action, err)
 		}
 	}

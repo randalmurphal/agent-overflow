@@ -167,18 +167,20 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 	if result.CreatedGroup != nil {
 		a.emitThreadGroup("create", *result.CreatedGroup)
 	}
-	a.announceThreadIfChanged(organizeThreadAction(result), result.Thread.ID, result.Changed)
-	// An archived child counts in its agent's done footer only while it is
-	// nested, so a placement change on one moves that count too.
-	if result.ArchivedChanged || (result.Changed && result.Thread.Archived) {
-		a.broadcastSpawnerRow(result.Thread)
+	switch {
+	case !result.Changed:
+	case !result.ArchivedChanged && result.PlacementChanged:
+		a.announcePlaced(result.Thread.ID)
+	default:
+		a.announceThread(organizeThreadAction(result), result.Thread.ID)
 	}
 	return result, work, nil
 }
 
 // organizeThreadAction picks the sidebar frame this patch produced. An
 // archive flip is what adds or removes the row from the active sidebar, so
-// it is announced as such; anything else is a whole-row update of a row
+// it is announced as such; a placement move without one goes out as
+// announcePlaced decides; anything else is a whole-row update of a row
 // that is already there.
 func organizeThreadAction(result threadapp.OrganizeResult) string {
 	if !result.ArchivedChanged {
@@ -321,16 +323,16 @@ func threadToolsOrganizeError(threadID string, err error) error {
 		return errorsx.Public(threadtools.CodeInvalidRequest, "A group name is trimmed, and a blank one is refused.", err)
 	case errors.Is(err, store.ErrStandingAgentGrouped):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
-			"That thread is an assistant's, and an assistant is not grouped: its own sidebar row holds the threads it spawned.", err)
+			"That thread is an assistant's, and an assistant is not grouped: it has a sidebar row of its own.", err)
 	case errors.Is(err, store.ErrStandingAgentPlaced):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
-			"That thread is an assistant's, and its own sidebar row is a row of its own: it takes no placement.", err)
+			"That thread is an assistant's, and an assistant always has its own sidebar row: it takes no placement.", err)
 	case errors.Is(err, store.ErrPlacementOutsideProjects):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
-			"That thread is outside every project, a helper or past thread of an assistant, and is always listed under the assistant: it takes no placement.", err)
+			"That thread is outside every project, a helper or past thread of an assistant, and belongs to the assistant: it takes no placement.", err)
 	case errors.Is(err, store.ErrThreadNotSpawned):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
-			"No thread on this computer spawned that thread, so there is no agent row to nest it under. Use standalone, or group it.", err)
+			"No thread on this computer spawned that thread, so no thread can own it and it keeps its sidebar row. Use standalone, or group it.", err)
 	case errors.Is(err, store.ErrPlacementNeedsGroup):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
 			"That thread is in no group, so placement grouped needs group, the name of the group to put it in.", err)
@@ -338,7 +340,7 @@ func threadToolsOrganizeError(threadID string, err error) error {
 		return errorsx.Public(threadtools.CodeInvalidRequest,
 			"group and placement disagree: a group name means grouped, and group null cannot be grouped.", err)
 	case errors.Is(err, store.ErrInvalidPlacement):
-		return errorsx.Public(threadtools.CodeInvalidRequest, "placement must be nested, grouped or standalone.", err)
+		return errorsx.Public(threadtools.CodeInvalidRequest, "placement must be owned, grouped or standalone.", err)
 	case errors.Is(err, store.ErrThreadGone), errors.Is(err, sql.ErrNoRows), errors.As(err, &moved):
 		return threadToolsNotFound(threadID)
 	}

@@ -13,7 +13,7 @@ func TestSpawnResolvesItsPlacement(t *testing.T) {
 	server := New(app)
 	for args, want := range map[string]string{
 		`{"prompt":"go"}`:                                       "",
-		`{"prompt":"go","placement":"nested"}`:                  PlacementNested,
+		`{"prompt":"go","placement":"owned"}`:                   PlacementOwned,
 		`{"prompt":"go","placement":"standalone"}`:              PlacementStandalone,
 		`{"prompt":"go","group":"Sweep"}`:                       "",
 		`{"prompt":"go","group":"Sweep","placement":"grouped"}`: PlacementGrouped,
@@ -26,9 +26,10 @@ func TestSpawnResolvesItsPlacement(t *testing.T) {
 	}
 	for args, fragment := range map[string]string{
 		`{"prompt":"go","placement":"grouped"}`:                    "needs group",
-		`{"prompt":"go","group":"Sweep","placement":"nested"}`:     "cannot also be nested",
+		`{"prompt":"go","group":"Sweep","placement":"owned"}`:      "cannot also be owned",
 		`{"prompt":"go","group":"Sweep","placement":"standalone"}`: "cannot also be standalone",
-		`{"prompt":"go","placement":"floating"}`:                   "nested, grouped or standalone",
+		`{"prompt":"go","placement":"floating"}`:                   "owned, grouped or standalone",
+		`{"prompt":"go","placement":"nested"}`:                     "owned, grouped or standalone",
 	} {
 		before := len(app.spawns)
 		message := callErr(t, server, localCaller(), "thread_spawn", args, CodeInvalidRequest)
@@ -57,16 +58,17 @@ func TestUpdateCarriesPlacement(t *testing.T) {
 	}
 	// Grouped alone is left to the thread, which knows whether it has a group.
 	call(t, p.server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`"],"placement":"grouped"}`)
-	// An ungroup with nested is one patch: out of the group, under the agent.
-	call(t, p.server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`"],"group":null,"placement":"nested"}`)
+	// An ungroup with owned is one patch: out of the group and the sidebar.
+	call(t, p.server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`"],"group":null,"placement":"owned"}`)
 	last := p.local.updates[len(p.local.updates)-1]
-	if last.Group == nil || *last.Group != "" || last.Placement == nil || *last.Placement != PlacementNested {
-		t.Fatalf("ungroup and nest = %+v", last)
+	if last.Group == nil || *last.Group != "" || last.Placement == nil || *last.Placement != PlacementOwned {
+		t.Fatalf("ungroup and own = %+v", last)
 	}
 	before := len(p.local.updates)
 	for _, args := range []string{
 		`{"thread_ids":["` + localThreadID + `"],"group":"Release","placement":"standalone"}`,
-		`{"thread_ids":["` + localThreadID + `"],"group":"Release","placement":"nested"}`,
+		`{"thread_ids":["` + localThreadID + `"],"group":"Release","placement":"owned"}`,
+		`{"thread_ids":["` + localThreadID + `"],"placement":"nested"}`,
 		`{"thread_ids":["` + localThreadID + `"],"group":null,"placement":"grouped"}`,
 		`{"thread_ids":["` + localThreadID + `"],"placement":"  "}`,
 		`{"thread_ids":["` + localThreadID + `"],"placement":"floating"}`,

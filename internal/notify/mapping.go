@@ -177,6 +177,12 @@ type ThreadRef struct {
 	// unless the screen opted in (settings.NotifyHiddenThreads), and the
 	// caller that read the row is the one that knows which it is.
 	Hidden bool
+	// Owned is a worker the thread that spawned it owns
+	// (store.PlacementOwned): its answer goes to that thread, so its turn
+	// ending, finished or failed, notifies no one unless it raised an
+	// attention flag. Its prompts still notify while the user is to answer
+	// them.
+	Owned bool
 	// Attention is the kind of the thread's pending attention flag
 	// (store.AttentionDecision and the rest), empty when none is pending.
 	// A fixed value, never the reason the agent gave: that is the thread's
@@ -354,6 +360,9 @@ func MapTurnRest(rest TurnRest) (Notification, bool) {
 	flagged := rest.Thread.Attention != ""
 	if rest.QuietTick && rest.Thread.AttentionAt < rest.StartedAt {
 		flagged = false
+	}
+	if rest.Thread.Owned && !flagged {
+		return Notification{}, false
 	}
 	switch {
 	case rest.Failed:

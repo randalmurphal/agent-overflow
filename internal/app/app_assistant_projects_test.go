@@ -487,13 +487,3 @@ func mustThread(t *testing.T, a *App, id string) store.Thread {
 	}
 	return thread
 }
-
-// archivedTotal is how many archived threads live under an assistant,
-// over all its containers.
-func archivedTotal(counts map[string]int) int {
-	total := 0
-	for _, n := range counts {
-		total += n
-	}
-	return total
-}

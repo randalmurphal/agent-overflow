@@ -34,17 +34,20 @@ func applyAssistantsMigration(t *testing.T, db *sql.DB) {
 // object but the two ledger tables is unchanged; the new tables have exactly
 // their columns, constraints and indexes and cascade as the spec says; the
 // ledger gains its columns at the end, its indexes and its triggers; and the
-// placement trigger ends nesting with the last link.
+// placement trigger ends ownership with the last link, except for a thread
+// outside every project, an assistant's helper.
 func TestMigrationV150Schema(t *testing.T) {
 	db, _ := openFileDBThrough(t, assistantsMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
 	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
 		('lead', 'p', 'Lead', 'claude', '/p', '', 1, 1, 0),
 		('worker', 'p', 'Worker', 'codex', '/p', '', 1, 2, 0),
-		('next', 'p', 'Next', 'claude', '/p', '', 1, 3, 0)`)
-	mustExec(t, db, `UPDATE threads SET placement = 'nested' WHERE id = 'worker'`)
+		('next', 'p', 'Next', 'claude', '/p', '', 1, 3, 0),
+		('helper', NULL, 'Helper', 'claude', '/h/lead', '', 1, 4, 0)`)
+	mustExec(t, db, `UPDATE threads SET placement = 'owned' WHERE id IN ('worker', 'helper')`)
 	mustExec(t, db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, created_at, updated_at) VALUES
-		('spawn', 'lead', 'spawn', 'worker', 'finished', 5, 5)`)
+		('spawn', 'lead', 'spawn', 'worker', 'finished', 5, 5),
+		('spawn-helper', 'lead', 'spawn', 'helper', 'finished', 6, 6)`)
 	threadsBefore := migrationThreadRows(t, db)
 	ledger := []string{"thread_requests", "thread_request_receipts"}
 	columnsBefore := map[string][]string{}
@@ -169,7 +172,7 @@ func TestMigrationV150Schema(t *testing.T) {
 		}
 	}
 	for index, want := range map[string][]string{
-		"idx_agent_past_threads_agent": {"agent_id", "superseded_at"},
+		"idx_agent_past_threads_agent": {"agent_id", "superseded_at", "thread_id"},
 		"idx_agent_wakes_due":          {"state", "next_at"},
 		"idx_agent_wakes_thread":       {"thread_id", "state"},
 	} {
@@ -203,11 +206,14 @@ func TestMigrationV150Schema(t *testing.T) {
 	mustExec(t, db, `INSERT INTO agent_wakes (id, thread_id, kind, label, state, created_at) VALUES ('w', 'lead', 'loop', 'board', 'armed', 1)`)
 	mustExec(t, db, `INSERT INTO session_start_failures (thread_id, failed_at) VALUES ('lead', 1)`)
 
-	// The spawner's delete takes its spawn row, which ends the nesting.
-	mustExec(t, db, `DELETE FROM thread_requests WHERE token = 'spawn'`)
-	var placement string
-	if err := db.QueryRow(`SELECT placement FROM threads WHERE id = 'worker'`).Scan(&placement); err != nil || placement != PlacementStandalone {
-		t.Errorf("worker without its spawn = %q %v, want standalone", placement, err)
+	// The spawner's delete takes its spawn rows, which ends the worker's
+	// ownership and leaves the helper's.
+	mustExec(t, db, `DELETE FROM thread_requests WHERE token IN ('spawn', 'spawn-helper')`)
+	for id, want := range map[string]string{"worker": PlacementStandalone, "helper": PlacementOwned} {
+		var placement string
+		if err := db.QueryRow(`SELECT placement FROM threads WHERE id = ?`, id).Scan(&placement); err != nil || placement != want {
+			t.Errorf("%s without its spawn = %q %v, want %s", id, placement, err, want)
+		}
 	}
 
 	// A past thread's delete leaves the assistant; the current thread's
@@ -524,7 +530,7 @@ func TestUpgradeFromAnOlderReleaseKeepsMainData(t *testing.T) {
 		want        []string
 	}{
 		{"threads", `SELECT id || '|' || mode || '|' || placement || '|' || COALESCE(group_id, '') FROM threads ORDER BY id`,
-			[]string{"caller|chat|standalone|", "child|chat|nested|", "disc|chat|standalone|", "grouped|chat|grouped|g"}},
+			[]string{"caller|chat|standalone|", "child|chat|standalone|", "disc|chat|standalone|", "grouped|chat|grouped|g"}},
 		{"work items", `SELECT id || '|' || source || '|' || source_ref FROM work_items`, []string{"run-auto|manual|"}},
 		{"requests", `SELECT token || '|' || lineage_only || '|' || COALESCE(confirmed_at, '-') || '|' || COALESCE(late_confirmed_at, '-') || '|' ||
 			late_delivered_how || '|' || wake_item_id || '|' || late_wake_item_id || '|' || answer_agent || '|' || open_below_0 || open_below_1

@@ -74,8 +74,8 @@ type HarnessSeedThread struct {
 	Archived   bool   `json:"archived,omitempty"`
 	// SpawnedBy is the title of a thread seeded earlier in this project.
 	// The thread is recorded as that thread's thread_spawn, through a
-	// finished spawn request row, nested, so the sidebar nests it under an
-	// assistant spawner and counts it once archived.
+	// finished spawn request row, owned by its spawner as a spawn with the
+	// default placement leaves it, so the sidebar lists no row for it.
 	SpawnedBy string `json:"spawnedBy,omitempty"`
 	// SpawnedByID is the id of a thread seeded before, in any project: the
 	// spawner of a thread an agent spawned into another project. At most
@@ -395,9 +395,9 @@ func (h *Harness) seedThread(projectID string, spec HarnessSeedThread, spawnerID
 		}); err != nil {
 			return thread.ID, fmt.Errorf("record spawner: %w", err)
 		}
-		// Nested, as a spawn with the default placement leaves it.
-		if _, err := h.store().SetThreadPlacement([]string{thread.ID}, store.PlacementNested); err != nil {
-			return thread.ID, fmt.Errorf("nest under spawner: %w", err)
+		// Owned, as a spawn with the default placement leaves it.
+		if _, err := h.store().SetThreadPlacement([]string{thread.ID}, store.PlacementOwned); err != nil {
+			return thread.ID, fmt.Errorf("own by spawner: %w", err)
 		}
 	}
 	if spec.Assistant {

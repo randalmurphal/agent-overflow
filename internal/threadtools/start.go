@@ -431,7 +431,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// ResolveSpawnPlacement resolves a spawn's placement: nested by default,
+// ResolveSpawnPlacement resolves a spawn's placement: owned by default,
 // grouped when group names a group, and refused when the two contradict.
 // The tools layer runs it to refuse a contradiction before a request
 // exists; the destination runs it on the call it receives to resolve the
@@ -451,7 +451,7 @@ func ResolveSpawnPlacement(placement, group string) (string, error) {
 	case placement == PlacementGrouped:
 		return "", invalidf("placement grouped needs group, the name of the group to put the thread in.")
 	case placement == "":
-		return PlacementNested, nil
+		return PlacementOwned, nil
 	}
 	return placement, nil
 }

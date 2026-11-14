@@ -1372,10 +1372,14 @@ func (r *Router) handleSubagentStatus(evt provider.ProviderEvent) error {
 //
 //   - "full"     the row's current state — converge a row the client already
 //     has. Says nothing about membership, so a client that does
-//     not have the row ignores it.
+//     not have the row ignores it. A row whose placement is owned
+//     has no sidebar row, so a client drops it from its sidebar
+//     and keeps any pane that shows it.
 //   - "patch"    changed fields only, keyed by ID.
 //   - "listed"   the row belongs in the active sidebar now — insert it if
-//     absent (creation, fork, terminal start, unarchive).
+//     absent (creation, fork, terminal start, unarchive, a
+//     placement or group move that gives an owned thread a row).
+//     An owned row is still kept out of the sidebar.
 //   - "unlisted" the row has left the active sidebar but still exists
 //     (archive). Carries the row so open panes converge too.
 //   - "deleted"  the row is gone from SQLite. ID only; one per row of a

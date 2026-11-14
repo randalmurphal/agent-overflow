@@ -70,6 +70,32 @@ func TestAnnounceHandOffReadsTheRowUnderTheLock(t *testing.T) {
 	}
 }
 
+// A placement frame follows the row it reads: `listed` for a row the
+// sidebar lists, `full` for an owned or archived one, and never the
+// archive's `unlisted`, which closes the panes showing the thread.
+func TestAnnouncePlacedFollowsTheRow(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		placement string
+		archived  bool
+		want      string
+	}{
+		{"standalone", store.PlacementStandalone, false, ThreadActionListed},
+		{"grouped", store.PlacementGrouped, false, ThreadActionListed},
+		{"owned", store.PlacementOwned, false, ThreadActionFull},
+		{"archived standalone", store.PlacementStandalone, true, ThreadActionFull},
+		{"archived owned", store.PlacementOwned, true, ThreadActionFull},
+	} {
+		stored := store.Thread{ID: "worker", Placement: tc.placement, Archived: tc.archived}
+		announcer := NewThreadAnnouncer(func(string) (store.Thread, error) { return stored, nil })
+		var got []ThreadUpdateEvent
+		announcer.AnnouncePlaced(func(_ eventchan.Channel, payload any) { got = append(got, payload.(ThreadUpdateEvent)) }, "worker")
+		if len(got) != 1 || got[0].Action != tc.want || got[0].Thread == nil || got[0].Thread.Placement != tc.placement {
+			t.Errorf("%s: frames = %+v, want one %s frame carrying the row", tc.name, got, tc.want)
+		}
+	}
+}
+
 // A patch carries the stored value of each field it names, whatever its
 // caller wrote, and leaves the fields it does not name unset.
 func TestAnnouncePatchCarriesTheStoredFields(t *testing.T) {

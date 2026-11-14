@@ -3,7 +3,6 @@ package app
 import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/triage"
 )
 
 // ThreadGroupUpdateEvent is the wire shape for thread-group:updated.
@@ -92,8 +91,9 @@ func (a *App) DeleteThreadGroup(id string) error {
 
 // SetThreadGroup moves threads into groupID, or out of any group when it
 // is empty. It returns every row the call touched and emits one
-// thread:updated "full" frame per row, because a move rewrites the
-// group and clears the pin of a row that changes group.
+// thread:updated frame per row, because a move rewrites the group and
+// clears the pin of a row that changes group; an owned thread a move
+// groups joins the sidebar (announceMovedThreads).
 //
 // The client routes this from the thread ids (methodFamilies.ts); home is
 // the single-backend fallback.
@@ -109,13 +109,15 @@ func (a *App) SetThreadGroup(threadIDs []string, groupID string) ([]store.Thread
 	return moved, nil
 }
 
-// SetThreadPlacement makes threads nested under the standing agent that
-// spawned them or standalone in their project, out of any group they were
-// in; a move into a group is SetThreadGroup. It returns every row the call
-// touched and emits one thread:updated "full" frame per row
-// (docs/specs/standing-agents.md ruling 36). Nested is refused for a thread
-// nothing on this computer spawned, and any placement for an assistant's
-// own thread.
+// SetThreadPlacement makes threads owned by the thread that spawned them,
+// with no sidebar row, or standalone in their project, out of any group
+// they were in; a move into a group is SetThreadGroup. Show in Sidebar and
+// Remove from Sidebar are its two calls. It returns every row the call
+// touched and emits one thread:updated frame per row: `listed` for a row
+// the sidebar now lists, `full` for an owned one, so a pane showing the
+// thread stays open (docs/specs/standing-agents.md, "Owned workers").
+// Owned is refused for a thread nothing on this computer spawned, and any
+// placement for an assistant's own thread or one outside every project.
 //
 //ao:scope threads:operate
 //ao:route home
@@ -129,13 +131,9 @@ func (a *App) SetThreadPlacement(threadIDs []string, placement string) ([]store.
 }
 
 // announceMovedThreads announces each row a group or placement move wrote,
-// and the agent row of each archived one: an archived child counts in its
-// agent's done footer only while it is nested.
+// as a row that may have joined or left the sidebar (announcePlaced).
 func (a *App) announceMovedThreads(rows []store.Thread) {
 	for _, thread := range rows {
-		a.announceThread(triage.ThreadActionFull, thread.ID)
-		if thread.Archived {
-			a.broadcastSpawnerRow(thread)
-		}
+		a.announcePlaced(thread.ID)
 	}
 }

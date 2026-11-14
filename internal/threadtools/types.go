@@ -105,10 +105,12 @@ const (
 	PinNone  = "none"
 )
 
-// Placements: where the sidebar shows a thread a standing agent spawned
-// (docs/specs/standing-agents.md ruling 36). They match the store's values.
+// Placements: whether a thread a local thread spawned has a sidebar row
+// (docs/specs/standing-agents.md, "Owned workers"). Owned is its spawner's
+// worker with no row; grouped and standalone give it one. They match the
+// store's values.
 const (
-	PlacementNested     = "nested"
+	PlacementOwned      = "owned"
 	PlacementGrouped    = "grouped"
 	PlacementStandalone = "standalone"
 )
@@ -119,13 +121,13 @@ const (
 // caller, because only the thread knows whether it is in a group already.
 func checkPlacement(placement string, group *string) error {
 	switch placement {
-	case "", PlacementNested, PlacementGrouped, PlacementStandalone:
+	case "", PlacementOwned, PlacementGrouped, PlacementStandalone:
 	default:
-		return invalidf("placement must be nested, grouped or standalone.")
+		return invalidf("placement must be owned, grouped or standalone.")
 	}
 	switch {
 	case group == nil:
-	case *group != "" && (placement == PlacementNested || placement == PlacementStandalone):
+	case *group != "" && (placement == PlacementOwned || placement == PlacementStandalone):
 		return invalidf("group puts the thread in a group, so it cannot also be %s. Pass placement grouped with group, or drop group.", placement)
 	case *group == "" && placement == PlacementGrouped:
 		return invalidf("group null takes the thread out of its group, so placement cannot be grouped.")

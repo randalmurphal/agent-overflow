@@ -739,11 +739,10 @@ func TestThreadSpawnRemovesTheThreadWhenItsGroupPatchFails(t *testing.T) {
 	}
 }
 
-// A fork copies its source's group. A standing agent's spawn places the
-// fork (ruling 36): a from_thread spawn of a grouped source lands nested by
+// A fork copies its source's group, but a spawn places the fork the same
+// way for every caller: a from_thread spawn of a grouped source is owned by
 // default and standalone when asked, out of the group either way, and in
-// the group a spawn names when it names one. Any other caller's fork keeps
-// the source's group unless the call places it.
+// the group a spawn names when it names one.
 func TestAForkSpawnTakesItsPlacementOverItsSourcesGroup(t *testing.T) {
 	t.Parallel()
 	type forkCase struct {
@@ -794,7 +793,7 @@ func TestAForkSpawnTakesItsPlacementOverItsSourcesGroup(t *testing.T) {
 	t.Run("assistant", func(t *testing.T) {
 		t.Parallel()
 		run(t, true, []forkCase{
-			{name: "default", wantPlacement: store.PlacementNested},
+			{name: "default", wantPlacement: store.PlacementOwned},
 			{name: "standalone", placement: threadtools.PlacementStandalone, wantPlacement: store.PlacementStandalone},
 			{name: "named group", group: "Sweep", wantPlacement: store.PlacementGrouped, wantSourceGroup: true},
 		})
@@ -802,16 +801,17 @@ func TestAForkSpawnTakesItsPlacementOverItsSourcesGroup(t *testing.T) {
 	t.Run("plain caller", func(t *testing.T) {
 		t.Parallel()
 		run(t, false, []forkCase{
-			{name: "default", wantPlacement: store.PlacementGrouped, wantSourceGroup: true},
-			{name: "nested", placement: threadtools.PlacementNested, wantPlacement: store.PlacementNested},
+			{name: "default", wantPlacement: store.PlacementOwned},
+			{name: "owned", placement: threadtools.PlacementOwned, wantPlacement: store.PlacementOwned},
 			{name: "standalone", placement: threadtools.PlacementStandalone, wantPlacement: store.PlacementStandalone},
+			{name: "named group", group: "Sweep", wantPlacement: store.PlacementGrouped, wantSourceGroup: true},
 		})
 	})
 }
 
 // The tool a live session calls leaves an omitted placement for the
-// destination to resolve, so a plain caller's thread_spawn of a grouped
-// source keeps the source's group, and an assistant's lands nested.
+// destination to resolve, so any caller's thread_spawn of a grouped source
+// lands owned, out of the source's group.
 func TestThreadSpawnToolForkOfAGroupedSource(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -820,8 +820,8 @@ func TestThreadSpawnToolForkOfAGroupedSource(t *testing.T) {
 		wantPlacement string
 		wantGroup     bool
 	}{
-		{name: "plain caller", wantPlacement: store.PlacementGrouped, wantGroup: true},
-		{name: "assistant", assistant: true, wantPlacement: store.PlacementNested},
+		{name: "plain caller", wantPlacement: store.PlacementOwned},
+		{name: "assistant", assistant: true, wantPlacement: store.PlacementOwned},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
