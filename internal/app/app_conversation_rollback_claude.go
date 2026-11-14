@@ -42,8 +42,7 @@ func (a *App) rollbackClaudeThreadToMessage(thread store.Thread, anchor store.Me
 	// 0 (a flush message queued during the very first turn) keeps that
 	// turn's prefix, so it needs the session slice like any later turn.
 	if anchor.TurnIndex == 0 && !midTurn {
-		_, err := a.store.UpdateSessionRef(thread.ID, "")
-		return err
+		return a.writeSessionRef(thread.ID, "")
 	}
 	sourceSessionRef := thread.ResolvedSessionRef()
 	if sourceSessionRef == "" {
@@ -76,7 +75,7 @@ func (a *App) rollbackClaudeThreadToMessage(thread store.Thread, anchor store.Me
 	// ids already name entries in the new file; SessionRef is the only
 	// state that moves. It commits only after the slice succeeded, and a
 	// failed commit removes the slice so no file outlives the attempt.
-	if _, err := a.store.UpdateSessionRef(thread.ID, newID); err != nil {
+	if err := a.writeSessionRef(thread.ID, newID); err != nil {
 		a.removeAbandonedSessionSlice(newPath)
 		return fmt.Errorf("persist rolled-back claude state: %w", err)
 	}

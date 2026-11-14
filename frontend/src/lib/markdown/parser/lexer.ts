@@ -31,7 +31,7 @@ import { markedHr } from './extensions/hr';
 import { markedTable } from './extensions/table';
 import { markedTableBlock } from './extensions/tableSource';
 import { markedDl, markedDlBlock } from './extensions/dl';
-import { markedAlign, markedAlignBlock } from './extensions/align';
+import { markedAlign } from './extensions/align';
 import { markedCitations } from './extensions/citations';
 import { markedMdx, markedMdxBlock } from './extensions/mdx';
 import { markedBlockquoteBlock } from './extensions/blockquoteSource';
@@ -62,7 +62,7 @@ const DEFAULT_BLOCK_EXTENSIONS: Extension[] = [
     markedListBlock,
     markedDlBlock,
     markedTableBlock,
-    markedAlignBlock,
+    markedAlign,
     markedMdxBlock
 ];
 const parseExtensions = (...extensions: Extension[]): LexerOptions => {
@@ -75,7 +75,7 @@ const parseExtensions = (...extensions: Extension[]): LexerOptions => {
             startInline: []
         }
     };
-    extensions.forEach(({ level, name, tokenizer, ...rest }) => {
+    extensions.forEach(({ level, name: _name, tokenizer, ...rest }) => {
         if ('start' in rest && rest.start) {
             if (level === 'block') {
                 options.extensions.startBlock.push(rest.start);
@@ -239,6 +239,12 @@ export type Extension = {
     tokenizer: (this: TokenizerThis, src: string, tokens: Token[] | TokensList) => GenericToken | undefined;
     start?: TokenizerStartFunction;
     applyInBlockParsing?: boolean;
+    /**
+     * True only when this extension tokenizes `source` exactly as `previous`
+     * did. A renderer holding output produced under `previous` may then keep
+     * it. Absent, or false, means the output is rebuilt.
+     */
+    tokenizesAlike?: (previous: Extension, source: string) => boolean;
 };
 export type StreamdownToken = Exclude<MarkedToken, Tokens.List | Tokens.ListItem | Tokens.Table> | ListToken | ListItemToken | MathToken | AlertToken | FootnoteToken | SubSupToken | BrToken | HrToken | TableToken | THead | TBody | TFoot | THeadRow | TRow | TH | TD | DescriptionListToken | DescriptionToken | DescriptionDetailToken | DescriptionTermToken | AlignToken | CitationToken | MdxToken | DetailsToken | DetailsSummaryToken;
 export type { TableToken, THead, TBody, TFoot, THeadRow, TRow, TH, TD } from './extensions/table';

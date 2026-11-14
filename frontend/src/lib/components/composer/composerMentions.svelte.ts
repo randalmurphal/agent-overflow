@@ -24,6 +24,8 @@ export interface ComposerMentionsOptions {
   getTextarea: () => HTMLTextAreaElement | undefined;
   /** Workspace getter — the checkout the search runs in. */
   getWorkspace: () => WorkspaceRef | null;
+  /** True while the text is a shell command, where `@` is not a mention. */
+  isShellInput?: () => boolean;
 }
 
 export interface ComposerMentionsHandle {
@@ -113,7 +115,7 @@ export function createComposerMentions(opts: ComposerMentionsOptions): ComposerM
     const value = textarea.value;
     const caret = textarea.selectionStart ?? value.length;
 
-    const mention = detectMentionTrigger(value, caret);
+    const mention = opts.isShellInput?.() ? null : detectMentionTrigger(value, caret);
     if (!mention || mention.start !== dismissedStart) dismissedStart = null;
     if (!mention || dismissedStart !== null) {
       if (mentionTrigger) resetMention();

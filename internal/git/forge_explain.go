@@ -1,0 +1,395 @@
+package git
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"agent-overflow/internal/forgeapi"
+)
+
+// ForgeActionError is a forge failure as the user reads it: one sentence
+// naming the cause and the fix (Message), its kind for the surface that
+// shows it, and the forge's own error underneath (Err) for "Details". It
+// is public by type (PublicDetails), so a bound method returning one
+// reaches the client as the sentence under the code "forge_<Kind>". Every
+// forge call the user makes (and the PR pump's reads) passes its error
+// through ExplainForgeError before it reaches the wire.
+type ForgeActionError struct {
+	Kind    string
+	Message string
+	Err     error
+}
+
+func (e *ForgeActionError) Error() string { return e.Message }
+func (e *ForgeActionError) Unwrap() error { return e.Err }
+
+// PublicDetails is the sentence under the code "forge_<kind>", for every
+// ForgeActionError however it was built (errorsx.Detailed): the transport
+// sends the message whole and a client reads the kind from the code; the
+// forge's own text travels only in the error's details.
+func (e *ForgeActionError) PublicDetails() (code, message string) {
+	return "forge_" + e.Kind, e.Message
+}
+
+// ForgeActionError.Kind values. The first four are the PR pump's failure
+// kinds (internal/app/app_forge_failure.go); the rest are refusals of
+// one action.
+const (
+	ForgeErrorTransient   = "transient"
+	ForgeErrorRateLimited = "rate_limited"
+	ForgeErrorSetup       = "setup"
+	ForgeErrorForbidden   = "forbidden"
+	ForgeErrorNotFound    = "not_found"
+	ForgeErrorStaleHead   = "stale_head"
+	// ForgeErrorSuggestionChanged is an apply whose suggestion is no
+	// longer the one the pane showed (SuggestionChangedError).
+	ForgeErrorSuggestionChanged = "suggestion_changed"
+	ForgeErrorRefused           = "refused"
+	ForgeErrorForge             = "forge"
+	// ForgeErrorUnconfirmed is a write whose answer did not say whether
+	// the forge applied it (UnconfirmedWriteError, a PartialWriteError
+	// whose next step did not confirm): it may have, so it is not sent
+	// again.
+	ForgeErrorUnconfirmed = "unconfirmed"
+)
+
+// ForgeAction names what the caller was doing, for the sentence.
+type ForgeAction string
+
+const (
+	ActionRead      ForgeAction = "read"
+	ActionApprove   ForgeAction = "approve"
+	ActionUnapprove ForgeAction = "unapprove"
+	ActionMerge     ForgeAction = "merge"
+	ActionAutoMerge ForgeAction = "auto-merge"
+	ActionUpdate    ForgeAction = "update the branch of"
+	ActionReady     ForgeAction = "mark ready"
+	ActionReview    ForgeAction = "review"
+	ActionReply     ForgeAction = "reply on"
+	ActionResolve   ForgeAction = "resolve a thread on"
+	// The comment actions (forge_comments.go).
+	ActionComment ForgeAction = "comment on"
+	ActionEdit    ForgeAction = "edit a comment on"
+	ActionDelete  ForgeAction = "delete a comment on"
+	// The management actions (forge_manage.go).
+	ActionEditPR    ForgeAction = "edit"
+	ActionReviewers ForgeAction = "change the reviewers of"
+	ActionAssignees ForgeAction = "change the assignees of"
+	ActionLabels    ForgeAction = "change the labels of"
+	ActionClose     ForgeAction = "close"
+	ActionReopen    ForgeAction = "reopen"
+	ActionToDraft   ForgeAction = "convert to draft"
+	ActionRerequest ForgeAction = "re-request a review on"
+	ActionDismiss   ForgeAction = "dismiss a review on"
+	ActionBypass    ForgeAction = "bypass the requested changes on"
+	ActionSearch    ForgeAction = "search"
+	ActionMergeText ForgeAction = "read the default commit message of"
+	// The suggestion and reaction actions (forge_suggestions.go).
+	ActionApplySuggestion ForgeAction = "apply a suggestion on"
+	ActionReact           ForgeAction = "change a reaction on"
+)
+
+// ExplainForgeError turns err, from a forge call about ref, into a
+// *ForgeActionError. An error that is already one, or nil, is returned
+// as is. The sentences are the table in docs/specs/pull-requests.md.
+func ExplainForgeError(ref PRReference, action ForgeAction, err error) error {
+	labels := forgeLabels(ref.Forge)
+	return explainForgeError(ref.Repository(), fmt.Sprintf("%s%s%d", ref.Project(), labels.numberPrefix, ref.Number), action, err)
+}
+
+// ExplainRepoForgeError is ExplainForgeError for a call about a whole
+// repository (its PR list, its pipelines): the sentences name the
+// project instead of one PR of it.
+func ExplainRepoForgeError(repo RepoReference, action ForgeAction, err error) error {
+	return explainForgeError(repo, repo.Project(), action, err)
+}
+
+// explainForgeError is both explanations; name is what the sentences call
+// the subject of the call.
+func explainForgeError(ref RepoReference, name string, action ForgeAction, err error) error {
+	if err == nil {
+		return nil
+	}
+	// An explained error is final, unless it is the cause inside a write
+	// whose outcome the explanation has to word (unconfirmed, partial).
+	outcome := func(err error) bool {
+		_, unconfirmed := errors.AsType[*UnconfirmedWriteError](err)
+		_, partial := errors.AsType[*PartialWriteError](err)
+		return unconfirmed || partial
+	}
+	var explained *ForgeActionError
+	if errors.As(err, &explained) && (!outcome(err) || outcome(explained)) {
+		return err
+	}
+	labels := forgeLabels(ref.Forge)
+	if left, ok := errors.AsType[*DraftsLeftError](err); ok {
+		cause, _ := explainForgeError(ref, name, action, left.Err).(*ForgeActionError)
+		return &ForgeActionError{Kind: cause.Kind, Err: err, Message: fmt.Sprintf(
+			"%s %d draft comments this submit created could not be removed and may still be pending on %s; delete them on %s before submitting again.",
+			cause.Message, left.Count, name, labels.name)}
+	}
+	wrap := func(kind, message string) error {
+		return &ForgeActionError{Kind: kind, Message: message, Err: err}
+	}
+	if partial, ok := errors.AsType[*PartialWriteError](err); ok {
+		if partial.Unconfirmed() {
+			return wrap(ForgeErrorUnconfirmed, fmt.Sprintf("%s of %s; %s may have applied. The pane shows what %s did.", capitalize(partial.Done), name, partial.Next, labels.name))
+		}
+		var cause *ForgeActionError
+		errors.As(explainForgeError(ref, name, action, partial.Err), &cause)
+		return wrap(cause.Kind, fmt.Sprintf("%s of %s; %s was refused: %s", capitalize(partial.Done), name, partial.Next, cause.Message))
+	}
+	if _, ok := errors.AsType[*UnconfirmedWriteError](err); ok {
+		if action == ActionComment || action == ActionReply {
+			return wrap(ForgeErrorUnconfirmed, fmt.Sprintf("%s may have posted this comment. Check the thread before sending it again.", labels.name))
+		}
+		return wrap(ForgeErrorUnconfirmed, fmt.Sprintf("%s did not confirm the request to %s %s, so it may have been applied. The pane shows what %s did.", labels.name, action, name, labels.name))
+	}
+	var setup *forgeapi.SetupError
+	var limited *forgeapi.RateLimitedError
+	var transient *forgeapi.TransientError
+	var forbidden *forgeapi.ForbiddenError
+	var graphQL *forgeapi.GraphQLError
+	var status *forgeapi.StatusError
+	var kept *BranchKeptError
+	var refused *forgeapi.RefusalError
+	var moved *HeadMovedError
+	var gone *ReplyThreadGoneError
+	var elsewhere *CommentNotOnPRError
+	var notApplied *SuggestionNotAppliedError
+	var changed *SuggestionChangedError
+	switch {
+	case errors.As(err, &changed):
+		return wrap(ForgeErrorSuggestionChanged, "The suggestion changed since it was loaded. Reload the pull request.")
+	case errors.As(err, &notApplied):
+		return wrap(ForgeErrorRefused, fmt.Sprintf("The suggestion was not applied: %s.", notApplied.Reason))
+	case errors.As(err, &elsewhere):
+		return wrap(ForgeErrorNotFound, fmt.Sprintf("That comment is not on %s, so it was not changed.", name))
+	case errors.As(err, &moved):
+		return wrap(ForgeErrorStaleHead, "The branch moved after you loaded this. Reload and try again.")
+	case errors.As(err, &gone):
+		return wrap(ForgeErrorNotFound, fmt.Sprintf("The thread this reply answers is no longer on %s, so the reply was not posted.", name))
+	case errors.As(err, &kept):
+		reason := trimSentence(kept.Err.Error())
+		if errors.As(kept.Err, &status) {
+			reason = firstNonEmpty(trimSentence(forgeBodyMessage(status.Body)), fmt.Sprintf("HTTP %d", status.Status))
+		}
+		return wrap(ForgeErrorForge, fmt.Sprintf("Merged %s, but %s kept the branch %s: %s", name, labels.name, kept.Branch, reason))
+	case errors.As(err, &setup):
+		return wrap(ForgeErrorSetup, setupSentence(setup, labels))
+	case errors.As(err, &limited):
+		return wrap(ForgeErrorRateLimited, limited.Error())
+	case errors.As(err, &refused):
+		return wrap(refusalSentence(refused, labels, ref, action, name))
+	case errors.As(err, &transient), errors.Is(err, context.DeadlineExceeded):
+		return wrap(ForgeErrorTransient, fmt.Sprintf("%s could not be reached. Check the connection and try again.", labels.host(ref.Host)))
+	case errors.As(err, &forbidden):
+		if forbidden.Scope != "" {
+			return wrap(ForgeErrorForbidden, fmt.Sprintf("Your %s token lacks the `%s` scope, so the app cannot %s %s. Create a token with that scope and log %s in with it.", labels.host(ref.Host), forbidden.Scope, action, name, labels.binary))
+		}
+		if forbidden.Message != "" && action != ActionRead {
+			return wrap(ForgeErrorRefused, fmt.Sprintf("%s blocks this: %s", labels.name, trimSentence(forbidden.Message)))
+		}
+		return wrap(ForgeErrorForbidden, fmt.Sprintf("No access to %s on %s with this login.", ref.Project(), labels.host(ref.Host)))
+	case errors.As(err, &graphQL):
+		if graphQLNotFound(graphQL) {
+			return wrap(ForgeErrorNotFound, notFoundSentence(labels, ref, name))
+		}
+		kind := ForgeErrorRefused
+		if graphQLHeadMoved(graphQL) {
+			kind = ForgeErrorStaleHead
+		}
+		return wrap(kind, graphQLSentence(graphQL, labels, action, name))
+	case errors.As(err, &status):
+		return wrap(statusKind(status), statusSentence(status, labels, ref, action, name))
+	}
+	return wrap(ForgeErrorForge, fmt.Sprintf("%s did not %s %s: %s", labels.name, action, name, trimSentence(err.Error())))
+}
+
+type forgeLabelSet struct {
+	name         string
+	binary       string
+	numberPrefix string
+	publicHost   string
+}
+
+// refusalSentence explains a write the forge refused with a 401 whose
+// recovery failed: nothing was done, and what to do about the login.
+func refusalSentence(refused *forgeapi.RefusalError, labels forgeLabelSet, ref RepoReference, action ForgeAction, name string) (string, string) {
+	reason := trimSentence(refused.Err.Error())
+	if refused.Step == forgeapi.RefusalStepProbe {
+		return ForgeErrorTransient, fmt.Sprintf("%s refused to %s %s (HTTP 401), so nothing was changed, and checking the `%s` login failed: %s. Try again in a moment.", labels.name, action, name, labels.binary, reason)
+	}
+	host := firstNonEmpty(ref.Host, labels.publicHost)
+	return ForgeErrorSetup, fmt.Sprintf("%s refused the `%s` login's token (HTTP 401), so it did not %s %s, and reading the login again failed: %s. Run `%s auth status --hostname %s` to check the login, then try again.", labels.name, labels.binary, action, name, reason, labels.binary, host)
+}
+
+func forgeLabels(forge string) forgeLabelSet {
+	if forge == "gitlab" {
+		return forgeLabelSet{name: "GitLab", binary: "glab", numberPrefix: "!", publicHost: "gitlab.com"}
+	}
+	return forgeLabelSet{name: "GitHub", binary: "gh", numberPrefix: "#", publicHost: "github.com"}
+}
+
+// host names the forge for the sentence: the forge's name on its public
+// host, the host itself elsewhere.
+func (l forgeLabelSet) host(host string) string {
+	if host == "" || host == l.publicHost {
+		return l.name
+	}
+	return host
+}
+
+func setupSentence(setup *forgeapi.SetupError, labels forgeLabelSet) string {
+	if !setup.ExpiredAt.IsZero() {
+		host := setup.Host
+		if host == "" {
+			host = labels.publicHost
+		}
+		return fmt.Sprintf("Your %s token for %s expired on %s. Run `%s auth login --hostname %s` to continue.", labels.name, host, formatExpiry(setup.ExpiredAt), labels.binary, host)
+	}
+	if setup.Kind == forgeapi.SetupUnauthenticated && setup.Host != "" && setup.Host != labels.publicHost {
+		return fmt.Sprintf("Your `%s` login has no token for %s. Run `%s auth login --hostname %s` to continue.", labels.binary, setup.Host, labels.binary, setup.Host)
+	}
+	return setup.Message
+}
+
+// notFoundSentence is the not-found sentence: a REST 404 and a GitHub
+// GraphQL NOT_FOUND read the same, since neither tells a missing object
+// from one this login cannot see.
+func notFoundSentence(labels forgeLabelSet, ref RepoReference, name string) string {
+	return fmt.Sprintf("%s was not found on %s, or this login cannot see it.", name, labels.host(ref.Host))
+}
+
+// graphQLNotFound reports a GraphQL answer with a NOT_FOUND problem: the
+// object the query named does not resolve for this login.
+func graphQLNotFound(graphQL *forgeapi.GraphQLError) bool {
+	for _, problem := range graphQL.Problems {
+		if problem.Type == "NOT_FOUND" {
+			return true
+		}
+	}
+	return false
+}
+
+// graphQLHeadMoved reports a GraphQL refusal because the head moved past
+// the expectedHeadOid the caller sent.
+func graphQLHeadMoved(graphQL *forgeapi.GraphQLError) bool {
+	if len(graphQL.Problems) == 0 {
+		return false
+	}
+	lower := strings.ToLower(graphQL.Problems[0].Message)
+	return strings.Contains(lower, "head branch was modified") || strings.Contains(lower, "expected head") || strings.Contains(lower, "expected branch to point to")
+}
+
+func graphQLSentence(graphQL *forgeapi.GraphQLError, labels forgeLabelSet, action ForgeAction, name string) string {
+	message := ""
+	if len(graphQL.Problems) > 0 {
+		message = graphQL.Problems[0].Message
+	}
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "approve your own"):
+		return "You cannot approve your own pull request."
+	case graphQLHeadMoved(graphQL):
+		return "The branch moved after you loaded this pull request. Reload and try again."
+	case strings.Contains(lower, "not mergeable") || strings.Contains(lower, "protected branch") || strings.Contains(lower, "required status") || strings.Contains(lower, "review is required"):
+		return fmt.Sprintf("%s blocks this merge: %s", labels.name, trimSentence(message))
+	case message == "":
+		return fmt.Sprintf("%s did not %s %s.", labels.name, action, name)
+	}
+	return fmt.Sprintf("%s did not %s %s: %s", labels.name, action, name, trimSentence(message))
+}
+
+func statusKind(status *forgeapi.StatusError) string {
+	switch status.Status {
+	case http.StatusNotFound:
+		return ForgeErrorNotFound
+	case http.StatusConflict:
+		return ForgeErrorStaleHead
+	case http.StatusMethodNotAllowed, http.StatusUnprocessableEntity, http.StatusNotAcceptable, http.StatusBadRequest, http.StatusUnauthorized:
+		return ForgeErrorRefused
+	}
+	if status.Status >= 500 {
+		return ForgeErrorTransient
+	}
+	return ForgeErrorForge
+}
+
+func statusSentence(status *forgeapi.StatusError, labels forgeLabelSet, ref RepoReference, action ForgeAction, name string) string {
+	reason := trimSentence(forgeBodyMessage(status.Body))
+	switch status.Status {
+	case http.StatusNotFound:
+		return notFoundSentence(labels, ref, name)
+	case http.StatusConflict:
+		return "The branch moved after you loaded this. Reload and try again."
+	case http.StatusUnauthorized:
+		// A 401 past the token refresh is a refusal of the action (GitLab
+		// answers a merge the user may not perform with 401).
+		return fmt.Sprintf("%s did not let you %s %s.", labels.name, action, name)
+	case http.StatusMethodNotAllowed, http.StatusUnprocessableEntity, http.StatusNotAcceptable:
+		if reason == "" {
+			return fmt.Sprintf("%s refused to %s %s.", labels.name, action, name)
+		}
+		return fmt.Sprintf("%s refused to %s %s: %s", labels.name, action, name, reason)
+	}
+	if status.Status >= 500 {
+		return fmt.Sprintf("%s answered with an error (HTTP %d). Try again in a moment.", labels.host(ref.Host), status.Status)
+	}
+	if reason == "" {
+		return fmt.Sprintf("%s did not %s %s (HTTP %d).", labels.name, action, name, status.Status)
+	}
+	return fmt.Sprintf("%s did not %s %s: %s", labels.name, action, name, reason)
+}
+
+// forgeBodyMessage pulls the human text out of a forge error body:
+// GitLab's {"message": ...} (a string, or a map of field errors), GitHub's
+// {"message": ...}. Anything else answers empty.
+func forgeBodyMessage(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" || body[0] != '{' {
+		return ""
+	}
+	var raw struct {
+		Message any    `json:"message"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		return ""
+	}
+	switch message := raw.Message.(type) {
+	case string:
+		return message
+	case map[string]any:
+		parts := make([]string, 0, len(message))
+		for field, value := range message {
+			parts = append(parts, fmt.Sprintf("%s %v", field, value))
+		}
+		return strings.Join(parts, "; ")
+	case []any:
+		parts := make([]string, 0, len(message))
+		for _, value := range message {
+			parts = append(parts, fmt.Sprint(value))
+		}
+		return strings.Join(parts, "; ")
+	}
+	return raw.Error
+}
+
+// trimSentence bounds a forge's text to one line of reasonable length and
+// drops a trailing period so the sentence it joins reads once.
+func trimSentence(text string) string {
+	text = strings.TrimSpace(strings.SplitN(text, "\n", 2)[0])
+	if len(text) > 200 {
+		text = text[:197] + "..."
+	}
+	return strings.TrimSuffix(text, ".")
+}
+
+// formatExpiry is the date the sentences show.
+func formatExpiry(at time.Time) string { return at.Local().Format("Jan 2, 2006") }

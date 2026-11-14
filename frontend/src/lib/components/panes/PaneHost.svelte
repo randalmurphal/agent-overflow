@@ -4,6 +4,7 @@
   import { untrack } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
   import CompanionPane from './CompanionPane.svelte';
+  import ToolPane from './ToolPane.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
   import {
     focusPane,
@@ -11,13 +12,14 @@
     getPane,
   } from '../../stores/panes.svelte';
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
-  import { getPaneLayoutItems, isCompanionKind, paneItemMinWidthPx, type PaneLayoutItem } from '../../stores/paneLayout.svelte';
-  import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
+  import { getPaneLayoutItems, isCompanionKind, isToolKind, paneItemMinWidthPx, type PaneLayoutItem } from '../../stores/paneLayout.svelte';
+  import { setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import { REVEAL_PANE_EVENT } from '../../stores/eventNames';
-  import { getCompactScreen, isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { compactShownPaneId, getCompactScreen, isCompactLayout, noteCompactPaneShown } from '../../stores/layoutMode.svelte';
   import PaneDivider from './PaneDivider.svelte';
   import { measurePane } from './measurePane';
-  import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
+  import { airspaceSurface } from '../../utils/paneAirspace.svelte';
+  import { createPaneThreadDrag, PANE_DROP_SEAM_PX } from './usePaneThreadDrag.svelte';
 
   const PANE_SELECTOR = '[data-pane-id]';
   type PaneRevealAlignment = 'start' | 'end';
@@ -40,12 +42,19 @@
         .map((item) => item.sourcePaneId as string),
     ),
   );
+  let stripEl: HTMLDivElement | undefined = $state(undefined);
   let hostEl: HTMLDivElement | undefined = $state(undefined);
-  let scrollLeft = $state(0);
-  let scrollClientWidth = $state(0);
-  // Not reactive: consumed imperatively by the drag/drop preview math,
-  // and offset churn during resize drags would only feed GC.
-  const paneOffsetLeftById: Map<string, number> = new Map();
+  // The sections' offsets and the strip width they were measured at, one
+  // snapshot: every offset in it holds for `width`, so a reader at another
+  // width (a scroll delivered between a resize and the host's observer)
+  // can tell it is stale. Not reactive: consumed imperatively by the
+  // compact measurement, and offset churn during resize drags would only
+  // feed GC.
+  interface StripGeometry {
+    width: number;
+    offsets: Map<string, number>;
+  }
+  let stripGeometry: StripGeometry = { width: -1, offsets: new Map() };
 
   function paneElementById(paneId: string): HTMLElement | null {
     for (const paneEl of hostEl?.querySelectorAll<HTMLElement>(PANE_SELECTOR) ?? []) {
@@ -54,35 +63,17 @@
     return null;
   }
 
-  function paneOffsetLeftFallback(paneId: string): number {
-    return paneElementById(paneId)?.offsetLeft ?? 0;
-  }
-
-  function paneMeasuredWidth(paneId: string): number {
-    const cached = getPaneWidth(paneId);
-    if (cached > 0) return cached;
-    return paneElementById(paneId)?.getBoundingClientRect().width ?? 0;
-  }
-
   const drag = createPaneThreadDrag({
+    getStripEl: () => stripEl,
     getHostEl: () => hostEl,
     getLayoutItems: () => layoutItems,
-    getMinPaneWidth: () => minPaneWidth,
-    getScrollLeft: () => scrollLeft,
-    setScrollLeft: (value) => {
-      scrollLeft = value;
-    },
-    getScrollClientWidth: () => scrollClientWidth,
-    getPaneOffsetLeft: (paneId) => {
-      const cached = paneOffsetLeftById.get(paneId);
-      return cached !== undefined ? cached : paneOffsetLeftFallback(paneId);
-    },
-    getPaneMeasuredWidth: paneMeasuredWidth,
   });
 
+  // A pane's own observer saw it move or resize: republish the whole
+  // snapshot rather than patch one offset into a snapshot of another width.
   function handlePaneOffsetChange(paneId: string, offsetLeft: number | null): void {
-    if (offsetLeft === null) paneOffsetLeftById.delete(paneId);
-    else paneOffsetLeftById.set(paneId, offsetLeft);
+    if (offsetLeft === null) stripGeometry.offsets.delete(paneId);
+    else publishPaneOffsets();
   }
 
   // Also runs after a divider resize gesture: panes past the boundary
@@ -91,11 +82,12 @@
   function publishPaneOffsets(): void {
     const el = hostEl;
     if (!el) return;
-    paneOffsetLeftById.clear();
+    const offsets = new Map<string, number>();
     for (const paneEl of el.querySelectorAll<HTMLElement>(PANE_SELECTOR)) {
       const paneId = paneEl.dataset.paneId;
-      if (paneId) paneOffsetLeftById.set(paneId, paneEl.offsetLeft);
+      if (paneId) offsets.set(paneId, paneEl.offsetLeft);
     }
+    stripGeometry = { width: el.clientWidth, offsets };
   }
 
   // Single home for the strip's scroll bounds: every scrollLeft the strip
@@ -113,8 +105,6 @@
     const nextScrollLeft = clampStripScrollLeft(el, el.scrollLeft);
     if (nextScrollLeft !== el.scrollLeft) el.scrollLeft = nextScrollLeft;
     const appliedScrollLeft = el.scrollLeft;
-    scrollLeft = appliedScrollLeft;
-    scrollClientWidth = el.clientWidth;
 
     // A structural change can move the pane an active reveal is targeting
     // even when the old numeric destination remains legal. Re-resolve from
@@ -149,7 +139,7 @@
     const el = hostEl;
     if (!el) return;
     const publishScrollPosition = (): void => {
-      scrollLeft = el.scrollLeft;
+      measureCompactShownPane();
     };
     // A horizontal wheel/trackpad gesture over the strip is user scroll
     // intent — it wins over an in-flight reveal glide. Vertical wheel
@@ -162,6 +152,7 @@
       const entry = entries[0];
       if (entry) setPaneHostWidth(entry.contentRect.width);
       reconcilePaneHostGeometry();
+      realignCompactStrip();
     });
     obs.observe(el);
     setPaneHostWidth(el.getBoundingClientRect().width);
@@ -190,6 +181,8 @@
     return () => {
       drag.destroy();
       cancelStripGlide();
+      // The record measures this strip; it ends with it.
+      noteCompactPaneShown(null);
       if (geometryReconcileFrame) cancelAnimationFrame(geometryReconcileFrame);
     };
   });
@@ -241,6 +234,8 @@
       const focusTarget = untrack(() => focusedPaneId);
       if (focusTarget) requestPaneScroll(focusTarget, { instant: true });
     }
+    // Sections came, went or moved under the strip's position.
+    measureCompactShownPane();
 
     let secondHandle = 0;
     const firstHandle = requestAnimationFrame(() => {
@@ -250,6 +245,70 @@
       cancelAnimationFrame(firstHandle);
       if (secondHandle) cancelAnimationFrame(secondHandle);
     };
+  });
+
+  // Compact shows one pane, and the layout store's record of which one
+  // (`isPaneOnScreen`) is a measurement of this strip, written only here:
+  // the pane whose section holds the strip's centre. It runs wherever the
+  // strip's position or its sections change: every scroll event (each
+  // glide frame, a glide's landing, a snap, a native scroll-into-view that
+  // abandons a glide), a structure change and entering compact. So it never
+  // names a pane the strip moved away from. A reveal does not write it: the
+  // reveal moves the strip and the record follows. Reads the published
+  // snapshot, no DOM walk, and the store write is a no-op unless the pane
+  // under the centre changed. A snapshot from another width says nothing
+  // about this position: the strip resized and its observer has not run,
+  // and that observer realigns to the pane recorded before the resize.
+  function measureCompactShownPane(): void {
+    const el = hostEl;
+    if (!el || !untrack(() => compact)) return;
+    // Compact sections are each the strip's full width.
+    const { width, offsets } = stripGeometry;
+    if (el.clientWidth !== width) return;
+    const centre = el.scrollLeft + width / 2;
+    let shown: string | null = null;
+    for (const [paneId, left] of offsets) {
+      if (left <= centre && centre < left + width) {
+        shown = paneId;
+        break;
+      }
+    }
+    noteCompactPaneShown(shown);
+  }
+
+  // A resize (a rotation, the keyboard opening) keeps the pane the record
+  // measured before it, the one place the record leads the strip: the old
+  // offset can put another pane, or two halves, under the resized strip.
+  // The snap's scroll event measures the result. A reveal on its way keeps
+  // its glide, which `reconcilePaneHostGeometry` re-resolved to its pane.
+  function realignCompactStrip(): void {
+    if (!untrack(() => compact)) return;
+    const before = untrack(compactShownPaneId);
+    const revealing = glideTargetLeft !== null || pendingScrollPaneId !== null;
+    const paneEl = before === null || revealing ? null : paneElementById(before);
+    if (paneEl) snapPaneIntoView(paneEl);
+  }
+
+  // Entering compact keeps what the reflowed strip shows, as the transition
+  // always has, aligned to that pane so it is the one on screen. Leaving it
+  // ends the record: the desktop shows every pane.
+  // Initialized to the mode at mount: the strip's first paint places the
+  // focused pane, so mounting in compact is not a transition into it.
+  let wasCompact = untrack(() => compact);
+  $effect(() => {
+    const now = compact;
+    const entering = now && !wasCompact;
+    const leaving = !now && wasCompact;
+    wasCompact = now;
+    untrack(() => {
+      if (leaving) noteCompactPaneShown(null);
+      if (!entering) return;
+      reconcilePaneHostGeometry();
+      measureCompactShownPane();
+      const shown = compactShownPaneId();
+      const paneEl = shown === null ? null : paneElementById(shown);
+      if (paneEl) snapPaneIntoView(paneEl);
+    });
   });
 
   // Always deferred one frame: reveal is requested in the same tick as the
@@ -397,7 +456,6 @@
     const target = paneRevealTarget(paneEl, el.scrollLeft);
     if (target === null) return;
     el.scrollLeft = clampStripScrollLeft(el, target.left);
-    scrollLeft = el.scrollLeft;
   }
 
   function scrollPaneIntoView(paneEl: HTMLElement): void {
@@ -449,20 +507,29 @@
      so they slide behind the sidebar with their trigger instead of painting
      over it. See utils/popoverOwnership.ts#resolvePopoverClipBoundary. -->
 <div
-  bind:this={hostEl}
-  class="compact-screen compact-screen-thread relative flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden compact:overflow-x-hidden"
-  inert={threadInert}
-  data-popover-clip-boundary
-  data-testid="pane-host"
+  bind:this={stripEl}
+  class="compact-screen compact-screen-thread relative flex flex-1 min-w-0 min-h-0"
+  data-testid="pane-strip"
   ondragover={drag.onHostDragOver}
   ondrop={drag.onHostDrop}
   ondragleave={drag.onHostDragLeave}
   ondragend={drag.onPaneDragEnd}
 >
+<div
+  bind:this={hostEl}
+  class="relative flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden compact:overflow-x-hidden"
+  inert={threadInert}
+  data-popover-clip-boundary
+  data-testid="pane-host"
+>
   {#if layoutItems.length === 0}
     <section
-      class="flex h-full min-w-full flex-1 items-center justify-center bg-transparent px-8"
+      class={[
+        'flex h-full min-w-full flex-1 items-center justify-center px-8',
+        drag.dropTarget ? 'bg-accent/10 ring-2 ring-accent/70 ring-inset' : 'bg-transparent',
+      ].join(' ')}
       data-testid="pane-host-empty"
+      data-drop-kind={drag.dropTarget?.kind}
     >
       <p class="text-sm text-fg-muted">Select a thread or create a new one to get started.</p>
     </section>
@@ -532,6 +599,35 @@
             {/if}
           </RenderBoundary>
         </section>
+      {:else if isToolKind(item.kind)}
+        <!-- Tool panes (Pull requests, Workflows) are app-wide surfaces with
+             no ThreadPane. Like a thread pane they lead their own layout
+             block, so they take reorder drops and a dropped thread opens
+             beside them. ToolPane owns the render boundary. -->
+        {@const toolKind = item.kind}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <section
+          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
+          style={paneSectionStyle(item)}
+          class={[
+            'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70',
+            focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
+            drag.draggingPaneId === item.paneId ? 'opacity-55' : '',
+          ].join(' ')}
+          data-pane-id={item.paneId}
+          data-pane-kind={item.kind}
+          data-pane-min-width={paneItemMinWidthPx(item, minPaneWidth)}
+          data-pane-width={item.widthPx}
+          data-pane-focused={focusedPaneId === item.paneId}
+          onpointerdown={() => handlePanePointerDown(item.paneId)}
+          onfocusin={() => handlePaneFocusIn(item.paneId)}
+        >
+          <ToolPane
+            paneId={item.paneId}
+            kind={toolKind}
+            onPaneDragStart={(event) => drag.onPaneDragStart(event, item.paneId)}
+          />
+        </section>
       {:else}
         {@const pane = getPane(item.paneId)}
         {@const paired = pairedSourceIds.has(item.paneId)}
@@ -555,8 +651,6 @@
             data-pane-paired={paired}
             onpointerdown={() => handlePanePointerDown(item.paneId)}
             onfocusin={() => handlePaneFocusIn(item.paneId)}
-            ondrop={(event) => drag.onPaneDrop(event, item.paneId)}
-            ondragend={drag.onPaneDragEnd}
           >
             <RenderBoundary label="This thread pane" testId="pane-render-error">
               <ChatView {pane} onPaneDragStart={(event) => drag.onPaneDragStart(event, item.paneId)} />
@@ -603,15 +697,44 @@
         />
       </div>
     {/if}
-    {#if drag.threadDropTarget}
+    <!-- Where a dragged thread, tool or pane lands: a bar on the seam, and
+         the half of the block under the pointer that chose it, fading away
+         from the bar. -->
+    {#if drag.dropTarget && drag.dropIndicator}
+      {@const lit = drag.dropIndicator.lit}
+      {#if lit}
+        <div
+          class="pointer-events-none absolute top-0 bottom-0 z-40 from-accent/25 to-accent/0 {lit.seam === 'left' ? 'bg-linear-to-r' : 'bg-linear-to-l'}"
+          style:left={`${lit.left}px`}
+          style:width={`${lit.width}px`}
+          data-testid="pane-drop-half"
+          data-seam-side={lit.seam}
+        ></div>
+      {/if}
       <div
-        class="pointer-events-none absolute top-0 bottom-0 z-40 rounded-[var(--radius-field)] border-2 border-accent/70 bg-accent/10"
-        style:left={`${drag.threadDropPreviewLeft}px`}
-        style:width={`${drag.threadDropPreviewWidth}px`}
-        data-testid="pane-thread-drop-preview"
-        data-drop-kind={drag.threadDropTarget.kind}
-        data-insert-index={drag.threadDropTarget.insertIndex}
+        class="pointer-events-none absolute top-0 bottom-0 z-40 rounded-full bg-accent"
+        style:left={`${drag.dropIndicator.seamLeft}px`}
+        style:width={`${PANE_DROP_SEAM_PX}px`}
+        data-testid="pane-drop-seam"
+        data-drop-kind={drag.dropTarget.kind}
+        data-insert-index={drag.dropTarget.insertIndex}
       ></div>
     {/if}
   {/if}
+</div>
+<!-- Takes a pane-placing drag off the panes while it is over the strip
+     (usePaneThreadDrag `shielding`). Outside the scroller, so the drag is
+     over nothing the browser can scroll. An airspace surface, so a native
+     browser view, which paints above the page, yields to it. -->
+{#if drag.shielding}
+  <div
+    class="absolute inset-0 z-50"
+    role="presentation"
+    data-testid="pane-drag-shield"
+    use:airspaceSurface
+    ondragleave={drag.onShieldDragLeave}
+    onpointermove={drag.onShieldPointer}
+    onpointerdown={drag.onShieldPointer}
+  ></div>
+{/if}
 </div>

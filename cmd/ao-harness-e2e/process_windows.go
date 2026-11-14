@@ -4,12 +4,16 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
 	"agent-overflow/internal/harness/containment"
 	"agent-overflow/internal/harness/instanceinfo"
 )
+
+// interruptSignals end the suite: the console's Ctrl+C.
+var interruptSignals = []os.Signal{os.Interrupt}
 
 func configureProcessGroup(*exec.Cmd) {}
 

@@ -355,7 +355,7 @@ A fork of such a thread is a helper of the same assistant. The current
 thread does not move to another computer (`ErrAssistantThreadStays`); a
 copy of it, and a past thread or a helper moved there, arrive as no
 assistant's.
-Migration v155 turned each `standing_agents` row into an `agents` row
+Migration v160 turned each `standing_agents` row into an `agents` row
 whose id is its thread's id, with its home and `promoted_at` as
 `created_at`, serving its thread's project, moved the thread into the
 home, and dropped the table, so a home at
@@ -986,14 +986,14 @@ instead and arrives once the thread is unarchived
 ([remote-commands.md](../architecture/remote-commands.md)). A thread
 request's queued answer or reminder goes back to its request, owed and
 disarmed, as the archive leaves the thread's undelivered requests
-([agent-thread-tools.md](agent-thread-tools.md)). A person's Stop or a
-revert drops the whole queue, and returns these two kinds the same way
-once the queue is gone: an answer or reminder to its request, owed and
+([agent-thread-tools.md](agent-thread-tools.md)). An Interrupt stops the turn and leaves the queue, which is delivered
+after it. An End Session or a revert drops the whole queue, and returns
+these two kinds the same way once the queue is gone: an answer or reminder to its request, owed and
 disarmed, so `thread_status` still returns it; a remote job's
 completion to its watch, whose watcher delivers it again and starts the
-session for it, as for a completion that finishes after the Stop. A
-Stop does not quiet later wakes. A Stop or an archive that ends a
-session holding such an answer or completion, handed to the provider
+session for it, as for a completion that finishes after the session ended. Ending the
+session does not quiet later wakes. An End Session or an archive that
+ends a session holding such an answer or completion, handed to the provider
 and not confirmed, returns it too; a person's text joined with it stays
 dropped. A session that ends, or a Codex resend that fails, without
 taking in such an answer or completion, and a restart that finds one
@@ -1006,8 +1006,8 @@ given back may already be in the conversation the next session resumes,
 so it can reach the agent twice. The confirmation is the app's own write
 after the provider's echo, while the provider records the message in its
 session file on its own, so a crash or a session death between the two
-leaves a message the agent holds reading unconfirmed. A Stop or an
-archive drops the unconfirmed sends before it closes the provider, which
+leaves a message the agent holds reading unconfirmed. An End Session or
+an archive drops the unconfirmed sends before it closes the provider, which
 has three seconds to exit once its input closes, and an echo the
 provider sends in that window arrives after the drop and is discarded.
 That cost is accepted: a request that reads owed and a watch that reads
@@ -1018,10 +1018,10 @@ ladder a request's undelivered wake is retried on, doubling from half
 a minute towards ten minutes for eight attempts, so a session that keeps
 ending before it takes the completion in is not restarted every few
 seconds; after the last attempt the watch is dismissed with the reason,
-and `remote_jobs` still returns the result. One that a Stop, an
+and `remote_jobs` still returns the result. One that an End Session, an
 archive, a revert or a restart returned is delivered at the watcher's
-next poll. A Stop and a revert drop the queue under the thread's
-mutation lock, which every queue write takes, so a message queued
+next poll. A session teardown and a revert drop the queue under the
+thread's mutation lock, which every queue write takes, so a message queued
 during the drop is either dropped with it or queued after it.
 An archived thread takes none of these messages and starts no session
 for them: one that arrives after the archive is refused back to what
@@ -1054,7 +1054,7 @@ unconfirmed by a session that ended, is discarded and its row records
 (capped at 64 KiB), which `thread_status` shows, so the agent can
 recover the event at its next wake; a loop needs nothing beyond the
 row. An outside `thread send` message is handled the same way, with a
-`not delivered` row in the thread's timeline; so is one a Stop, an
+`not delivered` row in the thread's timeline; so is one an End Session, an
 archive or a revert takes out of the queue. When Claude
 received a wake or an outside send joined with a person's queued
 message and the session ended before taking it in, the join is split:
@@ -1160,7 +1160,11 @@ thread marked unread, or never read, keeps its marker. The row is sent
 before `provider:turn_completed`, which carries `quiet`, so a client
 never shows the turn as Completed; every round of the turn is quiet,
 unless an earlier round of it failed, which leaves the whole turn the
-user's to read. A tick's start withdraws no notification.
+user's to read. A turn the Claude CLI starts on its own after a tick (a
+background task finishing, a scheduled wakeup) is a turn of its own
+([Rounds and turns](../architecture/turn-lifecycle.md#rounds-and-turns))
+and is never quiet: nothing says a wake started the work it reports. A
+tick's start withdraws no notification.
 
 A top-level turn that ends with the flag pending, a tick or not,
 notifies as `thread-attention` in place of Completed, with the kind's
@@ -1302,9 +1306,9 @@ closes up their spacing so the row holds at a phone width.
   incoming messages listed when it was pressed; the Stops of rows here
   start at once, beside those that wait on a paired computer.
   Background's `Stop All` and Stop background work leave Agents rows
-  alone. The thread's own Stop leaves its requests, and clears the
-  incoming rows with the rest of its queue, given back as a queue drop
-  does.
+  alone. The thread's own Interrupt leaves its requests and its queue,
+  the incoming rows with it; End Session clears the incoming rows with
+  the rest of the queue, given back as a queue drop does.
 - **Other computers.** A spawn on a paired computer lists and stops as a
   local one: the forwarded `agent_rows` and `agent_stop` calls
   ([reaching another computer](agent-thread-tools.md#reaching-another-computer)) nest that
@@ -1497,7 +1501,7 @@ ticket keys.
 | 8 | MR lead migration | 2, 3b, 5, 6, 14 | An assistant created for the lead read the old lead thread with `thread_show`, keeps the lead's notes in its home, set its own loop and watches, and ran a week | The user |
 | 9 | Agent home contents | 5, 6 | A standing agent's sessions on Claude, claude-tui and Codex carry the same block whatever the home files hold; footers and wakes name a standing agent with its role line and tell a worker its questions go to its agent; `home_files` attaches files on spawn and send and is refused for a non-agent, an escaping path, a missing file and a total past 32 KiB; thread rows carry `standing_agent` and `spawned_by`. Home file delivery moved to slice 15 | `standing-agent-home-contents.spec.ts` on both mock providers (the session block, a worker's first message carrying `home_files`, the footer role line between an agent and an ordinary thread); app tests reading the claude-tui argv and append file, since no mock speaks claude-tui |
 | 10 | Agents segment | 3b, 9 | The Agents segment lists a thread's spawns and owed sends and asks with title, provider, state, elapsed and what blocks them, nested by spawn to four levels and across paired computers; settled rows linger 8 s and leave, a click opens the target or the answer; Stop cancels the request for the user with the caller's wake armed and cascades into a spawned thread's background work, turn and own rows, here or on a paired computer, and Stop All does the same; incoming agent messages list until delivered and withdraw; Background's Stop All and the thread's own Stop leave the rows; the segment fits every rail density | `agents-tray.spec.ts` and `compact-agents-tray.spec.ts` on both mock providers (rows, nesting, a blocked approval, settle and linger, click, per-row Stop cascade with the caller's user-cancelled wake and the nested wakes disarmed, Stop All, Background's Stop All and the thread's own Stop leaving the rows); the cascade across computers in `thread-tools-paired.spec.ts`; screenshots of running, blocked, nested and settled rows and the digest, desktop and compact |
-| 14 | Assistant identity and creation | 9, 10, 13 | Standing agents are records (`agents`, `agent_past_threads`, v155) with existing rows migrated in place; promotion and demotion are gone from the app, the bindings and the docs; New Assistant (desktop and compact, sidebar and project menu) creates the record, the home and a thread whose app-written opening starts the role discussion; the name is the title, unique per computer, a clash across paired computers shows `<name>-<computer>`; New Thread, Same Assistant moves loops, watches, reminders, requests and workers to the successor and opens it with the handoff block; app-written messages to a past thread reach the current one; `thread_search` `agents` and name addressing; `thread_new_assistant` for assistants only; Agents rows open in the `agent-thread` companion pane; Interrupt and End Session are separate for assistant threads and workflow pauses | `assistant-creation.spec.ts`, `assistant-handoff.spec.ts`, `assistant-companion.spec.ts` and their compact twins on both mock providers; the name clash and name addressing in `thread-tools-paired.spec.ts`; `thread_new_assistant` in `thread-tools.spec.ts`; regression on the standing-agent, agents-tray, thread-tools and upgrade-corpus specs; screenshots of the dialog, the opening discussion, the handoff, the companion pane and the Stop menu, desktop and compact |
+| 14 | Assistant identity and creation | 9, 10, 13 | Standing agents are records (`agents`, `agent_past_threads`, v160) with existing rows migrated in place; promotion and demotion are gone from the app, the bindings and the docs; New Assistant (desktop and compact, sidebar and project menu) creates the record, the home and a thread whose app-written opening starts the role discussion; the name is the title, unique per computer, a clash across paired computers shows `<name>-<computer>`; New Thread, Same Assistant moves loops, watches, reminders, requests and workers to the successor and opens it with the handoff block; app-written messages to a past thread reach the current one; `thread_search` `agents` and name addressing; `thread_new_assistant` for assistants only; Agents rows open in the `agent-thread` companion pane; Interrupt and End Session are separate for assistant threads and workflow pauses | `assistant-creation.spec.ts`, `assistant-handoff.spec.ts`, `assistant-companion.spec.ts` and their compact twins on both mock providers; the name clash and name addressing in `thread-tools-paired.spec.ts`; `thread_new_assistant` in `thread-tools.spec.ts`; regression on the standing-agent, agents-tray, thread-tools and upgrade-corpus specs; screenshots of the dialog, the opening discussion, the handoff, the companion pane and the Stop menu, desktop and compact |
 | 15 | Memory and assistants above projects | 9, 14 | No built-in skills or Skills page; memory scopes, facts, the built index, a whole delivery per start and compaction with the write rules, what changed at each prompt, nothing cut past the size limit, and maintenance warnings for assistants only ([memory](memory.md)); shared memory and the provider memory settings on Claude, claude-tui and Codex; assistants with projects and no project of their own, running in their home, helpers under the assistant and project work under its row in the project, delete and project removal as ruled (rulings 37 to 40); the Assistants and Projects sidebar sections | Unit tests named in [memory](memory.md#verification); `standing-agent-home-contents.spec.ts`, the standing-agent sidebar and spawn-placement specs and the assistant specs on both mock providers, desktop and compact; screenshots of the Assistants section, an assistant's row in a project and the Projects checklist |
 
 Slices 1 and 3a start together, with the slice 4 spike beside them.

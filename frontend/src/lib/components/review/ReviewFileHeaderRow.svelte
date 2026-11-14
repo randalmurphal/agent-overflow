@@ -8,6 +8,7 @@
     REVIEW_FILE_HEADER_PX,
   } from '../../utils/reviewRows';
   import type { DiffFileSummary } from '../../utils/patchStore';
+  import { findHeaderKey } from '../../utils/reviewFindScan';
 
   // File header row — rendered both as a virtualized row and as the
   // sticky overlay copy. The virtualized row paints the between-files
@@ -32,9 +33,13 @@
      * chevron still toggles). */
     overlay?: boolean;
     onJump?: () => void;
+    /** A text SVG: whether it shows rendered, and the toggle. Undefined
+     * for every other file (no toggle). */
+    rendered?: boolean;
+    onToggleRendered?: () => void;
   }
 
-  let { file, collapsed, onToggle, first = false, overlay = false, onJump }: Props = $props();
+  let { file, collapsed, onToggle, first = false, overlay = false, onJump, rendered, onToggleRendered }: Props = $props();
 
   const pathSplit = $derived.by(() => {
     const slash = file.path.lastIndexOf('/');
@@ -85,7 +90,7 @@
       data-testid="review-file-header-path"
       onclick={onJump ?? onToggle}
     >
-      <span class="min-w-0 flex-1 truncate font-mono text-xs">
+      <span class="min-w-0 flex-1 truncate font-mono text-xs" data-find-key={overlay ? undefined : findHeaderKey(file.path)}>
         {#if pathSplit.dir}<span class="text-fg-muted">{pathSplit.dir}</span>{/if}<span class="font-medium text-fg">{pathSplit.base}</span>
       </span>
       {#if file.conflicts}
@@ -106,5 +111,17 @@
         <span class="shrink-0 text-[0.6875rem] tabular-nums text-error">-{file.deletions}</span>
       {/if}
     </button>
+    {#if rendered !== undefined}
+      <!-- A text SVG's one toggle: its text diff by default, the image
+           (an <img>, never inlined) when on. -->
+      <button
+        type="button"
+        class="mr-2 shrink-0 rounded-[var(--radius-field)] border px-1.5 py-px text-[0.6875rem] compact:select-none {rendered ? 'border-accent/40 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-1 hover:text-fg'}"
+        aria-pressed={rendered}
+        title={rendered ? 'Show the SVG\'s text diff' : 'Show the SVG as an image'}
+        data-testid="review-svg-rendered"
+        onclick={onToggleRendered}
+      >Rendered</button>
+    {/if}
   </div>
 </div>

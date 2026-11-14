@@ -1,17 +1,12 @@
 package remotejobs
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -53,20 +48,6 @@ func remoteHelper(role string) int {
 			fmt.Println("worker-alive")
 		}
 		return 0
-	case "graceful":
-		// Exits cleanly on SIGTERM after writing a marker, proving the polite
-		// signal arrived before any kill.
-		stop := make(chan os.Signal, 1)
-		signal.Notify(stop, syscall.SIGTERM)
-		fmt.Println("graceful-started")
-		<-stop
-		fmt.Println("graceful-term")
-		return 0
-	case "stubborn":
-		signal.Ignore(syscall.SIGTERM)
-		fmt.Println("stubborn-started")
-		time.Sleep(time.Minute)
-		return 0
 	}
 	fmt.Fprintln(os.Stderr, "unknown helper role")
 	return 2
@@ -86,83 +67,6 @@ func helperArgv(t *testing.T, role string) ([]string, func() []string) {
 		return []string{"HOME=" + home, "PATH=" + os.Getenv("PATH"), "AO_TEST_REMOTE_HELPER=" + role}
 	}
 	return []string{binary}, env
-}
-
-func waitFor(t *testing.T, what string, condition func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
-}
-
-// A command that exits while a child it started keeps running finishes with
-// its own exit code, its child's output captured, the child stopped, and the
-// receipt saying so.
-func TestProcessRunnerStopsLeftoverProcessesAndKeepsExitCode(t *testing.T) {
-	t.Parallel()
-	argv, env := helperArgv(t, "leave-child")
-	var output bytes.Buffer
-	started := time.Now()
-	outcome, err := ProcessRunner(env)(context.Background(), t.TempDir(), argv, &output)
-	if err != nil || outcome.ExitCode != 0 || !outcome.Leftovers {
-		t.Fatalf("outcome=%+v err=%v", outcome, err)
-	}
-	if elapsed := time.Since(started); elapsed > terminateGrace+drainGrace+5*time.Second {
-		t.Fatalf("leftover sweep took %s", elapsed)
-	}
-	text := output.String()
-	if !strings.Contains(text, "leader-done") || !strings.Contains(text, "worker-started") {
-		t.Fatalf("output lost the leader or its child: %q", text)
-	}
-}
-
-func TestProcessRunnerTerminatesBeforeKilling(t *testing.T) {
-	argv, env := helperArgv(t, "graceful")
-	var output syncBuffer
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan Outcome, 1)
-	go func() {
-		outcome, _ := ProcessRunner(env)(ctx, t.TempDir(), argv, &output)
-		done <- outcome
-	}()
-	waitFor(t, "helper start", func() bool { return strings.Contains(output.String(), "graceful-started") })
-	cancel()
-	outcome := <-done
-	if outcome.ExitCode != 0 || outcome.Leftovers || !strings.Contains(output.String(), "graceful-term") {
-		t.Fatalf("SIGTERM did not reach the command first: outcome=%+v output=%q", outcome, output.String())
-	}
-}
-
-func TestProcessRunnerKillsWhatIgnoresTerminate(t *testing.T) {
-	previous := terminateGrace
-	terminateGrace = 300 * time.Millisecond
-	t.Cleanup(func() { terminateGrace = previous })
-	argv, env := helperArgv(t, "stubborn")
-	var output syncBuffer
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan Outcome, 1)
-	go func() {
-		outcome, _ := ProcessRunner(env)(ctx, t.TempDir(), argv, &output)
-		done <- outcome
-	}()
-	waitFor(t, "helper start", func() bool { return strings.Contains(output.String(), "stubborn-started") })
-	canceled := time.Now()
-	cancel()
-	select {
-	case outcome := <-done:
-		if outcome.ExitCode == 0 || time.Since(canceled) < terminateGrace {
-			t.Fatalf("stubborn command was not killed after the grace: %+v after %s", outcome, time.Since(canceled))
-		}
-	case <-time.After(terminateGrace + 10*time.Second):
-		t.Fatal("stubborn command outlived the kill")
-	}
 }
 
 // The manager reports the sweep on the receipt without changing the result,
@@ -190,21 +94,4 @@ func TestManagerRecordsLeftoverWarningOnSuccessfulReceipt(t *testing.T) {
 			t.Fatalf("script retained: %s", filepath.Join(m.logs.options.LogDir, entry.Name()))
 		}
 	}
-}
-
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
 }

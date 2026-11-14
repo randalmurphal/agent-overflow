@@ -69,9 +69,12 @@ subagent completes. The wire-typed parent-ended signal is therefore
 `parent_tool_use_id == null`). See
 [§stream_event soft-round-close](#stream_event-streaming-deltas)
 below. We treat that signal as authoritative for the round-end UI
-(working indicator, Stop button, composer block) and absorb the late
-`result` envelope as a token-usage / cost / `assistant_message_id`
-fold-in. Backed by fixtures
+(working indicator, Stop button, composer block) and turn settlement,
+and absorb the late `result` envelope as a token-usage / cost /
+`assistant_message_id` fold-in; an input the CLI acts on meanwhile
+(each announced by `system/init`) starts a turn of its own
+([turn-lifecycle.md §Rounds and turns](../architecture/turn-lifecycle.md#rounds-and-turns)).
+Backed by fixtures
 [`local_agent_outlives.ndjson`](fixtures/claude/local_agent_outlives.ndjson)
 and
 [`local_agent_user_input_during_wait.ndjson`](fixtures/claude/local_agent_user_input_during_wait.ndjson).
@@ -401,7 +404,12 @@ a convenience string only.
 
 ## `system/init`
 
-**Fires**: once at session start, and again on model switch.
+**Fires**: before each model invocation the CLI starts on new input: a
+turn for a stdin message or command, a wake on a background-task
+notification, and each new input it acts on while it withholds `result`
+behind a running `local_agent` (§`result`). A continuation of the same
+invocation after a parent `end_turn` (a ToolSearch or ExitPlanMode
+resume) has none. Also on model switch.
 
 ```json
 {"type": "system", "subtype": "init",
@@ -420,7 +428,9 @@ a convenience string only.
  "capabilities": ["interrupt_receipt_v1", "msg_lifecycle_v1"]}
 ```
 
-Emits `EventInit`. Parser extracts model id for usage pricing, and the
+Emits `EventInit`; what it opens in AO is
+[turn-lifecycle.md §Turns the provider starts](../architecture/turn-lifecycle.md#turns-the-provider-starts).
+Parser extracts model id for usage pricing, and the
 optional fast-mode pair (same shape and same version caveat as on
 `result`, described in
 [§fast_mode_state](#fast_mode_state--fast_mode_disabled_reason-verified-21219)).
@@ -790,6 +800,41 @@ error enum respectively, and only the TURN died here.
 
 ---
 
+## `system/session_writes_lost`
+
+**Fires**: at most once, as the CLI exits with status 0 after the last
+result, when it could not save transcript lines, `~/.claude.json`
+changes, or both, because the disk was full or over quota (2.1.317+;
+schema read from the 2.1.321 bundle). A run that exits 1 reports this
+only on stderr.
+
+```json
+{"type":"system","subtype":"session_writes_lost","error_code":"ENOSPC",
+ "lost":["transcript","global_config"],"transcript_session_ids":["..."],
+ "uuid":"...","session_id":"..."}
+```
+
+`error_code` is `ENOSPC` (disk full) or `EDQUOT` (quota used up); when
+both kinds of write failed for different reasons it is the transcript's.
+`lost` is never empty. `transcript_session_ids` is present only when
+`transcript` is listed and names the sessions that lost lines, which after
+`/clear` can be an earlier session. Both enums are documented as open.
+
+AO keeps only an error text naming what was lost and why, plus a line
+saying resuming may miss part of the conversation when a transcript lost
+lines. An unknown code is named in the text; an unknown `lost` value reads
+as "other session data". The code, list and session ids are not stored.
+
+The envelope's usual cause of exit is AO closing the session, after which
+triage drops the thread's wire events, so the parser emits no event. The
+session holds the first text it saw (`Session.TakeLostWritesError`), and
+the app puts it on the thread as one error row once the process has ended:
+`closeProviderSession` after Close returns, and `unregisterSession` after a
+self-exit's final `disconnected` status. The text is handed out once, so a
+session that reaches both paths reports it once.
+
+---
+
 ## Permission notices (`permission_denied`, `permission_retry`)
 
 Two `system` subtypes that report a permission OUTCOME rather than asking
@@ -1066,15 +1111,12 @@ months-old source mirror disagreed on the async case, the wire won):
   after 1,200 frames; AO's control-request timeout therefore counts
   silence from the CLI, not time since the request
   (`DefaultControlRequestTimeout`), under a one-minute ceiling on the
-  whole wait (`DefaultControlRequestCeiling`). AO's plain Stop
-  and the Stop un-send both send this interrupt (`interruptTurnAtIndex`
-  in `internal/app/app_session.go`). While a running or parked agent is
-  live, both refuse with `background_agents_running` until the caller
-  confirms that agent by its transcript root; an agent launched after
-  the question was asked is refused again
-  (`internal/app/app_background_kill.go`). The un-send also
-  stops the session (`InterruptAndRevertIfClean`, `stopSession`) and
-  declines while background work runs (`hasRunningBackgroundTasks`).
+  whole wait (`DefaultControlRequestCeiling`). AO's Stop sends this
+  interrupt (`interruptTurnAtIndex` in `internal/app/app_session.go`).
+  While a running or parked agent is live, it refuses with
+  `background_agents_running` until the caller confirms that agent by
+  its transcript root; an agent launched after the question was asked
+  is refused again (`internal/app/app_background_kill.go`).
 - Session close kills every remaining shell and every async agent
   and, on a graceful stdin
   close, emits their killed terminals before exit. AO tears the thread
@@ -1369,6 +1411,32 @@ the client-supplied `uuid`, with `promptSource:"sdk"`, the CLI-assigned
 has no user entry; the transcript records it as a `queued_command`
 attachment carrying the uuid as `source_uuid`.
 
+### A host-sent `!` record is read as a command the person ran (verified 2.1.321)
+
+The TUI's `!` mode writes two user messages: `<bash-input>CMD</bash-input>`,
+then `<bash-stdout>…</bash-stdout><bash-stderr>…</bash-stderr>`. On success
+the merged output is in stdout with its trailing newline trimmed and stderr
+is empty. On failure stdout is empty and stderr holds the merged output; no
+exit code is recorded. Output is XML-escaped (`&lt;`, `&amp;`, `&gt;`) and
+the command is not. `bashOutputMaxChars` defaults to 30000; past it the CLI
+writes the output to a file and sends a preview with the path.
+
+A stream-json host that sends one user message holding both tags gets the
+same treatment as any prompt: it is written to the transcript under the
+client `uuid`, the model answers it as output of a command the person ran,
+and mid-turn it is drained into the running turn as a `queued_command`.
+Because the text holds `<bash-stdout>`, a turn-opening send is subject to
+the echo filter above, so its confirmation is the transcript mirror. Agent
+Overflow's composer shell commands send this shape
+(`internal/provider/claude/user_shell.go`) and add the exit code to stderr.
+The CLI's internal `bash_command` stdin frame runs a command the model
+never sees and is not used.
+
+The TUI's two records are not prompts, so the fork-point walk
+(`sessionfork.isRealUserPrompt`) skips them. The host's single record is
+one: the walk recognizes it by `</bash-input>` followed directly by
+`<bash-stdout>`, which the TUI never writes into one message.
+
 Spike 2026-10-11 (haiku, AO's flag set), each case with its
 `command_lifecycle` bracket:
 
@@ -1622,7 +1690,12 @@ running reserved its own turn, and a delivery for it inside another
 message's round waits for that turn, which its echo opens when no init
 does (`internal/triage/send_delivery.go`). On 2.1.284 the echo of a
 mid-loop drain precedes its `started` (next section), so the echo is that
-first signal.
+first signal. A confirmation that arrives with no turn open, for a
+message a turn start took and ran, is delivered into that turn; a turn
+that took a message whose `queued` ack is on record before its `started`
+raced it and did not run it (`ranInTakingTurn`). A message whose turn
+never echoes it is bound to the turn that took it when that turn's end is
+read (`Router.PendingSendTurn`).
 
 ### Frame order per consumption path (verified 2.1.284)
 
@@ -1670,23 +1743,28 @@ fixture through the parser and router (`send_delivery_capture_test.go`,
 
 - A mid-loop drain is delivered by its echo, which opens the message's own
   turn (`openQueuedEchoTurn`) when the message was deferred; its `started`
-  finds the delivery already reported. Midloop after cascade, deferred pair.
+  finds the delivery already reported. Deferred pair.
+- A message flushed while the turn a task notification woke the CLI for
+  runs is delivered into that turn, as into any running turn. Midloop
+  after cascade.
 - `deliveryFloor` decides the boundary merge of deferred members: `started`
   B arrives while the turn A's merged-away echo opened is still open, and
-  the floor holds B for its own turn. Merge after cascade.
+  the floor holds B for its own turn. No capture holds it: the unit tests
+  of the order below do.
 - A turn start releases deliveries a `started` left waiting: the members of
   a merge after a running turn, the held second of an idle pair. Boundary
-  merge, idle pair split.
+  merge, merge after cascade, idle pair split.
 - Merge-fold rebind (`SendDelivery.Rebind`) moves A from the turn its
   merged-away echo opened to the survivor's, with the init before the
-  survivor's echo. Merge after cascade.
+  survivor's echo. No capture holds it
+  (`TestAMergeFoldedMemberEchoedIntoATurnOfItsOwnMovesToTheSurvivorsTurn`).
 
 Two orders triage handles were not observed on 2.1.284. If a later CLI
 writes one of them, these tests already cover it:
 
 | Order not observed | Covering tests |
 |---|---|
-| `started` before the echo on a mid-loop drain | triage `TestSendDeliveryStartedBeforeAMidLoopEchoIsTheTurnTheEchoOpens`, `TestSendDeliveryOfASecondDeferredSendIsItsOwnTurn`, `TestSendDeliveryOfThreeDeferredSendsWaitsForEachOwnTurn`, `TestSendDeliveryOfADeferredSendBehindAPersonsMessageIsItsOwnTurn`; app `TestARequestDrainedAfterACascadeSettlesWithTheTurnItsEchoOpened`, `TestASecondDeferredRequestSettlesWithItsOwnTurn` |
+| `started` before the echo on a mid-loop drain | triage `TestSendDeliveryStartedBeforeAMidLoopEchoIsTheTurnTheEchoOpens`, `TestSendDeliveryOfASecondDeferredSendIsItsOwnTurn`, `TestSendDeliveryOfThreeDeferredSendsWaitsForEachOwnTurn`, `TestSendDeliveryOfADeferredSendBehindAPersonsMessageIsItsOwnTurn`; app `TestARequestDrainedIntoASelfWokenTurnSettlesWithThatTurn`, `TestASecondDeferredRequestSettlesWithItsOwnTurn` |
 | A boundary merge with no `system/init` before the survivor's echo | triage `TestAMergeFoldedMemberEchoedIntoATurnOfItsOwnMovesToTheSurvivorsTurn/no_init`; app `TestAMergeFoldedRequestEchoedIntoATurnOfItsOwnSettlesWithTheSurvivor/no_init` |
 
 ### ⚠ The `priority` field is known and deliberately unused
@@ -3437,30 +3515,40 @@ CLI machinery and are not prompts.
 
 ## Agent effort
 
-Source-read from the 2.1.300 bundle. The `Agent` tool takes an optional
+Source-read from the 2.1.321 bundle. The `Agent` tool takes an optional
 `effort` input. A subagent runs at the first of:
 
 1. the `CLAUDE_CODE_EFFORT_LEVEL` environment override;
 2. the launch's `input.effort` (ignored for `subagent_type: "fork"`);
 3. the agent definition's frontmatter `effort`;
-4. the effort of the agent that launched it: the enclosing subagent's for a
-   nested launch, else the session's for that model.
+4. the nearest effort layer above it: an effort an enclosing agent's launch
+   named (or took from rule 3 or 5), whatever the subagent's model;
+5. `CLAUDE_CODE_SUBAGENT_EFFORT` (2.1.316+), when it names a tier;
+6. the session's effort, if the subagent runs on the model it was picked
+   for (`pickedEffortModel`: the main loop's model when the outermost launch
+   ran, carried to nested launches); else (2.1.317+) the subagent model's
+   effort from the user's Claude settings (`modelSettings.<model>.effortLevel`,
+   else a settings-wide effort), else that model's default. Before 2.1.317
+   the session's effort applied whatever the model.
 
-The result is clamped to the subagent's model: `xhigh` or `max` the model
-does not offer becomes `high`, and a model with no effort tiers runs with
-none. With no explicit effort, an experiment may lower it. Behind another
-experiment the input also takes `"lower"` or `"higher"`, a one-tier step from
-the inherited effort; with the experiment off the CLI drops it.
+Models compare as one ID with or without the `[1m]` marker. A fork runs on
+its launcher's model with its launcher's layers, so at its launcher's
+effort. The result is clamped to the subagent's model: `xhigh` or `max` the
+model does not offer becomes `high`, and a model with no effort tiers runs
+with none. With no explicit effort, an experiment may lower it. Behind
+another experiment the input also takes `"lower"` or `"higher"`, a one-tier
+step from the computed effort; with the experiment off the CLI drops it.
 
 The `model` input is an alias (`sonnet`, `opus`, `haiku`, `fable`). An alias
 naming the launcher's own model family keeps the launcher's model; any other
 takes the alias's target, the `resolvedModel` of its `initialize` models row.
-A fork ignores it.
+A fork ignores it. With no input the agent definition's model applies, which
+AO does not see.
 
 A §E6 resume runs at the effort the launch named, which the agent's
-`.meta.json` records (only an explicit `effort` is recorded), else through
-the same chain with the session's effort at resume time. `SendMessage` takes
-no effort.
+`.meta.json` records, else through the same rules with the session's effort
+at resume time and the `pickedEffortModel` the metadata recorded at launch.
+`SendMessage` takes no effort.
 
 `/effort` replies that move the session's effort: `Set effort level to
 <tier>…`; `Effort '<x>' exceeds the cap for <model> set by your settings or
@@ -3469,47 +3557,79 @@ auto…`, `Effort set to auto for this session, but CLAUDE_CODE_EFFORT_LEVEL=…
 and `Cleared effort from settings, but CLAUDE_CODE_EFFORT_LEVEL=…`, after
 which the session runs at an effort AO cannot name.
 
-No stream field reports the subagent's effective effort. Session-mirror
-assistant rows carry the request's `effort`, unverified as a source for
-effort-capable subagents.
+What reports the effort a subagent ran at:
 
-AO records what was true when the agent started running
-(`internal/provider/claude/subagent_effort.go`):
+- `agent_metadata.effort` does not: it is the launch's named input only
+  (`...zt&&{effort:zt}`, `zt=fork?void 0:step??input`), beside
+  `pickedEffortModel`.
+- `task_started` and the stdout assistant envelopes carry no effort.
+- Each session-mirror `assistant` row carries `effort`, the
+  `output_config.effort` its API request sent
+  (`KS=typeof zy==="string"&&Yk(zy)?zy:void 0` with
+  `zy=Ac.output_config?.effort`), absent when the request named none. A
+  subagent's rows are in its `subagents/agent-<id>.jsonl` mirror.
+- claude-tui sees each subagent request's `output_config.effort` at the
+  gateway.
 
-- Each Agent/Task launch gets `meta.inherited_effort`, the launching agent's
-  effort, and `meta.requested_model`, the model its alias resolves to through
-  the CLI's alias map. A §E6 resume carrier gets `meta.inherited_effort`, its
-  sender's effort at resume time.
+AO (`internal/provider/claude/subagent_effort.go`):
+
+- `meta.run_effort` is the effort the agent's request ran at: from the
+  first mirrored row of the agent that names a tier, or claude-tui's first
+  subagent request (`""` when it named none). It lands on the row the
+  agent's task is bound to, so a §E6 resumed round records its own on the
+  carrier. Each mirrored row counts once by `uuid`, so a row delivered
+  again after a resume does not label the later round. Rows that arrive
+  before `task_started` bind the agent wait for it unless
+  `agent_metadata.toolUseId` names the launch, and an effort whose launch
+  the mirror has not delivered yet rides that launch's tool start;
+  ownerless metadata (a forked skill) records nothing. A resumed round's
+  row that precedes its own `task_started` is not attributed.
+- `meta.inherited_effort` is the effort shown until then: what the agent
+  runs at when its launch names none, stamped only where rules 4 and 6 prove
+  it. Under a named effort, and for a fork, it is the launcher's effort,
+  stamped at launch. Otherwise it is the session's effort at launch, stamped
+  when the agent's first envelope reports a model equal to the picked one
+  (the main loop's latest response model) and never for another model. A
+  CLI before 2.1.317 (`system/init.claude_code_version`, seeded from the
+  installed version; unknown takes the 2.1.317 rule) gets it at launch. A
+  §E6 resume carrier gets it on the same terms with the session's effort at
+  resume time.
+- `meta.requested_model` is the model the launch's alias resolves to
+  through the CLI's alias map.
 - The session's effort starts at the resolved `--effort` and follows the
   `/effort` replies above. claude-tui never sees the terminal's `/effort`, so
-  its reconstructor stamps each main-loop assistant envelope with the
-  request's `output_config.effort` (`ao_request_effort`, `""` when absent),
-  which the parser takes as the session's effort. The CLI clamps it to the
-  main model, so a `high` request on a model without `xhigh` or `max` may
-  stand for one of them: launches under it also get
+  its reconstructor stamps each assistant envelope with the request's
+  `output_config.effort` (`ao_request_effort`, `""` when absent); the
+  parser takes a main-loop one as the session's effort. The CLI clamps it to
+  the main model, so a `high` request on a model without `xhigh` or `max` may
+  stand for one of them: stamps under it also get
   `meta.inherited_effort_alternatives`, the tiers that model lacks (both
   when the catalog does not know it). A `/effort` reply clears them.
 - A resume of an agent an earlier process launched restores the effort the
   launch named and its model from the thread's history
   (`claude.Config.AgentLaunchByTask`), so launches nested in the resumed
-  round inherit it.
+  round inherit it. One that named none has no recorded picked model, so its
+  carrier gets no `inherited_effort`.
 - A relative `"lower"`/`"higher"` names no effort AO can reproduce, so the
-  row shows none and launches nested inside it inherit none.
+  row shows none until `run_effort` arrives, and launches nested inside it
+  inherit none.
 - A row's stamps are written once: triage keeps an existing row's stamp state
-  when its tool start is delivered again, and never adds a stamp to a row
-  stored without one (`internal/triage/launch_effort.go`). An effort and its
+  when its tool start is delivered again, adds a stamp only through a
+  meta-only update to a row without one, and holds a report that arrives
+  before its row (`internal/triage/launch_effort.go`). An effort and its
   alternatives settle as one stamp.
 
-The row shows `input.effort`, else the stamp; a resume carrier shows the
-launch's named effort, else its own stamp. The effort is clamped against the
-catalog entry of the subagent's model, else its requested model; an alias the
-parser could not resolve shows an effort only when every catalog model of its
-family agrees on it (`frontend/src/lib/utils/subagentEffort.ts`). With
-alternatives, it shows one only when the effort and every alternative clamp to
-the same tier on that model.
-Frontmatter effort, the environment override and the experiments are not
-visible to AO, so a row can show the inherited effort where the CLI used
-another.
+The row shows `run_effort`, else `input.effort`, else `inherited_effort`; a
+resume carrier shows its `run_effort`, else the launch's named effort, else
+its own `inherited_effort`. The effort is clamped against the catalog entry
+of the subagent's model, else its requested model; an alias the parser could
+not resolve shows an effort only when every catalog model of its family
+agrees on it (`frontend/src/lib/utils/subagentEffort.ts`). With
+alternatives, it shows one only when the effort and every alternative clamp
+to the same tier on that model.
+Until `run_effort` arrives, frontmatter effort, `CLAUDE_CODE_EFFORT_LEVEL`,
+`CLAUDE_CODE_SUBAGENT_EFFORT` and the experiments are not visible to AO, so
+an `inherited_effort` can differ from the effort the CLI used.
 
 ---
 
@@ -3661,8 +3781,11 @@ verbatim.
 ### Delta types
 - `text_delta: {text}`: ✅ handled
 - `thinking_delta: {thinking}`: ✅ handled
-- `signature_delta: {signature}`: ❌ unhandled (thinking signature; flows
-  even when the `thinking` text is redacted, per §Extended thinking)
+- `signature_delta: {signature}`: ✅ read for its tag, never emitted. It
+  arrives after a thinking block's `thinking_delta`s and before its
+  `content_block_stop`, and flows even when the `thinking` text is
+  redacted. The parser keeps it until the block stops
+  (§The signature tag).
 - `input_json_delta: {partial_json}`: ❌ unhandled (fine-grained tool streaming)
 
 ### `message_stop` vs `result`
@@ -3805,8 +3928,8 @@ With the flag set:
 
 - `assistant.message.content[].thinking` is populated.
 - `stream_event` emits `thinking_delta` deltas alongside the existing
-  `signature_delta`, already wired to `EventThinking` by
-  `parse_stream.go`.
+  `signature_delta`. `parse_stream.go` maps `thinking_delta` to
+  `EventThinking`.
 - The `signature` is identical regardless of display mode; it carries
   the encrypted full thinking and is required for multi-turn
   continuity. Switching `display` between turns is supported.
@@ -3832,6 +3955,55 @@ the wire surfaces, not what you pay.
 `--thinking-display omitted` keeps the redacted shape. Setting
 `--thinking enabled|adaptive` without a display flag does NOT flip
 display; the display knob is the load-bearing one.
+
+### The signature tag: narration blocks
+
+A thinking block's `signature` is base64 of a protobuf message. Field 2
+of that message holds a message whose field 1 is a header, and the
+header's field 8 is a short UTF-8 tag. Every other field is opaque.
+Observed tags:
+
+| Tag | Block |
+|---|---|
+| `thinking` | Reasoning. |
+| `narration` | Prose the model wrote for the user: a status note or a summary of what it found. |
+
+The tag is present on 2.1.302 and 2.1.321. A 2.1.132 signature
+(`opus47_thinking_summarized.ndjson`) carries none. A reader keeps the
+last occurrence of each field, as a protobuf reader does for a
+non-repeated field.
+
+The tag is known only once the signature has arrived, which is at the
+block's end on every path:
+
+| Path | Where the signature is |
+|---|---|
+| Streamed block | `signature_delta`, after the last `thinking_delta`. `content_block_start` carries `signature: ""`. |
+| `assistant` envelope (a never-streamed message, every subagent block) | `content[].signature` |
+| Session JSONL and `transcript_mirror` rows | `message.content[].signature` |
+
+`sessionimport.ThinkingTag` decodes it. A signature that is empty, not
+base64, not a well-formed message, over 256 KiB, or without the tag is
+untagged, and the block is handled exactly as before.
+
+For a `narration` block the adapter sets `provider.MetaNarrationKey`
+(`"narration": true`) on the event that settles the block:
+
+- the streamed block's `EventContentBlockStop`;
+- the recovered block's content-bearing `EventContentBlockStop`;
+- the transcript reader's `EventThinking`, which the mirror forwards
+  with its snapshot marker.
+
+Triage and the import writer store that block as an `assistant_text` row
+carrying `"narration": true` in its meta, under the thinking item id and
+payload id it would otherwise have had. A streamed block is a `thinking`
+row until its stop. A block that never stops (interrupt, error, a
+boundary settle) stays one. Compaction reasoning is never converted.
+
+The parser holds a streamed block's signature from its first
+`signature_delta` to its stop, and releases it at the scope's
+`message_stop`, the next block start on the same index, the turn
+boundary and session close.
 
 ### Empirical (same prompt, claude-opus-4-7)
 
@@ -3978,6 +4150,12 @@ CLI binary; the subtypes we use or plan to use:
   change never kills a working session. The CLI also echoes a replayed
   user envelope containing
   `<local-command-stdout>Set model to ...</local-command-stdout>`.
+
+  From 2.1.307 the ack can wait up to 15 s while the API confirms the
+  model (changelog; not observed on the wire), so AO gives `set_model` a
+  20 s silence budget (`SetModelControlRequestTimeout`) instead of
+  `DefaultControlRequestTimeout`. `controlRequestTimeoutFor` in
+  `session_control.go` chooses every request's budget.
 
   Models without effort need no process reset when switching: the CLI's
   request builder suppresses `output_config.effort` for unsupported models,
@@ -4477,9 +4655,13 @@ AO's consumer is `internal/claudemodels`, which merges the array into the
 hand-maintained catalog under those constraints (`internal/claudemodels/AGENTS.md`
 carries the policy). The rows are also AO's only source for what an alias
 means (`claude.ModelAliases`), used to read an alias the CLI reports back,
-such as a project `settings.json` naming `opus`. One real discrepancy the
-array settled: **Haiku reports no
-effort support at all**, under both subscription and API-key auth, while AO's
+such as a project `settings.json` naming `opus`. They are also AO's only
+source for fast mode: the shipped catalog states it for no model, because
+Claude withdraws fast mode from older models (Opus 4.7 already, Opus 4.8 on
+2026-11-30) and a fast request on such a model fails. A model the array has
+never marked `supportsFastMode` is therefore not fast, including an older
+model the shortlist omits. One real discrepancy the array settled: **Haiku
+reports no effort support at all**, under both subscription and API-key auth, while AO's
 catalog declared low/medium/high, and the catalog was corrected.
 
 ---
@@ -5369,6 +5551,59 @@ A file-trailing boundary has not been observed (an idle-`/compact`
 synthesis attempt on a tiny session didn't trigger compaction at all);
 if one ever occurs, AO's branch walk finds no content row and resumes
 with no cursor, the safe degenerate.
+
+## Transcript cleanup (`cleanupPeriodDays`, verified 2.1.321)
+
+The CLI deletes session transcripts under `<config home>/projects` whose
+mtime is older than `cleanupPeriodDays` (default 30, minimum 1). The sweep
+covers the whole config home and runs inside ordinary CLI processes, with
+the period that process resolved.
+
+Spike, in an isolated config home holding 60- and 200-day-old transcripts
+and no `.last-cleanup`, each process held open 20 seconds:
+
+| Launch | Result |
+|---|---|
+| `-p` stream-json, no period | Both deleted |
+| `--settings '{"cleanupPeriodDays":90}'` | 60-day kept, 200-day deleted |
+| `--settings '{"cleanupPeriodDays":36500}'` | Both kept |
+| `--safe-mode --max-turns 0` (the account probe), no period | Both deleted |
+| `--safe-mode --max-turns 0` with period 90 | 60-day kept |
+| `--no-session-persistence`, no period | 60-day deleted (only file seeded) |
+| `claude mcp list`, 30 seconds | 60-day kept (only file seeded), no `.last-cleanup` written |
+
+The period a process resolves follows settings precedence, user below
+project below local, read from the process's working directory only. Same
+home and seeded files, `-p` stream-json with and without `--safe-mode`:
+
+| Settings files | Result |
+|---|---|
+| `<cwd>/.claude/settings.json` 100 | 60-day kept, 200-day deleted |
+| `<cwd>/.claude/settings.local.json` 100 | 60-day kept, 200-day deleted |
+| User 365, project 100 | 200-day deleted |
+| User 100, project 365 | Both kept |
+| Project 100 in the parent directory or git root, cwd a subdirectory (no `--safe-mode` run) | Both deleted |
+| cwd is the home directory, `~/.claude/settings.local.json` 100 over user 365 (no `--safe-mode` run) | 200-day deleted |
+
+The interactive TUI ran no sweep in any spike: 45 seconds at onboarding in
+a new home, and 12 minutes idle at the prompt past onboarding, trusted and
+untrusted folder, with an unreachable API endpoint. Which period its sweep
+uses is therefore unobserved; the bundle resolves it through the same
+merged settings.
+
+From the bundle, not run: a process schedules the sweep 5 seconds after
+its startup work goes idle, runs it then when `<config home>/.last-cleanup`
+is absent or older than 24 hours, and otherwise runs it 10 minutes later.
+An interactive session defers while the user was active in the last
+minute. `--bare` skips it. A period set by managed policy outranks the
+`--settings` value.
+
+**AO context.** The shortest period among the processes that sweep is the
+home's effective retention, so every Claude process AO starts against the
+user's home carries a `--settings` period, measured against what that
+process resolves from the user, project and local files for its working
+directory. The rule and the list of launches are in
+`internal/provider/claude/retention.go`.
 
 ## Captured samples
 

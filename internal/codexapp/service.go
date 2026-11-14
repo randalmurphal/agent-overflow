@@ -20,6 +20,10 @@ import (
 
 const backgroundTerminalStopTimeout = 10 * time.Second
 
+// skillsReadTimeout bounds one shared skills read: a live session's
+// request, then the fallback process's own bound.
+const skillsReadTimeout = 2 * codex.DefaultSkillsListTimeout
+
 type AccountSelection struct {
 	ID    string
 	Email string
@@ -114,7 +118,9 @@ func (s *Service) Skills(ctx context.Context, workspacePath string, forceReload 
 	}
 	binary := s.binary()
 	key := codexskills.Key(binary, workspacePath)
-	fetch := func(ctx context.Context) (codexskills.CwdSkills, error) {
+	fetch := func() (codexskills.CwdSkills, error) {
+		ctx, cancel := context.WithTimeout(s.lifeContext(), skillsReadTimeout)
+		defer cancel()
 		return s.readSkills(ctx, binary, workspacePath, forceReload)
 	}
 	var (
@@ -183,6 +189,13 @@ type AccountUsageResult struct {
 	AccountEmail string
 }
 
+func (s *Service) lifeContext() context.Context {
+	if s.deps.LifeContext != nil {
+		return s.deps.LifeContext()
+	}
+	return context.Background()
+}
+
 func (s *Service) AccountUsage() (*AccountUsageResult, error) {
 	selection := AccountSelection{}
 	if s.deps.ActiveAccount != nil {
@@ -190,11 +203,7 @@ func (s *Service) AccountUsage() (*AccountUsageResult, error) {
 	}
 	binary := s.binary()
 	key := binary + "\x00" + selection.ID
-	ctx := context.Background()
-	if s.deps.LifeContext != nil {
-		ctx = s.deps.LifeContext()
-	}
-	usage, err := s.usageCache.Get(ctx, key, func(ctx context.Context) (codex.AccountUsage, error) {
+	usage, err := s.usageCache.Get(s.lifeContext(), key, func(ctx context.Context) (codex.AccountUsage, error) {
 		return s.readAccountUsage(ctx, binary, selection.ID)
 	})
 	if err != nil {

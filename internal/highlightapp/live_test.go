@@ -101,6 +101,20 @@ func waitPush(t *testing.T, rec *liveRecorder, item string, fence, seq int) Live
 	return found
 }
 
+// holdLiveWorkers takes every worker slot, so no row's goroutine advances
+// until the returned release runs.
+func holdLiveWorkers(service *Service) (release func()) {
+	slots := service.live.slots
+	for range cap(slots) {
+		slots <- struct{}{}
+	}
+	return func() {
+		for range cap(slots) {
+			<-slots
+		}
+	}
+}
+
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -280,12 +294,12 @@ func TestLiveEndTexts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			service, rec := newLiveService(t)
 			// Hold the row's goroutine so every end arrives before it runs.
-			service.live.slots <- struct{}{}
+			release := holdLiveWorkers(service)
 			service.ObserveAssistantTextDelta("t", "i", "", tc.streamed)
 			for _, text := range tc.ends {
 				service.EndAssistantText("t", "i", text)
 			}
-			<-service.live.slots
+			release()
 			waitFor(t, func() bool { return service.LiveItemCount() == 0 })
 			events := rec.snapshot()
 			for index, source := range tc.want {
@@ -366,7 +380,7 @@ func TestLivePurgeAndCloseRelease(t *testing.T) {
 // so only the scan can push.
 func TestLiveAnnouncesAFenceBeforeTheCallerEmitsItsText(t *testing.T) {
 	service, rec := newLiveService(t)
-	service.live.slots <- struct{}{}
+	release := holdLiveWorkers(service)
 	service.ObserveAssistantTextDelta("t", "i", "", "Intro\n```go\n")
 	if events := rec.snapshot(); len(events) != 0 {
 		t.Fatalf("pushes for a fence with no text: %+v", events)
@@ -387,7 +401,7 @@ func TestLiveAnnouncesAFenceBeforeTheCallerEmitsItsText(t *testing.T) {
 	if len(events) != 2 || events[1].Fence != 2 || events[1].Seq != 1 || events[1].Head != "a = 1" {
 		t.Fatalf("pushes %+v, want one announcement of fence 2", events)
 	}
-	<-service.live.slots
+	release()
 	service.EndAssistantText("t", "i", "")
 	waitFor(t, func() bool { return service.LiveItemCount() == 0 })
 	if len(rec.gaps) > 0 {
@@ -405,12 +419,12 @@ func TestLiveAnnouncesAFenceBeforeTheCallerEmitsItsText(t *testing.T) {
 // finishing the fence before it does not clear it.
 func TestLiveResyncNamesTheFenceTheScanOpened(t *testing.T) {
 	service, rec := newLiveService(t)
-	service.live.slots <- struct{}{}
+	release := holdLiveWorkers(service)
 	service.ObserveAssistantTextDelta("t", "i", "", "```go\nx := 1\n```\n```py\na = 1\n")
 	if open := service.ResyncLiveCode("t", "i"); open != 1 {
 		t.Fatalf("resync reported fence %d, want 1", open)
 	}
-	<-service.live.slots
+	release()
 	if final := waitPush(t, rec, "i", 0, 2); !final.Final {
 		t.Fatalf("fence 0 push %+v, want its final", final)
 	}
@@ -426,10 +440,10 @@ func TestLiveResyncNamesTheFenceTheScanOpened(t *testing.T) {
 // reached an announced fence still ends it.
 func TestLivePurgeEndsAFenceOnlyTheScanReached(t *testing.T) {
 	service, rec := newLiveService(t)
-	service.live.slots <- struct{}{}
+	release := holdLiveWorkers(service)
 	service.ObserveAssistantTextDelta("t", "i", "", "```go\nx := 1\n")
 	service.PurgeThread("t")
-	<-service.live.slots
+	release()
 	stop := waitPush(t, rec, "i", 0, 2)
 	if !stop.Final || stop.ContentKey != "" || stop.LineHashes != nil {
 		t.Fatalf("purge push %+v, want a stop", stop)

@@ -15,9 +15,11 @@ import "strings"
 //	PATH                — assembled by the app's sessionProcessEnv (the
 //	                      bundled `agent-overflow` CLI directory is prepended)
 //	                      and merged additively by BuildEnvironment.
-//	CLAUDE_CONFIG_DIR   — cleared by claude.NewSession (session.go),
-//	                      claude.ProbeAccount (probe.go), and the MCP status
-//	                      fetcher (mcpstatus.go); set to a temporary home by
+//	CLAUDE_CONFIG_DIR   — cleared, with the name below, wherever a launch
+//	                      uses claude.ConfigHomeUnsetEnv: claude.NewSession,
+//	                      claude.ProbeAccount, the MCP status fetcher, the
+//	                      interactive TUI (claudetui buildEnv) and
+//	                      textgen.RunClaude; set to a temporary home by
 //	                      claude.StartLogin and the inactive-account probes.
 //	CLAUDE_SECURESTORAGE_CONFIG_DIR
 //	                    — cleared everywhere CLAUDE_CONFIG_DIR is. Claude

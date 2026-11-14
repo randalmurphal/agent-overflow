@@ -17,7 +17,9 @@
   // height (stores/reviewSectionSizes), so how much of the pane the
   // diff keeps is the user's call. The overview row unmounts while the
   // reader is deep in the diff, so the body's scroll offset is handed to
-  // the owner and restored on remount.
+  // the owner and restored on remount. The browser's own scroll anchoring
+  // is off: WebKit has none, so a body that holds its reader's place
+  // (the Conversation feed) does so itself on every engine.
 
   interface Props {
     section: ReviewSectionId;
@@ -71,7 +73,7 @@
 
 <div
   bind:this={bodyEl}
-  class="overflow-y-auto {height === null ? fallbackClass : ''}"
+  class="overflow-y-auto [overflow-anchor:none] {height === null ? fallbackClass : ''}"
   style:max-height={height !== null ? `${height}px` : undefined}
   onscroll={() => { if (bodyEl) onScrollTop?.(bodyEl.scrollTop); }}
 >

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/provider"
 )
@@ -11,15 +12,23 @@ import (
 // Subagent reasoning effort (claude-wire.md §"Agent effort").
 //
 // The Agent tool takes an optional `effort` input (Claude Code 2.1.292+).
-// The CLI reports no effective effort for a subagent on the stream, so
-// what AO records is what was true when the agent started running: the
-// input the launch carries, and `inherited_effort`, the effort the launching
-// agent ran at. A launch that names no effort, and every fork, runs at its
-// launcher's effort: the session's for a top-level launch, the enclosing
-// subagent's for a nested one. A §E6 resume runs at the launch's named
-// effort, else at its sender's effort at resume time, so the parser stamps
-// `inherited_effort` on the resume carrier too. Each stamp is written once
-// on its row because the session's effort can change afterwards (`/effort`).
+// The headless stream reports no effective effort for a subagent, so AO
+// records what it can prove: the input the launch carries, and
+// `inherited_effort`, the effort the agent runs at when the launch names
+// none. An effort a launch names is a layer every launch nested in it
+// inherits, and a fork runs at its launcher's effort. Otherwise (2.1.317+)
+// the session's effort applies only to an agent on the model it was picked
+// for, the main loop's model when the outermost launch ran. An agent on
+// another model runs at that model's effort from the user's Claude settings
+// or its default, which AO cannot see, so it is not stamped. The agent's
+// model is known once its first envelope reports it, so the stamp rides
+// that report. Before 2.1.317 every such launch runs at its launcher's
+// effort and is stamped at launch. A §E6 resume follows the same rule with
+// the session's effort at resume time. Each stamp is written once on its
+// row because the session's effort can change afterwards (`/effort`).
+//
+// claude-tui reconstructs each subagent request's `output_config.effort`,
+// the effort the CLI sent, so a claude-tui agent also records `run_effort`.
 //
 // The launch's requested model alias is resolved here as well
 // (`requested_model`), because the alias's target decides which effort the
@@ -37,11 +46,65 @@ const (
 	// requestedModelMetaKey is the launch-row meta key of the model the
 	// launch's `model` alias resolves to.
 	requestedModelMetaKey = "requested_model"
+	// runEffortMetaKey is the launch-row meta key of the effort a
+	// claude-tui subagent's first request ran at, "" for none.
+	runEffortMetaKey = "run_effort"
 	// RequestEffortKey is the claude-tui reconstructor's top-level field on
-	// a main-loop assistant envelope: the `output_config.effort` of the API
-	// request that produced it, "" when the request named none.
+	// an assistant envelope: the `output_config.effort` of the API request
+	// that produced it, "" when the request named none.
 	RequestEffortKey = "ao_request_effort"
 )
+
+// modelScopedEffortCLIVersion is the first Claude Code build that runs a
+// subagent on a model other than the one the session's effort was picked
+// for at that model's own effort (2.1.317 changelog).
+const modelScopedEffortCLIVersion = "2.1.317"
+
+// SetCLIVersion seeds the CLI version that selects the subagent effort
+// rule; `system/init` overrides it. An unknown version takes the current
+// rule, under which AO stamps less, never a wrong effort.
+func (p *Parser) SetCLIVersion(version string) {
+	if p == nil {
+		return
+	}
+	p.cliVersion = strings.TrimSpace(version)
+}
+
+// modelScopedEffort reports whether the CLI applies the session's effort
+// only to agents on the model it was picked for.
+func (p *Parser) modelScopedEffort() bool {
+	if _, ok := parseClaudeCLIVersion(p.cliVersion); !ok {
+		return true
+	}
+	return claudeCLIVersionAtLeast(p.cliVersion, modelScopedEffortCLIVersion)
+}
+
+// observeMainLoopModel follows the model of the main loop's responses, the
+// model the session's effort is picked for when an outermost launch runs.
+func (p *Parser) observeMainLoopModel(parentToolUseID, model string) {
+	model = strings.TrimSpace(model)
+	if p == nil || parentToolUseID != "" || model == "" || isSyntheticCLIModel(model) {
+		return
+	}
+	p.mainLoopModel = model
+}
+
+// pickedEffortModel is the model the session's effort applies to now.
+func (p *Parser) pickedEffortModel() string {
+	if p.mainLoopModel != "" {
+		return p.mainLoopModel
+	}
+	return p.model
+}
+
+// sameEffortModel compares models the way the CLI does: one ID, with or
+// without its context marker. A model either side does not know is not the
+// same.
+func sameEffortModel(a, b string) bool {
+	a = strings.ToLower(provider.NormalizeModelSlug(string(provider.Claude), strings.TrimSpace(a)))
+	b = strings.ToLower(provider.NormalizeModelSlug(string(provider.Claude), strings.TrimSpace(b)))
+	return a != "" && a == b
+}
 
 // forkSubagentType is the subagent_type whose input effort and model the
 // CLI ignores.
@@ -164,8 +227,8 @@ func isRelativeEffort(effort string) bool {
 
 // agentLaunchEffort is what the parser remembers per Agent launch: the
 // stamps it wrote, the effort the launch named, the effort the launched
-// agent runs at, and its model when known (a launch nested inside it
-// inherits both).
+// agent runs at ("" unknown), and its model when known (a launch nested
+// inside it inherits from it).
 type agentLaunchEffort struct {
 	inherited             string
 	inheritedAlternatives []string
@@ -174,6 +237,21 @@ type agentLaunchEffort struct {
 	own                   string
 	ownAlternatives       []string
 	model                 string
+	// layered: own comes from an effort a launch named, this one or one it
+	// is nested in, which nested launches inherit whatever their model.
+	layered bool
+	// pickedModel is the model the session's effort was picked for when the
+	// outermost launch above this one ran.
+	pickedModel string
+	// pending holds the session's effort at launch until the agent reports
+	// its model (2.1.317+): it applies on pickedModel only.
+	pending             bool
+	pendingEffort       string
+	pendingAlternatives []string
+	modelReported       bool
+	// ran is the effort the agent's mirrored request reported before the
+	// launch itself was delivered (holdRunEffort).
+	ran string
 }
 
 // agentLaunchStamps are the launch-time facts a launch row records.
@@ -181,6 +259,16 @@ type agentLaunchStamps struct {
 	inheritedEffort             string
 	inheritedEffortAlternatives []string
 	requestedModel              string
+	runEffort                   string
+}
+
+// agentLauncher is what a launch inherits from the agent it runs inside.
+type agentLauncher struct {
+	effort       string
+	alternatives []string
+	model        string
+	layered      bool
+	pickedModel  string
 }
 
 // agentLaunchStamps returns the launch-time stamps for an Agent/Task launch
@@ -193,34 +281,181 @@ func (p *Parser) agentLaunchStamps(toolName, toolUseID, parentToolUseID string, 
 	if seen, ok := p.agentLaunchEfforts.get(toolUseID); ok {
 		return seen.stamps()
 	}
-	inherited, alternatives, launcherModel := p.launcherEffortAndModel(parentToolUseID)
+	launcher := p.launcherOf(parentToolUseID)
 	var decoded agentEffortInput
 	if len(input) > 0 {
 		_ = json.Unmarshal(input, &decoded)
 	}
 	launch := agentLaunchEffort{
-		inherited: inherited, inheritedAlternatives: alternatives,
-		own: inherited, ownAlternatives: alternatives,
+		inherited: launcher.effort, inheritedAlternatives: launcher.alternatives,
+		own: launcher.effort, ownAlternatives: launcher.alternatives,
+		layered: launcher.layered, pickedModel: launcher.pickedModel,
 	}
-	if strings.TrimSpace(decoded.SubagentType) == forkSubagentType {
+	fork := strings.TrimSpace(decoded.SubagentType) == forkSubagentType
+	if !fork && !launcher.layered && p.modelScopedEffort() {
+		// The session's effort applies only if the agent turns out to run
+		// on the picked model (agentModelReported).
+		launch.pending = true
+		launch.pendingEffort, launch.pendingAlternatives = p.sessionEffort, p.sessionEffortAlternatives
+		launch.inherited, launch.inheritedAlternatives = "", nil
+		launch.own, launch.ownAlternatives = "", nil
+	}
+	if fork {
 		// A fork runs on its launcher's model at its launcher's effort.
-		launch.model = launcherModel
+		launch.model = launcher.model
 	} else {
 		if named := strings.TrimSpace(decoded.Effort); named != "" {
 			launch.named = named
 			launch.own = named
 			launch.ownAlternatives = nil
+			launch.layered = true
 			if isRelativeEffort(named) {
 				launch.own = ""
 			}
 		}
 		if alias := strings.TrimSpace(decoded.Model); alias != "" {
-			launch.requested = p.resolveAgentModel(alias, launcherModel)
+			launch.requested = p.resolveAgentModel(alias, launcher.model)
 			launch.model = launch.requested
 		}
 	}
+	if effort, ok := p.heldRunEfforts.get(toolUseID); ok {
+		p.heldRunEfforts.delete(toolUseID)
+		launch.ran = effort
+		p.runEffortReported.set(toolUseID, struct{}{})
+	}
 	p.agentLaunchEfforts.set(toolUseID, launch)
 	return launch.stamps()
+}
+
+// agentModelReported takes the model the agent launched at launchID
+// reports on its first envelope and returns the stamps that report
+// settles: `inherited_effort` when the agent runs on the model the
+// session's effort was picked for. Zero for a launch the parser did not see
+// or already settled.
+func (p *Parser) agentModelReported(launchID, model string) agentLaunchStamps {
+	launch, ok := p.agentLaunchEfforts.get(launchID)
+	if !ok || launch.modelReported {
+		return agentLaunchStamps{}
+	}
+	launch.modelReported = true
+	launch.model = model
+	var settled agentLaunchStamps
+	if launch.pending {
+		launch.pending = false
+		if sameEffortModel(model, launch.pickedModel) {
+			launch.inherited, launch.inheritedAlternatives = launch.pendingEffort, launch.pendingAlternatives
+			if !launch.layered {
+				launch.own, launch.ownAlternatives = launch.pendingEffort, launch.pendingAlternatives
+			}
+			settled.inheritedEffort = launch.inherited
+			settled.inheritedEffortAlternatives = launch.inheritedAlternatives
+		}
+		launch.pendingEffort, launch.pendingAlternatives = "", nil
+	}
+	p.agentLaunchEfforts.set(launchID, launch)
+	return settled
+}
+
+// subagentModelReport is the meta of the update that records the model the
+// agent launched at launchID reports on its first envelope, with the effort
+// stamps that report settles and, from a claude-tui envelope, the effort
+// its request ran at.
+func (p *Parser) subagentModelReport(raw map[string]json.RawMessage, launchID, model string) map[string]json.RawMessage {
+	fields := map[string]json.RawMessage{}
+	fields["subagent_model"], _ = json.Marshal(model)
+	p.agentModelReported(launchID, model).apply(fields)
+	if value, ok := raw[RequestEffortKey]; ok {
+		var effort string
+		_ = json.Unmarshal(value, &effort)
+		// "" is a request that named no effort; a tier AO cannot name is
+		// left unrecorded.
+		if _, done := p.runEffortReported.get(launchID); !done {
+			if effort = strings.TrimSpace(effort); effort == "" || IsLiveEffortTier(effort) {
+				fields[runEffortMetaKey], _ = json.Marshal(effort)
+				p.runEffortReported.set(launchID, struct{}{})
+			}
+		}
+	}
+	return fields
+}
+
+// mirroredRunEffort is one mirrored request row that names an effort tier.
+type mirroredRunEffort struct {
+	uuid   string
+	effort string
+}
+
+// observeMirroredRunEfforts records the effort an agent's request ran at,
+// as its session-mirror rows report it, on the row the agent's task is
+// bound to now: its launch, or a §E6 resume carrier for a resumed round.
+// Before task_started binds the agent, agent_metadata's toolUseId names the
+// launch. The mirror can deliver a row again, after its agent was bound to
+// a later round, so each source row counts once.
+func (p *Parser) observeMirroredRunEfforts(threadID, agentID, metadataToolUseID string, rows []mirroredRunEffort, now time.Time) []provider.ProviderEvent {
+	if agentID == "" {
+		return nil
+	}
+	var events []provider.ProviderEvent
+	for _, row := range rows {
+		if row.uuid != "" {
+			if _, seen := p.runEffortSourceRows.get(row.uuid); seen {
+				continue
+			}
+			p.runEffortSourceRows.set(row.uuid, struct{}{})
+		}
+		rowID := firstNonEmpty(p.taskToolUseRef(agentID).ToolUseID, metadataToolUseID)
+		events = append(events, p.recordRunEffort(threadID, agentID, rowID, row.effort, now)...)
+	}
+	return events
+}
+
+// takePendingRunEffort records the effort an agent's rows reported before
+// its task_started bound it to rowID.
+func (p *Parser) takePendingRunEffort(threadID, agentID, rowID string, now time.Time) []provider.ProviderEvent {
+	effort, ok := p.heldRunEfforts.get(agentID)
+	if !ok {
+		return nil
+	}
+	p.heldRunEfforts.delete(agentID)
+	return p.recordRunEffort(threadID, agentID, rowID, effort, now)
+}
+
+// recordRunEffort is the meta-only update that records run_effort on rowID,
+// once per row, when rowID is an Agent launch or the resume carrier of the
+// agent's task. An effort whose row is not known yet is held: under the
+// agent until task_started binds it (takePendingRunEffort), under rowID
+// until the mirror delivers that launch (agentLaunchStamps).
+func (p *Parser) recordRunEffort(threadID, agentID, rowID, effort string, now time.Time) []provider.ProviderEvent {
+	if rowID == "" {
+		p.holdRunEffort(agentID, effort)
+		return nil
+	}
+	if _, done := p.runEffortReported.get(rowID); done {
+		return nil
+	}
+	_, launch := p.agentLaunchEfforts.get(rowID)
+	root := p.taskTranscriptRoot(agentID)
+	if carrier := root != "" && root != rowID; !launch && !carrier {
+		p.holdRunEffort(rowID, effort)
+		return nil
+	}
+	p.runEffortReported.set(rowID, struct{}{})
+	meta, _ := json.Marshal(map[string]any{"meta_update_only": true, runEffortMetaKey: effort})
+	return []provider.ProviderEvent{{
+		Kind:      provider.EventToolStart,
+		ThreadID:  threadID,
+		ItemID:    rowID,
+		Meta:      meta,
+		Timestamp: now,
+	}}
+}
+
+// holdRunEffort keeps the first effort reported for key, an agent id or a
+// tool use id, until its row is known.
+func (p *Parser) holdRunEffort(key, effort string) {
+	if _, held := p.heldRunEfforts.get(key); !held {
+		p.heldRunEfforts.set(key, effort)
+	}
 }
 
 func (l agentLaunchEffort) stamps() agentLaunchStamps {
@@ -228,20 +463,27 @@ func (l agentLaunchEffort) stamps() agentLaunchStamps {
 		inheritedEffort:             l.inherited,
 		inheritedEffortAlternatives: l.inheritedAlternatives,
 		requestedModel:              l.requested,
+		runEffort:                   l.ran,
 	}
 }
 
-// launcherEffortAndModel is the effort (with the higher tiers it may be
-// instead) and model of the agent a launch or resume at parentToolUseID
-// runs inside: the enclosing launch's when the parser saw it ("" for what
-// it does not know), else the session's.
-func (p *Parser) launcherEffortAndModel(parentToolUseID string) (string, []string, string) {
+// launcherOf is what a launch or resume at parentToolUseID inherits from
+// the agent it runs inside: the enclosing launch's when the parser saw it
+// ("" for an effort it does not know), else the session's.
+func (p *Parser) launcherOf(parentToolUseID string) agentLauncher {
 	if parentToolUseID != "" {
 		if parent, ok := p.agentLaunchEfforts.get(parentToolUseID); ok {
-			return parent.own, parent.ownAlternatives, parent.model
+			return agentLauncher{
+				effort: parent.own, alternatives: parent.ownAlternatives, model: parent.model,
+				layered: parent.layered, pickedModel: parent.pickedModel,
+			}
 		}
 	}
-	return p.sessionEffort, p.sessionEffortAlternatives, p.model
+	picked := p.pickedEffortModel()
+	return agentLauncher{
+		effort: p.sessionEffort, alternatives: p.sessionEffortAlternatives,
+		model: picked, pickedModel: picked,
+	}
 }
 
 // resolveAgentModel resolves an Agent launch's `model` alias the way the
@@ -276,7 +518,7 @@ func (p *Parser) stampProjectedAgentLaunchEffort(event *provider.ProviderEvent) 
 		return
 	}
 	stamps := p.agentLaunchStamps(event.ItemType, event.ItemID, event.ParentToolUseID, fields["input"])
-	if stamps.inheritedEffort == "" && stamps.requestedModel == "" {
+	if len(stamps.fields()) == 0 {
 		return
 	}
 	if fields == nil {
@@ -288,32 +530,52 @@ func (p *Parser) stampProjectedAgentLaunchEffort(event *provider.ProviderEvent) 
 	}
 }
 
-// apply writes the non-empty stamps into a meta field map.
-func (s agentLaunchStamps) apply(fields map[string]json.RawMessage) {
+// fields are the non-empty stamps by meta key.
+func (s agentLaunchStamps) fields() map[string]any {
+	fields := map[string]any{}
 	if s.inheritedEffort != "" {
-		fields[inheritedEffortMetaKey], _ = json.Marshal(s.inheritedEffort)
+		fields[inheritedEffortMetaKey] = s.inheritedEffort
+		if len(s.inheritedEffortAlternatives) > 0 {
+			fields[inheritedEffortAlternativesMetaKey] = s.inheritedEffortAlternatives
+		}
 	}
 	if s.requestedModel != "" {
-		fields[requestedModelMetaKey], _ = json.Marshal(s.requestedModel)
+		fields[requestedModelMetaKey] = s.requestedModel
 	}
-	if s.inheritedEffort != "" && len(s.inheritedEffortAlternatives) > 0 {
-		fields[inheritedEffortAlternativesMetaKey], _ = json.Marshal(s.inheritedEffortAlternatives)
+	if s.runEffort != "" {
+		fields[runEffortMetaKey] = s.runEffort
+	}
+	return fields
+}
+
+// apply writes the non-empty stamps into a meta field map.
+func (s agentLaunchStamps) apply(fields map[string]json.RawMessage) {
+	for key, value := range s.fields() {
+		fields[key], _ = json.Marshal(value)
 	}
 }
 
 // resumeInheritedEffort is the effort a §E6 resume of the agent launched at
-// root runs at when its launch named none: its sender's effort now, with
-// the higher tiers it may be instead. It also moves the resumed agent's own
-// effort, which launches nested in the resumed round inherit (their rows
-// stay parented to root).
+// root runs at when its launch named none, with the higher tiers it may be
+// instead: its sender's effort layer, else (2.1.317+) the session's effort
+// now when the agent runs on the model its launch picked the effort for;
+// before 2.1.317, its sender's effort. It also moves the resumed agent's
+// own effort, which launches nested in the resumed round inherit (their
+// rows stay parented to root).
 func (p *Parser) resumeInheritedEffort(senderParentToolUseID, root string) (string, []string) {
-	inherited, alternatives, _ := p.launcherEffortAndModel(senderParentToolUseID)
-	if root == "" {
-		return inherited, alternatives
+	sender := p.launcherOf(senderParentToolUseID)
+	inherited, alternatives := sender.effort, sender.alternatives
+	launch, known := p.agentLaunchEfforts.get(root)
+	if !sender.layered && p.modelScopedEffort() {
+		inherited, alternatives = "", nil
+		if known && launch.modelReported && sameEffortModel(launch.model, launch.pickedModel) {
+			inherited, alternatives = p.sessionEffort, p.sessionEffortAlternatives
+		}
 	}
-	if launch, ok := p.agentLaunchEfforts.get(root); ok && launch.named == "" {
+	if root != "" && known && launch.named == "" {
 		launch.own = inherited
 		launch.ownAlternatives = alternatives
+		launch.layered = sender.layered
 		p.agentLaunchEfforts.set(root, launch)
 	}
 	return inherited, alternatives
@@ -341,7 +603,7 @@ func (p *Parser) rememberHistoricalLaunch(record AgentLaunchRecord) {
 	if _, ok := p.agentLaunchEfforts.get(record.ToolUseID); ok {
 		return
 	}
-	launch := agentLaunchEffort{named: record.Effort, model: record.Model}
+	launch := agentLaunchEffort{named: record.Effort, model: record.Model, layered: record.Effort != ""}
 	if !isRelativeEffort(record.Effort) {
 		launch.own = record.Effort
 	}

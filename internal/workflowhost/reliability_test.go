@@ -48,7 +48,7 @@ func TestFailedTakeoverStopRestoresBackoffTimer(t *testing.T) {
 	// The interrupt is what fails here: production reaches a session whose
 	// provider it cannot name. What the test is about is the state the refusal
 	// leaves behind, not which refusal it was.
-	runner.interrupt = func(context.Context, string) error {
+	runner.interrupt = func(context.Context, string, Interrupt) error {
 		return errors.New("unknown provider")
 	}
 	now := time.Unix(100, 0)

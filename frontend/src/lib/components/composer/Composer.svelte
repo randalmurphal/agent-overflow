@@ -11,7 +11,7 @@
   // cleanup, the pending approval / user-input panels, and the activity
   // rail.
 
-  import { onDestroy, onMount, tick, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
   import ComposerInputSurface from './ComposerInputSurface.svelte';
@@ -35,12 +35,23 @@
     backendReachable,
     threadMachine,
     threadMachineUnreachable,
+    verifiedThreadMachine,
   } from '../../stores/attachedBackends.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
+  import { DictationSession } from '../../dictation/dictationSession.svelte';
+  import DictationButton from './DictationButton.svelte';
+  import ComposerDictationCaption from './ComposerDictationCaption.svelte';
+  import { browserDictationEnvironment } from '../../dictation/browserDictation';
+  import {
+    dictationRemote,
+    dictationSource,
+    refreshDictationSources,
+    registerComposerDictation,
+  } from '../../stores/dictation.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
-  import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
+  import { runInterrupt } from '../../stores/threadInterrupt.svelte';
   import { endThreadSession, isAssistantDraftMoved } from '../../stores/assistants.svelte';
   import { threadSessionLive } from '../../stores/threadSessionLive.svelte';
   import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
@@ -79,7 +90,6 @@
   import { buildSendOptions } from '../../utils/sendOptions';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
-  import { UNSTAMPED_ITEM_REV } from '../../stores/threadWindowDigest';
   import { getActiveTurn, isSendInFlight } from '../../stores/threadStatuses.svelte';
   import { isThreadInterruptPending } from '../../stores/threadInterruptState.svelte';
   import { getFocusedPaneId } from '../../stores/panes.svelte';
@@ -87,7 +97,11 @@
   import { errString } from '../../utils/errors';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
-  import type { DiffReviewComment, Item, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
+  import { isShellInput, shellCommandFromInput } from '../../utils/shellInvocation';
+  import { getShellRun, isShellRunActive, runShellCommand } from '../../stores/shellCommands.svelte';
+  import { isTransportClassError } from '../../stores/transportStatus.svelte';
+  import { pathBasename } from '../../utils/pathDisplay';
+  import type { DiffReviewComment, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
 
   interface Props {
     pane: ThreadPane;
@@ -150,6 +164,56 @@
     return !(machine === HOME_BACKEND && hasScope('host'));
   });
   let compactLayout = $derived(isCompactLayout());
+
+  // Dictation records here and transcribes on the computer the thread runs
+  // on. A session belongs to one thread on one computer: switching either
+  // abandons a recording rather than landing its words in another thread.
+  // A thread whose computer is not verified has no mic and asks no computer.
+  let dictationMachine = $derived(verifiedThreadMachine(pane.threadId ?? ''));
+  let dictation = $state<DictationSession | null>(null);
+  // What this engine can capture, fixed for the page's life.
+  const dictationEngine = {
+    records: browserDictationEnvironment.format() !== null,
+    streamsPcm: browserDictationEnvironment.streamsPcm(),
+  };
+  $effect(() => {
+    if (dictationMachine !== null) void refreshDictationSources(dictationMachine);
+  });
+  $effect(() => {
+    const backend = dictationMachine;
+    void pane.threadId;
+    if (backend === null) {
+      dictation = null;
+      return;
+    }
+    const session = new DictationSession(browserDictationEnvironment, dictationRemote(backend, dictationEngine), (text) =>
+      surface?.insertText(text) ?? false,
+    );
+    dictation = session;
+    const release = registerComposerDictation(pane.paneId, backend, session, () => showDictation);
+    return () => {
+      release();
+      session.dispose();
+    };
+  });
+  // An engine that cannot capture for any source the computer has on shows
+  // no mic rather than one that fails.
+  let showDictation = $derived(
+    !isDisabled && !sendUngranted && !offline && dictationMachine !== null
+      && dictationSource(dictationMachine, dictationEngine) !== null,
+  );
+  // Hiding the mic mid-recording (a sign-out, a lost grant) abandons the
+  // recording, so no microphone stays open behind a control that is gone.
+  // So does losing the source the recording started with, even when the
+  // other source is still on: switching live off stops the stream.
+  $effect(() => {
+    const session = dictation;
+    if (!session) return;
+    const source = showDictation && dictationMachine !== null ? dictationSource(dictationMachine, dictationEngine) : null;
+    const active = session.activeSource;
+    if (active !== null && active !== source) untrack(() => session.cancel());
+  });
+
   let respondUngranted = $derived(!threadHasScope('approvals:respond', pane.threadId, pane.thread?.projectId));
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
@@ -157,21 +221,19 @@
   // queue (RegisterQueueItem), and the backend dispatch worker delivers
   // each queued message via Send/Steer as soon as possible.
   //
-  // BETWEEN rounds — Claude's multi-result-per-turn cascade emits the
-  // first `result` envelope, then the model is idle while a backgrounded
-  // task hasn't yet produced its notification — `getActiveTurn` returns
-  // null and `isTurnActive` is false, so the composer dispatches
-  // directly. The next round (provoked by the bg task notification or
-  // the user's new prompt) re-flips this on. This matches Claude Code's
-  // actual behaviour and is the canonical wire-round emission contract
-  // documented in internal/triage/AGENTS.md "Wire-round vs logical-turn".
+  // BETWEEN rounds (the model's message ended while a local_agent still
+  // runs and the CLI withholds its result) `getActiveTurn` returns null
+  // and `isTurnActive` is false, so the composer dispatches directly.
+  // The next round (a wake, a continuation or the user's new prompt)
+  // re-flips this on. See docs/architecture/turn-lifecycle.md § Rounds
+  // and turns.
   let isTurnActive = $derived(getActiveTurn(pane.threadId) !== null);
   // Send routes through the queue on the wire signal above and on one
   // presentation signal: the pane's reveal frontier is still up (a
-  // completed turn's text is still draining). A direct send appends an
-  // optimistic row after that frontier, and `sliceRevealedNodes` withholds
-  // it with everything else past the frontier, so the person's own message
-  // would leave the composer and appear nowhere until the drain ended. The
+  // completed turn's text is still draining). A direct send's row lands
+  // after that frontier, and `sliceRevealedNodes` withholds it with
+  // everything else past the frontier, so the person's own message would
+  // leave the composer and appear nowhere until the drain ended. The
   // queue path's preview is the home for a message accepted but not yet
   // renderable, and the hand-off lands the row when the gate releases it.
   // The backend dispatches an accepted message at once when nothing is
@@ -237,7 +299,32 @@
       : [],
   );
   let hasDraftDiffReviewComments = $derived(Boolean(activeDiffReviewSource) && activeDiffReviewDraftComments.length > 0);
+  // Shell mode: a draft whose first character is `!` runs as a command in the
+  // thread's workspace and its output is sent. A draft that already holds a
+  // command's output (a message taken back) is a message again, so restoring
+  // one and pressing Enter resends it instead of running the command twice.
+  let shellMode = $derived(
+    !hasInteractivePrompt
+      && isShellInput(draft.content)
+      && !draft.attachments.some((attachment) => attachment.shell),
+  );
+  let shellCommand = $derived(shellMode ? shellCommandFromInput(draft.content) : null);
+  let shellUngranted = $derived(!threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId));
+  let shellRunning = $derived(isShellRunActive(pane.threadId));
+  let shellBlockedReason = $derived(
+    !shellMode ? ''
+      : shellUngranted ? 'This session cannot run commands'
+      : shellRunning ? 'A command is already running'
+      : '',
+  );
+  let shellSendState = $derived<'ready' | 'empty' | 'blocked' | undefined>(
+    !shellMode ? undefined
+      : shellBlockedReason ? 'blocked'
+      : shellCommand === null ? 'empty'
+      : 'ready',
+  );
   let sendState = $derived(deriveComposerSendState({
+    shell: shellSendState,
     isDisabled,
     sendUngranted,
     sending: false,
@@ -310,7 +397,11 @@
       Boolean(pane.thread?.worktreePath) ||
       // Applying a staged branch/worktree intent materializes an item-less
       // draft row first; deleting it mid-RPC fails the apply on the backend.
-      isWorktreeIntentApplying(pane.threadId)
+      isWorktreeIntentApplying(pane.threadId) ||
+      // Running a command clears the composer while the thread is still
+      // empty. Its output becomes the first message, and a failure notice
+      // has to stay readable.
+      getShellRun(pane.threadId) !== null
     );
   }
 
@@ -543,6 +634,9 @@
     // must not materialize a thread, open a queue slot, or leave a persisted
     // draft behind. The composed message is what the backend would have seen,
     // so the classification matches what a send would actually have sent.
+    // The command Enter was pressed on. The steps below await, and the text
+    // can change under them; only this command may run.
+    const commandAtSubmit = shellCommand;
     if (!hasUserInputPrompt && (surface?.consumeInterceptedSend(draft.composeOutgoingMessage()) ?? false)) {
       // Consume the TEXT only. Attachments and terminal chips are the user's
       // uploads, not part of the command, so they stay in the draft.
@@ -571,6 +665,14 @@
     // synchronous path until a staged choice actually needs an RPC.
     if (hasStagedWorktreeIntent(pane.thread)) {
       if (!(await prepareWorktreeForSend(pane, isCurrent)) || !isCurrent() || !sendState.canSend) return;
+    }
+    if (shellMode || commandAtSubmit !== null) {
+      // After the awaits above, so the command runs in the workspace they
+      // settled. Text edited meanwhile is left alone, unsent and not run.
+      const shellThreadId = pane.threadId;
+      if (commandAtSubmit === null || shellCommand !== commandAtSubmit || !shellThreadId) return;
+      await runShellFromComposer(pane, draft, shellThreadId, commandAtSubmit);
+      return;
     }
     const planSourceForImplement = latestPlanSource;
     if (planSourceForImplement && !hasDraftContent && !hasDraftPlanComments && !hasDraftDiffReviewComments) {
@@ -692,61 +794,30 @@
     // so the fresh element mounts empty.
     surface?.recreateInput();
 
-    const lastItem = pane.items.length > 0 ? pane.items[pane.items.length - 1] : null;
-    const nextTurn = lastItem ? lastItem.turnIndex + 1 : 0;
-    const optimisticId = `optimistic:${sendOptions.sendId}`;
-    const now = Date.now();
-    const optimisticItem: Item = {
-      id: optimisticId,
-      threadId: threadId!,
-      turnIndex: nextTurn,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      status: 'completed',
-      summary: message,
-      meta: JSON.stringify({ sendId: sendOptions.sendId }),
-      createdAt: now,
-      updatedAt: now,
-      // A locally minted row is not a copy of any stored row.
-      rev: UNSTAMPED_ITEM_REV,
-    };
     // The pane this send belongs to, captured alongside `threadId`: the
-    // rollback below runs after an await, and both the pane binding and
-    // what the pane is showing can have moved by then.
+    // settle below runs after an await, and the pane binding can have
+    // moved by then.
     const sendPane = pane;
-    sendPane.trackOptimisticItem(optimisticId);
-    // Arm the one-shot structural spring window before the upsert so the
-    // just-sent message glides in instead of sync-pinning (the arm must
-    // precede the flush that mounts the row; see armStructuralSpring).
-    sendPane.armStructuralSpring();
-    sendPane.upsertItems([optimisticItem]);
+    // No row is drawn for the message here. The Send button reads as
+    // pending until the backend's row or queue entry for it arrives.
+    sendPane.awaitSendConfirmation(sendOptions.sendId);
 
     try {
-      const sent = await dispatchSend({
-        draftReady,
-        turnIndex: nextTurn,
-        threadId,
-        message,
-        options: sendOptions,
-        snapshot,
-        restoreDraft: (tid, snap) => draft.restoreUnsentDraftFor(tid, snap),
-        draftThreadId: () => draft.threadId,
-        reportError: (msg, err) => sendPane.setGeneralError(msg, err),
-      });
-      // `dispatchSend` awaits, and the user can switch this pane to
-      // another thread while it does. The optimistic row belongs to
-      // `threadId`, so the rollback is gated on the pane still
-      // holding that thread. Without the gate the removal (and the
-      // cached-window drop that rides it) would land on whatever
-      // conversation is mounted now.
-      if (
-        !sent &&
-        sendPane.threadId === threadId &&
-        sendPane.isOptimisticItem(optimisticId)
-      ) {
-        sendPane.removeItemById(optimisticId, threadId);
-        sendPane.untrackOptimisticItem(optimisticId);
+      try {
+        await dispatchSend({
+          draftReady,
+          threadId,
+          message,
+          options: sendOptions,
+          snapshot,
+          restoreDraft: (tid, snap) => draft.restoreUnsentDraftFor(tid, snap),
+          draftThreadId: () => draft.threadId,
+          reportError: (msg, err) => sendPane.setGeneralError(msg, err),
+        });
+      } finally {
+        // The reply settles the wait whatever it said: an accepted send
+        // has its row or queue entry, a refused one has its draft back.
+        sendPane.confirmSend(threadId, sendOptions.sendId);
       }
       if (diffReviewSourceForSend) {
         await refreshDiffReviewComments(threadId, diffReviewSourceForSend.scope, diffReviewSourceForSend.sourceKey);
@@ -755,6 +826,42 @@
       if (isCurrent()) {
         preparingWorktree = false;
         sendPane.setSendInFlight(false);
+      }
+    }
+  }
+
+  /**
+   * Runs a `!command`. Only the text is consumed: attachments and terminal
+   * chips are not part of a command and stay for the next message. The run
+   * shows above the composer (ShellRunCard) and its output is sent by the
+   * backend when it exits, so nothing is added to the timeline here.
+   */
+  async function runShellFromComposer(
+    pane: ThreadPane,
+    draft: ComposerDraftStore,
+    threadId: string,
+    command: string,
+  ): Promise<void> {
+    const typed = draft.content;
+    draft.setContent('');
+    resetTextareaHeight();
+    surface?.recreateInput();
+    try {
+      await runShellCommand(threadId, command);
+    } catch (err) {
+      // A lost reply is not a refusal. The store keeps the run's identity,
+      // so running the restored text again cannot start it twice.
+      const message = isTransportClassError(err)
+        ? 'The connection dropped while the command was starting. Run it again: a command that already started is not run twice.'
+        : `Failed to run the command: ${errString(err)}`;
+      pane.setGeneralError(message, err);
+      // The text goes back ahead of anything typed since, on the thread it
+      // was typed in even when the pane has moved on.
+      try {
+        await draft.restoreUnsentDraftFor(threadId, { content: typed, attachments: [], terminalChips: [] });
+      } catch (restoreErr) {
+        console.error('Failed to restore the command text:', restoreErr);
+        pane.setGeneralError(`${message} The command text could not be restored.`, err);
       }
     }
   }
@@ -778,18 +885,10 @@
   }
 
   function interrupt() {
-    if (!pane.threadId) return;
-    // The flow owns the working presentation on both arms: the early
-    // un-send hides it now, and the plain Stop clears it in this tick or,
+    // The Stop owns the working presentation: it clears it in this tick or,
     // when a background agent would die with the turn, after the person
-    // confirms (stores/revertOnInterrupt.svelte.ts).
-    if (runInterruptOrRevert(pane, draft)) {
-      pane.setSendInFlight(false);
-      const restoredThreadId = pane.threadId;
-      void tick().then(() => {
-        if (pane.threadId === restoredThreadId) surface?.focusInputAtEnd();
-      });
-    }
+    // confirms (stores/threadInterrupt.svelte.ts).
+    runInterrupt(pane);
   }
 
   function endSession() {
@@ -808,6 +907,11 @@
    * component can find it.
    */
   function claimKeydown(e: KeyboardEvent): boolean {
+    if (e.key === 'Escape' && dictation && dictation.phase !== 'idle') {
+      e.preventDefault();
+      dictation.cancel();
+      return true;
+    }
     if (hasUserInputPrompt && e.key === 'ArrowUp' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const optionButtons = composerRoot?.querySelectorAll<HTMLButtonElement>('[data-user-input-option]');
       const lastOption = optionButtons?.[optionButtons.length - 1];
@@ -1008,11 +1112,18 @@
       </div>
     </div>
   {/if}
+  <!-- The caption floats above the card from this box, which carries the
+       card's width so the two share their edges; the card itself clips
+       (overflow-hidden) and could not host it. -->
+  <div class="pointer-events-none relative mx-auto w-full max-w-[68rem]">
+  {#if showDictation && dictation}
+    <ComposerDictationCaption session={dictation} />
+  {/if}
   <div
     bind:this={composerRoot}
     inert={draft.moving}
     aria-busy={draft.moving}
-    class="pointer-events-auto mx-auto w-full max-w-[68rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden
+    class="pointer-events-auto w-full rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden
            focus-within:border-border focus-within:shadow-menu transition-[border-color,box-shadow] duration-200"
     role="region"
     aria-label="Message Composer"
@@ -1085,11 +1196,45 @@
       onKeydownAfterPopovers={claimHistoryRecallKey}
       editsDraft={!hasUserInputPrompt}
       showDraftRows={!hasInteractivePrompt}
+      shellPrefix={shellMode}
       {blockAttachment}
+      attachmentsDeferred={hasInteractivePrompt}
       uploadThreadId={threadIdForUpload}
       ensureUploadThreadId={ensureThreadIdForUpload}
-    />
+    >
+      <!-- The phone puts the mic in the input row, in Send's column; the
+           desktop keeps it in the toolbar beside Send (owner ruling,
+           2026-10-21). One session either way. -->
+      {#snippet trailing()}
+        {#if compactLayout && showDictation && dictation}
+          <DictationButton session={dictation} />
+        {/if}
+      {/snippet}
+    </ComposerInputSurface>
 
+    {#if shellMode}
+      <!-- One fixed-height line, so entering and leaving shell mode moves
+           the card by exactly this row and nothing reflows inside it. -->
+      <div
+        class="flex h-5 items-center gap-1.5 px-4 text-[0.6875rem] leading-none text-fg-subtle"
+        aria-live="polite"
+        data-testid="composer-shell-hint"
+      >
+        <span class="font-mono text-accent" aria-hidden="true">$</span>
+        {#if shellBlockedReason}
+          <span class="truncate text-warning">{shellBlockedReason}</span>
+        {:else}
+          <span class="truncate">
+            {#if hasStagedWorktreeIntent(pane.thread)}
+              Runs in the new worktree
+            {:else}
+              Runs in <span class="font-mono text-fg-muted">{pathBasename(paneWorkspacePath(pane) ?? '') || 'the workspace'}</span>
+            {/if}
+            · the output is sent to the agent
+          </span>
+        {/if}
+      </div>
+    {/if}
     {#if !hasInteractivePrompt && preparingWorktree}
       <div
         class="px-4 pb-1 text-[0.6875rem] text-text-secondary/70"
@@ -1104,16 +1249,20 @@
       {canSend}
       {isTurnActive}
       sendInFlight={isSendInFlight(pane.threadId, pane.sendInFlight)}
+      sendPending={pane.sendAwaitingConfirmation}
       {sendAction}
       {sendLabel}
       sendDisabledReason={preparingSend
         ? 'Preparing message…'
+        : shellBlockedReason
+        ? shellBlockedReason
         : interruptPending
-        ? 'Wait for the interrupted message to finish reverting'
+        ? 'Wait for the stop or message edit to finish'
         : undefined}
       hasCurrentPlan={Boolean(latestPlanItem)}
       planCommentCount={hasDraftDiffReviewComments ? activeDiffReviewDraftComments.length : latestPlanDraftComments.length}
       hideSendButton={hasInteractivePrompt}
+      dictation={showDictation && !compactLayout ? dictation : null}
       onSend={() => send()}
       onSendWithoutPlanComments={(hasDraftPlanComments || hasDraftDiffReviewComments) && hasDraftContent ? () => send(false) : undefined}
       onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}
@@ -1122,5 +1271,6 @@
       sessionLive={threadSessionLive(pane.threadId)}
     />
     <ComposerWorkspaceStrip {pane} />
+  </div>
   </div>
 </div>

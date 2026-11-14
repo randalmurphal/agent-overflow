@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/provider"
 )
@@ -27,6 +28,9 @@ func decodeAccountInfo(result json.RawMessage) (provider.AccountInfo, error) {
 			Type     string `json:"type"`
 			Email    string `json:"email"`
 			PlanType string `json:"planType"`
+			// WorkspaceName (codex 0.166+, chatgpt accounts) is the selected
+			// ChatGPT workspace's display name; absent or null when unknown.
+			WorkspaceName string `json:"workspaceName"`
 		} `json:"account"`
 	}
 	if err := json.Unmarshal(result, &response); err != nil {
@@ -39,5 +43,10 @@ func decodeAccountInfo(result json.RawMessage) (provider.AccountInfo, error) {
 		Email:            response.Account.Email,
 		SubscriptionType: response.Account.PlanType,
 		APIProvider:      "openai",
+		OrgName:          strings.TrimSpace(response.Account.WorkspaceName),
+		// Only the chatgpt variant carries workspaceName, and only an answer
+		// that names the login can be attributed to a saved account.
+		OrgNameReported: response.Account.Type == "chatgpt" &&
+			strings.TrimSpace(response.Account.Email) != "",
 	}, nil
 }

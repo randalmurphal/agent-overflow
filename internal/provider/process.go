@@ -235,9 +235,7 @@ func (p *Process) WriteLine(data []byte) error {
 	default:
 	}
 
-	// Clipped so the newline lands in a copy, never in the caller's spare
-	// capacity.
-	_, err := p.stdin.Write(append(slices.Clip(data), '\n'))
+	_, err := p.stdin.Write(slices.Concat(data, []byte{'\n'}))
 	if err != nil {
 		return fmt.Errorf("provider: write to stdin: %w", err)
 	}

@@ -47,8 +47,8 @@ type RemoteWatch struct {
 	WakeIssue    string `json:"wakeIssue,omitempty"`
 }
 
-// remoteWatchesV91SQL is the table as v91 made it. v156 rebuilt it with
-// thread_id cascading from its thread (migration_v156_ledger_indexes.go).
+// remoteWatchesV91SQL is the table as v91 made it. v161 rebuilt it with
+// thread_id cascading from its thread (migration_v161_ledger_indexes.go).
 const remoteWatchesV91SQL = `CREATE TABLE remote_watches (
  computer_id TEXT NOT NULL, request_id TEXT NOT NULL, thread_id TEXT NOT NULL,
  fingerprint TEXT NOT NULL, label TEXT NOT NULL, receipt TEXT NOT NULL DEFAULT '{}',
@@ -251,9 +251,6 @@ const (
 	// WithdrawUnconfirmed also takes back one the provider was handed and
 	// never confirmed.
 	WithdrawUnconfirmed
-	// WithdrawUnsent also takes back one the provider confirmed, whose turn
-	// a Stop un-sent: the conversation no longer holds it.
-	WithdrawUnsent
 )
 
 // CompletionReturn is how a completion goes back to its watch: due at once
@@ -271,8 +268,7 @@ type CompletionReturn struct {
 // still queued: one already dispatched has been delivered. One the provider
 // was handed and never confirmed (unconfirmed) has no row left and goes
 // back all the same, while the watch still reads queued and no echo has
-// confirmed it; one whose turn a Stop un-sent (WithdrawUnsent) goes back
-// confirmed or not.
+// confirmed it.
 //
 // paced, when set, decides when the watcher delivers it again from the
 // completions given back so far (WakeAttempts), read in the same

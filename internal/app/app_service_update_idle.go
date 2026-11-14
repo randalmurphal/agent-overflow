@@ -23,6 +23,9 @@ func (a *App) updateWorkReason() (string, error) {
 	if a.remoteJobs != nil && a.remoteJobs.HasActive() {
 		return "Waiting for remote commands to finish…", nil
 	}
+	if a.shellCommands != nil && a.shellCommands.HasActive() {
+		return "Waiting for shell commands to finish…", nil
+	}
 	if a.terminals != nil && len(a.terminals.ThreadProcesses()) != 0 {
 		return "Close this computer’s terminals to finish the update.", nil
 	}

@@ -87,8 +87,8 @@ func (r *Router) handleTaskUpdate(evt provider.ProviderEvent) error {
 //
 // The seed is only sound because the stored ids and the provider's are minted
 // against the same task directory. That is what the thread-keyed list buys:
-// a rollback keeps the provider's list (tail tasks included, exactly as the
-// native TUI's Esc-revert does), so the column is never cleared by an app
+// a rollback keeps the provider's list (tail tasks included), so the column
+// is never cleared by an app
 // path — only by the provider's own deletes, which arrive as events.
 //
 // A seed read error is returned but does not block the event: an update

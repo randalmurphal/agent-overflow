@@ -112,7 +112,7 @@ func TestPointerForkOfARunningTurnOwnsItsRows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.FoldUserTextRows("src", "q2", []string{"q1"}, "first second", "{}", 5); err != nil {
+	if _, err := s.FoldUserTextRows("src", "q2", []string{"q1"}, nil, "first second", "{}", 5); err != nil {
 		t.Fatalf("fold: %v", err)
 	}
 	if _, err := s.BumpItemToTurnEnd("src", "q2", nil, 6); err != nil {

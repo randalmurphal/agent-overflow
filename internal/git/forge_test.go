@@ -303,11 +303,11 @@ func TestCoreRefusesInvalidPRReferenceBeforeDispatch(t *testing.T) {
 			return err
 		},
 		"StreamCIJobLog": func() error {
-			_, err := core.StreamCIJobLog(t.Context(), ref, CIJobLogRequest{JobID: "1"}, nil)
+			_, err := core.StreamCIJobLog(t.Context(), ref.Repository(), CIJobLogRequest{JobID: "1"}, nil)
 			return err
 		},
 		"FetchAttachment": func() error {
-			_, _, err := core.FetchAttachment(t.Context(), ref, "https://github.com/user-attachments/assets/0f1e2d3c", 1<<20)
+			_, _, err := core.FetchAttachment(t.Context(), ref.Repository(), "https://github.com/user-attachments/assets/0f1e2d3c", 1<<20)
 			return err
 		},
 	}

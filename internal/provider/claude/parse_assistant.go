@@ -7,6 +7,7 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -109,6 +110,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// api_error row (see TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent).
 	errorEnum := assistantErrorEnum(raw, msg)
 	p.observeRequestEffort(raw, parentToolUseID, msg.Model)
+	p.observeMainLoopModel(parentToolUseID, msg.Model)
 
 	// CLI-generated local command output. The CLI runs `/usage`, `/context`,
 	// a skill, a plugin command etc. itself — no API call, num_turns 0 — and
@@ -148,9 +150,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// the model never changes mid-subagent.
 	model := strings.TrimSpace(msg.Model)
 	if parentToolUseID != "" && model != "" && !p.hasStampedSubagentModel(parentToolUseID) {
-		modelMeta, _ := json.Marshal(map[string]any{
-			"subagent_model": model,
-		})
+		modelMeta, _ := json.Marshal(p.subagentModelReport(raw, parentToolUseID, model))
 		events = append(events, provider.ProviderEvent{
 			Kind:      provider.EventToolStart,
 			ThreadID:  threadID,
@@ -188,20 +188,20 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 			// the error copy, owned by the EventError path below — see the
 			// errorEnum comment above.
 			if errorEnum == "" && !p.hasStreamedMessageID(msg.ID) {
-				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "text", block.Text, now)
+				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "text", block.Text, false, now)
 			}
 		case "tool_use":
 			events = p.appendAdvisorCallsNotRun(events, threadID, parentToolUseID, msg.ID, now)
 			events = p.appendToolUseEvent(events, threadID, parentToolUseID, msg.ID, now, block)
 		case "thinking":
 			// Same contract as text, including the error-envelope skip. The
-			// thinking signature is not recovered: on the wire it rides
-			// `signature_delta`, which we deliberately don't handle
-			// (claude-wire.md §Delta types) — the CLI's session jsonl is
-			// authoritative for resume/fork replay, so AO never needs the
-			// signature. See the streamedMessageIDs field doc.
+			// signature itself is not kept: the CLI's session jsonl is
+			// authoritative for resume/fork replay. Only its tag is read,
+			// so a block the model wrote as prose for the user is recovered
+			// as one (provider.MetaNarrationKey). See the streamedMessageIDs
+			// field doc and claude-wire.md §The signature tag.
 			if errorEnum == "" && !p.hasStreamedMessageID(msg.ID) {
-				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "thinking", block.Thinking, now)
+				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "thinking", block.Thinking, sessionimport.ThinkingIsNarration(block.Signature), now)
 			}
 		case "server_tool_use":
 			// Claude's server-side tool call (today: `advisor`). The
@@ -301,6 +301,7 @@ func (p *Parser) appendRecoveredBlockEvent(
 	events []provider.ProviderEvent,
 	threadID, parentToolUseID, messageID string,
 	blockType, content string,
+	narration bool,
 	now time.Time,
 ) []provider.ProviderEvent {
 	if content == "" {
@@ -313,7 +314,7 @@ func (p *Parser) appendRecoveredBlockEvent(
 		ItemID:          recoveredBlockItemID(messageID, index),
 		Content:         content,
 		ContentPresent:  true,
-		Meta:            blockMeta(index, blockType, messageID),
+		Meta:            settledBlockMeta(index, blockType, messageID, narration),
 		ParentToolUseID: parentToolUseID,
 		Timestamp:       now,
 	})
@@ -932,15 +933,7 @@ func marshalToolMeta(toolName string, input json.RawMessage, isBackground, isAge
 	if assistantMessageID != "" {
 		fields["assistant_message_id"] = assistantMessageID
 	}
-	if stamps.inheritedEffort != "" {
-		fields[inheritedEffortMetaKey] = stamps.inheritedEffort
-	}
-	if stamps.requestedModel != "" {
-		fields[requestedModelMetaKey] = stamps.requestedModel
-	}
-	if stamps.inheritedEffort != "" && len(stamps.inheritedEffortAlternatives) > 0 {
-		fields[inheritedEffortAlternativesMetaKey] = stamps.inheritedEffortAlternatives
-	}
+	maps.Copy(fields, stamps.fields())
 	out, _ := json.Marshal(fields)
 	return out
 }

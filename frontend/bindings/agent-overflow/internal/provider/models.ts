@@ -29,12 +29,15 @@ import * as jsontext$0 from "../../../encoding/json/jsontext/models.js";
  * OrgID / OrgName carry the organization (Claude) or ChatGPT workspace
  * (Codex) behind the login. One email can hold a separate login per
  * organization, so email alone cannot key an account. Neither field is
- * guaranteed: Claude's probe wire carries only the display name (the
- * uuid lives in `~/.claude.json`'s oauthAccount and is enriched at
- * adoption time), Codex's `account/read` carries neither (the id is
- * parsed out of `auth.json` where the caller holds those bytes), and
- * API-key auth has no organization at all. Blank means UNKNOWN, never
- * "no organization" — matching must treat it as compatible with any.
+ * guaranteed: a Claude identity is replaced at adoption by the OAuth
+ * profile answer for the credential's own token (the probe wire carries
+ * only the display name, read from a shared config record that can
+ * describe another login), Codex's `account/read` carries only the
+ * workspace name, from 0.166 (the id is parsed out of `auth.json` where the
+ * caller holds those bytes), and API-key auth has no organization at all.
+ * A blank OrgID is UNKNOWN, never "no organization", and matching treats it
+ * as compatible with any. A blank OrgName is unknown too, except under
+ * OrgNameReported.
  */
 export class AccountInfo {
     "email"?: string;
@@ -423,6 +426,8 @@ export class ElicitationResolution {
  * spawn flag with no wire tier, and any Codex catalog entry that predates the
  * field. The ModelCapabilityFastMode marker on Capabilities remains the support
  * gate for both providers; this only carries the WHICH, never the WHETHER.
+ * No shipped Claude model carries the marker: which Claude models run fast is
+ * known only from the CLI's reported model list (internal/claudemodels).
  */
 export class FastModeTier {
     "id": string;

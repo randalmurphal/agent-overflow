@@ -148,6 +148,7 @@ func (a *App) ListThreadEditDiffs(threadID string) (EditDiffList, error) {
 // with ReadReviewDiff.
 //
 //ao:scope threads:read
+//ao:callerbound
 func (a *App) OpenEditDiff(ctx context.Context, threadID string, payloadID string) (ReviewDiffOpened, error) {
 	const action = "open edit diff"
 	if _, err := a.store.GetThread(threadID); err != nil {
@@ -168,6 +169,7 @@ func (a *App) OpenEditDiff(ctx context.Context, threadID string, payloadID strin
 // of its own moment. A turn with no edits is an empty diff.
 //
 //ao:scope threads:read
+//ao:callerbound
 func (a *App) OpenTurnEditsDiff(ctx context.Context, threadID string, turnIndex int) (ReviewDiffOpened, error) {
 	const action = "open turn edits diff"
 	if _, err := a.store.GetThread(threadID); err != nil {

@@ -1,7 +1,6 @@
 import type { Item } from '../types/models';
 import type { AttachmentPreviewCache, ImagePreviewItem } from '../utils/attachmentPreview.svelte';
 import { userMessageIdentity } from '../utils/userMessageIdentity';
-import { isUnsendDeclined as declinedInSession, noteUnsendDeclined } from './unsendDeclines.svelte';
 
 interface MessageAttachments {
   previews: Map<string, ImagePreviewItem>;
@@ -11,8 +10,6 @@ interface MessageAttachments {
 interface Options {
   getItemById(itemId: string): Item | undefined;
   loadedItems(): Iterable<Item>;
-  /** The thread whose session-scoped un-send declines this state reads. */
-  threadId(): string | null;
 }
 
 /** Message presentation survives confirmation, and ends when the message leaves retention. */
@@ -29,29 +26,32 @@ export function createThreadMessageUiState(options: Options) {
     return item ? itemKey(item) : `item:${itemId}`;
   }
 
-  function isExpanded(itemId: string): boolean {
-    return expanded.has(keyForId(itemId));
+  // An entry is a message key, or a message key and the part of the message
+  // that is open (a shell output block), so a part's state is retained and
+  // released with its message.
+  const PART = '\u0000';
+
+  function messageKeyOf(entry: string): string {
+    const at = entry.indexOf(PART);
+    return at < 0 ? entry : entry.slice(0, at);
   }
 
-  function setExpanded(itemId: string, value: boolean): void {
+  function entryFor(itemId: string, part: string): string {
     const key = keyForId(itemId);
+    return part ? key + PART + part : key;
+  }
+
+  function isExpanded(itemId: string, part = ''): boolean {
+    return expanded.has(entryFor(itemId, part));
+  }
+
+  function setExpanded(itemId: string, value: boolean, part = ''): void {
+    const key = entryFor(itemId, part);
     if (expanded.has(key) === value) return;
     const next = new Set(expanded);
     if (value) next.add(key);
     else next.delete(key);
     expanded = next;
-  }
-
-  // A decline outlives this state (unsendDeclines.svelte.ts); the key is
-  // the message's identity, so it holds across confirmation.
-  function isUnsendDeclined(itemId: string): boolean {
-    const threadId = options.threadId();
-    return threadId !== null && declinedInSession(threadId, keyForId(itemId));
-  }
-
-  function setUnsendDeclined(itemId: string): void {
-    const threadId = options.threadId();
-    if (threadId !== null) noteUnsendDeclined(threadId, keyForId(itemId));
   }
 
   function revoke(preview: ImagePreviewItem): void {
@@ -92,18 +92,21 @@ export function createThreadMessageUiState(options: Options) {
 
   function disposeItems(items: readonly Item[]): void {
     let retainedKeys: Set<string> | undefined;
-    let next: Set<string> | undefined;
+    const open = new Set(Array.from(expanded, messageKeyOf));
+    const released = new Set<string>();
     for (const item of items) {
       const key = itemKey(item);
-      if (!expanded.has(key) && !attachments.has(key)) continue;
+      if (!open.has(key) && !attachments.has(key)) continue;
       if (userMessageIdentity(item) !== null) {
         retainedKeys ??= new Set(Array.from(options.loadedItems(), itemKey));
         if (retainedKeys.has(key)) continue;
       }
       disposeAttachments(key);
-      if (expanded.has(key)) (next ??= new Set(expanded)).delete(key);
+      released.add(key);
     }
-    if (next) expanded = next;
+    if (released.size === 0 || expanded.size === 0) return;
+    const next = new Set([...expanded].filter((entry) => !released.has(messageKeyOf(entry))));
+    if (next.size !== expanded.size) expanded = next;
   }
 
   function prune(itemIds: ReadonlySet<string>): void {
@@ -112,7 +115,7 @@ export function createThreadMessageUiState(options: Options) {
     for (const key of attachments.keys()) {
       if (!kept.has(key)) disposeAttachments(key);
     }
-    const next = new Set([...expanded].filter((key) => kept.has(key)));
+    const next = new Set([...expanded].filter((entry) => kept.has(messageKeyOf(entry))));
     if (next.size !== expanded.size) expanded = next;
   }
 
@@ -122,11 +125,8 @@ export function createThreadMessageUiState(options: Options) {
   }
 
   return {
-    isExpanded, setExpanded, isUnsendDeclined, setUnsendDeclined, attachmentCacheFor, disposeItems, prune, clear,
+    isExpanded, setExpanded, attachmentCacheFor, disposeItems, prune, clear,
     expansionSignature: () => expanded.size > 0 ? `u:${JSON.stringify([...expanded].sort())}` : '',
-    stats: () => ({
-      expandedUserMessages: expanded.size,
-      attachmentItems: attachments.size,
-    }),
+    stats: () => ({ expandedUserMessages: expanded.size, attachmentItems: attachments.size }),
   };
 }

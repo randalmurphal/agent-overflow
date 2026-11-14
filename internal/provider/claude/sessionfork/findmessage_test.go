@@ -276,8 +276,8 @@ func TestInjectedUserContentWrappersCoversCrossSessionMessage(t *testing.T) {
 	t.Fatalf("InjectedUserContentWrappers is missing the cross-session-message entry: %v", InjectedUserContentWrappers)
 }
 
-// withSyntheticInterruptJSONL reproduces the revert-on-interrupt
-// off-by-one bug. A prior turn was interrupted, so Claude wrote a
+// withSyntheticInterruptJSONL reproduces the ordinal-walk off-by-one
+// bug. A prior turn was interrupted, so Claude wrote a
 // `[Request interrupted by user]` entry into the JSONL: a
 // `type:"user"`, `role:"user"` row with NO synthetic boolean flags and
 // array content whose first block is `{type:"text", text:"[Request
@@ -298,7 +298,7 @@ const withSyntheticInterruptJSONL = `{"type":"user","uuid":"u1","parentUuid":nul
 `
 
 // TestFindUUIDBeforeUserTurn_SkipsSyntheticInterrupt is the regression
-// guard for the revert-on-interrupt bug: a `[Request interrupted by
+// guard for the ordinal-walk bug: a `[Request interrupted by
 // user]` marker in kept history was counted as a real prompt, so the
 // ordinal walk landed one turn too early and the resumed Claude session
 // silently lost a turn (timeline/composer looked correct; only Claude's
@@ -509,6 +509,37 @@ func TestMergedQueuedBatchIsOneUserPrompt(t *testing.T) {
 	for _, dropped := range []string{"u2a", "u2b"} {
 		if _, _, err := WriteForkFileForUserMessageUUID(path, dropped, ""); !errors.Is(err, ErrMessageNotFound) {
 			t.Errorf("WriteForkFileForUserMessageUUID(%s): got %v, want ErrMessageNotFound", dropped, err)
+		}
+	}
+}
+
+// A shell command a host sends is one entry holding the command and its
+// output, and it opens a turn the person started. The CLI's own `!` mode
+// writes two entries, neither of which is a prompt.
+func TestIsRealUserPrompt_CountsAHostShellRecordAndNotTheClisOwn(t *testing.T) {
+	entry := func(content any) map[string]any {
+		return map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}}
+	}
+	hostRecord := "<bash-input>ls</bash-input>\n<bash-stdout>README.md</bash-stdout><bash-stderr></bash-stderr>"
+	if !strings.Contains(hostRecord, HostShellRecordJoint) {
+		t.Fatalf("fixture does not hold the joint %q", HostShellRecordJoint)
+	}
+	for name, content := range map[string]any{
+		"alone":            hostRecord,
+		"after other text": "first\n\n---\n\n" + hostRecord,
+		"array form":       []any{map[string]any{"type": "text", "text": hostRecord}},
+	} {
+		if !isRealUserPrompt(entry(content)) {
+			t.Errorf("a host shell record (%s) must count as a real prompt", name)
+		}
+	}
+	for name, content := range map[string]any{
+		"the CLI's command entry": "<bash-input>ls</bash-input>",
+		"the CLI's output entry":  "<bash-stdout>README.md</bash-stdout><bash-stderr></bash-stderr>",
+		"another wrapper":         "<system-reminder>context</system-reminder>",
+	} {
+		if isRealUserPrompt(entry(content)) {
+			t.Errorf("%s must not count as a real prompt", name)
 		}
 	}
 }

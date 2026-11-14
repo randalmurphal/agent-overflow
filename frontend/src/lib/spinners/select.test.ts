@@ -5,6 +5,7 @@ import {
   mergedSprites,
   resolveCompactionSprite,
   selectWorkingSprite,
+  showableSprites,
 } from './select';
 
 function custom(id: string): SpinnerSprite {
@@ -101,5 +102,25 @@ describe('selectWorkingSprite', () => {
       ),
     );
     expect(across.size).toBeGreaterThan(1);
+  });
+});
+
+describe('showableSprites', () => {
+  it('is the pool plus a compaction override unchecked from it', () => {
+    const ids = showableSprites([], ['robo-papers', 'nyan-cat'], '').map((sprite) => sprite.id);
+    expect(ids).toContain(DEFAULT_COMPACTION_SPRITE_ID);
+    expect(ids).not.toContain('nyan-cat');
+    expect(ids.length).toBe(BUILTIN_SPRITES.length - 1);
+  });
+
+  it('lists an override already in the pool once', () => {
+    const ids = showableSprites([], [], 'party-parrot').map((sprite) => sprite.id);
+    expect(ids.filter((id) => id === 'party-parrot').length).toBe(1);
+    expect(ids.length).toBe(BUILTIN_SPRITES.length);
+  });
+
+  it('adds nothing when compaction is off', () => {
+    const disabled = BUILTIN_SPRITES.map((sprite) => sprite.id);
+    expect(showableSprites([custom('mine')], disabled, 'none').map((sprite) => sprite.id)).toEqual(['mine']);
   });
 });

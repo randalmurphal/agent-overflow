@@ -4,7 +4,7 @@
   // workflow's own fields · step mode. The footer's primary is `Start`: rev 2
   // has no queue, so there is no position to show and nothing to predict.
   //
-  // Definitions come from the catalog the overlay already loaded, so opening
+  // Definitions come from the catalog the pane already loaded, so opening
   // this dialog costs no round trip; an invalid definition is greyed with its
   // first error rather than hidden, because "why can't I pick this?" is the
   // question a hidden row leaves behind.

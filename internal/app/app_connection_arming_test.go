@@ -209,6 +209,8 @@ type byIDTie struct {
 	unsubscribe func(ctx context.Context, id string) error
 	key         func(id string) string
 	live        func(id string) bool
+	// principal is the connection the subscribe runs on; zero for most.
+	principal transport.ConnPrincipal
 }
 
 // checkByIDTie proves that the subscribe binds its release to the connection
@@ -217,7 +219,7 @@ type byIDTie struct {
 // made.
 func checkByIDTie(t *testing.T, tie byIDTie) {
 	t.Helper()
-	ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	ctx, state := transport.WithConnState(context.Background(), tie.principal)
 	id, err := tie.subscribe(ctx)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -231,7 +233,7 @@ func checkByIDTie(t *testing.T, tie byIDTie) {
 		t.Fatalf("unsubscribe: %v", err)
 	}
 
-	ctx, state = transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	ctx, state = transport.WithConnState(context.Background(), tie.principal)
 	if id, err = tie.subscribe(ctx); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

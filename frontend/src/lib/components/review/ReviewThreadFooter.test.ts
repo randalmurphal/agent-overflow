@@ -14,9 +14,9 @@ const thread: ReviewThread = {
   isResolved: false,
   isOutdated: false,
   comments: [
-    { authorLogin: 'alice', body: 'First comment.', createdAt: '2026-01-01', databaseID: 1 },
-    { authorLogin: 'coderabbitai[bot]', body: '<!-- marker only -->', createdAt: '2026-01-02', databaseID: 2 },
-    { authorLogin: 'bob', body: 'A reply.\n\nWith two paragraphs.', createdAt: '2026-01-03', databaseID: 3 },
+    { authorLogin: 'alice', body: 'First comment.', createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false },
+    { authorLogin: 'coderabbitai[bot]', body: '<!-- marker only -->', createdAt: '2026-01-02', databaseID: 2, id: `n${2}`, viewerCanEdit: false, viewerCanDelete: false },
+    { authorLogin: 'bob', body: 'A reply.\n\nWith two paragraphs.', createdAt: '2026-01-03', databaseID: 3, id: `n${3}`, viewerCanEdit: false, viewerCanDelete: false },
   ],
 };
 
@@ -123,5 +123,47 @@ describe('<ReviewThreadFooter> actions', () => {
     const view = renderFooter({ replying: true, body: 'text', onSendReply });
     await fireEvent.click(view.getByText('Reply'));
     expect(onSendReply).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ReviewThreadFooter send now or hold', () => {
+  const buttons = (view: ReturnType<typeof renderFooter>) => ({
+    primary: view.container.querySelector<HTMLButtonElement>('[data-editor-control="primary"]')!,
+    secondary: view.container.querySelector<HTMLButtonElement>('[data-editor-control="secondary"]'),
+  });
+
+  it('offers Reply now and Add draft where a reply can be held, by the primary rule', async () => {
+    const onSendReply = vi.fn();
+    const onHold = vi.fn();
+    const now = renderFooter({ replying: true, body: 'Yes.', onSendReply, hold: { primary: 'now', onHold } });
+    expect(buttons(now).primary.textContent).toBe('Reply now');
+    expect(buttons(now).secondary?.textContent).toBe('Add draft');
+    const textarea = now.container.querySelector('textarea')!;
+    await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(onSendReply).toHaveBeenCalledTimes(1);
+    await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true, shiftKey: true });
+    expect(onHold).toHaveBeenCalledTimes(1);
+    now.unmount();
+
+    const held = renderFooter({ replying: true, body: 'Yes.', onSendReply, hold: { primary: 'draft', onHold } });
+    expect(buttons(held).primary.textContent).toBe('Add draft');
+    expect(buttons(held).secondary?.textContent).toBe('Reply now');
+  });
+
+  it('keeps one Reply that posts now where a reply cannot be held', () => {
+    const view = renderFooter({ replying: true, body: 'Yes.' });
+    expect(buttons(view).primary.textContent).toBe('Reply');
+    expect(buttons(view).secondary).toBeNull();
+  });
+
+  it('withholds the now reply with its reason, and shows it pending', () => {
+    const view = renderFooter({ replying: true, body: 'Yes.', nowWithheld: 'Not granted to this device', hold: { primary: 'now', onHold: vi.fn() } });
+    expect(buttons(view).primary.disabled).toBe(true);
+    expect(buttons(view).primary.title).toBe('Not granted to this device');
+    expect(buttons(view).secondary?.disabled).toBe(false);
+    view.unmount();
+    const pending = renderFooter({ replying: true, body: 'Yes.', sending: true });
+    expect(pending.container.querySelector('textarea')!.readOnly).toBe(true);
+    expect(pending.getByTestId('review-editor-pending')).toBeTruthy();
   });
 });

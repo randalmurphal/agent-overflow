@@ -291,7 +291,7 @@ func (r *Runner) provisionWorkspace(
 		if err != nil {
 			return PreparedWorkspace{}, fmt.Errorf("choose worktree path: %w", err)
 		}
-		if err := r.host.CutWorktreeFromFreshBase(ctx, project.Path, worktreePath, baseBranch, branch); err != nil {
+		if err := r.host.CutWorktreeFromFreshRef(ctx, project.Path, worktreePath, gitops.BranchRef(baseBranch), branch); err != nil {
 			return PreparedWorkspace{}, fmt.Errorf("create worktree from %q: %w", baseBranch, err)
 		}
 	}

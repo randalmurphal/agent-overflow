@@ -107,10 +107,10 @@ func TestWorkflowTurnUsageStampsLiveWorkItemAttribution(t *testing.T) {
 	}
 }
 
-// TestLateTurnPayloadAppendsUsageLedger — a soft round-close settles the
-// turn with no usage; the trailing wire result folds late and must still
-// append ledger rows (the turns row keeps first-write-wins separately).
-func TestLateTurnPayloadAppendsUsageLedger(t *testing.T) {
+// TestResultAfterSoftCloseAppendsUsageLedger — a soft round-close ends the
+// round with no usage and leaves the turn open; the trailing wire result
+// settles the turn and must append ledger rows for its usage.
+func TestResultAfterSoftCloseAppendsUsageLedger(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -128,7 +128,7 @@ func TestLateTurnPayloadAppendsUsageLedger(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("soft close: %v", err)
 	}
-	// Trailing wire result routes to persistLateTurnPayload (settled turn).
+	// Trailing wire result settles the turn with its usage.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: usageTurnCompleteMeta(
@@ -137,7 +137,7 @@ func TestLateTurnPayloadAppendsUsageLedger(t *testing.T) {
 		),
 		Timestamp: time.UnixMilli(1_700_000_002_000),
 	}); err != nil {
-		t.Fatalf("late fold: %v", err)
+		t.Fatalf("result: %v", err)
 	}
 
 	buckets, err := st.QueryUsage(store.UsageQuery{})
@@ -145,7 +145,7 @@ func TestLateTurnPayloadAppendsUsageLedger(t *testing.T) {
 		t.Fatalf("query usage: %v", err)
 	}
 	if len(buckets) != 1 || buckets[0].OutputTokens != 42 {
-		t.Fatalf("late fold must append ledger rows: %+v", buckets)
+		t.Fatalf("result after soft close must append ledger rows: %+v", buckets)
 	}
 	// store.QueryUsage never sets UnpricedRows itself (pricing lookups
 	// against internal/usagecost only happen in GetUsageStats/app_usage.go);

@@ -55,3 +55,22 @@ func TailRunes(s string, maxBytes int) string {
 	}
 	return s[start:]
 }
+
+// CompleteRunePrefix returns the length of s without a trailing rune that has
+// begun and not finished, for a caller that cuts a byte stream into pieces
+// that must each decode. Bytes that are not part of an unfinished rune,
+// invalid ones included, are kept.
+func CompleteRunePrefix[T ~[]byte | ~string](s T) int {
+	for back := 1; back < utf8.UTFMax && back <= len(s); back++ {
+		start := len(s) - back
+		if !utf8.RuneStart(s[start]) {
+			continue
+		}
+		var tail [utf8.UTFMax]byte
+		if !utf8.FullRune(tail[:copy(tail[:], s[start:])]) {
+			return start
+		}
+		break
+	}
+	return len(s)
+}

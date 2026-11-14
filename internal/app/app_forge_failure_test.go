@@ -32,6 +32,7 @@ func TestClassifyForgeFailure(t *testing.T) {
 		{"rate limit", &forgeapi.RateLimitedError{Host: "github.com", Pool: "graphql", Until: until}, forgeFailureRateLimited, false, until},
 		{"reserve", fmt.Errorf("read: %w", &forgeapi.RateLimitedError{Host: "github.com", Pool: "core", Until: until, Reserve: true}), forgeFailureRateLimited, true, until},
 		{"setup", &forgeapi.SetupError{Forge: "github", Binary: "gh", Kind: forgeapi.SetupUnauthenticated, Message: "Run gh auth login."}, forgeFailureSetup, false, time.Time{}},
+		{"forbidden", fmt.Errorf("read: %w", &forgeapi.ForbiddenError{Status: &forgeapi.StatusError{Method: "GET", URL: "https://api.github.com/repos/o/r/pulls/9", Status: 403}, Scope: "repo"}), forgeFailureForbidden, false, time.Time{}},
 		{"transient", fmt.Errorf("read: %w", &forgeapi.TransientError{Err: errors.New("dial tcp: connection refused")}), forgeFailureTransient, false, time.Time{}},
 		{"deadline", fmt.Errorf("read: %w", context.DeadlineExceeded), forgeFailureTransient, false, time.Time{}},
 		{"forge", errors.New("forge GET repos/o/r/pulls/9: HTTP 500"), forgeFailureForge, false, time.Time{}},
@@ -78,11 +79,18 @@ func fails(err error) func() error { return func() error { return err } }
 // steps, ticking every 5ms.
 func newScriptedPump(t *testing.T, steps ...func() error) (*App, *scriptedFetch, chan PRUpdatedEvent, PRUpdateSubscriptionResult) {
 	t.Helper()
+	return newStaggeredScriptedPump(t, 0, steps...)
+}
+
+// newStaggeredScriptedPump is newScriptedPump with stagger added to a rate
+// limit's resume time, set before the pump starts.
+func newStaggeredScriptedPump(t *testing.T, stagger time.Duration, steps ...func() error) (*App, *scriptedFetch, chan PRUpdatedEvent, PRUpdateSubscriptionResult) {
+	t.Helper()
 	app := NewApp()
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	app.prUpdates.retryBase = 5 * time.Millisecond
-	app.prUpdates.staggerFn = func() time.Duration { return 0 }
+	app.prUpdates.staggerFn = func() time.Duration { return stagger }
 	script := &scriptedFetch{steps: steps}
 	app.prUpdates.fetchFn = script.fetch
 	events := capturePRUpdates(t, app)
@@ -141,7 +149,7 @@ func TestPRUpdateRateLimitHoldsPollingUntilResumeAt(t *testing.T) {
 	t.Parallel()
 	const stagger = 100 * time.Millisecond
 	var resume atomic.Pointer[time.Time]
-	app, script, events, _ := newScriptedPump(t,
+	_, script, events, _ := newStaggeredScriptedPump(t, stagger,
 		ok,
 		func() error {
 			until := time.Now().Add(300 * time.Millisecond)
@@ -150,7 +158,6 @@ func TestPRUpdateRateLimitHoldsPollingUntilResumeAt(t *testing.T) {
 		},
 		ok,
 	)
-	app.prUpdates.staggerFn = func() time.Duration { return stagger }
 	limited := awaitPRUpdate(t, events, "rate limit frame")
 	until := *resume.Load()
 	if limited.ErrorKind != forgeFailureRateLimited || limited.ResumeAt != until.UTC().Format(time.RFC3339) {
@@ -304,7 +311,7 @@ func TestPRCILogFollowRevalidatesWithItsETag(t *testing.T) {
 	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess, LogsAvailable: true}), nil)
 	f.setLog("7", "done\n", nil)
 	sub := f.subscribe(t)
-	awaitCIEvent(t, f.ciEvents, "pipeline frame")
+	awaitSettledCIEvent(t, f, "pipeline frame")
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"}); err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
 	}
@@ -345,15 +352,44 @@ func isolatedForgeCore(t *testing.T, app *App, handler http.Handler) {
 func TestPRUpdateGitLabNotModifiedTickIsQuiet(t *testing.T) {
 	t.Parallel()
 	bodies := map[string]string{
-		"/merge_requests/12":             `{"iid":12,"title":"Fix","state":"opened","source_branch":"feat","target_branch":"main","sha":"head-a","author":{"username":"dev"}}`,
-		"/merge_requests/12/approvals":   `{"approved_by":[]}`,
-		"/merge_requests/12/discussions": `[]`,
+		"/merge_requests/12":                       `{"iid":12,"title":"Fix","state":"opened","source_branch":"feat","target_branch":"main","sha":"head-a","author":{"username":"dev"}}`,
+		"/merge_requests/12/approvals":             `{"approved_by":[]}`,
+		"/merge_requests/12/discussions":           `[]`,
+		"/merge_requests/12/resource_state_events": `[]`,
 	}
 	var mu sync.Mutex
 	type seen struct{ path, inm string }
 	var requests []seen
+	var projectReads, userReads atomic.Int32
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		suffix := r.URL.Path[strings.Index(r.URL.Path, "/merge_requests/"):]
+		// The project's merge settings and the viewer's login are read
+		// once, not per tick.
+		if strings.HasSuffix(r.URL.Path, "/projects/group/widget") {
+			projectReads.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"merge_method":"merge"}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/user") {
+			userReads.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"username":"dev"}`))
+			return
+		}
+		// The management read is GraphQL, which GitLab answers without
+		// an ETag; its unchanged answer adds no update.
+		if strings.HasSuffix(r.URL.Path, "/api/graphql") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"project":{"mergeRequest":{"userPermissions":{"updateMergeRequest":true,"adminMergeRequest":true},` +
+				`"reviewers":{"nodes":[]},"assignees":{"nodes":[]},"labels":{"nodes":[]}}},"rereview":null,"updateInput":{"inputFields":[]}}}`))
+			return
+		}
+		i := strings.Index(r.URL.Path, "/merge_requests/")
+		if i < 0 {
+			http.NotFound(w, r)
+			return
+		}
+		suffix := r.URL.Path[i:]
 		body, ok := bodies[suffix]
 		if !ok {
 			http.NotFound(w, r)
@@ -414,6 +450,12 @@ func TestPRUpdateGitLabNotModifiedTickIsQuiet(t *testing.T) {
 		if n < ticks-1 || n > ticks {
 			t.Fatalf("requests per endpoint = %v (%s)", perPath, path)
 		}
+	}
+	if n := projectReads.Load(); n != 1 {
+		t.Fatalf("project reads over %d ticks = %d, want 1", ticks, n)
+	}
+	if n := userReads.Load(); n != 1 {
+		t.Fatalf("user reads over %d ticks = %d, want 1", ticks, n)
 	}
 }
 
@@ -476,11 +518,11 @@ func TestPRCILogFollowOfALargeTraceIsCachedWhole(t *testing.T) {
 	if state.Error != "" || !state.Available || state.TotalLines != lines || state.TotalBytes != int64(len(full)) {
 		t.Fatalf("follow state = %d lines, %d bytes, error %q; want %d lines, %d bytes", state.TotalLines, state.TotalBytes, state.Error, lines, len(full))
 	}
-	first, err := f.app.GetPRCILogLines(pr, "7", 0, 2)
+	first, err := f.app.GetPRCILogLines(pr.Repository(), "7", 0, 2)
 	if err != nil || !slices.Equal(first.Lines, []string{"line 00000000 of the trace", "line 00000001 of the trace"}) {
 		t.Fatalf("top of the trace = %q, %v", first.Lines, err)
 	}
-	last, err := f.app.GetPRCILogLines(pr, "7", lines-1, 10)
+	last, err := f.app.GetPRCILogLines(pr.Repository(), "7", lines-1, 10)
 	if err != nil || !slices.Equal(last.Lines, []string{fmt.Sprintf("line %08d of the trace", lines-1)}) {
 		t.Fatalf("bottom of the trace = %q, %v", last.Lines, err)
 	}

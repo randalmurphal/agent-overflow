@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -24,15 +25,15 @@ func writeClaudeIdentityProbe(t *testing.T, email string) string {
 		"#!/bin/bash\nread -r _ || true\nprintf '%s\\n' '"+response+"'\nexit 0\n")
 }
 
-type unreachableTransport struct{}
+// staleProbeEmail is what every sign-in test's probe reports: the shared
+// oauthAccount record a running CLI can write back after a switch. AO must
+// identify each credential by its token (claudefake) and never by this.
+const staleProbeEmail = "stale@example.com"
 
-func (unreachableTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	return nil, errors.New("usage endpoint unreachable in tests")
-}
-
-// signInManager is newTestManager whose provider probe identifies email and
-// whose usage reads fail without leaving the process.
-func signInManager(t *testing.T, email string) (
+// signInManager is newTestManager whose provider probe reports a stale
+// identity, whose profile endpoint is the fake, and whose usage reads fail
+// without leaving the process.
+func signInManager(t *testing.T) (
 	*Manager,
 	*provideraccounts.Store,
 	*provideraccounts.Credentials,
@@ -42,10 +43,10 @@ func signInManager(t *testing.T, email string) (
 	manager, store, credentials := newTestManager(t)
 	sink := &recordingAccountSink{}
 	manager.deps.Accounts = sink
-	probe := writeClaudeIdentityProbe(t, email)
+	probe := writeClaudeIdentityProbe(t, staleProbeEmail)
 	manager.deps.ProviderBinary = func(string) string { return probe }
 	manager.deps.HTTPClient = func() *http.Client {
-		return &http.Client{Transport: unreachableTransport{}}
+		return &http.Client{Transport: claudefake.Transport{}}
 	}
 	return manager, store, credentials, sink
 }
@@ -106,13 +107,13 @@ func onlySignIn(t *testing.T, sink *recordingAccountSink) SignIn {
 // account's own login. Whatever is running keeps running on the selected
 // account: the canonical credential, the selection and its generation stay.
 func TestASignInForAnotherSavedAccountRenewsItWithoutSwitching(t *testing.T) {
-	manager, store, credentials, sink := signInManager(t, "other@example.com")
+	manager, store, credentials, sink := signInManager(t)
 	claudeName := string(provider.Claude)
 	canonical := claudeLogin("current", time.Now().Add(20*24*time.Hour))
 	seedClaudeAccounts(t, manager, store, credentials, canonical, "other", claudeLogin("other-old", time.Now().Add(time.Hour)))
 	order := listedAccountIDs(store)
 	generation := store.Generation(claudeName)
-	fresh := claudeLogin("other-new", time.Now().Add(30*24*time.Hour))
+	fresh := claudeLoginAs("other@example.com", "other-new", time.Now().Add(30*24*time.Hour))
 
 	result, err := manager.adoptLogin(completedLogin(t, manager, credentials, fresh))
 	if err != nil {
@@ -152,13 +153,13 @@ func TestASignInForAnotherSavedAccountRenewsItWithoutSwitching(t *testing.T) {
 // A login nobody has saved is appended after the existing accounts and is not
 // selected.
 func TestASignInForANewAccountIsAddedLastWithoutSwitching(t *testing.T) {
-	manager, store, credentials, sink := signInManager(t, "new@example.com")
+	manager, store, credentials, sink := signInManager(t)
 	claudeName := string(provider.Claude)
 	canonical := claudeLogin("current", time.Now().Add(20*24*time.Hour))
 	seedClaudeAccounts(t, manager, store, credentials, canonical, "other", claudeLogin("other", time.Now().Add(20*24*time.Hour)))
 	order := listedAccountIDs(store)
 	generation := store.Generation(claudeName)
-	fresh := claudeLogin("new", time.Now().Add(30*24*time.Hour))
+	fresh := claudeLoginAs("new@example.com", "new", time.Now().Add(30*24*time.Hour))
 
 	result, err := manager.adoptLogin(completedLogin(t, manager, credentials, fresh))
 	if err != nil {
@@ -191,10 +192,10 @@ func TestASignInForANewAccountIsAddedLastWithoutSwitching(t *testing.T) {
 // Signing the selected account in again replaces the canonical login, which
 // is the one every provider process runs on.
 func TestASignInForTheSelectedAccountRenewsTheCanonicalLogin(t *testing.T) {
-	manager, store, credentials, sink := signInManager(t, "current@example.com")
+	manager, store, credentials, sink := signInManager(t)
 	canonical := claudeLogin("current", time.Now().Add(time.Hour))
 	seedClaudeAccounts(t, manager, store, credentials, canonical, "other", claudeLogin("other", time.Now().Add(20*24*time.Hour)))
-	fresh := claudeLogin("current-new", time.Now().Add(30*24*time.Hour))
+	fresh := claudeLoginAs("current@example.com", "current-new", time.Now().Add(30*24*time.Hour))
 
 	result, err := manager.adoptLogin(completedLogin(t, manager, credentials, fresh))
 	if err != nil {
@@ -215,8 +216,8 @@ func TestASignInForTheSelectedAccountRenewsTheCanonicalLogin(t *testing.T) {
 // With nothing selected there is nothing to keep running, so the first login
 // becomes the selected account.
 func TestTheFirstSignInBecomesTheSelectedAccount(t *testing.T) {
-	manager, store, credentials, sink := signInManager(t, "first@example.com")
-	fresh := claudeLogin("first", time.Now().Add(30*24*time.Hour))
+	manager, store, credentials, sink := signInManager(t)
+	fresh := claudeLoginAs("first@example.com", "first", time.Now().Add(30*24*time.Hour))
 
 	result, err := manager.adoptLogin(completedLogin(t, manager, credentials, fresh))
 	if err != nil {
@@ -237,15 +238,15 @@ func TestTheFirstSignInBecomesTheSelectedAccount(t *testing.T) {
 // reconcileSeed is two saved accounts with "current" selected on a login
 // whose refresh deadline is deadline, and the canonical fingerprint forgotten
 // the way a fresh process starts.
-func reconcileSeed(t *testing.T, email string, deadline time.Time) (
+func reconcileSeed(t *testing.T, deadline time.Time) (
 	*Manager,
 	*provideraccounts.Store,
 	*provideraccounts.Credentials,
 	*recordingAccountSink,
 ) {
 	t.Helper()
-	manager, store, credentials, sink := signInManager(t, email)
-	canonical := claudeCredential("current", time.Now().Add(time.Hour), deadline)
+	manager, store, credentials, sink := signInManager(t)
+	canonical := claudeCredential(claudefake.AccessToken("current@example.com", testClaudeOrgID, "current"), time.Now().Add(time.Hour), deadline)
 	seedClaudeAccounts(t, manager, store, credentials, canonical, "other", claudeLogin("other", time.Now().Add(20*24*time.Hour)))
 	manager.mu.Lock()
 	delete(manager.fingerprints, string(provider.Claude))
@@ -259,11 +260,11 @@ func TestReconcilingTheSelectedLoginOrItsRotationReportsNoSignIn(t *testing.T) {
 	claudeName := string(provider.Claude)
 	deadline := time.Now().Add(20 * 24 * time.Hour)
 
-	manager, store, credentials, sink := reconcileSeed(t, "current@example.com", deadline)
+	manager, store, credentials, sink := reconcileSeed(t, deadline)
 	if err := manager.ReconcileExternalProviderAccount(claudeName); err != nil {
 		t.Fatal(err)
 	}
-	rotated := claudeCredential("current-rotated", time.Now().Add(8*time.Hour), deadline)
+	rotated := claudeCredential(claudefake.AccessToken("current@example.com", testClaudeOrgID, "rotated"), time.Now().Add(8*time.Hour), deadline)
 	if err := credentials.WriteNativeCredentialForTest(claudeName, rotated); err != nil {
 		t.Fatal(err)
 	}
@@ -285,10 +286,10 @@ func TestReconcilingTheSelectedLoginOrItsRotationReportsNoSignIn(t *testing.T) {
 // refresh deadline than the login it replaces.
 func TestAnExternalSignInForTheSelectedAccountReportsARenewal(t *testing.T) {
 	claudeName := string(provider.Claude)
-	manager, _, credentials, sink := reconcileSeed(t, "current@example.com", time.Now().Add(time.Hour))
+	manager, _, credentials, sink := reconcileSeed(t, time.Now().Add(time.Hour))
 	if err := credentials.WriteNativeCredentialForTest(
 		claudeName,
-		claudeLogin("current-new", time.Now().Add(30*24*time.Hour)),
+		claudeLoginAs("current@example.com", "current-new", time.Now().Add(30*24*time.Hour)),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -313,10 +314,10 @@ func TestAnExternalSignInForAnotherAccountReportsTheSwitch(t *testing.T) {
 		{email: "new@example.com", added: true},
 	} {
 		t.Run(tc.email, func(t *testing.T) {
-			manager, store, credentials, sink := reconcileSeed(t, tc.email, time.Now().Add(20*24*time.Hour))
+			manager, store, credentials, sink := reconcileSeed(t, time.Now().Add(20*24*time.Hour))
 			if err := credentials.WriteNativeCredentialForTest(
 				claudeName,
-				claudeLogin("external", time.Now().Add(30*24*time.Hour)),
+				claudeLoginAs(tc.email, "external", time.Now().Add(30*24*time.Hour)),
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -341,7 +342,7 @@ func TestAnExternalSignInForAnotherAccountReportsTheSwitch(t *testing.T) {
 }
 
 func TestReorderProviderAccountsNudgesTheListing(t *testing.T) {
-	manager, store, credentials, sink := signInManager(t, "current@example.com")
+	manager, store, credentials, sink := signInManager(t)
 	seedClaudeAccounts(t, manager, store, credentials, claudeLogin("current", time.Now().Add(time.Hour)), "other", claudeLogin("other", time.Now().Add(time.Hour)))
 
 	if err := manager.ReorderProviderAccounts(string(provider.Claude), []string{"current", "other"}); err != nil {

@@ -1,4 +1,3 @@
-import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import type { Attachment } from '../types/attachment';
 import type { DraftSnapshot, TerminalChip } from '../types/draft';
 import type { SourceProposedPlan } from '../types/models';
@@ -18,24 +17,6 @@ export interface ComposerDraftSnapshot {
 // from the bounded LRU. Writes share one per-thread tail so saves cannot overtake each other and
 // send/replacement operations can fence the writes admitted before them.
 const localDraftSnapshots = new Map<string, ComposerDraftSnapshot>();
-// Autosaves made while an un-send is restoring its draft must land after the
-// backend restore. The operation owns this finite barrier across pane switches.
-const draftRestores = new Map<string, { snapshot: ComposerDraftSnapshot; release: () => void }>();
-export function beginDraftRestore(threadId: string, snapshot: ComposerDraftSnapshot): void {
-  if (draftRestores.has(threadId)) return;
-  let release!: () => void;
-  const ready = new Promise<void>((resolve) => { release = resolve; });
-  draftRestores.set(threadId, { snapshot: cloneDraftSnapshot(snapshot), release });
-  void queueDraftSave(threadId, () => ready, 'send');
-}
-export function pendingDraftRestore(threadId: string): ComposerDraftSnapshot | undefined {
-  return draftRestores.get(threadId)?.snapshot;
-}
-export function finishDraftRestore(threadId: string): void {
-  const pending = draftRestores.get(threadId);
-  draftRestores.delete(threadId);
-  pending?.release();
-}
 interface DraftWrite {
   write: () => Promise<unknown>;
   replaceable: boolean;
@@ -117,8 +98,6 @@ export function hasRememberedDraftSnapshot(threadId: string): boolean {
 }
 
 export function rememberDraftSnapshot(threadId: string, snapshot: ComposerDraftSnapshot): void {
-  const restoring = draftRestores.get(threadId);
-  if (restoring) restoring.snapshot = cloneDraftSnapshot(snapshot);
   if (localDraftSnapshots.has(threadId)) {
     localDraftSnapshots.delete(threadId);
   }
@@ -200,19 +179,6 @@ export async function waitForActiveDraftSaves(threadId: string): Promise<void> {
 }
 
 export function resetComposerDraftSnapshotStateForTest(): void {
-  for (const id of draftRestores.keys()) finishDraftRestore(id);
   localDraftSnapshots.clear();
   draftWriters.clear();
 }
-
-// Invalidation cancels writes waiting behind a restore. Keep their local text,
-// but never send an old recovery's queued saves to a new conversation owner.
-onThreadHistoryInvalidated((owns) => {
-  for (const id of draftRestores.keys()) {
-    if (!owns(id)) continue;
-    const writer = draftWriters.get(id);
-    draftWriters.delete(id);
-    for (const pending of writer?.pending.splice(0) ?? []) pending.resolve(false);
-    finishDraftRestore(id);
-  }
-});

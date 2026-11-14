@@ -6,9 +6,11 @@
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
+  import ShellRunCard from '../composer/ShellRunCard.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
   import ChatHeader from './ChatHeader.svelte';
+  import ThreadPaneFind from './ThreadPaneFind.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
@@ -87,6 +89,12 @@
   // offered neither: the gate lands here, on the same single point.
   const supportsMessageAnchorActions = $derived(
     providerSupports(pane.thread?.provider, 'fork')
+      && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
+  );
+  // Run on a shell code block runs a command here and sends its output to the
+  // thread, so it is offered only to a session granted both.
+  const canRunShell = $derived(
+    threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId)
       && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
   );
   // On a phone the edit happens in the composer's slot, where the keyboard
@@ -420,8 +428,8 @@
   }
 
   // A thread switch voids the flow at any stage; an anchor row that
-  // disappears through another path (un-send, a concurrent revert
-  // reflected from a second pane) voids it too. Both passes read the
+  // disappears through another path (a concurrent revert reflected from
+  // a second pane) voids it too. Both passes read the
   // pane themselves — deliberately, so the second one only subscribes to
   // `pane.items` while a flow is actually parked against a row.
   $effect(() => {
@@ -457,6 +465,13 @@
     style="--composer-height: {composerHeight}px;"
   >
     <ChatHeader {pane} {onPaneDragStart} />
+    <ThreadPaneFind
+      paneId={pane.paneId}
+      title={pane.thread?.title || 'Thread'}
+      timeline={pane}
+      scope={pane.threadId ? { threadId: pane.threadId } : null}
+      root={chatColumn ?? null}
+    />
 
     <!--
       Single growing region: the timeline takes the entire remaining
@@ -483,6 +498,7 @@
       >
         <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
           <SendQueuePreview {pane} />
+          <ShellRunCard {pane} />
         </div>
         {#if showWorktreeSetup && worktreeSetupPanelModule && setupKey}
           {#await worktreeSetupPanelModule then { default: WorktreeSetupPanel }}
@@ -534,7 +550,7 @@
   {/await}
 {:else if pane.thread}
   <!-- Standard chat surface. Companion panes mount through PaneHost. -->
-  <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="relative flex h-full min-h-0 overflow-hidden">
+  <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} data-shell-runnable={canRunShell ? '' : undefined} class="relative flex h-full min-h-0 overflow-hidden">
     {@render chatColumnBody()}
     <ConfirmDialog
       open={editResend.confirmOpen}

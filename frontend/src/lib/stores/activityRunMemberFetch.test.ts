@@ -330,3 +330,18 @@ it('leaves a refusal made during a read for the next read', async () => {
   expect(f.reloadWindow).not.toHaveBeenCalled();
   f.fetcher.dispose();
 });
+
+// A jump's member load belongs to its navigation: once that is withdrawn
+// or superseded, the answer mounts nothing and applies no stub.
+it('mounts nothing for a navigation that ended while the members loaded', async () => {
+  const f = fixture();
+  const answer = deferred<unknown>();
+  setBindingMock('ListActivityRunMembers', () => answer.promise);
+  let live = true;
+  const held = f.fetcher.fetch('run', { direction: 'around', aroundItemId: 'm', limit: 5, live: () => live });
+  live = false;
+  answer.resolve({ items: [{ id: 'm', threadId: 'thread' }], stub: f.stub });
+  expect(await held).toEqual([]);
+  expect(f.onStubApplied).not.toHaveBeenCalled();
+  f.fetcher.dispose();
+});

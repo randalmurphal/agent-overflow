@@ -201,17 +201,18 @@ func assertTurnEnded(t *testing.T, st *store.Store, turnIndex int) {
 	}
 }
 
-// A message dispatched during a task-notification cascade round and drained
-// mid-loop: its echo, then its `started`. The echo opens the message's own
-// turn and delivers it there.
+// A message dispatched during the turn a task notification woke the CLI for
+// and drained mid-loop: its echo, then its `started`. The wake's turn is
+// running when the message is flushed, so it is delivered into that turn as
+// into any running turn.
 func TestReplayQueuedMidloopAfterCascade20261015(t *testing.T) {
 	st, got := replayDeliveryCapture(t, "queued_midloop_after_cascade_20261015.ndjson", []captureSend{
 		{uuid: "4d8ee9cf-7060-4c57-a25f-ef702b75601f", tag: "t0", kind: "direct", turn: 0},
-		{uuid: "7476959b-a610-4616-af65-52549e482621", tag: "m", kind: "deferred", turn: 1},
+		{uuid: "7476959b-a610-4616-af65-52549e482621", tag: "m", kind: "quiet", turn: 1},
 	}, []string{
 		"queued t0", "started t0", "init", "echo t0", "result", "completed t0", "init", "queued m", "echo m", "started m", "completed m", "result",
 	})
-	assertDeliveries(t, got, map[string][]delivered{"m": {{turn: 1, own: true}}})
+	assertDeliveries(t, got, map[string][]delivered{"m": {{turn: 1, own: false}}})
 	assertTurnEnded(t, st, 1)
 }
 
@@ -251,19 +252,19 @@ func TestReplayQueuedBoundaryMerge20261015(t *testing.T) {
 	assertTurnEnded(t, st, 1)
 }
 
-// A and B dispatched during a cascade round, after turn 0's result, so each
-// reserved its own turn; merged at the round's end. The merged-away echo
-// opens A's turn, the fold empties it and moves A to the survivor's turn.
+// A and B dispatched during the turn a task notification woke the CLI for,
+// held and merged at its end, as at the end of any running turn: both are
+// delivered into the turn the next init opens, their own.
 func TestReplayQueuedBoundaryMergeAfterCascade20261015(t *testing.T) {
 	st, got := replayDeliveryCapture(t, "queued_boundary_merge_after_cascade_20261015.ndjson", []captureSend{
 		{uuid: "b4fb2589-440d-4a2d-beb6-3ff215000e16", tag: "t0", kind: "direct", turn: 0},
-		{uuid: "61ad39d2-c20a-4285-899e-371a7bb6cf33", tag: "a", kind: "deferred", turn: 1},
-		{uuid: "2dbdd36e-6541-43dc-b6e5-0afed03a4f8b", tag: "b", kind: "deferred", turn: 2},
+		{uuid: "61ad39d2-c20a-4285-899e-371a7bb6cf33", tag: "a", kind: "quiet", turn: 1},
+		{uuid: "2dbdd36e-6541-43dc-b6e5-0afed03a4f8b", tag: "b", kind: "quiet", turn: 1},
 	}, []string{
 		"queued t0", "started t0", "init", "echo t0", "result", "completed t0", "init", "queued a", "queued b", "result", "echo a", "started a", "started b", "init", "echo b", "result", "completed a", "completed b",
 	})
 	assertDeliveries(t, got, map[string][]delivered{
-		"a": {{turn: 1, own: true}, {turn: 2, own: true, rebind: true}},
+		"a": {{turn: 2, own: true}},
 		"b": {{turn: 2, own: true}},
 	})
 	assertTurnEnded(t, st, 1)

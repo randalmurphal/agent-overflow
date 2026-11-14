@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import { createUseStickToBottomController } from './index.svelte';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 
-it('a viewport-only delivery cannot snap an optimistic send to the bottom', async () => {
+it('a viewport-only delivery cannot snap a sent message’s glide to the bottom', async () => {
   const scroller = document.createElement('div');
   scroller.style.cssText = 'position:fixed;width:400px;height:600px;overflow:auto;overflow-anchor:none;box-sizing:border-box';
   const content = document.createElement('div');

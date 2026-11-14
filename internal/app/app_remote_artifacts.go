@@ -49,6 +49,7 @@ type RemoteArtifact struct {
 //
 //ao:scope terminal:operate
 //ao:route selected
+//ao:callerbound
 func (a *App) RemoteCommandArtifact(ctx context.Context, id string, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
 	job, err := a.RemoteCommandStatus(ctx, id)
 	if err != nil {
@@ -257,6 +258,7 @@ func receiveRemoteArtifact(ctx context.Context, directory, path, threadID string
 //
 //ao:scope terminal:operate
 //ao:route selected
+//ao:callerbound
 func (a *App) RemoteCommandLogArtifact(ctx context.Context, id string, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
 	if a.remoteJobs == nil {
 		return RemoteArtifactChunk{}, errorsx.Public("remote_not_ready", "Remote commands are not ready on this computer.", nil)

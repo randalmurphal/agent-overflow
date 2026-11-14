@@ -89,6 +89,25 @@ interface PathLinkExtension {
     src: string,
     tokens: Token[] | TokensList,
   ): GenericLinkToken | GenericImageToken | undefined;
+  tokenizesAlike(previous: object, source: string): boolean;
+}
+
+/** What one built extension matches on, kept so a successor can name the
+ * sources its own allowlist tokenizes differently. */
+interface PathLinkInputs {
+  allowed: ReadonlySet<string>;
+  workspacePath: string;
+  imageWorkspacePath: string;
+  mode: PathLinkMode;
+}
+const builtInputs = new WeakMap<object, PathLinkInputs>();
+
+/** Paths in exactly one of the two allowlists. */
+function changedPaths(left: ReadonlySet<string>, right: ReadonlySet<string>): string[] {
+  const changed: string[] = [];
+  for (const path of left) if (!right.has(path)) changed.push(path);
+  for (const path of right) if (!left.has(path)) changed.push(path);
+  return changed;
 }
 
 // Shape that satisfies both marked's runtime contract and streamdown's
@@ -168,11 +187,18 @@ export type PathLinkMode = 'editor' | 'files' | 'html' | 'off';
  * `workspacePath` is encoded into each emitted href so a click after
  * the surface unmounts can still resolve relative paths — same trick
  * the legacy walker used with `data-workspace-path`.
+ *
+ * `imageWorkspacePath` is the workspace relative IMAGE paths resolve
+ * against: the one the prose was written in, when its row recorded it
+ * (getAuthoredWorkspaceFromMeta). Links keep the thread's workspace. It
+ * never enables rewriting on its own: a surface with no `workspacePath`
+ * stays inert.
  */
 export function buildPathLinkExtension(
   pathRefs: readonly PathRef[],
   workspacePath: string,
   mode: PathLinkMode = 'editor',
+  imageWorkspacePath: string = workspacePath,
 ): PathLinkExtension | undefined {
   // Dedupe by path (multiple refs for the same file may exist when
   // the same file is mentioned with different :line:col suffixes —
@@ -266,17 +292,54 @@ export function buildPathLinkExtension(
     return null;
   };
 
-  return {
+  const effectiveImageWorkspace = imageWorkspacePath || workspacePath;
+  // Keyed weakly, so an extension never keeps its predecessors alive.
+  const changesSince = new WeakMap<object, string[] | null>();
+
+  const extension: PathLinkExtension = {
     name: 'pathLink',
     level: 'inline',
     start(src) {
       return earliestPathLinkHit(src, scanRe);
     },
+    // Triage grows the allowlist while a message streams, so each new path
+    // builds a new extension. Prose matching is literal on the allowlisted
+    // paths, so a source containing none of the paths that differ tokenizes
+    // the same under both. A markdown link's target is unescaped before the
+    // allowlist sees it and need not appear literally, so a source holding
+    // one is never claimed.
+    tokenizesAlike(previous, source) {
+      let changes = changesSince.get(previous);
+      if (changes === undefined) {
+        const before = builtInputs.get(previous);
+        changes = before
+          && before.workspacePath === workspacePath
+          && before.imageWorkspacePath === effectiveImageWorkspace
+          && before.mode === mode
+          ? changedPaths(before.allowed, allowed)
+          : null;
+        changesSince.set(previous, changes);
+      }
+      if (changes === null) return false;
+      if (changes.length === 0) return true;
+      if (source.includes('](')) return false;
+      for (const path of changes) {
+        if (source.includes(path)) return false;
+      }
+      return true;
+    },
     tokenizer(this: unknown, src, tokens) {
       if (isInsideMarkdownLinkLabel(this)) return undefined;
 
       if (src.startsWith('[') || src.startsWith('![')) {
-        return markdownLocalResourceToken(src, this, parseAllowlistedTarget, workspacePath, mode);
+        return markdownLocalResourceToken(
+          src,
+          this,
+          parseAllowlistedTarget,
+          workspacePath,
+          effectiveImageWorkspace,
+          mode,
+        );
       }
       if (!bareRe || !wrappedRe) return undefined;
 
@@ -322,6 +385,13 @@ export function buildPathLinkExtension(
       return buildLinkToken(raw, path, line, col, 'text', raw);
     },
   };
+  builtInputs.set(extension, {
+    allowed,
+    workspacePath,
+    imageWorkspacePath: effectiveImageWorkspace,
+    mode,
+  });
+  return extension;
 }
 
 /**
@@ -480,6 +550,7 @@ function markdownLocalResourceToken(
   ctx: unknown,
   parseAllowlistedTarget: (target: string) => ParsedPathTarget | null,
   workspacePath: string,
+  imageWorkspacePath: string,
   mode: PathLinkMode,
 ): GenericLinkToken | GenericImageToken | undefined {
   const tokenizerContext = ctx as PathLinkTokenizerContext;
@@ -494,7 +565,7 @@ function markdownLocalResourceToken(
     if (path === null) return token as GenericImageToken;
     return {
       ...token,
-      href: buildLocalImageHref(path, workspacePath, token.href),
+      href: buildLocalImageHref(path, imageWorkspacePath, token.href),
     } as GenericImageToken;
   }
   if (mode === 'off') return token;

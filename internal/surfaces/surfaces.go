@@ -956,14 +956,16 @@ var Routes = []Route{
 		Credential: CredTransferTicket,
 		Posture:    PostureOpaqueMedia,
 		Why: "One local image rendered markdown references by path, " +
-			"streamed. These used to ride base64 inside a single RPC " +
+			"or one side of a review diff file (GetReviewDiffImage, " +
+			"GetEditDiffImage, files:read), streamed. These used to ride base64 inside a single RPC " +
 			"answer, the cost the attachment download route exists to " +
 			"remove, and could not be served smaller than the file. The " +
 			"backend that owns the thread gates the path through the " +
 			"editor-link gate, proves by signature that the bytes are an " +
 			"image a browser displays, and holds either the file's " +
-			"identity (path, size, modification time) or a display-size " +
-			"derivative under an opaque cache id; the files:read call " +
+			"identity (path, size, modification time), a display-size " +
+			"derivative, or a review diff side's bytes read at the " +
+			"diff's pinned sides, under an opaque cache id; the files:read call " +
 			"that did that mints the ticket. Admission is the same " +
 			"single-use, subject-bound ticket its siblings use, from a " +
 			"book of its own so no other route's ticket is spendable " +
@@ -972,9 +974,10 @@ var Routes = []Route{
 			"since it was resolved, answers the same 404 a spent ticket " +
 			"does. Nothing but an image reaches the route, under the type " +
 			"its bytes proved. An SVG also carries an attachment " +
-			"disposition: it is markup that can run script, and a " +
-			"navigation to this URL must download it rather than render " +
-			"it at the SPA origin. nosniff and Cache-Control: no-store " +
+			"disposition and a sandboxed policy that allows no script: " +
+			"it is markup that can run script, and a navigation to this " +
+			"URL must download it rather than render it at the SPA " +
+			"origin. nosniff and Cache-Control: no-store " +
 			"as on every ticketed transfer. Not Origin-guarded and not " +
 			"rate limited, for the reasons argued on the download row.",
 	},
@@ -997,6 +1000,16 @@ var Routes = []Route{
 		Posture:    PostureNone,
 		Why: "The upload route's preflight, for the reason its download " +
 			"sibling has one. Same shape: no credential to check, no work " +
+			"done, 204 with the allow headers for the one admitted origin " +
+			"and the listener's ordinary 404 for anybody else.",
+	},
+	{
+		Pattern:    "OPTIONS /attachments/dictation",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The dictation upload's preflight, for the reason the " +
+			"attachment upload has one. No credential to check, no work " +
 			"done, 204 with the allow headers for the one admitted origin " +
 			"and the listener's ordinary 404 for anybody else.",
 	},
@@ -1034,6 +1047,58 @@ var Routes = []Route{
 			"not. Single-shot: a failed upload is retried by minting " +
 			"again, since resumable transfer is deferred to the phone " +
 			"waves and every body here is at most 10 MiB.",
+	},
+	{
+		Pattern:    "PUT /attachments/dictation",
+		Listener:   "app transport",
+		Credential: CredTransferTicket,
+		Posture:    PostureNone,
+		Why: "One piece of a recording uploaded for dictation while the " +
+			"client records. The ticket is minted by a threads:operate call " +
+			"on the connection that opened the recording, and its subject " +
+			"names the recording, the piece's place in it and its exact " +
+			"length; the request contributes the bytes and nothing else. " +
+			"The length is capped DURING the read, as on the attachment " +
+			"upload, and the recording itself refuses a piece out of order " +
+			"or past its size cap. Answers 204 with no body. The bytes stay " +
+			"in memory until the recording is finished or abandoned.",
+	},
+	{
+		Pattern:    "GET /attachments/speech/{speechID}",
+		Listener:   "app transport",
+		Credential: CredTransferTicket,
+		Posture:    PostureOpaqueMedia,
+		Why: "One sentence read aloud in an OpenAI voice, as a WAV file. " +
+			"The threads:operate call that admitted the sentence (bounded " +
+			"in count, length and lifetime by internal/readaloud) mints the " +
+			"ticket, from a book of its own, and the path is compared " +
+			"against its subject. The fetch is what spends the user's key: " +
+			"the backend re-checks the Settings > Voice switch, reads the " +
+			"key, asks OpenAI under the request's context so an aborted " +
+			"fetch cancels the call, as does a write to the switch, and " +
+			"answers audio/wav it built itself around OpenAI's PCM. A " +
+			"failure answers a 4xx or 5xx (403 only for the switch being " +
+			"off or written since the sentence was admitted) with a " +
+			"short plain-text message this tree wrote, OpenAI's text only " +
+			"after the openai package scrubbed it. nosniff and " +
+			"Cache-Control: no-store as on every ticketed transfer. Not " +
+			"Origin-guarded and not rate limited, for the reasons argued " +
+			"on the download row; concurrent syntheses are capped by the " +
+			"backend instead, a clip holds its place under that cap until " +
+			"its response is written, and the whole fetch has a two minute " +
+			"window.",
+	},
+	{
+		Pattern:    "OPTIONS /attachments/speech/{speechID}",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The read-aloud route's preflight, for the reason its " +
+			"siblings have one: that route is registered method-qualified, " +
+			"and the mux answers an unmatched method with 405, which a " +
+			"browser reads as a refused preflight. No credential to check, " +
+			"no work done, 204 with the allow headers for the one admitted " +
+			"origin and the listener's ordinary 404 for anybody else.",
 	},
 	{
 		Pattern:    "GET /bundle/manifest.json",

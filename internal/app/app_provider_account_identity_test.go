@@ -3,6 +3,7 @@ package app
 import (
 	"agent-overflow/internal/testutil/mockexec"
 	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 )
@@ -50,16 +52,89 @@ func installIdentityTestAccount(
 
 func writeCodexIdentityProbeBinary(t *testing.T, email string) string {
 	t.Helper()
+	return writeCodexAccountReadProbeBinary(t,
+		`{"type":"chatgpt","email":"`+email+`","planType":"pro"}`)
+}
+
+// writeCodexAccountReadProbeBinary answers the identity probe's account/read
+// with accountJSON as the `account` member.
+func writeCodexAccountReadProbeBinary(t *testing.T, accountJSON string) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "mock-codex")
 	script := "#!/bin/bash\n" +
 		"read -r _ || true\n" +
 		"read -r _ || true\n" +
 		"read -r _ || true\n" +
 		"printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"v2\"}}'\n" +
-		"printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"" + email + "\",\"planType\":\"pro\"},\"requiresOpenaiAuth\":true}}'\n" +
+		"printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"account\":" + accountJSON + ",\"requiresOpenaiAuth\":true}}'\n" +
 		"exit 0\n"
 	mockexec.Write(t, path, script)
 	return path
+}
+
+// A Codex account's workspace name is what account/read reports now: it lands
+// on the listed card, survives a repeated observation, and clears when a codex
+// that predates the field (or a login without a workspace) stops reporting it.
+func TestCodexReconciliationTracksReportedWorkspaceName(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Codex),
+		"first",
+		"first@example.com",
+		[]byte(`{"tokens":{"access_token":"initial"}}`),
+	)
+	activePath, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Codex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := writeCodexAccountReadProbeBinary(t,
+		`{"type":"chatgpt","email":"first@example.com","planType":"team","workspaceName":"Acme Team"}`)
+	unnamed := writeCodexAccountReadProbeBinary(t,
+		`{"type":"chatgpt","email":"first@example.com","planType":"team"}`)
+
+	steps := []struct {
+		binary string
+		want   string
+	}{
+		{named, "Acme Team"},
+		{named, "Acme Team"},
+		{unnamed, ""},
+		{unnamed, ""},
+	}
+	for i, step := range steps {
+		if _, err := app.settings.Update(map[string]any{"codexBinaryPath": step.binary}); err != nil {
+			t.Fatal(err)
+		}
+		// A canonical credential AO did not write is what sends
+		// reconciliation to the identity probe.
+		credential := fmt.Sprintf(`{"tokens":{"access_token":"external-%d"}}`, i)
+		if err := os.WriteFile(activePath, []byte(credential), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+			t.Fatalf("step %d: reconcileExternalProviderAccount: %v", i, err)
+		}
+		listed, err := app.ListProviderAccounts()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var card *ManagedProviderAccount
+		for j := range listed {
+			if listed[j].Provider == string(provider.Codex) && listed[j].ID == "first" {
+				card = &listed[j]
+			}
+		}
+		if card == nil {
+			t.Fatalf("step %d: no listed card for first: %+v", i, listed)
+		}
+		if card.OrgName != step.want || card.SubscriptionType != "team" {
+			t.Fatalf("step %d: card = %+v, want OrgName %q", i, card.Account, step.want)
+		}
+	}
 }
 
 // writeRotatingProbeMockBinary answers the identity probe and rewrites the
@@ -219,16 +294,20 @@ func TestExternalClaudeLoginReconcilesMetadataAndLiveSessions(t *testing.T) {
 		Liveness:             newSessionLiveness(time.Now()),
 	})
 
+	// The probe still reports the previous login, as a stale oauthAccount
+	// record does; the new credential's token is what names second.
 	binary := writeProbeMockBinary(
 		t,
-		`{"email":"second@example.com","subscriptionType":"Claude Max","tokenSource":"oauth","apiProvider":"firstParty"}`,
+		`{"email":"first@example.com","subscriptionType":"Claude Max","tokenSource":"oauth","apiProvider":"firstParty"}`,
 	)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
 	if err := providerCredentialsForTest(t, app).WriteNativeCredentialForTest(
 		string(provider.Claude),
-		[]byte(`{"claudeAiOauth":{"accessToken":"second"}}`),
+		[]byte(`{"claudeAiOauth":{"accessToken":"`+
+			claudefake.AccessToken("second@example.com", "org-second", "1")+
+			`","scopes":["user:inference","user:profile"]}}`),
 	); err != nil {
 		t.Fatal(err)
 	}

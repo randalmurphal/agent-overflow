@@ -37,6 +37,7 @@
 package webview2host
 
 import (
+	"errors"
 	"strconv"
 	"syscall"
 	"unsafe"
@@ -204,6 +205,246 @@ func (e *iCoreWebView2Environment10) createControllerWithOptions(
 }
 
 // ---------------------------------------------------------------------
+// ICoreWebView2Environment15 (find options)
+// ---------------------------------------------------------------------
+
+// iCoreWebView2Environment15Vtbl is the flattened chain through
+// ICoreWebView2Environment15, taken from the C vtable
+// ICoreWebView2Environment15Vtbl in WebView2.h of the official
+// Microsoft.Web.WebView2 1.0.3405.78 NuGet package: slots 0-22 are
+// iCoreWebView2Environment10Vtbl above; 23-28 are Environment11's
+// get_FailureReportFolderPath, Environment12's CreateSharedBuffer,
+// Environment13's GetProcessExtendedInfos and Environment14's
+// CreateWebFileSystemFileHandle, CreateWebFileSystemDirectoryHandle and
+// CreateObjectCollection, none of which is called; slot 29 is
+// CreateFindOptions.
+type iCoreWebView2Environment15Vtbl struct {
+	iCoreWebView2Environment10Vtbl
+	_                 [6]comProc
+	CreateFindOptions comProc
+}
+
+type iCoreWebView2Environment15 struct {
+	vtbl *iCoreWebView2Environment15Vtbl
+}
+
+// iidEnvironment15 is IID_ICoreWebView2Environment15,
+// {2ac5ebfb-e654-5961-a667-7971885c7b27} (WebView2.h, SDK 1.0.3405.78).
+var iidEnvironment15 = windows.GUID{
+	Data1: 0x2ac5ebfb, Data2: 0xe654, Data3: 0x5961,
+	Data4: [8]byte{0xa6, 0x67, 0x79, 0x71, 0x88, 0x5c, 0x7b, 0x27},
+}
+
+// queryEnvironment15 returns nil on a runtime that predates the find API.
+func (e *iCoreWebView2Environment10) queryEnvironment15() *iCoreWebView2Environment15 {
+	var result *iCoreWebView2Environment15
+	_, _, _ = e.vtbl.QueryInterface.Call(
+		uintptr(unsafe.Pointer(e)),
+		uintptr(unsafe.Pointer(&iidEnvironment15)),
+		uintptr(unsafe.Pointer(&result)),
+	)
+	return result
+}
+
+func (e *iCoreWebView2Environment15) release() {
+	_, _, _ = e.vtbl.Release.Call(uintptr(unsafe.Pointer(e)))
+}
+
+// createFindOptions is CreateFindOptions([out, retval]
+// ICoreWebView2FindOptions** value).
+func (e *iCoreWebView2Environment15) createFindOptions() (*iCoreWebView2FindOptions, error) {
+	var options *iCoreWebView2FindOptions
+	hr, _, _ := e.vtbl.CreateFindOptions.Call(
+		uintptr(unsafe.Pointer(e)),
+		uintptr(unsafe.Pointer(&options)),
+	)
+	if err := hresult(hr); err != nil {
+		return nil, err
+	}
+	if options == nil {
+		return nil, errors.New("CreateFindOptions returned no options")
+	}
+	return options, nil
+}
+
+// ---------------------------------------------------------------------
+// ICoreWebView2FindOptions
+// ---------------------------------------------------------------------
+
+// iCoreWebView2FindOptionsVtbl follows the C vtable
+// ICoreWebView2FindOptionsVtbl in WebView2.h (SDK 1.0.3405.78): IUnknown,
+// then each property's get/put pair in IDL order.
+type iCoreWebView2FindOptionsVtbl struct {
+	iUnknownVtbl
+	GetFindTerm                  comProc
+	PutFindTerm                  comProc
+	GetIsCaseSensitive           comProc
+	PutIsCaseSensitive           comProc
+	GetShouldHighlightAllMatches comProc
+	PutShouldHighlightAllMatches comProc
+	GetShouldMatchWord           comProc
+	PutShouldMatchWord           comProc
+	GetSuppressDefaultFindDialog comProc
+	PutSuppressDefaultFindDialog comProc
+}
+
+type iCoreWebView2FindOptions struct {
+	vtbl *iCoreWebView2FindOptionsVtbl
+}
+
+func (o *iCoreWebView2FindOptions) release() {
+	_, _, _ = o.vtbl.Release.Call(uintptr(unsafe.Pointer(o)))
+}
+
+// putFindTerm is put_FindTerm([in] LPCWSTR value). The callee copies the
+// string; the UTF-16 buffer only has to outlive the call.
+func (o *iCoreWebView2FindOptions) putFindTerm(term string) error {
+	ptr, err := windows.UTF16PtrFromString(term)
+	if err != nil {
+		return err
+	}
+	hr, _, _ := o.vtbl.PutFindTerm.Call(uintptr(unsafe.Pointer(o)), uintptr(unsafe.Pointer(ptr)))
+	return hresult(hr)
+}
+
+func boolArg(value bool) uintptr {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+// putShouldHighlightAllMatches is put_ShouldHighlightAllMatches([in] BOOL).
+func (o *iCoreWebView2FindOptions) putShouldHighlightAllMatches(value bool) error {
+	hr, _, _ := o.vtbl.PutShouldHighlightAllMatches.Call(uintptr(unsafe.Pointer(o)), boolArg(value))
+	return hresult(hr)
+}
+
+// putSuppressDefaultFindDialog is put_SuppressDefaultFindDialog([in] BOOL).
+func (o *iCoreWebView2FindOptions) putSuppressDefaultFindDialog(value bool) error {
+	hr, _, _ := o.vtbl.PutSuppressDefaultFindDialog.Call(uintptr(unsafe.Pointer(o)), boolArg(value))
+	return hresult(hr)
+}
+
+// ---------------------------------------------------------------------
+// ICoreWebView2Find
+// ---------------------------------------------------------------------
+
+// iCoreWebView2FindVtbl follows the C vtable ICoreWebView2FindVtbl in
+// WebView2.h (SDK 1.0.3405.78).
+type iCoreWebView2FindVtbl struct {
+	iUnknownVtbl
+	GetActiveMatchIndex           comProc
+	GetMatchCount                 comProc
+	AddActiveMatchIndexChanged    comProc
+	RemoveActiveMatchIndexChanged comProc
+	AddMatchCountChanged          comProc
+	RemoveMatchCountChanged       comProc
+	Start                         comProc
+	FindNext                      comProc
+	FindPrevious                  comProc
+	Stop                          comProc
+}
+
+type iCoreWebView2Find struct {
+	vtbl *iCoreWebView2FindVtbl
+}
+
+func (f *iCoreWebView2Find) release() {
+	_, _, _ = f.vtbl.Release.Call(uintptr(unsafe.Pointer(f)))
+}
+
+// start is Start([in] ICoreWebView2FindOptions* options, [in]
+// ICoreWebView2FindStartCompletedHandler* handler). With the default dialog
+// not suppressed, the engine's own find bar shows once it completes.
+func (f *iCoreWebView2Find) start(options *iCoreWebView2FindOptions, handler *iFindStartCompletedHandler) error {
+	hr, _, _ := f.vtbl.Start.Call(
+		uintptr(unsafe.Pointer(f)),
+		uintptr(unsafe.Pointer(options)),
+		uintptr(unsafe.Pointer(handler)),
+	)
+	return hresult(hr)
+}
+
+// stop is Stop(): ends the session and hides the find bar; a no-op with no
+// session.
+func (f *iCoreWebView2Find) stop() error {
+	hr, _, _ := f.vtbl.Stop.Call(uintptr(unsafe.Pointer(f)))
+	return hresult(hr)
+}
+
+// matchCount is get_MatchCount([out, retval] INT32* value).
+func (f *iCoreWebView2Find) matchCount() (int32, error) {
+	var value int32
+	hr, _, _ := f.vtbl.GetMatchCount.Call(uintptr(unsafe.Pointer(f)), uintptr(unsafe.Pointer(&value)))
+	return value, hresult(hr)
+}
+
+// ---------------------------------------------------------------------
+// ICoreWebView2_28 (Find)
+// ---------------------------------------------------------------------
+
+// iCoreWebView2_28Vtbl is the flattened chain through ICoreWebView2_28, from
+// the C vtable ICoreWebView2_28Vtbl in WebView2.h (SDK 1.0.3405.78): slots
+// 0-60 are iCoreWebView2Vtbl below, 61-134 the methods ICoreWebView2_2
+// through ICoreWebView2_27 add (none of which is called), and 135 is
+// get_Find.
+type iCoreWebView2_28Vtbl struct {
+	iCoreWebView2Vtbl
+	_       [74]comProc
+	GetFind comProc
+}
+
+type iCoreWebView2_28 struct {
+	vtbl *iCoreWebView2_28Vtbl
+}
+
+// iidWebView2_28 is IID_ICoreWebView2_28,
+// {62e50381-5bf5-51a8-aae0-f20a3a9c8a90} (WebView2.h, SDK 1.0.3405.78).
+var iidWebView2_28 = windows.GUID{
+	Data1: 0x62e50381, Data2: 0x5bf5, Data3: 0x51a8,
+	Data4: [8]byte{0xaa, 0xe0, 0xf2, 0x0a, 0x3a, 0x9c, 0x8a, 0x90},
+}
+
+// queryWebView28 returns nil on a runtime that predates the find API.
+func (v *iCoreWebView2) queryWebView28() *iCoreWebView2_28 {
+	var result *iCoreWebView2_28
+	_, _, _ = v.vtbl.QueryInterface.Call(
+		uintptr(unsafe.Pointer(v)),
+		uintptr(unsafe.Pointer(&iidWebView2_28)),
+		uintptr(unsafe.Pointer(&result)),
+	)
+	return result
+}
+
+func (v *iCoreWebView2_28) release() {
+	_, _, _ = v.vtbl.Release.Call(uintptr(unsafe.Pointer(v)))
+}
+
+// find is get_Find([out, retval] ICoreWebView2Find** value).
+func (v *iCoreWebView2_28) find() (*iCoreWebView2Find, error) {
+	var find *iCoreWebView2Find
+	hr, _, _ := v.vtbl.GetFind.Call(uintptr(unsafe.Pointer(v)), uintptr(unsafe.Pointer(&find)))
+	if err := hresult(hr); err != nil {
+		return nil, err
+	}
+	if find == nil {
+		return nil, errors.New("get_Find returned no find")
+	}
+	return find, nil
+}
+
+// pageFind answers the view's find, or nil on a runtime without one.
+func (v *iCoreWebView2) pageFind() (*iCoreWebView2Find, error) {
+	view28 := v.queryWebView28()
+	if view28 == nil {
+		return nil, nil
+	}
+	defer view28.release()
+	return view28.find()
+}
+
+// ---------------------------------------------------------------------
 // ICoreWebView2ControllerOptions
 // ---------------------------------------------------------------------
 
@@ -309,6 +550,17 @@ func (c *iCoreWebView2Controller) addAcceleratorKeyPressed(handler *iAccelerator
 		uintptr(unsafe.Pointer(&token)),
 	)
 	return token, hresult(hr)
+}
+
+// moveFocusProgrammatic is COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC (0)
+// in WebView2.h.
+const moveFocusProgrammatic = 0
+
+// moveFocus is MoveFocus([in] COREWEBVIEW2_MOVE_FOCUS_REASON reason): keyboard
+// focus moves into the page.
+func (c *iCoreWebView2Controller) moveFocus(reason uint32) error {
+	hr, _, _ := c.vtbl.MoveFocus.Call(uintptr(unsafe.Pointer(c)), uintptr(reason))
+	return hresult(hr)
 }
 
 func (c *iCoreWebView2Controller) putIsVisible(visible bool) error {
@@ -603,6 +855,32 @@ var devToolsCompletedVtbl = handlerVtbl{
 
 func newDevToolsCompletedHandler(done func(uintptr, string)) *iDevToolsCompletedHandler {
 	return &iDevToolsCompletedHandler{vtbl: &devToolsCompletedVtbl, done: done}
+}
+
+// --- Find Start completed ---
+
+// iFindStartCompletedHandler is ICoreWebView2FindStartCompletedHandler,
+// whose Invoke is Invoke([in] HRESULT errorCode) (WebView2.h, SDK
+// 1.0.3405.78).
+type iFindStartCompletedHandler struct {
+	vtbl *handlerVtbl
+	done func(hr uintptr)
+}
+
+var findStartCompletedVtbl = handlerVtbl{
+	iUnknownVtbl: iUnknownVtbl{
+		QueryInterface: newComProc(noopQueryInterface),
+		AddRef:         newComProc(noopAddRefRelease),
+		Release:        newComProc(noopAddRefRelease),
+	},
+	Invoke: newComProc(func(this *iFindStartCompletedHandler, hr uintptr) uintptr {
+		this.done(hr)
+		return 0
+	}),
+}
+
+func newFindStartCompletedHandler(done func(uintptr)) *iFindStartCompletedHandler {
+	return &iFindStartCompletedHandler{vtbl: &findStartCompletedVtbl, done: done}
 }
 
 // --- AcceleratorKeyPressed ---

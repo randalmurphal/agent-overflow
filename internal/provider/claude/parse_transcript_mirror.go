@@ -111,6 +111,9 @@ func (p *Parser) parseTranscriptMirrorEntries(threadID string, envelope transcri
 	projectionKey := mirrorProjectionKey(envelope.FilePath, facts.agentID)
 	projection := state.projections[projectionKey]
 	var events []provider.ProviderEvent
+	if facts.scope == mirrorTranscriptSidechain {
+		events = p.observeMirroredRunEfforts(threadID, facts.agentID, facts.metadataToolUseID, facts.runEfforts, facts.timestampOr(now))
+	}
 	entries := envelope.Entries
 	// attributionSkill names the skill responsible for work in both the main
 	// transcript and a forked skill's sidechain. isSidechain identifies the
@@ -782,6 +785,9 @@ type mirrorEntryInspection struct {
 	metadataToolUseID string
 	firstTimestamp    time.Time
 	entries           []mirrorEntryFact
+	// runEfforts are the batch's request rows that name a tier AO can show:
+	// the `output_config.effort` each request sent.
+	runEfforts []mirroredRunEffort
 }
 
 type mirrorTranscriptScope uint8
@@ -881,6 +887,8 @@ func inspectMirrorEntries(entries []json.RawMessage) (mirrorEntryInspection, err
 			LegacySkill      string `json:"attribution_skill"`
 			Timestamp        string `json:"timestamp"`
 			TurnOrigin       string `json:"turnOrigin"`
+			Effort           string `json:"effort"`
+			APIError         bool   `json:"isApiErrorMessage"`
 			Attribution      struct {
 				Skill     string `json:"skill"`
 				SkillName string `json:"skillName"`
@@ -918,6 +926,9 @@ func inspectMirrorEntries(entries []json.RawMessage) (mirrorEntryInspection, err
 		facts.attributionSkill = firstNonEmpty(facts.attributionSkill,
 			strings.TrimSpace(raw.AttributionSkill), strings.TrimSpace(raw.LegacySkill),
 			strings.TrimSpace(raw.Attribution.Skill), strings.TrimSpace(raw.Attribution.SkillName))
+		if effort := strings.TrimSpace(raw.Effort); raw.Type == "assistant" && !raw.APIError && IsLiveEffortTier(effort) {
+			facts.runEfforts = append(facts.runEfforts, mirroredRunEffort{uuid: strings.TrimSpace(raw.UUID), effort: effort})
+		}
 		if facts.firstTimestamp.IsZero() && raw.Timestamp != "" {
 			if parsed, err := time.Parse(time.RFC3339Nano, raw.Timestamp); err == nil {
 				facts.firstTimestamp = parsed

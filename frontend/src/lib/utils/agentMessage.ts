@@ -351,7 +351,10 @@ function interruptReason(sentence: string, after: string): { stoppedBy: string; 
   if (sentence.startsWith(`${HANDED_OFF} `)) {
     return { stoppedBy: 'the assistant moving to a new thread', body: sentence.slice(HANDED_OFF.length + 1) };
   }
-  return null;
+  // A person's Stop has its own status line (WAKE_TAILS).
+  if (`: ${sentence}` === PERSON_STOPPED) return null;
+  // Who stopped the turn, as the stop worded it: a thread's cancel, a workflow.
+  return { stoppedBy: '', body: sentence };
 }
 
 const WAKE_TAILS: ReadonlyArray<{ kind: WakeKind; opening: string; body: 'line' | 'next' | 'none' }> = [

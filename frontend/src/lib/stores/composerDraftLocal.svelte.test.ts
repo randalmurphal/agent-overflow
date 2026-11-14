@@ -302,27 +302,4 @@ describe('composerDraft store — persistence: none', () => {
     expectSilent(bindings);
     expect(getRememberedDraftSnapshot('thread-other')).toBeUndefined();
   });
-
-  it('keeps the optimistic-restore markers working on local state', async () => {
-    const store = localStore();
-    store.seedLocalSnapshot('thread-1', snapshot({ content: '' }));
-    const restored = snapshot({ content: 'interrupted prompt' });
-
-    store.applyOptimisticRestoredDraft('thread-1', restored);
-    expect(store.content).toBe('interrupted prompt');
-
-    // Untouched restore clears back to the empty baseline.
-    expect(store.clearOptimisticRestoredDraft('thread-1', restored)).toBe(true);
-    expect(store.content).toBe('');
-
-    // Edited restore is preserved.
-    store.applyOptimisticRestoredDraft('thread-1', restored);
-    store.setContent('edited prompt');
-    expect(store.clearOptimisticRestoredDraft('thread-1', restored)).toBe(false);
-    expect(store.content).toBe('edited prompt');
-
-    await settle();
-    expectSilent(bindings);
-  });
-
 });

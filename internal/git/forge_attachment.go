@@ -34,27 +34,28 @@ import (
 // as a broken forge rather than a slow one.
 const forgeAttachmentTimeout = 10 * time.Minute
 
-// FetchAttachment resolves one attachment reference found in a PR/MR and
-// downloads its bytes through the owning forge's login.
+// FetchAttachment resolves one attachment reference found in markdown of
+// repo (a PR/MR body or comment) and downloads its bytes through the
+// owning forge's login.
 //
 // The reference is parsed BEFORE anything is dispatched, so a href that
 // is not a forge attachment costs no request.
-func (c *Core) FetchAttachment(ctx context.Context, ref PRReference, href string, maxBytes int64) (data []byte, filename string, err error) {
-	if err := ref.Validate(); err != nil {
+func (c *Core) FetchAttachment(ctx context.Context, repo RepoReference, href string, maxBytes int64) (data []byte, filename string, err error) {
+	if err := repo.Validate(); err != nil {
 		return nil, "", err
 	}
-	target, err := forgeattach.ParseReference(ref.Forge, ref.Project(), href)
+	target, err := forgeattach.ParseReference(repo.Forge, repo.Project(), href)
 	if err != nil {
 		return nil, "", err
 	}
-	data, err = c.ForgeByID(ref.Forge).FetchAttachment(ctx, ref, target, maxBytes)
+	data, err = c.ForgeByID(repo.Forge).FetchAttachment(ctx, repo, target, maxBytes)
 	if err != nil {
 		return nil, "", err
 	}
 	return data, target.Filename, nil
 }
 
-func (f *gitlabForge) FetchAttachment(ctx context.Context, ref PRReference, target forgeattach.Target, maxBytes int64) ([]byte, error) {
+func (f *gitlabForge) FetchAttachment(ctx context.Context, ref RepoReference, target forgeattach.Target, maxBytes int64) ([]byte, error) {
 	if target.Forge != "gitlab" || target.Request == "" || strings.Contains(target.Request, "://") {
 		return nil, errors.New("attachment reference is not a GitLab upload")
 	}
@@ -78,7 +79,7 @@ func (f *gitlabForge) FetchAttachment(ctx context.Context, ref PRReference, targ
 	return body.Bytes(), nil
 }
 
-func (f *githubForge) FetchAttachment(ctx context.Context, ref PRReference, target forgeattach.Target, maxBytes int64) ([]byte, error) {
+func (f *githubForge) FetchAttachment(ctx context.Context, ref RepoReference, target forgeattach.Target, maxBytes int64) ([]byte, error) {
 	if target.Forge != "github" || !strings.Contains(target.Request, "://") {
 		return nil, errors.New("attachment reference is not a GitHub attachment URL")
 	}
@@ -107,7 +108,7 @@ func (f *githubForge) FetchAttachment(ctx context.Context, ref PRReference, targ
 	return body.Bytes(), nil
 }
 
-func (nullForge) FetchAttachment(context.Context, PRReference, forgeattach.Target, int64) ([]byte, error) {
+func (nullForge) FetchAttachment(context.Context, RepoReference, forgeattach.Target, int64) ([]byte, error) {
 	return nil, ErrUnsupportedForge
 }
 

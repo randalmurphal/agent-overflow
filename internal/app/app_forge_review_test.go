@@ -6,17 +6,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/transport"
 )
 
 func TestMapSubmitPRReviewResult(t *testing.T) {
 	t.Parallel()
+	reviewRef := gitops.PRReference{Forge: "gitlab", Host: "gitlab.example.com", Namespace: "team", Repo: "app", Number: 42}
 	cases := []struct {
 		name    string
 		result  gitops.SubmitReviewResult
@@ -41,7 +44,22 @@ func TestMapSubmitPRReviewResult(t *testing.T) {
 				PostedReview:       true,
 				PostedFileComments: 1,
 				PartialFailurePath: "README.md",
-				PartialFailure:     "denied",
+				PartialFailure:     "GitLab did not review team/app!42: denied",
+				PartialFailureKind: gitops.ForgeErrorForge,
+			},
+		},
+		{
+			// The follow-up's failure reads as the reviewed sentence and
+			// kind, not the forge's error text.
+			name: "partial refused for a scope",
+			err: &gitops.PartialSubmitError{
+				PostedReview: true,
+				Err:          &forgeapi.ForbiddenError{Status: &forgeapi.StatusError{Status: http.StatusForbidden, Body: `{"error":"insufficient_scope"}`}, Scope: "api"},
+			},
+			want: SubmitPRReviewResult{
+				PostedReview:       true,
+				PartialFailure:     "Your gitlab.example.com token lacks the `api` scope, so the app cannot review team/app!42. Create a token with that scope and log glab in with it.",
+				PartialFailureKind: gitops.ForgeErrorForbidden,
 			},
 		},
 		{
@@ -52,7 +70,7 @@ func TestMapSubmitPRReviewResult(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := mapSubmitPRReviewResult(tt.result, tt.err)
+			got, err := mapSubmitPRReviewResult(reviewRef, gitops.ActionReview, tt.result, tt.err)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error")
@@ -62,7 +80,7 @@ func TestMapSubmitPRReviewResult(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("got %+v want %+v", got, tt.want)
 			}
 		})
@@ -121,7 +139,7 @@ func stubPRCIFetch(app *App) {
 }
 
 // emptyCILogStream answers every log request with an empty log.
-func emptyCILogStream(_ context.Context, _ gitops.PRReference, _ gitops.CIJobLogRequest, begin func(gitops.CIJobLogStart) (io.Writer, error)) (bool, error) {
+func emptyCILogStream(_ context.Context, _ gitops.RepoReference, _ gitops.CIJobLogRequest, begin func(gitops.CIJobLogStart) (io.Writer, error)) (bool, error) {
 	_, err := begin(gitops.CIJobLogStart{Status: http.StatusOK, ETag: `"empty"`})
 	return false, err
 }
@@ -359,10 +377,26 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
 
+	ciPolled := make(chan struct{}, 1)
+	app.testEmitHook = func(name string, _ any) {
+		if name == "pr:ci_updated" {
+			ciPolled <- struct{}{}
+		}
+	}
 	winner, err := app.SubscribePRUpdates(context.Background(), testPR)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
+	// The pump's first CI poll stamps its state; after it the pump is
+	// quiet for the hour-long interval.
+	select {
+	case <-ciPolled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the pump's first CI poll never landed")
+	}
+	app.prUpdates.mu.Lock()
+	liveSeq := app.prUpdates.pumps[winner.PRKey].seq
+	app.prUpdates.mu.Unlock()
 
 	// The loser finished its own fetch a moment later; the pump is already
 	// there when it takes the lock.
@@ -381,8 +415,8 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 	if ref.snapshot.Detail.HeadSHA != "head-a" {
 		t.Fatalf("loser kept its own snapshot (%q), want the live pump's", ref.snapshot.Detail.HeadSHA)
 	}
-	if ref.seq != winner.Seq {
-		t.Fatalf("loser's seq = %d, want the live pump's %d", ref.seq, winner.Seq)
+	if ref.seq != liveSeq {
+		t.Fatalf("loser's seq = %d, want the live pump's %d", ref.seq, liveSeq)
 	}
 	if refs, active, _, present := prPumpState(app, winner.PRKey); !present || refs != 2 || active != 2 {
 		t.Fatalf("pump refs=%d active=%d present=%v, want 2/2/true", refs, active, present)
@@ -515,15 +549,35 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var calls atomic.Int32
+	fetched := make(chan struct{}, 1)
 	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		calls.Add(1)
+		select {
+		case fetched <- struct{}{}:
+		default:
+		}
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
+	// polls waits for a fetch after any signalled before the call.
 	polls := func() bool {
+		select {
+		case <-fetched:
+		default:
+		}
+		select {
+		case <-fetched:
+			return true
+		case <-time.After(3 * time.Second):
+			return false
+		}
+	}
+	// idle reports no fetch across many intervals once an in-flight one
+	// drains; an absence has no event to wait for.
+	idle := func() bool {
 		time.Sleep(15 * time.Millisecond)
 		before := calls.Load()
 		time.Sleep(40 * time.Millisecond)
-		return calls.Load() != before
+		return calls.Load() == before
 	}
 
 	subA, err := app.SubscribePRUpdates(context.Background(), testPR)
@@ -567,7 +621,7 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 	if _, active, paused, _ := prPumpState(app, subA.PRKey); active != 0 || !paused {
 		t.Fatalf("after both hidden: active=%d paused=%v, want 0/true", active, paused)
 	}
-	if polls() {
+	if !idle() {
 		t.Fatal("pump kept polling with every subscriber hidden")
 	}
 
@@ -590,7 +644,7 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 	if _, active, paused, present := prPumpState(app, subB.PRKey); !present || active != 0 || !paused {
 		t.Fatalf("after active subscriber left: active=%d paused=%v present=%v, want 0/true/true", active, paused, present)
 	}
-	if polls() {
+	if !idle() {
 		t.Fatal("pump kept polling for a hidden subscriber after the visible one left")
 	}
 }
@@ -786,14 +840,14 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 
 	// A snapshot that WOULD have been a change on a live pump.
 	head = "head-b"
-	if evt, changed := app.pollPRUpdate(pump); changed {
+	if evt, changed := app.pollPRUpdate(pump.ctx, pump); changed {
 		t.Fatalf("dead pump published a snapshot change: %+v", evt)
 	}
 	assertUnstamped("snapshot path")
 
 	// And a failure, which stamps through a second critical section.
 	fetchErr = errors.New("gh: boom")
-	if evt, changed := app.pollPRUpdate(pump); changed {
+	if evt, changed := app.pollPRUpdate(pump.ctx, pump); changed {
 		t.Fatalf("dead pump published a failure: %+v", evt)
 	}
 	assertUnstamped("error path")

@@ -68,3 +68,18 @@ func TestParseArgsRejectsConflictingModes(t *testing.T) {
 		}
 	}
 }
+
+func TestASuiteIsolatedOnceRunsInItsNamespace(t *testing.T) {
+	for _, c := range []struct {
+		hostNetwork, contained, want bool
+	}{
+		{false, false, true},
+		{false, true, false},
+		{true, false, false},
+		{true, true, false},
+	} {
+		if got := needsIsolation(c.hostNetwork, c.contained); got != c.want {
+			t.Fatalf("needsIsolation(host network %v, contained %v) = %v, want %v", c.hostNetwork, c.contained, got, c.want)
+		}
+	}
+}

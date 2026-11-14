@@ -25,7 +25,9 @@ import (
 // What it deliberately does NOT do is stand in for a renderer. Anything that
 // needs real page content — snapshot, screenshot, evaluation, locators, input
 // — refuses by name, so a test that thinks it is driving a page fails loudly
-// instead of asserting against invented content.
+// instead of asserting against invented content. Find searches the one text a
+// fake page has, the title its tab shows, so the pane's find bar has an
+// answer to render.
 
 var errFakeEngineHasNoPage = errors.New("browser: the fake browser engine renders no page content")
 
@@ -93,8 +95,9 @@ func (p *fakeProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, e
 	ctx, cancel := context.WithCancel(context.Background())
 	page := &fakePage{
 		profile: p, hooks: hooks, ctx: ctx, cancel: cancel,
-		handle: fmt.Sprintf("fake-page-%d", p.engine.seq.Add(1)),
-		url:    "about:blank",
+		handle:   fmt.Sprintf("fake-page-%d", p.engine.seq.Add(1)),
+		url:      "about:blank",
+		findMode: FindModeBar,
 	}
 	if p.pages == nil {
 		p.pages = make(map[*fakePage]struct{})
@@ -155,6 +158,25 @@ type fakePage struct {
 	// viewportErr, when set, makes SetViewport fail so a test can drive the
 	// failure path.
 	viewportErr error
+	// selection answers SelectionText.
+	selection string
+	// findMode answers FindMode; FindModeBar unless a test changes it.
+	findMode string
+	// findQuery is the running search, "" when there is none.
+	findQuery string
+	// findHook, when set, sees every find call before it is answered:
+	// "start <query>", "step", "back", or "stop".
+	findHook func(call string)
+	// findAnswer, when set, replaces the answer the title gives.
+	findAnswer func(findResult) findResult
+	// findErr, when set, fails every find call.
+	findErr error
+	// findStartErr, when set, fails FindStart alone, after it replaced the
+	// search as a real engine's failed start can.
+	findStartErr error
+	// findStopErr, when set, is asked on each FindStop, with the stop's
+	// context, whether it fails.
+	findStopErr func(context.Context) error
 }
 
 func (p *fakePage) Lifetime() context.Context { return p.ctx }
@@ -186,7 +208,6 @@ func (p *fakePage) Navigate(_ context.Context, rawURL string) error {
 		return fmt.Errorf("browser: navigation to %s is not allowed", rawURL)
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	// A navigation truncates the forward entries AFTER the current one and
 	// keeps everything up to and including it, exactly like a real session
 	// history — dropping the current entry would make "back" impossible after
@@ -197,8 +218,48 @@ func (p *fakePage) Navigate(_ context.Context, rawURL string) error {
 		p.history = append(p.history[:p.index+1], rawURL)
 	}
 	p.index = len(p.history) - 1
+	// A move to a fragment of the same address stays in the document, as
+	// in a real engine; anything else loads a new one.
+	commits := fakeDocument(p.url) != fakeDocument(rawURL) || !strings.Contains(rawURL, "#")
 	p.url, p.title = rawURL, fakeTitle(rawURL)
+	p.mu.Unlock()
+	if commits {
+		p.commitDocument()
+	}
 	return nil
+}
+
+// fakeDocument is an address without its fragment.
+func fakeDocument(rawURL string) string {
+	document, _, _ := strings.Cut(rawURL, "#")
+	return document
+}
+
+// commitDocument reports a new document, as a real engine's commit signal
+// does, delivering the Manager's work at once.
+func (p *fakePage) commitDocument() {
+	p.commitDocumentLate()()
+}
+
+// commitDocumentLate stamps a new document now and returns the delivery of
+// the Manager's work, which a test runs later: an action on another
+// goroutine can run between a real engine's stamp and its delivery.
+func (p *fakePage) commitDocumentLate() (deliver func()) {
+	if p.hooks.DocumentCommitted == nil {
+		return func() {}
+	}
+	if finish := p.hooks.DocumentCommitted(); finish != nil {
+		return finish
+	}
+	return func() {}
+}
+
+// SameDocumentNavigation changes the address the way history.pushState
+// does: no new document. A test seam.
+func (p *fakePage) SameDocumentNavigation(rawURL string) {
+	p.mu.Lock()
+	p.url, p.title = rawURL, fakeTitle(rawURL)
+	p.mu.Unlock()
 }
 
 func (p *fakePage) HistoryState(context.Context) (bool, bool, error) {
@@ -209,23 +270,32 @@ func (p *fakePage) HistoryState(context.Context) (bool, bool, error) {
 
 func (p *fakePage) History(_ context.Context, action string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	switch action {
 	case "back":
 		if p.index <= 0 {
+			p.mu.Unlock()
 			return errors.New("browser: no previous history entry")
 		}
 		p.index--
 	case "forward":
 		if p.index+1 >= len(p.history) {
+			p.mu.Unlock()
 			return errors.New("browser: no forward history entry")
 		}
 		p.index++
-	case "reload", "stop":
+	case "reload":
+		// A reload loads the same address as a new document.
+		p.mu.Unlock()
+		p.commitDocument()
+		return nil
+	case "stop":
+		p.mu.Unlock()
 		return nil
 	}
 	p.url = p.history[p.index]
 	p.title = fakeTitle(p.url)
+	p.mu.Unlock()
+	p.commitDocument()
 	return nil
 }
 
@@ -287,14 +357,92 @@ func (p *fakePage) Click(context.Context, string) error              { return er
 func (p *fakePage) Type(context.Context, string, string, bool) error { return errFakeEngineHasNoPage }
 func (p *fakePage) Press(context.Context, string) error              { return errFakeEngineHasNoPage }
 func (p *fakePage) TypeText(context.Context, string) error           { return errFakeEngineHasNoPage }
-func (p *fakePage) SelectionText(context.Context) string             { return "" }
-func (p *fakePage) Pointer(context.Context, PointerOptions) error    { return errFakeEngineHasNoPage }
+func (p *fakePage) SelectionText(context.Context) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.selection
+}
+func (p *fakePage) Pointer(context.Context, PointerOptions) error { return errFakeEngineHasNoPage }
 
 func (p *fakePage) Scroll(context.Context, string, float64, float64) error {
 	return errFakeEngineHasNoPage
 }
 
 func (p *fakePage) WaitVisible(context.Context, string) error { return errFakeEngineHasNoPage }
+
+func (p *fakePage) FindMode() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.findMode
+}
+
+// findCall runs the test seams for one call and answers it from the title:
+// case-insensitive, non-overlapping matches of the running query.
+func (p *fakePage) findCall(call string) (findResult, error) {
+	p.mu.Lock()
+	hook, answer, err := p.findHook, p.findAnswer, p.findErr
+	query, title := p.findQuery, p.title
+	p.mu.Unlock()
+	if hook != nil {
+		hook(call)
+	}
+	if err != nil {
+		return findResult{}, err
+	}
+	count := 0
+	if query != "" {
+		count = strings.Count(strings.ToLower(title), strings.ToLower(query))
+	}
+	result := findResult{Found: count > 0, Matches: count}
+	if answer != nil {
+		result = answer(result)
+	}
+	return result, nil
+}
+
+func (p *fakePage) FindStart(_ context.Context, query string) (findResult, error) {
+	p.mu.Lock()
+	p.findQuery = query
+	startErr := p.findStartErr
+	p.mu.Unlock()
+	result, err := p.findCall("start " + query)
+	if err == nil && startErr != nil {
+		return findResult{}, startErr
+	}
+	return result, err
+}
+
+func (p *fakePage) FindStep(_ context.Context, backwards bool) (findResult, error) {
+	p.mu.Lock()
+	running := p.findQuery != ""
+	p.mu.Unlock()
+	if !running {
+		return findResult{}, errors.New("browser: no find is running on the fake page")
+	}
+	if backwards {
+		return p.findCall("back")
+	}
+	return p.findCall("step")
+}
+
+func (p *fakePage) FindStop(ctx context.Context) error {
+	p.mu.Lock()
+	hook, err, stopErr := p.findHook, p.findErr, p.findStopErr
+	p.mu.Unlock()
+	if err == nil && stopErr != nil {
+		err = stopErr(ctx)
+	}
+	// A refused stop leaves the search where it was.
+	if err == nil {
+		p.mu.Lock()
+		p.findQuery = ""
+		p.mu.Unlock()
+	}
+	if hook != nil {
+		hook("stop")
+	}
+	return err
+}
 
 // SetViewport records the size and succeeds unless viewportErr is set: a
 // viewport is AO state the Manager applies to every page, and refusing it

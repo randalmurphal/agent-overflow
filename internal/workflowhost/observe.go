@@ -138,7 +138,7 @@ func (r *Runner) observe(runKey string, event provider.ProviderEvent) {
 		// windows are advisory and model/bucket granularity is not reliable across
 		// providers, so neither is used for control flow: the real refusal is the
 		// proof, and an explicit resume always gets another real attempt.
-		if workflowUsageLimitRefusal(event) {
+		if provider.IsUsageLimitRefusal(event) {
 			r.disarmTimerLocked(attempt)
 			attempt.pendingTransient = false
 			identity, identified := attempt.dispatchIdentity, attempt.dispatchIdentitySet
@@ -280,7 +280,17 @@ func workflowProviderTurnStarted(providerName string, event provider.ProviderEve
 	if event.Kind == provider.EventTurnStart {
 		return true
 	}
-	return providerName == string(provider.Claude) && event.Kind == provider.EventInit
+	if providerName != string(provider.Claude) || event.Kind != provider.EventInit {
+		return false
+	}
+	// A command AO issued on its own (`/effort`, `/fast`) runs a CLI turn of
+	// its own that answers no attempt's prompt.
+	var info provider.SessionInfo
+	if len(event.Meta) > 0 && json.Unmarshal(event.Meta, &info) == nil &&
+		info.TurnOpener == provider.TurnOpenerInternalCommand {
+		return false
+	}
+	return true
 }
 
 // workflowParentedErrorClosesTurn reports whether an event carrying a child's

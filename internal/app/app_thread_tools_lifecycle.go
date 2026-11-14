@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"log"
+	"slices"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 )
 
 // Stopping a request, and what happens to one when either of its threads
@@ -18,7 +20,10 @@ import (
 //
 // The settlement comes FIRST so the turn observer, which settles only a
 // `running` receipt, cannot race the interrupt and report the interrupted
-// turn as this request's answer.
+// turn as this request's answer. Once it is settled the stop always runs to
+// the end, and a repeated cancel of a cancelled receipt stops whatever the
+// first one did not reach: the turn bound to it, or its message while still
+// queued.
 func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, error) {
 	return a.stopThreadRequestWorkFor(ctx, token, threadRequestSenderCancel)
 }
@@ -31,6 +36,27 @@ const (
 	threadRequestUserStop     = "The user stopped it from the Agents tray; you did not cancel it."
 	threadRequestUserWithdrew = "The user withdrew it from the recipient's queue before its agent read it."
 )
+
+// stopFromAgentsTray is the user's Stop of a request in its caller's Agents
+// tray. It is the user's stop, so the stopped thread's timeline says so, and
+// it carries no kill consent: the tray stops the request's turn, not the
+// background agents that turn started.
+func stopFromAgentsTray() turnStop {
+	return turnStop{
+		label: triage.StoppedByUser,
+		cause: "The user stopped its turn from the Agents tray before it answered.",
+	}
+}
+
+// requestCancelStop is who a request's cancel names as stopping its turn,
+// for any other request that turn was answering: the user for a Stop from
+// the Agents tray, otherwise the thread that sent the request.
+func (a *App) requestCancelStop(receipt store.ThreadRequestReceipt, answer string) turnStop {
+	if answer == threadRequestUserStop {
+		return stopFromAgentsTray()
+	}
+	return a.receiptCanceller(receipt)
+}
 
 // stopThreadRequestWorkFor is stopThreadRequestWork with the answer the
 // cancelled receipt settles with.
@@ -46,25 +72,44 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 	if hook := a.cancelReadForTest; hook != nil {
 		hook(token)
 	}
-	// The door takes the settle lock for the settlement and releases it
-	// before the queue and provider work below: both take thread locks, and
-	// neither settles anything.
-	work, settled, err := a.settleReceiptUnderLock(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
-		State:      store.ThreadReceiptCancelled,
-		Answer:     []byte(answer),
-		AnswerKind: store.ThreadAnswerError,
-	}, dropScratchThread)
-	if err != nil {
-		return "", err
-	}
-	a.runThreadSettlementWork(work)
-	// A receipt something else settled first (a reply, a turn end, an
-	// earlier cancel), before the read above or after it, has nothing left
-	// to stop: its turn, still running or not, is no longer this request's
-	// work. Only the settlement's own answer says which happened last.
-	if !settled {
+	repeated := false
+	switch {
+	case slices.Contains(store.ThreadReceiptOpenStates(), state):
+		// The door takes the settle lock for the settlement and releases it
+		// before the queue and provider work below: both take thread locks,
+		// and neither settles anything.
+		work, settled, err := a.settleReceiptUnderLock(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+			State:      store.ThreadReceiptCancelled,
+			Answer:     []byte(answer),
+			AnswerKind: store.ThreadAnswerError,
+		}, dropScratchThread)
+		if err != nil {
+			return "", err
+		}
+		a.runThreadSettlementWork(work)
+		// A receipt something else settled first (a reply, a turn end, an
+		// earlier cancel), before the read above or after it, has nothing
+		// left to stop: its turn, still running or not, is no longer this
+		// request's work. Only the settlement's own answer says which
+		// happened last.
+		if !settled {
+			return threadtools.EffectNothing, nil
+		}
+	case state == store.ThreadReceiptCancelled:
+		// A turn bound to the receipt means it was running when cancelled,
+		// and that turn is the one to stop. Otherwise its message may still
+		// be queued; a repeat takes it back if so and touches no turn, since
+		// it cannot name one.
+		repeated = true
+		state = store.ThreadReceiptAccepted
+		if receipt.TurnID != "" {
+			state = store.ThreadReceiptRunning
+		}
+	default:
 		return threadtools.EffectNothing, nil
 	}
+	ctx = context.WithoutCancel(ctx)
+	stop := a.requestCancelStop(receipt, answer)
 
 	if state == store.ThreadReceiptAccepted {
 		// The message was still on the queue when the receipt was read, so
@@ -107,13 +152,16 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 		if !receipt.OwnTurn {
 			return threadtools.EffectLeftRunning, nil
 		}
-		return a.interruptRequestTurn(ctx, receipt.TargetThreadID, index)
+		return a.interruptRequestTurn(ctx, receipt.TargetThreadID, index, stop)
+	}
+	if repeated {
+		return threadtools.EffectNothing, nil
 	}
 	if state == store.ThreadReceiptAccepted {
 		// It is not on the queue any more and no delivery bound it: the
 		// dispatch claimed it while the cancel was running, or it reached
 		// the provider before the receipt moved to `running`.
-		return a.interruptDispatchedRequest(ctx, receipt.TargetThreadID, threadRequestSendID(token))
+		return a.interruptDispatchedRequest(ctx, receipt.TargetThreadID, threadRequestSendID(token), stop)
 	}
 	// Running with no turn bound: the message is with the provider and no
 	// turn has read it yet. The turn running meanwhile is someone else's,
@@ -121,12 +169,23 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 	return threadtools.EffectLeftUnread, nil
 }
 
+// receiptCanceller is the stop of a request cancelled by its own sender.
+// The request itself is already settled cancelled; the cause reaches any
+// other request the same turn was answering.
+func (a *App) receiptCanceller(receipt store.ThreadRequestReceipt) turnStop {
+	computer := ""
+	if receipt.OwnerDeviceID != threadReceiptLocalOwner {
+		computer = a.stoppingComputerName(receipt.SourceComputerID)
+	}
+	return stopByThread(receipt.SourceThreadTitle, receipt.SourceThreadID, computer)
+}
+
 // interruptDispatchedRequest stops the turn a request's message started, for
 // a cancel that found nothing left to take off the queue. The send id names
 // the message, and the row it produced names the turn: without that the
 // cancel would report that there was nothing to stop while the turn it was
 // asked to stop ran on.
-func (a *App) interruptDispatchedRequest(ctx context.Context, threadID, sendID string) (string, error) {
+func (a *App) interruptDispatchedRequest(ctx context.Context, threadID, sendID string, stop turnStop) (string, error) {
 	record, found, err := a.findRecordedSend(threadID, sendID)
 	if err != nil {
 		return "", err
@@ -145,13 +204,13 @@ func (a *App) interruptDispatchedRequest(ctx context.Context, threadID, sendID s
 	if turnFound && turn.StartedAt < record.item.CreatedAt {
 		return threadtools.EffectLeftUnread, nil
 	}
-	return a.interruptRequestTurn(ctx, threadID, record.item.TurnIndex)
+	return a.interruptRequestTurn(ctx, threadID, record.item.TurnIndex, stop)
 }
 
 // interruptRequestTurn interrupts one thread only while the named turn is the
 // one it is running, and reports what happened in the cancel's vocabulary.
-func (a *App) interruptRequestTurn(ctx context.Context, threadID string, turnIndex int) (string, error) {
-	interrupted, err := a.interruptTurnAtIndex(ctx, threadID, turnIndex, nil)
+func (a *App) interruptRequestTurn(ctx context.Context, threadID string, turnIndex int, stop turnStop) (string, error) {
+	interrupted, err := a.interruptTurnAtIndex(ctx, threadID, turnIndex, stop)
 	if err != nil {
 		return "", err
 	}
@@ -174,26 +233,39 @@ func (a *App) interruptRequestTurn(ctx context.Context, threadID string, turnInd
 // caller was archived would destroy work nobody said to stop. An ask is the
 // exception: its scratch thread exists only to answer this caller.
 func (a *App) cancelThreadRequests(ctx context.Context, callerThreadID string) error {
-	a.cancelThreadRequestWaits(callerThreadID)
-	if _, err := a.store.SetThreadRequestsNotifyForCaller(callerThreadID, false); err != nil {
-		return err
-	}
-	rows, err := a.store.ListThreadRequestsByCaller(callerThreadID, threadCancelLineagePage, 0)
+	asks, err := a.disarmThreadRequests(callerThreadID)
 	if err != nil {
 		return err
 	}
-	for _, row := range rows {
-		if threadRequestSettled(row) || row.Kind != store.ThreadRequestAsk {
-			continue
-		}
+	a.cancelOwnedAsks(ctx, callerThreadID, asks)
+	return nil
+}
+
+// disarmThreadRequests ends the caller's parked calls, disarms its wakes and
+// returns the asks it owns that are still open.
+func (a *App) disarmThreadRequests(callerThreadID string) ([]store.ThreadRequest, error) {
+	a.cancelThreadRequestWaits(callerThreadID)
+	if _, err := a.store.SetThreadRequestsNotifyForCaller(callerThreadID, false); err != nil {
+		return nil, err
+	}
+	rows, err := a.store.ListThreadRequestsByCaller(callerThreadID, threadCancelLineagePage, 0)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(rows, func(row store.ThreadRequest) bool {
+		return threadRequestSettled(row) || row.Kind != store.ThreadRequestAsk
+	}), nil
+}
+
+// cancelOwnedAsks stops exactly the asks named, best effort by design: the
+// caller's own operation is what is being served, and a scratch thread left
+// running is swept at the next boot, here or on the computer that holds it.
+func (a *App) cancelOwnedAsks(ctx context.Context, callerThreadID string, asks []store.ThreadRequest) {
+	for _, row := range asks {
 		if err := a.cancelOwnedAsk(ctx, row); err != nil {
-			// Best effort by design: the caller's own operation is what is
-			// being served, and a scratch thread left running is swept at the
-			// next boot, here or on the computer that holds it.
 			log.Printf("thread tools: cancel ask %s for %s: %v", row.Token, callerThreadID, err)
 		}
 	}
-	return nil
 }
 
 // cancelOwnedAsk stops one ask this caller owns, wherever it is running.

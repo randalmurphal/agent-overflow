@@ -148,7 +148,7 @@
 </script>
 
 {#if token.isInline}
-  <span class={hostClass} data-math-source={token.text}>
+  <span class={hostClass} data-math-source={token.text} data-find-skip>
     <Math {token} {id} />
   </span>
 {:else}
@@ -157,6 +157,7 @@
     class={[hostClass, 'math-host-with-fallback']}
     class:math-rendered={mathRendered}
     data-math-source={token.text}
+    data-find-skip
     style:--math-cached-min-h={cachedRenderedHeight ? `${cachedRenderedHeight}px` : null}
   >
     <pre class="math-source-fallback" aria-hidden="true">{token.text}</pre>

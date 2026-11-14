@@ -12,8 +12,8 @@ function thread(overrides: Partial<ReviewThread> = {}): ReviewThread {
     isResolved: overrides.isResolved ?? false,
     isOutdated: overrides.isOutdated ?? false,
     comments: overrides.comments ?? [
-      { authorLogin: 'alice', body: 'first line\nsecond line', createdAt: '2026-01-01', databaseID: 1 },
-      { authorLogin: 'bob', body: 'reply', createdAt: '2026-01-02', databaseID: 2 },
+      { authorLogin: 'alice', body: 'first line\nsecond line', createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false },
+      { authorLogin: 'bob', body: 'reply', createdAt: '2026-01-02', databaseID: 2, id: `n${2}`, viewerCanEdit: false, viewerCanDelete: false },
     ],
   };
 }
@@ -118,14 +118,40 @@ describe('visibleBody', () => {
   it('drops an unterminated trailing comment', () => {
     expect(visibleBody('Prose first.\n<!-- truncated marker')).toBe('Prose first.');
   });
+
+  it('keeps fenced code whole: a comment opener there is code', () => {
+    const fenced = 'Before.\n```ts\nconst opener = "<!--";\n```\nAfter. <!-- gone -->\n~~~\n<!-- kept -->\n~~~';
+    expect(visibleBody(fenced)).toBe('Before.\n```ts\nconst opener = "<!--";\n```\nAfter. \n~~~\n<!-- kept -->\n~~~');
+    // A longer closer, CRLF, an indented fence, and a fence never closed.
+    expect(visibleBody('````\r\n<!--\r\n```\r\n`````\r\nx <!-- y -->')).toBe('````\r\n<!--\r\n```\r\n`````\r\nx');
+    expect(visibleBody('   ```\n<!--\n   ```\nx')).toBe('```\n<!--\n   ```\nx');
+    expect(visibleBody('a\n```\n<!-- to the end')).toBe('a\n```\n<!-- to the end');
+  });
+
+  it('reads a fence only where one opens', () => {
+    // A comment that opens first swallows the fence inside it.
+    expect(visibleBody('a <!--\n```\nx\n```\n--> b')).toBe('a  b');
+    // Backticks later on the line make it a code span, not a fence, and a
+    // fence opens only at the start of a line.
+    expect(visibleBody('```a``` <!-- x -->\ntail')).toBe('```a``` \ntail');
+    expect(visibleBody('<!-- x -->```\n<!-- y -->')).toBe('```');
+  });
+
+  it('stays linear over many comments ahead of a fence', () => {
+    const body = `${'<!-- m -->\n'.repeat(200000)}\`\`\`\n<!--\n\`\`\``;
+    const started = performance.now();
+    expect(visibleBody(body)).toBe('```\n<!--\n```');
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
 });
 
 describe('countReviewComments', () => {
-  it('counts per file and overall, unresolved only for open resolvable threads', () => {
+  it('counts per file and overall, unresolved for every open resolvable thread, outdated included', () => {
     const counts = countReviewComments({
       prThreads: [
         thread({ id: 't1', path: 'src/a.ts' }),
         thread({ id: 't2', path: 'src/a.ts', isResolved: true }),
+        // Outdated but open: the code moved, the question is still asked.
         thread({ id: 't3', path: 'src/a.ts', isOutdated: true }),
         // A PR-level comment: neutral, never unresolved.
         thread({ id: 'conv', path: '', line: null, side: '', isResolvable: false }),
@@ -133,11 +159,11 @@ describe('countReviewComments', () => {
       drafts: [draft({ id: 'd1', filePath: 'src/b.ts' })],
     });
 
-    expect(counts.byFile.get('src/a.ts')).toEqual({ total: 3, unresolved: 1 });
+    expect(counts.byFile.get('src/a.ts')).toEqual({ total: 3, unresolved: 2 });
     expect(counts.byFile.get('src/b.ts')).toEqual({ total: 1, unresolved: 0 });
     expect(counts.byFile.get('')).toEqual({ total: 1, unresolved: 0 });
     expect(counts.byFile.has('src/c.ts')).toBe(false);
-    expect(counts.tally).toEqual({ unresolved: 1, drafts: 1, total: 5 });
+    expect(counts.tally).toEqual({ unresolved: 2, drafts: 1, total: 5 });
   });
 
   it('is empty with nothing to count', () => {

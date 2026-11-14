@@ -201,6 +201,20 @@ func joinFlushMeta(members []flushMember, lengths []int) (string, []usermessage.
 	}
 	joined := usermessage.JoinMetas(metas)
 	joined.RecordMembers(metas, texts, lengths)
+	// The joined text without the review comments any member rendered,
+	// renumbered by the same walk as the summary.
+	for _, member := range members {
+		if member.resolved.textBeforeReviewComments != nil {
+			text := joinRenumberedText(members, func(member flushMember) string {
+				if member.resolved.textBeforeReviewComments != nil {
+					return *member.resolved.textBeforeReviewComments
+				}
+				return member.resolved.content
+			})
+			joined.TextBeforeReviewComments = &text
+			break
+		}
+	}
 	meta, err := usermessage.MarshalMeta(joined)
 	if err != nil {
 		return "", nil, "", err

@@ -1,6 +1,5 @@
 import { OpenExternalURL } from '../stores/bindings';
-import { threadActsHere } from '../stores/attachedBackends.svelte';
-import { browserCompanionAct, browserCompanionState } from '../stores/browserCompanion.svelte';
+import { browserCompanionAct, browserCompanionState, canUseNativeBrowser } from '../stores/browserCompanion.svelte';
 import { addErrorToast } from '../stores/toast.svelte';
 import { runMode } from '../transport/runMode';
 import type { BackendKey } from '../transport/backendKey';
@@ -234,10 +233,10 @@ function handleExternalLinkClick(event: MouseEvent): void {
   // Mod+click opens the link in the thread's companion browser, which is a
   // NATIVE view of ONE host process — the thread's, since that is where
   // `browserCompanionAct` routes. So the gesture needs more than `host` in
-  // hand: with the thread on another machine it would mint a page in that
-  // machine's engine, which this window has no way to show, and the person
-  // would see nothing happen. `threadActsHere` is both halves of the
-  // question, and off it the click falls back to the plain behaviour.
+  // hand: with the thread on another machine, or in a browser tab on the
+  // host, it would mint a page this window has no way to show, and the
+  // person would see nothing happen. `canUseNativeBrowser` is the pane's
+  // one question, and off it the click falls back to the plain behaviour.
   // Middle-click is deliberately not in this branch: it means "somewhere
   // other than here" in every browser, and the system browser is that
   // somewhere.
@@ -245,7 +244,7 @@ function handleExternalLinkClick(event: MouseEvent): void {
   // handler scheme (mailto:, vscode://) falls through to the OS opener.
   if (event.button === 0 && isModClick(event) && safeExternalURL(safeURL) !== null) {
     const threadId = threadIdForTarget(event.target);
-    if (threadId && threadActsHere(threadId)) {
+    if (threadId && canUseNativeBrowser(threadId)) {
       void openInCompanionBrowser(threadId, safeURL);
       return;
     }

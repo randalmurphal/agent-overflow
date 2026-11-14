@@ -18,7 +18,6 @@ vi.mock('./bindings', async (importOriginal) => ({
 const {
   applyWorktreeSetupEvent,
   dismissWorktreeSetup,
-  dropWorktreeSetup,
   getWorktreeSetup,
   hasWorktreeSetupSurface,
   hydrateWorktreeSetup,
@@ -266,18 +265,6 @@ describe('terminal states', () => {
       vi.useRealTimers();
     }
   });
-
-  it('cancels the pending clear when the key is dropped', async () => {
-    vi.useFakeTimers();
-    try {
-      applyWorktreeSetupEvent(started());
-      applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'succeeded' });
-      dropWorktreeSetup(THREAD);
-      expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });
 
 describe('dismissal', () => {
@@ -396,6 +383,39 @@ describe('hydration', () => {
     const view = getWorktreeSetup(THREAD);
     expect(view?.state).toBe('failed');
     expect(view?.error).toBe('late failure');
+  });
+
+  // A fast-streaming run would otherwise re-enter hydration indefinitely.
+  it('does not read again for replayed events the snapshot does not account for', async () => {
+    let release: (value: unknown) => void = () => {};
+    GetThreadWorktreeSetup.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    const pending = hydrateWorktreeSetup(THREAD);
+    // A chunk past a hole, and a step of a run the snapshot does not name.
+    applyWorktreeSetupEvent(output(5, 'late\n'));
+    applyWorktreeSetupEvent({ phase: 'step-started', threadId: THREAD, runId: 'run-other', stepIndex: 0 });
+    release({
+      threadId: THREAD, runId: 'run-1', state: 'running',
+      steps: started().steps, stepStatuses: ['succeeded', 'running'],
+      output: 'partial\n', outputSeq: 1,
+    });
+    await pending;
+
+    expect(getWorktreeSetup(THREAD)?.output).toBe('partial\nlate\n');
+    expect(getWorktreeSetup(THREAD)?.stepStatuses).toEqual(['succeeded', 'running']);
+    expect(GetThreadWorktreeSetup).toHaveBeenCalledTimes(1);
+  });
+
+  it('forgets a hydration in flight on reset', async () => {
+    let release: (value: unknown) => void = () => {};
+    GetThreadWorktreeSetup.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    const pending = hydrateWorktreeSetup(THREAD);
+    resetWorktreeSetupForTest();
+    release({
+      threadId: THREAD, runId: 'run-1', state: 'failed',
+      steps: [], stepStatuses: [], output: '', outputSeq: 0, error: 'stale',
+    });
+    await pending;
+    expect(getWorktreeSetup(THREAD)).toBeNull();
   });
 
   // A failed hydration must not leave the thread buffering forever: the stream

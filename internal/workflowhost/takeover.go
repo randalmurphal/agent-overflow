@@ -145,7 +145,7 @@ func (r *Runner) interruptAndWaitForYield(ctx context.Context, runKey, threadID 
 	// takeover.
 	lockCtx, cancel := context.WithTimeout(ctx, r.StopSendWait)
 	defer cancel()
-	if err := r.interrupt(lockCtx, threadID); err != nil {
+	if err := r.interrupt(lockCtx, threadID, InterruptForTakeover); err != nil {
 		return nil, fmt.Errorf("workflow runner: interrupt %s: %w", runKey, err)
 	}
 	if _, active, err := r.store.GetActiveTurn(threadID); err != nil {

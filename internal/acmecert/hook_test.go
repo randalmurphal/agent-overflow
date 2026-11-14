@@ -55,6 +55,15 @@ func TestAFailingHookReportsItsOutput(t *testing.T) {
 	requireNames(t, err, "exit status 3")
 }
 
+// A hook that cannot be started is a settings problem, named as one.
+func TestAHookThatCannotBeStartedReportsTheCommand(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-hook")
+	err := runHook(context.Background(), []string{missing}, time.Minute, hookSet, "_acme-challenge.backend.example", "the-value")
+	requireNames(t, err, "failed")
+	requireNames(t, err, "no-such-hook")
+	requireNames(t, err, "no such file or directory")
+}
+
 // The bound is real: a hook that never returns must not hold the renewal
 // loop, and the timeout kills its whole process group.
 func TestAHookThatNeverReturnsIsBounded(t *testing.T) {

@@ -498,6 +498,25 @@ export interface ProviderAccountSignInEvent {
   active: boolean;
 }
 
+/**
+ * `provider:account_auto_switch`: the app changed the selected account
+ * (docs/specs/account-auto-switch.md). With `error` set the switch failed and
+ * `toLabel` names the account it tried. `resetsAt` is unix seconds.
+ */
+export interface ProviderAccountAutoSwitchEvent {
+  provider: ProviderID;
+  fromAccountId?: string;
+  toAccountId?: string;
+  fromLabel?: string;
+  toLabel?: string;
+  reason?: 'exhausted' | 'threshold' | 'refused' | 'order';
+  limitName?: string;
+  usedPercent?: number;
+  resetsAt?: number;
+  model?: string;
+  error?: string;
+}
+
 export interface ProviderAccountUsageErrorEvent {
   provider: ProviderID;
   accountId: string;
@@ -549,10 +568,7 @@ export interface TurnCompletedEvent {
   stopReason: string;
   /**
    * Provider message id (Claude `msg_…`, Codex equivalent) of the
-   * FINAL assistant message of this turn. For multi-round logical
-   * turns (Claude task_notification cascades, stdin-during-wait
-   * re-rounds) each round's settle overwrites the persisted column
-   * so the value always points to the last message — matching the
+   * FINAL assistant message of this turn, matching the
    * `SettledTurn.assistantMessageId` contract. Empty string when
    * the provider didn't report one (e.g. session-died synthesis
    * before any assistant envelope).
@@ -577,14 +593,6 @@ export interface TurnCompletedEvent {
    * carries the read marker it kept.
    */
   quiet?: boolean;
-  /**
-   * True when this turn ended because the user message was reverted
-   * via InterruptAndRevertIfClean (Stop-before-response). The sidebar
-   * pill MUST NOT flip to "Interrupted" — nothing happened, so don't
-   * paint it like something did. Set by the backend Router after
-   * `MarkTurnReverted` consumes its one-shot flag.
-   */
-  revertedUserMessage?: boolean;
   /**
    * Thread history invalidation stamps (docs/architecture/thread-replica-sync.md
    * §3) read as this event was built. Adopted IN MEMORY ONLY: a writer
@@ -715,6 +723,32 @@ export interface WorktreeSetupEvent {
   chunk?: string;
   state?: string;
   error?: string;
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+/**
+ * ShellCommandEvent is one frame on the `shell:command` channel: a command
+ * the person ran from a thread's composer (app_shell_command.go). `started`
+ * carries `command` and `startedAt`; `output` carries `seq` and `chunk`;
+ * `terminal` carries the whole retained text of the command's own terminal
+ * (a prompt) and `terminalSeq`; `finished` carries `state` (sent | stopped |
+ * failed), `exitCode`, and `error` when it failed. `seq` and `terminalSeq`
+ * are independent per-run counters from 1, reconciled with the snapshot's
+ * `outputSeq` and `terminalSeq` in stores/shellCommands.svelte.ts.
+ */
+export interface ShellCommandEvent {
+  phase: 'started' | 'output' | 'terminal' | 'finished';
+  threadId: string;
+  runId: string;
+  command?: string;
+  seq?: number;
+  chunk?: string;
+  terminal?: string;
+  terminalSeq?: number;
+  state?: string;
+  error?: string;
+  exitCode?: number;
   startedAt?: number;
   finishedAt?: number;
 }

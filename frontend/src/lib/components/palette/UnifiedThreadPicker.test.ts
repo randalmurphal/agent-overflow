@@ -208,6 +208,19 @@ describe('<UnifiedThreadPicker> — filtering', () => {
     expect(marks[0].textContent).toBe('Release');
   });
 
+  it('highlights by its own filter rule, at the match after a character whose lower case is longer', async () => {
+    await seedThreads([makeThread({ id: 'a', title: 'İzmir ÉCOLE notes' })]);
+    const pane = makePane();
+    const { getByTestId, findByTestId } = render(UnifiedThreadPicker, {
+      open: true,
+      pane,
+      onClose: vi.fn(),
+    });
+    await fireEvent.input(getByTestId('thread-picker-input'), { target: { value: 'école' } });
+    const row = await findByTestId('thread-picker-hit-a');
+    expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['ÉCOLE']);
+  });
+
   it('shows the "N more — refine your query" footer when results exceed the cap', async () => {
     const many: Thread[] = [];
     for (let i = 0; i < 55; i += 1) {
@@ -261,7 +274,7 @@ describe('<UnifiedThreadPicker> — keyboard', () => {
       makeThread({ id: 'c', title: 'Charlie' }),
     ]);
     const pane = makePane();
-    const { getByTestId, container } = render(UnifiedThreadPicker, {
+    const { getByTestId } = render(UnifiedThreadPicker, {
       open: true,
       pane,
       onClose: vi.fn(),
@@ -283,7 +296,7 @@ describe('<UnifiedThreadPicker> — keyboard', () => {
     await fireEvent.keyDown(body, { key: 'ArrowUp' });
     expect(getByTestId('thread-picker-hit-c').getAttribute('aria-current')).toBe('true');
     // Backdrop is still the place Escape lands.
-    expect(container.querySelector('[data-modal-backdrop]')).not.toBeNull();
+    expect(document.querySelector('[data-modal-backdrop]')).not.toBeNull();
   });
 
   it('Enter switches to the highlighted thread and calls onClose', async () => {
@@ -330,8 +343,8 @@ describe('<UnifiedThreadPicker> — keyboard', () => {
     await seedThreads([makeThread({ id: 'a', title: 'Alpha' })]);
     const onClose = vi.fn();
     const pane = makePane();
-    const { container } = render(UnifiedThreadPicker, { open: true, pane, onClose });
-    const backdrop = container.querySelector('[data-modal-backdrop]')!;
+    render(UnifiedThreadPicker, { open: true, pane, onClose });
+    const backdrop = document.querySelector('[data-modal-backdrop]')!;
     await fireEvent.keyDown(backdrop, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -354,12 +367,12 @@ describe('<UnifiedThreadPicker> — interactions', () => {
     await seedThreads([makeThread({ id: 'a', title: 'Alpha' })]);
     const onClose = vi.fn();
     const pane = makePane();
-    const { getByTestId, container } = render(UnifiedThreadPicker, { open: true, pane, onClose });
+    const { getByTestId } = render(UnifiedThreadPicker, { open: true, pane, onClose });
     // Clicking the dialog body should not dismiss — Modal only closes
     // when the click originates on the backdrop itself.
     await fireEvent.click(getByTestId('thread-picker'));
     expect(onClose).not.toHaveBeenCalled();
-    const backdrop = container.querySelector('[data-modal-backdrop]') as HTMLElement;
+    const backdrop = document.querySelector('[data-modal-backdrop]') as HTMLElement;
     await fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledTimes(1);
   });

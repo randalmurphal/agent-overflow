@@ -1,1 +1,1 @@
-export type SendButtonAction = 'send' | 'implement' | 'refine' | 'send-comments';
+export type SendButtonAction = 'send' | 'run' | 'implement' | 'refine' | 'send-comments';

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/appimage"
+	"agent-overflow/internal/gitenv"
 	"agent-overflow/internal/procutil"
 )
 
@@ -79,9 +80,10 @@ func gitResult(ctx context.Context, runErr error, allowNonZero bool, args []stri
 }
 
 // gitEnv strips diff-driver overrides so user config can't inject an
-// external command into automatic diff runs, then appends extraEnv. The
-// inherited base is scrubbed of AppImage launch artifacts like every
-// other child environment (see internal/appimage).
+// external command into automatic diff runs, closes every credential
+// prompt (a diff in a partial clone fetches the objects it lacks), then
+// appends extraEnv. The inherited base is scrubbed of AppImage launch
+// artifacts like every other child environment (see internal/appimage).
 func gitEnv(extraEnv []string) []string {
 	base := appimage.Scrub(os.Environ())
 	env := make([]string, 0, len(base)+len(extraEnv)+2)
@@ -91,6 +93,6 @@ func gitEnv(extraEnv []string) []string {
 		}
 		env = append(env, entry)
 	}
-	env = append(env, "GIT_EXTERNAL_DIFF=", "GIT_DIFF_OPTS=")
+	env = gitenv.NonInteractive(append(env, "GIT_EXTERNAL_DIFF=", "GIT_DIFF_OPTS="))
 	return append(env, extraEnv...)
 }

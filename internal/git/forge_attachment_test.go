@@ -33,7 +33,7 @@ func TestFetchAttachmentRefusesAMalformedHrefBeforeSpawning(t *testing.T) {
 		{PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "g", Repo: "r", Number: 1}, "/uploads/short/a.png"},
 		{PRReference{Forge: "bitbucket", Host: "bitbucket.org", Namespace: "g", Repo: "r", Number: 1}, "https://github.com/user-attachments/assets/a"},
 	} {
-		if _, _, err := core.FetchAttachment(t.Context(), tc.ref, tc.href, 1<<20); err == nil {
+		if _, _, err := core.FetchAttachment(t.Context(), tc.ref.Repository(), tc.href, 1<<20); err == nil {
 			t.Fatalf("FetchAttachment(%q) accepted a reference it cannot serve", tc.href)
 		}
 	}
@@ -50,7 +50,7 @@ func TestFetchAttachmentRefusesAMalformedHrefBeforeSpawning(t *testing.T) {
 // rather than reaching for a binary.
 func TestFetchAttachmentIsUnsupportedForAnUnknownForge(t *testing.T) {
 	t.Parallel()
-	_, err := nullForge{}.FetchAttachment(t.Context(), PRReference{}, forgeattach.Target{}, 1<<20)
+	_, err := nullForge{}.FetchAttachment(t.Context(), RepoReference{}, forgeattach.Target{}, 1<<20)
 	if err != ErrUnsupportedForge {
 		t.Fatalf("nullForge.FetchAttachment = %v, want ErrUnsupportedForge", err)
 	}
@@ -65,7 +65,7 @@ func TestFetchAttachmentReportsAMissingBinary(t *testing.T) {
 	core := NewCore(WithForgeAPI(svc))
 	ref := PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widget", Number: 1}
 
-	_, _, err = core.FetchAttachment(t.Context(), ref, "https://github.com/user-attachments/assets/abc", 1<<20)
+	_, _, err = core.FetchAttachment(t.Context(), ref.Repository(), "https://github.com/user-attachments/assets/abc", 1<<20)
 	setup, ok := errors.AsType[*forgeapi.SetupError](err)
 	if !ok {
 		t.Fatalf("error is %T (%v), want *forgeapi.SetupError", err, err)

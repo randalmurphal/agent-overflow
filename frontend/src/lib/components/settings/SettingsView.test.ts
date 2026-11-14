@@ -25,6 +25,13 @@ async function seed(): Promise<void> {
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('ListThreads', async () => []);
   setBindingMock('ListArchivedThreads', async () => []);
+  // The storage page reads Claude Code's own transcript retention on mount.
+  setBindingMock('GetClaudeTranscriptRetention', async () => ({
+    settingsPath: '/home/test/.claude/settings.json',
+    claudeDays: 30,
+    explicit: false,
+    sessionDays: 0,
+  }));
   // The Performance page asks whether it runs under the Windows launcher.
   setBindingMock('IsWSL', async () => false);
   // The notifications block below reads the push status on mount.
@@ -56,7 +63,7 @@ describe('settings section map', () => {
     ]);
     expect(settingsSectionGroups().map((g) => g.sections.map((s) => s.id))).toEqual([
       ['theme', 'typography', 'chat', 'sidebar', 'spinner'],
-      ['threads', 'performance', 'keybindings', 'notifications', 'updates'],
+      ['threads', 'performance', 'keybindings', 'notifications', 'voice', 'updates'],
       ['claude', 'codex', 'commit-messages', 'browser', 'thread-tools', 'agent-guide', 'memory'],
       ['projects', 'git', 'editor'],
       ['systems', 'remote', 'agent-access'],
@@ -100,6 +107,14 @@ describe('<SettingsView> tabs', () => {
 
     await fireEvent.click(getByRole('tab', { name: 'Git' }));
     expect(getByTestId('settings-page-header')).toHaveTextContent('Git');
+  });
+
+  it('names the computer the Voice page configures', async () => {
+    const { getByTestId, getByRole } = render(SettingsView, { onClose: vi.fn() });
+    await fireEvent.click(getByRole('tab', { name: 'Voice' }));
+    const header = getByTestId('settings-page-header');
+    expect(header).toHaveTextContent('Computer:');
+    expect(header).not.toHaveTextContent('Saved on this device.');
   });
 
   it('switches to the Observability page when clicked', async () => {

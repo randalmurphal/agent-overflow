@@ -5,31 +5,30 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
-  import Circle from '@lucide/svelte/icons/circle';
-  import CircleCheck from '@lucide/svelte/icons/circle-check';
-  import CircleMinus from '@lucide/svelte/icons/circle-minus';
-  import CircleSlash from '@lucide/svelte/icons/circle-slash';
-  import CircleX from '@lucide/svelte/icons/circle-x';
   import Copy from '@lucide/svelte/icons/copy';
-  import Dot from '@lucide/svelte/icons/dot';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
-  import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
+  import ReviewCIJobActions from './ReviewCIJobActions.svelte';
   import ReviewCILogBlockRow from './ReviewCILogBlockRow.svelte';
+  import ReviewCISectionStatusIcon from './ReviewCISectionStatusIcon.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
+  import { hostedBackReader } from '../panes/hostedBack';
   import { OpenExternalURL } from '../../stores/bindings';
   import { CI_LOG_BLOCK_LINES, CILogBlockCache, type CILogFetch } from '../../stores/ciLogBlocks.svelte';
   import type { PRCILogState } from '../../stores/prReviewCI.svelte';
-  import { getSettings } from '../../stores/settings.svelte';
-  import type { CILogView } from '../../stores/reviewPane.svelte';
+  import type { CILogView } from '../../stores/ciSubject.svelte';
+  import type { CIActionsView } from '../../stores/ciSubjectActions.svelte';
   import type { CILogSection } from '../../types/models';
   import { ciJobLive, ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { reportReaderNavigation } from '../../utils/scroll/readerInput';
   import type { RowEstimate } from '../../utils/virtual/types';
   import { rateLimitMessage, type ForgeFailure } from '../../utils/forgeFailure';
+  import { findCILogKey } from '../../utils/ciLogFind';
+  import { textLineAtEdge } from '../../utils/findReadingEdge';
 
   // CI job log view: replaces the diff body (same pattern as the
   // conflict viewer). The log shows as one collapsible row per GitHub
@@ -75,13 +74,19 @@
     onBack: () => void;
     onRefresh: () => void;
     onSave: () => void;
-    onSend: () => void;
+    /** Puts the job in the source chat; absent with no chat to send to. */
+    onSend?: () => void;
     onToggleSection: (sectionKey: string) => void;
     onSetSectionsOpen: (sectionKeys: readonly string[], open: boolean) => void;
     /** Copies a section: resolves true once it is on the clipboard or,
      * past the inline size, saved to a file. */
     onCopySection: (section: CILogSection) => Promise<boolean>;
-    onSendSection: (section: CILogSection) => void;
+    /** Puts one section in the source chat; absent with no chat. */
+    onSendSection?: (section: CILogSection) => void;
+    /** The open job's actions, beside Refresh; absent offers none. */
+    actions?: CIActionsView;
+    /** The log followed a retry of the job it was opened on. */
+    retriedFrom?: string | null;
   }
 
   let {
@@ -102,7 +107,12 @@
     onSetSectionsOpen,
     onCopySection,
     onSendSection,
+    actions,
+    retriedFrom = null,
   }: Props = $props();
+
+  // Back closes the log; a host whose header owns Back steps here first.
+  const hostOwnsBack = hostedBackReader();
 
   type LogRow =
     | { kind: 'section'; key: string; section: CILogSection; open: boolean }
@@ -204,23 +214,35 @@
       if (anchoredJobId === job) return;
       anchoredJobId = job;
       stick.armWarmup();
-      stick.requestBottom({
-        takeover: 'claim',
-        write: () => {
-          ref.scrollToIndex(count - 1, { align: 'end' });
-          stick.markAtBottom();
-        },
-      });
+      placeAtEnd(ref, count);
     });
   });
 
-  // The reader acted, so bottom-follow is over. A list that fit its
-  // viewport has had no scroll event, so the virtualizer still holds the
-  // rows at the tail as a pin would want; revalidating hands it the real
-  // position before the list grows.
-  function takeOver(): void {
+  function placeAtEnd(ref: LongListHandle, count: number): void {
+    stick.requestBottom({
+      takeover: 'claim',
+      write: () => {
+        ref.scrollToIndex(count - 1, { align: 'end' });
+        stick.markAtBottom();
+      },
+    });
+  }
+
+  // Bottom-follow is over. A list that fit its viewport has had no scroll
+  // event, so the virtualizer still holds the rows at the tail as a pin
+  // would want; revalidating hands it the real position before the list
+  // grows.
+  function endFollow(): void {
     listRef?.revalidate();
     stick.markEscaped();
+  }
+
+  // The reader acted (a section opened or closed, all of them): follow
+  // ends, and the act is reported as the reader's, so a pending find
+  // reveal ends. Find's own calls end follow only.
+  function takeOver(): void {
+    reportReaderNavigation(scrollEl);
+    endFollow();
   }
 
   function toggleSection(section: CILogSection, anchor: HTMLElement): void {
@@ -231,6 +253,62 @@
   function setAllOpen(open: boolean): void {
     takeOver();
     onSetSectionsOpen(expandable.map((section) => section.key), open);
+  }
+
+  /** Find: the log line at the viewport top, read from the laid-out row
+   * where it is mounted (lines wrap); 0 with no rows. */
+  export function findReadingLine(): number {
+    const el = scrollEl;
+    const row = listRef && el && rows.length > 0 ? rows[listRef.findItemIndex(el.scrollTop)] : undefined;
+    if (!row) return 0;
+    if (row.kind !== 'lines') return row.section.start;
+    const text = el!.querySelector<HTMLElement>(`[data-find-key="${findCILogKey(row.from)}"]`);
+    const within = text ? textLineAtEdge(text, el!.getBoundingClientRect().top) : null;
+    return within === null ? row.from : Math.min(row.to - 1, row.from + within);
+  }
+
+  /** Find: a line as its block holds it, escapes and all (a stale block's
+   * while its reload runs); null while its block is not loaded. */
+  export function findLineText(line: number): string | null {
+    const block = blocks.block(Math.floor(line / CI_LOG_BLOCK_LINES));
+    return block?.lines?.[line % CI_LOG_BLOCK_LINES] ?? null;
+  }
+
+  /** Find: the read of a line's block, for a line it does not hold yet:
+   * running, or failed with its error. Neither while no row asks for it. */
+  export function findLineLoad(line: number): { loading: boolean; error: string | null } {
+    const block = blocks.block(Math.floor(line / CI_LOG_BLOCK_LINES));
+    if (!block || block.lines?.[line % CI_LOG_BLOCK_LINES] !== undefined) return { loading: false, error: null };
+    return { loading: block.loading, error: block.loading ? null : block.error };
+  }
+
+  /** Find: opens a closed section, ending bottom-follow. False when it is
+   * open already. */
+  export function openFindSection(sectionKey: string): boolean {
+    const section = sections.find((s) => s.key === sectionKey);
+    if (!section || isOpen(section)) return false;
+    endFollow();
+    onSetSectionsOpen([sectionKey], true);
+    return true;
+  }
+
+  /** Find: scrolls the line's row so the line sits a third down the view,
+   * ending bottom-follow. */
+  export function revealFindLine(line: number): void {
+    endFollow();
+    const index = rows.findIndex((row) => row.kind === 'lines' && row.from <= line && line < row.to);
+    const ref = listRef;
+    if (index < 0 || !ref) return;
+    const row = rows[index] as Extract<LogRow, { kind: 'lines' }>;
+    ref.scrollToIndex(index, { offset: (line - row.from) * LINE_ESTIMATE_PX - Math.round(ref.getViewportSize() / 3) });
+  }
+
+  /** Find: moves the view by `delta` pixels through the scroll owner. */
+  export function scrollFindBy(delta: number): void {
+    const el = scrollEl;
+    if (!el || delta === 0) return;
+    endFollow();
+    stick.applyScrollTarget(Math.max(0, el.scrollTop + delta));
   }
 
   let copiedKey: string | null = $state(null);
@@ -248,36 +326,14 @@
       copiedTimer = undefined;
     }, 2000);
   }
-
-  const animate = $derived(!getSettings().lowPowerMode);
 </script>
 
-{#snippet statusIcon(status: string)}
-  {#if status === 'success'}
-    <Icon icon={CircleCheck} size={13} class="shrink-0 text-success" />
-  {:else if status === 'failed'}
-    <Icon icon={CircleX} size={13} class="shrink-0 text-error" />
-  {:else if status === 'running'}
-    <SteppedSpinner size={13} class="text-accent" {animate} />
-  {:else if status === 'pending'}
-    <Icon icon={Circle} size={13} class="shrink-0 text-fg-subtle" />
-  {:else if status === 'canceled'}
-    <Icon icon={CircleSlash} size={13} class="shrink-0 text-fg-muted" />
-  {:else if status === 'done'}
-    <Icon icon={CircleCheck} size={13} class="shrink-0 text-fg-subtle" />
-  {:else if status === 'output'}
-    <Icon icon={Dot} size={13} class="shrink-0 text-fg-subtle" />
-  {:else}
-    <Icon icon={CircleMinus} size={13} class="shrink-0 text-fg-muted" />
-  {/if}
-{/snippet}
-
-<div class="flex min-h-0 flex-1 flex-col" data-testid="review-ci-log" data-cached-blocks={blocks.size}>
+<div class="flex min-h-0 flex-1 flex-col" data-testid="review-ci-log" data-cached-blocks={blocks.size} data-job-id={view.jobId}>
   <div class="flex items-center gap-2 border-b border-border bg-surface-1 px-3 py-2 text-xs">
     <span class="h-2 w-2 shrink-0 rounded-full {ciStatusDotClass(view.job.status)}"></span>
     <span class="min-w-0 truncate font-mono text-fg" title={view.job.name}>{view.job.name}</span>
     <span class="shrink-0 text-fg-subtle">{view.stageName}</span>
-    <span class="shrink-0 {ciStatusTextClass(view.job.status)}">{view.job.status}</span>
+    <span class="shrink-0 {ciStatusTextClass(view.job.status)}" data-testid="review-ci-log-status">{view.job.status}</span>
     {#if formatCIDuration(view.job.durationSeconds)}
       <span class="shrink-0 tabular-nums text-fg-subtle">{formatCIDuration(view.job.durationSeconds)}</span>
     {/if}
@@ -303,6 +359,11 @@
     >
       <Icon icon={RefreshCw} size={12} class={loading ? 'animate-spin' : ''} />
     </button>
+    {#if actions}
+      <span class="flex shrink-0 items-center" data-testid="review-ci-log-actions">
+        <ReviewCIJobActions {actions} job={view.job} testPrefix="review-ci-log" />
+      </span>
+    {/if}
     <button
       type="button"
       class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
@@ -311,14 +372,16 @@
     >
       Save to file
     </button>
-    <button
-      type="button"
-      class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
-      data-testid="review-ci-log-send"
-      onclick={onSend}
-    >
-      Send to chat
-    </button>
+    {#if onSend}
+      <button
+        type="button"
+        class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
+        data-testid="review-ci-log-send"
+        onclick={onSend}
+      >
+        Send to chat
+      </button>
+    {/if}
     {#if view.job.url}
       <button
         type="button"
@@ -330,15 +393,23 @@
         <Icon icon={ExternalLink} size={12} />
       </button>
     {/if}
-    <button
-      type="button"
-      class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
-      onclick={onBack}
-    >
-      Back
-    </button>
+    {#if !hostOwnsBack()}
+      <button
+        type="button"
+        class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
+        data-testid="review-ci-log-back"
+        onclick={onBack}
+      >
+        Back
+      </button>
+    {/if}
   </div>
 
+  {#if retriedFrom}
+    <div class="border-b border-border-subtle bg-surface-0/60 px-3 py-1.5 text-[0.6875rem] text-fg-muted" data-testid="review-ci-log-retried">
+      The job was retried; this is the new attempt's log.
+    </div>
+  {/if}
   {#if savedPath}
     <div class="border-b border-border-subtle bg-surface-0/60 px-3 py-1.5 font-mono text-[0.6875rem] text-fg-muted" data-testid="review-ci-log-saved">
       Saved to {savedPath}
@@ -417,7 +488,7 @@
                 onclick={(event) => toggleSection(section, event.currentTarget)}
               >
                 <Icon icon={row.open ? ChevronDown : ChevronRight} size={12} class="shrink-0 text-fg-subtle {lines ? '' : 'invisible'}" />
-                {@render statusIcon(section.status)}
+                <ReviewCISectionStatusIcon status={section.status} />
                 <span class="min-w-0 truncate font-mono {section.status === 'pending' ? 'text-fg-subtle' : 'text-fg'}">{section.name}</span>
                 <span class="min-w-0 flex-1"></span>
                 {#if section.status === 'running' && lines}
@@ -437,12 +508,14 @@
                     onclick={() => { void copySection(section); }}
                     testid="review-ci-section-copy"
                   />
-                  <ReviewIconButton
-                    icon={MessageSquarePlus}
-                    label="Send section to chat"
-                    onclick={() => onSendSection(section)}
-                    testid="review-ci-section-send"
-                  />
+                  {#if onSendSection}
+                    <ReviewIconButton
+                      icon={MessageSquarePlus}
+                      label="Send section to chat"
+                      onclick={() => onSendSection(section)}
+                      testid="review-ci-section-send"
+                    />
+                  {/if}
                 </span>
               {/if}
             </div>

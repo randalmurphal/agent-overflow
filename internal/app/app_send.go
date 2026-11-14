@@ -12,6 +12,7 @@ import (
 	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/planrevision"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -127,6 +128,18 @@ type userMessageInputs struct {
 	// joinedParts are a requeued joined row's members, which the wire text
 	// marks one by one.
 	joinedParts []usermessage.JoinedPart
+	// heldBy are the rows an earlier dispatch of this same message landed
+	// as and that are still to be retired (a requeue's stale row): the
+	// review comments their claims hold are this message's own, so its
+	// resolution reads them as drafts.
+	heldBy []string
+	// textBeforeReviewComments, when set, says the content already renders
+	// its diff review comments: it is the summary of the row an earlier
+	// dispatch of the message landed as (flushqueue.Payload). The content
+	// is sent as it is, and the message claims renderedReviewComments
+	// again instead of rendering revisionSourceDiffCommentIDs.
+	textBeforeReviewComments *string
+	renderedReviewComments   []flushqueue.RenderedReviewComments
 }
 
 var errEmptyUserMessage = errors.New("enter a message or attach a file before sending")
@@ -165,7 +178,10 @@ type resolvedUserMessage struct {
 	// command is the composer command that expanded, without its slash
 	// ("workflow"), or "" when the message invoked none. Recorded in the
 	// stored item's meta.
-	command                string
+	command string
+	// shellCommand reports that content is the typed invocation of a shell
+	// output attachment and nothing else.
+	shellCommand           bool
 	providerAttachments    []provider.ImageAttachment
 	persistedAttachments   []store.Attachment
 	sourcePlan             *SourceProposedPlan
@@ -173,7 +189,14 @@ type resolvedUserMessage struct {
 	revisionPlanCommentIDs []string
 	revisionSourceDiff     *SourceDiffReview
 	revisionDiffCommentIDs []string
-	userMessageMeta        string
+	// reviewDeliveries are the review comments as content carries them, by
+	// source; the delivery claims exactly these (claimDiffReviewDelivery).
+	reviewDeliveries []reviewDelivery
+	// textBeforeReviewComments is content before those drafts were
+	// rendered into it, or nil when it renders none
+	// (usermessage.Meta.TextBeforeReviewComments).
+	textBeforeReviewComments *string
+	userMessageMeta          string
 }
 
 // resolveUserMessageEnvelope runs the shared prologue that every
@@ -223,13 +246,32 @@ func (a *App) resolveUserMessageEnvelope(
 		revisionCommentIDs = commentIDs
 	}
 	revisionDiffCommentIDs := inputs.revisionSourceDiffCommentIDs
-	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
-		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(threadID, content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR)
+	var reviewDeliveries []reviewDelivery
+	var textBeforeReviewComments *string
+	if inputs.textBeforeReviewComments != nil {
+		// The content renders its comments already, with the hunk excerpts
+		// the meta does not keep; rendering them again would send each
+		// twice. The comment ids stay on the meta as provenance.
+		before := *inputs.textBeforeReviewComments
+		textBeforeReviewComments = &before
+		reviewDeliveries, err = a.renderedReviewDeliveries(threadID, inputs.renderedReviewComments)
+		if err != nil {
+			return resolvedUserMessage{}, err
+		}
+	} else if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
+		heldBy := store.DiffReviewMessageRows{ThreadID: threadID, ItemIDs: inputs.heldBy}
+		nextContent, comments, err := a.appendDiffReviewCommentsToContent(diffReviewSourceOwner(revisionSourceDiff), content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR, heldBy)
 		if err != nil {
 			return resolvedUserMessage{}, fmt.Errorf("diff review comments: %w", err)
 		}
+		before := strings.TrimSpace(content)
+		textBeforeReviewComments = &before
 		content = nextContent
-		revisionDiffCommentIDs = commentIDs
+		reviewDeliveries = []reviewDelivery{{source: revisionSourceDiff, comments: comments}}
+		revisionDiffCommentIDs = make([]string, 0, len(comments))
+		for _, comment := range comments {
+			revisionDiffCommentIDs = append(revisionDiffCommentIDs, comment.ID)
+		}
 	}
 	if revisionSourceDiff != nil && revisionSourceDiff.PR != nil {
 		// The per-comment hunk excerpts are prompt inputs already baked into
@@ -249,18 +291,17 @@ func (a *App) resolveUserMessageEnvelope(
 	// persisted the user row, so the composer restores the draft and shows
 	// the error rather than silently sending the message without the
 	// context it asked for.
-	//
 	providerContent, command, err := a.wireText(threadID, content, usermessage.Meta{
 		ExpandComposerCommands: inputs.expandComposerCommands,
 		Origin:                 inputs.origin,
 		OriginThread:           inputs.originThread,
 		OriginWake:             inputs.originWake,
 		JoinedParts:            inputs.joinedParts,
-	})
+	}, attachments.isInvocation(content))
 	if err != nil {
 		return resolvedUserMessage{}, err
 	}
-	providerContent = appendFileAttachmentLines(providerContent, attachments.fileLines)
+	providerContent = attachments.promptText([]string{providerContent}, "")
 
 	userMeta, err := usermessage.Marshal(usermessage.Input{
 		Attachments:            attachments.records,
@@ -275,6 +316,8 @@ func (a *App) resolveUserMessageEnvelope(
 		Origin:                 inputs.origin,
 		OriginThread:           inputs.originThread,
 		OriginWake:             inputs.originWake,
+
+		TextBeforeReviewComments: textBeforeReviewComments,
 	})
 	if err != nil {
 		return resolvedUserMessage{}, fmt.Errorf("user meta: %w", err)
@@ -284,6 +327,7 @@ func (a *App) resolveUserMessageEnvelope(
 		content:                content,
 		providerContent:        providerContent,
 		command:                command,
+		shellCommand:           attachments.isInvocation(content),
 		providerAttachments:    attachments.images,
 		persistedAttachments:   attachments.records,
 		sourcePlan:             sourcePlan,
@@ -291,7 +335,10 @@ func (a *App) resolveUserMessageEnvelope(
 		revisionPlanCommentIDs: revisionCommentIDs,
 		revisionSourceDiff:     revisionSourceDiff,
 		revisionDiffCommentIDs: revisionDiffCommentIDs,
-		userMessageMeta:        userMeta,
+		reviewDeliveries:       reviewDeliveries,
+
+		textBeforeReviewComments: textBeforeReviewComments,
+		userMessageMeta:          userMeta,
 	}, nil
 }
 
@@ -302,7 +349,13 @@ func (a *App) rowWireText(threadID, content, metaJSON string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	text, _, err := a.wireText(threadID, content, meta)
+	var commands []string
+	for _, attachment := range meta.Attachments {
+		if attachment.Shell != nil {
+			commands = append(commands, attachment.Shell.Command)
+		}
+	}
+	text, _, err := a.wireText(threadID, content, meta, usermessage.IsShellInvocation(content, commands))
 	return text, err
 }
 
@@ -310,11 +363,13 @@ func (a *App) rowWireText(threadID, content, metaJSON string) (string, error) {
 // attachment lines, and the composer command it expanded. A message the
 // app or an agent wrote opens with its sender and ends with the end line,
 // member by member when it is joined (usermessage.WireText); the stored
-// row stays as written. A person's composer command expands after that.
-func (a *App) wireText(threadID, content string, meta usermessage.Meta) (text, command string, err error) {
+// row stays as written. A person's composer command expands after that,
+// except in a shell command (shellInvocation), which is not prose: a
+// `/word` in it is a path, not a composer command to expand.
+func (a *App) wireText(threadID, content string, meta usermessage.Meta, shellInvocation bool) (text, command string, err error) {
 	here, _ := a.backendIdentity()
 	text = usermessage.WireText(content, meta, here)
-	if !meta.ExpandComposerCommands {
+	if !meta.ExpandComposerCommands || shellInvocation {
 		return text, "", nil
 	}
 	text, command, err = a.expandComposerCommand(threadID, text)
@@ -503,6 +558,9 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: placement: %w", err)
 	}
+	if a.sendStageFn != nil && !placement.queue {
+		a.sendStageFn(threadID, "placed")
+	}
 	if placement.queue {
 		_, err := a.registerQueueItem(threadID, content, SendMessageOptions{
 			ConsumeDraft:                 opts.ConsumeDraft,
@@ -641,22 +699,6 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: check prior items: %w", err)
 	}
-	turnIndex := placement.displayTurn
-	userItemID, err := a.userMessageItemID(threadID, opts.SendID, turnIndex, intent)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("send message: allocate item id: %w", err)
-	}
-	// A request names its work in the sender's text; its footer is
-	// routing, and a title or branch named from it would read "Agent
-	// request from thread ...".
-	namingText := content
-	if opts.Origin == usermessage.OriginAgentThread {
-		namingText = threadtools.StripFooter(content)
-	}
-	if !isCodexReview {
-		a.maybeRenameTemporaryWorktreeBranch(threadID, namingText)
-	}
-
 	if opts.onUserMessageReady != nil {
 		if _, live := a.sessionManager().get(threadID); !live {
 			if err := a.startSession(ctx, threadID); err != nil {
@@ -664,6 +706,58 @@ func (a *App) sendMessageLocked(
 			}
 		}
 	}
+
+	// A request names its work in the sender's text; its footer is
+	// routing, and a title or branch named from it would read "Agent
+	// request from thread ...".
+	namingText := content
+	if opts.Origin == usermessage.OriginAgentThread {
+		namingText = threadtools.StripFooter(content)
+	}
+	// A command says what was run, not what the work is: the first prompt
+	// names the branch.
+	if !isCodexReview && !resolved.shellCommand {
+		a.maybeRenameTemporaryWorktreeBranch(threadID, namingText)
+	}
+
+	// The index is final once the row lands. Until then a turn the
+	// provider starts on its own can take the one placement chose, so it
+	// is chosen again and the row persisted under the turn allocation
+	// lock. Nothing here waits for the provider event worker.
+	unlockAllocation := a.triage.LockTurnAllocation(threadID)
+	allocationHeld := true
+	releaseAllocation := func() {
+		if allocationHeld {
+			allocationHeld = false
+			unlockAllocation()
+		}
+	}
+	defer releaseAllocation()
+	turnIndex := placement.displayTurn
+	if next, nextErr := a.nextSendTurnIndex(threadID); nextErr != nil {
+		err = nextErr
+		return store.Item{}, fmt.Errorf("send message: resolve turn index: %w", err)
+	} else if next > turnIndex {
+		turnIndex = next
+	}
+	userItemID, err := a.userMessageItemID(threadID, opts.SendID, turnIndex, intent)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: allocate item id: %w", err)
+	}
+
+	// The review drafts this message carries are claimed for its turn
+	// before its row exists, so a draft another message already took
+	// fails the send here, before anything is delivered. A failure before
+	// the row lands hands them back; the row's insert settles the claim.
+	var claim diffReviewClaims
+	if claim, err = a.claimDiffReviewDelivery(threadID, turnIndex, userItemID, resolved, false); err != nil {
+		return store.Item{}, fmt.Errorf("send message: %w", err)
+	}
+	defer func() {
+		if err != nil && !userMsgKept {
+			err = errors.Join(err, claim.release(a))
+		}
+	}()
 
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
@@ -688,6 +782,21 @@ func (a *App) sendMessageLocked(
 	}
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: persist user message: %w", err)
+	}
+	// A live session can start a turn of its own before this send reaches
+	// its provider write. Registering the pending send with the row, under
+	// the same lock, makes that turn find the message and take its turn
+	// rather than open one past it. A cold session registers below, after
+	// it starts: no turn of its own can come first.
+	if !isCodexReview {
+		if live, ok := a.sessionManager().get(threadID); ok {
+			_, earlyExpect := providerSendIdentity(live, userItem.ID, sendUUID)
+			a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, earlyExpect)
+		}
+	}
+	releaseAllocation()
+	if a.sendStageFn != nil {
+		a.sendStageFn(threadID, "persisted")
 	}
 	userMsgKept = true
 	if opts.onUserMessageReady != nil {
@@ -718,6 +827,7 @@ func (a *App) sendMessageLocked(
 	// the failed-send sibling error stays available for retry. See
 	// applyProposedPlanAcceptance.
 	a.applyProposedPlanAcceptance(threadID, userItem, resolved)
+	claim.announce(a)
 
 	// A thread is session-less until the first message is sent — we don't
 	// spawn the provider subprocess at thread creation. Lazy-start only
@@ -752,6 +862,7 @@ func (a *App) sendMessageLocked(
 	sess, unlockAccount, accountErr := a.lockProviderAccountForSendLocked(thread)
 	if accountErr != nil {
 		err = accountErr
+		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 		a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
@@ -774,16 +885,10 @@ func (a *App) sendMessageLocked(
 		started, startErr := sess.Codex.StartReviewForTurn(
 			reviewCtx,
 			reviewTarget,
-			codex.ReviewDeliveryInline,
 			codex.ReviewRunOptions{TurnIndex: turnIndex},
 		)
 		if startErr != nil {
 			err = fmt.Errorf("start code review: %w", startErr)
-			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
-			return store.Item{}, fmt.Errorf("send message: %w", err)
-		}
-		if started.Detached {
-			err = fmt.Errorf("codex returned detached review thread %s for an inline review", started.ReviewThreadID)
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 			return store.Item{}, fmt.Errorf("send message: %w", err)
 		}
@@ -803,8 +908,13 @@ func (a *App) sendMessageLocked(
 	// envelope arrives, or cleared on send failure below. The identity the
 	// echo matches by — and the wire stamp it rides in on — come from
 	// providerSendIdentity, one derivation for every send entry point.
+	// A send registered with its row is registered again when the session
+	// it was registered against was torn down since (an account switch
+	// reconnects Codex here), since teardown clears the registry.
 	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
-	a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, sendExpect)
+	if !a.triage.HasPendingSend(threadID, userItem.ID) {
+		a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, sendExpect)
+	}
 
 	if err := sendToProvider(sess, threadID, providerContent, provider.SendOptions{
 		InteractionMode:         provider.NormalizeInteractionMode(thread.Mode),
@@ -1000,7 +1110,7 @@ func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, s
 // rather than three returns because the three are not interchangeable and
 // two of them are slices of near-identical shape: `images` is positional
 // and binds to the `[Image #N]` markers, `records` is everything for the
-// persisted meta, and `fileLines` is prompt text.
+// persisted meta, and `files` is prompt text.
 type turnAttachments struct {
 	// images is the provider slice, in attachmentIDs order over the IMAGE
 	// subset. Files are excluded: they have no marker and no slot.
@@ -1008,9 +1118,87 @@ type turnAttachments struct {
 	// records is every requested attachment, both kinds, in order. The
 	// timeline row's meta is built from this.
 	records []store.Attachment
-	// fileLines is one attachment.PromptLine per `file`, in order. The
-	// envelope appends them to providerContent; nothing persists them.
-	fileLines []string
+	// files is the prompt text of each `file`, in order. promptText puts
+	// them on providerContent; nothing persists them.
+	files []promptFile
+}
+
+// promptFile is what one `file` attachment adds to the provider text.
+type promptFile struct {
+	// text is an attachment.PromptLine, or the command block of a shell
+	// output file.
+	text string
+	// shell marks a shell output file, whose block stands where its
+	// command was typed. command is that command.
+	shell   bool
+	command string
+}
+
+// isInvocation reports whether content is exactly the typed invocation of one
+// of the shell output files.
+func (t turnAttachments) isInvocation(content string) bool {
+	commands, _ := t.shellCommands(nil)
+	return usermessage.IsShellInvocation(content, commands)
+}
+
+// shellCommands is the command of each shell output file that taken does not
+// mark, in order, with each one's index in files.
+func (t turnAttachments) shellCommands(taken []bool) (commands []string, indexes []int) {
+	for i, file := range t.files {
+		if file.shell && (taken == nil || !taken[i]) {
+			commands, indexes = append(commands, file.command), append(indexes, i)
+		}
+	}
+	return commands, indexes
+}
+
+// promptText is the provider text of one or more messages, joined by
+// separator, with what the file attachments add. The typed invocation of a
+// shell output file (usermessage.ShellInvocationRuns) is replaced by that
+// file's command block, so the model reads the command where the person ran
+// it and the typed `!command` stays a transcript fact, like a composer
+// command's word. An invocation never crosses two messages. Every other
+// file's text is appended after a blank line.
+func (t turnAttachments) promptText(messages []string, separator string) string {
+	placed := make([]bool, len(t.files))
+	texts := make([]string, 0, len(messages))
+	for _, message := range messages {
+		commands, indexes := t.shellCommands(placed)
+		if len(commands) == 0 {
+			texts = append(texts, message)
+			continue
+		}
+		parts := strings.Split(message, usermessage.JoinSeparator)
+		blocks := make(map[int]string, len(commands))
+		dropped := make(map[int]bool)
+		for i, run := range usermessage.ShellInvocationRuns(parts, commands) {
+			if run.First < 0 {
+				continue
+			}
+			placed[indexes[i]] = true
+			blocks[run.First] = t.files[indexes[i]].text
+			for part := run.First + 1; part <= run.Last; part++ {
+				dropped[part] = true
+			}
+		}
+		kept := make([]string, 0, len(parts))
+		for part, text := range parts {
+			if block, ok := blocks[part]; ok {
+				text = block
+			} else if dropped[part] {
+				continue
+			}
+			kept = append(kept, text)
+		}
+		texts = append(texts, strings.Join(kept, usermessage.JoinSeparator))
+	}
+	lines := make([]string, 0, len(t.files))
+	for i, file := range t.files {
+		if !placed[i] {
+			lines = append(lines, file.text)
+		}
+	}
+	return appendFileAttachmentLines(strings.Join(texts, separator), lines)
 }
 
 // resolveSendMessageAttachments validates the requested attachment IDs,
@@ -1064,8 +1252,18 @@ func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []str
 			return turnAttachments{}, err
 		}
 		out.records = append(out.records, record)
+		if !record.Shell.IsZero() {
+			// A command the person ran reaches the model as its output,
+			// in the form the provider's own CLI records one.
+			block, err := userShellPromptBlock(thread.Provider, record, path)
+			if err != nil {
+				return turnAttachments{}, err
+			}
+			out.files = append(out.files, promptFile{text: block, shell: true, command: record.Shell.Command})
+			continue
+		}
 		if record.Kind == store.AttachmentKindFile {
-			out.fileLines = append(out.fileLines, attachmentstore.PromptLine(record, path))
+			out.files = append(out.files, promptFile{text: attachmentstore.PromptLine(record, path)})
 			continue
 		}
 		att := provider.ImageAttachment{
@@ -1091,8 +1289,9 @@ func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []str
 	return out, nil
 }
 
-// appendFileAttachmentLines returns providerContent with one
-// `[Attached file …]` line per file attachment, after a blank line.
+// appendFileAttachmentLines returns providerContent with the prompt text of
+// each file attachment, after a blank line: one `[Attached file …]` line, or
+// a shell output file's command block.
 //
 // It runs LAST, after composer-command expansion, so every content
 // transform is already applied and a new one cannot be sandwiched between
@@ -1110,8 +1309,13 @@ func appendFileAttachmentLines(providerContent string, fileLines []string) strin
 	}
 	var b strings.Builder
 	b.Grow(size)
-	b.WriteString(providerContent)
-	b.WriteString("\n\n")
+	// A message that is nothing but its files starts with the first one: a
+	// shell command's block is then the whole message, as the provider's
+	// own CLI records it.
+	if providerContent != "" {
+		b.WriteString(providerContent)
+		b.WriteString("\n\n")
+	}
 	for i, line := range fileLines {
 		if i > 0 {
 			b.WriteByte('\n')
@@ -1161,6 +1365,18 @@ func (a *App) nextSequencedUserItemID(threadID string, turnIndex int, scope stri
 	return fmt.Sprintf("user:%d:%s:%d", turnIndex, scope, seq), nil
 }
 
+// refusePRDraftSource refuses a send through the thread bindings that names
+// a PR's drafts: those are git:operate state, sent to a thread only by
+// SendPRDiffReviewComments.
+func refusePRDraftSource(opts SendMessageOptions) error {
+	if opts.RevisionSourceDiffReview != nil && opts.RevisionSourceDiffReview.PRKey != "" {
+		return errors.New("send message: a PR's review drafts are sent with SendPRDiffReviewComments")
+	}
+	return nil
+}
+
+// resolveSourceDiffReview resolves the drafts a send carries: threadID's own,
+// or the drafts of the PR the source's PRKey names, which go to threadID.
 func (a *App) resolveSourceDiffReview(threadID string, source *SourceDiffReview) (*SourceDiffReview, error) {
 	if source == nil || strings.TrimSpace(source.Scope) == "" {
 		return nil, nil
@@ -1169,16 +1385,25 @@ func (a *App) resolveSourceDiffReview(threadID string, source *SourceDiffReview)
 	if err != nil {
 		return nil, err
 	}
+	sourceKey, err := store.NormalizeDiffReviewSourceKey(source.SourceKey)
+	if err != nil {
+		return nil, err
+	}
+	if prKey := strings.TrimSpace(source.PRKey); prKey != "" {
+		if strings.TrimSpace(source.ThreadID) != "" {
+			return nil, fmt.Errorf("diff review source names both a thread and a PR")
+		}
+		if scope != string(store.DiffReviewScopePR) {
+			return nil, fmt.Errorf("a PR's diff review drafts are pr scope, not %s", scope)
+		}
+		return &SourceDiffReview{PRKey: prKey, Scope: scope, SourceKey: sourceKey, PR: source.PR}, nil
+	}
 	sourceThreadID := strings.TrimSpace(source.ThreadID)
 	if sourceThreadID == "" {
 		sourceThreadID = threadID
 	}
 	if sourceThreadID != threadID {
 		return nil, fmt.Errorf("diff review source must be on the current thread")
-	}
-	sourceKey, err := store.NormalizeDiffReviewSourceKey(source.SourceKey)
-	if err != nil {
-		return nil, err
 	}
 	return &SourceDiffReview{ThreadID: sourceThreadID, Scope: scope, SourceKey: sourceKey, PR: source.PR}, nil
 }
@@ -1326,12 +1551,151 @@ func (a *App) applyProposedPlanAcceptance(threadID string, userItem store.Item, 
 		}
 	}
 
-	if rd := resolved.revisionSourceDiff; rd != nil && len(resolved.revisionDiffCommentIDs) > 0 {
-		if err := a.store.MarkDiffReviewCommentsSent(threadID, rd.Scope, rd.SourceKey, resolved.revisionDiffCommentIDs, now, sentTurnID); err != nil {
-			log.Printf("apply plan acceptance: mark diff review comments sent: %v", err)
-		} else {
-			a.announceDiffCommentsChanged(threadID, rd.Scope, rd.SourceKey)
+	// Diff review drafts are claimed before delivery, not marked here
+	// (claimDiffReviewDelivery).
+}
+
+// diffReviewSentTurnID is the turn id a message's review drafts are marked
+// sent in: the comments sent as one click share it.
+func diffReviewSentTurnID(threadID string, turnIndex int) string {
+	return fmt.Sprintf("%s:%d", threadID, turnIndex)
+}
+
+// diffReviewClaim is the review drafts one message delivers, marked sent in
+// its turn before the message reaches the provider. The zero value claims
+// nothing.
+type diffReviewClaim struct {
+	threadID  string
+	owner     store.DiffReviewOwner
+	scope     string
+	sourceKey string
+	turnID    string
+	itemID    string
+	ids       []string
+}
+
+// reviewDelivery is one source's review comments a message carries, as it
+// carries them.
+type reviewDelivery struct {
+	source   *SourceDiffReview
+	comments []store.DiffReviewCommentSnapshot
+}
+
+// renderedReviewDeliveries are the deliveries of the review comments a
+// message rebuilt from its row renders (flushqueue.Payload).
+func (a *App) renderedReviewDeliveries(threadID string, rendered []flushqueue.RenderedReviewComments) ([]reviewDelivery, error) {
+	deliveries := make([]reviewDelivery, 0, len(rendered))
+	for _, r := range rendered {
+		source, err := a.resolveSourceDiffReview(threadID, &r.Source)
+		if err != nil {
+			return nil, fmt.Errorf("rendered diff review comments: %w", err)
 		}
+		if source == nil || len(r.Comments) == 0 {
+			continue
+		}
+		deliveries = append(deliveries, reviewDelivery{source: source, comments: r.Comments})
+	}
+	return deliveries, nil
+}
+
+// claimDiffReviewDelivery marks sent, in the turn turnIndex of threadID, the
+// drafts resolved carries whose text is still what it read: a draft edited
+// since stays a draft, since its new text was not sent. A draft another
+// message already carried fails the claim
+// (store.ErrDiffReviewCommentsSentElsewhere), and the caller must not
+// deliver. itemID is the user row the message lands as. A direct send or
+// steer is delivered by that row, so its insert settles the claim; a queued
+// message's row can land before the provider has it, so its claim settles
+// when the provider confirms it (store.DiffReviewDelivery.Queued). A claim
+// still unsettled returns to drafts at the next boot. The message claims
+// each source it carries; a failure hands back what it already claimed.
+func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, itemID string, resolved resolvedUserMessage, queued bool) (diffReviewClaims, error) {
+	var claims diffReviewClaims
+	for _, delivery := range resolved.reviewDeliveries {
+		if delivery.source == nil || len(delivery.comments) == 0 {
+			continue
+		}
+		claim := diffReviewClaim{
+			threadID: threadID, owner: diffReviewSourceOwner(delivery.source), scope: delivery.source.Scope, sourceKey: delivery.source.SourceKey,
+			turnID: diffReviewSentTurnID(threadID, turnIndex), itemID: itemID,
+		}
+		ids, err := a.store.ClaimDiffReviewCommentsSent(claim.owner, claim.scope, claim.sourceKey, delivery.comments, store.DiffReviewDelivery{
+			SentAt: time.Now().UnixMilli(), TurnID: claim.turnID, ThreadID: threadID, ItemID: itemID, Queued: queued,
+		})
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("diff review comments: %w", err), claims.release(a))
+		}
+		claim.ids = ids
+		claims = append(claims, claim)
+	}
+	return claims, nil
+}
+
+// release hands the claimed drafts back when their message was not sent.
+func (c diffReviewClaim) release(a *App) error {
+	if len(c.ids) == 0 {
+		return nil
+	}
+	if err := a.store.ReleaseDiffReviewCommentsSent(c.owner, c.scope, c.sourceKey, c.ids, c.turnID); err != nil {
+		return fmt.Errorf("return the review comments to drafts: %w", err)
+	}
+	c.announce(a)
+	return nil
+}
+
+// retarget moves the claim to the turn and row its message is placed as.
+func (c *diffReviewClaim) retarget(a *App, turnIndex int, itemID string) error {
+	turnID := diffReviewSentTurnID(c.threadID, turnIndex)
+	if len(c.ids) == 0 || (turnID == c.turnID && itemID == c.itemID) {
+		return nil
+	}
+	if err := a.store.RetargetDiffReviewCommentsSent(c.owner, c.scope, c.sourceKey, c.ids, c.turnID, turnID, itemID); err != nil {
+		return fmt.Errorf("move the review comments to turn %d: %w", turnIndex, err)
+	}
+	c.turnID, c.itemID = turnID, itemID
+	return nil
+}
+
+// announce tells a thread's review panes its drafts moved. A PR's drafts
+// have no thread to announce on; the page re-reads them itself.
+func (c diffReviewClaim) announce(a *App) {
+	if len(c.ids) > 0 && c.owner.ThreadID != "" {
+		a.announceDiffCommentsChanged(c.owner.ThreadID, c.scope, c.sourceKey)
+	}
+}
+
+// diffReviewClaims are the claims of a message, one per source it carries,
+// or of a joined message's members.
+type diffReviewClaims []diffReviewClaim
+
+// ids are the comment ids the claims marked.
+func (cs diffReviewClaims) ids() []string {
+	var ids []string
+	for _, c := range cs {
+		ids = append(ids, c.ids...)
+	}
+	return ids
+}
+
+func (cs diffReviewClaims) release(a *App) error {
+	var errs []error
+	for _, c := range cs {
+		errs = append(errs, c.release(a))
+	}
+	return errors.Join(errs...)
+}
+
+func (cs diffReviewClaims) retarget(a *App, turnIndex int, itemID string) error {
+	var errs []error
+	for i := range cs {
+		errs = append(errs, cs[i].retarget(a, turnIndex, itemID))
+	}
+	return errors.Join(errs...)
+}
+
+func (cs diffReviewClaims) announce(a *App) {
+	for _, c := range cs {
+		c.announce(a)
 	}
 }
 

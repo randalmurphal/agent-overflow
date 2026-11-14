@@ -21,8 +21,26 @@ import type { AgentPaneScopeSnapshot } from '../types/settings';
 // take-control, browser, side-chat and agent-thread are
 // live/ephemeral; plan, review, and agent companions are persisted by layout
 // persistence and restored through companionPanes.svelte.ts.
-export type PaneLayoutKind = 'thread' | 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat' | 'agent-thread';
+//
+// Tool panes ('pulls', 'workflows') are a third class: an app-wide surface
+// with no thread and no source pane. A tool item leads its own layout block
+// like a thread pane does (resnap, move and reorder treat it as a lead), is
+// not in the ThreadPane registry, and exists at most once per kind under the
+// id `tool-<kind>` (toolPanes.svelte.ts).
+export type ToolPaneKind = 'pulls' | 'workflows';
 export type CompanionPaneKind = 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat' | 'agent-thread';
+export type PaneLayoutKind = 'thread' | CompanionPaneKind | ToolPaneKind;
+
+export const TOOL_PANE_KINDS: readonly ToolPaneKind[] = ['pulls', 'workflows'];
+
+export function isToolKind(kind: unknown): kind is ToolPaneKind {
+  return kind === 'pulls' || kind === 'workflows';
+}
+
+/** The one layout id a tool kind's pane has. */
+export function toolPaneIdFor(kind: ToolPaneKind): string {
+  return `tool-${kind}`;
+}
 
 export function isCompanionKind(kind: PaneLayoutKind): kind is CompanionPaneKind {
   return kind === 'take-control' ||
@@ -93,6 +111,27 @@ export function paneLayoutMutationRevision(): number { return mutationRevision; 
 export function notePaneLayoutMutation(): void { mutationRevision++; }
 
 let persistenceHandlers: PaneLayoutPersistenceHandlers | null = null;
+
+const removalListeners = new Set<(paneIds: readonly string[]) => void>();
+
+/**
+ * Observe panes leaving the layout. Per-pane state that outlives a body
+ * remount (find) is dropped here, whatever body the pane last showed.
+ */
+export function onPaneLayoutItemsRemoved(listener: (paneIds: readonly string[]) => void): () => void {
+  removalListeners.add(listener);
+  return () => { removalListeners.delete(listener); };
+}
+
+function replaceLayoutItems(next: PaneLayoutItem[]): void {
+  const previous = layoutItems;
+  layoutItems = next;
+  if (removalListeners.size === 0) return;
+  const kept = new Set(next.map((item) => item.paneId));
+  const removed = previous.filter((item) => !kept.has(item.paneId)).map((item) => item.paneId);
+  if (removed.length === 0) return;
+  for (const listener of removalListeners) listener(removed);
+}
 
 export function setPaneLayoutPersistenceHandlers(handlers: PaneLayoutPersistenceHandlers | null): void {
   persistenceHandlers = handlers;
@@ -169,6 +208,21 @@ const sourcePaneIdByPaneId = $derived.by(() => {
   });
 });
 
+// A pane id's kind never changes for its lifetime, so membership alone keys
+// this lookup too.
+const kindByPaneId = $derived.by(() => {
+  void paneMembershipKey;
+  return untrack(() => new Map(layoutItems.map((item) => [item.paneId, item.kind])));
+});
+
+/**
+ * Kind of a mounted layout pane, null for an unmounted id. Reactive reads
+ * track layout membership only, never pane widths.
+ */
+export function paneLayoutKindOf(paneId: string): PaneLayoutKind | null {
+  return kindByPaneId.get(paneId) ?? null;
+}
+
 /**
  * `sourcePaneId` of a mounted layout pane: the paired source thread pane
  * for companions, null for thread panes and unmounted ids. Reactive reads
@@ -202,7 +256,7 @@ export function addPaneLayoutItem(
 export function removePaneLayoutItem(paneId: string, options?: PaneLayoutMutationOptions): void {
   const next = layoutItems.filter((item) => item.paneId !== paneId);
   if (next.length === layoutItems.length) return;
-  layoutItems = next;
+  replaceLayoutItems(next);
   if (shouldPersist(options)) requestLayoutPersistence();
 }
 
@@ -435,14 +489,14 @@ export function averagePaneWidthPx(): number {
 }
 
 export function resetPaneLayoutForTest(): void {
-  layoutItems = [defaultMainPaneLayoutItem()];
+  replaceLayoutItems([defaultMainPaneLayoutItem()]);
 }
 
 // Verbatim setter, deliberately NOT resnapped: persistence restore
 // rebuilds source-then-companions order itself, and PaneHost's broken
 // companion fallback needs orphan states to be representable.
 export function setPaneLayoutItems(items: PaneLayoutItem[]): void {
-  layoutItems = items.map(cloneLayoutItem);
+  replaceLayoutItems(items.map(cloneLayoutItem));
 }
 
 export function setPaneLayoutItemsForTest(items: PaneLayoutItem[]): void {

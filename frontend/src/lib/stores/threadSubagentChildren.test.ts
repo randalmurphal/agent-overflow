@@ -173,12 +173,11 @@ describe('subagent children', () => {
       }
     });
 
-    it('drops a child riding a rolled-back revert that restores its anchor', async () => {
+    it('drops a child that arrives in the batch re-inserting its anchor', async () => {
       const pane = await paneWithAnchor('children-revert');
-      const removed = pane.removeItemsFromTurn(1, pane.threadId!);
+      const removed = pane.removeRevertedItems(1, []);
       expect(removed.map((it) => it.id)).toEqual(['anchor']);
 
-      // A rolled-back revert re-inserts the turn through `upsertItems`.
       pane.upsertItems([...removed, childItem('children-revert', { status: 'streaming', updatedAt: 3 })]);
       expect(pane.items.map((it) => it.id)).toEqual(['pre', 'anchor']);
     });

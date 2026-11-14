@@ -45,8 +45,11 @@ seams under `frontend/src/lib/native/` are:
 - lifecycle and hardware-back handling;
 - app lock and startup pairing adoption;
 - QR scanning and shell-local keybindings;
-- bundle synchronization; and
-- push registration, presentation, retraction, and tap routing.
+- bundle synchronization;
+- push registration, presentation, retraction, and tap routing; and
+- read-aloud through Android's TextToSpeech (`SpeechPlugin`), since the
+  WebView has no `speechSynthesis`. Each reading queues every piece at once
+  so it continues in the background.
 
 Startup must process a `#pair=` invitation before first-run routing. Pairing by
 QR and by link uses the same payload validation and endpoint adoption. Neither

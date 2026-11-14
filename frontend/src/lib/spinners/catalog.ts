@@ -1,8 +1,9 @@
 // Built-in working-indicator sprite animations. Each is a horizontal
 // strip PNG (frames side by side, equal width, 72px tall = 3x the 24px
 // CSS render height, so the art stays crisp on HiDPI). The strips are
-// static Vite assets: the browser fetches one only when a sprite
-// actually renders, so users with animations off never pay for them.
+// static Vite assets, fetched and kept loaded only while animations are
+// on and the sprite can show (retain.ts), so users with animations off
+// never pay for them.
 //
 // Frame geometry is baked here rather than measured at runtime — the
 // numbers are verified against the committed PNGs by

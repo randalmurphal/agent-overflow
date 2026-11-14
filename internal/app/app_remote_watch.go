@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -479,8 +480,9 @@ func remoteCompletionFromSendID(sendID string) (computerID, requestID string, ok
 // reaches the agent when the thread is next started and the watcher delivers
 // it once the thread is unarchived. A completion the dispatch already took
 // stays delivered. One queued in a live session goes back when the archive's
-// teardown drops the queue (giveBackToOwners).
-func (a *App) withdrawHeldRemoteCompletions(threadID string) error {
+// teardown drops the queue (giveBackToOwners). match picks the queued
+// messages by send id.
+func (a *App) withdrawHeldRemoteCompletions(threadID string, match func(sendID string) bool) error {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
 		return fmt.Errorf("withdraw the queued remote completions of %s: %w", threadID, err)
@@ -489,7 +491,7 @@ func (a *App) withdrawHeldRemoteCompletions(threadID string) error {
 	withdrawn := false
 	for _, row := range rows {
 		computerID, requestID, ok := remoteCompletionFromSendID(row.SendID)
-		if !ok {
+		if !ok || !match(row.SendID) {
 			continue
 		}
 		removal, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
@@ -540,7 +542,9 @@ func (a *App) CancelThreadRemoteCommand(ctx context.Context, threadID, computerI
 	if w.ThreadID != threadID {
 		return RemoteCommand{}, errorsx.Public("remote_wrong_conversation", "This job belongs to another conversation.", nil)
 	}
-	call, cancel := context.WithTimeout(ctx, 20*time.Second)
+	// The cancel and the record of its answer finish once sent, even at
+	// shutdown; only the settle wait below ends with the context.
+	call, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 	defer cancel()
 	var receipt RemoteCommand
 	err = a.backends.CallAgentPeer(call, computerID, "RemoteCommandCancel", &receipt, requestID)
@@ -602,19 +606,33 @@ func (a *App) remoteCommandStatus(ctx context.Context, computerID, requestID str
 // computer stops polling it, so the caller's operation proceeds. Only store
 // failures are returned.
 func (a *App) cancelThreadRemoteCommands(ctx context.Context, threadID string, keepFinished bool) error {
-	a.cancelRemoteWaits(threadID)
-	rows, err := a.store.ListRemoteWatches(threadID, 0, 256)
+	rows, err := a.disarmRemoteCommands(threadID)
 	if err != nil {
 		return err
 	}
+	return a.cancelRemoteCommands(ctx, threadID, rows, keepFinished)
+}
+
+// disarmRemoteCommands ends the thread's parked remote waits and returns the
+// commands it started that still await completion.
+func (a *App) disarmRemoteCommands(threadID string) ([]store.RemoteWatch, error) {
+	a.cancelRemoteWaits(threadID)
+	rows, err := a.store.ListRemoteWatches(threadID, 0, 256)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(rows, func(w store.RemoteWatch) bool { return w.Notification != "pending" }), nil
+}
+
+// cancelRemoteCommands cancels and dismisses exactly the commands named,
+// keeping a finished one's notification when keepFinished is set
+// (cancelThreadRemoteCommands).
+func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []store.RemoteWatch, keepFinished bool) error {
 	dismiss := a.store.DismissRemoteWatch
 	if keepFinished {
 		dismiss = a.store.DismissUnfinishedRemoteWatch
 	}
 	for _, w := range rows {
-		if w.Notification != "pending" {
-			continue
-		}
 		unfinished := w.Receipt.ID == "" || w.Receipt.State == "running"
 		if !unfinished && keepFinished {
 			continue

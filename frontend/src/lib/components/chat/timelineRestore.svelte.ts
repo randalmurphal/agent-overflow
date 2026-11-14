@@ -103,6 +103,8 @@ export interface TimelineRestore {
   readonly restoredThreadId: string | null;
   /** Start a navigation: ends every older one. */
   beginNavigation(): number;
+  /** The current navigation's token; a navigation started later moves it. */
+  readonly navigation: number;
   /**
    * Whether the navigation still owns the viewport. When it does, ends
    * every hold, so call it last, right before the navigation's write.
@@ -155,6 +157,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   function endAll(): void {
     navigationToken += 1;
     holdToken += 1;
+    options.getPane().releaseEndedNavigation();
   }
 
   // The restore/snapshot IDENTITY for this timeline surface. The base
@@ -289,7 +292,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     if (previous.kind === 'placeholder') {
       // Placeholder → materialized transition: the timeline was empty
       // so there is no measurement cascade to hide. Skip the warm-up
-      // gate so the optimistic user message renders immediately.
+      // gate so the first user message renders as soon as its row arrives.
       options.stick.skipWarmup();
       options.stick.markAtBottom();
       return;
@@ -530,7 +533,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
         return;
       }
 
-      const loaded = await pane.loadUntilItem(snap.itemId);
+      const loaded = await pane.loadUntilItem(snap.itemId, () => token === navigationToken);
       if (isUiRenderTraceEnabled()) {
         recordUiTrace('timeline.restore.anchor.loaded', {
           threadId,
@@ -624,7 +627,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     // while this navigation still owns the viewport; only those retry.
     let loaded: LoadUntilItemResult = 'superseded';
     for (let attempt = 0; attempt < JUMP_LOOKUP_ATTEMPTS && loaded === 'superseded'; attempt++) {
-      loaded = await pane.loadUntilItem(id);
+      loaded = await pane.loadUntilItem(id, () => interruption() === null);
       const interrupted = interruption();
       if (interrupted) return finishJump(id, interrupted);
     }
@@ -707,8 +710,11 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     return outcome === 'issued' || outcome === 'withheld';
   }
 
+  // Every end of a navigation frees the window's paging claims it held.
   function beginNavigation(): number {
-    return ++navigationToken;
+    const token = ++navigationToken;
+    options.getPane().releaseEndedNavigation();
+    return token;
   }
 
   function claimNavigation(token: number): boolean {
@@ -727,6 +733,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
 
   function noteReaderGesture(): void {
     readerGestureEpoch += 1;
+    options.getPane().releaseEndedNavigation();
   }
 
   function invalidateRestore(): void {
@@ -748,6 +755,9 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
       return restoredThreadId;
     },
     beginNavigation,
+    get navigation() {
+      return navigationToken;
+    },
     claimNavigation,
     beginHold,
     isHoldCurrent,

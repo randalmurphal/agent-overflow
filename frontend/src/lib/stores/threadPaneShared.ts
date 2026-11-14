@@ -252,8 +252,8 @@ export interface PaneScrollController {
    * thread.svelte.ts): synchronously while applying provider upserts that
    * APPEND in-window rows, when the reveal gate releases withheld rows
    * (both of which also stamp the pane's live-content latch — see
-   * `armLiveContentAppendSpring`), and for the composer's optimistic
-   * user-send (arm only) — each ordered strictly before the flush in
+   * `armLiveContentAppendSpring`), and for the replacement row of an
+   * edit-and-resend (arm only) — each ordered strictly before the flush in
    * which the virtualizer delivers the resulting content-geometry
    * sample. A component-effect arm loses that race — and is blind to
    * appends outside an active turn (interrupt echo, force-closed tool
@@ -383,6 +383,25 @@ export function withViewportBottomHeld(
 export interface ScrollToItemRequest {
   itemId: string;
   switchGeneration: number;
+  /** Flash the landing row, as an explicit jump does (find steps). */
+  mark: boolean;
+  /** The session that may withdraw the request (a find query); null for none. */
+  owner: object | null;
+}
+
+export interface ScrollToItemOptions {
+  mark?: boolean;
+  owner?: object;
+}
+
+/**
+ * The latest withdrawal: the timeline that took a request of `owner` ends
+ * its navigation if that navigation is still current. `seq` makes a repeat
+ * withdrawal by the same owner a new value.
+ */
+export interface ScrollToItemWithdrawal {
+  owner: object;
+  seq: number;
 }
 
 export function loadOlderResult(
@@ -395,11 +414,13 @@ export function loadOlderResult(
 
 export interface LiveStateHydrationGuard {
   compactingRevisionAtRequest: number;
+  shellRunRevisionAtRequest: number;
   codexAgentRevisionAtRequest: number;
   subagentProgressRevisionAtRequest: number;
   activeTurnAtRequest: ActiveTurn | null;
   queueRevisionAtRequest: number;
   liveTodoRevisionAtRequest: number;
+  unsavedRowsRevisionAtRequest: number;
   providerSessionAccountRevisionAtRequest: number;
   effectiveModelRevisionAtRequest: number;
 }

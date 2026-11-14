@@ -890,7 +890,7 @@ func (a *App) stopRemoteAgentRequest(ctx context.Context, current store.ThreadRe
 	if !settled {
 		report, err := tools.cancelRemoteThread(ctx, caller, threadtools.CancelCall{
 			ThreadID: current.TargetThreadID, ComputerID: current.TargetComputerID,
-		})
+		}, true)
 		if err != nil {
 			result.Failures = append(result.Failures, "interrupt its turn: "+err.Error())
 		} else if report.Effect == threadtools.EffectInterrupted {
@@ -918,7 +918,7 @@ func (a *App) stopThreadAgentTarget(ctx context.Context, target string, visited 
 	if err != nil {
 		result.Failures = append(result.Failures, "stop its background work: "+err.Error())
 	}
-	if effect, err := a.threadTools().interruptRunningThread(ctx, target); err != nil {
+	if effect, err := a.threadTools().interruptRunningThread(ctx, target, stopFromAgentsTray()); err != nil {
 		result.Failures = append(result.Failures, "interrupt its turn: "+err.Error())
 	} else if effect == threadtools.EffectInterrupted {
 		result.Interrupted = true

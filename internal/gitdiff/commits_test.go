@@ -40,7 +40,7 @@ func TestListCommitsReturnsBranchCommitsNewestFirst(t *testing.T) {
 	commitFile(t, repo, "a.txt", "a\n", "first change")
 	commitFile(t, repo, "b.txt", "b\n", "second change")
 
-	commits, err := ListCommits(context.Background(), repo, "main")
+	commits, err := commitsOf(ListCommits(context.Background(), repo, "main"))
 	if err != nil {
 		t.Fatalf("ListCommits: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestListCommitsEmptyRange(t *testing.T) {
 	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 
-	commits, err := ListCommits(context.Background(), repo, "main")
+	commits, err := commitsOf(ListCommits(context.Background(), repo, "main"))
 	if err != nil {
 		t.Fatalf("ListCommits: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestListCommitsKeepsSeparatorCharactersInSubject(t *testing.T) {
 	subject := `fix: handle "quotes" | pipes %s and unicode ✓`
 	commitFile(t, repo, "a.txt", "a\n", subject)
 
-	commits, err := ListCommits(context.Background(), repo, "main")
+	commits, err := commitsOf(ListCommits(context.Background(), repo, "main"))
 	if err != nil {
 		t.Fatalf("ListCommits: %v", err)
 	}
@@ -103,9 +103,9 @@ func TestListCommitsSurvivesControlBytesInSubject(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "a.txt", "a\n", "sep \x1f and \x1e inside")
-	commitFile(t, repo, "b.txt", "b\n", "clean subject")
+	commitFile(t, repo, "b.txt", "b\n", "clean subject\n\nA body with \x1f inside,\nand a second line.\n\n")
 
-	commits, err := ListCommits(context.Background(), repo, "main")
+	commits, err := commitsOf(ListCommits(context.Background(), repo, "main"))
 	if err != nil {
 		t.Fatalf("ListCommits: %v", err)
 	}
@@ -117,6 +117,9 @@ func TestListCommitsSurvivesControlBytesInSubject(t *testing.T) {
 	}
 	if commits[1].AuthoredAt <= 0 {
 		t.Fatalf("fields shifted by control bytes: %+v", commits[1])
+	}
+	if commits[0].Body != "A body with \x1f inside,\nand a second line." || commits[1].Body != "" {
+		t.Fatalf("bodies mangled: %q %q", commits[0].Body, commits[1].Body)
 	}
 }
 
@@ -140,7 +143,7 @@ func TestListCommitsResolvesRemoteOnlyBaseBranch(t *testing.T) {
 	t.Parallel()
 	clone := cloneWithRemoteOnlyBranch(t)
 
-	commits, err := ListCommits(context.Background(), clone, "release")
+	commits, err := commitsOf(ListCommits(context.Background(), clone, "release"))
 	if err != nil {
 		t.Fatalf("ListCommits with remote-only base: %v", err)
 	}
@@ -185,7 +188,7 @@ func TestListCommitsRangeToExplicitHeadSHA(t *testing.T) {
 	fetchedHead := headSHA(t, repo)
 	commitFile(t, repo, "b.txt", "b\n", "past the fetched head")
 
-	commits, err := ListCommitsRange(context.Background(), repo, "main", fetchedHead)
+	commits, err := commitsOf(ListCommitsRange(context.Background(), repo, "main", fetchedHead))
 	if err != nil {
 		t.Fatalf("ListCommitsRange: %v", err)
 	}

@@ -124,21 +124,22 @@ func TestCodexModelsDefaultToGPT56Sol(t *testing.T) {
 	}
 }
 
+// No shipped Claude model states fast mode: which models run fast is known
+// only from the CLI's reported model list (internal/claudemodels).
 func TestClaudeFastModeAndContextCapabilities(t *testing.T) {
 	cases := []struct {
-		model    string
-		fastMode bool
-		windows  int
+		model   string
+		windows int
 	}{
-		{"claude-fable-5", false, 2},
-		{"claude-opus-5", true, 2},
-		{"claude-opus-4-8", true, 2},
-		{"claude-opus-4-7", true, 2},
-		{"claude-opus-4-6", true, 2},
-		{"claude-opus-4-5", false, 2},
-		{"claude-sonnet-5", false, 2},
-		{"claude-sonnet-4-6", false, 2},
-		{"claude-haiku-4-5", false, 1},
+		{"claude-fable-5", 2},
+		{"claude-opus-5", 2},
+		{"claude-opus-4-8", 2},
+		{"claude-opus-4-7", 2},
+		{"claude-opus-4-6", 2},
+		{"claude-opus-4-5", 2},
+		{"claude-sonnet-5", 2},
+		{"claude-sonnet-4-6", 2},
+		{"claude-haiku-4-5", 1},
 	}
 
 	for _, tc := range cases {
@@ -146,9 +147,6 @@ func TestClaudeFastModeAndContextCapabilities(t *testing.T) {
 			model, found := FindModel("claude", tc.model)
 			if !found {
 				t.Fatalf("FindModel(%q) not found", tc.model)
-			}
-			if got := slices.Contains(model.Capabilities, ModelCapabilityFastMode); got != tc.fastMode {
-				t.Fatalf("fast capability = %v, want %v", got, tc.fastMode)
 			}
 			if len(model.ContextWindows) != tc.windows {
 				t.Fatalf("ContextWindows len = %d, want %d", len(model.ContextWindows), tc.windows)
@@ -160,6 +158,13 @@ func TestClaudeFastModeAndContextCapabilities(t *testing.T) {
 				t.Fatalf("first ContextWindow option = %d, want %d", model.ContextWindows[0].Tokens, ClaudeStandardContextWindow)
 			}
 		})
+	}
+	for _, list := range [][]ModelInfo{ClaudeModels, ClaudeTUIModels} {
+		for _, model := range list {
+			if slices.Contains(model.Capabilities, ModelCapabilityFastMode) {
+				t.Errorf("shipped %s/%s states fast mode", model.Provider, model.Slug)
+			}
+		}
 	}
 }
 
@@ -223,7 +228,7 @@ func TestFindModelDoesNotResolveAliases(t *testing.T) {
 		}
 	}
 	model, found := FindModel("claude", "claude-opus-5[1m]")
-	if !found || model.Slug != "claude-opus-5" || !slices.Contains(model.Capabilities, ModelCapabilityFastMode) {
+	if !found || model.Slug != "claude-opus-5" {
 		t.Fatalf("FindModel(claude, claude-opus-5[1m]) = %+v, %v; want the Opus 5 entry", model, found)
 	}
 }

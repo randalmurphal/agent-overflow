@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/accountswitch"
 	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/appupdate"
@@ -18,6 +19,7 @@ import (
 	"agent-overflow/internal/claudeapp"
 	"agent-overflow/internal/codexapp"
 	"agent-overflow/internal/codexthread"
+	"agent-overflow/internal/dictation"
 	"agent-overflow/internal/forgeattach"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitapp"
@@ -35,12 +37,16 @@ import (
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/power"
 	"agent-overflow/internal/projectapp"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerdiscoveryapp"
 	"agent-overflow/internal/providerlifecycleapp"
+	"agent-overflow/internal/readaloud"
 	"agent-overflow/internal/remotejobs"
+	"agent-overflow/internal/reviewimage"
 	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/shellrun"
 	"agent-overflow/internal/soundlib"
 	"agent-overflow/internal/spinner"
 	"agent-overflow/internal/store"
@@ -196,7 +202,9 @@ type App struct {
 	transfers  appThreadTransfers
 	terminals  *terminal.Manager
 	remoteJobs *remotejobs.Manager
-	remoteMCP  appRemoteMCP
+	// shellCommands owns the composer shell commands in flight.
+	shellCommands *shellrun.Service
+	remoteMCP     appRemoteMCP
 	// threadMCP owns the ao-thread-tools server and the threadtools
 	// contract bound to this app. Zero value ready; built on first use.
 	threadMCP appThreadMCP
@@ -263,6 +271,14 @@ type App struct {
 	remoteWatchWG    sync.WaitGroup
 	remoteStartsOnce sync.Once
 	remoteStarts     *keyedlock.Registry
+	// reviewSubmits, postedReviewDrafts and reviewAttempts are
+	// SubmitPRReview's per-PR submit lock, its posted-but-unmarked drafts
+	// and its attempts' outcomes (app_pr_review_submit.go). Zero value
+	// ready.
+	reviewSubmitsOnce  sync.Once
+	reviewSubmits      *keyedlock.Registry
+	postedReviewDrafts postedReviewDrafts
+	reviewAttempts     reviewAttempts
 	// providerTerminals is the per-connection take-control bookkeeping for
 	// claude-tui PTYs: which caller armed which attachment, so a dead socket
 	// releases exactly its own claim and its input lease. Zero value ready.
@@ -339,6 +355,17 @@ type App struct {
 	// Wails/event façades.
 	providerLifecycleOnce sync.Once
 	providerLifecycle     *providerlifecycleapp.Service
+	// accountSwitcher decides account auto-switches and continues after a
+	// usage limit (app_account_autoswitch.go).
+	accountSwitcherOnce    sync.Once
+	accountSwitcher        *accountswitch.Coordinator
+	accountSwitchStartOnce sync.Once
+	// accountSwitchCheckInterval shortens the waiting-thread check for a
+	// test. Zero keeps the product interval.
+	accountSwitchCheckInterval time.Duration
+	// switchedAccountProbeFn replaces the identity probe that follows a
+	// Claude account switch in tests. Nil runs ProbeClaudeAccount.
+	switchedAccountProbeFn func() error
 	// forgeAttachCache holds the bytes of forge-hosted PR/MR attachments
 	// between the bound method that fetched them and the ticketed byte
 	// route that serves them (app_forge_attachments.go). Lazily
@@ -352,10 +379,43 @@ type App struct {
 	// the reason forgeAttachCache is.
 	localImageOnce    sync.Once
 	localImageService *localimage.Service
+	// reviewDiffImageStore holds the image bytes of review diff files for
+	// the same byte route (app_review_diff_files.go). Lazy for the reason
+	// forgeAttachCache is.
+	reviewDiffImageOnce  sync.Once
+	reviewDiffImageStore *reviewimage.Store
+	// reviewDiffFiles remembers what each git-backed review diff open
+	// pinned, for its file reads (app_review_diff_records.go).
+	reviewDiffFiles reviewDiffRecords
+	// reviewDiffPinTimeout overrides reviewDiffPinTimeout in tests.
+	reviewDiffPinTimeout time.Duration
+	// reviewDiffPinHook, set only by tests, runs at the start of each pin
+	// with the pin's context.
+	reviewDiffPinHook func(context.Context)
+	// reviewDiffReadHook, set only by tests, runs in a file read after its
+	// record is found and before it waits for the pin.
+	reviewDiffReadHook func()
 	// ciLogStore is the CI job log cache (app_ci_logs.go), opened on
 	// first use for the reason forgeAttachCache is lazy.
 	ciLogOnce  sync.Once
 	ciLogStore *cilog.Store
+	// claudeRetentionLogged is the last Claude transcript-retention failure
+	// logged per working directory, so a repeated one is logged once
+	// (app_claude_retention.go).
+	claudeRetentionLogMu  sync.Mutex
+	claudeRetentionLogged map[string]string
+	// dictation holds recordings clients are uploading for transcription
+	// (app_dictation.go), created on first use.
+	dictationOnce sync.Once
+	dictation     *dictation.Recordings
+	// liveDictation holds clients' live recordings streaming to OpenAI
+	// (app_live_dictation.go), created on first use.
+	liveDictationOnce sync.Once
+	liveDictation     *dictation.Live
+	// readAloud holds sentences admitted to be read aloud in OpenAI voices
+	// (app_read_aloud.go), created on first use.
+	readAloudOnce sync.Once
+	readAloud     *readaloud.Sentences
 	// transportServer is the Phase C HTTP+WS transport. Set by main.go
 	// via SetTransportServer before app.Run() so Shutdown can drain
 	// in-flight RPCs BEFORE App subsystems (store, telemetry, sessions)
@@ -484,6 +544,9 @@ type App struct {
 	// prUpdates is the PR-scope review-pane polling concern
 	// (`app_pr_updates.go`).
 	prUpdates appPRUpdateState
+	// prManage runs one PR's management writes one at a time
+	// (app_pr_manage.go).
+	prManage prManageLocks
 	// mergedPRs removes a thread's worktree once its pull request merges
 	// (`app_worktree_merge_cleanup.go`).
 	mergedPRs mergedPRCleanupState
@@ -507,6 +570,9 @@ type App struct {
 	// prompt would differ at their next session start
 	// (app_prompt_stale.go).
 	promptStale appPromptStaleState
+	// unsavedRows is the per-thread list of error and notice rows the store
+	// refused, delivered live instead (app_unsaved_rows.go).
+	unsavedRows appUnsavedRowState
 	// taskOutput follows the output files of running background commands
 	// for the tray rows clients expanded (app_background_task_output.go).
 	taskOutput appBackgroundTaskOutputState
@@ -543,9 +609,14 @@ type App struct {
 	threadTitleAppOnce sync.Once
 	threadTitleApp     *threadtitleapp.Service
 	// Test-only injection points for binding helpers that need to observe start/stop.
-	startSessionFn       func(string) error
-	stopSessionFn        func(string) error
-	sendMessageFn        func(string, string, []string) error
+	startSessionFn func(string) error
+	stopSessionFn  func(string) error
+	sendMessageFn  func(string, string, []string) error
+	// sendStageFn runs at two points of a direct send where a turn the
+	// provider starts on its own can land: "placed" (between placement and
+	// the row's persist) and "persisted" (after the allocation lock is
+	// released).
+	sendStageFn          func(threadID, stage string)
 	generateBranchNameFn func(store.Thread, string) (string, error)
 	// threadTitleGenerator is the test seam over the one provider-capable
 	// dependency injected into threadtitleapp. Production leaves it nil.
@@ -638,10 +709,17 @@ type App struct {
 	// canned path (or empty for "cancelled").
 	savePayloadPickerFn savePayloadPicker
 	// rateLimitProbeClientOverride replaces the Claude rate-limit probe's
-	// HTTP client. ConfigureIsolation sets one that refuses every request;
-	// tests assign a client pointing at a local httptest server. Nil uses
-	// the package-level singleton.
+	// HTTP client. ConfigureIsolation sets one that answers in process only
+	// what claudeUsageFake holds; tests assign a client pointing at a local
+	// httptest server. Nil uses the package-level singleton.
 	rateLimitProbeClientOverride *http.Client
+	// claudeUsageFake holds the usage answers an isolated boot's transport
+	// gives, per identity (HarnessSetClaudeUsage). Nil outside isolation.
+	claudeUsageFake *claudefake.Usage
+	// openAIClientOverride replaces the client keyed OpenAI requests use
+	// (app_live_dictation.go). Only an isolated boot sets it, to answer
+	// them in process.
+	openAIClientOverride *http.Client
 	// externalURLsIsolated makes every system-browser open answer
 	// externalurl.ErrNoOpener, as a host with no browser does. Only an
 	// isolated boot sets it: a test run must not open the developer's browser.
@@ -663,6 +741,10 @@ type App struct {
 	// idleReap holds an isolated test boot's idle-session reaper timing
 	// (IsolationConfig). Zero fields keep the product values.
 	idleReap idleReapTiming
+	// usageProbeGap shortens the shortest gap between two usage probes of
+	// one provider for an end-to-end test (IsolationConfig). Zero keeps the
+	// product gap.
+	usageProbeGap time.Duration
 	// dataDirOverride overrides the data directory root that initStores
 	// otherwise resolves via os.UserConfigDir(). The app's data lives in
 	// <root>/agent-overflow. Set by the --data-dir CLI flag (harness mode

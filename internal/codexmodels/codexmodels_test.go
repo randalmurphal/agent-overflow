@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -248,4 +249,51 @@ func TestGet_CtxCancelledWhileSingleFlightInflight(t *testing.T) {
 		t.Fatalf("expected context error")
 	}
 	close(block)
+}
+
+// The caller that started a lookup leaving ends only its wait: the lookup
+// keeps running for a caller sharing it, and the next Get is served its
+// answer rather than the first caller's cancellation.
+func TestGet_FirstCallerLeavingEndsOnlyItsWait(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	cache := NewWith(time.Minute, func(ctx context.Context, _ string) ([]provider.ModelInfo, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return []provider.ModelInfo{{Slug: "first"}}, nil
+	}, nil)
+
+	callerA, leaveA := context.WithCancel(context.Background())
+	aDone := make(chan error, 1)
+	go func() {
+		_, err := cache.Get(callerA, "codex")
+		aDone <- err
+	}()
+	<-started
+	bDone := make(chan error, 1)
+	go func() {
+		_, err := cache.Get(context.Background(), "codex")
+		bDone <- err
+	}()
+	leaveA()
+	if err := <-aDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller A after leaving: %v, want context.Canceled", err)
+	}
+	close(release)
+	if err := <-bDone; err != nil {
+		t.Fatalf("caller B, sharing the lookup: %v", err)
+	}
+	if got, err := cache.Get(context.Background(), "codex"); err != nil || len(got) != 1 {
+		t.Fatalf("next Get = %v, %v, want the cached answer", got, err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("lister calls = %d, want 1", n)
+	}
 }

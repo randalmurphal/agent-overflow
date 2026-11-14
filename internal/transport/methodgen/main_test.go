@@ -264,6 +264,38 @@ func TestScanReceivers_ParsesRemote(t *testing.T) {
 	}
 }
 
+// TestScanReceivers_ParsesCallerBound pins the optional //ao:callerbound
+// directive. A dropped one only keeps a read running after its caller
+// left; a spurious one lets a disconnect cut a write.
+func TestScanReceivers_ParsesCallerBound(t *testing.T) {
+	specs := []receiverSpec{{Dir: "testdata/callerbound", Receiver: "Zeta", Package: "main"}}
+	entries, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
+	if err != nil {
+		t.Fatalf("scanReceivers: %v", err)
+	}
+	got := map[string]MethodEntry{}
+	for _, e := range entries {
+		got[e.Name] = e
+	}
+	if len(got) != 2 {
+		t.Fatalf("collected %d entries, want 2: %v", len(got), got)
+	}
+	if !got["Reads"].CallerBound {
+		t.Error("Reads lost its //ao:callerbound mark")
+	}
+	if got["Writes"].CallerBound {
+		t.Error("Writes is caller-bound without the directive")
+	}
+	rendered, err := renderFile(entries)
+	if err != nil {
+		t.Fatalf("renderFile: %v", err)
+	}
+	if !strings.Contains(string(rendered), `CallerBound: true}, // main.Zeta.Reads`) ||
+		strings.Contains(string(rendered), `CallerBound: true}, // main.Zeta.Writes`) {
+		t.Errorf("rendered table does not carry the CallerBound column:\n%s", rendered)
+	}
+}
+
 // TestLoadScopeVocabulary_ReadsTheDeclaredSet reads the real
 // internal/transport/scopes.go, because the generator's whole defence
 // against a typo is that the vocabulary comes from the same file the

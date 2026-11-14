@@ -55,6 +55,12 @@ func (m *Manager) ReconcileExternalProviderAccount(providerName string) error {
 func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 	providerName string,
 ) error {
+	// A rotation another store's sweep recovered into the selected slot
+	// goes back into the canonical store before anything reads it as the
+	// selected login.
+	if err := m.promoteActiveSlot(providerName); err != nil {
+		return err
+	}
 	before, present, err := m.readCanonicalCredentialIfPresent(providerName)
 	if err != nil {
 		return err
@@ -66,10 +72,10 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 	m.mu.RLock()
 	known, observed := m.fingerprints[providerName]
 	m.mu.RUnlock()
-	if observed && known == sha256.Sum256(before.Data) {
+	if observed && known == sha256.Sum256(before.Bytes()) {
 		return nil
 	}
-	if m.credentials.CredentialLoginExpired(providerName, before.Data, time.Now()) {
+	if m.credentials.CredentialLoginExpired(providerName, before.Bytes(), time.Now()) {
 		// An expired login is a change this reconciliation cannot identify:
 		// the probe that would name it is a CLI start, and starting the CLI on
 		// an expired refresh token is what converts it into the husk below.
@@ -79,7 +85,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 		// neither switch away from the dead account nor sign it back in.
 		return nil
 	}
-	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(before.Data) {
+	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(before.Bytes()) {
 		// claude >= 2.1.219 blanks the canonical credential in place when its
 		// startup token refresh fails (spike 2026-08-03). That husk is a
 		// sign-out, not an external login: adopting it would copy unusable
@@ -100,6 +106,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 	info, credential, err := m.runStableAccountProbe(
 		providerName,
 		m.canonicalProviderAccountProbe(providerName, binary),
+		m.identifyClaudeCredential,
 	)
 	if err != nil {
 		return fmt.Errorf("identify externally selected %s account: %w", providerName, err)
@@ -109,7 +116,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 		// nothing to adopt, and the next reconciliation sees the absence.
 		return nil
 	}
-	fingerprint := sha256.Sum256(credential.Data)
+	fingerprint := sha256.Sum256(credential.Bytes())
 
 	m.mu.Lock()
 	// Serialize against Agent Overflow's own account switch and repeat the
@@ -119,7 +126,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 		m.mu.Unlock()
 		return fmt.Errorf("recheck active %s credentials before activation: %w", providerName, err)
 	}
-	if sha256.Sum256(current.Data) != fingerprint {
+	if sha256.Sum256(current.Bytes()) != fingerprint {
 		m.mu.Unlock()
 		return fmt.Errorf("%s credentials changed before account activation; retry", providerName)
 	}
@@ -260,7 +267,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 		if !restoreCredentialOnError || retErr == nil {
 			return
 		}
-		if cleanupErr := m.credentials.RestoreAccountCredential(saved); cleanupErr != nil {
+		if cleanupErr := m.credentials.RestoreAccountCredential(saved, credential.Bytes()); cleanupErr != nil {
 			retErr = errors.Join(
 				retErr,
 				fmt.Errorf(
@@ -276,7 +283,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 	if err := m.credentials.WriteAccountCredential(
 		providerName,
 		target.ID,
-		credential.Data,
+		credential.Bytes(),
 	); err != nil {
 		return provideraccounts.Account{}, SignIn{}, false, fmt.Errorf(
 			"preserve externally selected %s credentials: %w",
@@ -292,7 +299,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 			err,
 		)
 	}
-	if sha256.Sum256(stable.Data) != sha256.Sum256(credential.Data) {
+	if sha256.Sum256(stable.Bytes()) != sha256.Sum256(credential.Bytes()) {
 		return provideraccounts.Account{}, SignIn{}, false, fmt.Errorf(
 			"%s credentials changed before metadata activation; retry",
 			providerName,
@@ -311,13 +318,13 @@ func (m *Manager) reconcileObservedAccountLocked(
 			err,
 		)
 	}
-	account = m.withRecordedLoginExpiry(account, credential.Data)
+	account = m.withRecordedLoginExpiry(account, credential.Bytes())
 	restoreCredentialOnError = false
 	signIn = SignIn{
 		Provider: providerName,
 		Account:  account,
 		Added:    !found,
-		Renewed:  found && CredentialLoginRenewed(providerName, previous, credential.Data),
+		Renewed:  found && CredentialLoginRenewed(providerName, previous, credential.Bytes()),
 		Switched: hasActive && active.ID != account.ID,
 		Active:   true,
 	}
@@ -383,6 +390,10 @@ func (m *Manager) verifyCanonicalProviderCredentialLocked(
 // long as nothing observed CONTRADICTS it (Identity.Contradicts) — same
 // email on a provably different organization is a different login and
 // reassigns exactly like a different email does.
+//
+// Once attributed, the observation's metadata is recorded on that account.
+// The returned account is non-nil only when the stored row changed, so the
+// caller publishes a card only then.
 func (m *Manager) accountIDForObservedIdentity(
 	providerName string,
 	expectedAccountID string,
@@ -392,14 +403,34 @@ func (m *Manager) accountIDForObservedIdentity(
 	if email == "" || m.store == nil {
 		return expectedAccountID, nil, nil
 	}
+	saved, err := m.attributeObservedIdentity(providerName, expectedAccountID, info)
+	if err != nil {
+		return "", nil, err
+	}
+	updated, err := m.recordObservedMetadata(providerName, saved, info)
+	if err != nil {
+		return "", nil, err
+	}
+	return saved.ID, updated, nil
+}
+
+// attributeObservedIdentity names the saved account an observation that
+// carries an email describes: the expected account while the observation
+// confirms it, otherwise the saved account matching it, otherwise an
+// expected account saved before its email was known.
+func (m *Manager) attributeObservedIdentity(
+	providerName string,
+	expectedAccountID string,
+	info provider.AccountInfo,
+) (provideraccounts.Account, error) {
 	observed := provideraccounts.IdentityFromInfo(info)
-	if expected, ok := m.store.Get(providerName, expectedAccountID, time.Now()); ok &&
-		provideraccounts.AccountIdentity(expected).Confirms(observed) {
-		return expectedAccountID, nil, nil
+	expected, hasExpected := m.store.Get(providerName, expectedAccountID, time.Now())
+	if hasExpected && provideraccounts.AccountIdentity(expected).Confirms(observed) {
+		return expected, nil
 	}
 	resolved, found, err := m.findAccountByObservedIdentity(providerName, info)
 	if err != nil {
-		return "", nil, fmt.Errorf(
+		return provideraccounts.Account{}, fmt.Errorf(
 			"resolve observed %s account %s: %w",
 			providerName,
 			DescribeObservedAccount(info),
@@ -407,34 +438,59 @@ func (m *Manager) accountIDForObservedIdentity(
 		)
 	}
 	if found {
-		return resolved.ID, nil, nil
+		return resolved, nil
 	}
-	if expected, ok := m.store.Get(providerName, expectedAccountID, time.Now()); ok &&
-		strings.TrimSpace(expected.Email) == "" {
-		metadata := AccountFromInfo(expected.ID, providerName, info)
-		if metadata.DisplayName == "" {
-			metadata.DisplayName = expected.DisplayName
-		}
-		if metadata.SubscriptionType == "" {
-			metadata.SubscriptionType = expected.SubscriptionType
-		}
-		if metadata.TokenSource == "" {
-			metadata.TokenSource = expected.TokenSource
-		}
-		if metadata.APIProvider == "" {
-			metadata.APIProvider = expected.APIProvider
-		}
-		updated, err := m.store.UpdateMetadata(metadata)
-		if err != nil {
-			return "", nil, fmt.Errorf("save observed %s account identity: %w", providerName, err)
-		}
-		return updated.ID, &updated, nil
+	if hasExpected && strings.TrimSpace(expected.Email) == "" {
+		return expected, nil
 	}
-	return "", nil, fmt.Errorf(
+	return provideraccounts.Account{}, fmt.Errorf(
 		"%s identity probe returned unsaved account %s instead of selected account",
 		providerName,
 		DescribeObservedAccount(info),
 	)
+}
+
+// recordObservedMetadata writes what an attributed observation reports over
+// the saved row: each non-blank field replaces the saved value, a blank keeps
+// it, and the organization name follows the store's OrgNameReported rule.
+// It returns the stored row only when it changed.
+func (m *Manager) recordObservedMetadata(
+	providerName string,
+	saved provideraccounts.Account,
+	info provider.AccountInfo,
+) (*provideraccounts.Account, error) {
+	observed := AccountFromInfo(saved.ID, providerName, info)
+	metadata := saved
+	for _, field := range []struct {
+		saved    *string
+		observed string
+	}{
+		{&metadata.Email, observed.Email},
+		{&metadata.DisplayName, observed.DisplayName},
+		{&metadata.SubscriptionType, observed.SubscriptionType},
+		{&metadata.TokenSource, observed.TokenSource},
+		{&metadata.APIProvider, observed.APIProvider},
+		{&metadata.OrgID, observed.OrgID},
+		{&metadata.OrgName, observed.OrgName},
+	} {
+		if field.observed != "" {
+			*field.saved = field.observed
+		}
+	}
+	if observed.OrgNameReported {
+		metadata.OrgName = observed.OrgName
+		metadata.OrgNameReported = true
+	}
+	updated, err := m.store.UpdateMetadata(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("save observed %s account identity: %w", providerName, err)
+	}
+	before, after := saved, updated
+	before.RateLimits, after.RateLimits = nil, nil
+	if before == after {
+		return nil, nil
+	}
+	return &updated, nil
 }
 
 // ResolveObservedAccount attributes a provider-reported identity while

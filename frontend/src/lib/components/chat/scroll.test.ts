@@ -23,8 +23,11 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { buildPane, installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
+import { createThreadPane } from '../../stores/thread.svelte';
+import type { Item } from '../../types/models';
+import { registerPaneForTest } from '../../stores/panes.svelte';
 import { projectTurnStarted, projectTurnCompleted } from '../../stores/threadStatuses.svelte';
 import type { PaneScrollController, ThreadPane } from '../../stores/thread.svelte';
 import {
@@ -400,7 +403,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    expect(loadUntilItem).toHaveBeenCalledWith('pinned-item');
+    expect(loadUntilItem).toHaveBeenCalledWith('pinned-item', expect.any(Function));
   });
 
   it('bottom-snapshot restore leaves the controller sticky and not escaped', async () => {
@@ -486,7 +489,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
     const { container } = render(MessageTimeline, { props: { pane } });
 
-    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledWith(target.id));
+    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledWith(target.id, expect.any(Function)));
     await waitFor(() => {
       expect(container.querySelector(`[data-item-id="${target.id}"]`)).not.toBeNull();
     });
@@ -593,7 +596,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    expect(loadUntilItem).toHaveBeenCalledWith('gone-from-history');
+    expect(loadUntilItem).toHaveBeenCalledWith('gone-from-history', expect.any(Function));
   });
 
   it('falls back to restoreToBottom when loadUntilItem reports the anchor missing (controller ends sticky+not-escaped)', async () => {
@@ -720,7 +723,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    expect(loadUntilItem).toHaveBeenCalledWith('anchor-row');
+    expect(loadUntilItem).toHaveBeenCalledWith('anchor-row', expect.any(Function));
   });
 
 });
@@ -795,7 +798,7 @@ describe('scroll integration — scroll to item', () => {
     await tick();
     await tick();
 
-    expect(loadUntilItem).toHaveBeenCalledWith('visible');
+    expect(loadUntilItem).toHaveBeenCalledWith('visible', expect.any(Function));
   });
 
   it('emits a warning toast when the requested item is gone from history', async () => {
@@ -934,7 +937,7 @@ describe('scroll integration — scroll-to-item requests', () => {
     expect(loadUntilItem).not.toHaveBeenCalled();
     finishSwitch();
     await reload;
-    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledWith('visible'));
+    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledWith('visible', expect.any(Function)));
   });
 
   it('a viewport hold during the lookup does not cancel the jump', async () => {
@@ -955,6 +958,148 @@ describe('scroll integration — scroll-to-item requests', () => {
     await tick();
     finishLookup('loaded');
     await waitFor(() => expect(escaped, 'the jump must land').toHaveBeenCalled());
+  });
+
+  it('a request its owner withdrew does not land, before or after the timeline took it', async () => {
+    const pane = await buildPane(undefined, runItems());
+    let finishLookup: ((result: 'loaded') => void) | null = null;
+    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockImplementation(
+      () => new Promise((resolve) => { finishLookup = resolve; }),
+    );
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    const escaped = vi.spyOn(timelineStick(), 'markEscaped');
+    const owner = {};
+
+    // Taken: the lookup is in flight when the owner withdraws it.
+    pane.requestScrollToItem('prose-after', { mark: true, owner });
+    await waitFor(() => expect(finishLookup).toBeTypeOf('function'));
+    pane.withdrawScrollToItem(owner);
+    await tick();
+    finishLookup!('loaded');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(escaped, 'a withdrawn jump must not land').not.toHaveBeenCalled();
+
+    // Untaken: withdrawn while the pane still loads, so it is never run.
+    loadUntilItem.mockClear();
+    pane.requestScrollToItem('prose-before', { mark: true, owner });
+    pane.withdrawScrollToItem(owner);
+    await tick();
+    await tick();
+    expect(loadUntilItem).not.toHaveBeenCalled();
+
+    // Another owner's withdrawal leaves a request alone.
+    finishLookup = null;
+    pane.requestScrollToItem('prose-after', { mark: true, owner });
+    await waitFor(() => expect(finishLookup).toBeTypeOf('function'));
+    pane.withdrawScrollToItem({});
+    finishLookup!('loaded');
+    await waitFor(() => expect(escaped, 'the jump must land').toHaveBeenCalled());
+  });
+
+  /** A pane holding `held` with older history still to page. */
+  async function paneWithHistory(held: Item): Promise<ThreadPane> {
+    installPaneMocks([held]);
+    const slice = getBindingMock('ListThreadSliceAround')!;
+    setBindingMock('ListThreadSliceAround', async (...args: unknown[]) => ({
+      ...(await slice(...args) as object), hasMore: true, hasMoreOlder: true,
+    }));
+    const pane = createThreadPane({ paneId: 'main' });
+    await pane.switchThread(makeThread());
+    registerPaneForTest('main', pane);
+    expect(pane.hasMoreHistory).toBe(true);
+    return pane;
+  }
+
+  it('a withdrawn jump leaves the loaded window alone and releases its paging claims at once', async () => {
+    const held = makeItem({ id: 'held', turnIndex: 50, kind: 'assistant_text', role: 'assistant', summary: 'held' });
+    const target = makeItem({ id: 'far', turnIndex: 2, kind: 'assistant_text', role: 'assistant', summary: 'far' });
+    const pane = await paneWithHistory(held);
+    setBindingMock('GetThreadItem', async () => target);
+    let answer!: (page: unknown) => void;
+    const slice = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
+    setBindingMock('ListThreadSliceAround', slice);
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    const owner = {};
+    pane.requestScrollToItem('far', { mark: true, owner });
+    await waitFor(() => expect(slice).toHaveBeenCalled());
+    expect(pane.loadingOlder && pane.loadingNewer).toBe(true);
+    pane.withdrawScrollToItem(owner);
+    await tick();
+
+    // Before the withdrawn slice answers, the window pages again.
+    expect(pane.loadingOlder).toBe(false);
+    expect(pane.loadingNewer).toBe(false);
+    let older!: (page: unknown) => void;
+    const before = vi.fn(() => new Promise((resolve) => { older = resolve; }));
+    setBindingMock('ListItemsBeforeCursor', before);
+    const paging = pane.loadOlder();
+    expect(before).toHaveBeenCalledOnce();
+    expect(pane.loadingOlder).toBe(true);
+
+    // The withdrawn slice settles: it commits nothing and leaves the newer claim.
+    answer({
+      items: [target],
+      oldestCursor: { turnIndex: 2, itemIndex: 0, itemId: 'far' },
+      newestCursor: { turnIndex: 2, itemIndex: 0, itemId: 'far' },
+      oldestTurnIndex: 2,
+      newestTurnIndex: 2,
+      hasMore: true,
+      hasMoreNewer: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(pane.items.map((item) => item.id)).toEqual(['held']);
+    expect(pane.hasMoreNewer).toBe(false);
+    expect(pane.loadingOlder).toBe(true);
+    older({ items: [], hasMore: false, hasMoreOlder: false, oldestCursor: { turnIndex: -1, itemIndex: -1, itemId: '' } });
+    await paging;
+    expect(pane.loadingOlder).toBe(false);
+  });
+
+  it.each(['a reader gesture', 'unmounting the timeline'] as const)('%s releases a jump lookup\'s paging claims', async (end) => {
+    const held = makeItem({ id: 'held', turnIndex: 50, kind: 'assistant_text', role: 'assistant', summary: 'held' });
+    const pane = await paneWithHistory(held);
+    const lookup = vi.fn(() => new Promise(() => {}));
+    setBindingMock('GetThreadItem', lookup);
+    const { container, unmount } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    pane.requestScrollToItem('far');
+    await waitFor(() => expect(lookup).toHaveBeenCalled());
+    expect(pane.loadingOlder && pane.loadingNewer).toBe(true);
+    if (end === 'unmounting the timeline') unmount();
+    else await fireEvent.wheel(container.querySelector('[data-testid="message-timeline-scroll"]')!, { deltaY: 40 });
+    expect(pane.loadingOlder).toBe(false);
+    expect(pane.loadingNewer).toBe(false);
+  });
+
+  it.each([
+    ['a tail load', (pane: ThreadPane) => { void pane.loadRecentTail(); }],
+    ['a conversation cut', (pane: ThreadPane) => { pane.removeRevertedItems(60, []); }],
+  ])('%s releases the claims of the lookup it supersedes', async (_name, supersede) => {
+    const held = makeItem({ id: 'held', turnIndex: 50, kind: 'assistant_text', role: 'assistant', summary: 'held' });
+    const pane = await paneWithHistory(held);
+    setBindingMock('GetThreadItem', () => new Promise(() => {}));
+    setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
+    void pane.loadUntilItem('far');
+    expect(pane.loadingOlder && pane.loadingNewer).toBe(true);
+    supersede(pane);
+    expect(pane.loadingOlder).toBe(false);
+  });
+
+  it('a jump to a held row releases the claims of the lookup it supersedes', async () => {
+    const held = makeItem({ id: 'held', turnIndex: 50, kind: 'assistant_text', role: 'assistant', summary: 'held' });
+    const pane = await paneWithHistory(held);
+    let found!: (item: unknown) => void;
+    setBindingMock('GetThreadItem', () => new Promise((resolve) => { found = resolve; }));
+    const lookup = pane.loadUntilItem('far');
+    expect(pane.loadingOlder && pane.loadingNewer).toBe(true);
+    expect(await pane.loadUntilItem('held')).toBe('loaded');
+    expect(pane.loadingOlder).toBe(false);
+    expect(pane.loadingNewer).toBe(false);
+    found(makeItem({ id: 'far', turnIndex: 2 }));
+    expect(await lookup).toBe('superseded');
+    expect(pane.items.map((item) => item.id)).toEqual(['held']);
   });
 
   it('lands a hidden bell on the completion that hides it', async () => {

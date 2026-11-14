@@ -19,7 +19,7 @@ import (
 
 // TestProviderSmokeRevertFlows verifies native conversation continuity, which
 // scripted providers cannot attest. Each leg uses a temporary database/repo,
-// four short answered turns and one immediately interrupted send. Authentication
+// three short answered turns, the last an edited replacement. Authentication
 // and native transcript storage use the installed CLI's normal provider home.
 func TestProviderSmokeRevertFlows(t *testing.T) {
 	for _, smoke := range []providerSmokeCase{
@@ -115,63 +115,7 @@ func TestProviderSmokeRevertFlows(t *testing.T) {
 				t.Fatalf("duplicate replacement: %+v err=%v", retry, err)
 			}
 			t.Log("older-message replacement preserved the native prefix, composer WIP and send identity")
-
-			undoID := uuid.NewString()
-			undoneCodeword := providerSmokeCodeword()
-			raw := "  " + providerSmokeCodewordPrompt(undoneCodeword) + "\n"
-			live, hasLiveCodex := app.activeCodexSession(thread.ID)
-			expectLiveRevert := hasLiveCodex && live.SupportsThreadRevert()
-			sent, err := app.sendMessageWithOptions(ctx, thread.ID, strings.TrimSpace(raw), sendMessageOptions{SendID: undoID})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if expectLiveRevert {
-				// Wait only for the native start anchor so this leg exercises the
-				// live cut, rather than the pre-start fork fallback.
-				waitProviderSmokeRevertAnchor(t, ctx, app, thread.ID, sent.TurnIndex)
-			}
-			undone, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{ExpectedSendID: undoID, Draft: &DraftSnapshot{Content: raw}}, nil)
-			if err != nil || !undone.Reverted {
-				t.Fatalf("early Stop: %+v err=%v", undone, err)
-			}
-			if expectLiveRevert {
-				if active, ok := app.activeCodexSession(thread.ID); !ok || active != live {
-					t.Fatal("early Stop replaced the live Codex session")
-				}
-			}
-			track()
-			if _, accepted, err := app.findRecordedSend(thread.ID, undoID); err != nil || accepted {
-				t.Fatalf("un-sent row remains: accepted=%v err=%v", accepted, err)
-			}
-			draft, _, err = app.store.GetThreadDraft(thread.ID)
-			if err != nil || draft.Content != raw {
-				t.Fatalf("early Stop lost raw draft: %+v err=%v", draft, err)
-			}
-			assertProviderSmokeRecall(t, wait(send(recall)), kept, undoneCodeword)
-			t.Log("early Stop restored the raw draft; a subsequent native turn retained the correct history")
 		})
-	}
-}
-
-func waitProviderSmokeRevertAnchor(t *testing.T, ctx context.Context, app *App, threadID string, turnIndex int) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for {
-		anchor, found, err := app.resolveCodexRevertAnchor(threadID, turnIndex)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if found && anchor != "" {
-			return
-		}
-		select {
-		case <-ticker.C:
-		case <-ctx.Done():
-			t.Fatalf("waiting for native turn %d start anchor: %v", turnIndex, ctx.Err())
-		}
 	}
 }
 

@@ -26,8 +26,7 @@ const Timeout = 180 * time.Second
 
 // Per-section caps applied at the prompt-construction layer. Mirrors
 // t3-code's Prompts.ts (6k for the summary, 40k for the patch). The
-// gather layer in internal/git applies larger caps first, so these can
-// trim further without re-reading the repo.
+// gather layer reads no more of the patch than one bounded chunk.
 const (
 	PromptStagedSummaryLimit = 6_000
 	PromptStagedPatchLimit   = 40_000

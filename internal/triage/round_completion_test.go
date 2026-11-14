@@ -7,6 +7,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 )
 
@@ -31,10 +32,12 @@ func roundEnds(t *testing.T, emissions []emitted) (open []string, completed []Tu
 	return open, completed
 }
 
-// A later round of a settled turn announces its own completion time, and
-// the turns row follows it: a read clamps to the row, so a read taken
-// after the later round clears it on every client.
-func TestLaterRoundAdvancesTurnCompletedAt(t *testing.T) {
+// A soft close settles the turn; a continuation with no init (a ToolSearch
+// or ExitPlanMode resume) reopens it for a second round, and the next soft
+// close settles it again. The turns row's completed_at is never before a
+// round's announced completion, so a read stamped at the row's completion
+// covers every round a client saw end.
+func TestContinuationReopensSoftClosedTurn(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	base := time.UnixMilli(1_700_000_000_000)
@@ -46,35 +49,40 @@ func TestLaterRoundAdvancesTurnCompletedAt(t *testing.T) {
 			t.Fatalf("%s: %v", evt.Kind, err)
 		}
 	}
-	completedAt := func() int64 {
+
+	turnRow := func() store.Turn {
 		t.Helper()
 		turn, found, err := st.GetTurn("t1:0")
-		if err != nil || !found || turn.CompletedAt == nil {
-			t.Fatalf("turn row: found=%v err=%v %+v", found, err, turn)
+		if err != nil || !found {
+			t.Fatalf("turn row: found=%v err=%v", found, err)
 		}
-		return *turn.CompletedAt
+		return turn
 	}
 
 	handle(provider.ProviderEvent{Kind: provider.EventTurnStart}, 0)
 	handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"}}, time.Second)
-	first := completedAt()
-	handle(provider.ProviderEvent{Kind: provider.EventInit}, 2*time.Second)
+	if turn := turnRow(); turn.CompletedAt == nil || *turn.CompletedAt != base.Add(time.Second).UnixMilli() {
+		t.Fatalf("turn row after the soft close: %+v, want settled at it", turn)
+	}
+	handle(parentContentBlockStart("t1", "text"), 2*time.Second)
+	if turn := turnRow(); turn.CompletedAt != nil {
+		t.Fatalf("turn row during the continuation: completed_at %d, want reopened", *turn.CompletedAt)
+	}
 	handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"}}, 3*time.Second)
+	handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}}, 4*time.Second)
 
 	open, completed := roundEnds(t, emissions.snapshot())
 	if len(open) != 0 || len(completed) != 2 {
 		t.Fatalf("rounds: open=%v completed=%d, want both rounds closed", open, len(completed))
 	}
-	if got, want := completedAt(), completed[1].CompletedAt; got != want || got <= first {
-		t.Fatalf("completed_at = %d, want the later round's %d (first round %d)", got, want, first)
+	for _, round := range completed {
+		if round.TurnIndex != 0 {
+			t.Fatalf("round on turn %d, want both rounds on turn 0", round.TurnIndex)
+		}
 	}
-
-	// The trailing wire result took no round and announced nothing, so
-	// it leaves the row where the announcement put it.
-	settled := completedAt()
-	handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}}, 4*time.Second)
-	if got := completedAt(); got != settled {
-		t.Fatalf("roundless trailing result moved completed_at %d -> %d", settled, got)
+	turn := turnRow()
+	if turn.CompletedAt == nil || *turn.CompletedAt < completed[1].CompletedAt {
+		t.Fatalf("completed_at = %v, want at or after the last round's %d", turn.CompletedAt, completed[1].CompletedAt)
 	}
 }
 

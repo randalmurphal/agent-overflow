@@ -14,13 +14,14 @@
 import {
   attachedBackends as registryBackends,
   onBackendsChanged,
+  requireEntityBackend,
   type BackendEntry,
 } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { getBackendIdentity, onBackendIdentity } from '../transport/backendIdentity';
 import { rememberedIdentity } from '../transport/rememberedIdentity';
 import { projectBackend } from '../transport/entityIndex';
-import { threadClaimant } from '../transport/threadOwner';
+import { threadClaimant, threadOwner } from '../transport/threadOwner';
 import { hasScope } from '../transport/scopes';
 import { relativeTime } from '../utils/format';
 import { getTransportStatusFor } from './transportStatus.svelte';
@@ -164,6 +165,25 @@ export function backendOfflineLabel(key: BackendKey, lastReachedMs = 0): string 
  */
 export function threadMachine(threadId: string, projectId: string | null | undefined): BackendKey {
   return threadClaimant(threadId) ?? (projectId ? projectBackend(projectId) : undefined) ?? HOME_BACKEND;
+}
+
+/**
+ * The computer a thread verifiably runs on, by the rules thread routing
+ * applies (`transport/runtime.ts`): its owner (a draft placeholder resolves
+ * through the project its id names), else the sole attached computer.
+ * Null when two computers claim it, or when its owner is unknown and
+ * several are attached. Features that spend a computer's credentials use
+ * this, not `threadMachine`.
+ */
+export function verifiedThreadMachine(threadId: string): BackendKey | null {
+  // The registry `requireEntityBackend` counts is not reactive; `list` is.
+  void list;
+  try {
+    return requireEntityBackend(threadOwner(threadId));
+  } catch {
+    // Both throws are routing's refusal: contested or ambiguous.
+    return null;
+  }
 }
 
 /**

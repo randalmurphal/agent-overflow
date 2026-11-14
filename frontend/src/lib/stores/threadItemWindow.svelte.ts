@@ -48,7 +48,6 @@ export interface TimelineCommitOptions {
  * take its commit entry points), and none is read during construction.
  */
 export interface ThreadItemWindowOptions {
-  optimisticItemIds: Set<string>;
   /**
    * The transcript this window holds: omitted for a thread's main window;
    * an agent scope names its launch in `scopeRootId`. Rows parented
@@ -60,6 +59,12 @@ export interface ThreadItemWindowOptions {
   rowUiState(): ThreadRowUiState;
   activityRuns(): ThreadActivityRuns;
   switchLoad(): Pick<ThreadSwitchLoad, 'noteItemMutation' | 'noteItemMutations' | 'noteItemWindowReplacement'>;
+  /**
+   * The rows a commit just put in the window: every row of a wholesale
+   * replacement, the written rows of a merge. Both carry rows from history
+   * reads as well as from the wire.
+   */
+  rowsCommitted?(rows: readonly Item[]): void;
 }
 
 export function createThreadItemWindow(options: ThreadItemWindowOptions) {
@@ -83,6 +88,14 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   let timelineRevision = $state(0);
   // Snapshot geometry is correction even when live events share its flush.
   let historyRevision = $state(0);
+  // Revision of the window's searchable text: every write that changes a
+  // loaded row's summary, a streaming delta included, and every structural
+  // change. A find re-reads its count off it; nothing else should read it,
+  // because it advances at reveal cadence.
+  let searchRevision = $state(0);
+  // Finds watching events for rows the window does not hold. Zero leaves
+  // each such event at one comparison.
+  let searchWatchers = 0;
   // Revision of the item-side inputs to offscreen row-UI-state retention
   // (`utils/rowUiRetention.ts`): bumped by an items write only when it
   // changed which rows the prune retains unconditionally, or what it
@@ -189,6 +202,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     }
     options.streamingReveal().reconcileItemWrite(previous, next);
     if (rowUiRetentionChanged(previous, next)) rowUiRetentionRevision += 1;
+    if (previous.summary !== next.summary) searchRevision += 1;
     windowedRows += isWindowed(next) - isWindowed(previous);
     const errors: unknown[] = [];
     // Same chokepoint logic for the activity-run header: it summarises the
@@ -256,6 +270,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     // remain at the source the router still knows how to render.
     options.switchLoad().noteItemMutation(itemId);
     current.summary = append.next;
+    searchRevision += 1;
     current.streamEnd = streamEnd;
     current.updatedAt = Math.max(updatedAt, current.updatedAt);
   }
@@ -269,9 +284,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       windowed += isWindowed(item);
     }
     windowedRows = windowed;
-    for (const id of options.optimisticItemIds) {
-      if (!itemIndexById.has(id)) options.optimisticItemIds.delete(id);
-    }
   }
 
   function disposeDroppedItemState(
@@ -398,6 +410,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
         errors.push(error);
       }
       timelineRevision++;
+      searchRevision += 1;
       // Unconditional: a wholesale replacement can drop an active row, land
       // one, or re-link a payload, and proving otherwise would cost the very
       // walk the revision exists to remove. These paths are rare (prune,
@@ -412,6 +425,11 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       // that is invisible to both of the header's per-run signals.
       try {
         options.activityRuns().noteWholesaleReplace();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        options.rowsCommitted?.(nextItems);
       } catch (error) {
         errors.push(error);
       }
@@ -505,15 +523,17 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     return dropped;
   }
 
-  /** Commit the merge, including provisional identities replaced by confirmation. */
+  /** Commit the merge. */
   function commitUpsertResult(
     next: ApplyItemUpsertsToWindowResult,
     afterCommit: (committed: ApplyItemUpsertsToWindowResult) => void,
   ): void {
     const streamingReveal = options.streamingReveal();
     const errors: unknown[] = [];
+    let textChanged = next.structureChanged;
     for (const changed of next.changedItems) {
       const previousIndex = itemIndexById.get(changed.id);
+      if (previousIndex === undefined || items[previousIndex].summary !== changed.summary) textChanged = true;
       if (previousIndex !== undefined) {
         try {
           streamingReveal.reconcileItemWrite(items[previousIndex], changed);
@@ -539,33 +559,17 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     }
     for (const item of next.appendedItems) windowedRows += isWindowed(item);
     try {
-      if (next.replacedItems.length > 0) {
-        options.switchLoad().noteItemWindowReplacement(previousItems, committed);
-      } else {
-        options.switchLoad().noteItemMutations(next.changedItems);
-      }
+      options.switchLoad().noteItemMutations(next.changedItems);
     } catch (error) {
       errors.push(error);
     }
     try {
-      // Only entries from `reindexFrom` moved; a confirmed send's
-      // provisional id leaves the map and the optimistic ledger with it.
-      for (const replaced of next.replacedItems) {
-        itemIndexById.delete(replaced.id);
-        options.optimisticItemIds.delete(replaced.id);
-      }
+      // Only entries from `reindexFrom` moved.
       for (let index = next.reindexFrom; index < committed.length; index += 1) {
         itemIndexById.set(committed[index].id, index);
       }
     } catch (error) {
       errors.push(error);
-    }
-    for (const item of next.replacedItems) {
-      try {
-        itemBoxes.drop(item.id);
-      } catch (error) {
-        errors.push(error);
-      }
     }
     for (const item of next.changedItems) {
       try {
@@ -574,14 +578,13 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
         errors.push(error);
       }
     }
-    if (next.replacedItems.length > 0) {
-      try {
-        disposeDroppedItemState(next.replacedItems);
-      } catch (error) {
-        errors.push(error);
-      }
+    try {
+      options.rowsCommitted?.(next.changedItems);
+    } catch (error) {
+      errors.push(error);
     }
     if (next.structureChanged) timelineRevision++;
+    if (textChanged) searchRevision += 1;
     if (next.rowUiRetentionChanged) rowUiRetentionRevision += 1;
     for (const id of next.summaryFieldsChangedIds) {
       try {
@@ -607,6 +610,25 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
      */
     itemIndexById,
     get historyRevision() { return historyRevision; },
+    /** Advances whenever loaded rows' searchable text may have changed. */
+    get searchRevision() { return searchRevision; },
+    /**
+     * Count events that change the transcript's searchable text into
+     * `searchRevision`, held rows or not, until the returned stop runs.
+     */
+    watchSearchableEvents(): () => void {
+      searchWatchers += 1;
+      let watching = true;
+      return () => {
+        if (!watching) return;
+        watching = false;
+        searchWatchers -= 1;
+      };
+    },
+    /** A searchable event reached this window's thread or scope. */
+    noteSearchableEvent(): void {
+      if (searchWatchers > 0) searchRevision += 1;
+    },
     get timelineRevision() {
       return timelineRevision;
     },

@@ -113,6 +113,12 @@ type pendingSend struct {
 	// message over them and persist that inverted order.
 	AnchoredAtInterrupt bool
 
+	// AnchorSettling is set with an AnchoredAtInterrupt claim made before
+	// its store write and cleared when the write lands or the claim is
+	// withdrawn. Until then the row is not in the timeline, so the entry
+	// still reads as a pending send (anchoredInTimeline).
+	AnchorSettling bool
+
 	// WasDeferred marks an entry whose row was originally deferred
 	// (persist-at-echo) and reached SQLite only through the interrupt
 	// eager-persist. Its row owns a FRESH turn index, so if its echo
@@ -181,6 +187,16 @@ type pendingSend struct {
 	// the message reached the model. It decides what the send's terminal
 	// lifecycle state means (handleCommandLifecycle).
 	Started bool
+	// StartedTurn is the turn that was open when `started` arrived, when
+	// one was: the turn the model read the message in. It answers for a
+	// confirmation that arrives after that turn closed.
+	StartedTurn    int
+	StartedTurnSet bool
+	// StartedAtClaim records whether `started` had arrived when a turn
+	// start took this send: the provider opened that turn for it. A turn
+	// that took it without one (a provider-started wake, or a provider with
+	// no lifecycle frames) is weaker evidence of where it is answered.
+	StartedAtClaim bool
 
 	// DeliveryReported records that the app was told which turn this send
 	// was delivered into (send_delivery.go). The first delivery signal
@@ -394,6 +410,14 @@ func (r *Router) HasPendingSendForThread(threadID string) bool {
 	return len(r.pendingSendsLocked(threadID)) > 0
 }
 
+// HasPendingSend reports whether aoItemID's send is registered on threadID.
+// A session teardown clears the registry, so a send registered against a
+// session that was replaced before its provider write registers again.
+func (r *Router) HasPendingSend(threadID, aoItemID string) bool {
+	_, ok := r.peekPendingSendByItemID(threadID, aoItemID)
+	return ok
+}
+
 // peekPendingSendHead returns the FIFO head for threadID without
 // popping it. Used by resolveTurnIndexOnStart to recover the
 // dispatcher-stamped TurnIndex when the wire init carries no turn
@@ -422,10 +446,57 @@ func (r *Router) claimTurnOpeningPendingSend(threadID string) (int, bool) {
 	for i := range queue {
 		if queue[i].canOpenTurn() {
 			queue[i].OpenedTurn = true
+			queue[i].StartedAtClaim = queue[i].Started
 			return queue[i].TurnIndex, true
 		}
 	}
 	return 0, false
+}
+
+// PendingSendState is what the registry holds about a send the provider
+// has not confirmed consuming.
+type PendingSendState int
+
+const (
+	// PendingSendNone: no unconsumed entry. The provider confirmed the send
+	// (its delivery, when it has one, was reported) or the entry was
+	// dropped.
+	PendingSendNone PendingSendState = iota
+	// PendingSendWaiting: the provider has the send and no turn start ran
+	// it: none took it, or the one that took it was the provider's own
+	// (ranInTakingTurn). A turn that ends now did not read it.
+	PendingSendWaiting
+	// PendingSendClaimed: a turn start took the send as the returned turn
+	// and ran it there (ranInTakingTurn).
+	PendingSendClaimed
+)
+
+// PendingSendTurn reports where the send whose row is aoItemID stands, and
+// for a claimed one the turn that took it. It is how a reader learns the
+// turn of a send whose delivery was never reported (SetSendDeliveredHook): a
+// provider that opens the message's turn and never echoes the message. It
+// waits out a confirmation in progress.
+func (r *Router) PendingSendTurn(threadID, aoItemID string) (int, PendingSendState) {
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return 0, PendingSendNone
+	}
+	for i := range st.pendingSends {
+		entry := &st.pendingSends[i]
+		if entry.AOItemID != aoItemID || entry.EchoConsumed {
+			continue
+		}
+		if st.ranInTakingTurn(entry) {
+			return entry.TurnIndex, PendingSendClaimed
+		}
+		return 0, PendingSendWaiting
+	}
+	return 0, PendingSendNone
 }
 
 // turnOpeningPendingSend reads the entry claimTurnOpeningPendingSend would
@@ -837,7 +908,7 @@ type EagerPersistedFlush struct {
 //
 // interruptedTurnIndex is the turn that was open when the user issued
 // the interrupt (-1 when none), sampled by the caller via
-// OpenTurnIndex BEFORE awaiting the provider's interrupt ack. Sampling
+// InterruptTurnIndex BEFORE awaiting the provider's interrupt ack. Sampling
 // here instead would race the ack wait: the read loop keeps processing
 // wire events during it, so the cut turn can settle (clearing
 // openTurns) before this runs, and its echo would then settle it
@@ -927,6 +998,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 			pending[i].DeferredItem = nil
 			pending[i].WasDeferred = true
 			pending[i].AnchoredAtInterrupt = true
+			pending[i].AnchorSettling = true
 			if stampCurrent {
 				pending[i].InterruptedTurnIndex = interruptedTurnIndex
 			}
@@ -948,6 +1020,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 			r.restorePendingSendDeferred(threadID, snap.item.ID)
 			continue
 		}
+		r.settlePendingSendAnchor(threadID, snap.item.ID)
 		if confirmedHook != nil {
 			confirmedHook(threadID, persisted)
 		}
@@ -1026,6 +1099,7 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 		if pending[i].DeferredItem == nil && !pending[i].AnchoredAtInterrupt && pending[i].Shape == sendShapeFlush {
 			ids = append(ids, pending[i].AOItemID)
 			pending[i].AnchoredAtInterrupt = true
+			pending[i].AnchorSettling = true
 		}
 	}
 	r.noteSendsPendingLocked(threadID)
@@ -1055,6 +1129,7 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 			r.unclaimPendingSendAnchor(threadID, id)
 			continue
 		}
+		r.settlePendingSendAnchor(threadID, id)
 		r.emitItemUpsert(item)
 		if confirmedHook != nil {
 			confirmedHook(threadID, item)
@@ -1119,6 +1194,7 @@ func (r *Router) restorePendingSendDeferred(threadID, aoItemID string) {
 			}
 			pending[i].WasDeferred = false
 			pending[i].AnchoredAtInterrupt = false
+			pending[i].AnchorSettling = false
 			break
 		}
 	}
@@ -1329,11 +1405,35 @@ func (r *Router) unclaimPendingSendAnchor(threadID, aoItemID string) {
 	for i := range pending {
 		if pending[i].AOItemID == aoItemID {
 			pending[i].AnchoredAtInterrupt = false
+			pending[i].AnchorSettling = false
 			break
 		}
 	}
 	r.noteSendsPendingLocked(threadID)
 	r.mu.Unlock()
+}
+
+// settlePendingSendAnchor records that the store write behind an
+// AnchoredAtInterrupt claim landed: the row is in the timeline, and the
+// entry stops reading as a pending send. The caller holds the thread's
+// flush anchor lock.
+func (r *Router) settlePendingSendAnchor(threadID, aoItemID string) {
+	r.mu.Lock()
+	pending := r.pendingSendsLocked(threadID)
+	for i := range pending {
+		if pending[i].AOItemID == aoItemID {
+			pending[i].AnchorSettling = false
+			break
+		}
+	}
+	r.noteSendsPendingLocked(threadID)
+	r.mu.Unlock()
+}
+
+// anchoredInTimeline reports whether an interrupt placed the entry's row in
+// the timeline: the claim is made and its store write landed.
+func (p *pendingSend) anchoredInTimeline() bool {
+	return p.AnchoredAtInterrupt && !p.AnchorSettling
 }
 
 // markPendingSendsAnchoredAtInterrupt flips AnchoredAtInterrupt on the
@@ -1382,18 +1482,6 @@ func (r *Router) ClearPendingSendsByItemIDs(threadID string, ids []string) {
 	r.clearPendingSendsMatching(threadID, func(entry pendingSend) bool {
 		_, drop := remove[entry.AOItemID]
 		return drop
-	})
-}
-
-// ClearPendingSendsFromTurn retires send correlations after a committed
-// conversation cut. A provider session retained across the cut must not assign
-// its next turn or user echo to a send removed from history.
-func (r *Router) ClearPendingSendsFromTurn(threadID string, turnIndex int) {
-	if threadID == "" || turnIndex < 0 {
-		return
-	}
-	r.clearPendingSendsMatching(threadID, func(entry pendingSend) bool {
-		return entry.TurnIndex >= turnIndex
 	})
 }
 

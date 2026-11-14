@@ -283,25 +283,32 @@ func (c *Cache) GetOrFetch(ctx context.Context, k Key, fetcher Fetcher, force bo
 	}
 
 	c.sfMu.Lock()
-	if existing, ok := c.sf[k]; ok {
-		c.sfMu.Unlock()
-		select {
-		case <-existing.done:
-		case <-ctx.Done():
-			return ServerStatus{}, ctx.Err()
-		}
-		return pickResult(existing.results, k), existing.err
+	flight, ok := c.sf[k]
+	if !ok {
+		flight = &inflight{done: make(chan struct{})}
+		c.sf[k] = flight
+		go c.runFetch(context.WithoutCancel(ctx), k.Provider, fetcher, flight, func() { delete(c.sf, k) })
 	}
-	flight := &inflight{done: make(chan struct{})}
-	c.sf[k] = flight
 	c.sfMu.Unlock()
+	select {
+	case <-flight.done:
+	case <-ctx.Done():
+		return ServerStatus{}, ctx.Err()
+	}
+	return pickResult(flight.results, k), flight.err
+}
 
-	results, err := fetcher.Fetch(ctx, k.Provider)
+// runFetch is one shared fetch. It belongs to no caller: it keeps the
+// first caller's values but not its cancellation and ends at the
+// fetcher's own timeout, because the CLI may be mid credential refresh.
+// Each caller waits on its own context. forget runs under sfMu.
+func (c *Cache) runFetch(ctx context.Context, p Provider, fetcher Fetcher, flight *inflight, forget func()) {
+	results, err := fetcher.Fetch(ctx, p)
 	for i := range results {
 		// Stamp source so callers can't accidentally Put a Source-less
 		// fetch result. Written back in place — including Put's
-		// carry-forward — so the slice we hand back (and the one stored
-		// on the flight for waiters) matches what landed in the cache.
+		// carry-forward — so the slice stored on the flight for waiters
+		// matches what landed in the cache.
 		if results[i].Source == "" {
 			results[i].Source = SourceEphemeralFetch
 		}
@@ -309,13 +316,10 @@ func (c *Cache) GetOrFetch(ctx context.Context, k Key, fetcher Fetcher, force bo
 	}
 	flight.results = results
 	flight.err = err
-	close(flight.done)
-
 	c.sfMu.Lock()
-	delete(c.sf, k)
+	forget()
 	c.sfMu.Unlock()
-
-	return pickResult(results, k), err
+	close(flight.done)
 }
 
 // RefreshProvider unconditionally re-fetches the provider's whole
@@ -328,35 +332,19 @@ func (c *Cache) GetOrFetch(ctx context.Context, k Key, fetcher Fetcher, force bo
 // Every returned entry is Put so subscribers see the live update.
 func (c *Cache) RefreshProvider(ctx context.Context, p Provider, fetcher Fetcher) ([]ServerStatus, error) {
 	c.sfMu.Lock()
-	if existing, ok := c.sfProvider[p]; ok {
-		c.sfMu.Unlock()
-		select {
-		case <-existing.done:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-		return cloneStatuses(existing.results), existing.err
+	flight, ok := c.sfProvider[p]
+	if !ok {
+		flight = &inflight{done: make(chan struct{})}
+		c.sfProvider[p] = flight
+		go c.runFetch(context.WithoutCancel(ctx), p, fetcher, flight, func() { delete(c.sfProvider, p) })
 	}
-	flight := &inflight{done: make(chan struct{})}
-	c.sfProvider[p] = flight
 	c.sfMu.Unlock()
-
-	results, err := fetcher.Fetch(ctx, p)
-	for i := range results {
-		if results[i].Source == "" {
-			results[i].Source = SourceEphemeralFetch
-		}
-		results[i] = c.Put(results[i])
+	select {
+	case <-flight.done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	flight.results = results
-	flight.err = err
-	close(flight.done)
-
-	c.sfMu.Lock()
-	delete(c.sfProvider, p)
-	c.sfMu.Unlock()
-
-	return cloneStatuses(results), err
+	return cloneStatuses(flight.results), flight.err
 }
 
 // cloneStatuses copies in so every single-flight caller gets a slice it

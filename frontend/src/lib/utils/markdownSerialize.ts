@@ -427,9 +427,16 @@ function serializeTable(el: HTMLElement, ctx: SerializeContext): string {
   return `${lines.join('\n')}\n\n`;
 }
 
+// A pipe in a cell is written `\|`. The table grammar reads a pipe after an
+// even run of backslashes as a column boundary, so the backslashes already
+// in front of a pipe are doubled to keep the run odd.
+function escapeCellPipes(text: string): string {
+  return text.replace(/(\\*)\|/g, '$1$1\\|');
+}
+
 function formatTableRow(cells: HTMLElement[], ctx: SerializeContext): string {
   const text = cells
-    .map((c) => serializeChildren(c, ctx).replace(/\|/g, '\\|').replace(/\n+/g, ' ').trim())
+    .map((c) => escapeCellPipes(serializeChildren(c, ctx)).replace(/\n+/g, ' ').trim())
     .join(' | ');
   return `| ${text} |`;
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provideraccounts"
 )
 
@@ -28,9 +29,18 @@ func claudeLogin(token string, sessionEnd time.Time) []byte {
 	return claudeCredential(token, accessExpiresAt, sessionEnd)
 }
 
+// claudeLoginAs is claudeLogin whose access token the fake profile endpoint
+// identifies as email (claudefake), the only identity AO pairs with it.
+func claudeLoginAs(email, nonce string, sessionEnd time.Time) []byte {
+	return claudeLogin(claudefake.AccessToken(email, testClaudeOrgID, nonce), sessionEnd)
+}
+
+const testClaudeOrgID = "org-1"
+
 func claudeCredential(token string, accessExpiresAt, refreshDeadline time.Time) []byte {
 	return []byte(fmt.Sprintf(
-		`{"claudeAiOauth":{"accessToken":%q,"refreshToken":"refresh-%s","expiresAt":%d,"refreshTokenExpiresAt":%d}}`,
+		`{"claudeAiOauth":{"accessToken":%q,"refreshToken":"refresh-%s","expiresAt":%d,"refreshTokenExpiresAt":%d,`+
+			`"scopes":["user:inference","user:profile"]}}`,
 		token,
 		token,
 		accessExpiresAt.UnixMilli(),

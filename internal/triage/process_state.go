@@ -21,7 +21,9 @@ package triage
 var processBoundState = []processBoundEntry{
 	// A stale settlement marker would misroute a replacement session's
 	// first error result into persistLateTurnPayload (see MarkThreadActive).
-	{name: "turn settlement", clear: stateClear(func(st *threadState) { st.settledTurns = nil })},
+	// The soft-closed turn is the dead process's: only its own result or
+	// continuation could have resumed it.
+	{name: "turn settlement", clear: stateClear(func(st *threadState) { st.settledTurns, st.softClosedTurnSet = nil, false })},
 	{name: "effective model", clear: stateClear(func(st *threadState) { st.effectiveModel, st.effectiveModelSet = "", false })},
 	// A pending wakeup and armed cron jobs live in the previous CLI
 	// process. A stale deadline would shield the replacement from the
@@ -38,6 +40,12 @@ var processBoundState = []processBoundEntry{
 	// A delivery waiting for a turn start waits on the dead process's
 	// turn; a replacement's first turn is not it.
 	{name: "deliveries awaiting a turn", clear: stateClear(func(st *threadState) { st.deliveriesAwaitingTurn = nil })},
+	// A death announced for the previous process says nothing about this
+	// one's.
+	{name: "death announcement", clear: stateClear(func(st *threadState) { st.announcedDeath = "" })},
+	// The directory is the dead process's. Its replacement launches from
+	// the thread row's workspace, wherever the last one moved to.
+	{name: "workspace path", clear: stateClear(func(st *threadState) { st.workspacePath, st.workspacePathSet = "", false })},
 	// An in-flight echo cannot survive the session whose read loop carries
 	// it, and a replacement after revert reuses turn indexes, so a
 	// lingering mark would settle a reused-index predecessor

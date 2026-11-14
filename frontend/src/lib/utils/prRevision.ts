@@ -1,7 +1,9 @@
 import type { PRDetail } from '../types/models';
 
 /** The pull request state a local PR read is computed at (`git.PRRevision`):
- *  the head and the base branch's tip as the forge last reported them. */
+ *  the head and the base commit the forge recorded, as it last reported
+ *  them. The recorded base does not follow the base branch; the conflict
+ *  read merges with the branch's live tip instead. */
 export interface PRRevision {
   baseRef: string;
   baseSHA: string;

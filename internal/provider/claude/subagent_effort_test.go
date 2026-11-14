@@ -9,6 +9,16 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+// legacyEffortParser is a parser for a CLI before 2.1.317, where a launch
+// that names no effort runs at its launcher's effort, so the stamp lands at
+// launch. These tests pin how the parser follows that effort; the 2.1.317
+// model rule is in subagent_effort_model_test.go.
+func legacyEffortParser() *Parser {
+	parser := NewParser()
+	parser.SetCLIVersion("2.1.316")
+	return parser
+}
+
 func agentLaunchLine(toolUseID, parentToolUseID, input string) []byte {
 	parent := ""
 	if parentToolUseID != "" {
@@ -39,7 +49,7 @@ func launchInheritedEffort(t *testing.T, parser *Parser, line []byte) (string, b
 }
 
 func TestAgentLaunchRecordsTheSessionEffortItInherits(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	parser.SetSessionEffort("xhigh")
 
 	effort, ok := launchInheritedEffort(t, parser, agentLaunchLine("toolu-a", "", `{"description":"look","prompt":"p"}`))
@@ -55,14 +65,14 @@ func TestAgentLaunchRecordsTheSessionEffortItInherits(t *testing.T) {
 }
 
 func TestAgentLaunchWithoutAKnownSessionEffortIsNotStamped(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	if effort, ok := launchInheritedEffort(t, parser, agentLaunchLine("toolu-a", "", `{"prompt":"p"}`)); ok {
 		t.Fatalf("inherited_effort = %q on a session with no --effort, want absent", effort)
 	}
 }
 
 func TestNestedAgentLaunchInheritsItsLaunchersEffort(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	parser.SetSessionEffort("medium")
 
 	launchInheritedEffort(t, parser, agentLaunchLine("toolu-outer", "", `{"prompt":"p","effort":"max"}`))
@@ -86,7 +96,7 @@ func TestNestedAgentLaunchInheritsItsLaunchersEffort(t *testing.T) {
 }
 
 func TestEffortReplyMovesTheEffortLaterLaunchesInherit(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	parser.SetSessionEffort("high")
 
 	launchInheritedEffort(t, parser, agentLaunchLine("toolu-before", "", `{"prompt":"p"}`))
@@ -122,7 +132,7 @@ func TestEffortReplyMovesTheEffortLaterLaunchesInherit(t *testing.T) {
 }
 
 func TestOnlyAgentLaunchesAreStamped(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	parser.SetSessionEffort("xhigh")
 	events, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"m","role":"assistant","content":[{"type":"tool_use","id":"toolu-bash","name":"Bash","input":{"command":"ls"}}]}}`))
 	if err != nil {
@@ -138,7 +148,7 @@ func TestOnlyAgentLaunchesAreStamped(t *testing.T) {
 }
 
 func TestMirrorProjectedAgentLaunchIsStamped(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	parser.SetSessionEffort("medium")
 	launchInheritedEffort(t, parser, agentLaunchLine("toolu-bg", "", `{"prompt":"p","effort":"xhigh","run_in_background":true}`))
 
@@ -195,7 +205,7 @@ func TestEffortAutoAndCapRepliesMoveTheSessionEffort(t *testing.T) {
 		{"capped", "Effort 'max' exceeds the cap for claude-opus-4-7 set by your settings or organization; set to 'high' instead (this session only): Deep", "high"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			parser := NewParser()
+			parser := legacyEffortParser()
 			parser.SetSessionEffort("xhigh")
 			mustParse(t, parser, effortReplyLine("syn", tc.reply))
 			effort, ok := launchInheritedEffort(t, parser, agentLaunchLine("toolu-after", "", `{"prompt":"p"}`))
@@ -209,7 +219,7 @@ func TestEffortAutoAndCapRepliesMoveTheSessionEffort(t *testing.T) {
 // claude-tui stamps each main-loop assistant envelope with its API
 // request's effort; a subagent's envelope says nothing about the session.
 func TestRequestEffortOnTheMainLoopMovesTheSessionEffort(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	parser.SetSessionEffort("high")
 	mustParse(t, parser, []byte(`{"type":"assistant","ao_request_effort":"low","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu-a","name":"Agent","input":{"prompt":"p"}}]}}`))
 	if effort, _ := launchInheritedEffort(t, parser, agentLaunchLine("toolu-b", "", `{"prompt":"p"}`)); effort != "low" {
@@ -246,7 +256,7 @@ func launchMeta(t *testing.T, parser *Parser, line []byte) map[string]any {
 // launcher's own family keeps the launcher's model, any other alias takes
 // the CLI's alias target, and a fork ignores it.
 func TestAgentModelAliasResolvesToTheModelItRunsOn(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	parser.SetModel("claude-opus-4-7")
 	parser.SetModelAliases(map[string]string{"haiku": "claude-haiku-4-5", "opus": "claude-opus-4-8", "sonnet": "claude-sonnet-4-6"})
 	for i, tc := range []struct {
@@ -269,7 +279,7 @@ func TestAgentModelAliasResolvesToTheModelItRunsOn(t *testing.T) {
 // A resumed agent runs at the effort its launch named, else at its
 // sender's effort when the resume happens: the carrier records the latter.
 func TestResumeCarrierRecordsTheEffortAtResumeTime(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	parser.SetSessionEffort("high")
 	mustParse(t, parser, agentLaunchLine("launch-1", "", `{"prompt":"p"}`))
 	mustParse(t, parser, []byte(`{"type":"system","subtype":"task_started","task_id":"agent-1","tool_use_id":"launch-1","task_type":"local_agent"}`))
@@ -288,7 +298,7 @@ func TestResumeCarrierRecordsTheEffortAtResumeTime(t *testing.T) {
 
 // A launch that named its effort keeps running at it after a resume.
 func TestResumeOfANamedEffortLaunchKeepsItsEffort(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	parser.SetSessionEffort("high")
 	mustParse(t, parser, agentLaunchLine("launch-1", "", `{"prompt":"p","effort":"max"}`))
 	mustParse(t, parser, []byte(`{"type":"system","subtype":"task_started","task_id":"agent-1","tool_use_id":"launch-1","task_type":"local_agent"}`))
@@ -303,7 +313,7 @@ func TestResumeOfANamedEffortLaunchKeepsItsEffort(t *testing.T) {
 // A relative effort ("lower"/"higher", experiment-gated) names no effort AO
 // can reproduce, so what nests inside it inherits none.
 func TestRelativeEffortLeavesTheAgentsEffortUnknown(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	parser.SetSessionEffort("high")
 	mustParse(t, parser, agentLaunchLine("outer", "", `{"prompt":"p","effort":"higher"}`))
 	if effort, ok := launchInheritedEffort(t, parser, agentLaunchLine("inner", "outer", `{"prompt":"p"}`)); ok {
@@ -325,7 +335,7 @@ func TestHighRequestOnAModelWithoutHigherTiersRecordsThemAsAlternatives(t *testi
 		{"claude-sonnet-4-6", "medium", nil},
 		{"claude-unknown-9", "high", []any{"xhigh", "max"}},
 	} {
-		parser := NewParser()
+		parser := legacyEffortParser()
 		mustParse(t, parser, []byte(`{"type":"assistant","ao_request_effort":"`+tc.effort+`","message":{"id":"m1","model":"`+tc.model+`","role":"assistant","content":[{"type":"text","text":"x"}]}}`))
 		meta := launchMeta(t, parser, agentLaunchLine("toolu-a", "", `{"prompt":"p"}`))
 		if meta[inheritedEffortMetaKey] != tc.effort {
@@ -349,7 +359,7 @@ func TestHighRequestOnAModelWithoutHigherTiersRecordsThemAsAlternatives(t *testi
 
 // An effort the session states outright (a /effort reply) is not clamped.
 func TestEffortReplyClearsTheRequestAlternatives(t *testing.T) {
-	parser := NewParser()
+	parser := legacyEffortParser()
 	mustParse(t, parser, []byte(`{"type":"assistant","ao_request_effort":"high","message":{"id":"m1","model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"text","text":"x"}]}}`))
 	mustParse(t, parser, effortReplyLine("syn-1", "Set effort level to high (this session only): Deep"))
 	if got, ok := launchMeta(t, parser, agentLaunchLine("toolu-a", "", `{"prompt":"p"}`))[inheritedEffortAlternativesMetaKey]; ok {
@@ -370,7 +380,7 @@ func TestResumeOfAHistoricalLaunchRestoresItsEffort(t *testing.T) {
 		{"unnamed", AgentLaunchRecord{ToolUseID: "launch-1"}, "max"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			parser := NewParser()
+			parser := legacyEffortParser()
 			parser.SetSessionEffort("max")
 			parser.agentLaunchLookup = func(taskID string) (AgentLaunchRecord, bool, error) {
 				if taskID != "agent-1" {

@@ -120,7 +120,7 @@ func (r *Router) settleAgentStreams(threadID string, end agentEnd) error {
 		ref, held := r.takeAgentStream(threadID, stream)
 		switch stream.Kind {
 		case itemKindThinking:
-			err = r.settleStreamingThinkingRow(threadID, stream.ID, end.streamStatus, end.rule.Summarise, "", false)
+			err = r.settleStreamingThinkingRow(threadID, stream.ID, end.streamStatus, end.rule.Summarise, "", false, false)
 		default:
 			err = r.settleStreamingTextRow(threadID, stream.ID, end.streamStatus, end.rule.Summarise, "", false, nil)
 		}

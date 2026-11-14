@@ -199,3 +199,23 @@ func TestParseShortStatusBranchHandlesEveryHeaderShape(t *testing.T) {
 		}
 	}
 }
+
+func TestLimitSectionTruncationMarker(t *testing.T) {
+	t.Parallel()
+	in := strings.Repeat("x", 100)
+	out := limitSection(in, 50)
+	if !strings.HasSuffix(out, "[truncated]") {
+		t.Errorf("expected truncation marker; got %q", out)
+	}
+	if len(out) == len(in) {
+		t.Error("expected truncation to shorten input")
+	}
+}
+
+func TestLimitSectionNoopBelowBudget(t *testing.T) {
+	t.Parallel()
+	in := "short"
+	if got := limitSection(in, 100); got != in {
+		t.Errorf("expected no-op; got %q", got)
+	}
+}

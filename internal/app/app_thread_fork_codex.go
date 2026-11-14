@@ -108,8 +108,12 @@ var codexForkTimeout = 60 * time.Second
 // the child's writer and the child's own first start would be refused
 // (codex.ForkThread). The source is read from the thread store, which a
 // live source's recorder flushes on every write.
+//
+// The cut runs to its answer whatever its caller does: Codex cannot delete
+// a child over JSON-RPC, so a cut stopped after the child exists would
+// leave it with no thread pointing at it.
 func (a *App) forkCodexThreadAt(ctx context.Context, source store.Thread, lastTurnID string) (string, error) {
-	cut, cancel := context.WithTimeout(ctx, codexForkTimeout)
+	cut, cancel := context.WithTimeout(context.WithoutCancel(ctx), codexForkTimeout)
 	defer cancel()
 	return codex.ForkThread(cut, codex.ForkSpec{
 		Binary:         a.providerBinaryPath(source.Provider),

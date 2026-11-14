@@ -39,6 +39,15 @@ type RetentionSettings struct {
 	Days int `json:"days"`
 }
 
+// KeepDays is the window for a consumer that needs a positive day count:
+// Days, or MaxRetentionDays when the sweep is disabled.
+func (r RetentionSettings) KeepDays() int {
+	if r.Days <= 0 {
+		return MaxRetentionDays
+	}
+	return r.Days
+}
+
 // CurrentSchemaVersion is the version stamped on every Update-written
 // settings file. Bump on any breaking shape change so a future loader
 // can branch on the version and run a one-shot migration before
@@ -113,6 +122,31 @@ type Settings struct {
 	// threads: pairing already says which computers belong to the user, and
 	// a paired computer's agents reach this one whether it is on or off.
 	ThreadToolsEnabled bool `json:"threadToolsEnabled"`
+	// DictationSubscriptionEnabled lets a composer on any client dictate
+	// through this computer's Codex sign-in with ChatGPT, which sends each
+	// recording to OpenAI. Default off. With no dictation source on, no
+	// composer shows a mic.
+	DictationSubscriptionEnabled bool `json:"dictationSubscriptionEnabled,omitempty"`
+	// DictationAPIEnabled lets a composer on any client dictate live through
+	// this computer's OpenAI API key (internal/openaikey), which streams
+	// the recording to OpenAI while it is spoken. Default off. The four
+	// fields after it tune that transcription (voice.go).
+	DictationAPIEnabled bool `json:"dictationAPIEnabled,omitempty"`
+	// DictationAPIDelay is gpt-live-transcribe's latency: lower shows text
+	// sooner, higher is more accurate. Empty leaves OpenAI's default.
+	DictationAPIDelay string `json:"dictationAPIDelay,omitempty"`
+	// DictationAPILanguages are the language codes the speaker uses, such
+	// as "en". Empty lets OpenAI detect them.
+	DictationAPILanguages []string `json:"dictationAPILanguages,omitempty"`
+	// DictationAPIKeywords are terms the transcription should spell as
+	// written: names, jargon, identifiers.
+	DictationAPIKeywords []string `json:"dictationAPIKeywords,omitempty"`
+	// DictationAPIPrompt describes the speaker or setting to the model.
+	DictationAPIPrompt string `json:"dictationAPIPrompt,omitempty"`
+	// ReadAloudAPIEnabled lets any client read replies aloud in OpenAI
+	// voices through this computer's OpenAI API key, which sends each
+	// sentence to OpenAI. Default off.
+	ReadAloudAPIEnabled bool `json:"readAloudAPIEnabled,omitempty"`
 	// AgentGuideEnabled appends Agent Overflow's own guide to every
 	// interactive Claude, claude-tui and Codex session's system prompt: what
 	// the chat pane renders and which built-in tool servers are on
@@ -373,6 +407,15 @@ type Settings struct {
 	ClaudeAutoCompactExtendedPercent int `json:"claudeAutoCompactExtendedPercent"`
 	CodexAutoCompactStandardPercent  int `json:"codexAutoCompactStandardPercent"`
 	CodexAutoCompactExtendedPercent  int `json:"codexAutoCompactExtendedPercent"`
+
+	// Account auto-switch, for every provider (accountautoswitch.go).
+	// AccountAutoSwitchStrategy is the order the pool is used in,
+	// AccountAutoSwitchThreshold the usage percent at which an account is
+	// past threshold, and AccountAutoContinue continues a thread refused
+	// for a usage limit once an account can serve it.
+	AccountAutoSwitchStrategy  string `json:"accountAutoSwitchStrategy"`
+	AccountAutoSwitchThreshold int    `json:"accountAutoSwitchThreshold"`
+	AccountAutoContinue        bool   `json:"accountAutoContinue,omitempty"`
 
 	// Observability — all opt-in. Empty/false defaults leave the app quiet.
 	//
@@ -694,6 +737,8 @@ var DefaultSettings = Settings{
 	ClaudeAutoCompactExtendedPercent: 90,
 	CodexAutoCompactStandardPercent:  90,
 	CodexAutoCompactExtendedPercent:  90,
+	AccountAutoSwitchStrategy:        AccountAutoSwitchSoonestReset,
+	AccountAutoSwitchThreshold:       DefaultAccountAutoSwitchThreshold,
 	// Observability defaults to off so there is zero runtime cost for users
 	// who don't opt in. The OTLP endpoint is only meaningful when tracing
 	// is enabled; we leave it blank so a misconfigured endpoint can't cause
@@ -835,6 +880,8 @@ func (s Settings) AutoCompactPercents(provider string) (standard, extended int) 
 type Service struct {
 	path string
 	mu   sync.RWMutex
+	// revision counts persisted writes that changed something (Revision).
+	revision uint64
 	// cached is the SHARED half of the settings: host tier from the file,
 	// user tier from UserScope, device tier at its defaults. A caller's own
 	// device slice is overlaid per read (Caller.Get), never cached here,

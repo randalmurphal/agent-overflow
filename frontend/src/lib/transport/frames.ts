@@ -27,12 +27,17 @@ export interface ServerRPCFrame {
   // have killed. The transport carries it raw: the element shape belongs
   // to the method that refused, and ./backgroundKillRefusal.ts validates
   // it as untrusted input.
+  // `reserve` and `resumeAt` are present only alongside
+  // 'forge_rate_limited': whether the forge's quota was kept for the
+  // user's own actions, and when the forge may be asked again (RFC 3339).
   // `detail` is the failure's diagnostic record (internal/transport
   // ErrorDetail), carried raw and validated by ./errorDetail.ts.
   error?: {
     code: string; message: string; reason?: string; scope?: string;
     transfer?: { operationId: string; backendId: string };
     backgroundAgents?: unknown;
+    reserve?: unknown;
+    resumeAt?: unknown;
     detail?: unknown;
   };
 }

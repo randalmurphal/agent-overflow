@@ -1,6 +1,6 @@
 # Process helpers
 
-This package owns four utilities:
+This package owns six utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
   child process group using the platform implementation. On Unix,
@@ -24,6 +24,36 @@ This package owns four utilities:
   exit, so on Unix RunDrained watches it while draining and returns its
   error. On both, a run whose process the context killed returns its error,
   which exec's Wait replaces with the exit status.
+- `StartGroup` starts argv as the leader of its own process group and
+  returns a `Group`; `Group.Wait` supervises it to the end, and `RunGroup` is
+  the two together. This is the one implementation of pipe ownership,
+  cancellation, the leftover sweep and the drain: do not build another from
+  `ConfigureGroup`. A done context starts nothing. The `Group` owns the
+  output pipe, so output from grandchildren is captured, from the start and
+  never after `Wait` returns. Cancellation sends SIGTERM, then SIGKILL after
+  `TerminateGrace`, and sets `Stopped`: an exit status is then the command's
+  answer to the signal, not its result. After the leader exits `Wait` stops
+  whatever is still in the group and reports those processes as `Leftovers`;
+  `KeepLeftovers` leaves them running for a command that may start a service
+  on purpose. `OutputHeld` reports a pipe still open after the drain grace.
+  `Wait`'s error is `*exec.ExitError` for a non-zero exit or a signal death,
+  or `ErrGroupSurvived` when the leader ignored SIGKILL (it runs as another
+  user) and was abandoned. `Output` should not return an error; one is
+  reported as `PipeErr` and the rest of the output is discarded.
+  `GroupOutcome.OutputErr` folds `PipeErr` and `OutputHeld` (as
+  `ErrOutputHeld`) into one error for a caller that fails a command whose
+  output was cut.
+- `Terminal` (`OpenTerminal`, Unix only) is a pty that `GroupCommand.Terminal`
+  makes the command's controlling terminal, for programs that prompt on
+  `/dev/tty`. Stdin and `Output` are unchanged. The command starts through a
+  `/bin/sh` shim that ignores SIGHUP and closes the inherited descriptor:
+  the kernel hangs up the terminal's foreground group when the session
+  leader exits, which would end leftovers before `Wait` counts them. The
+  command's processes therefore start with SIGHUP ignored. An executable
+  that is not found is still a start error; an exec failure after that is
+  the shim's exit status. The caller closes the `Terminal` after `Wait`
+  returns. `PollableMaster` makes a read of a pty master end on `Close` on
+  Linux; elsewhere the read ends when no process holds the terminal.
 
 Call `ConfigureGroup` before starting the command and pass the same command to
 `KillConfiguredGroup`. These APIs do not verify process identity or establish

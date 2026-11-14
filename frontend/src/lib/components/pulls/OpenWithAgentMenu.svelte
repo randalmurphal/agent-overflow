@@ -1,0 +1,125 @@
+<script lang="ts">
+  import Menu from '../primitives/Menu.svelte';
+  import MenuDivider from '../primitives/MenuDivider.svelte';
+  import MenuItem from '../primitives/MenuItem.svelte';
+  import MenuSectionHeader from '../primitives/MenuSectionHeader.svelte';
+  import MenuSubmenuItem from '../primitives/MenuSubmenuItem.svelte';
+  import Popover from '../primitives/Popover.svelte';
+  import type { Snippet } from 'svelte';
+  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
+  import type { AgentThreadChoice } from '../../stores/pullsPageAgent.svelte';
+
+  // The "Open with agent" menu on an MR opened from the page (the toolbar
+  // button and each row's menu): a new thread in a linked worktree on the
+  // MR's branch, the threads already on this MR, and sending the review's
+  // drafts to a thread of the project. Every row names what it does; the
+  // page runs it. Until the threads on the MR are read, nobody knows
+  // whether one has the branch checked out, so a failed read says so with
+  // a Retry and New thread stays off.
+
+  interface Props {
+    anchor: HTMLElement | undefined;
+    open: boolean;
+    onClose: (reason?: PopoverCloseReason) => void;
+    /** The branch the new thread checks out: the MR's source branch, or
+     * the local `pr/N` branch for an MR from a fork. */
+    branch: string;
+    crossRepository: boolean;
+    /** Threads already tracking this MR. */
+    threadsOnPR: readonly AgentThreadChoice[];
+    /** The read of threadsOnPR is in flight. */
+    threadsLoading?: boolean;
+    /** The read of threadsOnPR failed; null when it answered. */
+    threadsError?: string | null;
+    onRetryThreads?: () => void;
+    /** The project's other threads, for sending drafts. */
+    projectThreads: readonly AgentThreadChoice[];
+    draftsCount: number;
+    /** A thread already has the branch checked out: a second worktree on
+     * it is impossible, so the row names that thread instead. */
+    checkedOutBy?: AgentThreadChoice | null;
+    busy?: boolean;
+    /** Rows the page appends after the agent rows (Open on forge, Copy URL). */
+    extra?: Snippet;
+    onNewThread: () => void;
+    onOpenThread: (threadId: string) => void;
+    onSendDrafts: (threadId: string) => void;
+  }
+
+  let {
+    anchor,
+    open,
+    onClose,
+    branch,
+    crossRepository,
+    threadsOnPR,
+    threadsLoading = false,
+    threadsError = null,
+    onRetryThreads,
+    projectThreads,
+    draftsCount,
+    checkedOutBy = null,
+    busy = false,
+    extra,
+    onNewThread,
+    onOpenThread,
+    onSendDrafts,
+  }: Props = $props();
+
+  const newThreadDescription = $derived(
+    checkedOutBy
+      ? `${checkedOutBy.title} already has ${branch} checked out; open it below.`
+      : crossRepository
+      ? `Fetches the fork's head into ${branch} in a linked worktree; the draft opens with the MR linked.`
+      : "Checks out the MR's branch in a linked worktree; the draft opens with the MR linked.",
+  );
+  const sendTargets = $derived([
+    ...threadsOnPR,
+    ...projectThreads.filter((thread) => !threadsOnPR.some((onPR) => onPR.id === thread.id)),
+  ]);
+  const sendLabel = $derived(
+    draftsCount === 0 ? 'Send review comments to a thread…' : `Send ${draftsCount} review ${draftsCount === 1 ? 'comment' : 'comments'} to a thread…`,
+  );
+</script>
+
+<Popover {anchor} {open} {onClose} placement="bottom-start" ariaLabel="Open with agent">
+  <!-- Bounded so the first row's description truncates rather than widening the menu past the pane. -->
+  <div class="max-w-[min(26rem,calc(100vw-1rem))]">
+  <Menu ariaLabel="Open with agent" onClose={() => onClose()} minWidthClass="min-w-[300px]">
+    <MenuItem
+      label="New thread on {branch}"
+      description={newThreadDescription}
+      suffix="worktree"
+      disabled={busy || threadsLoading || threadsError !== null || !branch || checkedOutBy !== null}
+      onSelect={onNewThread}
+      testId="open-with-agent-new-thread"
+    />
+    <MenuDivider />
+    <MenuSectionHeader label="Threads already on this MR" />
+    {#if threadsError !== null}
+      <MenuItem label="Could not read the threads on this MR" description={threadsError} disabled testId="open-with-agent-threads-error" />
+      {#if onRetryThreads}
+        <MenuItem label="Retry" onSelect={onRetryThreads} testId="open-with-agent-threads-retry" />
+      {/if}
+    {:else if threadsLoading && threadsOnPR.length === 0}
+      <MenuItem label="Reading the threads on this MR…" disabled testId="open-with-agent-threads-loading" />
+    {:else if threadsOnPR.length === 0}
+      <MenuItem label="No threads on this MR yet" disabled testId="open-with-agent-no-threads" />
+    {:else}
+      {#each threadsOnPR as thread (thread.id)}
+        <MenuItem label={thread.title} suffix={thread.detail} onSelect={() => onOpenThread(thread.id)} testId="open-with-agent-thread" />
+      {/each}
+    {/if}
+    <MenuDivider />
+    <MenuSubmenuItem label={sendLabel} disabled={draftsCount === 0 || sendTargets.length === 0}>
+      {#each sendTargets as thread (thread.id)}
+        <MenuItem label={thread.title} suffix={thread.detail} onSelect={() => onSendDrafts(thread.id)} testId="open-with-agent-send-target" />
+      {/each}
+    </MenuSubmenuItem>
+    {#if extra}
+      <MenuDivider />
+      {@render extra()}
+    {/if}
+  </Menu>
+  </div>
+</Popover>

@@ -63,6 +63,80 @@ export class Lines {
 }
 
 /**
+ * Search is the answer of a search over one published version of a log:
+ * the lines holding matches, in line order, and their total. Capped is
+ * true when Matches stopped at the search's limit.
+ */
+export class Search {
+    "version": number;
+    "totalLines": number;
+    "hits": SearchHit[];
+    "matches": number;
+    "capped": boolean;
+
+    /** Creates a new Search instance. */
+    constructor($$source: Partial<Search> = {}) {
+        if (!("version" in $$source)) {
+            this["version"] = 0;
+        }
+        if (!("totalLines" in $$source)) {
+            this["totalLines"] = 0;
+        }
+        if (!("hits" in $$source)) {
+            this["hits"] = [];
+        }
+        if (!("matches" in $$source)) {
+            this["matches"] = 0;
+        }
+        if (!("capped" in $$source)) {
+            this["capped"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Search instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Search {
+        const $$createField2_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("hits" in $$parsedSource) {
+            $$parsedSource["hits"] = $$createField2_0($$parsedSource["hits"]);
+        }
+        return new Search($$parsedSource as Partial<Search>);
+    }
+}
+
+/**
+ * SearchHit is a line of a log holding Count matches of a search.
+ */
+export class SearchHit {
+    "line": number;
+    "count": number;
+
+    /** Creates a new SearchHit instance. */
+    constructor($$source: Partial<SearchHit> = {}) {
+        if (!("line" in $$source)) {
+            this["line"] = 0;
+        }
+        if (!("count" in $$source)) {
+            this["count"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SearchHit instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SearchHit {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SearchHit($$parsedSource as Partial<SearchHit>);
+    }
+}
+
+/**
  * Section is one row of a job log: a GitHub step, a GitLab top-level
  * section, a run of GitLab lines outside every section, or the whole log
  * when nothing splits it. Lines [Start, End) of the log are its text; a
@@ -131,3 +205,5 @@ export class Section {
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
 const $$createType1 = $Create.Array($Create.Any);
+const $$createType2 = SearchHit.createFrom;
+const $$createType3 = $Create.Array($$createType2);

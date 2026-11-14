@@ -14,6 +14,8 @@
 //     tab chords bubble to the window handler.
 //   - Right-click: copy the selection if there is one, otherwise paste (the
 //     VS Code `copyPaste` behavior), instead of the webview's context menu.
+//   - The one notification of every change to the buffer, which the
+//     surface's find (terminalFind.svelte.ts) re-searches on.
 //
 // Keeping this in one place means the two surfaces can't drift on glyph
 // rendering or key handling. The only thing the caller owns is where input
@@ -22,8 +24,10 @@
 // `term.onData(onInput)` for the main keystroke stream — so a single gate (e.g.
 // the take-control read-only lease) governs both paths. Paste goes through
 // `term.paste`, which emits onData, so the same gate covers it.
+// `acceptsPaste` refuses a paste whose clipboard read finished after
+// keyboard focus left for the surface's find bar.
 
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type IDisposable } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -41,8 +45,19 @@ import { errString } from '../../utils/errors';
 import { clipboardChordFor, isFontZoomChord } from './terminalKeys';
 import { isMacPlatform } from '../../utils/platform';
 import { isCompactLayout } from '../../stores/layoutMode.svelte';
+import { createTerminalFindLayer, type TerminalFindLayer } from './terminalFindLayer';
 
 const isMac = isMacPlatform();
+
+/** Viewport cells under the find bar: the top `rows` rows, columns `from`
+ * through `to`. */
+export interface TerminalObscured {
+  rows: number;
+  from: number;
+  to: number;
+}
+
+const NOTHING_OBSCURED: TerminalObscured = { rows: 0, from: 0, to: -1 };
 
 export interface BuildTerminalOptions {
   // Receives input the widget produces internally (the Shift+Enter newline).
@@ -56,6 +71,29 @@ export interface BuildTerminalOptions {
   // caller; buildTerminal just consults it. Optional — omit for surfaces with
   // no teardown race.
   isDisposed?: () => boolean;
+  // False while a paste must not reach the terminal. Checked when the
+  // clipboard answers.
+  acceptsPaste?: () => boolean;
+}
+
+export interface BuiltTerminal {
+  term: Terminal;
+  fit: FitAddon;
+  /**
+   * Fires after every change to the buffer: parsed output (which covers a
+   * full reset, the alternate screen and scrollback trimming), a resize,
+   * `clear()` and `reset()`.
+   */
+  onBufferChange(listener: () => void): IDisposable;
+  /** The cells the surface's find bar overlay covers. */
+  obscured(): TerminalObscured;
+  /** Fires when the find bar overlay's size changes, opening included. */
+  onObscuredChange(listener: () => void): IDisposable;
+  /** Find's paint over the grid (terminalFindLayer.ts). */
+  findLayer: TerminalFindLayer;
+  paste: () => void;
+  /** The clipboard text, for a paste that goes elsewhere (the find bar). */
+  readClipboard: () => Promise<string>;
 }
 
 // Build the xterm instance with its addons attached to the mount node. Extracted
@@ -64,11 +102,12 @@ export interface BuildTerminalOptions {
 // handling.
 // `paste` is the clipboard-to-PTY route the widget's own chord and right-click
 // use, exposed so the compact key row (which has neither) offers the same
-// action with the same failure toast.
+// action with the same failure toast. The Unicode 11 width tables
+// (`terminal.unicode`) need `allowProposedApi`.
 export function buildTerminal(
   mount: HTMLDivElement,
-  { onInput, isDisposed }: BuildTerminalOptions,
-): { term: Terminal; fit: FitAddon; paste: () => void } {
+  { onInput, isDisposed, acceptsPaste }: BuildTerminalOptions,
+): BuiltTerminal {
   const terminal = new Terminal({
     convertEol: false,
     cursorBlink: true,
@@ -107,6 +146,55 @@ export function buildTerminal(
   terminal.loadAddon(new WebLinksAddon((_event, uri) => void handleExternalURL(uri)));
   terminal.open(mount);
 
+  // `clear()` and `reset()` change the buffer without a write, so they
+  // announce themselves here, whoever calls them.
+  const bufferListeners = new Set<() => void>();
+  function bufferChanged(): void {
+    for (const listener of bufferListeners) listener();
+  }
+  terminal.onWriteParsed(bufferChanged);
+  terminal.onResize(bufferChanged);
+  const clear = terminal.clear.bind(terminal);
+  terminal.clear = () => {
+    clear();
+    bufferChanged();
+  };
+  const reset = terminal.reset.bind(terminal);
+  terminal.reset = () => {
+    reset();
+    bufferChanged();
+  };
+  function listen(listeners: Set<() => void>, listener: () => void): IDisposable {
+    listeners.add(listener);
+    return { dispose: () => listeners.delete(listener) };
+  }
+
+  // The surface floats its find bar over the top of the grid
+  // (data-terminal-find-overlay inside data-terminal-find-host).
+  function findOverlay(): Element | null {
+    return mount.closest('[data-terminal-find-host]')?.querySelector('[data-terminal-find-overlay]') ?? null;
+  }
+  function obscured(): TerminalObscured {
+    const overlay = findOverlay();
+    const screen = terminal.element?.querySelector('.xterm-screen');
+    if (!overlay || !screen || terminal.rows === 0 || terminal.cols === 0) return NOTHING_OBSCURED;
+    const bar = overlay.getBoundingClientRect();
+    const grid = screen.getBoundingClientRect();
+    if (bar.height === 0 || bar.width === 0) return NOTHING_OBSCURED;
+    const cellWidth = grid.width / terminal.cols;
+    const rows = Math.min(terminal.rows, Math.max(0, Math.ceil((bar.bottom - grid.top) / (grid.height / terminal.rows))));
+    const from = Math.max(0, Math.floor((bar.left - grid.left) / cellWidth));
+    const to = Math.min(terminal.cols - 1, Math.ceil((bar.right - grid.left) / cellWidth) - 1);
+    return to < from ? NOTHING_OBSCURED : { rows, from, to };
+  }
+  function onObscuredChange(listener: () => void): IDisposable {
+    const overlay = findOverlay();
+    if (!overlay) return { dispose: () => {} };
+    const observer = new ResizeObserver(() => listener());
+    observer.observe(overlay);
+    return { dispose: () => observer.disconnect() };
+  }
+
   // Copy the selection and drop the highlight, so the next Ctrl+C / right-
   // click is a SIGINT / paste again rather than a second copy. The highlight
   // stays on a failed write so the user can retry after the toast.
@@ -140,7 +228,7 @@ export function buildTerminal(
       .then((text) => {
         // The surface may have unmounted while the clipboard read was in
         // flight; never write into a disposed xterm.
-        if (text && !isDisposed?.()) terminal.paste(text);
+        if (text && !isDisposed?.() && (acceptsPaste?.() ?? true)) terminal.paste(text);
       })
       .catch((err) => {
         console.error('terminal: clipboard paste failed', err);
@@ -246,5 +334,14 @@ export function buildTerminal(
     );
   }
 
-  return { term: terminal, fit: fitAddon, paste: pasteClipboard };
+  return {
+    term: terminal,
+    fit: fitAddon,
+    onBufferChange: (listener) => listen(bufferListeners, listener),
+    obscured,
+    onObscuredChange,
+    findLayer: createTerminalFindLayer(mount, terminal),
+    paste: pasteClipboard,
+    readClipboard: readClipboardText,
+  };
 }

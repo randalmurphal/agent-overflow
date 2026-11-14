@@ -33,6 +33,7 @@
   import ClaudeDisabledToolsEditor from './ClaudeDisabledToolsEditor.svelte';
   import ClaudeSessionAxesEditor from './ClaudeSessionAxesEditor.svelte';
   import CodexDisabledToolsEditor from './CodexDisabledToolsEditor.svelte';
+  import AccountAutoSwitchSettings from './AccountAutoSwitchSettings.svelte';
   import ProviderAccountsSettings from './ProviderAccountsSettings.svelte';
   import ProviderContextSettings from './ProviderContextSettings.svelte';
   import ProviderCustomEnvSection from './ProviderCustomEnvSection.svelte';
@@ -247,6 +248,7 @@
 
   <section>
     <ProviderAccountsSettings {provider} />
+    <AccountAutoSwitchSettings {provider} />
   </section>
 
   <section>

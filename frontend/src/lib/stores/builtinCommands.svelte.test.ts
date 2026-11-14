@@ -3,6 +3,8 @@
 
 import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { tick } from 'svelte';
+import { render } from '@testing-library/svelte';
+import PaneFindBar from '../components/panes/PaneFindBar.svelte';
 import { createThreadPane } from './thread.svelte';
 import {
   isSidebarCollapsed,
@@ -10,33 +12,55 @@ import {
   setSidebarCollapsed,
 } from './sidebarLayout.svelte';
 import { resetSidebarCursorStore, setSidebarCursorForTest } from './sidebarCursor.svelte';
-import { setCompactLayoutForTest } from './layoutMode.svelte';
+import { getCompactScreen, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
+import { installCompanionPanes, isCompanionOpen, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { stepBack } from '../utils/stepBack';
 import { resetAppStorageForTest } from './appStorage';
 import {
   getActiveTurn,
   projectSendStarted,
   resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
-import { makeCommandContext, registerBuiltinCommands } from './builtinCommands.svelte';
+import { makeCommandContext, overlayBesidePalette, registerBuiltinCommands } from './builtinCommands.svelte';
 import { pairViewOnly, resetToLocalPage } from '../../test/helpers/scopes';
 import {
   clearCommandRegistry,
   getCommand,
   isCommandEnabled,
+  listCommands,
   runCommand,
   type CommandContext,
 } from './commandRegistry.svelte';
+import { registerAirspaceSurface, resetAirspaceForTest } from '../utils/paneAirspace.svelte';
+import { closePalette, openPalette } from './palette.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import {
   closeMessageSearch,
-  getMessageSearchMode,
-  getMessageSearchTargetPaneId,
   isMessageSearchOpen,
   openMessageSearch,
 } from './messageSearch.svelte';
 import { getToasts } from './toast.svelte';
+import {
+  PANE_FIND_DETAIL_REGION,
+  PANE_FIND_LIST_REGION,
+  activatePaneFindRegion,
+  declarePaneFindRegions,
+  declarePaneFindSurface,
+  getPaneFind,
+  openPaneFind,
+  paneFindDetailKey,
+  paneFindListKey,
+  paneFindRegionKey,
+  registerPaneFindProvider,
+  resetPaneFindForTest,
+  setPaneFindBarFocused,
+  type PaneFindProvider,
+} from './paneFind.svelte';
+import { dispatchKey, eventMatchesKeybindingCommand, resetKeybindingsStore, setKeybindingsForTest } from './keybindings.svelte';
+import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
+import { createSurfaceDismissalEvent, isSurfaceDismissalEvent } from '../utils/surfaceDismissal';
 import {
   closeThreadPicker,
   isThreadPickerOpen,
@@ -58,9 +82,12 @@ import {
 } from './threadActionConfirmations.svelte';
 import { getSettings, loadSettings, resetSettingsForTest } from './settings.svelte';
 import {
-  isWorkflowsOverlayOpen,
+  getWorkflowsOverlayTop,
+  pushWorkflowRunDetail,
   resetWorkflowsOverlayForTest,
 } from './workflowsOverlay.svelte';
+import { isToolOpen, openTool, registerToolDetailProbe, resetToolPanesForTest } from './toolPanes.svelte';
+import { registerPullsBackHandler } from './pullsCommands.svelte';
 import {
   getSettingsSection,
   isSettingsOpen,
@@ -903,58 +930,683 @@ describe('search.messages command', () => {
   });
 });
 
-// --- search.in-thread wiring ---
+// --- find.in-pane wiring ---
 //
-// mod+f opens the SAME MessageSearch overlay as search.messages, but in
-// thread-scoped mode (Find in thread). It reuses the toggle-on-rechord shape
-// and additionally refuses to open without an active thread — there is
-// nothing to scope to — surfacing a warning toast instead.
+// mod+f opens the focused layout pane's own find bar. A pane with no find
+// provider has no find: the command is disabled and its chord falls through.
 
-describe('search.in-thread command', () => {
+describe('find.in-pane command', () => {
+  const providerFor = (): PaneFindProvider => ({
+    noun: 'thread',
+    result: { count: 0, current: -1, pending: false },
+    search: vi.fn(),
+    clear: vi.fn(),
+  });
+
   beforeEach(() => {
     clearCommandRegistry();
     closeMessageSearch();
+    resetPaneFindForTest();
+    resetPanesForTest();
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 },
+      { id: 'b', paneId: 'b', kind: 'thread', widthPx: 600 },
+    ]);
   });
 
-  it('registers the command', () => {
-    registerFixtureCommands(readyPane());
-    expect(getCommand('search.in-thread')).toBeDefined();
+  afterEach(() => {
+    resetPaneFindForTest();
+    resetPaneLayoutForTest();
+    resetKeybindingsStore();
+    resetAirspaceForTest();
+    resetSettingsOverlayForTest();
+    document.body.replaceChildren();
   });
 
-  it('opens MessageSearch in thread mode scoped to the active pane', () => {
+  it('opens the focused pane\'s bar, never the message search', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
+    registerPaneFindProvider('a', providerFor());
+    registerPaneFindProvider('b', providerFor());
+    focusPane('b');
     const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(isCommandEnabled('find.in-pane', ctx)).toBe(true);
+    expect(runCommand('find.in-pane', ctx)).toBe(true);
+    expect(getPaneFind('b')?.open).toBe(true);
+    expect(getPaneFind('a')).toBeNull();
     expect(isMessageSearchOpen()).toBe(false);
-    const ran = runCommand('search.in-thread', ctx);
-    expect(ran).toBe(true);
-    expect(isMessageSearchOpen()).toBe(true);
-    // The distinguishing behavior vs search.messages: thread mode + a pane id
-    // so the overlay knows which thread to scope SearchThreadItems to.
-    expect(getMessageSearchMode()).toBe('thread');
-    expect(getMessageSearchTargetPaneId()).toBe(pane.paneId);
   });
 
-  it('toggles closed when the same chord runs while open', () => {
+  it('is a no-op with no provider for the focused pane', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
+    registerPaneFindProvider('a', providerFor());
+    focusPane('b');
     const ctx = makeCommandContext(pane, {}) as CommandContext;
-    runCommand('search.in-thread', ctx);
-    expect(isMessageSearchOpen()).toBe(true);
-    runCommand('search.in-thread', ctx);
+    expect(ctx.flags.paneFindAvailable).toBe(false);
+    expect(runCommand('find.in-pane', ctx)).toBe(false);
+    expect(getPaneFind('b')).toBeNull();
     expect(isMessageSearchOpen()).toBe(false);
   });
 
-  it('refuses to open without an active thread and warns instead', () => {
-    registerFixtureCommands(readyPane());
-    const before = getToasts().length;
-    // A null pane yields hasActiveThread:false / paneId:null — opening an
-    // unscoped in-thread find would search nothing, so the run bails.
-    const ctx = makeCommandContext(null, {}) as CommandContext;
-    runCommand('search.in-thread', ctx);
-    expect(isMessageSearchOpen()).toBe(false);
-    const added = getToasts().slice(before);
-    expect(added.some((t) => t.type === 'warning')).toBe(true);
+  it('fires mod+f from the composer textarea and from inside the bar', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    registerPaneFindProvider('a', providerFor());
+    focusPane('a');
+    const section = document.createElement('section');
+    section.dataset.paneId = 'a';
+    const composer = document.createElement('textarea');
+    section.appendChild(composer);
+    document.body.appendChild(section);
+    composer.focus();
+    const press = (target: HTMLElement) => {
+      const event = new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, bubbles: true });
+      Object.defineProperty(event, 'target', { value: target });
+      const ctx = makeCommandContext(pane, {}) as CommandContext;
+      // App.svelte lets an editable target through only for these commands.
+      const reachable = new Set(['find.in-pane']);
+      return eventMatchesKeybindingCommand(event, ctx, reachable, { isMac: false })
+        && dispatchKey(event, ctx, { isMac: false });
+    };
+    expect(getCommand('find.in-pane')?.editableReachable).toBe(true);
+    expect(press(composer)).toBe(true);
+    expect(getPaneFind('a')).toMatchObject({ open: true, returnFocus: composer });
+    const request = getPaneFind('a')!.focusRequest;
+    expect(press(composer)).toBe(true);
+    expect(getPaneFind('a')!.focusRequest).toBe(request + 1);
+  });
+
+  // A chord from the browser pane's native view is replayed on the window
+  // with the companion focused (browserCompanion.replayBrowserAccelerator)
+  // while the document has no keyboard focus. The context is the source
+  // thread pane's, whose terminal may still hold DOM focus: that focus is
+  // stale and must not gate the chord, while a terminal the user is typing
+  // in still keeps mod+f.
+  it('fires a replayed mod+f for a browser companion while a source terminal holds stale DOM focus', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 },
+      { id: 'browser-a', paneId: 'browser-a', kind: 'browser', widthPx: 600 },
+    ]);
+    const openNative = vi.fn();
+    registerPaneFindProvider('browser-a', { ...providerFor(), openNative });
+    focusPane('browser-a');
+    const press = () => {
+      const event = new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, cancelable: true });
+      return dispatchKey(event, makeCommandContext(pane, {}) as CommandContext, { isMac: false });
+    };
+    notifyTerminalFocus(pane.paneId, true);
+    const hasFocus = vi.spyOn(document, 'hasFocus');
+    try {
+      hasFocus.mockReturnValue(false);
+      expect(press()).toBe(true);
+      expect(openNative).toHaveBeenCalledTimes(1);
+      hasFocus.mockReturnValue(true);
+      expect(press()).toBe(false);
+      expect(openNative).toHaveBeenCalledTimes(1);
+    } finally {
+      hasFocus.mockRestore();
+      notifyTerminalFocus(pane.paneId, false);
+    }
+  });
+
+  it('fires mod+f for a focused browser companion, gated only by a focused source terminal', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 },
+      { id: 'browser-a', paneId: 'browser-a', kind: 'browser', widthPx: 600 },
+    ]);
+    const openNative = vi.fn();
+    registerPaneFindProvider('browser-a', { ...providerFor(), openNative });
+    focusPane('browser-a');
+    const press = () => {
+      const event = new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, cancelable: true });
+      return dispatchKey(event, makeCommandContext(pane, {}) as CommandContext, { isMac: false });
+    };
+    expect(press()).toBe(true);
+    expect(openNative).toHaveBeenCalledTimes(1);
+    expect(getPaneFind('browser-a')).toBeNull();
+
+    notifyTerminalFocus(pane.paneId, true);
+    try {
+      expect(press()).toBe(false);
+      expect(openNative).toHaveBeenCalledTimes(1);
+    } finally {
+      notifyTerminalFocus(pane.paneId, false);
+    }
+  });
+
+  // Escape pressed in the SPA with the browser companion focused reaches
+  // find.close for the shared bar. An engine's own find UI closes without
+  // telling AO, so after an open of it Escape is never find.close's: it
+  // stays with the page and the engine.
+  it('Escape closes a focused browser companion\'s bar and is never taken for an engine UI', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 },
+      { id: 'browser-a', paneId: 'browser-a', kind: 'browser', widthPx: 600 },
+    ]);
+    focusPane('browser-a');
+    const escape = () => dispatchKey(
+      new KeyboardEvent('keydown', { key: 'escape', cancelable: true }),
+      makeCommandContext(pane, {}) as CommandContext,
+      { isMac: false },
+    );
+
+    const bar = providerFor();
+    const release = registerPaneFindProvider('browser-a', bar);
+    openPaneFind('browser-a');
+    expect(escape()).toBe(true);
+    expect(getPaneFind('browser-a')?.open).toBe(false);
+    expect(bar.clear).toHaveBeenCalledTimes(1);
+    release();
+
+    const engine = { ...providerFor(), openNative: vi.fn() };
+    registerPaneFindProvider('browser-a', engine);
+    for (let round = 0; round < 2; round++) {
+      openPaneFind('browser-a');
+      expect(engine.openNative).toHaveBeenCalledTimes(round + 1);
+      expect(escape()).toBe(false);
+    }
+    expect(engine.clear).not.toHaveBeenCalled();
+  });
+
+  it('seeds the query from text selected inside the pane', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    registerPaneFindProvider('a', providerFor());
+    focusPane('a');
+    const section = document.createElement('section');
+    section.dataset.paneId = 'a';
+    section.innerHTML = '<p>pick this word</p>';
+    document.body.appendChild(section);
+    const range = document.createRange();
+    const text = section.querySelector('p')!.firstChild!;
+    range.setStart(text, 5);
+    range.setEnd(text, 9);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    runCommand('find.in-pane', makeCommandContext(pane, {}) as CommandContext);
+    expect(getPaneFind('a')?.query).toBe('this');
+    window.getSelection()!.removeAllRanges();
+  });
+
+  it('closes the focused bar on Back through the dismissal ladder', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const provider = providerFor();
+    registerPaneFindProvider('a', provider);
+    focusPane('a');
+    openPaneFind('a');
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.paneFindOpen).toBe(true);
+    expect(getCommand('find.close')?.dismissesSurface).toBe(true);
+    expect(dispatchKey(createSurfaceDismissalEvent(), ctx)).toBe(true);
+    expect(getPaneFind('a')?.open).toBe(false);
+    expect(provider.clear).toHaveBeenCalled();
+    expect(dispatchKey(createSurfaceDismissalEvent(), makeCommandContext(pane, {}) as CommandContext)).toBe(false);
+  });
+
+  // The shipped rules through the real resolver: Escape closes an open find
+  // from the transcript and from the composer before it can interrupt the
+  // live turn, and interrupts once the bar is closed.
+  it('Escape closes the open find before it interrupts a live turn', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    const interrupt = vi.spyOn(getCommand('thread.interrupt')!, 'run').mockImplementation(() => {});
+    registerPaneFindProvider('a', providerFor());
+    focusPane('a');
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const section = document.createElement('section');
+    section.dataset.paneId = 'a';
+    const transcript = document.createElement('div');
+    const composer = document.createElement('textarea');
+    section.append(transcript, composer);
+    document.body.appendChild(section);
+    const reachable = new Set(listCommands().filter((c) => c.editableReachable).map((c) => c.id));
+    const escape = (target: HTMLElement, editable: boolean) => {
+      const event = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true });
+      Object.defineProperty(event, 'target', { value: target });
+      const ctx = makeCommandContext(pane, {}) as CommandContext;
+      if (editable && !eventMatchesKeybindingCommand(event, ctx, reachable, { isMac: false })) return false;
+      return dispatchKey(event, ctx, { isMac: false });
+    };
+
+    for (const [target, editable] of [[transcript, false], [composer, true]] as const) {
+      openPaneFind('a');
+      expect(escape(target, editable)).toBe(true);
+      expect(getPaneFind('a')?.open).toBe(false);
+      expect(interrupt).not.toHaveBeenCalled();
+    }
+    expect(escape(transcript, false)).toBe(true);
+    expect(interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  // The thread terminal is a find surface nested in the pane, with one find
+  // per tab (TerminalSurface). mod+f inside a focused xterm is the shell's
+  // (readline forward-char, a pager's page): it opens nothing and is left to
+  // the terminal. From the terminal's own bar, the find commands, Escape and
+  // Back act on that bar; from the rest of the pane, on the pane's own.
+  describe('in a thread terminal', () => {
+    function terminalPane() {
+      const pane = readyPane();
+      registerFixtureCommands(pane);
+      setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+      setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 600 }]);
+      focusPane(pane.paneId);
+      const tab = paneFindRegionKey(pane.paneId, 'terminal:t1');
+      const own = providerFor();
+      const terminal = providerFor();
+      registerPaneFindProvider(pane.paneId, own);
+      registerPaneFindProvider(tab, terminal);
+      const surface = declarePaneFindSurface(pane.paneId, () => tab, true);
+      const ctx = () => makeCommandContext(pane, {}) as CommandContext;
+      const key = (init: KeyboardEventInit, target?: HTMLElement) => {
+        const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+        if (target) Object.defineProperty(event, 'target', { value: target });
+        return dispatchKey(event, ctx(), { isMac: false });
+      };
+      return { pane, tab, own, terminal, surface, ctx, key };
+    }
+
+    it('leaves ctrl+f in a focused xterm to the shell and opens no bar', () => {
+      const { pane, tab, key } = terminalPane();
+      notifyTerminalFocus(pane.paneId, true);
+      try {
+        expect(key({ key: 'f', code: 'KeyF', ctrlKey: true })).toBe(false);
+        expect(getPaneFind(tab)).toBeNull();
+        expect(getPaneFind(pane.paneId)).toBeNull();
+        // Nor does the escape predicate let the chord out of the xterm.
+        expect(TERMINAL_ESCAPE_COMMAND_IDS.has('find.in-pane')).toBe(false);
+      } finally {
+        notifyTerminalFocus(pane.paneId, false);
+      }
+    });
+
+    it('gives ctrl+f back to find from the terminal\'s focused bar, which is terminal focus but no shell', () => {
+      const { pane, tab, key, ctx } = terminalPane();
+      openPaneFind(tab);
+      // The bar's input holds focus: the pane's terminal has focus.
+      notifyTerminalFocus(pane.paneId, true);
+      setPaneFindBarFocused(tab, true);
+      try {
+        expect(ctx().flags.terminalFocus).toBe(false);
+        const request = getPaneFind(tab)!.focusRequest;
+        expect(key({ key: 'f', code: 'KeyF', ctrlKey: true })).toBe(true);
+        expect(getPaneFind(tab)!.focusRequest).toBe(request + 1);
+      } finally {
+        setPaneFindBarFocused(tab, false);
+        notifyTerminalFocus(pane.paneId, false);
+      }
+    });
+
+    it('opens, refocuses and closes the terminal\'s bar from it, and the pane\'s from the rest of the pane', () => {
+      const { pane, tab, own, terminal, surface, ctx, key } = terminalPane();
+      expect(ctx().flags.paneFindAvailable).toBe(true);
+      expect(runCommand('find.in-pane', ctx())).toBe(true);
+      expect(getPaneFind(tab)?.open).toBe(true);
+      expect(getPaneFind(pane.paneId)).toBeNull();
+      const request = getPaneFind(tab)!.focusRequest;
+      expect(key({ key: 'f', code: 'KeyF', ctrlKey: true })).toBe(true);
+      expect(getPaneFind(tab)!.focusRequest).toBe(request + 1);
+
+      openPaneFind(pane.paneId);
+      expect(key({ key: 'Escape', code: 'Escape' })).toBe(true);
+      expect(getPaneFind(tab)?.open).toBe(false);
+      expect(terminal.clear).toHaveBeenCalledTimes(1);
+      expect(getPaneFind(pane.paneId)?.open).toBe(true);
+
+      surface.setActive(false);
+      expect(key({ key: 'Escape', code: 'Escape' })).toBe(true);
+      expect(getPaneFind(pane.paneId)?.open).toBe(false);
+      expect(own.clear).toHaveBeenCalledTimes(1);
+    });
+
+    it('Back closes the terminal\'s bar before anything else', () => {
+      const { tab, ctx } = terminalPane();
+      openPaneFind(tab);
+      expect(ctx().flags.paneFindOpen).toBe(true);
+      expect(dispatchKey(createSurfaceDismissalEvent(), ctx())).toBe(true);
+      expect(getPaneFind(tab)?.open).toBe(false);
+      expect(dispatchKey(createSurfaceDismissalEvent(), ctx())).toBe(false);
+    });
+  });
+
+  // An overlay (settings, a dialog) is on top of the pane: mod+f does not
+  // open a bar behind it and Back closes the overlay, not the hidden bar.
+  // The palette counts for a key pressed in it; the palette's own list
+  // does not count it, because a command picked there runs after it closes.
+  it('yields to an overlay above the panes, keyboard and Back alike', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    registerPaneFindProvider('a', providerFor());
+    focusPane('a');
+    const overlay = document.createElement('div');
+    const release = registerAirspaceSurface(overlay);
+    let ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.overlayOpen).toBe(true);
+    expect(runCommand('find.in-pane', ctx)).toBe(false);
+    expect(getPaneFind('a')).toBeNull();
+    release();
+
+    openPaneFind('a');
+    openSettingsOverlay('theme');
+    const settings = registerAirspaceSurface(document.createElement('div'));
+    ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(dispatchKey(createSurfaceDismissalEvent(), ctx)).toBe(true);
+    expect(isSettingsOpen()).toBe(false);
+    expect(getPaneFind('a')?.open).toBe(true);
+    settings();
+    expect(dispatchKey(createSurfaceDismissalEvent(), makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+    expect(getPaneFind('a')?.open).toBe(false);
+
+    openPalette();
+    const palette = registerAirspaceSurface(document.createElement('div'));
+    const keyboard = makeCommandContext(pane, {}) as CommandContext;
+    expect(keyboard.flags.overlayOpen).toBe(true);
+    expect(runCommand('find.in-pane', keyboard)).toBe(false);
+    expect(getPaneFind('a')?.open).toBe(false);
+    const listed = makeCommandContext(pane, { overlayOpen: overlayBesidePalette() }) as CommandContext;
+    expect(isCommandEnabled('find.in-pane', listed)).toBe(true);
+    const dialog = registerAirspaceSurface(document.createElement('div'));
+    expect(overlayBesidePalette()).toBe(true);
+    dialog();
+    palette();
+    closePalette();
+  });
+});
+
+// A pane with regions (the Pull requests page's list beside its detail):
+// find acts on the region last focused or clicked, or the one on screen
+// under compact, and an open find closes before the detail's own Escape.
+describe('find.in-pane over pane regions', () => {
+  const PULLS = 'tool-pulls';
+  const providerFor = (): PaneFindProvider => ({
+    noun: 'merge requests',
+    result: { count: 0, current: -1, pending: false },
+    search: vi.fn(),
+    clear: vi.fn(),
+  });
+  let releases: (() => void)[] = [];
+
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetPaneFindForTest();
+    resetPanesForTest();
+    resetToolPanesForTest();
+    setPaneLayoutItemsForTest([{ id: PULLS, paneId: PULLS, kind: 'pulls', widthPx: 900 }]);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+  });
+
+  afterEach(() => {
+    for (const release of releases) release();
+    releases = [];
+    setCompactLayoutForTest(false);
+    showCompactList();
+    resetPaneFindForTest();
+    resetPaneLayoutForTest();
+    resetKeybindingsStore();
+    document.body.replaceChildren();
+  });
+
+  function escape(): boolean {
+    const event = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true });
+    Object.defineProperty(event, 'target', { value: document.body });
+    return dispatchKey(event, makeCommandContext(null, {}) as CommandContext, { isMac: false });
+  }
+
+  it('opens the active region\'s bar; a detail with no find falls through; Escape closes the list find before the detail', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const back = vi.fn(() => true);
+    releases.push(registerPullsBackHandler(back));
+    releases.push(registerToolDetailProbe('pulls', () => true));
+    releases.push(declarePaneFindRegions(PULLS, { initial: PANE_FIND_LIST_REGION }));
+    const list = paneFindListKey(PULLS);
+    const detail = paneFindDetailKey(PULLS);
+    const listProvider = providerFor();
+    releases.push(registerPaneFindProvider(list, listProvider));
+    focusPane(PULLS);
+
+    let ctx = makeCommandContext(null, {}) as CommandContext;
+    expect(ctx.flags.paneFindAvailable).toBe(true);
+    expect(runCommand('find.in-pane', ctx)).toBe(true);
+    expect(getPaneFind(list)?.open).toBe(true);
+    expect(getPaneFind(PULLS)).toBeNull();
+
+    // The reader clicked into the detail, which has no find yet.
+    activatePaneFindRegion(detail);
+    ctx = makeCommandContext(null, {}) as CommandContext;
+    expect(ctx.flags.paneFindAvailable).toBe(false);
+    expect(ctx.flags.paneFindOpen).toBe(false);
+    expect(runCommand('find.in-pane', ctx)).toBe(false);
+    // Escape there is the detail's: the list's find stays open.
+    expect(escape()).toBe(true);
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(getPaneFind(list)?.open).toBe(true);
+
+    // A detail find, once registered, opens under its own key.
+    const detailProvider = providerFor();
+    releases.push(registerPaneFindProvider(detail, detailProvider));
+    expect(runCommand('find.in-pane', makeCommandContext(null, {}) as CommandContext)).toBe(true);
+    expect(getPaneFind(detail)?.open).toBe(true);
+
+    // Back in the list: Escape closes the list find first, then the detail.
+    activatePaneFindRegion(list);
+    expect(escape()).toBe(true);
+    expect(getPaneFind(list)?.open).toBe(false);
+    expect(listProvider.clear).toHaveBeenCalledTimes(1);
+    expect(getPaneFind(detail)?.open).toBe(true);
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(escape()).toBe(true);
+    expect(back).toHaveBeenCalledTimes(2);
+  });
+
+  it('under compact targets the region on screen', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    let shown = PANE_FIND_LIST_REGION;
+    releases.push(declarePaneFindRegions(PULLS, { initial: PANE_FIND_LIST_REGION, shown: () => shown }));
+    releases.push(registerPaneFindProvider(paneFindListKey(PULLS), providerFor()));
+    focusPane(PULLS);
+    setCompactLayoutForTest(true);
+    showCompactThread();
+    const strip = document.createElement('div');
+    strip.className = 'compact-screen-thread';
+    const rect = { left: 0, right: 412, top: 0, bottom: 800, width: 412, height: 800, x: 0, y: 0, toJSON: () => ({}) };
+    strip.getBoundingClientRect = () => rect;
+    const section = document.createElement('section');
+    section.dataset.paneId = PULLS;
+    section.getBoundingClientRect = () => rect;
+    strip.appendChild(section);
+    document.body.appendChild(strip);
+
+    // The reader last touched the detail, but the list is on screen.
+    activatePaneFindRegion(paneFindDetailKey(PULLS));
+    let ctx = makeCommandContext(null, {}) as CommandContext;
+    expect(ctx.flags.paneFindAvailable).toBe(true);
+    expect(runCommand('find.in-pane', ctx)).toBe(true);
+    expect(getPaneFind(paneFindListKey(PULLS))?.open).toBe(true);
+    // The detail replaced the list: its find is the target, and it has none.
+    shown = PANE_FIND_DETAIL_REGION;
+    ctx = makeCommandContext(null, {}) as CommandContext;
+    expect(ctx.flags.paneFindAvailable).toBe(false);
+    expect(ctx.flags.paneFindOpen).toBe(false);
+  });
+});
+
+// Compact shows one pane, and opening a companion leaves focus on its
+// source thread: find commands act on the pane on screen, so Back never
+// closes a find nobody can see.
+describe('pane find under compact', () => {
+  const providerFor = (): PaneFindProvider => ({
+    noun: 'thread',
+    result: { count: 0, current: -1, pending: false },
+    search: vi.fn(),
+    clear: vi.fn(),
+  });
+  let release: (() => void) | null = null;
+
+  function mountStrip(onScreen: string, paneIds: string[]): void {
+    document.body.replaceChildren();
+    const rect = (left: number) => ({ left, right: left + 412, top: 0, bottom: 800, width: 412, height: 800, x: left, y: 0, toJSON: () => ({}) });
+    const strip = document.createElement('div');
+    strip.className = 'compact-screen-thread';
+    strip.getBoundingClientRect = () => rect(0);
+    for (const paneId of paneIds) {
+      const section = document.createElement('section');
+      section.dataset.paneId = paneId;
+      section.getBoundingClientRect = () => rect(paneId === onScreen ? 0 : 412);
+      strip.appendChild(section);
+    }
+    document.body.appendChild(strip);
+  }
+
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetPaneFindForTest();
+    resetPanesForTest();
+    resetCompanionPanesForTest();
+    installCompanionPanes();
+    setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 412 }]);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+  });
+
+  afterEach(() => {
+    release?.();
+    release = null;
+    setCompactLayoutForTest(false);
+    showCompactList();
+    resetCompanionPanesForTest();
+    resetPaneFindForTest();
+    resetPaneLayoutForTest();
+    resetKeybindingsStore();
+    document.body.replaceChildren();
+  });
+
+  it('acts on the pane on screen: Back closes its find and leaves an off-screen one', () => {
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    registerFixtureCommands(pane);
+    focusPane('a');
+    registerPaneFindProvider('a', providerFor());
+    const plan = openCompanion('a', 'plan')!;
+    registerPaneFindProvider(plan.paneId, providerFor());
+    focusPane('a');
+    setCompactLayoutForTest(true);
+    showCompactThread();
+    // The app's window handler: Back's Escape reaches dispatch with a fresh context.
+    const onKey = (event: KeyboardEvent) => {
+      if (isSurfaceDismissalEvent(event) && dispatchKey(event, makeCommandContext(pane, {}) as CommandContext)) event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    release = () => window.removeEventListener('keydown', onKey);
+
+    // The source's find is open; the plan is on screen with focus left on the source.
+    openPaneFind('a');
+    mountStrip(plan.paneId, ['a', plan.paneId]);
+    let ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.paneFindOpen).toBe(false);
+    expect(runCommand('find.in-pane', ctx)).toBe(true);
+    expect(getPaneFind(plan.paneId)?.open).toBe(true);
+
+    // Back closes the plan's find, then the plan; the source's find stays.
+    expect(stepBack()).toBe(true);
+    expect(getPaneFind(plan.paneId)?.open).toBe(false);
+    expect(isCompanionOpen('a', 'plan')).toBe(true);
+    expect(stepBack()).toBe(true);
+    expect(isCompanionOpen('a', 'plan')).toBe(false);
+    expect(getPaneFind('a')?.open).toBe(true);
+
+    // Back on the source closes its own find, then leaves for the list.
+    mountStrip('a', ['a']);
+    ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.paneFindOpen).toBe(true);
+    expect(stepBack()).toBe(true);
+    expect(getPaneFind('a')?.open).toBe(false);
+    expect(stepBack()).toBe(true);
+    expect(getCompactScreen()).toBe('list');
+
+    // The list screen shows no pane: no find to open or close.
+    openPaneFind('a');
+    ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.paneFindOpen).toBe(false);
+    expect(ctx.flags.paneFindAvailable).toBe(false);
+  });
+
+  // The bar's input keeps DOM focus while keyboard navigation reveals the
+  // companion: Back must close the companion on screen, not the bar behind it.
+  it('a focused bar\'s Escape goes through the same target: Back passes an off-screen bar, desktop Escape closes it', async () => {
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    registerFixtureCommands(pane);
+    focusPane('a');
+    registerPaneFindProvider('a', providerFor());
+    const plan = openCompanion('a', 'plan')!;
+    focusPane('a');
+    setCompactLayoutForTest(true);
+    showCompactThread();
+
+    let onScreen = 'a';
+    const rect = (left: number) => ({ left, right: left + 412, top: 0, bottom: 800, width: 412, height: 800, x: left, y: 0, toJSON: () => ({}) });
+    const strip = document.createElement('div');
+    strip.className = 'compact-screen-thread';
+    strip.getBoundingClientRect = () => rect(0);
+    const sections = new Map<string, HTMLElement>();
+    for (const paneId of ['a', plan.paneId]) {
+      const section = document.createElement('section');
+      section.dataset.paneId = paneId;
+      section.getBoundingClientRect = () => rect(paneId === onScreen ? 0 : 412);
+      strip.appendChild(section);
+      sections.set(paneId, section);
+    }
+    document.body.appendChild(strip);
+    render(PaneFindBar, { target: sections.get('a')!, props: { paneId: 'a', title: 'A', fallbackFocus: () => null } });
+
+    // App.svelte's window handler, reduced to its dispatch rules.
+    const reachable = new Set(listCommands().filter((c) => c.editableReachable).map((c) => c.id));
+    const onKey = (event: KeyboardEvent) => {
+      const ctx = makeCommandContext(pane, {}) as CommandContext;
+      const target = event.target as HTMLElement;
+      const editable = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+      if (!isSurfaceDismissalEvent(event) && editable && !eventMatchesKeybindingCommand(event, ctx, reachable, { isMac: false })) return;
+      if (dispatchKey(event, ctx, { isMac: false })) event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    release = () => window.removeEventListener('keydown', onKey);
+
+    openPaneFind('a');
+    await tick();
+    const input = sections.get('a')!.querySelector<HTMLInputElement>('[data-testid="pane-find-input"]')!;
+    await vi.waitFor(() => expect(document.activeElement).toBe(input));
+
+    // Keyboard navigation reveals the plan; DOM focus stays in A's input.
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', code: 'KeyL', altKey: true, bubbles: true, cancelable: true }));
+    onScreen = plan.paneId;
+    expect(document.activeElement).toBe(input);
+
+    // Back closes the plan on screen; A's bar, off screen, stays open.
+    expect(stepBack()).toBe(true);
+    expect(isCompanionOpen('a', 'plan')).toBe(false);
+    expect(getPaneFind('a')?.open).toBe(true);
+
+    // On desktop, Escape in the focused bar closes it.
+    setCompactLayoutForTest(false);
+    focusPane('a');
+    input.focus();
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true });
+    input.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(getPaneFind('a')?.open).toBe(false);
   });
 });
 
@@ -1833,7 +2485,16 @@ describe('settings commands', () => {
     clearCommandRegistry();
     resetWorkflowsOverlayForTest();
     resetSettingsOverlayForTest();
+    resetToolPanesForTest();
+    resetPanesForTest();
+    setPaneLayoutItemsForTest([]);
     registerBuiltinCommands(makeBuiltinHooks());
+  });
+
+  afterEach(() => {
+    resetToolPanesForTest();
+    resetPanesForTest();
+    resetPaneLayoutForTest();
   });
 
   it('opens the settings overlay on its General tab', () => {
@@ -1867,19 +2528,89 @@ describe('settings commands', () => {
     expect(getCommand('settings.close')?.editableReachable).toBe(true);
   });
 
-  // Both surfaces are full-height layers over the pane strip with their own
-  // focus trap, so opening either closes the other. Both directions live in
-  // the stores now: `openSettingsOverlay` calls `closeWorkflowsOverlay`, and
-  // the settings store arms the reverse hook at module init.
-  it('is mutually exclusive with the workflows overlay, both directions', () => {
+  // Settings is a layer over the pane strip; a tool pane is IN the strip. A
+  // tool opened under settings would be invisible, so opening one closes
+  // settings (armed by the settings store at module init). Settings opening
+  // over a tool pane leaves the pane where it is.
+  it('closes settings when a tool pane opens, and keeps the pane under settings', () => {
     openSettingsOverlay('theme');
     runCommand('workflows.toggle', makeCommandContext(null, {}) as CommandContext);
-    expect(isWorkflowsOverlayOpen()).toBe(true);
+    expect(isToolOpen('workflows')).toBe(true);
     expect(isSettingsOpen()).toBe(false);
 
     runCommand('settings.open', makeCommandContext(null, {}) as CommandContext);
     expect(isSettingsOpen()).toBe(true);
-    expect(isWorkflowsOverlayOpen()).toBe(false);
+    expect(isToolOpen('workflows')).toBe(true);
+  });
+});
+
+// --- tool pane flags ---
+//
+// The workflows chords gate on the RAW focused pane being the workflows pane,
+// and its surface-dismissal Escape additionally on `toolDetailOpen`. Derived
+// in makeCommandContext so every builder sees one answer.
+describe('tool pane command flags', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetWorkflowsOverlayForTest();
+    resetToolPanesForTest();
+    resetPanesForTest();
+    setPaneLayoutItemsForTest([]);
+  });
+
+  afterEach(() => {
+    resetToolPanesForTest();
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+  });
+
+  it('derives tool focus and the detail step from the focused pane', () => {
+    let flags = makeCommandContext(null, {}).flags;
+    expect(flags.toolPaneFocused).toBe(false);
+    expect(flags.workflowsPaneFocused).toBe(false);
+    expect(flags.toolDetailOpen).toBe(false);
+
+    openTool('workflows');
+    flags = makeCommandContext(null, {}).flags;
+    expect(flags.toolPaneFocused).toBe(true);
+    expect(flags.workflowsPaneFocused).toBe(true);
+    expect(flags.toolDetailOpen).toBe(false);
+    expect(flags.workflowsRunDetail).toBe(false);
+
+    pushWorkflowRunDetail('run-1');
+    flags = makeCommandContext(null, {}).flags;
+    expect(flags.toolDetailOpen).toBe(true);
+    expect(flags.workflowsRunDetail).toBe(true);
+
+    // Another tool focused: the workflows chords and its detail step go quiet.
+    openTool('pulls', { newPane: true });
+    flags = makeCommandContext(null, {}).flags;
+    expect(flags.toolPaneFocused).toBe(true);
+    expect(flags.workflowsPaneFocused).toBe(false);
+    expect(flags.toolDetailOpen).toBe(false);
+    expect(flags.workflowsRunDetail).toBe(false);
+  });
+
+  // Settings opened over a run detail owns Escape, Back and the bare keys:
+  // the detail behind it is neither stepped back nor driven.
+  it('a tool pane surface yields to an overlay above it', () => {
+    registerBuiltinCommands(makeBuiltinHooks());
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    openTool('workflows');
+    pushWorkflowRunDetail('run-1');
+    openSettingsOverlay('theme');
+    const release = registerAirspaceSurface(document.createElement('div'));
+    const ctx = makeCommandContext(null, {}) as CommandContext;
+    expect(ctx.flags.workflowsRunDetail).toBe(false);
+    expect(isCommandEnabled('workflows.escape', ctx)).toBe(false);
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape' });
+    expect(dispatchKey(escape, ctx, { isMac: false })).toBe(true);
+    expect(isSettingsOpen()).toBe(false);
+    expect(getWorkflowsOverlayTop().level).toBe('run');
+    release();
+    resetKeybindingsStore();
+    resetSettingsOverlayForTest();
+    resetAirspaceForTest();
   });
 });
 

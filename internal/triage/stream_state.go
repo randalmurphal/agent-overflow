@@ -266,7 +266,7 @@ func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status stri
 		turnWG.Add(1)
 		r.goSettle(threadID, func() {
 			defer turnWG.Done()
-			captureErr(r.doSettleStreamingThinking(ref, status, "", false))
+			captureErr(r.doSettleStreamingThinking(ref, status, "", false, false))
 		})
 	}
 	turnWG.Wait()
@@ -455,13 +455,7 @@ func (r *Router) settleStreamingTextRow(threadID, itemID, status string, summari
 		item.Summary = summarise(item.Summary)
 	}
 	now := time.Now().UnixMilli()
-	item.Meta = mergeItemMetaJSON(item.Meta, blockMeta)
-	r.enrichPathRefsFromTexts(threadID, &item, pathRefSource)
-	// Persist highlight spans keyed to the FINAL summary (after the
-	// interrupted decoration above — the spans must match exactly what
-	// the frontend renders; for a stream cut mid-fence the decorated
-	// open fence is the rendered content).
-	r.enrichCodeSpans(&item)
+	r.stampSettledProse(&item, pathRefSource, blockMeta)
 	if finalContentPresent && item.PayloadID != "" {
 		metaJSON := BuildPayloadMeta(itemKindAssistantText, provider.ProviderEvent{
 			ThreadID:  threadID,
@@ -483,6 +477,19 @@ func (r *Router) settleStreamingTextRow(threadID, itemID, status string, summari
 		update.Summary = &item.Summary
 	}
 	return r.persistSettle(item, update)
+}
+
+// stampSettledProse writes onto item what every settled prose row carries
+// beside its text: the stop envelope's row-level meta, the path refs of the
+// model text, and the code spans of the summary. item.Summary must already
+// be the FINAL summary (after any interrupted decoration): the spans must
+// match exactly what the frontend renders, and for a stream cut mid-fence
+// the decorated open fence is the rendered content. modelText is the text
+// before that decoration.
+func (r *Router) stampSettledProse(item *store.Item, modelText string, blockMeta json.RawMessage) {
+	item.Meta = mergeItemMetaJSON(item.Meta, blockMeta)
+	r.enrichPathRefsFromTexts(item.ThreadID, item, modelText)
+	r.enrichCodeSpans(item)
 }
 
 // persistSettle writes a streaming row's settle while the row is still
@@ -594,12 +601,11 @@ func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope,
 		Summary:   content,
 		PayloadID: AssistantTextPayloadID(itemID),
 		ParentID:  scope,
-		Meta:      mergeItemMetaJSON(providerItemMeta(providerItemID), blockMeta),
+		Meta:      providerItemMeta(providerItemID),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	r.enrichPathRefsFromTexts(threadID, &item, content)
-	r.enrichCodeSpans(&item)
+	r.stampSettledProse(&item, content, blockMeta)
 	payload := assistantTextPayload(item.ID, content, now)
 	if scope == "" {
 		// Top-level recovery lands in the live transcript mid-view;
@@ -633,7 +639,11 @@ func (r *Router) nextTextItemID(threadID string, turnIndex int, scope string) st
 // path-shaped tokens across one or more text sources against the
 // workspace filesystem and stores the resulting allowlist on item.Meta.
 // Per-item dedupe keeps the slice size bounded when several sources
-// reference the same path.
+// reference the same path. A source that holds a markdown image also
+// records the workspace itself (pathlinks.RecordWorkspace): the thread's
+// workspace moves (a worktree entered or left, a switch, an attach) while
+// the row's text does not, and a relative image destination names a file
+// in the checkout the text was written in.
 //
 // Failures are non-fatal: a missing thread record or a malformed
 // existing meta JSON falls back to skipping enrichment so the
@@ -644,6 +654,11 @@ func (r *Router) enrichPathRefsFromTexts(threadID string, item *store.Item, sour
 	workspacePath := r.workspacePathFor(threadID)
 	if workspacePath == "" {
 		return
+	}
+	if recorded, err := pathlinks.RecordWorkspace(item.Meta, workspacePath, sources...); err != nil {
+		log.Printf("triage: authored workspace for %s: %v", item.ID, err)
+	} else {
+		item.Meta = recorded
 	}
 	refs := extractPathRefsFromTexts(workspacePath, sources)
 	if len(refs) == 0 {
@@ -795,13 +810,11 @@ func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64
 	r.emit(eventchan.ProviderItemEvent, newItemStreamMeta(item.ThreadID, item.ID, item.ParentID, item.Kind, merged, updatedAt))
 }
 
-// workspacePathFor returns the WorkspacePath for threadID, using a
-// per-router cache so repeat callers in a single turn (e.g. several
-// assistant_text settles back-to-back) don't each pay a SQLite read
-// for the same effectively-immutable value. Misses log and return
-// empty so the caller skips enrichment cleanly. Eviction is tied to
-// CleanupThread (the only point at which the workspace association
-// goes away from the router's perspective).
+// workspacePathFor returns the directory threadID's provider process works
+// in, through the thread state's cache (see threadState.workspacePath) so
+// the streaming flushes and prose settles of a turn do not each pay a
+// SQLite read. A failed lookup logs and returns empty so the caller skips
+// enrichment cleanly.
 func (r *Router) workspacePathFor(threadID string) string {
 	r.mu.Lock()
 	st := r.threadStateIfPresent(threadID)
@@ -819,12 +832,40 @@ func (r *Router) workspacePathFor(threadID string) string {
 	r.mu.Lock()
 	// A final settle can outlive CleanupThread. Reads never resurrect its
 	// caches, and a lookup begun by an old session cannot seed its replacement.
+	// A move the process reported during the read is newer than the row.
 	if st != nil && r.threadStateIfPresent(threadID) == st {
-		st.workspacePath = workspacePath
-		st.workspacePathSet = true
+		if st.workspacePathSet {
+			workspacePath = st.workspacePath
+		} else {
+			st.workspacePath = workspacePath
+			st.workspacePathSet = true
+		}
 	}
 	r.mu.Unlock()
 	return workspacePath
+}
+
+// followWorkspaceChange moves the thread's cached workspace to the directory
+// the provider process reports it now works in, so the rows that settle
+// after the move are validated against, and record, the checkout they were
+// written in. An event with no readable directory drops the cache; the next
+// read takes the thread row.
+func (r *Router) followWorkspaceChange(evt provider.ProviderEvent) {
+	var change provider.WorkspaceChangeMeta
+	cwd := ""
+	if err := json.Unmarshal(evt.Meta, &change); err != nil {
+		log.Printf("triage: workspace change for %s: %v", evt.ThreadID, err)
+	} else {
+		cwd = strings.TrimSpace(change.Cwd)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		return
+	}
+	if st := r.threadStateIfPresent(evt.ThreadID); st != nil {
+		st.workspacePath, st.workspacePathSet = cwd, cwd != ""
+	}
 }
 
 // mergePathRefsIntoMeta returns the item.Meta JSON string with a
@@ -932,15 +973,17 @@ func (r *Router) takeFirstActiveThinkingBlock(threadID string, turnIndex int, sc
 // on the hot path — that would block the next provider event (a
 // tool_use or text_delta following thinking) and produce the
 // perceived end-of-thinking freeze.
-func (r *Router) doSettleStreamingThinking(block activeStreamBlock, status, finalContent string, finalContentPresent bool) error {
+func (r *Router) doSettleStreamingThinking(block activeStreamBlock, status, finalContent string, finalContentPresent, narration bool) error {
 	defer r.finishSettle(block)
-	return r.settleStreamingThinkingRow(block.threadID, block.itemID, status, interruptedSummary, finalContent, finalContentPresent)
+	return r.settleStreamingThinkingRow(block.threadID, block.itemID, status, interruptedSummary, finalContent, finalContentPresent, narration)
 }
 
 // settleStreamingThinkingRow is doSettleStreamingThinking without the
 // count release and drain, which its caller owns. An errored row's
-// summary is summarise of its preview.
-func (r *Router) settleStreamingThinkingRow(threadID, itemID, status string, summarise func(string) string, finalContent string, finalContentPresent bool) error {
+// summary is summarise of its preview. narration is the block stop's
+// provider.MetaNarrationKey: a thinking row that completes with it
+// settles as assistant text (settleNarrationRow).
+func (r *Router) settleStreamingThinkingRow(threadID, itemID, status string, summarise func(string) string, finalContent string, finalContentPresent, narration bool) error {
 	if err := r.flushStreamingItem(threadID, itemID); err != nil {
 		return err
 	}
@@ -950,6 +993,9 @@ func (r *Router) settleStreamingThinkingRow(threadID, itemID, status string, sum
 	}
 	if item.Status != statusStreaming {
 		return nil
+	}
+	if narration && status == statusCompleted && item.Kind == itemKindThinking && item.PayloadID != "" {
+		return r.settleNarrationRow(item, finalContent, finalContentPresent)
 	}
 	now := time.Now().UnixMilli()
 	update := store.ItemPartialUpdate{
@@ -972,18 +1018,18 @@ func (r *Router) settleStreamingThinkingRow(threadID, itemID, status string, sum
 	return r.persistSettle(item, update)
 }
 
-func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool, at time.Time) {
+func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent, narration bool, at time.Time) {
 	block, active := r.takeActiveThinkingBlock(threadID, turnIndex, scope, providerItemID)
 	if !active {
 		if finalContentPresent && finalContent != "" {
-			if err := r.persistOrUpdateCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, finalContent, at); err != nil {
+			if err := r.persistOrUpdateCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, finalContent, narration, at); err != nil {
 				r.reportCompletedHistoryConflict(threadID, scope, err)
 			}
 		}
 		return
 	}
 	r.goSettle(threadID, func() {
-		if err := r.doSettleStreamingThinking(block, status, finalContent, finalContentPresent); err != nil {
+		if err := r.doSettleStreamingThinking(block, status, finalContent, finalContentPresent, narration); err != nil {
 			r.providerWriteFailed(threadID, fmt.Sprintf("async settle thinking %s/%s", threadID, block.itemID), err)
 		}
 	})
@@ -997,7 +1043,7 @@ func (r *Router) settleStreamingThinkingScopeAsync(threadID string, turnIndex in
 			continue
 		}
 		r.goSettle(threadID, func() {
-			if err := r.doSettleStreamingThinking(ref, status, "", false); err != nil {
+			if err := r.doSettleStreamingThinking(ref, status, "", false, false); err != nil {
 				r.providerWriteFailed(threadID, fmt.Sprintf("async settle thinking %s/%s", threadID, ref.itemID), err)
 			}
 		})
@@ -1020,12 +1066,23 @@ func (r *Router) activeThinkingKeysForScope(threadID string, turnIndex int, scop
 	return keys
 }
 
-func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string, at time.Time) error {
+// persistOrUpdateCompletedThinkingItem persists a complete thinking block,
+// or settles the row that already holds it. narration is the block's
+// provider.MetaNarrationKey: the block is then stored as assistant text
+// (narration.go).
+func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string, narration bool, at time.Time) error {
 	if providerItemID != "" {
 		r.waitThreadSettles(threadID)
 		if item, found, err := r.store.FindStreamItemByProviderItemID(threadID, turnIndex, itemKindThinking, scope, providerItemID); err != nil {
 			return err
-		} else if found {
+		} else if !found {
+			// The block's row is assistant text once it settled as
+			// narration; a re-assert must find that row, not write a
+			// second one or turn it back into thinking.
+			if handled, err := r.reassertNarrationItem(threadID, turnIndex, scope, providerItemID, content); handled || err != nil {
+				return err
+			}
+		} else {
 			if item.Status != statusStreaming && item.Status != statusCompleted {
 				return nil
 			}
@@ -1042,16 +1099,19 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 			}
 			// A streaming row whose stream the router no longer holds
 			// settles as that stream's stop would, with this content.
-			return r.settleStreamingThinkingRow(threadID, item.ID, statusCompleted, interruptedSummary, content, true)
+			return r.settleStreamingThinkingRow(threadID, item.ID, statusCompleted, interruptedSummary, content, true, narration)
 		}
 	}
-	return r.persistCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, content, at)
+	return r.persistCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, content, narration, at)
 }
 
-func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string, at time.Time) error {
+func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string, narration bool, at time.Time) error {
 	itemID := scopedStreamItemID("think", turnIndex, scope, providerItemID, r.nextThinkingItemID(threadID, turnIndex, scope))
 	payloadID := ThinkingPayloadID(itemID)
 	now := rowClockMillis(at)
+	if narration {
+		return r.persistCompletedNarrationItem(threadID, turnIndex, scope, providerItemID, itemID, content, now)
+	}
 	item := store.Item{
 		ID:        itemID,
 		ThreadID:  threadID,

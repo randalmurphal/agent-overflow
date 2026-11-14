@@ -245,6 +245,7 @@ func (in Input) Projection() Meta {
 			MimeType: attachment.MimeType,
 			Size:     attachment.Size,
 			Kind:     attachment.Kind,
+			Shell:    shellMeta(attachment),
 		})
 	}
 	return Meta{
@@ -261,6 +262,7 @@ func (in Input) Projection() Meta {
 		Origin:                       in.Origin,
 		OriginThread:                 in.OriginThread,
 		OriginWake:                   in.OriginWake,
+		TextBeforeReviewComments:     in.TextBeforeReviewComments,
 	}
 }
 
@@ -338,7 +340,7 @@ func samePlanRef(a, b *store.ProposedPlanSourceRef) bool {
 }
 
 func sameDiffRef(a, b *store.DiffReviewSourceRef) bool {
-	return a != nil && b != nil && a.Scope == b.Scope && a.SourceKey == b.SourceKey
+	return a != nil && b != nil && a.PRKey == b.PRKey && a.Scope == b.Scope && a.SourceKey == b.SourceKey
 }
 
 // MarshalMeta encodes an already-projected Meta with the same empty-is-nothing
@@ -370,6 +372,7 @@ func (m Meta) isZero() bool {
 		m.OriginThread == nil &&
 		m.OriginWake == nil &&
 		len(m.JoinedParts) == 0 &&
+		m.TextBeforeReviewComments == nil &&
 		!m.ExpandComposerCommands
 }
 
@@ -397,6 +400,7 @@ var metaTypedKeys = []string{
 	"joinedOriginTokens",
 	"originWake",
 	"joinedParts",
+	"textBeforeReviewComments",
 }
 
 // MergeJoinedMeta rewrites the typed usermessage fields of `existing` to those

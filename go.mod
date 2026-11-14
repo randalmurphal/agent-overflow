@@ -1,6 +1,6 @@
 module agent-overflow
 
-go 1.27.2
+go 1.27.4
 
 // macOS and Windows verify certificates with the system trust store even
 // when SSL_CERT_FILE or SSL_CERT_DIR is set.
@@ -23,7 +23,7 @@ require (
 	github.com/hashicorp/mdns v1.0.7
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
 	github.com/jsimonetti/rtnetlink v1.4.2
-	github.com/klauspost/compress v1.20.1
+	github.com/klauspost/compress v1.20.2
 	github.com/miekg/dns v1.1.73
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/rjeczalik/notify v0.9.3
@@ -46,6 +46,7 @@ require (
 	github.com/tree-sitter/tree-sitter-rust v0.24.2
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
 	github.com/wailsapp/wails/v3 v3.0.0-beta.4
+	github.com/yuin/goldmark v1.7.16
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0
@@ -268,7 +269,6 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	github.com/yuin/goldmark v1.7.16 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zalando/go-keyring v0.2.6 // indirect

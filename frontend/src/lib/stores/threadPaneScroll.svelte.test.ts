@@ -148,8 +148,8 @@ describe('threadPaneScroll', () => {
       expect(pane.lastLiveContentAt).toBeLessThanOrEqual(after);
     });
 
-    it('pane.armStructuralSpring (composer optimistic send) arms without stamping', async () => {
-      // The composer's send is deliberately a one-shot: one append wants
+    it('pane.armStructuralSpring (edit-and-resend replacement) arms without stamping', async () => {
+      // The replacement is deliberately a one-shot: one append wants
       // one spring window, not 500ms of spring eligibility for
       // unrelated reflows.
       const thread = makeThread({ id: 'thread-arm-composer' });
@@ -477,11 +477,11 @@ describe('threadPaneScroll', () => {
         expect(pane.revealBoundary).toEqual({ turnIndex: 1, itemIndex: 0 });
         markStructuralContentPending.mockClear();
 
-        // Revert-on-interrupt truncates the tail: frontier AND withheld
+        // A conversation revert truncates the tail: frontier AND withheld
         // successor go in one call. The boundary drops, but nothing
         // mounts — the timeline SHRANK — so arming would open a phantom
         // spring window over the revert settle.
-        pane.removeItemsFromTurn(1, pane.threadId!);
+        pane.removeRevertedItems(1, []);
         expect(pane.revealBoundary).toBeNull();
         expect(markStructuralContentPending).not.toHaveBeenCalled();
       } finally {
@@ -740,8 +740,8 @@ describe('threadPaneScroll', () => {
   // `applyItemPatch`), it must advance ONLY on genuine smooth live
   // timeline content arriving — text reveals, final-summary patches —
   // and must NOT advance on thread switch, non-smooth delta growth,
-  // bulk history loads, meta-only updates, or the optimistic-send /
-  // rollback paths that drive `upsertItems` directly. (The provider
+  // bulk history loads, meta-only updates, or the rollback paths that
+  // drive `upsertItems` directly. (The provider
   // upsert fan-out in events.ts additionally stamps visible-field
   // updates to mounted rows of ANY kind — tool output previews,
   // completion chrome; those rules are covered in events.test.ts.)
@@ -969,10 +969,8 @@ describe('threadPaneScroll', () => {
         });
         expect(pane.lastLiveContentAt).toBe(0);
 
-        // Driving pane.upsertItems directly (the Composer optimistic-send
-        // echo and revertOnInterrupt rollback paths) must NOT stamp — only
-        // the events.ts provider fan-out marks live content. This is what
-        // keeps a user's own sent message and rollback restores sync-pinned.
+        // Driving pane.upsertItems directly must NOT stamp: only the
+        // events.ts provider fan-out marks live content.
         pane.upsertItems([
           makeItem({
             id: 'new:1:0',

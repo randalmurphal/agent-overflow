@@ -135,6 +135,29 @@ func TestTransferPreparationCleanupPreservesPublishedWorkspace(t *testing.T) {
 	}
 }
 
+// A transfer records and re-checks a branch that shares its name with a tag
+// by its own name, on both ends.
+func TestTransferWorkspaceBranchSharingATagsName(t *testing.T) {
+	t.Parallel()
+	ctx, core := context.Background(), NewCore()
+	source := initGitRepo(t)
+	testutil.RunGit(t, source, "checkout", "-q", "-b", "dup")
+	testutil.RunGit(t, source, "tag", "dup")
+	capture, err := core.CaptureTransferWorkspace(ctx, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capture.Workspace.Branch != "dup" {
+		t.Fatalf("captured branch = %q, want dup", capture.Workspace.Branch)
+	}
+
+	core, plan := prepareTestTransferWorktree(t, "copied-work")
+	testutil.RunGit(t, plan.Repository, "tag", "copied-work", plan.Head)
+	if err := core.PublishTransferWorktree(ctx, plan); err != nil {
+		t.Fatalf("publish with a tag of the branch's name: %v", err)
+	}
+}
+
 func TestTransferWorktreePublicationRefusesAnotherDirectory(t *testing.T) {
 	t.Parallel()
 	core, plan := prepareTestTransferWorktree(t, "")

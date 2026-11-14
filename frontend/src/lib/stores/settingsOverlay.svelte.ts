@@ -1,7 +1,7 @@
 // Settings overlay open-state (UI-SPEC §2.1). Settings mounts as a SIBLING of
-// PaneHost, layered over it through the same frame primitive the workflows
-// overlay uses — so its open state belongs in a store next to every other
-// overlay's, not in App.svelte. Distant surfaces (the context-window meter, the
+// PaneHost, layered over it through `primitives/OverlayShell.svelte` — so its
+// open state belongs in a store next to every other overlay's, not in
+// App.svelte. Distant surfaces (the context-window meter, the
 // `/config` composer command, the account switcher) deep-link straight in by
 // calling `openSettingsOverlay`; none of them needs a window event to reach
 // App's local state any more.
@@ -10,10 +10,7 @@
 // same tab comes back), and a restart starts on the pane tree with settings
 // closed.
 
-import {
-  closeWorkflowsOverlay,
-  setWorkflowsOverlayExclusion,
-} from './workflowsOverlay.svelte';
+import { setToolPaneOpenExclusion } from './toolPanes.svelte';
 import { isCompactLayout } from './layoutMode.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import {
@@ -63,11 +60,6 @@ export function hideSettingsRail(): void {
  */
 export function openSettingsOverlay(nextSection: SettingsSection = section, backend?: BackendKey): void {
   const target = settingsSectionAvailable(nextSection) ? nextSection : DEFAULT_SETTINGS_SECTION;
-  // Settings and the workflows overlay are both full-height layers over the
-  // pane strip, each with its own focus trap; stacking them has no coherent
-  // Esc. The reverse direction runs off `openWorkflowsOverlay`, the one writer
-  // of that store's `open` (armed at the bottom of this module).
-  closeWorkflowsOverlay();
   section = target;
   computer = backend ?? null;
   // A deep link to a specific section lands on that page directly.
@@ -76,15 +68,15 @@ export function openSettingsOverlay(nextSection: SettingsSection = section, back
 }
 
 /**
- * The one settings-close path — X button, scrim, `settings.close`, and the
- * workflows overlay opening all route here.
+ * The one settings-close path — X button, scrim, `settings.close`, and a tool
+ * pane opening all route here.
  *
  * Settings fields commit on blur, so focus has to leave the surface BEFORE it
  * unmounts: a click-close moves focus by itself, but an Esc-close would
  * otherwise unmount a focused input and silently drop the edit in it. The
  * already-closed guard comes FIRST precisely because of that blur — this runs
- * on every workflows-overlay open, and blurring there would steal focus from
- * whatever the user was typing in.
+ * on every tool open, and blurring there would steal focus from whatever the
+ * user was typing in.
  */
 export function closeSettingsOverlay(): void {
   if (!open) return;
@@ -108,11 +100,11 @@ export function escapeSettingsOverlay(): void {
   closeSettingsOverlay();
 }
 
-// Arm the mutual exclusion at module init. Importing this module is what wires
-// it, so no registration order — and no test's reset — can leave the workflows
-// overlay able to open on top of settings. The import direction is one-way
-// (this store → workflowsOverlay) so the pair never forms a cycle.
-setWorkflowsOverlayExclusion(closeSettingsOverlay);
+// A tool pane opened under settings would be invisible, so opening one closes
+// settings. Armed at module init: importing this module is what wires it, so
+// no registration order and no test's reset can disarm it. The import runs
+// one way (this store → toolPanes) so the pair never forms a cycle.
+setToolPaneOpenExclusion(closeSettingsOverlay);
 
 export function resetSettingsOverlayForTest(): void {
   open = false;

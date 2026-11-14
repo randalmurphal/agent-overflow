@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -153,17 +152,25 @@ func runStepCommand(
 // stdout+stderr into output. It reports only what the process did; the caller
 // decides how a failure reads, because only the caller knows whether the run
 // context expired.
+//
+// A process the command left running in its group is kept: a recipe may start
+// a service on purpose. One that still holds the command's output after the
+// drain grace fails an otherwise successful command. A command stopped by ctx
+// fails with ctx's error even when it answered the signal with a clean exit.
 func runCommand(ctx context.Context, worktreeRoot string, commandEnv, argv []string, output io.Writer) error {
 	if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
 		return fmt.Errorf("worktree setup command has no executable")
 	}
-	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	command.Dir = worktreeRoot
-	command.Env = commandEnv
-	command.Stdout = output
-	command.Stderr = output
-	procutil.ConfigureGroup(command)
-	return command.Run()
+	outcome, err := procutil.RunGroup(ctx, procutil.GroupCommand{
+		Dir: worktreeRoot, Env: commandEnv, Argv: argv, Output: output, KeepLeftovers: true,
+	})
+	switch {
+	case err != nil:
+		return errors.Join(err, outcome.PipeErr)
+	case outcome.Stopped:
+		return errors.Join(ctx.Err(), outcome.PipeErr)
+	}
+	return outcome.OutputErr()
 }
 
 // Env renders the environment for every setup command: the app's own

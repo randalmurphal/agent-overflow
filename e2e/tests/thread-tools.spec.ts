@@ -2925,10 +2925,13 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
   // only way into the thread is the turn boundary. The CLI holds a message
   // written during a turn with no tool round left and runs it as the next
   // turn (claude-wire.md §Queued-message consumption).
-  await setScenario(harness, targetPath, {
-    ...threadToolsScenario({
+  await setScenario(
+    harness,
+    targetPath,
+    threadToolsScenario({
       name: 'tt-draft-target-script',
       provider: 'claude',
+      holdQueuedInput: true,
       turns: [
         { steps: [{ gate: 'hold-target' }], text: 'Still on the first task.' },
         {
@@ -2946,8 +2949,7 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
         },
       ],
     }),
-    claude: { holdQueuedInput: true },
-  });
+  );
   await setScenario(
     harness,
     callerPath,

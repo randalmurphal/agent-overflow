@@ -14,7 +14,7 @@ import (
 )
 
 func TestAgentThreadCreationPreservesUserProfiles(t *testing.T) {
-	t.Parallel()
+	// Serial: seeds the process-wide Claude model report.
 	for _, providerName := range []string{"claude", "codex"} {
 		t.Run(providerName, func(t *testing.T) {
 			f := newThreadToolsFixture(t)
@@ -22,6 +22,8 @@ func TestAgentThreadCreationPreservesUserProfiles(t *testing.T) {
 			window := 200000
 			if providerName == "codex" {
 				model, window = "gpt-5.4", 272000
+			} else {
+				seedClaudeFastModels(t, f.app, model)
 			}
 			profile := store.ChatModelProfile{Provider: providerName, Model: model, ReasoningEffort: "high", ContextWindow: window, RuntimeMode: "full-access", AutoCompactStandardPercent: 71, AutoCompactExtendedPercent: 81, UpdatedAt: 100}
 			if err := f.app.store.UpsertChatModelProfile(profile); err != nil {
@@ -34,11 +36,11 @@ func TestAgentThreadCreationPreservesUserProfiles(t *testing.T) {
 			adapter := threadToolsApp{app: f.app}
 			fast, compact := true, 65
 			for _, mode := range []string{"read-only", "approval-required"} {
-				spawned, err := adapter.createSpawnedThreadUngrouped(t.Context(), threadtools.SpawnCall{}, CreateThreadOptions{
+				spawned, err := adapter.createSpawned(t.Context(), threadtools.SpawnCall{}, spawnOptions{CreateThreadOptions: CreateThreadOptions{
 					ProjectID: f.project.ID, Title: "Agent work", Provider: providerName, Model: model,
 					ReasoningEffort: "low", FastMode: &fast, RuntimeMode: mode, ContextWindow: 1000000,
 					AutoCompactStandardPercent: &compact, AutoCompactExtendedPercent: &compact,
-				})
+				}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -109,7 +111,7 @@ func assertSavedProfile(t *testing.T, app *App, want store.ChatModelProfile) {
 }
 
 func TestUserProfileControlRemembersOnlySelectedFields(t *testing.T) {
-	t.Parallel()
+	// Serial: seeds the process-wide Claude model report.
 	for _, providerName := range []string{"claude", "codex"} {
 		for _, control := range []string{"effort", "fast", "fast-off", "runtime", "context", "model"} {
 			t.Run(providerName+"/"+control, func(t *testing.T) {
@@ -117,6 +119,8 @@ func TestUserProfileControlRemembersOnlySelectedFields(t *testing.T) {
 				profile := store.ChatModelProfile{Provider: "claude", Model: "claude-opus-4-7", ReasoningEffort: "high", ContextWindow: 200000, RuntimeMode: "full-access", AutoCompactStandardPercent: 71, AutoCompactExtendedPercent: 81, UpdatedAt: 100}
 				if providerName == "codex" {
 					profile.Provider, profile.Model, profile.ContextWindow = "codex", "gpt-5.4", 272000
+				} else {
+					seedClaudeFastModels(t, f.app, profile.Model)
 				}
 				if err := f.app.store.UpsertChatModelProfile(profile); err != nil {
 					t.Fatal(err)
@@ -216,8 +220,9 @@ func TestUserControlReportsProfilePersistenceFailure(t *testing.T) {
 }
 
 func TestConcurrentUserControlsPreserveIndependentPreferences(t *testing.T) {
-	t.Parallel()
+	// Serial: seeds the process-wide Claude model report.
 	f := newThreadToolsFixture(t)
+	seedClaudeFastModels(t, f.app, "claude-opus-4-7")
 	threads := make([]store.Thread, 4)
 	for i := range threads {
 		threads[i] = f.thread(t, fmt.Sprintf("concurrent-control-%d", i))
@@ -301,9 +306,9 @@ func TestAgentCreationDoesNotIntroduceAnUnrememberedProfile(t *testing.T) {
 			if providerName == "codex" {
 				model = "gpt-5.4"
 			}
-			_, err := (threadToolsApp{app: f.app}).createSpawnedThreadUngrouped(t.Context(), threadtools.SpawnCall{}, CreateThreadOptions{
+			_, err := (threadToolsApp{app: f.app}).createSpawned(t.Context(), threadtools.SpawnCall{}, spawnOptions{CreateThreadOptions: CreateThreadOptions{
 				ProjectID: f.project.ID, Title: "Unremembered agent", Provider: providerName, Model: model, RuntimeMode: "read-only", ReasoningEffort: "low",
-			})
+			}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -339,9 +344,9 @@ func TestAgentOverridesDoNotSurviveAsDefaultsAfterRestart(t *testing.T) {
 	if err := app.store.UpsertChatModelProfile(profile); err != nil {
 		t.Fatal(err)
 	}
-	_, err = (threadToolsApp{app: app}).createSpawnedThreadUngrouped(t.Context(), threadtools.SpawnCall{}, CreateThreadOptions{
+	_, err = (threadToolsApp{app: app}).createSpawned(t.Context(), threadtools.SpawnCall{}, spawnOptions{CreateThreadOptions: CreateThreadOptions{
 		ProjectID: defaultTestProjectID, Title: "Temporary reader", Provider: profile.Provider, Model: profile.Model, RuntimeMode: "read-only", ReasoningEffort: "low",
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

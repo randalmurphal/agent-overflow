@@ -396,7 +396,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       clearWarmupTimers();
     }
     // Placeholder → materialized: no cascade to settle, and the first
-    // growth is the optimistic send + response, which must glide.
+    // growth is the sent message and its response, which must glide.
     coldLoadSettleUntil = 0;
   }
 

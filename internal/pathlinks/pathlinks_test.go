@@ -558,3 +558,54 @@ func TestStreamScanner(t *testing.T) {
 		}
 	})
 }
+
+func TestHasMarkdownImage(t *testing.T) {
+	cases := map[string]bool{
+		"![overview](shots/overview.png)":       true,
+		"text ![](/abs/shot.png) more":          true,
+		"![alt text][shot]\n\n[shot]: shot.png": true,
+		"line one\n![multi\nline](a.png)":       true,
+		"":                                      false,
+		"a [link](docs/readme.md) only":         false,
+		"if (![1, 2].includes(x)) return":       false,
+		"wow!\n[link](a.md)":                    false,
+		"![unclosed":                            false,
+	}
+	for text, want := range cases {
+		if got := HasMarkdownImage(text); got != want {
+			t.Errorf("HasMarkdownImage(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
+
+func TestRecordWorkspace(t *testing.T) {
+	image := "![shot](shots/a.png)"
+	cases := []struct {
+		name  string
+		meta  string
+		texts []string
+		want  string
+	}{
+		{"no image leaves empty meta empty", "", []string{"plain", "[link](a.md)"}, ""},
+		{"no image leaves meta untouched", `{"task_id":"t"}`, []string{"plain"}, `{"task_id":"t"}`},
+		{"image on empty meta", "", []string{image}, `{"authoredWorkspace":"/work/space"}`},
+		{"image in any text", " ", []string{"plain", image}, `{"authoredWorkspace":"/work/space"}`},
+		{"keeps sibling keys", `{"task_id":"t","pathRefs":[{"path":"a/b.go"}]}`, []string{image},
+			`{"authoredWorkspace":"/work/space","pathRefs":[{"path":"a/b.go"}],"task_id":"t"}`},
+		{"replaces an earlier record", `{"authoredWorkspace":"/old"}`, []string{image}, `{"authoredWorkspace":"/work/space"}`},
+		{"null meta", "null", []string{image}, `{"authoredWorkspace":"/work/space"}`},
+	}
+	for _, tc := range cases {
+		got, err := RecordWorkspace(tc.meta, "/work/space", tc.texts...)
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+	if got, err := RecordWorkspace(`[1,2]`, "/work/space", image); err == nil {
+		t.Errorf("meta that is not an object: got %s, want an error", got)
+	}
+}

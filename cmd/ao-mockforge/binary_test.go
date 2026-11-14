@@ -47,6 +47,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	code := providerpath.Run(m)
+	if code == 0 {
+		if err := checkEveryGraphQLOperationSent(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			code = 1
+		}
+	}
 	_ = os.RemoveAll(tmp)
 	os.Exit(code)
 }
@@ -61,7 +67,7 @@ type rig struct {
 
 func newRig(t *testing.T, fixture forgefake.Fixture) *rig {
 	t.Helper()
-	engine := forgefake.New(forgefake.Options{APIToken: rigAPIToken})
+	engine := forgefake.New(forgefake.Options{APIToken: rigAPIToken, OnInvocation: func(inv forgefake.Invocation) { recordRigInvocation(t, inv) }})
 	if _, err := engine.Seed(fixture); err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
@@ -223,8 +229,11 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	if file.Side != "file" || file.Line != nil {
 		t.Fatalf("file thread = %+v", file)
 	}
-	if !outdated.IsOutdated || outdated.Side != "left" {
+	if !outdated.IsOutdated || outdated.Side != "left" || outdated.Line != nil || outdated.OriginalLine == nil || *outdated.OriginalLine != 1 {
 		t.Fatalf("outdated thread = %+v", outdated)
+	}
+	if ranged.OriginalLine == nil || *ranged.OriginalLine != 3 || ranged.OriginalStartLine == nil || *ranged.OriginalStartLine != 2 {
+		t.Fatalf("range thread original lines = %v %v", ranged.OriginalLine, ranged.OriginalStartLine)
 	}
 	if last := threads[len(threads)-1]; last.Path != "" || last.Comments[0].Body != "conversation 129" {
 		t.Fatalf("last conversation comment = %+v", last)
@@ -241,21 +250,21 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		pipeline.Stages[0].Jobs[1].Steps != nil || pipeline.Stages[0].Jobs[2].LogsAvailable {
 		t.Fatalf("ListPRCIJobs = %+v", pipeline)
 	}
-	log, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "902"})
+	log, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "902"})
 	if err != nil || log.text != "\xef\xbb\xbflint failed" || log.etag == "" || log.status != http.StatusOK {
 		t.Fatalf("StreamCIJobLog = %+v, %v", log, err)
 	}
-	if again, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "902", ETag: log.etag}); err != nil || !again.notModified {
+	if again, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "902", ETag: log.etag}); err != nil || !again.notModified {
 		t.Fatalf("revalidated StreamCIJobLog = %+v, %v", again, err)
 	}
 	// A resume reads the rest of the blob from its offset.
-	if rest, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "902", From: 8}); err != nil || rest.status != http.StatusPartialContent || rest.offset != 8 || rest.text != "failed" || rest.etag != log.etag {
+	if rest, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "902", From: 8}); err != nil || rest.status != http.StatusPartialContent || rest.offset != 8 || rest.text != "failed" || rest.etag != log.etag {
 		t.Fatalf("resumed StreamCIJobLog = %+v, %v", rest, err)
 	}
-	if _, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "903"}); err == nil {
+	if _, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "903"}); err == nil {
 		t.Fatal("a queued job served a log")
 	}
-	if _, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "904"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
+	if _, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "904"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
 		t.Fatalf("withheld log error = %v, want ErrCIJobLogNotFound", err)
 	}
 
@@ -281,11 +290,11 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		}
 	}
 
-	data, name, err := r.core.FetchAttachment(t.Context(), ref, "https://github.com/user-attachments/assets/1a2b", 1<<20)
+	data, name, err := r.core.FetchAttachment(t.Context(), ref.Repository(), "https://github.com/user-attachments/assets/1a2b", 1<<20)
 	if err != nil || !bytes.Equal(data, pngBytes) || name != "1a2b" {
 		t.Fatalf("FetchAttachment = %d bytes %q, %v", len(data), name, err)
 	}
-	if _, _, err := r.core.FetchAttachment(t.Context(), ref, "https://github.com/user-attachments/assets/ffff", 1<<20); err == nil {
+	if _, _, err := r.core.FetchAttachment(t.Context(), ref.Repository(), "https://github.com/user-attachments/assets/ffff", 1<<20); err == nil {
 		t.Fatal("an unseeded attachment downloaded")
 	}
 
@@ -318,11 +327,11 @@ type streamedLog struct {
 
 // streamLog reads a job log through the core the way the CI log cache
 // does.
-func streamLog(t *testing.T, core *gitops.Core, ref gitops.PRReference, req gitops.CIJobLogRequest) (streamedLog, error) {
+func streamLog(t *testing.T, core *gitops.Core, repo gitops.RepoReference, req gitops.CIJobLogRequest) (streamedLog, error) {
 	t.Helper()
 	var out streamedLog
 	var body strings.Builder
-	notModified, err := core.StreamCIJobLog(t.Context(), ref, req, func(st gitops.CIJobLogStart) (io.Writer, error) {
+	notModified, err := core.StreamCIJobLog(t.Context(), repo, req, func(st gitops.CIJobLogStart) (io.Writer, error) {
 		out.status, out.etag, out.offset = st.Status, st.ETag, st.Offset
 		return &body, nil
 	})
@@ -357,24 +366,24 @@ func TestGitHubRunningJobLogThroughTheAppsForgeCode(t *testing.T) {
 		}
 	}
 
-	if r.core.CILogStreams(ref) {
+	if r.core.CILogStreams(ref.Repository()) {
 		t.Fatal("GitHub reports that it streams running logs")
 	}
-	if _, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "601"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
+	if _, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "601"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
 		t.Fatalf("running log before its blob exists: %v, want ErrCIJobLogNotFound", err)
 	}
 	reseed(func(job *forgefake.Job) { job.LogWithheld = false })
 	// The blob starts with the byte order mark GitHub writes; the CI log
 	// cache drops it.
-	first, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "601"})
+	first, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "601"})
 	if err != nil || first.text != "\xef\xbb\xbf2026-01-01T00:00:00.1000000Z Current runner version: '2.337.0'\n" || first.etag == "" {
 		t.Fatalf("running log = %+v, %v", first, err)
 	}
-	if same, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "601", ETag: first.etag}); err != nil || !same.notModified {
+	if same, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "601", ETag: first.etag}); err != nil || !same.notModified {
 		t.Fatalf("unchanged running log = %+v, %v; want NotModified", same, err)
 	}
 	reseed(func(job *forgefake.Job) { job.Log += "2026-01-01T00:00:01.2000000Z ##[group]Run make test\n" })
-	grown, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "601", ETag: first.etag})
+	grown, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "601", ETag: first.etag})
 	if err != nil || grown.notModified || grown.etag == first.etag || !strings.HasSuffix(grown.text, "##[group]Run make test\n") {
 		t.Fatalf("grown running log = %+v, %v", grown, err)
 	}
@@ -427,7 +436,7 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		ranged.Comments[0].AuthorLogin != "dave" || ranged.Comments[0].AuthorName != "Dave Jones" {
 		t.Fatalf("range thread = %+v", ranged)
 	}
-	if !outdated.IsOutdated || outdated.Side != "left" || *outdated.Line != 1 {
+	if !outdated.IsOutdated || outdated.Side != "left" || *outdated.Line != 1 || outdated.OriginalLine != nil {
 		t.Fatalf("outdated thread = %+v", outdated)
 	}
 	if last := threads[61]; last.Path != "" || last.IsResolvable || last.Comments[0].Body != "note 39" {
@@ -442,15 +451,15 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		pipeline.Stages[0].Name != "build" || pipeline.Stages[0].Jobs[0].DurationSeconds != 60 || pipeline.Stages[1].Jobs[0].ID != "12" {
 		t.Fatalf("ListPRCIJobs = %+v", pipeline)
 	}
-	log, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "11"})
+	log, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "11"})
 	if err != nil || log.text != "built" || log.etag == "" {
 		t.Fatalf("StreamCIJobLog = %+v, %v", log, err)
 	}
-	if again, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "11", ETag: log.etag}); err != nil || !again.notModified {
+	if again, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "11", ETag: log.etag}); err != nil || !again.notModified {
 		t.Fatalf("revalidated StreamCIJobLog = %+v, %v", again, err)
 	}
 	// A completed trace answers a resume from its offset.
-	if rest, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "11", From: 2}); err != nil || rest.status != http.StatusPartialContent || rest.offset != 2 || rest.text != "ilt" {
+	if rest, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "11", From: 2}); err != nil || rest.status != http.StatusPartialContent || rest.offset != 2 || rest.text != "ilt" {
 		t.Fatalf("resumed trace = %+v, %v", rest, err)
 	}
 	// The merge request read revalidates its ETag: a second read is a 304
@@ -463,22 +472,24 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	}) {
 		t.Fatal("the second merge request read was not a 304")
 	}
-	if _, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "13"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
+	if _, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "13"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
 		t.Fatalf("withheld trace error = %v, want ErrCIJobLogNotFound", err)
 	}
 	// A running trace arrives as the runner wrote it, section markers
 	// and all, for the CI log cache to clean and index; it ignores a
 	// resume's Range and answers whole.
-	if live, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "12"}); err != nil || live.text != gitlabSectionTrace {
+	if live, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "12"}); err != nil || live.text != gitlabSectionTrace {
 		t.Fatalf("running trace = %q, %v; want %q", live.text, err, gitlabSectionTrace)
 	}
-	if live, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "12", From: 10}); err != nil || live.status != http.StatusOK || live.text != gitlabSectionTrace {
+	if live, err := streamLog(t, r.core, ref.Repository(), gitops.CIJobLogRequest{JobID: "12", From: 10}); err != nil || live.status != http.StatusOK || live.text != gitlabSectionTrace {
 		t.Fatalf("resumed running trace = %d %q, %v; want the whole trace", live.status, live.text, err)
 	}
 
 	// One pump tick reads the merge request once and derives every part
 	// from it: approvals for the detail, discussions for the threads and
-	// the head pipeline's jobs for CI.
+	// the head pipeline's jobs for CI. The management read (an earlier
+	// read found the override, so it selects the mergeability checks)
+	// is the detail's one extra request.
 	before := len(r.engine.Invocations(0).Invocations)
 	read, err := r.core.ReadPR(t.Context(), ref, gitops.PRReadParts{Detail: true, Threads: true, CI: true}, nil, nil)
 	if err != nil {
@@ -494,7 +505,7 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		}
 		routes[inv.Route]++
 	}
-	if want := map[string]int{"glab api merge request": 1, "glab api approvals": 1, "glab api discussions": 1, "glab api pipeline jobs": 1}; !maps.Equal(routes, want) {
+	if want := map[string]int{"glab api merge request": 1, "glab api approvals": 1, "glab api discussions": 1, "glab graphql PipelineJobs": 1, "glab graphql PRManageChecks": 1}; !maps.Equal(routes, want) {
 		t.Fatalf("ReadPR requests = %v, want %v", routes, want)
 	}
 
@@ -504,7 +515,7 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		"https://gitlab.com/grp/sub/tool/-/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg",
 		"/-/project/4242/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg",
 	} {
-		data, name, err := r.core.FetchAttachment(t.Context(), ref, href, 1<<20)
+		data, name, err := r.core.FetchAttachment(t.Context(), ref.Repository(), href, 1<<20)
 		if err != nil || string(data) != svg || name != "diagram one.svg" {
 			t.Fatalf("FetchAttachment(%s) = %q %q, %v", href, data, name, err)
 		}
@@ -589,7 +600,7 @@ func TestPRReadsAddressTheReferencesHost(t *testing.T) {
 			t.Fatalf("%s ListPRCIJobs = %+v, %v", ref.Host, pipeline, err)
 		}
 	}
-	if _, _, err := r.core.FetchAttachment(t.Context(), refs[1], "/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg", 1<<20); err != nil {
+	if _, _, err := r.core.FetchAttachment(t.Context(), refs[1].Repository(), "/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg", 1<<20); err != nil {
 		t.Fatalf("self-hosted GitLab FetchAttachment: %v", err)
 	}
 	reads := r.engine.Invocations(0).Invocations
@@ -803,28 +814,18 @@ func TestCreatePROpensOneTheAppThenFinds(t *testing.T) {
 	}
 }
 
+// GitLab's discussion resolve is a call the fake does not implement: the
+// app's error carries the fake's report of the request.
 func TestUnimplementedInvocationSurfacesItsArgvToTheApp(t *testing.T) {
-	fixture := githubFixture()
-	fixture.Repos = append(fixture.Repos, gitlabFixture().Repos...)
-	r := newRig(t, fixture)
-	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}
-	err := r.core.ReplyToThread(t.Context(), ref, "", 99, "Body")
-	if err == nil || !strings.Contains(err.Error(), "unhandled http request") || !strings.Contains(err.Error(), "POST repos/acme/widgets/pulls/7/comments/99/replies") {
-		t.Fatalf("GitHub ReplyToThread error = %v, want the fake's unhandled report with the request", err)
-	}
+	r := newRig(t, gitlabFixture())
 	mr := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp/sub", Repo: "tool", Number: 3}
-	err = r.core.SetThreadResolved(t.Context(), mr, "abc", true)
+	err := r.core.SetThreadResolved(t.Context(), mr, "abc", true)
 	if err == nil || !strings.Contains(err.Error(), "unhandled http request") || !strings.Contains(err.Error(), "PUT projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc") {
 		t.Fatalf("GitLab SetThreadResolved error = %v, want the fake's unhandled report with the request", err)
 	}
 	log := r.engine.Invocations(0).Invocations
-	if len(log) != 2 {
+	if len(log) != 1 || !log[0].Unhandled || log[0].Via != forgefake.ViaHTTP || log[0].Method != "PUT" || log[0].Forge != "gitlab" {
 		t.Fatalf("recorded %+v", log)
-	}
-	for i, forge := range []string{"github", "gitlab"} {
-		if inv := log[i]; !inv.Unhandled || inv.Via != forgefake.ViaHTTP || inv.Forge != forge {
-			t.Fatalf("recorded %+v", log)
-		}
 	}
 }
 
@@ -931,4 +932,561 @@ func TestGitLabReplyLandsInTheThread(t *testing.T) {
 		return
 	}
 	t.Fatalf("thread missing from %+v", read.Threads)
+}
+
+// mergeRead reads ref's detail, events and threads through the app's
+// ReadPR, failing the test on an error.
+func mergeRead(t *testing.T, r *rig, ref gitops.PRReference) gitops.PRRead {
+	t.Helper()
+	read, err := r.core.ReadPR(t.Context(), ref, gitops.PRReadParts{Detail: true, Threads: true, Events: true, CI: true}, nil, nil)
+	if err != nil {
+		t.Fatalf("ReadPR %s: %v", ref.Project(), err)
+	}
+	return read
+}
+
+func blockerKinds(readiness gitops.MergeReadiness) []string {
+	out := []string{}
+	for _, blocker := range readiness.Blockers {
+		out = append(out, blocker.Kind)
+	}
+	return out
+}
+
+func eventKinds(events []gitops.ReviewEvent) []string {
+	out := []string{}
+	for _, event := range events {
+		out = append(out, event.Kind)
+	}
+	return out
+}
+
+// explained is err as the app explains it to the user.
+func explained(t *testing.T, ref gitops.PRReference, action gitops.ForgeAction, err error) *gitops.ForgeActionError {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s succeeded, want a forge refusal", action)
+	}
+	out, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(ref, action, err))
+	if !ok {
+		t.Fatalf("ExplainForgeError(%v) is not a ForgeActionError", err)
+	}
+	return out
+}
+
+func githubMergeFixture(ci string, reviews ...forgefake.Review) forgefake.Fixture {
+	return forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{
+		Forge: "github", Project: "acme/merge", ID: 5150,
+		Merge: &forgefake.RepoMerge{AutoMergeAllowed: true, DefaultMethod: "squash"},
+		Pulls: []forgefake.Pull{
+			{
+				Number: 9, Title: "Ship it", Author: "octo", HeadRef: "ship", HeadSHA: strings.Repeat("9", 40),
+				Readiness: &forgefake.Readiness{RequiredApprovals: 1, RequiredChecks: []string{"unit"}},
+				Reviews:   reviews,
+				CI: &forgefake.Pipeline{ID: 990, Jobs: []forgefake.Job{
+					{ID: 991, Name: "unit", Status: ci}, {ID: 992, Name: "lint", Status: "failed", Log: "lint"},
+				}},
+			},
+			{Number: 10, Title: "Behind", Author: "octo", HeadRef: "behind", HeadSHA: strings.Repeat("a", 40), Readiness: &forgefake.Readiness{Behind: true}},
+			{Number: 11, Title: "Drafty", Author: "octo", HeadRef: "drafty", Draft: true},
+			{Number: 12, Title: "Mine", Author: "alice", HeadRef: "mine"},
+		},
+	}}}
+}
+
+// The Merge section's GitHub reads and every action, through the app's
+// own adapters: each action changes what the next read answers, and a
+// stale head changes nothing.
+func TestGitHubMergeActionsThroughTheAppsForgeCode(t *testing.T) {
+	r := newRig(t, githubMergeFixture("running"))
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
+	ctx := forgeapi.WithInteractive(t.Context())
+	head := strings.Repeat("9", 40)
+
+	read := mergeRead(t, r, ref)
+	merge := read.Detail.Merge
+	if got := read.Detail.Readiness; got.State != gitops.MergeStateBlocked || !slices.Equal(blockerKinds(got), []string{"approvals", "checks"}) ||
+		got.Blockers[0].Text != "Needs 1 more approval" || got.Blockers[1].Text != "1 required check pending" {
+		t.Fatalf("blocked readiness = %+v", got)
+	}
+	if !slices.Equal(merge.Methods, []string{"squash", "merge", "rebase"}) || !merge.AutoMergeAvailable || !merge.ViewerCanMerge ||
+		!merge.ViewerCanApprove || merge.ViewerApproved || !merge.DeleteBranchOffered || merge.AutoMerge != nil {
+		t.Fatalf("merge options = %+v", merge)
+	}
+
+	// Approve: the viewer's approval counts, the approvals blocker goes,
+	// and the review is a timeline event.
+	if err := r.core.ApprovePR(ctx, ref, head); err != nil {
+		t.Fatalf("ApprovePR: %v", err)
+	}
+	read = mergeRead(t, r, ref)
+	if got := read.Detail.Readiness; !slices.Equal(blockerKinds(got), []string{"checks"}) || !read.Detail.Merge.ViewerApproved {
+		t.Fatalf("after approve: readiness %+v, merge %+v", got, read.Detail.Merge)
+	}
+	if kinds := eventKinds(read.Events); !slices.Equal(kinds, []string{"approved"}) || read.Events[0].ActorLogin != "alice" || read.Events[0].Ref != head {
+		t.Fatalf("after approve: events %+v", read.Events)
+	}
+
+	// Unapprove finds the approval itself (ViewerApproval) and dismisses it.
+	if err := r.core.UnapprovePR(ctx, ref); err != nil {
+		t.Fatalf("UnapprovePR: %v", err)
+	}
+	read = mergeRead(t, r, ref)
+	if got := read.Detail.Readiness; !slices.Equal(blockerKinds(got), []string{"approvals", "checks"}) || read.Detail.Merge.ViewerApproved {
+		t.Fatalf("after unapprove: readiness %+v, merge %+v", got, read.Detail.Merge)
+	}
+	if kinds := eventKinds(read.Events); !slices.Equal(kinds, []string{"review_dismissed"}) || read.Events[0].Ref != "alice" || read.Events[0].Text != "Approval withdrawn" {
+		t.Fatalf("after unapprove: events %+v", read.Events)
+	}
+	if err := r.core.UnapprovePR(ctx, ref); explained(t, ref, gitops.ActionUnapprove, err).Message != "You have no approval to withdraw." {
+		t.Fatalf("a second unapprove = %v", err)
+	}
+
+	// A merge now while blocked is GitHub's refusal; auto-merge arms.
+	if _, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "squash", HeadSHA: head}); explained(t, ref, gitops.ActionMerge, err).Kind != gitops.ForgeErrorRefused {
+		t.Fatalf("merge while blocked = %v", err)
+	}
+	outcome, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "squash", HeadSHA: head, AutoMerge: true})
+	if err != nil || !outcome.AutoMerge {
+		t.Fatalf("auto-merge = %+v, %v", outcome, err)
+	}
+	read = mergeRead(t, r, ref)
+	if armed := read.Detail.Merge.AutoMerge; armed == nil || armed.Method != "squash" || armed.ByLogin != "alice" || !armed.CanCancel || armed.At == "" ||
+		armed.WaitsFor != "required reviews and checks" {
+		t.Fatalf("armed auto-merge = %+v", armed)
+	}
+	if kinds := eventKinds(read.Events); kinds[len(kinds)-1] != "auto_merge_set" || read.Events[len(kinds)-1].Text != "squash" {
+		t.Fatalf("after auto-merge: events %+v", read.Events)
+	}
+	if err := r.core.CancelPRAutoMerge(ctx, ref); err != nil {
+		t.Fatalf("CancelPRAutoMerge: %v", err)
+	}
+	read = mergeRead(t, r, ref)
+	if read.Detail.Merge.AutoMerge != nil || eventKinds(read.Events)[len(read.Events)-1] != "auto_merge_canceled" {
+		t.Fatalf("after cancel: merge %+v, events %+v", read.Detail.Merge, read.Events)
+	}
+	// Auto-merge with an edited commit message sends it
+	// (EnableAutoMergeMessage); cancel it again.
+	edited := gitops.MergeMessage{Title: "Ship it (#9)", Body: "Edited."}
+	if outcome, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "squash", HeadSHA: head, AutoMerge: true, CommitMessage: &edited}); err != nil || !outcome.AutoMerge {
+		t.Fatalf("auto-merge with a message = %+v, %v", outcome, err)
+	}
+	if vars := decodeRaw(t, lastInvocation(t, r, "gh graphql EnableAutoMergeMessage").Variables); vars["commitHeadline"] != edited.Title || vars["commitBody"] != edited.Body {
+		t.Fatalf("EnableAutoMergeMessage variables = %v", vars)
+	}
+	if err := r.core.CancelPRAutoMerge(ctx, ref); err != nil {
+		t.Fatalf("CancelPRAutoMerge: %v", err)
+	}
+
+	// The checks pass and a reviewer approved: ready. A merge naming a
+	// head the pull no longer has is refused and changes nothing.
+	if _, err := r.engine.Seed(githubMergeFixture("success", forgefake.Review{Author: "bob", State: "APPROVED"})); err != nil {
+		t.Fatal(err)
+	}
+	if got := mergeRead(t, r, ref).Detail.Readiness; got.State != gitops.MergeStateReady {
+		t.Fatalf("ready readiness = %+v", got)
+	}
+	stale := explained(t, ref, gitops.ActionMerge, func() error {
+		_, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "merge", HeadSHA: strings.Repeat("8", 40)})
+		return err
+	}())
+	if stale.Kind != gitops.ForgeErrorStaleHead || stale.Message != "The branch moved after you loaded this pull request. Reload and try again." {
+		t.Fatalf("a stale head = %+v", stale)
+	}
+	if got := mergeRead(t, r, ref).Detail; got.State != "open" || got.Readiness.State != gitops.MergeStateReady {
+		t.Fatalf("after a stale merge: %+v", got)
+	}
+	outcome, err = r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "merge", HeadSHA: head, DeleteBranch: true})
+	if err != nil || !outcome.Merged || len(outcome.SHA) != 40 {
+		t.Fatalf("merge = %+v, %v", outcome, err)
+	}
+	read = mergeRead(t, r, ref)
+	if got := read.Detail; got.State != "merged" || got.Readiness.State != gitops.MergeStateMerged || got.MergedBy != "alice" || got.MergedAt == "" || got.ClosedAt == "" {
+		t.Fatalf("merged detail = %+v", got)
+	}
+	if kinds := eventKinds(read.Events); kinds[len(kinds)-1] != "merged" || read.Events[len(kinds)-1].Ref != outcome.SHA {
+		t.Fatalf("merged events = %+v", read.Events)
+	}
+	deleted := false
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		deleted = deleted || (inv.Route == "gh api delete branch" && inv.Status == 204 && inv.Path == "repos/acme/merge/git/refs/heads/ship")
+	}
+	if !deleted {
+		t.Fatal("the merge did not delete the head branch")
+	}
+
+	// Update branch moves a behind head; mark ready takes a draft out.
+	behind := ref
+	behind.Number = 10
+	if got := mergeRead(t, r, behind).Detail.Readiness; !slices.Equal(blockerKinds(got), []string{"rebase"}) {
+		t.Fatalf("behind readiness = %+v", got)
+	}
+	if err := r.core.UpdatePRBranch(ctx, behind, strings.Repeat("a", 40)); err != nil {
+		t.Fatalf("UpdatePRBranch: %v", err)
+	}
+	if got := mergeRead(t, r, behind).Detail; got.HeadSHA == strings.Repeat("a", 40) || got.Readiness.State != gitops.MergeStateReady {
+		t.Fatalf("after update: %+v", got)
+	}
+	draft := ref
+	draft.Number = 11
+	if got := mergeRead(t, r, draft).Detail.Readiness; got.State != gitops.MergeStateDraft {
+		t.Fatalf("draft readiness = %+v", got)
+	}
+	if err := r.core.MarkPRReady(ctx, draft); err != nil {
+		t.Fatalf("MarkPRReady: %v", err)
+	}
+	if read := mergeRead(t, r, draft); read.Detail.Draft || read.Detail.Readiness.State != gitops.MergeStateReady || !slices.Equal(eventKinds(read.Events), []string{"marked_ready"}) {
+		t.Fatalf("after mark ready: %+v, events %+v", read.Detail, read.Events)
+	}
+
+	// The author cannot approve: no Approve, the reason, and GitHub's 422.
+	mine := ref
+	mine.Number = 12
+	if got := mergeRead(t, r, mine).Detail.Merge; got.ViewerCanApprove || got.CannotApproveReason != "You cannot approve your own pull request." {
+		t.Fatalf("the author's merge options = %+v", got)
+	}
+	if err := r.core.ApprovePR(ctx, mine, strings.Repeat("0", 40)); explained(t, mine, gitops.ActionApprove, err).Kind != gitops.ForgeErrorRefused {
+		t.Fatalf("the author's approval = %v", err)
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
+		}
+	}
+}
+
+func gitlabMergeFixture(ci string, reviews ...forgefake.Review) forgefake.Fixture {
+	return forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{
+		Forge: "gitlab", Project: "grp/merge", ID: 6160,
+		Merge: &forgefake.RepoMerge{PipelineMustSucceed: true, DeleteBranchOnMerge: true},
+		Pulls: []forgefake.Pull{
+			{
+				Number: 4, Title: "Ship it", Author: "octo", HeadRef: "ship", HeadSHA: strings.Repeat("4", 40),
+				Readiness: &forgefake.Readiness{RequiredApprovals: 1},
+				Reviews:   reviews,
+				CI:        &forgefake.Pipeline{ID: 440, Jobs: []forgefake.Job{{ID: 441, Name: "unit", Status: ci}}},
+			},
+			{Number: 5, Title: "Draft: Drafty", Author: "octo", HeadRef: "drafty"},
+		},
+	}, {
+		Forge: "gitlab", Project: "grp/linear", ID: 6161,
+		Merge: &forgefake.RepoMerge{MergeMethod: "ff"},
+		Pulls: []forgefake.Pull{{Number: 1, Title: "Behind", Author: "octo", HeadRef: "behind", HeadSHA: strings.Repeat("b", 40), Readiness: &forgefake.Readiness{Behind: true}}},
+	}}}
+}
+
+// The Merge section's GitLab reads and every action, through the app's
+// own adapters.
+func TestGitLabMergeActionsThroughTheAppsForgeCode(t *testing.T) {
+	r := newRig(t, gitlabMergeFixture("running"))
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	ctx := forgeapi.WithInteractive(t.Context())
+	head := strings.Repeat("4", 40)
+
+	read := mergeRead(t, r, ref)
+	merge := read.Detail.Merge
+	if got := read.Detail.Readiness; got.State != gitops.MergeStateBlocked || !slices.Equal(blockerKinds(got), []string{"checks", "approvals"}) ||
+		got.Blockers[0].Text != "The pipeline is still running" || got.Blockers[1].Text != "Needs 1 more approval" {
+		t.Fatalf("blocked readiness = %+v", got)
+	}
+	if !slices.Equal(merge.Methods, []string{"merge", "squash"}) || !merge.AutoMergeAvailable || !merge.ViewerCanMerge || !merge.ViewerCanApprove ||
+		merge.ViewerApproved || !merge.DeleteBranchOffered || !merge.DeleteBranchDefault {
+		t.Fatalf("merge options = %+v", merge)
+	}
+
+	// An approval of a head that moved is GitLab's 409 and changes nothing.
+	stale := explained(t, ref, gitops.ActionApprove, r.core.ApprovePR(ctx, ref, strings.Repeat("0", 40)))
+	if stale.Kind != gitops.ForgeErrorStaleHead || stale.Message != "The branch moved after you loaded this. Reload and try again." {
+		t.Fatalf("a stale approval = %+v", stale)
+	}
+	if mergeRead(t, r, ref).Detail.Merge.ViewerApproved {
+		t.Fatal("a refused approval approved")
+	}
+	if err := r.core.ApprovePR(ctx, ref, head); err != nil {
+		t.Fatalf("ApprovePR: %v", err)
+	}
+	read = mergeRead(t, r, ref)
+	if got := read.Detail; !slices.Equal(blockerKinds(got.Readiness), []string{"checks"}) || !got.Merge.ViewerApproved || got.Merge.ViewerCanApprove || len(got.LatestReviews) != 1 {
+		t.Fatalf("after approve: %+v", got)
+	}
+	if kinds := eventKinds(read.Events); !slices.Equal(kinds, []string{"approved"}) || read.Events[0].ActorLogin != "alice" {
+		t.Fatalf("after approve: events %+v", read.Events)
+	}
+	if err := r.core.UnapprovePR(ctx, ref); err != nil {
+		t.Fatalf("UnapprovePR: %v", err)
+	}
+	read = mergeRead(t, r, ref)
+	if got := read.Detail; !slices.Equal(blockerKinds(got.Readiness), []string{"checks", "approvals"}) || got.Merge.ViewerApproved || !got.Merge.ViewerCanApprove {
+		t.Fatalf("after unapprove: %+v", got)
+	}
+	if kinds := eventKinds(read.Events); !slices.Equal(kinds, []string{"approved", "unapproved"}) {
+		t.Fatalf("after unapprove: events %+v", read.Events)
+	}
+
+	// Merge now is refused while blocked (405); auto-merge arms.
+	if _, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "merge", HeadSHA: head}); explained(t, ref, gitops.ActionMerge, err).Kind != gitops.ForgeErrorRefused {
+		t.Fatalf("merge while blocked = %v", err)
+	}
+	outcome, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "merge", HeadSHA: head, AutoMerge: true, DeleteBranch: true})
+	if err != nil || !outcome.AutoMerge {
+		t.Fatalf("auto-merge = %+v, %v", outcome, err)
+	}
+	read = mergeRead(t, r, ref)
+	if armed := read.Detail.Merge.AutoMerge; armed == nil || armed.Method != "merge" || armed.ByLogin != "alice" || !armed.CanCancel || armed.At == "" ||
+		armed.WaitsFor != "all merge checks for "+head+" pass" {
+		t.Fatalf("armed auto-merge = %+v", armed)
+	}
+	if err := r.core.CancelPRAutoMerge(ctx, ref); err != nil {
+		t.Fatalf("CancelPRAutoMerge: %v", err)
+	}
+	read = mergeRead(t, r, ref)
+	if read.Detail.Merge.AutoMerge != nil || !slices.Equal(eventKinds(read.Events), []string{"approved", "unapproved", "auto_merge_set", "auto_merge_canceled"}) {
+		t.Fatalf("after cancel: merge %+v, events %+v", read.Detail.Merge, read.Events)
+	}
+	if err := r.core.CancelPRAutoMerge(ctx, ref); explained(t, ref, gitops.ActionAutoMerge, err).Kind != gitops.ForgeErrorStaleHead {
+		// GitLab answers a cancel with nothing armed 409.
+		t.Fatalf("a second cancel = %v", err)
+	}
+
+	// The pipeline passed and a reviewer approved: ready, then merged.
+	if _, err := r.engine.Seed(gitlabMergeFixture("success", forgefake.Review{Author: "bob", State: "APPROVED"})); err != nil {
+		t.Fatal(err)
+	}
+	if got := mergeRead(t, r, ref).Detail.Readiness; got.State != gitops.MergeStateReady {
+		t.Fatalf("ready readiness = %+v", got)
+	}
+	outcome, err = r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "squash", HeadSHA: head, DeleteBranch: true})
+	if err != nil || !outcome.Merged || len(outcome.SHA) != 40 {
+		t.Fatalf("merge = %+v, %v", outcome, err)
+	}
+	read = mergeRead(t, r, ref)
+	if got := read.Detail; got.State != "merged" || got.Readiness.State != gitops.MergeStateMerged || got.MergedBy != "alice" || got.MergedAt == "" {
+		t.Fatalf("merged detail = %+v", got)
+	}
+	if kinds := eventKinds(read.Events); kinds[len(kinds)-1] != "merged" || read.Events[len(kinds)-1].Ref != outcome.SHA {
+		t.Fatalf("merged events = %+v", read.Events)
+	}
+
+	// Mark ready drops the title's draft prefix; a rebase moves the head.
+	draft := ref
+	draft.Number = 5
+	if got := mergeRead(t, r, draft).Detail; got.Readiness.State != gitops.MergeStateDraft || !got.Draft {
+		t.Fatalf("draft detail = %+v", got)
+	}
+	if err := r.core.MarkPRReady(ctx, draft); err != nil {
+		t.Fatalf("MarkPRReady: %v", err)
+	}
+	if read := mergeRead(t, r, draft); read.Detail.Draft || read.Detail.Title != "Drafty" || !slices.Equal(eventKinds(read.Events), []string{"marked_ready"}) {
+		t.Fatalf("after mark ready: %+v, events %+v", read.Detail, read.Events)
+	}
+	linear := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "linear", Number: 1}
+	if got := mergeRead(t, r, linear).Detail; !slices.Equal(blockerKinds(got.Readiness), []string{"rebase"}) || !slices.Equal(got.Merge.Methods, []string{"rebase", "squash"}) {
+		t.Fatalf("behind detail = %+v", got)
+	}
+	if err := r.core.UpdatePRBranch(ctx, linear, strings.Repeat("b", 40)); err != nil {
+		t.Fatalf("UpdatePRBranch: %v", err)
+	}
+	if got := mergeRead(t, r, linear).Detail; got.HeadSHA == strings.Repeat("b", 40) || got.Readiness.State != gitops.MergeStateReady {
+		t.Fatalf("after rebase: %+v", got)
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
+		}
+	}
+}
+
+// A GitHub review submit with line comments through the app's own code:
+// each comment is a thread of the viewer's on its line and side, a range
+// keeps its start, and nothing is unhandled.
+func TestGitHubSubmitReviewLineCommentsThroughTheAppsForgeCode(t *testing.T) {
+	r := newRig(t, githubMergeFixture("success"))
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
+	right, left, start := 3, 7, 5
+	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Two notes", Comments: []gitops.ReviewLineComment{
+		{Path: "a.go", Body: "nit", Line: &right, Side: "right"},
+		{Path: "b.go", Body: "range", Line: &left, Start: &gitops.ReviewLineStart{Line: start, Side: "left"}, Side: "left"},
+	}}
+	if _, err := r.core.SubmitReview(forgeapi.WithInteractive(t.Context()), ref, review); err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+	got := map[string]gitops.ReviewThread{}
+	for _, thread := range mergeRead(t, r, ref).Threads {
+		if len(thread.Comments) == 1 && thread.Comments[0].AuthorLogin == "alice" {
+			got[thread.Comments[0].Body] = thread
+		}
+	}
+	nit, rangeThread := got["nit"], got["range"]
+	if nit.Path != "a.go" || nit.Line == nil || *nit.Line != 3 || nit.Side != "right" {
+		t.Fatalf("nit = %+v", nit)
+	}
+	if rangeThread.Path != "b.go" || rangeThread.Line == nil || *rangeThread.Line != 7 || rangeThread.StartLine == nil || *rangeThread.StartLine != 5 || rangeThread.Side != "left" {
+		t.Fatalf("range = %+v", rangeThread)
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
+		}
+	}
+}
+
+// A GitLab review submit through the app's own code: one that fails after
+// creating its drafts deletes exactly those, by the ids GitLab returned,
+// and never the viewer's own pending draft with the same text; a retry
+// then publishes each comment once. A delete that fails too is said.
+func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabMergeFixture("running")
+	fixture.Repos[0].Pulls[0].DraftNotes = []forgefake.DraftNote{{ID: 9001, Author: "alice", Note: "LGTM"}}
+	fixture.Repos[0].Pulls[0].Diff = commentDiff
+	r := newRig(t, fixture)
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	ctx := forgeapi.WithInteractive(t.Context())
+	line := 3
+	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "LGTM", Comments: []gitops.ReviewLineComment{
+		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
+	}}
+	routes := func(since int) (created, deleted []string) {
+		for _, inv := range r.engine.Invocations(since).Invocations {
+			if inv.Unhandled {
+				t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
+			}
+			switch inv.Route {
+			case "glab api create draft note":
+				created = append(created, inv.Path)
+			case "glab api delete draft note":
+				deleted = append(deleted, inv.Path[strings.LastIndex(inv.Path, "/")+1:])
+			}
+		}
+		return created, deleted
+	}
+
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "glab api publish draft notes", Status: 422, Times: 1, Body: []byte(`{"message":"refused"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(r.engine.Invocations(0).Invocations)
+	if _, err := r.core.SubmitReview(ctx, ref, review); err == nil {
+		t.Fatal("SubmitReview succeeded through a refused publish")
+	} else if _, left := errors.AsType[*gitops.DraftsLeftError](err); left {
+		t.Fatalf("SubmitReview = %v, want its drafts removed", err)
+	}
+	created, deleted := routes(before)
+	if len(created) != 2 || len(deleted) != 2 || slices.Contains(deleted, "9001") {
+		t.Fatalf("created %v, deleted %v: want exactly the two created drafts deleted", created, deleted)
+	}
+
+	if _, err := r.core.SubmitReview(ctx, ref, review); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	bodies := map[string]int{}
+	for _, thread := range mergeRead(t, r, ref).Threads {
+		for _, comment := range thread.Comments {
+			bodies[comment.Body]++
+		}
+	}
+	// The viewer's own pending "LGTM" publishes with the review, as
+	// bulk_publish does on GitLab; nothing the failed submit made remains.
+	if bodies["nit"] != 1 || bodies["LGTM"] != 2 {
+		t.Fatalf("published comments = %v, want nit once and the two LGTMs", bodies)
+	}
+
+	for _, route := range []string{"glab api publish draft notes", "glab api delete draft note"} {
+		if err := r.engine.SetRefusal(forgefake.Refusal{Route: route, Status: 422, Body: []byte(`{"message":"refused"}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := r.core.SubmitReview(ctx, ref, review)
+	if left, ok := errors.AsType[*gitops.DraftsLeftError](err); !ok || left.Count != 2 {
+		t.Fatalf("SubmitReview with failing deletes = %v, want both drafts reported left", err)
+	}
+	if got := explained(t, ref, gitops.ActionReview, err); !strings.Contains(got.Message, "2 draft comments") || !strings.Contains(got.Message, "may still be pending") {
+		t.Fatalf("explained = %+v", got)
+	}
+}
+
+// A refusal the knob arms reaches the app as the forge's own: a token
+// without the scope is named in the sentence on both forges, and a 401 on
+// a mutation the login survives is GitLab refusing the action.
+func TestRefusalsReachTheAppsExplanations(t *testing.T) {
+	ctx := forgeapi.WithInteractive(t.Context())
+	gl := newRig(t, gitlabMergeFixture("running"))
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	if err := gl.engine.SetRefusal(forgefake.Refusal{Route: "glab api approve", Status: 403, Body: []byte(`{"error":"insufficient_scope","error_description":"The request requires higher privileges than provided by the access token.","scope":"api"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	refused := explained(t, ref, gitops.ActionApprove, gl.core.ApprovePR(ctx, ref, strings.Repeat("4", 40)))
+	if refused.Kind != gitops.ForgeErrorForbidden || !strings.Contains(refused.Message, "lacks the `api` scope") {
+		t.Fatalf("a scope refusal = %+v", refused)
+	}
+	if mergeRead(t, gl, ref).Detail.Merge.ViewerApproved {
+		t.Fatal("a refused approval approved")
+	}
+	if err := gl.engine.SetRefusal(forgefake.Refusal{Route: "glab api merge", Status: 401, Body: []byte(`{"message":"401 Unauthorized"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := gl.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "merge", HeadSHA: strings.Repeat("4", 40), AutoMerge: true})
+	if got := explained(t, ref, gitops.ActionMerge, err); got.Kind != gitops.ForgeErrorRefused || got.Message != "GitLab did not let you merge grp/merge!4." {
+		t.Fatalf("a refused merge = %+v (%v)", got, err)
+	}
+	if mergeRead(t, gl, ref).Detail.Merge.AutoMerge != nil {
+		t.Fatal("a refused auto-merge armed")
+	}
+
+	gh := newRig(t, githubMergeFixture("running"))
+	ghRef := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
+	if err := gh.engine.SetRefusal(forgefake.Refusal{Route: "gh api pull reviews", Status: 403, Header: map[string]string{"X-Accepted-OAuth-Scopes": "repo", "X-OAuth-Scopes": "read:org"}, Body: []byte(`{"message":"Resource not accessible by integration"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := explained(t, ghRef, gitops.ActionApprove, gh.core.ApprovePR(ctx, ghRef, strings.Repeat("9", 40))); got.Kind != gitops.ForgeErrorForbidden || !strings.Contains(got.Message, "lacks the `repo` scope") {
+		t.Fatalf("a GitHub scope refusal = %+v", got)
+	}
+	if err := gh.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql MergePR", Status: 200, Times: 1, Body: []byte(`{"data":{"mergePullRequest":null},"errors":[{"type":"UNPROCESSABLE","path":["mergePullRequest"],"message":"Head branch was modified. Review and try the merge again."}]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = gh.core.MergePR(ctx, ghRef, gitops.MergeRequest{Method: "merge", HeadSHA: strings.Repeat("9", 40)})
+	if got := explained(t, ghRef, gitops.ActionMerge, err); got.Kind != gitops.ForgeErrorStaleHead {
+		t.Fatalf("a GraphQL refusal = %+v", got)
+	}
+	for _, rig := range []*rig{gl, gh} {
+		for _, inv := range rig.engine.Invocations(0).Invocations {
+			if inv.Unhandled {
+				t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
+			}
+		}
+	}
+}
+
+// The detail's thread states and the timeline past their first page
+// (PRThreadStatesPage, PRTimelinePage): a base requiring conversation
+// resolution with the one unresolved thread past the first 100, and 150
+// events, read backwards.
+func TestGitHubReadsPastTheFirstPageThroughTheAppsForgeCode(t *testing.T) {
+	threads := manyThreads(105)
+	for i := range threads {
+		threads[i].Resolved = i != 104
+	}
+	events := make([]forgefake.Event, 150)
+	for i := range events {
+		events[i] = forgefake.Event{Kind: "review_requested", Ref: "bob", At: fmt.Sprintf("2026-01-01T00:%02d:%02dZ", i/60, i%60)}
+	}
+	r := newRig(t, forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{
+		Forge: "github", Project: "acme/long",
+		Pulls: []forgefake.Pull{{
+			Number: 4, Title: "Long", Author: "octo", HeadRef: "long",
+			Readiness: &forgefake.Readiness{ResolveThreads: true},
+			Threads:   threads, Events: events,
+		}},
+	}}})
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "long", Number: 4}
+	read, err := r.core.ReadPR(t.Context(), ref, gitops.PRReadParts{Detail: true, Events: true}, nil, nil)
+	if err != nil {
+		t.Fatalf("ReadPR: %v", err)
+	}
+	if got := read.Detail.Readiness; !slices.Contains(blockerKinds(got), "threads") {
+		t.Fatalf("readiness = %+v, want the unresolved thread past the first page to block", got)
+	}
+	if len(read.Events) != 150 || read.Events[0].At != events[0].At || read.Events[149].At != events[149].At {
+		t.Fatalf("events = %d, first %+v", len(read.Events), read.Events[0])
+	}
+	lastInvocation(t, r, "gh graphql PRThreadStatesPage")
+	lastInvocation(t, r, "gh graphql PRTimelinePage")
 }

@@ -34,6 +34,24 @@ type threadState struct {
 	// (the map's comma-ok).
 	openTurn    int
 	openTurnSet bool
+	// softClosedTurn is the turn a soft round close settled while its CLI
+	// turn's `result` is still to come (softClosedTurnSet).
+	// Parent content before the result continues it
+	// (reopenSoftClosedTurn); the result and every turn start clear it.
+	softClosedTurn    int
+	softClosedTurnSet bool
+	// selfWokenTurn is the open turn the CLI started with no command
+	// behind it (selfWokenTurnSet): a background-task notification, a
+	// scheduled wakeup or a peer session's message. No queued wake took
+	// it up, so it is never quiet (turnIsQuiet). The next turn opened
+	// clears it (setOpenTurn).
+	selfWokenTurn    int
+	selfWokenTurnSet bool
+	// turnStarting is non-nil while handleTurnStart runs, from before it
+	// writes the turns row until the open turn is set, and is closed
+	// when it returns. InterruptTurnIndex waits on it so an interrupt
+	// never samples the turn between its row and its open turn.
+	turnStarting chan struct{}
 
 	// interruptQueue holds persistence work deferred behind an active
 	// stream (invariant 11), drained once the thread stops streaming.
@@ -119,38 +137,31 @@ type threadState struct {
 	// can't leak its last-seen state into the next turn.
 	streamingPathRefsLast map[string]*streamingPathRefsState
 
-	// settledTurns marks turns whose handleTurnComplete has already run
-	// to completion (turns row UPDATE-d, streaming items settled). A
-	// second EventTurnComplete for a settled turn is the
-	// multi-result-per-turn wire pattern (Claude CLI synthesizes a
-	// `type:"user"` envelope from a task_notification → second `result`
-	// envelope) or the synthetic-truncate-then-real race; in either
-	// case the second handler invocation is a persistence no-op so
+	// settledTurns marks turns whose settlement has run (turns row
+	// UPDATE-d, streaming items settled): handleTurnComplete's, or the
+	// predecessor settle when the next turn starts. A later
+	// EventTurnComplete for a settled turn (the synthetic-truncate-then-
+	// real race) is a persistence no-op apart from its late payload, so
 	// the turns row isn't re-stamped. Cleared by setOpenTurn (so a
 	// re-init can re-settle the same turn) and by MarkThreadActive.
-	// Key = turnIndex.
+	// Key = turnIndex. The session has settled a turn when it is
+	// non-empty (sessionSettledATurn).
 	//
-	// Note: this gate operates at LOGICAL-TURN granularity. The
-	// frontend-facing `provider:turn_completed` emission is gated
-	// independently per WIRE ROUND via currentRound/takeOpenRound below —
-	// so a multi-result-per-turn cascade emits one turn_completed per
-	// `result` envelope while persistence stays at one settle per
-	// logical turn.
+	// This gate operates at LOGICAL-TURN granularity; the frontend-facing
+	// `provider:turn_completed` emission is gated per ROUND via
+	// currentRound/takeOpenRound below.
 	settledTurns map[int]bool
 
-	// currentRound names the active wire-round for the thread.
-	// Frontend `provider:turn_started` / `provider:turn_completed`
-	// emissions are gated per round via this slot — handleTurnStart and
-	// the re-round branch of handleInit allocate a fresh round id;
-	// handleTurnComplete reads-and-clears it via takeOpenRound. A wire
-	// round corresponds to one Claude `result` envelope (or one Codex
-	// `turn/completed`); a logical agent-overflow turn can span multiple
-	// rounds when Claude's CLI synthesizes a `type:"user"` envelope from
-	// a task_notification and the model issues another response. The
-	// per-round cadence is what drives the working indicator, Stop
-	// button, and composer-block state — all of which want "model is
-	// engaged right now" semantics rather than "user-typed prompt is in
-	// flight." Cleared by takeOpenRound (every wire complete).
+	// currentRound names the active round for the thread. Frontend
+	// `provider:turn_started` / `provider:turn_completed` emissions are
+	// gated per round via this slot: every turn start and reopenSoftClosedTurn
+	// allocate a fresh round id; handleTurnComplete reads-and-clears it
+	// via takeOpenRound. A round ends at a Claude soft close or `result`
+	// (or a Codex `turn/completed`), so a turn spans several when the
+	// model continues after a soft close. The per-round cadence drives
+	// the working indicator, Stop button, and composer-block state, all
+	// of which want "model is engaged right now" semantics rather than
+	// "user-typed prompt is in flight."
 	currentRound     ActiveTurnSnapshot
 	currentRoundOpen bool
 
@@ -162,6 +173,13 @@ type threadState struct {
 	// survive the session that produced it.
 	effectiveModel    string
 	effectiveModelSet bool
+
+	// announcedDeath is the id of the session_died notice this thread's
+	// session last announced on provider:session_died. It dedupes a
+	// replayed death whose notice the store refused, so no saved row can
+	// (handleSessionDied). Bound to the provider process: cleared when a
+	// replacement session starts (MarkThreadActive).
+	announcedDeath string
 
 	// tasks is the per-thread mirror of the Claude Task* family task
 	// list. Survives any number of Parser recreations within the process
@@ -313,23 +331,15 @@ type threadState struct {
 	// why neither value can be recovered lazily.
 	commandLifecycle map[string]commandLifecycleEntry
 
-	// workspacePath is a small read-through cache for the thread row's
-	// WorkspacePath, populated lazily by path-ref enrichment (the only hot
-	// caller). A thread's workspace is set at create time and effectively
-	// immutable, so the cache is safe without invalidation beyond session
-	// teardown. Without it, every assistant_text settle ran a SQLite
-	// GetThread JUST to read a stable string — fine on its own, but adds
-	// up across the 10-30 text blocks per heavy turn.
+	// workspacePath caches the directory the thread's provider process
+	// works in, for path-ref enrichment: every streaming text flush and
+	// every prose settle reads it, 10-30 times in a heavy turn. It is read
+	// from the thread row at first use, follows the process's own move
+	// (followWorkspaceChange), and is dropped when the process is replaced
+	// (MarkThreadActive) or the session is torn down. Every other checkout
+	// move restarts the session.
 	workspacePath    string
 	workspacePathSet bool
-
-	// revertedTurn marks a thread whose next provider:turn_completed
-	// emission should carry RevertedUserMessage=true. Set by the App
-	// layer's revert-on-interrupt path BEFORE it tears down the session;
-	// consumed (read-and-clear) when handleTurnComplete claims the round.
-	// Defensively cleared by clearOpenTurn too, so a stale flag never
-	// leaks into a future turn. See revert_marker.go.
-	revertedTurn bool
 
 	// usageEmitThrottle rate-limits provider:usage emissions to at most
 	// one per usageEmitMinInterval. The context-window meter changes
@@ -425,6 +435,9 @@ type threadIdentity struct {
 	// while a waiter still holds the old one, silently splitting the
 	// serialization domain.
 	anchorLock sync.Mutex
+	// allocLock is the thread's turn allocation lock (LockTurnAllocation).
+	// On the never-deleted identity for the same reason as anchorLock.
+	allocLock sync.Mutex
 	// drainLock serializes, PER THREAD, an interrupt-queue drain's full
 	// pop + persist span. r.mu alone covers only the map pop: a
 	// settle-goroutine drain releases it before persisting the handed-off
@@ -446,8 +459,8 @@ type threadIdentity struct {
 
 	// claimedFlushItems holds batch items mid-handoff between the
 	// queue delete in tryFlushQueue and the dispatcher's synchronous
-	// in-flight record. Folded into QueuedFlushItemCount so the
-	// revert-on-interrupt predicate sees a draining batch as queued →
+	// in-flight record. Folded into QueuedFlushItemCount so the App's
+	// pending-work count sees a draining batch as queued →
 	// claimed → in-flight, never invisible (round-14 close-out, C14-1),
 	// and into QueuedFlushItems so the same handoff cannot publish a
 	// queue_state_changed snapshot that omits the item — Zone 1 dropped

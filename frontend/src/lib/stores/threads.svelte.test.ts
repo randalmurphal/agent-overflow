@@ -3,6 +3,7 @@ import {
   getThreads,
   getThreadLiveActivityAt,
   refreshThreads,
+  replaceAllThreads,
   prependThread,
   prependThreadReply,
   removeThread,
@@ -11,6 +12,7 @@ import {
   replaceThread,
   touchThreadActivity,
   clearThreadGroupMembership,
+  dropThreadsForDetachedBackend,
 } from './threads.svelte';
 import type { Thread } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -31,6 +33,9 @@ import {
   getAgentWakeRows,
   resetThreadWakesForTest,
 } from './threadWakes.svelte';
+import * as replicaSession from '../replica/session';
+import { observeCatalogStamp, resetCatalogStampsForTest } from '../replica/catalogStamp';
+import { HOME_BACKEND } from '../transport/backendKey';
 import { applyThreadUpdated } from './eventsThreadRows';
 import { threadRowFrameMark } from './threadRowFrames';
 
@@ -91,6 +96,78 @@ describe('threads store', () => {
     });
   });
 
+  describe('rows as values', () => {
+    it('rejects a write into a stored row or into the list', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('t1'), makeThread('t2')]);
+      await refreshThreads();
+      updateThreadTitle('t2', 'Renamed');
+      const rows = getThreads() as Thread[];
+      // Both a row a read committed and a row a mutation replaced.
+      expect(() => { rows[0].title = 'written in place'; }).toThrow(TypeError);
+      expect(() => { rows[1].title = 'written in place'; }).toThrow(TypeError);
+      expect(() => { rows.push(makeThread('t3')); }).toThrow(TypeError);
+      expect(getThreads().map((t) => t.title)).toEqual([makeThread('t1').title, 'Renamed']);
+    });
+
+    it('stores its own copy of a reactive row a pane hands over', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('t1')]);
+      await refreshThreads();
+      const paneRow = $state(makeThread('draft'));
+
+      prependThread(paneRow);
+      expect(getThreads().map((t) => t.id)).toEqual(['draft', 't1']);
+      expect(getThreads()[0]).not.toBe(paneRow);
+      expect(getThreads()[0]).toEqual(makeThread('draft'));
+
+      // The pane writing to its row does not reach the catalog's copy.
+      paneRow.title = 'typed in the pane';
+      expect(getThreads()[0].title).toBe(makeThread('draft').title);
+
+      replaceThread(paneRow);
+      expect(getThreads()[0]).not.toBe(paneRow);
+      expect(getThreads()[0].title).toBe('typed in the pane');
+
+      // Rows the store already holds keep their identity across a change.
+      const kept = getThreads()[1];
+      updateThreadTitle('draft', 'renamed');
+      expect(getThreads()[1]).toBe(kept);
+    });
+
+    it('writes its catalog with a row cache, since its rows are values', async () => {
+      const write = vi.spyOn(replicaSession, 'putReplicaCatalog').mockResolvedValue(undefined);
+      observeCatalogStamp(HOME_BACKEND, 'threads', 'stamp');
+      setBindingMock('ListThreads', async () => [makeThread('t1')]);
+      await refreshThreads();
+      // The read writes its answer as it came; the store's writer follows
+      // with the rows it holds, and that is the write with the cache.
+      const cached = () => write.mock.calls.filter((call) => call[1] === 'threads' && call[5] instanceof WeakMap);
+      // An earlier test's write may still hold the spacing.
+      await vi.waitFor(() => expect(cached().length).toBeGreaterThan(0), { timeout: 4000 });
+      expect(cached()[0][2]).toEqual([makeThread('t1')]);
+      write.mockRestore();
+      resetCatalogStampsForTest();
+    });
+
+    it('keeps its own list when a caller hands over an array', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('t1'), makeThread('t2')]);
+      await refreshThreads();
+      // Rows the store already holds, in the caller's array.
+      const rows = [...getThreads()];
+      replaceAllThreads(rows);
+      expect(getThreads()).not.toBe(rows);
+      expect(getThreads()[0]).toBe(rows[0]);
+
+      // The caller's array stays the caller's: writable, and not the list.
+      rows.pop();
+      expect(getThreads().map((t) => t.id)).toEqual(['t1', 't2']);
+
+      const empty: Thread[] = [];
+      replaceAllThreads(empty);
+      empty.push(makeThread('late'));
+      expect(getThreads()).toEqual([]);
+    });
+  });
+
   describe('mutations', () => {
     it('prependThread puts new thread at the head', async () => {
       setBindingMock('ListThreads', async () => [makeThread('b'), makeThread('c')]);
@@ -111,6 +188,17 @@ describe('threads store', () => {
       expect(getThreads().map((t) => [t.id, t.title])).toEqual([['fresh', 'Named meanwhile'], ['b', 'Thread b']]);
       const later = threadRowFrameMark();
       expect(prependThreadReply(makeThread('fresh', { title: 'Reply' }), later).title).toBe('Reply');
+    });
+
+    it('prependThreadReply applies a ready fork answer over the preparing row a frame set', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('b')]);
+      await refreshThreads();
+      const mark = threadRowFrameMark();
+      applyThreadUpdated({ action: 'listed', thread: makeThread('fork', { forkPreparing: true }) });
+      const applied = prependThreadReply(makeThread('fork', { sessionRef: 'ready-session' }), mark);
+      expect(applied.forkPreparing ?? false).toBe(false);
+      expect(applied.sessionRef).toBe('ready-session');
+      expect(getThreads().map((t) => [t.id, t.forkPreparing ?? false])).toEqual([['fork', false], ['b', false]]);
     });
 
     it('removeThread drops the matching id and leaves others', async () => {
@@ -307,5 +395,15 @@ describe('standing agent state on removal', () => {
     await primeAgentState();
     replaceThread(agent(false));
     expectCleared();
+  });
+
+  it("keeps the assistant's state when its computer detaches", async () => {
+    await primeAgentState();
+    dropThreadsForDetachedBackend(['agent']);
+    expect(getThreads().some((t) => t.id === 'agent')).toBe(false);
+    expect(isAgentExpanded('agent')).toBe(false);
+    expect(isAgentDoneExpanded('agent')).toBe(true);
+    expect(getArchivedChildren('agent', 1)?.length).toBe(1);
+    expect(getAgentWakeRows('agent').length).toBe(1);
   });
 });

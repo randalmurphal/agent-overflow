@@ -55,7 +55,8 @@ func TestTerminateRefusesANonPID(t *testing.T) {
 // asked to survive SIGKILL on demand.
 func TestTerminateReportsAProcessThatSurvivedSIGKILL(t *testing.T) {
 	dataRoot := t.TempDir()
-	launched, err := Launch(context.Background(), fakeBackendOpts(t, "linger", dataRoot))
+	// The backend ignores SIGTERM, so the kill reaches a running process.
+	launched, err := Launch(context.Background(), fakeBackendOpts(t, "ignore-term", dataRoot))
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}

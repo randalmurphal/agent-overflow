@@ -63,10 +63,10 @@ mode. Every component must work in desktop and compact layouts.
   hover-revealed action carries `compact:opacity-100` (and
   `compact:pointer-events-auto` when hidden that way) or has a menu row.
 - Shared primitives carry the compact hit-target size (`IconButton`, `Button`,
-  `TranscriptDisclosureHeader`, `headerSegmentClasses`, `triggerClasses`,
-  `activityRailClasses`, `settings/styles.ts`). Size a control there, not per
-  call site. Text controls take `compact:select-none` so a long press opens
-  the menu instead of selecting the label.
+  `chipClasses`, `TranscriptDisclosureHeader`, `headerSegmentClasses`,
+  `triggerClasses`, `activityRailClasses`, `settings/styles.ts`). Size a
+  control there, not per call site. Text controls take `compact:select-none`
+  so a long press opens the menu instead of selecting the label.
 - A browser's Back runs the same ladder through the history sentinel in
   `utils/compactHistoryBack.svelte.ts`. "Away from root" is the layout
   store's screen plus the airspace registry; do not add a second surface list.

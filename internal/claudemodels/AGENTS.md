@@ -15,14 +15,19 @@ shipped list is served unmarked. An identity without an entry is served the
 newest entry learned from the same binary.
 
 The shipped catalog owns model names and context windows. The wire owns feature
-flags for rows it reports. Add wire-only models, deriving names from slugs and
-windows from the nearest catalog family. Without a match, use 200k and widen
-only when `[1m]` is explicit.
+flags for rows it reports. The shipped catalog never states fast-mode or
+auto-mode support, so a model has either only from a report: the current
+answer, or an earlier answer for the same identity that a later one omits. A
+row reporting the model without the flag, or `DropBinary`, withdraws it. Only
+an effort disagreement is drift. Add wire-only models, deriving names from
+slugs and windows from the nearest catalog family. Without a match, use 200k
+and widen only when `[1m]` is explicit.
 
 `Export` and `Seed` carry one identity's answer across a restart. `Export`
 returns the exact key's entry only, with no same-binary fallback; `Seed`
-rebuilds the models, learned models and wire rows `Store` would have produced
-from that snapshot, and an empty snapshot creates nothing. A seeded entry
+rebuilds the models, learned models (wire-only models and shipped models with
+reported flags) and wire rows `Store` would have produced from that snapshot,
+and an empty snapshot creates nothing. A seeded entry
 carries no drift report: dedup is per process, so each process's log keeps
 reporting a stale catalog. This package cannot see the filesystem, so the caller
 proves the record still describes the binary behind the key. The application

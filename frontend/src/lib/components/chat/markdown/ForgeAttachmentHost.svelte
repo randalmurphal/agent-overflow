@@ -161,6 +161,7 @@
 {#if error || decodeFailed}
   <span
     data-forge-attachment-error
+    data-find-skip
     class="inline-block rounded border border-error/40 bg-error/10 px-2 py-1 text-xs text-error"
     title={error}
   >
@@ -173,6 +174,7 @@
       target="_blank"
       rel="noopener noreferrer"
       data-forge-attachment-fallback
+      data-find-skip
     >
       open on {parsed?.pr.forge === 'gitlab' ? 'GitLab' : 'GitHub'}
     </a>
@@ -180,6 +182,7 @@
 {:else if loading || !resolved}
   <span
     data-forge-attachment-loading
+    data-find-skip
     class="inline-block rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-fg-hint"
     {@attach measureFirst}
   >
@@ -222,6 +225,7 @@
   <button
     type="button"
     data-forge-attachment-file
+    data-find-skip
     class="inline-flex max-w-full items-center gap-1.5 rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs hover:bg-surface-2"
     title={browserUrl ?? undefined}
     onclick={activate}

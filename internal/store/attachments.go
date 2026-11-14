@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 )
 
@@ -30,30 +31,95 @@ type Attachment struct {
 	// Rows written before the column existed default to `image`, which is
 	// what every attachment was.
 	Kind string `json:"kind"`
+	// Shell is set on a `file` attachment whose bytes are the output of a
+	// command the person ran from the composer (migration v147). The zero
+	// value means an ordinary file.
+	Shell AttachmentShell `json:"shell,omitzero"`
 }
 
-const attachmentColumns = `id, thread_id, filename, mime_type, size, relative_path, created_at, kind`
+// AttachmentShell describes the composer shell command whose combined
+// stdout and stderr a `file` attachment holds. A value type so Attachment
+// stays comparable; Command is never empty on a shell attachment.
+type AttachmentShell struct {
+	Command string `json:"command"`
+	// ExitCode is the command's own, or -1 when a signal or the timeout
+	// ended it.
+	ExitCode   int   `json:"exitCode"`
+	DurationMs int64 `json:"durationMs"`
+	// Truncated reports that the file holds the head and tail of a longer
+	// stream around an omission marker.
+	Truncated bool `json:"truncated,omitempty"`
+	TimedOut  bool `json:"timedOut,omitempty"`
+	// Preview is the first lines of the output, bounded, so a timeline row
+	// paints without reading the file.
+	Preview string `json:"preview,omitempty"`
+}
+
+// IsZero reports an attachment that is not a shell command's output.
+func (s AttachmentShell) IsZero() bool { return s.Command == "" }
+
+const attachmentColumns = `id, thread_id, filename, mime_type, size, relative_path, created_at, kind, shell`
 
 func scanAttachment(scanner interface{ Scan(...any) error }) (Attachment, error) {
 	var a Attachment
+	var shell sql.NullString
 	if err := scanner.Scan(
-		&a.ID, &a.ThreadID, &a.Filename, &a.MimeType, &a.Size, &a.RelativePath, &a.CreatedAt, &a.Kind,
+		&a.ID, &a.ThreadID, &a.Filename, &a.MimeType, &a.Size, &a.RelativePath, &a.CreatedAt, &a.Kind, &shell,
 	); err != nil {
 		return Attachment{}, err
 	}
+	if err := a.Shell.scan(shell); err != nil {
+		return Attachment{}, fmt.Errorf("attachment %s: %w", a.ID, err)
+	}
 	return a, nil
+}
+
+func (s *AttachmentShell) scan(column sql.NullString) error {
+	if !column.Valid || column.String == "" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(column.String), s); err != nil {
+		return fmt.Errorf("decode shell metadata: %w", err)
+	}
+	return nil
+}
+
+// column is the stored form: SQL NULL for an ordinary attachment.
+func (s AttachmentShell) column() (any, error) {
+	if s.IsZero() {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(s)
+	if err != nil {
+		return nil, fmt.Errorf("encode shell metadata: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// validateAttachment is the closed-set rule every writer of the table applies.
+func validateAttachment(a Attachment) error {
+	if a.Kind != AttachmentKindImage && a.Kind != AttachmentKindFile {
+		return fmt.Errorf("unknown kind %q", a.Kind)
+	}
+	if !a.Shell.IsZero() && a.Kind != AttachmentKindFile {
+		return fmt.Errorf("shell output must be a file attachment, not %q", a.Kind)
+	}
+	return nil
 }
 
 // InsertAttachment persists attachment metadata. The on-disk file must already
 // exist at RelativePath (resolved against the attachment root).
 func (s *Store) InsertAttachment(a Attachment) error {
-	if a.Kind != AttachmentKindImage && a.Kind != AttachmentKindFile {
-		return fmt.Errorf("store: insert attachment %s: unknown kind %q", a.ID, a.Kind)
+	if err := validateAttachment(a); err != nil {
+		return fmt.Errorf("store: insert attachment %s: %w", a.ID, err)
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO attachments (id, thread_id, filename, mime_type, size, relative_path, created_at, kind)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.ThreadID, a.Filename, a.MimeType, a.Size, a.RelativePath, a.CreatedAt, a.Kind,
+	shell, err := a.Shell.column()
+	if err != nil {
+		return fmt.Errorf("store: insert attachment %s: %w", a.ID, err)
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO attachments (`+attachmentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.ThreadID, a.Filename, a.MimeType, a.Size, a.RelativePath, a.CreatedAt, a.Kind, shell,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert attachment %s: %w", a.ID, err)
@@ -121,14 +187,17 @@ func (s *Store) GetAttachmentWithThumbnail(id string) (AttachmentWithThumbnail, 
 		`SELECT `+attachmentColumns+`, thumbnail_data, thumbnail_mime FROM attachments WHERE id = ?`, id,
 	)
 	var out AttachmentWithThumbnail
-	var thumbMime sql.NullString
+	var thumbMime, shell sql.NullString
 	if err := row.Scan(
-		&out.ID, &out.ThreadID, &out.Filename, &out.MimeType, &out.Size, &out.RelativePath, &out.CreatedAt, &out.Kind,
+		&out.ID, &out.ThreadID, &out.Filename, &out.MimeType, &out.Size, &out.RelativePath, &out.CreatedAt, &out.Kind, &shell,
 		&out.ThumbnailData, &thumbMime,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return AttachmentWithThumbnail{}, false, nil
 		}
+		return AttachmentWithThumbnail{}, false, fmt.Errorf("store: get attachment+thumbnail %s: %w", id, err)
+	}
+	if err := out.Shell.scan(shell); err != nil {
 		return AttachmentWithThumbnail{}, false, fmt.Errorf("store: get attachment+thumbnail %s: %w", id, err)
 	}
 	if out.ThumbnailData != nil && thumbMime.Valid {

@@ -1,8 +1,11 @@
 import { fireEvent, render } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
+import { SvelteSet } from 'svelte/reactivity';
 import ReviewConversationThread from './ReviewConversationThread.svelte';
 import { parseReviewFiles } from '../../utils/patchStore';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
+import { createEditorPreviews } from '../../stores/reviewEditorPreview.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import type { ReviewComment, ReviewThread } from '../../types/models';
 
 function comment(overrides: Partial<ReviewComment> = {}): ReviewComment {
@@ -10,7 +13,7 @@ function comment(overrides: Partial<ReviewComment> = {}): ReviewComment {
     authorLogin: 'octocat',
     body: 'First comment body.',
     createdAt: '2026-01-01T00:00:00Z',
-    databaseID: 1,
+    databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false,
     ...overrides,
   };
 }
@@ -33,17 +36,27 @@ function withReplies(count: number): ReviewComment[] {
   return [
     comment(),
     ...Array.from({ length: count }, (_, index) =>
-      comment({ authorLogin: `replier${index}`, body: `Reply number ${index + 1}.`, databaseID: index + 2 })),
+      comment({ authorLogin: `replier${index}`, body: `Reply number ${index + 1}.`, databaseID: index + 2, id: `n${index + 2}`, viewerCanEdit: false, viewerCanDelete: false })),
   ];
 }
 
-// Only the members the card reads. The fake is not reactive: a test that
-// needs another store state renders again.
+// Only the members the card reads. The fake is not reactive, except for
+// the open composers: a test that needs another store state renders again.
 function fakeReview(overrides: Partial<Record<keyof ReviewPaneState, unknown>> = {}) {
+  const open = new SvelteSet<string>();
   const review = {
+    replyOpen: vi.fn((id: string, surface: string) => open.has(`${surface}:${id}`)),
+    openReply: vi.fn((id: string, surface: string) => { open.add(`${surface}:${id}`); }),
+    closeReply: vi.fn((id: string, surface: string) => { open.delete(`${surface}:${id}`); }),
     files: [],
     isTurnActive: false,
     replyBodyFor: vi.fn(() => ''),
+    replyDraftsFor: vi.fn(() => []),
+    sentComments: { editBodyFor: () => null, confirmingDelete: () => false, pending: () => false, error: () => null },
+    sentCommentActions: false,
+    nowWithheldReason: null,
+    canHoldReply: false,
+    primaryCommentAction: 'now',
     replyErrorFor: vi.fn(() => null),
     sendingReply: vi.fn(() => false),
     resolvingThread: vi.fn(() => false),
@@ -54,6 +67,11 @@ function fakeReview(overrides: Partial<Record<keyof ReviewPaneState, unknown>> =
     setPRThreadResolved: vi.fn(async () => {}),
     setReplyBody: vi.fn(),
     sendPRThreadReply: vi.fn(async () => {}),
+    // A backend without suggestions and reactions.
+    reactions: { available: false, canAdd: false, withheld: null, reactionsOf: () => [], pending: () => false, error: () => null, toggle: vi.fn(), pickerOpen: () => false, setPickerOpen: vi.fn() },
+    suggestions: { available: false, withheld: null, pending: () => false, error: () => null, apply: vi.fn(), currentFile: () => null, threadSource: () => null, lineSource: () => null },
+    editorPreviews: createEditorPreviews(() => new Set(), HOME_BACKEND),
+    reactionsUnavailable: null,
     ...overrides,
   };
   return review;
@@ -71,18 +89,27 @@ function renderCard(t: ReviewThread, options: { inDiff?: boolean; review?: Retur
 }
 
 describe('<ReviewConversationThread> state', () => {
-  it('carries the thread state on data-state', () => {
-    const cases: [Partial<ReviewThread>, string][] = [
-      [{}, 'unresolved'],
-      [{ isResolved: true }, 'resolved'],
-      [{ isOutdated: true }, 'outdated'],
-      [{ isResolvable: false, path: '', line: null }, 'none'],
+  it('carries the thread state on data-state and outdated as a marker on data-outdated', () => {
+    const cases: [Partial<ReviewThread>, string, boolean][] = [
+      [{}, 'unresolved', false],
+      [{ isResolved: true }, 'resolved', false],
+      [{ isOutdated: true }, 'unresolved', true],
+      [{ isOutdated: true, isResolved: true }, 'resolved', true],
+      [{ isResolvable: false, path: '', line: null }, 'none', false],
     ];
-    for (const [overrides, state] of cases) {
-      const { card, unmount } = renderCard(thread(overrides));
-      expect(card.getAttribute('data-state')).toBe(state);
-      unmount();
+    for (const [overrides, state, outdated] of cases) {
+      const view = renderCard(thread(overrides));
+      expect(view.card.getAttribute('data-state')).toBe(state);
+      expect(view.card.getAttribute('data-outdated')).toBe(outdated ? 'true' : null);
+      expect(view.queryByTestId('review-thread-outdated') !== null).toBe(outdated);
+      view.unmount();
     }
+  });
+
+  it('names the line an outdated GitHub thread was written at', () => {
+    const view = renderCard(thread({ isOutdated: true, line: null, originalLine: 9 }));
+    expect(view.getByText('a.ts:9')).toBeTruthy();
+    expect(view.getByTestId('review-thread-outdated').getAttribute('title')).toBe('Written against an earlier revision, at line 9 then');
   });
 
   it('resolves a live thread from the footer', async () => {
@@ -103,10 +130,14 @@ describe('<ReviewConversationThread> state', () => {
     expect(view.review.setPRThreadResolved).toHaveBeenCalledWith(t, false);
   });
 
-  it('omits the resolve control when the thread is outdated or not resolvable', () => {
-    const outdated = renderCard(thread({ isOutdated: true }));
-    expect(outdated.queryByTestId('review-thread-resolve')).toBeNull();
-    outdated.unmount();
+  it('resolves an outdated thread: the code moved, the question is still open', async () => {
+    const t = thread({ isOutdated: true });
+    const view = renderCard(t);
+    await fireEvent.click(view.getByTestId('review-thread-resolve'));
+    expect(view.review.setPRThreadResolved).toHaveBeenCalledWith(t, true);
+  });
+
+  it('omits the resolve control when the thread is not resolvable', () => {
     const flat = renderCard(thread({ isResolvable: false, path: '', line: null }));
     expect(flat.queryByTestId('review-thread-resolve')).toBeNull();
   });
@@ -174,7 +205,7 @@ describe('<ReviewConversationThread> replies', () => {
   });
 
   it('says "1 reply" for a single reply', () => {
-    const view = renderCard(thread({ isOutdated: true, comments: withReplies(1) }));
+    const view = renderCard(thread({ isResolved: true, comments: withReplies(1) }));
     expect(view.getByTestId('review-conversation-replies').textContent).toContain('1 reply');
     expect(view.getByTestId('review-conversation-replies').textContent).not.toContain('replies');
   });
@@ -212,13 +243,14 @@ describe('<ReviewConversationThread> reply composer', () => {
     await fireEvent.click(view.getByTestId('review-thread-reply'));
     await fireEvent.click(view.getByText('Cancel'));
     expect(view.queryByTestId('review-thread-composer')).toBeNull();
+    expect(view.review.closeReply).toHaveBeenCalledWith('t1', 'conversation');
     await fireEvent.click(view.getByTestId('review-thread-reply'));
     await fireEvent.keyDown(view.container.querySelector('textarea')!, { key: 'Escape' });
     expect(view.queryByTestId('review-thread-composer')).toBeNull();
   });
 
-  it('mounts with the composer open when a draft survived', () => {
-    const review = fakeReview({ replyBodyFor: vi.fn(() => 'half a reply') });
+  it('mounts with the composer open when the store kept it open', () => {
+    const review = fakeReview({ replyBodyFor: vi.fn(() => 'half a reply'), replyOpen: vi.fn(() => true) });
     const view = renderCard(thread(), { review });
     expect(view.container.querySelector('textarea')!.value).toBe('half a reply');
   });
@@ -258,5 +290,17 @@ describe('<ReviewConversationThread> code context', () => {
       expect(view.queryByTestId('review-thread-context')).toBeNull();
       view.unmount();
     }
+  });
+});
+
+describe('the card header', () => {
+  it('keeps the state chip at its right edge, the comment actions\' slot left of it', () => {
+    const review = fakeReview({ sentCommentActions: true });
+    const mine = comment({ viewerCanEdit: true, viewerCanDelete: true });
+    const view = render(ReviewConversationThread, { review: review as unknown as ReviewPaneState, thread: thread({ comments: [mine] }), inDiff: false });
+    const header = view.container.querySelector('[data-first-comment]')!;
+    const children = [...header.children];
+    expect(children.at(-1)?.getAttribute('data-testid')).toBe('review-thread-state');
+    expect(children.at(-2)?.getAttribute('data-testid')).toBe('review-comment-actions');
   });
 });

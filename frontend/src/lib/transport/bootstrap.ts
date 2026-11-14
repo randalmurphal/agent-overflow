@@ -33,7 +33,7 @@ import { fetchPairedComputer, hasPairedSession, observePairedComputerBootstrap, 
 import type { BackendDescriptor } from './backends';
 import { computerResponseURL } from './computerRoutes';
 import type { ComputerRoute } from './computerRoute';
-import { awaitInjectedPageTicket, clearInjectedPageTicket, isWebviewHosted } from './pageHost';
+import { awaitInjectedPageTicket, clearInjectedPageTicket, isWebviewHosted, setHostWindowFromBootstrap } from './pageHost';
 import { credentialsForUrl, homeOriginParts, homeUrl, originPartsOf } from './homeEndpoint';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { isNativeShell } from '../native/platform';
@@ -177,6 +177,8 @@ export interface Bootstrap {
    * ./harnessMode.ts.
    */
   harness?: boolean;
+  /** This page is the host's own window (./pageHost.ts isHostWindow). */
+  hostWindow?: boolean;
   pageMarker?: string;
   /**
    * The backend has a canonical domain, so it can run passkey ceremonies
@@ -356,6 +358,7 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   // over loopback IS the owner's screen, and a page served over the
   // network holds only what it paired for. Published before the harness
   // latch below, which reads it at arm time.
+  setHostWindowFromBootstrap(data.hostWindow === true);
   setPageGrantsFromBootstrap(data.remote);
   setHarnessPageMarkerFromBootstrap(data.pageMarker);
   setPasskeysAvailableFromBootstrap(data.passkeysAvailable === true);

@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/settings"
 )
 
@@ -553,18 +554,22 @@ func TestSelectedClaudeUsageRefreshRejectsADifferentAccount(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
-	rotated := `{"claudeAiOauth":{"accessToken":"someone-else"}}`
+	// The CLI reports the selected account (its identity record is stale);
+	// the token it now holds is the intruder's, which only the profile
+	// endpoint can tell.
+	intruderToken := claudefake.AccessToken("intruder@example.com", "org-intruder", "1")
+	rotated := `{"claudeAiOauth":{"accessToken":"` + intruderToken + `","scopes":["user:inference","user:profile"]}}`
 	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
 
 	canonical, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Claude))
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary := writeClaudeRefreshMockBinary(t, canonical, rotated, "intruder@example.com")
+	binary := writeClaudeRefreshMockBinary(t, canonical, rotated, "selected@example.com")
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	app.rateLimitProbeClientOverride = expiringUsageClient(t, "someone-else")
+	app.rateLimitProbeClientOverride = expiringUsageClient(t, intruderToken)
 
 	err = app.refreshProviderAccountUsage(
 		context.Background(),

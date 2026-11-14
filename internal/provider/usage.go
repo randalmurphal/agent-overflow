@@ -52,6 +52,14 @@ func (s FastModeStatus) IsZero() bool {
 	return s.State == "" && s.DisabledReason == ""
 }
 
+// TurnOpener names what opened a provider turn; see SessionInfo.TurnOpener.
+type TurnOpener string
+
+const (
+	TurnOpenerCommand         TurnOpener = "command"
+	TurnOpenerInternalCommand TurnOpener = "internal-command"
+)
+
 // SessionInfo contains metadata from the provider init/handshake.
 type SessionInfo struct {
 	SessionID  string      `json:"sessionId"`
@@ -84,6 +92,14 @@ type SessionInfo struct {
 	// value, not an absence: the echo exists so a settings-source style AO
 	// never sent can still be seen. No other provider has the concept.
 	OutputStyle string `json:"outputStyle,omitempty"`
+	// TurnOpener is what opened the Claude CLI turn this init announces:
+	// TurnOpenerCommand when a stdin message's `command_lifecycle started`
+	// preceded the init, TurnOpenerInternalCommand when that message is a
+	// command AO issued on its own (`SendOptions.InternalCommand`). Empty
+	// means no message opened it: the CLI started the turn itself (a
+	// background-task wake, a scheduled wakeup), the session is attaching,
+	// or the CLI predates `command_lifecycle`.
+	TurnOpener TurnOpener `json:"turnOpener,omitempty"`
 	// MCPServerErrors reports servers the provider REFUSED at startup.
 	// Claude emits it as `system/init.mcp_server_errors` (2.1.237). The
 	// affected names are ABSENT from MCPServers — that is the whole point
@@ -144,12 +160,15 @@ type MCPServer struct {
 // OrgID / OrgName carry the organization (Claude) or ChatGPT workspace
 // (Codex) behind the login. One email can hold a separate login per
 // organization, so email alone cannot key an account. Neither field is
-// guaranteed: Claude's probe wire carries only the display name (the
-// uuid lives in `~/.claude.json`'s oauthAccount and is enriched at
-// adoption time), Codex's `account/read` carries neither (the id is
-// parsed out of `auth.json` where the caller holds those bytes), and
-// API-key auth has no organization at all. Blank means UNKNOWN, never
-// "no organization" — matching must treat it as compatible with any.
+// guaranteed: a Claude identity is replaced at adoption by the OAuth
+// profile answer for the credential's own token (the probe wire carries
+// only the display name, read from a shared config record that can
+// describe another login), Codex's `account/read` carries only the
+// workspace name, from 0.166 (the id is parsed out of `auth.json` where the
+// caller holds those bytes), and API-key auth has no organization at all.
+// A blank OrgID is UNKNOWN, never "no organization", and matching treats it
+// as compatible with any. A blank OrgName is unknown too, except under
+// OrgNameReported.
 type AccountInfo struct {
 	Email            string `json:"email,omitempty"`
 	DisplayName      string `json:"displayName,omitempty"`
@@ -158,6 +177,11 @@ type AccountInfo struct {
 	APIProvider      string `json:"apiProvider,omitempty"`
 	OrgID            string `json:"orgId,omitempty"`
 	OrgName          string `json:"orgName,omitempty"`
+	// OrgNameReported marks an answer that states the organization name
+	// whenever the login has one, so a blank OrgName means "none" rather
+	// than "unknown" and clears a saved name. Only Codex sets it, on a
+	// successful chatgpt account/read that names the login.
+	OrgNameReported bool `json:"-"`
 }
 
 // TokenUsage tracks per-turn token/cost accounting. Values are per-turn

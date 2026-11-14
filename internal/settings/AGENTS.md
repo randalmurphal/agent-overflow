@@ -7,7 +7,7 @@ Remote-access behavior and residency are specified in [remote access](../../docs
 ## Storage and mutation
 
 - `Service.mutate` is the only persisted-write path. It loads current state, applies one mutation, validates, routes changed keys by tier, writes, updates the cache, releases the lock, then notifies observers.
-- A no-op mutation emits nothing. Observer callbacks run outside the lock.
+- A no-op mutation emits nothing. Observer callbacks run outside the lock, so they can run out of order; each changing write takes the next `Revision`, carried on its `TierChange`s, for observers that must order writes.
 - File and SQLite writes are not one transaction. Return partial-write errors and emit no success notification.
 - Sparse JSON omission is part of forward-compatible defaults. Do not serialize resolved defaults into the host file.
 - `tier.go` is a total routing table. Every new key needs a host, user, or device tier and completeness coverage.
@@ -48,6 +48,7 @@ Remove a retired setting from validation, residency, generated defaults, binding
 - `claudesession.go`, `claudecrosssession.go`: Claude-only session axes and live reconciliation inputs.
 - `network.go`: LAN, domain/TLS, tailnet, and configured preview ports. Validate independent halves independently.
 - `spinner.go`: custom verbs, animation exclusions, and compaction selection.
+- `voice.go`: the OpenAI API dictation options and their bounds, OpenAI's vocabulary restated (pinned by `internal/openai`'s tests).
 - `notifycue.go`: the notification-cue value rule, the one authority for the built-in names plus the `custom:<id>` form the frontend mirrors.
 - `classdefaults.go`, `residency.go`, `tier.go`: storage routing and per-screen resolution.
 - `gendefaults.go`: Go-to-frontend default generation.

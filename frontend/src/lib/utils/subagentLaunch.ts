@@ -425,9 +425,10 @@ export interface ClaudeResumeCarrierIdentity {
   /** The ORIGINAL agent's model ('' when unstamped). */
   model: string;
   /**
-   * The effort slug this resumed round runs at: the effort the original
-   * launch named, else the carrier's own `inherited_effort`, its sender's
-   * effort at resume time ('' when unknown).
+   * The effort slug this resumed round runs at: the carrier's `run_effort`,
+   * which the round's request reported, else the effort the original
+   * launch named, else the carrier's own `inherited_effort` ('' when
+   * unknown).
    */
   effort: string;
   /** Higher tiers the sender may have been at instead of `effort`. */
@@ -463,8 +464,9 @@ export function claudeResumeCarrierIdentity(item: Item): ClaudeResumeCarrierIden
     typeof meta?.subagent_effort === 'string' ? meta.subagent_effort.trim() : '';
   const inheritedEffort =
     typeof meta?.inherited_effort === 'string' ? meta.inherited_effort.trim() : '';
-  const effort = knownEffort(namedEffort) ?? inheritedEffort;
-  const effortAlternatives = namedEffort ? [] : readEffortAlternatives(meta);
+  const ran = typeof meta?.run_effort === 'string' ? meta.run_effort.trim() : undefined;
+  const effort = ran ?? knownEffort(namedEffort) ?? inheritedEffort;
+  const effortAlternatives = ran !== undefined || namedEffort ? [] : readEffortAlternatives(meta);
   let description =
     typeof meta?.description === 'string' ? meta.description.trim() : '';
   if (!description) {

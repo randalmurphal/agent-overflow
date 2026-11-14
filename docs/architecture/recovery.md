@@ -115,13 +115,14 @@ frontend.
 
 ## Rollback and Recovery
 
-Conversation rollback (fork-from-message and the Stop/Esc
-revert-on-interrupt, shared saga in `app_conversation_rollback.go`)
-interacts with this machinery:
+Conversation rollback (fork-from-message and edit-and-resend, whose
+destructive tail is `app_conversation_rollback.go`) interacts with this
+machinery:
 
-- Codex calls `thread/rollback` on the live or a temp resumed session
-  (`rollbackCodexThreadToMessage`). `session_ref` stays valid. Rolling
-  back to turn 0 clears `session_ref` and starts fresh instead.
+- Codex calls `thread/revert` on the live or a temp resumed session
+  where supported, keeping `session_ref`, and otherwise `thread/fork`,
+  repointing it (`rollbackCodexThreadToMessage`). Rolling back to turn 0
+  clears `session_ref` and starts fresh instead.
 - Claude has no wire-level rollback, so
   `rollbackClaudeThreadToMessage` writes a sliced copy of the session
   JSONL (`internal/provider/claude/sessionfork`) and points

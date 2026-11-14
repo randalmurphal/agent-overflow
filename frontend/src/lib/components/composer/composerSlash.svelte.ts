@@ -52,6 +52,11 @@ export interface ComposerSlashOptions {
    * pane was mounted first.
    */
   getPane: () => ThreadPane;
+  /**
+   * True while the text is a shell command (a leading `!` the host runs).
+   * A `/` in a command is a path, so no completion level opens over it.
+   */
+  isShellInput?: () => boolean;
 }
 
 interface OpenTrigger {
@@ -230,7 +235,9 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
     const review = interceptedNames.has('review')
       ? detectReviewTargetTrigger(value, caret)
       : null;
-    const next: OpenTrigger | null = review
+    const next: OpenTrigger | null = opts.isShellInput?.()
+      ? null
+      : review
       ? { level: 'review', ...review, atStart: true }
       : (() => {
           const command = detectCommandTrigger(value, caret);

@@ -44,7 +44,7 @@
   // post-settle summary overwrite; see threadStreamingReveal.svelte.ts).
   // When expanded the clamp, anchor, and window are all dropped (plain
   // `block`; full text flows to full height).
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { motionReduced } from '../../utils/reducedMotion';
   import { slideDecision, stepSlide, type SlideObservation } from './tailSlide';
   import {
@@ -53,6 +53,7 @@
     TAIL_WINDOW_KEEP_LINES,
     TAIL_WINDOW_MEASURE_RETRY_CHARS,
     TAIL_WINDOW_MIN_KEEP_CHARS,
+    heightAbove,
     isMonotonicAppend,
     measuredLineStartOffset,
     newlineCutOffset,
@@ -89,6 +90,8 @@
   // summary when the retained tail is dropped, and resets the window)
   // and for throttling failed measurements. Stream offsets.
   let prevEnd = 0;
+  /** Stream offset the text node rendered from after the last update. */
+  let prevNodeStart = 0;
   let prevLastCharCode = 0;
   let cutFirstCharCode = 0;
   let measureFloor = 0;
@@ -123,6 +126,22 @@
   let slideOffset = 0;
   let slideFrame = 0;
   let slideLastTs = 0;
+  // An update whose rendered start advanced (the window's own cut, or the
+  // source window's start moving past it) removes height from above the
+  // box in the frame of the text that landed, so the observer sees the
+  // lines that landed less the lines removed, and a cut that removes
+  // exactly what landed changes no size and wakes no observer. The height
+  // removed is read in two parts, each where the rows still exist: the
+  // rows the source dropped (its start moving past the rendered start)
+  // on the layout before the update (`overtakenPx`, the pre-effect), and
+  // the rows the window's own cut drops as the inner's height with the
+  // appended text rendered from the previous start, read before the cut
+  // applies, less its height once the DOM shows the cut (settleCut).
+  // Heights rather than character rectangles: an append that completes a
+  // word at the right margin carries the previous last character onto
+  // the new row with it, so no character marks the previous end's row.
+  let slideCut: { preCutH: number; overtakenPx: number } | null = null;
+  let overtakenPx = 0;
 
   function applySlide(inner: HTMLElement): void {
     inner.style.transform = slideOffset > 0 ? `translateY(${slideOffset}px)` : '';
@@ -152,6 +171,32 @@
     }
   }
 
+  function observeSlide(inner: HTMLElement, next: SlideObservation, removedPx = 0): void {
+    const decision = slideDecision(slideMemory, next, slideOffset, removedPx);
+    slideMemory = decision.memory;
+    if (decision.kind === 'clear') {
+      clearSlide();
+      return;
+    }
+    // Gate checked after the baseline update so a low-power toggle
+    // mid-stream leaves the geometry bookkeeping calibrated.
+    if (decision.kind !== 'slide' || motionReduced()) return;
+    startSlide(inner, decision.startPx);
+  }
+
+  // After the DOM shows a cut: decide from the geometry as it is now, with
+  // the height the cut removed. The observer's later delivery, if any,
+  // sees the same sizes and does nothing.
+  function settleCut(): void {
+    const pending = slideCut;
+    slideCut = null;
+    if (!pending || !innerEl || !el || slideMemory === null) return;
+    const inner = innerEl.getBoundingClientRect();
+    const outer = el.getBoundingClientRect();
+    const removed = pending.overtakenPx + pending.preCutH - inner.height;
+    observeSlide(innerEl, { innerH: inner.height, innerW: inner.width, outerH: outer.height }, Math.max(0, removed));
+  }
+
   $effect(() => {
     const inner = innerEl;
     const outer = el;
@@ -178,20 +223,7 @@
       const innerSize = sizes.get(inner);
       const outerSize = sizes.get(outer);
       if (!innerSize || !outerSize) return;
-      const decision = slideDecision(
-        slideMemory,
-        { innerH: innerSize.h, innerW: innerSize.w, outerH: outerSize.h },
-        slideOffset,
-      );
-      slideMemory = decision.memory;
-      if (decision.kind === 'clear') {
-        clearSlide();
-        return;
-      }
-      // Gate checked after the baseline update so a low-power toggle
-      // mid-stream leaves the geometry bookkeeping calibrated.
-      if (decision.kind !== 'slide' || motionReduced()) return;
-      startSlide(inner, decision.startPx);
+      observeSlide(inner, { innerH: innerSize.h, innerW: innerSize.w, outerH: outerSize.h });
     });
     ro.observe(inner);
     ro.observe(outer);
@@ -211,7 +243,7 @@
   // wants — later changes are the effect's job.
   const initialText = untrack(() => displayText);
   if (!untrack(() => expanded) && initialText.length > TAIL_WINDOW_CAP_CHARS) {
-    const initialCut = newlineCutOffset(initialText, 0, TAIL_WINDOW_MIN_KEEP_CHARS);
+    const initialCut = newlineCutOffset(initialText, 0, TAIL_WINDOW_MIN_KEEP_CHARS, TAIL_WINDOW_KEEP_LINES);
     if (initialCut !== null) {
       cutOffset = untrack(() => textStart) + initialCut;
       cutFirstCharCode = initialText.charCodeAt(initialCut);
@@ -223,6 +255,21 @@
   const renderedFrom = $derived(Math.max(0, cutOffset - textStart));
   const rendered = $derived(expanded || renderedFrom === 0 ? displayText : displayText.slice(renderedFrom));
 
+  // Before the DOM update of an append whose source start moved past the
+  // rendered start: the text node still renders the previous window, so
+  // the rows the source dropped are measurable here and nowhere later.
+  $effect.pre(() => {
+    const t = displayText;
+    const start = textStart;
+    overtakenPx = 0;
+    const node = innerEl?.firstChild;
+    if (!el || !(node instanceof Text) || untrack(() => expanded) || start <= prevNodeStart) return;
+    const renderedCut = untrack(() => cutOffset);
+    if (!isMonotonicAppend(t, start, prevEnd, prevLastCharCode, renderedCut, cutFirstCharCode)) return;
+    const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight);
+    overtakenPx = heightAbove(node, start - prevNodeStart, lineHeight) ?? 0;
+  });
+
   // Depends on `displayText`, `textStart` and `expanded`. `cutOffset` reads go
   // through `untrack` so the effect's own cut writes can't re-trigger it.
   $effect(() => {
@@ -230,6 +277,8 @@
     const start = textStart;
     const end = start + t.length;
     const renderedCut = untrack(() => cutOffset);
+    const overtaken = overtakenPx;
+    overtakenPx = 0;
     let cut = renderedCut;
 
     const appended = isMonotonicAppend(t, start, prevEnd, prevLastCharCode, cut, cutFirstCharCode);
@@ -242,6 +291,7 @@
       // swap shape the RO cannot see). The expanded flip needs no arm
       // here: it moves the clamp box, and the RO watches the box.
       slideMemory = null;
+      slideCut = null;
       clearSlide();
     } else if (cut < start) {
       cut = start;
@@ -250,7 +300,7 @@
     prevLastCharCode = t.length > 0 ? t.charCodeAt(t.length - 1) : 0;
 
     if (!expanded && end - cut > TAIL_WINDOW_CAP_CHARS) {
-      const nlCut = newlineCutOffset(t, cut - start, TAIL_WINDOW_MIN_KEEP_CHARS);
+      const nlCut = newlineCutOffset(t, cut - start, TAIL_WINDOW_MIN_KEEP_CHARS, TAIL_WINDOW_KEEP_LINES);
       if (nlCut !== null) {
         cut = start + nlCut;
       } else if (cut === Math.max(renderedCut, start) && end >= measureFloor) {
@@ -270,11 +320,22 @@
       }
     }
 
+    // A rendered start that advanced removes height from above the box in
+    // the same frame as the text that landed. The text node still renders
+    // the appended text from the previous start here (the cut applies on
+    // the next flush), so its height now less its height after the cut is
+    // what the cut removed: settle the slide once the DOM shows the cut.
+    if (appended && cut > renderedCut && !expanded && innerEl) {
+      slideCut = { preCutH: innerEl.getBoundingClientRect().height, overtakenPx: overtaken };
+      void tick().then(settleCut);
+    }
+
     // A replacement can leave the cut where it was, over different text.
     if (cut !== renderedCut || !appended) {
       cutFirstCharCode = cut > 0 ? t.charCodeAt(cut - start) : 0;
       cutOffset = cut;
     }
+    prevNodeStart = expanded ? start : Math.max(cut, start);
   });
 </script>
 

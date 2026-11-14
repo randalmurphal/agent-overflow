@@ -92,6 +92,9 @@ islands, footnote popovers, selection preservation, and streamed reveal.
 
 - Agent chat does not enable embedded HTML. Forge-authored review content may
   opt into the renderer's sanitized embedded-HTML mode.
+- A host renders some fenced blocks itself, in place, through `codeClaim`
+  (`markdown/codeClaim.ts`); a claimed block never retires to static
+  HTML, and find skips it through `markdownFindText`'s `claimsCode`.
 - Path and preview behavior is implemented as parser extensions so both compact
   static and component render paths make the same decision.
 - The streaming literal has one imperative DOM owner. Ownership transfers must
@@ -102,6 +105,12 @@ islands, footnote popovers, selection preservation, and streamed reveal.
   tier `utils/imageTiers.ts` picks for its box and opens the app-level
   lightbox; `StreamdownImageHost.svelte` and `ForgeAttachmentHost.svelte`
   only decide which source it gets.
+- An island whose text is drawn or fetched after the render (diagram, math,
+  attachment chip) carries `data-find-skip` on its root, so find neither
+  counts nor paints it; `markdownFindText.ts` projects the rest, parsing
+  and sanitizing with the options ChatMarkdown builds
+  (`markdown/chatMarkdownOptions.ts`), and
+  `markdownFindText.browser.test.ts` holds the two to the same text.
 
 Use differential tests for both renderer paths and browser tests for DOM
 identity, selection, geometry, or actual scroll behavior.

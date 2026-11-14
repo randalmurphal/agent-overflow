@@ -2,7 +2,7 @@
   import { untrack, type Snippet } from 'svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
   import ReviewFileHeaderRow from './ReviewFileHeaderRow.svelte';
-  import ReviewLineBlockRow from './ReviewLineBlockRow.svelte';
+  import ReviewDiffRow from './ReviewDiffRow.svelte';
   import {
     createReviewScrollOwner,
     reviewScrollKey,
@@ -20,18 +20,31 @@
     type ReadingAnchor,
   } from '../../utils/reviewAnchor';
   import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
+  import { findLineKeyIndex, findLineKeyPath, type ReviewFindPlace } from '../../utils/reviewFindScan';
+  import { findHitRow, findRowPosition } from '../../utils/reviewFindRows';
+  import { reviewDiffKeydown, type ReviewDiffKeysHost } from './reviewDiffKeys';
+  import { elementAtEdge } from '../../utils/findReadingEdge';
+  import { reportReaderNavigation } from '../../utils/scroll/readerInput';
+  import { focusWhenShown } from '../../utils/focusWhenShown';
+  import type { EditorAnchor } from '../../stores/reviewPane.svelte';
   import {
     BlockRowsCache,
     buildReviewRows,
     REVIEW_FILE_GAP_PX,
     REVIEW_FILE_HEADER_BAR_PX,
+    REVIEW_COMMIT_CARD_ROW_KEY,
     REVIEW_OVERVIEW_ROW_KEY,
-    REVIEW_SURFACE_END_PX,
     reviewRowEstimate,
     type CommentAnchor,
+    type EditorRow,
+    type ReviewLeadRow,
     type ReviewRow,
   } from '../../utils/reviewRows';
   import type { RowEstimate } from '../../utils/virtual/types';
+  import type { LineRange } from '../../utils/reviewRange';
+  import type { LineCommentGate } from '../../stores/reviewRangeComments';
+  import type { ReviewMediaHost } from '../../stores/reviewDiffMedia.svelte';
+  import { isSvgPath } from '../../utils/reviewImageRows';
 
   // The continuous virtualized review surface: every file's header +
   // line blocks + comment rows in ONE LongListVirtualizer, with a
@@ -70,26 +83,46 @@
     collapsedPaths: ReadonlySet<string>;
     onToggleCollapsed: (path: string) => void;
     drafts?: readonly DiffReviewComment[];
-    openEditors?: readonly CommentAnchor[];
+    openEditors?: readonly EditorRow[];
     prThreads?: readonly ReviewThread[];
     expandedPRThreadIds?: ReadonlySet<string>;
     /** Renders draft-editor rows. Required whenever `openEditors` is
      * non-empty; absent, those rows render nothing. */
-    draftEditor?: Snippet<[anchor: CommentAnchor]>;
+    draftEditor?: Snippet<[editor: EditorRow]>;
     /** Renders comment-thread rows. Required whenever `drafts` is
      * non-empty; absent, those rows render nothing. `pulse` is the
      * row-key jump that landed on the row (utils/reviewJumpPulse), 0
      * for none. */
     commentThread?: Snippet<[threadKey: string, anchor: CommentAnchor, pulse: number]>;
     prThread?: Snippet<[thread: ReviewThread, anchor: CommentAnchor, collapsed: boolean, orphaned: boolean, pulse: number]>;
-    /** The PR overview (meta, Description, Conversation) as the list's
-     * first row, so it scrolls off with the diff. Absent on every other
-     * scope. */
+    /** The lead row (the PR overview, or the picked commit's card) as the
+     * list's first row, so it scrolls off with the diff. Absent when
+     * neither applies. */
     overview?: Snippet;
-    /** Fires when the overview row leaves or re-enters the viewport top,
-     * for the title bar's peek controls. */
+    /** Rendered under the lead row when `files` is empty (an empty diff,
+     * or every file filtered out), so the lead row still has the list to
+     * sit in. */
+    empty?: Snippet;
+    /** Which lead row `overview` renders; keys its measured height. */
+    overviewLead?: ReviewLeadRow;
+    /** Fires when the PR overview row leaves or re-enters the viewport
+     * top, for the title bar's peek controls. A commit card has no peek
+     * controls and never reports. */
     onOverviewOffChange?: (off: boolean) => void;
-    onAddComment?: (anchor: CommentAnchor) => void;
+    /** The diff on screen (ShownDiff.generation), for a pick's check. */
+    generation?: number;
+    onAddComment?: (anchor: EditorAnchor, generation?: number) => void;
+    /** Shift+click on a line's add button (a range comment). */
+    onExtendRange?: (anchor: EditorAnchor, generation?: number) => void;
+    /** A head-ending commit run: what each line takes. */
+    lineComment?: LineCommentGate;
+    /** Binary files' images and sizes, and rendered SVGs. Absent (the
+     * conflict view), binary files show git's line about them. */
+    mediaHost?: ReviewMediaHost;
+    /** A line's number gutter menu (Copy link to line). */
+    onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => boolean;
+    /** The line ranges a file's rows tint. */
+    rangesFor?: (path: string) => readonly LineRange[];
     /** Conflict view only: expands a fold row's hidden lines. */
     onExpandFold?: (path: string, foldId: number) => void;
     /** Diff view only: fetches a hunk gap's hidden context lines. */
@@ -127,8 +160,16 @@
     commentThread,
     prThread,
     overview,
+    overviewLead = 'overview',
+    empty,
     onOverviewOffChange,
+    generation,
     onAddComment,
+    onExtendRange,
+    lineComment,
+    mediaHost,
+    onLineMenu,
+    rangesFor,
     onExpandFold,
     onExpandGap,
     spanContext = null,
@@ -141,9 +182,23 @@
   }: Props = $props();
 
   const built = $derived(
-    buildReviewRows({ files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds, overview: overview !== undefined }),
+    buildReviewRows({
+      files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds,
+      overview: overview === undefined ? undefined : overviewLead,
+      // Without a media host binary files keep git's line.
+      renderedPaths: mediaHost?.renderedPaths, newSideOnly: mediaHost?.newSideOnly, media: mediaHost !== undefined,
+    }),
   );
   const builtEstimate = $derived(reviewRowEstimate(built, wordWrap));
+  // The rows detached editors suggest, by file.
+  const targetsByPath = $derived.by(() => {
+    const out = new Map<string, CommentAnchor[]>();
+    for (const editor of openEditors) {
+      if (editor.state !== 'detached' || !editor.suggested) continue;
+      out.set(editor.filePath, [...(out.get(editor.filePath) ?? []), editor.suggested]);
+    }
+    return out;
+  });
   // The rows of the blocks this surface renders, for the files it shows.
   const blockRows = new BlockRowsCache();
   $effect.pre(() => {
@@ -188,7 +243,7 @@
       const saved = savedReadingPosition(key);
       const target = saved === undefined ? readingAnchor : saved;
       if (target) restoreAnchor(target);
-      else if (saved === null) scroll.applyScrollTarget(0);
+      else if (saved === null) restoreTop();
       // The engine tail-seeds its window until its first scroll input
       // (chat's bottom-anchored mount seeding). This surface is
       // TOP-anchored, and neither a restore that lands on the current
@@ -235,7 +290,8 @@
       return;
     }
     const rowIndex = ref.findItemIndex(offset);
-    setOverviewOff(built.rows[0]?.kind === 'overview' && rowIndex > 0);
+    const lead = built.rows[0];
+    setOverviewOff(lead?.kind === 'overview' && lead.lead === 'overview' && rowIndex > 0);
     const fileIndex = built.fileOfRow[rowIndex] ?? -1;
     setTopFileIndex(fileIndex);
     const headerRow = fileIndex >= 0 ? (built.firstRowOfFile[fileIndex] ?? -1) : -1;
@@ -269,6 +325,21 @@
     readingAnchor = ref ? captureReadingAnchor(built, files, blockRows, ref, offset) : null;
   }
 
+  // A key saved at the top opens at the top.
+  function restoreTop(): void {
+    scroll.applyScrollTarget(0);
+  }
+
+  // Every scroll made on the reader's behalf (a file, row, comment or
+  // sticky-header jump) goes through here and is reported as theirs, so a
+  // pending find reveal ends. Find's own reveal (revealFindPlace,
+  // scrollFindBy) and keeping the reader's place (restoreAnchor,
+  // restoreTop, the virtualizer's writes) do not.
+  function navigateToIndex(index: number, opts?: { offset?: number }): void {
+    reportReaderNavigation(scrollEl);
+    listRef?.scrollToIndex(index, opts);
+  }
+
   function restoreAnchor(target: ReadingAnchor): void {
     const ref = listRef;
     if (!ref) return;
@@ -292,6 +363,72 @@
   let prevPrThreads: readonly ReviewThread[] = prThreads;
   // svelte-ignore state_referenced_locally
   let prevScrollKey = scrollKey;
+  // The focused comment editor, with its offset from the viewport top, the
+  // control in it that has focus and the caret, read before a rebuild
+  // reaches the list: a reload keeps that editor where it was on screen
+  // rather than the line above, even when its row moved out of the rows the
+  // list holds (which unmounts it).
+  interface FocusedEditor {
+    id: string;
+    top: number;
+    /** The focused control's key in the editor (data-editor-control). */
+    control: string | null;
+    selection: [number, number, 'forward' | 'backward' | 'none'] | null;
+  }
+  let focusedEditor: FocusedEditor | null = null;
+  let refocus: (() => void) | null = null;
+  function editorNode(id: string): Element | null {
+    return scrollEl?.querySelector(`[data-review-editor-id="${CSS.escape(id)}"]`) ?? null;
+  }
+  function editorTop(id: string): number | null {
+    const el = scrollEl;
+    const node = editorNode(id);
+    return el && node ? node.getBoundingClientRect().top - el.getBoundingClientRect().top : null;
+  }
+  $effect.pre(() => {
+    void built;
+    untrack(() => {
+      focusedEditor = null;
+      const el = scrollEl;
+      const active = typeof document === 'undefined' ? null : document.activeElement;
+      const node = active instanceof Element && el?.contains(active) ? active.closest('[data-review-editor-id]') : null;
+      const id = node?.getAttribute('data-review-editor-id');
+      const top = id ? editorTop(id) : null;
+      if (!id || top === null) return;
+      const selection = active instanceof HTMLTextAreaElement
+        ? [active.selectionStart, active.selectionEnd, active.selectionDirection] as FocusedEditor['selection']
+        : null;
+      focusedEditor = { id, top, control: active!.getAttribute('data-editor-control'), selection };
+    });
+  });
+  // Puts the focused editor's row back at the offset the box had, by its
+  // index in the list (the row may not be mounted), then focuses the same
+  // control of the box once it shows (the text with its caret): the element
+  // that kept focus, or the one a remount put in its place. Then the offset
+  // is corrected by where the box is measured. False when the editor has no
+  // row now.
+  function restoreFocusedEditor(keep: FocusedEditor): boolean {
+    const el = scrollEl;
+    const ref = listRef;
+    const index = built.rowKeys.indexOf(`d:${keep.id}`);
+    if (!el || !ref || index < 0) return false;
+    const top = editorTop(keep.id);
+    if (top === null) ref.scrollToIndex(index, { offset: -keep.top });
+    else if (top !== keep.top) scroll.applyScrollTarget(Math.max(0, el.scrollTop + top - keep.top));
+    const control = (): HTMLElement | null => {
+      const node = editorNode(keep.id);
+      const same = keep.control ? node?.querySelector<HTMLElement>(`[data-editor-control="${CSS.escape(keep.control)}"]:not(:disabled)`) : null;
+      return same ?? node?.querySelector('textarea') ?? null;
+    };
+    refocus?.();
+    refocus = focusWhenShown(control, (area) => {
+      if (keep.selection && area instanceof HTMLTextAreaElement) area.setSelectionRange(...keep.selection);
+      const now = editorTop(keep.id);
+      if (now !== null && now !== keep.top) scroll.applyScrollTarget(Math.max(0, el.scrollTop + now - keep.top));
+    });
+    return true;
+  }
+  $effect(() => () => refocus?.());
   $effect(() => {
     void built;
     untrack(() => {
@@ -300,7 +437,11 @@
       prevFiles = files;
       prevPrThreads = prThreads;
       prevScrollKey = scrollKey;
-      if (contentChanged && !keyChanged && readingAnchor) restoreAnchor(readingAnchor);
+      const keep = focusedEditor;
+      focusedEditor = null;
+      if (contentChanged && !keyChanged && keep && restoreFocusedEditor(keep)) {
+        // The focused editor holds its place.
+      } else if (contentChanged && !keyChanged && readingAnchor) restoreAnchor(readingAnchor);
       const offset = scrollEl?.scrollTop ?? 0;
       updateSticky(offset);
       captureAnchor(offset);
@@ -315,7 +456,7 @@
     const headerRow = fileIndex >= 0 ? (built.firstRowOfFile[fileIndex] ?? -1) : -1;
     if (headerRow < 0) return;
     untrack(() => {
-      ref.scrollToIndex(headerRow);
+      navigateToIndex(headerRow);
       onJumpConsumed?.();
     });
   });
@@ -341,13 +482,14 @@
     untrack(() => {
       onJumpRowConsumed?.();
       if (rowIndex < 0) return;
-      // The overview is a destination, not a find: no pulse, and it
-      // sits above every file so nothing overlays its top.
-      if (key === REVIEW_OVERVIEW_ROW_KEY) {
-        ref.scrollToIndex(rowIndex);
+      // The lead row (the overview, a commit's or run's card) is a
+      // destination, not a find: no pulse, and it sits above every file
+      // so nothing overlays its top.
+      if (key === REVIEW_OVERVIEW_ROW_KEY || key === REVIEW_COMMIT_CARD_ROW_KEY) {
+        navigateToIndex(rowIndex);
         return;
       }
-      ref.scrollToIndex(rowIndex, { offset: -REVIEW_FILE_HEADER_BAR_PX });
+      navigateToIndex(rowIndex, { offset: -REVIEW_FILE_HEADER_BAR_PX });
       pulse = { rowKey: key, generation: (pulse?.generation ?? 0) + 1 };
       clearTimeout(pulseTimer);
       pulseTimer = setTimeout(() => { pulse = null; }, REVIEW_JUMP_PULSE_MS);
@@ -367,92 +509,66 @@
     if (file) onToggleCollapsed(file.path);
   }
 
+  // The sticky bar's SVG toggle, as the header row's (ReviewDiffRow).
+  const stickyRendered = $derived.by(() => {
+    const file = stickyFile;
+    return mediaHost && file && isSvgPath(file.path) && !file.header?.binary ? mediaHost.renderedPaths.has(file.path) : undefined;
+  });
+  function toggleStickyRendered(): void {
+    const file = stickyFile;
+    if (file) mediaHost?.toggleRendered(file.path);
+  }
+
   function jumpToStickyFile(): void {
     const headerRow = built.firstRowOfFile[stickyFileIndex] ?? -1;
-    if (headerRow >= 0) listRef?.scrollToIndex(headerRow);
+    if (headerRow >= 0) navigateToIndex(headerRow);
   }
 
-  function currentTopRowIndex(): number {
+  const keysHost: ReviewDiffKeysHost = {
+    built: () => built,
+    files: () => files,
+    list: () => listRef,
+    navigateToIndex,
+    scrollTop: () => scrollEl?.scrollTop ?? 0,
+    onAddComment: () => onAddComment,
+  };
+  const handleKeydown = reviewDiffKeydown(keysHost);
+
+  /** Find: the (file, line) at the reading edge (the viewport top, below
+   * the sticky file bar), in find-hit order. Inside a block of lines, the
+   * line laid out across the edge (lines wrap); its block's first line
+   * when none is (a gap or fold row). */
+  export function findReadingPosition(): { fileIndex: number; line: number } | null {
+    const el = scrollEl;
+    const list = listRef;
+    if (!el || !list || built.rows.length === 0) return null;
+    const inset = stickyFile ? REVIEW_FILE_HEADER_BAR_PX : 0;
+    const at = list.findItemIndex(el.scrollTop + inset);
+    const position = findRowPosition(built, at);
+    if (!position || built.rows[at]?.kind !== 'line-block') return position;
+    const path = files[position.fileIndex]?.path;
+    const lines = [...el.querySelectorAll<HTMLElement>('[data-find-key^="l:"]')].filter((line) => findLineKeyPath(line.dataset.findKey!) === path);
+    const line = findLineKeyIndex(elementAtEdge(lines, el.getBoundingClientRect().top + inset)?.dataset.findKey ?? '');
+    return line !== null && line >= position.line ? { fileIndex: position.fileIndex, line } : position;
+  }
+
+  /** Find: scrolls the row showing a match at `at` (resolved against the
+   * files shown, reviewFindRows.ts) so its line sits a third down the
+   * viewport. False when the row model does not show it. */
+  export function revealFindPlace(at: { fileIndex: number; place: ReviewFindPlace }): boolean {
     const ref = listRef;
-    if (!ref || built.rows.length === 0) return -1;
-    return ref.findItemIndex(scrollEl?.scrollTop ?? 0);
+    const target = ref ? findHitRow(built, files, at) : null;
+    if (!ref || !target) return false;
+    ref.scrollToIndex(target.index, { offset: target.within - Math.round(ref.getViewportSize() / 3) });
+    return true;
   }
 
-  function currentTopFileIndex(): number {
-    const topRow = currentTopRowIndex();
-    return topRow >= 0 ? (built.fileOfRow[topRow] ?? -1) : -1;
+  /** Find: moves the view by `delta` pixels through the scroll owner. */
+  export function scrollFindBy(delta: number): void {
+    const el = scrollEl;
+    if (el && delta !== 0) scroll.applyScrollTarget(Math.max(0, el.scrollTop + delta));
   }
 
-  function jumpFile(delta: 1 | -1): void {
-    const fileIndex = currentTopFileIndex();
-    if (fileIndex < 0) return;
-    const targetFile = fileIndex + delta;
-    const targetRow = built.firstRowOfFile[targetFile] ?? -1;
-    if (targetRow >= 0) listRef?.scrollToIndex(targetRow);
-  }
-
-  function jumpComment(delta: 1 | -1): void {
-    const topRow = currentTopRowIndex();
-    if (topRow < 0) return;
-    for (let index = topRow + delta; index >= 0 && index < built.rows.length; index += delta) {
-      const row = built.rows[index];
-      if (row?.kind === 'draft-editor' || row?.kind === 'comment-thread' || row?.kind === 'pr-thread') {
-        listRef?.scrollToIndex(index, { offset: -REVIEW_FILE_HEADER_BAR_PX });
-        return;
-      }
-    }
-  }
-
-  function openFileLevelComment(): void {
-    if (!onAddComment) return;
-    const fileIndex = currentTopFileIndex();
-    const file = fileIndex >= 0 ? files[fileIndex] : null;
-    if (!file) return;
-    onAddComment({ filePath: file.path, side: 'file', selectedText: '' });
-  }
-
-  function isInputTarget(target: EventTarget | null): boolean {
-    if (!(target instanceof HTMLElement)) return false;
-    const tag = target.tagName.toLowerCase();
-    return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
-  }
-
-  function handleKeydown(event: KeyboardEvent): void {
-    if (isInputTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-    switch (event.key) {
-      case 'j':
-        event.preventDefault();
-        jumpFile(1);
-        break;
-      case 'k':
-        event.preventDefault();
-        jumpFile(-1);
-        break;
-      case 'n':
-        event.preventDefault();
-        jumpComment(1);
-        break;
-      case 'p':
-        event.preventDefault();
-        jumpComment(-1);
-        break;
-      case 'c':
-        event.preventDefault();
-        openFileLevelComment();
-        break;
-    }
-  }
-
-  // Per-file gutter width (ch) from the file's max line number — a
-  // true max over every row, not the last numbered row: a merged
-  // edits-scope file whose sections couldn't be renumbered (overlap
-  // fallback in mergePatchFilesByPath) renders sections in edit order,
-  // where numbering is non-monotonic and the last row can carry a
-  // smaller number than rows above it — sizing from it cramps every
-  // wider number.
-  function gutterChars(file: ReviewFile): number {
-    return Math.max(2, String(file.body.maxLine).length);
-  }
 </script>
 
 <div class="relative h-full min-h-0 min-w-0 flex-1" data-testid="review-diff-body">
@@ -467,6 +583,8 @@
         file={stickyFile}
         collapsed={collapsedPaths.has(stickyFile?.path ?? '')}
         onToggle={toggleStickyFile}
+        rendered={stickyRendered}
+        onToggleRendered={toggleStickyRendered}
         overlay
         onJump={jumpToStickyFile}
       />
@@ -496,60 +614,38 @@
         onscrollend={() => saveReadingPosition(scrollKey, readingAnchor)}
       >
         {#snippet children(row: ReviewRow)}
-          {@const file = files[row.fileIndex]}
-          {@const rowPulse = row === pulseRow && pulse ? pulse.generation : 0}
-          {#if row.kind === 'overview'}
-            {@render overview?.()}
-          {:else if !file}
-            <!-- Build/props raced; the next flush re-renders coherent rows. -->
-          {:else if row.kind === 'file-header'}
-            <ReviewFileHeaderRow
-              {file}
-              collapsed={collapsedPaths.has(file.path)}
-              onToggle={() => onToggleCollapsed(file.path)}
-              first={row.fileIndex === 0}
-            />
-          {:else if row.kind === 'surface-end'}
-            <!-- Closing cap for the last file's slab (exact height:
-                 REVIEW_SURFACE_END_PX; box-border keeps the border
-                 inside it). -->
-            <div style:height="{REVIEW_SURFACE_END_PX}px">
-              <div class="mx-[var(--review-slab-inset)] h-full rounded-b-[var(--radius-control)] border-x border-b border-border-subtle bg-surface-1"></div>
-            </div>
-          {:else if row.kind === 'line-block'}
-            {@const materialized = blockRows.get(file, row)}
-            <ReviewLineBlockRow
-              rows={materialized.rows}
-              splitRows={materialized.splitRows}
-              {file}
-              path={file.path}
-              {spanOwner}
-              {spanContext}
-              {painted}
-              {wordWrap}
-              gutterCh={gutterChars(file)}
-              {onAddComment}
-              {onExpandFold}
-              {onExpandGap}
-            />
-          {:else if row.kind === 'draft-editor'}
-            <!-- The slab inset + border-x + bg-surface-1 keep the file slab
-                 continuous behind the inserted rows (the page behind is
-                 darker surface-0). -->
-            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
-              {@render draftEditor?.(row.anchor)}
-            </div>
-          {:else if row.kind === 'comment-thread'}
-            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
-              {@render commentThread?.(row.threadKey, row.anchor, rowPulse)}
-            </div>
-          {:else}
-            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
-              {@render prThread?.(row.thread, row.anchor, row.collapsed, row.orphaned, rowPulse)}
-            </div>
-          {/if}
+          <ReviewDiffRow
+            {row}
+            file={files[row.fileIndex]}
+            targets={row.kind === 'line-block' ? targetsByPath.get(files[row.fileIndex]?.path ?? '') : undefined}
+            {blockRows}
+            collapsed={collapsedPaths.has(files[row.fileIndex]?.path ?? '')}
+            {onToggleCollapsed}
+            {spanOwner}
+            {spanContext}
+            {painted}
+            {wordWrap}
+            pulse={row === pulseRow && pulse ? pulse.generation : 0}
+            {overview}
+            {draftEditor}
+            {commentThread}
+            {prThread}
+            {generation}
+            {onAddComment}
+            {onExtendRange}
+            {lineComment}
+            {mediaHost}
+            split={viewMode === 'split'}
+            {onLineMenu}
+            {rangesFor}
+            {onExpandFold}
+            {onExpandGap}
+          />
         {/snippet}
       </LongListVirtualizer>
     {/key}
+    {#if files.length === 0}
+      {@render empty?.()}
+    {/if}
   </div>
 </div>

@@ -94,6 +94,12 @@ type sessionTurnState struct {
 	// clearTurnStart on EventTurnComplete so re-used turn IDs (rare,
 	// typically across resumed sessions) can fire fresh.
 	seenTurnStarts map[string]struct{}
+	// safetyBufferingNoticed and safetyBufferingNoticeTurn name the last turn
+	// whose held-response notice claimSafetyBufferingNotice let through. The
+	// bool keeps a signal with no turnId, which the wire type does not allow,
+	// to one row instead of none.
+	safetyBufferingNoticed    bool
+	safetyBufferingNoticeTurn string
 }
 
 // sessionTurnOrigins answers "did WE start this turn?" for every

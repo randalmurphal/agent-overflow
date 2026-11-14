@@ -43,7 +43,7 @@ import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
 import { SRC_ROOT } from '../../../test/sourceScan';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
-import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
 const appCss = readFileSync(join(SRC_ROOT, 'app.css'), 'utf8');
 
@@ -213,6 +213,30 @@ describe('<ChatView>', () => {
     const { queryByLabelText } = render(ChatView, { props: { pane } });
 
     expect(queryByLabelText('Fork from this message')).toBeNull();
+  });
+
+  it('marks the surface as able to run shell blocks only for a session granted both scopes', async () => {
+    // app.css shows Run on a shell code block inside a surface that carries
+    // this mark. The run needs terminal:operate, sending its output needs
+    // threads:operate.
+    const surface = (container: HTMLElement) => container.querySelector('[data-ui-surface="chat"]');
+    const local = render(ChatView, { props: { pane: await buildPane() } });
+    await tick();
+    expect(surface(local.container)?.hasAttribute('data-shell-runnable')).toBe(true);
+    local.unmount();
+
+    for (const scopes of [OBSERVE_SCOPES, [...OBSERVE_SCOPES, 'terminal:operate'], [...OBSERVE_SCOPES, 'threads:operate']]) {
+      await pairWithScopes(scopes);
+      try {
+        const view = render(ChatView, { props: { pane: await buildPane() } });
+        await tick();
+        expect(surface(view.container)).not.toBeNull();
+        expect(surface(view.container)?.hasAttribute('data-shell-runnable')).toBe(false);
+        view.unmount();
+      } finally {
+        resetToLocalPage();
+      }
+    }
   });
 
   it('offers neither fork nor edit on a user message without threads:operate', async () => {
@@ -577,7 +601,7 @@ describe('<ChatView>', () => {
     const view = render(ChatView, { props: { pane } });
     await openMessageEditor(view);
 
-    // Un-send, or a concurrent revert reflected from a second pane.
+    // A concurrent revert reflected from a second pane.
     pane.removeRevertedItems(item.turnIndex, []);
     await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
     expect(resend).not.toHaveBeenCalled();

@@ -33,8 +33,29 @@ import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelt
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn' | 'hasFailedTurn'>>;
 
-let threads: Thread[] = $state([]);
-const catalogWriter = computerCatalogWriter('threads', () => threads, setThreads, (row) => threadBackend(row.id));
+// Rows are values: a change replaces the row and the array, never writes
+// into either. The array is therefore held raw. A deep proxy would add a
+// trap call to every field read of every row, and each thread event reads
+// all of them several times (lookups by id, the row transform, the catalog
+// write).
+let threads: readonly Thread[] = $state.raw([]);
+// The rows this store made. A row from outside is copied on its way in: a
+// caller may hand over a pane's reactive row, and the store's copy must
+// neither be that proxy nor change when the pane writes to it. The list is
+// the store's own array for the same reason.
+const owned = new WeakSet<Thread>();
+function storeThreads(rows: readonly Thread[]): void {
+  const next = rows.slice();
+  for (let i = 0; i < next.length; i++) {
+    if (owned.has(next[i])) continue;
+    const row = { ...next[i] };
+    // Development and test builds reject a write into a stored row.
+    if (import.meta.env.DEV) Object.freeze(row);
+    owned.add(row);
+    next[i] = row;
+  }
+  threads = import.meta.env.DEV ? Object.freeze(next) : next;
+}
 
 // Every write to the list passes here except dropThreadsForDetachedBackend,
 // so a thread that stops being an assistant's current thread in this list
@@ -43,14 +64,13 @@ const catalogWriter = computerCatalogWriter('threads', () => threads, setThreads
 // thread left in the list takes its sidebar state (keyed by the assistant,
 // so a handoff keeps it). A computer detaching keeps that state: its
 // assistants are still assistants, and the persisted fold must survive.
-function setThreads(rows: Thread[]): void {
+function setThreads(rows: readonly Thread[]): void {
   const before = threads;
-  rows = oneCurrentThreadPerAssistant(before, rows);
-  threads = rows;
+  storeThreads(oneCurrentThreadPerAssistant(before, rows));
   let currentThreadOf: Map<string, string> | null = null;
   for (const row of before) {
     if (!row.agentId) continue;
-    currentThreadOf ??= new Map(rows.flatMap((t) => (t.agentId ? [[t.agentId, t.id] as const] : [])));
+    currentThreadOf ??= new Map(threads.flatMap((t) => (t.agentId ? [[t.agentId, t.id] as const] : [])));
     const current = currentThreadOf.get(row.agentId);
     if (current === row.id) continue;
     forgetArchivedChildren(row.id);
@@ -59,6 +79,7 @@ function setThreads(rows: Thread[]): void {
     if (current === undefined) forgetAgentSidebarState(row.agentId);
   }
 }
+const catalogWriter = computerCatalogWriter('threads', () => threads as Thread[], setThreads, (row) => threadBackend(row.id), { rowsAreValues: true });
 
 /**
  * An assistant has one current thread. A handoff lists the new thread
@@ -67,7 +88,7 @@ function setThreads(rows: Thread[]): void {
  * both are new) and holds the other as the past thread it now is: nested
  * under the agent row unless it is in a group, as the handoff placed it.
  */
-function oneCurrentThreadPerAssistant(before: readonly Thread[], rows: Thread[]): Thread[] {
+function oneCurrentThreadPerAssistant(before: readonly Thread[], rows: readonly Thread[]): readonly Thread[] {
   let current: Map<string, Thread> | null = null;
   let duplicated = false;
   for (const row of rows) {
@@ -111,7 +132,7 @@ onThreadOwnershipChanged((_id, previousBackend) => {
 // next full row sync.
 const liveActivityAt = createKeyedSignalRegistry<number>(0);
 
-export function getThreads(): Thread[] {
+export function getThreads(): readonly Thread[] {
   return threads;
 }
 
@@ -152,7 +173,7 @@ function threadReadOptions(only?: BackendKey) {
  * startup validates saved panes against the winning snapshot, even when a
  * first hello superseded its read.
  */
-export async function loadThreads(): Promise<Thread[]> {
+export async function loadThreads(): Promise<readonly Thread[]> {
   pendingThreadReads++;
   const request = readCurrentThreadRows();
   latestThreadRead = request;
@@ -518,7 +539,7 @@ export function dropThreadsForDetachedBackend(ids: readonly string[]): void {
   }
   const gone = new Set(ids);
   const kept = threads.filter((t) => !gone.has(t.id));
-  if (kept.length !== threads.length) threads = kept;
+  if (kept.length !== threads.length) storeThreads(kept);
 }
 
 onBackendDetached(({ threadIds }) => dropThreadsForDetachedBackend(threadIds));
@@ -540,7 +561,7 @@ export function assistantCurrentThread(agentId: string): Thread | undefined {
 // Every write replaces the list's array, so the index is rebuilt on the
 // first lookup after one. Reading `threads` keeps a reactive caller
 // subscribed to the list, as the scan it replaces did.
-let indexedRows: Thread[] | null = null;
+let indexedRows: readonly Thread[] | null = null;
 let indexes = { byId: new Map<string, Thread>(), currentByAgent: new Map<string, Thread>() };
 function threadIndex(): typeof indexes {
   const rows = threads;

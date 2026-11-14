@@ -4,6 +4,7 @@
   import FileText from '@lucide/svelte/icons/file-text';
   import Folder from '@lucide/svelte/icons/folder';
   import ListFilter from '@lucide/svelte/icons/list-filter';
+  import ListTree from '@lucide/svelte/icons/list-tree';
   import Search from '@lucide/svelte/icons/search';
   import Icon from '../primitives/Icon.svelte';
   import Menu from '../primitives/Menu.svelte';
@@ -19,6 +20,7 @@
     fileExtensionLabel,
     filterReviewFiles,
     flattenReviewTree,
+    isTestPath,
     type ReviewTreeNode,
   } from '../../utils/reviewTree';
 
@@ -32,14 +34,27 @@
     /** Per-file comment/draft counts for the badge pills. */
     /** Comments per file; the badge tints warning while any is unresolved. */
     commentCounts?: ReadonlyMap<string, CommentFileCounts>;
+    /** Hides the tree; the button renders only when a handler is
+     * provided (the rail's strip shows it again). */
+    onToggleOpen?: () => void;
     /** Shared extension-filter set. ReviewPane owns it so the filter can
      * also apply to the diff body; standalone use falls back to a local
      * set (rail-only filtering). */
     activeExtensions?: SvelteSet<string>;
-    /** The dropdown's "Apply filter to diff" toggle. The item renders
-     * only when a handler is provided. */
+    /** The dropdown's "Hide tests" toggle (utils/reviewTree.ts
+     * isTestPath). The item renders only when a handler is provided. */
+    hideTests?: boolean;
+    onHideTestsChange?: (value: boolean) => void;
+    /** The dropdown's "Apply filter to diff" toggle, on unless the user
+     * turns it off. The item renders only when a handler is provided. */
     filterDiff?: boolean;
     onFilterDiffChange?: (value: boolean) => void;
+    /** Paths an explicit jump revealed; the type filter and hide-tests keep
+     * them (utils/reviewTree.ts filterReviewFiles). */
+    revealedPaths?: ReadonlySet<string>;
+    /** Called when the user changes the type filter or hide-tests, which
+     * ends every reveal. */
+    onFilterSelectionChange?: () => void;
   }
 
   let {
@@ -47,50 +62,78 @@
     activeFileIndex = -1,
     onSelectFile,
     commentCounts,
+    onToggleOpen,
     activeExtensions = new SvelteSet<string>(),
-    filterDiff = false,
+    hideTests = false,
+    onHideTestsChange,
+    filterDiff = true,
     onFilterDiffChange,
+    revealedPaths,
+    onFilterSelectionChange,
   }: Props = $props();
 
-  const EMPTY_COLLAPSED: ReadonlySet<string> = new Set();
-
   let query = $state('');
-  const collapsedPaths = $state(new SvelteSet<string>());
+  // The user's collapsed folders, applied to the full tree and to the tree
+  // the type filter and hide-tests narrow.
+  const collapsedPaths = new SvelteSet<string>();
+  // Folders collapsed during a text query. It starts empty and empties on
+  // every edit of the query, so a typed query shows its matches expanded,
+  // and clearing the query returns to collapsedPaths untouched.
+  const queryCollapsedPaths = new SvelteSet<string>();
   let extMenuOpen = $state(false);
   let extTriggerEl: HTMLButtonElement | undefined = $state(undefined);
 
   // Chips come from the FULL file set so toggling one never removes the
-  // others from the strip; counts stay stable under an active search.
+  // others from the strip; counts stay stable under an active search. A
+  // picked type the file list no longer has (another commit picked) is
+  // listed at 0 so it can be unchecked.
   const extensionCounts = $derived.by(() => {
     const counts = new Map<string, number>();
     for (const file of files) {
       const ext = fileExtensionLabel(file.path);
       counts.set(ext, (counts.get(ext) ?? 0) + 1);
     }
+    for (const ext of activeExtensions) {
+      if (!counts.has(ext)) counts.set(ext, 0);
+    }
     return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   });
 
-  const filterActive = $derived(query.trim() !== '' || activeExtensions.size > 0);
-  const filtered = $derived(filterReviewFiles(files, query, activeExtensions));
-  const tree = $derived(buildReviewTree(filtered.files, filtered.fileIndexes));
-  // A live filter overrides manual collapse: every match must be visible.
-  const visibleNodes = $derived(
-    flattenReviewTree(tree, filterActive ? EMPTY_COLLAPSED : collapsedPaths),
+  const testFileCount = $derived(files.reduce((count, file) => count + (isTestPath(file.path) ? 1 : 0), 0));
+  const menuFilterCount = $derived(activeExtensions.size + (hideTests ? 1 : 0));
+  // The menu exists when there is something to choose (more than one type,
+  // or tests to hide) and whenever a menu filter is on, so the filter, Clear
+  // filters and the diff switch stay reachable when the list changes under
+  // it.
+  const filterMenuShown = $derived(
+    menuFilterCount > 0 || extensionCounts.length > 1 || (onHideTestsChange !== undefined && testFileCount > 0),
   );
+  const queryActive = $derived(query.trim() !== '');
+  const filtered = $derived(filterReviewFiles(files, query, activeExtensions, hideTests, revealedPaths));
+  const tree = $derived(buildReviewTree(filtered.files, filtered.fileIndexes));
+  const collapsedInEffect = $derived(queryActive ? queryCollapsedPaths : collapsedPaths);
+  const visibleNodes = $derived(flattenReviewTree(tree, collapsedInEffect));
 
   function toggleDirectory(path: string): void {
-    if (filterActive) return;
-    if (collapsedPaths.has(path)) collapsedPaths.delete(path);
-    else collapsedPaths.add(path);
+    if (collapsedInEffect.has(path)) collapsedInEffect.delete(path);
+    else collapsedInEffect.add(path);
   }
 
   function toggleExtension(ext: string): void {
     if (activeExtensions.has(ext)) activeExtensions.delete(ext);
     else activeExtensions.add(ext);
+    onFilterSelectionChange?.();
   }
 
-  function clearExtensions(): void {
+  function toggleHideTests(): void {
+    onHideTestsChange?.(!hideTests);
+    onFilterSelectionChange?.();
+  }
+
+  function clearFilters(): void {
     activeExtensions.clear();
+    if (hideTests) onHideTestsChange?.(false);
+    onFilterSelectionChange?.();
     closeExtMenu();
   }
 
@@ -125,6 +168,19 @@
 
 <div class="flex min-h-0 flex-1 flex-col" data-testid="review-file-tree">
   <div class="flex shrink-0 items-center gap-1.5 px-2 pb-1.5 pt-2">
+    {#if onToggleOpen}
+      <button
+        type="button"
+        class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle bg-surface-2 text-fg compact:h-8 compact:w-8"
+        aria-label="Hide file tree"
+        aria-pressed="true"
+        title="Hide file tree"
+        data-testid="review-tree-toggle"
+        onclick={onToggleOpen}
+      >
+        <Icon icon={ListTree} size={13} />
+      </button>
+    {/if}
     <div class="relative min-w-0 flex-1">
       <Icon
         icon={Search}
@@ -133,34 +189,35 @@
       />
       <input
         type="text"
-        class="h-6 w-full rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 pl-7 pr-2 text-xs text-fg placeholder:text-fg-subtle focus:border-border focus:outline-none"
+        class="h-6 w-full rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 pl-7 pr-2 text-xs text-fg placeholder:text-fg-subtle focus:border-border focus:outline-none compact:h-8"
         placeholder="Filter files"
         aria-label="Filter files"
         data-testid="review-tree-search"
         bind:value={query}
+        oninput={() => queryCollapsedPaths.clear()}
       />
     </div>
-    {#if extensionCounts.length > 1}
+    {#if filterMenuShown}
       <button
         bind:this={extTriggerEl}
         type="button"
-        class="inline-flex h-6 shrink-0 items-center gap-1 rounded-[var(--radius-field)] border px-1.5 text-[0.6875rem] {activeExtensions.size > 0
+        class="inline-flex h-6 shrink-0 items-center gap-1 rounded-[var(--radius-field)] border px-1.5 text-[0.6875rem] compact:h-8 {menuFilterCount > 0
           ? 'border-accent/60 bg-accent/15 text-accent'
           : 'border-border-subtle text-fg-muted hover:text-fg'}"
         aria-haspopup="menu"
         aria-expanded={extMenuOpen}
-        aria-label="Filter by file type"
-        title="Filter by file type"
+        aria-label="Filter files by type"
+        title="Filter files by type"
         data-testid="review-tree-ext-trigger"
         onclick={() => { extMenuOpen = !extMenuOpen; }}
       >
         <Icon icon={ListFilter} size={13} />
-        {#if activeExtensions.size > 0}
-          <span class="tabular-nums">{activeExtensions.size}</span>
+        {#if menuFilterCount > 0}
+          <span class="tabular-nums">{menuFilterCount}</span>
         {/if}
       </button>
       <Popover anchor={extTriggerEl} open={extMenuOpen} onClose={closeExtMenu} placement="bottom-end" role="none">
-        <Menu ariaLabel="Filter by file type" onClose={closeExtMenu} minWidthClass="min-w-[160px]">
+        <Menu ariaLabel="Filter files by type" onClose={closeExtMenu} minWidthClass="min-w-[160px]">
           {#each extensionCounts as [ext, count] (ext)}
             <MenuItem
               label={ext}
@@ -169,17 +226,28 @@
               onSelect={() => toggleExtension(ext)}
             />
           {/each}
+          {#if onHideTestsChange && (testFileCount > 0 || hideTests)}
+            <MenuDivider />
+            <MenuItem
+              label="Hide tests"
+              suffix={String(testFileCount)}
+              checked={hideTests}
+              testId="review-tree-hide-tests"
+              onSelect={toggleHideTests}
+            />
+          {/if}
           {#if onFilterDiffChange}
             <MenuDivider />
             <MenuItem
               label="Apply filter to diff"
               checked={filterDiff}
+              testId="review-tree-filter-diff"
               onSelect={() => onFilterDiffChange?.(!filterDiff)}
             />
           {/if}
-          {#if activeExtensions.size > 0}
+          {#if menuFilterCount > 0}
             <MenuDivider />
-            <MenuItem label="Clear filters" onSelect={clearExtensions} />
+            <MenuItem label="Clear filters" onSelect={clearFilters} />
           {/if}
         </Menu>
       </Popover>
@@ -198,7 +266,7 @@
         <button
           type="button"
           class="flex h-7 w-full min-w-0 items-center pr-2 text-left text-xs text-fg-muted hover:bg-surface-2/50 hover:text-fg"
-          aria-expanded={filterActive || !collapsedPaths.has(node.path)}
+          aria-expanded={!collapsedInEffect.has(node.path)}
           onclick={() => toggleDirectory(node.path)}
           data-testid="review-tree-dir"
         >
@@ -207,7 +275,7 @@
             <Icon
               icon={ChevronRight}
               size={12}
-              class={!filterActive && collapsedPaths.has(node.path) ? 'shrink-0' : 'shrink-0 rotate-90'}
+              class={collapsedInEffect.has(node.path) ? 'shrink-0' : 'shrink-0 rotate-90'}
             />
             <Icon icon={Folder} size={12} class="shrink-0 opacity-80" />
             <span class="min-w-0 truncate">{node.name}</span>

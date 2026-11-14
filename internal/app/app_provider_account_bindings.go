@@ -26,6 +26,9 @@ type ManagedProviderAccount struct {
 	// call succeeds, nothing was activated, and the card is to show that the
 	// account needs a sign-in. The client never starts one on its own.
 	SignInRequired bool `json:"signInRequired"`
+	// AutoSwitch reports that the account is in the provider's auto-switch
+	// pool.
+	AutoSwitch bool `json:"autoSwitch"`
 }
 
 //ao:scope access:admin
@@ -48,17 +51,38 @@ func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 //ao:scope access:admin
 //ao:route home
 func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProviderAccount, error) {
+	account, err := a.switchProviderAccount(providerName, accountID, false)
+	return managedProviderAccount(account), err
+}
+
+// switchProviderAccount selects a saved account, as the person's choice or as
+// an automatic one, and runs what follows every switch.
+func (a *App) switchProviderAccount(
+	providerName, accountID string,
+	automatic bool,
+) (provideraccountapp.ManagedAccount, error) {
 	if a.providerAccounts == nil {
-		return ManagedProviderAccount{}, errors.New("provider account storage is unavailable")
+		return provideraccountapp.ManagedAccount{}, errors.New("provider account storage is unavailable")
 	}
-	account, err := a.providerAccounts.SwitchProviderAccount(providerName, accountID)
+	selectAccount := a.providerAccounts.SwitchProviderAccount
+	if automatic {
+		selectAccount = a.providerAccounts.AutoSwitchProviderAccount
+	}
+	from := a.providerAccounts.Selection(providerName).AccountID
+	account, err := selectAccount(providerName, accountID)
 	// A declined switch activated nothing, so there is no new identity to
 	// learn — and the catalog probe would spawn the CLI for an answer the
 	// canonical home already gave.
 	if err == nil && !account.SignInRequired {
 		a.probeSwitchedProviderAccount(providerName)
+		// The meters and auto-switch otherwise hold this account's last
+		// reading until the next poll.
+		a.providerLifecycleService().RequestReading(providerName)
+		// A refusal of a request already in flight on the previous account
+		// is charged to that account, not the new selection.
+		a.accountSwitch().SelectionMoved(provider.UsageProviderFamily(providerName), from, accountID)
 	}
-	return managedProviderAccount(account), err
+	return account, err
 }
 
 // ReorderProviderAccounts sets the order one provider's saved accounts are
@@ -73,6 +97,18 @@ func (a *App) ReorderProviderAccounts(providerName string, accountIDs []string) 
 	return a.providerAccounts.ReorderProviderAccounts(providerName, accountIDs)
 }
 
+// SetProviderAccountAutoSwitch puts one saved account in or out of the
+// provider's auto-switch pool.
+//
+//ao:scope access:admin
+//ao:route home
+func (a *App) SetProviderAccountAutoSwitch(providerName, accountID string, enabled bool) error {
+	if a.providerAccounts == nil {
+		return errors.New("provider account storage is unavailable")
+	}
+	return a.providerAccounts.SetProviderAccountAutoSwitch(providerName, accountID, enabled)
+}
+
 // probeSwitchedProviderAccount runs the zero-token identity probe for the
 // account a switch just activated. The switch emits `provider:account` from
 // saved metadata without probing, and Claude's model catalog is learned per
@@ -84,8 +120,15 @@ func (a *App) probeSwitchedProviderAccount(providerName string) {
 	if providerName != string(provider.Claude) || a.shuttingDown.Load() {
 		return
 	}
+	probe := a.switchedAccountProbeFn
+	if probe == nil {
+		probe = func() error {
+			_, err := a.ProbeClaudeAccount()
+			return err
+		}
+	}
 	go func() {
-		if _, err := a.ProbeClaudeAccount(); err != nil {
+		if err := probe(); err != nil {
 			log.Printf("provider accounts: probe switched claude account: %v", err)
 		}
 	}()
@@ -206,6 +249,6 @@ func managedProviderAccount(account provideraccountapp.ManagedAccount) ManagedPr
 	return ManagedProviderAccount{
 		Account: account.Account, Active: account.Active,
 		Generation: account.Generation, NeedsLogin: account.NeedsLogin,
-		SignInRequired: account.SignInRequired,
+		SignInRequired: account.SignInRequired, AutoSwitch: account.AutoSwitch,
 	}
 }

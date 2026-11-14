@@ -36,7 +36,9 @@ export const REPLICA_ENVELOPE_VERSION = 1;
  * Body schema version, stamped into the database's `meta` record.
  * Bump whenever `ReplicaBody`'s field set or the meaning of a field
  * changes — including a change to the wire `Item` DTO, since items ride
- * the envelope verbatim. A mismatch drops the whole database.
+ * the envelope verbatim. A mismatch drops the whole database, and the
+ * bump raises `REPLICA_DB_VERSION` (idb.ts), which shuts out a page still
+ * running the previous build.
  */
 // Schema 4 gave the body `runs`: a window is only paintable with the
 // stubs that describe the activity-run members it does not hold. Schema 5
@@ -45,7 +47,11 @@ export const REPLICA_ENVELOPE_VERSION = 1;
 // Schema 6 carries completion launch context independently of loaded rows.
 // Schema 7 holds no subagent child rows and no child aggregates: a
 // collapsed card reads its launch row's backend decoration.
-export const REPLICA_SCHEMA_VERSION = 7;
+// Schema 8: the abandoned-blocks record joins the run it follows, so a
+// stored stub that ends a run at the record describes runs that no longer
+// exist, and a window holding only one side of the old split would never
+// be corrected.
+export const REPLICA_SCHEMA_VERSION = 8;
 
 /**
  * Per-envelope caps, deliberately the same numbers `threadItemCache`

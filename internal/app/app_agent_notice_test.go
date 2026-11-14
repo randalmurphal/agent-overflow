@@ -240,7 +240,7 @@ func TestAThreadSendArchivedBeforeItsSessionStartsIsWithdrawn(t *testing.T) {
 	if n := starts.Load(); n != 0 {
 		t.Fatalf("started %d sessions for an archived thread", n)
 	}
-	if err := a.stopArchivedThreadWork(context.Background(), thread.ID); err != nil {
+	if err := a.stopArchivedThreadWork(a.captureArchivedThreadWork(thread.ID)); err != nil {
 		t.Fatalf("stopArchivedThreadWork: %v", err)
 	}
 
@@ -250,6 +250,39 @@ func TestAThreadSendArchivedBeforeItsSessionStartsIsWithdrawn(t *testing.T) {
 	want := "A message sent with agent-overflow thread send was not delivered: the thread was archived before the agent took it in."
 	if rows := noticeRows(t, a, thread.ID, want); len(rows) != 1 {
 		t.Fatalf("notices %q, want one %q", rows, want)
+	}
+}
+
+// The archive withdraws what was queued when it committed. A message queued
+// after the thread came back is not the archive's to take.
+func TestAnArchiveLeavesAMessageQueuedAfterTheThreadCameBack(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	a.startSessionFn = func(string) error { return nil }
+	thread := noticeTestThread(t, a, "notice-archived-then-back")
+
+	unlock := a.threadLocks().Lock(thread.ID)
+	sendWithin(t, a, thread.ID, "deploy 4 is done", 5*time.Second)
+	if _, _, err := a.threadApplication().Archive(thread.ID); err != nil {
+		unlock()
+		t.Fatalf("Archive: %v", err)
+	}
+	work := a.captureArchivedThreadWork(thread.ID)
+	unlock()
+	a.waitAgentNoticeWork()
+
+	if _, err := a.UnarchiveThread(thread.ID); err != nil {
+		t.Fatalf("UnarchiveThread: %v", err)
+	}
+	later := sendWithin(t, a, thread.ID, "deploy 5 is done", 5*time.Second)
+	a.waitAgentNoticeWork()
+	if err := a.stopArchivedThreadWork(work); err != nil {
+		t.Fatalf("stopArchivedThreadWork: %v", err)
+	}
+
+	rows := durableQueueRows(t, a, thread.ID)
+	if len(rows) != 1 || rows[0].SendID != later {
+		t.Fatalf("queue = %+v, want only the message sent after the thread came back (%s)", rows, later)
 	}
 }
 
@@ -774,7 +807,7 @@ func TestAWithdrawalThatFailsIsReported(t *testing.T) {
 		!strings.Contains(err.Error(), `the loop "board" is cancelled, but its wake already queued could not be taken back`) {
 		t.Fatalf("CancelWake: %v, want the wake left queued reported", err)
 	}
-	if err := a.stopArchivedThreadWork(context.Background(), thread.ID); err == nil || !strings.Contains(err.Error(), "withdraw agent-wake:wake-board:1") {
+	if err := a.stopArchivedThreadWork(a.captureArchivedThreadWork(thread.ID)); err == nil || !strings.Contains(err.Error(), "withdraw agent-wake:wake-board:1") {
 		t.Fatalf("stopArchivedThreadWork: %v, want the wakes left queued reported", err)
 	}
 }

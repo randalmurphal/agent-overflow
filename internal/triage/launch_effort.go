@@ -8,19 +8,79 @@ import (
 // launchStampKeys are the facts the Claude parser stamps on an Agent launch
 // (and `inherited_effort` on a §E6 resume carrier) about the moment it
 // happened (internal/provider/claude/subagent_effort.go): the effort the
-// launcher ran at, the higher tiers it may have run at instead (claude-tui)
-// and the model the launch's alias resolved to. A later delivery of the same
-// row would stamp a later moment, so a row's first state wins. An effort and
-// its alternatives are one stamp: they settle together.
-var launchStampGroups = [][]string{
-	{"inherited_effort", "inherited_effort_alternatives"},
-	{"requested_model"},
+// agent runs at absent a named one, the higher tiers it may be instead
+// (claude-tui), the model the launch's alias resolved to, and the effort
+// a claude-tui agent's first request ran at. The effort stamps may arrive
+// with the agent's first model report. A later delivery of the same row
+// would stamp a later moment, so a row's first state wins. An effort and its
+// alternatives are one stamp: they settle together.
+var launchStampGroups = []launchStampGroup{
+	{keys: []string{"inherited_effort", "inherited_effort_alternatives"}},
+	{keys: []string{"requested_model"}},
+	{keys: []string{"run_effort"}, reported: true},
+}
+
+type launchStampGroup struct {
+	keys []string
+	// reported marks a stamp the agent's own request reported, not one read
+	// off the launch moment: a row without it takes it from any delivery.
+	reported bool
+}
+
+// launchStampFields picks the launch stamps out of a tool start's meta, so
+// a model report that arrives before its launch row can be held for it.
+func launchStampFields(meta json.RawMessage) map[string]json.RawMessage {
+	if !mentionsLaunchStamp(string(meta)) {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(meta, &fields) != nil {
+		return nil
+	}
+	stamps := map[string]json.RawMessage{}
+	for _, group := range launchStampGroups {
+		for _, key := range group.keys {
+			if value, ok := fields[key]; ok {
+				stamps[key] = value
+			}
+		}
+	}
+	if len(stamps) == 0 {
+		return nil
+	}
+	return stamps
+}
+
+// holdLaunchStamps adds next to the stamps held for a row that does not
+// exist yet. The stamps arrive in separate updates, so each stamp keeps its
+// first value.
+func holdLaunchStamps(held, next map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(held) == 0 {
+		return next
+	}
+	for _, group := range launchStampGroups {
+		settled := false
+		for _, key := range group.keys {
+			if _, ok := held[key]; ok {
+				settled = true
+			}
+		}
+		if settled {
+			continue
+		}
+		for _, key := range group.keys {
+			if value, ok := next[key]; ok {
+				held[key] = value
+			}
+		}
+	}
+	return held
 }
 
 // keepLaunchStamps settles the launch stamps of a row whose tool start is
 // delivered again (a later process, a mirror re-projection): the existing
 // row's state wins in both directions, so a row stored without a stamp never
-// gains one from a replay.
+// gains one from a replay, except a reported stamp.
 func keepLaunchStamps(existing, merged string) string {
 	return settleLaunchStamps(existing, merged, false)
 }
@@ -46,15 +106,15 @@ func settleLaunchStamps(existing, merged string, mayAdd bool) string {
 	changed := false
 	for _, group := range launchStampGroups {
 		had, has := false, false
-		for _, key := range group {
+		for _, key := range group.keys {
 			_, inPrior := prior[key]
 			_, inNext := next[key]
 			had, has = had || inPrior, has || inNext
 		}
-		if !had && (mayAdd || !has) {
+		if !had && (mayAdd || group.reported || !has) {
 			continue
 		}
-		for _, key := range group {
+		for _, key := range group.keys {
 			value, inPrior := prior[key]
 			current, inNext := next[key]
 			switch {
@@ -79,7 +139,7 @@ func settleLaunchStamps(existing, merged string, mayAdd bool) string {
 
 func mentionsLaunchStamp(meta string) bool {
 	for _, group := range launchStampGroups {
-		for _, key := range group {
+		for _, key := range group.keys {
 			if strings.Contains(meta, `"`+key+`"`) {
 				return true
 			}

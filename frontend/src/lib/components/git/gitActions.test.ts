@@ -7,6 +7,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  menuPullEnabled,
   menuPushEnabled,
   primaryActionFor,
   runPushAction,
@@ -186,6 +187,23 @@ describe('menuPushEnabled', () => {
 
   it('does not offer Push on a detached HEAD without an upstream', () => {
     expect(menuPushEnabled(status({ branch: '', hasUpstream: false, aheadCount: 0 }))).toBe(false);
+  });
+});
+
+describe('a detached HEAD', () => {
+  const detached = status({ branch: '', tag: 'v2', headCommit: 'abc', hasUpstream: true, aheadCount: 2, behindCount: 3 });
+
+  it('offers no Push or Pull as the primary action, whatever counts it carries', () => {
+    expect(primaryActionFor(detached)).toMatchObject({ action: 'commit', disabled: true });
+    expect(primaryActionFor({ ...detached, aheadCount: 0 })).toMatchObject({ action: 'commit', disabled: true });
+    expect(primaryActionFor({ ...detached, hasChanges: true })).toMatchObject({ action: 'commit', disabled: false });
+  });
+
+  it('offers no Push or Pull in the menu', () => {
+    expect(menuPushEnabled(detached)).toBe(false);
+    expect(menuPullEnabled(detached)).toBe(false);
+    expect(menuPullEnabled(status({ behindCount: 1 }))).toBe(true);
+    expect(menuPullEnabled(status({ behindCount: 0 }))).toBe(false);
   });
 });
 

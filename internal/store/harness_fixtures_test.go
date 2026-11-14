@@ -234,10 +234,11 @@ func downgradeSchema(t *testing.T, db, ref *sql.DB, version int) {
 				drop(o)
 			case w.SQL != o.SQL && kind == "table":
 				if got := dropAddedColumns(t, db, ref, o.Name); got != w.SQL {
-					if !isSubsequence(orderedColumnsForTest(t, db, o.Name), orderedColumnsForTest(t, ref, o.Name)) {
+					columns := keptColumns(orderedColumnsForTest(t, db, o.Name), orderedColumnsForTest(t, ref, o.Name))
+					if !isSubsequence(columns, orderedColumnsForTest(t, ref, o.Name)) {
 						t.Fatalf("table %s differs from v%d's; the fixture cannot be downgraded:\n%s\nwant:\n%s", o.Name, version, got, w.SQL)
 					}
-					rebuildTableAs(t, db, o.Name, w.SQL)
+					rebuildTableAs(t, db, o.Name, w.SQL, columns)
 					// The rebuild dropped the table's indexes and triggers;
 					// the way up recreates ref's.
 					for other, dependent := range have {
@@ -302,14 +303,15 @@ func orderedColumnsForTest(t *testing.T, db *sql.DB, table string) []string {
 }
 
 // rebuildTableAs replaces table with one declared by create, ref's exact
-// statement, holding the same rows. db is one connection. The old table is
+// statement, holding the same rows' values of columns. db is one
+// connection. The old table is
 // renamed away under legacy_alter_table, so no reference to the name in
 // another table, view or trigger is rewritten, and dropped with its
 // indexes and triggers once its rows are copied; foreign keys are off
 // meanwhile, as in a rebuild migration.
-func rebuildTableAs(t *testing.T, db *sql.DB, table, create string) {
+func rebuildTableAs(t *testing.T, db *sql.DB, table, create string, kept []string) {
 	t.Helper()
-	columns := `"` + strings.Join(orderedColumnsForTest(t, db, table), `", "`) + `"`
+	columns := `"` + strings.Join(kept, `", "`) + `"`
 	old := table + "_downgraded"
 	mustExec(t, db, `PRAGMA foreign_keys = OFF`)
 	mustExec(t, db, `PRAGMA legacy_alter_table = ON`)
@@ -321,19 +323,30 @@ func rebuildTableAs(t *testing.T, db *sql.DB, table, create string) {
 	mustExec(t, db, `PRAGMA foreign_keys = ON`)
 }
 
-// dropAddedColumns drops the columns of table that ref's table lacks, when
-// they trail every column ref's has, as a later ADD COLUMN leaves them, and
-// returns the table's SQL after.
-func dropAddedColumns(t *testing.T, db, ref *sql.DB, table string) string {
-	t.Helper()
-	have, want := orderedColumnsForTest(t, db, table), orderedColumnsForTest(t, ref, table)
+// keptColumns is have without the columns that trail every column of
+// want's and want lacks, as a later ADD COLUMN, or a rebuild that appends
+// a column, leaves them.
+func keptColumns(have, want []string) []string {
 	kept := len(have)
 	for kept > 0 && !slices.Contains(want, have[kept-1]) {
 		kept--
 	}
-	if !slices.ContainsFunc(have[:kept], func(name string) bool { return !slices.Contains(want, name) }) {
-		for _, name := range have[kept:] {
-			mustExec(t, db, fmt.Sprintf(`ALTER TABLE "%s" DROP COLUMN "%s"`, table, name))
+	return have[:kept]
+}
+
+// dropAddedColumns drops the columns of table that ref's table lacks, when
+// they trail every column ref's has, and returns the table's SQL after. A
+// column a constraint of the table names cannot be dropped in place; it
+// stays for the caller's rebuild, which copies only keptColumns.
+func dropAddedColumns(t *testing.T, db, ref *sql.DB, table string) string {
+	t.Helper()
+	have, want := orderedColumnsForTest(t, db, table), orderedColumnsForTest(t, ref, table)
+	kept := keptColumns(have, want)
+	if !slices.ContainsFunc(kept, func(name string) bool { return !slices.Contains(want, name) }) {
+		for _, name := range have[len(kept):] {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE "%s" DROP COLUMN "%s"`, table, name)); err != nil {
+				break
+			}
 		}
 	}
 	var sqlText string
@@ -364,7 +377,7 @@ func TestDowngradeRestoresADroppedColumnButRefusesARenamedOne(t *testing.T) {
 	if got := orderedColumnsForTest(t, dropped, "x"); !isSubsequence(got, orderedColumnsForTest(t, ref, "x")) {
 		t.Fatalf("columns after dropping the added one = %v", got)
 	}
-	rebuildTableAs(t, dropped, "x", declared)
+	rebuildTableAs(t, dropped, "x", declared, orderedColumnsForTest(t, dropped, "x"))
 	var a, b, c string
 	if err := dropped.QueryRow(`SELECT a, b, c FROM x`).Scan(&a, &b, &c); err != nil || a != "1" || b != "kept" || c != "3" {
 		t.Fatalf("rebuilt row = %q %q %q, %v", a, b, c, err)

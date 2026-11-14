@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil/providerpath"
@@ -25,6 +26,7 @@ import (
 func TestMain(m *testing.M) { os.Exit(providerpath.Guard(func() int { return storetest.Run(m) })) }
 
 type testHost struct {
+	forgeCachesReset  int
 	store             *store.Store
 	replay            *replaylog.Manager
 	emit              func(eventchan.Channel, any)
@@ -36,7 +38,10 @@ type testHost struct {
 	browserScreenshot func(string, string) ([]byte, error)
 	pushSent          []PushMessage
 	updateWorkReason  string
+	claudeUsage       *claudefake.Usage
+	usageReadings     int
 	droppedRetained   int
+	droppedImages     int
 	broadcastRows     []string
 	// stopped is every StopSession call, in order. liveAfterStop is what
 	// each AwaitSessionEndWork returns in turn: the sessions the stops'
@@ -114,6 +119,8 @@ func (h *testHost) UpdateWorkReason() (string, error) {
 func (h *testHost) StallProviderEvents(string) error   { return nil }
 func (h *testHost) ReleaseProviderEvents(string) error { return nil }
 func (h *testHost) PendingProviderEvents(string) int   { return 0 }
+func (h *testHost) ClaudeUsageFake() *claudefake.Usage { return h.claudeUsage }
+func (h *testHost) RequestClaudeUsageReading()         { h.usageReadings++ }
 func (h *testHost) BrowserPressKey(string, string, keybindings.Accelerator) error {
 	return errors.New("no browser engine in the fixture")
 }
@@ -185,6 +192,9 @@ func (h *testHost) ClearUIState() error {
 	return h.store.ClearUIState()
 }
 func (h *testHost) ResetSessionImporter() {}
+func (h *testHost) DropReviewDiffImages() { h.droppedImages++ }
+
+func (h *testHost) ResetForgeCaches() { h.forgeCachesReset++ }
 
 // PauseMergedPRCleanup counts pauses and resumes and, through onPause and
 // onResume, lets a test see what the reset had done by then.

@@ -26,7 +26,7 @@
   title="Attach files"
   data-testid="composer-attach"
   onclick={() => isNativeShell() ? (open = !open) : choose('')}
-  class="inline-flex size-8 compact:size-9 shrink-0 items-center justify-center rounded-[var(--radius-control)] text-fg-muted hover:bg-surface-2/40 hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+  class="inline-flex size-8 compact:size-10 shrink-0 items-center justify-center rounded-[var(--radius-control)] text-fg-muted hover:bg-surface-2/40 hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
 >
   <Icon icon={Paperclip} size={16} />
 </button>

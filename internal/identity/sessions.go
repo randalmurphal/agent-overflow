@@ -15,6 +15,8 @@ import (
 	"agent-overflow/internal/store"
 
 	"github.com/google/uuid"
+
+	"agent-overflow/internal/secret"
 )
 
 // LiveConns is the transport's live-connection registry, as this package
@@ -55,7 +57,7 @@ type Sessions struct {
 	// keys caches signing-key secrets by id. Bounded by the rows in
 	// `signing_keys`, which only this package inserts; a presentation
 	// naming an unknown key is refused and caches nothing.
-	keys map[string][]byte
+	keys map[string]*secret.Bytes
 
 	// conns is optional. Nil means no transport is attached — a headless
 	// boot, a test — and revocation then only has to reach the database and
@@ -107,7 +109,7 @@ func NewSessions(st *store.Store, backendID string) (*Sessions, error) {
 		backendID:  backendID,
 		now:        time.Now,
 		live:       make(map[string]store.Session),
-		keys:       make(map[string][]byte),
+		keys:       make(map[string]*secret.Bytes),
 		proofs:     newProofReplay(),
 		ceremonies: make(map[string]passkeyCeremony),
 		stepUps:    make(map[string]stepUpGrant),
@@ -135,14 +137,14 @@ func (s *Sessions) EnsureSigningKey() (store.SigningKey, error) {
 	if !errors.Is(err, sql.ErrNoRows) {
 		return store.SigningKey{}, err
 	}
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
 		return store.SigningKey{}, fmt.Errorf("identity: mint signing key: %w", err)
 	}
-	digest := sha256.Sum256(secret)
+	digest := sha256.Sum256(raw)
 	minted := store.SigningKey{
 		ID:        encodeKeyID(digest[:claimsKeyIDLen]),
-		Secret:    secret,
+		Secret:    secret.Adopt(raw),
 		CreatedAt: s.now().UnixMilli(),
 	}
 	if err := s.store.InsertSigningKey(minted); err != nil {
@@ -224,7 +226,7 @@ func (s *Sessions) Mint(req MintRequest) (store.Session, string, error) {
 		SessionID: session.ID,
 		IssuedAt:  session.CreatedAt,
 		ExpiresAt: session.ExpiresAt,
-	}, key.Secret, s.backendID)
+	}, key.Secret.Reveal(), s.backendID)
 	if err != nil {
 		return store.Session{}, "", err
 	}
@@ -268,7 +270,7 @@ func (s *Sessions) Verify(credential string) (store.Session, Reason) {
 	if reason.Refused() {
 		return store.Session{}, reason
 	}
-	secret, err := s.signingSecret(claims.KeyID)
+	keySecret, err := s.signingSecret(claims.KeyID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return store.Session{}, ReasonKeyMismatch
@@ -276,7 +278,7 @@ func (s *Sessions) Verify(credential string) (store.Session, Reason) {
 		log.Printf("identity: read signing key %s: %v", claims.KeyID, err)
 		return store.Session{}, ReasonKeyMismatch
 	}
-	want := claimsMAC(payload[:], secret, s.backendID)
+	want := claimsMAC(payload[:], keySecret.Reveal(), s.backendID)
 	if !hmac.Equal(mac[:], want[:]) {
 		return store.Session{}, ReasonInvalidSignature
 	}
@@ -667,12 +669,12 @@ func (s *Sessions) sweepExpiredLocked(now int64) {
 // signingSecret resolves a key id to its bytes, caching the read. A
 // presentation naming a key this backend does not hold returns
 // sql.ErrNoRows and caches nothing, so an unknown id cannot grow the map.
-func (s *Sessions) signingSecret(keyID string) ([]byte, error) {
+func (s *Sessions) signingSecret(keyID string) (*secret.Bytes, error) {
 	s.mu.RLock()
-	secret, hit := s.keys[keyID]
+	cached, hit := s.keys[keyID]
 	s.mu.RUnlock()
 	if hit {
-		return secret, nil
+		return cached, nil
 	}
 	key, err := s.store.SigningKeyByID(keyID)
 	if err != nil {

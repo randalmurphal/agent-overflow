@@ -69,7 +69,7 @@
         <BranchPicker {pane} />
         <EnvPicker {pane} {workspaceLock} />
         {#if !readonly}
-          <WorktreeNameInput {pane} workspaceDirty={false} {workspaceLock} />
+          <WorktreeNameInput {pane} {workspaceLock} />
         {/if}
       {/if}
     </div>

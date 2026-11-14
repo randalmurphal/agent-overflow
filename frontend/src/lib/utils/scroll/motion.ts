@@ -14,73 +14,18 @@ const JERK_SPEED_BASE = 3;
 const CARRY_CEILING = 4;
 export const SPRING_MAX_CATCHUP_STEPS = 1;
 export const SPRING_MAX_VELOCITY_PX_PER_FRAME = 27;
+/** A spring value this close to its target, moving this slowly, has arrived. */
+const VALUE_LANDING = 0.5;
 
-/** Continuous chase state. Each step samples the trajectory and reconciles its own readback. */
-export class SpringMotion {
-  private speed = 0;
-  private residual = 0;
-  private modeled = 0;
-  private acceleration: number | null = null;
-  private readback: number | null = null;
-  private quantum = 0;
-  private offset = 0;
+/**
+ * The spring's velocity law: one step of velocity toward a distance, with
+ * the acceleration it carries between steps. Shared by every motion that
+ * must read as the same spring.
+ */
+export class SpringVelocity {
+  acceleration: number | null = null;
 
-  get velocity(): number { return this.speed; }
-
-  reset(): void {
-    this.speed = 0;
-    this.rebase();
-    this.readback = null;
-  }
-
-  private rebase(): void {
-    this.residual = 0;
-    this.acceleration = null;
-  }
-
-  step(
-    current: number, target: number, frames: number, grid: ScrollGrid,
-    write: (current: number, position: number, request: number, target: number, overshot: boolean) => number,
-  ): number {
-    if (!Number.isFinite(current) || !Number.isFinite(target) || !Number.isFinite(frames) || frames < 0
-      || !Number.isFinite(grid.quantum) || grid.quantum <= 0
-      || !Number.isFinite(grid.writeOffset) || !Number.isFinite(grid.readbackError) || grid.readbackError < 0) {
-      throw new RangeError('Spring step requires finite positions, nonnegative elapsed time and a valid grid');
-    }
-    this.synchronize(current, grid);
-    if (frames === 0) return current;
-    const modeled = this.advance(current, target, frames);
-    const position = sampleScrollPosition(modeled, current, target, grid);
-    if (position === current) return current;
-    const overshot = (current < target && modeled > target) || (current > target && modeled < target);
-    const readback = write(current, position, position === target ? target : position + grid.writeOffset, target, overshot);
-    if (!Number.isFinite(readback)) throw new RangeError('Scroll write returned a nonfinite position');
-    this.accept(readback, position, target, grid);
-    if (overshot) this.acceleration = null;
-    return readback;
-  }
-
-  private synchronize(current: number, grid: ScrollGrid): void {
-    if (grid.quantum !== this.quantum || grid.writeOffset !== this.offset
-      || (this.readback !== null && Math.abs(current - this.readback) > scrollReadbackTolerance(grid, current))) {
-      this.rebase();
-    }
-    this.quantum = grid.quantum;
-    this.offset = grid.writeOffset;
-    this.readback = current;
-  }
-
-  private advance(current: number, target: number, frames: number): number {
-    const fraction = Math.min(frames, SPRING_MAX_CATCHUP_STEPS);
-    const difference = target - (current + this.residual);
-    const before = this.speed;
-    this.speed = this.advanceVelocity(difference, before, fraction);
-    this.residual += this.speed * fraction;
-    this.modeled = current + this.residual;
-    return this.modeled;
-  }
-
-  private advanceVelocity(difference: number, velocity: number, fraction: number): number {
+  advance(difference: number, velocity: number, fraction: number): number {
     const direction = Math.sign(difference);
     if (direction === 0) {
       this.acceleration = null;
@@ -114,6 +59,103 @@ export class SpringMotion {
     this.acceleration = direction * (next - toward) / fraction;
     return direction * next;
   }
+}
+
+/**
+ * A length chasing a target on the scroll spring's velocity law, for
+ * frame-driven motion that is not a scroll position (a box height). It has
+ * no pixel grid to reconcile, so it lands exactly on the target.
+ */
+export class SpringValue {
+  private speed = 0;
+  private readonly law = new SpringVelocity();
+
+  /** One step from `current` toward `target`; returns the new value. */
+  step(current: number, target: number, frames: number): number {
+    if (!Number.isFinite(current) || !Number.isFinite(target) || !Number.isFinite(frames) || frames < 0) {
+      throw new RangeError('Spring value step requires finite values and nonnegative elapsed time');
+    }
+    const fraction = Math.min(frames, SPRING_MAX_CATCHUP_STEPS);
+    if (fraction === 0) return current;
+    const difference = target - current;
+    if (Math.abs(difference) <= VALUE_LANDING && Math.abs(this.speed) < VALUE_LANDING) return this.land(target);
+    this.speed = this.law.advance(difference, this.speed, fraction);
+    const next = current + this.speed * fraction;
+    const overshot = (current < target && next > target) || (current > target && next < target);
+    return overshot ? this.land(target) : next;
+  }
+
+  private land(target: number): number {
+    this.speed = 0;
+    this.law.acceleration = null;
+    return target;
+  }
+}
+
+/** Continuous chase state. Each step samples the trajectory and reconciles its own readback. */
+export class SpringMotion {
+  private speed = 0;
+  private residual = 0;
+  private modeled = 0;
+  private readonly law = new SpringVelocity();
+  private readback: number | null = null;
+  private quantum = 0;
+  private offset = 0;
+
+  get velocity(): number { return this.speed; }
+
+  reset(): void {
+    this.speed = 0;
+    this.rebase();
+    this.readback = null;
+  }
+
+  private rebase(): void {
+    this.residual = 0;
+    this.law.acceleration = null;
+  }
+
+  step(
+    current: number, target: number, frames: number, grid: ScrollGrid,
+    write: (current: number, position: number, request: number, target: number, overshot: boolean) => number,
+  ): number {
+    if (!Number.isFinite(current) || !Number.isFinite(target) || !Number.isFinite(frames) || frames < 0
+      || !Number.isFinite(grid.quantum) || grid.quantum <= 0
+      || !Number.isFinite(grid.writeOffset) || !Number.isFinite(grid.readbackError) || grid.readbackError < 0) {
+      throw new RangeError('Spring step requires finite positions, nonnegative elapsed time and a valid grid');
+    }
+    this.synchronize(current, grid);
+    if (frames === 0) return current;
+    const modeled = this.advance(current, target, frames);
+    const position = sampleScrollPosition(modeled, current, target, grid);
+    if (position === current) return current;
+    const overshot = (current < target && modeled > target) || (current > target && modeled < target);
+    const readback = write(current, position, position === target ? target : position + grid.writeOffset, target, overshot);
+    if (!Number.isFinite(readback)) throw new RangeError('Scroll write returned a nonfinite position');
+    this.accept(readback, position, target, grid);
+    if (overshot) this.law.acceleration = null;
+    return readback;
+  }
+
+  private synchronize(current: number, grid: ScrollGrid): void {
+    if (grid.quantum !== this.quantum || grid.writeOffset !== this.offset
+      || (this.readback !== null && Math.abs(current - this.readback) > scrollReadbackTolerance(grid, current))) {
+      this.rebase();
+    }
+    this.quantum = grid.quantum;
+    this.offset = grid.writeOffset;
+    this.readback = current;
+  }
+
+  private advance(current: number, target: number, frames: number): number {
+    const fraction = Math.min(frames, SPRING_MAX_CATCHUP_STEPS);
+    const difference = target - (current + this.residual);
+    const before = this.speed;
+    this.speed = this.law.advance(difference, before, fraction);
+    this.residual += this.speed * fraction;
+    this.modeled = current + this.residual;
+    return this.modeled;
+  }
 
   private accept(readback: number, position: number, target: number, grid: ScrollGrid): void {
     const error = this.modeled - readback;
@@ -129,7 +171,7 @@ export class SpringMotion {
     if (Math.abs(this.speed) > FLOOR) {
       this.speed = Math.sign(this.speed) * Math.max(FLOOR, Math.abs(this.speed) / SLEW ** frames);
     }
-    this.acceleration = null;
+    this.law.acceleration = null;
   }
 
   park(frames: number, retain: boolean): void {

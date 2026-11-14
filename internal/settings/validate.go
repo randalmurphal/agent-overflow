@@ -241,7 +241,7 @@ func validateSettings(current Settings) (Settings, error) {
 	); err != nil {
 		return Settings{}, err
 	}
-	if err := validateRetentionDays(current.Retention.Days); err != nil {
+	if err := ValidateRetentionDays(current.Retention.Days); err != nil {
 		return Settings{}, err
 	}
 	if err := validateFontSize("fontSize", current.FontSize); err != nil {
@@ -319,6 +319,17 @@ func validateSettings(current Settings) (Settings, error) {
 	if err := validateClaudeMaxCommandTimeoutHours("claudeMaxCommandTimeoutHours", current.ClaudeMaxCommandTimeoutHours); err != nil {
 		return Settings{}, err
 	}
+	current.AccountAutoSwitchStrategy = strings.TrimSpace(current.AccountAutoSwitchStrategy)
+	if err := validateOption(
+		"accountAutoSwitchStrategy",
+		current.AccountAutoSwitchStrategy,
+		allowedAccountAutoSwitchStrategies,
+	); err != nil {
+		return Settings{}, err
+	}
+	if err := validateAccountAutoSwitchThreshold("accountAutoSwitchThreshold", current.AccountAutoSwitchThreshold); err != nil {
+		return Settings{}, err
+	}
 	current.ClaudeThinking, err = validateClaudeThinking("claudeThinking", current.ClaudeThinking)
 	if err != nil {
 		return Settings{}, err
@@ -340,6 +351,9 @@ func validateSettings(current Settings) (Settings, error) {
 		current.SpinnerCompactionAnimation,
 	)
 	if err != nil {
+		return Settings{}, err
+	}
+	if err := validateDictationAPI(&current); err != nil {
 		return Settings{}, err
 	}
 
@@ -496,6 +510,16 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		"claudeMaxCommandTimeoutHours",
 		current.ClaudeMaxCommandTimeoutHours,
 	)
+	current.AccountAutoSwitchStrategy = sanitizeOption(
+		"accountAutoSwitchStrategy",
+		current.AccountAutoSwitchStrategy,
+		DefaultSettings.AccountAutoSwitchStrategy,
+		allowedAccountAutoSwitchStrategies,
+	)
+	current.AccountAutoSwitchThreshold = sanitizeAccountAutoSwitchThreshold(
+		"accountAutoSwitchThreshold",
+		current.AccountAutoSwitchThreshold,
+	)
 	current.ClaudeThinking = sanitizeClaudeThinking("claudeThinking", current.ClaudeThinking)
 	current.SpinnerCustomVerbs = sanitizeSpinnerCustomVerbs("spinnerCustomVerbs", current.SpinnerCustomVerbs)
 	current.SpinnerDisabledAnimations = sanitizeSpinnerDisabledAnimations(
@@ -506,6 +530,7 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		"spinnerCompactionAnimation",
 		current.SpinnerCompactionAnimation,
 	)
+	sanitizeDictationAPI(&current)
 	return current
 }
 
@@ -533,12 +558,12 @@ func sanitizeAutoCompactPercent(field string, value, fallback int) int {
 // human-scale retention policy.
 const MaxRetentionDays = 36500
 
-// validateRetentionDays rejects negative and arithmetic-unsafe values.
+// ValidateRetentionDays rejects negative and arithmetic-unsafe values.
 // Zero is legal — it means "disable the sweep" — but a negative
 // integer is a caller bug because there is no policy a negative window
 // could represent, and a value above MaxRetentionDays risks Duration
 // overflow downstream.
-func validateRetentionDays(value int) error {
+func ValidateRetentionDays(value int) error {
 	if value < 0 {
 		return fmt.Errorf("retention.days must be non-negative, got %d", value)
 	}

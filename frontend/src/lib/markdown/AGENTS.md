@@ -70,10 +70,14 @@ backed tokens such as Mermaid, including when highlight caches are warm.
 - `LiteralHost` has one imperative owner. An app host may adopt it during
   streaming; visible text extends until a real divergence replaces it once.
 - `CompactBlocks` preserves reference-identical prefix DOM and rebuilds only a
-  rewritten suffix. It explicitly mounts and retires component islands.
+  rewritten suffix. It explicitly mounts and retires component islands. A
+  changed extension list rebuilds every block unless each changed extension
+  implements `tokenizesAlike`; then only the blocks it does not claim rebuild.
 - `data-streamdown-last-block` publishes the stable prefix's final token type.
 - `sd-trim-first-block`, `sd-trim-last-block`, `sd-first-block`, task-item
   classes, and paragraph-adjacency markers replace broad structural selectors.
+- `sd-codespan-short` marks inline code short enough to stay on one line.
+  Every emitter of an inline `<code>` calls `render/codespan.ts#codespanClass`.
 - `data-footnote-label` publishes labels only. Chat owns the definition registry
   and popup and pays the whole-document definition lex when opening it.
 - Mermaid and math elements publish parser-owned source values. Code source

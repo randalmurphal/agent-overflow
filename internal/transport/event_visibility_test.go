@@ -59,6 +59,7 @@ func TestEventVisibleToOrigin(t *testing.T) {
 		"provider:status",
 		"provider:login",
 		"provider:account_signin",
+		"provider:account_auto_switch",
 		// Both notification channels reach an attached remote client: being
 		// told a turn finished while away from the desk is the reason to
 		// attach one, and the reveal that follows the click belongs to the

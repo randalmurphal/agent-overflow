@@ -277,6 +277,19 @@ var InjectedUserContentWrappers = []InjectedUserContentWrapper{
 	{"<command-name>", "</command-name>"},
 }
 
+// HostShellRecordJoint is the text between the command and its output in a
+// shell command a stream-json host sends as one user message
+// (claude.FormatUserShellCommand). The CLI's own `!` mode writes the command
+// and its output as two entries, so only a host's record holds this text: it
+// is a turn the person started, and the fork-point walk counts it as one.
+const HostShellRecordJoint = "</bash-input>\n<bash-stdout>"
+
+// isInjectedUserText reports whether a user text was put there by the CLI
+// rather than sent as a prompt.
+func isInjectedUserText(s string) bool {
+	return hasInjectedUserContentTag(s) && !strings.Contains(s, HostShellRecordJoint)
+}
+
 // isRealUserPrompt reports whether a JSONL entry represents a user-typed
 // prompt rather than a tool-result echo, sidechain message, or
 // CLI-injected synthetic user-role entry (Skill body, compact
@@ -318,7 +331,7 @@ func isRealUserPrompt(entry map[string]any) bool {
 	}
 	switch content := msg["content"].(type) {
 	case string:
-		if hasInjectedUserContentTag(content) {
+		if isInjectedUserText(content) {
 			return false
 		}
 		return true
@@ -345,7 +358,7 @@ func isRealUserPrompt(entry map[string]any) bool {
 			// they ride an `isMeta:false` entry (rare but observed for
 			// command-output / system-reminder one-shots).
 			if t == "text" {
-				if text, _ := b["text"].(string); hasInjectedUserContentTag(text) {
+				if text, _ := b["text"].(string); isInjectedUserText(text) {
 					return false
 				}
 			}

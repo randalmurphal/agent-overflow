@@ -1357,7 +1357,7 @@ func (q *cardSequence) opFold(rows []seqRow) (cardSequenceOp, bool) {
 		meta = item.Meta
 	}
 	return cardSequenceOp{fmt.Sprintf("FoldUserTextRows into %s folding %v meta=%s", survivor.ID, folded, meta), func() error {
-		_, err := q.s.FoldUserTextRows(q.thread, survivor.ID, folded, "folded", meta, q.now())
+		_, err := q.s.FoldUserTextRows(q.thread, survivor.ID, folded, nil, "folded", meta, q.now())
 		return err
 	}}, true
 }

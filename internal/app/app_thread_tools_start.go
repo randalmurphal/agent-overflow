@@ -245,6 +245,7 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
+	ctx = acceptedRequestContext(ctx)
 	target, fresh, err := t.acceptRequest(origin, store.ThreadRequest{
 		Token:          token,
 		Kind:           store.ThreadRequestSpawn,
@@ -336,6 +337,7 @@ func (t threadToolsApp) acceptSend(ctx context.Context, origin threadRequestOrig
 		return "", t.failRequest(token, errorsx.Public(threadtools.CodeSelfSend,
 			"A thread cannot send to itself.", nil))
 	}
+	ctx = acceptedRequestContext(ctx)
 	_, fresh, err := t.acceptRequest(origin, store.ThreadRequest{
 		Token:          token,
 		Kind:           store.ThreadRequestSend,
@@ -411,6 +413,7 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
+	ctx = acceptedRequestContext(ctx)
 	target, fresh, err := t.acceptRequest(origin, store.ThreadRequest{
 		Token:          token,
 		Kind:           store.ThreadRequestAsk,
@@ -438,6 +441,14 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 		return "", t.failRequest(token, err)
 	}
 	return target, nil
+}
+
+// acceptedRequestContext is the context a request runs on from its receipt
+// on: the caller's values without its cancellation. A retry with the same
+// token never creates or dispatches again, so an accepted request abandoned
+// mid-dispatch would leave its thread without the message for good.
+func acceptedRequestContext(ctx context.Context) context.Context {
+	return context.WithoutCancel(ctx)
 }
 
 // answerRequested is what the footer's wording turns on: the sender waits, or
@@ -685,24 +696,15 @@ func (t threadToolsApp) requestDispatched(token, targetThreadID string) {
 	t.markRequestDispatched(token, targetThreadID, record.item.ID)
 }
 
-// returnRequest takes a request whose message a person's Stop un-sent back to
-// `accepted`, before the interrupt. Nothing answered it, so its sender is told
-// nothing; the
+// returnRequestNotTakenIn takes a request whose message goes back before the
+// provider took it in (a session end, a teardown, a handoff's move) back to
+// `accepted`. Nothing answered it, so its sender is told nothing; the
 // request is owed again and requeueRequest puts its message back on the
-// queue. It reports false when the request was settled or cancelled first,
-// and then it owes nothing. It takes the token's settle lock, so a turn end
-// reading the receipt sees it running or accepted, never in between.
-func (t threadToolsApp) returnRequest(token string) bool {
-	unlock := t.app.threadRequestSettleLock(token)
-	defer unlock()
-	return t.returnRequestLocked(token)
-}
-
-// returnRequestNotTakenIn is returnRequest for a message a session's end took
-// back: it reports true for a request still `accepted` (its message never
+// queue. It reports true for a request still `accepted` (its message never
 // left the queue) or `running` on threadID with no turn and not taken in by
 // the provider, now `accepted`, and false for any other, which the session
-// end settles.
+// end settles. It takes the token's settle lock, so a turn end reading the
+// receipt sees it running or accepted, never in between.
 func (t threadToolsApp) returnRequestNotTakenIn(threadID, token string) bool {
 	unlock := t.app.threadRequestSettleLock(token)
 	defer unlock()
@@ -744,7 +746,7 @@ func (t threadToolsApp) returnRequestLocked(token string) bool {
 
 // requeueRequest puts a returned request's message (body, footer included)
 // back on its target's queue, attributed as dispatchRequest attributed it. It
-// is held: the Stop or session end that gave it back does not start a turn
+// is held: the session end or teardown that gave it back does not start a turn
 // for it, and the thread's next turn boundary or session start sends it. An
 // archived thread refuses it, except one New Thread, Same Assistant
 // superseded: its request moves to the assistant's current thread, receipt
@@ -900,6 +902,10 @@ func (a *App) bindRequestDelivery(token, targetThreadID, messageItemID string, t
 //
 // The caller holds the token's settle lock.
 func (t threadToolsApp) settleIfTurnAlreadyEnded(token, targetThreadID string, turnIndex int) threadSettlementWork {
+	if t.app.triage != nil && t.app.triage.OpenTurnIndex(targetThreadID) == turnIndex {
+		// The turn is running, whatever completion its row still carries.
+		return threadSettlementWork{}
+	}
 	turn, found, err := t.app.store.GetTurnByThreadIndex(targetThreadID, turnIndex)
 	if err != nil {
 		log.Printf("thread tools: read turn %d of %s for request %s: %v", turnIndex, targetThreadID, token, err)

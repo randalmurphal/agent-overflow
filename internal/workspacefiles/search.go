@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/appimage"
+	"agent-overflow/internal/gitenv"
 )
 
 const (
@@ -49,9 +50,7 @@ var IgnoredDirs = map[string]struct{}{
 var gitCommand = func(ctx context.Context, cwd string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = cwd
-	// nil outside an AppImage launch, which keeps exec.Cmd on its own
-	// inherit path; inside one it drops the launch artifacts.
-	cmd.Env = appimage.ScrubInherited()
+	cmd.Env = gitenv.NonInteractive(appimage.Scrub(os.Environ()))
 	return cmd
 }
 

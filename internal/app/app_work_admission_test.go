@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/supervise"
+	"agent-overflow/internal/transport"
 )
 
 func TestAccountManagerSharesTheRestartFence(t *testing.T) {
@@ -79,6 +80,41 @@ func TestWorkAdmissionHandoffAndCancellation(t *testing.T) {
 	case <-entered:
 	case <-ctx.Done():
 		t.Fatal("canceled update did not reopen admission")
+	}
+}
+
+// An accepted request's next admission, taken while an update holds the
+// fence, outlives its caller leaving: it waits for the reopen and is
+// admitted, so the dispatch that follows its receipt runs.
+func TestAcceptedRequestAdmissionOutlivesItsCaller(t *testing.T) {
+	t.Parallel()
+	var gate workAdmission
+	if reason, err := gate.quiesce(func() (string, error) { return "", nil }); err != nil || reason != "" {
+		t.Fatalf("quiesce: %q, %v", reason, err)
+	}
+	caller, leave := context.WithCancel(transport.WithCallerScope(context.Background(), transport.CallerScope{Kind: transport.ScopeKindInteractive}))
+	result := make(chan error, 1)
+	go func() {
+		release, err := gate.begin(acceptedRequestContext(caller))
+		if err == nil {
+			release()
+		}
+		result <- err
+	}()
+	leave()
+	select {
+	case err := <-result:
+		t.Fatalf("the admission ended when its caller left: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	gate.reopen()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("admission after the reopen: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the admission never returned after the reopen")
 	}
 }
 

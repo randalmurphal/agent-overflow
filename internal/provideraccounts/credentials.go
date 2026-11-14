@@ -1,11 +1,14 @@
 package provideraccounts
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,6 +17,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/filelock"
+	"agent-overflow/internal/secret"
 )
 
 const (
@@ -75,6 +80,12 @@ type ChainPosition func(providerName string, data []byte) (int64, bool)
 // a sign-in repairs is the worse failure.
 type LoginExpiry func(providerName string, data []byte) (int64, bool)
 
+// TokenFingerprint identifies the refresh token provider-native credential
+// bytes hold, as a hex SHA-256: equal across rewrites that keep the token,
+// different once a rotation replaces it. ok=false means the bytes hold no
+// refresh token, so nothing in them can be consumed.
+type TokenFingerprint func(providerName string, data []byte) (string, bool)
+
 // Policy carries the provider-specific credential predicates this package
 // cannot implement itself without importing a provider package. They are
 // supplied at construction rather than through setters, so a store that
@@ -85,6 +96,9 @@ type Policy struct {
 	SignedOut      SignedOutDetector
 	ChainPosition  ChainPosition
 	LoginExpiresAt LoginExpiry
+	// TokenFingerprint names what a crash recovery records as consumed
+	// (consumed.go). Without it nothing is recorded.
+	TokenFingerprint TokenFingerprint
 }
 
 // Credentials owns Agent Overflow's opaque copies of provider-native
@@ -103,10 +117,33 @@ type Credentials struct {
 }
 
 // CredentialSnapshot is one stable read from a provider-native credential
-// store. Data remains opaque to Agent Overflow.
+// store. The bytes remain opaque to Agent Overflow and print as
+// secret.Redacted wherever a snapshot is formatted, logged or encoded;
+// Bytes is the only way to read them.
 type CredentialSnapshot struct {
-	Data []byte
+	data *secret.Bytes
 }
+
+// NewCredentialSnapshot takes ownership of data.
+func NewCredentialSnapshot(data []byte) CredentialSnapshot {
+	return CredentialSnapshot{data: secret.Adopt(data)}
+}
+
+// Bytes returns the credential. The slice aliases the snapshot; callers
+// must not modify it.
+func (s CredentialSnapshot) Bytes() []byte { return s.data.Reveal() }
+
+func (CredentialSnapshot) String() string   { return secret.Redacted }
+func (CredentialSnapshot) GoString() string { return secret.Redacted }
+
+// Format prints secret.Redacted for every verb and flag.
+func (CredentialSnapshot) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(secret.Redacted)) }
+
+func (CredentialSnapshot) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + secret.Redacted + `"`), nil
+}
+func (CredentialSnapshot) MarshalText() ([]byte, error) { return []byte(secret.Redacted), nil }
+func (CredentialSnapshot) LogValue() slog.Value         { return slog.StringValue(secret.Redacted) }
 
 // NewCredentials builds the credential store. See Policy for why the
 // provider-specific predicates are constructor arguments rather than setters.
@@ -349,16 +386,16 @@ func (c *Credentials) InspectCredential(
 	if err != nil {
 		return CredentialState{}, err
 	}
-	if len(snapshot.Data) == 0 {
+	if len(snapshot.Bytes()) == 0 {
 		return CredentialState{}, nil
 	}
 	state := CredentialState{
-		LoginExpiresAt: c.CredentialLoginExpiresAt(providerName, snapshot.Data),
+		LoginExpiresAt: c.CredentialLoginExpiresAt(providerName, snapshot.Bytes()),
 	}
-	if c.credentialSignedOut(providerName, snapshot.Data) {
+	if c.credentialSignedOut(providerName, snapshot.Bytes()) {
 		return state, nil
 	}
-	state.Usable = !c.CredentialLoginExpired(providerName, snapshot.Data, time.Now())
+	state.Usable = !c.CredentialLoginExpired(providerName, snapshot.Bytes(), time.Now())
 	return state, nil
 }
 
@@ -374,7 +411,7 @@ func (c *Credentials) CredentialUsable(providerName, accountID string, active bo
 // active is true, or from one saved account slot otherwise.
 func (c *Credentials) ReadCredential(providerName, accountID string, active bool) ([]byte, error) {
 	snapshot, err := c.ReadCredentialSnapshot(providerName, accountID, active)
-	return snapshot.Data, err
+	return snapshot.Bytes(), err
 }
 
 func (c *Credentials) ReadCredentialSnapshot(
@@ -411,7 +448,7 @@ func (c *Credentials) readCredentialAt(
 	}
 	if runtime.GOOS == "darwin" && providerName == "claude" {
 		data, err := c.keychain.read(home, active)
-		return CredentialSnapshot{Data: data}, err
+		return NewCredentialSnapshot(data), err
 	}
 	return readCredentialSnapshot(filepath.Join(home, paths.CredentialFile))
 }
@@ -486,7 +523,7 @@ func (c *Credentials) noteSupersededSlotWrite(providerName, home string, data []
 	if err != nil {
 		return
 	}
-	current, ok := c.policy.ChainPosition(providerName, existing.Data)
+	current, ok := c.policy.ChainPosition(providerName, existing.Bytes())
 	if !ok || incoming >= current {
 		return
 	}
@@ -530,18 +567,119 @@ func (c *Credentials) writeCredential(
 	accountID string,
 	active bool,
 	data []byte,
-) error {
+) (retErr error) {
 	home, err := c.credentialLocation(providerName, accountID, active)
 	if err != nil {
 		return err
 	}
 	if !active {
+		lock, err := c.lockSlot(providerName, accountID)
+		if err != nil {
+			return err
+		}
+		defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
 		home, err = c.ensureAccountDirectory(providerName, accountID)
 		if err != nil {
 			return err
 		}
+		if consumed, err := c.consumedSlotWrite(providerName, accountID, data); err != nil || consumed {
+			return err
+		}
 	}
 	return c.writeCredentialAt(providerName, home, active, data)
+}
+
+// accountLockDirectoryName holds one lock file per account slot, beside the
+// slot directories rather than inside them: removal deletes a slot
+// directory while holding its lock, and the lock file outlives the
+// directory so every contender keeps opening the same inode.
+const accountLockDirectoryName = "agent-overflow-account-locks"
+
+// slotLockWait bounds the wait for another process's slot write or
+// removal, which is one small file operation.
+const slotLockWait = 5 * time.Second
+
+// lockSlot takes an account slot's lock. Every slot write and removal holds
+// it, so a writer that reads the slot to decide what to write (the
+// ephemeral sweep's adoption) can hold it across the read and the write
+// against other processes sharing the provider home.
+func (c *Credentials) lockSlot(providerName, accountID string) (*os.File, error) {
+	paths, err := c.Paths(providerName)
+	if err != nil {
+		return nil, err
+	}
+	if !safeAccountID.MatchString(accountID) {
+		return nil, fmt.Errorf("provideraccounts: invalid account id %q", accountID)
+	}
+	dir := filepath.Join(paths.SharedHome, accountLockDirectoryName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("provideraccounts: create account lock directory: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), slotLockWait)
+	defer cancel()
+	lock, err := filelock.Acquire(ctx, filepath.Join(dir, accountID+".lock"))
+	if err != nil {
+		return nil, fmt.Errorf("provideraccounts: lock %s account slot %s: %w", providerName, accountID, err)
+	}
+	return lock, nil
+}
+
+func releaseSlot(lock *os.File) error {
+	if err := filelock.Release(lock); err != nil {
+		return fmt.Errorf("provideraccounts: release account slot lock: %w", err)
+	}
+	return nil
+}
+
+// ReplaceAccountCredential writes data into a slot only while the slot still
+// holds expected, the credential data was derived from. It reports whether
+// the slot holds data afterwards; false means the slot moved on (a sign-in,
+// a recovery, a removal) and was left as it stands. A write whose own
+// earlier attempt already landed reports true without writing again.
+//
+// A writer holding bytes it read earlier uses this instead of
+// WriteAccountCredential: by the time it writes, another process may have
+// put a later credential there, and an unconditional write would rewind
+// the slot onto a refresh token that has already been used.
+//
+// A slot that holds expected but sits strictly later on the rotation chain
+// than data is kept too, whatever login either holds. Another store's boot
+// sweep can leave a slot there, ahead of the canonical credential a
+// selected probe derives data from, and bytes behind a rotation hold the
+// refresh token it consumed. When data is instead a different live login,
+// keeping the slot loses nothing either. Unlike the unconditional writes
+// noteSupersededSlotWrite only observes, this refusal cannot wedge a slot:
+// sign-ins and switches still write it.
+func (c *Credentials) ReplaceAccountCredential(providerName, accountID string, expected, data []byte) (replaced bool, retErr error) {
+	accountDir, err := c.accountDirectory(providerName, accountID)
+	if err != nil {
+		return false, err
+	}
+	lock, err := c.lockSlot(providerName, accountID)
+	if err != nil {
+		return false, err
+	}
+	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
+	current, err := c.readCredentialAt(providerName, accountDir, false)
+	switch {
+	case IsCredentialMissing(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("provideraccounts: inspect %s slot %s before replacing it: %w", providerName, accountID, err)
+	case bytes.Equal(current.Bytes(), data):
+		return true, nil
+	case !bytes.Equal(current.Bytes(), expected):
+		return false, nil
+	case c.chainAdvances(providerName, data, current.Bytes()):
+		return false, nil
+	}
+	if consumed, err := c.consumedSlotWrite(providerName, accountID, data); err != nil || consumed {
+		return false, err
+	}
+	if err := c.writeCredentialAt(providerName, accountDir, false, data); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (c *Credentials) WriteAccountCredential(providerName, accountID string, data []byte) error {
@@ -552,15 +690,22 @@ func (c *Credentials) WriteAccountCredential(providerName, accountID string, dat
 // native store before updating its saved account slot. Canonical-first ordering
 // keeps the active account usable if the secondary slot write fails; a later
 // reconciliation can repair the slot from canonical state.
+//
+// The slot is replaced only while it still holds expectedSlot, what the
+// caller read before it refreshed: once the canonical credential is
+// published another process can rotate it further and switch away, saving
+// the later credential into this slot, and that is not to be rewound. A slot
+// that moved on, or is gone, is left as it stands.
 func (c *Credentials) CommitSelectedCredential(
 	providerName string,
 	accountID string,
+	expectedSlot []byte,
 	data []byte,
 ) error {
 	if err := c.writeActiveCredential(providerName, data); err != nil {
 		return fmt.Errorf("provideraccounts: activate refreshed %s credentials: %w", providerName, err)
 	}
-	if err := c.WriteAccountCredential(providerName, accountID, data); err != nil {
+	if _, err := c.ReplaceAccountCredential(providerName, accountID, expectedSlot, data); err != nil {
 		return fmt.Errorf(
 			"provideraccounts: save refreshed %s account after canonical activation: %w",
 			providerName,
@@ -645,7 +790,7 @@ func readCredentialSnapshot(path string) (CredentialSnapshot, error) {
 	if currentInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, currentInfo) {
 		return CredentialSnapshot{}, fmt.Errorf("%s changed while reading credential file", path)
 	}
-	return CredentialSnapshot{Data: data}, nil
+	return NewCredentialSnapshot(data), nil
 }
 
 func IsCredentialMissing(err error) bool {

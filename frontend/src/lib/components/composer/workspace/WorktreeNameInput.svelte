@@ -6,7 +6,7 @@
   //   mode='new-worktree' && !creatingBranch → "+ new branch" + confirm ✓
   //   otherwise                              → nothing
   //
-  // The "+ new branch" button's only job is to call enterCreateBranchMode —
+  // The "+ new branch" button's only job is to call startNewBranch —
   // the resulting state then re-renders this component into the text-input
   // branch. In local mode the entry point is the BranchPicker dropdown's
   // "+ New branch…" entry instead, so no button shows here.
@@ -27,26 +27,25 @@
   import { userFacingError } from '../../../utils/userFacingError';
   import { isImeComposingEvent } from '../../../utils/imeComposition';
   import {
-    enterCreateBranchMode,
     exitCreateBranchMode,
     setNewBranchName,
+    startNewBranch,
     worktreeIntentForThread,
   } from '../../../stores/worktreeIntent.svelte';
   import { applyWorktreeIntentNow } from '../../../stores/worktreeIntentMaterialize';
+  import { checkoutDisplay, paneCheckout, refCheckout } from '../../../utils/checkout';
 
   interface Props {
     pane: ThreadPane;
-    workspaceDirty: boolean;
     workspaceLock: WorkspaceChangeLockState;
   }
 
-  let { pane, workspaceDirty, workspaceLock }: Props = $props();
+  let { pane, workspaceLock }: Props = $props();
 
   let applying = $state(false);
 
   let intent = $derived(worktreeIntentForThread(pane.thread));
   let inputId = $derived(`new-branch-name-${pane.thread?.id ?? 'none'}`);
-  let currentBranch = $derived(pane.thread?.branch ?? '');
   let showInput = $derived(intent.creatingBranch);
   let showButton = $derived(!intent.creatingBranch && intent.mode === 'new-worktree');
   let nameMissing = $derived(intent.creatingBranch && !intent.newBranchName.trim());
@@ -82,13 +81,17 @@
     if (confirmDisabled || !pane.thread) return;
     applying = true;
     const wasWorktree = intent.mode === 'new-worktree';
+    // An attach to a tag binds no branch; the toast names the tag instead.
+    const attachTarget = intent.creatingBranch
+      ? ''
+      : checkoutDisplay(intent.attachBranch ? refCheckout(intent.attachBranch) : paneCheckout(pane)).name;
     try {
       const applied = await applyWorktreeIntentNow(pane);
       if (applied) {
         addToast(
           'info',
           wasWorktree
-            ? `Created worktree on ${applied.branch || 'new branch'}`
+            ? `Created worktree on ${applied.branch || attachTarget || 'new branch'}`
             : `Created branch ${applied.branch || intent.newBranchName}`,
         );
       }
@@ -115,7 +118,7 @@
 
   function startCreate(): void {
     if (!pane.thread) return;
-    enterCreateBranchMode(pane.thread, { workspaceDirty, currentBranch });
+    startNewBranch(pane);
   }
 
   const smallButtonClasses = [

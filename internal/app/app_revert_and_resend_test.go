@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -678,5 +679,133 @@ func TestConversationMutationReadWaitsForReplacement(t *testing.T) {
 	}
 	if state.UserItemExists {
 		t.Fatal("read returned pre-cut history")
+	}
+}
+
+// appendTurnRow appends one row of the given kind to a thread turn.
+func appendTurnRow(t *testing.T, st *store.Store, row store.Item) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	if row.Status == "" {
+		row.Status = "completed"
+	}
+	if row.Role == "" {
+		row.Role = "assistant"
+	}
+	row.CreatedAt = now
+	row.UpdatedAt = now
+	if err := storetest.WithParentCard(st, row, func(row store.Item) error {
+		_, err := st.AppendItem(row)
+		return err
+	}); err != nil {
+		t.Fatalf("append %s %s: %v", row.Kind, row.ID, err)
+	}
+}
+
+// Editing an earlier message cuts a later turn that holds the completion of
+// a background command launched before the cut. The launch stays settled
+// history with no result: the revert writes it no sibling, and a later
+// session end finds nothing to settle.
+func TestRevertAndResendLeavesALaunchWhoseCompletionWasCutSettled(t *testing.T) {
+	t.Parallel()
+	app, _ := newResendTestApp(t)
+	thread, _ := seedResendThread(t, app, "t-resend-cut-completion")
+	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 9)
+	appendTurnRow(t, app.store, store.Item{ID: "complete:bg:0", ThreadID: thread.ID, TurnIndex: 1, ItemIndex: 5, Kind: "tool_completion", IsBackground: true, CompletionOf: "bg:0"})
+	if count, err := app.countRunningBackgroundTasks(thread.ID); err != nil || count != 0 {
+		t.Fatalf("precondition: running background tasks = %d (%v), want 0", count, err)
+	}
+
+	result, err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"})
+	if err != nil || result.Failure != "" || result.Warning != "" {
+		t.Fatalf("revert and resend: err=%v failure=%q warning=%q", err, result.Failure, result.Warning)
+	}
+	assertLaunchSettledWithoutSibling(t, app, thread.ID, "bg:0")
+
+	settled, err := app.triage.SettleBackgroundLaunchesForSessionEnd(thread.ID)
+	if err != nil || settled != 0 {
+		t.Fatalf("session-end settle after the revert = %d, %v; want nothing to settle", settled, err)
+	}
+	assertLaunchSettledWithoutSibling(t, app, thread.ID, "bg:0")
+}
+
+// When the cut keeps part of the anchor turn, the kept set names exactly
+// the rows that survive: a launch whose completion the cut deleted gets no
+// new sibling there.
+func TestRevertAndResendKeptSetNamesOnlyTheSurvivors(t *testing.T) {
+	t.Parallel()
+	app, bus := newResendTestApp(t)
+	workspace := t.TempDir()
+	writeClaudeProjectSession(t, testProviderHome(t, app), workspace, resendSourceSessionID,
+		`{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"source-session","message":{"role":"user","content":"steer"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+`)
+	thread := e2eThread("t-resend-kept-survivors", string(provider.Claude), workspace)
+	thread.SessionRef = resendSourceSessionID
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 1)
+	for _, row := range []store.Item{
+		{ID: "asst:0", Kind: "assistant_text", ItemIndex: 2, Summary: "reply 0"},
+		{ID: "user:steer", Kind: "user_text", Role: "user", ItemIndex: 3, Summary: "steer"},
+		{ID: "complete:bg:0", Kind: "tool_completion", ItemIndex: 4, IsBackground: true, CompletionOf: "bg:0"},
+		{ID: "asst:1", Kind: "assistant_text", ItemIndex: 5, Summary: "reply 1"},
+	} {
+		row.ThreadID = thread.ID
+		appendTurnRow(t, app.store, row)
+	}
+	seedMessageAnchor(t, app.store, thread.ID, "user:steer", 0, "u1", "")
+
+	if err := revertAndResendForTest(app, context.Background(), thread.ID, "user:steer", RevertAndResendOptions{Content: "rewritten steer"}); err != nil {
+		t.Fatalf("revert and resend: %v", err)
+	}
+
+	_, ev := findRevertedEvent(t, bus)
+	want := []string{"user:0", "bg:0", "asst:0"}
+	if !slices.Equal(ev.KeptAnchorTurnItemIDs, want) {
+		t.Fatalf("event kept-set = %v, want %v", ev.KeptAnchorTurnItemIDs, want)
+	}
+	assertLaunchSettledWithoutSibling(t, app, thread.ID, "bg:0")
+}
+
+// assertLaunchSettledWithoutSibling fails unless launchID is settled, no
+// row names it through completion_of, and neither the stop count nor the
+// tray returns it.
+func assertLaunchSettledWithoutSibling(t *testing.T, app *App, threadID, launchID string) {
+	t.Helper()
+	items, err := app.store.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	var launch *store.Item
+	for i, item := range items {
+		if item.CompletionOf == launchID {
+			t.Fatalf("the revert wrote %s a sibling: %+v", launchID, item)
+		}
+		if item.ID == launchID {
+			launch = &items[i]
+		}
+	}
+	if launch == nil {
+		t.Fatalf("the cut removed the launch %s", launchID)
+	}
+	if !strings.Contains(launch.Meta, `"live_background_active":false`) {
+		t.Fatalf("launch %s meta = %s, want it settled", launchID, launch.Meta)
+	}
+	if count, err := app.countRunningBackgroundTasks(threadID); err != nil || count != 0 {
+		t.Fatalf("running background tasks = %d (%v), want 0", count, err)
+	}
+	tray, err := app.ListLiveBackgroundTasks(threadID)
+	if err != nil {
+		t.Fatalf("list tray: %v", err)
+	}
+	for _, row := range tray {
+		if row.ID == launchID || row.CompletionOf == launchID {
+			t.Fatalf("the tray lists %s: %+v", launchID, row)
+		}
 	}
 }

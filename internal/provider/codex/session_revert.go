@@ -39,9 +39,9 @@ import (
 //     precedes shutdown and history mutation, which makes fallback safe.
 //   - It accepts a running turn. It submits shutdown, waits for the thread
 //     runtime and listener to stop, reverts the store, and reloads the runtime
-//     with `has_live_in_progress_turn = false`. AO uses that single operation
-//     for live un-send. A separate interrupt acknowledgement does not cover
-//     the later listener-drain and reload boundaries.
+//     with `has_live_in_progress_turn = false`. A separate interrupt
+//     acknowledgement does not cover the later listener-drain and reload
+//     boundaries.
 //
 // What upstream does NOT destroy is the pre-revert history: the local
 // thread store writes a NEW immutable rollout referencing the retained
@@ -273,8 +273,7 @@ func (s *Session) SupportsThreadRevert() bool {
 //   - Too-old app-server / non-paginated thread:
 //     ErrThreadRevertUnsupported, before any RPC.
 //   - Turn in flight: accepted. Upstream owns shutdown, persistence, history
-//     replacement and runtime reload as one operation. AO uses that contract
-//     for Esc un-send instead of separately interrupting and reconnecting.
+//     replacement and runtime reload as one operation.
 //   - Upstream's own "only supports paginated threads" refusal is
 //     re-classified to ErrThreadRevertUnsupported. It is raised before
 //     durable history changes, so the caller may fall back to a fork.

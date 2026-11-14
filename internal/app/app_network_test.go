@@ -680,10 +680,6 @@ func TestNetworkSettingsApplyIsSerializedWithOwnDeviceHosting(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
-	chosen := freeLoopbackPort(t)
-	if chosen == portFromAddr(srv.Addr()) {
-		t.Skip("the probe port collided with the bound one; nothing to move")
-	}
 	entered, release := make(chan struct{}, 1), make(chan struct{})
 	app.boundPortRecorder = func(int) {
 		select {
@@ -692,12 +688,20 @@ func TestNetworkSettingsApplyIsSerializedWithOwnDeviceHosting(t *testing.T) {
 		}
 		<-release
 	}
-	saved := make(chan error, 1)
+	type save struct {
+		port int
+		err  error
+	}
+	saved := make(chan save, 1)
 	go func() {
-		_, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: chosen})
-		saved <- err
+		_, port, err := saveOnFreeLoopbackPort(app, network.Settings{})
+		saved <- save{port, err}
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case result := <-saved:
+		t.Fatalf("SetNetworkSettings returned before recording its port: %+v", result)
+	}
 	hosted := make(chan error, 1)
 	go func() { hosted <- app.ensureOwnDeviceHosting() }()
 	select {
@@ -709,9 +713,11 @@ func TestNetworkSettingsApplyIsSerializedWithOwnDeviceHosting(t *testing.T) {
 		t.Fatal("the worker wrote BindAll while the screen's apply was still in flight")
 	}
 	close(release)
-	if err := <-saved; err != nil {
-		t.Fatalf("SetNetworkSettings: %v", err)
+	result := <-saved
+	if result.err != nil {
+		t.Fatalf("SetNetworkSettings: %v", result.err)
 	}
+	chosen := result.port
 	if err := <-hosted; err != nil {
 		t.Fatalf("ensureOwnDeviceHosting: %v", err)
 	}

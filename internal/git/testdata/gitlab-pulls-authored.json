@@ -1,0 +1,17 @@
+{
+  "data": {
+    "project": {
+      "mergeRequests": {
+        "pageInfo": { "hasNextPage": false, "endCursor": null },
+        "nodes": [
+          {
+            "iid": "21",
+            "reviewers": { "nodes": [ { "username": "bob", "mergeRequestInteraction": { "reviewState": "UNREVIEWED" } } ] },
+            "approvedBy": { "nodes": [] },
+            "headPipeline": { "status": "RUNNING" }
+          }
+        ]
+      }
+    }
+  }
+}

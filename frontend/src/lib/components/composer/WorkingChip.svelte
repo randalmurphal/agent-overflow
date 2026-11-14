@@ -21,7 +21,7 @@
   import { BUILTIN_SPINNER_VERBS } from '../../spinners/builtinVerbs';
   import { assembleVerbPool, pickFromPool } from '../../spinners/pick';
   import { selectWorkingSprite } from '../../spinners/select';
-  import { ensureCustomSpinners, peekCustomSpinners } from '../../stores/spinners.svelte';
+  import { peekCustomSpinners } from '../../stores/spinners.svelte';
 
   interface Props {
     threadId: string;
@@ -68,14 +68,9 @@
   // information.
   let workingLabel = $derived(labelOverride || (compacting ? 'Compacting' : (spinnerVerb ?? 'Working')));
 
-  // Custom sprites load lazily and only once animations are actually on;
-  // the effect keys on the setting so flipping it mid-session attaches.
-  $effect(() => {
-    if (getSettings().spinnerAnimationsEnabled) ensureCustomSpinners();
-  });
-
   // The per-key sprite standing in for the LED chase. Compacting swaps
-  // to the assigned compaction sprite; null renders the stock LEDs.
+  // to the assigned compaction sprite; null renders the stock LEDs. The
+  // app root loads the custom list and keeps the strips loaded.
   let workingSprite = $derived.by(() => {
     const settings = getSettings();
     if (!settings.spinnerAnimationsEnabled) return null;

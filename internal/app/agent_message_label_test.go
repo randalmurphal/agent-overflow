@@ -90,6 +90,8 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("a person's Stop before anything was said", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: threadtools.InterruptRestart}, from("wake", worker))
 	add("a restart", text, meta)
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: stopByWorkflow().cause}, from("wake", worker))
+	add("a stop with its recorded cause", text, meta)
 	for _, reason := range threadtools.InterruptSessionEndedReasons {
 		text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: reason}, from("wake", worker))
 		add("a session that ended: "+reason, text, meta)

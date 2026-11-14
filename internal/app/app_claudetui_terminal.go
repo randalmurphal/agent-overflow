@@ -172,6 +172,7 @@ func (a *App) releaseProviderTerminalsFor(conn *transport.ConnState) {
 // the safety net for unclean disconnects.
 //
 //ao:scope terminal:operate
+//ao:callerbound
 func (a *App) ProviderTerminalAttach(ctx context.Context, threadID string) (ProviderTerminalHandle, error) {
 	sess, err := a.claudetuiSession(threadID)
 	if err != nil {

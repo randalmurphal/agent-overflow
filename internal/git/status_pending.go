@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// pendingOperation detects an in-progress merge, rebase, or bisect by
-// inspecting well-known files under the repository's git directory. Returns
-// "" when the repo is idle.
+// pendingOperation detects an in-progress merge, cherry-pick, revert, rebase,
+// or bisect by inspecting well-known files under the repository's git directory.
+// Returns "" when the repo is idle.
 //
 // We use `git rev-parse --git-dir` to resolve the correct git-dir because it
 // handles both plain repos (`.git` is a dir) and linked worktrees (`.git` is a
@@ -25,6 +25,14 @@ func (c *Core) pendingOperation(cwd string) string {
 	if fileExists(filepath.Join(gitDir, "MERGE_HEAD")) {
 		return "merge"
 	}
+	// CHERRY_PICK_HEAD is present while a cherry-pick waits on its conflict.
+	if fileExists(filepath.Join(gitDir, "CHERRY_PICK_HEAD")) {
+		return "cherry-pick"
+	}
+	// REVERT_HEAD is present while a revert waits on its conflict.
+	if fileExists(filepath.Join(gitDir, "REVERT_HEAD")) {
+		return "revert"
+	}
 	// rebase-merge / rebase-apply cover both interactive rebases and the
 	// legacy format-patch style rebases (`rebase-apply`).
 	if dirExists(filepath.Join(gitDir, "rebase-merge")) || dirExists(filepath.Join(gitDir, "rebase-apply")) {
@@ -35,6 +43,20 @@ func (c *Core) pendingOperation(cwd string) string {
 		return "bisect"
 	}
 	return ""
+}
+
+// pendingOperationCommitsWhole reports whether a commit during op has to
+// take every change: a merge, a cherry-pick and a revert each record their
+// whole result. Git refuses selected paths during the first two; during a
+// revert it would commit them and end the revert half recorded.
+func pendingOperationCommitsWhole(op string) bool {
+	return op == "merge" || op == "cherry-pick" || op == "revert"
+}
+
+// CommitsWholeOnly reports whether a commit in cwd has to be
+// CommitSelection.All right now.
+func (c *Core) CommitsWholeOnly(cwd string) bool {
+	return pendingOperationCommitsWhole(c.pendingOperation(cwd))
 }
 
 // resolveGitDir runs `git rev-parse --git-dir` and returns the absolute git

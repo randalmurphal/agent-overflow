@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/secret"
 )
 
 const testSecret = "fake-token-1"
@@ -17,14 +19,18 @@ func TestTokenNeverFormatsItsSecret(t *testing.T) {
 		Token  Token
 		Ptr    *Token
 		Nested struct{ Inner Token }
+		hidden *Token
+		inline Token
 	}
-	h := holder{Token: *token, Ptr: token}
+	h := holder{Token: *token, Ptr: token, hidden: token, inline: *token}
 	h.Nested.Inner = *token
 
 	outputs := []string{
 		fmt.Sprintf("%v %s %+v %#v %q %x %X %d", token, token, token, token, token, token, token, token),
 		fmt.Sprintf("%v %s %+v %#v %q %x", *token, *token, *token, *token, *token, *token),
-		fmt.Sprintf("%v %+v %#v %s", h, h, h, h),
+		// Through any, so vet does not reject the verbs that reach fmt's
+		// bad-verb path: that path is exactly where nested fields leaked.
+		fmt.Sprintf("%v %+v %#v %s %q %x %d", any(h), any(h), any(h), any(h), any(h), any(h), any(h)),
 		fmt.Sprint(token, *token, h),
 		token.String(),
 		token.GoString(),
@@ -46,7 +52,7 @@ func TestTokenNeverFormatsItsSecret(t *testing.T) {
 			t.Fatalf("a formatter printed the secret: %q", out)
 		}
 		if !strings.Contains(out, "redacted") {
-			t.Fatalf("output %q does not say %s", out, redacted)
+			t.Fatalf("output %q does not say %s", out, secret.Redacted)
 		}
 	}
 }
@@ -69,7 +75,7 @@ func TestTokenAuthorizesAndZeroes(t *testing.T) {
 		if got := req.Header.Get(tc.name); got != tc.want {
 			t.Fatalf("%s = %q, want %q", tc.name, got, tc.want)
 		}
-		backing := token.b
+		backing := token.secret.Reveal()
 		token.Zero()
 		for _, c := range backing {
 			if c != 0 {

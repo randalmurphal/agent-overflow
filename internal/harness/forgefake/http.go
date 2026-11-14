@@ -1,10 +1,13 @@
 package forgefake
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -13,7 +16,7 @@ import (
 )
 
 // maxRequestBody bounds what the fake reads of a request body.
-const maxRequestBody = 1 << 20
+const maxRequestBody = 4 << 20
 
 // ServeHTTP answers the forge API transport an isolated boot's forgeapi
 // Service sends (internal/forgeapi, Options.Isolated) from the REST and
@@ -22,6 +25,7 @@ const maxRequestBody = 1 << 20
 //	/github/rest/<endpoint>      GitHub REST (the githubAPI routes)
 //	/github/graphql              GitHub GraphQL (githubGraphQL, by operationName)
 //	/gitlab/api/v4/<endpoint>    GitLab REST (the gitlabAPI routes)
+//	/gitlab/api/graphql          GitLab GraphQL (gitlabGraphQL, by operationName)
 //	/{forge}/absolute/<host>/<p> https://<host>/<p> (attachments)
 //
 // The forge host a REST or GraphQL request is for is its Host header,
@@ -35,6 +39,9 @@ const maxRequestBody = 1 << 20
 // that list it implement (conditional). Range is likewise a flag only
 // the job log routes implement, each the way its forge answers it. A pool under a rate limit
 // (SetRateLimit) answers as the forge does.
+// maxRecordedBody bounds the REST write body an invocation records.
+const maxRecordedBody = 64 << 10
+
 func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.EscapedPath(), "/")
 	inv := Invocation{Via: ViaHTTP, Method: r.Method, Path: path}
@@ -60,6 +67,8 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if c.graphQL != nil {
 		inv.Operation = c.graphQL.OperationName
 		inv.Variables = c.graphQL.Variables
+	} else if r.Method != http.MethodGet && len(body) <= maxRecordedBody && json.Valid(body) {
+		inv.Body = json.RawMessage(bytes.TrimSpace(body))
 	}
 	if mount == "absolute" {
 		host, _, _ := strings.Cut(rest, "/")
@@ -69,7 +78,7 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case readErr != nil:
 		reason = "read request body: " + readErr.Error()
 	case len(body) > maxRequestBody:
-		reason = "request body over 1 MiB"
+		reason = "request body over 4 MiB"
 	}
 
 	e.mu.Lock()
@@ -115,17 +124,29 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	status, header, out := renderHTTP(resp)
 	inv.Route = resp.route
-	inv.Unhandled = resp.unhandled != ""
+	inv.Unhandled = resp.unhandled != "" || resp.invalid != ""
 	inv.Status = status
 	switch {
+	case resp.invalid != "":
+		inv.Detail = fmt.Sprintf("ao-mockforge: invalid http request (%s): %s %s.", resp.invalid, r.Method, inv.Path)
 	case inv.Unhandled:
 		inv.Detail = fmt.Sprintf("ao-mockforge: unhandled http request (%s): %s %s. Add a handler in internal/harness/forgefake (see its AGENTS.md).", resp.unhandled, r.Method, inv.Path)
 	case status >= 400:
 		inv.Detail = strings.TrimSpace(resp.stderr)
 	}
 	e.record(inv)
+	if resp.held != nil {
+		select {
+		case <-resp.held.done:
+		case <-r.Context().Done():
+			return
+		}
+		if resp.held.drop {
+			panic(http.ErrAbortHandler)
+		}
+	}
 
-	if inv.Unhandled {
+	if resp.unhandled != "" {
 		// The detail names the request's own path: it goes out as plain
 		// text through http.Error, never as a body a browser could sniff.
 		http.Error(w, inv.Detail, status)
@@ -155,7 +176,7 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // the endpoint the invocation records and, for a request the fake cannot
 // map, the reason it is unhandled.
 func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byte) (*call, string, string) {
-	c := &call{http: &httpCall{host: strings.ToLower(r.Host)}, flags: map[string][]string{"method": {r.Method}}}
+	c := &call{http: &httpCall{host: strings.ToLower(r.Host), body: body, contentType: r.Header.Get("Content-Type")}, flags: map[string][]string{"method": {r.Method}}}
 	if addr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
 		c.http.base = "http://" + addr.String()
 	}
@@ -167,10 +188,14 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 	default:
 		return c, "", "no forge mount " + forge
 	}
-	c.contentType = r.Header.Get("Content-Type")
 	if spec := r.Header.Get("Range"); spec != "" {
 		// Only the log routes, which list it, answer Range.
 		c.flags["range"] = []string{spec}
+	}
+	if accept := r.Header.Get("Accept"); strings.HasPrefix(accept, "application/vnd.github.") {
+		// A GitHub media type of the request's own (the raw contents) is a
+		// flag only the route that serves it lists.
+		c.flags["accept"] = []string{accept}
 	}
 	if tag := r.Header.Get("If-None-Match"); tag != "" {
 		// A route that lists if-none-match answers it; any other refuses
@@ -186,7 +211,7 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 	case forge == "github" && mount == "rest" && rest != "":
 		endpoint = rest + query
 		c.flags["hostname"] = []string{c.http.host}
-	case forge == "github" && mount == "graphql" && rest == "":
+	case (forge == "github" && mount == "graphql" && rest == "") || (forge == "gitlab" && mount == "api" && rest == "graphql"):
 		if r.Method != http.MethodPost || query != "" {
 			return c, "graphql", "GraphQL is a POST with no query string"
 		}
@@ -204,7 +229,6 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 	case forge == "gitlab" && mount == "api" && strings.HasPrefix(rest, "v4/") && len(rest) > len("v4/"):
 		endpoint = strings.TrimPrefix(rest, "v4/") + query
 		c.flags["hostname"] = []string{c.http.host}
-		c.body = body
 	case mount == "absolute" && strings.Contains(rest, "/"):
 		// The attachment's own URL; its host is in the path, not the Host
 		// header, and its query (a signature) is not recorded.
@@ -219,6 +243,44 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 	}
 	c.positional = []string{endpoint}
 	return c, recorded, ""
+}
+
+// decodeRESTBody decodes a REST request's JSON body into out, refusing a
+// field out does not declare: a handler that ignored one would answer a
+// different request than the one sent. An empty body is allowed when
+// optional (a route whose body is all optional parameters), and decodes
+// as nothing. GitLab reads a body as JSON only when its Content-Type says
+// so, so a GitLab body sent with another media type is refused.
+func decodeRESTBody(c *call, out any, optional bool) error {
+	body := bytes.TrimSpace(c.http.body)
+	if len(body) == 0 {
+		if optional {
+			return nil
+		}
+		return errors.New("the request has no JSON body")
+	}
+	if c.cli == "glab" && c.http.contentType != "" {
+		if mediaType, _, err := mime.ParseMediaType(c.http.contentType); err != nil || mediaType != "application/json" {
+			return fmt.Errorf("the request body's Content-Type is %q, not application/json", c.http.contentType)
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(out); err != nil {
+		return fmt.Errorf("request body: %w", err)
+	}
+	if dec.More() {
+		return errors.New("request body: more than one JSON value")
+	}
+	return nil
+}
+
+// noRESTBody refuses a body on a route whose request carries none.
+func noRESTBody(c *call) error {
+	if len(bytes.TrimSpace(c.http.body)) != 0 {
+		return errors.New("the route takes no request body")
+	}
+	return nil
 }
 
 // authorized reports whether r carries the fixed token in either header

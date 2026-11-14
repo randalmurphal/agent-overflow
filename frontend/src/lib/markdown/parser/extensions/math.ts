@@ -51,8 +51,12 @@ const singleDollarLooksLikeProse = (content: string, charAfterClose: string): bo
 const currencyPatterns = {
     // Simple price patterns: $123, $123.45, $1,234.56
     simplePrice: /^\d{1,3}(?:,\d{3})*(?:\.\d{2})?$/,
-    // Multiple prices or numbers: "123, 456", "123.45, 678.90", "123 or 456"
-    multipleNumbers: /^\d+(?:[.,]\d+)*(?:\s*[,;]\s*\d+(?:[.,]\d+)*)+$/,
+    // Multiple prices or numbers: "123, 456", "123.45, 678.90", "1,234;5"
+    // A comma always separates two numbers and a dot always continues one,
+    // so each character has one reading. Letting a comma also continue a
+    // number matches the same strings but backtracks exponentially on a
+    // near miss such as "1,1,1,...,1x".
+    multipleNumbers: /^\d+(?:\.\d+)*(?:\s*[,;]\s*\d+(?:\.\d+)*)+$/,
     // Price ranges: "123-456", "123 - 456", "123 to 456"
     priceRange: /^\d+(?:\.\d{2})?\s*(?:-|to|or)\s*\d+(?:\.\d{2})?$/i,
     // Common currency words nearby (check surrounding context)

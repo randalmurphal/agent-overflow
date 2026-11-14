@@ -9,7 +9,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/forgeapi"
+	gitops "agent-overflow/internal/git"
 )
 
 // The kinds of forge failure the PR pump reports (ErrorKind on the wire),
@@ -25,6 +27,10 @@ const (
 	// forgeFailureSetup is a login the user fixes outside the app: the CLI
 	// is missing or has no token for the host.
 	forgeFailureSetup = "setup"
+	// forgeFailureForbidden is a forge that refused the login: a token
+	// without the scope, or no access to the project. The wire carries the
+	// sentence naming which (git.ExplainForgeError).
+	forgeFailureForbidden = "forbidden"
 	// forgeFailureForge is every other forge answer: a status, a GraphQL
 	// error, a body the app could not read.
 	forgeFailureForge = "forge"
@@ -43,11 +49,14 @@ func classifyForgeFailure(err error) (kind string, reserve bool, until time.Time
 	var limited *forgeapi.RateLimitedError
 	var transient *forgeapi.TransientError
 	var setup *forgeapi.SetupError
+	var forbidden *forgeapi.ForbiddenError
 	switch {
 	case errors.As(err, &limited):
 		return forgeFailureRateLimited, limited.Reserve, limited.Until
 	case errors.As(err, &setup):
 		return forgeFailureSetup, false, time.Time{}
+	case errors.As(err, &forbidden):
+		return forgeFailureForbidden, false, time.Time{}
 	case errors.As(err, &transient), errors.Is(err, context.DeadlineExceeded):
 		return forgeFailureTransient, false, time.Time{}
 	}
@@ -74,6 +83,24 @@ type prForgeFailure struct {
 	release time.Time
 	// correlationID ties wire to the server log line.
 	correlationID string
+	// detail is the failure behind wire for "Details": the correlation id
+	// and the raw error's layers, fixed when the failure is first seen so
+	// a repeat of it leaves the snapshot unchanged.
+	detail *ForgeErrorDetail
+}
+
+// ForgeErrorDetail is a pump failure's diagnostic record, in the shape of
+// the transport's ErrorDetail (internal/transport/frame.go) so a client
+// reads it as it reads a failed call's: Ref is the correlation id of the
+// server log line `(id: <ref>)` holding the full error, Method names the
+// read that failed, At (Unix milliseconds) is when the failure was first
+// seen, and Chain is the raw error's wrap layers, outermost first
+// (errorsx.Chain), which carry the forge's own text.
+type ForgeErrorDetail struct {
+	Ref    string   `json:"ref"`
+	Method string   `json:"method"`
+	At     int64    `json:"at"`
+	Chain  []string `json:"chain,omitempty"`
 }
 
 func (f prForgeFailure) failing() bool { return f.key != "" }
@@ -81,16 +108,43 @@ func (f prForgeFailure) failing() bool { return f.key != "" }
 // rateLimited reports whether the failure holds its poller until release.
 func (f prForgeFailure) rateLimited() bool { return f.kind == forgeFailureRateLimited }
 
-// newPRForgeFailure classifies err and mints its wire summary.
-func (a *App) newPRForgeFailure(err error) prForgeFailure {
+// newPRForgeFailure classifies err, from a read of pr, and mints its wire
+// summary: the correlation summary, or for a setup or forbidden failure
+// the sentence naming the login to fix (git.ExplainForgeError), which
+// carries no forge text.
+func (a *App) newPRForgeFailure(pr gitops.PRReference, err error) prForgeFailure {
+	return a.newForgeFailure(err, "pull request read", prUpdateErrorMessage, func(err error) error {
+		return gitops.ExplainForgeError(pr, gitops.ActionRead, err)
+	})
+}
+
+// newRepoForgeFailure is newPRForgeFailure for a read of a whole
+// repository (its PR list, a pipeline of it): the setup and forbidden
+// sentences name the project, and every other kind reads as a failed
+// refresh of the repository.
+func (a *App) newRepoForgeFailure(repo gitops.RepoReference, err error) prForgeFailure {
+	return a.newForgeFailure(err, "repository read", repoRefreshErrorMessage, func(err error) error {
+		return gitops.ExplainRepoForgeError(repo, gitops.ActionRead, err)
+	})
+}
+
+// repoRefreshErrorMessage is the repository read's counterpart of
+// prUpdateErrorMessage.
+func repoRefreshErrorMessage(correlationID string) string {
+	return fmt.Sprintf("failed to refresh from the forge (id: %s)", correlationID)
+}
+
+// newForgeFailure classifies err with summary as the correlation sentence
+// and explain as the sentence of a setup or forbidden failure; read names
+// the read in the failure's detail.
+func (a *App) newForgeFailure(err error, read string, summary func(correlationID string) string, explain func(error) error) prForgeFailure {
 	kind, reserve, until := classifyForgeFailure(err)
 	f := prForgeFailure{key: err.Error(), kind: kind, correlationID: uuid.NewString()}
-	f.wire = prUpdateErrorMessage(f.correlationID)
+	f.wire = summary(f.correlationID)
+	f.detail = &ForgeErrorDetail{Ref: f.correlationID, Method: read, At: time.Now().UnixMilli(), Chain: errorsx.Chain(err)}
 	switch kind {
-	case forgeFailureSetup:
-		var setup *forgeapi.SetupError
-		errors.As(err, &setup)
-		f.wire = setup.Message
+	case forgeFailureSetup, forgeFailureForbidden:
+		f.wire = explain(err).Error()
 	case forgeFailureRateLimited:
 		f.reserve = reserve
 		f.resumeAt = until.UTC().Format(time.RFC3339)

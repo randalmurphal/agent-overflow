@@ -115,6 +115,19 @@ export function getPathRefsFromMeta(meta: string | undefined | null): PathRef[] 
   return out;
 }
 
+/**
+ * The workspace a row's prose was written in. Triage records it on rows
+ * whose prose holds a markdown image (`pathlinks.WorkspaceMetaKey`), and a
+ * relative image path in that prose resolves against it, so the image is
+ * the same file after the thread moves to another checkout. `undefined`
+ * for rows with no record (no image, imported history, rows settled before
+ * the record existed): those resolve against the thread's workspace.
+ */
+export function getAuthoredWorkspaceFromMeta(meta: string | undefined | null): string | undefined {
+  const workspace = parseJsonObject(meta)?.authoredWorkspace;
+  return typeof workspace === 'string' && workspace !== '' ? workspace : undefined;
+}
+
 // Content-canonical instances for the parsed arrays, keyed by the refs'
 // serialized content. The meta-string memo above alone is not enough
 // for identity stability: the settle patch merges the codeSpans blob

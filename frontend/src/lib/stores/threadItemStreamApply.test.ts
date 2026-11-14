@@ -708,6 +708,7 @@ describe('threadItemStreamApply: rows of another scope', () => {
   // the window's reveal machinery at all, which the pane cannot observe.
   function streamApply(scopeRootId?: string) {
     const applyPatch = vi.fn(() => null);
+    const noteSearchableEvent = vi.fn();
     const reconciled: string[][] = [];
     const withReconciledItems = vi.fn((incoming: readonly Item[]) => {
       reconciled.push(incoming.map((item) => item.id));
@@ -719,9 +720,10 @@ describe('threadItemStreamApply: rows of another scope', () => {
       itemIndexById: new Map(),
       getThread: () => null,
       streamingReveal: { applyPatch, withReconciledItems } as unknown as ThreadStreamingReveal,
+      noteSearchableEvent,
       ...(scopeRootId === undefined ? {} : { scopeRootId }),
     } as unknown as ThreadItemStreamApplyOptions);
-    return { apply, applyPatch, reconciled };
+    return { apply, applyPatch, noteSearchableEvent, reconciled };
   }
 
   it('drops a batch\'s rows of another scope before any window work', () => {
@@ -742,7 +744,7 @@ describe('threadItemStreamApply: rows of another scope', () => {
     expect(scoped.reconciled).toEqual([['child']]);
   });
 
-  it('hands a missing row\'s patch to the reveal only when the row is of its own scope', () => {
+  it('hands a missing row\'s patch to the reveal and the find count only when the row is of its own scope', () => {
     const patch = (parentId?: string): ItemPatchEvent => ({
       threadId: 'thread-1', itemId: 'row', kind: 'tool_call',
       ...(parentId === undefined ? {} : { parentId }),
@@ -752,14 +754,18 @@ describe('threadItemStreamApply: rows of another scope', () => {
     const main = streamApply();
     main.apply.applyItemPatch(patch('agent'));
     expect(main.applyPatch).not.toHaveBeenCalled();
+    expect(main.noteSearchableEvent).not.toHaveBeenCalled();
     main.apply.applyItemPatch(patch());
     expect(main.applyPatch).toHaveBeenCalledOnce();
+    expect(main.noteSearchableEvent).toHaveBeenCalledOnce();
 
     const scoped = streamApply('agent');
     scoped.apply.applyItemPatch(patch());
     scoped.apply.applyItemPatch(patch('nested'));
     expect(scoped.applyPatch).not.toHaveBeenCalled();
+    expect(scoped.noteSearchableEvent).not.toHaveBeenCalled();
     scoped.apply.applyItemPatch(patch('agent'));
     expect(scoped.applyPatch).toHaveBeenCalledOnce();
+    expect(scoped.noteSearchableEvent).toHaveBeenCalledOnce();
   });
 });

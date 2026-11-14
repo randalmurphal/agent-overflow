@@ -2,6 +2,7 @@ package threadapp
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -31,7 +32,11 @@ func (m *testModels) CoerceReasoningEffort(providerName, model, effort string) s
 	return string(provider.CoerceReasoningEffortForModel(providerName, model, provider.NormalizeReasoningEffort(effort)))
 }
 func (m *testModels) SupportsFastMode(providerName, model string) bool {
-	return chatmodel.SupportsStoredFastMode(providerName, model)
+	candidate, found := provider.FindModel(providerName, model)
+	return found && chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
+}
+func (m *testModels) SavedFastModeStands(providerName, model string) bool {
+	return m.SupportsFastMode(providerName, model)
 }
 func (m *testModels) ContextWindowOptions(providerName, model string) []provider.ContextWindowOption {
 	return chatmodel.ContextWindowOptions(providerName, model)
@@ -59,6 +64,10 @@ type testWorkspace struct {
 	// base choice reached git.
 	createErr error
 	cuts      []WorktreeCut
+	// createdBranch is what each cut reports it made; removed records the
+	// cuts RemoveCutWorktree was asked to undo.
+	createdBranch bool
+	removed       []CutWorktree
 	// origin is what ObserveOrigin reports for any path. Zero by default, so
 	// a test that says nothing about git provenance asserts the "workspace is
 	// not a repository" shape for free.
@@ -71,12 +80,17 @@ func (w *testWorkspace) ObserveOrigin(string) store.ThreadOrigin { return w.orig
 func (w *testWorkspace) FindWorktree(string, string) (string, string, bool, error) {
 	return w.findPath, w.findBranch, w.findPath != "", nil
 }
-func (w *testWorkspace) CreateWorktree(_ context.Context, _ string, cut WorktreeCut) (string, string, error) {
+func (w *testWorkspace) CreateWorktree(_ context.Context, _ string, cut WorktreeCut) (CutWorktree, error) {
 	w.cuts = append(w.cuts, cut)
 	if w.createErr != nil {
-		return "", "", w.createErr
+		return CutWorktree{}, w.createErr
 	}
-	return w.createPath, w.createBranch, nil
+	return CutWorktree{Path: w.createPath, Branch: w.createBranch, CreatedBranch: w.createdBranch}, nil
+}
+
+func (w *testWorkspace) RemoveCutWorktree(_ string, cut CutWorktree) error {
+	w.removed = append(w.removed, cut)
+	return nil
 }
 
 type setupRecorder struct {
@@ -124,6 +138,35 @@ func newServiceFixture(t *testing.T) (*Service, *store.Store, *testModels) {
 	return service, database, models
 }
 
+// newBranchCut is the cut of a new branch named name from the current branch.
+func newBranchCut(name string) *WorktreeCut {
+	return &WorktreeCut{Target: gitops.WorktreeTarget{Ref: gitops.BranchRef(name)}}
+}
+
+// Branch is recorded exactly as given, and a name git would refuse is an
+// error rather than a row naming no branch, for an inherited worktree and
+// for the plain workspace alike.
+func TestCreateRecordsBranchVerbatimAndRefusesAnInvalidOne(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	service.deps.Workspace = &testWorkspace{findPath: "/repo-worktrees/feature", findBranch: "feature/one"}
+	for _, opts := range []CreateOptions{
+		{ProjectID: "project", Branch: "bad..name"},
+		{ProjectID: "project", Branch: "--orphan"},
+		{ProjectID: "project", WorktreePath: "/repo-worktrees/feature", Branch: "a..b"},
+	} {
+		if thread, err := service.Create(opts); err == nil {
+			t.Errorf("Create(branch %q) = thread on %q, want a refusal", opts.Branch, thread.Branch)
+		}
+	}
+	if threads, err := database.ListThreads(); err != nil || len(threads) != 0 {
+		t.Fatalf("threads = %d (%v), want none", len(threads), err)
+	}
+	thread, err := service.Create(CreateOptions{ProjectID: "project", Branch: "  _wip/x  "})
+	if err != nil || thread.Branch != "_wip/x" {
+		t.Fatalf("Create(_wip/x) = branch %q, %v; want it verbatim", thread.Branch, err)
+	}
+}
+
 func TestCreatePreservesProjectAndWorkspaceDistinction(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	setup := &setupRecorder{store: database}
@@ -166,10 +209,8 @@ func TestCreateStartsSetupOnlyForWorktreeItCuts(t *testing.T) {
 	service.deps.Workspace = workspace
 	service.deps.WorktreeSetup = setup
 	thread, err := service.Create(CreateOptions{
-		ProjectID:         "project",
-		WorktreeBranch:    "feature/new",
-		WorktreeBase:      "  release/2  ",
-		WorktreeBaseLocal: true,
+		ProjectID: "project",
+		Worktree:  &WorktreeCut{Target: gitops.WorktreeTarget{Ref: gitops.BranchRef("feature/new")}, Base: "release/2", BaseLocal: true},
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -180,7 +221,7 @@ func TestCreateStartsSetupOnlyForWorktreeItCuts(t *testing.T) {
 	if len(setup.started) != 1 {
 		t.Fatalf("setup calls = started %v", setup.started)
 	}
-	want := WorktreeCut{Branch: "feature/new", Base: "release/2", BaseLocal: true}
+	want := WorktreeCut{Target: gitops.WorktreeTarget{Ref: gitops.BranchRef("feature/new")}, Base: "release/2", BaseLocal: true}
 	if len(workspace.cuts) != 1 || workspace.cuts[0] != want {
 		t.Fatalf("cuts = %+v, want one %+v", workspace.cuts, want)
 	}
@@ -195,7 +236,7 @@ func TestCreateFailsWhenTheWorktreeCannotBeCut(t *testing.T) {
 	service.deps.Workspace = &testWorkspace{createErr: errors.New("branch already checked out")}
 	service.deps.WorktreeSetup = setup
 
-	_, err := service.Create(CreateOptions{ProjectID: "project", WorktreeBranch: "feature/new"})
+	_, err := service.Create(CreateOptions{ProjectID: "project", Worktree: newBranchCut("feature/new")})
 	if err == nil {
 		t.Fatal("Create reported a thread for a worktree git refused to cut")
 	}
@@ -211,6 +252,32 @@ func TestCreateFailsWhenTheWorktreeCannotBeCut(t *testing.T) {
 	}
 	if len(setup.started) != 0 {
 		t.Fatalf("setup ran for a worktree that was never cut: %v", setup.started)
+	}
+}
+
+// A cut whose thread row cannot be written belongs to no thread, so the
+// creation takes it back, branch included, and reports the insert's cause.
+func TestCreateUndoesTheCutWhenTheThreadCannotBeWritten(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	setup := &setupRecorder{store: database}
+	workspace := &testWorkspace{createPath: "/repo-worktrees/new", createBranch: "feature/new", createdBranch: true}
+	service.deps.Workspace = workspace
+	service.deps.WorktreeSetup = setup
+	// The fixture mints one id, so a second thread's insert collides.
+	if _, err := service.Create(CreateOptions{ProjectID: "project"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, cut, err := service.CreateWithWorktree(CreateOptions{ProjectID: "project", Worktree: newBranchCut("feature/new")})
+	if err == nil {
+		t.Fatal("Create reported a thread whose row was never written")
+	}
+	want := CutWorktree{Path: "/repo-worktrees/new", Branch: "feature/new", CreatedBranch: true}
+	if len(workspace.removed) != 1 || workspace.removed[0] != want {
+		t.Fatalf("removed = %+v, want the cut %+v", workspace.removed, want)
+	}
+	if cut != (CutWorktree{}) || len(setup.started) != 0 {
+		t.Fatalf("cut = %+v, setup = %v; want neither", cut, setup.started)
 	}
 }
 
@@ -521,7 +588,7 @@ func TestCreateInAHome(t *testing.T) {
 	for name, opts := range map[string]CreateOptions{
 		"project":   {Home: "/h", ProjectID: "project"},
 		"group":     {Home: "/h", GroupID: "g"},
-		"worktree":  {Home: "/h", WorktreeBranch: "feature"},
+		"worktree":  {Home: "/h", Worktree: &WorktreeCut{}},
 		"inherited": {Home: "/h", WorktreePath: "/repo-worktrees/feature"},
 		"workspace": {Home: "/h", WorkspaceOverride: "/elsewhere"},
 		"branch":    {Home: "/h", Branch: "feature"},
@@ -618,5 +685,58 @@ func TestDeletingAnAssistantDeletesWhatLivesUnderItFirst(t *testing.T) {
 	}
 	if pending, err := database.ListPendingThreadDeletes(); err != nil || len(pending) != 0 {
 		t.Fatalf("pending deletes = %q %v, want the assistant unmarked", pending, err)
+	}
+}
+
+// The created row is read back in its insert's transaction, the last
+// step of a creation that can fail. A read that fails leaves no thread,
+// takes back the worktree the creation cut and starts no setup; a
+// terminal's creation leaves no row either.
+func TestCreateUndoesEverythingWhenTheCreatedRowCannotBeRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.sqlite")
+	database, err := store.New(path)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if _, err := database.CreateProject(store.Project{ID: "project", Path: "/repo", Name: "repo", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	setup := &setupRecorder{store: database}
+	workspace := &testWorkspace{createPath: "/repo-worktrees/new", createBranch: "feature/new", createdBranch: true}
+	service := New(Deps{
+		Store: database, Models: &testModels{}, Workspace: workspace, WorktreeSetup: setup,
+		Now: func() time.Time { return time.UnixMilli(1234) }, NewID: func() string { return "thread" },
+	})
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	// A column the read cannot scan makes the row unreadable.
+	if _, err := raw.Exec(`CREATE TRIGGER unreadable_thread AFTER INSERT ON threads BEGIN UPDATE threads SET last_read_at = 'unreadable' WHERE id = NEW.id; END`); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, cut, err := service.CreateWithWorktree(CreateOptions{ProjectID: "project", Worktree: newBranchCut("feature/new")})
+	if err == nil {
+		t.Fatalf("CreateWithWorktree = %+v, want the read's failure", thread)
+	}
+	if _, getErr := database.GetThread("thread"); !errors.Is(getErr, sql.ErrNoRows) {
+		t.Fatalf("GetThread after the failed create = %v, want no row", getErr)
+	}
+	want := CutWorktree{Path: "/repo-worktrees/new", Branch: "feature/new", CreatedBranch: true}
+	if len(workspace.removed) != 1 || workspace.removed[0] != want {
+		t.Fatalf("removed = %+v, want the cut %+v", workspace.removed, want)
+	}
+	if cut != (CutWorktree{}) || len(setup.started) != 0 {
+		t.Fatalf("cut = %+v, setup = %v; want neither", cut, setup.started)
+	}
+
+	if _, err := service.StartTerminal(TerminalOptions{ProjectID: "project"}); err == nil {
+		t.Fatal("StartTerminal reported a terminal it could not read")
+	}
+	if _, getErr := database.GetThread("thread"); !errors.Is(getErr, sql.ErrNoRows) {
+		t.Fatalf("GetThread after the failed terminal = %v, want no row", getErr)
 	}
 }

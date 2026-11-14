@@ -58,11 +58,20 @@ func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.Companion
 // never leave a browser view painted over a window that no longer renders
 // the pane under it.
 //
+// Only the host's own window may mount one: the native view lives in that
+// window, so a pane in another client holding the launch credential, such
+// as a browser tab on this machine, would be a mount nothing can be shown
+// in. That client shows what a connected browser shows
+// (transport.ConnState.HostWindow; the SPA's canUseNativeBrowser).
+//
 //ao:scope host
 //ao:route home
 func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (appbrowser.CompanionSubscription, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser manager unavailable")
+	}
+	if !transport.ConnStateFromContext(ctx).HostWindow() {
+		return appbrowser.CompanionSubscription{}, errBrowserPaneNotHostWindow
 	}
 	access, err := a.browserAccess(threadID)
 	if err != nil {
@@ -92,6 +101,8 @@ func (a *App) BrowserCompanionPaneDetach(ctx context.Context, paneID string) err
 }
 
 func companionPaneCleanupKey(id string) string { return "companion-pane:" + id }
+
+var errBrowserPaneNotHostWindow = errors.New("browser: the browser pane shows only in this computer's app window")
 
 // BrowserCompanionPaneRect reports where the mounted pane's host rect sits,
 // coalesced to one call per changed frame by the frontend.
@@ -170,6 +181,44 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		return appbrowser.CompanionEvent{}, err
 	}
 	return a.browser.manager.CompanionState(access), nil
+}
+
+// BrowserFindAction is one request of the browser pane's find: start (the
+// query; empty ends the search, or opens an engine's own find bar empty),
+// next, previous or stop. Mount is the pane mount the find belongs to and
+// Seq the provider's sequence: a start's own, increasing with every start
+// the provider makes; the one a step steps; for a stop, the highest the
+// provider made, and the stop ends the mount's search at or below it. A step
+// or stop for a search another owner holds changes nothing.
+type BrowserFindAction struct {
+	Kind   string `json:"kind"`
+	PageID string `json:"pageId"`
+	Query  string `json:"query,omitempty"`
+	Mount  string `json:"mount"`
+	Seq    uint64 `json:"seq"`
+}
+
+// BrowserCompanionFind runs one find action on the page the thread's browser
+// pane shows, through the engine's own find-in-page. The answer is the
+// session it leaves; an end the backend decides on its own (navigation, a
+// tab switch, the page closing) arrives as a `find` companion event.
+//
+//ao:scope host
+//ao:route home
+func (a *App) BrowserCompanionFind(ctx context.Context, threadID string, action BrowserFindAction) (appbrowser.FindState, error) {
+	if a.browser.manager == nil {
+		return appbrowser.FindState{}, fmt.Errorf("browser manager unavailable")
+	}
+	access, err := a.browserAccess(threadID)
+	if err != nil {
+		return appbrowser.FindState{}, err
+	}
+	state, err := a.browser.manager.Find(ctx, access, action.PageID, action.Kind, action.Query, action.Mount, action.Seq)
+	// An open or start on a suspended page restores it.
+	if deletedErr := a.closeBrowserPagesIfThreadDeleted(access.ThreadID); deletedErr != nil {
+		return appbrowser.FindState{}, deletedErr
+	}
+	return state, err
 }
 
 // closeBrowserPagesIfThreadDeleted closes the pages of a thread deleted while

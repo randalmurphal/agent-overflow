@@ -30,7 +30,7 @@
   import type { Snippet } from 'svelte';
   import { motionReduced } from '../../utils/reducedMotion';
   import { foldAnimates } from './runMapGeometry';
-  import { requireWorkflowsOverlayScroller } from './overlayScroller';
+  import { requireWorkflowsScroller } from './workflowsScroller';
 
   interface Props {
     open: boolean;
@@ -39,7 +39,7 @@
   }
   let { open, children, testId }: Props = $props();
 
-  const scrollerOf = requireWorkflowsOverlayScroller();
+  const scrollerOf = requireWorkflowsScroller();
 
   let regionEl = $state<HTMLElement | null>(null);
   // Plain `$state`, decided per toggle. A `$derived` cannot express it: the

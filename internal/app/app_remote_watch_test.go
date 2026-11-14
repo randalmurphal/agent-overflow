@@ -652,11 +652,12 @@ func TestARemoteCompletionQueuedAfterAnArchiveIsHeld(t *testing.T) {
 			if err != nil || !proceed {
 				t.Fatalf("prepare: proceed %v, %v", proceed, err)
 			}
+			var work archivedThreadWork
 			if tc.wholeArchive {
 				if err := a.ArchiveThread(thread.ID); err != nil {
 					t.Fatalf("ArchiveThread: %v", err)
 				}
-			} else if err := a.archiveThreadLocked(thread.ID); err != nil {
+			} else if work, err = a.archiveThreadLocked(thread.ID); err != nil {
 				t.Fatalf("archiveThreadLocked: %v", err)
 			}
 			notice.prepare = func() (string, bool, error) { return body, true, nil }
@@ -666,7 +667,7 @@ func TestARemoteCompletionQueuedAfterAnArchiveIsHeld(t *testing.T) {
 			a.waitAgentNoticeWork()
 			startsBeforeTheRest := starts.Load()
 			if !tc.wholeArchive {
-				if err := a.stopArchivedThreadWork(context.Background(), thread.ID); err != nil {
+				if err := a.stopArchivedThreadWork(work); err != nil {
 					t.Fatalf("stopArchivedThreadWork: %v", err)
 				}
 			}

@@ -153,9 +153,8 @@ func (a *App) applyProviderWorkspaceChange(threadID, sessionToken string, change
 // nested repository, a hook-provisioned directory outside git) has no
 // representation on the row and is refused with the reason.
 func (a *App) resolveProviderWorkspaceTarget(project, cwd string) (GitWorkspaceState, error) {
-	core := a.gitCore()
 	if gitops.SameFilesystemPath(cwd, project) {
-		return GitWorkspaceState{WorkspacePath: project, Branch: core.CurrentBranch(project)}, nil
+		return a.workspaceState(project, project)
 	}
 	worktree, ok, err := a.findWorktree(project, cwd)
 	if err != nil {
@@ -164,11 +163,7 @@ func (a *App) resolveProviderWorkspaceTarget(project, cwd string) (GitWorkspaceS
 	if !ok {
 		return GitWorkspaceState{}, fmt.Errorf("%s is not the project root or a worktree of %s", cwd, project)
 	}
-	branch := strings.TrimSpace(worktree.Branch)
-	if branch == "" {
-		branch = core.CurrentBranch(worktree.Path)
-	}
-	return GitWorkspaceState{WorkspacePath: worktree.Path, WorktreePath: worktree.Path, Branch: branch}, nil
+	return a.workspaceState(project, worktree.Path)
 }
 
 // reclaimProviderRemovedWorktree is the app's half of an `ExitWorktree

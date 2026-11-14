@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/settings"
 )
 
@@ -172,18 +174,22 @@ func TestSelectedClaudeUsageRefreshStillRefusesAnotherAccountsLogin(t *testing.T
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original","refreshToken":"original-rt"}}`)
-	rotated := `{"claudeAiOauth":{"accessToken":"rotated","refreshToken":"rotated-rt"}}`
+	// The CLI reports the selected account (its identity record is stale);
+	// only the token says which login now owns the canonical home.
+	intruderToken := claudefake.AccessToken("someone-else@example.com", "org-other", "1")
+	rotated := `{"claudeAiOauth":{"accessToken":"` + intruderToken + `","refreshToken":"rotated-rt",` +
+		`"scopes":["user:inference","user:profile"]}}`
 	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
 
 	canonical, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Claude))
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary := writeClaudeRefreshMockBinary(t, canonical, rotated, "someone-else@example.com")
+	binary := writeClaudeRefreshMockBinary(t, canonical, rotated, "selected@example.com")
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	app.rateLimitProbeClientOverride = expiringUsageClient(t, "rotated")
+	app.rateLimitProbeClientOverride = expiringUsageClient(t, intruderToken)
 
 	err = app.refreshProviderAccountUsage(
 		context.Background(),
@@ -203,5 +209,49 @@ func TestSelectedClaudeUsageRefreshStillRefusesAnotherAccountsLogin(t *testing.T
 	}
 	if string(saved) != string(original) {
 		t.Fatalf("saved slot = %s, want another account's credential kept out of it", saved)
+	}
+}
+
+// A rotation the profile endpoint will not identify is not attributed by the
+// usage refresh: the selected slot keeps what it had and the canonical home
+// keeps the rotation, for reconciliation to identify once it can.
+func TestSelectedClaudeUsageRefreshLeavesAnUnidentifiedRotationInPlace(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	original := []byte(`{"claudeAiOauth":{"accessToken":"original","refreshToken":"original-rt"}}`)
+	// A bearer the fake profile endpoint never issued: it answers 401.
+	rotated := `{"claudeAiOauth":{"accessToken":"unknown-issuer","refreshToken":"rotated-rt",` +
+		`"scopes":["user:inference","user:profile"]}}`
+	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
+
+	credentials := providerCredentialsForTest(t, app)
+	canonical, err := credentials.ActiveCredentialPath(string(provider.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := writeClaudeRefreshMockBinary(t, canonical, rotated, "selected@example.com")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	app.rateLimitProbeClientOverride = expiringUsageClient(t, "unknown-issuer")
+
+	err = app.refreshProviderAccountUsage(context.Background(), string(provider.Claude), "selected")
+	if !errors.Is(err, claude.ErrOAuthUnauthorized) {
+		t.Fatalf("refresh error = %v, want the profile refusal", err)
+	}
+	saved, err := credentials.ReadCredential(string(provider.Claude), "selected", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(saved) != string(original) {
+		t.Fatalf("saved slot = %s, want the unidentified rotation kept out of it", saved)
+	}
+	live, err := credentials.ReadCredential(string(provider.Claude), "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(live) != rotated {
+		t.Fatalf("canonical = %s, want the rotation left in place", live)
 	}
 }

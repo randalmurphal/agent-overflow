@@ -21,6 +21,7 @@ func TestDeleteThreadPreservesResourceOrder(t *testing.T) {
 		CleanProviderBackground: func(thread store.Thread) error { calls = append(calls, "background"); return nil },
 		StopSession:             func(id string) error { calls = append(calls, "session"); return nil },
 		CancelWorktreeSetup:     func(id string) { calls = append(calls, "setup") },
+		CancelShellCommand:      func(id string) { calls = append(calls, "shell") },
 		CloseTerminals:          func(id string) error { calls = append(calls, "terminal"); return nil },
 		CloseBrowserPages:       func(id string) error { calls = append(calls, "browser"); return nil },
 		ClearAutoReconnect:      func(id string) { calls = append(calls, "reconnect") },
@@ -33,8 +34,9 @@ func TestDeleteThreadPreservesResourceOrder(t *testing.T) {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 	want := []string{
-		"background", "session", "setup", "terminal", "browser", "reconnect",
-		"attachments", "replay", "records", "terminal", "browser", "forget",
+		"background", "session", "setup", "shell", "terminal", "browser", "reconnect",
+		// The second stop is under the mutation lock a command registers with.
+		"shell", "attachments", "replay", "records", "terminal", "browser", "forget",
 	}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("cleanup order = %v, want %v", calls, want)

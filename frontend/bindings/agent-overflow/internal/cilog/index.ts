@@ -3,5 +3,7 @@
 
 export {
     Lines,
+    Search,
+    SearchHit,
     Section
 } from "./models.js";

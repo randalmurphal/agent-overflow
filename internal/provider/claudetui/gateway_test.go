@@ -51,7 +51,7 @@ func (d *recordingDriver) beginSubagentTurn(req *messagesRequest, agentID string
 	if parent == "" {
 		return nil
 	}
-	return d.rec.beginSubagentRequest(parent)
+	return d.rec.beginSubagentRequest(parent, req)
 }
 
 func (d *recordingDriver) beginCompactionCapture(req *messagesRequest) *agentRequest {

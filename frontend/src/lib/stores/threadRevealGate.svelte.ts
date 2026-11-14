@@ -31,6 +31,12 @@ export interface RevealGateOptions {
   /** Arm the structural-append spring (pane owns all its gates). */
   armStructuralSpring(): void;
   /**
+   * Rows whose replacement the pane is holding back
+   * (threadRowPromotions.svelte.ts). Each gates like an open stream until
+   * its hold ends, whether or not a smoother is left for it.
+   */
+  heldItemIds?(): Iterable<string>;
+  /**
    * Every pass ends here, after the boundary is published. The pane's
    * send-queue handover hangs off this: which rows are RENDERED changes
    * when the gate moves and when the window under it changes, and every
@@ -54,6 +60,13 @@ export interface RevealGate {
   disposeSmoothersForItems(items: readonly { id: string }[]): void;
   /** Pane clear / thread switch: the gate has no window to describe. */
   clearBoundary(): void;
+}
+
+/** Earliest position wins; a tie goes to the later candidate. */
+function earlierItem(frontier: Item | null, item: Item): Item {
+  return frontier === null || compareItemsByTimelinePosition(item, frontier) <= 0
+    ? item
+    : frontier;
 }
 
 export function createRevealGate(options: RevealGateOptions): RevealGate {
@@ -95,7 +108,7 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
   // that frontier row. A gate drop releases whatever top-level rows sit
   // after the old frontier — nothing, when the drop came from the lone
   // streaming row draining, or from a removal that truncated the tail
-  // (revert-on-interrupt drops both frontier and withheld successor in
+  // (a conversation revert drops both frontier and withheld successor in
   // one call), where arming would open a phantom spring window over a
   // SHRINKING timeline. A retreat (a replay delta re-creating a smoother
   // for an earlier row) only withholds and never releases. Evaluated
@@ -149,7 +162,8 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
    * skipping, rushing, or popping the frontier.
    *
    * The frontier is the earliest top-level (`!parentId`) item whose stream
-   * is still open OR whose smoother is still revealing. Catch-up during an
+   * is still open, whose smoother is still revealing, OR whose replacement
+   * row the pane is holding back (`heldItemIds`). Catch-up during an
    * input gap is not message completion: releasing there lets a command row
    * mount, disappear on the next text burst, then mount again, repeatedly
    * shrinking/growing the bottom-follow target. The item's terminal patch
@@ -229,12 +243,13 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
       if (!item || (item.parentId ?? '') !== (options.scopeRootId ?? '')) continue;
       // An empty buffer is only a pause until this specific message ends.
       if (entry.smoother.isCaughtUp() && item.status !== 'streaming') continue;
-      // Earliest position wins (<= 0 ⇒ item is at or before the frontier).
-      if (
-        frontier === null ||
-        compareItemsByTimelinePosition(item, frontier) <= 0
-      ) {
-        frontier = item;
+      frontier = earlierItem(frontier, item);
+    }
+    if (options.heldItemIds) {
+      for (const id of options.heldItemIds()) {
+        const item = options.getItemById(id);
+        if (!item || (item.parentId ?? '') !== (options.scopeRootId ?? '')) continue;
+        frontier = earlierItem(frontier, item);
       }
     }
 

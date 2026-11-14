@@ -187,6 +187,14 @@ share the same limit. `pnpm test` invokes this launcher through `go run` when
 the standalone binary is not present. The two-worker gate reserves 6 GiB by
 default and accepts `--memory-limit-bytes` for machine-specific runs. Direct
 Windows use of `launchHarness` refuses unless this launcher marker is present.
+The suite runs in a process group of its own, so an interrupt (and on Unix
+`SIGTERM` or `SIGHUP`) reaches only the launcher; it stops the owned tree,
+waits for it, and exits with 128 plus the signal number. Each backend
+`launchHarness` starts has a process group of its own, out of that
+teardown's reach, so on Unix it is passed `--exit-with-parent` with its
+worker's PID and stops itself once that worker is gone. That stop does
+not wait on logging, since nobody may read its output any more, and exits
+outright if the ordered shutdown has not finished within its bound.
 
 Every `up`, managed `run`, and compare leg installs the platform memory policy
 before starting the backend. `up` defaults to 2 GiB and managed plans may
@@ -283,11 +291,20 @@ refuse them through AppArmor while
 GitHub-hosted runners get both settings from `.github/actions/setup`, which
 also loads the `dummy` link module the LAN interface needs.
 
-`--host-network` skips isolation for suites that need host services:
-`e2e/scripts/android-smoke.sh` uses it because Playwright reaches the device
-through the host's adb server, and real SSH mode needs it to reach its sshd
-on host loopback. The provider smoke targets also stay on the host network
-because they reach the real provider APIs. macOS and Windows run on the host
+Started inside such a namespace already, `ao-harness-e2e` runs the suite
+there instead of in a new one. It judges that by `netisolate.Inside`: the
+namespace's helper records the namespace's identity in `AO_NETISOLATE_NS`,
+and the process must be in that namespace with its interface shape, so a
+host that happens to look alike, or a process that inherited the variable
+elsewhere, gets a namespace of its own. `e2e/scripts/android-smoke.sh` relies on it:
+it boots the emulator and the adb server under `bin/ao-netns` and starts the
+launcher beside them, so nothing the Android smoke runs listens on the host.
+
+`--host-network` skips isolation for suites that need host services: the
+Android smoke on a real phone (`AO_ANDROID_HUMAN_LOCK=1`), which needs the
+host's adb server, and real SSH mode, which reaches its sshd on host
+loopback. The provider smoke targets also stay on the host network because
+they reach the real provider APIs. macOS and Windows run on the host
 network.
 
 An isolated boot (`ConfigureIsolation`) uses its LAN as a LAN only inside

@@ -418,3 +418,23 @@ func TestNewSessionExpectsTheHookItsSpawnRuns(t *testing.T) {
 		t.Fatalf("NewSession with a hook without a heading: %v", err)
 	}
 }
+
+// The memory hook, the native-memory switch, the access directories and the
+// transcript retention period share the one inline settings block; none
+// displaces another.
+func TestInlineSettingsCarryTheMemoryKeysBesideTheRetentionPeriod(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
+	cfg.SessionStartHook = testHook()
+	cfg.NativeMemoryOff = true
+	cfg.AccessDirs = []string{"/memory/user"}
+	cfg.CleanupPeriodDays = 90
+	settings := settingsArg(t, buildArgs(cfg, "", ""))
+	for _, key := range []string{"hooks", "autoMemoryEnabled", "permissions", CleanupPeriodDaysSetting} {
+		if _, ok := settings[key]; !ok {
+			t.Errorf("inline settings lack %q: %v", key, settings)
+		}
+	}
+	if settings[CleanupPeriodDaysSetting] != float64(90) {
+		t.Errorf("%s = %v, want 90", CleanupPeriodDaysSetting, settings[CleanupPeriodDaysSetting])
+	}
+}

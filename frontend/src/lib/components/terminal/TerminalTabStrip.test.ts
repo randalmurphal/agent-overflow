@@ -79,6 +79,46 @@ describe('TerminalTabStrip refresh affordance', () => {
   });
 });
 
+describe('TerminalTabStrip find affordance', () => {
+  it('renders a labeled find button with a tooltip that invokes onFind', async () => {
+    const onFind = vi.fn();
+    const { getByTestId } = render(TerminalTabStrip, { backend: '',
+      handle: handleWithTabs('t1'),
+      onOpen: noop,
+      onClose: noop,
+      onSelect: noop,
+      onFind,
+    });
+
+    const button = getByTestId('terminal-find');
+    expect(button.getAttribute('aria-label')).toBe('Find in Terminal');
+    expect(button.getAttribute('title')).toBe('Find in Terminal');
+    // The shared primitive, so it carries the compact hit target.
+    expect(button.hasAttribute('data-icon-button')).toBe(true);
+    await fireEvent.click(button);
+    expect(onFind).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the find button with no tabs, or when the host does not wire onFind', () => {
+    const empty = render(TerminalTabStrip, { backend: '',
+      handle: handleWithTabs(),
+      onOpen: noop,
+      onClose: noop,
+      onSelect: noop,
+      onFind: vi.fn(),
+    });
+    expect(empty.queryByTestId('terminal-find')).toBeNull();
+    cleanup();
+    const unwired = render(TerminalTabStrip, { backend: '',
+      handle: handleWithTabs('t1'),
+      onOpen: noop,
+      onClose: noop,
+      onSelect: noop,
+    });
+    expect(unwired.queryByTestId('terminal-find')).toBeNull();
+  });
+});
+
 // Middle-click close + right-click menu. Both are strip-local: they resolve
 // the target tabs from `handle.tabs` and hand each id to the same `onClose`
 // the ✕ button uses, so the host keeps owning CloseTerminal, the focus latch,

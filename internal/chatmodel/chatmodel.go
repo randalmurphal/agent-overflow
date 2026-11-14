@@ -91,28 +91,6 @@ func FallbackProfile(providerName, model string, availableProviders ...string) s
 	}
 }
 
-// ProfileFromThread projects a stored thread's chat-model settings into
-// the standalone ChatModelProfile shape used by the "remember last
-// model" cache. Codex choices survive changes to catalog availability.
-func ProfileFromThread(thread store.Thread) store.ChatModelProfile {
-	effort := provider.CoerceReasoningEffortForModel(
-		thread.Provider,
-		thread.Model,
-		provider.NormalizeReasoningEffort(thread.ReasoningEffort),
-	)
-	fastMode := thread.FastMode && SupportsStoredFastMode(thread.Provider, thread.Model)
-	return store.ChatModelProfile{
-		Provider:                   thread.Provider,
-		Model:                      thread.Model,
-		ReasoningEffort:            string(effort),
-		FastMode:                   fastMode,
-		ContextWindow:              thread.ContextWindow,
-		AutoCompactStandardPercent: thread.AutoCompactStandardPercent,
-		AutoCompactExtendedPercent: thread.AutoCompactExtendedPercent,
-		RuntimeMode:                string(provider.NormalizeRuntimeMode(thread.RuntimeMode)),
-	}
-}
-
 // SameProfile compares two profiles for equality under the same
 // normalization the rest of the package uses (runtime-mode is
 // normalized before compare; everything else is a plain ==).
@@ -127,9 +105,13 @@ func SameProfile(a, b store.ChatModelProfile) bool {
 		provider.NormalizeRuntimeMode(a.RuntimeMode) == provider.NormalizeRuntimeMode(b.RuntimeMode)
 }
 
-// SanitizeProfile clamps every field to a registry-supported value.
-// Use it after loading a stored profile to defend the UI from rows
-// written under an older provider catalog.
+// SanitizeProfile clamps the model, effort and context window to
+// registry-supported values. Use it after loading a stored profile to
+// defend the UI from rows written under an older provider catalog.
+//
+// FastMode passes through. Which models run fast is what the provider
+// reports, and the static registry is only a placeholder for that report,
+// so the App's catalog-aware sanitizer judges it.
 func SanitizeProfile(profile store.ChatModelProfile) store.ChatModelProfile {
 	profile.Model = provider.NormalizeModelSlug(profile.Provider, profile.Model)
 	profile.ReasoningEffort = string(provider.CoerceReasoningEffortForModel(
@@ -138,9 +120,6 @@ func SanitizeProfile(profile store.ChatModelProfile) store.ChatModelProfile {
 		provider.NormalizeReasoningEffort(profile.ReasoningEffort),
 	))
 	profile.ContextWindow = SanitizeContextWindow(profile.Provider, profile.Model, profile.ContextWindow)
-	if !SupportsStoredFastMode(profile.Provider, profile.Model) {
-		profile.FastMode = false
-	}
 	return profile
 }
 
@@ -157,9 +136,6 @@ func SanitizeThread(thread store.Thread) store.Thread {
 		provider.NormalizeReasoningEffort(thread.ReasoningEffort),
 	))
 	thread.ContextWindow = SanitizeContextWindow(thread.Provider, thread.Model, thread.ContextWindow)
-	if !SupportsStoredFastMode(thread.Provider, thread.Model) {
-		thread.FastMode = false
-	}
 	return thread
 }
 
@@ -296,20 +272,6 @@ func ValidateContextUpdate(options []provider.ContextWindowOption, rawProvider, 
 		return "", "", fmt.Errorf("context settings: extended auto-compact percent must be between 0 and 90")
 	}
 	return providerName, model, nil
-}
-
-// SupportsStoredFastMode preserves accepted Codex flags. Claude flags follow
-// the shipped capability registry.
-func SupportsStoredFastMode(providerName, model string) bool {
-	model = provider.NormalizeModelSlug(providerName, model)
-	if providerName == string(provider.Codex) {
-		return strings.TrimSpace(model) != ""
-	}
-	candidate, found := provider.FindModel(providerName, model)
-	if !found {
-		return false
-	}
-	return HasCapability(candidate, provider.ModelCapabilityFastMode)
 }
 
 // HasCapability reports whether a model advertises a named capability.

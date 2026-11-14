@@ -16,6 +16,8 @@
    * add/del line: span segments are split at the range boundaries and
    * the inside segments get a stronger background wash.
    *
+   * The prefix is gutter, never find text (`data-find-skip`).
+   *
    * Inline spans only — no block boxes or vertical metrics. The review
    * pane's exact-height contract (REVIEW_LINE_HEIGHT_PX per visual
    * line) depends on this component adding zero vertical geometry.
@@ -54,4 +56,4 @@
   );
 </script>
 
-{#if prefix}<span class={prefixTintClass(line.type)}>{prefix}</span>{/if}{#if segments}{#each segments as seg, si (si)}<span class="{seg.className} {seg.emph ? emphClass : ''}">{seg.text}</span>{/each}{:else if bodySegments}{#each bodySegments as seg, si (si)}<span class={seg.className}>{seg.text}</span>{/each}{:else}{plain}{/if}
+{#if prefix}<span class={prefixTintClass(line.type)} data-find-skip>{prefix}</span>{/if}{#if segments}{#each segments as seg, si (si)}<span class="{seg.className} {seg.emph ? emphClass : ''}">{seg.text}</span>{/each}{:else if bodySegments}{#each bodySegments as seg, si (si)}<span class={seg.className}>{seg.text}</span>{/each}{:else}{plain}{/if}

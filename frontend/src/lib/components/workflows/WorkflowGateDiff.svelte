@@ -4,10 +4,10 @@
   // the hand-off to the real ReviewPane (UI-SPEC §4.3, §4.7). There is no
   // parallel diff renderer here — the file list reuses WorkflowDiff, and
   // "Open full review" opens the review companion on the phase's own thread,
-  // which closes the overlay (R3).
+  // which takes the focused workflows pane's slot (R3).
   //
   // The whole patch is read once into compact storage, and an expanded file
-  // renders its lines from it (WorkflowDiffLines), so opening three files
+  // renders its lines from it (PatchLines), so opening three files
   // costs one read, not four. The read can hold the diff open to read
   // evicted text again; it is disposed with its files, and read again when
   // that text is lost.

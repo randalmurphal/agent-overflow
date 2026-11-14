@@ -148,6 +148,18 @@
               "maxLength": 256,
               "description": "Markdown list bullets and numbers in chat prose (the code-axis counterpart is syntax-markup-list). Follows the muted body-text tier (fg-muted). Derived by default — override only to stop it tracking."
             },
+            "find-match": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Ground painted behind every find-bar match. Translucent; follows the warning color. Derived by default — override only to stop it tracking."
+            },
+            "find-match-current": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Ground painted behind the current find-bar match. Translucent; follows the warning color. Derived by default — override only to stop it tracking."
+            },
             "code-inline-bg": {
               "type": "string",
               "minLength": 1,

@@ -596,18 +596,6 @@ graded by durability:
   invalidate the window attestation. Replay and reveal cursors can carry
   older content even when their delivery occurs after the read. Windows
   with active smoothers are also ineligible for stamped caching.
-
-  A window holding an **optimistic row** (a send the wire has not
-  echoed) is not a window any rev ever had, so neither stamped tier
-  will pair a stamp with it: the replica skips the write entirely (its
-  envelope IS the pairing) and the L1 snapshot drops both the row and
-  its stamp. Filtering the row while keeping the stamp is NOT the safe
-  version of this: the optimistic marker can itself be wrong (an echo
-  that arrived under a different id leaves a real row marked), and that
-  direction pairs a stamp with a window missing real content. Dropping
-  the stamp costs one window fetch and cannot lie either way. The
-  marker is discharged only by the wire. The pane's own optimistic
-  insert must never clear it, or every filter downstream is dead code.
 - **Event-carried stamps (`turn_completed`, `user_message:reverted`)
   do not validate client windows.** They are not full attestations: a
   writer outside the emitting goroutine, concretely the async
@@ -897,8 +885,7 @@ port; temporary token attachment does not create a durable pairing.
    flags). It is independent evidence, not a fallback: the stamp asks
    whether the thread changed, the window asks whether these rows are
    still the read, and a thread that had a turn while open can only
-   answer the second. A pane holding an un-echoed optimistic row
-   describes nothing, for the same reason it persists nothing (§3.4).
+   answer the second.
 3. Replica installation goes through the existing `applyInitialSlice`
    path. The cached rows stay in the pane store for the sync request but
    are not rendered while it is pending. After ~100 ms the empty surface
@@ -934,9 +921,8 @@ port; temporary token attachment does not create a durable pairing.
 5. **Write-back**: `snapshotOutgoingPane` (the sole L1 writer) also
    persists the envelope, taking rows from the live window and the
    stamp from the attestation the PANE carries for those rows (§3.4:
-   never a thread-keyed lookup, never an event-carried stamp, never
-   across a lineage re-mint, and never at all while an un-echoed
-   optimistic row is in the window). A settled sync response for the
+   never a thread-keyed lookup, never an event-carried stamp and never
+   across a lineage re-mint). A settled sync response for the
    open thread schedules a debounced write-back so a crash doesn't lose
    the session's threads. Fire-and-forget but never silent: IDB failures
    surface through the frontend error log
@@ -1037,8 +1023,7 @@ the freshly returned window, so there is nothing stale to page into.
   page-less answer with neither a validating stamp nor a sent window is
   still reported and refetched.
 - **Attestation pairing (frontend)**: a replica paint whose sync then
-  FAILS must write back under the envelope's own stamp; a window
-  carrying an optimistic row must reach neither stamped tier; a
+  FAILS must write back under the envelope's own stamp; a
   transport gap must strip unattested L1 stamp copies and leave
   attested ones. Each of these is a pairing, so cover the SEQUENCE that
   separates the stamp from its rows. A single-state check passes on

@@ -45,6 +45,20 @@ func (h *Harness) HarnessForgeSeed(raw json.RawMessage) (forgefake.Fixture, erro
 	return seeded, nil
 }
 
+// HarnessForgeOrigin creates the bare origin repository of a forge
+// project ("acme/widgets", "grp/sub/tool") and answers {root, path}: the
+// origin root, a directory this harness process created under the data
+// root (forge-origin-*), and the repository's path under it, the one a
+// spec pushes a pull's head to. A commit the fake forge makes on a pull
+// is written only to an origin created here (forge_origin.go). Creating
+// one again answers the same origin.
+func (h *Harness) HarnessForgeOrigin(project string) (ForgeOrigin, error) {
+	if h.origins == nil {
+		return ForgeOrigin{}, errors.New("this harness has no data root for forge origins")
+	}
+	return h.origins.create(project)
+}
+
 // HarnessForgeInvocations returns every recorded gh or glab invocation
 // with a sequence number above since: argv, cwd, stdin, the route that
 // answered (or unhandled) and the exit status.
@@ -76,6 +90,31 @@ func (h *Harness) HarnessForgeOffline(offline bool) error {
 // the reset; HarnessReset clears it.
 func (h *Harness) HarnessForgeRateLimit(limit forgefake.RateLimit) error {
 	return h.forge.SetRateLimit(limit)
+}
+
+// HarnessForgeRefuse makes one fake forge route answer a refusal in
+// place of its handler (forgefake.Refusal): {route, status, header,
+// body, times, hold}, route a REST route name or "gh graphql <operation>",
+// times 0 until cleared, hold to answer only on HarnessForgeRelease. Status 0 clears the route's refusal; HarnessReset
+// clears every one.
+func (h *Harness) HarnessForgeRefuse(refusal forgefake.Refusal) error {
+	return h.forge.SetRefusal(refusal)
+}
+
+// HarnessForgeRelease ends the refusal armed with hold on its route
+// (forgefake.Release: {route, drop}): the requests it holds are answered
+// with the refusal, or with drop closed with no reply, their answer lost.
+func (h *Harness) HarnessForgeRelease(release forgefake.Release) error {
+	return h.forge.ReleaseRefusal(release)
+}
+
+// HarnessForgeAdvanceJob moves one current CI job of a seeded repository
+// to a later state, as its runner would (forgefake.JobAdvance: {forge,
+// project, job (name) or id, status, log?, artifacts?}): a job a retry
+// left pending can be run and finished without re-seeding, since its id
+// is the fake's. Returns the job as it is now.
+func (h *Harness) HarnessForgeAdvanceJob(advance forgefake.JobAdvance) (forgefake.Job, error) {
+	return h.forge.AdvanceJob(advance)
 }
 
 // ForgeAPIEndpoint is where an isolated boot's forge API transport sends

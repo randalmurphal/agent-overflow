@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"agent-overflow/internal/store"
 )
@@ -76,7 +77,7 @@ type Meta struct {
 	// Origin names the non-human author of a user row, in the same field
 	// and vocabulary the provider-written rows use (`external-queue`,
 	// `peer-session`). Agent thread tools write OriginAgentThread; the
-	// frontend's one attribution branch labels all three.
+	// frontend's one attribution branch labels every origin.
 	Origin string `json:"origin,omitempty"`
 	// OriginThread names the thread that wrote this row, on an
 	// `agent-thread` row. Absent on every other origin.
@@ -93,10 +94,27 @@ type Meta struct {
 	// JoinedParts are a joined row's members as they appear in its text,
 	// each with its attribution (JoinedPart), written when the row is
 	// joined. Origin above is the first attributed member's; these say
-	// which words are whose, so a Stop that un-sends the row gives the
+	// which words are whose, so a restore that takes the row back gives the
 	// person back their own text and an agent's member back to its owner.
 	// Absent on a row of one message and on rows joined before it existed.
 	JoinedParts []JoinedPart `json:"joinedParts,omitempty"`
+	// TextBeforeReviewComments is the message as it read before the diff
+	// review comments it carries were rendered into it, set when it
+	// rendered any; the row's summary is the rendered whole. The comments
+	// belong to the message's claim, not to its text: a message taken back
+	// undelivered returns this text to the composer while its comments
+	// return to drafts (store.RetireUndeliveredUserRow). A resend rebuilt
+	// from the row sends the summary and claims the comments again.
+	TextBeforeReviewComments *string `json:"textBeforeReviewComments,omitempty"`
+}
+
+// TextWithoutReviewComments is the text of the row whose summary is
+// summary, without the diff review comments rendered into it.
+func (m Meta) TextWithoutReviewComments(summary string) string {
+	if m.TextBeforeReviewComments != nil {
+		return *m.TextBeforeReviewComments
+	}
+	return summary
 }
 
 // OriginAgentThread is the Origin value of a row one thread's agent wrote
@@ -130,6 +148,9 @@ const (
 	OriginWakeKindCompletion = "completion"
 	OriginWakeKindWorkflow   = "workflow"
 )
+
+// OriginApp is the Origin value of a row Agent Overflow wrote in its own voice.
+const OriginApp = "app"
 
 // OriginThread identifies the sending thread of an `agent-thread` row: what
 // the row's header names, and the request token that keeps three requests
@@ -209,6 +230,8 @@ type Input struct {
 	Origin                 string
 	OriginThread           *OriginThread
 	OriginWake             *OriginWake
+	// TextBeforeReviewComments is Meta.TextBeforeReviewComments.
+	TextBeforeReviewComments *string
 }
 
 // AttachmentMeta is the per-attachment slice element. The Go side
@@ -230,6 +253,56 @@ type AttachmentMeta struct {
 	// existed carried an image, so an absent value is the truth about that
 	// row rather than a gap to repair.
 	Kind string `json:"kind,omitempty"`
+	// Shell is set when the file is the output of a command the person ran
+	// from the composer. The row renders the command and its outcome from
+	// here and reads the rest of the output on demand.
+	Shell *ShellMeta `json:"shell,omitempty"`
+}
+
+// ShellCommandMetaBytes bounds the command a row's metadata carries. The
+// attachment record keeps the whole command.
+const ShellCommandMetaBytes = 512
+
+// ShellMeta is what a shell output attachment's row shows without a read.
+// Every string is bounded so the item wire never elides one.
+type ShellMeta struct {
+	Command string `json:"command"`
+	// CommandLength is set when Command is only the start of a longer one:
+	// the whole command's length in UTF-16 code units, which is how the
+	// frontend measures the typed text it stands for.
+	CommandLength int   `json:"commandLength,omitempty"`
+	ExitCode      int   `json:"exitCode"`
+	DurationMs    int64 `json:"durationMs"`
+	// Truncated reports output past the capture cap; TimedOut that the
+	// run's time limit ended the command.
+	Truncated bool `json:"truncated,omitempty"`
+	TimedOut  bool `json:"timedOut,omitempty"`
+	// Preview is the first lines of the output; More reports that the file
+	// holds output past it.
+	Preview string `json:"preview,omitempty"`
+	More    bool   `json:"more,omitempty"`
+}
+
+func shellMeta(attachment store.Attachment) *ShellMeta {
+	shell := attachment.Shell
+	if shell.IsZero() {
+		return nil
+	}
+	command, length := shell.Command, 0
+	if len(command) > ShellCommandMetaBytes {
+		// The first excluded byte starts a rune exactly when the prefix
+		// ends on one.
+		cut := ShellCommandMetaBytes
+		for cut > 0 && !utf8.RuneStart(command[cut]) {
+			cut--
+		}
+		command, length = command[:cut], utf16Length(command)
+	}
+	return &ShellMeta{
+		Command: command, CommandLength: length, ExitCode: shell.ExitCode,
+		DurationMs: shell.DurationMs, Truncated: shell.Truncated, TimedOut: shell.TimedOut,
+		Preview: shell.Preview, More: attachment.Size > int64(len(shell.Preview)),
+	}
 }
 
 // Marshal returns the JSON-encoded user-message meta for the given

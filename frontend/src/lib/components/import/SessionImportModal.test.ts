@@ -281,7 +281,7 @@ describe('the project filter menu', () => {
     // it while a popover is open — the topmost surface owns Escape, and
     // losing the whole dialog to a dismissed dropdown would take a selection
     // with it. The popover's document listener takes the same press.
-    await fireEvent.keyDown(view.container.querySelector('[data-modal-backdrop]')!, {
+    await fireEvent.keyDown(document.querySelector('[data-modal-backdrop]')!, {
       key: 'Escape',
     });
     await settle();
@@ -298,7 +298,7 @@ describe('the project filter menu', () => {
     expect(isSessionImportOpen()).toBe(true);
 
     // With the menu closed the dialog owns Escape again.
-    await fireEvent.keyDown(view.container.querySelector('[data-modal-backdrop]')!, {
+    await fireEvent.keyDown(document.querySelector('[data-modal-backdrop]')!, {
       key: 'Escape',
     });
     await settle();
@@ -463,9 +463,9 @@ describe('an in-flight run', () => {
   }
 
   it('refuses Esc — the modal stays open and the store stays open with it', async () => {
-    const { container, getByRole } = await mountAndStart();
+    const { getByRole } = await mountAndStart();
 
-    await fireEvent.keyDown(container.querySelector('[data-modal-backdrop]')!, { key: 'Escape' });
+    await fireEvent.keyDown(document.querySelector('[data-modal-backdrop]')!, { key: 'Escape' });
     await settle();
 
     expect(isSessionImportOpen()).toBe(true);
@@ -473,9 +473,9 @@ describe('an in-flight run', () => {
   });
 
   it('refuses a backdrop click for the same reason', async () => {
-    const { container, getByRole } = await mountAndStart();
+    const { getByRole } = await mountAndStart();
 
-    await fireEvent.click(container.querySelector('[data-modal-backdrop]')!);
+    await fireEvent.click(document.querySelector('[data-modal-backdrop]')!);
     await settle();
 
     expect(isSessionImportOpen()).toBe(true);

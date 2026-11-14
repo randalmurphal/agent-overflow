@@ -143,6 +143,9 @@ func readThreadWake(text string) (title, body string, reminder, ok bool) {
 		strings.HasPrefix(rest, ": The thread was moved to ") && strings.HasSuffix(rest, " before it answered."),
 		strings.HasPrefix(rest, " was cancelled."), strings.HasPrefix(rest, " was interrupted by a restart of "),
 		rest == " did not answer within a day.", rest == " settled.":
+	case strings.HasPrefix(rest, ": ") && after == "":
+		// Who stopped the turn, worded by the stop (app_turn_stop.go).
+		body = rest[len(": "):]
 	default:
 		return "", "", false, false
 	}

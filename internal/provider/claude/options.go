@@ -15,8 +15,7 @@ import (
 
 // claudeEffortForModel resolves the `--effort` flag value for a session,
 // dropping it entirely for a model the catalog says has no reasoning tiers
-// (Haiku, per the CLI's own model list). Mirrors claudeFastMode, which gates
-// the same way on the same catalog. See
+// (Haiku, per the CLI's own model list). See
 // provider.ModelDeclaresNoReasoningEffort for why absence beats coercion here.
 func claudeEffortForModel(model string, effort provider.ReasoningEffort) string {
 	if provider.ModelDeclaresNoReasoningEffort(string(provider.Claude), model) {
@@ -168,16 +167,15 @@ func thinkingArgs(thinking ThinkingConfig) []string {
 	}
 }
 
-func claudeFastMode(model string, fastMode bool) bool {
-	return fastMode && provider.ModelSupportsCapability(string(provider.Claude), model, provider.ModelCapabilityFastMode)
-}
-
 // ConfigFromOptions translates a provider-agnostic SessionOptions bundle into
 // the Claude-specific launch Config. This is the single place where the
 // effort flag, 1M-context model suffix, permission flags, and fast-mode
 // settings are applied. Callers in app.go pass the result straight into
 // claude.NewSession plus any ancillary wiring (Binary, EventLogger) that
 // lives outside the session-options abstraction.
+//
+// FastMode is the thread's setting as given: the App clears it for a model
+// the CLI reports cannot run fast, and the CLI has the last word.
 func ConfigFromOptions(opts provider.SessionOptions) Config {
 	model := opts.Model
 	contextWindow := provider.ResolveContextWindowForModel(string(provider.Claude), model, opts.ContextWindow)
@@ -199,7 +197,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		ForkSession:          opts.ForkSession,
 		SystemPrompt:         opts.SystemPrompt,
 		ReasoningEffort:      claudeEffortForModel(model, opts.ReasoningEffort),
-		FastMode:             claudeFastMode(model, opts.FastMode),
+		FastMode:             opts.FastMode,
 		PermissionFlags:      claudePermissionFlags(opts.RuntimeMode),
 		DisallowedTools:      mergeDisallowedTools(claudeDisallowedTools(opts.RuntimeMode), opts.DisabledTools),
 		DisableTodoReminders: opts.DisableTodoReminders,
@@ -616,8 +614,11 @@ type cliInlineSettings struct {
 	// ("Concise" / "Proactive" / "Explanatory" / "Learning"). There is no
 	// CLI flag for this axis — the settings key is the only delivery
 	// mechanism.
-	OutputStyle string            `json:"outputStyle,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
+	OutputStyle string `json:"outputStyle,omitempty"`
+	// CleanupPeriodDays is the transcript retention this process sweeps the
+	// config home with. See retention.go.
+	CleanupPeriodDays int               `json:"cleanupPeriodDays,omitempty"`
+	Env               map[string]string `json:"env,omitempty"`
 	// Hooks carries Config.SessionStartHook. The flagSettings layer's hooks
 	// merge with the user's own and run beside them.
 	Hooks map[string]any `json:"hooks,omitempty"`
@@ -655,9 +656,11 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 		FastMode:            cfg.FastMode,
 		CrossSessionInbound: strings.TrimSpace(cfg.CrossSessionInbound),
 		OutputStyle:         strings.TrimSpace(cfg.OutputStyle),
-		Env:                 inlineSettingsEnvForCLI(cfg),
-		Hooks:               inlineSettingsHooksForCLI(cfg),
-		Permissions:         AccessPermissions(cfg.AccessDirs),
+		// The CLI's schema rejects a value below one.
+		CleanupPeriodDays: max(cfg.CleanupPeriodDays, 0),
+		Env:               inlineSettingsEnvForCLI(cfg),
+		Hooks:             inlineSettingsHooksForCLI(cfg),
+		Permissions:       AccessPermissions(cfg.AccessDirs),
 	}
 	if cfg.NativeMemoryOff {
 		off := false
@@ -666,6 +669,7 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 	if !settings.FastMode &&
 		settings.CrossSessionInbound == "" &&
 		settings.OutputStyle == "" &&
+		settings.CleanupPeriodDays == 0 &&
 		len(settings.Env) == 0 &&
 		len(settings.Hooks) == 0 &&
 		settings.AutoMemoryEnabled == nil &&

@@ -40,6 +40,7 @@ describe('reviewTrigger', () => {
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', SUBJECT, {
       scope: 'workspace',
       filePath: 'src/foo.ts',
+      userInitiated: true,
     });
   });
 
@@ -49,6 +50,7 @@ describe('reviewTrigger', () => {
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', SUBJECT, {
       scope: 'workspace',
       filePath: undefined,
+      userInitiated: true,
     });
   });
 

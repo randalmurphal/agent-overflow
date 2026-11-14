@@ -33,7 +33,7 @@ func TestOrganizePatchArchiveOfALiveSessionReturns(t *testing.T) {
 	archived := true
 	done := make(chan error, 1)
 	go func() {
-		_, err := app.applyThreadOrganizePatchLocked(context.Background(), thread.ID, threadapp.OrganizePatch{Archived: &archived})
+		_, _, err := app.applyThreadOrganizePatchLocked(context.Background(), thread.ID, threadapp.OrganizePatch{Archived: &archived})
 		done <- err
 	}()
 	select {

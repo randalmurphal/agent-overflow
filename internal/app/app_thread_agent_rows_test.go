@@ -772,7 +772,7 @@ func TestThreadStopLeavesItsAgentRows(t *testing.T) {
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "working")
 	child := f.runningRequest(t, "lead the fix")
-	if err := f.app.interruptTurnCtx(t.Context(), f.caller.ID); err != nil {
+	if err := f.app.interruptTurnCtx(t.Context(), f.caller.ID, stopByUser(nil)); err != nil {
 		t.Fatalf("interrupt the caller: %v", err)
 	}
 	if row := f.request(t, child.Token); row.State != store.ThreadRequestRunning || !row.Notify {

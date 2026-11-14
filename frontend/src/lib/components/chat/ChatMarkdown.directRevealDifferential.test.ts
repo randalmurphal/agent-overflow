@@ -21,6 +21,10 @@ function normalizeStyle(value: string): string {
     .split(';')
     .map((declaration) => declaration.trim())
     .filter(Boolean)
+    // `-webkit-mask-image` is an alias of `mask-image`: a style written
+    // through the style object keeps one declaration, a style attribute
+    // parsed from markup keeps the text of both.
+    .filter((declaration) => !declaration.startsWith('-webkit-mask-image'))
     .map((declaration) => {
       const separator = declaration.indexOf(':');
       if (separator < 0) return declaration;
@@ -101,6 +105,12 @@ async function assertEveryAppend(
     expect(normalizeElement(direct), `after ${JSON.stringify(consumed)}`).toEqual(
       normalizeElement(baseline),
     );
+    // The literal owner keeps its adopted host without searching the message
+    // again, which is exact only while the tail never holds a second host.
+    expect(
+      direct.querySelectorAll('.md-volatile [data-streamdown-direct-append-safe]').length,
+      `literal hosts after ${JSON.stringify(consumed)}`,
+    ).toBeLessThanOrEqual(1);
   }
   expect(consumed).toBe(source);
   await harness.synchronize();

@@ -17,7 +17,7 @@ import {
   validateWsUrl,
 } from './bootstrap';
 import { clearPairedSession, redeemPairing } from './deviceSession';
-import { __resetPageHostForTest } from './pageHost';
+import { __resetPageHostForTest, isHostWindow } from './pageHost';
 import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
 import { fetchBackendManifest } from './manifestBackends';
 import { BackendStartingError, STARTUP_REPORT_LIMIT_BYTES } from './startupProgress';
@@ -220,6 +220,17 @@ describe('defaultBootstrap', () => {
     vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS })));
 
     await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
+  });
+
+  // Whether the page is the host's own window is the backend's answer, from
+  // the window ticket, and every manifest restates it.
+  it('publishes whether the page is the host window', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, hostWindow: true })));
+    await defaultBootstrap();
+    expect(isHostWindow()).toBe(true);
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS })));
+    await defaultBootstrap();
+    expect(isHostWindow()).toBe(false);
   });
 
   // A page whose window this application owns is handed its ticket by

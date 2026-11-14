@@ -84,9 +84,9 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	timing := startForkTiming(sourceThreadID, "thread")
 	defer timing.finish()
 	// Hold the source thread's action lock for the duration of the fork so
-	// concurrent SendMessage / InterruptAndRevertIfClean / etc. can't move
-	// the source's history between the provider cut and the fork's cut.
-	// Mirrors the un-send path's thread action lock.
+	// concurrent SendMessage / RevertConversationAndResendMessage / etc.
+	// can't move the source's history between the provider cut and the
+	// fork's cut.
 	unlock, err := a.threadLocks().LockCtx(ctx, sourceThreadID)
 	if err != nil {
 		return store.Thread{}, err
@@ -296,10 +296,9 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 		)
 	}
 
-	// Publish readiness only after history and provider identity agree.
-	if err := ctx.Err(); err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.Run())
-	}
+	// Publish readiness only after history and provider identity agree. No
+	// caller check from here: a Codex child now exists and only this row
+	// names it.
 	ready, err := a.store.FinishForkPreparation(fork.ID)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
@@ -376,8 +375,8 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 	// The fork's cut sits at the item's position and the provider cut
 	// derives from the anchor; resolveMessageAnchor guarantees the two
 	// agree by synthesizing from the item row when the persisted anchor
-	// is missing or its turn index drifted. Same contract as the un-send
-	// path (InterruptAndRevertIfClean).
+	// is missing or its turn index drifted. Same contract as
+	// edit-and-resend (RevertConversationAndResendMessage).
 	anchor := a.resolveMessageAnchor("fork thread from message", sourceThreadID, item)
 
 	timing.next("origin")
@@ -454,9 +453,7 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 			cleanups.Run(),
 		)
 	}
-	if err := ctx.Err(); err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.Run())
-	}
+	// No caller check from here, as in ForkThread.
 	ready, err := a.store.FinishForkPreparation(fork.ID)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())

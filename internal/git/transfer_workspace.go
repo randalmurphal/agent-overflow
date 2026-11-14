@@ -100,14 +100,16 @@ func (c *Core) readTransferWorkspace(ctx context.Context, cwd string) (TransferW
 	if !validTransferOID(w.Head) {
 		return w, nil, errors.New("transfer: invalid workspace commit")
 	}
-	branch, err := c.runSpec(commandSpec{binary: "git", cwd: cwd, ctx: ctx, args: []string{"symbolic-ref", "--quiet", "--short", "HEAD"}})
+	// The full ref, trimmed: --short spells a branch that shares its name
+	// with a tag "heads/<name>". checkTransferWorktree reads it the same way.
+	branch, err := c.runSpec(commandSpec{binary: "git", cwd: cwd, ctx: ctx, args: []string{"symbolic-ref", "--quiet", "HEAD"}})
 	if err != nil {
 		return w, nil, err
 	}
 	if branch.exitCode != 0 && branch.exitCode != 1 {
 		return w, nil, errors.New("transfer: could not read the workspace branch")
 	}
-	w.Branch = strings.TrimSpace(branch.stdout)
+	w.Branch = trimBranchRef(strings.TrimSpace(branch.stdout))
 	w.Index, err = c.ReadTransferIndex(ctx, cwd)
 	if err != nil {
 		return w, nil, err

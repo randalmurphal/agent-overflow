@@ -220,10 +220,30 @@ export function awaitInjectedPageTicket(
   });
 }
 
+let hostWindowPage = false;
+
+/**
+ * Whether this page is the host's own window (bootstrap `hostWindow`): the
+ * one client that shows the native views the host owns, such as the browser
+ * pane. A browser tab on the same machine holds the same grants and is not.
+ * The backend decides it from the window ticket the window's own process
+ * injected, so it is read from the manifest rather than from `?host=`.
+ */
+export function isHostWindow(): boolean {
+  return hostWindowPage;
+}
+
+// Called only by bootstrap.ts once a manifest has been validated, before
+// the page grants it publishes, so a reader woken by those sees this.
+export function setHostWindowFromBootstrap(value: boolean): void {
+  hostWindowPage = value;
+}
+
 // __resetPageHostForTest is the test-only escape hatch, matching
 // runMode.ts's. Production code never calls it.
 export function __resetPageHostForTest(): void {
   cachedWebviewHosted = null;
+  hostWindowPage = false;
   const w = hostWindow();
   if (w) delete w[TICKET_GLOBAL];
 }

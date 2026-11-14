@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,16 +55,20 @@ var ErrTooManyPRUpdateSubscriptions = errors.New("pr updates: too many active su
 // pump state this result was read from, so the caller can tell a frame it
 // missed during the join from one already folded in.
 type PRUpdateSubscriptionResult struct {
-	ID        string                `json:"id"`
-	PRKey     string                `json:"prKey"`
-	Detail    gitops.PRDetail       `json:"detail"`
-	Threads   []gitops.ReviewThread `json:"threads"`
-	HeadSHA   string                `json:"headSHA"`
-	Error     string                `json:"error"`
-	ErrorKind string                `json:"errorKind"`
-	Reserve   bool                  `json:"reserve"`
-	ResumeAt  string                `json:"resumeAt"`
-	Seq       uint64                `json:"seq"`
+	ID      string                `json:"id"`
+	PRKey   string                `json:"prKey"`
+	Detail  gitops.PRDetail       `json:"detail"`
+	Threads []gitops.ReviewThread `json:"threads"`
+	Events  []gitops.ReviewEvent  `json:"events"`
+	// ReactionsUnavailable is the sentence saying the threads carry no
+	// reactions because their read failed (gitops.PRRead).
+	ReactionsUnavailable string `json:"reactionsUnavailable,omitempty"`
+	HeadSHA              string `json:"headSHA"`
+	Error                string `json:"error"`
+	ErrorKind            string `json:"errorKind"`
+	Reserve              bool   `json:"reserve"`
+	ResumeAt             string `json:"resumeAt"`
+	Seq                  uint64 `json:"seq"`
 	// CI is the pump's pipeline, nil until its first CI poll has answered
 	// (the frame then follows on pr:ci_updated); CIError is the CI poll's
 	// active failure, the same caller-safe summary as Error, with its kind
@@ -98,20 +101,25 @@ type PRUpdateSubscriptionResult struct {
 // Seq its SubscribePRUpdates result carried: anything at or below is
 // already in that snapshot, anything above is a frame the join missed.
 type PRUpdatedEvent struct {
-	PRKey     string                `json:"prKey"`
-	Detail    gitops.PRDetail       `json:"detail"`
-	Threads   []gitops.ReviewThread `json:"threads"`
-	HeadSHA   string                `json:"headSHA"`
-	Error     string                `json:"error,omitempty"`
-	ErrorKind string                `json:"errorKind,omitempty"`
-	Reserve   bool                  `json:"reserve,omitempty"`
-	ResumeAt  string                `json:"resumeAt,omitempty"`
-	Seq       uint64                `json:"seq"`
+	PRKey   string                `json:"prKey"`
+	Detail  gitops.PRDetail       `json:"detail"`
+	Threads []gitops.ReviewThread `json:"threads"`
+	Events  []gitops.ReviewEvent  `json:"events"`
+	// ReactionsUnavailable is as on PRUpdateSubscriptionResult.
+	ReactionsUnavailable string `json:"reactionsUnavailable,omitempty"`
+	HeadSHA              string `json:"headSHA"`
+	Error                string `json:"error,omitempty"`
+	ErrorKind            string `json:"errorKind,omitempty"`
+	Reserve              bool   `json:"reserve,omitempty"`
+	ResumeAt             string `json:"resumeAt,omitempty"`
+	Seq                  uint64 `json:"seq"`
 }
 
 type prUpdateSnapshot struct {
-	Detail  gitops.PRDetail       `json:"detail"`
-	Threads []gitops.ReviewThread `json:"threads"`
+	Detail               gitops.PRDetail       `json:"detail"`
+	Threads              []gitops.ReviewThread `json:"threads"`
+	Events               []gitops.ReviewEvent  `json:"events"`
+	ReactionsUnavailable string                `json:"reactionsUnavailable,omitempty"`
 }
 
 // prUpdatePump is the App's per-PR poller: one ticker, one
@@ -134,24 +142,11 @@ type prUpdateSnapshot struct {
 type prUpdatePump struct {
 	prKey string
 	pr    gitops.PRReference
-	done  chan struct{}
-	// ctx is every forge call the pump makes, derived from the app's
-	// lifetime; cancel ends it when the pump dies (stopPRUpdatePump,
-	// dropPRUpdatePump), which cancels a forge request the pump has in
-	// flight.
-	ctx    context.Context
-	cancel context.CancelFunc
-	dead   bool
-	// paused suspends polling while EVERY subscriber of this PR reports
-	// itself hidden (window minimized, tab in the background) — active is
-	// the count of those that don't, so one visible client keeps the pump
-	// running for all of them. The pump and its change-detection state
-	// stay alive; wake nudges the loop on resume so a poll missed while
-	// paused runs immediately instead of waiting out the next tick.
-	paused atomic.Bool
-	wake   chan struct{}
-	refs   int
-	active int
+	// pumpCore is the goroutine's lifetime, the subscribers' refs and
+	// visibility votes (paused while EVERY subscriber of this PR reports
+	// itself hidden, so one visible client keeps the pump running for all
+	// of them), the sequence and the request channel.
+	pumpCore
 
 	// last is the encoded form used for change detection; lastSnapshot is
 	// the same observation decoded, kept so a joiner is served without
@@ -170,24 +165,13 @@ type prUpdatePump struct {
 	fail         prForgeFailure
 	graced       bool
 	readFailed   bool
-	seq          uint64
 
-	// The CI phase (app_forge_ci.go), under the same lock. ci is the last
-	// pipeline fetched (meaningful once ciKnown), ciLast its encoding for
-	// change detection, ciFail the active fetch failure, as fail is for the
-	// snapshot. ciStamp is the prCIStamp of the
-	// snapshot the pipeline was last polled under; ciDirty is set by a
-	// snapshot poll that moved it and by a new follow (whose steps the next
-	// pipeline poll fills). follows holds the logs being watched,
-	// by job id. requests is how an RPC has this goroutine poll now.
-	ci       gitops.CIPipeline
-	ciKnown  bool
-	ciLast   []byte
-	ciFail   prForgeFailure
-	ciStamp  string
-	ciDirty  bool
-	follows  map[string]*prCILogFollow
-	requests chan *prPumpRequest
+	// The CI phase (app_ci_phase.go): the head pipeline and the followed
+	// logs, under the same lock. ciStamp is the prCIStamp of the snapshot
+	// the pipeline was last polled under; a snapshot poll that moves it
+	// marks the phase dirty.
+	ciPhase
+	ciStamp string
 }
 
 // prUpdateReference is one caller's take on a pump: the handle plus the
@@ -239,47 +223,55 @@ func (a *App) GetPRDetail(ctx context.Context, pr gitops.PRReference) (gitops.PR
 	return a.gitCore().GetPRDetail(forgeapi.WithInteractive(ctx), pr)
 }
 
-// OpenPRDiff opens the PR's three-dot diff (merge base of the base branch
-// tip to the head) at rev, the revision of the PR snapshot the caller
-// shows, computed in the referenced clone.
+// OpenPRDiff opens the PR's three-dot diff (merge base of the recorded base
+// and the head, to the head) at rev, the revision of the PR snapshot the caller
+// shows, computed in the referenced clone. userInitiated is whether a person
+// asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
 	const action = "open PR diff"
-	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev)
+	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenMergeBaseDiff(ctx, workspace, rev.BaseSHA, rev.HeadSHA,
-			gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
+		return gitdiff.MergeBaseSides(ctx, workspace, rev.BaseSHA, rev.HeadSHA)
 	})
 }
 
 // ListPRCommits returns the commits a PR carries at rev (`base..head`,
-// newest first), computed from the referenced clone.
+// newest first, capped) and how many it carries (BranchCommitList),
+// computed from the referenced clone. userInitiated is whether a person
+// asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision) ([]BranchCommit, error) {
-	workspace, err := a.prRevisionWorkspace("list PR commits", ws, pr, rev)
+func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, userInitiated bool) (BranchCommitList, error) {
+	workspace, err := a.prRevisionWorkspace("list PR commits", ws, pr, rev, userInitiated)
 	if err != nil {
-		return nil, err
+		return BranchCommitList{}, err
 	}
 	return gitdiff.ListCommitsRange(context.Background(), workspace, rev.BaseSHA, rev.HeadSHA)
 }
 
-// OpenPRCommitDiff opens the unified patch a single commit of the PR at rev
-// introduced (first-parent diff), read from the referenced clone.
+// OpenPRCommitDiff opens the patch of a contiguous run of the PR's commits
+// at rev: from the first parent of firstSHA (the older end) to lastSHA, read
+// from the referenced clone (gitdiff.CommitRangeSides). Both ends must be in
+// the commit list ListPRCommits answers for rev, firstSHA no newer than
+// lastSHA. firstSHA == lastSHA is one commit's own change (first-parent
+// diff); a run of more than one commit covering the whole list is refused,
+// because OpenPRDiff reads the whole PR. userInitiated is whether a person
+// asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, sha string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, firstSHA, lastSHA string, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
 	const action = "open PR commit diff"
-	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev)
+	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenCommitDiff(ctx, workspace, sha, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
+		return gitdiff.CommitRangeSides(ctx, workspace, rev.BaseSHA, rev.HeadSHA, firstSHA, lastSHA)
 	})
 }
 
@@ -300,7 +292,11 @@ func (a *App) prCloneWorkspace(action string, ws WorkspaceRef) (string, error) {
 
 // prRevisionWorkspace is the shared entry of a PR read at rev: it resolves
 // the clone and makes rev's commits present in it (EnsurePRObjects).
-func (a *App) prRevisionWorkspace(action string, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision) (string, error) {
+// userInitiated is whether a person asked for this read: only then may the
+// fetch ask for credentials, and only then does a failure arm the PR pump's
+// retry (notePRReadFailed), so an automatic read that fails cannot chain
+// into another one on every poll.
+func (a *App) prRevisionWorkspace(action string, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, userInitiated bool) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
@@ -314,8 +310,14 @@ func (a *App) prRevisionWorkspace(action string, ws WorkspaceRef, pr gitops.PRRe
 	if err != nil {
 		return "", err
 	}
-	if err := a.gitCore().EnsurePRObjects(workspace, pr, rev); err != nil {
-		a.notePRReadFailed(pr)
+	ensure := a.gitCore().EnsurePRObjectsUnattended
+	if userInitiated {
+		ensure = a.gitCore().EnsurePRObjects
+	}
+	if err := ensure(workspace, pr, rev); err != nil {
+		if userInitiated {
+			a.notePRReadFailed(pr)
+		}
 		return "", fmt.Errorf("%s: %w", action, err)
 	}
 	return workspace, nil
@@ -347,55 +349,72 @@ func (a *App) ListPRReviewThreads(ctx context.Context, pr gitops.PRReference) ([
 	return a.gitCore().ListReviewThreads(forgeapi.WithInteractive(ctx), pr)
 }
 
+// SubmitPRReviewResult is what a submit posted. PostedReplies counts the
+// held replies GitHub posted after the review (GitLab publishes them with
+// it). PartialFailurePath names a failed follow-up file comment's file and
+// PartialFailureThreadID a failed reply's thread (a gone thread is kind
+// not_found); the drafts that did not post stay drafts.
 type SubmitPRReviewResult struct {
-	PostedReview       bool   `json:"postedReview"`
-	PostedFileComments int    `json:"postedFileComments"`
-	PartialFailurePath string `json:"partialFailurePath,omitempty"`
+	PostedReview           bool   `json:"postedReview"`
+	PostedFileComments     int    `json:"postedFileComments"`
+	PostedReplies          int    `json:"postedReplies,omitempty"`
+	PartialFailurePath     string `json:"partialFailurePath,omitempty"`
+	PartialFailureThreadID string `json:"partialFailureThreadId,omitempty"`
+	// PartialFailure is the failed follow-up's sentence and
+	// PartialFailureKind its kind (git.ExplainForgeError), never the
+	// forge's raw text.
 	PartialFailure     string `json:"partialFailure,omitempty"`
+	PartialFailureKind string `json:"partialFailureKind,omitempty"`
+	// SentDraftIDs are the named drafts a draft submit posted and marked
+	// sent; EditedDraftIDs the ones it posted that changed meanwhile and
+	// stay drafts. Both empty for a submit without drafts.
+	SentDraftIDs   []string `json:"sentDraftIds,omitempty"`
+	EditedDraftIDs []string `json:"editedDraftIds,omitempty"`
+	// Posted is a draft submit's own fact that the forge took a review
+	// from it; Unconfirmed that the forge did not say whether it did. Both
+	// false on every answer of a submit without drafts.
+	Posted      bool `json:"posted,omitempty"`
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
 }
 
-func mapSubmitPRReviewResult(result gitops.SubmitReviewResult, err error) (SubmitPRReviewResult, error) {
+// mapSubmitPRReviewResult turns a submit's result into the wire answer. A
+// review that landed with a failed follow-up is a result, not an error,
+// and carries the follow-up's failure explained for pr and action.
+func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, result gitops.SubmitReviewResult, err error) (SubmitPRReviewResult, error) {
 	if err == nil {
 		return SubmitPRReviewResult{
 			PostedReview:       result.PostedReview,
 			PostedFileComments: result.PostedFileComments,
+			PostedReplies:      result.PostedReplies,
 		}, nil
 	}
 	var partial *gitops.PartialSubmitError
 	if errors.As(err, &partial) {
-		return SubmitPRReviewResult{
-			PostedReview:       partial.PostedReview,
-			PostedFileComments: partial.PostedFileComments,
-			PartialFailurePath: partial.FailedPath,
-			PartialFailure:     partial.Err.Error(),
-		}, nil
+		mapped := SubmitPRReviewResult{
+			PostedReview:           partial.PostedReview,
+			PostedFileComments:     partial.PostedFileComments,
+			PostedReplies:          partial.PostedReplies,
+			PartialFailurePath:     partial.FailedPath,
+			PartialFailureThreadID: partial.FailedThreadID,
+		}
+		mapped.PartialFailure = partial.Err.Error()
+		if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, action, partial.Err)); ok {
+			mapped.PartialFailure, mapped.PartialFailureKind = explained.Message, explained.Kind
+		}
+		if partial.ApproveErr != nil {
+			approval := partial.ApproveErr.Error()
+			if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, gitops.ActionApprove, partial.ApproveErr)); ok {
+				approval = explained.Message
+			}
+			mapped.PartialFailure += " The approval did not go through either: " + approval
+		}
+		if partial.Unconfirmed {
+			mapped.PartialFailure = "The forge did not confirm it, so it may already be on the PR; check the PR before sending it again. " + mapped.PartialFailure
+			mapped.PartialFailureKind = "unconfirmed"
+		}
+		return mapped, nil
 	}
 	return SubmitPRReviewResult{}, err
-}
-
-//ao:scope git:operate
-//ao:route selected
-func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review gitops.SubmitReviewRequest) (SubmitPRReviewResult, error) {
-	if a.shuttingDown.Load() {
-		return SubmitPRReviewResult{}, ErrShuttingDown
-	}
-	if err := pr.Validate(); err != nil {
-		return SubmitPRReviewResult{}, err
-	}
-	result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, review)
-	return mapSubmitPRReviewResult(result, err)
-}
-
-//ao:scope git:operate
-//ao:route selected
-func (a *App) ReplyToPRThread(ctx context.Context, pr gitops.PRReference, threadID string, databaseID int64, body string) error {
-	if a.shuttingDown.Load() {
-		return ErrShuttingDown
-	}
-	if err := pr.Validate(); err != nil {
-		return err
-	}
-	return a.gitCore().ReplyToThread(forgeapi.WithInteractive(ctx), pr, threadID, databaseID, body)
 }
 
 // SetPRThreadResolved resolves (or reopens) one review thread on the
@@ -418,7 +437,7 @@ func (a *App) SetPRThreadResolved(ctx context.Context, pr gitops.PRReference, th
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("review thread id is required")
 	}
-	return a.gitCore().SetThreadResolved(forgeapi.WithInteractive(ctx), pr, threadID, resolved)
+	return gitops.ExplainForgeError(pr, gitops.ActionResolve, a.gitCore().SetThreadResolved(forgeapi.WithInteractive(ctx), pr, threadID, resolved))
 }
 
 // SubscribePRUpdates begins polling a pull request for detail/review-thread
@@ -476,7 +495,7 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 		var encoded []byte
 		var fail prForgeFailure
 		if err != nil {
-			fail = a.newPRForgeFailure(err)
+			fail = a.newPRForgeFailure(pr, err)
 			log.Printf("pr updates: first fetch failed for pr=%s (id: %s): %v", prKey, fail.correlationID, err)
 			fetched = prUpdateSnapshot{}
 		} else if encoded, err = encodePRUpdateSnapshot(fetched); err != nil {
@@ -502,21 +521,23 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 	}
 
 	return PRUpdateSubscriptionResult{
-		ID:          ref.id,
-		PRKey:       prKey,
-		Detail:      ref.snapshot.Detail,
-		Threads:     ref.snapshot.Threads,
-		HeadSHA:     ref.snapshot.Detail.HeadSHA,
-		Error:       ref.fail.wire,
-		ErrorKind:   ref.fail.kind,
-		Reserve:     ref.fail.reserve,
-		ResumeAt:    ref.fail.resumeAt,
-		Seq:         ref.seq,
-		CI:          ref.ci,
-		CIError:     ref.ciFail.wire,
-		CIErrorKind: ref.ciFail.kind,
-		CIReserve:   ref.ciFail.reserve,
-		CIResumeAt:  ref.ciFail.resumeAt,
+		ID:                   ref.id,
+		PRKey:                prKey,
+		Detail:               ref.snapshot.Detail,
+		Threads:              ref.snapshot.Threads,
+		Events:               ref.snapshot.Events,
+		ReactionsUnavailable: ref.snapshot.ReactionsUnavailable,
+		HeadSHA:              ref.snapshot.Detail.HeadSHA,
+		Error:                ref.fail.wire,
+		ErrorKind:            ref.fail.kind,
+		Reserve:              ref.fail.reserve,
+		ResumeAt:             ref.fail.resumeAt,
+		Seq:                  ref.seq,
+		CI:                   ref.ci,
+		CIError:              ref.ciFail.wire,
+		CIErrorKind:          ref.ciFail.kind,
+		CIReserve:            ref.ciFail.reserve,
+		CIResumeAt:           ref.ciFail.resumeAt,
 	}, nil
 }
 
@@ -561,19 +582,23 @@ func (a *App) createPRUpdatePump(
 	if existing := a.livePRUpdatePumpLocked(prKey); existing != nil {
 		return a.takePRUpdateReferenceLocked(existing), nil, nil
 	}
-	ctx, cancel := context.WithCancel(a.lifeCtx())
 	pump := &prUpdatePump{
 		prKey:        prKey,
 		pr:           pr,
-		done:         make(chan struct{}),
-		ctx:          ctx,
-		cancel:       cancel,
-		wake:         make(chan struct{}, 1),
-		requests:     make(chan *prPumpRequest),
+		pumpCore:     a.newPumpCore(),
 		last:         encoded,
 		lastSnapshot: snapshot,
 		fail:         fail,
-		seq:          a.nextPRUpdateSeqLocked(),
+	}
+	pump.seq = a.nextPRUpdateSeqLocked()
+	pump.ciPhase = ciPhase{
+		core:  &pump.pumpCore,
+		repo:  pr.Repository(),
+		prKey: prKey,
+		fetch: func(ctx context.Context, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error) {
+			return a.fetchPRCI(ctx, pr, prev, stepsFor)
+		},
+		failure: func(err error) prForgeFailure { return a.newPRForgeFailure(pr, err) },
 	}
 	a.prUpdates.pumps[prKey] = pump
 	return a.takePRUpdateReferenceLocked(pump), pump, nil
@@ -618,14 +643,8 @@ func (a *App) livePRUpdatePumpLocked(prKey string) *prUpdatePump {
 // for waits out a whole tick that the pause already made it miss.
 func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump) prUpdateReference {
 	id := uuid.NewString()
-	pump.refs++
-	pump.active++
-	resumed := pump.refs > 1 && pump.active == 1
-	pump.paused.Store(false)
+	pump.takeLocked()
 	a.prUpdates.handles[id] = &prUpdateHandle{pump: pump, active: true}
-	if resumed {
-		wakePRUpdatePump(pump)
-	}
 	ref := prUpdateReference{
 		id:       id,
 		snapshot: pump.lastSnapshot,
@@ -678,27 +697,12 @@ func (a *App) SetPRUpdatesActive(subscriptionID string, active bool) error {
 		a.prUpdates.mu.Unlock()
 		return nil
 	}
-	if active {
-		pump.active++
-	} else {
-		pump.active--
-	}
-	resumed := active && pump.active == 1
-	pump.paused.Store(pump.active <= 0)
+	resumed := pump.voteLocked(active)
 	a.prUpdates.mu.Unlock()
 	if resumed {
-		wakePRUpdatePump(pump)
+		pump.wakeUp()
 	}
 	return nil
-}
-
-// wakePRUpdatePump nudges a resumed pump's loop without blocking: the
-// channel is capacity-1, and a wake already queued does the same job.
-func wakePRUpdatePump(pump *prUpdatePump) {
-	select {
-	case pump.wake <- struct{}{}:
-	default:
-	}
 }
 
 func (a *App) pumpPRUpdates(pump *prUpdatePump) {
@@ -722,49 +726,40 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 	// to the interval, starting with the failure it was created with; a
 	// healthy one rides the ticker alone. A rate-limited pump instead waits
 	// for the failure's release (the pool's resume time plus the stagger)
-	// and polls nothing before it: hold is that release, and a tick or
-	// resume that lands earlier is skipped.
-	var retry <-chan time.Time
-	var retryDelay time.Duration
-	var hold time.Time
+	// and polls nothing before it: a tick or resume that lands earlier is
+	// skipped.
+	var retry retrySchedule
 	scheduleRetry := func() {
 		retrying, release := a.prUpdatePumpRetry(pump)
-		switch {
-		case !retrying:
-			retry, retryDelay, hold = nil, 0, time.Time{}
-		case !release.IsZero():
-			retryDelay, hold = 0, release
-			retry = time.After(heldUntil(release))
-		default:
-			hold = time.Time{}
-			if retryDelay == 0 {
-				retryDelay = min(a.prUpdateRetryBase(), interval)
-			} else {
-				retryDelay = min(retryDelay*2, interval)
-			}
-			retry = time.After(retryDelay)
-		}
+		retry.arm(retrying, release, a.prUpdateRetryBase(), interval)
 	}
 	scheduleRetry()
 	// The CI phase rides its own timer, re-armed from the pump's CI state
-	// after every CI poll (prCIInterval): nil while nothing is live. A CI
+	// after every CI poll (ciInterval): nil while nothing is live. A CI
 	// tick that lands while paused is folded into the resume poll.
 	var ciTick <-chan time.Time
-	var ciRetryDelay time.Duration
 	missedCI := false
+	// runSnapshot polls the detail, threads and events once and folds the
+	// answer into the retry curve; the ticker and a merge action's refresh
+	// request (servePRPumpRequest) both run it. ctx is the pump's, marked
+	// interactive for the request.
+	runSnapshot := func(ctx context.Context) {
+		event, changed := a.pollPRUpdate(ctx, pump)
+		scheduleRetry()
+		if changed {
+			a.emitPumpEvent(&pump.pumpCore, eventchan.PRUpdated, event)
+		}
+	}
 	// ctx is the pump's, marked interactive when a person's request asked
-	// for the poll (servePRPumpRequest).
+	// for the poll (servePumpRequest).
 	runCI := func(ctx context.Context, forced map[string]bool, pollPipeline bool) {
 		missedCI = false
-		if pollPipeline || a.prCIWantsPoll(pump) {
+		delay := a.runCIPhase(ctx, &pump.ciPhase, forced, pollPipeline, func(ctx context.Context) {
 			if event, changed := a.pollPRCI(ctx, pump); changed {
-				a.emitPRPumpEvent(pump, eventchan.PRCIUpdated, event)
+				a.emitPumpEvent(&pump.pumpCore, eventchan.PRCIUpdated, event)
 			}
-		}
-		for _, event := range a.pollPRCILogs(ctx, pump, forced) {
-			a.emitPRPumpEvent(pump, eventchan.PRCILog, event)
-		}
-		if delay := a.prCIInterval(pump, &ciRetryDelay); delay > 0 {
+		})
+		if delay > 0 {
 			ciTick = time.After(delay)
 		} else {
 			ciTick = nil
@@ -781,7 +776,7 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 		case <-pump.ctx.Done():
 			return
 		case req := <-pump.requests:
-			a.servePRPumpRequest(pump, req, runCI)
+			a.servePumpRequest(&pump.ciPhase, req, runSnapshot, runCI)
 			continue
 		case <-ciTick:
 			if pump.paused.Load() {
@@ -797,11 +792,10 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 				continue
 			}
 			missedTick = false
-		case <-retry:
+		case <-retry.timer:
 			if pump.paused.Load() {
 				// Resume polls once; the retry curve restarts from there.
-				retry = nil
-				retryDelay = 0
+				retry.pausedRetry()
 				missedTick = true
 				continue
 			}
@@ -813,28 +807,22 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 			}
 			missedTick = false
 		}
-		if time.Now().Before(hold) {
+		if retry.held() {
 			// A rate limit holds the snapshot poll until its release, which
 			// the retry timer is armed for; a resume after a pause re-arms
 			// it.
-			if retry == nil {
-				retry = time.After(heldUntil(hold))
-			}
 			continue
 		}
-		event, changed := a.pollPRUpdate(pump)
-		scheduleRetry()
-		if changed {
-			a.emitPRPumpEvent(pump, eventchan.PRUpdated, event)
-		}
-		if missedCI || a.prCIWantsPoll(pump) {
+		runSnapshot(pump.ctx)
+		if missedCI || a.ciWantsPoll(&pump.ciPhase) {
 			runCI(pump.ctx, nil, true)
 		}
 	}
 }
 
-// pollPRUpdate fetches one snapshot and folds it into the pump's change
-// detection. changed=false means the observation is identical to the last
+// pollPRUpdate fetches one snapshot under ctx (the pump's, marked
+// interactive when a person's action asked for the poll) and folds it
+// into the pump's change detection. changed=false means the observation is identical to the last
 // one broadcast — including a repeat of the same failure, which must not
 // re-emit every tick while a forge is down.
 //
@@ -845,8 +833,8 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 // after the replacement was created would outrank fresher content. With the
 // guard, a pump only stores while live and successive pumps' live windows
 // for a key cannot overlap.
-func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
-	snapshot, err := a.fetchPRUpdateSnapshot(pump.ctx, pump.pr)
+func (a *App) pollPRUpdate(ctx context.Context, pump *prUpdatePump) (PRUpdatedEvent, bool) {
+	snapshot, err := a.fetchPRUpdateSnapshot(ctx, pump.pr)
 	if err == nil {
 		var encoded []byte
 		encoded, err = encodePRUpdateSnapshot(snapshot)
@@ -879,11 +867,13 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 				return PRUpdatedEvent{}, false
 			}
 			return PRUpdatedEvent{
-				PRKey:   pump.prKey,
-				Detail:  snapshot.Detail,
-				Threads: snapshot.Threads,
-				HeadSHA: snapshot.Detail.HeadSHA,
-				Seq:     seq,
+				PRKey:                pump.prKey,
+				Detail:               snapshot.Detail,
+				Threads:              snapshot.Threads,
+				Events:               snapshot.Events,
+				ReactionsUnavailable: snapshot.ReactionsUnavailable,
+				HeadSHA:              snapshot.Detail.HeadSHA,
+				Seq:                  seq,
 			}, true
 		}
 	}
@@ -893,7 +883,7 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 	// server log, the same split internal/transport makes for RPC errors.
 	// The id is minted before the lock so the summary STORED for joiners
 	// and the one EMITTED here are the same string.
-	fail := a.newPRForgeFailure(err)
+	fail := a.newPRForgeFailure(pump.pr, err)
 	// Dedup BEFORE logging: a forge that is down fails identically every
 	// tick, and logging first turned one outage into a log line every 45s
 	// for as long as a pane stayed open.
@@ -968,39 +958,26 @@ func (a *App) unsubscribePRUpdates(id string) {
 	delete(a.prUpdates.handles, id)
 	var teardown *prUpdatePump
 	pump := handle.pump
-	releaseFollowsLocked(pump, handle)
-	if handle.active {
-		pump.active--
-	}
-	pump.refs--
-	if pump.refs <= 0 {
+	releaseFollowsLocked(&pump.ciPhase, handle.follows)
+	handle.follows = nil
+	// The last release stamps the pump dead under the same lock pollPRUpdate
+	// stores under, so a poll this pump still has in flight cannot stamp
+	// state (or a sequence) after a replacement pump exists — per key,
+	// sequence order must match content order, and this pump's fetch began
+	// before any successor's. dropPRUpdatePump re-stamps harmlessly.
+	if pump.releaseLocked(handle.active) {
 		teardown = pump
-		// Stamped under the same lock pollPRUpdate stores under, so a poll
-		// this pump still has in flight cannot stamp state (or a sequence)
-		// after a replacement pump exists — per key, sequence order must
-		// match content order, and this pump's fetch began before any
-		// successor's. dropPRUpdatePump re-stamps harmlessly.
-		pump.dead = true
 		// Only if it is still the pump serving this key — a superseded
 		// (dead) pump was replaced in the map and must not evict its
 		// successor.
 		if a.prUpdates.pumps[pump.prKey] == pump {
 			delete(a.prUpdates.pumps, pump.prKey)
 		}
-	} else {
-		pump.paused.Store(pump.active <= 0)
 	}
 	a.prUpdates.mu.Unlock()
 	if teardown != nil {
-		stopPRUpdatePump(teardown)
+		teardown.stop()
 	}
-}
-
-// stopPRUpdatePump ends a pump taken out of the map: its loop exits and a
-// forge call it has in flight is cancelled.
-func stopPRUpdatePump(pump *prUpdatePump) {
-	pump.cancel()
-	close(pump.done)
 }
 
 // dropPRUpdatePump removes a pump whose goroutine exited on its own (app
@@ -1024,7 +1001,8 @@ func (a *App) dropPRUpdatePump(pump *prUpdatePump) {
 	}
 	for id, handle := range a.prUpdates.handles {
 		if handle.pump == pump {
-			releaseFollowsLocked(pump, handle)
+			releaseFollowsLocked(&pump.ciPhase, handle.follows)
+			handle.follows = nil
 			delete(a.prUpdates.handles, id)
 		}
 	}
@@ -1050,8 +1028,10 @@ func (a *App) closePRUpdatePumps() {
 	}
 	a.prUpdates.mu.Unlock()
 	for _, pump := range orphans {
-		stopPRUpdatePump(pump)
+		pump.stop()
 	}
+	a.closePipelinePumps()
+	a.closePRListPump()
 	a.prUpdates.wg.Wait()
 }
 
@@ -1059,13 +1039,13 @@ func (a *App) fetchPRUpdateSnapshot(ctx context.Context, pr gitops.PRReference) 
 	if a.prUpdates.fetchFn != nil {
 		return a.prUpdates.fetchFn(ctx, pr)
 	}
-	// One forge read per tick: the detail and threads together. The CI
-	// phase reads the pipeline on its own cadence (fetchPRCI).
-	read, err := a.gitCore().ReadPR(ctx, pr, gitops.PRReadParts{Detail: true, Threads: true}, nil, nil)
+	// One forge read per tick: the detail, threads and events together.
+	// The CI phase reads the pipeline on its own cadence (fetchPRCI).
+	read, err := a.gitCore().ReadPR(ctx, pr, gitops.PRReadParts{Detail: true, Threads: true, Events: true}, nil, nil)
 	if err != nil {
 		return prUpdateSnapshot{}, err
 	}
-	return prUpdateSnapshot{Detail: read.Detail, Threads: read.Threads}, nil
+	return prUpdateSnapshot{Detail: read.Detail, Threads: read.Threads, Events: read.Events, ReactionsUnavailable: read.ReactionsUnavailable}, nil
 }
 
 func (a *App) prUpdatePollInterval() time.Duration {

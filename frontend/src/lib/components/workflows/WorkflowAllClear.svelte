@@ -7,7 +7,7 @@
 
   import { workflowSessionSummary, formatWorkflowCost } from '../../stores/workflowData';
   import { getWorkflowReceipts } from '../../stores/workflowRuns.svelte';
-  import { closeWorkflowsOverlay, popWorkflowsOverlay } from '../../stores/workflowsOverlay.svelte';
+  import { popWorkflowsOverlay } from '../../stores/workflowsOverlay.svelte';
 
   let summary = $derived(workflowSessionSummary(getWorkflowReceipts()));
   let cost = $derived(formatWorkflowCost(summary.costUsd));
@@ -24,7 +24,7 @@
     {/if}
     <button
       class="mt-4 rounded-md border border-border-subtle px-3 py-1.5 text-xs text-fg-muted hover:text-fg"
-      onclick={() => { if (!popWorkflowsOverlay()) closeWorkflowsOverlay(); }}
+      onclick={() => { popWorkflowsOverlay(); }}
       data-testid="workflow-all-clear-back"
     >Back to workflows</button>
   </div>

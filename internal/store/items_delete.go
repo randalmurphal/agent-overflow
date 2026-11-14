@@ -22,33 +22,39 @@ import (
 // it out of the thread; an inherited row is hidden (hideInheritedItemTx).
 func (s *Store) DeleteThreadItem(threadID, itemID string) error {
 	return s.writeItems(threadID, nil, "delete item "+threadID+"/"+itemID, func(tx *sql.Tx, w *cardWrite) error {
-		turn, own, err := ownRowTurnTx(tx, threadID, itemID)
-		if err != nil {
-			return err
-		}
-		if own {
-			taken, err := splitShownRowsTx(tx, w, threadID, forkSplit{fromTurn: turn, where: "id = ?", args: []any{itemID}})
-			if err != nil || taken > 0 {
-				return err
-			}
-		}
-		sharedDeleted, err := deleteSharedHistoryItemTx(tx, w, threadID, itemID)
-		if err != nil || sharedDeleted > 0 {
-			return err
-		}
-		hidden, err := hideInheritedItemTx(tx, w, threadID, itemID)
-		if err != nil || hidden {
-			return err
-		}
-		n, err := deleteItemRowsTx(tx, w, `id = ?`, []any{itemID}, fmt.Sprintf("store: delete item %s/%s", threadID, itemID))
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return fmt.Errorf("store: delete item %s/%s: %w", threadID, itemID, sql.ErrNoRows)
-		}
-		return nil
+		return deleteThreadItemTx(tx, w, threadID, itemID)
 	})
+}
+
+// deleteThreadItemTx is DeleteThreadItem in the caller's item write. A row
+// the thread does not show fails with sql.ErrNoRows.
+func deleteThreadItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) error {
+	turn, own, err := ownRowTurnTx(tx, threadID, itemID)
+	if err != nil {
+		return err
+	}
+	if own {
+		taken, err := splitShownRowsTx(tx, w, threadID, forkSplit{fromTurn: turn, where: "id = ?", args: []any{itemID}})
+		if err != nil || taken > 0 {
+			return err
+		}
+	}
+	sharedDeleted, err := deleteSharedHistoryItemTx(tx, w, threadID, itemID)
+	if err != nil || sharedDeleted > 0 {
+		return err
+	}
+	hidden, err := hideInheritedItemTx(tx, w, threadID, itemID)
+	if err != nil || hidden {
+		return err
+	}
+	n, err := deleteItemRowsTx(tx, w, `id = ?`, []any{itemID}, fmt.Sprintf("store: delete item %s/%s", threadID, itemID))
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("store: delete item %s/%s: %w", threadID, itemID, sql.ErrNoRows)
+	}
+	return nil
 }
 
 // ownRowTurnTx reads the turn of one of threadID's own rows, local or

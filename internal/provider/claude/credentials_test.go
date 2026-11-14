@@ -6,6 +6,22 @@ import (
 	"time"
 )
 
+func TestCredentialRefreshTokenFingerprint(t *testing.T) {
+	base, ok := CredentialRefreshTokenFingerprint([]byte(`{"claudeAiOauth":{"accessToken":"a","refreshToken":"rt-1","expiresAt":1}}`))
+	if !ok || len(base) != 64 {
+		t.Fatalf("fingerprint = %q, %v", base, ok)
+	}
+	if renewed, _ := CredentialRefreshTokenFingerprint([]byte(`{"claudeAiOauth":{"accessToken":"b","refreshToken":"rt-1","expiresAt":2}}`)); renewed != base {
+		t.Fatal("a rewrite that kept the refresh token changed its fingerprint")
+	}
+	if rotated, _ := CredentialRefreshTokenFingerprint([]byte(`{"claudeAiOauth":{"refreshToken":"rt-2"}}`)); rotated == base {
+		t.Fatal("a rotation kept the fingerprint")
+	}
+	if fingerprint, ok := CredentialRefreshTokenFingerprint([]byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`)); ok {
+		t.Fatalf("the sign-out husk has fingerprint %q", fingerprint)
+	}
+}
+
 func TestCredentialsSignedOut(t *testing.T) {
 	cases := []struct {
 		name string

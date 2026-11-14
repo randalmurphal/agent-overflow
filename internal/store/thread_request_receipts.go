@@ -454,8 +454,8 @@ func (s *Store) RebindThreadReceiptTurn(token, messageItemID, threadID string, f
 	return rowsChanged(result, action)
 }
 
-// ReturnThreadReceipt takes a receipt back to `accepted` when the turn its
-// message started was un-sent before it answered: the message goes back on
+// ReturnThreadReceipt takes a receipt back to `accepted` when its message
+// goes back before the provider took it in: the message goes back on
 // the queue, and the next delivery binds the receipt again
 // (BindThreadReceiptTurn). It reports whether the receipt is open and
 // accepted afterwards; a settled or cancelled one is left as it is.

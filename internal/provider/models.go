@@ -56,6 +56,8 @@ type ReasoningEffortOption struct {
 // spawn flag with no wire tier, and any Codex catalog entry that predates the
 // field. The ModelCapabilityFastMode marker on Capabilities remains the support
 // gate for both providers; this only carries the WHICH, never the WHETHER.
+// No shipped Claude model carries the marker: which Claude models run fast is
+// known only from the CLI's reported model list (internal/claudemodels).
 type FastModeTier struct {
 	ID          string `json:"id"`
 	Name        string `json:"name,omitempty"`
@@ -104,15 +106,13 @@ var ClaudeModels = []ModelInfo{
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
-		// Same capability shape as Opus 4.8 — fast-mode capable, 1M
-		// extended context ([1m] wire tier), effort low through max
-		// including xhigh — per the claude 2.1.219 binary's API
-		// capability table (effort/max_effort/xhigh_effort/fast_mode
-		// on the claude-opus-5 entry).
+		// Same capability shape as Opus 4.8: 1M extended context ([1m]
+		// wire tier), effort low through max including xhigh, per the
+		// claude 2.1.219 binary's API capability table
+		// (effort/max_effort/xhigh_effort on the claude-opus-5 entry).
 		Slug:             "claude-opus-5",
 		Name:             "Claude Opus 5",
 		Provider:         "claude",
-		Capabilities:     []string{ModelCapabilityFastMode},
 		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
@@ -120,7 +120,6 @@ var ClaudeModels = []ModelInfo{
 		Slug:             "claude-opus-4-8",
 		Name:             "Claude Opus 4.8",
 		Provider:         "claude",
-		Capabilities:     []string{ModelCapabilityFastMode},
 		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
@@ -128,7 +127,6 @@ var ClaudeModels = []ModelInfo{
 		Slug:             "claude-opus-4-7",
 		Name:             "Claude Opus 4.7",
 		Provider:         "claude",
-		Capabilities:     []string{ModelCapabilityFastMode},
 		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
@@ -136,7 +134,6 @@ var ClaudeModels = []ModelInfo{
 		Slug:             "claude-opus-4-6",
 		Name:             "Claude Opus 4.6",
 		Provider:         "claude",
-		Capabilities:     []string{ModelCapabilityFastMode},
 		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
 	},
@@ -392,17 +389,6 @@ func ContextWindowOptionsForModel(providerName, model string) []ContextWindowOpt
 		return append([]ContextWindowOption(nil), candidate.ContextWindows...)
 	}
 	return nil
-}
-
-func ModelSupportsCapability(providerName, model, capability string) bool {
-	if candidate, ok := FindModel(providerName, model); ok {
-		for _, existing := range candidate.Capabilities {
-			if existing == capability {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func ReasoningEffortOptionsForModel(providerName, model string) []ReasoningEffortOption {

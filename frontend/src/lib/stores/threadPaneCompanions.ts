@@ -94,13 +94,13 @@ export function createThreadPaneCompanions(options: ThreadPaneCompanionsOptions)
         return;
       }
       const subject = options.getReviewSubject();
-      if (subject) void openReviewCompanion(paneId, subject);
+      if (subject) void openReviewCompanion(paneId, subject, { userInitiated: true });
     },
 
     setShowReviewPane(value: boolean): void {
       if (value) {
         const subject = options.getReviewSubject();
-        if (subject) void openReviewCompanion(paneId, subject);
+        if (subject) void openReviewCompanion(paneId, subject, { userInitiated: true });
       }
       else closeFor('review');
     },

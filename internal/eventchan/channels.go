@@ -117,6 +117,18 @@ const (
 	PRCILog     Channel = "pr:ci_log"
 )
 
+// pulls:* — the Pull requests page's list of every forge project's open
+// PRs, one frame per change of the list pump's snapshot.
+const (
+	PullsUpdated Channel = "pulls:updated"
+)
+
+// ci:* — a pipeline pump's pipeline, keyed by repository and pipeline id
+// (the Pipelines tab); its followed logs ride pr:ci_log.
+const (
+	PipelineUpdated Channel = "ci:pipeline_updated"
+)
+
 // project:* — one frame per project row a persisted write moved, carrying
 // the row and what the receiver must do with it. Same vocabulary and same
 // rules as thread:updated (triage.ProjectUpdateEvent).
@@ -131,6 +143,7 @@ const (
 	ProviderAccountUsageError      Channel = "provider:account_usage_error"
 	ProviderAccountsChanged        Channel = "provider:accounts_changed"
 	ProviderAccountSignIn          Channel = "provider:account_signin"
+	ProviderAccountAutoSwitch      Channel = "provider:account_auto_switch"
 	ProviderApproval               Channel = "provider:approval"
 	ProviderBackgroundTaskOutput   Channel = "provider:background_task_output"
 	ProviderBackgroundTaskState    Channel = "provider:background_task_state"
@@ -296,6 +309,7 @@ const (
 	ThreadModeChanged        Channel = "thread:mode_changed"
 	ThreadRuntimeModeChanged Channel = "thread:runtime_mode_changed"
 	ThreadTitleGeneration    Channel = "thread:title_generation"
+	ThreadUnsavedRows        Channel = "thread:unsaved_rows"
 	ThreadUpdated            Channel = "thread:updated"
 	// ThreadWakesChanged carries one changed loop, watch or reminder: its
 	// thread, its id, and the row as it stands or that it was removed.
@@ -373,6 +387,11 @@ const (
 	WorktreeRemoved Channel = "worktree:removed"
 	WorktreeSetup   Channel = "worktree:setup"
 )
+
+// ShellCommand carries a composer shell command's lifecycle and output: the
+// command a person ran with `!` in a thread, from start to the frame that says
+// its output was sent. Local command output, gated like terminal:output.
+const ShellCommand Channel = "shell:command"
 
 // ComputerRoutesChanged invalidates the authenticated bootstrap route snapshot.
 const ComputerRoutesChanged Channel = "computer-routes:changed"

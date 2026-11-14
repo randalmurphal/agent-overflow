@@ -2,7 +2,7 @@
   // Last-known quota bars for one saved account. Lives in shared/ because it
   // has two feature homes: the Accounts cards on a provider's settings page
   // and the account-switcher picker.
-  import { rateLimitDisplayName } from '../../stores/rateLimitsInfo.svelte';
+  import { rateLimitDisplayName, rateLimitWindowLabel } from '../../stores/rateLimitsInfo.svelte';
   import type { RateLimitEntry } from '../../types/events';
   import { formatResetCountdown } from '../../utils/format';
   import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
@@ -20,11 +20,7 @@
   function limitLabel(limit: RateLimitEntry): string {
     const name = rateLimitDisplayName(limit);
     if (limit.windowMins <= 0) return name || 'Usage limit';
-    const window = limit.windowMins === 300
-      ? '5h'
-      : limit.windowMins === 10080
-        ? '7d'
-        : `${Math.max(1, Math.round(limit.windowMins / 60))}h`;
+    const window = rateLimitWindowLabel(limit.windowMins);
     if (!name || name.toLowerCase() === window.toLowerCase()) return window;
     return `${name} · ${window}`;
   }

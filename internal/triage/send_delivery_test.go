@@ -217,15 +217,16 @@ func TestSendDeliveryWaitingForATurnDiesWithItsSession(t *testing.T) {
 	}
 }
 
-// A message the CLI drains mid-loop, after a task-notification cascade
-// re-opened a wire round on a settled turn: `started` arrives with no logical
-// turn open and no init follows, so the echo is what opens the message's
-// turn (openQueuedEchoTurn). The delivery is that turn, and it is the
-// message's own, never the next unrelated turn to start.
+// A message dispatched before the turn ahead of it opened reserves a turn of
+// its own, and the CLI can drain it mid-loop into that earlier turn:
+// `started` arrives with the earlier turn open and no init follows, so the
+// echo is what opens the message's turn (openQueuedEchoTurn). The delivery
+// is that turn, and it is the message's own, never the turn that was open
+// when `started` arrived.
 func TestSendDeliveryStartedBeforeAMidLoopEchoIsTheTurnTheEchoOpens(t *testing.T) {
 	t.Parallel()
 	r, st, _ := newTestRouter(t)
-	const threadID = "t-cascade"
+	const threadID = "t-midloop"
 	createTestThread(t, st, threadID)
 	log := &deliveryLog{}
 	r.SetSendDeliveredHook(log.record)
@@ -237,31 +238,43 @@ func TestSendDeliveryStartedBeforeAMidLoopEchoIsTheTurnTheEchoOpens(t *testing.T
 			t.Fatalf("%s: %v", evt.Kind, err)
 		}
 	}
-	const uuid = "uuid-cascade"
+	echo := func(uuid, text string) provider.ProviderEvent {
+		t.Helper()
+		meta, err := json.Marshal(map[string]any{"provider_item_id": uuid})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return provider.ProviderEvent{Kind: provider.EventUserText, ItemID: uuid, Content: text, Meta: meta}
+	}
+	register := func(queueID, rowID, uuid, text, meta string, turnIndex int) {
+		r.RegisterPendingFlushSendWithExpectation(threadID, queueID, store.Item{
+			ID: rowID, ThreadID: threadID, TurnIndex: turnIndex, Kind: "user_text", Role: "user",
+			Status: "completed", Summary: text, Meta: meta,
+		}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: uuid})
+	}
+	const first, second = "uuid-first", "uuid-second"
 	handle(provider.ProviderEvent{Kind: provider.EventTurnStart})
 	handle(provider.ProviderEvent{Kind: provider.EventTextDelta, Content: "turn 0 response"})
 	handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: normalTurnCompleteMeta()})
+
+	register("queue:1", "user:1:flush:1", first, "run the suite", `{}`, 1)
+	handle(commandLifecycleEvent(threadID, first, provider.CommandQueued))
+	handle(commandLifecycleEvent(threadID, first, provider.CommandStarted))
+	register("queue:2", "user:2:flush:2", second, "look at the crash report", requestSendMeta, 2)
 	handle(provider.ProviderEvent{Kind: provider.EventInit})
-	handle(provider.ProviderEvent{Kind: provider.EventTextDelta, Content: "cascade wake-up work"})
-	r.RegisterPendingFlushSendWithExpectation(threadID, "queue:1", store.Item{
-		ID: "user:1:flush:1", ThreadID: threadID, TurnIndex: 1, Kind: "user_text", Role: "user",
-		Status: "completed", Summary: "look at the crash report", Meta: requestSendMeta,
-	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: uuid})
-	handle(commandLifecycleEvent(threadID, uuid, provider.CommandQueued))
-	handle(commandLifecycleEvent(threadID, uuid, provider.CommandStarted))
+	handle(commandLifecycleEvent(threadID, second, provider.CommandQueued))
+	handle(echo(first, "run the suite"))
+	handle(provider.ProviderEvent{Kind: provider.EventTextDelta, Content: "running it"})
+	handle(commandLifecycleEvent(threadID, second, provider.CommandStarted))
 	if seen := log.snapshot(); len(seen) != 0 {
 		t.Fatalf("delivered before the turn it runs in opened: %+v", seen)
 	}
-	meta, err := json.Marshal(map[string]any{"provider_item_id": uuid})
-	if err != nil {
-		t.Fatal(err)
-	}
-	handle(provider.ProviderEvent{Kind: provider.EventUserText, ItemID: uuid, Content: "look at the crash report", Meta: meta})
+	handle(echo(second, "look at the crash report"))
 	handle(provider.ProviderEvent{Kind: provider.EventTextDelta, Content: "the stall is in the watchdog"})
 	handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: normalTurnCompleteMeta()})
 	seen := log.snapshot()
-	if len(seen) != 1 || seen[0].TurnIndex != 1 || !seen[0].OwnTurn || seen[0].UserItemID != "user:1:flush:1" {
-		t.Fatalf("deliveries = %+v, want one into turn 1, its own", seen)
+	if len(seen) != 1 || seen[0].TurnIndex != 2 || !seen[0].OwnTurn || seen[0].UserItemID != "user:2:flush:2" {
+		t.Fatalf("deliveries = %+v, want one into turn 2, its own", seen)
 	}
 }
 

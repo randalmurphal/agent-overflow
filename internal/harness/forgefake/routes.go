@@ -53,21 +53,70 @@ var commands = []command{
 // GraphQL operations are githubGraphQL.
 var githubAPI = []apiRoute{
 	{name: "gh repository identity", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
+	{name: "gh api runs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: ghRuns},
+	{name: "gh api run", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)$`), flags: []string{"hostname", "if-none-match"}, run: ghRun},
 	{name: "gh api run jobs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: ghRunJobs},
 	{name: "gh api job logs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/jobs/(\d+)/logs$`), flags: []string{"hostname", "if-none-match", "range"}, run: ghJobLogs},
+	{name: "gh api job rerun", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/jobs/(\d+)/rerun$`), flags: []string{"hostname"}, run: ghJobRerun},
+	{name: "gh api run rerun failed", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/rerun-failed-jobs$`), flags: []string{"hostname"}, run: ghRunRerunFailed},
+	{name: "gh api run cancel", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/cancel$`), flags: []string{"hostname"}, run: ghRunCancel},
+	{name: "gh api run artifacts", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/artifacts(?:\?(.*))?$`), flags: []string{"hostname"}, run: ghRunArtifacts},
+	{name: "gh api artifact zip", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/artifacts/(\d+)/zip$`), flags: []string{"hostname"}, run: ghArtifactZip},
 	{name: "gh api attachment", method: "GET", pattern: regexp.MustCompile(`^https://.+`), run: ghAttachment},
+	{name: "gh api pull reviews", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/reviews$`), flags: []string{"hostname"}, run: ghPullReview},
+	{name: "gh api pull comments", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/comments$`), flags: []string{"hostname"}, run: ghPullComment},
+	{name: "gh api pull comment reply", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/comments/(\d+)/replies$`), flags: []string{"hostname"}, run: ghPullCommentReply},
+	{name: "gh api issue comments", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/issues/(\d+)/comments$`), flags: []string{"hostname"}, run: ghIssueComment},
+	{name: "gh api delete branch", method: "DELETE", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/git/refs/heads/(.+)$`), flags: []string{"hostname"}, run: ghDeleteBranch},
+	{name: "gh api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"hostname"}, run: forgeUser},
+	{name: "gh api request reviewers", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/requested_reviewers$`), flags: []string{"hostname"}, run: ghRequestedReviewers},
+	{name: "gh api remove reviewers", method: "DELETE", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/requested_reviewers$`), flags: []string{"hostname"}, run: ghRequestedReviewers},
+	{name: "gh api add assignees", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/issues/(\d+)/assignees$`), flags: []string{"hostname"}, run: ghAssignees},
+	{name: "gh api blob", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/git/blobs/([0-9a-fA-F]{40})$`), flags: []string{"hostname", "accept"}, run: ghBlob},
+	{name: "gh api remove assignees", method: "DELETE", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/issues/(\d+)/assignees$`), flags: []string{"hostname"}, run: ghAssignees},
 }
 
 var gitlabAPI = []apiRoute{
-	{name: "glab repository identity", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
+	{name: "glab repository identity", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)$`), flags: []string{"hostname", "if-none-match"}, run: glabProjectRead},
 	{name: "glab api merge request", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname", "if-none-match"}, run: glabMR},
 	{name: "glab api approvals", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approvals$`), flags: []string{"hostname"}, run: glabApprovals},
+	{name: "glab api merge request diffs", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/diffs(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabMRDiffs},
 	{name: "glab api discussions", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabDiscussions},
-	{name: "glab api discussion note", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([0-9a-f]+)/notes$`), flags: []string{"hostname"}, run: glabDiscussionNote},
+	{name: "glab api create discussion", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions$`), flags: []string{"hostname"}, run: glabCreateDiscussion},
+	{name: "glab api discussion", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([^/?]+)$`), flags: []string{"hostname"}, run: glabDiscussion},
+	{name: "glab api create discussion note", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([^/?]+)/notes$`), flags: []string{"hostname"}, run: glabCreateDiscussionNote},
+	{name: "glab api update discussion note", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([^/?]+)/notes/(\d+)$`), flags: []string{"hostname"}, run: glabUpdateDiscussionNote},
+	{name: "glab api delete discussion note", method: "DELETE", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([^/?]+)/notes/(\d+)$`), flags: []string{"hostname"}, run: glabDeleteDiscussionNote},
+	{name: "glab api create note", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/notes$`), flags: []string{"hostname"}, run: glabCreateNote},
 	{name: "glab api merge request list", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: glabMRList},
-	{name: "glab api pipeline jobs", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabPipelineJobs},
+	{name: "glab api pipelines", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabPipelines},
+	{name: "glab api pipeline", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)$`), flags: []string{"hostname"}, run: glabPipeline},
 	{name: "glab api job trace", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/trace$`), flags: []string{"hostname", "if-none-match", "range"}, run: glabJobTrace},
+	{name: "glab api job retry", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/retry$`), flags: []string{"hostname"}, run: glabJobRetry},
+	{name: "glab api job cancel", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/cancel$`), flags: []string{"hostname"}, run: glabJobCancel},
+	{name: "glab api job play", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/play$`), flags: []string{"hostname"}, run: glabJobPlay},
+	{name: "glab api job artifacts", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/artifacts$`), flags: []string{"hostname"}, run: glabJobArtifacts},
+	{name: "glab api pipeline retry", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)/retry$`), flags: []string{"hostname"}, run: glabPipelineRetry},
+	{name: "glab api pipeline cancel", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)/cancel$`), flags: []string{"hostname"}, run: glabPipelineCancel},
 	{name: "glab api upload", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/uploads/([0-9a-f]{32})/([^/?]+)$`), flags: []string{"hostname"}, run: glabUpload},
+	{name: "glab api approve", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approve$`), flags: []string{"hostname"}, run: glabApprove},
+	{name: "glab api list draft notes", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/draft_notes(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabDraftList},
+	{name: "glab api create draft note", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/draft_notes$`), flags: []string{"hostname"}, run: glabDraftCreate},
+	{name: "glab api delete draft note", method: "DELETE", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/draft_notes/(\d+)$`), flags: []string{"hostname"}, run: glabDraftDelete},
+	{name: "glab api publish draft notes", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/draft_notes/bulk_publish$`), flags: []string{"hostname"}, run: glabDraftPublish},
+	{name: "glab api unapprove", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/unapprove$`), flags: []string{"hostname"}, run: glabUnapprove},
+	{name: "glab api merge", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/merge$`), flags: []string{"hostname"}, run: glabMerge},
+	{name: "glab api cancel auto-merge", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/cancel_auto_merge$`), flags: []string{"hostname"}, run: glabCancelAutoMerge},
+	{name: "glab api rebase", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/rebase$`), flags: []string{"hostname"}, run: glabRebase},
+	{name: "glab api update merge request", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname"}, run: glabUpdateMR},
+	{name: "glab api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"hostname"}, run: forgeUser},
+	{name: "glab api user events", method: "GET", pattern: regexp.MustCompile(`^users/(\d+)/events(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabUserEvents},
+	{name: "glab api project users", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/users(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabProjectUsers},
+	{name: "glab api apply suggestion", method: "PUT", pattern: regexp.MustCompile(`^suggestions/(\d+)/apply$`), flags: []string{"hostname"}, run: glabApplySuggestion},
+	{name: "glab api note award emoji", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/notes/(\d+)/award_emoji(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabNoteAwards},
+	{name: "glab api create note award emoji", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/notes/(\d+)/award_emoji$`), flags: []string{"hostname"}, run: glabCreateNoteAward},
+	{name: "glab api delete note award emoji", method: "DELETE", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/notes/(\d+)/award_emoji/(\d+)$`), flags: []string{"hostname"}, run: glabDeleteNoteAward},
+	{name: "glab api state events", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/resource_state_events(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabStateEvents},
 }
 
 // api dispatches a REST request, mapped by httpCall onto its endpoint,
@@ -88,7 +137,10 @@ func (e *Engine) api(c *call, routes []apiRoute) response {
 				return unhandled("%s does not implement --%s", route.name, name)
 			}
 		}
-		resp := route.run(e, c, match)
+		resp, refused := e.refusal(route.name)
+		if !refused {
+			resp = route.run(e, c, match)
+		}
 		if resp.route == "" {
 			resp.route = route.name
 		}

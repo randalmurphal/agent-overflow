@@ -1,0 +1,256 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/forgeapi"
+	gitops "agent-overflow/internal/git"
+)
+
+// A merge action's success asks the PR's live pump to poll at once: the
+// next frame carries the snapshot the poll read, without waiting out the
+// interval.
+func TestPRActionRefreshPollsTheLivePump(t *testing.T) {
+	t.Parallel()
+	app, script, events, sub := newScriptedPump(t, ok)
+	// Park the ticker: a 5ms interval would poll on its own and hide
+	// whether the refresh did.
+	app.prUpdates.mu.Lock()
+	pump := app.livePRUpdatePumpLocked(sub.PRKey)
+	app.prUpdates.mu.Unlock()
+	if pump == nil {
+		t.Fatal("no live pump after subscribe")
+	}
+	pump.paused.Store(true)
+	before := len(script.calls())
+	// The scripted fetch answers head-a every time; the refresh's own
+	// poll is told apart by its count, and the frame by a changed head.
+	script.mu.Lock()
+	script.steps = []func() error{func() error { return nil }}
+	script.mu.Unlock()
+	app.prUpdates.fetchFn = func(_ context.Context, pr gitops.PRReference) (prUpdateSnapshot, error) {
+		script.mu.Lock()
+		script.at = append(script.at, time.Now())
+		script.mu.Unlock()
+		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: pr.Number, HeadSHA: "head-b"}, Events: []gitops.ReviewEvent{{ID: "e1", Kind: gitops.EventApproved}}}, nil
+	}
+	if _, err := app.settlePRAction(context.Background(), testPR, gitops.ActionApprove, nil); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	frame := awaitPRUpdate(t, events, "refresh frame")
+	if frame.HeadSHA != "head-b" || len(frame.Events) != 1 || frame.Error != "" {
+		t.Fatalf("refresh frame = %+v, want head-b with one event", frame)
+	}
+	if got := len(script.calls()) - before; got != 1 {
+		t.Fatalf("polls after the action = %d, want 1", got)
+	}
+}
+
+// The refresh an action asks for polls as the person's request, so it may
+// spend the quota reserve background polling leaves; the ticker's polls
+// stay background.
+func TestPRActionRefreshPollsInteractively(t *testing.T) {
+	t.Parallel()
+	app := NewApp()
+	stubPRCIFetch(app)
+	app.prUpdates.interval = 5 * time.Millisecond
+	var mu sync.Mutex
+	var polls []bool
+	recorded := func() []bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(polls)
+	}
+	app.prUpdates.fetchFn = func(ctx context.Context, pr gitops.PRReference) (prUpdateSnapshot, error) {
+		mu.Lock()
+		polls = append(polls, forgeapi.IsInteractive(ctx))
+		mu.Unlock()
+		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: pr.Number, HeadSHA: "head"}}, nil
+	}
+	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	if err != nil {
+		t.Fatalf("SubscribePRUpdates: %v", err)
+	}
+	defer func() {
+		if err := app.UnsubscribePRUpdates(context.Background(), sub.ID); err != nil {
+			t.Fatalf("UnsubscribePRUpdates: %v", err)
+		}
+		app.prUpdates.wg.Wait()
+	}()
+	// The subscribe's own fetch is the person's; the ticker's are not.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(recorded()) < 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	got := recorded()
+	if len(got) < 3 || !got[0] || slices.Contains(got[1:], true) {
+		t.Fatalf("polls interactive = %v, want the subscribe's alone", got)
+	}
+	app.prUpdates.mu.Lock()
+	pump := app.livePRUpdatePumpLocked(sub.PRKey)
+	app.prUpdates.mu.Unlock()
+	pump.paused.Store(true)
+	if _, err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, nil); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	// The pump is paused, so the last poll is the refresh, served before
+	// settlePRAction returned.
+	if got := recorded(); !got[len(got)-1] {
+		t.Fatalf("polls interactive = %v, want the refresh interactive", got)
+	}
+}
+
+// A failed action reaches the caller as the one sentence under its kind,
+// and polls nothing. The pump is parked so the ticker cannot poll on its
+// own; a request served by the pump still runs while parked, so a failure
+// that wrongly asked for a refresh would show as a poll.
+func TestPRActionFailureIsExplained(t *testing.T) {
+	t.Parallel()
+	app, script, _, sub := newScriptedPump(t, ok)
+	app.prUpdates.mu.Lock()
+	pump := app.livePRUpdatePumpLocked(sub.PRKey)
+	app.prUpdates.mu.Unlock()
+	if pump == nil {
+		t.Fatal("no live pump after subscribe")
+	}
+	pump.paused.Store(true)
+	// A tick in flight when the pump was parked finishes first.
+	time.Sleep(20 * time.Millisecond)
+	before := len(script.calls())
+	_, err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, errors.New("forge PUT merge: HTTP 418"))
+	var explained *gitops.ForgeActionError
+	if !errors.As(err, &explained) || explained.Kind != gitops.ForgeErrorForge {
+		t.Fatalf("settle = %T %v, want a forge ForgeActionError", err, err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if polls := len(script.calls()) - before; polls != 0 {
+		t.Fatalf("a failure should not poll; got %d", polls)
+	}
+}
+
+// Without a live pump (no pane on the PR) a success refreshes nothing and
+// still succeeds.
+func TestPRActionWithoutPumpSucceeds(t *testing.T) {
+	t.Parallel()
+	app := NewApp()
+	if _, err := app.settlePRAction(context.Background(), testPR, gitops.ActionApprove, nil); err != nil {
+		t.Fatalf("settle without pump: %v", err)
+	}
+}
+
+// The bound methods validate before touching a forge.
+func TestPRActionsValidateTheReference(t *testing.T) {
+	t.Parallel()
+	app := NewApp()
+	ctx := context.Background()
+	bad := gitops.PRReference{Forge: "github"}
+	if _, err := app.ApprovePR(ctx, bad, "abc"); err == nil {
+		t.Fatal("ApprovePR accepted an empty reference")
+	}
+	if _, err := app.MergePR(ctx, testPR, gitops.MergeRequest{Method: "rebase-merge", HeadSHA: "abcdef1"}); err == nil {
+		t.Fatal("MergePR accepted an unknown method")
+	}
+	if _, err := app.MergePR(ctx, testPR, gitops.MergeRequest{Method: gitops.MergeMethodSquash, HeadSHA: "not a sha"}); err == nil {
+		t.Fatal("MergePR accepted a malformed head")
+	}
+}
+
+// A merge action that changed the PR polls the live pump's snapshot: a
+// success, and a merge whose branch delete then failed. A refusal changed
+// nothing and does not.
+func TestSettlePRActionRefreshesWhenThePRChanged(t *testing.T) {
+	t.Parallel()
+	app := NewApp()
+	stubPRCIFetch(app)
+	app.prUpdates.interval = time.Hour
+	var fetches atomic.Int32
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
+		fetches.Add(1)
+		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head", Mergeability: gitops.MergeabilityClean}}, nil
+	}
+	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	if err != nil {
+		t.Fatalf("SubscribePRUpdates: %v", err)
+	}
+	defer func() {
+		if err := app.UnsubscribePRUpdates(context.Background(), sub.ID); err != nil {
+			t.Fatalf("UnsubscribePRUpdates: %v", err)
+		}
+		app.prUpdates.wg.Wait()
+	}()
+	base := fetches.Load()
+
+	if _, err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, nil); err != nil || fetches.Load() != base+1 {
+		t.Fatalf("success = %v, fetches %d after %d", err, fetches.Load(), base)
+	}
+
+	refused := errors.New("refused")
+	_, err = app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, refused)
+	if explained, ok := errors.AsType[*gitops.ForgeActionError](err); !ok || !errors.Is(err, refused) || fetches.Load() != base+1 {
+		t.Fatalf("refusal = %v (%+v), fetches %d", err, explained, fetches.Load())
+	}
+
+	kept := &gitops.BranchKeptError{Outcome: gitops.MergeOutcome{Merged: true, SHA: "m"}, Branch: "feature", Err: errors.New("delete refused")}
+	_, err = app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, kept)
+	explained, ok := errors.AsType[*gitops.ForgeActionError](err)
+	if !ok || explained.Message != "Merged owner/repo#9, but GitHub kept the branch feature: delete refused" || fetches.Load() != base+2 {
+		t.Fatalf("merged, branch kept = %v, fetches %d", err, fetches.Load())
+	}
+
+	// A management write the forge may have applied, whole or in part,
+	// polls too, and says so.
+	for i, applied := range []error{
+		&gitops.UnconfirmedWriteError{Err: errors.New("connection reset")},
+		&gitops.PartialWriteError{Done: "removed bob from the reviewers", Next: "adding carol", Err: &gitops.UnconfirmedWriteError{Err: errors.New("EOF")}},
+		&gitops.PartialWriteError{Done: "removed bob from the reviewers", Next: "adding carol", Err: &gitops.ForgeActionError{Kind: gitops.ForgeErrorRefused, Message: "GitHub refused."}},
+	} {
+		_, err = app.settlePRAction(context.Background(), testPR, gitops.ActionReviewers, applied)
+		if _, ok := errors.AsType[*gitops.ForgeActionError](err); !ok || fetches.Load() != base+3+int32(i) {
+			t.Fatalf("%v = %v, fetches %d", applied, err, fetches.Load())
+		}
+	}
+}
+
+// An action the forge accepted whose refresh poll failed answers sequence
+// zero: no frame shows the change, so the caller settles on the write at
+// once and the pump's own failure frame says the pane is stale. A poll
+// that fails with a transient error first (held back for one retry)
+// counts as failed too. A refresh that ran answers its frame's sequence.
+func TestPRActionWhoseRefreshFailedAnswersNoSequence(t *testing.T) {
+	t.Parallel()
+	for name, failure := range map[string]error{
+		"forge":     errors.New("forge GET repos/o/r/pulls/9: HTTP 500"),
+		"transient": &forgeapi.TransientError{Err: errors.New("dial tcp: connection refused")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			app, script, _, sub := newScriptedPump(t, ok)
+			app.prUpdates.mu.Lock()
+			pump := app.livePRUpdatePumpLocked(sub.PRKey)
+			app.prUpdates.mu.Unlock()
+			pump.paused.Store(true)
+			time.Sleep(20 * time.Millisecond)
+			script.mu.Lock()
+			script.steps = []func() error{fails(failure)}
+			script.at = nil
+			script.mu.Unlock()
+			result, err := app.settlePRAction(context.Background(), testPR, gitops.ActionApprove, nil)
+			if err != nil || result.Seq != 0 {
+				t.Fatalf("settle after a failed refresh = %+v, %v; want seq 0", result, err)
+			}
+			script.mu.Lock()
+			script.steps = []func() error{ok}
+			script.mu.Unlock()
+			result, err = app.settlePRAction(context.Background(), testPR, gitops.ActionApprove, nil)
+			if err != nil || result.Seq == 0 {
+				t.Fatalf("settle after a good refresh = %+v, %v; want its frame's seq", result, err)
+			}
+		})
+	}
+}

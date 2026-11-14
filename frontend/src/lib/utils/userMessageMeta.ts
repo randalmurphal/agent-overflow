@@ -7,6 +7,7 @@ import {
 } from '../types/attachment';
 import type { Item, SourceProposedPlan } from '../types/models';
 import { commandWordRanges, type CommandWordRange } from './commandWords';
+import type { ShellOutputMeta } from './shellInvocation';
 
 export interface AttachmentPreviewSource {
   id: string;
@@ -15,6 +16,8 @@ export interface AttachmentPreviewSource {
   mimeType: string;
   size: number;
   kind: AttachmentKind;
+  /** Set when the file is the output of a composer shell command. */
+  shell?: ShellOutputMeta;
 }
 
 export interface UserMessageMeta {
@@ -57,6 +60,8 @@ export interface UserMessageMeta {
    *   through Codex's own `create_thread` / `send_message_to_thread` tools,
    *   outside Agent Overflow. Only imported history carries it.
    *   (`internal/provider/codex/rollout/delegation.go`)
+   * - `app` — Agent Overflow itself wrote the row, such as the "Continue"
+   *   sent after a usage limit (`docs/specs/account-auto-switch.md`).
    *
    * Absent means locally authored, which is the overwhelmingly common case.
    */
@@ -69,8 +74,7 @@ export interface UserMessageMeta {
    * A joined row's members in its text, each `{sendId, bytes, origin,
    * originThread, originWake}`: bytes is the member's UTF-8 length, and an
    * agent thread's member carries its request token. `originThread` keeps
-   * only the first member's. See personTextOfUserMessage and
-   * userMessageOriginTokens.
+   * only the first member's. See userMessageOriginTokens.
    */
   joinedParts?: unknown;
   /**
@@ -223,9 +227,30 @@ export function parseUserMessageMeta(meta: string | undefined): UserMessageMeta 
   }
 }
 
+// The predicates below run over every user row of a pane on each queue
+// and reveal pass. Their answers are remembered per row object for as long
+// as the row carries the same meta string, so a pass parses only the rows
+// that changed.
+interface RowFlags { meta: string | undefined; pendingFlush: boolean; wireOnly: boolean; agentMessage: boolean }
+const rowFlags = new WeakMap<Item, RowFlags>();
+function flagsOf(item: Item): RowFlags {
+  let flags = rowFlags.get(item);
+  if (flags === undefined || flags.meta !== item.meta) {
+    const meta = parseUserMessageMeta(item.meta);
+    flags = {
+      meta: item.meta,
+      pendingFlush: meta.pendingFlush === true,
+      wireOnly: meta.wire_only === true,
+      agentMessage: isAgentMessageMeta(meta),
+    };
+    rowFlags.set(item, flags);
+  }
+  return flags;
+}
+
 /** A quiet stored copy, before provider consumption or interrupt promotion. */
 export function isPendingFlushRow(item: Item): boolean {
-  return item.kind === 'user_text' && parseUserMessageMeta(item.meta).pendingFlush === true;
+  return item.kind === 'user_text' && flagsOf(item).pendingFlush;
 }
 
 /**
@@ -248,63 +273,14 @@ export function isAgentMessageMeta(meta: UserMessageMeta): boolean {
  * subagent-child user rows and an agent's messages (isAgentMessageMeta).
  * The ONE TypeScript counterpart of the store's tick predicate
  * (items_read.go personMessageFilterFor): the nav rail's tick derivation,
- * the composer's recall, the un-send on interrupt, and any future "which
- * user messages are the person's" question all route here so they cannot
- * drift.
+ * the composer's recall, and any future "which user messages are the
+ * person's" question all route here so they cannot drift.
  */
 export function isReaderAuthoredUserText(item: Item): boolean {
   if (item.kind !== 'user_text') return false;
   if ((item.parentId ?? '') !== '') return false;
-  const meta = parseUserMessageMeta(item.meta);
-  return meta.wire_only !== true && !isAgentMessageMeta(meta);
-}
-
-const JOIN_SEPARATOR_BYTES = new TextEncoder().encode('\n\n---\n\n');
-
-interface JoinedPartMeta {
-  bytes: number;
-  agent: boolean;
-}
-
-function joinedPartsOf(meta: UserMessageMeta): JoinedPartMeta[] | null {
-  if (!Array.isArray(meta.joinedParts)) return null;
-  const parts: JoinedPartMeta[] = [];
-  for (const part of meta.joinedParts as unknown[]) {
-    if (typeof part !== 'object' || part === null) return null;
-    const { bytes, origin } = part as { bytes?: unknown; origin?: unknown };
-    if (typeof bytes !== 'number' || !Number.isInteger(bytes)) return null;
-    parts.push({ bytes, agent: origin === 'agent-thread' || origin === 'agent-wake' });
-  }
-  return parts;
-}
-
-/**
- * The person's text of a row a Stop un-sends: the whole row, or for a row
- * headless Claude joined from the person's messages and agents', the
- * person's members cut by the lengths the row recorded. null when the row
- * holds an agent's message nothing tells apart from the person's; the
- * un-send declines then. The Go twin is usermessage.SplitPersonParts.
- */
-export function personTextOfUserMessage(text: string, meta: UserMessageMeta): string | null {
-  const origin = typeof meta.origin === 'string' ? meta.origin : '';
-  const agentOrigin = origin === 'agent-thread' || origin === 'agent-wake';
-  const parts = joinedPartsOf(meta);
-  if (parts === null || parts.length === 0) return agentOrigin ? null : text;
-  if (agentOrigin && !parts.some((part) => part.agent)) return null;
-  const bytes = new TextEncoder().encode(text);
-  const decoder = new TextDecoder();
-  const kept: string[] = [];
-  let at = 0;
-  for (const [i, part] of parts.entries()) {
-    if (i > 0) {
-      if (!JOIN_SEPARATOR_BYTES.every((byte, j) => bytes[at + j] === byte)) return null;
-      at += JOIN_SEPARATOR_BYTES.length;
-    }
-    if (part.bytes < 0 || part.bytes > bytes.length - at) return null;
-    if (!part.agent) kept.push(decoder.decode(bytes.subarray(at, at + part.bytes)));
-    at += part.bytes;
-  }
-  return at === bytes.length ? kept.join('\n\n---\n\n') : null;
+  const flags = flagsOf(item);
+  return !flags.wireOnly && !flags.agentMessage;
 }
 
 /**
@@ -384,7 +360,7 @@ function attachmentFromMeta(
   const size = sizeField(record.size, maxAttachmentSizeFor(kind));
   if (size === null) return null;
 
-  return {
+  const source: AttachmentPreviewSource = {
     id,
     threadId,
     filename: stringField(record.filename) || id,
@@ -392,6 +368,27 @@ function attachmentFromMeta(
     size,
     kind,
   };
+  const shell = kind === 'file' ? shellFromMeta(record.shell) : null;
+  if (shell) source.shell = shell;
+  return source;
+}
+
+function shellFromMeta(value: unknown): ShellOutputMeta | null {
+  const record = objectRecord(value);
+  if (!record) return null;
+  const command = stringField(record.command);
+  if (!command) return null;
+  const exitCode = typeof record.exitCode === 'number' && Number.isFinite(record.exitCode) ? record.exitCode : 0;
+  const durationMs = typeof record.durationMs === 'number' && Number.isFinite(record.durationMs) ? record.durationMs : 0;
+  const shell: ShellOutputMeta = { command, exitCode, durationMs };
+  if (typeof record.commandLength === 'number' && record.commandLength > command.length) {
+    shell.commandLength = record.commandLength;
+  }
+  if (record.truncated === true) shell.truncated = true;
+  if (record.timedOut === true) shell.timedOut = true;
+  if (record.more === true) shell.more = true;
+  if (typeof record.preview === 'string' && record.preview !== '') shell.preview = record.preview;
+  return shell;
 }
 
 export function parseUserMessageAttachments(

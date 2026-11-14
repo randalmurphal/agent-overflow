@@ -39,7 +39,7 @@ func TestFoldUserTextRowsRewritesSurvivorAndDropsFoldedRows(t *testing.T) {
 	seedFoldRows(t, s, "t-fold", now)
 
 	survivor, err := s.FoldUserTextRows(
-		"t-fold", "user:0:flush:2", []string{"user:0:flush:1"},
+		"t-fold", "user:0:flush:2", []string{"user:0:flush:1"}, nil,
 		"first\n\n---\n\nsecond", `{"joinedSendIds":["send-first","send-second"]}`, now+10,
 	)
 	if err != nil {
@@ -91,7 +91,7 @@ func TestFoldUserTextRowsRejectsUnusableArguments(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.FoldUserTextRows("t-fold-bad", tc.survivor, tc.folded, "joined", "", now)
+			_, err := s.FoldUserTextRows("t-fold-bad", tc.survivor, tc.folded, nil, "joined", "", now)
 			if err == nil {
 				t.Fatal("fold succeeded; want a refusal")
 			}
@@ -107,5 +107,50 @@ func TestFoldUserTextRowsRejectsUnusableArguments(t *testing.T) {
 				t.Errorf("survivor summary after a refused fold: got %q, want %q", item.Summary, "second")
 			}
 		})
+	}
+}
+
+// Every merged message, the one whose row the fold deletes and the one that
+// never had a row, settles the review drafts it claimed with the fold,
+// which hands its text to the survivor; a claim naming any other message
+// stays pending for the boot to release.
+func TestFoldUserTextRowsSettlesTheClaimsOfMergedMembers(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UnixMilli()
+	seedFoldRows(t, s, "t-fold-claims", now)
+	owner := PRReviewOwner("github:o/r:7")
+	scope, source := string(DiffReviewScopePR), "pr:github:o/r:7"
+	for id, itemID := range map[string]string{"merged": "user:0:flush:0", "folded": "user:0:flush:1", "other": "user:0:flush:7"} {
+		if _, err := s.CreateDiffReviewComment(DiffReviewComment{
+			ID: id, PRKey: owner.PRKey, Scope: scope, SourceKey: source, FilePath: "a.go", NewLine: 1, Side: "new", Body: id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, []DiffReviewCommentSnapshot{{ID: id, Body: id}}, DiffReviewDelivery{
+			SentAt: now, TurnID: "t-fold-claims:0", ThreadID: "t-fold-claims", ItemID: itemID, Queued: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The folded member's row has landed, which does not deliver it: the
+	// fold does.
+	if _, err := s.FoldUserTextRows("t-fold-claims", "user:0:flush:2", []string{"user:0:flush:1"}, []string{"user:0:flush:0"}, "zero first second", "{}", now+10); err != nil {
+		t.Fatalf("FoldUserTextRows: %v", err)
+	}
+	if items, err := s.ListItems("t-fold-claims"); err != nil || len(items) != 1 {
+		t.Fatalf("items = %+v (%v), want the survivor alone", items, err)
+	}
+	released, err := s.ReleaseUnsettledDiffReviewClaims()
+	if err != nil || released != 1 {
+		t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, %v; want only the other message's claim", released, err)
+	}
+	for _, id := range []string{"merged", "folded"} {
+		if got, err := s.GetDiffReviewComment(owner, id); err != nil || got.Status != "sent" {
+			t.Fatalf("%s = %+v (%v), want it sent", id, got, err)
+		}
+	}
+	if got, err := s.GetDiffReviewComment(owner, "other"); err != nil || got.Status != "draft" {
+		t.Fatalf("other = %+v (%v), want it a draft", got, err)
 	}
 }

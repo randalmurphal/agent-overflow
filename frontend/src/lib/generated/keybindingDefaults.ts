@@ -176,9 +176,9 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
   },
   {
     "key": "mod+f",
-    "command": "search.in-thread",
-    "when": "hasActiveThread \u0026\u0026 !terminalFocus",
-    "defaultId": "search.in-thread",
+    "command": "find.in-pane",
+    "when": "paneFindAvailable \u0026\u0026 !terminalFocus",
+    "defaultId": "find.in-pane",
     "defaultKey": "mod+f"
   },
   {
@@ -197,8 +197,15 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
   {
     "key": "esc",
     "command": "thread.interrupt",
-    "when": "hasActiveThread \u0026\u0026 (turnActive || sendInFlight || hasPendingPrompt) \u0026\u0026 !anyModalOpen",
+    "when": "hasActiveThread \u0026\u0026 (turnActive || sendInFlight || hasPendingPrompt) \u0026\u0026 !anyModalOpen \u0026\u0026 !paneFindOpen",
     "defaultId": "thread.interrupt",
+    "defaultKey": "esc"
+  },
+  {
+    "key": "esc",
+    "command": "find.close",
+    "when": "paneFindOpen \u0026\u0026 !anyModalOpen",
+    "defaultId": "find.close",
     "defaultKey": "esc"
   },
   {
@@ -256,10 +263,10 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "mod+9"
   },
   {
-    "key": "mod+shift+/",
+    "key": "mod+shift+?",
     "command": "help.keybindings",
     "defaultId": "help.keybindings",
-    "defaultKey": "mod+shift+/"
+    "defaultKey": "mod+shift+?"
   },
   {
     "key": "mod+shift+f",
@@ -308,6 +315,19 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "mod+shift+b"
   },
   {
+    "key": "mod+shift+space",
+    "command": "composer.dictate",
+    "when": "hasActiveThread \u0026\u0026 threadsOperate \u0026\u0026 !anyModalOpen",
+    "defaultId": "composer.dictate",
+    "defaultKey": "mod+shift+space"
+  },
+  {
+    "key": "mod+shift+\u003e",
+    "command": "readAloud.toggle",
+    "defaultId": "readAloud.toggle",
+    "defaultKey": "mod+shift+\u003e"
+  },
+  {
     "key": "alt+shift+m",
     "command": "sound.toggleMute",
     "defaultId": "sound.toggleMute",
@@ -329,8 +349,21 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
   {
     "key": "esc",
     "command": "workflows.escape",
-    "when": "workflowsOverlayOpen",
+    "when": "workflowsPaneFocused \u0026\u0026 toolDetailOpen",
     "defaultId": "workflows.escape",
+    "defaultKey": "esc"
+  },
+  {
+    "key": "mod+shift+p",
+    "command": "pulls.toggle",
+    "defaultId": "pulls.toggle",
+    "defaultKey": "mod+shift+p"
+  },
+  {
+    "key": "esc",
+    "command": "pulls.escape",
+    "when": "pullsPaneFocused \u0026\u0026 toolDetailOpen",
+    "defaultId": "pulls.escape",
     "defaultKey": "esc"
   },
   {
@@ -418,3 +451,8 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "enter"
   }
 ];
+
+/** Renamed default ids, old to current, for overrides kept by id alone. */
+export const KEYBINDING_DEFAULT_ID_RENAMES: Readonly<Record<string, string>> = {
+  "search.in-thread": "find.in-pane"
+};

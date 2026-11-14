@@ -405,6 +405,121 @@ func TestDispatchFlush_MarksProposedPlanImplementedAfterDispatch(t *testing.T) {
 	}
 }
 
+// A queued message's review drafts are claimed for the row's turn before
+// dispatch, and a dispatch that requeues the message hands them back.
+func TestDispatchFlush_ClaimsDiffReviewDraftsAndReturnsThemOnFailure(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []string{"ok", "refused"} {
+		app, rec := newAppForFlushQueueRPC(t)
+		thread := testThread("flush-diff-review-" + outcome)
+		thread.Provider = string(provider.Codex)
+		thread.WorkspacePath = t.TempDir()
+		if err := app.store.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread: %v", err)
+		}
+		draft, err := app.CreateDiffReviewComment(thread.ID, diffReviewPRInput("Name this better."))
+		if err != nil {
+			t.Fatal(err)
+		}
+		app.sessionManager().put(thread.ID, session{
+			Provider: string(provider.Codex), Token: "flush-diff-review-token", Codex: installSteerTestSession(t, app, thread, outcome),
+		})
+		if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: thread.ID, TurnIndex: 0, Timestamp: time.Now()}); err != nil {
+			t.Fatalf("EventTurnStart: %v", err)
+		}
+		if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "", SendMessageOptions{
+			RevisionSourceDiffReview:     &SourceDiffReview{ThreadID: thread.ID, Scope: draft.Scope, SourceKey: draft.SourceKey},
+			RevisionSourceDiffCommentIDs: []string{draft.ID},
+		}); err != nil {
+			t.Fatalf("%s: RegisterQueueItem: %v", outcome, err)
+		}
+		owner := store.ThreadReviewOwner(thread.ID)
+		if outcome == "ok" {
+			waitForAtLeastQueueFlushed(t, rec, 1)
+			if got, err := app.store.GetDiffReviewComment(owner, draft.ID); err != nil || got.Status != "sent" || got.SentTurnID != thread.ID+":0" {
+				t.Fatalf("ok: draft = %+v (%v), want sent in turn 0", got, err)
+			}
+			continue
+		}
+		// The error row lands just before the requeue hands the drafts back.
+		waitForCondition(t, "the refused dispatch to return the draft", func() bool {
+			items, _ := app.store.ListItems(thread.ID)
+			failed := false
+			for _, item := range items {
+				failed = failed || item.Kind == triage.ItemKindError
+			}
+			got, err := app.store.GetDiffReviewComment(owner, draft.ID)
+			return failed && err == nil && got.Status == "draft" && got.SentTurnID == ""
+		})
+	}
+}
+
+// A queued message that lands in a fresh turn after Codex reports no
+// active turn is a new row; its review drafts' claim follows that row
+// before the send, so the provider's confirmation of that row settles it
+// and a boot keeps the drafts sent.
+func TestDispatchFlush_DiffReviewClaimFollowsTheFallbackRow(t *testing.T) {
+	t.Parallel()
+	app, rec := newAppForFlushQueueRPC(t)
+	thread := testThread("flush-diff-review-fallback")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	draft, err := app.CreateDiffReviewComment(thread.ID, diffReviewPRInput("Name this better."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex), Token: "flush-diff-review-fallback-token", Codex: installSteerTestSession(t, app, thread, "no-active-turn"),
+	})
+	if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: thread.ID, TurnIndex: 0, Timestamp: time.Now()}); err != nil {
+		t.Fatalf("EventTurnStart: %v", err)
+	}
+	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "", SendMessageOptions{
+		RevisionSourceDiffReview:     &SourceDiffReview{ThreadID: thread.ID, Scope: draft.Scope, SourceKey: draft.SourceKey},
+		RevisionSourceDiffCommentIDs: []string{draft.ID},
+	}); err != nil {
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
+	owner := store.ThreadReviewOwner(thread.ID)
+	var row store.Item
+	waitForCondition(t, "the fallback to place the message in a fresh turn", func() bool {
+		got, err := app.store.GetDiffReviewComment(owner, draft.ID)
+		if err != nil || got.Status != "sent" || got.SentTurnID == thread.ID+":0" {
+			return false
+		}
+		for _, evt := range emittedQueueFlushed(rec) {
+			for _, item := range evt.Items {
+				if strings.HasSuffix(got.SentTurnID, ":1") && item.UserItemID != "" && !strings.HasPrefix(item.UserItemID, "user:0") {
+					row = store.Item{ID: item.UserItemID, ThreadID: thread.ID, TurnIndex: 1}
+				}
+			}
+		}
+		return row.ID != ""
+	})
+	// The provider's echo confirms the row the claim now names.
+	echoMeta, err := json.Marshal(map[string]any{"provider_item_id": "wire-echo-" + row.ID, "client_id": row.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: thread.ID, TurnIndex: 1, ItemID: row.ID, Meta: echoMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("EventUserText: %v", err)
+	}
+	if _, found, err := app.store.GetThreadItem(thread.ID, row.ID); err != nil || !found {
+		t.Fatalf("the echo did not land %s: found=%v err=%v", row.ID, found, err)
+	}
+	if released, err := app.store.ReleaseUnsettledDiffReviewClaims(); err != nil || released != 0 {
+		t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, %v; want the landed row to have settled the claim", released, err)
+	}
+	if got, err := app.store.GetDiffReviewComment(owner, draft.ID); err != nil || got.Status != "sent" || got.SentTurnID != thread.ID+":1" {
+		t.Fatalf("draft = %+v (%v), want sent in turn 1", got, err)
+	}
+}
+
 // emittedQueueFlushed returns every QueueFlushedEvent the recorder
 // captured, in emission order. Used to assert "fired exactly once"
 // when the trigger predicate gates the dispatch.

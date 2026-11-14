@@ -92,6 +92,7 @@ type SyncThreadWindowResponse struct {
 // window only.
 //
 //ao:scope threads:read
+//ao:callerbound
 func (a *App) SyncThreadWindow(callerCtx context.Context, threadID string, req SyncThreadWindowRequest) (SyncThreadWindowResponse, error) {
 	if err := a.readyThreadHistory(threadID); err != nil {
 		return SyncThreadWindowResponse{}, err

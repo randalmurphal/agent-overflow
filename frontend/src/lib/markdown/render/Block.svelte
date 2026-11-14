@@ -32,30 +32,44 @@
 
 <script lang="ts">
 	import { parseIncompleteMarkdown } from '../parser/incompleteMarkdown';
+	import { codespanClass } from './codespan';
 	import Element from './elements/Element.svelte';
 	import {
 		createIncrementalLexCache,
 		incrementalLex,
+		matchesProvenAppend,
+		type Alignment,
 		type IncrementalLexObserver,
 		type ProvenAppend,
 		type StreamdownToken
 	} from '../parser/index';
+	import {
+		alignedTokens,
+		nextShortLastLine,
+		shortLastLine,
+		withoutAlignmentMarkers,
+		withoutPartialAlignmentCloser
+	} from '../parser/extensions/align';
 	import LiteralHost from './LiteralHost.svelte';
 	import { useStreamdown } from './context.svelte';
 	import { renderStaticTokenHtml } from './staticHtml';
+	import { tableCellRenders } from './elements/url';
 
 	let {
 		block,
 		append,
 		static: isStatic = false,
 		directAppendTail = false,
-		compactStaticHtml = false
+		compactStaticHtml = false,
+		align = null
 	}: {
 		block: string;
 		append?: ProvenAppend;
 		static?: boolean;
 		directAppendTail?: boolean;
 		compactStaticHtml?: boolean;
+		/** The alignment in force before this block (extensions/align.ts). */
+		align?: Alignment;
 	} = $props();
 
 	const streamdown = useStreamdown();
@@ -68,22 +82,57 @@
 		__observeIncrementalLex?: IncrementalLexObserver;
 	};
 	const lexCache = createIncrementalLexCache(diagnosticContext.__observeIncrementalLex);
-	const tokens = $derived(
-		incrementalLex(
-			block,
-			streamdown.extensions,
-			lexCache,
-			isStatic || streamdown.parseIncompleteMarkdown === false
-				? null
-				: parseIncompleteMarkdown,
-			append
-		)
+	const completer = $derived(
+		isStatic || streamdown.parseIncompleteMarkdown === false ? null : parseIncompleteMarkdown
 	);
+	// Only a static Block renders a whole document, with its markers; any
+	// other is one block string from parseBlocks, which never is a marker.
+	const lexBlock = (
+		source: string,
+		cache: typeof lexCache,
+		sourceAppend?: ProvenAppend
+	): StreamdownToken[] => {
+		const run = () => incrementalLex(source, streamdown.extensions, cache, completer, sourceAppend);
+		return isStatic ? run() : withoutAlignmentMarkers(run);
+	};
+	const blockTokens = $derived(lexBlock(block, lexCache, append));
+	// While streaming inside an alignment, a trailing partial closer line of
+	// a paragraph or list is held back: shown, it would vanish once the
+	// closer completes. Only the few appends spelling the closer lex twice.
+	// The last line comes from the append delta, so the growing block is
+	// never scanned.
+	const heldLexCache = createIncrementalLexCache();
+	let lastLineOf: string | undefined;
+	let lastLine: string | null = null;
+	const blockLastLine = (): string | null => {
+		if (lastLineOf === block) return lastLine;
+		lastLine = lastLineOf !== undefined && matchesProvenAppend(append, lastLineOf, block)
+			? nextShortLastLine(lastLine, append.delta)
+			: shortLastLine(block);
+		lastLineOf = block;
+		return lastLine;
+	};
+	const tokens = $derived.by(() => {
+		if (align === null || completer === null)
+			return blockTokens;
+		const type = blockTokens.at(-1)?.type;
+		if (type !== 'paragraph' && type !== 'list') return blockTokens;
+		const held = withoutPartialAlignmentCloser(block, align, blockLastLine());
+		return held === block ? blockTokens : lexBlock(held, heldLexCache);
+	});
 	const id = $props.id();
 	const staticHtml = $derived(
 		compactStaticHtml && streamdown.parseIncompleteMarkdown === false
-			? renderStaticTokenHtml(tokens, streamdown, id)
+			? renderStaticTokenHtml(tokens, streamdown, id, align)
 			: null
+	);
+	// Top-level tokens with the alignment each renders under; null when none
+	// is in force, so unaligned content renders exactly as before.
+	const aligned = $derived(
+		alignedTokens(tokens, align, {
+			mdxComponents: streamdown.mdxComponents,
+			mdxSnippet: streamdown.snippets.mdx
+		})
 	);
 
 </script>
@@ -143,7 +192,10 @@
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</blockquote>
 			{:else if token.type === 'codespan' && !streamdown.snippets.codespan}
-				<code data-streamdown-codespan={id} class={streamdown.theme.codespan.base}>
+				<code
+					data-streamdown-codespan={id}
+					class={codespanClass(streamdown.theme.codespan.base, token.text)}
+				>
 					{token.text}
 				</code>
 			{:else if token.type === 'list' && (
@@ -206,7 +258,7 @@
 				<tr data-streamdown-tr={id} class={streamdown.theme.tr.base}>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</tr>
-			{:else if token.type === 'td' && token.rowspan > 0 && !streamdown.snippets.td}
+			{:else if token.type === 'td' && tableCellRenders(token) && !streamdown.snippets.td}
 				<td
 					data-streamdown-td={id}
 					class={streamdown.theme.td.base}
@@ -218,7 +270,7 @@
 				>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</td>
-			{:else if token.type === 'th' && token.rowspan > 0 && !streamdown.snippets.th}
+			{:else if token.type === 'th' && tableCellRenders(token) && !streamdown.snippets.th}
 				<th
 					data-streamdown-th={id}
 					class={streamdown.theme.th.base}
@@ -295,6 +347,19 @@
 
 {#if staticHtml !== null}
 	{@html staticHtml}
+{:else if aligned !== null}
+	{#each aligned as entry, index}
+		{#if entry.align !== null}
+			<div
+				data-streamdown-align={id}
+				class={entry.align === 'right' ? streamdown.theme.align.right : streamdown.theme.align.center}
+			>
+				{@render renderChildren([entry.token], !entry.nested && directAppendTail && index === aligned.length - 1, !entry.nested)}
+			</div>
+		{:else}
+			{@render renderChildren([entry.token], !entry.nested && directAppendTail && index === aligned.length - 1, !entry.nested)}
+		{/if}
+	{/each}
 {:else}
 	{@render renderChildren(tokens, directAppendTail, true)}
 {/if}

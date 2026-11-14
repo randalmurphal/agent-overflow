@@ -25,8 +25,8 @@ import (
 // error came back.
 //
 // reviewThreadID is what `review/start` reports back. Passing the session's own
-// thread id models the inline answer; passing anything else models the
-// detached one the binding has to refuse.
+// thread id models the expected answer; passing anything else models a server
+// that ran the review elsewhere, which the binding has to refuse.
 func writeCodexReviewBinary(t *testing.T, threadID, reviewThreadID, capturePath string) string {
 	t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
@@ -255,8 +255,9 @@ func TestCodexReviewCannotBeQueuedOrSteeredIntoAnActiveTurn(t *testing.T) {
 }
 
 // TestStartCodexReviewSendsTheTargetInline is the happy path: the validated
-// target reaches `review/start` with inline delivery, and the answer names the
-// AO thread the review's transcript will arrive on.
+// target reaches `review/start` without a delivery key (inline is the protocol
+// default), and the answer names the AO thread the review's transcript will
+// arrive on.
 func TestStartCodexReviewSendsTheTargetInline(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -281,8 +282,8 @@ func TestStartCodexReviewSendsTheTargetInline(t *testing.T) {
 	}
 
 	captured := waitForCapturedRequest(t, capturePath, `"method":"review/start"`)
-	if !strings.Contains(captured, `"delivery":"inline"`) {
-		t.Fatalf("review/start must name inline delivery; captured:\n%s", captured)
+	if strings.Contains(captured, `"delivery"`) {
+		t.Fatalf("review/start must omit delivery; captured:\n%s", captured)
 	}
 	if !strings.Contains(captured, `"type":"baseBranch"`) || !strings.Contains(captured, `"branch":"main"`) {
 		t.Fatalf("review/start did not carry the requested target; captured:\n%s", captured)
@@ -392,25 +393,25 @@ func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T
 	}
 }
 
-// TestStartCodexReviewRefusesADetachedAnswer: we asked for inline, so a
-// different review thread id means the transcript lands on a thread this
+// TestStartCodexReviewRefusesAnotherThreadAnswer: the review runs on the
+// requesting thread, so a different review thread id means the transcript lands on a thread this
 // session does not own and is quarantined. Returning success would hand the UI
 // a billed turn it can never show.
-func TestStartCodexReviewRefusesADetachedAnswer(t *testing.T) {
+func TestStartCodexReviewRefusesAnotherThreadAnswer(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
-	thread := newCodexThreadForReviewTest(t, app, "thread-codex-review-detached")
+	thread := newCodexThreadForReviewTest(t, app, "thread-codex-review-other-thread")
 	capturePath := filepath.Join(t.TempDir(), "rpc.ndjson")
 	installCodexReviewSession(t, app, thread, "some-other-thread", capturePath)
 
 	_, err := app.StartCodexReview(context.Background(), thread.ID, CodexReviewTarget{Kind: "uncommittedChanges"})
 	if err == nil {
-		t.Fatal("a detached answer must be surfaced as an error, not reported as a started review")
+		t.Fatal("an answer naming another thread must be surfaced as an error, not reported as a started review")
 	}
-	if !strings.Contains(err.Error(), "detached") {
-		t.Fatalf("error = %v, want it to name the detached thread", err)
+	if !strings.Contains(err.Error(), "some-other-thread") {
+		t.Fatalf("error = %v, want it to name the other thread", err)
 	}
 	turn, found, turnErr := app.store.GetTurnByThreadIndex(thread.ID, 0)
 	if turnErr != nil || !found || turn.CompletedAt == nil {

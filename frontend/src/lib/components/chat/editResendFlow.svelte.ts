@@ -482,8 +482,8 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
         terminalChips: composerDraft.terminalChips,
         sourceProposedPlan: composerDraft.sourceProposedPlan,
       });
-      composerDraft.applyOptimisticRestoredDraft(threadId, recovered);
       try {
+        // Paints before it persists.
         await composerDraft.restoreDraftFor(threadId, recovered);
       } catch (err) {
         // The paint above means the text IS on screen and sendable, so
@@ -576,8 +576,8 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
     },
 
     // The flow is parked against a specific user row; if that row
-    // disappears through another path — an un-send or a concurrent revert
-    // reflected from a second pane on the same thread — the flow is void:
+    // disappears through another path — a concurrent revert reflected from
+    // a second pane on the same thread — the flow is void:
     // self-dismiss instead of letting Send fire a doomed RPC against a
     // deleted anchor. The executing stage is exempt because our own revert
     // removes the row when `user_message:reverted` lands mid-RPC.

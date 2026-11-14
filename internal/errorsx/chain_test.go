@@ -10,8 +10,8 @@ import (
 
 func TestChainSplitsWrapLayers(t *testing.T) {
 	cause := errors.New(`stored provider uuid "u1" is missing from session /tmp/a: b.jsonl`)
-	err := fmt.Errorf("interrupt-and-revert: %w", fmt.Errorf("write rolled-back session: %w", fmt.Errorf("claude rollback: %w", cause)))
-	want := []string{"interrupt-and-revert", "write rolled-back session", "claude rollback", cause.Error()}
+	err := fmt.Errorf("revert and resend: %w", fmt.Errorf("write rolled-back session: %w", fmt.Errorf("claude rollback: %w", cause)))
+	want := []string{"revert and resend", "write rolled-back session", "claude rollback", cause.Error()}
 	if got := Chain(err); !slices.Equal(got, want) {
 		t.Fatalf("Chain = %q, want %q", got, want)
 	}

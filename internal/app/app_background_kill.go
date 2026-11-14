@@ -14,9 +14,9 @@ import (
 
 // A Claude `control_request{interrupt}` kills every live async agent the
 // session holds, whichever turn launched it, together with the background
-// shells each agent owns (claude-wire.md §Background task ownership). The
-// two Stop RPCs, InterruptTurn and InterruptAndRevertIfClean, therefore
-// refuse while a live agent is one the caller has not confirmed, and name
+// shells each agent owns (claude-wire.md §Background task ownership). A
+// person's Stop (InterruptTurn, and InterruptAndRevertIfClean, its
+// wire-compatibility alias) therefore refuses while a live agent is one the caller has not confirmed, and name
 // every live agent so the person can see what the stop would cost. A
 // confirmation names the agents it covers: an agent launched while the
 // person was reading the question is refused again. The refusal comes

@@ -888,8 +888,8 @@ export function isToolTextBoundary(nodes: readonly TimelineNode[], index: number
  * uses this to label only the closing assistant message of a settled
  * turn; intermediate text-after-tool boundaries inside the same turn
  * render the divider as a plain line. Excluding the in-flight turn is
- * load-bearing because providers emit per-wire-round (see
- * internal/triage/CLAUDE.md § Wire-round vs logical-turn): more rounds
+ * load-bearing because providers emit per round (see
+ * docs/architecture/turn-lifecycle.md § Rounds and turns): more rounds
  * may still arrive and promote a different message to "final."
  *
  * Subagent-group descendants are intentionally invisible to this walk —
@@ -1083,11 +1083,7 @@ export function groupItemsBySubagent(
     }
   }
   if (!hasGroupingSignals && alreadySorted) {
-    const leaves: TimelineNode[] = new Array(items.length);
-    for (let i = 0; i < items.length; i++) {
-      leaves[i] = leafNode(items[i]);
-    }
-    return leaves;
+    return items.map((item) => leafNode(item));
   }
 
   // Work on a shallow copy sorted in canonical order so callers may pass

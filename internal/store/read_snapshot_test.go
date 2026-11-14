@@ -311,7 +311,10 @@ func TestWholeHistoryReadsTakeAHistoryReadSlot(t *testing.T) {
 		{"ListEditDiffItems", func() error { _, err := s.ListEditDiffItems(thread); return err }},
 		{"ListTurnUserSummaries", func() error { _, err := s.ListTurnUserSummaries(thread); return err }},
 		{"SearchThreadMessages", func() error { _, err := s.SearchThreadMessages("answer", 10); return err }},
-		{"SearchThreadItems", func() error { _, err := s.SearchThreadItems(thread, "answer", 10); return err }},
+		{"SearchThreadItems", func() error {
+			_, err := s.SearchThreadItems(context.Background(), thread, "answer", TimelineSelection{}, 10)
+			return err
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			releases := holdHistoryReadSlots(t, s, true)

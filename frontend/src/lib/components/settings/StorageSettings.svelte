@@ -4,6 +4,7 @@
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import ArchivedThreads from './ArchivedThreads.svelte';
+  import ClaudeTranscriptRetentionNote from './ClaudeTranscriptRetentionNote.svelte';
   import { INPUT_CLASS } from './styles';
 
   // Mirrors internal/settings.MaxRetentionDays. Hard-capped on the Go
@@ -25,7 +26,7 @@
         label="Retention (days)"
         hint={settings.retention.days === 0
           ? 'Automatic cleanup is disabled. Nothing will be removed automatically.'
-          : 'Threads (with their attachments and replay logs), provider-event logs, and bug-report bookmarks older than this are cleaned up automatically. Set to 0 to disable. Assistants and their past threads are never cleaned up. This cleans up only Agent Overflow\'s own data; Claude and Codex clean up their session files under their own settings.'}
+          : 'Threads (with their attachments and replay logs), provider-event logs, and bug-report bookmarks older than this are cleaned up automatically. Set to 0 to disable. Assistants and their past threads are never cleaned up. Claude and Codex delete their own session files under their own settings; Claude sessions Agent Overflow starts keep theirs at least this long.'}
         htmlFor="retention-days"
       >
         <input
@@ -48,6 +49,7 @@
           class="{INPUT_CLASS} max-w-[6rem]"
         />
       </SettingsField>
+      <ClaudeTranscriptRetentionNote days={settings.retention.days} />
     </div>
   </section>
 

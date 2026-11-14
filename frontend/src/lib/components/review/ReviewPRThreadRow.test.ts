@@ -12,14 +12,13 @@ const thread: ReviewThread = {
   isResolvable: true,
   isResolved: false,
   isOutdated: false,
-  comments: [{ authorLogin: 'alice', body: 'first comment', createdAt: '2026-01-01', databaseID: 1 }],
+  comments: [{ authorLogin: 'alice', body: 'first comment', createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
 };
 
 const anchor: CommentAnchor = { filePath: 'src/a.ts', newLine: 5, side: 'new' };
 
 function setup() {
   const onSendReply = vi.fn();
-  // A non-empty body mounts the row with its reply composer open.
   // `anchor` is a reserved Svelte mount option, so props must be nested.
   const view = render(ReviewPRThreadRow, {
     props: {
@@ -28,12 +27,15 @@ function setup() {
       collapsed: true,
       orphaned: false,
       body: 'reply text',
+      replying: true,
       error: null,
       sending: false,
       resolving: false,
       resolveError: null,
       onToggle: vi.fn(),
       onBodyChange: vi.fn(),
+      onOpenReply: vi.fn(),
+      onCloseReply: vi.fn(),
       onSendReply,
     },
   });
@@ -69,9 +71,9 @@ describe('<ReviewPRThreadRow> card', () => {
     ...thread,
     isResolved: true,
     comments: [
-      { authorLogin: 'alice', body: BODY, createdAt: '2026-01-01', databaseID: 1 },
-      { authorLogin: 'bob', body: 'Reply one.', createdAt: '2026-01-02', databaseID: 2 },
-      { authorLogin: 'carol', body: 'Reply two.', createdAt: '2026-01-03', databaseID: 3 },
+      { authorLogin: 'alice', body: BODY, createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false },
+      { authorLogin: 'bob', body: 'Reply one.', createdAt: '2026-01-02', databaseID: 2, id: `n${2}`, viewerCanEdit: false, viewerCanDelete: false },
+      { authorLogin: 'carol', body: 'Reply two.', createdAt: '2026-01-03', databaseID: 3, id: `n${3}`, viewerCanEdit: false, viewerCanDelete: false },
     ],
   };
 
@@ -83,12 +85,15 @@ describe('<ReviewPRThreadRow> card', () => {
         collapsed: true,
         orphaned: false,
         body: '',
+        replying: false,
         error: null,
         sending: false,
           resolving: false,
         resolveError: null,
         onToggle: vi.fn(),
         onBodyChange: vi.fn(),
+        onOpenReply: vi.fn(),
+        onCloseReply: vi.fn(),
         onSendReply: vi.fn(),
         ...overrides,
       },
@@ -113,19 +118,36 @@ describe('<ReviewPRThreadRow> card', () => {
       .toEqual([true, true]);
   });
 
-  it('carries the thread state, reading an orphaned thread as outdated', () => {
-    const cases: [ReviewThread, boolean, string][] = [
-      [thread, false, 'unresolved'],
-      [withReplies, false, 'resolved'],
-      [{ ...thread, isOutdated: true }, false, 'outdated'],
-      [thread, true, 'outdated'],
-      [{ ...thread, isResolvable: false }, false, 'none'],
+  it('carries the thread state, with outdated (forge flag or orphaned anchor) as a marker beside it', () => {
+    const cases: [ReviewThread, boolean, string, boolean][] = [
+      [thread, false, 'unresolved', false],
+      [withReplies, false, 'resolved', false],
+      [{ ...thread, isOutdated: true }, false, 'unresolved', true],
+      [{ ...withReplies, isOutdated: true }, false, 'resolved', true],
+      [thread, true, 'unresolved', true],
+      [{ ...thread, isResolvable: false }, false, 'none', false],
     ];
-    for (const [t, orphaned, state] of cases) {
-      const view = renderRow({ thread: t, orphaned });
-      expect(view.getByTestId('review-pr-thread').getAttribute('data-state')).toBe(state);
+    for (const [t, orphaned, state, outdated] of cases) {
+      const view = renderRow({ thread: t, orphaned, collapsed: false });
+      const row = view.getByTestId('review-pr-thread');
+      expect(row.getAttribute('data-state')).toBe(state);
+      expect(row.getAttribute('data-outdated')).toBe(outdated ? 'true' : null);
+      expect(view.queryByTestId('review-thread-outdated') !== null).toBe(outdated);
       view.unmount();
     }
+  });
+
+  it('keeps an outdated open thread resolvable and names the line it was written at', () => {
+    const view = renderRow({
+      thread: { ...thread, line: null, originalLine: 41, isOutdated: true },
+      anchor: { filePath: 'src/file.ts', side: 'file' },
+      orphaned: true,
+      collapsed: false,
+      onResolve: vi.fn(),
+    });
+    expect(view.getByTestId('review-thread-resolve').textContent?.trim()).toBe('Resolve');
+    expect(view.getByTestId('review-thread-outdated').getAttribute('title')).toBe('Written against an earlier revision, at line 41 then');
+    expect(view.getByRole('button', { expanded: true }).getAttribute('title')).toBe('src/file.ts:41');
   });
 
   it('renders the conversation jump only when the overview exists', () => {
@@ -143,10 +165,14 @@ describe('<ReviewPRThreadRow> card', () => {
     const collapsedView = renderRow({ collapsed: true });
     expect(collapsedView.queryByTestId('review-thread-footer')).toBeNull();
     collapsedView.unmount();
-    const view = renderRow({ collapsed: false });
+    const onOpenReply = vi.fn();
+    const view = renderRow({ collapsed: false, onOpenReply });
     expect(view.queryByTestId('review-thread-composer')).toBeNull();
     await fireEvent.click(view.getByTestId('review-thread-reply'));
-    expect(view.getByTestId('review-thread-composer')).toBeTruthy();
+    expect(onOpenReply).toHaveBeenCalledTimes(1);
+    view.unmount();
+    // The owner keeps the composer open, collapsed or not.
+    expect(renderRow({ collapsed: true, replying: true }).getByTestId('review-thread-composer')).toBeTruthy();
   });
 
   it('resolves from the footer only when the host offers it', async () => {

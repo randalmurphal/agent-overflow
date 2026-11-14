@@ -571,6 +571,30 @@ var channelPolicies = []ChannelPolicy{
 			"against the text that call answered with.",
 	},
 	{
+		Channel:   eventchan.PullsUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeGitOperate,
+		Why: "Every forge project's open pull requests: private-repo titles, " +
+			"branch names, author and reviewer logins, review and CI states, " +
+			"plus per-project read failures. Gated like pr:updated: only " +
+			"SubscribePRList (git:operate) starts the pump that emits it, and " +
+			"the subscribe call answers with the same snapshot. Audience any " +
+			"for the same reason as pr:updated: a list away from the desk " +
+			"that never hears a change presents stale attention as live.",
+	},
+	{
+		Channel:   eventchan.PipelineUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeGitOperate,
+		Why: "One repository pipeline as job rows: job and step names, " +
+			"statuses and URLs of a private repository, plus a poll-failure " +
+			"summary. Same gate and reasoning as pr:ci_updated: only " +
+			"SubscribePipeline (git:operate) starts the pump that emits it, " +
+			"and the subscribe call answers with the same pipeline.",
+	},
+	{
 		Channel:   eventchan.ProjectUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
@@ -646,6 +670,17 @@ var channelPolicies = []ChannelPolicy{
 			"Ephemeral because it is a moment, not a state: a replayed " +
 			"frame toasts a sign-in that happened before the gap, and the " +
 			"listing a reconnecting client re-reads already holds the result.",
+	},
+	{
+		Channel:   eventchan.ProviderAccountAutoSwitch,
+		Audience:  AudienceAny,
+		Retention: RetentionEphemeral,
+		Scope:     ScopeAccessAdmin,
+		Why: "Reports a switch auto-switch made, or one it could not " +
+			"make, for the toast every admin client shows. Same grant " +
+			"and audience as provider:account_signin. Ephemeral for the " +
+			"same reason: a replayed frame toasts a switch from before " +
+			"the gap, and the listing already holds the selection.",
 	},
 	{
 		Channel:   eventchan.ProviderApproval,
@@ -1409,6 +1444,21 @@ var channelPolicies = []ChannelPolicy{
 			"state the others do not.",
 	},
 	{
+		Channel:   eventchan.ThreadUnsavedRows,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "The thread errors and notices AO could not save to history: " +
+			"the text the row would have carried, its severity, and why the " +
+			"write failed. threads:read like provider:item_event, which " +
+			"carries the same prose when the row saves, and " +
+			"GetThreadLiveState, which mirrors this list. Each frame is the " +
+			"thread's whole list, so " +
+			"a replayed frame is idempotent. NOT EntityFiltered: rare, " +
+			"small, and a pane that mounts reads the mirror. Keyed per " +
+			"thread: never latest-only.",
+	},
+	{
 		Channel:   eventchan.ThreadGroupUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
@@ -1670,6 +1720,20 @@ var channelPolicies = []ChannelPolicy{
 		Why: "{itemId, armed} supersede-per-key state; keyed per run-tree " +
 			"root, so capacity-1 retention would evict other runs' latest " +
 			"frames — never latest-only.",
+	},
+	{
+		Channel:   eventchan.ShellCommand,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeTerminalOperate,
+		Why: "Streams the stdout/stderr of a command the person ran from a " +
+			"thread's composer in its workspace: the same data class as " +
+			"terminal:output. RunThreadShellCommand starts it and " +
+			"GetThreadShellCommands returns the same buffered output under " +
+			"terminal:operate, so the stream reaches the sessions those " +
+			"answer. Audience any because a command started from a phone has " +
+			"to show its output there. Output frames are sequenced per run, " +
+			"so never latest-only.",
 	},
 	{
 		Channel:   eventchan.WorktreeRemoved,

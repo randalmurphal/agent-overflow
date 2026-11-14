@@ -32,7 +32,7 @@ func checkClaudeTransferCredential(info provider.AccountInfo, credential *provid
 	if !providerstatus.ClaudeUnauthenticated(info) {
 		return nil
 	}
-	if credential != nil && !CredentialSignedOut(string(provider.Claude), credential.Data) {
+	if credential != nil && !CredentialSignedOut(string(provider.Claude), credential.Bytes()) {
 		return nil
 	}
 	return errors.New("Sign in to Claude on this computer before receiving the conversation.")

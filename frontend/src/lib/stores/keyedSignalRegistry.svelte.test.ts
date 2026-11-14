@@ -13,6 +13,17 @@ describe('createKeyedSignalRegistry', () => {
     expect(registry.get('a')).toBe('idle');
   });
 
+  it('lists the keys that have a box, until they are dropped', () => {
+    const registry = createKeyedSignalRegistry<string>('idle');
+    registry.set('a', 'running');
+    registry.set('b', 'running');
+    registry.set('never', 'idle');
+    registry.set('b', 'idle');
+    expect([...registry.keys()]).toEqual(['a', 'b']);
+    registry.drop('a');
+    expect([...registry.keys()]).toEqual(['b']);
+  });
+
   it('writing the empty value to a boxless key creates nothing and wakes nobody', () => {
     const registry = createKeyedSignalRegistry<boolean>(false);
     const probe = probeReactivity(() => registry.get('a'));
@@ -73,6 +84,46 @@ describe('createKeyedSignalRegistry', () => {
 
       // The reader re-attached through the creation version, so a
       // post-drop write still reaches it via a fresh box.
+      registry.set('a', 'y');
+      flushSync();
+      expect(probe.latest).toBe('y');
+    } finally {
+      probe.dispose();
+    }
+  });
+
+  it('drop re-attaches a reader whose box already holds the empty value', () => {
+    const registry = createKeyedSignalRegistry<string | null>(null);
+    registry.set('a', 'x');
+    const probe = probeReactivity(() => registry.get('a'));
+    try {
+      // The key drains before it is dropped, so the drop changes no value
+      // the reader can see. It must still move the reader off the box.
+      registry.set('a', null);
+      flushSync();
+      expect(probe.latest).toBeNull();
+
+      registry.drop('a');
+      flushSync();
+      expect(probe.latest).toBeNull();
+
+      registry.set('a', 'y');
+      flushSync();
+      expect(probe.latest).toBe('y');
+    } finally {
+      probe.dispose();
+    }
+  });
+
+  it('reset re-attaches a reader whose box already holds the empty value', () => {
+    const registry = createKeyedSignalRegistry<string>('');
+    registry.set('a', 'x');
+    const probe = probeReactivity(() => registry.get('a'));
+    try {
+      registry.set('a', '');
+      flushSync();
+      registry.reset();
+      flushSync();
       registry.set('a', 'y');
       flushSync();
       expect(probe.latest).toBe('y');

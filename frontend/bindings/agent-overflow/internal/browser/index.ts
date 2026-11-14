@@ -4,6 +4,7 @@
 export {
     CompanionEvent,
     CompanionSubscription,
+    FindState,
     PageInfo,
     PaneRect
 } from "./models.js";

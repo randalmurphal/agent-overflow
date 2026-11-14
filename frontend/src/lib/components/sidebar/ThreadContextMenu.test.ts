@@ -986,7 +986,9 @@ describe('<ThreadContextMenu> standing agent', () => {
       'The assistant "Ops" is deleted too, with its 2 past threads and 1 helper, and its home folder /config/agents/agent-1 is removed with everything in it.',
     ));
     expect(remove).not.toHaveBeenCalled();
-    const confirm = Array.from(baseElement.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Delete');
+    // The menu's own Delete item is a button too: the dialog's is the one
+    // that is no menu item.
+    const confirm = Array.from(baseElement.querySelectorAll('button:not([role="menuitem"])')).find((b) => b.textContent?.trim() === 'Delete');
     if (!confirm) throw new Error('confirm button not rendered');
     await fireEvent.click(confirm);
     await waitFor(() => expect(remove).toHaveBeenCalledWith('thread-1'));

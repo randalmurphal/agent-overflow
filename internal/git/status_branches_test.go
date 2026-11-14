@@ -20,13 +20,13 @@ func TestParseBranchList(t *testing.T) {
 	//   - "origin/orphan"   remote-only branch; MUST appear as "orphan"
 	//   - "origin/HEAD"     standard symref form (some git versions); MUST be dropped
 	branches := parseBranchList(
-		"main|*|/tmp/repo|ahead 3, behind 2\n"+
-			"feature/demo| ||\n"+
-			"origin| ||\n"+
-			"origin/main| ||\n"+
-			"origin/feature/demo| ||\n"+
-			"origin/orphan| ||\n"+
-			"origin/HEAD| ||\n",
+		"main|*|/tmp/repo|ahead 3, behind 2|1700000000\n"+
+			"feature/demo| |||\n"+
+			"origin| |||\n"+
+			"origin/main| |||\n"+
+			"origin/feature/demo| |||\n"+
+			"origin/orphan| |||\n"+
+			"origin/HEAD| |||\n",
 		"main",
 		[]string{"origin"},
 	)
@@ -54,6 +54,9 @@ func TestParseBranchList(t *testing.T) {
 	if !byName["main"].IsDefault {
 		t.Fatal("expected main to be default")
 	}
+	if byName["main"].Date != 1700000000 {
+		t.Fatalf("main date = %d, want 1700000000", byName["main"].Date)
+	}
 	if byName["main"].AheadCount != 3 || byName["main"].BehindCount != 2 {
 		t.Fatalf("main ahead/behind = %d/%d, want 3/2", byName["main"].AheadCount, byName["main"].BehindCount)
 	}
@@ -78,7 +81,7 @@ func TestParseBranchListPreservesLocalNamedLikeBranch(t *testing.T) {
 	t.Parallel()
 	// A local branch literally named "feature/HEAD" should pass through
 	// (only remote-namespaced HEAD symrefs are dropped).
-	branches := parseBranchList("feature/HEAD| ||\nfeature/regular| ||\n", "main", []string{"origin"})
+	branches := parseBranchList("feature/HEAD| |||\nfeature/regular| |||\n", "main", []string{"origin"})
 	if len(branches) != 2 {
 		t.Fatalf("expected 2 branches, got %d: %+v", len(branches), branches)
 	}
@@ -119,7 +122,7 @@ func TestParseBranchListProjectsRemoteOnlyDefault(t *testing.T) {
 	// no local checkout yet of main), the projected "main" entry must
 	// still be flagged as default so the picker keeps the badge.
 	branches := parseBranchList(
-		"feature| ||\norigin/main| ||\n",
+		"feature| |||\norigin/main| |||\n",
 		"main",
 		[]string{"origin"},
 	)

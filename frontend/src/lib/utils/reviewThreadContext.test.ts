@@ -69,6 +69,14 @@ describe('threadAnchorRow', () => {
     expect(threadAnchorRow(mixedFile(), thread({ line: 3, side: 'old' }))).toBe(2);
   });
 
+  it('finds a left-side line on an unchanged row, never on a deletion before it', () => {
+    // ' a', '-b', ' c', ' d': b is old 2; c is old 3 and new 2.
+    const file = parseReviewFiles(['diff --git a/src/a.ts b/src/a.ts', 'index 1111111..2222222 100644', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,4 +1,3 @@', ' a', '-b', ' c', ' d'].join('\n'))[0];
+    expect(threadAnchorRow(file, thread({ path: 'src/a.ts', line: 3, side: 'left' }))).toBe(2);
+    expect(threadAnchorRow(file, thread({ path: 'src/a.ts', line: 2, side: 'left' }))).toBe(1);
+    expect(threadAnchorRow(file, thread({ path: 'src/a.ts', line: 2, side: 'right' }))).toBe(2);
+  });
+
   it('falls back to startLine when the thread has no line', () => {
     expect(threadAnchorRow(mixedFile(), thread({ line: null, startLine: 4 }))).toBe(4);
   });

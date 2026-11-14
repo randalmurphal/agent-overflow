@@ -13,6 +13,9 @@ every close and failed-spawn path.
 Settings that the CLI can override from its own configuration must travel
 through the inline `--settings` payload, with their names reserved from user
 environment overrides.
+Every launch of the CLI against the user's home carries the transcript
+retention period, including probes and launches built outside this package.
+`retention.go` lists them and gives the reason.
 
 Structured output is session-scoped through `--json-schema`; Claude ignores
 per-turn output schemas. Emit one `--add-dir` per additional directory before

@@ -189,7 +189,7 @@ func (h *fakeHost) GitCore() *gitops.Core {
 	return h.gitCore
 }
 
-// FindWorktree, CutWorktreeFromFreshBase and DefaultWorktreePath mirror
+// FindWorktree, CutWorktreeFromFreshRef and DefaultWorktreePath mirror
 // `app_worktree.go`'s bodies against the same Core, so what the runner is held
 // to here is what production does.
 func (h *fakeHost) FindWorktree(project, path string) (gitops.Worktree, bool, error) {
@@ -205,10 +205,10 @@ func (h *fakeHost) FindWorktree(project, path string) (gitops.Worktree, bool, er
 	return gitops.Worktree{}, false, nil
 }
 
-func (h *fakeHost) CutWorktreeFromFreshBase(
-	ctx context.Context, projectPath, worktreePath, baseBranch, newBranch string,
+func (h *fakeHost) CutWorktreeFromFreshRef(
+	ctx context.Context, projectPath, worktreePath string, base gitops.Ref, newBranch string,
 ) error {
-	_, err := h.GitCore().CreateWorktreeFromFreshBase(ctx, projectPath, worktreePath, baseBranch, newBranch)
+	_, err := h.GitCore().CreateWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, newBranch)
 	return err
 }
 
@@ -300,7 +300,7 @@ func newTestRunner(t *testing.T, host *fakeHost, dataStore *store.Store, profile
 		// home is what it resolves against rather than whatever $HOME says.
 		host.claudeProjectsDir = sessionfork.ProjectsDirForHome(isolation.Home)
 	}
-	return New(host, dataStore, t.TempDir(), profiles, func(context.Context, string) error { return nil })
+	return New(host, dataStore, t.TempDir(), profiles, func(context.Context, string, Interrupt) error { return nil })
 }
 
 // newTestStore clones the package's migrated template. Several runner paths

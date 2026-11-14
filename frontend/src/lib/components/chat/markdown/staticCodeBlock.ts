@@ -6,6 +6,7 @@ import { maskSpriteRef } from '../../../utils/maskSprite';
 import { spanSegments, type EncodedLine } from '../../../utils/syntaxSpans';
 import { getCachedBlockSpans } from './codeSpanCache';
 import { isCodeBlockUnwrapped, setCodeBlockUnwrapped } from './codeWrapState';
+import { CODE_RUN_CLASS, CODE_RUN_LABEL, isRunnableShellLang, runCodeBlock } from './codeRun';
 
 type StreamdownContext = ReturnType<
   (typeof import('../../../markdown'))['useStreamdown']
@@ -142,6 +143,27 @@ function wrapIconRef(): string {
   );
 }
 
+function runIconRef(): string {
+  return maskSpriteRef(
+    'static-code-run',
+    24,
+    24,
+    'fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"',
+    '<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>',
+  );
+}
+
+function runButtonHtml(): string {
+  return '<button type="button"' +
+    attribute('aria-label', CODE_RUN_LABEL) + attribute('title', CODE_RUN_LABEL) +
+    attribute('class', `${CODE_RUN_CLASS} ${COPY_BUTTON_CLASS}`) +
+    ' data-icon-button data-static-code-run>' +
+    '<span aria-hidden="true"' +
+      attribute('style', `width:13px;height:13px;-webkit-mask-image:${runIconRef()};mask-image:${runIconRef()}`) +
+      ' class="lucide-icon lucide lucide-play inline-block shrink-0 opacity-80"></span>' +
+    '</button>';
+}
+
 function copyIconHtml(): string {
   return '<span aria-hidden="true" data-static-code-copy-icon' +
     attribute('style', `width:13px;height:13px;-webkit-mask-image:${copyIconRef()};mask-image:${copyIconRef()}`) +
@@ -198,6 +220,7 @@ export function renderStaticCodeBlockHtml(
       code.join('') +
     '</code></pre></div></div>' +
     '<div' + attribute('class', CODE_OVERLAY_CLASS) + '>' +
+      (isRunnableShellLang(codeFenceInfoWord(token.lang ?? '')) ? runButtonHtml() : '') +
       '<button type="button"' +
         attribute('aria-label', wrapLabel) + attribute('title', wrapLabel) +
         attribute('class', COPY_BUTTON_CLASS) +
@@ -347,10 +370,28 @@ function handleStaticCodeWrap(event: MouseEvent): void {
   );
 }
 
-/** One document listener replaces one Svelte button pair per settled fence. */
+/**
+ * Runs one settled shell block. The code element's textContent equals the
+ * fence source by the copy contract, so it is the command.
+ */
+function handleStaticCodeRun(event: MouseEvent): void {
+  const button = codeButtonFor(event.target, 'button[data-static-code-run]');
+  if (!button) return;
+  const code = button.closest<HTMLElement>('.streamdown-code-host')?.querySelector('pre > code');
+  if (!code) {
+    console.warn('[static-code-run] handler failed: code host is incomplete');
+    reportFrontendDiagnostic('[static-code-run] handler failed', 'code host is incomplete');
+    addToast('error', 'Failed to run the command');
+    return;
+  }
+  void runCodeBlock(button, code.textContent ?? '');
+}
+
+/** One document listener replaces one Svelte button set per settled fence. */
 export function ensureStaticCodeDelegate(): void {
   if (delegateInstalled) return;
   document.addEventListener('click', (event) => {
+    handleStaticCodeRun(event);
     handleStaticCodeWrap(event);
     void handleStaticCodeCopy(event).catch(reportStaticCodeCopyFailure);
   });

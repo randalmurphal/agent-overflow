@@ -40,6 +40,7 @@ import {
   revealPane,
 } from './panes.svelte';
 import { deleteSideChatThread } from './sideChatThread';
+import { closeToolPane, toolKindOf } from './toolPanes.svelte';
 
 export type CompanionKind = CompanionPaneKind;
 /**
@@ -56,7 +57,6 @@ export type PersistedCompanionKind = Exclude<
 function isEphemeralCompanionKind(kind: CompanionKind): boolean {
   return kind === 'take-control' || kind === 'browser' || kind === 'side-chat' || kind === 'agent-thread';
 }
-
 
 export interface CompanionPaneState {
   paneId: string;
@@ -213,9 +213,25 @@ export function hideCompanion(paneId: string): void {
   takeDownCompanion(paneId, 'hide');
 }
 
+let companionClosedObservers: readonly CompanionClosedObserver[] = [];
+
+/** Observes a companion closed for good (`closeCompanion`, the source
+ * pane's destroy cascade), never one hidden for a thread switch. `threadId`
+ * is the source pane's thread at that moment. */
+export type CompanionClosedObserver = (sourcePaneId: string, kind: CompanionKind, threadId: string | null) => void;
+
+export function addCompanionClosedObserver(observer: CompanionClosedObserver): () => void {
+  companionClosedObservers = [...companionClosedObservers, observer];
+  return () => {
+    companionClosedObservers = companionClosedObservers.filter((existing) => existing !== observer);
+  };
+}
+
 function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
   const state = companionPanes.get(paneId);
   if (!state) return;
+  // Read before the registry entry goes: the observers name the thread.
+  const sourceThreadId = getPane(state.sourcePaneId)?.threadId ?? null;
   // Read before the section leaves the DOM: under compact the strip shows
   // one pane, and closing the one on screen must bring its thread back
   // rather than glide to whichever sibling companion is left.
@@ -227,6 +243,9 @@ function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
     closeCompanionsForSource(paneId);
   }
   unregisterCompanionPane(paneId);
+  if (mode === 'close') {
+    for (const observe of companionClosedObservers) observe(state.sourcePaneId, state.kind, sourceThreadId);
+  }
   if (isThreadHostingPaneKind(state.kind)) {
     // A side chat and an agent thread companion own a ThreadPane each (the
     // registry entry under the companion pane id), so their take-down goes
@@ -250,8 +269,9 @@ function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
 /**
  * Pane-scoped close for whatever holds focus. A focused companion closes
  * ITSELF (never the thread it's paired to — closeCompanion hands focus
- * back to the source); anything else destroys the focused thread pane.
- * This is the single owner of the companion-vs-thread close branch —
+ * back to the source); a focused tool pane closes as a tool; anything else
+ * destroys the focused thread pane.
+ * This is the single owner of the companion-vs-tool-vs-thread close branch —
  * `pane.close` routes here. It lives in this store because
  * panes.svelte.ts must not depend on companion stores, while the reverse
  * dependency is the sanctioned direction.
@@ -260,6 +280,7 @@ export function closeFocusedPaneOrCompanion(): void {
   const focusedId = getFocusedPaneId();
   const companion = focusedId ? companionPanes.get(focusedId) : null;
   if (companion) closeCompanion(companion.paneId);
+  else if (toolKindOf(focusedId)) closeToolPane(focusedId as string);
   else closeFocusedPane();
 }
 
@@ -272,6 +293,7 @@ export function closeFocusedPaneOrCompanion(): void {
 export function closePaneById(paneId: string): void {
   const companion = companionPanes.get(paneId);
   if (companion) closeCompanion(companion.paneId);
+  else if (toolKindOf(paneId)) closeToolPane(paneId);
   else destroyPane(paneId);
 }
 

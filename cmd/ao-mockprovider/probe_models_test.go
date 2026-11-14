@@ -22,10 +22,9 @@ import (
 // permanently inert under harness while every test still passed.
 //
 // Second, that the merge is OBSERVABLE. The mock claims fast-mode support for
-// claude-haiku-4-5, which the shipped catalog does not, so a working merge has
-// to report exactly one capability drift and hand back a Haiku carrying
-// ModelCapabilityFastMode. A payload that agreed with the catalog on every axis
-// would let this test pass with the merge never having run.
+// claude-haiku-4-5, which the shipped catalog never states, so a working merge
+// hands back a Haiku carrying ModelCapabilityFastMode, with no drift: fast
+// mode is wire-owned and the rows' efforts match the catalog.
 //
 // The envelope unwrap below mirrors claude/probe.go's
 // tryParseControlInitResponse rather than calling it: that function is
@@ -84,11 +83,10 @@ func TestClaudeProbeReportsMergeableModels(t *testing.T) {
 		t.Errorf("haiku capabilities = %v, want the wire's fast-mode claim applied", haiku.Capabilities)
 	}
 
-	if len(drift) != 1 {
-		t.Fatalf("drift = %v, want exactly the one deliberate divergence", drift)
-	}
-	if drift[0].Model != "claude-haiku-4-5" || drift[0].Kind != claudemodels.DriftCapability {
-		t.Errorf("drift[0] = %v, want a capability drift on claude-haiku-4-5", drift[0])
+	// Fast mode is wire-owned, so the claim is applied without a drift line,
+	// and every row's efforts match the catalog.
+	if len(drift) != 0 {
+		t.Fatalf("drift = %s, want none", claudemodels.FormatDrift(drift))
 	}
 
 	// The pointer row must resolve to a catalog model rather than being added

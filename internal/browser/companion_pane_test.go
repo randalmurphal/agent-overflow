@@ -206,17 +206,9 @@ func TestPaneDetachHidesThePresentedView(t *testing.T) {
 	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
-	if err != nil {
-		t.Fatalf("attach pane: %v", err)
-	}
-	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
-	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
-		t.Fatalf("set pane rect: %v", err)
-	}
-	engine.take()
+	mount := attachSizedPane(t, manager, engine, access)
 
-	manager.DetachPane(mount.ID)
+	manager.DetachPane(mount)
 	var hidden bool
 	for _, call := range engine.take() {
 		if call == "hide:"+secondHandle {
@@ -228,5 +220,68 @@ func TestPaneDetachHidesThePresentedView(t *testing.T) {
 	}
 	if !hidden {
 		t.Fatal("detaching the pane left the presented view showing")
+	}
+}
+
+// attachSizedPane mounts a pane, reports its rect and waits for the pages to
+// take its size, whose presentation pass runs on its own goroutine; then
+// nothing of the thread's presentation is in flight. It answers the mount.
+func attachSizedPane(t *testing.T, manager *Manager, engine *recordingPaneHost, access Access) string {
+	t.Helper()
+	applied := make(chan string, 16)
+	manager.viewportApplied = func(threadID string) { applied <- threadID }
+	mount, err := manager.AttachPane(access)
+	if err != nil {
+		t.Fatalf("attach pane: %v", err)
+	}
+	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
+	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+		t.Fatalf("set pane rect: %v", err)
+	}
+	if got := <-applied; got != access.ThreadID {
+		t.Fatalf("viewport applied for %q, want %q", got, access.ThreadID)
+	}
+	engine.take()
+	return mount.ID
+}
+
+// Presentation passes of a thread never overlap: a pass asked for while one
+// is telling the engine to show the page runs after it, so a detach that
+// lands mid-pass still leaves the page hidden.
+func TestPanePresentationPassesNeverOverlap(t *testing.T) {
+	manager, engine, access, _, secondID := newPaneHostManager(t)
+	secondHandle := paneHandle(manager, access, secondID)
+	show := true
+	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+		t.Fatalf("visibility: %v", err)
+	}
+	mount := attachSizedPane(t, manager, engine, access)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	engine.mu.Lock()
+	engine.onBounds = func(PanePlacement) {
+		once.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
+	engine.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		manager.syncPanePresentation(access.ThreadID)
+	}()
+	<-entered
+	manager.DetachPane(mount)
+	close(release)
+	<-done
+	last := ""
+	for _, call := range engine.take() {
+		if strings.HasSuffix(call, ":"+secondHandle) && !strings.HasPrefix(call, "bounds:") {
+			last = call
+		}
+	}
+	if last != "hide:"+secondHandle {
+		t.Fatalf("after a detach during a presentation pass the page's last call is %q, want it hidden", last)
 	}
 }

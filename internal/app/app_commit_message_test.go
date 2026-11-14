@@ -32,7 +32,7 @@ func newCommitMsgTestApp(t *testing.T) *App {
 func TestGenerateCommitMessage_UnresolvableWorkspaceErrors(t *testing.T) {
 	t.Parallel()
 	app := newCommitMsgTestApp(t)
-	_, err := app.GenerateCommitMessage(WorkspaceRef{ProjectID: "nope"})
+	_, err := app.GenerateCommitMessage(WorkspaceRef{ProjectID: "nope"}, CommitSelection{All: true})
 	if err == nil {
 		t.Fatal("expected error for unknown project id")
 	}
@@ -41,13 +41,13 @@ func TestGenerateCommitMessage_UnresolvableWorkspaceErrors(t *testing.T) {
 	}
 }
 
-func TestGenerateCommitMessage_EmptyStagedReturnsNothingToDescribe(t *testing.T) {
+func TestGenerateCommitMessage_CleanTreeReturnsNothingToDescribe(t *testing.T) {
 	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	ref := testWorkspaceRef(t, app, workspace)
-	// Repo is clean — StageAll is a no-op, nothing to describe.
-	_, err := app.GenerateCommitMessage(ref)
+	// Repo is clean: nothing to describe.
+	_, err := app.GenerateCommitMessage(ref, CommitSelection{All: true})
 	if err == nil {
 		t.Fatal("expected error when working tree is clean")
 	}
@@ -60,7 +60,7 @@ func TestGenerateCommitMessage_CodexPathHappy(t *testing.T) {
 	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
-	// Dirty the repo so there's something to stage.
+	// Dirty the repo so there is something to describe.
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("hello\nworld\n"), 0o644); err != nil {
 		t.Fatalf("dirty: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestGenerateCommitMessage_CodexPathHappy(t *testing.T) {
 
 	ref := testWorkspaceRef(t, app, workspace)
 
-	got, err := app.GenerateCommitMessage(ref)
+	got, err := app.GenerateCommitMessage(ref, CommitSelection{All: true})
 	if err != nil {
 		t.Fatalf("happy path: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
 
 	ref := testWorkspaceRef(t, app, workspace)
 
-	got, err := app.GenerateCommitMessage(ref)
+	got, err := app.GenerateCommitMessage(ref, CommitSelection{All: true})
 	if err != nil {
 		t.Fatalf("happy path: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestGenerateCommitMessage_ClaudeDefaultFollowsTheCLIModelList(t *testing.T)
 				gotSpec = spec
 				return textgen.CLIResult{Stdout: `{"structured_output":{"subject":"ok","body":""}}`}, nil
 			}
-			if _, err := app.GenerateCommitMessage(testWorkspaceRef(t, app, workspace)); err != nil {
+			if _, err := app.GenerateCommitMessage(testWorkspaceRef(t, app, workspace), CommitSelection{All: true}); err != nil {
 				t.Fatalf("generate: %v", err)
 			}
 			if got := nextArgAfter(gotSpec.Args, "--model"); got != tc.wantModel {
@@ -264,7 +264,7 @@ func TestGenerateCommitMessage_RoutingRespectsSettings(t *testing.T) {
 				}, nil
 			}
 
-			if _, err := app.GenerateCommitMessage(ref); err != nil {
+			if _, err := app.GenerateCommitMessage(ref, CommitSelection{All: true}); err != nil {
 				t.Fatalf("generate: %v", err)
 			}
 			if !argsContain(gotSpec.Args, tc.sentinel) {
@@ -299,7 +299,7 @@ func TestGenerateCommitMessage_RoutingCustomEffortAndModel(t *testing.T) {
 		return textgen.CLIResult{ExitCode: 0}, nil
 	}
 
-	if _, err := app.GenerateCommitMessage(ref); err != nil {
+	if _, err := app.GenerateCommitMessage(ref, CommitSelection{All: true}); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 	if got := nextArgAfter(gotSpec.Args, "--model"); got != "gpt-5.4" {
@@ -323,7 +323,7 @@ func TestGenerateCommitMessage_CLIMissingReturnsFriendlyError(t *testing.T) {
 		// Emulate exec.LookPath failure shape — a PathError wrapping ENOENT.
 		return textgen.CLIResult{}, exec.ErrNotFound
 	}
-	_, err := app.GenerateCommitMessage(ref)
+	_, err := app.GenerateCommitMessage(ref, CommitSelection{All: true})
 	if err == nil {
 		t.Fatal("expected error when CLI isn't available")
 	}
@@ -347,7 +347,7 @@ func TestGenerateCommitMessage_CLIFailureSurfacesStderr(t *testing.T) {
 			ExitCode: 1,
 		}, nil
 	}
-	_, err := app.GenerateCommitMessage(ref)
+	_, err := app.GenerateCommitMessage(ref, CommitSelection{All: true})
 	if err == nil {
 		t.Fatal("expected error when CLI exits non-zero")
 	}
@@ -399,7 +399,7 @@ func TestGenerateCommitMessage_InvalidProviderCoercesToDefault(t *testing.T) {
 		_ = os.WriteFile(outputPath, []byte(`{"subject":"ok","body":""}`), 0o600)
 		return textgen.CLIResult{ExitCode: 0}, nil
 	}
-	if _, err := app.GenerateCommitMessage(ref); err != nil {
+	if _, err := app.GenerateCommitMessage(ref, CommitSelection{All: true}); err != nil {
 		t.Fatalf("handler should succeed after provider coercion; got: %v", err)
 	}
 }
@@ -433,7 +433,7 @@ func TestGenerateCommitMessage_Layer2PrimaryFailsAlternateSucceeds(t *testing.T)
 		}, nil
 	}
 
-	got, err := app.GenerateCommitMessage(ref)
+	got, err := app.GenerateCommitMessage(ref, CommitSelection{All: true})
 	if err != nil {
 		t.Fatalf("commit message: %v", err)
 	}
@@ -467,7 +467,7 @@ func TestGenerateCommitMessage_Layer2BothFailReturnsPrimaryError(t *testing.T) {
 		return textgen.CLIResult{Stderr: msg, ExitCode: 1}, nil
 	}
 
-	_, err := app.GenerateCommitMessage(ref)
+	_, err := app.GenerateCommitMessage(ref, CommitSelection{All: true})
 	if err == nil {
 		t.Fatal("expected error when both providers fail")
 	}
@@ -497,7 +497,7 @@ func TestGenerateCommitMessage_Layer2AlternateMissingNoRetry(t *testing.T) {
 		return textgen.CLIResult{Stderr: "codex boom", ExitCode: 1}, nil
 	}
 
-	if _, err := app.GenerateCommitMessage(ref); err == nil {
+	if _, err := app.GenerateCommitMessage(ref, CommitSelection{All: true}); err == nil {
 		t.Fatal("expected error")
 	}
 	if calls != 1 {
@@ -522,7 +522,7 @@ func TestGenerateCommitMessage_Layer2ContextCanceledNoRetry(t *testing.T) {
 		return textgen.CLIResult{}, context.Canceled
 	}
 
-	_, err := app.GenerateCommitMessage(ref)
+	_, err := app.GenerateCommitMessage(ref, CommitSelection{All: true})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}

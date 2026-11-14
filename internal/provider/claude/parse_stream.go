@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionimport"
 )
 
 // parseStreamEvent handles the `stream_event` envelope produced by the
@@ -67,6 +68,9 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 			return nil, nil
 		}
 		p.rememberStreamBlock(parentToolUseID, index, blockType)
+		// The streamed block opens with an empty signature that
+		// signature_delta fills; a start that already carries one seeds it.
+		p.appendStreamSignature(parentToolUseID, index, readRawString(block["signature"]))
 		return []provider.ProviderEvent{{
 			Kind:            provider.EventContentBlockStart,
 			ThreadID:        threadID,
@@ -77,11 +81,11 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 
 	case "content_block_stop":
 		index, _ := readIntAtAnyKey(eventRaw, "index")
-		blockType := p.takeStreamBlock(parentToolUseID, index)
+		blockType, signature := p.takeStreamBlock(parentToolUseID, index)
 		return []provider.ProviderEvent{{
 			Kind:            provider.EventContentBlockStop,
 			ThreadID:        threadID,
-			Meta:            blockMeta(index, blockType, p.streamAPIMessageID(raw, parentToolUseID)),
+			Meta:            settledBlockMeta(index, blockType, p.streamAPIMessageID(raw, parentToolUseID), sessionimport.ThinkingIsNarration(signature)),
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
 		}}, nil
@@ -94,6 +98,7 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		// not in the transcript (claude-wire.md §abandoned_blocks). The
 		// API's own message_stop carries no such key and emits nothing.
 		defer p.forgetStreamMessageID(parentToolUseID)
+		p.forgetStreamSignatures(parentToolUseID)
 		return p.blocksAbandonedEvent(threadID, raw, parentToolUseID, now), nil
 
 	case "content_block_delta":
@@ -102,9 +107,10 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 			return nil, nil
 		}
 		var delta struct {
-			Type     string `json:"type"`
-			Text     string `json:"text,omitempty"`
-			Thinking string `json:"thinking,omitempty"`
+			Type      string `json:"type"`
+			Text      string `json:"text,omitempty"`
+			Thinking  string `json:"thinking,omitempty"`
+			Signature string `json:"signature,omitempty"`
 		}
 		if json.Unmarshal(deltaRaw, &delta) != nil {
 			return nil, nil
@@ -133,6 +139,12 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 				ParentToolUseID: parentToolUseID,
 				Timestamp:       now,
 			}}, nil
+		case "signature_delta":
+			// The signature is never content. It is kept until the block's
+			// stop only to read its tag (settledBlockMeta).
+			index, _ := readIntAtAnyKey(eventRaw, "index")
+			p.appendStreamSignature(parentToolUseID, index, delta.Signature)
+			return nil, nil
 		default:
 			return nil, nil
 		}
@@ -142,7 +154,8 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		// context meter) AND a soft EventTurnComplete from the inner
 		// `delta.stop_reason` (drives the working indicator off when
 		// the parent stops emitting, without waiting for the wire
-		// `result` — see invariants.md §27). The two gates are
+		// `result` — docs/architecture/turn-lifecycle.md §Rounds and
+		// turns). The two gates are
 		// independent; a malformed envelope missing one field
 		// must still let the other fire.
 		//
@@ -183,12 +196,24 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 // row at content_block_start so an abandoned_blocks message_stop can name
 // the rows it discards; apiMessageId is omitted when unknown.
 func blockMeta(index int, blockType, apiMessageID string) json.RawMessage {
+	return settledBlockMeta(index, blockType, apiMessageID, false)
+}
+
+// settledBlockMeta is blockMeta for a block's stop. narration reports that
+// a thinking block's signature tags it as prose for the user
+// (sessionimport.ThinkingTag); the stop then carries
+// provider.MetaNarrationKey, and an untagged stop is byte-identical to
+// blockMeta.
+func settledBlockMeta(index int, blockType, apiMessageID string, narration bool) json.RawMessage {
 	fields := map[string]any{
 		"index":     index,
 		"blockType": blockType,
 	}
 	if apiMessageID != "" {
 		fields[provider.MetaAPIMessageIDKey] = apiMessageID
+	}
+	if narration && blockType == "thinking" {
+		fields[provider.MetaNarrationKey] = true
 	}
 	meta, _ := json.Marshal(fields)
 	return meta

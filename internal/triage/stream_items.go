@@ -107,6 +107,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 			eventParentID(evt),
 			strings.TrimSpace(evt.ItemID),
 			evt.Content,
+			eventMetaBool(evt.Meta, provider.MetaNarrationKey),
 			evt.Timestamp,
 		)
 	}
@@ -337,8 +338,13 @@ func ThinkingSummaryPreview(content string) string {
 }
 
 func assistantTextPayload(itemID, content string, now int64) store.Payload {
+	return prosePayload(AssistantTextPayloadID(itemID), content, now)
+}
+
+// prosePayload is a settled assistant text row's payload under payloadID.
+func prosePayload(payloadID, content string, now int64) store.Payload {
 	return store.Payload{
-		ID:        AssistantTextPayloadID(itemID),
+		ID:        payloadID,
 		Kind:      itemKindAssistantText,
 		Meta:      BuildPayloadMeta(itemKindAssistantText, provider.ProviderEvent{Content: content, Timestamp: time.UnixMilli(now)}),
 		Data:      []byte(content),

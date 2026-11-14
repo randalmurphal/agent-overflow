@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tick } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import { getToasts } from './toast.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import {
@@ -7,42 +7,53 @@ import {
   replaceDiffReviewCommentsForTest,
 } from './diffReviewComments.svelte';
 import { projectTurnStarted } from './threadStatuses.svelte';
+import { CI_SECTION_INLINE_MAX_BYTES } from './ciSubject.svelte';
+import { peekCIAction } from './ciActions.svelte';
 import {
   __resetReviewPaneStateForTest,
-  CI_SECTION_INLINE_MAX_BYTES,
+  __setRelocationBudgetForTest,
   disposeReviewStateForPane,
   openReviewCompanion,
+  reviewSubjectForPane,
   reviewStateForPane,
   type ConversationFeedItem,
   type ReviewSubject,
 } from './reviewPane.svelte';
 import {
+  COLLAPSE_ROW_LIMIT,
   draftAnchorExists,
   EditFileMerge,
   reviewLineCommentForDraft,
   supportsIgnoreWhitespace,
 } from './reviewPaneLoad';
 import { applyPRCILogEvent, applyPRCIUpdatedEvent, applyPRUpdatedEvent, attachPR } from './prReviewStore.svelte';
-import { resetCompanionPanesForTest } from './companionPanes.svelte';
+import { closeCompanion, hideCompanion, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { __setTransportHelloForTest, __setTransportStatusForTest } from './transportStatus.svelte';
+import { DisconnectedError, TransportError, type TransportHello } from '../transport/wsClient';
 import { companionSubjectKey } from './companionSubject';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { getPane, registerPaneForTest, resetPanesForTest, revealPane } from './panes.svelte';
+import { noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
+import { persistScope } from './reviewPaneScope';
+import { removeThread } from './threads.svelte';
 import { createThreadPane } from './thread.svelte';
 import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import type { DiffReviewComment, PRDetail, ReviewThread, Thread } from '../types/models';
+import type { DiffReviewComment, PRDetail, PRReviewSubmitOutcome, ReviewThread, Thread } from '../types/models';
 import type { GitStatus, WorkspaceRef } from '../types/git';
 import { diffSourceKey } from '../utils/diffSourceKey';
 import { PATCH_PARSE_CACHE_MAX_ENTRY_CHARS, type PatchDisplayRow, type PatchLine } from '../utils/patchFiles';
 import { displayRowCount, FILE_START, materializeRows } from '../utils/patchRows';
-import { parseReviewFiles, type ReviewFile } from '../utils/patchStore';
-import { buildReviewRows } from '../utils/reviewRows';
+import { keptText, parseReviewFiles, type ReviewFile } from '../utils/patchStore';
+import { buildReviewRows, REVIEW_COMMIT_CARD_ROW_KEY } from '../utils/reviewRows';
+import { RANGE_LINE_NOT_IN_PR } from './reviewRangeComments';
 import {
   getSpansForReviewLine,
   resetDiffSpanCacheForTest,
   type PaintedSpans,
 } from '../utils/diffSpanCache.svelte';
 import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
+import { commitList } from '../../test/helpers/commitList';
 import { REVIEW_DIFF_READ_BYTES } from './reviewDiffStream';
 import { patchTextHeldBytes, setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
 import { PatchTextLost } from '../utils/patchStore';
@@ -55,6 +66,11 @@ function rowsOf(file: ReviewFile): PatchDisplayRow[] {
 
 function linesOf(file: ReviewFile | undefined): PatchLine[] | undefined {
   return file?.body.toPatchLines();
+}
+
+// The attempt id a SubmitPRReview call carried.
+function attemptOf(submit: { mock: { calls: unknown[][] } }, call: number): string | undefined {
+  return (submit.mock.calls[call]?.[1] as { attemptId?: string } | undefined)?.attemptId;
 }
 
 function patchFor(path: string, lines: number): string {
@@ -154,9 +170,9 @@ function installDefaultMocks(): void {
   setBindingMock('UpdateThreadBranch', async () => []);
   setReviewDiffMock('OpenWorkspaceDiff', async () => '');
   setReviewDiffMock('OpenBranchBaseDiff', async () => '');
-  setBindingMock('ListBranchCommits', async () => []);
+  setBindingMock('ListBranchCommits', async () => commitList([]));
   setReviewDiffMock('OpenCommitDiff', async () => '');
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setReviewDiffMock('OpenPRCommitDiff', async () => '');
   setBindingMock('GitListBranches', async () => [{ name: 'develop', isCurrent: false, isDefault: true }]);
   setBindingMock('ListDiffReviewComments', async () => []);
@@ -202,18 +218,22 @@ describe('reviewPane store', () => {
       line: 7,
       side: 'right',
     });
-    expect(reviewLineCommentForDraft(draft({ side: 'old', oldLine: 5, newLine: undefined }))).toEqual({
+    expect(reviewLineCommentForDraft(draft({ side: 'old', oldLine: 5, newLine: 0 }))).toEqual({
       path: 'src/app.ts',
       body: 'comment',
       line: 5,
       side: 'left',
     });
-    expect(reviewLineCommentForDraft(draft({ side: 'context', oldLine: 3, newLine: 3 }))).toEqual({
-      path: 'src/app.ts',
-      body: 'comment',
-      line: 3,
-      side: 'right',
-    });
+    // An unchanged line, from the unified row or either half: both numbers.
+    for (const side of ['context', 'old', 'new'] as const) {
+      expect(reviewLineCommentForDraft(draft({ side, oldLine: 3, newLine: 4 }))).toEqual({
+        path: 'src/app.ts',
+        body: 'comment',
+        line: 4,
+        oldLine: 3,
+        side: 'right',
+      });
+    }
     expect(reviewLineCommentForDraft(draft({ side: 'file', oldLine: undefined, newLine: undefined }))).toEqual({
       path: 'src/app.ts',
       body: 'comment',
@@ -260,7 +280,7 @@ describe('reviewPane store', () => {
     await refresh;
 
     setReviewDiffMock('OpenBranchBaseDiff', async () => patch);
-    setBindingMock('ListBranchCommits', async () => [{ sha: 'commit-a', subject: 'change' }]);
+    setBindingMock('ListBranchCommits', async () => commitList([{ sha: 'commit-a', subject: 'change' }]));
     await state.setScope('branch', { baseBranch: 'main' });
     setReviewDiffMock('OpenCommitDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
     const selecting = state.selectCommit('commit-a');
@@ -275,10 +295,10 @@ describe('reviewPane store', () => {
   it('loads the binding for each scope', async () => {
     const workspace = setReviewDiffMock('OpenWorkspaceDiff', async () => patchFor('workspace.go', 1));
     const branch = setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
-    setBindingMock('ListBranchCommits', async () => [
+    setBindingMock('ListBranchCommits', async () => commitList([
       { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
       { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'second', author: 'r', authoredAt: 2 },
-    ]);
+    ]));
     setBindingMock('GitListBranches', async () => [
       { name: 'develop', isCurrent: false, isDefault: true },
     ]);
@@ -329,9 +349,9 @@ describe('reviewPane store', () => {
   it('selects a single commit in branch scope and keys comments by its SHA', async () => {
     const sha = 'a'.repeat(40);
     setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
-    setBindingMock('ListBranchCommits', async () => [
+    setBindingMock('ListBranchCommits', async () => commitList([
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     const commitDiff = setReviewDiffMock('OpenCommitDiff', async () => patchFor('commit.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
@@ -354,9 +374,9 @@ describe('reviewPane store', () => {
   it('drops a selected commit that left the range and reloads the full diff', async () => {
     const sha = 'a'.repeat(40);
     setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
-    setBindingMock('ListBranchCommits', async () => [
+    setBindingMock('ListBranchCommits', async () => commitList([
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenCommitDiff', async () => patchFor('commit.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
@@ -366,7 +386,7 @@ describe('reviewPane store', () => {
     expect(state.files.map((f) => f.path)).toEqual(['commit.go']);
 
     // Rebase: the SHA is gone from base..HEAD.
-    setBindingMock('ListBranchCommits', async () => []);
+    setBindingMock('ListBranchCommits', async () => commitList([]));
     await state.reload();
     expect(state.selectedCommitSHA).toBeNull();
     expect(state.files.map((f) => f.path)).toEqual(['branch.go']);
@@ -375,9 +395,9 @@ describe('reviewPane store', () => {
   it('resets the selected commit when the scope changes', async () => {
     const sha = 'a'.repeat(40);
     setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
-    setBindingMock('ListBranchCommits', async () => [
+    setBindingMock('ListBranchCommits', async () => commitList([
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenCommitDiff', async () => patchFor('commit.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
@@ -403,6 +423,8 @@ describe('reviewPane store', () => {
     await waitLoaded(state!);
     expect(state!.scope).toBe('branch');
     expect(state!.pendingJumpFilePath).toBe('src/app.ts');
+    // A jump to a file shows it even when the file filter hides it.
+    expect([...state!.revealedPaths]).toEqual(['src/app.ts']);
 
     const same = reviewStateForPane('pane-1', subjectFor());
     expect(same.pendingJumpFilePath).toBe('src/app.ts');
@@ -414,7 +436,8 @@ describe('reviewPane store', () => {
     const patch = [
       patchFor('src/small.ts', 2),
       patchFor('pnpm-lock.yaml', 2),
-      patchFor('src/large.ts', 401),
+      patchFor('src/limit.ts', COLLAPSE_ROW_LIMIT),
+      patchFor('src/large.ts', COLLAPSE_ROW_LIMIT + 1),
     ].join('\n');
     setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
 
@@ -423,6 +446,7 @@ describe('reviewPane store', () => {
 
     expect(state.collapsedPaths.has('src/small.ts')).toBe(false);
     expect(state.collapsedPaths.has('pnpm-lock.yaml')).toBe(true);
+    expect(state.collapsedPaths.has('src/limit.ts')).toBe(false);
     expect(state.collapsedPaths.has('src/large.ts')).toBe(true);
   });
 
@@ -439,6 +463,7 @@ describe('reviewPane store', () => {
     expect(state.collapsedPaths.has('pnpm-lock.yaml')).toBe(false);
     expect(state.expandedPRThreadIds.has('thread-9')).toBe(true);
     expect(state.pendingJumpRowKey).toBe('pt:thread-9');
+    expect([...state.revealedPaths]).toEqual(['pnpm-lock.yaml']);
 
     state.consumePendingJumpRowKey();
     expect(state.pendingJumpRowKey).toBeNull();
@@ -446,6 +471,28 @@ describe('reviewPane store', () => {
     // A PR-level conversation thread has no row to jump to.
     state.jumpToDiffThread({ ...reviewThreadStub('thread-10'), path: '' });
     expect(state.pendingJumpRowKey).toBeNull();
+    expect([...state.revealedPaths]).toEqual(['pnpm-lock.yaml']);
+
+    // A filter change ends the reveals.
+    state.clearRevealedPaths();
+    expect(state.revealedPaths.size).toBe(0);
+  });
+
+  it('a different diff ends the reveals; a refresh of the same diff keeps them', async () => {
+    const patch = [patchFor('src/small.ts', 2), patchFor('src/small.test.ts', 2)].join('\n');
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patch);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+
+    state.jumpToDiffThread({ ...reviewThreadStub('thread-9'), path: 'src/small.test.ts' });
+    await state.reload();
+    await waitLoaded(state);
+    expect([...state.revealedPaths]).toEqual(['src/small.test.ts']);
+
+    await state.setScope('branch');
+    await waitLoaded(state);
+    expect(state.revealedPaths.size).toBe(0);
   });
 
   it('toggleCollapseAll flips every file and allCollapsed tracks the set', async () => {
@@ -529,72 +576,6 @@ describe('reviewPane store', () => {
     expect(state.comments.map((comment) => comment.id)).toEqual(['comment-1']);
   });
 
-  it('createComment success closes the draft editor', async () => {
-    const patch = patchFor('src/app.ts', 1);
-    const sourceKey = diffSourceKey(patch);
-    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
-    setBindingMock('CreateDiffReviewComment', async () => draft({ sourceKey, body: 'Looks good.' }));
-    setBindingMock('ListDiffReviewComments', async () => [draft({ sourceKey, body: 'Looks good.' })]);
-
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
-    state.openDraftEditor(anchor);
-    expect(state.openEditors).toHaveLength(1);
-
-    await state.createComment(anchor, 'Looks good.');
-
-    expect(state.openEditors).toHaveLength(0);
-    expect(state.drafts.map((comment) => comment.body)).toEqual(['Looks good.']);
-  });
-
-  it('createComment failure keeps the editor open and sets error', async () => {
-    const patch = patchFor('src/app.ts', 1);
-    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
-    setBindingMock('CreateDiffReviewComment', async () => {
-      throw new Error('create failed');
-    });
-
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
-    state.openDraftEditor(anchor);
-
-    await expect(state.createComment(anchor, 'Body')).rejects.toThrow('create failed');
-
-    expect(state.openEditors).toHaveLength(1);
-    expect(state.error).toBe('create failed');
-  });
-
-  it('keeps draft-editor text in the store and focuses exactly once per open', async () => {
-    const patch = patchFor('src/app.ts', 1);
-    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
-
-    state.openDraftEditor(anchor);
-    state.setDraftBody(anchor, 'half-typed comment');
-    // The row component reads back through the store, so a virtualizer
-    // unmount/remount cycle (which drops all row-local state) keeps the
-    // user's text.
-    expect(state.draftBodyFor(anchor)).toBe('half-typed comment');
-
-    // Focus is consumed by the first mount only; a remount at the render
-    // buffer's edge must not steal focus.
-    expect(state.consumeDraftEditorFocus(anchor)).toBe(true);
-    expect(state.consumeDraftEditorFocus(anchor)).toBe(false);
-
-    state.closeDraftEditor(anchor);
-    state.openDraftEditor(anchor);
-    expect(state.draftBodyFor(anchor)).toBe('');
-    expect(state.consumeDraftEditorFocus(anchor)).toBe(true);
-
-    state.setDraftBody(anchor, 'stale text');
-    await state.setScope('branch');
-    expect(state.draftBodyFor(anchor)).toBe('');
-  });
-
   it('sendComments no-ops while a turn is active', async () => {
     const patch = patchFor('src/app.ts', 1);
     const sourceKey = diffSourceKey(patch);
@@ -648,6 +629,8 @@ function prDetailStub(overrides: Partial<PRDetail> = {}): PRDetail {
     latestReviews: [],
     checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
     mergeability: 'clean',
+    readiness: { state: 'ready', blockers: [], settled: [] },
+    merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     ...overrides,
   };
 }
@@ -745,6 +728,7 @@ describe('reviewPane store — PR scope', () => {
       expect.objectContaining({ Number: 5 }),
       { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-a' },
       false,
+      false,
     );
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
     expect(state.prDetail?.number).toBe(5);
@@ -759,23 +743,23 @@ describe('reviewPane store — PR scope', () => {
   it('selects a single PR commit and keys comments by its SHA', async () => {
     const sha = 'b'.repeat(40);
     installPRMocks();
-    const list = setBindingMock('ListPRCommits', async () => [
+    const list = setBindingMock('ListPRCommits', async () => commitList([
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     const commitDiff = setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
 
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     const revision = { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-a' };
-    expect(list).toHaveBeenCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision);
+    expect(list).toHaveBeenCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision, false);
     expect(state.commits.map((commit) => commit.sha)).toEqual([sha]);
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
 
     await state.selectCommit(sha);
     expect(state.selectedCommitSHA).toBe(sha);
     expect(state.sourceKey).toBe(`commit:${sha}`);
-    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision, sha, false);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision, sha, sha, false, false);
 
     // Back to the whole PR.
     await state.selectCommit(null);
@@ -786,9 +770,9 @@ describe('reviewPane store — PR scope', () => {
   it('commit selection reuses the live subscription and commit list (fast path)', async () => {
     const sha = 'b'.repeat(40);
     const { subscribe, unsubscribe } = installPRMocks();
-    const list = setBindingMock('ListPRCommits', async () => [
+    const list = setBindingMock('ListPRCommits', async () => commitList([
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
 
     const state = reviewStateForPane('pane-1', prSubject());
@@ -809,9 +793,9 @@ describe('reviewPane store — PR scope', () => {
   it('single-commit view forces the agent target and blocks PR submission', async () => {
     const sha = 'b'.repeat(40);
     installPRMocks();
-    setBindingMock('ListPRCommits', async () => [
+    setBindingMock('ListPRCommits', async () => commitList([
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
     const submit = setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
 
@@ -836,9 +820,9 @@ describe('reviewPane store — PR scope', () => {
   it('drops a selected PR commit that left the range (force-push) and reloads the full diff', async () => {
     const sha = 'b'.repeat(40);
     installPRMocks();
-    setBindingMock('ListPRCommits', async () => [
+    setBindingMock('ListPRCommits', async () => commitList([
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
     const fullDiff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
 
@@ -848,7 +832,7 @@ describe('reviewPane store — PR scope', () => {
     await state.selectCommit(sha);
     expect(state.selectedCommitSHA).toBe(sha);
 
-    setBindingMock('ListPRCommits', async () => []);
+    setBindingMock('ListPRCommits', async () => commitList([]));
     await state.reload();
     expect(state.selectedCommitSHA).toBeNull();
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
@@ -1034,6 +1018,7 @@ describe('reviewPane store — PR scope', () => {
       expect.objectContaining({ Number: 5 }),
       { baseRef: 'main', baseSHA: 'base-main-2', headSHA: 'sha-a' },
       false,
+      false,
     );
   });
 
@@ -1211,11 +1196,152 @@ describe('reviewPane store — PR scope', () => {
     // apply here — no banner, and no head quoted from another pull request.
     expect(state.prStale).toBe(false);
     expect(state.prHeadSHA).toBe('');
+    // Nor does any merge action run on #7 while its diff is not on screen:
+    // the controls are withheld, and the live head is never pinned in the
+    // loaded one's place.
+    expect(state.mergeWithheldReason).toBe('The diff is still loading.');
+    const approve = setBindingMock('ApprovePR', async () => ({ seq: 2 }));
+    await state.approvePR();
+    expect(approve).not.toHaveBeenCalled();
 
     releaseDiff(patchFor('src/app.ts', 3));
     await reloading;
     expect(state.prHeadSHA).toBe('sha-z');
     expect(state.prStale).toBe(false);
+    expect(state.mergeWithheldReason).toBeNull();
+  });
+
+  it('withholds the merge actions after the PR diff failed to load', async () => {
+    installPRMocks();
+    setReviewDiffMock('OpenPRDiff', async () => {
+      throw new Error('fetch pull request diff: HTTP 502');
+    });
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await vi.waitFor(() => {
+      expect(state.error).toContain('HTTP 502');
+    });
+    expect(state.prDetail?.number).toBe(5);
+    expect(state.mergeWithheldReason).toBe('The diff has not loaded for this pull request. Reload it to act on it.');
+    const approve = setBindingMock('ApprovePR', async () => ({ seq: 2 }));
+    await state.approvePR();
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it('refuses a second merge action until the pump\'s answer to the first is on screen', async () => {
+    installPRMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    const approve = setBindingMock('ApprovePR', async () => ({ seq: 2 }));
+    const unapprove = setBindingMock('UnapprovePR', async () => ({ seq: 3 }));
+    await state.approvePR();
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(state.mergeAction).toBe('approve');
+    // Still pending: the call answered, the frame it named has not landed.
+    await state.approvePR();
+    await state.unapprovePR();
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(unapprove).not.toHaveBeenCalled();
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub(), threads: [], headSHA: 'sha-a', seq: 2 });
+    expect(state.mergeAction).toBeNull();
+  });
+
+  it('keeps the merged PR across the checkout move the worktree cleanup makes and a thread switch, until the companion closes', async () => {
+    installPRMocks();
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 400 }]);
+    const state = reviewStateForPane('pane-1', prSubject());
+    const companion = openCompanion('pane-1', 'review');
+    expect(companion).not.toBeNull();
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(state.prRef?.number).toBe(5);
+    // The PR merged: git status stops listing it, the pane holds it.
+    seedPaneWorkspaceStatus('pane-1', { forge: 'github' });
+    await tick();
+    expect(state.prRef?.number).toBe(5);
+    // The cleanup moves the thread to Base: the companion subject changes
+    // (its checkout is part of it) and CompanionPane remounts the body,
+    // destroying the old ReviewPane (which disposes its state) before the
+    // new one creates its own. The companion stays open throughout, so the
+    // held PR carries across and the merged snapshot stays on screen.
+    disposeReviewStateForPane('pane-1', state);
+    const base: WorkspaceRef = { projectId: REVIEW_WS.projectId, workspacePath: '/tmp/base' };
+    const thread = { id: 'thread-1', projectId: REVIEW_WS.projectId } as Thread;
+    const baseSubject: ReviewSubject = {
+      identity: companionSubjectKey({ thread, workspace: base }),
+      threadId: 'thread-1',
+      rowId: 'thread-1',
+      workspace: base,
+    };
+    const moved = reviewStateForPane('pane-1', baseSubject);
+    expect(moved.scope).toBe('pr');
+    expect(moved.prRef?.number).toBe(5);
+    await waitLoaded(moved);
+    // A thread switch hides the companion (the stash reopens it with the
+    // thread) and destroys its ReviewPane: the held PR stays with the
+    // thread.
+    hideCompanion(companion!.paneId);
+    disposeReviewStateForPane('pane-1', moved);
+    const reopened = openCompanion('pane-1', 'review');
+    const back = reviewStateForPane('pane-1', baseSubject);
+    expect(back.prRef?.number).toBe(5);
+    await waitLoaded(back);
+    // Hidden again, then the thread is deleted: nothing is left to close,
+    // and nothing is held for a thread that is gone.
+    hideCompanion(reopened!.paneId);
+    disposeReviewStateForPane('pane-1', back);
+    removeThread('thread-1');
+    const gone = reviewStateForPane('pane-1', baseSubject);
+    expect(gone.prRef).toBeNull();
+    disposeReviewStateForPane('pane-1', gone);
+    // Closing the companion is the end of it too: the next state starts clean.
+    const again = openCompanion('pane-1', 'review');
+    seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/5', openPrNumber: 5 });
+    const held = reviewStateForPane('pane-1', baseSubject);
+    await waitLoaded(held);
+    expect(held.prRef?.number).toBe(5);
+    seedPaneWorkspaceStatus('pane-1', { forge: 'github' });
+    await tick();
+    expect(held.prRef?.number).toBe(5);
+    closeCompanion(again!.paneId);
+    disposeReviewStateForPane('pane-1', held);
+    const fresh = reviewStateForPane('pane-1', baseSubject);
+    expect(fresh.prRef).toBeNull();
+    disposeReviewStateForPane('pane-1', fresh);
+  });
+
+  it('waits for the pump\'s answer through a re-subscribe to the same backend and gives it up on a restart', async () => {
+    const hello = (launchId: string): TransportHello => ({ launchId, protocolVersion: 1, capabilities: [], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    __setTransportHelloForTest(hello('launch-1'));
+    const { subscribe } = installPRMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    setBindingMock('ApprovePR', async () => ({ seq: 100 }));
+    await state.approvePR();
+    expect(state.mergeAction).toBe('approve');
+    // Gap recovery re-subscribes to the same backend process: its pump's
+    // seqs are the ones the answer named, so the wait goes on.
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    await vi.waitFor(() => {
+      expect(subscribe).toHaveBeenCalledTimes(2);
+    });
+    await tick();
+    expect(state.mergeAction).toBe('approve');
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub(), threads: [], headSHA: 'sha-a', seq: 100 });
+    expect(state.mergeAction).toBeNull();
+
+    // A second action; this time the backend restarts: a new launch, whose
+    // pump numbers from one, and whose snapshot is the forge's answer.
+    setBindingMock('ApprovePR', async () => ({ seq: 200 }));
+    await state.approvePR();
+    expect(state.mergeAction).toBe('approve');
+    __setTransportHelloForTest(hello('launch-2'));
+    await tick();
+    expect(state.mergeAction).toBeNull();
   });
 
   it('a pr:updated error surfaces as pane state and clears on the next good snapshot', async () => {
@@ -1447,7 +1573,14 @@ describe('reviewPane store — PR scope', () => {
     await state.openConflictView();
     expect(linesOf(state.conflictFiles[0])?.[0]?.fold).toEqual({ id: 0, lines: 7 });
 
+    // Find reads the folds the view built, not a rebuild per call.
+    const folds = state.conflictFoldLines('main.go');
+    expect(folds).toBe(state.conflictFoldLines('main.go'));
+    expect([...folds!]).toEqual([[0, ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7']]]);
+    expect(state.conflictFoldLines('other.go')).toBeNull();
+
     state.expandConflictFold('main.go', 0);
+    expect(state.conflictFoldLines('main.go')!.size).toBe(0);
     const expanded = state.conflictFiles[0];
     expect(linesOf(expanded)?.some((line) => line.fold)).toBe(false);
     expect(linesOf(expanded)?.[1]?.content).toBe(' c1');
@@ -1576,7 +1709,7 @@ describe('reviewPane store — PR scope', () => {
     const window = await state.readCILogLines(1, 2);
     expect(window.lines).toEqual(['line 2', 'line 3']);
     expect(reads).toHaveBeenLastCalledWith(
-      { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 }, '20', 1, 2);
+      { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo' }, '20', 1, 2);
 
     state.closeCILogView();
     await flushPane();
@@ -1683,6 +1816,26 @@ describe('reviewPane store — PR scope', () => {
     }
   });
 
+  it('drops a CI action it started when the pane is disposed', async () => {
+    installCIMocks();
+    setBindingMock('RunPRCIAction', async () => ({ seq: 40 }));
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    // A second pane on the same PR keeps its CI entry, so only the
+    // disposal can drop the action.
+    const other = attachPR(` ${PR_KEY}`, { ref: { forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 } });
+    try {
+      expect(await state.ciActions.run('cancel_pipeline', null)).toBe(true);
+      expect(peekCIAction(` ${PR_KEY}`)?.kind).toBe('cancel_pipeline');
+      disposeReviewStateForPane('pane-1', state);
+      await flushPane();
+      expect(peekCIAction(` ${PR_KEY}`)).toBeNull();
+    } finally {
+      other.release();
+    }
+  });
+
   it('a PR switch closes the old PR\'s job log and clears its follow', async () => {
     seedPaneWorkspaceStatus('pane-1', {
       forge: 'github',
@@ -1778,7 +1931,7 @@ describe('reviewPane store — PR scope', () => {
       await sending;
 
       expect(save).toHaveBeenCalledWith(
-        { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
+        { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo' },
         '20',
         'unit',
       );
@@ -1863,7 +2016,7 @@ describe('reviewPane store — PR scope', () => {
       await state.sendCILogSectionToChat(big);
       expect(reads).not.toHaveBeenCalled();
       expect(save).toHaveBeenCalledWith(
-        { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
+        { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo' },
         '20',
         'unit',
         'section:step_script:1',
@@ -2088,90 +2241,444 @@ describe('reviewPane store — PR scope', () => {
     expect(state.error).toBeNull();
   });
 
-  it('submit success marks drafts sent against the head SHA and clears the summary', async () => {
-    installPRMocks();
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', prSubject());
-    await waitLoaded(state);
-    await state.setScope('pr');
-    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
-      draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' }),
-    ]);
-    state.setSummaryBody('overall note');
-
-    await state.submitPRReview();
-
-    expect(markSent).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
-    expect(state.summaryBody).toBe('');
-    expect(state.submitError).toBeNull();
-  });
-
-  it('partial submit keeps unposted file-level drafts and marks line drafts sent', async () => {
-    installPRMocks();
-    setBindingMock('SubmitPRReview', async () => ({
-      postedReview: true,
-      postedFileComments: 0,
-      partialFailurePath: 'src/app.ts',
-      partialFailure: 'boom',
-    }));
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', prSubject());
-    await waitLoaded(state);
-    await state.setScope('pr');
-    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
-      // Same file: the line draft rode the batched review and posted; only
-      // the file-level draft (standalone follow-up call) failed.
-      draft({ id: 'd-file', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'file', newLine: undefined }),
-      draft({ id: 'd-line', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', newLine: 1, side: 'new' }),
-    ]);
-
-    await state.submitPRReview();
-
-    expect(markSent).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-line'], 'pr:sha-a');
-    expect(state.submitError).toContain('src/app.ts');
-  });
-
-  it('a pathless partial failure (approve failed after publish) marks all drafts sent and keeps the error', async () => {
-    installPRMocks();
-    setBindingMock('SubmitPRReview', async () => ({
-      postedReview: true,
-      postedFileComments: 0,
-      partialFailure: 'glab api approve merge request failed',
-    }));
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', prSubject());
-    await waitLoaded(state);
-    await state.setScope('pr');
-    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
-      draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' }),
-    ]);
-    state.setSummaryBody('overall note');
-
-    await state.submitPRReview();
-
-    expect(markSent).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
-    expect(state.submitError).toContain('approve');
-    expect(state.summaryBody).toBe('overall note');
-  });
-
-  it('a thrown submit keeps every draft and surfaces the error', async () => {
-    installPRMocks();
-    setBindingMock('SubmitPRReview', async () => {
-      throw new Error('gh api submit review failed');
+  // The thread's pr-scope drafts as the backend holds them: listed, marked
+  // by the two-call flow's MarkDiffReviewCommentsSent, and by a draft
+  // submit that posted them (`posts`: whether the forge takes the review).
+  function threadDraftsBackend(rows: DiffReviewComment[]) {
+    const list = setBindingMock('ListDiffReviewComments', async (_thread: string, scope: string, sourceKey: string) =>
+      rows.filter((row) => row.scope === scope && row.sourceKey === sourceKey).map((row) => ({ ...row })));
+    const mark = setBindingMock('MarkDiffReviewCommentsSent', async (_thread: string, _scope: string, _source: string, ids: string[]) => {
+      for (const row of rows) if (ids.includes(row.id)) row.status = 'sent';
     });
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
+    return { list, mark };
+  }
+
+  function draftSubmitHello(capabilities: string[], launchId = 'l'): void {
+    __setTransportHelloForTest({ launchId, protocolVersion: 1, capabilities, backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+  }
+
+  async function prScopeWith(rows: DiffReviewComment[]): Promise<ReturnType<typeof reviewStateForPane>> {
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
-    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
-      draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' }),
-    ]);
+    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, rows.map((row) => ({ ...row })));
+    return state;
+  }
 
-    await expect(state.submitPRReview()).rejects.toThrow('gh api submit review failed');
+  describe('a backend without the draft submit (two calls)', () => {
+    beforeEach(() => draftSubmitHello([]));
+    afterEach(() => __setTransportHelloForTest(null));
 
-    expect(markSent).not.toHaveBeenCalled();
-    expect(state.submitError).toContain('gh api submit review failed');
-    expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+    it('posts the comments, marks the drafts sent against the head SHA and clears the summary', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { mark } = threadDraftsBackend(rows);
+      const submit = getBindingMock('SubmitPRReview')!;
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await state.submitPRReview();
+
+      expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall note', comments: [{ path: 'src/app.ts', body: 'comment', line: 1, side: 'right' }] });
+      expect(mark).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
+      expect(state.summaryBody).toBe('');
+      expect(state.submitError).toBeNull();
+      expect(state.drafts).toEqual([]);
+    });
+
+    it('sends no attempt id and, after a lost answer, asks nothing and says the review may be on the PR', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      threadDraftsBackend(rows);
+      const submit = setBindingMock('SubmitPRReview', async () => {
+        throw new DisconnectedError('socket closed');
+      });
+      const ask = setBindingMock('GetPRReviewSubmitOutcome', async () => ({ state: 'unknown' }));
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(submit.mock.calls[0]?.[1]).not.toHaveProperty('attemptId');
+      expect(submit.mock.calls[0]?.[1]).not.toHaveProperty('drafts');
+      expect(ask).not.toHaveBeenCalled();
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.submitError).toContain('may already be on the PR');
+    });
+
+    it('a partial submit marks the drafts that posted and keeps the unposted file draft', async () => {
+      installPRMocks();
+      setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0, partialFailurePath: 'src/app.ts', partialFailure: 'boom' }));
+      const rows = [
+        // Same file: the line draft rode the batched review and posted; only
+        // the file-level draft (standalone follow-up call) failed.
+        draft({ id: 'd-file', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'file', newLine: undefined }),
+        draft({ id: 'd-line', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', newLine: 1, side: 'new' }),
+      ];
+      const { mark } = threadDraftsBackend(rows);
+      const state = await prScopeWith(rows);
+
+      await state.submitPRReview();
+
+      expect(mark).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-line'], 'pr:sha-a');
+      expect(state.submitError).toContain('src/app.ts');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-file']);
+    });
+
+    it('a pathless partial failure (approve failed after publish) marks all drafts sent and keeps the error', async () => {
+      installPRMocks();
+      setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0, partialFailure: 'glab api approve merge request failed' }));
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { mark } = threadDraftsBackend(rows);
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await state.submitPRReview();
+
+      expect(mark).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
+      expect(state.submitError).toContain('approve');
+      expect(state.summaryBody).toBe('overall note');
+    });
+
+    it('a mark that fails after the review posted ends as posted and says the drafts must not go again', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { mark } = threadDraftsBackend(rows);
+      mark.mockImplementation(async () => {
+        throw new DisconnectedError('socket closed');
+      });
+      const submit = getBindingMock('SubmitPRReview')!;
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+      state.setVerdict('request-changes');
+
+      await state.submitPRReview();
+
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(state.summaryBody).toBe('');
+      expect(state.verdict).toBe('comment');
+      expect(state.submitError).toContain('The review posted');
+      expect(state.submitError).toContain('not marked sent');
+      expect(state.submitError).not.toContain('may already be on the PR');
+    });
+
+    it('a thrown submit keeps every draft and surfaces the error', async () => {
+      installPRMocks();
+      setBindingMock('SubmitPRReview', async () => {
+        throw new Error('gh api submit review failed');
+      });
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { mark } = threadDraftsBackend(rows);
+      const state = await prScopeWith(rows);
+
+      await expect(state.submitPRReview()).rejects.toThrow('gh api submit review failed');
+
+      expect(mark).not.toHaveBeenCalled();
+      expect(state.submitError).toContain('gh api submit review failed');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+    });
+  });
+
+  describe('a backend with the draft submit (pr-review-drafts.v1)', () => {
+    beforeEach(() => draftSubmitHello(['pr-review-drafts.v1']));
+    afterEach(() => __setTransportHelloForTest(null));
+
+    const NOT_DRAFTS = 'Some of these comments were already sent, so this review and its summary were not posted.';
+    const UNMARKED = 'These comments were posted by an earlier review and are being marked sent, so this review was not posted.';
+    const MAY_BE_ON_PR = 'The connection dropped before the forge answered, so the review may already be on the PR. Check the PR before you submit again.';
+    const NEVER_ARRIVED = 'The connection dropped before the review reached the computer, so nothing was posted.';
+    const UNCONFIRMED = 'The forge did not confirm the review, so it may already be on the PR. Check the PR before you submit again.';
+    const FORGOTTEN = 'The computer no longer has this review\'s outcome, so it may already be on the PR. Check the PR before you submit again.';
+
+    function row(id = 'd-1'): DiffReviewComment {
+      return draft({ id, scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' });
+    }
+
+    // The backend's draft submit over `rows`, recording each attempt's
+    // outcome as the backend does. It refuses drafts that are not drafts
+    // (or, with `unmarked`, drafts an earlier review posted); otherwise it
+    // posts and marks them. `lose` drops the answer after the backend
+    // handled the call, `never` before it arrived; `restart` also gives
+    // the reconnect a new launch.
+    // `unconfirmed` answers as a forge that did not confirm the review.
+    function draftBackend(rows: DiffReviewComment[], opts: { lose?: 'after' | 'never'; restart?: boolean; unmarked?: boolean; unconfirmed?: boolean } = {}) {
+      const outcomes = new Map<string, PRReviewSubmitOutcome>();
+      let lose = opts.lose;
+      const submit = setBindingMock('SubmitPRReview', async (_wire: unknown, review: { body: string; drafts?: { ids: string[] }; attemptId?: string }) => {
+        const losing = lose;
+        lose = undefined;
+        if (opts.restart) draftSubmitHello(['pr-review-drafts.v1'], 'launch-2');
+        if (losing === 'never') throw new DisconnectedError('socket closed');
+        const ids = review.drafts?.ids ?? [];
+        let outcome: PRReviewSubmitOutcome;
+        if (opts.unconfirmed) {
+          outcome = { state: 'unconfirmed', result: { postedReview: false, postedFileComments: 0, unconfirmed: true } };
+        } else if (opts.unmarked && ids.length > 0) {
+          outcome = { state: 'failed', code: 'review_drafts_unmarked', message: 'These comments were posted by an earlier review and are being marked sent, so this review was not posted.' };
+        } else if (ids.some((id) => rows.find((candidate) => candidate.id === id)?.status !== 'draft')) {
+          outcome = { state: 'failed', code: 'review_drafts_not_drafts', message: 'Some of these comments were already sent or removed, so this review was not posted.' };
+        } else {
+          for (const candidate of rows) if (ids.includes(candidate.id)) candidate.status = 'sent';
+          outcome = { state: 'posted', result: { postedReview: true, postedFileComments: 0, sentDraftIds: ids, posted: true } };
+        }
+        if (review.attemptId && !opts.restart) outcomes.set(review.attemptId, outcome);
+        if (losing === 'after') throw new DisconnectedError('socket closed');
+        if (outcome.state === 'failed') throw new TransportError(outcome.code!, outcome.message!);
+        return outcome.result;
+      });
+      const ask = setBindingMock('GetPRReviewSubmitOutcome', async (_wire: unknown, id: string) => outcomes.get(id) ?? { state: 'unknown' });
+      return { submit, ask, loseNext: (how: 'after' | 'never') => { lose = how; } };
+    }
+
+    it('names the drafts and a fresh attempt in one call, and marks nothing itself', async () => {
+      installPRMocks();
+      const rows = [row()];
+      const { mark } = threadDraftsBackend(rows);
+      const { submit } = draftBackend(rows);
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await state.submitPRReview();
+
+      expect(submit.mock.calls[0]?.[1]).toEqual({
+        verdict: 'comment', body: 'overall note', comments: [],
+        drafts: { threadId: 'thread-1', ids: ['d-1'], headSha: 'sha-a' },
+        attemptId: expect.any(String),
+      });
+      expect(mark).not.toHaveBeenCalled();
+      expect(state.summaryBody).toBe('');
+      expect(state.submitError).toBeNull();
+      expect(state.drafts).toEqual([]);
+      state.setSummaryBody('another note');
+      await state.submitPRReview();
+      expect(attemptOf(submit, 1)).not.toBe(attemptOf(submit, 0));
+    });
+
+    for (const withDraft of [true, false]) {
+      it(`a lost answer after the review posted asks the backend and ends as posted (${withDraft ? 'with a draft' : 'summary only'})`, async () => {
+        installPRMocks();
+        const rows = withDraft ? [row()] : [];
+        threadDraftsBackend(rows);
+        const { submit, ask } = draftBackend(rows, { lose: 'after' });
+        const state = await prScopeWith(rows);
+        state.setSummaryBody('overall note');
+
+        await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+        expect(ask).toHaveBeenCalledWith(expect.anything(), attemptOf(submit, 0));
+        expect(state.summaryBody).toBe('');
+        expect(state.submitError).toBeNull();
+        expect(state.drafts).toEqual([]);
+        expect(submit).toHaveBeenCalledTimes(1);
+      });
+    }
+
+    it('a lost request that never reached the backend posted nothing, keeps everything, and goes once on the next Send', async () => {
+      installPRMocks();
+      const rows = [row()];
+      threadDraftsBackend(rows);
+      const { submit } = draftBackend(rows, { lose: 'never' });
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+      state.setVerdict('request-changes');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.verdict).toBe('request-changes');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+      expect(state.submitError).toBe(NEVER_ARRIVED);
+      await state.submitPRReview();
+      expect(submit).toHaveBeenCalledTimes(2);
+      expect(attemptOf(submit, 1)).not.toBe(attemptOf(submit, 0));
+      expect(state.summaryBody).toBe('');
+      expect(state.drafts).toEqual([]);
+    });
+
+    it('a lost answer from a backend that restarted keeps the summary, says the review may be on the PR, and posts nothing by itself', async () => {
+      installPRMocks();
+      const rows = [row()];
+      threadDraftsBackend(rows);
+      const { submit } = draftBackend(rows, { lose: 'after', restart: true });
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.submitError).toBe(MAY_BE_ON_PR);
+      expect(submit).toHaveBeenCalledTimes(1);
+    });
+
+    it('a press of Send while the outcome cannot be asked asks again and posts nothing', async () => {
+      installPRMocks();
+      const rows = [row()];
+      threadDraftsBackend(rows);
+      const { submit, ask } = draftBackend(rows, { lose: 'after' });
+      const answers = ask.getMockImplementation()!;
+      ask.mockImplementation(async () => {
+        throw new DisconnectedError('socket closed');
+      });
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.submitError).toContain('Send asks again');
+
+      ask.mockImplementation(answers);
+      await state.submitPRReview();
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(state.summaryBody).toBe('');
+      expect(state.submitError).toBeNull();
+    });
+
+    it('drafts another tab posted that are not marked yet refuse this review, and keep its summary and verdict', async () => {
+      installPRMocks();
+      const rows = [row()];
+      threadDraftsBackend(rows);
+      draftBackend(rows, { unmarked: true });
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('from tab B');
+      state.setVerdict('request-changes');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(TransportError);
+
+      expect(state.summaryBody).toBe('from tab B');
+      expect(state.verdict).toBe('request-changes');
+      expect(state.submitError).toBe(UNMARKED);
+    });
+
+    for (const sentBy of ['another tab', 'a send to an agent'] as const) {
+      it(`a refusal whose answer was lost, the drafts sent by ${sentBy}, keeps this summary and verdict`, async () => {
+        installPRMocks();
+        const rows = [row()];
+        threadDraftsBackend(rows);
+        const { submit } = draftBackend(rows, { lose: 'after' });
+        const state = await prScopeWith(rows);
+        state.setSummaryBody('from tab B');
+        state.setVerdict('request-changes');
+        // Sent before this submit reaches the backend.
+        rows[0]!.status = 'sent';
+        if (sentBy === 'a send to an agent') rows[0]!.sentTurnId = 'turn-agent';
+
+        await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+        expect(state.summaryBody).toBe('from tab B');
+        expect(state.verdict).toBe('request-changes');
+        expect(state.submitError).toBe(NOT_DRAFTS);
+        expect(state.drafts).toEqual([]);
+        // The summary and verdict go on the next Send.
+        await state.submitPRReview();
+        expect(submit.mock.calls[1]?.[1]).toMatchObject({ verdict: 'request-changes', body: 'from tab B', drafts: { ids: [] } });
+        expect(state.summaryBody).toBe('');
+      });
+    }
+
+    it('settles a lost answer against the scope it was sent from, after the pane switched scope', async () => {
+      installPRMocks();
+      const rows = [row()];
+      const { list } = threadDraftsBackend(rows);
+      setReviewDiffMock('OpenWorkspaceDiff', async () => patchFor('src/app.ts', 1));
+      let switched: Promise<void> | null = null;
+      const state = await prScopeWith(rows);
+      const { submit } = draftBackend(rows, { lose: 'after' });
+      const posting = submit.getMockImplementation()!;
+      submit.mockImplementation(async (...args: Parameters<typeof posting>) => {
+        switched = state.setScope('workspace');
+        return posting(...args);
+      });
+      state.setSummaryBody('overall note');
+      list.mockClear();
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+      await switched;
+
+      expect(state.scope).toBe('workspace');
+      expect(list).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY);
+      expect(state.summaryBody).toBe('');
+      await state.setScope('pr');
+      replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, rows.map((each) => ({ ...each })));
+      expect(state.drafts).toEqual([]);
+      expect(state.submitError).toBeNull();
+    });
+
+    for (const lost of [false, true]) {
+      it(`a review the forge did not confirm keeps everything, says it may be on the PR, and posts again only on Send (${lost ? 'answer lost' : 'answered'})`, async () => {
+        installPRMocks();
+        const rows = [row()];
+        threadDraftsBackend(rows);
+        const { submit, ask } = draftBackend(rows, { unconfirmed: true, lose: lost ? 'after' : undefined });
+        const state = await prScopeWith(rows);
+        state.setSummaryBody('overall note');
+        state.setVerdict('request-changes');
+
+        if (lost) await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+        else await state.submitPRReview();
+
+        expect(ask).toHaveBeenCalledTimes(lost ? 1 : 0);
+        expect(state.summaryBody).toBe('overall note');
+        expect(state.verdict).toBe('request-changes');
+        expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+        expect(state.submitError).toBe(UNCONFIRMED);
+        expect(submit).toHaveBeenCalledTimes(1);
+        // The attempt is closed: Send posts a new one, not a re-ask.
+        await state.submitPRReview();
+        expect(submit).toHaveBeenCalledTimes(2);
+        expect(attemptOf(submit, 1)).not.toBe(attemptOf(submit, 0));
+      });
+    }
+
+    it('a lost answer whose outcome the backend no longer keeps says the review may be on the PR', async () => {
+      installPRMocks();
+      const rows = [row()];
+      threadDraftsBackend(rows);
+      const { submit, ask } = draftBackend(rows, { lose: 'never' });
+      ask.mockImplementation(async () => ({ state: 'forgotten' }));
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+      expect(state.submitError).toBe(FORGOTTEN);
+      expect(submit).toHaveBeenCalledTimes(1);
+    });
+
+    it('a review that posted with its drafts left unmarked ends as posted and says so', async () => {
+      installPRMocks();
+      const rows = [row()];
+      threadDraftsBackend(rows);
+      setBindingMock('SubmitPRReview', async () => ({
+        postedReview: true, postedFileComments: 0, posted: true,
+        partialFailure: 'Its comments are not marked sent yet. They will not post again, and the app marks them on its next read.',
+        partialFailureKind: 'unmarked',
+      }));
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await state.submitPRReview();
+
+      expect(state.summaryBody).toBe('');
+      expect(state.submitError).toContain('not marked sent yet');
+    });
+
+    it('a draft edited while the review posted stays a draft and is named', async () => {
+      installPRMocks();
+      const rows = [row('d-1'), draft({ id: 'd-2', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 2, side: 'new' })];
+      threadDraftsBackend(rows);
+      setBindingMock('SubmitPRReview', async () => {
+        rows[0]!.status = 'sent';
+        return { postedReview: true, postedFileComments: 0, posted: true, sentDraftIds: ['d-1'], editedDraftIds: ['d-2'] };
+      });
+      const state = await prScopeWith(rows);
+
+      await state.submitPRReview();
+
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-2']);
+      expect(state.submitError).toContain('edited while it posted');
+    });
   });
 
   function setDocumentVisibility(value: DocumentVisibilityState): void {
@@ -2230,7 +2737,7 @@ function installChunkedDiff(
   name: 'OpenWorkspaceDiff' | 'OpenBranchBaseDiff' | 'OpenPRDiff' | 'OpenTurnEditsDiff',
   patch: string,
   size: number,
-  opts: { id?: string; hold?: number; headSha?: string } = {},
+  opts: { id?: string; hold?: number; headSha?: string; filesHandle?: string } = {},
 ) {
   const id = opts.id ?? 'diff-1';
   const chunkAt = (offset: number) => {
@@ -2239,7 +2746,7 @@ function installChunkedDiff(
   };
   let unblock!: () => void;
   const held = new Promise<void>((resolve) => { unblock = resolve; });
-  const open = setBindingMock(name, async () => ({ id, chunk: chunkAt(0), headSha: opts.headSha ?? '' }));
+  const open = setBindingMock(name, async () => ({ id, chunk: chunkAt(0), headSha: opts.headSha ?? '', ...(opts.filesHandle ? { filesHandle: opts.filesHandle } : {}) }));
   const read = setBindingMock('ReadReviewDiff', async (handle: string, offset: number) => {
     if (handle !== id) throw new Error('review diff: not open');
     if (offset === opts.hold) await held;
@@ -2287,6 +2794,67 @@ describe('reviewPane store — streamed diffs', () => {
     expect(state.files.map((file) => file.path)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
     expect(state.sourceKey).toBe(diffSourceKey(patch));
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads an image and a binary file\'s sizes while the rest of the diff streams', async () => {
+    const binary = (path: string) => [
+      `diff --git a/${path} b/${path}`,
+      'index 1111111..2222222 100644',
+      `Binary files a/${path} and b/${path} differ`,
+    ].join('\n');
+    const streamed = [binary('img/logo.png'), binary('blob.bin'), patchFor('src/big.ts', 400)].join('\n');
+    // The first chunk ends inside src/big.ts; the next one is held.
+    const cut = streamed.indexOf('+line 10');
+    const { unblock } = installChunkedDiff('OpenWorkspaceDiff', streamed, cut, { hold: cut, filesHandle: 'files-1' });
+    const images = setBindingMock('GetReviewDiffImage', async () => ({
+      old: { exists: true, size: 30 * 1024 * 1024, overCap: true },
+      new: { exists: true, size: 30 * 1024 * 1024, overCap: true },
+      maxBytes: 25 * 1024 * 1024,
+    }));
+    const sizes = setBindingMock('GetReviewDiffFileSizes', async (_ws: unknown, _handle: string, list: Array<{ path: string }>) => (
+      list.map((file) => ({ path: file.path, old: { exists: true, size: 4 }, new: { exists: true, size: 8 } }))
+    ));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await vi.waitFor(() => {
+      expect(state.files.map((file) => file.path)).toEqual(['img/logo.png', 'blob.bin']);
+    });
+    expect(state.loading).toBe(true);
+    // The rows published mid-stream read under the open's handle.
+    const media = state.mediaHost.media;
+    expect(media.identity).toContain('"files-1"');
+    const [logo, blob] = state.files;
+    const row = media.image(logo, ['old', 'new']);
+    media.requestSizes(blob);
+    await vi.waitFor(() => {
+      expect(row.state.kind).toBe('image');
+      expect(media.sizes('blob.bin')).toMatchObject({ kind: 'ready' });
+    });
+    expect(state.loading).toBe(true);
+    expect(images.mock.calls[0][1]).toBe('files-1');
+    expect(sizes.mock.calls[0][1]).toBe('files-1');
+    unblock();
+    await waitLoaded(state);
+    // The completed diff keeps the open it streamed under.
+    expect(media.identity).toContain('"files-1"');
+    row.release();
+  });
+
+  it('never reopens a workspace diff whose files handle is gone: its row offers reloading the diff', async () => {
+    const logoPatch = ['diff --git a/img/logo.png b/img/logo.png', 'index 1111111..2222222 100644', 'Binary files a/img/logo.png and b/img/logo.png differ', ''].join('\n');
+    const { open } = installChunkedDiff('OpenWorkspaceDiff', logoPatch, logoPatch.length, { filesHandle: 'files-1' });
+    const images = setBindingMock('GetReviewDiffImage', async () => {
+      throw new TransportError('review_diff_files_gone', 'This diff\'s files are no longer held; reload the diff.');
+    });
+    setBindingMock('GetReviewDiffFileSizes', async () => []);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    const row = state.mediaHost.media.image(state.files[0], ['old', 'new']);
+    await vi.waitFor(() => {
+      expect(row.state).toMatchObject({ kind: 'binary', action: 'reload' });
+    });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(images).toHaveBeenCalledTimes(1);
+    row.release();
   });
 
   it('keeps the previous diff on screen until a reload completes', async () => {
@@ -2513,6 +3081,60 @@ describe('collapse overrides across reloads', () => {
 });
 
 describe('comments-only PR refresh', () => {
+  describe('a failed read belongs to its PR in PR scope', () => {
+    async function failedOnPR5(): Promise<ReturnType<typeof reviewStateForPane>> {
+      installPRMocks();
+      setBindingMock('GetPRDetail', async () => prDetailStub());
+      const state = reviewStateForPane('pane-1', prSubject());
+      await waitLoaded(state);
+      await state.setScope('pr');
+      setBindingMock('ListPRReviewThreads', async () => { throw new Error('The threads did not load.'); });
+      await state.refreshPRThreads({ explicit: true });
+      expect(state.threadsError).toContain('threads did not load');
+      return state;
+    }
+
+    it('stays while the pane shows the PR, and its read clears it', async () => {
+      const state = await failedOnPR5();
+      await state.reload();
+      await flushPane();
+      expect(state.threadsError).toContain('threads did not load');
+      const list = setBindingMock('ListPRReviewThreads', async () => []);
+      await state.refreshPRThreads({ explicit: true });
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(state.threadsError).toBeNull();
+    });
+
+    it('goes with a change of scope, and a return does not bring it back', async () => {
+      const state = await failedOnPR5();
+      const leaving = state.setScope('workspace');
+      // Not shown outside PR scope, from the moment the scope changes.
+      expect(state.threadsError).toBeNull();
+      await leaving;
+      await flushPane();
+      expect(state.threadsError).toBeNull();
+      setBindingMock('ListPRReviewThreads', async () => []);
+      await state.setScope('pr');
+      await flushPane();
+      expect(state.threadsError).toBeNull();
+    });
+
+    it('goes with a change of PR', async () => {
+      const state = await failedOnPR5();
+      setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
+        id: `sub-${pr.Number}`, prKey: `github:owner/repo:${pr.Number}`, detail: prDetailStub({ number: pr.Number }), threads: [], headSHA: 'sha-a',
+      }));
+      seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/7', openPrNumber: 7 });
+      await vi.waitFor(() => expect(state.prRef?.number).toBe(7));
+      expect(state.threadsError).toBeNull();
+      // Back on #5 (its read failing still), the return's own read decides.
+      seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/5', openPrNumber: 5 });
+      await vi.waitFor(() => expect(state.prRef?.number).toBe(5));
+      await flushPane();
+      expect(state.threadsError).toBeNull();
+    });
+  });
+
   it('refreshes detail + threads without reloading the diff', async () => {
     installPRMocks();
     const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
@@ -2549,6 +3171,35 @@ describe('comments-only PR refresh', () => {
     expect(state.prHeadSHA).toBe('sha-a');
     expect(state.prDetail?.headSHA).toBe('sha-b');
     expect(diff).toHaveBeenCalledTimes(1);
+  });
+
+  // A refresh asked for while one is running (a merge failure during a
+  // manual refresh) is not dropped: the running one may predate what the
+  // later ask wants to see.
+  it('runs a refresh asked for during one in flight once it ends', async () => {
+    installPRMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    let releaseFirst!: () => void;
+    const held = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let calls = 0;
+    const detail = setBindingMock('GetPRDetail', async () => {
+      calls += 1;
+      if (calls === 1) await held;
+      return prDetailStub({ title: `read ${calls}` });
+    });
+
+    const first = state.refreshPRThreads();
+    await flushPane();
+    void state.refreshPRThreads();
+    void state.refreshPRThreads();
+    releaseFirst();
+    await first;
+    await flushPane();
+    expect(detail).toHaveBeenCalledTimes(2);
+    expect(state.prDetail?.title).toBe('read 2');
+    expect(state.refreshingPRData).toBe(false);
   });
 
   it('is a no-op outside pr scope', async () => {
@@ -2606,6 +3257,35 @@ describe('reviewPane store — edits scope', () => {
       expect(state.files.find((file) => file.path === path)?.suppressGaps).toBeUndefined();
     });
   }
+
+  it('reads an edit image again under each open of the turn: a reload, or another pane, never reuses an older open\'s bytes', async () => {
+    installEditMocks();
+    const svg = ['diff --git a/diagram.svg b/diagram.svg', 'index 1111111..2222222 100644', 'Binary files a/diagram.svg and b/diagram.svg differ', ''].join('\n');
+    setReviewDiffMock('OpenTurnEditsDiff', async () => svg);
+    // The agent edits the file between opens: each read answers its bytes.
+    let version = 0;
+    const images = setBindingMock('GetEditDiffImage', async () => {
+      version += 1;
+      return { old: { exists: false, size: 0 }, new: { exists: true, size: 30 * 1024 * 1024, overCap: true }, maxBytes: version };
+    });
+    const first = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(first);
+    await first.setScope('edits');
+    await waitLoaded(first);
+    const before = first.mediaHost.media.identity;
+    expect(before).not.toBeNull();
+    const shown = first.mediaHost.media.image(first.files[0], ['new']);
+    await vi.waitFor(() => expect(shown.state).toMatchObject({ kind: 'image', maxBytes: 1 }));
+
+    await first.reload();
+    await waitLoaded(first);
+    expect(first.mediaHost.media.identity).not.toBe(before);
+    const reread = first.mediaHost.media.image(first.files[0], ['new']);
+    await vi.waitFor(() => expect(reread.state).toMatchObject({ kind: 'image', maxBytes: 2 }));
+    expect(images).toHaveBeenCalledTimes(2);
+    shown.release();
+    reread.release();
+  });
 
   it('defaults to the latest turn and keys comments by turn', async () => {
     const { turnDiff } = installEditMocks();
@@ -2778,6 +3458,28 @@ describe('reviewPane store — edits scope', () => {
     expect(state!.sourceKey).toBe('edit:pl-2a');
     expect(payload).toHaveBeenCalledWith('thread-1', 'pl-2a');
     expect(state!.pendingJumpFilePath).toBe('lexer.go');
+  });
+
+  it('keeps an open new-comment editor when the selected edit is opened again, and drops it for another edit', async () => {
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
+    installEditMocks();
+    const state = await openReviewCompanion('pane-1', subjectFor(), { editItemId: 'tool:2a' });
+    await waitLoaded(state!);
+    const anchor = { filePath: 'x.go', side: 'new' as const, newLine: 6, selectedText: 'new' };
+    const id = state!.openDraftEditor(anchor)!;
+    state!.setDraftBody(id, 'Guard this.');
+
+    expect(await openReviewCompanion('pane-1', subjectFor(), { editItemId: 'tool:2a' })).toBe(state);
+    await waitLoaded(state!);
+    expect(state!.selectedEditKey).toBe('item:tool:2a');
+    expect(state!.openEditors.map((editor) => [editor.id, editor.anchor])).toEqual([[id, anchor]]);
+    expect(state!.draftBodyFor(id)).toBe('Guard this.');
+
+    await openReviewCompanion('pane-1', subjectFor(), { editItemId: 'tool:1' });
+    await waitLoaded(state!);
+    expect(state!.selectedEditKey).toBe('item:tool:1');
+    expect(state!.openEditors).toEqual([]);
+    expect(state!.draftBodyFor(id)).toBe('');
   });
 
   it('selection changes reuse the loaded list (fast path)', async () => {
@@ -3305,9 +4007,9 @@ describe('reviewPane hide-whitespace toggle', () => {
     // from the diff body while still counting toward the tally.
     const sha = 'a'.repeat(40);
     setReviewDiffMock('OpenBranchBaseDiff', async () => CANONICAL_PATCH);
-    setBindingMock('ListBranchCommits', async () => [
+    setBindingMock('ListBranchCommits', async () => commitList([
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenCommitDiff',
       async (_threadId: string, _sha: string, ignoreWhitespace: boolean) =>
         (ignoreWhitespace ? IGNORED_PATCH : CANONICAL_PATCH),
@@ -3351,7 +4053,7 @@ describe('reviewPane store — conversation section and resolve', () => {
   function convThread(id: string, overrides: Partial<ReviewThread> = {}): ReviewThread {
     return {
       ...reviewThreadStub(id),
-      comments: [{ authorLogin: 'alice', body: `body of ${id}`, createdAt: '2026-01-01', databaseID: 1 }],
+      comments: [{ authorLogin: 'alice', body: `body of ${id}`, createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
       ...overrides,
     };
   }
@@ -3376,56 +4078,50 @@ describe('reviewPane store — conversation section and resolve', () => {
       (entry.kind === 'thread' ? [entry.thread.id] : []));
   }
 
-  it('freezes ordering while open: arrivals wait behind the new chip, reveal folds them in', async () => {
+  it('holds the order while open: arrivals join at their place, no reveal needed', async () => {
     const resolvedEarly = convThread('t-resolved', {
       isResolved: true,
-      comments: [{ authorLogin: 'bob', body: 'old', createdAt: '2026-01-01', databaseID: 1 }],
+      comments: [{ authorLogin: 'bob', body: 'old', createdAt: '2026-01-01', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
     });
     const openLater = convThread('t-open', {
-      comments: [{ authorLogin: 'alice', body: 'new', createdAt: '2026-01-02', databaseID: 2 }],
+      comments: [{ authorLogin: 'alice', body: 'new', createdAt: '2026-01-02', databaseID: 2, id: `n${2}`, viewerCanEdit: false, viewerCanDelete: false }],
     });
     const state = await statePRWithThreads([resolvedEarly, openLater]);
 
-    // Closed by default; opening freezes the order in hand.
+    // Closed by default; opening shows the order in hand.
     expect(state.conversationOpen).toBe(false);
     expect(state.conversationFeed).toEqual([]);
     state.setConversationOpen(true);
-    expect(state.conversationFrozen).toBe(true);
     // Chronological, newest first; replies unfold by default only on the
     // unresolved thread.
     expect(feedThreadIds(state)).toEqual(['t-open', 't-resolved']);
     expect(state.conversationThreadExpanded('t-open')).toBe(true);
     expect(state.conversationThreadExpanded('t-resolved')).toBe(false);
 
-    // A thread arriving mid-read neither reorders nor appears; it counts.
+    // A thread arriving mid-read joins at its own time (2026-01-01, tie
+    // broken by id), neither reordering the rest nor waiting; the reader
+    // is at the top, so nothing counts as new.
     applyPRUpdatedEvent({
       prKey: PR_KEY,
       detail: prDetailStub(),
       threads: [resolvedEarly, openLater, convThread('t-arrived')],
       headSHA: 'sha-a',
     });
-    expect(feedThreadIds(state)).toEqual(['t-open', 't-resolved']);
-    expect(state.conversationNewCount).toBe(1);
-
-    state.revealNewConversationThreads();
-    expect(state.conversationNewCount).toBe(0);
-    // The arrival interleaves by its own time (2026-01-01, tie broken by
-    // id) rather than jumping the whole feed.
+    flushSync();
     expect(feedThreadIds(state)).toEqual(['t-open', 't-arrived', 't-resolved']);
+    expect(state.conversationNewCount).toBe(0);
+    expect(state.conversationThreadExpanded('t-arrived')).toBe(true);
 
-    // Closing forgets the frozen view; an explicit reopen freezes what is
-    // in hand.
+    // Closing forgets the view; a reopen shows what is in hand.
     state.setConversationOpen(false);
     expect(state.conversationFeed).toEqual([]);
-    expect(state.conversationFrozen).toBe(false);
     state.setConversationOpen(true);
-    expect(state.conversationFrozen).toBe(true);
     expect(feedThreadIds(state)).toEqual(['t-open', 't-arrived', 't-resolved']);
     expect(state.conversationNewCount).toBe(0);
     // Leaving pr scope drops the view but keeps the section open.
     await state.setScope('workspace');
     expect(state.conversationOpen).toBe(true);
-    expect(state.conversationFrozen).toBe(false);
+    expect(state.conversationFeed).toEqual([]);
   });
 
   it('interleaves verdicts and commit pushes chronologically, newest first', async () => {
@@ -3440,16 +4136,16 @@ describe('reviewPane store — conversation section and resolve', () => {
         }],
       }),
       threads: [convThread('t-1', {
-        comments: [{ authorLogin: 'alice', body: 'hm', createdAt: '2026-01-02T00:00:00Z', databaseID: 1 }],
+        comments: [{ authorLogin: 'alice', body: 'hm', createdAt: '2026-01-02T00:00:00Z', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
       })],
       headSHA: 'sha-a',
     }));
     // Newest first, one author: one contiguous push row, timed by its
     // newest commit and keyed by its oldest.
-    setBindingMock('ListPRCommits', async () => [
+    setBindingMock('ListPRCommits', async () => commitList([
       { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'second', author: 'ann', authoredAt: Date.parse('2026-01-04T00:00:00Z') },
       { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'first', author: 'ann', authoredAt: Date.parse('2026-01-01T12:00:00Z') },
-    ]);
+    ]));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -3481,14 +4177,15 @@ describe('reviewPane store — conversation section and resolve', () => {
     expect(first?.kind === 'thread' && first.thread.isResolved).toBe(true);
     expect(state.conversationThreadExpanded('t-1')).toBe(true);
 
-    // ...even across a reveal (new arrivals fold in, open cards stay open).
+    // ...even as arrivals join (open cards stay open).
     applyPRUpdatedEvent({
       prKey: PR_KEY,
       detail: prDetailStub(),
       threads: [{ ...open, isResolved: true }, convThread('t-2')],
       headSHA: 'sha-a',
     });
-    state.revealNewConversationThreads();
+    flushSync();
+    expect(feedThreadIds(state)).toEqual(['t-1', 't-2']);
     expect(state.conversationThreadExpanded('t-1')).toBe(true);
   });
 
@@ -3543,6 +4240,8 @@ describe('reviewPane store — conversation section and resolve', () => {
     expect(state.unresolvedCursor).toBe('t-in');
     expect(state.pendingJumpRowKey).toBe('pt:t-in');
     expect(state.expandedPRThreadIds.has('t-in')).toBe(true);
+    // The row it jumps to shows even when the file filter hides its file.
+    expect([...state.revealedPaths]).toEqual(['src/app.ts']);
     state.consumePendingJumpRowKey();
 
     // Next: outside the diff, so its card in the overview.
@@ -3637,6 +4336,8 @@ describe('reviewPane store: painted span retention', () => {
     setBindingMock('GetPRMergeConflicts', async () => tree);
     setBindingMock('GetMergeConflictFile', async () => ['<<<<<<< ours', 'left', '=======', 'right', '>>>>>>> theirs'].join('\n'));
     const state = reviewStateForPane('pane-1', prSubject());
+    // The mounted pane: a push recomputes only a view on screen.
+    state.attachSurface('companion-1');
     await waitLoaded(state);
     await state.setScope('pr');
     const [a, b] = state.files;
@@ -3878,5 +4579,1227 @@ describe('reviewPane store — PR whose first fetch failed', () => {
     expect(state.prUpdateError).toBeNull();
     expect(state.prDetail?.number).toBe(5);
     expect(diff).toHaveBeenCalledTimes(1);
+  });
+});
+
+// A PR read may ask for git credentials only when a person asked for it.
+// Every store entry point reads unattended unless its caller says so, and
+// the reads the store starts itself (a retry on a pump frame) never do.
+describe('reviewPane store — PR read intent', () => {
+  const sha = 'b'.repeat(40);
+  const revision = { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-a' };
+  const pr = expect.objectContaining({ Number: 5 });
+  function installIntentMocks() {
+    installPRMocks();
+    const list = setBindingMock('ListPRCommits', async () => commitList([
+      { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]));
+    const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
+    const commitDiff = setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
+    return { list, diff, commitDiff };
+  }
+
+  it('reads unattended from every entry point that does not say a person asked', async () => {
+    const { list, diff, commitDiff } = installIntentMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+
+    await state.setScope('pr');
+    expect(list).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+    await state.reload();
+    expect(list).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+    await state.selectCommit(sha);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, sha, false, false);
+    await state.setIgnoreWhitespace(true);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, sha, true, false);
+  });
+
+  it('reads attended for the entry points a person drove', async () => {
+    const { list, diff, commitDiff } = installIntentMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+
+    await state.setScope('pr', { userInitiated: true });
+    expect(list).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, true);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+    await state.reload();
+    await state.reload({ userInitiated: true });
+    expect(list).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, true);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+    await state.selectCommit(sha, { userInitiated: true });
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, sha, false, true);
+    await state.setIgnoreWhitespace(true, { userInitiated: true });
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, sha, true, true);
+  });
+
+  it('retries a failed user read unattended on the next pump frame', async () => {
+    installIntentMocks();
+    let fail = true;
+    const diff = setReviewDiffMock('OpenPRDiff', async () => {
+      if (fail) throw new Error('fetch failed');
+      return patchFor('src/app.ts', 3);
+    });
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr', { userInitiated: true });
+    expect(state.error).toContain('fetch failed');
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+
+    fail = false;
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub(), threads: [], headSHA: 'sha-a', seq: 50 });
+    await vi.waitFor(() => expect(state.files).toHaveLength(1));
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+  });
+
+  it('keeps a person\'s open across the wait for the PR snapshot', async () => {
+    const { diff } = installIntentMocks();
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1', prKey: PR_KEY, detail: prDetailStub({ baseRefSHA: '' }), threads: [], headSHA: 'sha-a', seq: 1,
+    }));
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr', { userInitiated: true });
+    expect(state.awaitingPR).toBe(true);
+    expect(diff).not.toHaveBeenCalled();
+
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub(), threads: [], headSHA: 'sha-a', seq: 2 });
+    await vi.waitFor(() => expect(state.files).toHaveLength(1));
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+  });
+
+  it('keeps a person\'s open across the wait for the workspace status', async () => {
+    const { diff } = installIntentMocks();
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('pr', { userInitiated: true });
+    expect(state.awaitingPR).toBe(true);
+    expect(diff).not.toHaveBeenCalled();
+
+    prSubject();
+    await vi.waitFor(() => expect(state.files).toHaveLength(1));
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+  });
+
+  it('reads unattended when a PR appears after the status answered none, even after a person\'s wait', async () => {
+    const { diff } = installIntentMocks();
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('pr', { userInitiated: true });
+    expect(state.awaitingPR).toBe(true);
+
+    // The status lands with no PR: the open ends in its error.
+    seedPaneWorkspaceStatus('pane-1', {});
+    await vi.waitFor(() => expect(state.error).toContain('No PR'));
+    expect(diff).not.toHaveBeenCalled();
+
+    // A PR opened later is not the person's open.
+    prSubject();
+    await vi.waitFor(() => expect(state.files).toHaveLength(1));
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+  });
+
+  it.each([
+    ['toggleReviewPane', () => getPane('pane-1')!.toggleReviewPane()],
+    ['setShowReviewPane', () => getPane('pane-1')!.setShowReviewPane(true)],
+  ] as const)('the pane\'s %s is a person\'s open', async (_name, open) => {
+    const { diff } = installIntentMocks();
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
+    persistScope('thread-1', 'pr', null);
+    prSubject();
+    // The pane's thread names its project, so the pane has a checkout.
+    getPane('pane-1')!.replaceThread({
+      id: 'thread-1', title: 'Review', provider: 'claude', projectId: REVIEW_WS.projectId,
+      workspacePath: REVIEW_WORKSPACE, projectPath: REVIEW_WORKSPACE, model: 'm', createdAt: 0, updatedAt: 0, archived: false,
+    });
+    expect(reviewSubjectForPane(getPane('pane-1')!)?.workspace).toEqual(REVIEW_WS);
+    open();
+    await vi.waitFor(() => expect(diff).toHaveBeenCalled());
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+  });
+
+  it('openReviewCompanion reads attended only when its caller says a person opened it', async () => {
+    const { diff } = installIntentMocks();
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
+    const opened = await openReviewCompanion('pane-1', prSubject(), { scope: 'pr', userInitiated: true });
+    await waitLoaded(opened!);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+    disposeReviewStateForPane('pane-1', opened!);
+
+    // No scope: the state's own first load carries the open.
+    const reopened = await openReviewCompanion('pane-1', prSubject(), { userInitiated: true });
+    await waitLoaded(reopened!);
+    expect(reopened!.scope).toBe('pr');
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+    disposeReviewStateForPane('pane-1', reopened!);
+
+    // A state made by a mount (a restored layout) reads unattended.
+    const mounted = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(mounted);
+    expect(mounted.scope).toBe('pr');
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+    disposeReviewStateForPane('pane-1', mounted);
+
+    const unsaid = await openReviewCompanion('pane-1', prSubject(), { scope: 'pr' });
+    await waitLoaded(unsaid!);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+  });
+});
+
+describe('reviewPane store — the conflict view\'s permit follows the mounted pane', () => {
+  function installConflictTree() {
+    return setBindingMock('GetPRMergeConflicts', async (_ws: unknown, _ref: unknown, rev: { headSHA: string }) => ({
+      conflicted: false, treeOID: `tree-${rev.headSHA}`, baseLabel: 'origin/main', headLabel: 'feature', paths: [], messages: [],
+    }));
+  }
+  const heads = (mock: { mock: { calls: unknown[][] } }) => mock.mock.calls.map((call) => [(call[2] as { headSHA: string }).headSHA, call[4]]);
+
+  it('reads nothing for an open view no mounted pane renders, and catches up once one does', async () => {
+    installPRMocks();
+    const conflicts = installConflictTree();
+    const state = reviewStateForPane('pane-1', prSubject());
+    const detach = state.attachSurface('companion-1');
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await state.openConflictView();
+    expect(heads(conflicts)).toEqual([['sha-a', true]]);
+
+    detach();
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 30 });
+    await flushPane();
+    expect(conflicts).toHaveBeenCalledTimes(1);
+
+    const reattach = state.attachSurface('companion-1');
+    await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
+    expect(heads(conflicts)[1]).toEqual(['sha-b', false]);
+    expect(state.conflictView).toBe(true);
+    reattach();
+  });
+
+  it('on compact, holds the permit only while the companion is the pane on screen', async () => {
+    setCompactLayoutForTest(true);
+    // No strip is mounted here: this is what PaneHost's measurement writes
+    // when the compact strip comes to rest on the pane.
+    const showOnStrip = (paneId: string): void => {
+      showCompactThread();
+      noteCompactPaneShown(paneId);
+    };
+    try {
+      installPRMocks();
+      const conflicts = installConflictTree();
+      const state = reviewStateForPane('pane-1', prSubject());
+      state.attachSurface('companion-1');
+      showOnStrip('companion-1');
+      await waitLoaded(state);
+      await state.setScope('pr');
+      await state.openConflictView();
+      expect(heads(conflicts)).toEqual([['sha-a', true]]);
+
+      // Back to the sidebar screen: a frame reads nothing.
+      showCompactList();
+      await flushPane();
+      applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 40 });
+      await flushPane();
+      expect(conflicts).toHaveBeenCalledTimes(1);
+      // Back to the companion: the snapshot moved, so it reads.
+      showOnStrip('companion-1');
+      await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
+      expect(heads(conflicts)[1]).toEqual(['sha-b', false]);
+
+      // Another pane on screen: likewise.
+      showOnStrip('pane-1');
+      await flushPane();
+      applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-c' }), threads: [], headSHA: 'sha-c', seq: 41 });
+      await flushPane();
+      expect(conflicts).toHaveBeenCalledTimes(2);
+      showOnStrip('companion-1');
+      await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(3));
+      expect(heads(conflicts)[2]).toEqual(['sha-c', false]);
+
+      // A return with nothing moved reads nothing.
+      showOnStrip('pane-1');
+      await flushPane();
+      showOnStrip('companion-1');
+      await flushPane();
+      expect(conflicts).toHaveBeenCalledTimes(3);
+    } finally {
+      setCompactLayoutForTest(false);
+    }
+  });
+
+  it('on the desktop, every mounted pane keeps its permit whichever pane was revealed', async () => {
+    installPRMocks();
+    const conflicts = installConflictTree();
+    const state = reviewStateForPane('pane-1', prSubject());
+    state.attachSurface('companion-1');
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await state.openConflictView();
+    revealPane('pane-2');
+    showCompactList();
+    await flushPane();
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 42 });
+    await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
+  });
+
+  it('a reopen of a PR that moved while the view was closed is the person\'s read', async () => {
+    installPRMocks();
+    const conflicts = installConflictTree();
+    const state = reviewStateForPane('pane-1', prSubject());
+    state.attachSurface('companion-1');
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await state.openConflictView();
+    state.closeConflictView();
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 31 });
+    await flushPane();
+    expect(conflicts).toHaveBeenCalledTimes(1);
+
+    await state.openConflictView();
+    expect(heads(conflicts)).toEqual([['sha-a', true], ['sha-b', true]]);
+  });
+});
+
+describe('reviewPane store — open new-comment editors', () => {
+  // A modified file of the workspace diff: `index` names its blob ids.
+  function changed(index: string, hunk: string, lines: readonly string[], path = 'src/app.ts'): string {
+    return [
+      `diff --git a/${path} b/${path}`,
+      `index ${index} 100644`,
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      hunk,
+      ...lines,
+    ].join('\n');
+  }
+
+  // Comments as the backend holds them: created from the input, listed
+  // back by scope and source.
+  function commentsBackend() {
+    const rows: DiffReviewComment[] = [];
+    const create = setBindingMock('CreateDiffReviewComment', async (threadId: string, input: Partial<DiffReviewComment> & { sourceKey: string; scope: DiffReviewComment['scope'] }) => {
+      const row = { ...draft({ ...input, id: `c-${rows.length + 1}`, threadId }), oldLine: input.oldLine, newLine: input.newLine };
+      rows.push(row);
+      return row;
+    });
+    setBindingMock('ListDiffReviewComments', async (_thread: string, scope: string, sourceKey: string) =>
+      rows.filter((row) => row.scope === scope && row.sourceKey === sourceKey).map((row) => ({ ...row })));
+    return { rows, create };
+  }
+
+  async function workspaceWith(patch: () => string) {
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch());
+    const backend = commentsBackend();
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    return { state, ...backend };
+  }
+
+  const refused = (reason: string) => expect.objectContaining({ name: 'ReviewCommentRefused', reason });
+
+  it('keys an editor\'s text, focus and save by its id', async () => {
+    const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 2));
+    const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
+    const id = state.openDraftEditor(anchor)!;
+    expect(id).toBeTruthy();
+    expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+    state.setDraftBody(id, 'half-typed');
+    expect(state.draftBodyFor(id)).toBe('half-typed');
+    expect(state.consumeDraftEditorFocus(id)).toBe(true);
+    expect(state.consumeDraftEditorFocus(id)).toBe(false);
+    // The line already has an editor: it is focused, not doubled.
+    expect(state.openDraftEditor(anchor)).toBe(id);
+    expect(state.consumeDraftEditorFocus(id)).toBe(true);
+    expect(state.openEditors).toHaveLength(1);
+
+    await state.createComment(id, 'Looks good.');
+    expect(create.mock.calls[0]?.[1]).toMatchObject({ scope: 'workspace', newLine: 1, side: 'new', selectedText: 'line 1', body: 'Looks good.' });
+    expect(state.openEditors).toEqual([]);
+    expect(state.draftBodyFor(id)).toBe('');
+    expect(state.drafts.map((comment) => comment.body)).toEqual(['Looks good.']);
+
+    const next = state.openDraftEditor(anchor)!;
+    state.setDraftBody(next, 'other subject');
+    await state.setScope('branch');
+    expect(state.draftBodyFor(next)).toBe('');
+  });
+
+  it('keeps a failed save\'s editor open with the error', async () => {
+    const { state } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    setBindingMock('CreateDiffReviewComment', async () => {
+      throw new Error('create failed');
+    });
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
+    await expect(state.createComment(id, 'Body')).rejects.toThrow('create failed');
+    expect(state.openEditors.map((editor) => editor.id)).toEqual([id]);
+    expect(state.error).toBe('create failed');
+  });
+
+  it('opens no editor on a line the diff does not have, and refuses a quote longer than a comment may hold', async () => {
+    const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    expect(state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 9, selectedText: 'x' })).toBeNull();
+    expect(state.openDraftEditor({ filePath: 'src/gone.ts', side: 'file' })).toBeNull();
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'é'.repeat(5000) })!;
+    await expect(state.createComment(id, 'Body')).rejects.toEqual(refused('too-long'));
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('saves a file comment while its file is in the diff', async () => {
+    const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'file' })!;
+    await state.createComment(id, 'About the whole file.');
+    expect(create.mock.calls[0]?.[1]).toMatchObject({ filePath: 'src/app.ts', side: 'file', selectedText: '', body: 'About the whole file.' });
+  });
+
+  describe('across a reload', () => {
+    // The old head adds a primary and a fallback handler between two
+    // unchanged base lines.
+    const HEAD_A = changed('aaaaaaa..bbbbbbb', '@@ -1,2 +1,8 @@', [' top', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom']);
+    const report = { filePath: 'src/app.ts', side: 'new' as const, newLine: 3, selectedText: '  report();' };
+
+    async function editorThen(after: string, anchor = report) {
+      let patch = HEAD_A;
+      const loaded = await workspaceWith(() => patch);
+      const id = loaded.state.openDraftEditor(anchor)!;
+      loaded.state.setDraftBody(id, 'Guard this.');
+      patch = after;
+      await loaded.state.reload();
+      await waitLoaded(loaded.state);
+      return { ...loaded, id };
+    }
+
+    it('does not follow the primary handler\'s text onto the fallback handler', async () => {
+      // The primary block goes and the fallback now reports: the base is
+      // unchanged and `report();` is on one row each time.
+      const { state, create, id } = await editorThen(changed('aaaaaaa..ccccccc', '@@ -1,2 +1,5 @@', [' top', '+if (fallback) {', '+  report();', '+}', ' bottom']));
+      expect(state.openEditors).toMatchObject([{ id, filePath: 'src/app.ts', side: 'new', state: 'detached', anchor: null }]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+      await expect(state.createComment(id, 'Guard this.')).rejects.toEqual(refused('detached'));
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('detaches an added line\'s editor when lines are added above it', async () => {
+      const { state, create, id } = await editorThen(changed('aaaaaaa..ddddddd', '@@ -1,2 +1,9 @@', [' top', '+inserted', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom']));
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'detached', anchor: null });
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+      await expect(state.createComment(id, 'x')).rejects.toEqual(refused('detached'));
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('keeps an editor on its line when its file did not change', async () => {
+      const other = changed('1111111..2222222', '@@ -1,1 +1,1 @@', ['-x', '+y'], 'src/other.ts');
+      const { state, create, id } = await editorThen(`${HEAD_A}\n${other}`);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+      await state.createComment(id, 'Guard this.');
+      expect(create.mock.calls[0]?.[1]).toMatchObject({ newLine: 3, selectedText: '  report();' });
+    });
+
+    it('follows an unchanged line by its base version; its split halves keep their sides', async () => {
+      const before = changed('1111111..2222222', '@@ -1,3 +1,3 @@', [' keep 1', '-old 2', '+new 2', ' keep 3']);
+      const after = changed('1111111..3333333', '@@ -1,3 +1,4 @@', [' keep 1', '-old 2', '+new 2', '+more', ' keep 3']);
+      let patch = before;
+      const { state, create } = await workspaceWith(() => patch);
+      const left = state.openDraftEditor({ filePath: 'src/app.ts', side: 'old', oldLine: 3, selectedText: ' keep 3' })!;
+      const right = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 3, selectedText: ' keep 3' })!;
+      state.setDraftBody(left, 'Left.');
+      state.setDraftBody(right, 'Right.');
+      patch = after;
+      await state.reload();
+      await waitLoaded(state);
+
+      expect(state.openEditors.map((editor) => [editor.id, editor.anchor])).toEqual([
+        [left, { filePath: 'src/app.ts', side: 'old', oldLine: 3, newLine: 4, selectedText: ' keep 3' }],
+        [right, { filePath: 'src/app.ts', side: 'new', oldLine: 3, newLine: 4, selectedText: ' keep 3' }],
+      ]);
+      expect([state.draftBodyFor(left), state.draftBodyFor(right)]).toEqual(['Left.', 'Right.']);
+      await state.createComment(left, 'Left.');
+      await state.createComment(right, 'Right.');
+      expect((create.mock.calls as [string, DiffReviewComment][]).map(([, input]) => [input.side, input.oldLine, input.newLine])).toEqual([['old', 3, 4], ['new', 3, 4]]);
+    });
+
+    it('keeps its editors and their lines across the whitespace toggle', async () => {
+      const { state, id } = await editorThen(HEAD_A);
+      await state.setIgnoreWhitespace(true);
+      await waitLoaded(state);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+    });
+
+    it('keeps the editor of a reverted file to copy from, and places it again when the file comes back', async () => {
+      const { state, id } = await editorThen('');
+      expect(state.files).toEqual([]);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'gone', anchor: null, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+
+      setReviewDiffMock('OpenWorkspaceDiff', async () => HEAD_A);
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: report, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+    });
+
+    it('re-entering the scope on screen keeps the editor and its text', async () => {
+      const { state, id } = await editorThen(HEAD_A);
+      await state.setScope('workspace');
+      await waitLoaded(state);
+      expect(state.openEditors.map((editor) => editor.id)).toEqual([id]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+    });
+
+    it('renders every editor of the diff once, in its file or the group, whatever placed it', async () => {
+      const other = changed('1111111..2222222', '@@ -1,1 +1,1 @@', ['-x', '+y'], 'src/other.ts');
+      const moved = changed('aaaaaaa..ddddddd', '@@ -1,2 +1,9 @@', [' top', '+inserted', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom']);
+      for (const [label, next, budget] of [
+        ['same', HEAD_A, null], ['moved', moved, null], ['file left', other, null], ['empty', '', null],
+        ['file left, budget spent', other, 1], ['moved, budget spent', `${moved}\n${other}`, 1],
+      ] as const) {
+        __resetReviewPaneStateForTest();
+        const restore = budget === null ? () => {} : __setRelocationBudgetForTest(budget);
+        try {
+          const { state, id } = await editorThen(next);
+          const built = buildReviewRows({ files: state.files, viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: state.openEditors });
+          expect(built.rowKeys.filter((key) => key === `d:${id}`), label).toHaveLength(1);
+          const editor = state.openEditors[0]!;
+          expect(editor.state === 'gone', label).toBe(!state.files.some((file) => file.path === editor.filePath));
+        } finally {
+          restore();
+        }
+      }
+    });
+
+    it('detaches an editor whose line is longer than the byte allowance and still shows the diff', async () => {
+      const restore = __setRelocationBudgetForTest(1_000_000, 100_000);
+      try {
+        const long = `b${'x'.repeat(200_000)}`;
+        const patch = ['diff --git a/src/app.ts b/src/app.ts', 'new file mode 100644', 'index 0000000..1111111', '--- /dev/null', '+++ b/src/app.ts', '@@ -0,0 +1,3 @@', '+a', `+${long}`, '+c'].join('\n');
+        const { state } = await workspaceWith(() => patch);
+        const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 2, selectedText: long })!;
+        await state.reload();
+        await waitLoaded(state);
+        expect(state.files.map((file) => file.path)).toEqual(['src/app.ts']);
+        expect(state.openEditors).toMatchObject([{ id, filePath: 'src/app.ts', state: 'detached', anchor: null }]);
+        expect(state.error).toBeNull();
+      } finally {
+        restore();
+      }
+    });
+
+    it('detaches an editor in a file longer than the row allowance, sizing nothing by that file, and still shows the diff', async () => {
+      const restore = __setRelocationBudgetForTest(1_000);
+      const rows = 5_000;
+      const big = ['diff --git a/src/app.ts b/src/app.ts', 'index aaaaaaa..eeeeeee 100644', '--- a/src/app.ts', '+++ b/src/app.ts', `@@ -1,2 +1,${rows} @@`, ...Array.from({ length: rows }, (_, index) => `+line ${index}`)].join('\n');
+      // Every row-table length the relocation could ask for; the parser
+      // grows its own arrays by powers of two.
+      const lengths: number[] = [];
+      try {
+        let patch = HEAD_A;
+        const { state } = await workspaceWith(() => patch);
+        const id = state.openDraftEditor(report)!;
+        patch = big;
+        for (const name of ['Uint8Array', 'Int32Array'] as const) {
+          vi.stubGlobal(name, new Proxy(globalThis[name], {
+            construct(target, args, newTarget) {
+              if (typeof args[0] === 'number') lengths.push(args[0]);
+              return Reflect.construct(target, args, newTarget) as object;
+            },
+          }));
+        }
+        try {
+          await state.reload();
+          await waitLoaded(state);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+        expect(state.files.map((file) => file.body.lineCount)).toEqual([rows + 5]);
+        expect(state.openEditors).toMatchObject([{ id, filePath: 'src/app.ts', state: 'detached', anchor: null }]);
+        expect(state.error).toBeNull();
+        expect(lengths).not.toContain(rows + 5);
+      } finally {
+        restore();
+      }
+    });
+
+    // A tripwire: JS cannot see whether a string is a slice holding its
+    // chunk alive, only whether it went through the copy.
+    it('copies the quote an editor keeps', async () => {
+      const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 2));
+      const own = vi.spyOn(keptText, 'own').mockImplementation((text) => `owned:${text}`);
+      try {
+        const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
+        await state.createComment(id, 'Kept.');
+        expect(create.mock.calls[0]?.[1]).toMatchObject({ selectedText: 'owned:line 1' });
+      } finally {
+        own.mockRestore();
+      }
+    });
+
+    it('detaches what the relocation budget does not reach and still shows the diff', async () => {
+      const restore = __setRelocationBudgetForTest(1);
+      try {
+        const other = changed('1111111..2222222', '@@ -1,1 +1,1 @@', ['-x', '+y'], 'src/other.ts');
+        const { state, id } = await editorThen(`${HEAD_A}\n${other}`);
+        expect(state.files.map((file) => file.path)).toEqual(['src/app.ts', 'src/other.ts']);
+        expect(state.openEditors).toMatchObject([{ id, filePath: 'src/app.ts', side: 'new', state: 'detached', anchor: null }]);
+        expect(state.error).toBeNull();
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  describe('detached by a change to their file', () => {
+    const HEAD = changed('aaaaaaa..bbbbbbb', '@@ -1,2 +1,8 @@', [' top', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom']);
+    // One line inserted above: `report();` is one row lower.
+    const MOVED = changed('aaaaaaa..ddddddd', '@@ -1,2 +1,9 @@', [' top', '+inserted', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom']);
+    const OTHER = changed('1111111..2222222', '@@ -1,1 +1,2 @@', [' one', '+two'], 'src/other.ts');
+    const report = { filePath: 'src/app.ts', side: 'new' as const, newLine: 3, selectedText: '  report();' };
+
+    async function detachedAfter(next: string) {
+      let patch = `${HEAD}\n${OTHER}`;
+      const loaded = await workspaceWith(() => patch);
+      const id = loaded.state.openDraftEditor(report)!;
+      loaded.state.setDraftBody(id, 'Guard this.');
+      patch = next;
+      await loaded.state.reload();
+      await waitLoaded(loaded.state);
+      return { ...loaded, id, setPatch: (text: string) => { patch = text; } };
+    }
+
+    it('shows after the row its text is on, which saves nothing until the reader takes it', async () => {
+      const { state, create, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'detached', anchor: null, suggested: { filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: '  report();' }, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+      await expect(state.createComment(id, 'Guard this.')).rejects.toEqual(refused('detached'));
+      expect(create).not.toHaveBeenCalled();
+
+      expect(state.useSuggestedLine(id, state.openEditors[0]!)).toBe(true);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: '  report();' }, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+      await state.createComment(id, 'Guard this.');
+      expect(create.mock.calls[0]?.[1]).toMatchObject({ newLine: 4, side: 'new', selectedText: '  report();', body: 'Guard this.' });
+    });
+
+    it('takes the suggestion the reader saw, never one a reload made since', async () => {
+      const { state, id, setPatch } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      const seen = state.openEditors[0]!;
+      expect(seen.suggested).toMatchObject({ newLine: 4 });
+      // A reload lands between the press and its activation: two lines
+      // above now, so the suggestion is another row.
+      setPatch(`${changed('aaaaaaa..eeeeeee', '@@ -1,2 +1,10 @@', [' top', '+inserted', '+inserted 2', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom'])}\n${OTHER}`);
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors[0]!.suggested).toMatchObject({ newLine: 5 });
+      expect(state.useSuggestedLine(id, seen)).toBe(false);
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'detached', anchor: null });
+      expect(state.useSuggestedLine(id, state.openEditors[0]!)).toBe(true);
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'placed', anchor: { newLine: 5 } });
+    });
+
+    it('takes a pick only in the diff the reader made it in', async () => {
+      const { state, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      state.moveEditor(id);
+      const pressedIn = state.openEditors[0]!.generation;
+      await state.reload();
+      await waitLoaded(state);
+      const two = { filePath: 'src/other.ts', side: 'new' as const, newLine: 2, selectedText: 'two' };
+      expect(state.openDraftEditor(two, pressedIn)).toBeNull();
+      expect(state.openEditors.map((editor) => [editor.id, editor.state])).toEqual([[id, 'detached']]);
+      expect(state.openDraftEditor(two, state.openEditors[0]!.generation)).not.toBeNull();
+    });
+
+    it('moves to the line the reader picks next, in its file or another, with its text', async () => {
+      const { state, create, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      state.moveEditor(id);
+      expect(state.armedEditorId).toBe(id);
+      expect(state.openEditors[0]?.armed).toBe(true);
+      expect(state.openDraftEditor({ filePath: 'src/other.ts', side: 'new', newLine: 2, selectedText: 'two' })).toBe(id);
+      expect(state.armedEditorId).toBeNull();
+      expect(state.consumeDraftEditorFocus(id)).toBe(true);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/other.ts', side: 'new', state: 'placed', anchor: { filePath: 'src/other.ts', side: 'new', newLine: 2, selectedText: 'two' }, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+      expect(state.draftBodyFor(id)).toBe('Guard this.');
+      await state.createComment(id, 'Guard this.');
+      expect(create.mock.calls[0]?.[1]).toMatchObject({ filePath: 'src/other.ts', newLine: 2, selectedText: 'two' });
+    });
+
+    it('moves within its file; a line with no row leaves it armed', async () => {
+      const { state, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      state.moveEditor(id);
+      expect(state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 99, selectedText: 'x' })).toBeNull();
+      expect(state.armedEditorId).toBe(id);
+      expect(state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 7, selectedText: '  retry();' })).toBe(id);
+      expect(state.openEditors[0]).toMatchObject({ state: 'placed', anchor: { newLine: 7 } });
+      expect(state.openEditors).toHaveLength(1);
+    });
+
+    it('arms one editor at a time, and a cancel, a reload, a subject change or a discard disarms', async () => {
+      const { state, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      // A second detached editor, by the same change to its file.
+      state.moveEditor(id);
+      state.cancelEditorMove();
+      expect(state.armedEditorId).toBeNull();
+      state.moveEditor(id);
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.armedEditorId).toBeNull();
+      state.moveEditor(id);
+      state.closeDraftEditor(id);
+      expect(state.armedEditorId).toBeNull();
+      // Placed editors cannot be armed.
+      const placed = state.openDraftEditor({ filePath: 'src/other.ts', side: 'new', newLine: 2, selectedText: 'two' })!;
+      state.moveEditor(placed);
+      expect(state.armedEditorId).toBeNull();
+    });
+
+    it('disarms on a subject change', async () => {
+      const { state, id } = await detachedAfter(`${MOVED}\n${OTHER}`);
+      state.moveEditor(id);
+      await state.setScope('branch');
+      expect(state.armedEditorId).toBeNull();
+    });
+
+    it('goes back to its line by itself when a later diff proves it, unless the reader chose one', async () => {
+      const first = await detachedAfter(`${MOVED}\n${OTHER}`);
+      first.setPatch(`${HEAD}\n${OTHER}`);
+      await first.state.reload();
+      await waitLoaded(first.state);
+      expect(first.state.openEditors[0]).toMatchObject({ id: first.id, state: 'placed', anchor: report });
+
+      __resetReviewPaneStateForTest();
+      const second = await detachedAfter(`${MOVED}\n${OTHER}`);
+      second.state.useSuggestedLine(second.id, second.state.openEditors[0]!);
+      second.setPatch(`${HEAD}\n${OTHER}`);
+      await second.state.reload();
+      await waitLoaded(second.state);
+      // The reader's line (4 of MOVED) is not proven in HEAD's other blob.
+      expect(second.state.openEditors[0]).toMatchObject({ id: second.id, state: 'detached' });
+    });
+
+    it('is gone when its file leaves the diff, and comes back to its line with the file', async () => {
+      const { state, id, setPatch } = await detachedAfter(OTHER);
+      expect(state.openEditors).toEqual([{ id, filePath: 'src/app.ts', side: 'new', state: 'gone', anchor: null, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+      state.moveEditor(id);
+      expect(state.armedEditorId).toBeNull();
+      setPatch(`${HEAD}\n${OTHER}`);
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'placed', anchor: report });
+    });
+  });
+
+  describe('on rows an expansion supplied', () => {
+    // Lines 1..9 sit in the leading gap of each file.
+    const gapped = (path: string) => changed('1111111..2222222', '@@ -10,2 +10,2 @@', [' ctx', '-old', '+new'], path);
+    const patch = `${gapped('src/a.ts')}\n${gapped('src/b.ts')}`;
+
+    function contextLines() {
+      return setBindingMock('GetDiffContextLines', async (_ws, req) => {
+        const { startLine, endLine } = req as { startLine: number; endLine: number };
+        return { lines: Array.from({ length: endLine - startLine + 1 }, (_, i) => `src ${startLine + i}`), startLine, eof: false, totalLines: 0 };
+      });
+    }
+
+    const leadingGap = (file: ReviewFile | undefined) => rowsOf(file!).find((row) => row.gap)!.gap!;
+
+    it('saves one in the load it was opened in, and detaches it at the next', async () => {
+      contextLines();
+      const { state, create } = await workspaceWith(() => patch);
+      await state.expandDiffContext('src/a.ts', leadingGap(state.files[0]), 'all');
+      const one = { filePath: 'src/a.ts', side: 'context' as const, oldLine: 1, newLine: 1, selectedText: ' src 1' };
+      const saved = state.openDraftEditor(one)!;
+      await state.createComment(saved, 'In this load.');
+      expect(create.mock.calls[0]?.[1]).toMatchObject({ side: 'context', oldLine: 1, newLine: 1 });
+
+      const kept = state.openDraftEditor(one)!;
+      await state.reload();
+      await waitLoaded(state);
+      // No version proves a row an expansion supplied (editorPlacement's
+      // unit tests show no proof is recorded for it).
+      expect(state.openEditors).toMatchObject([{ id: kept, filePath: 'src/a.ts', side: 'context', state: 'detached', anchor: null }]);
+      await state.expandDiffContext('src/a.ts', leadingGap(state.files[0]), 'all');
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors[0]).toMatchObject({ state: 'detached', anchor: null });
+    });
+
+    it('lets an editor in one file save after another file expands, and after its own file does', async () => {
+      contextLines();
+      const { state, create } = await workspaceWith(() => patch);
+      const onA = state.openDraftEditor({ filePath: 'src/a.ts', side: 'new', newLine: 11, selectedText: 'new' })!;
+      await state.expandDiffContext('src/b.ts', leadingGap(state.files[1]), 'all');
+      await state.createComment(onA, 'After B expanded.');
+      const again = state.openDraftEditor({ filePath: 'src/a.ts', side: 'new', newLine: 11, selectedText: 'new' })!;
+      await state.expandDiffContext('src/a.ts', leadingGap(state.files[0]), 'all');
+      await state.createComment(again, 'After A expanded.');
+      expect((create.mock.calls as [string, DiffReviewComment][]).map(([, input]) => [input.filePath, input.newLine, input.body])).toEqual([
+        ['src/a.ts', 11, 'After B expanded.'],
+        ['src/a.ts', 11, 'After A expanded.'],
+      ]);
+    });
+  });
+
+  describe('while their placement waits on evicted text', () => {
+    afterEach(() => {
+      __resetReviewPaneStateForTest();
+      setPatchTextBudgetForTest(null);
+    });
+
+    it('neither resurrects an editor discarded during the wait nor places one opened during it', async () => {
+      const patch = [patchFor('src/a.ts', 3), patchFor('src/b.ts', 3), patchFor('src/c.ts', 3)].join('\n');
+      setPatchTextBudgetForTest(100);
+      let hold: Promise<void> | null = null;
+      let release!: () => void;
+      let heldReads = 0;
+      let opened = 0;
+      const chunkAt = (offset: number) => {
+        const next = Math.min(patch.length, offset + 40);
+        return { data: patch.slice(offset, next), offset, nextOffset: next, eof: next === patch.length };
+      };
+      setBindingMock('OpenWorkspaceDiff', async () => ({ id: `diff-${++opened}`, chunk: chunkAt(0), headSha: '' }));
+      let furthest = 0;
+      setBindingMock('ReadReviewDiff', async (handle: string, offset: number) => {
+        // The reloaded diff reads its evicted text again for the editors'
+        // rows.
+        if (handle === 'diff-2' && hold && offset < furthest) {
+          heldReads += 1;
+          await hold;
+        }
+        if (handle === 'diff-2') furthest = Math.max(furthest, offset + 40);
+        return chunkAt(offset);
+      });
+      setBindingMock('ReleaseReviewDiff', async () => undefined);
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      const line = (path: string) => ({ filePath: path, side: 'new' as const, newLine: 2, selectedText: 'line 2' });
+      const discarded = state.openDraftEditor(line('src/c.ts'))!;
+      const kept = state.openDraftEditor(line('src/b.ts'))!;
+      state.setDraftBody(discarded, 'Gone.');
+
+      hold = new Promise<void>((resolve) => { release = resolve; });
+      const reloading = state.reload();
+      await vi.waitFor(() => expect(heldReads).toBeGreaterThan(0));
+      state.closeDraftEditor(discarded);
+      const late = state.openDraftEditor(line('src/a.ts'))!;
+      hold = null;
+      release();
+      await reloading;
+      await waitLoaded(state);
+
+      expect(state.openEditors.map((editor) => [editor.id, editor.anchor?.newLine ?? null, editor.state])).toEqual([
+        [kept, 2, 'placed'],
+        [late, null, 'detached'],
+      ]);
+      expect(state.draftBodyFor(discarded)).toBe('');
+      expect(state.files.map((file) => file.path)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    });
+
+    // A diff of `src/a.ts` and `count` other files, then a reload in which
+    // every one of them is renamed. Its text is held to 100 bytes, so each
+    // file's text is evicted as the next arrives; `reread` lists the byte
+    // offsets the new diff's text is read again at.
+    async function renamedWithEvictedText(count: number) {
+      const others = Array.from({ length: count }, (_, index) => `src/f${index}.ts`);
+      const before = [patchFor('src/a.ts', 3), ...others.map((path) => patchFor(path, 3))].join('\n');
+      const renamed = (from: string, to: string): string => [
+        `diff --git a/${from} b/${to}`,
+        'similarity index 90%',
+        `rename from ${from}`,
+        `rename to ${to}`,
+        'index 1111111..2222222 100644',
+        `--- a/${from}`,
+        `+++ b/${to}`,
+        '@@ -1,3 +1,3 @@',
+        ' line 1',
+        '-line 2',
+        '+line two',
+        ' line 3',
+      ].join('\n');
+      const first = renamed('src/a.ts', 'src/moved.ts');
+      const after = [first, ...others.map((path) => renamed(path, path.replace('/f', '/g')))].join('\n');
+      setPatchTextBudgetForTest(100);
+      let current = before;
+      let opened = 0;
+      const reread: number[] = [];
+      const furthest = new Map<string, number>();
+      const chunkAt = (patch: string, offset: number) => {
+        const next = Math.min(patch.length, offset + 40);
+        return { data: patch.slice(offset, next), offset, nextOffset: next, eof: next === patch.length };
+      };
+      const texts = new Map<string, string>();
+      setBindingMock('OpenWorkspaceDiff', async () => {
+        const handle = `diff-${++opened}`;
+        texts.set(handle, current);
+        furthest.set(handle, 40);
+        return { id: handle, chunk: chunkAt(current, 0), headSha: '' };
+      });
+      setBindingMock('ReadReviewDiff', async (handle: string, offset: number) => {
+        if (offset < furthest.get(handle)!) {
+          if (handle !== 'diff-1') reread.push(offset);
+        } else furthest.set(handle, offset + 40);
+        return chunkAt(texts.get(handle)!, offset);
+      });
+      setBindingMock('ReleaseReviewDiff', async () => undefined);
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      const id = state.openDraftEditor({ filePath: 'src/a.ts', side: 'new', newLine: 2, selectedText: 'line 2' })!;
+      current = after;
+      await state.reload();
+      await waitLoaded(state);
+      return { state, id, reread, firstLength: first.length, count };
+    }
+
+    it('finds a renamed editor\'s file by the path it came from, reading no other renamed file again', async () => {
+      const { state, id, reread, firstLength, count } = await renamedWithEvictedText(40);
+      expect(state.files).toHaveLength(count + 1);
+      expect(state.openEditors).toMatchObject([{ id, filePath: 'src/moved.ts', state: 'detached' }]);
+      // Only the editor's own file is read again: its rows, for the suggestion.
+      expect(reread.every((offset) => offset < firstLength)).toBe(true);
+    });
+
+    it('publishes the diff with the relocation budget spent and every renamed file\'s text evicted', async () => {
+      const restore = __setRelocationBudgetForTest(1, 1);
+      try {
+        const { state, id, reread, count } = await renamedWithEvictedText(40);
+        expect(state.files).toHaveLength(count + 1);
+        expect(state.openEditors).toMatchObject([{ id, filePath: 'src/moved.ts', state: 'detached', anchor: null }]);
+        expect(reread).toEqual([]);
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  describe('of the Edits scope', () => {
+    function editSection(index: string | null, start: number, from: string, to: string): string {
+      return [
+        'diff --git a/x.go b/x.go',
+        ...(index ? [`index ${index} 100644`] : []),
+        '--- a/x.go',
+        '+++ b/x.go',
+        `@@ -${start},1 +${start},1 @@`,
+        `-${from}`,
+        `+${to}`,
+      ].join('\n');
+    }
+
+    function editsWith(turnPatch: () => string) {
+      setBindingMock('ListThreadEditDiffs', async () => ({
+        entries: [{ itemId: 'tool:1', payloadId: 'pl-1', turnIndex: 1, title: 'Edited x.go', paths: ['x.go'], insertions: 2, deletions: 2, createdAt: 1 }],
+        turnLabels: [{ turnIndex: 1, label: 'edit' }],
+      }));
+      setReviewDiffMock('OpenTurnEditsDiff', async () => turnPatch());
+      setBindingMock('VerifyEditDiffs', async () => ({ expandablePaths: [] }));
+    }
+
+    it('keeps a placed editor of a merged turn file through a reload of the same bytes, and detaches it when another edit joins', async () => {
+      let turn = [editSection('1111111..2222222', 3, 'a', 'b'), editSection('2222222..3333333', 9, 'c', 'd')].join('\n');
+      editsWith(() => turn);
+      const { state, create } = await workspaceWith(() => '');
+      await state.setScope('edits');
+      await waitLoaded(state);
+      expect(state.files.map((file) => [file.path, file.mergedSections])).toEqual([['x.go', 2]]);
+      const nine = { filePath: 'x.go', side: 'new' as const, newLine: 9, selectedText: 'd' };
+      const id = state.openDraftEditor(nine)!;
+
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors).toEqual([{ id, filePath: 'x.go', side: 'new', state: 'placed', anchor: nine, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+
+      // A third edit of the file: its first section's ids are unchanged,
+      // and prove nothing of the whole.
+      turn = [editSection('1111111..2222222', 3, 'a', 'b'), editSection('2222222..3333333', 9, 'c', 'd'), editSection('3333333..4444444', 20, 'e', 'f')].join('\n');
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'detached', anchor: null });
+      await expect(state.createComment(id, 'x')).rejects.toEqual(refused('detached'));
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('saves no comment on a line number two rows of the file share, and lets the editor move', async () => {
+      // Line 1 changed twice in one turn, a to b and then b to c: the two
+      // added rows both have new line 1, and a saved line cannot say which.
+      editsWith(() => [editSection('1111111..2222222', 1, 'a', 'b'), editSection('2222222..3333333', 1, 'b', 'c')].join('\n'));
+      const { state, create } = await workspaceWith(() => '');
+      await state.setScope('edits');
+      await waitLoaded(state);
+      const file = state.files[0]!;
+      const onC = Array.from({ length: file.body.lineCount }, (_, index) => index).find((index) => file.body.text(index) === '+c')!;
+      const id = state.openDraftEditor({ filePath: 'x.go', side: 'new', newLine: 1, selectedText: 'c', lineIndex: onC })!;
+      expect(id).toBeTruthy();
+      expect(state.openEditors[0]).toMatchObject({ id, state: 'placed', repeated: true, occurrence: 1 });
+      await expect(state.createComment(id, 'On c.')).rejects.toEqual(refused('repeated'));
+      expect(create).not.toHaveBeenCalled();
+      state.moveEditor(id);
+      expect(state.armedEditorId).toBe(id);
+    });
+
+    it('keeps a placed editor of a section with no index line through a reload of the same bytes', async () => {
+      editsWith(() => editSection(null, 3, 'a', 'b'));
+      const { state } = await workspaceWith(() => '');
+      await state.setScope('edits');
+      await waitLoaded(state);
+      const three = { filePath: 'x.go', side: 'new' as const, newLine: 3, selectedText: 'b' };
+      const id = state.openDraftEditor(three)!;
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.openEditors).toEqual([{ id, filePath: 'x.go', side: 'new', state: 'placed', anchor: three, suggested: null, armed: false, occurrence: 0, repeated: false, generation: expect.any(Number) }]);
+    });
+  });
+
+  it('commits the subject the load resolved, not the one asked for', async () => {
+    setBindingMock('ListBranchCommits', async () => commitList([{ sha: 'commit-a', subject: 'change' }]));
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('src/app.ts', 1));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('branch');
+    await waitLoaded(state);
+    // A commit the list does not have: the load shows the whole branch.
+    await state.selectCommit('commit-gone');
+    await waitLoaded(state);
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })).not.toBeNull();
+  });
+});
+
+describe('reviewPane store — open new-comment editors of the PR on screen', () => {
+  it('opens and saves against the diff on screen while the controls name another PR, and after its load fails', async () => {
+    seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/5', openPrNumber: 5 });
+    installPRMocks();
+    setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
+      id: `sub-${pr.Number}`,
+      prKey: `github:owner/repo:${pr.Number}`,
+      detail: prDetailStub({ number: pr.Number, headSHA: pr.Number === 5 ? 'sha-a' : 'sha-z' }),
+      threads: [],
+      headSHA: pr.Number === 5 ? 'sha-a' : 'sha-z',
+    }));
+    const create = setBindingMock('CreateDiffReviewComment', async (_thread: string, input: Partial<DiffReviewComment>) => draft(input));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await waitLoaded(state);
+    const line = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
+    const onFive = state.openDraftEditor(line)!;
+    expect(onFive).toBeTruthy();
+
+    // The workspace's PR is now #7; its diff is loading.
+    seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/7', openPrNumber: 7 });
+    let failDiff!: (err: Error) => void;
+    setReviewDiffMock('OpenPRDiff', () => new Promise<string>((_resolve, reject) => { failDiff = reject; }));
+    const reloading = state.reload();
+    await vi.waitFor(() => {
+      expect(state.prRef?.number).toBe(7);
+      expect(failDiff).toBeTypeOf('function');
+    });
+    expect(state.openDraftEditor({ ...line, newLine: 2, selectedText: 'line 2' })).toBeNull();
+    await state.createComment(onFive, 'On #5.');
+    expect(create.mock.calls[0]?.[1]).toMatchObject({ scope: 'pr', sourceKey: PR_SOURCE_KEY, commitSha: 'sha-a', newLine: 1 });
+
+    failDiff(new Error('fetch pull request diff: HTTP 502'));
+    await reloading;
+    await waitLoaded(state);
+    expect(state.error).toContain('HTTP 502');
+    expect(state.prRef?.number).toBe(7);
+    expect(state.files.map((file) => file.path)).toEqual(['src/app.ts']);
+    expect(state.openDraftEditor({ ...line, newLine: 3, selectedText: 'line 3' })).toBeNull();
+    expect(state.openDraftEditor(line)).toBeNull();
+  });
+
+  it('excludes a saved draft with one number on an unchanged line from the review, as before', async () => {
+    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: [], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    try {
+      installPRMocks();
+      setReviewDiffMock('OpenPRDiff', async () => ['diff --git a/src/app.ts b/src/app.ts', 'index 1111111..2222222 100644', '--- a/src/app.ts', '+++ b/src/app.ts', '@@ -1,3 +1,4 @@', ' keep 1', '-old 2', '+new 2', '+added', ' keep 3'].join('\n'));
+      const stored = [
+        { ...draft({ id: 'left-only', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'old', selectedText: 'keep 3', body: 'Left.' }), oldLine: 3, newLine: undefined },
+        { ...draft({ id: 'right-only', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'new', selectedText: 'keep 3', body: 'Right.' }), oldLine: undefined, newLine: 4 },
+        { ...draft({ id: 'added', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'new', selectedText: 'added', body: 'Added.' }), oldLine: undefined, newLine: 3 },
+      ];
+      setBindingMock('ListDiffReviewComments', async (_thread: string, scope: string) => (scope === 'pr' ? stored.map((row) => ({ ...row })) : []));
+      setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
+      const submit = getBindingMock('SubmitPRReview')!;
+      const state = reviewStateForPane('pane-1', prSubject());
+      await waitLoaded(state);
+      await state.setScope('pr');
+      await waitLoaded(state);
+      await vi.waitFor(() => expect(state.drafts).toHaveLength(3));
+      expect([...state.orphanedDraftIds()].sort()).toEqual(['left-only', 'right-only']);
+      await state.submitPRReview();
+      expect(submit.mock.calls[0]?.[1]).toMatchObject({ comments: [{ path: 'src/app.ts', body: 'Added.', line: 3, side: 'right' }] });
+    } finally {
+      __setTransportHelloForTest(null);
+    }
+  });
+
+  it('saves both halves of a split context row with both numbers, and the review posts them as the unchanged line', async () => {
+    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: [], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    try {
+      installPRMocks();
+      setReviewDiffMock('OpenPRDiff', async () => [
+        'diff --git a/src/app.ts b/src/app.ts',
+        'index 1111111..2222222 100644',
+        '--- a/src/app.ts',
+        '+++ b/src/app.ts',
+        '@@ -1,3 +1,4 @@',
+        ' keep 1',
+        '-old 2',
+        '+new 2',
+        '+added',
+        ' keep 3',
+      ].join('\n'));
+      const rows: DiffReviewComment[] = [];
+      setBindingMock('CreateDiffReviewComment', async (_thread: string, input: Partial<DiffReviewComment>) => {
+        const row = { ...draft({ ...input, id: `c-${rows.length + 1}` }), oldLine: input.oldLine, newLine: input.newLine };
+        rows.push(row);
+        return row;
+      });
+      setBindingMock('ListDiffReviewComments', async (_thread: string, scope: string, sourceKey: string) =>
+        rows.filter((row) => row.scope === scope && row.sourceKey === sourceKey && row.status === 'draft').map((row) => ({ ...row })));
+      setBindingMock('MarkDiffReviewCommentsSent', async (_t: string, _s: string, _k: string, ids: string[]) => {
+        for (const row of rows) if (ids.includes(row.id)) row.status = 'sent';
+      });
+      const submit = getBindingMock('SubmitPRReview')!;
+      const state = reviewStateForPane('pane-1', prSubject());
+      await waitLoaded(state);
+      await state.setScope('pr');
+      await waitLoaded(state);
+
+      const left = state.openDraftEditor({ filePath: 'src/app.ts', side: 'old', oldLine: 3, selectedText: ' keep 3' })!;
+      const right = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 4, selectedText: ' keep 3' })!;
+      await state.createComment(left, 'Left half.');
+      await state.createComment(right, 'Right half.');
+      // An unchanged line carries both numbers, whichever half was used.
+      expect(state.drafts.map((comment) => [comment.side, comment.oldLine, comment.newLine])).toEqual([['old', 3, 4], ['new', 3, 4]]);
+      expect(state.orphanedDraftIds().size).toBe(0);
+      // Each renders on its row, not under the file header.
+      const built = buildReviewRows({ files: state.files, viewMode: 'split', collapsedPaths: new Set(), drafts: state.drafts, openEditors: [] });
+      const threadAt = built.rows.findIndex((row) => row.kind === 'comment-thread');
+      expect(built.rows[threadAt - 1]?.kind).toBe('line-block');
+
+      await state.submitPRReview();
+      expect(submit.mock.calls[0]?.[1]).toMatchObject({
+        comments: [
+          { path: 'src/app.ts', body: 'Left half.', line: 4, oldLine: 3, side: 'right' },
+          { path: 'src/app.ts', body: 'Right half.', line: 4, oldLine: 3, side: 'right' },
+        ],
+      });
+    } finally {
+      __setTransportHelloForTest(null);
+    }
+  });
+});
+
+describe('reviewPane store — runs of a PR\'s commits', () => {
+  const REVISION = { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-a' };
+  const B = 'b'.repeat(40);
+  const C = 'c'.repeat(40);
+  // Newest first: the head, then b, then c the first commit.
+  const COMMITS = [
+    { sha: 'sha-a', shortSha: 'sha-a', subject: 'head', author: 'r', authoredAt: 3 },
+    { sha: B, shortSha: 'bbbbbbb', subject: 'middle', author: 'r', authoredAt: 2 },
+    { sha: C, shortSha: 'ccccccc', subject: 'first', author: 'r', authoredAt: 1 },
+  ];
+  // The run b..head touches src/app.ts lines the whole PR has, and a file
+  // a later commit put back, so the whole PR does not change it.
+  const RUN_PATCH = [
+    patchFor('src/app.ts', 3),
+    'diff --git a/src/undone.ts b/src/undone.ts',
+    'index 2222222..3333333 100644',
+    '--- a/src/undone.ts',
+    '+++ b/src/undone.ts',
+    '@@ -1,2 +1,2 @@',
+    ' keep',
+    '-old',
+    '+new',
+  ].join('\n');
+
+  async function prPane() {
+    installPRMocks();
+    setBindingMock('ListPRCommits', async () => commitList(COMMITS));
+    const whole = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
+    const run = setReviewDiffMock('OpenPRCommitDiff', async () => RUN_PATCH);
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    return { state, whole, run };
+  }
+
+  it('opens a run by its two ends and keys its comments by the run', async () => {
+    const { state, run } = await prPane();
+    await state.selectCommits({ first: C, last: B });
+    expect(run).toHaveBeenLastCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), REVISION, C, B, false, false);
+    expect(state.selectedCommits).toEqual({ first: C, last: B });
+    expect(state.sourceKey).toBe(`range:${C}..${B}`);
+    expect(state.headRange).toBe(false);
+    // Not to the head: every line takes the view's own comments.
+    expect(state.lineComment({ filePath: 'src/app.ts', newLine: 1, side: 'new' })).toBeNull();
+  });
+
+  it('turns a run over the whole list into All commits, opening the whole diff', async () => {
+    const { state, whole, run } = await prPane();
+    const before = whole.mock.calls.length;
+    await state.selectCommits({ first: C, last: B });
+    await state.selectCommits({ first: C, last: 'sha-a' });
+    expect(state.selectedCommits).toBeNull();
+    expect(whole.mock.calls.length).toBe(before + 1);
+    expect(run).toHaveBeenCalledTimes(1);
+    // Changes from the first commit is the whole PR: to its first file.
+    await state.selectCommits({ first: C, last: B });
+    await state.showChangesFrom(C);
+    expect(state.selectedCommits).toBeNull();
+    expect(state.pendingJumpFilePath).toBe('src/app.ts');
+    expect(state.sourceKey).toBe(PR_SOURCE_KEY);
+  });
+
+  it('Changes from here runs from a commit to the head, takes the PR\'s comment home, and answers each line from the whole PR', async () => {
+    const { state, whole } = await prPane();
+    const wholeReads = whole.mock.calls.length;
+    await state.showChangesFrom(B);
+    expect(state.selectedCommits).toEqual({ first: B, last: 'sha-a' });
+    expect(state.headRange).toBe(true);
+    expect(state.sourceKey).toBe(PR_SOURCE_KEY);
+    expect(state.pendingJumpRowKey).toBe(REVIEW_COMMIT_CARD_ROW_KEY);
+    // Built from the whole diff that was on screen: no second read.
+    expect(state.prDiffIndexState).toBe('ready');
+    expect(whole.mock.calls.length).toBe(wholeReads);
+    expect(state.lineComment({ filePath: 'src/app.ts', newLine: 2, side: 'new' })).toEqual({ target: 'pr', reason: null });
+    expect(state.lineComment({ filePath: 'src/undone.ts', newLine: 2, side: 'new' })).toEqual({ target: 'agent', reason: RANGE_LINE_NOT_IN_PR });
+    expect(state.lineComment({ filePath: 'src/undone.ts', newLine: 0, side: 'old' })).toMatchObject({ target: 'none' });
+  });
+
+  it('reads the whole PR for a head run it holds no whole diff for, and a failed read leaves lines to the agent', async () => {
+    const { state, whole } = await prPane();
+    await state.selectCommits({ first: C, last: B });
+    // The whole diff shown before was read without -w: no seed for this.
+    await state.setIgnoreWhitespace(true);
+    let refuse = true;
+    const reads = setReviewDiffMock('OpenPRDiff', async () => {
+      if (refuse) throw new Error('fetch failed');
+      return patchFor('src/app.ts', 3);
+    });
+    void whole;
+    await state.selectCommits({ first: B, last: 'sha-a' });
+    await vi.waitFor(() => expect(state.prDiffIndexState).toBe('failed'));
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(state.prDiffIndexError).toContain('fetch failed');
+    expect(state.lineComment({ filePath: 'src/app.ts', newLine: 2, side: 'new' })).toMatchObject({ target: 'agent' });
+    refuse = false;
+    state.retryPRDiffIndex();
+    await vi.waitFor(() => expect(state.prDiffIndexState).toBe('ready'));
+    expect(state.lineComment({ filePath: 'src/app.ts', newLine: 2, side: 'new' })).toEqual({ target: 'pr', reason: null });
+    // Leaving the run drops the index.
+    await state.selectCommits(null);
+    expect(state.prDiffIndexState).toBe('closed');
+  });
+
+  it('falls back to All commits, saying so, when a held run\'s commits left the PR', async () => {
+    const { state, whole } = await prPane();
+    await state.selectCommits({ first: C, last: B });
+    setBindingMock('ListPRCommits', async () => commitList(COMMITS.filter((commit) => commit.sha !== B)));
+    const before = whole.mock.calls.length;
+    await state.reload();
+    await waitLoaded(state);
+    expect(state.selectedCommits).toBeNull();
+    expect(state.commitSelectionLost).toBe(true);
+    expect(whole.mock.calls.length).toBe(before + 1);
+    state.dismissCommitSelectionLost();
+    expect(state.commitSelectionLost).toBe(false);
   });
 });

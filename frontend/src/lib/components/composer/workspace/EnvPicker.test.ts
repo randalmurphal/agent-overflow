@@ -27,6 +27,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 // Real-thread panes in this suite sit in the project root; the placeholder
 // helper parks its composer in the worktree being removed.
 const WS = { projectId: 'project-1', workspacePath: '/repo' };
+const PROJECT_ROOT = { projectId: 'project-1', workspacePath: '' };
 const WT_WS = { projectId: 'project-1', workspacePath: '/tmp/wt-feature' };
 
 // What RemoveOtherWorktree answers: the caller's workspace after the removal
@@ -42,6 +43,7 @@ function cleanStatus(overrides: Record<string, unknown> = {}) {
     dirty: false,
     uncommittedCount: 0,
     unpushedCommits: 0,
+    orphanCommits: 0,
     hasUpstream: true,
     attachedThreads: 0,
     terminals: 0,
@@ -146,6 +148,62 @@ describe('<EnvPicker>', () => {
     const renamedRow = await findByRole('menuitem', { name: /renamed/ });
     expect(renamedRow.textContent?.replace(/\s+/g, ' ')).toContain('other · renamed');
     expect(renamedRow.querySelector('.lucide-git-branch')).not.toBeNull();
+  });
+
+  it('tells worktrees in same-named directories apart by their parent directory', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/repo', branch: 'main', head: 'abc' },
+      { path: '/data/wt/develop', branch: '', head: 'def' },
+      { path: '/tmp/scratchpad/develop', branch: '', head: 'ghi' },
+      { path: '/tmp/unique', branch: 'unique', head: 'jkl' },
+    ]);
+    setBindingMock('GitWorktreeStatus', async () => cleanStatus({ path: '/data/wt/develop', branch: '' }));
+    const { getByTestId, findByRole, findByLabelText, findByTestId } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+
+    // Detached rows lead with their commit; the directory label follows.
+    await findByRole('menuitem', { name: /^detached at def · wt\/develop/ });
+    await findByRole('menuitem', { name: /^detached at ghi · scratchpad\/develop/ });
+    await findByRole('menuitem', { name: /^unique/ });
+
+    await fireEvent.click(await findByLabelText('Remove worktree wt/develop'));
+    const confirmRow = await findByTestId('env-picker-confirm-row');
+    expect(confirmRow.textContent ?? '').toMatch(/Remove\s*detached at def\s*·\s*wt\/develop\?/);
+  });
+
+  it('marks a worktree whose directory is gone, refuses to enter it and still removes it', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/repo', branch: 'main', head: 'abc' },
+      { path: '/tmp/gone', branch: '', head: 'def', missing: true },
+    ]);
+    setBindingMock('GitWorktreeStatus', async () =>
+      cleanStatus({ path: '/tmp/gone', branch: '', hasUpstream: false, missing: true }));
+    setBindingMock('UpdateThreadWorkspace', async () => makeThread({ workspacePath: '/tmp/gone' }));
+    setBindingMock('RemoveOtherWorktree', async () => removal());
+    const { getByTestId, findByRole, findByLabelText, findByTestId } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+
+    const row = await findByRole('menuitem', { name: /gone/ });
+    expect(row.textContent ?? '').toContain('missing');
+    expect(row).toHaveAttribute('aria-disabled', 'true');
+    expect(row).toHaveAttribute('title', expect.stringMatching(/folder no longer exists/));
+    await fireEvent.click(row);
+    expect(getBindingMock('UpdateThreadWorkspace')?.mock.calls ?? []).toHaveLength(0);
+
+    const trash = await findByLabelText('Remove worktree gone');
+    expect(trash).not.toBeDisabled();
+    await fireEvent.click(trash);
+    expect((await findByTestId('env-picker-confirm-missing')).textContent ?? '').toMatch(/folder is already gone/);
+    await fireEvent.click(await findByTestId('env-picker-confirm-remove'));
+    await waitFor(() => {
+      expect(getBindingMock('RemoveOtherWorktree')?.mock.calls[0]).toEqual([WS, '/tmp/gone', false]);
+    });
   });
 
   it('stages a new worktree without switching immediately', async () => {
@@ -663,7 +721,45 @@ describe('<EnvPicker>', () => {
     await findByLabelText(/Remove worktree wt-other/);
     expect(queryByTestId('env-picker-list-error')).toBeNull();
     const calls = getBindingMock('GitListWorktrees')!.mock.calls;
-    expect(calls[calls.length - 1][0]).toEqual(WS);
+    expect(calls[calls.length - 1][0]).toEqual(PROJECT_ROOT);
+  });
+
+  // The removal answered, but this pane's row has not caught up: it still
+  // names the deleted worktree. The refresh after the removal must not read
+  // the list through that path.
+  it('lists from the project root after removing its own worktree before its row moves', async () => {
+    const onWorktree = makeThread({
+      workspacePath: '/tmp/wt-feature',
+      worktreePath: '/tmp/wt-feature',
+      projectPath: '/repo',
+      branch: 'feat',
+    });
+    const pane = await buildPane(onWorktree);
+    let gitRemoved = false;
+    setBindingMock('GitListWorktrees', async (ws: { workspacePath: string }) => {
+      if (gitRemoved && ws.workspacePath === '/tmp/wt-feature') {
+        throw new Error('resolve workspace: "/tmp/wt-feature" is not a workspace of project /repo');
+      }
+      return gitRemoved
+        ? [{ path: '/repo', branch: 'main', head: 'abc' }, { path: '/tmp/wt-other', branch: 'other', head: 'ghi' }]
+        : [{ path: '/repo', branch: 'main', head: 'abc' }, { path: '/tmp/wt-feature', branch: 'feat', head: 'def' }];
+    });
+    setBindingMock('GitWorktreeStatus', async () => cleanStatus({ attachedThreads: 1 }));
+    setBindingMock('RemoveOtherWorktree', async () => {
+      gitRemoved = true;
+      return removal();
+    });
+
+    const { getByTestId, findByLabelText, findByTestId, queryByTestId } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+    await fireEvent.click(await findByLabelText(/Remove worktree wt-feature/));
+    await fireEvent.click(await findByTestId('env-picker-confirm-remove'));
+
+    await findByLabelText(/Remove worktree wt-other/);
+    expect(pane.thread?.workspacePath).toBe('/tmp/wt-feature');
+    expect(queryByTestId('env-picker-list-error')).toBeNull();
   });
 
   // A list read already running when the removal starts describes the tree
@@ -829,6 +925,53 @@ describe('<EnvPicker>', () => {
     await waitFor(() => {
       const call = getBindingMock('RemoveOtherWorktree')?.mock.calls[0];
       expect(call).toEqual([WS, '/tmp/wt-feature', true]);
+    });
+  });
+
+  it('names a worktree with no branch by its tag or detached commit, with their icons', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/repo', branch: 'main', head: 'abc' },
+      { path: '/tmp/release', branch: '', tag: 'v2.4.0', head: 'aaa1111' },
+      { path: '/tmp/v1.0', branch: '', tag: 'v1.0', head: 'bbb2222' },
+      { path: '/tmp/poke', branch: '', head: '0123456789abcdef' },
+    ]);
+    const { getByTestId, findByRole } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+
+    const tagRow = await findByRole('menuitem', { name: /^v2\.4\.0 · release/ });
+    expect(tagRow.querySelector('[data-checkout-kind="tag"]')).not.toBeNull();
+    // A tag named like its directory is not repeated; its icon still marks it.
+    const sameNameRow = await findByRole('menuitem', { name: /^v1\.0$/ });
+    expect(sameNameRow.querySelector('[data-checkout-kind="tag"]')).not.toBeNull();
+    const commitRow = await findByRole('menuitem', { name: /^detached at 0123456 · poke/ });
+    expect(commitRow.querySelector('[data-checkout-kind="commit"]')).not.toBeNull();
+  });
+
+  it('treats commits on no branch as unsaved work in the remove confirmation', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/repo', branch: 'main', head: 'abc' },
+      { path: '/tmp/release', branch: '', tag: 'v2.4.0', head: 'aaa1111' },
+    ]);
+    setBindingMock('GitWorktreeStatus', async () =>
+      cleanStatus({ path: '/tmp/release', branch: '', hasUpstream: false, orphanCommits: 2 }));
+    setBindingMock('RemoveOtherWorktree', async () => removal());
+    const { getByTestId, findByLabelText, findByTestId, queryByTestId } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+    await fireEvent.click(await findByLabelText('Remove worktree release'));
+
+    const confirmRow = await findByTestId('env-picker-confirm-row');
+    await waitFor(() => expect(confirmRow.textContent ?? '').toContain('2 commits on no branch'));
+    expect(confirmRow.textContent ?? '').toMatch(/Remove\s*v2\.4\.0\s*·\s*release/);
+    expect(queryByTestId('env-picker-confirm-remove')).toBeNull();
+    await fireEvent.click(getByTestId('env-picker-confirm-force'));
+    await waitFor(() => {
+      expect(getBindingMock('RemoveOtherWorktree')?.mock.calls[0]).toEqual([WS, '/tmp/release', true]);
     });
   });
 });

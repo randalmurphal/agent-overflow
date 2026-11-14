@@ -7,6 +7,11 @@ import {
   resetForTest as resetProviderAccounts,
   setProviderAccount,
 } from '../../../stores/accountInfo.svelte';
+import {
+  resetForTest as resetRateLimits,
+  setProviderRateLimits,
+} from '../../../stores/rateLimitsInfo.svelte';
+import { makeItem } from '../../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
 import { ThreadMCPServer } from '../../../stores/bindings';
 import { refreshMcpServers } from '../../../stores/mcpServers.svelte';
@@ -392,6 +397,111 @@ describe('<ComposerToolbar>', () => {
     } finally {
       globalThis.ResizeObserver = realRO;
     }
+  });
+});
+
+describe('<ComposerToolbar> usage rings', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetProviderAccounts();
+    resetRateLimits();
+  });
+  afterEach(() => {
+    resetProviderAccounts();
+    resetRateLimits();
+  });
+
+  const resetsAt = Math.floor(Date.now() / 1000) + 86400;
+  const weekly = { limitId: 'weekly_all', limitName: 'All models', usedPercent: 40, windowMins: 10080, resetsAt };
+  const session = { limitId: 'session', limitName: 'Current session', usedPercent: 12, windowMins: 300, resetsAt };
+
+  function renderLockedToolbar(provider: 'claude' | 'codex' = 'claude') {
+    setProviderAccount(provider, { email: 'a@example.test' }, 'acct');
+    const pane = createThreadPane();
+    pane.replaceThread(makeThread({ provider }));
+    pane.upsertItem(makeItem({ id: 'user:0', kind: 'user_text', role: 'user' }));
+    return render(ComposerToolbar, { props: toolbarProps(pane) });
+  }
+
+  it('shows only the 7d ring before the account has any reading', () => {
+    const { queryByTestId } = renderLockedToolbar();
+    expect(queryByTestId('composer-rate-limit-7d')).not.toBeNull();
+    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
+  });
+
+  it('shows no usage rings before the thread is locked', () => {
+    setProviderRateLimits({ provider: 'claude', accountId: 'acct', limits: [session, weekly], updatedAt: 1 });
+    setProviderAccount('claude', { email: 'a@example.test' }, 'acct');
+    const { queryByTestId } = renderToolbar();
+    expect(queryByTestId('composer-rate-limit-7d')).toBeNull();
+    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
+  });
+
+  it('omits the 5h ring for an account whose reading has no 5h limit', () => {
+    setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [weekly], updatedAt: 1 });
+    const { queryByTestId } = renderLockedToolbar();
+    expect(queryByTestId('composer-rate-limit-7d')).not.toBeNull();
+    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
+  });
+
+  it('mounts the 5h ring when a 5h limit arrives and removes it when a complete reading drops it', async () => {
+    const { queryByTestId } = renderLockedToolbar();
+    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
+
+    setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [session, weekly], updatedAt: 1 });
+    await waitFor(() => expect(queryByTestId('composer-rate-limit-5h')).not.toBeNull());
+    // 5h sits before 7d.
+    const meters = [...document.querySelectorAll('[data-testid^="composer-rate-limit-"]')]
+      .map((el) => el.getAttribute('data-testid'));
+    expect(meters).toEqual(['composer-rate-limit-5h', 'composer-rate-limit-7d']);
+
+    setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [weekly], updatedAt: 2 });
+    await waitFor(() => expect(queryByTestId('composer-rate-limit-5h')).toBeNull());
+    expect(queryByTestId('composer-rate-limit-7d')).not.toBeNull();
+  });
+
+  it('applies the same rule to Codex', async () => {
+    const codexWeekly = { ...weekly, limitId: 'codex', limitName: '' };
+    const codexSession = { ...session, limitId: 'codex', limitName: '' };
+    setProviderRateLimits({ provider: 'codex', accountId: 'acct', limits: [codexWeekly], updatedAt: 1 });
+    const { queryByTestId } = renderLockedToolbar('codex');
+    expect(queryByTestId('composer-rate-limit-7d')).not.toBeNull();
+    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
+
+    setProviderRateLimits({ provider: 'codex', accountId: 'acct', limits: [codexSession], updatedAt: 2 });
+    await waitFor(() => expect(queryByTestId('composer-rate-limit-5h')).not.toBeNull());
+  });
+
+  it('shows only the 5h ring for an account that reports only a 5h limit', () => {
+    setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [session], updatedAt: 1 });
+    const { queryByTestId } = renderLockedToolbar();
+    expect(queryByTestId('composer-rate-limit-5h')).not.toBeNull();
+    expect(queryByTestId('composer-rate-limit-7d')).toBeNull();
+  });
+
+  // A scoped 5h limit alone has no account-wide ring to draw, so it must not
+  // mount an empty 5h meter.
+  it('mounts no 5h ring for a scoped-only 5h limit', () => {
+    const scoped = { ...session, limitId: 'session_scoped:fable', limitName: 'Fable' };
+    setProviderRateLimits({ provider: 'claude', accountId: 'acct', limits: [scoped, weekly], updatedAt: 1 });
+    const { queryByTestId } = renderLockedToolbar();
+    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
+    expect(queryByTestId('composer-rate-limit-7d')).not.toBeNull();
+  });
+
+  it('keeps the mounted 7d meter when the 5h meter appears beside it', async () => {
+    setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [weekly], updatedAt: 1 });
+    const { getByTestId, queryByTestId } = renderLockedToolbar();
+    const weeklyButton = getByTestId('composer-rate-limit-7d').querySelector('button');
+    setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [session, weekly], updatedAt: 2 });
+    await waitFor(() => expect(queryByTestId('composer-rate-limit-5h')).not.toBeNull());
+    expect(getByTestId('composer-rate-limit-7d').querySelector('button')).toBe(weeklyButton);
+  });
+
+  it('reads the 5h limit of the account serving the thread, not another saved account', () => {
+    setProviderRateLimits({ provider: 'claude', accountId: 'other', limits: [session, weekly], updatedAt: 1 });
+    const { queryByTestId } = renderLockedToolbar();
+    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
   });
 });
 

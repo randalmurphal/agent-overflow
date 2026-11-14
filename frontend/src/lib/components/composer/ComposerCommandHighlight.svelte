@@ -30,6 +30,7 @@
   //     holes in their selection.
 
   import { commandSegments, type CommandWordRange } from '../../utils/commandWords';
+  import { COMPOSER_TEXT_CLASSES } from './composerInputSurface';
 
   interface Props {
     /** The exact value the textarea is rendering. */
@@ -73,13 +74,13 @@
     data-testid="composer-command-highlight"
   >
     <!--
-      Geometry twin of the textarea in Composer.svelte: same `px-1 py-1`
-      padding, same `text-[0.8125rem] leading-[1.55]`, same inherited font
+      Geometry twin of the textarea in ComposerInputSurface.svelte: the same
+      COMPOSER_TEXT_CLASSES (padding, size, leading), same inherited font
       family, and the wrapping a textarea does by default
       (`white-space: pre-wrap; overflow-wrap: break-word`).
     -->
     <div
-      class="absolute left-0 top-0 whitespace-pre-wrap px-1 py-1 text-[0.8125rem] leading-[1.55] text-transparent [overflow-wrap:break-word]"
+      class="absolute left-0 top-0 whitespace-pre-wrap {COMPOSER_TEXT_CLASSES} text-transparent [overflow-wrap:break-word]"
       style="width: {width}; transform: translateY({-scrollTop}px)"
     >{#each segments as segment, index (index)}{#if segment.command}<span
           class="bg-card text-accent"

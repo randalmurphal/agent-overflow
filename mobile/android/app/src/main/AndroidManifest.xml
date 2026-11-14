@@ -17,10 +17,15 @@
         `@xml/data_extraction_rules` turns off (it excludes every domain
         from both halves).
     -->
-    <!-- Capacitor checks for a camera activity before launching file-input capture. -->
+    <!-- Capacitor checks for a camera activity before launching file-input
+         capture. Read-aloud binds the system text-to-speech engine, which
+         package visibility hides from an app that does not declare it. -->
     <queries>
         <intent>
             <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
     </queries>
 
@@ -94,4 +99,11 @@
         `navigator.vibrate` a silent no-op.
     -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!--
+        Runtime-prompted. The WebView's getUserMedia asks for both through
+        Capacitor's BridgeWebChromeClient when the composer's mic is pressed,
+        and is refused unless both are declared here.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 </manifest>

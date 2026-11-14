@@ -32,25 +32,19 @@ type prCIFixture struct {
 	logErrs     map[string]error
 	// logCuts cuts the next download of a job off after that many bytes.
 	logCuts map[string]int
-	// resumeGate, when set, holds every resumed download (a request from
-	// an offset) until it is closed.
-	resumeGate chan struct{}
+	// logHold holds every log request after the first until it is closed.
+	logHold chan struct{}
 	// ciInteractive and logInteractive record, per fetch, whether its
 	// context carried the interactive mark.
 	ciInteractive  []bool
 	logInteractive []bool
 	// logRequests is every log request, in order.
-	logRequests []gitops.CIJobLogRequest
-	ciFetches   atomic.Int32
-	logFetches  atomic.Int32
-	// logFetchesAtTerminal is logFetches when a pipeline fetch first
-	// answered with no job live, or -1. The pump fetches the pipeline and
-	// then the logs on one goroutine, so every later log fetch is of a
-	// completed job.
-	logFetchesAtTerminal atomic.Int32
-	snapshotHead         atomic.Pointer[string]
-	ciEvents             chan PRCIUpdatedEvent
-	logEvents            chan PRCILogEvent
+	logRequests  []gitops.CIJobLogRequest
+	ciFetches    atomic.Int32
+	logFetches   atomic.Int32
+	snapshotHead atomic.Pointer[string]
+	ciEvents     chan PRCIUpdatedEvent
+	logEvents    chan PRCILogEvent
 }
 
 func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
@@ -63,7 +57,6 @@ func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
 		ciEvents:  make(chan PRCIUpdatedEvent, 64),
 		logEvents: make(chan PRCILogEvent, 64),
 	}
-	f.logFetchesAtTerminal.Store(-1)
 	head := "head-a"
 	f.snapshotHead.Store(&head)
 	f.app.prUpdates.interval = time.Hour
@@ -79,24 +72,24 @@ func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
 		f.ciInteractive = append(f.ciInteractive, forgeapi.IsInteractive(ctx))
 		f.stepsFor = append(f.stepsFor, slices.Sorted(slices.Values(stepsFor)))
 		f.ciFetches.Add(1)
-		if f.pipelineErr == nil && !gitops.CIPipelineLive(f.pipeline) {
-			f.logFetchesAtTerminal.CompareAndSwap(-1, f.logFetches.Load())
-		}
 		return f.pipeline, f.pipelineErr
 	}
 	f.app.configDir = t.TempDir()
-	f.app.prUpdates.ciLogStreamFn = func(ctx context.Context, _ gitops.PRReference, req gitops.CIJobLogRequest, begin func(gitops.CIJobLogStart) (io.Writer, error)) (bool, error) {
+	f.app.prUpdates.ciLogStreamFn = func(ctx context.Context, _ gitops.RepoReference, req gitops.CIJobLogRequest, begin func(gitops.CIJobLogStart) (io.Writer, error)) (bool, error) {
 		f.logFetches.Add(1)
 		f.mu.Lock()
 		f.logInteractive = append(f.logInteractive, forgeapi.IsInteractive(ctx))
 		f.logRequests = append(f.logRequests, req)
 		text, err, cut := f.logs[req.JobID], f.logErrs[req.JobID], f.logCuts[req.JobID]
 		delete(f.logCuts, req.JobID)
-		gate := f.resumeGate
+		hold := f.logHold
+		if len(f.logRequests) == 1 {
+			hold = nil
+		}
 		f.mu.Unlock()
-		if gate != nil && req.From > 0 {
+		if hold != nil {
 			select {
-			case <-gate:
+			case <-hold:
 			case <-ctx.Done():
 				return false, ctx.Err()
 			}
@@ -159,6 +152,20 @@ func (f *prCIFixture) cutLog(jobID string, n int) {
 	f.logCuts[jobID] = n
 }
 
+// holdLaterLogs holds every log request after the first until the returned
+// release is called, so a test reads the reply to the first download before
+// the follow cadence asks again. The test's end releases it too.
+func (f *prCIFixture) holdLaterLogs(t *testing.T) (release func()) {
+	t.Helper()
+	hold := make(chan struct{})
+	f.mu.Lock()
+	f.logHold = hold
+	f.mu.Unlock()
+	release = sync.OnceFunc(func() { close(hold) })
+	t.Cleanup(release)
+	return release
+}
+
 func (f *prCIFixture) requests() []gitops.CIJobLogRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -168,7 +175,7 @@ func (f *prCIFixture) requests() []gitops.CIJobLogRequest {
 // lines reads a followed job's whole cached log through the RPC.
 func (f *prCIFixture) lines(t *testing.T, jobID string) []string {
 	t.Helper()
-	window, err := f.app.GetPRCILogLines(testPR, jobID, 0, maxCILogLinesPerRead)
+	window, err := f.app.GetPRCILogLines(testPR.Repository(), jobID, 0, maxCILogLinesPerRead)
 	if err != nil {
 		t.Fatalf("GetPRCILogLines(%s): %v", jobID, err)
 	}
@@ -250,6 +257,39 @@ func expectCountHolds(t *testing.T, counter *atomic.Int32, why string) {
 	time.Sleep(60 * time.Millisecond)
 	if after := counter.Load(); after != before {
 		t.Fatalf("%s: count %d -> %d", why, before, after)
+	}
+}
+
+// awaitSettledCIEvent awaits a pipeline frame and the end of the turn
+// that emitted it. A turn emits its pipeline frame before it polls the
+// followed logs, so a follow set right after the frame is otherwise
+// fetched by that turn as well as by the follow's own request.
+func awaitSettledCIEvent(t *testing.T, f *prCIFixture, why string) PRCIUpdatedEvent {
+	t.Helper()
+	evt := awaitCIEvent(t, f.ciEvents, why)
+	settlePumps(t, f.app)
+	return evt
+}
+
+// settlePumps returns once every PR and pipeline pump of app served an
+// empty request. A pump takes a request only between turns, so no turn
+// that began before the call is still running.
+func settlePumps(t *testing.T, app *App) {
+	t.Helper()
+	app.prUpdates.mu.Lock()
+	cores := make([]*pumpCore, 0, len(app.prUpdates.pumps)+len(app.prUpdates.pipelines))
+	for _, pump := range app.prUpdates.pumps {
+		cores = append(cores, &pump.pumpCore)
+	}
+	for _, pump := range app.prUpdates.pipelines {
+		cores = append(cores, &pump.pumpCore)
+	}
+	app.prUpdates.mu.Unlock()
+	for _, core := range cores {
+		// A pump that stopped runs no turn.
+		if err := app.requestPump(t.Context(), core, &prPumpRequest{}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) {
+			t.Fatalf("settle the pumps: %v", err)
+		}
 	}
 }
 
@@ -398,12 +438,11 @@ func TestPRCIIntervalPacesEachFollow(t *testing.T) {
 	interval := func(streams bool, ci *gitops.CIPipeline, state prCILogFollow) time.Duration {
 		t.Helper()
 		app.prUpdates.ciLogStreams = &streams
-		pump := &prUpdatePump{pr: testPR, follows: map[string]*prCILogFollow{"7": &state}}
+		phase := &ciPhase{repo: testPR.Repository(), follows: map[string]*prCILogFollow{"7": &state}}
 		if ci != nil {
-			pump.ci, pump.ciKnown = *ci, true
+			phase.ci, phase.ciKnown = *ci, true
 		}
-		var retry time.Duration
-		return app.prCIInterval(pump, &retry)
+		return app.ciInterval(phase)
 	}
 
 	if got := interval(false, nil, prCILogFollow{pendingFinal: true, finalAttempts: prCILogFinalAttempts - 1}); got != follow {

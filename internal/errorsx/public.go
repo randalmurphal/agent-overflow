@@ -22,11 +22,24 @@ func (e *publicError) Error() string {
 }
 func (e *publicError) Unwrap() error { return e.cause }
 
+// Detailed is an error type whose every value carries reviewed,
+// client-safe prose of its own, so none of its values can reach a client
+// without one. PublicDetails reads it like a Public wrapper.
+type Detailed interface {
+	error
+	PublicDetails() (code, message string)
+}
+
 // PublicDetails extracts only the approved message, never the wrapper/cause.
 func PublicDetails(err error) (code, message string, ok bool) {
 	var public *publicError
 	if errors.As(err, &public) {
 		return public.code, public.message, true
+	}
+	var detailed Detailed
+	if errors.As(err, &detailed) {
+		code, message = detailed.PublicDetails()
+		return code, message, true
 	}
 	return "", "", false
 }

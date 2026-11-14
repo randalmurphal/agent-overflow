@@ -43,8 +43,9 @@ func loadAgentMessageMetas(t *testing.T) []agentMessageMeta {
 // The classifier exists three times: usermessage.IsAgentMessage, the store's
 // AgentMessageFilterFor behind the nav rail's ticks, and the frontend's
 // isAgentMessageMeta (userMessageMeta.test.ts reads the same cases). This
-// holds the first two to one answer per row, and Stop's un-send predicate
-// to the same: an agent's message is never the person's to take back.
+// holds the first two to one answer per row, and the person's-message
+// predicate the Claude TUI Stop notice reads to the same: an agent's message
+// is never the person's.
 func TestAgentMessageClassifierAgreesInGoAndSQL(t *testing.T) {
 	t.Parallel()
 	agentMessageMetas := loadAgentMessageMetas(t)
@@ -85,7 +86,7 @@ func TestAgentMessageClassifierAgreesInGoAndSQL(t *testing.T) {
 			t.Errorf("%s: ticked %v, recalled %v; an agent's message is neither and the person's is both", tc.Name, ticked[id], recalled[id])
 		}
 		if isReaderAuthoredUserItem(items[i]) == tc.Agent {
-			t.Errorf("%s: un-send predicate reads it as the person's = %v", tc.Name, !tc.Agent)
+			t.Errorf("%s: isReaderAuthoredUserItem reads it as the person's = %v", tc.Name, !tc.Agent)
 		}
 		// The send-identity read still finds an agent's row by its send id:
 		// that is how a retried request or wake is recognised.

@@ -30,15 +30,15 @@ describe('buildRecallEntries', () => {
   });
 
   it('overlays the loaded window over the backend baseline by position', () => {
-    // The optimistic just-sent row shares a position with nothing in the
-    // backend answer yet; an edited row at a known position wins over it.
+    // The just-sent row shares a position with nothing in the backend
+    // answer yet; an edited row at a known position wins over it.
     const entries = buildRecallEntries(
       [row('u1', 0, 'stale backend text')],
-      [userItem('user:0', 0, 'fresh window text'), userItem('user:1', 1, 'optimistic send')],
+      [userItem('user:0', 0, 'fresh window text'), userItem('user:1', 1, 'just sent')],
       [],
       '',
     );
-    expect(entries).toEqual(['optimistic send', 'fresh window text']);
+    expect(entries).toEqual(['just sent', 'fresh window text']);
   });
 
   it('applies the reader-authored predicate to window rows', () => {

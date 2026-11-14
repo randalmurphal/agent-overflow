@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -84,7 +85,7 @@ func TestSearchThreadMessagesBindingSurfacesResults(t *testing.T) {
 func TestSearchThreadItemsBindingReturnsEmptyOnBlankQuery(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	hits, err := app.SearchThreadItems("t1", "  ", 10)
+	hits, err := app.SearchThreadItems(context.Background(), "t1", "  ", 10)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestSearchThreadItemsBindingIsThreadScoped(t *testing.T) {
 		t.Fatalf("insert item: %v", err)
 	}
 
-	hits, err := app.SearchThreadItems("t1", "seconds", 10)
+	hits, err := app.SearchThreadItems(context.Background(), "t1", "seconds", 10)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}

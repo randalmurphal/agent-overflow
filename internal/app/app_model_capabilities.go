@@ -22,6 +22,10 @@ func (a *App) supportsFastModeForModel(providerName, model string) bool {
 	return supported
 }
 
+// supportsFastModeFromModelInfo judges fast mode by the catalog entry the
+// caller resolved: the provider's own report merged over the shipped list.
+// A model no catalog lists can run fast only on Codex, whose accepted
+// choices outlive catalog availability.
 func supportsFastModeFromModelInfo(
 	providerName, model string,
 	candidate provider.ModelInfo,
@@ -30,7 +34,7 @@ func supportsFastModeFromModelInfo(
 	if found {
 		return chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
 	}
-	return chatmodel.SupportsStoredFastMode(providerName, model)
+	return providerName == string(provider.Codex) && strings.TrimSpace(model) != ""
 }
 
 // fastModeTierIDForModel resolves the wire service-tier id a fast-mode turn on
@@ -90,7 +94,7 @@ func (a *App) draftModelDefaults(providerName, model, effort string, fastMode bo
 	}
 	candidate, found := a.modelInfoForProvider(providerName, model)
 	effort = coerceReasoningEffortFromModelInfo(providerName, model, effort, candidate, found)
-	fastMode = fastMode && supportsFastModeFromModelInfo(providerName, model, candidate, found)
+	fastMode = fastMode && a.savedFastModeStands(providerName, model)
 	return effort, fastMode
 }
 
@@ -101,6 +105,9 @@ func (a *App) sanitizeChatModelProfile(profile store.ChatModelProfile) store.Cha
 	if profile.Provider == string(provider.Codex) {
 		return profile
 	}
+	if profile.FastMode && !a.savedFastModeStands(profile.Provider, profile.Model) {
+		profile.FastMode = false
+	}
 	candidate, found := a.modelInfoForProvider(profile.Provider, profile.Model)
 	if !found {
 		return profile
@@ -110,7 +117,6 @@ func (a *App) sanitizeChatModelProfile(profile store.ChatModelProfile) store.Cha
 		candidate,
 		provider.NormalizeReasoningEffort(profile.ReasoningEffort),
 	))
-	profile.FastMode = profile.FastMode && chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
 	if !chatmodel.ContextWindowSupported(candidate.ContextWindows, profile.ContextWindow) {
 		if tokens, ok := provider.DefaultContextWindowForOptions(candidate.ContextWindows); ok {
 			profile.ContextWindow = tokens
@@ -178,6 +184,21 @@ func (a *App) validateModelChoice(providerName, model string) error {
 		return nil
 	}
 	return provider.ValidateModelID(providerName, model, a.claudeModelsForProvider(providerName))
+}
+
+// savedFastModeStands reports whether a fast-mode choice made earlier is
+// kept on the model. A new choice must pass supportsFastModeForModel. A saved
+// one passes the same check, and also stands while the Claude CLI has
+// reported nothing: which Claude models run fast is known only from its
+// reported model list, live or restored at boot.
+func (a *App) savedFastModeStands(providerName, model string) bool {
+	// The provenance is read before the lookup, so a report that lands in
+	// between is judged by a lookup at least as new.
+	if provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.ClaudeProbeEnrichedCatalog &&
+		a.providerDiscoveryService().ClaudeCatalog(providerName).Provenance != provider.CatalogProbed {
+		return true
+	}
+	return a.supportsFastModeForModel(providerName, model)
 }
 
 // modelInfoForProvider uses capability evidence already available locally.

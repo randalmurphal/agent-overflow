@@ -22,12 +22,18 @@
   import {
     getThreadTerminalState,
     registerTerminalSurface,
+    terminalFocusRegion,
     terminalStateKeyForPane,
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
   import TerminalTabStrip from './TerminalTabStrip.svelte';
   import TerminalBody from './TerminalBody.svelte';
   import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
+  import { TERMINAL_FIND_OVERLAY_CLASS, terminalFindKey } from './terminalFind.svelte';
+  import PaneFindBar from '../panes/PaneFindBar.svelte';
+  import { paneFindSurface } from '../panes/paneFindRegion';
+  import { dropPaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind } from '../../stores/paneFind.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
     surface: ThreadTerminalSurfaceContext;
@@ -40,7 +46,7 @@
 
   let { surface, manual = false, collapsible = true }: Props = $props();
 
-  let bodyEl: { focus: () => void } | undefined = $state(undefined);
+  let bodyEl: { focus: () => void; focusTarget: () => HTMLElement | null } | undefined = $state(undefined);
   // Latch a "focus the terminal body once it exists" intent, drained (and
   // cleared) by the rAF effect below. Every create/switch/close changes
   // activeTerminalID, and TerminalBody is keyed on it, so each remounts the body
@@ -186,6 +192,38 @@
     surface.setVisible(false);
   }
 
+  // Each tab has its own find (terminalFind.svelte.ts). The pane's find
+  // commands reach the active tab's through the surface declaration; the
+  // tab strip's button is the keyboard-free entry, since mod+f inside the
+  // xterm belongs to the shell. It shows once the active tab's find has
+  // registered. A close from the bar returns focus to the terminal (the
+  // bar's fallback focus).
+  function activeFindKey(): string | null {
+    const terminalID = handle.activeTerminalID;
+    return terminalID ? terminalFindKey(surface.paneId, terminalID) : null;
+  }
+
+  function openFind() {
+    const key = activeFindKey();
+    if (key) openPaneFind(key);
+  }
+
+  // Under compact the open bar sits over the tab strip.
+  const stripCovered = $derived.by(() => {
+    const key = activeFindKey();
+    return isCompactLayout() && key !== null && isPaneFindOpen(key);
+  });
+
+  // A closed tab's find state goes with it.
+  let listedTerminals = new Set(handle.tabs.map((t) => t.terminalID));
+  $effect(() => {
+    const now = new Set(handle.tabs.map((t) => t.terminalID));
+    for (const terminalID of listedTerminals) {
+      if (!now.has(terminalID)) dropPaneFind(terminalFindKey(surface.paneId, terminalID));
+    }
+    listedTerminals = now;
+  });
+
   let previousTabCount = handle.tabs.length;
 
   $effect(() => {
@@ -255,27 +293,50 @@
   });
 </script>
 
-<TerminalTabStrip backend={threadMachine(surface.threadId ?? '', null)}
-  {handle}
-  onOpen={() => void openTerminal({ focus: true })}
-  onClose={closeTerminal}
-  onSelect={selectTerminal}
-  onRefresh={refreshActiveTerminal}
-  onCollapse={collapsible ? collapseDrawer : undefined}
-  workspacePath={surface.workspacePath}
-/>
-
-{#if handle.activeTerminalID}
-  {#key handle.activeTerminalID}
-    <TerminalBody
-      bind:this={bodyEl}
+<div
+  class="relative flex flex-1 min-h-0 min-w-0 flex-col"
+  data-testid="terminal-surface"
+  {@attach paneFindSurface(surface.paneId, activeFindKey)}
+>
+  <!-- Under compact the open find bar covers the strip, which takes no
+       taps or focus until it closes. -->
+  <div class="contents" inert={stripCovered}>
+    <TerminalTabStrip backend={threadMachine(surface.threadId ?? '', null)}
       {handle}
-      terminalID={handle.activeTerminalID}
-      paneId={surface.paneId}
+      onOpen={() => void openTerminal({ focus: true })}
+      onClose={closeTerminal}
+      onSelect={selectTerminal}
+      onRefresh={refreshActiveTerminal}
+      onFind={hasPaneFindProvider(activeFindKey()) ? openFind : undefined}
+      onCollapse={collapsible ? collapseDrawer : undefined}
+      workspacePath={surface.workspacePath}
     />
-  {/key}
-{:else}
-  <div class="flex-1 min-h-0 flex items-center justify-center text-fg-muted text-sm">
-    No active terminal.
   </div>
-{/if}
+
+  {#if handle.activeTerminalID}
+    {@const findKey = terminalFindKey(surface.paneId, handle.activeTerminalID)}
+    {#key handle.activeTerminalID}
+      <!-- Static under compact, so the bar places against the surface and
+           covers the strip there. -->
+      <div class="relative compact:static flex flex-1 min-h-0 min-w-0 flex-col" data-terminal-find-host>
+        <TerminalBody
+          bind:this={bodyEl}
+          {handle}
+          terminalID={handle.activeTerminalID}
+          paneId={surface.paneId}
+          {findKey}
+        />
+        <!-- The bar floats over the grid (over the strip under compact), so
+             opening it changes neither the terminal's rows nor the PTY's
+             size. Focus in it is focus in the terminal (terminalFocusRegion). -->
+        <div class={TERMINAL_FIND_OVERLAY_CLASS} data-terminal-find-overlay {@attach terminalFocusRegion(surface.paneId)}>
+          <PaneFindBar paneId={findKey} title="Terminal" floating fallbackFocus={() => bodyEl?.focusTarget() ?? null} />
+        </div>
+      </div>
+    {/key}
+  {:else}
+    <div class="flex-1 min-h-0 flex items-center justify-center text-fg-muted text-sm">
+      No active terminal.
+    </div>
+  {/if}
+</div>

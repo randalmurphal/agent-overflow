@@ -46,14 +46,16 @@
 
   import { getContext, untrack } from 'svelte';
   import {
-    EMBEDDED_HTML_EXTENSIONS,
     Streamdown,
+    alignmentAtEnd,
+    createParseBlocksCache,
+    parseBlocks,
     sanitizeEmbeddedHtmlToken,
-    type ClaimEmbeddedMedia,
-    type Extension,
+    type Alignment,
     type ProvenAppend,
     type Tokens,
   } from '../../markdown';
+  import { chatMarkdownExtensions, chatMarkdownForgeOptions } from './markdown/chatMarkdownOptions';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
     CHAT_MARKDOWN_SETTLED_CONTEXT,
@@ -67,6 +69,8 @@
     streamdownComponentsFor,
   } from './markdown/streamdownConfig';
   import { MarkdownFenceUnwrapper } from './markdown/unwrapMarkdownFence';
+  import ClaimableCodeHost from './markdown/ClaimableCodeHost.svelte';
+  import { provideCodeClaim, type CodeClaim } from './markdown/codeClaim';
   import {
     ensureForgeAttachmentClickDelegate,
     ensureMarkdownCopyDelegate,
@@ -74,17 +78,12 @@
   } from '../../utils/markdownEnhance';
   import {
     LOCAL_IMAGE_HREF_PREFIX,
-    PATH_LINK_HREF_PREFIX,
     buildPathLinkExtension,
     type PathLinkMode,
   } from '../../utils/pathLinkExtension';
   import { buildPreviewLinkExtension } from '../../utils/previewLinkExtension';
-  import {
-    FORGE_ATTACHMENT_HREF_PREFIX,
-    buildForgeAttachmentHref,
-    isForgeAttachmentHref,
-  } from '../../utils/forgeAttachments';
-  import { buildForgeAttachmentExtension } from '../../utils/forgeAttachmentExtension';
+  import { FORGE_ATTACHMENT_HREF_PREFIX } from '../../utils/forgeAttachments';
+  import { CHAT_LINK_PREFIXES } from './markdown/chatLinkPrefixes';
   import {
     FORGE_ATTACHMENT_SOURCE_CONTEXT,
     type ForgeAttachmentSourceReader,
@@ -116,10 +115,12 @@
     sourceAppend,
     streaming = false,
     workspacePath = '',
+    imageWorkspacePath,
     pathRefs,
     threadId = '',
     liveCodeRow,
     embeddedHtml = false,
+    codeClaim = null,
     class: className = '',
   }: {
     source: string;
@@ -135,6 +136,11 @@
      *  gets no href rewriting at all, so third-party
      *  root-relative links can never become editor links there. */
     workspacePath?: string;
+    /** The workspace this prose was written in, when its row recorded one
+     *  (`getAuthoredWorkspaceFromMeta(item.meta)`): relative image paths
+     *  resolve against it instead of `workspacePath`, so an image stays
+     *  the same file after the thread moves to another checkout. */
+    imageWorkspacePath?: string;
     /** Server-validated allowlist of file paths to linkify in prose.
      *  Only paths in this list get the prose `agent-overflow:` link
      *  treatment — this component never invents prose links. Choosing
@@ -161,10 +167,26 @@
      *  as escaped literal text — never silently dropped. See
      *  `markdown/parser/extensions/embeddedHtml.ts`. */
     embeddedHtml?: boolean;
+    /** Fenced blocks the host renders itself, in place (codeClaim.ts). */
+    codeClaim?: CodeClaim | null;
     class?: string;
   } = $props();
 
   setLiveCodeRowContext(() => liveCodeRow);
+  provideCodeClaim(() => codeClaim);
+  // With a claim, code islands ask it first and a claimed block never
+  // retires to static HTML.
+  function streamdownComponents(parseIncomplete: boolean) {
+    const base = streamdownComponentsFor(parseIncomplete);
+    return codeClaim ? { ...base, code: ClaimableCodeHost } : base;
+  }
+  const staticRenderers = $derived.by(() => {
+    const claim = codeClaim;
+    if (!claim) return STREAMDOWN_STATIC_RENDERERS;
+    return {
+      code: (...args: Parameters<typeof STREAMDOWN_STATIC_RENDERERS.code>) => (claim.claims(args[0]) ? null : STREAMDOWN_STATIC_RENDERERS.code(...args)),
+    };
+  });
   // Path links resolve to an editor open on the host desktop, so a page
   // that cannot act there emits none.
   let noHost = $derived(!hasScope('host', threadMachine(threadId, null)));
@@ -217,8 +239,11 @@
   const pathLinkMode = $derived<PathLinkMode>(
     noHost ? (filePreview ? 'html' : 'off') : filePreview ? 'files' : 'editor',
   );
+  // A string, so a row whose recorded workspace equals the thread's does
+  // not rebuild the extension when the record arrives at settle.
+  const imageWorkspace = $derived(imageWorkspacePath || workspacePath);
   const pathLinkExtension = $derived(
-    buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath, pathLinkMode),
+    buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath, pathLinkMode, imageWorkspace),
   );
 
   // `localhost:<port>` rewriting, for prose about a machine that is not the
@@ -253,63 +278,40 @@
   const forgeNumber = $derived(forgeSource?.pr.number ?? 0);
   const forgeBackend = $derived(forgeSource?.backend ?? '');
   const forgeWebBase = $derived(forgeSource?.webBase ?? '');
-  const forgeAttachmentExtensions = $derived.by(() => {
-    if (forgeForge !== 'github' && forgeForge !== 'gitlab') return undefined;
-    return buildForgeAttachmentExtension({
-      pr: {
-        forge: forgeForge,
-        host: forgeHost,
-        namespace: forgeNamespace,
-        repo: forgeRepo,
-        number: forgeNumber,
-      },
-      backend: forgeBackend,
-      webBase: forgeWebBase,
+  // The forge attachment extensions, and the same claim for media the
+  // parser never sees as a token: a forge wrapper (`<p align="center"><img
+  // …>`, `<a href><img>`, a screenshot table, a `<details>` body) is ONE
+  // html block, so the sanitizer asks `claimMedia` per
+  // `<img>`/`<video>`/`<source>` and `EmbeddedHtmlHost` mounts a real
+  // attachment host over each claim. Built by chatMarkdownOptions.ts, which
+  // find's projection (markdownFindText.ts) builds its parse from too. The
+  // derivation keys on the scalars above, so the extension and function
+  // identities are stable across renders for one PR: a fresh closure per
+  // render would invalidate the renderer's per-block caches on every frame.
+  const forgeOptions = $derived.by(() =>
+    chatMarkdownForgeOptions(
+      forgeForge === 'github' || forgeForge === 'gitlab'
+        ? {
+            pr: { forge: forgeForge, host: forgeHost, namespace: forgeNamespace, repo: forgeRepo, number: forgeNumber },
+            backend: forgeBackend,
+            webBase: forgeWebBase,
+          }
+        : null,
       embeddedHtml,
-    });
-  });
-
-  // The same claim, for media the parser never sees as a token: a forge
-  // wrapper (`<p align="center"><img …>`, `<a href><img>`, a screenshot
-  // table, a `<details>` body) is ONE html block, so the sanitizer asks this
-  // hook per `<img>`/`<video>`/`<source>` and `EmbeddedHtmlHost` mounts a
-  // real attachment host over each claim. Both derivations key on the same
-  // scalars as the extension above, so the function identity is stable
-  // across renders for one PR — a fresh closure per render would invalidate
-  // the renderer's per-block caches on every frame.
-  const forgeClaimMedia = $derived.by<ClaimEmbeddedMedia | undefined>(() => {
-    if (forgeForge !== 'github' && forgeForge !== 'gitlab') return undefined;
-    const pr = {
-      forge: forgeForge,
-      host: forgeHost,
-      namespace: forgeNamespace,
-      repo: forgeRepo,
-      number: forgeNumber,
-    };
-    const backend = forgeBackend;
-    const webBase = forgeWebBase;
-    return (_tag, src) =>
-      isForgeAttachmentHref(pr.forge, src)
-        ? buildForgeAttachmentHref({ href: src, pr, backend, webBase })
-        : null;
-  });
+    ),
+  );
   const renderEmbeddedHtml = $derived.by(() => {
-    const claimMedia = forgeClaimMedia;
-    const options = claimMedia ? { claimMedia } : undefined;
+    const options = forgeOptions.html;
     return (token: Tokens.HTML | Tokens.Tag) => sanitizeEmbeddedHtmlToken(token, options);
   });
 
-  // Forge attachments first, then preview: both the path-link extension and
-  // the embedded-HTML pair claim starts the forge one needs (`[`, `![`,
-  // `<img`, `<video`), and it returns undefined for everything that is not a
-  // forge-shaped href, so nothing behind it loses a token. Preview then
-  // precedes path links, which claim every remaining `[…](…)`.
   const extensions = $derived.by(() => {
-    const list: Extension[] = [];
-    if (forgeAttachmentExtensions) list.push(...forgeAttachmentExtensions);
-    if (previewLinkExtension) list.push(previewLinkExtension);
-    if (pathLinkExtension) list.push(pathLinkExtension);
-    if (embeddedHtml) list.push(...EMBEDDED_HTML_EXTENSIONS);
+    const list = chatMarkdownExtensions({
+      forge: forgeOptions.extensions,
+      preview: previewLinkExtension,
+      pathLink: pathLinkExtension,
+      embeddedHtml,
+    });
     return list.length > 0 ? list : undefined;
   });
 
@@ -323,7 +325,7 @@
   // rendered.
   // `data:` is a denied LINK scheme (it is a document the webview would
   // evaluate), but an inline `data:image/…` src is just bytes for an <img>.
-  const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX, FORGE_ATTACHMENT_HREF_PREFIX];
+  const allowedLinkPrefixes = [...CHAT_LINK_PREFIXES];
   const allowedImagePrefixes = [
     '*',
     LOCAL_IMAGE_HREF_PREFIX,
@@ -397,6 +399,21 @@
       prefixAppend: boundarySplitter.prefixAppend,
       tailAppend: boundarySplitter.tailAppend,
     };
+  });
+
+  // The volatile tail continues the committed prefix, so it starts under
+  // the `[center]`/`[right]` alignment in force at the prefix's end. The
+  // prefix only grows while streaming; its append proof keeps this fold
+  // proportional to the newly committed bytes.
+  let prefixAlignmentCache = createParseBlocksCache();
+  const tailAlignStart = $derived.by((): Alignment => {
+    if (!streaming) {
+      prefixAlignmentCache = createParseBlocksCache();
+      return null;
+    }
+    const { prefix, prefixAppend } = splitDerived;
+    parseBlocks(prefix, extensions, prefixAlignmentCache, prefixAppend);
+    return alignmentAtEnd(prefixAlignmentCache);
   });
 
   // A stable block migrates from the volatile Streamdown to the committed
@@ -511,11 +528,13 @@
   contentAppend?: ProvenAppend,
   trimFirstBlockMargin = false,
   trimLastBlockMargin = false,
+  alignStart: Alignment = null,
 )}
   <Streamdown
     class={wrapperClass}
     {content}
     {contentAppend}
+    {alignStart}
     {parseIncompleteMarkdown}
     isolatedVolatileTail={parseIncompleteMarkdown}
     {diagnostics}
@@ -528,11 +547,11 @@
     compactStaticHtml={true}
     {trimFirstBlockMargin}
     {trimLastBlockMargin}
-    staticRenderers={STREAMDOWN_STATIC_RENDERERS}
+    {staticRenderers}
     staticWorkScheduler={STREAMDOWN_STATIC_WORK_SCHEDULER}
     {extensions}
     onsettled={handleSettled}
-    components={streamdownComponentsFor(parseIncompleteMarkdown)}
+    components={streamdownComponents(parseIncompleteMarkdown)}
   >
     {#snippet inlineCitation({ token })}
       {token.text ?? token.raw}
@@ -567,6 +586,7 @@
       splitDerived.tailAppend,
       !splitDerived.prefix,
       true,
+      tailAlignStart,
     )}
   {/if}
 </div>

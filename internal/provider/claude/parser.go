@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionimport"
 	"agent-overflow/internal/stringsx"
 )
 
@@ -37,6 +38,10 @@ import (
 // readLoop serializes line parsing. A zero-value Parser is valid; the
 // internal maps lazily initialise on first write.
 type Parser struct {
+	// sessionWritesLost is the error text of a system/session_writes_lost
+	// the read loop has not yet handed to the Session
+	// (parse_session_writes_lost.go).
+	sessionWritesLost string
 	// backgroundToolUses marks tool_use IDs expected to answer with a
 	// backgrounding ack, by origin: an input `run_in_background: true`
 	// (a hint the result must confirm) or a task_started resume rebind
@@ -192,6 +197,18 @@ type Parser struct {
 	// instead of sessionEffort (observeRequestEffort).
 	sessionEffortAlternatives []string
 	agentLaunchEfforts        recentMap[agentLaunchEffort]
+	// mainLoopModel is the model of the latest main-loop response, the
+	// model the session's effort applies to (subagent_effort.go).
+	mainLoopModel string
+	// cliVersion selects the subagent effort rule (SetCLIVersion).
+	cliVersion string
+	// runEffortReported holds the rows that recorded `run_effort`,
+	// runEffortSourceRows the mirrored rows already counted toward one, and
+	// heldRunEfforts the efforts mirrored before their row was known, by
+	// agent id or tool use id (recordRunEffort).
+	runEffortReported   recentMap[struct{}]
+	runEffortSourceRows recentMap[struct{}]
+	heldRunEfforts      recentMap[string]
 	// modelAliases is the CLI's alias map, which resolves an Agent
 	// launch's `model` alias (SetModelAliases).
 	modelAliases map[string]string
@@ -199,6 +216,16 @@ type Parser struct {
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.
 	streamBlockTypes map[string]string
+	// streamBlockSignatures accumulates the `signature_delta` chunks of
+	// the thinking blocks open in streamBlockTypes, so the block's stop can
+	// read the signature's tag (sessionimport.ThinkingTag). An entry lives
+	// from the block's first signature chunk to its stop. A block that
+	// never stops releases its entry at its scope's message_stop, at the
+	// next block start on the same index, at the turn boundary and at
+	// session reset. Each entry is capped at
+	// sessionimport.MaxThinkingSignatureBytes; a signature past the cap is
+	// dropped and reads as untagged.
+	streamBlockSignatures map[streamBlockRef]*streamSignature
 	// streamMessageIDs is the API id (`msg_...`) of the response currently
 	// streaming per parent_tool_use_id, taken from its `message_start`.
 	// It is the fallback for the envelope's own `api_message_id`, which
@@ -494,7 +521,12 @@ func (p *Parser) Close() {
 	p.ownedBackgroundTasks = nil
 	p.subagentModelStamped = nil
 	p.agentLaunchEfforts = recentMap[agentLaunchEffort]{}
+	p.mainLoopModel = ""
+	p.runEffortReported = recentMap[struct{}]{}
+	p.runEffortSourceRows = recentMap[struct{}]{}
+	p.heldRunEfforts = recentMap[string]{}
 	p.streamBlockTypes = nil
+	p.streamBlockSignatures = nil
 	p.streamMessageIDs = nil
 	p.streamedMessageIDs = nil
 	p.recoveredBlockSeq = nil
@@ -1160,27 +1192,95 @@ func (p *Parser) rememberStreamBlock(parentToolUseID string, index int, blockTyp
 	if blockType == "" {
 		return
 	}
+	// A block start replaces whatever the index held, including the
+	// signature of a block that never stopped.
+	delete(p.streamBlockSignatures, streamBlockRef{parentToolUseID, index})
 	if p.streamBlockTypes == nil {
 		p.streamBlockTypes = make(map[string]string)
 	}
 	if len(p.streamBlockTypes) >= parserStreamBlockCap {
 		p.streamBlockTypes = make(map[string]string)
+		p.streamBlockSignatures = nil
 	}
 	p.streamBlockTypes[streamBlockKey(parentToolUseID, index)] = blockType
 }
 
-func (p *Parser) takeStreamBlock(parentToolUseID string, index int) string {
+// takeStreamBlock closes an open block and returns its type and, for a
+// thinking block, the signature its deltas carried.
+func (p *Parser) takeStreamBlock(parentToolUseID string, index int) (blockType, signature string) {
+	ref := streamBlockRef{parentToolUseID, index}
+	if sig := p.streamBlockSignatures[ref]; sig != nil {
+		delete(p.streamBlockSignatures, ref)
+		if !sig.dropped {
+			signature = sig.data.String()
+		}
+	}
 	if p.streamBlockTypes == nil {
-		return ""
+		return "", ""
 	}
 	key := streamBlockKey(parentToolUseID, index)
-	blockType := p.streamBlockTypes[key]
+	blockType = p.streamBlockTypes[key]
 	delete(p.streamBlockTypes, key)
-	return blockType
+	if blockType != "thinking" {
+		signature = ""
+	}
+	return blockType, signature
 }
 
 func streamBlockKey(parentToolUseID string, index int) string {
 	return fmt.Sprintf("%s:%d", parentToolUseID, index)
+}
+
+// streamBlockRef names one streaming content block of a scope.
+type streamBlockRef struct {
+	parentToolUseID string
+	index           int
+}
+
+// streamSignature is one open thinking block's accumulated signature.
+type streamSignature struct {
+	data strings.Builder
+	// dropped is set once the signature passes its cap; the block then
+	// reads as untagged whatever arrives later.
+	dropped bool
+}
+
+// appendStreamSignature adds one signature chunk to an open thinking
+// block. A chunk for any other block is ignored: only a thinking block's
+// signature carries a tag.
+func (p *Parser) appendStreamSignature(parentToolUseID string, index int, chunk string) {
+	if chunk == "" || p.streamBlockTypes[streamBlockKey(parentToolUseID, index)] != "thinking" {
+		return
+	}
+	ref := streamBlockRef{parentToolUseID, index}
+	sig := p.streamBlockSignatures[ref]
+	if sig == nil {
+		if p.streamBlockSignatures == nil {
+			p.streamBlockSignatures = make(map[streamBlockRef]*streamSignature)
+		}
+		sig = &streamSignature{}
+		p.streamBlockSignatures[ref] = sig
+	}
+	if sig.dropped {
+		return
+	}
+	if sig.data.Len()+len(chunk) > sessionimport.MaxThinkingSignatureBytes {
+		sig.data.Reset()
+		sig.dropped = true
+		return
+	}
+	sig.data.WriteString(chunk)
+}
+
+// forgetStreamSignatures drops the signatures of a scope's blocks that
+// never stopped. Called at the scope's message_stop: a response that ends
+// cannot stop its blocks afterward.
+func (p *Parser) forgetStreamSignatures(parentToolUseID string) {
+	for ref := range p.streamBlockSignatures {
+		if ref.parentToolUseID == parentToolUseID {
+			delete(p.streamBlockSignatures, ref)
+		}
+	}
 }
 
 // rememberStreamMessageID records the API id of the response that just
@@ -1327,6 +1427,7 @@ func (p *Parser) clearSnapshotRecoveryState() {
 	}
 	p.streamedMessageIDs = nil
 	p.streamMessageIDs = nil
+	p.streamBlockSignatures = nil
 	p.recoveredBlockSeq = nil
 }
 

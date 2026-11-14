@@ -97,8 +97,13 @@ func (a *App) localImages() *localimage.Service {
 	return a.localImageService
 }
 
-// OpenLocalImage satisfies transport.AttachmentTransfer.
+// OpenLocalImage satisfies transport.AttachmentTransfer. The route serves
+// the images review diffs read (app_review_diff_files.go) too: content ids
+// are random, so one id names an entry in one of the two.
 func (t attachmentTransfer) OpenLocalImage(contentID string) (transport.LocalImageContent, error) {
+	if content, ok := t.app.reviewDiffImages().Open(contentID); ok {
+		return transport.LocalImageContent{MimeType: content.MimeType, ModTime: content.StoredAt, Content: content}, nil
+	}
 	content, err := t.app.localImages().Open(contentID)
 	if err != nil {
 		return transport.LocalImageContent{}, err

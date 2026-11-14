@@ -19,6 +19,49 @@ import (
 	"agent-overflow/internal/worktreesetup"
 )
 
+// A checkout move whose thread row cannot be written takes back the
+// worktree and a branch the move made: the new branch of a create, the
+// local branch of an attach to a branch only origin had. A branch that
+// was already local is kept.
+func TestWorktreeMovesUndoTheBranchTheyMadeWhenTheThreadCannotMove(t *testing.T) {
+	t.Parallel()
+	app, dbPath := newTestAppWithStorePath(t)
+	repo, _ := initGitRepoWithOrigin(t)
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// origin-only: on origin, with no local branch.
+	testutil.RunGit(t, repo, "branch", "-q", "origin-only")
+	testutil.RunGit(t, repo, "push", "-q", "origin", "origin-only")
+	testutil.RunGit(t, repo, "branch", "-q", "-D", "origin-only")
+	testutil.RunGit(t, repo, "fetch", "-q", "origin")
+	testutil.RunGit(t, repo, "branch", "-q", "already-local")
+	thread := testThread("thread-move-undo")
+	thread.ProjectID, thread.WorkspacePath, thread.Branch = project.ID, repo, "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	execOnStore(t, dbPath, `CREATE TRIGGER refuse_move BEFORE UPDATE OF worktree_path ON threads BEGIN SELECT RAISE(ABORT, 'injected move failure'); END`)
+
+	if _, err := app.GitCreateWorktree(thread.ID, "made-by-create"); err == nil || !strings.Contains(err.Error(), "injected move failure") {
+		t.Fatalf("GitCreateWorktree = %v, want the move's failure", err)
+	}
+	for _, branch := range []string{"origin-only", "already-local"} {
+		if _, err := app.AttachThreadWorktree(thread.ID, branch); err == nil || !strings.Contains(err.Error(), "injected move failure") {
+			t.Fatalf("AttachThreadWorktree(%s) = %v, want the move's failure", branch, err)
+		}
+	}
+	for branch, want := range map[string]bool{"made-by-create": false, "origin-only": false, "already-local": true} {
+		if got := branchExists(repo, branch); got != want {
+			t.Errorf("branch %s exists = %v, want %v", branch, got, want)
+		}
+	}
+	if worktrees, err := app.gitCore().ListWorktrees(repo); err != nil || len(worktrees) != 1 {
+		t.Fatalf("worktrees = %+v (%v), want the main checkout alone", worktrees, err)
+	}
+}
+
 func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)

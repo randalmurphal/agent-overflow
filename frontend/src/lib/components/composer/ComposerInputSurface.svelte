@@ -7,7 +7,7 @@
   // comment for what deliberately does NOT live here.
 
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
-  import { flushSync, onDestroy } from 'svelte';
+  import { flushSync, onDestroy, untrack } from 'svelte';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
   import AttachmentPicker from './AttachmentPicker.svelte';
@@ -17,14 +17,17 @@
   import ComposerSlashPopover from './ComposerSlashPopover.svelte';
   import ComposerTerminalChipRow from './ComposerTerminalChipRow.svelte';
   import { dispatchComposerInputKeydown, focusTextareaAt, focusTextareaAtEnd } from './composerKeyboard';
+  import { replaceTextareaRange, spacedInsertion } from './textareaEdit';
   import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { createComposerMentions } from './composerMentions.svelte';
   import { createComposerSlash } from './composerSlash.svelte';
   import { createComposerUploads, type UploadInsertionPoint } from './composerUploads.svelte';
   import { slashCommandMatches } from './slashCommands';
-  import type {
-    ComposerInputSelection,
-    ComposerInputSurfaceProps,
+  import { isShellInput } from '../../utils/shellInvocation';
+  import {
+    COMPOSER_TEXT_CLASSES,
+    type ComposerInputSelection,
+    type ComposerInputSurfaceProps,
   } from './composerInputSurface';
 
   let {
@@ -39,17 +42,23 @@
     onKeydownAfterPopovers,
     editsDraft = true,
     showDraftRows = true,
+    shellPrefix = false,
     blockAttachment,
+    attachmentsDeferred = false,
     shouldDeleteAttachmentRecord,
     attachmentCache,
     uploadThreadId,
     ensureUploadThreadId,
+    trailing,
   }: ComposerInputSurfaceProps = $props();
 
   let textarea: HTMLTextAreaElement | undefined = $state(undefined);
   let fileInput: HTMLInputElement | undefined = $state();
   let pickerGeneration = -1;
   let pickerInsertion: UploadInsertionPoint | null = null;
+  let heldPick: { files: File[]; insertion: UploadInsertionPoint | null; generation: number } | null = $state.raw(null);
+  // Attachments are refused for now, not for good.
+  const attachmentsOnHold = $derived(disabled || attachmentsDeferred);
   let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
   let lastAutosizedValue = '';
   // Bumped by recreateInput() to swap the <textarea> element itself (the
@@ -68,18 +77,32 @@
   // 2026-08-23 on the WebView2 build: the JS path cost every keystroke two
   // forced layouts (height:auto → scrollHeight, then the frame's own), and
   // an inline `height` would override the CSS sizing, so the two paths are
-  // exclusive. Detected off the style object rather than `CSS.supports`,
-  // which happy-dom answers true for every query; the unit suite runs the
-  // fallback, the browser suite runs the native path.
+  // exclusive. Detected with a two-sided `CSS.supports` probe: happy-dom
+  // answers true for every query and lists every known property on a style
+  // object, so a one-sided check reads as support where nothing lays out.
+  // The unit suite runs the fallback, the browser suite runs the native path.
   const nativeAutosize =
-    typeof document !== 'undefined' && 'fieldSizing' in document.createElement('textarea').style;
+    typeof CSS !== 'undefined' &&
+    typeof CSS.supports === 'function' &&
+    CSS.supports('field-sizing', 'content') &&
+    !CSS.supports('field-sizing', 'not-a-field-sizing-value');
+
+  // A shell command is not a message: no `/word` or `@file` in it opens a
+  // completion. Read from the textarea, which holds the keystroke being
+  // handled before the host's mode follows it.
+  const typingShellCommand = () => shellPrefix && isShellInput(textarea?.value ?? '');
 
   const mentions = createComposerMentions({
     getTextarea: () => textarea,
     getWorkspace: () => pane.workspace,
+    isShellInput: typingShellCommand,
   });
 
-  const slash = createComposerSlash({ getTextarea: () => textarea, getPane: () => pane });
+  const slash = createComposerSlash({
+    getTextarea: () => textarea,
+    getPane: () => pane,
+    isShellInput: typingShellCommand,
+  });
 
   const uploads = createComposerUploads({
     getContext: () => draft.contextKey,
@@ -120,6 +143,8 @@
   // is in both registries.
   let commandRanges = $derived.by(() => {
     if (!editsDraft || disabled || composingText || !selectionCollapsed) return [];
+    // A shell command is not a message, so no slash word in it is live.
+    if (shellPrefix) return [{ name: '!', start: 0, end: 1 }];
     return [...slash.interceptedRanges(value), ...slashCommandMatches(value)];
   });
 
@@ -199,7 +224,7 @@
   }
 
   function chooseAttachments(accept: string, capture = false): void {
-    if (!fileInput || disabled || refuseAttachment(new Event('pick'))) return;
+    if (!fileInput || attachmentsOnHold || refuseAttachment(new Event('pick'))) return;
     pickerGeneration = pane.switchGeneration;
     pickerInsertion = imagePlaceholders.currentUploadInsertion();
     fileInput.accept = accept;
@@ -213,9 +238,38 @@
   function attachSelectedFiles(event: Event): void {
     const files = Array.from(fileInput?.files ?? []);
     if (fileInput) fileInput.value = '';
-    if (pickerGeneration !== pane.switchGeneration || disabled || refuseAttachment(event)) return;
+    if (files.length === 0 || pickerGeneration !== pane.switchGeneration) return;
+    // The picker opened while the surface took attachments. A selection
+    // that comes back while it does not (a connection that dropped under
+    // the camera, a prompt that arrived) is kept until it does again. The
+    // host's veto is asked only then: while a prompt waits it refuses
+    // everything, and that refusal is not about this selection.
+    if (attachmentsOnHold) {
+      heldPick = { files, insertion: pickerInsertion, generation: pickerGeneration };
+      return;
+    }
+    if (refuseAttachment(event)) return;
     void uploads.uploadFiles(files, pickerInsertion);
   }
+
+  // The held selection uploads once the surface takes attachments again,
+  // and is let go when the pane moved to another thread first. The picker
+  // cannot open while attachments are on hold, so one selection is the
+  // most held.
+  $effect(() => {
+    const held = heldPick;
+    if (!held) return;
+    if (held.generation !== pane.switchGeneration) {
+      heldPick = null;
+      return;
+    }
+    if (attachmentsOnHold) return;
+    heldPick = null;
+    untrack(() => {
+      if (refuseAttachment(new Event('pick'))) return;
+      void uploads.uploadFiles(held.files, held.insertion);
+    });
+  });
 
   function handlePaste(event: ClipboardEvent): void {
     if (refuseAttachment(event)) return;
@@ -277,8 +331,8 @@
 
   export function recreateInput(): void {
     // Deferred to an idle slot rather than run inside the caller's task: a
-    // send's Enter keydown already carries the optimistic message mount, the
-    // sidebar tier-move FLIP, and the dispatch RPC (8-19ms measured
+    // send's Enter keydown already carries the sidebar tier-move FLIP and
+    // the dispatch RPC (8-19ms measured
     // 2026-08-27), and the swap adds ~2-3ms of teardown + refocus plus the
     // style recalc those force. The old element stays mounted and focused
     // until the swap task runs, so no frame ever renders without a textarea
@@ -321,6 +375,15 @@
     autosizeTextarea();
   }
 
+  export function insertText(text: string): boolean {
+    if (!textarea) return false;
+    const { selectionStart: start, selectionEnd: end, value } = textarea;
+    const insertion = spacedInsertion(value.slice(0, start), value.slice(end), text);
+    if (insertion === '') return false;
+    replaceTextareaRange(textarea, start, end, insertion);
+    return true;
+  }
+
   export function uploading(): boolean {
     return uploads.uploading;
   }
@@ -357,6 +420,8 @@
 {#if showDraftRows}
   {#if uploads.uploading}
     <div class="px-4 py-1 text-xs text-fg-muted" role="status">Uploading…</div>
+  {:else if heldPick}
+    <div class="px-4 py-1 text-xs text-fg-muted" role="status" data-testid="composer-attachment-held">Waiting to attach…</div>
   {/if}
   <ComposerAttachmentRow
     attachments={draft.attachments}
@@ -376,8 +441,15 @@
   visible={showDraftRows}
 />
 
-<div class="flex items-end gap-1 px-4 pt-3 pb-2">
-  <div class="relative min-w-0 flex-1">
+<!-- The row's trailing inset is the toolbar's (px-2.5), so a control of
+     Send's size here (the paperclip; on the phone the mic) shares Send's
+     column. The vertical padding gives back what the textarea's own
+     padding took (COMPOSER_TEXT_CLASSES), so the text's top sits where it
+     did. -->
+<div class="flex items-end gap-1 pl-4 pr-2.5 pt-2.5 pb-2 compact:pt-1.5 compact:pb-1">
+  <!-- A shell command is set in the monospace face, on the wrapper so the
+       textarea and its highlight twin inherit the same metrics. -->
+  <div class={['relative min-w-0 flex-1', shellPrefix && 'font-mono']} data-shell-input={shellPrefix ? '' : undefined}>
     <ComposerMentionPopover backend={threadMachine(pane.threadId ?? '', pane.thread?.projectId)}
       anchor={textarea}
       open={mentions.mentionTrigger !== null}
@@ -420,7 +492,7 @@
       aria-label="Message Input"
       rows={1}
       {value}
-      class="field-sizing-content max-h-50 w-full resize-none bg-transparent px-1 py-1 text-[0.8125rem] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+      class="field-sizing-content max-h-50 w-full resize-none bg-transparent {COMPOSER_TEXT_CLASSES} text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
     ></textarea>
     {/key}
 
@@ -433,10 +505,16 @@
       {textarea}
     />
   </div>
-  {#if showDraftRows && editsDraft && threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId) && providerSupports(pane.thread?.provider, 'attachments')}
-    <AttachmentPicker {disabled} onChoose={chooseAttachments} />
+  {#if threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId) && providerSupports(pane.thread?.provider, 'attachments')}
+    {#if showDraftRows && editsDraft}
+      <AttachmentPicker disabled={attachmentsOnHold} onChoose={chooseAttachments} />
+    {/if}
+    <!-- Outlives the picker button: a prompt that hides the draft rows
+         while the platform picker is open must not take away the element
+         its selection returns to. -->
     <input bind:this={fileInput} type="file" multiple hidden aria-label="Choose attachments" onchange={attachSelectedFiles} />
   {/if}
+  {@render trailing?.()}
 </div>
 
 {#if showDraftRows && slash.commandError}

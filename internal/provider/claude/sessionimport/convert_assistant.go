@@ -90,7 +90,11 @@ func (c *converter) convertAssistant(row Row) {
 			}
 			var meta json.RawMessage
 			if sig := rawString(block, "signature"); sig != "" {
-				meta, _ = json.Marshal(map[string]any{"signature": sig})
+				fields := map[string]any{"signature": sig}
+				if ThinkingIsNarration(sig) {
+					fields[provider.MetaNarrationKey] = true
+				}
+				meta, _ = json.Marshal(fields)
 			}
 			c.emit(provider.ProviderEvent{
 				Kind:           provider.EventThinking,

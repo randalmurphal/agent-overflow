@@ -8,7 +8,7 @@ import type { DiffReviewComment, ReviewThread } from '../types/models';
 
 /** 'comment' = a non-resolvable thread (flat conversation comment) —
  * neutral, so it doesn't masquerade as "unresolved". */
-export type CommentItemState = 'unresolved' | 'resolved' | 'outdated' | 'draft' | 'comment';
+export type CommentItemState = 'unresolved' | 'resolved' | 'draft' | 'comment';
 
 export interface CommentFileCounts {
   total: number;
@@ -87,15 +87,53 @@ function stripInlineMarkdown(line: string): string {
  * marker-only replies (`<!-- coderabbit resolve -->`) that render as an
  * empty card; a surface renders a comment only when this is non-empty,
  * and shows THIS so a marker glued to real prose never paints the
- * marker. */
+ * marker. A fenced code block is kept whole: a comment opener inside one
+ * is code. Only a fence at the body's top level is read as one; a
+ * comment that opens before a fence swallows it. */
 export function visibleBody(body: string): string {
-  return body.replace(/<!--[\s\S]*?(?:-->|$)/g, '').trim();
+  const fences = /^ {0,3}(`{3,}|~{3,})([^\n]*)$/gm;
+  // The next fence at or after a position, or null once there is none.
+  let fence: { start: number; end: number } | null | undefined;
+  const fenceFrom = (at: number): { start: number; end: number } | null => {
+    if (fence === null || (fence && fence.start >= at)) return fence;
+    fences.lastIndex = at;
+    for (let open = fences.exec(body); open; open = fences.exec(body)) {
+      const mark = open[1];
+      // A backtick fence's info string holds no backtick.
+      if (mark[0] === '`' && open[2].includes('`')) continue;
+      const close = new RegExp(`^ {0,3}${mark[0]}{${mark.length},}[ \\t]*\\r?$`, 'gm');
+      close.lastIndex = fences.lastIndex;
+      const closed = close.exec(body);
+      return (fence = { start: open.index, end: closed ? closed.index + closed[0].length : body.length });
+    }
+    return (fence = null);
+  };
+  let out = '';
+  let at = 0;
+  while (at < body.length) {
+    const comment = body.indexOf('<!--', at);
+    const next = fenceFrom(at);
+    if (next && (comment < 0 || next.start < comment)) {
+      out += body.slice(at, next.end);
+      at = next.end;
+      continue;
+    }
+    if (comment < 0) {
+      out += body.slice(at);
+      break;
+    }
+    out += body.slice(at, comment);
+    const end = body.indexOf('-->', comment + 4);
+    at = end < 0 ? body.length : end + 3;
+  }
+  return out.trim();
 }
 
 /** Forge timestamps are ISO strings; unparseable input maps to null so
  * the row simply omits the time instead of showing "NaN ago". */
 function threadState(thread: ReviewThread): CommentItemState {
-  if (thread.isOutdated) return 'outdated';
+  // Outdated is a marker, not a state: an open thread on moved code is
+  // still unresolved (utils/reviewThreadStyle.ts).
   // Legacy payloads without the field are all resolvable diff threads.
   if (thread.isResolvable === false) return 'comment';
   if (thread.isResolved) return 'resolved';

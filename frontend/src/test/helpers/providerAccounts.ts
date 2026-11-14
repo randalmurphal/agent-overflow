@@ -22,6 +22,7 @@ export function account(
     active: false,
     generation: 1,
     needsLogin: false,
+    autoSwitch: true,
     ...overrides,
   } as ManagedProviderAccount;
 }

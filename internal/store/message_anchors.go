@@ -9,7 +9,7 @@ import (
 // immediately after the message's items row persists. It carries the
 // provider-side identity of the message — Claude's wire uuid + parent
 // uuid, and the AO turn index Codex anchors resolve against — so
-// fork-from-message and revert-on-interrupt can slice provider history
+// fork-from-message and edit-and-resend can slice provider history
 // at the message boundary. Pure SQLite bookkeeping: the git snapshot
 // machinery that used to hang off this row is gone.
 type MessageAnchor struct {

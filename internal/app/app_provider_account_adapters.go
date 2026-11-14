@@ -1,7 +1,6 @@
 package app
 
 import (
-	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -64,14 +63,6 @@ func (a *App) accountIDForObservedIdentity(
 	info provider.AccountInfo,
 ) (string, *provideraccounts.Account, error) {
 	return a.providerAccounts.ResolveObservedAccount(providerName, expectedAccountID, info)
-}
-
-func enrichCodexObservedIdentity(providerName string, info provider.AccountInfo, credential []byte) provider.AccountInfo {
-	return provideraccountapp.EnrichCodexIdentity(providerName, info, credential)
-}
-
-func enrichClaudeInfoFromOAuthRecord(info provider.AccountInfo, store *claudeconfig.Store) provider.AccountInfo {
-	return provideraccountapp.EnrichClaudeIdentity(info, store)
 }
 
 func describeObservedAccount(info provider.AccountInfo) string {
@@ -165,6 +156,8 @@ func (s providerAccountEventSink) PublishCleared(providerName string, generation
 // be a second, divergent projection of it.
 func (s providerAccountEventSink) PublishAccountsChanged() {
 	s.app.emit(eventchan.ProviderAccountsChanged, nil)
+	s.app.accountSwitch().AccountsChanged(string(provider.Claude))
+	s.app.accountSwitch().AccountsChanged(string(provider.Codex))
 }
 
 func (s providerAccountEventSink) PublishSignIn(signIn provideraccountapp.SignIn) {
@@ -186,20 +179,21 @@ func (s providerAccountEventSink) PublishLogin(state provideraccountapp.LoginSta
 
 func newProviderAccountManager(app *App) *provideraccountapp.Manager {
 	return provideraccountapp.NewManager(provideraccountapp.Deps{
-		Context:         app.lifeCtx,
-		BeginWork:       app.workAdmission.begin,
-		IsShuttingDown:  func() bool { return app.shuttingDown.Load() },
-		ShutdownError:   ErrShuttingDown,
-		CurrentSettings: app.currentSettings,
-		ProviderBinary:  app.providerBinaryPath,
-		OpenBrowser:     app.openExternalURL,
-		LoginSpawnEnv:   func() map[string]string { return app.providerExtraEnv },
-		HTTPClient:      app.rateLimitProbeClient,
-		Sessions:        providerAccountSessionGateway{app: app},
-		Probes:          providerAccountProbeInvalidator{app: app},
-		RateLimits:      providerAccountRateLimitSink{app: app},
-		Backoff:         app.providerLifecycleService(),
-		Accounts:        providerAccountEventSink{app: app},
+		Context:                 app.lifeCtx,
+		BeginWork:               app.workAdmission.begin,
+		IsShuttingDown:          func() bool { return app.shuttingDown.Load() },
+		ShutdownError:           ErrShuttingDown,
+		CurrentSettings:         app.currentSettings,
+		ProviderBinary:          app.providerBinaryPath,
+		ClaudeCleanupPeriodDays: app.claudeCleanupPeriodDays,
+		OpenBrowser:             app.openExternalURL,
+		LoginSpawnEnv:           func() map[string]string { return app.providerExtraEnv },
+		HTTPClient:              app.rateLimitProbeClient,
+		Sessions:                providerAccountSessionGateway{app: app},
+		Probes:                  providerAccountProbeInvalidator{app: app},
+		RateLimits:              providerAccountRateLimitSink{app: app},
+		Backoff:                 app.providerLifecycleService(),
+		Accounts:                providerAccountEventSink{app: app},
 	})
 }
 

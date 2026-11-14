@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 )
@@ -75,9 +76,16 @@ type Host interface {
 	RecoverOrphanedBackgroundTasks() error
 	ClearUIState() error
 	ResetSessionImporter()
+	// ResetForgeCaches forgets what the forge adapters remember of each
+	// host and project, which the next fixture can contradict.
+	ResetForgeCaches()
 	// PauseMergedPRCleanup stops the merged pull request cleanup, joins it
 	// and drops its in-memory state; resume starts it again from nothing.
 	PauseMergedPRCleanup() (resume func())
+	// DropReviewDiffImages forgets the image bytes review diffs read and
+	// what their opens pinned, so a spec's URLs and file handles do not
+	// resolve in the next.
+	DropReviewDiffImages()
 	// DropRetainedEvents empties the event bus replay rings so nothing
 	// emitted before a reset is replayable by the next test's page.
 	DropRetainedEvents()
@@ -110,4 +118,9 @@ type Host interface {
 	StallProviderEvents(threadID string) error
 	ReleaseProviderEvents(threadID string) error
 	PendingProviderEvents(threadID string) int
+	// ClaudeUsageFake is the isolated boot's Claude usage endpoint, nil on a
+	// boot without one. RequestClaudeUsageReading asks for a reading of the
+	// selected Claude account without waiting for it.
+	ClaudeUsageFake() *claudefake.Usage
+	RequestClaudeUsageReading()
 }

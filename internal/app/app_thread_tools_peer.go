@@ -66,7 +66,8 @@ type ThreadPeerCall struct {
 	Inherit threadtools.SpawnDefaults `json:"inherit,omitzero"`
 	// UserStop marks a thread_cancel a person made from the source thread's
 	// Agents tray rather than the source's agent: the receipt settles saying
-	// so. A computer that does not read it words it as the sender's cancel.
+	// so, and a turn it interrupts names the user. A computer that does not
+	// read it words it as the sender's cancel.
 	UserStop bool `json:"userStop,omitempty"`
 }
 
@@ -163,6 +164,7 @@ type ThreadPeerResolve struct {
 //
 //ao:scope threads:read
 //ao:route selected
+//ao:callerbound
 func (a *App) ThreadToolResolve(ctx context.Context, resolve ThreadPeerResolve) (threadtools.Resolution, error) {
 	if _, err := a.remoteCommandOwner(ctx); err != nil {
 		return threadtools.Resolution{}, err
@@ -279,6 +281,7 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 //
 //ao:scope threads:read
 //ao:route selected
+//ao:callerbound
 func (a *App) ThreadToolExportChunk(ctx context.Context, exportID string, offset int64) (RemoteArtifactChunk, error) {
 	if _, err := a.remoteCommandOwner(ctx); err != nil {
 		return RemoteArtifactChunk{}, err
@@ -516,7 +519,7 @@ func (a *App) cancelPeerThreadRequest(ctx context.Context, origin threadRequestO
 		}
 	}
 	if cancel.ThreadID != "" {
-		report, err := a.threadTools().interruptForeignThread(ctx, origin, cancel.ThreadID)
+		report, err := a.threadTools().interruptForeignThread(ctx, origin, cancel.ThreadID, call.UserStop)
 		if err != nil {
 			return ThreadPeerReply{}, a.publicThreadToolError("thread_cancel", origin.caller.ThreadID, err)
 		}

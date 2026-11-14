@@ -2,55 +2,70 @@
   import Pencil from '@lucide/svelte/icons/pencil';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import ReviewAvatar from './ReviewAvatar.svelte';
+  import ReviewCommentEditorShell from './ReviewCommentEditorShell.svelte';
+  import type { SuggestionSource } from './ReviewCommentMarkdown.svelte';
+  import type { EditorPreviewControl } from '../../stores/reviewEditorPreview.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
   import type { DiffReviewComment } from '../../types/models';
-  import { isImeComposingEvent } from '../../utils/imeComposition';
+  import { draftRange, rangeLabel } from '../../utils/reviewRange';
   import { jumpPulse } from '../../utils/reviewJumpPulse';
+  import { findDraftKey } from '../../utils/reviewFindScan';
 
   // The reader's own draft comment on the diff surface: the same card
   // shape as a PR thread, with an accent edge in place of a state edge
   // (a draft has no forge state yet) and edit/delete in place of
-  // reply/resolve.
+  // reply/resolve. The row is virtualized, so an open edit's text lives in
+  // the review state (`draftEditBodyFor`) and survives the row unmounting.
+  // A held reply renders the same card at the foot of its thread.
 
   interface Props {
     comment: DiffReviewComment;
     orphaned?: boolean;
+    /** The unsaved text of this draft's open edit; null when not editing. */
+    editBody: string | null;
+    /** Opens (a body), changes or, with null, discards the edit. */
+    onEditBodyChange: (commentId: string, body: string | null) => void;
+    /** Saves the body; the owner ends the edit on success. */
     onUpdate: (commentId: string, body: string) => Promise<void> | void;
     onDelete: (commentId: string) => Promise<void> | void;
     /** The jump that landed here (utils/reviewJumpPulse); 0 for none. */
     pulse?: number;
+    /** Its body carries its find key: the diff's card does, the
+     * Conversation's (which find does not search) does not. */
+    findable?: boolean;
+    /** The edit's Preview toggle and where a previewed suggestion reads
+     * the lines it replaces. */
+    preview?: EditorPreviewControl | null;
+    previewSource?: SuggestionSource | null;
   }
 
-  let { comment, orphaned = false, onUpdate, onDelete, pulse = 0 }: Props = $props();
-  let editing = $state(false);
-  let editBody = $state('');
+  let { comment, orphaned = false, editBody, onEditBodyChange, onUpdate, onDelete, pulse = 0, findable = true, preview = null, previewSource = null }: Props = $props();
   let busy = $state(false);
-  const canSave = $derived(editBody.trim().length > 0 && !busy);
+  const editing = $derived(editBody !== null);
+  const canSave = $derived((editBody ?? '').trim().length > 0 && !busy);
   const quote = $derived(comment.selectedText.trim().replace(/\s+/g, ' '));
 
+  const range = $derived(draftRange(comment));
+
   function commentLocation(comment: DiffReviewComment): string {
-    if (comment.side === 'file') return comment.filePath;
+    if (comment.side === 'file' || comment.side === 'reply') return comment.filePath;
     const line = comment.side === 'old' ? comment.oldLine : (comment.newLine || comment.oldLine);
     return line ? `${comment.filePath}:${line}` : comment.filePath;
   }
 
   function startEdit(): void {
-    editBody = comment.body;
-    editing = true;
+    onEditBodyChange(comment.id, comment.body);
   }
 
   function cancelEdit(): void {
-    editing = false;
-    editBody = '';
+    onEditBodyChange(comment.id, null);
   }
 
   async function saveEdit(): Promise<void> {
-    if (!canSave) return;
+    if (!canSave || editBody === null) return;
     busy = true;
     try {
       await onUpdate(comment.id, editBody);
-      editing = false;
-      editBody = '';
     } catch {
       // The review-pane store exposes the user-facing error.
     } finally {
@@ -70,20 +85,6 @@
     }
   }
 
-  function onEditKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelEdit();
-      return;
-    }
-    // Mid-composition the edited text is still in the IME buffer, so the
-    // submit chord would save a truncated comment.
-    if (event.key === 'Enter' && isImeComposingEvent(event)) return;
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      void saveEdit();
-    }
-  }
 </script>
 
 <article
@@ -96,7 +97,10 @@
   <div class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {orphaned ? 'border-dashed border-border-strong' : 'border-accent/40 border-l-[3px] border-l-accent'}" {@attach jumpPulse(pulse)}>
     <div class="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 pr-1 {orphaned ? 'bg-surface-2/40' : 'bg-accent/6'}" title={commentLocation(comment)}>
       <span class="shrink-0 font-semibold text-fg">You</span>
-      <span class="shrink-0 rounded-full bg-accent/12 px-1.5 py-px text-[0.625rem] text-accent">draft</span>
+      <span class="shrink-0 rounded-full bg-accent/12 px-1.5 py-px text-[0.625rem] text-accent">{comment.side === 'reply' ? 'draft reply' : 'draft'}</span>
+      {#if range}
+        <span class="shrink-0 text-[0.6875rem] text-fg-subtle" data-testid="review-draft-range">{rangeLabel(range)}</span>
+      {/if}
       {#if orphaned}
         <span class="shrink-0 rounded-full bg-surface-2 px-1.5 py-px text-[0.625rem] text-fg-muted" title="Line no longer in diff">orphaned</span>
       {/if}
@@ -113,31 +117,17 @@
         </div>
       {/if}
       {#if editing}
-        <textarea
-          bind:value={editBody}
-          rows="3"
-          class="w-full resize-none rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-2 text-xs leading-relaxed text-fg focus:border-accent/60 focus:outline-none"
-          onkeydown={onEditKeydown}
-        ></textarea>
-        <div class="mt-2 flex justify-end gap-2">
-          <button
-            type="button"
-            class="rounded-[var(--radius-control)] px-2 py-1 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg"
-            onclick={cancelEdit}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            class="rounded-[var(--radius-control)] bg-accent px-2.5 py-1 text-[0.6875rem] font-medium text-accent-fg disabled:opacity-45"
-            disabled={!canSave}
-            onclick={() => { void saveEdit(); }}
-          >
-            Save
-          </button>
-        </div>
+        <ReviewCommentEditorShell
+          body={editBody ?? ''}
+          onBodyChange={(body) => onEditBodyChange(comment.id, body)}
+          primary={{ label: 'Save', run: saveEdit, disabled: !canSave }}
+          onCancel={cancelEdit}
+          {preview}
+          {previewSource}
+          takeFocus={() => true}
+        />
       {:else}
-        <p class="whitespace-pre-wrap leading-relaxed text-fg">{comment.body}</p>
+        <p class="whitespace-pre-wrap leading-relaxed text-fg" data-find-key={findable ? findDraftKey(comment.id) : undefined}>{comment.body}</p>
       {/if}
     </div>
   </div>

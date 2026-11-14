@@ -8,7 +8,6 @@ import (
 	"log"
 	"maps"
 	"slices"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/chatmodel"
@@ -127,6 +126,7 @@ func (a *App) startSessionNow(threadID string) error {
 		if err := a.store.UpdateThread(sanitized); err != nil {
 			return fmt.Errorf("start session: persist live model settings: %w", err)
 		}
+		a.announceThread(triage.ThreadActionFull, threadID)
 		t = sanitized
 	}
 	// An imported Claude branch that is not its transcript's active branch
@@ -607,6 +607,7 @@ func (a *App) spawnProviderSession(
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
 		cfg.AccessDirs = mem.Dirs
 		applyClaudeSessionAxes(&cfg, appSettings.ClaudeSessionAxesForProvider(t.Provider))
+		cfg.CleanupPeriodDays = a.claudeCleanupPeriodDays(cfg.WorkDir)
 		// The peer-visible name rides the Config rather than the options
 		// bundle on purpose: it is live-changeable through `/rename`, so
 		// letting the reconciler see it would queue a restart every time a
@@ -776,45 +777,7 @@ func (a *App) spawnProviderSession(
 		}, nil
 
 	case string(provider.ClaudeTUI):
-		cfg := claudetui.ConfigFromOptions(opts)
-		// The interactive provider drives the same `claude` binary as the
-		// headless one; there is no separate TUI binary setting.
-		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
-		cfg.AppendSystemPrompt = appGuide
-		cfg.SessionStartHook = mem.Hook
-		cfg.SessionStartForget = mem.Forget
-		cfg.NativeMemoryOff = appSettings.ClaudeNativeMemoryDisabled
-		cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
-		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
-		cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)
-		// claudetui's Config carries a whole environment rather than an
-		// override map, so the shared rule is applied here instead of inside
-		// the provider package. Skipping this branch would leave one provider
-		// silently without the boot-mode overrides and the ao credential.
-		//
-		// The TUI shares Claude's custom environment (one binary, one backend),
-		// with one variable it cannot take through the process env:
-		// ANTHROPIC_BASE_URL names the per-session loopback gateway for the
-		// child, and claudetui's buildEnv strips any inherited value. Handing it
-		// to the gateway's upstream instead is what keeps the interactive
-		// provider on the same backend as the headless one — dropping it here
-		// would silently run take-control sessions against api.anthropic.com
-		// while every other Claude surface used the user's endpoint.
-		//
-		// The command timeout ceiling is applied to the override map here,
-		// before the host environment is merged under it, so its precedence
-		// matches the headless spawn: custom env over the setting over an
-		// inherited value.
-		cfg.Env = provider.BuildEnvironment(claude.WithCommandTimeoutEnv(
-			a.sessionProcessEnv(string(provider.ClaudeTUI), nil, credential),
-			opts.ClaudeMaxCommandTimeoutHours,
-		))
-		cfg.AdditionalDirs = a.claudeAdditionalDirs()
-		cfg.AccessDirs = mem.Dirs
-		cfg.MCPServers, cfg.AllowedTools = claudeTUIMCPServers(mcpServers)
-		cfg.Upstream = a.claudetuiUpstream()
-		cfg.EventLogger = a.logger
-		cfg.SystemPromptDir, err = a.claudePromptFileDir()
+		cfg, err := a.claudeTUISessionConfig(threadID, opts, appGuide, mcpServers, credential, mem)
 		if err != nil {
 			return session{}, err
 		}
@@ -836,6 +799,63 @@ func (a *App) spawnProviderSession(
 	default:
 		return session{}, fmt.Errorf("unknown Provider: %s", t.Provider)
 	}
+}
+
+// claudeTUISessionConfig is the launch configuration of a thread's
+// interactive Claude session.
+func (a *App) claudeTUISessionConfig(
+	threadID string,
+	opts provider.SessionOptions,
+	appGuide string,
+	mcpServers map[string]any,
+	credential aoSessionCredential,
+	mem sessionMemory,
+) (claudetui.Config, error) {
+	cfg := claudetui.ConfigFromOptions(opts)
+	// The interactive provider drives the same `claude` binary as the
+	// headless one; there is no separate TUI binary setting.
+	cfg.Binary = a.providerBinaryPath(string(provider.Claude))
+	cfg.AppendSystemPrompt = appGuide
+	cfg.SessionStartHook = mem.Hook
+	cfg.SessionStartForget = mem.Forget
+	cfg.NativeMemoryOff = a.currentSettings().ClaudeNativeMemoryDisabled
+	cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
+	cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
+	cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)
+	// claudetui's Config carries a whole environment rather than an
+	// override map, so the shared rule is applied here instead of inside
+	// the provider package. Skipping this branch would leave one provider
+	// silently without the boot-mode overrides and the ao credential.
+	//
+	// The TUI shares Claude's custom environment (one binary, one backend),
+	// with one variable it cannot take through the process env:
+	// ANTHROPIC_BASE_URL names the per-session loopback gateway for the
+	// child, and claudetui's buildEnv strips any inherited value. Handing it
+	// to the gateway's upstream instead is what keeps the interactive
+	// provider on the same backend as the headless one — dropping it here
+	// would silently run take-control sessions against api.anthropic.com
+	// while every other Claude surface used the user's endpoint.
+	//
+	// The command timeout ceiling is applied to the override map here,
+	// before the host environment is merged under it, so its precedence
+	// matches the headless spawn: custom env over the setting over an
+	// inherited value.
+	cfg.Env = provider.BuildEnvironment(claude.WithCommandTimeoutEnv(
+		a.sessionProcessEnv(string(provider.ClaudeTUI), nil, credential),
+		opts.ClaudeMaxCommandTimeoutHours,
+	))
+	cfg.AdditionalDirs = a.claudeAdditionalDirs()
+	cfg.AccessDirs = mem.Dirs
+	cfg.MCPServers, cfg.AllowedTools = claudeTUIMCPServers(mcpServers)
+	cfg.CleanupPeriodDays = a.claudeCleanupPeriodDays(cfg.WorkDir)
+	cfg.Upstream = a.claudetuiUpstream()
+	cfg.EventLogger = a.logger
+	var err error
+	cfg.SystemPromptDir, err = a.claudePromptFileDir()
+	if err != nil {
+		return claudetui.Config{}, err
+	}
+	return cfg, nil
 }
 
 func (a *App) codexResumeCollabLaunches(threadID string) ([]codex.ResumeCollabLaunch, error) {
@@ -899,7 +919,7 @@ type SendMessageOptions struct {
 	// app-internal injector leaves it unset, as does any client bundle
 	// older than the field.
 	SendID string `json:"sendId,omitempty"`
-	// ReconcileBySendID declares that the caller retires provisional rows by
+	// ReconcileBySendID declares that the caller finds its message's row by
 	// SendID, rather than predicting user:<turn>. Older callers still send
 	// SendID for idempotency, so its presence alone cannot negotiate this.
 	ReconcileBySendID bool `json:"reconcileBySendId,omitempty"`
@@ -916,10 +936,10 @@ type SendMessageOptions struct {
 // a cancellation, because "cancelled" there is indistinguishable from
 // "delivered".
 //
-// It never refuses on live background agents: its callers, a workflow
-// takeover and an agent request's cancel, are not a person's Stop.
-func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
-	_, err := a.interruptTurnAtIndex(ctx, threadID, anyOpenTurn, nil)
+// Its callers, the workflow runner and an agent's cancel, pass a stop with
+// no consent, so live background agents never refuse it.
+func (a *App) interruptTurnCtx(ctx context.Context, threadID string, stop turnStop) error {
+	_, err := a.interruptTurnAtIndex(ctx, threadID, anyOpenTurn, stop)
 	return err
 }
 
@@ -934,13 +954,18 @@ const anyOpenTurn = -1
 // whatever is running. It reports whether the interrupt was sent, so a caller
 // that must say what it stopped does not have to guess.
 //
-// A person's Stop passes its consent: the call returns a
+// stop names who is stopping the turn, recorded for the requests it
+// answers. The user's Stop carries its consent: the call returns a
 // backgroundKillRefusal while the interrupt would kill a live background
-// agent the consent does not cover. Nil is an interrupt that is not a
-// person's Stop, which is never refused. The check runs before the
-// parked-call cancels below and again under the thread action lock, where an
-// agent launched after the first check is still seen before the interrupt.
-func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectTurnIndex int, consent *agentKillConsent) (bool, error) {
+// agent the consent does not cover. Any other stop is never refused. The
+// check runs before the parked-call cancels below and again under the thread
+// action lock, where an agent launched after the first check is still seen
+// before the interrupt.
+func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectTurnIndex int, stop turnStop) (bool, error) {
+	if !stop.valid() {
+		return false, fmt.Errorf("interrupt turn %s: no stop cause", threadID)
+	}
+	consent := stop.consent
 	if a.shuttingDown.Load() {
 		return false, ErrShuttingDown
 	}
@@ -951,10 +976,18 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	}
 	// A tool call parked on a remote command returns at once as backgrounded;
 	// the command itself keeps running and the tray still owns stopping it.
-	a.cancelRemoteWaits(threadID)
 	// A tool call parked on another thread's request returns the same way:
-	// the request keeps running and the answer arrives as a message.
-	a.cancelThreadRequestWaits(threadID)
+	// the request keeps running and the answer arrives as a message. An
+	// interrupt of whatever is running ends them before it waits for the
+	// lock; a fenced one only once it knows the turn is the one it names,
+	// because the calls belong to whatever turn the thread is running.
+	cancelParked := func() {
+		a.cancelRemoteWaits(threadID)
+		a.cancelThreadRequestWaits(threadID)
+	}
+	if expectTurnIndex == anyOpenTurn {
+		cancelParked()
+	}
 	// Capture before waiting on the app-level thread lock. A Codex revert holds
 	// that lock across its provider and SQLite halves; an interrupt that entered
 	// before or during the cut must not wake afterward and hit the reloaded
@@ -980,9 +1013,8 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	// replacement could reactivate the thread between the post-ack
 	// epoch checks and their store writes, and the Codex resend could
 	// go through a captured session already swapped out (round-12,
-	// CT12-2/CT12-3/C12-2). runPlainInterruptLocked holds the same lock
-	// via its caller — including across the ack wait, the established
-	// precedent that the provider event worker never blocks on this lock.
+	// CT12-2/CT12-3/C12-2). Holding it across the ack wait is safe because
+	// the provider event worker never blocks on this lock.
 	// The in-triage epoch fences stay as defense for an interrupt that
 	// acquires this lock only after a replacement completed.
 	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
@@ -1019,10 +1051,11 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	// previous stamps are RESTORED — not wiped: an entry eager-persisted
 	// by an earlier interrupt still carries that interrupt's valid
 	// stamp.
+	pendingTUISendTurn := a.claudeTUIPendingSendTurn(threadID, sess)
 	interruptedTurn := anyOpenTurn
 	var stampToken triage.FlushStampToken
 	if a.triage != nil {
-		interruptedTurn = a.triage.OpenTurnIndex(threadID)
+		interruptedTurn = a.triage.InterruptTurnIndex(threadID)
 		if expectTurnIndex != anyOpenTurn && interruptedTurn != anyOpenTurn && interruptedTurn != expectTurnIndex {
 			// The thread has moved on to a turn this caller does not own.
 			// Stopping it would take work away from whoever started it.
@@ -1030,8 +1063,13 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		}
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
+	discardsMessage := a.claudeTUIStopDiscardsMessage(threadID, sess, interruptedTurn, pendingTUISendTurn)
+	a.recordTurnStop(threadID, interruptedTurn, stop)
 	if consent != nil {
 		a.notePersonStop(threadID, interruptedTurn)
+	}
+	if expectTurnIndex != anyOpenTurn {
+		cancelParked()
 	}
 	var interruptErr error
 	interruptSent := true
@@ -1041,6 +1079,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		interruptErr = providerSess.Interrupt(context.Background())
 	}
 	if interruptErr != nil {
+		a.dropTurnStop(threadID, interruptedTurn)
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
@@ -1048,6 +1087,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		return false, interruptErr
 	}
 	if !interruptSent {
+		a.dropTurnStop(threadID, interruptedTurn)
 		// The intent entered before a same-session revert and therefore names
 		// the history that operation already discarded. Do not synthesize a
 		// second user interrupt in triage for the reloaded thread.
@@ -1062,13 +1102,16 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		// consumed during the ack wait may have opened its own turn, and
 		// the stopped bookkeeping belongs on the turn the user cut
 		// (round-11, C11-1).
-		if _, err := a.triage.MarkUserInterrupt(threadID, interruptedTurn, stampToken); err != nil {
+		if _, err := a.triage.MarkInterrupt(threadID, interruptedTurn, stampToken, stop.label); err != nil {
 			// The provider stopped; the thread's record of the stop did
 			// not land, so its rows can still read as running.
-			log.Printf("app: interrupt turn: mark user interrupt: %v", err)
+			log.Printf("app: interrupt turn: mark interrupt: %v", err)
 			a.emitErrorToThread(threadID, fmt.Sprintf("The turn stopped, but recording the stop failed: %v", err))
 		}
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)
+	}
+	if discardsMessage {
+		a.noticeClaudeTUIDiscardedMessage(threadID)
 	}
 	return true, nil
 }
@@ -1195,7 +1238,7 @@ func (a *App) codexResendAfterInterrupt(
 	// carries the file lines too — the original dispatch put them on its
 	// providerContent, which Codex discarded with the rest of the pending
 	// input at turn/interrupt.
-	merged := appendFileAttachmentLines(strings.Join(contents, "\n\n"), attachments.fileLines)
+	merged := attachments.promptText(contents, "\n\n")
 	// The merged re-send is correlated to the FIRST item's row, which is
 	// the row the pending entry below is registered for. Items 2+ share
 	// that correlation, exactly as they share the turn.

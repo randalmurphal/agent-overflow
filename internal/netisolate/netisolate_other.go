@@ -21,3 +21,6 @@ func RunHelper(_ []string, stderr io.Writer) int {
 
 // Contained is false: without a namespace a process shares the host network.
 func Contained() bool { return false }
+
+// Inside is false for the same reason.
+func Inside() bool { return false }

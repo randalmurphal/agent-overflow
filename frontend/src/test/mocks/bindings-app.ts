@@ -41,6 +41,7 @@ export function setBindingMock(
 export function setReviewDiffMock(
   name:
     | 'OpenWorkspaceDiff'
+    | 'OpenCommitFileDiff'
     | 'OpenBranchBaseDiff'
     | 'OpenCommitDiff'
     | 'OpenPRDiff'
@@ -212,6 +213,17 @@ export const AutoResumeThread = dispatch('AutoResumeThread');
 export const StopSession = dispatch('StopSession');
 export const ReconnectSession = dispatch('ReconnectSession');
 export const DismissSessionBanner = dispatch('DismissSessionBanner');
+export const DismissUnsavedThreadRows = dispatch('DismissUnsavedThreadRows');
+/**
+ * Every pane open reads it, so like SyncThreadWindow it has a DEFAULT: an
+ * empty list, which is what the backend answers for a thread with nothing
+ * unsaved. An explicit `setBindingMock('GetThreadUnsavedRows', …)` wins.
+ */
+export const GetThreadUnsavedRows = async (threadId: unknown): Promise<unknown> => {
+  const explicit = mocks.get('GetThreadUnsavedRows');
+  if (explicit) return explicit(threadId);
+  return { threadId, rows: [] };
+};
 export const SendMessage = dispatch('SendMessage');
 export const SendMessageWithOptions = dispatch('SendMessageWithOptions');
 export const SteerMessageWithOptions = dispatch('SteerMessageWithOptions');
@@ -220,6 +232,7 @@ export const GetConversationMutationState = dispatch('GetConversationMutationSta
 export const InterruptAndRevertIfClean = dispatch('InterruptAndRevertIfClean');
 export const GetThreadLiveState = dispatch('GetThreadLiveState');
 export const ListThreadLiveActivity = dispatch('ListThreadLiveActivity');
+export const ListUnsettledFlushes = dispatch('ListUnsettledFlushes');
 export const ListPendingInteractiveRequests = dispatch('ListPendingInteractiveRequests');
 export const RespondToApproval = dispatch('RespondToApproval');
 export const RespondToUserInput = dispatch('RespondToUserInput');
@@ -255,6 +268,7 @@ export const UpdateNewThreadDefaults = dispatch('UpdateNewThreadDefaults');
 export const WriteWorkspaceFile = dispatch('WriteWorkspaceFile');
 export const SearchThreadMessages = dispatch('SearchThreadMessages');
 export const SearchThreadItems = dispatch('SearchThreadItems');
+export const SearchTimelineItems = dispatch('SearchTimelineItems');
 export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
 
 export const GetPayloadPreview = dispatch('GetPayloadPreview');
@@ -270,13 +284,16 @@ export const CancelProviderLogin = dispatch('CancelProviderLogin');
 export const SwitchProviderAccount = dispatch('SwitchProviderAccount');
 export const RemoveProviderAccount = dispatch('RemoveProviderAccount');
 export const ReorderProviderAccounts = dispatch('ReorderProviderAccounts');
+export const SetProviderAccountAutoSwitch = dispatch('SetProviderAccountAutoSwitch');
 export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage');
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
+export const GetClaudeTranscriptRetention = dispatch('GetClaudeTranscriptRetention');
 export const ClearBrowserSiteData = dispatch('ClearBrowserSiteData');
 export const BrowserCompanionRevealPageFile = dispatch('BrowserCompanionRevealPageFile');
 export const BrowserCompanionDo = dispatch('BrowserCompanionDo');
+export const BrowserCompanionFind = dispatch('BrowserCompanionFind');
 export const BrowserCompanionPaneAttach = dispatch('BrowserCompanionPaneAttach');
 export const BrowserCompanionPaneDetach = dispatch('BrowserCompanionPaneDetach');
 export const BrowserCompanionPaneRect = dispatch('BrowserCompanionPaneRect');
@@ -310,6 +327,11 @@ export const SetProjectWorktreeSetup = dispatch('SetProjectWorktreeSetup');
 export const DismissThreadWorktreeSetup = dispatch('DismissThreadWorktreeSetup');
 export const GetThreadWorktreeSetup = dispatch('GetThreadWorktreeSetup');
 export const RetryThreadWorktreeSetup = dispatch('RetryThreadWorktreeSetup');
+export const AnswerThreadShellCommand = dispatch('AnswerThreadShellCommand');
+export const RunThreadShellCommand = dispatch('RunThreadShellCommand');
+export const StopThreadShellCommand = dispatch('StopThreadShellCommand');
+export const GetThreadShellCommands = dispatch('GetThreadShellCommands');
+export const ReadShellAttachmentOutput = dispatch('ReadShellAttachmentOutput');
 export const Version = dispatch('Version');
 export const GetErrorLogLines = dispatch('GetErrorLogLines');
 
@@ -542,6 +564,8 @@ export class GitStatusSubscriptionResult {
   }
 }
 export const GitListBranches = dispatch('GitListBranches');
+export const GitListTags = dispatch('GitListTags');
+export const GitRefreshTags = dispatch('GitRefreshTags');
 export const GitListWorktrees = dispatch('GitListWorktrees');
 export const GitCommit = dispatch('GitCommit');
 export const GitPush = dispatch('GitPush');
@@ -568,6 +592,7 @@ export class WorktreeStatus {
   dirty: boolean;
   uncommittedCount: number;
   unpushedCommits: number;
+  orphanCommits: number;
   hasUpstream: boolean;
   attachedThreads: number;
   terminals: number;
@@ -577,6 +602,7 @@ export class WorktreeStatus {
     this.dirty = s.dirty ?? false;
     this.uncommittedCount = s.uncommittedCount ?? 0;
     this.unpushedCommits = s.unpushedCommits ?? 0;
+    this.orphanCommits = s.orphanCommits ?? 0;
     this.hasUpstream = s.hasUpstream ?? false;
     this.attachedThreads = s.attachedThreads ?? 0;
     this.terminals = s.terminals ?? 0;
@@ -596,6 +622,19 @@ export const SaveDraft = dispatch('SaveDraft');
 export const GetDraft = dispatch('GetDraft');
 export const ClearDraft = dispatch('ClearDraft');
 export const DeleteEmptyDraftThread = dispatch('DeleteEmptyDraftThread');
+export const DictationSources = dispatch('DictationSources');
+export const BeginDictation = dispatch('BeginDictation');
+export const MintDictationChunkTicket = dispatch('MintDictationChunkTicket');
+export const FinishDictation = dispatch('FinishDictation');
+export const CancelDictation = dispatch('CancelDictation');
+export const BeginLiveDictation = dispatch('BeginLiveDictation');
+export const AppendLiveDictation = dispatch('AppendLiveDictation');
+export const FinishLiveDictation = dispatch('FinishLiveDictation');
+export const CancelLiveDictation = dispatch('CancelLiveDictation');
+export const OpenAIKeyFile = dispatch('OpenAIKeyFile');
+export const EditOpenAIKeyFile = dispatch('EditOpenAIKeyFile');
+export const ReadAloudSource = dispatch('ReadAloudSource');
+export const MintReadAloudTicket = dispatch('MintReadAloudTicket');
 export const SearchWorkspaceFiles = dispatch('SearchWorkspaceFiles');
 export const ListChatBarFavorites = dispatch('ListChatBarFavorites');
 export const SetChatBarFavorite = dispatch('SetChatBarFavorite');
@@ -607,6 +646,8 @@ export const ResetKeybindings = dispatch('ResetKeybindings');
 
 // Review pane diffs
 export const OpenWorkspaceDiff = dispatch('OpenWorkspaceDiff');
+export const OpenCommitFileDiff = dispatch('OpenCommitFileDiff');
+export const ListCommitFiles = dispatch('ListCommitFiles');
 export const OpenBranchBaseDiff = dispatch('OpenBranchBaseDiff');
 export const OpenCommitDiff = dispatch('OpenCommitDiff');
 export const ReadReviewDiff = dispatch('ReadReviewDiff');
@@ -619,6 +660,9 @@ export const OpenTurnEditsDiff = dispatch('OpenTurnEditsDiff');
 export const GetPayloadPatchSpans = dispatch('GetPayloadPatchSpans');
 export const GetDiffContextLines = dispatch('GetDiffContextLines');
 export const GetEditDiffContextLines = dispatch('GetEditDiffContextLines');
+export const GetReviewDiffFileSizes = dispatch('GetReviewDiffFileSizes');
+export const GetReviewDiffImage = dispatch('GetReviewDiffImage');
+export const GetEditDiffImage = dispatch('GetEditDiffImage');
 export const VerifyEditDiffs = dispatch('VerifyEditDiffs');
 export const HighlightClassNames = dispatch('HighlightClassNames');
 export const HighlightSchemaVersion = dispatch('HighlightSchemaVersion');
@@ -722,18 +766,66 @@ export const GetMergeConflictFile = dispatch('GetMergeConflictFile');
 export const SavePRCIJobLog = dispatch('SavePRCIJobLog');
 export const SavePRCIJobLogSection = dispatch('SavePRCIJobLogSection');
 export const GetPRCILogLines = dispatch('GetPRCILogLines');
+export const SearchPRCILog = dispatch('SearchPRCILog');
 export const FetchForgeAttachment = dispatch('FetchForgeAttachment');
 export const SaveAttachment = dispatch('SaveAttachment');
 export const SaveForgeAttachment = dispatch('SaveForgeAttachment');
 export const ListPRReviewThreads = dispatch('ListPRReviewThreads');
 export const SubmitPRReview = dispatch('SubmitPRReview');
+export const GetPRReviewSubmitOutcome = dispatch('GetPRReviewSubmitOutcome');
 export const ReplyToPRThread = dispatch('ReplyToPRThread');
+export const PostPRLineComment = dispatch('PostPRLineComment');
+export const PostPRComment = dispatch('PostPRComment');
+export const EditPRComment = dispatch('EditPRComment');
+export const DeletePRComment = dispatch('DeletePRComment');
 export const SetPRThreadResolved = dispatch('SetPRThreadResolved');
+export const ApprovePR = dispatch('ApprovePR');
+export const UnapprovePR = dispatch('UnapprovePR');
+export const MergePR = dispatch('MergePR');
+export const CancelPRAutoMerge = dispatch('CancelPRAutoMerge');
+export const UpdatePRBranch = dispatch('UpdatePRBranch');
+export const MarkPRReady = dispatch('MarkPRReady');
+export const EditPR = dispatch('EditPR');
+export const SetPRReviewers = dispatch('SetPRReviewers');
+export const SetPRAssignees = dispatch('SetPRAssignees');
+export const SetPRLabels = dispatch('SetPRLabels');
+export const SetPRState = dispatch('SetPRState');
+export const RerequestPRReview = dispatch('RerequestPRReview');
+export const DismissPRReview = dispatch('DismissPRReview');
+export const BypassPRRequestedChanges = dispatch('BypassPRRequestedChanges');
+export const SearchPRCandidates = dispatch('SearchPRCandidates');
+export const GetPRMergeMessage = dispatch('GetPRMergeMessage');
+export const ApplyPRSuggestion = dispatch('ApplyPRSuggestion');
+export const SetPRCommentReaction = dispatch('SetPRCommentReaction');
+export const ParseCommentSuggestions = dispatch('ParseCommentSuggestions');
 export const SubscribePRUpdates = dispatch('SubscribePRUpdates');
 export const UnsubscribePRUpdates = dispatch('UnsubscribePRUpdates');
 export const SetPRUpdatesActive = dispatch('SetPRUpdatesActive');
 export const SetPRCILogFollows = dispatch('SetPRCILogFollows');
 export const RefreshPRCI = dispatch('RefreshPRCI');
+export const ListForgeProjects = dispatch('ListForgeProjects');
+export const SubscribePRList = dispatch('SubscribePRList');
+export const SetPRListActive = dispatch('SetPRListActive');
+export const RefreshPRList = dispatch('RefreshPRList');
+export const UnsubscribePRList = dispatch('UnsubscribePRList');
+export const ListThreadsOnPR = dispatch('ListThreadsOnPR');
+export const OpenPRThread = dispatch('OpenPRThread');
+export const ListPRDiffReviewComments = dispatch('ListPRDiffReviewComments');
+export const CreatePRDiffReviewComment = dispatch('CreatePRDiffReviewComment');
+export const UpdatePRDiffReviewComment = dispatch('UpdatePRDiffReviewComment');
+export const DeletePRDiffReviewComment = dispatch('DeletePRDiffReviewComment');
+export const MarkPRDiffReviewCommentsSent = dispatch('MarkPRDiffReviewCommentsSent');
+export const SendPRDiffReviewComments = dispatch('SendPRDiffReviewComments');
+export const ListProjectPipelines = dispatch('ListProjectPipelines');
+export const ReadPipelineStages = dispatch('ReadPipelineStages');
+export const SubscribePipeline = dispatch('SubscribePipeline');
+export const SetPipelineActive = dispatch('SetPipelineActive');
+export const SetPipelineFollows = dispatch('SetPipelineFollows');
+export const RefreshPipeline = dispatch('RefreshPipeline');
+export const RunPRCIAction = dispatch('RunPRCIAction');
+export const RunPipelineAction = dispatch('RunPipelineAction');
+export const SaveCIArtifacts = dispatch('SaveCIArtifacts');
+export const UnsubscribePipeline = dispatch('UnsubscribePipeline');
 export const CountRunningBackgroundTasks = dispatch('CountRunningBackgroundTasks');
 export const RunningBackgroundAgents = dispatch('RunningBackgroundAgents');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');

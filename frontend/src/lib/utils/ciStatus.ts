@@ -7,6 +7,19 @@ export function ciJobLive(status: string): boolean {
   return status === 'running' || status === 'pending';
 }
 
+/** The status in words, for the text beside (or the name of) a dot that
+ * shows it in color: "passed", "failed", "no status" for ''. */
+export function ciStatusText(status: string): string {
+  switch (status) {
+    case 'success':
+      return 'passed';
+    case '':
+      return 'no status';
+    default:
+      return status;
+  }
+}
+
 export function ciStatusDotClass(status: string): string {
   switch (status) {
     case 'success':

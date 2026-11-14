@@ -85,42 +85,6 @@ func TestInterruptTurn_ConfirmationNamesAResumedAgentByItsRoot(t *testing.T) {
 	}
 }
 
-// The un-send takes the same confirmation: one naming only some of the
-// live agents is refused before anything is interrupted or reverted.
-func TestInterruptAndRevertIfClean_ConfirmationCoversOnlyTheAgentsItNames(t *testing.T) {
-	t.Parallel()
-	f := newClaudeAgentKillFixture(t)
-	f.launchAgent(t, "first", "task-first", "")
-	f.launchAgent(t, "later", "task-later", "")
-	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "never mind")
-	itemsBefore := f.itemCount(t)
-
-	result, err := f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, []string{"first"})
-	if got := agentIDs(requireRefusal(t, err)); len(got) != 2 {
-		t.Fatalf("refusal agents = %v, want both agents", got)
-	}
-	if result.Reverted || result.Reason != "" {
-		t.Fatalf("refused result = %+v, want empty", result)
-	}
-	if n := f.interrupts(t); n != 0 {
-		t.Fatalf("a refused un-send sent %d interrupts", n)
-	}
-	if got := f.itemCount(t); got != itemsBefore {
-		t.Fatalf("a refused un-send changed rows: %d items, want %d", got, itemsBefore)
-	}
-
-	result, err = f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, []string{"first", "later"})
-	if err != nil {
-		t.Fatalf("InterruptAndRevertIfClean confirmed for both: %v", err)
-	}
-	if result.Reverted || result.Reason != "running background tasks" {
-		t.Fatalf("confirmed result = %+v, want the plain-interrupt decline", result)
-	}
-	if n := f.interrupts(t); n != 1 {
-		t.Fatalf("interrupts = %d, want 1", n)
-	}
-}
-
 // The confirmation crosses the real dispatcher as the list the client sent.
 func TestInterruptTurn_ConfirmationArrivesOverTheWire(t *testing.T) {
 	t.Parallel()

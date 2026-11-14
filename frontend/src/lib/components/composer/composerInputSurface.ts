@@ -13,6 +13,7 @@
 // Deliberately NOT a narrow role: this surface hosts the `/` command
 // runner, which reaches `makeCommandContext` and the whole command
 // action surface. A role for that would just re-describe `ThreadPane`.
+import type { Snippet } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
 import type { AttachmentPreviewCache } from '../../utils/attachmentPreview.svelte';
@@ -75,6 +76,11 @@ export interface ComposerInputSurfaceProps {
    * user-input prompt owns the card.
    */
   showDraftRows?: boolean;
+  /**
+   * The host runs this text as a shell command (a leading `!`), so the `!`
+   * is painted like a command word. The host decides what Enter does.
+   */
+  shellPrefix?: boolean;
 
   // ---- attachments ----
   /**
@@ -94,6 +100,13 @@ export interface ComposerInputSurfaceProps {
    */
   blockAttachment?: (event: Event, notify: boolean) => boolean;
   /**
+   * True while the host refuses attachments only for now (a prompt is
+   * waiting for its answer). A picker selection that returns meanwhile is
+   * kept and attached once this clears, where a `blockAttachment` refusal
+   * is final.
+   */
+  attachmentsDeferred?: boolean;
+  /**
    * Whether removing an attachment also deletes its backing record.
    * Default true. A surface editing a message it did not upload for must
    * answer false for those ids — the record still belongs to the message.
@@ -106,6 +119,15 @@ export interface ComposerInputSurfaceProps {
    * Defaults to `pane.ensureMaterializedThread()`.
    */
   ensureUploadThreadId?: () => Promise<string | null>;
+
+  // ---- host chrome ----
+  /**
+   * Host controls at the input row's trailing edge, after the attachment
+   * picker and on its centerline (the phone composer's mic). A flex
+   * sibling of the textarea, so text never runs under it. The message
+   * editor passes none; the desktop composer keeps its mic in the toolbar.
+   */
+  trailing?: Snippet;
 }
 
 export interface ComposerInputSurfaceHandle {
@@ -138,6 +160,12 @@ export interface ComposerInputSurfaceHandle {
    */
   recreateInput(): void;
   autosizeInput(): void;
+  /**
+   * Insert text at the caret as if typed, replacing any selection and
+   * spaced from the words around it (dictation). Undoable where the engine
+   * keeps a native undo stack. False when there is no input or no text.
+   */
+  insertText(text: string): boolean;
   /** True while an upload batch is in flight. */
   uploading(): boolean;
   /**
@@ -161,3 +189,17 @@ export interface ComposerInputSurfaceHandle {
    */
   consumeInterceptedSend(message: string): boolean;
 }
+
+/**
+ * The textarea's text geometry, shared with `ComposerCommandHighlight`,
+ * whose mirror must wrap and sit exactly where the textarea's text does.
+ *
+ * The vertical padding centers one text line in the input row's controls
+ * (the paperclip, and on the phone the mic: Send's diameter, 2rem on the
+ * desktop and 2.5rem on the phone), so a control bottom-aligned with the
+ * textarea is centered on its last line: `(control - 1.55 * 0.8125rem) / 2`.
+ * `block`, because an inline-block textarea sits on a baseline and leaves
+ * descender space under itself, which put every control 7px low.
+ */
+export const COMPOSER_TEXT_CLASSES =
+  'block px-1 py-[calc((2rem_-_1.55_*_0.8125rem)_/_2)] compact:py-[calc((2.5rem_-_1.55_*_0.8125rem)_/_2)] text-[0.8125rem] leading-[1.55]';

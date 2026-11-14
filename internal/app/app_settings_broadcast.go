@@ -71,5 +71,32 @@ func (a *App) registerSettingsBroadcast() {
 		if promptsMoved {
 			a.reconcileStalePromptSessions()
 		}
+		// A live recording admitted while live dictation was on, before
+		// this write switched it, saw it go off: it ends now, not at its
+		// next piece, and a quick off and on again cannot spare it.
+		if revision, ok := switchRevision(changes, "dictationAPIEnabled"); ok {
+			a.liveDictations().RevokeBefore(revision)
+		}
+		// The same for read aloud in OpenAI voices: sentences admitted
+		// before this write are dropped and their syntheses ended.
+		if revision, ok := switchRevision(changes, "readAloudAPIEnabled"); ok {
+			a.readAloudSentences().RevokeBefore(revision)
+		}
+		// The same for continues after a usage limit: threads that started
+		// waiting before this write no longer receive one.
+		if revision, ok := switchRevision(changes, "accountAutoContinue"); ok {
+			a.accountSwitch().RevokeWaitsBefore(revision)
+		}
 	})
+}
+
+// switchRevision is the revision of the write that changed the setting
+// key, if this one did.
+func switchRevision(changes []settings.TierChange, key string) (uint64, bool) {
+	for _, change := range changes {
+		if slices.Contains(change.Keys, key) {
+			return change.Revision, true
+		}
+	}
+	return 0, false
 }

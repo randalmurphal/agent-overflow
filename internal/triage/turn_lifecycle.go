@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -23,23 +24,40 @@ import (
 // `turns` row for this turn (completed_at NULL), and emits
 // `provider:turn_started` so the frontend flips `pane.activeTurn` on.
 //
-// Wire-round vs logical-turn cadence: this handler is the canonical
-// start of round 1 of every logical turn. It both seeds per-turn
-// flow-control state (setOpenTurn) AND opens a fresh wire round
-// (setOpenRound). The `provider:turn_started` payload carries the
-// per-round id as TurnID — the frontend treats each round as its own
-// active turn for indicator / composer / Stop-button purposes.
-// Subsequent rounds within the same logical turn are opened in
-// handleInit's re-round branch, which only calls setOpenRound (not
-// setOpenTurn) so id-allocating counters survive the multi-result-
-// per-turn cascade. See internal/triage/AGENTS.md "Wire-round vs
-// logical-turn".
+// It opens the turn's first round: per-turn state (setOpenTurn) and a
+// round snapshot whose id `provider:turn_started` carries as TurnID. A
+// continuation after a soft close reopens the same turn
+// (reopenSoftClosedTurn), keeping its id-allocating counters.
+// See docs/architecture/turn-lifecycle.md §Rounds and turns.
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
+	return r.startTurn(evt, func() (int, error) {
+		return r.resolveTurnIndexOnStart(evt), nil
+	})
+}
+
+// startTurn opens the logical turn resolve names. Every turn opens here:
+// an AO send's (handleTurnStart) and one the provider started
+// (openProviderStartedTurn). A retired session's frame opens nothing.
+func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, error)) error {
 	if r.frameRetired(evt.ThreadID, evt.SessionToken) {
 		return nil
 	}
-	turnIndex := r.resolveTurnIndexOnStart(evt)
+	// An interrupt sampled from here until the open turn is set waits
+	// for it (InterruptTurnIndex): the row written below is already the
+	// active turn GetActiveTurn-gated callers stop.
+	started := r.beginTurnStart(evt.ThreadID)
+	defer started()
+	turnIndex, err := resolve()
+	if err != nil {
+		return err
+	}
 	startedAt := eventTimestampMillis(evt)
+	// A turn still open when another starts never gets a completion of
+	// its own (the CLI's one result settles only the newest turn), so it
+	// settles here, as a mid-loop echo's predecessor does.
+	if open, ok := r.openTurnIndex(evt.ThreadID); ok && open != turnIndex {
+		r.settleQueuedEchoPredecessor(evt.ThreadID, open, startedAt, r.predecessorStopReason(evt.ThreadID, open, -1), evt.SessionToken)
+	}
 
 	// The turns row is reconciled BEFORE any router state is seeded on
 	// the index. upsertTurnRow can move the turn to a free index when a
@@ -58,9 +76,17 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 		ProviderTurnID: strings.TrimSpace(evt.TurnID),
 	})
 
+	r.mu.Lock()
+	gate := r.turnRowWrittenGate
+	r.mu.Unlock()
+	if gate != nil {
+		gate(evt.ThreadID)
+	}
+
 	// A failed ownership read is reported once the turn is open: the turn
 	// starts either way.
 	opened, openErr := r.setOpenTurn(evt.ThreadID, turnIndex, evt.SessionToken)
+	started()
 	if !opened {
 		return openErr
 	}
@@ -375,42 +401,21 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// window is open (compaction_status.go).
 	r.clearCompacting(evt.ThreadID)
 
-	// Two-cadence shape (see internal/triage/AGENTS.md "Wire-round vs
-	// logical-turn"):
+	// Two cadences (docs/architecture/turn-lifecycle.md §Rounds and
+	// turns):
 	//
-	//   1. Per-WIRE-ROUND emission (claimed at the top of this handler,
-	//      emitted when it returns). `provider:turn_completed` fires once
-	//      per `result` envelope so the frontend's working indicator, Stop
-	//      button, and composer block correctly reflect "model is engaged
-	//      right now." takeOpenRound clears the round slot in the same
-	//      critical section it returns it; an empty slot means a synthetic
-	//      complete already raced ahead (handleError fatal path) — skip
-	//      the second emit so the frontend sees exactly one
-	//      turn_completed per round.
+	//   1. Per-ROUND emission (claimed below, emitted when this handler
+	//      returns). takeOpenRound clears the round slot in the same
+	//      critical section it returns it; an empty slot means the round
+	//      already ended (a soft close, or a synthetic complete that raced
+	//      ahead on handleError's fatal path), so no second emit.
 	//
-	//   2. Per-LOGICAL-TURN persistence (claimTurnSettlement-gated below).
-	//      The `turns` row UPDATE, streaming-item settlement, and
-	//      force-close-orphans pass run once per
-	//      (thread, turn_index). A second wire complete for the same
-	//      logical turn — the multi-result-per-turn pattern, where
-	//      Claude's CLI synthesizes a `type:"user"` envelope from a
-	//      task_notification and emits another `result` — folds late
-	//      token usage onto the existing turns row and otherwise
-	//      no-ops.
-	//
-	// Known sources of a second wire complete on an already-settled
-	// logical turn:
-	//
-	//   1. Claude task_notification → CLI synthesizes a `type:"user"`
-	//      envelope → model emits another response → second `result`
-	//      envelope. Both `result`s belong to one logical agent-overflow
-	//      turn; persistence settles on the first. The wire-round emit
-	//      fires for the second too (each round gets its own indicator
-	//      on/off).
-	//   2. handleError synthesizes an EventTurnComplete with TruncatedTurnCompleteMeta,
-	//      then a real wire EventTurnComplete arrives anyway because the
-	//      subprocess kept streaming. takeOpenRound returns "" on the
-	//      second, so the wire-round emit is suppressed.
+	//   2. Per-LOGICAL-TURN settlement (claimTurnSettlement-gated below):
+	//      the `turns` row, streaming items and orphan tool calls, once
+	//      per (thread, turn_index). A soft close skips it; the result or
+	//      the next turn's start settles the turn. A second complete for a
+	//      settled turn (handleError's synthetic complete, then the real
+	//      result) folds its late payload only.
 	//
 	// Live fast-mode state rides the wire result envelope. Emitted before
 	// every settlement branch below (including the orphan-error and
@@ -420,7 +425,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	r.emitFastModeState(evt.ThreadID, fastModeStatusFromTurnComplete(evt))
 
 	countsAsActivity := turnCountsAsThreadActivity(evt)
-	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+	turnIndex, owned, err := r.completionTurnIndex(evt.ThreadID)
 	meta, metaErr := turnCompleteMetaFromEvent(evt)
 	if metaErr != nil {
 		log.Printf("triage: %v", metaErr)
@@ -440,8 +445,6 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// its streaming items already settled. Registered after the other
 	// defers so it runs before them, and in particular before the queue
 	// boundary flush can start the next turn.
-	// The revert marker belongs to the round claimed here and is taken with
-	// it, before clearOpenTurn below drops any marker still pending.
 	//
 	// A failed turn-index or payload read still ends the round it took:
 	// the event carries the round's own index, and nothing else would
@@ -452,13 +455,12 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	quiet := false
 	round, hasRound := r.takeOpenRound(evt.ThreadID)
 	if hasRound {
-		reverted := r.consumeRevertedTurn(evt.ThreadID)
 		emitIndex := turnIndex
 		if err != nil {
 			emitIndex = round.TurnIndex
 		}
 		defer func() {
-			event := r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta, reverted)
+			event := r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta)
 			event.Quiet = quiet
 			r.emit(eventchan.ProviderTurnCompleted, event)
 		}()
@@ -501,6 +503,12 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	if err == nil && !countsAsActivity {
 		return nil
 	}
+	// The fallback turn is a waiting message's or a previous session's
+	// finished turn: nothing here owns the completion.
+	if err == nil && !owned {
+		log.Printf("triage: turn complete for %s matches no turn of this session; nothing to settle", evt.ThreadID)
+		return nil
+	}
 
 	if err == nil {
 		// claimTurnSettlement is sticky on partial failure (same trade-off
@@ -509,16 +517,14 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		// lifecycle settlement. Late usage on a duplicate is still folded
 		// into the existing turn row below so accounting is not lost.
 		if !r.claimTurnSettlement(evt.ThreadID, turnIndex, evt.SessionToken) {
-			// Late-fold path: a second activity-counting result for an
-			// already-settled logical turn (the multi-result / re-round
-			// pattern). persistLateTurnPayload folds the late turns-row
-			// columns below, but the turn can still carry streaming items or
-			// running foreground tool_calls opened on the LATER round that no
-			// content_block_stop or tool_result ever closed — e.g. a
-			// CLI-internal retry whose first attempt stalled mid-thinking
-			// (thread fc24607e). Without settling them here they leak a
-			// permanent status=streaming / status=running row: the user's
-			// stuck "thinking" spinner.
+			// Late-fold path: a second activity-counting complete for an
+			// already-settled logical turn (handleError's synthetic
+			// complete, then the real result). persistLateTurnPayload folds
+			// the late turns-row columns below, but the turn can still carry
+			// streaming items or running foreground tool_calls that no
+			// content_block_stop or tool_result ever closed. Without
+			// settling them here they leak a permanent status=streaming /
+			// status=running row: the user's stuck "thinking" spinner.
 			//
 			// This is a deliberate SUBSET of the full settle path: the
 			// once-per-logical-turn steps (turns-row settle,
@@ -526,8 +532,8 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			// first settlement, so only the orphan settle + force-close repeat
 			// here — both idempotent on the common cascade (drained active
 			// maps / no running foreground tool_calls → no-ops). It must NOT
-			// touch the id-allocating counters: invariant 27 keeps re-round
-			// row ids from colliding. Settle failures are returned (the wire
+			// touch the id-allocating counters, which keep later row ids
+			// from colliding with the turn's earlier rows. Settle failures are returned (the wire
 			// pump logs a returned error and keeps reading) so they surface
 			// the same way the full path's persistErr does.
 			lateStatus := settledTurnStatus(meta)
@@ -552,6 +558,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 				r.keepThreadReadPast(evt.ThreadID, r.persistedTurnID(evt, turnIndex), roundCompletedAt)
 			}
 			r.FlushUsageEmitThrottle(evt.ThreadID)
+			r.noteTurnSettled(evt.ThreadID, turnIndex, evt)
 			return lateErr
 		}
 	}
@@ -641,8 +648,75 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	r.clearOpenTurn(evt.ThreadID, agentScopes)
 	r.finishTurnSpan(evt.ThreadID, completedTurnOutcome(meta, persistErr))
 	r.FlushUsageEmitThrottle(evt.ThreadID)
+	r.noteTurnSettled(evt.ThreadID, turnIndex, evt)
 
 	return persistErr
+}
+
+// noteTurnSettled records whether the CLI turn behind a settled logical
+// turn can still continue it. A soft round close (the parent's message
+// ended with end_turn, stop_sequence or refusal) settles the turn while
+// the CLI turn's `result` is still to come, and the model can resume
+// first (a ToolSearch or ExitPlanMode continuation): reopenSoftClosedTurn
+// continues it then. The result ends that possibility.
+func (r *Router) noteTurnSettled(threadID string, turnIndex int, evt provider.ProviderEvent) {
+	_, soft := evt.TurnComplete.(*provider.SoftRoundCloseMeta)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, evt.SessionToken) {
+		return
+	}
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return
+	}
+	if !soft {
+		st.softClosedTurnSet = false
+		return
+	}
+	st.softClosedTurn, st.softClosedTurnSet = turnIndex, true
+}
+
+// reopenSoftClosedTurn continues the turn a soft round close settled when
+// the model resumes it before the CLI turn's `result`. The turns row is
+// open again, so GetActiveTurn-gated callers (send placement, revert)
+// see the running work, and the open-turn state is restored without
+// resetting the turn's id-allocating counters, so the continuation's
+// rows extend the turn without colliding with the rows before the close.
+// A new round announces it. Its next soft close or result settles it
+// again. Reports whether a turn was reopened.
+func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) {
+	r.mu.Lock()
+	st := r.threadStateIfPresent(evt.ThreadID)
+	if st == nil || !st.softClosedTurnSet || st.openTurnSet || r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		r.mu.Unlock()
+		return false, nil
+	}
+	turnIndex := st.softClosedTurn
+	st.softClosedTurnSet = false
+	st.openTurn, st.openTurnSet = turnIndex, true
+	delete(st.settledTurns, turnIndex)
+	r.mu.Unlock()
+
+	err := r.store.ReopenTurn(r.persistedTurnID(evt, turnIndex))
+	if err != nil {
+		err = fmt.Errorf("reopen soft-closed turn %s/%d: %w", evt.ThreadID, turnIndex, err)
+	} else {
+		// After the row is open again: a reader told this turn answers a
+		// send must not find the completion the soft close wrote.
+		r.releaseDeliveriesAtTurnStart(evt.ThreadID, turnIndex, evt.SessionToken)
+	}
+	r.openTurnSpan(evt, turnIndex)
+	snapshot := ActiveTurnSnapshot{
+		ThreadID:  evt.ThreadID,
+		TurnID:    uuid.NewString(),
+		TurnIndex: turnIndex,
+		StartedAt: eventTimestampMillis(evt),
+	}
+	if r.setOpenRoundSnapshot(snapshot, evt.SessionToken) {
+		r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
+	}
+	return true, err
 }
 
 // turnCompleteIsTruncated reports whether the turn ended via interruption /
@@ -710,8 +784,8 @@ func ForceCloseSummary(summary string) string {
 // turnCompleteFields holds the small set of derived values both
 // settleTurnRow (persistence) and buildRoundCompletedEvent (wire
 // payload) compute from the same EventTurnComplete inputs. Extracted
-// because the two consumers run in different cadences (logical-turn
-// vs wire-round) but the projection rules — stop_reason fallback to
+// because the two consumers run in different cadences (logical turn
+// vs round) but the projection rules — stop_reason fallback to
 // "error" on persistErr, assistant_message_id resolution across
 // provider shapes, and error_message derived from meta or persistErr
 // — are exactly the same. logicalTurnID is caller-supplied because
@@ -806,9 +880,17 @@ func turnCountsAsThreadActivity(evt provider.ProviderEvent) bool {
 // turnIsQuiet reports whether the top-level turn turnIndex of threadID,
 // ending with meta, is one nobody needs to read: the classifier names it
 // (SetQuietTurnClassifier) and it ended cleanly, with no error and no
-// interrupt. A turn that failed is the user's to see whoever started it.
+// interrupt. A turn that failed is the user's to see whoever started it,
+// and so is one the CLI woke itself for (selfWokenTurn): no wake started it.
 func (r *Router) turnIsQuiet(threadID string, turnIndex int, meta turnCompleteMeta) bool {
 	if meta.Error != "" || turnCompleteIsTruncated(meta) || canonicalStopReason(meta) == "error" {
+		return false
+	}
+	r.mu.Lock()
+	st := r.threadStateIfPresent(threadID)
+	selfWoken := st != nil && st.selfWokenTurnSet && st.selfWokenTurn == turnIndex
+	r.mu.Unlock()
+	if selfWoken {
 		return false
 	}
 	r.quietTurnMu.Lock()
@@ -849,9 +931,9 @@ func (r *Router) keepThreadReadPast(threadID, turnID string, at int64) {
 }
 
 // buildRoundCompletedEvent builds the frontend-facing
-// TurnCompletedEvent payload for a single wire round. The TurnID is
-// the per-round uuid (allocated in handleTurnStart / handleInit
-// re-round) — the frontend treats each round as a distinct active
+// TurnCompletedEvent payload for a single round. The TurnID is
+// the per-round uuid (allocated where the round opened: startTurn,
+// openQueuedEchoTurn, reopenSoftClosedTurn) — the frontend treats each round as a distinct active
 // turn, replacing its activeTurn entry on each round-start and
 // clearing on the matching complete. StartedAt prefers the persisted
 // `turns` row's started_at (logical-turn clock) and falls back to
@@ -859,8 +941,7 @@ func (r *Router) keepThreadReadPast(threadID, turnID string, at int64) {
 //
 // Pure projection — does not write the `turns` row. settleTurnRow
 // owns the UPDATE and runs once per logical turn under the
-// claimTurnSettlement gate. reverted is the revert marker taken when the
-// round was claimed.
+// claimTurnSettlement gate.
 //
 // No persistErr parameter: the payload reports what the provider said
 // about the round. A persistence failure in handleTurnComplete surfaces
@@ -872,7 +953,6 @@ func (r *Router) buildRoundCompletedEvent(
 	turnIndex int,
 	now int64,
 	meta turnCompleteMeta,
-	reverted bool,
 ) TurnCompletedEvent {
 	fields := decodeTurnCompleteFields(evt, r.persistedTurnID(evt, turnIndex), meta, nil)
 	startedAt := now
@@ -889,38 +969,28 @@ func (r *Router) buildRoundCompletedEvent(
 		log.Printf("triage: read history stamp for %s: %v", evt.ThreadID, err)
 	}
 	return TurnCompletedEvent{
-		ThreadID:            evt.ThreadID,
-		TurnID:              roundID,
-		TurnIndex:           turnIndex,
-		StartedAt:           startedAt,
-		CompletedAt:         now,
-		StopReason:          fields.stopReason,
-		AssistantMessageID:  fields.assistantMessageID,
-		TokenUsage:          meta.Usage,
-		ErrorMessage:        fields.errorMessage,
-		Aborted:             meta.Aborted || meta.Truncated,
-		RevertedUserMessage: reverted,
-		CountsAsActivity:    turnCountsAsThreadActivity(evt),
-		HistoryRev:          stamp.Rev,
-		HistoryEpoch:        stamp.Epoch,
+		ThreadID:           evt.ThreadID,
+		TurnID:             roundID,
+		TurnIndex:          turnIndex,
+		StartedAt:          startedAt,
+		CompletedAt:        now,
+		StopReason:         fields.stopReason,
+		AssistantMessageID: fields.assistantMessageID,
+		TokenUsage:         meta.Usage,
+		ErrorMessage:       fields.errorMessage,
+		Aborted:            meta.Aborted || meta.Truncated,
+		CountsAsActivity:   turnCountsAsThreadActivity(evt),
+		HistoryRev:         stamp.Rev,
+		HistoryEpoch:       stamp.Epoch,
 	}
 }
 
 // persistLateTurnPayload folds late-arriving payload onto the existing
 // turn row when handleTurnComplete fires after the turn was already
-// settled. Two known sources:
-//
-//  1. Multi-result cascade — Claude's CLI emits a second `result`
-//     envelope for the same logical turn after a task_notification
-//     re-round. Cumulative `usage` lands on the second envelope; the
-//     amid points to the final round's assistant message.
-//  2. Soft round-close — `parse_stream.go` emits an
-//     soft EventTurnComplete from `message_delta.stop_reason` before the
-//     wire `result` envelope. The soft event carries the
-//     parser's PEEKED last assistant_message_id (the consume happens
-//     when the trailing `result` calls takeLastAssistantMessageID).
-//     The trailing `result` carries cumulative usage that the soft
-//     event lacks.
+// settled: handleError's synthetic truncated complete settles it, then
+// the real `result` arrives because the subprocess kept writing. The
+// result carries the usage and the final assistant message id the
+// synthetic complete lacked.
 //
 // Per-column semantics (different intentionally, see store
 // UpdateTurnLatePayload):
@@ -931,15 +1001,13 @@ func (r *Router) buildRoundCompletedEvent(
 //     round overwrites so the persisted column is the FINAL
 //     assistant message of the turn — what
 //     `SettledTurn.assistantMessageId` is documented to be.
-//   - stop_reason / error_message: late error wins. A soft
-//     message_delta close can settle a turn as `end_turn` before the
-//     trailing wire `result{is_error:true}` arrives; the error must
-//     still be visible in persisted history.
-//   - completed_at: advances to roundCompletedAt, the CompletedAt a
-//     later round's provider:turn_completed carried (0 when this
-//     completion took no round, as a soft close's trailing `result`
-//     does). A thread the user read between rounds is unread again
-//     until read after the later round, on whichever client.
+//   - stop_reason / error_message: late error wins, so an error the
+//     trailing `result{is_error:true}` reports stays visible in
+//     persisted history.
+//   - completed_at: advances to roundCompletedAt, the CompletedAt the
+//     round this completion took carried (0 when it took none). A
+//     thread the user read before that round ended is unread again
+//     until read after it, on whichever client.
 //
 // Folded as a single UPDATE so the common case (both fields arrive
 // on the trailing `result`) pays one autocommit boundary.
@@ -947,9 +1015,7 @@ func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex in
 	turnID := r.persistedTurnID(evt, turnIndex)
 	// Ledger rows append on every settle event: the provider emits
 	// per-turn DELTAS, so a late fold's usage is new spend the first
-	// settle could not have carried (soft round-close settles with no
-	// usage at all; a multi-result cascade's second envelope deltas only
-	// the re-round's growth).
+	// settle could not have carried (a synthetic complete has none).
 	usageErr := r.appendUsageLedger(evt, turnID, meta, eventTimestampMillis(evt))
 	usageJSON := ""
 	if len(meta.Usage) > 0 {
@@ -990,6 +1056,42 @@ func (r *Router) currentTurnIndex(threadID string) (int, error) {
 	return r.store.LastTurnIndex(threadID)
 }
 
+// completionTurnIndex is the turn a turn-complete settles: the open turn,
+// else the soft-closed turn whose CLI turn the trailing result ends, else
+// the newest turn that started (the newest row when none has a turns row).
+// owned reports whether the completion may settle that fallback: not when
+// it is a sent message's turn that has not started, as currentTurnIndex's
+// newest-row fallback would pick once the message's row holds the next
+// index, and not when a previous session finished it (an AO internal
+// command's result after a resume). Unfinished work and a turn this
+// session settled (a duplicate result) are owned.
+func (r *Router) completionTurnIndex(threadID string) (turnIndex int, owned bool, err error) {
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(threadID); st != nil && (st.openTurnSet || st.softClosedTurnSet) {
+		turnIndex := st.openTurn
+		if !st.openTurnSet {
+			turnIndex = st.softClosedTurn
+		}
+		r.mu.Unlock()
+		return turnIndex, true, nil
+	}
+	r.mu.Unlock()
+	turns, err := r.store.ListRecentTurns(threadID, 1)
+	if err != nil {
+		return 0, false, err
+	}
+	finished := false
+	if len(turns) == 1 {
+		turnIndex, finished = turns[0].TurnIndex, turns[0].CompletedAt != nil
+	} else if turnIndex, err = r.store.LastTurnIndex(threadID); err != nil {
+		return 0, false, err
+	}
+	if pending, ok := r.turnOpeningPendingSend(threadID); ok && pending.TurnIndex == turnIndex {
+		return turnIndex, false, nil
+	}
+	return turnIndex, !finished || r.isTurnSettled(threadID, turnIndex), nil
+}
+
 // openTurnIndex returns the router's currently-open turn for threadID,
 // or (_, false) when no turn is in flight. Distinct from
 // currentTurnIndex: this does NOT fall back to the store's
@@ -1007,12 +1109,8 @@ func (r *Router) openTurnIndex(threadID string) (int, bool) {
 }
 
 // OpenTurnIndex returns the currently-open logical turn for threadID,
-// or -1 when none is in flight. Interrupt paths sample this BEFORE
-// awaiting the provider's interrupt ack and pass the value to
-// EagerPersistDeferredFlushSends: the ack wait processes wire events,
-// so the turn the user cut can settle during it, and a post-ack sample
-// would report -1 for exactly that turn — its echo would then settle
-// it "end_turn" instead of "interrupted" (round-5, R5-4).
+// or -1 when none is in flight. Interrupt paths sample
+// InterruptTurnIndex instead, which waits out a turn start in progress.
 func (r *Router) OpenTurnIndex(threadID string) int {
 	if turnIndex, ok := r.openTurnIndex(threadID); ok {
 		return turnIndex
@@ -1020,16 +1118,91 @@ func (r *Router) OpenTurnIndex(threadID string) int {
 	return -1
 }
 
+// InterruptTurnIndex returns the turn an interrupt of threadID cuts: the
+// open turn, or -1 when none is in flight. While handleTurnStart runs it
+// first waits for the start to finish, whether or not a turn is already
+// open. That handler writes the active turns row before it sets the open
+// turn, and GetActiveTurn-gated callers (workflow takeover, revert) can
+// interrupt in between; an immediate sample would read -1 and lose the
+// user's stop. A marker written before setOpenTurn would not hold
+// either, even on a turn a queued echo already opened at the same index:
+// setOpenTurn resets the turn's error sequence (its re-init contract),
+// so the turn's next error row would reuse the marker's id.
+//
+// The store's row is never consulted. An active row with no open turn
+// and no start in progress is a turn the router already closed: a fatal
+// provider error awaiting its wire completion, or a settlement whose
+// write failed. Stopping then cuts nothing.
+//
+// Interrupt paths sample this BEFORE awaiting the provider's interrupt
+// ack and pass the value to MarkFlushSendsInterrupted, MarkInterrupt
+// and EagerPersistDeferredFlushSends: the ack wait processes wire
+// events, so the turn the user cut can settle during it, and a post-ack
+// sample would report -1 for exactly that turn — its echo would then
+// settle it "end_turn" instead of "interrupted" (round-5, R5-4).
+//
+// The wait is bounded by the start's own store writes, and nothing it
+// runs takes the app's thread action lock the interrupt paths hold.
+// It must not be called from the event worker.
+func (r *Router) InterruptTurnIndex(threadID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for {
+		st := r.threadStateIfPresent(threadID)
+		if st == nil {
+			return -1
+		}
+		if st.turnStarting == nil {
+			if !st.openTurnSet {
+				return -1
+			}
+			return st.openTurn
+		}
+		// The event worker can finish this start, complete its turn and
+		// begin the next one before this waiter resumes, so the state is
+		// read again after every wait until no start is in progress.
+		starting := st.turnStarting
+		hook := r.interruptWaitHook
+		r.mu.Unlock()
+		if hook != nil {
+			hook(threadID, false)
+		}
+		<-starting
+		if hook != nil {
+			hook(threadID, true)
+		}
+		r.mu.Lock()
+	}
+}
+
+// beginTurnStart marks threadID as starting a turn and returns the
+// function that ends the mark, releasing InterruptTurnIndex waiters.
+// Ending is idempotent: handleTurnStart ends it once the open turn is
+// set and again, as a no-op, when it returns.
+func (r *Router) beginTurnStart(threadID string) func() {
+	starting := make(chan struct{})
+	r.mu.Lock()
+	r.state(threadID).turnStarting = starting
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			if st := r.threadStateIfPresent(threadID); st != nil && st.turnStarting == starting {
+				st.turnStarting = nil
+			}
+			r.mu.Unlock()
+			close(starting)
+		})
+	}
+}
+
 // HasInFlightTurnOrRound reports whether the router still has any
-// turn or wire-round state for threadID worth synthesizing a
-// truncated turn-complete against. Used by CleanupThread and
-// handleSessionDied so the round-2+ re-round case (handleInit's
-// maybeEmitReRoundOnInit branch sets currentRoundByThread WITHOUT
-// calling setOpenTurn — counters survive the multi-result boundary
-// by design) still produces a frontend `provider:turn_completed`
-// when the session dies mid-round-2. Without the currentRoundByThread
-// arm of this check, the openTurns map alone misses the round-2+
-// case because clearOpenTurn cleared it at the end of round 1.
+// turn or round state for threadID worth synthesizing a truncated
+// turn-complete against. Used by CleanupThread and handleSessionDied.
+// An open turn whose round a soft close ended counts: its result never
+// came. A round counts on its own too, so a round whose turn state was
+// already cleared still gets its `provider:turn_completed`.
 func (r *Router) HasInFlightTurnOrRound(threadID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1076,6 +1249,10 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int, sessionToken string
 	st := r.state(threadID)
 	st.openTurn = turnIndex
 	st.openTurnSet = true
+	st.softClosedTurnSet = false
+	if st.selfWokenTurn != turnIndex {
+		st.selfWokenTurnSet = false
+	}
 	key := scopeCounterKey(turnIndex, "")
 	if st.segmentIndexByScope == nil {
 		st.segmentIndexByScope = make(map[string]int)
@@ -1089,9 +1266,9 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int, sessionToken string
 	delete(st.errorSeqByScope, key)
 	// Clear the settled marker so a re-init (Claude resend system.init
 	// after an interrupt; Codex resend turn/started) can settle the
-	// same turn again. The multi-result-per-turn case does NOT re-fire
-	// EventTurnStart between the two completes, so the marker survives
-	// there and the second complete returns early.
+	// same turn again. A synthetic complete followed by the real result
+	// has no turn start between them, so the marker survives there and
+	// the second complete takes the late-fold path.
 	delete(st.settledTurns, turnIndex)
 	r.mu.Unlock()
 	return true, scopeErr
@@ -1112,16 +1289,15 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int, sessionToken string
 // revert flow's active-turn guard reads idle mid-stream.
 //
 // This is the wire-echo twin of handleTurnStart: turns row, open-turn
-// bookkeeping, turn span, fresh wire-round snapshot, and the
+// bookkeeping, turn span, fresh round snapshot, and the
 // `provider:turn_started` emission — WITHOUT setOpenTurn's thread-wide
 // streaming sweeps. Those sweeps are keyed to "a brand-new wire
 // conversation is starting"; here the previous turn's tail can still
 // be settling on the same live round, and `turnIndex` is a fresh index
 // with no stale state of its own to clear (the counter seeds below are
-// exactly the fresh-index subset of setOpenTurn). This is NOT the
-// forbidden re-round setOpenTurn (see maybeReopenSettledRound): a
-// re-round reuses the SAME index whose counters must survive; this
-// opens a NEW index.
+// exactly the fresh-index subset of setOpenTurn). A continuation of
+// the SAME turn never comes here: reopenSoftClosedTurn reopens it and
+// keeps its counters; this opens a NEW index.
 //
 // No-op when `turnIndex` is already the open logical turn: the queue
 // consumed at turn pickup with a real system.init (handleTurnStart
@@ -1130,8 +1306,7 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int, sessionToken string
 // deferred row persists at the active turn's own index). Also refuses
 // to roll the open turn BACKWARD or reopen a settled turn — rows are
 // already persisted under those indexes and a reopen would reset their
-// id-allocating context (the same hazard invariant 27 forbids for
-// re-rounds). Both guards protect the attachProviderItemIDToUserRow
+// id-allocating context, so new rows would collide with them. Both guards protect the attachProviderItemIDToUserRow
 // caller, which fires on every WasDeferred echo including replays.
 //
 // When an UNSETTLED earlier turn is open — a second queued message
@@ -1174,6 +1349,10 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	}
 	st.openTurn = turnIndex
 	st.openTurnSet = true
+	st.softClosedTurnSet = false
+	if st.selfWokenTurn != turnIndex {
+		st.selfWokenTurnSet = false
+	}
 	key := scopeCounterKey(turnIndex, "")
 	if st.segmentIndexByScope == nil {
 		st.segmentIndexByScope = make(map[string]int)
@@ -1197,18 +1376,10 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	// makes any re-match a no-op. MarkThreadActive clears the list, so
 	// a replacement session's reused turn indexes (revert paths) never
 	// meet a dead session's marks (round-11, CT11-2).
-	markedInterruptTurn := -1
-	if id := r.identityIfPresent(threadID); id != nil && len(id.interruptMarks) > 0 {
-		markedInterruptTurn = id.interruptMarks[len(id.interruptMarks)-1].turn
-	}
 	r.mu.Unlock()
 
 	if hasOpen {
-		reason := "end_turn"
-		if open == interruptedTurnIndex || open == markedInterruptTurn {
-			reason = "interrupted"
-		}
-		r.settleQueuedEchoPredecessor(threadID, open, startedAt, reason, sessionToken)
+		r.settleQueuedEchoPredecessor(threadID, open, startedAt, r.predecessorStopReason(threadID, open, interruptedTurnIndex), sessionToken)
 	}
 
 	// Same deterministic id shape resolveTurnID synthesizes for Claude
@@ -1256,6 +1427,23 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 }
 
+// predecessorStopReason is the stop reason of an open turn a new turn
+// replaces: "interrupted" when a user interrupt provably cut it (the turn
+// the pending entry's stamp names, or the thread's newest interrupt mark),
+// "end_turn" otherwise.
+func (r *Router) predecessorStopReason(threadID string, open, interruptedTurnIndex int) string {
+	if open == interruptedTurnIndex {
+		return "interrupted"
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id := r.identityIfPresent(threadID); id != nil && len(id.interruptMarks) > 0 &&
+		id.interruptMarks[len(id.interruptMarks)-1].turn == open {
+		return "interrupted"
+	}
+	return "end_turn"
+}
+
 // settleQueuedEchoPredecessor closes the logical turn a queued echo is
 // replacing. A deliberate SUBSET of handleTurnComplete's settle path:
 // streaming rows settle as completed (or flip errored+stopped when the
@@ -1265,8 +1453,8 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 // queued message, "interrupted" when a user interrupt provably cut the
 // predecessor short (the caller decides; see openQueuedEchoTurn). No frontend emission (the successor's
 // provider:turn_started replaces the round snapshot in place), no usage
-// fold (the round's single `result` carries round-cumulative usage that
-// lands on the final turn, same as the re-round fold), and no orphan
+// fold (the CLI turn's single `result` carries cumulative usage that
+// lands on the final turn), and no orphan
 // tool-call force-close (the CLI drains its queue between API
 // iterations, after the prior iteration's tool results — a tool
 // completion that hasn't arrived yet still will, and belongs to the row
@@ -1347,24 +1535,15 @@ func (r *Router) isTurnSettled(threadID string, turnIndex int) bool {
 	return st != nil && st.settledTurns[turnIndex]
 }
 
-// setOpenRoundSnapshot records the active wire-round snapshot for threadID. A round
-// begins on either:
-//
-//   - handleTurnStart (per user-typed send) — the canonical first
-//     round of every logical turn.
-//   - handleInit when the prior round of the same logical turn already
-//     settled — the re-round case for Claude's multi-result-per-turn
-//     wire pattern, where the CLI synthesizes a `type:"user"` envelope
-//     from a task_notification and emits a fresh `system.init`
-//     followed by another `result`. Each `result` is its own wire
-//     round from the model's POV.
+// setOpenRoundSnapshot records the active round snapshot for threadID. A
+// round begins with every turn (startTurn, openQueuedEchoTurn) and again
+// when the model continues a turn after a soft close (reopenSoftClosedTurn).
 //
 // Round ids are uuids; the frontend treats each round as a distinct
 // active turn for indicator / composer / Stop-button purposes. The
 // persisted `turns` row id stays on `resolveTurnID` (logical-turn
 // granularity); only the wire payload's TurnID field carries the round
-// id. See internal/triage/AGENTS.md "Wire-round vs logical-turn" for
-// the full mental model.
+// id. See docs/architecture/turn-lifecycle.md §Rounds and turns.
 //
 // Overwrites any prior round snapshot for the thread — a leaked round (e.g.
 // if currentTurnIndex failed in the prior handleTurnComplete and the
@@ -1385,7 +1564,7 @@ func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot, sessionToken 
 	return true
 }
 
-// takeOpenRound returns the active wire-round snapshot for threadID and
+// takeOpenRound returns the active round snapshot for threadID and
 // clears the slot in the same critical section. Empty string when no
 // round is open — the caller (handleTurnComplete) skips the per-round
 // `provider:turn_completed` emission in that case. The
@@ -1407,7 +1586,7 @@ func (r *Router) takeOpenRound(threadID string) (ActiveTurnSnapshot, bool) {
 	return round, true
 }
 
-// openRoundID returns the active wire-round id for threadID without
+// openRoundID returns the active round id for threadID without
 // clearing the slot. Read-only counterpart to takeOpenRound for
 // callers that observe the round id mid-round (handleToolStart's
 // flush trigger). Returns "" when no round is open — the caller
@@ -1424,7 +1603,7 @@ func (r *Router) openRoundID(threadID string) string {
 	return st.currentRound.TurnID
 }
 
-// ActiveTurnSnapshot returns the current live wire-round snapshot for a
+// ActiveTurnSnapshot returns the current live round snapshot for a
 // thread without clearing it. Most production hydration goes through
 // LiveStateSnapshotForThread; this narrow accessor remains for tests and
 // diagnostics that only need the active-turn slot.
@@ -1512,12 +1691,6 @@ func (r *Router) clearOpenTurn(threadID string, agentScopes map[string]bool) {
 	// already or the turn closed without forward progress; either way
 	// the next turn starts with a clean flag.
 	st.openAPIRetryRow = false
-	// revertedTurn is normally read-and-cleared when handleTurnComplete
-	// claims the round. Defensive sweep here covers the case
-	// where MarkTurnReverted was set but no turn-completed actually
-	// fires (rare — e.g. the thread had no open turn so no
-	// synthesizeTruncatedTurnComplete ran).
-	st.revertedTurn = false
 	r.mu.Unlock()
 }
 
@@ -1665,14 +1838,18 @@ func (r *Router) RecoverCrashedTurns() (int, error) {
 	return len(crashed), nil
 }
 
-// MarkUserInterrupt is the public chokepoint for the app-layer
+// StoppedByUser is the stop row of the user's own Stop.
+const StoppedByUser = "Stopped by user"
+
+// MarkInterrupt is the public chokepoint for the app-layer
 // interrupt flow. It flips every streaming/running item in the
 // interrupted turn to errored with a " — stopped" suffix and records a
-// new "Stopped by user" system error row so the timeline carries the
+// new system error row reading summary, which names who stopped the turn
+// (StoppedByUser for the user's own Stop), so the timeline carries the
 // explicit user-facing signal.
 //
-// sampledTurnIndex is the caller's PRE-ACK OpenTurnIndex sample (-1
-// when none was open) — the turn the user actually cut. It must not be
+// sampledTurnIndex is the caller's PRE-ACK InterruptTurnIndex sample
+// (-1 when none was open) — the turn the user actually cut. It must not be
 // re-resolved here: a queued echo consumed during the ack wait opens
 // the queued message's turn, and a post-ack "current turn" read would
 // land the stopped flips and the error row on that new turn, which
@@ -1686,16 +1863,18 @@ func (r *Router) RecoverCrashedTurns() (int, error) {
 // Returns the error id that was persisted so the caller can surface
 // diagnostics or correlate with downstream emissions; empty string
 // when no turn could be resolved or the session was replaced.
-func (r *Router) MarkUserInterrupt(threadID string, sampledTurnIndex int, tok FlushStampToken) (string, error) {
+func (r *Router) MarkInterrupt(threadID string, sampledTurnIndex int, tok FlushStampToken, summary string) (string, error) {
+	if summary == "" {
+		return "", fmt.Errorf("triage: mark interrupt of %s: no stop summary", threadID)
+	}
 	if r.ThreadEpoch(threadID) != tok.threadEpoch {
 		return "", nil
 	}
 	if sampledTurnIndex < 0 {
-		// No turn was open at the pre-ack sample: nothing was cut. The
-		// UI only offers Stop while a turn shows active, and the router
-		// opens the turn before that emission — so a -1 sample means the
-		// turn completed in the click-to-sample race and the interrupt
-		// ack'd an idle CLI. Resolving a fallback here would relabel
+		// No turn was open at the pre-ack sample, which waits out a
+		// turn start in progress (InterruptTurnIndex): nothing was cut.
+		// The turn completed or failed in the click-to-sample race and
+		// the interrupt ack'd an idle CLI. Resolving a fallback here would relabel
 		// completed history (LastTurnIndex) or a queued echo's freshly
 		// opened turn as "Stopped by user" (round-12, CT12-1).
 		return "", nil
@@ -1714,7 +1893,7 @@ func (r *Router) MarkUserInterrupt(threadID string, sampledTurnIndex int, tok Fl
 		Kind:      ItemKindError,
 		Role:      "system",
 		Status:    statusCompleted,
-		Summary:   "Stopped by user",
+		Summary:   summary,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -2004,7 +2183,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 			TurnComplete: &provider.TruncatedTurnCompleteMeta{Synthetic: true},
 			Timestamp:    time.UnixMilli(cleanupAt),
 		}
-		completed := r.buildRoundCompletedEvent(synth, strandedRound.TurnID, strandedRound.TurnIndex, cleanupAt, turnCompleteMeta{Truncated: true}, false)
+		completed := r.buildRoundCompletedEvent(synth, strandedRound.TurnID, strandedRound.TurnIndex, cleanupAt, turnCompleteMeta{Truncated: true})
 		// No turns row settles for this round, so it must not move the
 		// read clock a client derives unread from.
 		completed.CountsAsActivity = false

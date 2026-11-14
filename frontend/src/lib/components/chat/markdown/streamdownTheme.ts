@@ -120,6 +120,10 @@ export const chatMarkdownTheme: Theme = {
   blockquote: {
     base: 'md-blk border-border-subtle text-md-blockquote border-l-2 pl-3 italic',
   },
+  align: {
+    center: 'md-blk my-(--markdown-block-gap) text-center',
+    right: 'md-blk my-(--markdown-block-gap) text-right',
+  },
   // GFM alerts (`> [!NOTE]` … ). The variant entry lands on the alert
   // container (left border), its `[data-alert-title]` row (via the descendant
   // modifier — the title is a CHILD of the element carrying the class), and
@@ -147,8 +151,9 @@ export const chatMarkdownTheme: Theme = {
     // table-auto (not fixed): app.css `.markdown-body … table` already forces
     // table-layout:auto via higher specificity, so `table-fixed` here was a
     // silently-overridden no-op. Keep them in agreement — columns size to
-    // content (see the table block + overflow-wrap note in app.css).
-    table: 'w-full table-auto border-collapse min-w-0',
+    // content (see the table block + overflow-wrap note in app.css). No
+    // `w-full` for the same reason: the table takes its content width.
+    table: 'table-auto border-collapse min-w-0',
   },
   thead: { base: 'bg-surface-1 text-fg-muted' },
   tbody: { base: '' },

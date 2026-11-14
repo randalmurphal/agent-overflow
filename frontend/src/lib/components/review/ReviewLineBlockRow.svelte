@@ -1,13 +1,18 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import DiffLineContent from '../chat/DiffLineContent.svelte';
-  import type { CommentAnchor } from '../../stores/reviewPane.svelte';
+  import type { CommentAnchor, EditorAnchor } from '../../stores/reviewPane.svelte';
+  import { rowMatchesAnchor, type RowType } from '../../utils/patchRows';
   import { DIFF_CONTEXT_EXPAND_STEP, type ExpandDirection } from '../../utils/diffContextExpansion';
   import { gutterTintClass, lineTintClass } from '../../utils/diffLineTint';
   import { diffSpanCacheGeneration, getSpansForReviewLine, requestReviewFileSpans, type PaintedSpans, type PatchScopeContext } from '../../utils/diffSpanCache.svelte';
   import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type SplitDisplayRow } from '../../utils/patchFiles';
   import type { ReviewFile } from '../../utils/patchStore';
   import { REVIEW_LINE_HEIGHT_PX } from '../../utils/reviewRows';
+  import { findLineKey } from '../../utils/reviewFindScan';
+  import { seenActivation } from '../../utils/seenActivation';
+  import { rowInRange, type LineRange } from '../../utils/reviewRange';
+  import type { LineCommentGate } from '../../stores/reviewRangeComments';
 
   // One review line block (≤ REVIEW_LINE_BLOCK_MAX_LINES display rows).
   //
@@ -47,14 +52,60 @@
     wordWrap: boolean;
     /** Line-number gutter width in ch, per file (max line number). */
     gutterCh: number;
-    onAddComment?: (anchor: CommentAnchor) => void;
+    /** Rows a detached comment editor suggests ("Use this line"). */
+    targets?: readonly CommentAnchor[];
+    /** The diff on screen these rows are of (ShownDiff.generation): a
+     * pick is valid only there. */
+    generation?: number;
+    onAddComment?: (anchor: EditorAnchor, generation?: number) => void;
+    /** Shift+click on a line's add button: span the open editor to it. */
+    onExtendRange?: (anchor: EditorAnchor, generation?: number) => void;
+    /** A head-ending commit run: what a line takes (no add button for
+     * `none`) and why, as the add button's hover text. */
+    lineComment?: LineCommentGate;
+    /** A right-click (a long press on compact) on a line's number gutter:
+     * the line's menu. Absent, the gutter has none. */
+    onLineMenu?: (event: MouseEvent, path: string, lineIndex: number) => boolean;
+    /** The line ranges of this file the diff tints (open range editors,
+     * range drafts, open forge threads that span lines). */
+    ranges?: readonly LineRange[];
     /** Conflict view only: expands the fold row's hidden lines. */
     onExpandFold?: (path: string, foldId: number) => void;
     /** Diff view only: fetches a hunk gap's hidden context lines. */
     onExpandGap?: (path: string, gap: DiffGap, dir: ExpandDirection) => void;
   }
 
-  let { rows, splitRows, file, path, spanOwner, spanContext = null, painted = null, wordWrap, gutterCh, onAddComment, onExpandFold, onExpandGap }: Props = $props();
+  let { rows, splitRows, file, path, spanOwner, spanContext = null, painted = null, wordWrap, gutterCh, targets, generation, onAddComment, onExtendRange, lineComment, onLineMenu, ranges, onExpandFold, onExpandGap }: Props = $props();
+
+  const ROW_TYPES: Record<PatchDisplayRow['side'], RowType> = { old: 'del', new: 'add', context: 'context' };
+
+  // Whether `row` (or its `half` in split view) is a suggested row: the
+  // row the anchor names (patchRows' rowMatchesAnchor), on its half.
+  function isTarget(row: PatchDisplayRow, half: 'old' | 'new' | null): boolean {
+    if (!targets || targets.length === 0) return false;
+    return targets.some((target) => (target.side === 'old' ? half !== 'new' : half !== 'old')
+      && rowMatchesAnchor(ROW_TYPES[row.side], row.oldLine, row.newLine, target));
+  }
+
+  // An add button acts on the row and diff it was pressed on: a reload
+  // between the press and the click must not open the comment on the row
+  // that replaced it.
+  // With Shift held it spans the open editor to the row instead.
+  function addComment(anchor: () => EditorAnchor) {
+    return seenActivation(() => ({ anchor: anchor(), generation }), (at, click) => {
+      if (click.shiftKey && onExtendRange) onExtendRange(at.anchor, at.generation);
+      else onAddComment?.(at.anchor, at.generation);
+    });
+  }
+
+  // Whether a row (or its half in split view) is inside a tinted range.
+  function inRange(row: PatchDisplayRow, half: 'old' | 'new' | null): boolean {
+    if (!ranges || ranges.length === 0) return false;
+    return ranges.some((range) => rowInRange(row.oldLine, row.newLine, half, range));
+  }
+  const RANGE_CLASS = "after:pointer-events-none after:absolute after:inset-0 after:bg-accent/15 after:content-['']";
+  // The tree's selected-row wash.
+  const TARGET_CLASS = 'before:bg-accent/15';
 
   $effect(() => {
     // Generation dependency: an eviction (LRU pressure, same-thread
@@ -84,24 +135,46 @@
       : 'whitespace-pre pl-2',
   );
 
-  function stackedAnchor(row: PatchDisplayRow): CommentAnchor {
+  function stackedAnchor(row: PatchDisplayRow): EditorAnchor {
     return {
       filePath: path,
       oldLine: row.oldLine || undefined,
       newLine: row.newLine || undefined,
       side: row.side,
       selectedText: stripPatchLinePrefix(row.line),
+      lineIndex: row.lineIndex,
     };
   }
 
-  function sideAnchor(row: PatchDisplayRow, side: 'old' | 'new'): CommentAnchor {
+  // A half of a split row; an unchanged row's half carries both numbers.
+  function sideAnchor(row: PatchDisplayRow, side: 'old' | 'new'): EditorAnchor {
+    const context = row.side === 'context';
     return {
       filePath: path,
-      oldLine: side === 'old' ? row.oldLine || undefined : undefined,
-      newLine: side === 'new' ? row.newLine || undefined : undefined,
+      oldLine: side === 'old' || context ? row.oldLine || undefined : undefined,
+      newLine: side === 'new' || context ? row.newLine || undefined : undefined,
       side,
       selectedText: stripPatchLinePrefix(row.line),
+      lineIndex: row.lineIndex,
     };
+  }
+
+  // The find's key for the row's code text (utils/reviewFindScan.ts).
+  function findKey(row: PatchDisplayRow): string | undefined {
+    return row.lineIndex === undefined ? undefined : findLineKey(path, row.lineIndex);
+  }
+
+  // Split view shows a context line on both sides; find counts it once,
+  // so only its new side carries the key.
+  function leftFindKey(left: PatchDisplayRow, right: PatchDisplayRow | null | undefined): string | undefined {
+    return right && right.lineIndex === left.lineIndex ? undefined : findKey(left);
+  }
+
+  // A line's number gutter opens the line menu (Copy link to line) where
+  // the pane offers one; elsewhere the native menu stays.
+  function openLineMenu(event: MouseEvent, row: PatchDisplayRow | null): void {
+    if (!onLineMenu || !row || row.lineIndex === undefined || row.pending) return;
+    if (onLineMenu(event, path, row.lineIndex)) event.preventDefault();
   }
 
   function gapLabel(gap: DiffGap): string {
@@ -119,15 +192,18 @@
 <!-- Reserved action column: a real cell at the row's left edge, so
      the hover affordance never paints over the line numbers. A row whose
      text is still being read (`pending`) has no text to quote yet. -->
-{#snippet actionCell(row: PatchDisplayRow, anchor: CommentAnchor, side: string)}
+{#snippet actionCell(row: PatchDisplayRow, anchor: EditorAnchor, side: string)}
+  {@const gate = lineComment?.(anchor) ?? null}
   <span class="flex w-5 shrink-0 items-center justify-center">
-    {#if onAddComment && !row.pending}
+    {#if onAddComment && !row.pending && gate?.target !== 'none'}
       <button
         type="button"
         class="flex size-4 items-center justify-center rounded-[3px] bg-accent text-[0.6875rem] font-semibold leading-none text-accent-fg opacity-0 transition-opacity duration-75 group-hover:opacity-100 focus-visible:opacity-100 compact:opacity-100 hover:brightness-110 focus:outline-none"
         aria-label={`Add ${side} comment`}
+        title={gate?.reason ?? (onExtendRange ? 'Add a comment (Shift+click to span the open comment to this line)' : undefined)}
+        data-comment-target={gate?.target}
         data-testid="review-add-comment"
-        onclick={() => onAddComment?.(anchor)}
+        {@attach addComment(() => anchor)}
       >
         +
       </button>
@@ -232,18 +308,20 @@
         {@render gapRow(pair.left.gap)}
       {:else}
       <div class={lineClass} style:height={wordWrap ? undefined : lineHeight}>
-        <div class="group relative flex w-1/2 min-w-0 before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/40'}">
+        <div class="group relative flex w-1/2 min-w-0 before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/40'} {pair.left && isTarget(pair.left, 'old') ? TARGET_CLASS : ''} {pair.left && inRange(pair.left, 'old') ? RANGE_CLASS : ''}" data-review-range={pair.left && inRange(pair.left, 'old') ? '' : undefined} data-review-target={pair.left && isTarget(pair.left, 'old') ? '' : undefined}>
           {#if pair.left}
             {@render actionCell(pair.left, sideAnchor(pair.left, 'old'), 'old-line')}
-            <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}">{@render gutter(pair.left.oldLine)}</span>
-            <span class="min-w-0 flex-1 {contentClass} pr-2"><DiffLineContent line={pair.left.line} spans={getSpansForReviewLine(file, pair.left.lineIndex ?? -1, pair.left.line, spanContext, painted)} intraline={pair.left.intraline ?? null} /></span>
+            <!-- svelte-ignore a11y_no_static_element_interactions (the menu is a pointer gesture; the line has no keyboard focus to open it from) -->
+            <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}" data-testid="review-line-gutter" oncontextmenu={(event) => openLineMenu(event, pair.left)}>{@render gutter(pair.left.oldLine)}</span>
+            <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={leftFindKey(pair.left, pair.right)}><DiffLineContent line={pair.left.line} spans={getSpansForReviewLine(file, pair.left.lineIndex ?? -1, pair.left.line, spanContext, painted)} intraline={pair.left.intraline ?? null} /></span>
           {/if}
         </div>
-        <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'}">
+        <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'} {pair.right && isTarget(pair.right, 'new') ? TARGET_CLASS : ''} {pair.right && inRange(pair.right, 'new') ? RANGE_CLASS : ''}" data-review-range={pair.right && inRange(pair.right, 'new') ? '' : undefined} data-review-target={pair.right && isTarget(pair.right, 'new') ? '' : undefined}>
           {#if pair.right}
             {@render actionCell(pair.right, sideAnchor(pair.right, 'new'), 'new-line')}
-            <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}">{@render gutter(pair.right.newLine)}</span>
-            <span class="min-w-0 flex-1 {contentClass} pr-2"><DiffLineContent line={pair.right.line} spans={getSpansForReviewLine(file, pair.right.lineIndex ?? -1, pair.right.line, spanContext, painted)} intraline={pair.right.intraline ?? null} /></span>
+            <!-- svelte-ignore a11y_no_static_element_interactions (the menu is a pointer gesture; the line has no keyboard focus to open it from) -->
+            <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}" data-testid="review-line-gutter" oncontextmenu={(event) => openLineMenu(event, pair.right)}>{@render gutter(pair.right.newLine)}</span>
+            <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={findKey(pair.right)}><DiffLineContent line={pair.right.line} spans={getSpansForReviewLine(file, pair.right.lineIndex ?? -1, pair.right.line, spanContext, painted)} intraline={pair.right.intraline ?? null} /></span>
           {/if}
         </div>
       </div>
@@ -257,15 +335,18 @@
         {@render gapRow(row.gap)}
       {:else}
         <div
-          class="group relative {lineClass} {lineTintClass(row.line.type)} before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04]"
+          class="group relative {lineClass} {lineTintClass(row.line.type)} before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {isTarget(row, null) ? TARGET_CLASS : ''} {inRange(row, null) ? RANGE_CLASS : ''}"
           style:height={wordWrap ? undefined : lineHeight}
+          data-review-target={isTarget(row, null) ? '' : undefined}
+          data-review-range={inRange(row, null) ? '' : undefined}
         >
           {@render actionCell(row, stackedAnchor(row), 'line')}
-          <span class="flex shrink-0 {gutterTintClass(row.line.type)}">
+          <!-- svelte-ignore a11y_no_static_element_interactions (the menu is a pointer gesture; the line has no keyboard focus to open it from) -->
+          <span class="flex shrink-0 {gutterTintClass(row.line.type)}" data-testid="review-line-gutter" oncontextmenu={(event) => openLineMenu(event, row)}>
             {@render gutter(row.oldLine)}
             {@render gutter(row.newLine)}
           </span>
-          <span class="min-w-0 flex-1 {contentClass} pr-3"><DiffLineContent line={row.line} spans={getSpansForReviewLine(file, row.lineIndex ?? -1, row.line, spanContext, painted)} intraline={row.intraline ?? null} /></span>
+          <span class="min-w-0 flex-1 {contentClass} pr-3" data-find-key={findKey(row)}><DiffLineContent line={row.line} spans={getSpansForReviewLine(file, row.lineIndex ?? -1, row.line, spanContext, painted)} intraline={row.intraline ?? null} /></span>
         </div>
       {/if}
     {/each}

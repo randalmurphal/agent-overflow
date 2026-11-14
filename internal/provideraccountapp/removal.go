@@ -108,7 +108,7 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 	// into a rollback error that buries the real cause. Skipping the rewrite
 	// leaves the same state either way — an account that needs a fresh login.
 	hasSavedSnapshot := savedErr == nil &&
-		!m.credentials.CredentialSignedOut(providerName, savedSnapshot.Data)
+		!m.credentials.CredentialSignedOut(providerName, savedSnapshot.Bytes())
 
 	var activeSnapshot provideraccounts.CredentialSnapshot
 	hasActiveSnapshot := false
@@ -149,7 +149,7 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 			}
 			if err := m.verifyCanonicalProviderCredentialLocked(
 				providerName,
-				replacementCredential.Data,
+				replacementCredential.Bytes(),
 			); err != nil {
 				return err
 			}
@@ -169,7 +169,7 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 			if err := m.credentials.WriteAccountCredential(
 				providerName,
 				accountID,
-				savedSnapshot.Data,
+				savedSnapshot.Bytes(),
 			); err != nil {
 				rollbackErrs = append(rollbackErrs, fmt.Errorf("restore saved credentials: %w", err))
 			}
@@ -209,7 +209,7 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 		} else {
 			m.rememberProviderCredentialFingerprintLocked(
 				providerName,
-				replacementCredential.Data,
+				replacementCredential.Bytes(),
 			)
 		}
 	}

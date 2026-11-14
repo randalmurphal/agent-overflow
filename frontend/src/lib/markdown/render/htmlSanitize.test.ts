@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { SHORT_CODESPAN_CLASS, SHORT_CODESPAN_MAX_LENGTH } from './codespan';
 import { sanitizeEmbeddedHtmlToken } from './htmlSanitize';
 
 // The allowlist sanitizer behind `renderHtml` on embedded-HTML surfaces.
@@ -51,6 +52,18 @@ describe('sanitizeEmbeddedHtmlToken', () => {
 		expect(block('<img src="https://img.shields.io/b.svg" alt="b">')).toBe(
 			'<img src="https://img.shields.io/b.svg" alt="b">'
 		);
+	});
+
+	it('marks short inline code like the token renderers, and no other code', () => {
+		const short = 'x'.repeat(SHORT_CODESPAN_MAX_LENGTH);
+		const long = 'x'.repeat(SHORT_CODESPAN_MAX_LENGTH + 1);
+		const out = block(
+			`<table><tr><td><code class="mine">${short}</code></td><td><code>${long}</code></td></tr></table>` +
+				`<pre><code>${short}</code></pre>`
+		);
+		expect(out).toContain(`<td><code class="${SHORT_CODESPAN_CLASS}">${short}</code></td>`);
+		expect(out).toContain(`<td><code>${long}</code></td>`);
+		expect(out).toContain(`<pre><code>${short}</code></pre>`);
 	});
 
 	it('renders comments as nothing, alone or padded', () => {

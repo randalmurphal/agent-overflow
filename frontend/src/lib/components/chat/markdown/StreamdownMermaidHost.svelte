@@ -178,6 +178,7 @@
   class={['mermaid', 'streamdown-mermaid-host', 'mermaid-host-with-fallback']}
   class:mermaid-rendered={mermaidRendered}
   data-mermaid-source={token.text}
+  data-find-skip
   style:--mermaid-cached-min-h={cachedRenderedHeight ? `${cachedRenderedHeight}px` : null}
   onclickcapture={(e: MouseEvent) => {
     if (!(e.target instanceof Element)) return;

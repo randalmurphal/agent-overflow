@@ -82,7 +82,7 @@ being true.
 |---|---|
 | a node on the spine | `RUN_MAP_NODE_BOX`, an INTRINSIC-width box, centered in its row, capped at the card edge with its label WRAPPING inside it. **CSS ellipsis is banned on this surface**: a map whose every node reads `Implement …` says nothing, so labels wrap and `RUN_MAP_LABEL_MAX` (96, applied with `truncateMiddle` in each label's renderer) is the runaway guard for a label that is effectively a paragraph, not a line budget. Never a full-width bar: a column of edge-to-edge bars reads as a list whatever the glyphs say. The box is `inline-block` TEXT FLOW, and a row's glyph + label + meta live inside ONE button as inline content: atomic siblings beside a label wrap as units when space runs out, stranding a lone glyph on the first line (§13 fourth pass) |
 | a ghost row | `RUN_MAP_GHOST_ROW`: same intrinsic-width text flow, no border, no fill, one type step down. A ghost is a line, not a box (§2 table above) |
-| the map's column | the overlay card's full width, with no wrapper and no cap. A 34rem column existed once for the look of the single-file mockup, and a real campaign paid for it twice (§6, width) |
+| the map's column | the workflows pane's full width, with no wrapper and no cap. A 34rem column existed once for the look of the single-file mockup, and a real campaign paid for it twice (§6, width) |
 | lane geometry | `RUN_MAP_LANE_MIN` / `RUN_MAP_LANE_MAX` (15rem / 26rem), an open lane's width band, plus `RUN_MAP_FOLDED_LABEL_MAX` (40), the folded lane title's hard budget, the one deliberately single-line text on the map. `app.css` re-declares the band on `:root` as the `var()` resolution floor; a test pins the two sources together |
 | a frame around live flow | `RUN_MAP_CARD`: the current wave, and a live composition's sub-card. **The surface's one structural emphasis**: the live path is the thing with a box around it, and that contrast is what folds buy |
 | a fan lane's name | `RUN_MAP_LANE_HEADER`, small caps above its column |
@@ -449,7 +449,7 @@ tier. Each rule below is testable without a layout engine.
   card) falls back to start alignment, so overflow is at worst a
   clipped tail, never an unreachable head bleeding out of both edges.
   **Nothing writes any `scrollLeft`**: §9's chokepoint owns exactly one
-  number, the overlay body's `scrollTop` (§9.1).
+  number, the workflows pane body's `scrollTop` (§9.1).
 - **Fans inside a lane render STACKED, never as columns**
   (`RunMapFan.layout`, decided by the model at build time: `stacked`
   once the walk has entered a lane, `columns` anywhere the card's full
@@ -712,7 +712,7 @@ stated where it lives.
 | `WorkflowRunMapFold.svelte` | the `grid-template-rows` 0fr⇄1fr reveal both folds use, plus the §9.8 in-view decision that turns the transition off for a region the reader cannot see (§9.8, §10) |
 | `runMapFollow.svelte.ts` | scroll/follow controller (§9): engagement, glide, escape, chip, resize cadence, the one write chokepoint |
 | `runMapGeometry.ts` + `.test.ts` | the pure rect arithmetic the controller decides on: band, resting line, off-screen, and the anchor descent, which is the one non-obvious rule here and gets direct tests rather than being inferred from a compensation number |
-| `overlayScroller.ts` | the §9.9 scroller handoff: the overlay frame provides, the map requires |
+| `workflowsScroller.ts` | the §9.9 scroller handoff: the workflows pane provides, the map requires |
 | `utils/workflowRunMap.ts` + `.test.ts` | pure projection |
 | `stores/workflowRunMap.svelte.ts` | entity store + event patching |
 
@@ -730,9 +730,9 @@ existing role. Test ids: `workflow-run-map`, `workflow-map-wave`,
 Interaction:
 
 - Any **node with a thread** opens it via `openWorkflowThreadById`
-  (closes the overlay, R3, unchanged).
+  (the thread takes the focused workflows pane's slot, R3).
 - A **folded wave row** expands inline (model already built; pure
-  render). Expansion state lives in the overlay nav store
+  render). Expansion state lives in the workflows nav store
   (`workflowsOverlay.svelte.ts`) keyed by run id so it survives
   detail remounts. The current tree loses expansion on remount;
   don't replicate that. There are THREE sets per run (waves,
@@ -834,8 +834,8 @@ implementation detail:
    directly tested; a scroller or region it cannot measure answers
    "animate", which is the harmless side (a visible fold that should
    have been instant is cosmetic; the reverse is the drift).
-9. `overflow-anchor: none` on the overlay body scroller (doctrine:
-   native anchoring fights owned compensation), and the overlay's
+9. `overflow-anchor: none` on the workflows pane body scroller (doctrine:
+   native anchoring fights owned compensation), and the pane's
    scroll position **resets per level/run navigation**, which fixes the
    existing sweep-leaves-stale-scrollTop defect as an adjacent fix.
 10. **Jump chip**: `now ▸` chip; click = engage + glide. Sits outside the
@@ -992,7 +992,7 @@ Docs/tests bookkeeping:
 
 - **Done**: UI-SPEC §4.2 rewritten for the map; §12 integration rows
   updated; this file is the map's spec of record.
-- **Done**: e2e `workflows-overlay.spec.ts` migrated off the tree ids
+- **Done**: e2e `workflows-pane.spec.ts` (then `workflows-overlay.spec.ts`) migrated off the tree ids
   and onto map ids and map semantics, with new coverage for: a live run
   tracked from held to parked on ONE mounted detail (the event-patch
   path, no navigation, no reload), a thread opened from a map node

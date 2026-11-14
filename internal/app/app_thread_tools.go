@@ -220,7 +220,7 @@ func (t threadToolsApp) LiveState(_ context.Context, threadID string) (threadtoo
 func threadToolsLiveState(snapshot triage.LiveStateSnapshot) threadtools.LiveState {
 	return threadtools.LiveState{
 		ActiveTurn:        snapshot.ActiveTurn != nil,
-		PendingSends:      len(snapshot.QueueItems)+len(snapshot.FlushedItems)+len(snapshot.DeferredItems) > 0,
+		PendingSends:      len(snapshot.QueueItems)+len(snapshot.FlushedItems) > 0,
 		PendingApprovals:  len(snapshot.Interactive.Approvals),
 		PendingUserInputs: len(snapshot.Interactive.UserInputs),
 	}

@@ -1,10 +1,15 @@
 package store
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 func TestSearchHidesPreparingForkUntilPublication(t *testing.T) {
@@ -19,7 +24,7 @@ func TestSearchHidesPreparingForkUntilPublication(t *testing.T) {
 	if hits, err := s.SearchThreadMessages("quokka", 10); err != nil || len(hits) != 0 {
 		t.Errorf("global search exposed preparing fork: %+v err=%v", hits, err)
 	}
-	if _, err := s.SearchThreadItems(thread.ID, "quokka", 10); !errors.Is(err, ErrForkPreparing) {
+	if _, err := s.SearchThreadItems(context.Background(), thread.ID, "quokka", TimelineSelection{}, 10); !errors.Is(err, ErrForkPreparing) {
 		t.Errorf("thread search accepted preparing fork: %v", err)
 	}
 	if _, err := s.FinishForkPreparation(thread.ID); err != nil {
@@ -201,6 +206,59 @@ func TestSearchThreadMessages_TitleMatchesSortedBeforeItemMatches(t *testing.T) 
 }
 
 // ---- Case-insensitivity ----
+
+// Thread find matches by the rule the find bar paints with: the shared
+// vectors (frontend/src/test/fixtures/findVectors.json, read by
+// findMatch.test.ts and stringsx) find a summary exactly when they count a
+// match. The cross-thread search keeps SQLite's ASCII LOWER and LIKE.
+func TestSearchThreadItemsMatchesTheSharedFindVectors(t *testing.T) {
+	raw, err := os.ReadFile("../../frontend/src/test/fixtures/findVectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors struct {
+		Count []struct {
+			Text  string `json:"text"`
+			Query string `json:"query"`
+			Count int    `json:"count"`
+		} `json:"count"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil || len(vectors.Count) == 0 {
+		t.Fatalf("vectors: %v", err)
+	}
+	s := newTestStore(t)
+	for i, v := range vectors.Count {
+		if strings.TrimSpace(v.Query) == "" {
+			continue
+		}
+		id := fmt.Sprintf("v%d", i)
+		mustCreateThreadForSearch(t, s, id, "vectors")
+		mustInsertItemForSearch(t, s, id, id+"-item", 0, v.Text, 100)
+		items, err := s.SearchThreadItems(context.Background(), id, v.Query, TimelineSelection{}, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(items) > 0; got != (v.Count > 0) {
+			t.Errorf("thread find of %q in %q found %v, want %v", v.Query, v.Text, got, v.Count > 0)
+		}
+	}
+	// The cross-thread search keeps its own rule: ASCII letters fold on
+	// both sides, every other character matches exactly
+	// (TestSearchThreadMessagesMatchesTheSharedSearchVectors).
+	mustCreateThreadForSearch(t, s, "accent", "HAUTE ÉCOLE")
+	hits, err := s.SearchThreadMessages("haute école", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.ThreadID == "accent" {
+			t.Errorf("cross-thread search folded É in the text: %+v", h)
+		}
+	}
+	if hits, err := s.SearchThreadMessages("HAUTE", 10); err != nil || len(hits) != 1 || hits[0].ThreadID != "accent" {
+		t.Errorf("cross-thread search of HAUTE = %+v, %v", hits, err)
+	}
+}
 
 func TestSearchThreadMessages_CaseInsensitiveMatch(t *testing.T) {
 	s := newTestStore(t)
@@ -441,7 +499,7 @@ func TestSearchThreadItems_EmptyQueryReturnsNil(t *testing.T) {
 	mustCreateThreadForSearch(t, s, "t1", "alpha")
 	mustInsertItemForSearch(t, s, "t1", "i1", 0, "hello seconds", 100)
 
-	got, err := s.SearchThreadItems("t1", "   ", 10)
+	got, err := s.SearchThreadItems(context.Background(), "t1", "   ", TimelineSelection{}, 10)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -457,7 +515,7 @@ func TestSearchThreadItems_ScopedToOneThread(t *testing.T) {
 	mustCreateThreadForSearch(t, s, "t2", "thread two")
 	mustInsertItemForSearch(t, s, "t2", "b1", 0, "also thirty seconds here", 100)
 
-	got, err := s.SearchThreadItems("t1", "seconds", 10)
+	got, err := s.SearchThreadItems(context.Background(), "t1", "seconds", TimelineSelection{}, 10)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -476,7 +534,7 @@ func TestSearchThreadItems_DoesNotMatchTitle(t *testing.T) {
 	mustCreateThreadForSearch(t, s, "t1", "All about seconds")
 	mustInsertItemForSearch(t, s, "t1", "i1", 0, "no temporal words here", 100)
 
-	got, _ := s.SearchThreadItems("t1", "seconds", 10)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "seconds", TimelineSelection{}, 10)
 	if len(got) != 0 {
 		t.Errorf("expected no item hits (term only in title), got %+v", got)
 	}
@@ -493,7 +551,7 @@ func TestSearchThreadItems_DocumentOrder(t *testing.T) {
 	mustInsertItemForSearch(t, s, "t1", "first", 0, "find me A", 300)
 	mustInsertItemForSearch(t, s, "t1", "second", 1, "find me B", 200)
 
-	got, _ := s.SearchThreadItems("t1", "find me", 10)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "find me", TimelineSelection{}, 10)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 hits, got %d", len(got))
 	}
@@ -510,11 +568,11 @@ func TestSearchThreadItems_LimitCapsAndZeroReturnsAll(t *testing.T) {
 		mustInsertItemForSearch(t, s, "t1", fmt.Sprintf("i%d", i), i, "same match body", int64(100+i))
 	}
 
-	capped, _ := s.SearchThreadItems("t1", "match", 4)
+	capped, _ := s.SearchThreadItems(context.Background(), "t1", "match", TimelineSelection{}, 4)
 	if len(capped) != 4 {
 		t.Errorf("expected 4 hits (limit), got %d", len(capped))
 	}
-	all, _ := s.SearchThreadItems("t1", "match", 0)
+	all, _ := s.SearchThreadItems(context.Background(), "t1", "match", TimelineSelection{}, 0)
 	if len(all) != 9 {
 		t.Errorf("expected 9 hits (zero-limit), got %d", len(all))
 	}
@@ -541,7 +599,7 @@ func TestSearchThreadItems_ItemIndexBreaksTurnTies(t *testing.T) {
 		t.Fatalf("insert first: %v", err)
 	}
 
-	got, _ := s.SearchThreadItems("t1", "find me", 10)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "find me", TimelineSelection{}, 10)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 hits, got %d", len(got))
 	}
@@ -550,16 +608,15 @@ func TestSearchThreadItems_ItemIndexBreaksTurnTies(t *testing.T) {
 	}
 }
 
-// SearchThreadItems shares likePattern/escapeLike with the global search, but
-// its i.summary path had no direct literal-wildcard test. A literal % in the
-// query must match a literal % in a summary, not act as a wildcard.
+// A literal % in the query matches a literal % in a summary, never a
+// wildcard: thread find matches literally (find_fold and instr).
 func TestSearchThreadItems_LiteralPercentInSummary(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForSearch(t, s, "t1", "x")
 	mustInsertItemForSearch(t, s, "t1", "pct", 0, "build is 100% done", 100)
 	mustInsertItemForSearch(t, s, "t1", "nopct", 1, "build is 100 done", 200)
 
-	got, _ := s.SearchThreadItems("t1", "100%", 10)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "100%", TimelineSelection{}, 10)
 	if len(got) != 1 || got[0].ItemID != "pct" {
 		t.Errorf("expected only the literal-%% item, got %+v", got)
 	}
@@ -625,5 +682,66 @@ func TestSearchThreadMessages_ProviderFieldPropagates(t *testing.T) {
 	}
 	if providers["tx"] != "codex" {
 		t.Errorf("codex provider missing: %+v", providers)
+	}
+}
+
+// The cross-thread search's match rule, held to the vectors the search
+// modal's highlighter reads (frontend/src/test/fixtures/searchVectors.json,
+// highlight.test.ts): a title is found exactly when the vector has a range,
+// each range alone is found, and the title with its ranges blanked out is
+// not, so the highlighter paints every match the SQL made and no other.
+func TestSearchThreadMessagesMatchesTheSharedSearchVectors(t *testing.T) {
+	raw, err := os.ReadFile("../../frontend/src/test/fixtures/searchVectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors struct {
+		Ranges []struct {
+			Text   string   `json:"text"`
+			Query  string   `json:"query"`
+			Ranges [][2]int `json:"ranges"`
+		} `json:"ranges"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil || len(vectors.Ranges) == 0 {
+		t.Fatalf("vectors: %v", err)
+	}
+	s := newTestStore(t)
+	next := 0
+	// found reports whether a thread titled title is a hit for query.
+	found := func(title, query string) bool {
+		t.Helper()
+		next++
+		id := fmt.Sprintf("sv%d", next)
+		mustCreateThreadForSearch(t, s, id, title)
+		hits, err := s.SearchThreadMessages(query, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range hits {
+			if h.ThreadID == id {
+				return true
+			}
+		}
+		return false
+	}
+	for _, v := range vectors.Ranges {
+		units := utf16.Encode([]rune(v.Text))
+		if got := found(v.Text, v.Query); got != (len(v.Ranges) > 0) {
+			t.Errorf("search of %q in %q found %v, vector has ranges %v", v.Query, v.Text, got, v.Ranges)
+		}
+		blanked := append([]uint16(nil), units...)
+		for _, r := range v.Ranges {
+			if part := string(utf16.Decode(units[r[0]:r[1]])); !found(part, v.Query) {
+				t.Errorf("search of %q: range %v (%q) of %q is not a match", v.Query, r, part, v.Text)
+			}
+			for i := r[0]; i < r[1]; i++ {
+				blanked[i] = 1
+			}
+		}
+		if len(v.Ranges) > 0 {
+			if rest := string(utf16.Decode(blanked)); found(rest, v.Query) {
+				t.Errorf("search of %q in %q matches outside ranges %v (%q)", v.Query, v.Text, v.Ranges, rest)
+			}
+		}
 	}
 }

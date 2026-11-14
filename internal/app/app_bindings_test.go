@@ -1189,6 +1189,7 @@ func newTestAppAtStorePath(t *testing.T, dbPath string) *App {
 	// store closes.
 	t.Cleanup(app.waitAgentNoticeWork)
 	t.Cleanup(app.appCancel)
+	joinThreadRequestWorkAtCleanup(t, app)
 	ensureDefaultTestProject(t, app)
 	return app
 }

@@ -85,6 +85,12 @@
   --md-blockquote: var(--text-secondary);
   --md-marker: var(--fg-muted);
 
+  /* Find-bar matches, painted through `::highlight()` by
+     utils/findHighlights.ts: every match, and the current one. Translucent
+     over the warning hue so the text stays its own color on any ground. */
+  --find-match: color-mix(in oklab, var(--warning) 28%, transparent);
+  --find-match-current: color-mix(in oklab, var(--warning) 60%, transparent);
+
   /* Border softer variant. Used on ambient surfaces (tool-call rows,
      thin card chrome, sidebar dividers) where the full --border is too
      loud. */

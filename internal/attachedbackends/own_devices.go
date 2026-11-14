@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"agent-overflow/internal/computerroute"
+	"agent-overflow/internal/ctxutil"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/owndevices"
 	"agent-overflow/internal/rpcclient"
@@ -134,6 +135,10 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 		return false, err
 	}
 	link.Endpoint, link.CertFingerprint = route.Endpoint, route.CertFingerprint
+	// From the redemption on, the enrollment finishes and is published
+	// whether or not the caller still waits; Close still ends it.
+	ctx, release := ctxutil.Detach(ctx, m.life)
+	defer release()
 	if _, err := m.addLinkLocked(ctx, link); err != nil {
 		return false, err
 	}

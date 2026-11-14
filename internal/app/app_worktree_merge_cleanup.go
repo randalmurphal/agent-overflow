@@ -19,6 +19,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/prthread"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/worktreeapp"
 )
 
 // Merged pull request worktree cleanup (docs/decisions.md, "A thread's
@@ -1070,7 +1071,9 @@ func (a *App) mergedPRStillDue(pr store.ThreadPullRequest, site *mergedPRSite, c
 	if err != nil {
 		return err
 	}
-	if !ok {
+	// A directory that vanished since the cleanup's own stat is left
+	// registered: unattended cleanup never prunes (docs/decisions.md).
+	if !ok || worktreeapp.DirectoryGone(worktree.Path) {
 		return errMergedPRWorktreeGone
 	}
 	if worktree.Branch != pr.Branch {
@@ -1141,7 +1144,7 @@ func (a *App) mergedPRWorktreeBusy(path string, threadIDs []string) error {
 		switch {
 		case live.ActiveTurn != nil:
 			return fmt.Errorf("thread %s is responding", id)
-		case len(live.QueueItems)+len(live.FlushedItems)+len(live.DeferredItems) > 0:
+		case len(live.QueueItems)+len(live.FlushedItems) > 0:
 			return fmt.Errorf("thread %s has queued messages", id)
 		case len(live.Interactive.Approvals)+len(live.Interactive.UserInputs) > 0:
 			return fmt.Errorf("thread %s is waiting for an answer", id)

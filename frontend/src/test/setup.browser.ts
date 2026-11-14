@@ -19,6 +19,7 @@ import { resetBindingMocks, setBindingMock } from './mocks/bindings-app';
 import { resetPanesForTest } from '../lib/stores/panes.svelte';
 import { resetAttachmentTransferMocks } from './mocks/attachmentTransfer';
 import { setPageGrantsFromBootstrap } from '../lib/transport/scopes';
+import { setHostWindowFromBootstrap } from '../lib/transport/pageHost';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { clearThreadScrollSnapshotsForTest } from '../lib/utils/threadScrollSnapshots';
@@ -61,6 +62,7 @@ beforeEach(() => {
   // read outside a reactive context (the 2026-09-03 idle-trim tripwire).
   // Pin the embedded webview's answer; a test exercising a narrower
   // session sets its own.
+  setHostWindowFromBootstrap(true);
   setPageGrantsFromBootstrap(false);
 });
 

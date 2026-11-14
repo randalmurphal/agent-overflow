@@ -8,7 +8,7 @@
   import { NO_GROUPS } from '../../stores/threadGroups.svelte';
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import ProjectItem from './ProjectItem.svelte';
-  import { disambiguatedProjectLabels } from '../../utils/pathDisplay';
+  import { disambiguatedPathLabels } from '../../utils/pathDisplay';
   import type { ProjectNewThreadHandler, ProjectNewTerminalHandler } from './projectNewThread';
 
   interface Props {
@@ -40,9 +40,13 @@
     onReorder,
   }: Props = $props();
 
+  // One array for every project with no threads (or no assistants), so
+  // its list is not handed a new empty one on each render.
+  const NO_THREADS: Thread[] = [];
   const NO_AGENTS: readonly Thread[] = [];
+
   let orderedIds = $derived(projects.map((p) => p.project.id));
-  let labels = $derived(disambiguatedProjectLabels(projects.map((p) => p.project)));
+  let labels = $derived(disambiguatedPathLabels(projects.map((p) => p.project)));
 </script>
 
 {#if projects.length === 0}
@@ -65,7 +69,7 @@
       <ProjectItem
         {project}
         displayLabel={labels.get(project.project.id)}
-        threads={threadsByProject.get(project.project.id) ?? []}
+        threads={threadsByProject.get(project.project.id) ?? NO_THREADS}
         groups={groupsByProject?.get(project.project.id) ?? NO_GROUPS}
         agents={agentsByProject?.get(project.project.id) ?? NO_AGENTS}
         {pane}

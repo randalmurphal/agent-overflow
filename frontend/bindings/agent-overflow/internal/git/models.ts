@@ -5,6 +5,138 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+/**
+ * ApprovalCount is a PR's standing approvals (Given) against what its
+ * merge requires (Required).
+ */
+export class ApprovalCount {
+    "given": number;
+    "required": number;
+
+    /** Creates a new ApprovalCount instance. */
+    constructor($$source: Partial<ApprovalCount> = {}) {
+        if (!("given" in $$source)) {
+            this["given"] = 0;
+        }
+        if (!("required" in $$source)) {
+            this["required"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ApprovalCount instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ApprovalCount {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ApprovalCount($$parsedSource as Partial<ApprovalCount>);
+    }
+}
+
+/**
+ * AutoMergeRequest is an armed merge-when-ready: who set it, when, with
+ * which method, and the forge's own wording of what it waits for.
+ */
+export class AutoMergeRequest {
+    "method": string;
+    "byLogin": string;
+    "byName"?: string;
+    "at": string;
+    "waitsFor": string;
+    "canCancel": boolean;
+
+    /** Creates a new AutoMergeRequest instance. */
+    constructor($$source: Partial<AutoMergeRequest> = {}) {
+        if (!("method" in $$source)) {
+            this["method"] = "";
+        }
+        if (!("byLogin" in $$source)) {
+            this["byLogin"] = "";
+        }
+        if (!("at" in $$source)) {
+            this["at"] = "";
+        }
+        if (!("waitsFor" in $$source)) {
+            this["waitsFor"] = "";
+        }
+        if (!("canCancel" in $$source)) {
+            this["canCancel"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AutoMergeRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AutoMergeRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AutoMergeRequest($$parsedSource as Partial<AutoMergeRequest>);
+    }
+}
+
+/**
+ * CIAction is whether one action applies to a job or pipeline and whether
+ * the viewer may take it. Empty: the action does not apply, and the UI
+ * shows nothing for it. CIActionAllowed: it applies and the forge reports
+ * nothing against the viewer taking it. CIActionDenied: it applies, but
+ * the forge reports the viewer may not take it (GitLab's job and pipeline
+ * permissions, GitHub's repository permission).
+ */
+export enum CIAction {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    CIActionAllowed = "allowed",
+    CIActionDenied = "denied",
+};
+
+/**
+ * CIActionKind names one write ForgeCIActor performs.
+ */
+export enum CIActionKind {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    CIActionRetryJob = "retry_job",
+    CIActionCancelJob = "cancel_job",
+    CIActionPlayJob = "play_job",
+    CIActionRetryFailed = "retry_failed",
+    CIActionCancelPipeline = "cancel_pipeline",
+};
+
+/**
+ * CIArtifactsRequest names whose artifacts to download: one GitLab job's
+ * archive (JobID), or every artifact of the GitHub workflow runs RunIDs.
+ */
+export class CIArtifactsRequest {
+    "jobId"?: string;
+    "runIds"?: string[];
+
+    /** Creates a new CIArtifactsRequest instance. */
+    constructor($$source: Partial<CIArtifactsRequest> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIArtifactsRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIArtifactsRequest {
+        const $$createField1_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("runIds" in $$parsedSource) {
+            $$parsedSource["runIds"] = $$createField1_0($$parsedSource["runIds"]);
+        }
+        return new CIArtifactsRequest($$parsedSource as Partial<CIArtifactsRequest>);
+    }
+}
+
 export class CIJob {
     /**
      * ID is the forge's numeric job id, as a string. Empty when the job
@@ -19,6 +151,18 @@ export class CIJob {
     "logsAvailable": boolean;
     "steps"?: CIStep[];
 
+    /**
+     * RunID is a GitHub Actions job's workflow run id; empty on GitLab and
+     * for an external check.
+     */
+    "runId"?: string;
+
+    /**
+     * Actions are the job-level actions and whether the viewer may take
+     * them (see CIJobActions).
+     */
+    "actions": CIJobActions;
+
     /** Creates a new CIJob instance. */
     constructor($$source: Partial<CIJob> = {}) {
         if (!("name" in $$source)) {
@@ -30,6 +174,9 @@ export class CIJob {
         if (!("logsAvailable" in $$source)) {
             this["logsAvailable"] = false;
         }
+        if (!("actions" in $$source)) {
+            this["actions"] = (new CIJobActions());
+        }
 
         Object.assign(this, $$source);
     }
@@ -38,26 +185,91 @@ export class CIJob {
      * Creates a new CIJob instance from a string or object.
      */
     static createFrom($$source: any = {}): CIJob {
-        const $$createField7_0 = $$createType1;
+        const $$createField7_0 = $$createType2;
+        const $$createField9_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("steps" in $$parsedSource) {
             $$parsedSource["steps"] = $$createField7_0($$parsedSource["steps"]);
+        }
+        if ("actions" in $$parsedSource) {
+            $$parsedSource["actions"] = $$createField9_0($$parsedSource["actions"]);
         }
         return new CIJob($$parsedSource as Partial<CIJob>);
     }
 }
 
+/**
+ * CIJobActions are the job-level actions. Retry applies to a job that
+ * finished failed or canceled (on GitHub, once its whole workflow run
+ * completed, since GitHub re-runs a job of a completed run only); Cancel
+ * to a running or pending GitLab job; Play to a GitLab job waiting for a
+ * manual start; Artifacts to a GitLab job with an artifacts archive.
+ * GitHub cancels runs, not jobs, starts no manual jobs and keeps
+ * artifacts per run, so a GitHub job carries Retry alone. A job with no
+ * ID (a GitHub external check, a GitLab bridge or commit status) carries
+ * none.
+ */
+export class CIJobActions {
+    "retry"?: CIAction;
+    "cancel"?: CIAction;
+    "play"?: CIAction;
+    "artifacts"?: CIAction;
+
+    /** Creates a new CIJobActions instance. */
+    constructor($$source: Partial<CIJobActions> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIJobActions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIJobActions {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CIJobActions($$parsedSource as Partial<CIJobActions>);
+    }
+}
+
 export class CIPipeline {
+    /**
+     * ID is the forge's pipeline id as a decimal string: the GitLab
+     * pipeline or the GitHub workflow run ReadPipeline read. A GitHub PR's
+     * head checks span every workflow run on the head, so ReadPR leaves it
+     * empty there.
+     */
+    "id"?: string;
+
     /**
      * Status is the normalized aggregate for the whole pipeline.
      */
     "status": string;
 
     /**
-     * URL links to the forge's pipeline page (GitLab only; empty on GitHub).
+     * URL links to the forge's pipeline page: the GitLab pipeline, the
+     * GitHub workflow run (empty for a GitHub PR's head checks).
      */
     "url"?: string;
+
+    /**
+     * Ref and SHA are the ref and commit the pipeline ran on.
+     */
+    "ref"?: string;
+    "sha"?: string;
     "stages": CIStage[];
+
+    /**
+     * Actions are the pipeline-level actions and whether the viewer may
+     * take them (see CIPipelineActions).
+     */
+    "actions": CIPipelineActions;
+
+    /**
+     * ActionsUnavailable is the sentence saying why some actions are not
+     * offered: a read behind their flags (GitHub's repository permission,
+     * a run's artifacts) failed, and the flags it would have set are
+     * absent. Empty when every flag was read.
+     */
+    "actionsUnavailable"?: string;
 
     /** Creates a new CIPipeline instance. */
     constructor($$source: Partial<CIPipeline> = {}) {
@@ -67,6 +279,9 @@ export class CIPipeline {
         if (!("stages" in $$source)) {
             this["stages"] = [];
         }
+        if (!("actions" in $$source)) {
+            this["actions"] = (new CIPipelineActions());
+        }
 
         Object.assign(this, $$source);
     }
@@ -75,12 +290,46 @@ export class CIPipeline {
      * Creates a new CIPipeline instance from a string or object.
      */
     static createFrom($$source: any = {}): CIPipeline {
-        const $$createField2_0 = $$createType3;
+        const $$createField5_0 = $$createType5;
+        const $$createField6_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("stages" in $$parsedSource) {
-            $$parsedSource["stages"] = $$createField2_0($$parsedSource["stages"]);
+            $$parsedSource["stages"] = $$createField5_0($$parsedSource["stages"]);
+        }
+        if ("actions" in $$parsedSource) {
+            $$parsedSource["actions"] = $$createField6_0($$parsedSource["actions"]);
         }
         return new CIPipeline($$parsedSource as Partial<CIPipeline>);
+    }
+}
+
+/**
+ * CIPipelineActions are the pipeline-level actions. RetryFailed applies
+ * to a finished pipeline with a failed or canceled job, Cancel to a
+ * running or pending one. A GitHub pipeline is every workflow run its
+ * jobs belong to: RetryFailed applies when a completed run holds a failed
+ * or canceled job, Cancel when a run is still live, and each acts on the
+ * runs that qualify. Artifacts is GitHub's alone (artifacts belong to a
+ * run): a completed run of the pipeline has artifacts; GitLab's are per
+ * job.
+ */
+export class CIPipelineActions {
+    "retryFailed"?: CIAction;
+    "cancel"?: CIAction;
+    "artifacts"?: CIAction;
+
+    /** Creates a new CIPipelineActions instance. */
+    constructor($$source: Partial<CIPipelineActions> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIPipelineActions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIPipelineActions {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CIPipelineActions($$parsedSource as Partial<CIPipelineActions>);
     }
 }
 
@@ -111,7 +360,7 @@ export class CIStage {
      * Creates a new CIStage instance from a string or object.
      */
     static createFrom($$source: any = {}): CIStage {
-        const $$createField2_0 = $$createType5;
+        const $$createField2_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("jobs" in $$parsedSource) {
             $$parsedSource["jobs"] = $$createField2_0($$parsedSource["jobs"]);
@@ -159,6 +408,37 @@ export class CIStep {
     static createFrom($$source: any = {}): CIStep {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new CIStep($$parsedSource as Partial<CIStep>);
+    }
+}
+
+/**
+ * ChangeRequest is one review that requested changes and blocks the
+ * merge, on a BlockerChangesRequested row: ReviewID is the GitHub review
+ * node id DismissPRReview takes.
+ */
+export class ChangeRequest {
+    "reviewId": string;
+    "authorLogin": string;
+    "authorName"?: string;
+
+    /** Creates a new ChangeRequest instance. */
+    constructor($$source: Partial<ChangeRequest> = {}) {
+        if (!("reviewId" in $$source)) {
+            this["reviewId"] = "";
+        }
+        if (!("authorLogin" in $$source)) {
+            this["authorLogin"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ChangeRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ChangeRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ChangeRequest($$parsedSource as Partial<ChangeRequest>);
     }
 }
 
@@ -236,12 +516,171 @@ export class CheckSummary {
      * Creates a new CheckSummary instance from a string or object.
      */
     static createFrom($$source: any = {}): CheckSummary {
-        const $$createField6_0 = $$createType7;
+        const $$createField6_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("checks" in $$parsedSource) {
             $$parsedSource["checks"] = $$createField6_0($$parsedSource["checks"]);
         }
         return new CheckSummary($$parsedSource as Partial<CheckSummary>);
+    }
+}
+
+/**
+ * CommentReaction is one reaction group on a comment: its Name (the
+ * shared vocabulary, or a GitLab award emoji's own name), how many
+ * reacted, whether the viewer did, and who, when the read already has
+ * them (GitLab; GitHub's would cost a connection per comment, so it
+ * leaves Users empty).
+ */
+export class CommentReaction {
+    "name": string;
+    "count": number;
+    "viewerReacted": boolean;
+    "users"?: string[];
+
+    /** Creates a new CommentReaction instance. */
+    constructor($$source: Partial<CommentReaction> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("count" in $$source)) {
+            this["count"] = 0;
+        }
+        if (!("viewerReacted" in $$source)) {
+            this["viewerReacted"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommentReaction instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommentReaction {
+        const $$createField3_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("users" in $$parsedSource) {
+            $$parsedSource["users"] = $$createField3_0($$parsedSource["users"]);
+        }
+        return new CommentReaction($$parsedSource as Partial<CommentReaction>);
+    }
+}
+
+/**
+ * CommentSuggestion is one suggestion block of a comment, in body order
+ * (Index). StartLine and EndLine are the new-side lines it replaces,
+ * zero when the anchor names none on the new side (an old-side line, a
+ * file, an outdated GitHub thread). From is the replaced text when the
+ * read proves it (FromKnown: GitLab's from_content), else absent and
+ * the client shows the additions alone; To is the replacement. ID is
+ * GitLab's suggestion id, which the apply names; GitHub's apply names
+ * Index. Appliable is the forge's answer (GitLab's appliable, with the
+ * developer role its suggestions API requires) or the adapter's own from
+ * the read (GitHub: the PR is open, the thread current, unresolved and
+ * on the new side, and viewerCanApplySuggestion). Applied is GitLab's;
+ * GitHub does not say.
+ */
+export class CommentSuggestion {
+    "index": number;
+    "id"?: string;
+    "startLine"?: number;
+    "endLine"?: number;
+    "from"?: string[];
+    "fromKnown"?: boolean;
+    "to": string[];
+    "appliable": boolean;
+    "applied"?: boolean;
+
+    /**
+     * BodyStartLine and BodyEndLine are the 0-based lines, in the
+     * comment's body split on "\n", of the block's opening and closing
+     * fences (mdsuggest.Block), when BodyPlaced: GitHub's always; GitLab's
+     * only when the body holds as many blocks as GitLab reports
+     * suggestions, block i being suggestion i. They are not part of the
+     * digest.
+     */
+    "bodyStartLine": number;
+    "bodyEndLine": number;
+    "bodyPlaced": boolean;
+
+    /**
+     * Digest names what the user is shown and what an apply writes
+     * (SuggestionDigest); the apply presents it and is refused when the
+     * suggestion no longer has it.
+     */
+    "digest": string;
+
+    /** Creates a new CommentSuggestion instance. */
+    constructor($$source: Partial<CommentSuggestion> = {}) {
+        if (!("index" in $$source)) {
+            this["index"] = 0;
+        }
+        if (!("to" in $$source)) {
+            this["to"] = [];
+        }
+        if (!("appliable" in $$source)) {
+            this["appliable"] = false;
+        }
+        if (!("bodyStartLine" in $$source)) {
+            this["bodyStartLine"] = 0;
+        }
+        if (!("bodyEndLine" in $$source)) {
+            this["bodyEndLine"] = 0;
+        }
+        if (!("bodyPlaced" in $$source)) {
+            this["bodyPlaced"] = false;
+        }
+        if (!("digest" in $$source)) {
+            this["digest"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommentSuggestion instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommentSuggestion {
+        const $$createField4_0 = $$createType0;
+        const $$createField6_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("from" in $$parsedSource) {
+            $$parsedSource["from"] = $$createField4_0($$parsedSource["from"]);
+        }
+        if ("to" in $$parsedSource) {
+            $$parsedSource["to"] = $$createField6_0($$parsedSource["to"]);
+        }
+        return new CommentSuggestion($$parsedSource as Partial<CommentSuggestion>);
+    }
+}
+
+/**
+ * CommentTarget names one sent comment: ThreadID is its thread's
+ * ReviewThread.ID and CommentID its ReviewComment.ID. A GitHub
+ * conversation comment's thread ID is its own ID (ReviewThread).
+ */
+export class CommentTarget {
+    "threadId": string;
+    "commentId": string;
+
+    /** Creates a new CommentTarget instance. */
+    constructor($$source: Partial<CommentTarget> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("commentId" in $$source)) {
+            this["commentId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommentTarget instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommentTarget {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CommentTarget($$parsedSource as Partial<CommentTarget>);
     }
 }
 
@@ -294,6 +733,11 @@ export class GitBranch {
     "aheadCount"?: number;
     "behindCount"?: number;
 
+    /**
+     * Date is the tip's committer date in unix seconds.
+     */
+    "date"?: number;
+
     /** Creates a new GitBranch instance. */
     constructor($$source: Partial<GitBranch> = {}) {
         if (!("name" in $$source)) {
@@ -324,6 +768,18 @@ export class GitBranch {
 export class GitStatus {
     "isRepo": boolean;
     "branch": string;
+
+    /**
+     * HeadCommit is the full commit id of a detached HEAD; empty on a
+     * branch.
+     */
+    "headCommit"?: string;
+
+    /**
+     * Tag is set only on a detached HEAD at least one tag points at: the
+     * first such tag in ListTags order.
+     */
+    "tag"?: string;
     "isDefaultBranch": boolean;
     "hasChanges": boolean;
     "insertions": number;
@@ -362,9 +818,9 @@ export class GitStatus {
 
     /**
      * PendingOperation surfaces an in-progress multi-step operation.
-     * Values: "merge", "rebase", "bisect", or "" when none is pending. The
-     * commit dialog shows it as a notice; git itself decides whether a
-     * commit can be recorded.
+     * Values: "merge", "cherry-pick", "revert", "rebase", "bisect", or "" when none is
+     * pending. The commit dialog shows it as a notice; git itself decides
+     * whether a commit can be recorded.
      */
     "pendingOperation"?: string;
 
@@ -417,6 +873,416 @@ export class GitStatus {
 }
 
 /**
+ * GitTag is a tag the branch picker can offer. Date is git's creatordate in
+ * unix seconds: the tagger date of an annotated tag, the commit date of a
+ * lightweight one.
+ */
+export class GitTag {
+    "name": string;
+    "date": number;
+
+    /** Creates a new GitTag instance. */
+    constructor($$source: Partial<GitTag> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("date" in $$source)) {
+            this["date"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitTag instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitTag {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitTag($$parsedSource as Partial<GitTag>);
+    }
+}
+
+/**
+ * LeftBehind is what moving a detached HEAD away from commit orphans.
+ */
+export class LeftBehind {
+    "count": number;
+    "commit": string;
+
+    /** Creates a new LeftBehind instance. */
+    constructor($$source: Partial<LeftBehind> = {}) {
+        if (!("count" in $$source)) {
+            this["count"] = 0;
+        }
+        if (!("commit" in $$source)) {
+            this["commit"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LeftBehind instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LeftBehind {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LeftBehind($$parsedSource as Partial<LeftBehind>);
+    }
+}
+
+/**
+ * MergeBlocker is one condition of the merge. Text is the sentence the row
+ * shows ("Needs 1 more approval"), Detail the smaller line under it
+ * ("Randy Murphy approved · 2 required"), URL the forge page for the
+ * condition when one exists (a pipeline, a protection rule).
+ */
+export class MergeBlocker {
+    "kind": string;
+    "text": string;
+    "detail"?: string;
+    "url"?: string;
+
+    /**
+     * A BlockerChangesRequested row carries what its fix needs: on GitHub
+     * the reviews to dismiss (ChangeRequests), on GitLab whether the
+     * viewer may bypass them (Bypassable). A settled row of that kind
+     * with Bypassed is requested changes GitLab reports overridden.
+     */
+    "changeRequests"?: ChangeRequest[];
+    "bypassable"?: boolean;
+    "bypassed"?: boolean;
+
+    /** Creates a new MergeBlocker instance. */
+    constructor($$source: Partial<MergeBlocker> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("text" in $$source)) {
+            this["text"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeBlocker instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeBlocker {
+        const $$createField4_0 = $$createType12;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("changeRequests" in $$parsedSource) {
+            $$parsedSource["changeRequests"] = $$createField4_0($$parsedSource["changeRequests"]);
+        }
+        return new MergeBlocker($$parsedSource as Partial<MergeBlocker>);
+    }
+}
+
+/**
+ * MergeMessage is a merge commit's message: its title (the first line)
+ * and body.
+ */
+export class MergeMessage {
+    "title": string;
+    "body": string;
+
+    /** Creates a new MergeMessage instance. */
+    constructor($$source: Partial<MergeMessage> = {}) {
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeMessage instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeMessage {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new MergeMessage($$parsedSource as Partial<MergeMessage>);
+    }
+}
+
+/**
+ * MergeOptions is what the project allows and what the viewer may do,
+ * read with the PR's detail. Methods lists the allowed merge methods with
+ * the project's default first; empty when the viewer cannot read the
+ * project's settings, in which case the UI offers MergeMethodMerge alone.
+ */
+export class MergeOptions {
+    "methods": string[];
+
+    /**
+     * DeleteBranchOffered is whether the menu shows the delete-branch
+     * toggle: false for a fork's branch or when the project always deletes
+     * it; DeleteBranchDefault is the toggle's initial state.
+     */
+    "deleteBranchOffered": boolean;
+    "deleteBranchDefault": boolean;
+
+    /**
+     * AutoMergeAvailable is whether the forge offers merging when the
+     * checks pass; AutoMerge is the armed request, nil when none.
+     */
+    "autoMergeAvailable": boolean;
+    "autoMerge"?: AutoMergeRequest | null;
+
+    /**
+     * ViewerCanMerge is whether the forge would let this login merge;
+     * ViewerCanApprove whether it accepts an approval from this login
+     * (GitHub refuses the author; GitLab's user_can_approve);
+     * ViewerApproved whether the login's approval currently stands.
+     */
+    "viewerCanMerge": boolean;
+    "viewerCanApprove": boolean;
+    "viewerApproved": boolean;
+
+    /**
+     * CannotApproveReason explains an absent Approve button ("Authors
+     * cannot approve their own pull request").
+     */
+    "cannotApproveReason"?: string;
+
+    /**
+     * CannotMergeReason explains a greyed Merge now ("You do not have
+     * merge access to this project").
+     */
+    "cannotMergeReason"?: string;
+
+    /** Creates a new MergeOptions instance. */
+    constructor($$source: Partial<MergeOptions> = {}) {
+        if (!("methods" in $$source)) {
+            this["methods"] = [];
+        }
+        if (!("deleteBranchOffered" in $$source)) {
+            this["deleteBranchOffered"] = false;
+        }
+        if (!("deleteBranchDefault" in $$source)) {
+            this["deleteBranchDefault"] = false;
+        }
+        if (!("autoMergeAvailable" in $$source)) {
+            this["autoMergeAvailable"] = false;
+        }
+        if (!("viewerCanMerge" in $$source)) {
+            this["viewerCanMerge"] = false;
+        }
+        if (!("viewerCanApprove" in $$source)) {
+            this["viewerCanApprove"] = false;
+        }
+        if (!("viewerApproved" in $$source)) {
+            this["viewerApproved"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeOptions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeOptions {
+        const $$createField0_0 = $$createType0;
+        const $$createField4_0 = $$createType14;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("methods" in $$parsedSource) {
+            $$parsedSource["methods"] = $$createField0_0($$parsedSource["methods"]);
+        }
+        if ("autoMerge" in $$parsedSource) {
+            $$parsedSource["autoMerge"] = $$createField4_0($$parsedSource["autoMerge"]);
+        }
+        return new MergeOptions($$parsedSource as Partial<MergeOptions>);
+    }
+}
+
+/**
+ * MergeOutcome is what the forge did. Merged is true when the PR is
+ * merged now; AutoMerge when the forge armed the merge instead (a merge
+ * request that returned the PR still open, or an auto-merge request that
+ * succeeded). A forge that merges asynchronously answers neither and the
+ * caller follows the PR's next poll.
+ */
+export class MergeOutcome {
+    "merged": boolean;
+    "autoMerge": boolean;
+    "sha"?: string;
+
+    /** Creates a new MergeOutcome instance. */
+    constructor($$source: Partial<MergeOutcome> = {}) {
+        if (!("merged" in $$source)) {
+            this["merged"] = false;
+        }
+        if (!("autoMerge" in $$source)) {
+            this["autoMerge"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeOutcome instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeOutcome {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new MergeOutcome($$parsedSource as Partial<MergeOutcome>);
+    }
+}
+
+/**
+ * MergeReadiness is whether the forge would merge the PR now, and what
+ * stands in the way when it would not. Blockers is in the forge's order:
+ * empty when State is ready, checking, merged or closed; a draft leads
+ * with its draft blocker (the fix is Mark ready) and then what would block
+ * once ready. Settled lists the checks that pass (approvals met,
+ * pipeline passed, no conflicts) so the section has rows in every state.
+ */
+export class MergeReadiness {
+    "state": string;
+    "blockers": MergeBlocker[];
+    "settled": MergeBlocker[];
+
+    /**
+     * Approvals counts the approvals that stand and the approvals the
+     * merge requires (0 when nothing is required). Unresolved counts the
+     * review threads not yet resolved when the read has every thread's
+     * state; nil otherwise.
+     */
+    "approvals": ApprovalCount;
+    "unresolved"?: number | null;
+
+    /** Creates a new MergeReadiness instance. */
+    constructor($$source: Partial<MergeReadiness> = {}) {
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("blockers" in $$source)) {
+            this["blockers"] = [];
+        }
+        if (!("settled" in $$source)) {
+            this["settled"] = [];
+        }
+        if (!("approvals" in $$source)) {
+            this["approvals"] = (new ApprovalCount());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeReadiness instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeReadiness {
+        const $$createField1_0 = $$createType16;
+        const $$createField2_0 = $$createType16;
+        const $$createField3_0 = $$createType17;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("blockers" in $$parsedSource) {
+            $$parsedSource["blockers"] = $$createField1_0($$parsedSource["blockers"]);
+        }
+        if ("settled" in $$parsedSource) {
+            $$parsedSource["settled"] = $$createField2_0($$parsedSource["settled"]);
+        }
+        if ("approvals" in $$parsedSource) {
+            $$parsedSource["approvals"] = $$createField3_0($$parsedSource["approvals"]);
+        }
+        return new MergeReadiness($$parsedSource as Partial<MergeReadiness>);
+    }
+}
+
+/**
+ * MergeRequest is one merge action. Method must be one of the PR's
+ * MergeOptions.Methods; HeadSHA is the head the caller saw and the forge
+ * refuses the merge when the branch moved past it. AutoMerge arms the
+ * merge for when the checks pass instead of merging now.
+ */
+export class MergeRequest {
+    "method": string;
+    "headSHA": string;
+    "deleteBranch": boolean;
+    "autoMerge": boolean;
+
+    /**
+     * CommitMessage is the commit message the user edited, sent with a
+     * merge or an auto-merge of a method that writes a commit; nil leaves
+     * the forge's default.
+     */
+    "commitMessage"?: MergeMessage | null;
+
+    /** Creates a new MergeRequest instance. */
+    constructor($$source: Partial<MergeRequest> = {}) {
+        if (!("method" in $$source)) {
+            this["method"] = "";
+        }
+        if (!("headSHA" in $$source)) {
+            this["headSHA"] = "";
+        }
+        if (!("deleteBranch" in $$source)) {
+            this["deleteBranch"] = false;
+        }
+        if (!("autoMerge" in $$source)) {
+            this["autoMerge"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeRequest {
+        const $$createField4_0 = $$createType19;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("commitMessage" in $$parsedSource) {
+            $$parsedSource["commitMessage"] = $$createField4_0($$parsedSource["commitMessage"]);
+        }
+        return new MergeRequest($$parsedSource as Partial<MergeRequest>);
+    }
+}
+
+/**
+ * PRCandidates is one picker search: the first candidatePageSize people
+ * (users, and GitHub teams for reviewers when the login can read them)
+ * or labels matching the query, and More when the forge has more.
+ */
+export class PRCandidates {
+    "people": PRPerson[];
+    "labels": PRLabel[];
+    "more": boolean;
+
+    /** Creates a new PRCandidates instance. */
+    constructor($$source: Partial<PRCandidates> = {}) {
+        if (!("people" in $$source)) {
+            this["people"] = [];
+        }
+        if (!("labels" in $$source)) {
+            this["labels"] = [];
+        }
+        if (!("more" in $$source)) {
+            this["more"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRCandidates instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRCandidates {
+        const $$createField0_0 = $$createType21;
+        const $$createField1_0 = $$createType23;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("people" in $$parsedSource) {
+            $$parsedSource["people"] = $$createField0_0($$parsedSource["people"]);
+        }
+        if ("labels" in $$parsedSource) {
+            $$parsedSource["labels"] = $$createField1_0($$parsedSource["labels"]);
+        }
+        return new PRCandidates($$parsedSource as Partial<PRCandidates>);
+    }
+}
+
+/**
  * PRDetail is the normalized PR/MR detail shape consumed by the review pane.
  * 
  * AuthorName, here and on ReviewVerdict and ReviewComment, is the forge
@@ -436,9 +1302,11 @@ export class PRDetail {
     "baseRefName": string;
 
     /**
-     * BaseRefSHA is the base branch's tip the forge compares the PR
-     * against: GitHub's baseRefOid, GitLab's diff_refs.start_sha. Empty
-     * while GitLab is still preparing the merge request's diff.
+     * BaseRefSHA is the base commit the forge recorded for the PR's diff:
+     * GitHub's baseRefOid, GitLab's diff_refs.start_sha. It does not follow
+     * the base branch, so it is not the branch's current tip (see
+     * PRRevision.BaseSHA). Empty while GitLab is still preparing the merge
+     * request's diff.
      */
     "baseRefSHA": string;
     "headSHA": string;
@@ -452,6 +1320,23 @@ export class PRDetail {
     "checks": CheckSummary;
     "mergeability": string;
     "diffRefs"?: PRDiffRefs | null;
+
+    /**
+     * Readiness and Merge feed the review pane's Merge section
+     * (forge_merge.go). MergedAt, MergedBy and ClosedAt name the end of a
+     * PR that is no longer open; empty while it is.
+     */
+    "readiness": MergeReadiness;
+    "merge": MergeOptions;
+    "mergedAt"?: string;
+    "mergedBy"?: string;
+    "closedAt"?: string;
+
+    /**
+     * Manage is the Details section and the management capabilities
+     * (forge_manage.go).
+     */
+    "manage": PRManage;
 
     /** Creates a new PRDetail instance. */
     constructor($$source: Partial<PRDetail> = {}) {
@@ -512,6 +1397,15 @@ export class PRDetail {
         if (!("mergeability" in $$source)) {
             this["mergeability"] = "";
         }
+        if (!("readiness" in $$source)) {
+            this["readiness"] = (new MergeReadiness());
+        }
+        if (!("merge" in $$source)) {
+            this["merge"] = (new MergeOptions());
+        }
+        if (!("manage" in $$source)) {
+            this["manage"] = (new PRManage());
+        }
 
         Object.assign(this, $$source);
     }
@@ -520,9 +1414,12 @@ export class PRDetail {
      * Creates a new PRDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): PRDetail {
-        const $$createField17_0 = $$createType9;
-        const $$createField18_0 = $$createType10;
-        const $$createField20_0 = $$createType12;
+        const $$createField17_0 = $$createType25;
+        const $$createField18_0 = $$createType26;
+        const $$createField20_0 = $$createType28;
+        const $$createField21_0 = $$createType29;
+        const $$createField22_0 = $$createType30;
+        const $$createField26_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
             $$parsedSource["latestReviews"] = $$createField17_0($$parsedSource["latestReviews"]);
@@ -532,6 +1429,15 @@ export class PRDetail {
         }
         if ("diffRefs" in $$parsedSource) {
             $$parsedSource["diffRefs"] = $$createField20_0($$parsedSource["diffRefs"]);
+        }
+        if ("readiness" in $$parsedSource) {
+            $$parsedSource["readiness"] = $$createField21_0($$parsedSource["readiness"]);
+        }
+        if ("merge" in $$parsedSource) {
+            $$parsedSource["merge"] = $$createField22_0($$parsedSource["merge"]);
+        }
+        if ("manage" in $$parsedSource) {
+            $$parsedSource["manage"] = $$createField26_0($$parsedSource["manage"]);
         }
         return new PRDetail($$parsedSource as Partial<PRDetail>);
     }
@@ -563,6 +1469,346 @@ export class PRDiffRefs {
     static createFrom($$source: any = {}): PRDiffRefs {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new PRDiffRefs($$parsedSource as Partial<PRDiffRefs>);
+    }
+}
+
+/**
+ * PREdit is a title or description edit; nil leaves a field as it is.
+ * A description edit names ExpectedDescription, the description the
+ * editor opened with: the forge adapter re-reads the description and
+ * refuses with ErrDescriptionChanged when it differs (line endings
+ * aside), since neither forge's API takes a precondition on it.
+ */
+export class PREdit {
+    "title"?: string | null;
+    "description"?: string | null;
+    "expectedDescription"?: string | null;
+
+    /** Creates a new PREdit instance. */
+    constructor($$source: Partial<PREdit> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PREdit instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PREdit {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PREdit($$parsedSource as Partial<PREdit>);
+    }
+}
+
+/**
+ * PRLabel is one label. ID is its global id (a GitHub node id, a GitLab
+ * label gid), which label writes address it by on both forges. Color is
+ * "#rrggbb", empty when the forge gave none.
+ */
+export class PRLabel {
+    "id"?: string;
+    "name": string;
+    "color"?: string;
+
+    /** Creates a new PRLabel instance. */
+    constructor($$source: Partial<PRLabel> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRLabel instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRLabel {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRLabel($$parsedSource as Partial<PRLabel>);
+    }
+}
+
+/**
+ * PRLabelChange removes, then adds, labels, one write per side, each
+ * label by its ID.
+ */
+export class PRLabelChange {
+    "add": PRLabel[];
+    "remove": PRLabel[];
+
+    /** Creates a new PRLabelChange instance. */
+    constructor($$source: Partial<PRLabelChange> = {}) {
+        if (!("add" in $$source)) {
+            this["add"] = [];
+        }
+        if (!("remove" in $$source)) {
+            this["remove"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRLabelChange instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRLabelChange {
+        const $$createField0_0 = $$createType23;
+        const $$createField1_0 = $$createType23;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("add" in $$parsedSource) {
+            $$parsedSource["add"] = $$createField0_0($$parsedSource["add"]);
+        }
+        if ("remove" in $$parsedSource) {
+            $$parsedSource["remove"] = $$createField1_0($$parsedSource["remove"]);
+        }
+        return new PRLabelChange($$parsedSource as Partial<PRLabelChange>);
+    }
+}
+
+/**
+ * PRListAuthor is a PR's author: the login and, when the forge reports
+ * one, the display name.
+ */
+export class PRListAuthor {
+    "login": string;
+    "name"?: string;
+
+    /** Creates a new PRListAuthor instance. */
+    constructor($$source: Partial<PRListAuthor> = {}) {
+        if (!("login" in $$source)) {
+            this["login"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRListAuthor instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRListAuthor {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRListAuthor($$parsedSource as Partial<PRListAuthor>);
+    }
+}
+
+/**
+ * PRListReview is the login's latest review of a PR: GitHub's review
+ * state (APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED) and when it
+ * was submitted (RFC 3339).
+ */
+export class PRListReview {
+    "state"?: string;
+    "submittedAt"?: string;
+
+    /** Creates a new PRListReview instance. */
+    constructor($$source: Partial<PRListReview> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRListReview instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRListReview {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRListReview($$parsedSource as Partial<PRListReview>);
+    }
+}
+
+/**
+ * PRManage is what the review pane's Details section shows and which
+ * management controls it offers, read with the detail. Unavailable is
+ * the sentence saying the read failed: the lists are then empty and
+ * every Can flag false, and the rest of the detail stands.
+ */
+export class PRManage {
+    "reviewers": PRReviewer[];
+    "assignees": PRPerson[];
+    "labels": PRLabel[];
+    "can": PRManageCan;
+    "unavailable"?: string;
+
+    /** Creates a new PRManage instance. */
+    constructor($$source: Partial<PRManage> = {}) {
+        if (!("reviewers" in $$source)) {
+            this["reviewers"] = [];
+        }
+        if (!("assignees" in $$source)) {
+            this["assignees"] = [];
+        }
+        if (!("labels" in $$source)) {
+            this["labels"] = [];
+        }
+        if (!("can" in $$source)) {
+            this["can"] = (new PRManageCan());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRManage instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRManage {
+        const $$createField0_0 = $$createType33;
+        const $$createField1_0 = $$createType21;
+        const $$createField2_0 = $$createType23;
+        const $$createField3_0 = $$createType34;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("reviewers" in $$parsedSource) {
+            $$parsedSource["reviewers"] = $$createField0_0($$parsedSource["reviewers"]);
+        }
+        if ("assignees" in $$parsedSource) {
+            $$parsedSource["assignees"] = $$createField1_0($$parsedSource["assignees"]);
+        }
+        if ("labels" in $$parsedSource) {
+            $$parsedSource["labels"] = $$createField2_0($$parsedSource["labels"]);
+        }
+        if ("can" in $$parsedSource) {
+            $$parsedSource["can"] = $$createField3_0($$parsedSource["can"]);
+        }
+        return new PRManage($$parsedSource as Partial<PRManage>);
+    }
+}
+
+/**
+ * PRManageCan is what the forge says the viewer may do, one flag per
+ * control; a false flag hides the control. Each comes from the forge's
+ * own answer (GitHub viewerCan* and viewerPermission, GitLab
+ * userPermissions and user.can_merge) and applies to the PR's current
+ * state (Close only while open, Reopen only while closed, ConvertToDraft
+ * only on an open PR that is not a draft). Rerequest also needs the
+ * server's re-review mutation, Bypass GitLab's override (both read from
+ * its schema). ReviewerTeams is whether reviewer search can offer teams:
+ * GitHub organizations only.
+ */
+export class PRManageCan {
+    "editTitle": boolean;
+    "editDescription": boolean;
+    "reviewers": boolean;
+    "assignees": boolean;
+    "labels": boolean;
+    "close": boolean;
+    "reopen": boolean;
+    "convertToDraft": boolean;
+    "rerequest": boolean;
+    "dismiss": boolean;
+    "bypass": boolean;
+    "reviewerTeams": boolean;
+
+    /** Creates a new PRManageCan instance. */
+    constructor($$source: Partial<PRManageCan> = {}) {
+        if (!("editTitle" in $$source)) {
+            this["editTitle"] = false;
+        }
+        if (!("editDescription" in $$source)) {
+            this["editDescription"] = false;
+        }
+        if (!("reviewers" in $$source)) {
+            this["reviewers"] = false;
+        }
+        if (!("assignees" in $$source)) {
+            this["assignees"] = false;
+        }
+        if (!("labels" in $$source)) {
+            this["labels"] = false;
+        }
+        if (!("close" in $$source)) {
+            this["close"] = false;
+        }
+        if (!("reopen" in $$source)) {
+            this["reopen"] = false;
+        }
+        if (!("convertToDraft" in $$source)) {
+            this["convertToDraft"] = false;
+        }
+        if (!("rerequest" in $$source)) {
+            this["rerequest"] = false;
+        }
+        if (!("dismiss" in $$source)) {
+            this["dismiss"] = false;
+        }
+        if (!("bypass" in $$source)) {
+            this["bypass"] = false;
+        }
+        if (!("reviewerTeams" in $$source)) {
+            this["reviewerTeams"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRManageCan instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRManageCan {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRManageCan($$parsedSource as Partial<PRManageCan>);
+    }
+}
+
+/**
+ * PRPeopleChange removes, then adds, reviewers or assignees, one write
+ * per side. A GitHub team (reviewers only) is a PRPerson with Team.
+ */
+export class PRPeopleChange {
+    "add": PRPerson[];
+    "remove": PRPerson[];
+
+    /** Creates a new PRPeopleChange instance. */
+    constructor($$source: Partial<PRPeopleChange> = {}) {
+        if (!("add" in $$source)) {
+            this["add"] = [];
+        }
+        if (!("remove" in $$source)) {
+            this["remove"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRPeopleChange instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRPeopleChange {
+        const $$createField0_0 = $$createType21;
+        const $$createField1_0 = $$createType21;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("add" in $$parsedSource) {
+            $$parsedSource["add"] = $$createField0_0($$parsedSource["add"]);
+        }
+        if ("remove" in $$parsedSource) {
+            $$parsedSource["remove"] = $$createField1_0($$parsedSource["remove"]);
+        }
+        return new PRPeopleChange($$parsedSource as Partial<PRPeopleChange>);
+    }
+}
+
+/**
+ * PRPerson is a user, or on GitHub a team (Team, Login its
+ * "org/slug"). Both forges address people by Login; ID is GitLab's
+ * numeric user id, which its re-review mutation alone takes.
+ */
+export class PRPerson {
+    "login": string;
+    "name"?: string;
+    "id"?: string;
+    "team"?: boolean;
+
+    /** Creates a new PRPerson instance. */
+    constructor($$source: Partial<PRPerson> = {}) {
+        if (!("login" in $$source)) {
+            this["login"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRPerson instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRPerson {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRPerson($$parsedSource as Partial<PRPerson>);
     }
 }
 
@@ -623,16 +1869,57 @@ export class PRReference {
 }
 
 /**
+ * PRReviewer is one reviewer and where their review stands: State is
+ * ReviewerApproved, ReviewerChangesRequested, ReviewerCommented or
+ * ReviewerPending (asked and not reviewed since). Stale is a GitHub
+ * review on a commit older than the head.
+ */
+export class PRReviewer {
+    "login": string;
+    "name"?: string;
+    "id"?: string;
+    "team"?: boolean;
+    "state": string;
+    "stale"?: boolean;
+
+    /** Creates a new PRReviewer instance. */
+    constructor($$source: Partial<PRReviewer> = {}) {
+        if (!("login" in $$source)) {
+            this["login"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRReviewer instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRReviewer {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRReviewer($$parsedSource as Partial<PRReviewer>);
+    }
+}
+
+/**
  * PRRevision is the pull request state a local read is computed at, as the
- * forge last reported it: the head commit and the base branch's tip. Every
- * PR read of one snapshot (diff, commit list, merge conflicts) uses the
- * same pair, so they agree with each other and with the forge.
+ * forge last reported it: the head commit and the base commit the forge
+ * recorded for the PR. The diff and the commit list of one snapshot use the
+ * same pair, so they agree with each other and with the forge. The merge
+ * conflict read merges the head with the base branch's live tip instead
+ * (RemoteBranchTip), because the recorded base does not follow the branch.
  */
 export class PRRevision {
     "baseRef": string;
 
     /**
-     * BaseSHA is the base branch's tip (PRDetail.BaseRefSHA).
+     * BaseSHA is the base commit the forge recorded for the PR
+     * (PRDetail.BaseRefSHA). It is not the base branch's current tip:
+     * GitLab's start_sha is the target tip when the diff was last
+     * computed, usually the merge base, and GitHub's baseRefOid can lag
+     * the branch by several merges.
      */
     "baseSHA": string;
     "headSHA": string;
@@ -661,16 +1948,216 @@ export class PRRevision {
     }
 }
 
+/**
+ * PipelineListFilter narrows ListPipelines. Ref is a branch, tag or (on
+ * GitLab) merge request ref as a list row names it; Status a normalized
+ * CI status the forge can filter by: success, failed, running, pending,
+ * canceled, skipped, and manual on GitLab. GitHub's pending filter is its
+ * queued status. Limit is the rows wanted, the most recent first; 0 or
+ * more than pipelineListMaxLimit reads pipelineListMaxLimit.
+ */
+export class PipelineListFilter {
+    "ref"?: string;
+    "status"?: string;
+    "limit"?: number;
+
+    /** Creates a new PipelineListFilter instance. */
+    constructor($$source: Partial<PipelineListFilter> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PipelineListFilter instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PipelineListFilter {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PipelineListFilter($$parsedSource as Partial<PipelineListFilter>);
+    }
+}
+
+/**
+ * PipelineSummary is one pipeline of a repository as the forge's list
+ * read answers it: a GitLab pipeline or a GitHub workflow run. RefKind is
+ * merge_request for a merge request's pipeline (GitLab's
+ * refs/merge-requests/N ref, a GitHub pull_request event), tag for a
+ * GitLab pipeline whose ref the tag scope names or a GitHub release
+ * event, and branch otherwise, a GitHub tag push included.
+ */
+export class PipelineSummary {
+    /**
+     * ID is the pipeline's or run's id, a decimal string, for
+     * ReadPipeline.
+     */
+    "id": string;
+
+    /**
+     * Status is the normalized CI status (NormalizeCIStatus).
+     */
+    "status": string;
+
+    /**
+     * Name is the GitHub workflow's; GitLab's list has none.
+     */
+    "name"?: string;
+    "ref": string;
+    "refKind": string;
+
+    /**
+     * MRNumber is the merge request a merge_request pipeline ran for; 0
+     * when the forge does not name it (GitHub lists no pull request for
+     * a fork's run).
+     */
+    "mrNumber"?: number;
+    "sha": string;
+
+    /**
+     * Title is the GitHub run's display title (its commit's headline or
+     * the run's name); GitLab's list carries no commit title.
+     */
+    "title"?: string;
+
+    /**
+     * Source is what started it: GitLab's source (push,
+     * merge_request_event, schedule, ...) or GitHub's event (push,
+     * pull_request, workflow_dispatch, ...).
+     */
+    "source": string;
+
+    /**
+     * CreatedAt and UpdatedAt are RFC 3339, as the forge spells them.
+     */
+    "createdAt": string;
+    "updatedAt": string;
+    "url": string;
+
+    /** Creates a new PipelineSummary instance. */
+    constructor($$source: Partial<PipelineSummary> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("ref" in $$source)) {
+            this["ref"] = "";
+        }
+        if (!("refKind" in $$source)) {
+            this["refKind"] = "";
+        }
+        if (!("sha" in $$source)) {
+            this["sha"] = "";
+        }
+        if (!("source" in $$source)) {
+            this["source"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = "";
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = "";
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PipelineSummary instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PipelineSummary {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PipelineSummary($$parsedSource as Partial<PipelineSummary>);
+    }
+}
+
+/**
+ * RepoReference identifies a repository on a forge host: a PRReference
+ * without its number. Repository-scoped reads that take no checkout
+ * (ListProjectPRs, ListPipelines, ReadPipeline, StreamCIJobLog) address
+ * the repository by it; its fields mean what PRReference's do.
+ */
+export class RepoReference {
+    /**
+     * "github" | "gitlab"
+     */
+    "Forge": string;
+
+    /**
+     * URL.host spelling, as PRReference.Host
+     */
+    "Host": string;
+
+    /**
+     * "owner" or "group/sub/..."
+     */
+    "Namespace": string;
+    "Repo": string;
+
+    /** Creates a new RepoReference instance. */
+    constructor($$source: Partial<RepoReference> = {}) {
+        if (!("Forge" in $$source)) {
+            this["Forge"] = "";
+        }
+        if (!("Host" in $$source)) {
+            this["Host"] = "";
+        }
+        if (!("Namespace" in $$source)) {
+            this["Namespace"] = "";
+        }
+        if (!("Repo" in $$source)) {
+            this["Repo"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RepoReference instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RepoReference {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RepoReference($$parsedSource as Partial<RepoReference>);
+    }
+}
+
+/**
+ * ReviewComment is one comment of a thread. ID is what an edit or a
+ * delete names (CommentTarget.CommentID): a GitHub comment's node id, a
+ * GitLab note's id in decimal. ViewerCanEdit and ViewerCanDelete are the
+ * forge's answer for the signed-in login: GitHub's viewerCanUpdate and
+ * viewerCanDelete; GitLab's REST notes carry no permission, so there they
+ * are the viewer's own notes (GitLab lets only a note's author edit it).
+ * EditedAt is when the forge says the body was last edited (GitHub's
+ * lastEditedAt), empty when it was not or the forge does not say (GitLab's
+ * REST notes do not: their updated_at also moves on a resolve). URL is the
+ * comment on the forge's web UI, which the client copies as the comment's
+ * link: GitHub's url, GitLab's merge request page at #note_<id>.
+ * Suggestions are the comment's suggestion blocks and Reactions its
+ * reaction groups with a count above zero (forge_suggestions.go).
+ */
 export class ReviewComment {
+    "id": string;
     "authorLogin": string;
     "authorName"?: string;
     "body": string;
     "createdAt": string;
+    "editedAt"?: string;
     "databaseID": number;
     "replyTo"?: ReviewReplyTo | null;
+    "viewerCanEdit": boolean;
+    "viewerCanDelete": boolean;
+    "url"?: string;
+    "suggestions"?: CommentSuggestion[];
+    "reactions"?: CommentReaction[];
 
     /** Creates a new ReviewComment instance. */
     constructor($$source: Partial<ReviewComment> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
         if (!("authorLogin" in $$source)) {
             this["authorLogin"] = "";
         }
@@ -683,6 +2170,12 @@ export class ReviewComment {
         if (!("databaseID" in $$source)) {
             this["databaseID"] = 0;
         }
+        if (!("viewerCanEdit" in $$source)) {
+            this["viewerCanEdit"] = false;
+        }
+        if (!("viewerCanDelete" in $$source)) {
+            this["viewerCanDelete"] = false;
+        }
 
         Object.assign(this, $$source);
     }
@@ -691,21 +2184,93 @@ export class ReviewComment {
      * Creates a new ReviewComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewComment {
-        const $$createField5_0 = $$createType14;
+        const $$createField7_0 = $$createType36;
+        const $$createField11_0 = $$createType38;
+        const $$createField12_0 = $$createType40;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replyTo" in $$parsedSource) {
-            $$parsedSource["replyTo"] = $$createField5_0($$parsedSource["replyTo"]);
+            $$parsedSource["replyTo"] = $$createField7_0($$parsedSource["replyTo"]);
+        }
+        if ("suggestions" in $$parsedSource) {
+            $$parsedSource["suggestions"] = $$createField11_0($$parsedSource["suggestions"]);
+        }
+        if ("reactions" in $$parsedSource) {
+            $$parsedSource["reactions"] = $$createField12_0($$parsedSource["reactions"]);
         }
         return new ReviewComment($$parsedSource as Partial<ReviewComment>);
     }
 }
 
+/**
+ * ReviewEvent is one forge activity row. ID is unique within the PR and
+ * stable across reads (a GitLab note id, a GitHub timeline node id). At is
+ * RFC 3339. Text is the forge's own phrasing when it adds to the kind
+ * ("enabled an automatic merge when the pipeline succeeds"), else empty.
+ * Ref names what the event concerns when the kind has one: the review
+ * author for review_dismissed, the reviewer for review_requested, the
+ * new base for base_changed.
+ */
+export class ReviewEvent {
+    "id": string;
+    "kind": string;
+    "actorLogin": string;
+    "actorName"?: string;
+    "at": string;
+    "text"?: string;
+    "ref"?: string;
+
+    /** Creates a new ReviewEvent instance. */
+    constructor($$source: Partial<ReviewEvent> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("actorLogin" in $$source)) {
+            this["actorLogin"] = "";
+        }
+        if (!("at" in $$source)) {
+            this["at"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewEvent instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewEvent {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReviewEvent($$parsedSource as Partial<ReviewEvent>);
+    }
+}
+
+/**
+ * ReviewLineComment is one comment of a review: a file comment, a line on
+ * the left (Line is its old number) or the right (its new number), a range
+ * of lines ending at Line and starting at Start, or a reply to a thread
+ * (InReplyTo, with no line). An unchanged line is on the right with its
+ * old number in OldLine, which GitLab needs beside the new one.
+ */
 export class ReviewLineComment {
     "path": string;
     "body": string;
     "line"?: number | null;
+    "oldLine"?: number | null;
     "side": string;
-    "startLine"?: number | null;
+
+    /**
+     * Start is the first line of a range, described as Line, OldLine and
+     * Side describe the last; nil for one line.
+     */
+    "start"?: ReviewLineStart | null;
+
+    /**
+     * InReplyTo makes the comment a reply to an existing thread. Path and
+     * Line then only name the thread for a failure's sentence.
+     */
+    "inReplyTo"?: ReviewThreadReply | null;
 
     /** Creates a new ReviewLineComment instance. */
     constructor($$source: Partial<ReviewLineComment> = {}) {
@@ -726,8 +2291,47 @@ export class ReviewLineComment {
      * Creates a new ReviewLineComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewLineComment {
+        const $$createField5_0 = $$createType42;
+        const $$createField6_0 = $$createType44;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("start" in $$parsedSource) {
+            $$parsedSource["start"] = $$createField5_0($$parsedSource["start"]);
+        }
+        if ("inReplyTo" in $$parsedSource) {
+            $$parsedSource["inReplyTo"] = $$createField6_0($$parsedSource["inReplyTo"]);
+        }
         return new ReviewLineComment($$parsedSource as Partial<ReviewLineComment>);
+    }
+}
+
+/**
+ * ReviewLineStart is the first line of a range comment: Line on Side
+ * ("left" at its old number, "right" at its new one), and an unchanged
+ * line's old number in OldLine beside its new one on the right.
+ */
+export class ReviewLineStart {
+    "line": number;
+    "oldLine"?: number;
+    "side": string;
+
+    /** Creates a new ReviewLineStart instance. */
+    constructor($$source: Partial<ReviewLineStart> = {}) {
+        if (!("line" in $$source)) {
+            this["line"] = 0;
+        }
+        if (!("side" in $$source)) {
+            this["side"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewLineStart instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewLineStart {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReviewLineStart($$parsedSource as Partial<ReviewLineStart>);
     }
 }
 
@@ -759,14 +2363,31 @@ export class ReviewReplyTo {
 /**
  * ReviewThread is one PR discussion: a file-anchored review thread
  * (Path set) or a PR-level conversation thread (Path empty — GitLab
- * position-less discussions, GitHub PR conversation comments).
+ * position-less discussions, GitHub PR conversation comments). A GitHub
+ * conversation comment is a thread of its own whose ID is the comment's
+ * ID, which is how a write tells it from a review thread comment
+ * (CommentTarget).
  */
 export class ReviewThread {
     "id": string;
     "path": string;
     "line": number | null;
     "startLine": number | null;
+
+    /**
+     * OriginalLine and OriginalStartLine are set when the forge reports the
+     * line the thread was written against (GitHub outdated threads).
+     */
+    "originalLine"?: number | null;
+    "originalStartLine"?: number | null;
     "side": string;
+
+    /**
+     * StartSide is the half StartLine (or OriginalStartLine) is on, "left"
+     * or "right", set with it. It differs from Side when a range starts on
+     * a removed line and ends on an unchanged or added one.
+     */
+    "startSide"?: string;
 
     /**
      * IsResolvable distinguishes threads with a real resolve state from
@@ -815,12 +2436,42 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField8_0 = $$createType16;
+        const $$createField11_0 = $$createType46;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
-            $$parsedSource["comments"] = $$createField8_0($$parsedSource["comments"]);
+            $$parsedSource["comments"] = $$createField11_0($$parsedSource["comments"]);
         }
         return new ReviewThread($$parsedSource as Partial<ReviewThread>);
+    }
+}
+
+/**
+ * ReviewThreadReply names the thread a reply answers: ThreadID as ReadPR
+ * reported it, and RootDatabaseID its first comment's DatabaseID, which a
+ * GitHub reply is posted under.
+ */
+export class ReviewThreadReply {
+    "threadId": string;
+    "rootDatabaseId": number;
+
+    /** Creates a new ReviewThreadReply instance. */
+    constructor($$source: Partial<ReviewThreadReply> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("rootDatabaseId" in $$source)) {
+            this["rootDatabaseId"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewThreadReply instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewThreadReply {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReviewThreadReply($$parsedSource as Partial<ReviewThreadReply>);
     }
 }
 
@@ -862,56 +2513,99 @@ export class ReviewVerdict {
     }
 }
 
-export class SubmitReviewRequest {
-    "verdict": string;
-    "body": string;
-    "comments": ReviewLineComment[];
+/**
+ * SuggestionApply names one suggestion to apply: the comment it is in
+ * (Target), its Index in that comment's suggestions, GitLab's suggestion
+ * ID, the Digest the read gave it (CommentSuggestion.Digest; a
+ * suggestion that no longer has it is *SuggestionChangedError), and
+ * HeadSHA, the head the caller's pane loaded. A head that moved
+ * is refused (*HeadMovedError) before anything is written; GitHub's
+ * commit also names it as its expectedHeadOid.
+ */
+export class SuggestionApply {
+    "target": CommentTarget;
+    "index": number;
+    "suggestionId"?: string;
+    "digest": string;
+    "headSha": string;
 
-    /** Creates a new SubmitReviewRequest instance. */
-    constructor($$source: Partial<SubmitReviewRequest> = {}) {
-        if (!("verdict" in $$source)) {
-            this["verdict"] = "";
+    /** Creates a new SuggestionApply instance. */
+    constructor($$source: Partial<SuggestionApply> = {}) {
+        if (!("target" in $$source)) {
+            this["target"] = (new CommentTarget());
         }
-        if (!("body" in $$source)) {
-            this["body"] = "";
+        if (!("index" in $$source)) {
+            this["index"] = 0;
         }
-        if (!("comments" in $$source)) {
-            this["comments"] = [];
+        if (!("digest" in $$source)) {
+            this["digest"] = "";
+        }
+        if (!("headSha" in $$source)) {
+            this["headSha"] = "";
         }
 
         Object.assign(this, $$source);
     }
 
     /**
-     * Creates a new SubmitReviewRequest instance from a string or object.
+     * Creates a new SuggestionApply instance from a string or object.
      */
-    static createFrom($$source: any = {}): SubmitReviewRequest {
-        const $$createField2_0 = $$createType18;
+    static createFrom($$source: any = {}): SuggestionApply {
+        const $$createField0_0 = $$createType47;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("comments" in $$parsedSource) {
-            $$parsedSource["comments"] = $$createField2_0($$parsedSource["comments"]);
+        if ("target" in $$parsedSource) {
+            $$parsedSource["target"] = $$createField0_0($$parsedSource["target"]);
         }
-        return new SubmitReviewRequest($$parsedSource as Partial<SubmitReviewRequest>);
+        return new SuggestionApply($$parsedSource as Partial<SuggestionApply>);
     }
 }
 
 // Private type creation functions
-const $$createType0 = CIStep.createFrom;
-const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = CIStage.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = CIJob.createFrom;
+const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = CIStep.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = CIJobActions.createFrom;
+const $$createType4 = CIStage.createFrom;
 const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = CheckStatus.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = ReviewVerdict.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = CheckSummary.createFrom;
-const $$createType11 = PRDiffRefs.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = ReviewReplyTo.createFrom;
+const $$createType6 = CIPipelineActions.createFrom;
+const $$createType7 = CIJob.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = CheckStatus.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = ChangeRequest.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = AutoMergeRequest.createFrom;
 const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = ReviewComment.createFrom;
+const $$createType15 = MergeBlocker.createFrom;
 const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = ReviewLineComment.createFrom;
-const $$createType18 = $Create.Array($$createType17);
+const $$createType17 = ApprovalCount.createFrom;
+const $$createType18 = MergeMessage.createFrom;
+const $$createType19 = $Create.Nullable($$createType18);
+const $$createType20 = PRPerson.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = PRLabel.createFrom;
+const $$createType23 = $Create.Array($$createType22);
+const $$createType24 = ReviewVerdict.createFrom;
+const $$createType25 = $Create.Array($$createType24);
+const $$createType26 = CheckSummary.createFrom;
+const $$createType27 = PRDiffRefs.createFrom;
+const $$createType28 = $Create.Nullable($$createType27);
+const $$createType29 = MergeReadiness.createFrom;
+const $$createType30 = MergeOptions.createFrom;
+const $$createType31 = PRManage.createFrom;
+const $$createType32 = PRReviewer.createFrom;
+const $$createType33 = $Create.Array($$createType32);
+const $$createType34 = PRManageCan.createFrom;
+const $$createType35 = ReviewReplyTo.createFrom;
+const $$createType36 = $Create.Nullable($$createType35);
+const $$createType37 = CommentSuggestion.createFrom;
+const $$createType38 = $Create.Array($$createType37);
+const $$createType39 = CommentReaction.createFrom;
+const $$createType40 = $Create.Array($$createType39);
+const $$createType41 = ReviewLineStart.createFrom;
+const $$createType42 = $Create.Nullable($$createType41);
+const $$createType43 = ReviewThreadReply.createFrom;
+const $$createType44 = $Create.Nullable($$createType43);
+const $$createType45 = ReviewComment.createFrom;
+const $$createType46 = $Create.Array($$createType45);
+const $$createType47 = CommentTarget.createFrom;

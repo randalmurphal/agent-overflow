@@ -296,6 +296,20 @@ describe('CILogBlockCache', () => {
     expect(cache.block(0)?.lines?.[0]).toBe('v2 0');
   });
 
+  // The index grows within one version while the block's read runs: the
+  // refresh it asked for is not dropped for the read in flight.
+  it('reads the rest of a block when the index grew at the same version while its read ran', async () => {
+    const { backend, cache } = open(50);
+    backend.auto = false;
+    cache.acquire(0);
+    backend.set(1, lines(80));
+    cache.setIndex(1, 80, 0);
+    await backend.answer();
+    expect(backend.reads).toEqual([[0, 50], [50, 30]]);
+    await backend.answer();
+    expect(cache.block(0)?.lines).toHaveLength(80);
+  });
+
   it('reads nothing before the log has a version', async () => {
     const backend = new Backend();
     const cache = new CILogBlockCache(backend.fetch);

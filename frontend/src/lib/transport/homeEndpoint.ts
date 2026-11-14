@@ -154,7 +154,8 @@ export function backendUrl(path: string, backend: BackendKey = HOME_BACKEND): st
 /**
  * Ticket-bearing attachment URLs stay on the computer that minted them.
  *
- * Four route shapes are admitted, and nothing else: `/attachments/upload`,
+ * Five route shapes are admitted, and nothing else: `/attachments/upload`,
+ * `/attachments/dictation` for a piece of a dictation recording,
  * `/attachments/<thread>/<attachment>` for a message attachment,
  * `/attachments/forge/<id>` for a forge attachment the backend fetched with
  * the user's forge CLI, and `/attachments/image/<id>` for a local image a
@@ -167,7 +168,7 @@ export function backendTransferUrl(path: string, backend: BackendKey = HOME_BACK
   if (!path.startsWith('/attachments/') || path.includes('\\')
     || parsed.origin !== 'https://attachment.invalid' || parsed.hash
     || parsed.pathname !== path.split('?')[0]
-    || !/^\/attachments\/(?:upload|(?:forge|image|[a-zA-Z0-9_-]+)\/[a-zA-Z0-9_-]+)$/.test(parsed.pathname)) {
+    || !/^\/attachments\/(?:upload|dictation|(?:forge|image|[a-zA-Z0-9_-]+)\/[a-zA-Z0-9_-]+)$/.test(parsed.pathname)) {
     throw new Error('Invalid attachment transfer URL.');
   }
   if (backend === HOME_BACKEND || storedBackendEndpoint(backend) !== '') return backendUrl(path, backend);

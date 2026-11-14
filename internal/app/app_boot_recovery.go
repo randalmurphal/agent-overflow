@@ -45,4 +45,15 @@ func (a *App) settlePriorInstance() {
 		a.bootPhaseFailed(err)
 	}
 	endPhase()
+	// A message claims its review drafts before it is delivered: a direct
+	// send's row insert settles the claim, a queued message's provider
+	// confirmation does. A claim still unsettled belongs to a message no
+	// provider received, so its drafts are drafts again.
+	endPhase = a.bootPhase("app.release_unsettled_review_claims", "Returning unsent review comments")
+	if released, err := a.store.ReleaseUnsettledDiffReviewClaims(); err != nil {
+		a.bootPhaseFailed(err)
+	} else if released > 0 {
+		log.Printf("app: returned %d review comments no message delivered to drafts", released)
+	}
+	endPhase()
 }

@@ -36,7 +36,7 @@ export interface OutgoingSendOptions {
    * ship without one by forgetting.
    */
   sendId: string;
-  /** This frontend reconciles provisional rows by send ID, not a predicted turn. */
+  /** This frontend finds its message's row by send ID, not by a predicted `user:<turn>` id. */
   reconcileBySendId: true;
 }
 

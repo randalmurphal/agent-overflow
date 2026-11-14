@@ -2,6 +2,7 @@ package harnessclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -28,6 +29,13 @@ var processAlive = instanceinfo.ProcessAlive
 // process ID during the grace window.
 var verifyProcessIdentity = instanceinfo.VerifyProcessIdentity
 
+// exitCustody reports the members of a launch's process group that its
+// launcher recorded when the launch's root exited, before reaping it, once
+// it has (Launched.custody). A process the root started after a group signal never
+// received it and is missing from the proof captured before the signal, and
+// once the root is gone it carries nothing else that ties it to the launch.
+type exitCustody func() (proof ownedGroupProof, recorded bool, err error)
+
 // verifyProcessIfAlive closes the normal-exit race between a liveness probe
 // and identity capture. A process that disappears during verification is
 // already safe. A process that remains, including a recycled PID, must still
@@ -44,6 +52,11 @@ func verifyProcessIfAlive(pid int, expected instanceinfo.ProcessIdentity) (bool,
 	}
 	return true, nil
 }
+
+// processDone reports a signal refused because the process it was sent
+// to has exited: proof of exit for that process, whatever a pid probe
+// says afterwards about a process that may since hold the pid.
+func processDone(err error) bool { return errors.Is(err, os.ErrProcessDone) }
 
 // WaitForExit confirms a process actually disappeared after an authenticated
 // shutdown request. A successful RPC only proves the intended backend heard
@@ -78,7 +91,7 @@ func TerminateProcess(ctx context.Context, pid int, grace time.Duration) error {
 		return fmt.Errorf("terminate %d: %w", pid, err)
 	}
 	if err := requestStop(proc); err != nil {
-		if !processAlive(pid) {
+		if processDone(err) || !processAlive(pid) {
 			// It died between the liveness check the caller made and this
 			// signal. Nothing to do, and nothing went wrong.
 			return nil
@@ -97,7 +110,9 @@ func TerminateProcess(ctx context.Context, pid int, grace time.Duration) error {
 		case <-time.After(pollInterval):
 		}
 	}
-	if err := requestKill(proc); err != nil && processAlive(pid) {
+	if err := requestKill(proc); processDone(err) {
+		return nil
+	} else if err != nil && processAlive(pid) {
 		return fmt.Errorf("kill %d after %s grace: %w", pid, grace, err)
 	}
 	// A successful Kill() is a signal DELIVERED, not a process gone: an
@@ -150,7 +165,7 @@ func TerminateProcessVerified(ctx context.Context, pid int, expected instanceinf
 		return nil
 	}
 	if err := requestStop(proc); err != nil {
-		if !processAlive(pid) {
+		if processDone(err) || !processAlive(pid) {
 			return nil
 		}
 		return fmt.Errorf("terminate %d: %w", pid, err)
@@ -178,7 +193,9 @@ func TerminateProcessVerified(ctx context.Context, pid int, expected instanceinf
 	if !alive {
 		return nil
 	}
-	if err := requestKill(proc); err != nil && processAlive(pid) {
+	if err := requestKill(proc); processDone(err) {
+		return nil
+	} else if err != nil && processAlive(pid) {
 		return fmt.Errorf("kill %d after %s grace: %w", pid, grace, err)
 	}
 	killDeadline := time.Now().Add(KillConfirmWindow)
@@ -208,5 +225,5 @@ func TerminateProcessTreeVerified(ctx context.Context, pid int, expected instanc
 	if expected.Namespace != instanceinfo.CurrentPIDNamespace() {
 		return fmt.Errorf("terminate tree %d: pid namespace %q is not this CLI's %q", pid, expected.Namespace, instanceinfo.CurrentPIDNamespace())
 	}
-	return terminateOwnedProcess(ctx, pid, expected, grace)
+	return terminateOwnedProcess(ctx, pid, expected, grace, nil)
 }

@@ -1,24 +1,35 @@
 <script lang="ts">
   import FileText from '@lucide/svelte/icons/file-text';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
-  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import { tick } from 'svelte';
   import Icon from '../primitives/Icon.svelte';
   import ReviewAvatar from './ReviewAvatar.svelte';
+  import ReviewIconButton from './ReviewIconButton.svelte';
+  import ReviewPRStateMenu from './ReviewPRStateMenu.svelte';
+  import ReviewTitleEditor from './ReviewTitleEditor.svelte';
+  import type { CIActionsView } from '../../stores/ciSubjectActions.svelte';
   import ReviewCIChips from './ReviewCIChips.svelte';
   import ReviewUnresolvedStepper from './ReviewUnresolvedStepper.svelte';
   import { OpenExternalURL } from '../../stores/bindings';
+  import { truncateMiddle } from '../../utils/format';
   import { authorDisplayName } from '../../utils/reviewIdentity';
+  import { READINESS_PILL_CLASS, readinessPill } from '../../utils/reviewReadiness';
   import type { ForgeFailure } from '../../utils/forgeFailure';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import type { CIJob, CIPipeline, PRDetail } from '../../types/models';
 
-  // The PR's fixed title bar above the rail and the diff: what the PR is
-  // (title, number, author) and where it stands (conflicts, CI, review
-  // decision). The Description and Conversation sections are NOT here:
-  // they are the overview row at the top of the diff list, which scrolls
-  // off under this bar. Once it has, the bar grows peek controls that
-  // scroll back to each section, and the unresolved stepper walks the
-  // diff's thread rows instead of the conversation's cards.
+  // The PR's fixed title bar above the rail and the diff, four lines that
+  // each say one thing: what the PR is (title, number), who opened it and
+  // where it stands (author, state), what it targets and who signed off
+  // (base ← head, conflicts, verdicts), and CI. Each line keeps a minimum
+  // height so chips arriving or leaving never shift the diff under the
+  // reader; a line's content wraps inside it on a narrow pane. The
+  // Description and Conversation sections are NOT here: they are the
+  // overview row at the top of the diff list, which scrolls off under
+  // this bar. Once it has, the title line grows peek controls that scroll
+  // back to each section, and the unresolved stepper walks the diff's
+  // thread rows instead of the conversation's cards.
 
   interface Props {
     detail: PRDetail;
@@ -37,6 +48,8 @@
     onOpenCIJob?: (stageName: string, job: CIJob) => void;
     /** Has the pump re-poll CI now, no diff or thread refresh. */
     onRefreshCI?: () => void;
+    /** The PR's CI actions; absent offers none. */
+    ciActions?: CIActionsView;
     /** Present in the review pane proper; absent in narrow test mounts. */
     review?: ReviewPaneState | null;
     /** The overview row has scrolled off under this bar. */
@@ -55,19 +68,49 @@
     forge = '',
     onOpenCIJob,
     onRefreshCI,
+    ciActions,
     review = null,
     overviewOff = false,
   }: Props = $props();
 
   const unresolvedCount = $derived(review?.unresolvedThreads.length ?? 0);
-  const conversationTotal = $derived(
-    (review?.prThreads.length ?? 0) + detail.latestReviews.length,
-  );
+  const conversationTotal = $derived(review?.conversationCount ?? detail.latestReviews.length);
+  // The refs line carries the readiness pill and nothing more about
+  // merging: the pill jumps to the Merge section, the one home of the
+  // actions, so every pane reads and does the same thing.
+  const readiness = $derived(readinessPill(detail));
+  // The title's editor, when the forge lets the viewer edit it.
+  const manage = $derived(review?.manage ?? null);
+  const canEditTitle = $derived(!!manage && !!detail.manage?.can.editTitle);
+  const editingTitle = $derived(canEditTitle && manage?.titleDraft != null);
+  let titleEditTrigger: HTMLButtonElement | undefined = $state(undefined);
+
+  async function focusTitleEdit(): Promise<void> {
+    await tick();
+    titleEditTrigger?.focus({ preventScroll: true });
+  }
 
   async function openURL(url: string | undefined): Promise<void> {
     if (!url) return;
     await OpenExternalURL(url);
   }
+
+  // The PR's state as the forge normalizes it (open, merged, closed,
+  // locked; internal/git/forge.go NormalizePRState), a draft reading as
+  // draft whatever its state.
+  const stateLabel = $derived(detail.draft ? 'draft' : detail.state.toLowerCase());
+  const STATE_PILL_CLASS: Record<string, string> = {
+    open: 'bg-success/12 text-success',
+    merged: 'bg-accent/12 text-accent',
+    closed: 'bg-error/12 text-error',
+    draft: 'bg-surface-2 text-fg-muted',
+  };
+  const statePillClass = $derived(STATE_PILL_CLASS[stateLabel] ?? 'bg-surface-2 text-fg-muted');
+
+  // A branch name's distinguishing part is usually its tail
+  // (BLITZ-664-action-queue), so a long one keeps both ends; the full
+  // pair is the line's tooltip.
+  const REF_MAX = 36;
 
   // Forge review states arrive as wire enums (APPROVED,
   // CHANGES_REQUESTED, REVIEW_REQUIRED, COMMENTED, ...): render them as
@@ -88,20 +131,40 @@
   }
 
   const peekClass = 'inline-flex h-6 items-center gap-1.5 rounded-[var(--radius-field)] border px-2 text-[0.6875rem] font-medium compact:h-8';
+  const lineClass = 'flex min-h-6 min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[0.75rem] text-fg-muted compact:min-h-8';
 </script>
 
-<section class="shrink-0 border-b border-border bg-surface-1 px-4 py-2.5" data-testid="review-pr-header">
-  <!-- Fixed-height rows: the peek controls (h-6) and the CI chips come
-       and go, and the bar must not breathe with them. -->
-  <div class="flex min-h-6 min-w-0 items-center gap-3">
-    <button
-      type="button"
-      class="min-w-0 flex-1 truncate text-left text-sm font-semibold text-fg hover:text-accent"
-      title={detail.title}
-      onclick={() => { void openURL(detail.url); }}
-    >
-      {detail.title} <span class="font-normal text-fg-muted">#{detail.number}</span>
-    </button>
+<section class="group/titlebar flex shrink-0 flex-col gap-1.5 border-b border-border bg-surface-1 px-4 py-2.5" data-testid="review-pr-header">
+  <div class="flex min-h-6 min-w-0 items-center gap-3 compact:min-h-8">
+    {#if editingTitle && manage}
+      <ReviewTitleEditor {manage} onClosed={() => { void focusTitleEdit(); }} />
+    {:else}
+      <span class="flex min-w-0 flex-1 items-center gap-1">
+        <button
+          type="button"
+          class="min-w-0 truncate text-left text-sm font-semibold text-fg hover:text-accent"
+          title={detail.title}
+          data-testid="review-pr-title"
+          onclick={() => { void openURL(detail.url); }}
+        >
+          {detail.title} <span class="font-normal text-fg-muted">#{detail.number}</span>
+        </button>
+        {#if canEditTitle && manage}
+          <!-- Revealed on hover; the space is held so nothing moves. -->
+          <span class="inline-flex shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-hover/titlebar:opacity-100 compact:opacity-100">
+            <ReviewIconButton
+              bind:element={titleEditTrigger}
+              icon={Pencil}
+              label="Edit title"
+              testid="review-title-edit"
+              disabled={manage.blockedReason !== null}
+              disabledLabel={manage.blockedReason ?? undefined}
+              onclick={() => manage?.openTitle(detail.title)}
+            />
+          </span>
+        {/if}
+      </span>
+    {/if}
     {#if review && overviewOff}
       <!-- Peek controls: the overview is above the viewport; each button
            scrolls the diff back to it with that section open. -->
@@ -148,7 +211,8 @@
       </div>
     {/if}
   </div>
-  <div class="mt-1.5 flex min-h-6 flex-wrap items-center gap-x-2.5 gap-y-1 text-[0.75rem] text-fg-muted">
+
+  <div class={lineClass} data-testid="review-pr-author-line">
     <span class="inline-flex min-w-0 items-center gap-1.5" data-testid="review-pr-author">
       <ReviewAvatar login={detail.authorLogin} name={detail.authorName} size={16} />
       <span class="truncate font-medium text-fg">{authorDisplayName(detail)}</span>
@@ -156,6 +220,38 @@
         <span class="truncate text-fg-subtle">@{detail.authorLogin}</span>
       {/if}
     </span>
+    <span class="inline-flex items-center rounded-full px-2 py-px text-[0.6875rem] {statePillClass}" data-testid="review-pr-state">{stateLabel}</span>
+    {#if manage}
+      <ReviewPRStateMenu {manage} {detail} />
+    {/if}
+  </div>
+
+  <div class={lineClass} data-testid="review-pr-refs-line">
+    <span
+      class="inline-flex min-w-0 items-center gap-1 font-mono text-[0.6875rem]"
+      title="{detail.baseRefName} ← {detail.headRefName}"
+      data-testid="review-pr-refs"
+    >
+      <span class="truncate text-fg">{truncateMiddle(detail.baseRefName, REF_MAX)}</span>
+      <span class="shrink-0 text-fg-subtle">←</span>
+      <span class="truncate text-fg">{truncateMiddle(detail.headRefName, REF_MAX)}</span>
+    </span>
+    {#if readiness}
+      {#if review}
+        <button
+          type="button"
+          class="inline-flex items-center rounded-full px-2 py-px text-[0.6875rem] hover:brightness-110 {READINESS_PILL_CLASS[readiness.tone]}"
+          title="Open the Merge section"
+          data-testid="review-pr-readiness"
+          data-state={readiness.state}
+          onclick={() => review?.jumpToOverview('merge')}
+        >
+          {readiness.label}
+        </button>
+      {:else}
+        <span class="inline-flex items-center rounded-full px-2 py-px text-[0.6875rem] {READINESS_PILL_CLASS[readiness.tone]}" data-testid="review-pr-readiness" data-state={readiness.state}>{readiness.label}</span>
+      {/if}
+    {/if}
     {#if detail.mergeability === 'conflicts'}
       {#if hasWorkspace}
         <button
@@ -168,31 +264,8 @@
       {:else}
         <span class="rounded-[var(--radius-field)] border border-error/40 bg-error/10 px-1.5 py-px text-[0.6875rem] text-error">Conflicts</span>
       {/if}
-    {:else if detail.mergeability === 'checking'}
+    {:else if detail.mergeability === 'checking' && !readiness}
       <span class="text-fg-subtle">Checking mergeability...</span>
-    {/if}
-    {#if onOpenCIJob}
-      <ReviewCIChips
-        pipeline={ciPipeline}
-        loading={ciLoading}
-        error={ciError}
-        failure={ciFailure}
-        {forge}
-        onOpenJob={onOpenCIJob}
-      />
-      {#if onRefreshCI}
-        <button
-          type="button"
-          class="inline-flex size-5 items-center justify-center rounded text-fg-subtle hover:bg-surface-2 hover:text-fg disabled:opacity-50"
-          aria-label="Refresh CI status"
-          title="Refresh CI status"
-          data-testid="review-ci-refresh"
-          disabled={ciRefreshing}
-          onclick={onRefreshCI}
-        >
-          <Icon icon={RefreshCw} size={12} class={ciRefreshing ? 'animate-spin' : ''} />
-        </button>
-      {/if}
     {/if}
     <!-- The PR's decision, unless a reviewer's own verdict pill already
          says the same thing beside it. -->
@@ -209,4 +282,20 @@
       </span>
     {/each}
   </div>
+
+  {#if onOpenCIJob}
+    <div class={lineClass} data-testid="review-pr-ci-line">
+      <ReviewCIChips
+        pipeline={ciPipeline}
+        loading={ciLoading}
+        error={ciError}
+        failure={ciFailure}
+        {forge}
+        onOpenJob={onOpenCIJob}
+        onRefresh={onRefreshCI}
+        refreshing={ciRefreshing}
+        actions={ciActions}
+      />
+    </div>
+  {/if}
 </section>

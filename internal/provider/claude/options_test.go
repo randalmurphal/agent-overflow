@@ -73,14 +73,16 @@ func TestConfigFromOptionsFastModePreservesModelAndSetsFlag(t *testing.T) {
 	}
 }
 
-func TestConfigFromOptionsFastModeUnsupportedModelClearsFlag(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider: "claude",
-		Model:    "claude-opus-4-5",
-		FastMode: true,
-	})
-	if cfg.FastMode {
-		t.Fatal("FastMode = true, want false for opus 4.5")
+// The launch carries the thread's fast-mode setting as given. Which models
+// run fast is what the CLI reports, which the App has already applied; the
+// shipped list here knows neither a model newer than itself nor a capability
+// the CLI added or withdrew.
+func TestConfigFromOptionsFastModeIsNotJudgedByTheShippedList(t *testing.T) {
+	for _, model := range []string{"claude-opus-4-5", "claude-newer-than-the-list-1"} {
+		cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: model, FastMode: true})
+		if !cfg.FastMode {
+			t.Fatalf("%s: FastMode = false, want the thread's setting", model)
+		}
 	}
 }
 

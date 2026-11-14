@@ -66,15 +66,20 @@ type appFlushDispatchState struct {
 	running       map[string]bool
 	inflightItems map[string]int
 	generation    map[string]uint64
-	wg            sync.WaitGroup
+	// flushUnsettled holds each thread with a `queue_flushed` that no
+	// provider:sends_pending frame reading nothing pending has covered yet.
+	// publishSendsPending emits that frame for a listed thread even when
+	// the published answer did not change.
+	flushUnsettled map[string]struct{}
+	wg             sync.WaitGroup
 	// handoffMu serializes RegisterQueueItem's enqueue→flush handoff
-	// against the revert-on-interrupt predicate's read of the queued /
-	// in-flight counters. tryFlushQueue deletes a batch from the triage queue
-	// before the dispatcher records it as in-flight; in that window the item
-	// is invisible to every counter the predicate consults. Holding this mutex
+	// against pendingFlushWorkCount's read of the queued / in-flight
+	// counters. tryFlushQueue deletes a batch from the triage queue before
+	// the dispatcher records it as in-flight; in that window the item is
+	// invisible to every counter the read consults. Holding this mutex
 	// across both the handoff (RegisterQueueItem) and the counter read
-	// (pendingFlushWorkCount) makes the queued message observable to a
-	// concurrent Stop click as either still-queued or already-in-flight, never
+	// makes the queued message observable to idle eviction and transfer
+	// reservation as either still-queued or already-in-flight, never
 	// neither. Deliberately NOT the per-thread action lock: that lock is held
 	// for seconds by git / worktree ops, and queueing a message
 	// must stay responsive while those run. See RegisterQueueItem for the full
@@ -115,11 +120,39 @@ type appPRUpdateState struct {
 	// ciFetchFn and ciLogStreamFn stand in for the forge in tests, like
 	// fetchFn; ciLogStreams overrides the forge's answer when set.
 	ciFetchFn     func(ctx context.Context, pr gitops.PRReference, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error)
-	ciLogStreamFn func(ctx context.Context, pr gitops.PRReference, req gitops.CIJobLogRequest, begin func(gitops.CIJobLogStart) (io.Writer, error)) (bool, error)
+	ciLogStreamFn func(ctx context.Context, repo gitops.RepoReference, req gitops.CIJobLogRequest, begin func(gitops.CIJobLogStart) (io.Writer, error)) (bool, error)
 	ciLogStreams  *bool
 	// staggerFn replaces the random delay added to a rate limit's resume
 	// time (prUpdateStagger), for tests.
 	staggerFn func() time.Duration
+
+	// pipelines index the pipeline pumps (app_pipeline_pump.go) by
+	// pipelineKey, and pipelineHandles each SubscribePipeline caller's
+	// reference, as pumps and handles do for PRs. pipelineFetchFn stands
+	// in for the forge's ReadPipeline in tests.
+	pipelines       map[string]*pipelinePump
+	pipelineHandles map[string]*pipelineHandle
+	pipelineFetchFn func(ctx context.Context, repo gitops.RepoReference, id string, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error)
+	// ciActions holds the pipelines a CI action is running on, by
+	// ciActionKey (app_ci_actions.go): one at a time per pipeline.
+	ciActions map[string]bool
+
+	// list is this backend's PR list pump (app_pr_list.go), nil while no
+	// page subscribes, and listHandles its subscribers. The list fetch
+	// hooks stand in for the forge in tests.
+	list           *prListPump
+	listHandles    map[string]*prListHandle
+	listProjectsFn func(ctx context.Context) ([]ForgeProject, error)
+	listFetchFn    func(ctx context.Context, repo gitops.RepoReference) ([]gitops.PRListRow, error)
+	// listGen counts the writers of the PR list's stored copy started (each
+	// list pump and the boot prefetch), under mu: the latest owns the copy
+	// (commitPRListStore). listStore serializes that copy's writes and
+	// prunes with their ownership checks. listStoreHook, for tests, runs at
+	// each change's stages: "enter" before listStore is taken, "owned"
+	// once the writer is found to own the copy.
+	listGen       uint64
+	listStore     sync.Mutex
+	listStoreHook func(stage string)
 }
 
 // appSessionImportState is the session-import concern

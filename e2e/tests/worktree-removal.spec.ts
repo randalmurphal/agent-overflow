@@ -18,6 +18,11 @@
 // staged intent when a second browser removes that worktree from its git
 // actions menu. The removing page never sees the draft's pane, so only the
 // thread:updated / worktree:removed events can move it.
+//
+// A worktree whose folder was deleted outside git stays registered: the
+// picker lists it as missing, does not let a thread enter it, and its trash
+// clears the registration without an error.
+import { rm } from 'node:fs/promises';
 import type { Page } from '@playwright/test';
 import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import { RESULT_LINE, claudeTurnsScenario, emit, textLines } from './agent-visibility-helpers.js';
@@ -322,5 +327,39 @@ test('removing the thread\'s own worktree while its session takes seconds to exi
   await expect(menu.getByRole('menuitem', { name: basename(other.worktreePath!) })).toBeVisible();
   await expect(menu.getByRole('menuitem', { name: basename(ownPath) })).toHaveCount(0);
   expect(await page.evaluate(() => (window as unknown as { __listErrorSeen?: boolean }).__listErrorSeen)).toBe(false);
+  await expect(errorToasts(page)).toHaveCount(0);
+});
+
+test('a worktree whose folder was deleted is listed as missing and removed from the workspace picker', async ({
+  harness,
+  page,
+}) => {
+  const GONE = 'gone-wt';
+  const project = await seedWorktreeProject(harness, 'worktree-remove-missing', ['Root thread', 'Gone worktree thread'], [GONE]);
+  const [, goneId] = project.threadIds;
+  const gonePath = (await attachWorktree(harness, goneId, GONE)).worktreePath!;
+  await rm(gonePath, { recursive: true, force: true });
+  await expect.poll(async () => {
+    const listed = await listWorktrees(harness, project.projectId, project.root);
+    return listed.find((wt) => basename(wt.path) === basename(gonePath))?.missing;
+  }, { message: 'git no longer registers the deleted worktree, or the list does not mark it missing' }).toBe(true);
+
+  await harness.open(page);
+  await openThread(page, 'Root thread');
+  await envTrigger(page).click();
+  const menu = page.getByRole('menu', { name: 'Workspace' });
+  const row = menu.getByRole('menuitem', { name: basename(gonePath) });
+  await expect(row).toContainText('missing');
+  await expect(row).toHaveAttribute('aria-disabled', 'true');
+
+  await menu.getByRole('button', { name: `Remove worktree ${basename(gonePath)}` }).click();
+  const confirm = page.getByTestId('env-picker-confirm-row');
+  await expect(confirm.getByTestId('env-picker-confirm-missing')).toBeVisible();
+  await confirm.getByTestId('env-picker-confirm-remove').click();
+
+  await expect(page.getByRole('alert').filter({ hasText: `Removed worktree ${basename(gonePath)}` })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: basename(gonePath) })).toHaveCount(0);
+  const remaining = await listWorktrees(harness, project.projectId, project.root);
+  expect(remaining.map((wt) => basename(wt.path))).not.toContain(basename(gonePath));
   await expect(errorToasts(page)).toHaveCount(0);
 });

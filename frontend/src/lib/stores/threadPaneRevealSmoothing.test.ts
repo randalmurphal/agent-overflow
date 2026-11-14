@@ -12,6 +12,7 @@ import {
   MAX_ADVANCE_PER_TICK_CHARS,
 } from '../markdown/smoothing/PerItemSmoother';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
+import { revealTickBound } from '../../test/helpers/revealUnits';
 import { LIVE_WINDOW_RECUT_CHARS } from '../utils/liveText';
 import { getSettings } from './settings.svelte';
 import { trimToTailRunes } from './threadPaneShared';
@@ -300,14 +301,16 @@ describe('reveal smoothing', () => {
         }
 
         // "5 words show up" ≈ 30 chars; "15 more words" ≈ 90 chars.
-        // A healthy smoother stays under the per-tick work cap (~3
-        // short words) even under steady-state burst. The cap inside
-        // `PerItemSmoother.tick()` is what enforces this; without it,
-        // adaptive math at lag ~= wire_rate * (catchup_ms / 1000)
-        // produces 60–100+ chars/tick under sustained 2000 cps bursts
-        // and the user perceives those as chunks of 5–15 words.
-        expect(maxLengthJump).toBeLessThanOrEqual(MAX_ADVANCE_PER_TICK_CHARS);
-        expect(maxContentJump).toBeLessThanOrEqual(MAX_ADVANCE_PER_TICK_CHARS);
+        // A healthy smoother stays under the per-tick work cap (one
+        // tick's worth, or a single longer word landing whole) even under
+        // steady-state burst. The cap inside `PerItemSmoother.tick()` is
+        // what enforces this; without it, adaptive math at
+        // lag ~= wire_rate * (catchup_ms / 1000) produces 60–100+
+        // chars/tick under sustained 2000 cps bursts and the user
+        // perceives those as chunks of 5–15 words.
+        const bound = revealTickBound(prev);
+        expect(maxLengthJump).toBeLessThanOrEqual(bound);
+        expect(maxContentJump).toBeLessThanOrEqual(bound);
       } finally {
         __setSmoothingClockForTest(undefined);
       }

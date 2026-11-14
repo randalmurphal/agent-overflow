@@ -60,6 +60,16 @@ A leading `context.Context` gives a bound method access to the connection
 principal and is omitted from generated TypeScript signatures. Regenerate both
 binding sets after adding it.
 
+That context ends at server shutdown, not when the caller disconnects, unless
+the method is marked `//ao:callerbound`. Mark only a method whose context
+reaches nothing outside the process: no subprocess, no network request, no
+shared or deduplicated operation and no write. A subscription or stream
+qualifies when the connection's cleanup stack releases it. List it in
+`callerBoundMethods` with what its context reaches; when in doubt, do not.
+Work past a method's first effect that must also survive shutdown runs on
+`context.WithoutCancel(ctx)`, or `ctxutil.Detach` onto its owner's lifetime,
+under its own timeout.
+
 Per-screen settings must be obtained through `settingsCaller(ctx)` so bucket
 and device class come from one derivation. Backend work for the local screen
 uses `settings.Service.BackendScreen()`. A direct `ui_state` write outside
@@ -76,6 +86,11 @@ it, mirrored into `GetThreadLiveState`, dismissed through
 `DismissSessionBanner`, and withdrawn with a `withdrawKind` naming it. The
 contract is in
 [prompt-tool-overrides.md](../../docs/specs/prompt-tool-overrides.md#prompt-changed-banner).
+Error and notice rows the store refused are pushed on `thread:unsaved_rows`
+with their severity, at most five per thread, and read back by
+`GetThreadUnsavedRows` at the push's threads:read scope. An entry leaves
+when its row later saves, when `DismissUnsavedThreadRows` names it, or with
+the thread (`app_unsaved_rows.go`).
 
 A method that arms a connection-owned resource registers its release with
 `transport.ConnState.RegisterCleanup`. If registration reports that teardown
@@ -113,7 +128,9 @@ is handed to the caller by the same door
 was delivered into, and to whether that turn opened for it (the only turn a
 cancel interrupts), only from triage's send-delivered hook or a send that
 opened its own turn (`bindRequestDelivery`); a message handed to the
-provider waits for that, because Claude can hold it for a turn of its own. A wake (`app_thread_tools_wake.go`) writes its durable queue row and its
+provider waits for that, because Claude can hold it for a turn of its own.
+A message a turn took and never echoed is bound to that turn when its end
+is read (`bindUndeliveredReceiptToTakingTurn`). A wake (`app_thread_tools_wake.go`) writes its durable queue row and its
 delivery mark in one store transaction. Every message the app writes into
 a thread for someone else goes through `queueAgentNotice`
 (`app_agent_notice.go`): it is accepted once queued, without the action
@@ -147,15 +164,14 @@ back to their owners through one path (`giveBackToOwners`), from a Stop, an
 archive, a revert, a session end, a failed Codex resend and the boot sweep,
 whether still queued or handed to the provider and not confirmed. The
 provider's echo confirms the owner's delivery mark (`confirmOwnedDeliveries`,
-on triage's consumed hook), and a completion a session end returned is
+on triage's `SetFlushSendConsumedHook`), and a completion a session end returned is
 paced on the wake retry ladder (`completionRedelivery`). A message
 Claude joined from a person's text and such parts is split by the lengths
 its dispatch recorded (`usermessage.JoinedPart`), and only the person's
 text goes back (`agentPartsNotTakenIn`); another thread's request in it
 goes back to its queue, owed again (`giveBackRequest`), from a session
 end, and a teardown does the same before it drops the queue
-(`returnRequestsAtTeardown`). A Stop that un-sends such a row does the
-same from the parts the row records (`returnUnsentRequests`). What the app's messages are owed
+(`returnRequestsAtTeardown`). What the app's messages are owed
 is applied once that restore commits (`settleNotTakenIn`): a restore that
 fails requeues them whole. Whether a turn was a tick
 is read from the rows of the turn that ended, because a dispatch cannot know

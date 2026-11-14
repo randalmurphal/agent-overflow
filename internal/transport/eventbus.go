@@ -183,24 +183,24 @@ func newRing(channel string, capacity, byteBudget int) *ring {
 	// and matches exactly how the reflection encoder renders the
 	// ServerFrame Channel field, HTML escaping included.
 	name, _ := json.Marshal(channel)
-	prefix := make([]byte, 0, len(eventFramePrefix)+len(name)+len(eventSeqKey))
-	prefix = append(prefix, eventFramePrefix...)
-	prefix = append(prefix, name...)
-	prefix = append(prefix, eventSeqKey...)
-	r.envPrefix = prefix
+	r.envPrefix = slices.Concat([]byte(eventFramePrefix), name, []byte(eventSeqKey))
 	return r
 }
 
 const (
 	eventFramePrefix = `{"type":"` + frameTypeEvent + `","channel":`
 	eventSeqKey      = `,"seq":`
-	eventDataKey     = `,"data":`
 	// maxUint64Digits is the worst-case decimal width of a seq.
 	maxUint64Digits = 20
 )
 
+var (
+	eventDataKey    = []byte(`,"data":`)
+	eventFrameClose = []byte{'}'}
+)
+
 // appendEventWire assembles the pre-encoded ServerFrame envelope for a
-// live event in one exact-size allocation: envPrefix + seq + `,"data":`
+// live event in one allocation: envPrefix + seq + `,"data":`
 // + data + `}`. Byte-identical to encodeEventFrame's reflection marshal
 // for Emit-shaped events (seq >= 1, non-empty Data — itself compact,
 // HTML-escaped json.Marshal output — and Gap always false, so every
@@ -209,12 +209,10 @@ const (
 // under the bus mutex, so no reflection walk or encoder buffer growth
 // is paid inside the critical section.
 func (r *ring) appendEventWire(seq uint64, data []byte) []byte {
-	wire := make([]byte, 0, len(r.envPrefix)+maxUint64Digits+len(eventDataKey)+len(data)+1)
-	wire = append(wire, r.envPrefix...)
-	wire = strconv.AppendUint(wire, seq, 10)
-	wire = append(wire, eventDataKey...)
-	wire = append(wire, data...)
-	return append(wire, '}')
+	var digits [maxUint64Digits]byte
+	// slices.Concat sizes the one allocation itself and refuses a total
+	// that overflows.
+	return slices.Concat(r.envPrefix, strconv.AppendUint(digits[:0], seq, 10), eventDataKey, data, eventFrameClose)
 }
 
 // append stores e, emitted at now (EventBus.clock), at the tail. It first

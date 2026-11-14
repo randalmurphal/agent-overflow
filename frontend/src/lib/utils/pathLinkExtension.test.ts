@@ -698,6 +698,35 @@ describe('buildPathLinkExtension', () => {
     expect(images[0].href).toBe('/uploads/abc/image.png');
   });
 
+  it('resolves images against the workspace the prose was written in, and links against the thread', () => {
+    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }] as never, '/thread', 'editor', '/written-in');
+    const tokens = lex('![shot](shots/a.png) ![abs](/tmp/b.png) [doc](docs/a.md) src/foo.ts', ext);
+    expect(findImages(tokens).map(image => parseLocalImageHref(image.href))).toEqual([
+      { path: 'shots/a.png', workspacePath: '/written-in', sourceHref: 'shots/a.png' },
+      { path: '/tmp/b.png', workspacePath: '/written-in', sourceHref: '/tmp/b.png' },
+    ]);
+    const links = findLinks(tokens).map(link => parsePathLinkHref(link.href));
+    expect(links.map(link => link?.path)).toEqual(['docs/a.md', 'src/foo.ts']);
+    expect(links.map(link => link?.workspacePath)).toEqual(['/thread', '/thread']);
+  });
+
+  it('resolves images against the thread workspace when the prose recorded none', () => {
+    for (const ext of [
+      buildPathLinkExtension([], '/thread', 'editor'),
+      buildPathLinkExtension([], '/thread', 'editor', ''),
+    ]) {
+      const images = findImages(lex('![shot](shots/a.png)', ext));
+      expect(parseLocalImageHref(images[0].href)?.workspacePath).toBe('/thread');
+    }
+  });
+
+  it('does not rewrite an image on a surface with no workspace, whatever the prose recorded', () => {
+    const ext = buildPathLinkExtension([{ path: 'main.ts' }] as never, '', 'editor', '/written-in');
+    const images = findImages(lex('![x](shots/a.png)', ext));
+    expect(images[0].href).toBe('shots/a.png');
+    expect(buildPathLinkExtension([], '', 'editor', '/written-in')).toBeUndefined();
+  });
+
   it('in off mode rewrites no link and linkifies no prose, images aside', () => {
     const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }] as never, '/workspace', 'off');
     const tokens = lex('see src/foo.ts and [x](/workspace/a.md) and ![s](/tmp/s.png)', ext);
@@ -871,5 +900,97 @@ describe('path-link start() performance contract', () => {
     const links = findLinks(lex(perfDoc, ext));
     expect(links).toHaveLength(100);
     expect(new Set(links.map((l) => l.raw)).size).toBe(64);
+  });
+});
+
+describe('tokenizesAlike', () => {
+  const build = (paths: string[], workspace = '/repo', mode: Parameters<typeof buildPathLinkExtension>[2] = 'editor') => {
+    const extension = buildPathLinkExtension(paths.map((path) => ({ path })), workspace, mode);
+    if (!extension) throw new Error('extension must not be undefined');
+    return extension;
+  };
+
+  const sources = [
+    'Plain prose with no path in it at all.',
+    'See src/foo.ts for the change.',
+    'See `src/foo.ts:12` and src/bar.ts here.',
+    'Nested name lib/src/foo.ts.bak and @src/bar.ts too.',
+    '[label](src/bar.ts) is a markdown link.',
+    'An escaped target [x](src/a\\_b.ts) names a path the source never spells.',
+    '![shot](docs/shot.png) beside docs/shot.png',
+    '```\nsrc/bar.ts\n```',
+    'email name@src/bar.ts and <src/bar.ts>',
+  ];
+  const allowlists = [
+    [],
+    ['src/foo.ts'],
+    ['src/foo.ts', 'src/bar.ts'],
+    ['src/bar.ts', 'foo.ts'],
+    ['src/a_b.ts'],
+    ['docs/shot.png', 'src/foo.ts'],
+  ];
+
+  it('claims a source only when both allowlists tokenize it identically', () => {
+    let claimed = 0;
+    for (const before of allowlists) {
+      for (const after of allowlists) {
+        const previous = build(before);
+        const next = build(after);
+        for (const source of sources) {
+          if (!next.tokenizesAlike(previous, source)) continue;
+          claimed++;
+          expect(lex(source, next), `${JSON.stringify(before)} -> ${JSON.stringify(after)}: ${source}`)
+            .toEqual(lex(source, previous));
+        }
+      }
+    }
+    // The property is vacuous unless a real share of the corpus is claimed.
+    expect(claimed).toBeGreaterThan(sources.length * allowlists.length);
+  });
+
+  it('claims prose that names none of the paths that changed', () => {
+    const previous = build(['src/foo.ts']);
+    const next = build(['src/foo.ts', 'src/bar.ts']);
+    expect(next.tokenizesAlike(previous, 'See src/foo.ts for the change.')).toBe(true);
+    expect(next.tokenizesAlike(previous, 'Now src/bar.ts is validated.')).toBe(false);
+  });
+
+  it('refuses a source that names a path the allowlist dropped', () => {
+    const previous = build(['src/foo.ts', 'src/bar.ts']);
+    const next = build(['src/foo.ts']);
+    expect(next.tokenizesAlike(previous, 'Now src/bar.ts is gone.')).toBe(false);
+    expect(next.tokenizesAlike(previous, 'See src/foo.ts still.')).toBe(true);
+  });
+
+  it('refuses a markdown link whose unescaped target is the new path', () => {
+    const previous = build([]);
+    const next = build(['src/a_b.ts:3']);
+    const source = '[x](src/a\\_b.ts:3)';
+    expect(source.includes('src/a_b.ts:3')).toBe(false);
+    expect(lex(source, next)).not.toEqual(lex(source, previous));
+    expect(next.tokenizesAlike(previous, source)).toBe(false);
+  });
+
+  it('claims every source when the allowlists are equal', () => {
+    const previous = build(['src/foo.ts']);
+    const next = build(['src/foo.ts']);
+    expect(next.tokenizesAlike(previous, '[label](src/foo.ts) and src/foo.ts')).toBe(true);
+  });
+
+  it('refuses when the workspace, the mode, or the predecessor is not comparable', () => {
+    const source = 'Plain prose.';
+    expect(build(['a.ts'], '/other').tokenizesAlike(build(['a.ts']), source)).toBe(false);
+    expect(build(['a.ts'], '/repo', 'files').tokenizesAlike(build(['a.ts']), source)).toBe(false);
+    expect(build(['a.ts']).tokenizesAlike({ name: 'pathLink' }, source)).toBe(false);
+  });
+
+  it('answers for each predecessor it is asked about in turn', () => {
+    const first = build(['src/foo.ts']);
+    const second = build(['src/bar.ts']);
+    const next = build(['src/foo.ts', 'src/bar.ts']);
+    expect(next.tokenizesAlike(first, 'src/bar.ts')).toBe(false);
+    expect(next.tokenizesAlike(second, 'src/bar.ts')).toBe(true);
+    expect(next.tokenizesAlike(first, 'src/foo.ts')).toBe(true);
+    expect(next.tokenizesAlike(second, 'src/foo.ts')).toBe(false);
   });
 });

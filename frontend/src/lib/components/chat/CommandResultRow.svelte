@@ -37,7 +37,7 @@
   import CopyButton from '../primitives/CopyButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { readCommandResultView } from './commandResultMeta';
-  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getAuthoredWorkspaceFromMeta, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { copyMarkdownToClipboard } from '../../utils/markdownClipboard';
   import { ingestPersistedCodeSpans } from '../../utils/persistedSpans';
 
@@ -159,6 +159,7 @@
         streaming={false}
         threadId={item.threadId}
         workspacePath={paneWorkspacePath(pane)}
+        imageWorkspacePath={getAuthoredWorkspaceFromMeta(item.meta)}
         {pathRefs}
       />
     </div>

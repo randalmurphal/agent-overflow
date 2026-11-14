@@ -211,11 +211,12 @@ describe('attachment transfer boundaries', () => {
     expect(() => backendTransferUrl(path, 'gpu')).toThrow();
   });
 
-  // The four shapes the routes mint, stated so the admitted set is a list
+  // The five shapes the routes mint, stated so the admitted set is a list
   // rather than whatever the pattern happens to allow. The forge and image
   // shapes are the ones a future tightening would break silently.
   it.each([
     '/attachments/upload?ticket=x',
+    '/attachments/dictation?ticket=x',
     '/attachments/thread-1/att-2?ticket=x',
     '/attachments/forge/Ab9_-x?ticket=x',
     '/attachments/image/Ab9_-x?ticket=x',

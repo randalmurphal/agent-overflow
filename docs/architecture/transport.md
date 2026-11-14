@@ -100,6 +100,15 @@ mints a ticket after `WindowRuntimeReady` and injects it through
 provides fresh URLs or separate URL/ticket values to authenticated native
 clients that need another navigation.
 
+A window host mints a window ticket (`MintWindowTicket`: the desktop
+window's injection and the `/pageurl?host=webview` answer). Its exchange
+also sets the `ao_window_<port>` cookie, and a loopback page or socket
+carrying it is the host window (`Bootstrap.HostWindow`,
+`ConnState.HostWindow`): the one client that shows the native views the
+host owns. A browser tab on the same machine holds the same launch
+credential and is not. This is an identity, not an authority. A harness
+has no window, so its pages count as the host window.
+
 Page tickets and session-bound WebSocket tickets use the shared single-use
 ticket implementation. A page ticket has no subject or deadline. A WebSocket
 ticket names a durable session and has a short lifetime.
@@ -221,6 +230,10 @@ wrap layers outermost first (`errorsx.Chain`). Every caller is an
 authenticated session that was allowed to make the call, so the message and
 chain are the method's own on every origin. A panic's value stays in the log;
 its frame carries only the reference. `already_handled` carries no detail.
+A `forge_rate_limited` failure also carries `reserve` (the forge's quota was
+kept for the user's own actions rather than spent) and `resumeAt` (RFC 3339,
+when the forge may be asked again), from `forgeapi.RateLimitedError`, so a
+client words the pause without parsing the message.
 
 The backend retains its recent log lines in memory (`logging.Output`).
 `GetErrorLogLines` (scope `threads:operate`, the grant that already lets a
@@ -443,13 +456,28 @@ Every connection coalesces events over a small bounded window to reduce webview
 message overhead. A single event keeps its ordinary frame shape; multiple
 events use `type:"batch"`. Non-loopback connections may also negotiate
 permessage-deflate. Coalescing preserves channel sequence order and respects
-the configured event-count bound.
+the configured event-count bound. An RPC reply goes through the connection's
+event pump, which first writes every event already queued for that
+connection, so an event a method emitted before returning reaches the client
+before its reply; item deltas a background lease is merging stay held. Carried sockets (`/ws/backend/<id>`) and a phone's own
+sockets are single ordered streams and keep that order; replay frames carry
+older ring events and are reconciled by sequence, not by reply order.
 
 Each connection caps its in-flight RPC handlers. Reaching the cap refuses the
 frame immediately with `client_overloaded` instead of parking the read loop:
 the reader keeps serving the connection's other frames, and the caller gets a
-settled rejection naming a call that never started. Connection teardown still
-waits for the handlers that did start.
+settled rejection naming a call that never started.
+
+When the read loop exits, for a client close, a network drop or a server-side
+teardown, the connection closes its event subscriber and cancels the
+connection context at once. It then waits for the handlers that started and
+for its pump, keepalive and session watchdog, and only then runs the
+connection's cleanups. Only a method marked `//ao:callerbound` sees its
+caller's departure as context cancellation; every other method keeps running
+until it returns or the server stops, whatever its caller does. The `/rpc`
+route applies the same rule to its request. The [application guide](../../internal/app/AGENTS.md)
+says which methods may be caller-bound. A reply written after the socket is
+gone fails at once and is dropped.
 
 The server sends application-visible ping frames on the heartbeat cadence and
 periodically verifies a protocol pong while the reader is parked. Every write
@@ -484,8 +512,9 @@ Revocation teardown:
 2. cancels connection work; and
 3. closes the WebSocket to wake the reader.
 
-The steps are idempotent and run without holding the registry lock. Ordinary
-connection teardown uses the same cleanup stack. Transport stores no revocation
+The steps are idempotent and run without holding the registry lock. The woken
+reader then runs the ordinary connection teardown, whose cleanup stack also
+removes the connection from the registry. Transport stores no revocation
 tombstone; the durable identity rows remain authoritative for later admission.
 
 The per-RPC scope hook also consults current session liveness, so an established

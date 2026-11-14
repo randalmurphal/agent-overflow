@@ -77,21 +77,19 @@ func claudeAccountForHome() claudeAccount {
 //   - The `default` POINTER row, whose displayName names the pointer rather
 //     than a model and whose `resolvedModel` carries the `[1m]` marker.
 //     Exercises CanonicalSlug's alias/marker normalization and
-//     IsDefaultPointer; its capabilities match the catalog's claude-opus-5
-//     exactly, so it contributes no drift.
-//   - A `claude-opus-4-7` row matching the catalog exactly. The harness seeds
+//     IsDefaultPointer; its efforts match the catalog's claude-opus-5.
+//   - A `claude-opus-4-7` row. The harness seeds
 //     Claude threads on this model (internal/harnessrpc/seed.go), and pickers
 //     offer only what the CLI lists, so the mock lists it as a real CLI that
-//     runs it would. It contributes no drift.
-//   - A `claude-haiku-4-5` row claiming `supportsFastMode: true`, which the
-//     catalog does not. That single divergence is deliberate: it is what makes
-//     the merge OBSERVABLE under harness — Merge reports one DriftCapability
-//     line and appends ModelCapabilityFastMode to a model that shipped without
-//     it. A payload that agreed with the catalog everywhere would be
-//     indistinguishable from no payload at all.
+//     runs it would. Its efforts match the catalog.
+//   - A `claude-haiku-4-5` row claiming `supportsFastMode: true`. The
+//     shipped catalog states no fast mode, so the merged Haiku carries
+//     ModelCapabilityFastMode only because the wire said so: that is what
+//     makes the merge OBSERVABLE under harness. Its effort fields stay at the
+//     wire's real answer (no effort support), matching the catalog.
 //
-// Haiku's effort fields stay at the wire's real answer (no effort support), so
-// the row produces exactly ONE drift line rather than two.
+// Fast mode is wire-owned and every row's efforts match the catalog, so the
+// merge reports no drift.
 const claudeModelsJSON = `[` +
 	`{"value":"default","resolvedModel":"claude-opus-5[1m]","displayName":"Default (recommended)",` +
 	`"description":"Opus 5 with 1M context","supportsEffort":true,` +

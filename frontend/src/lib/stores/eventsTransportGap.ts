@@ -33,6 +33,7 @@ import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { hydrateProviderAccounts } from './eventsProvider';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { resyncWorktreeSetups } from './eventsWorktreeSetup';
+import { resyncShellRuns } from './shellCommands.svelte';
 import { revalidateDraftWorktrees } from './eventsWorktreeRemoved';
 import { markImportConnectionLost } from './sessionImport.svelte';
 import { releaseThreadTitleGenerationPending } from './threadTitleGeneration.svelte';
@@ -42,6 +43,7 @@ import { threadHasScope } from '../transport/entityScopes';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
 import { resendPRCILogFollowsForBackend } from './prReviewCIFollows.svelte';
+import { resyncPipelinesAfterGap, resyncPullsAfterGap } from './pullsStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { hasRememberedDraftSnapshot } from './composerDraftSnapshots';
@@ -61,6 +63,7 @@ import { reconcileTerminalSurfaces } from './eventsTerminal';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 import { applyBackendSetChange } from './systems.svelte';
 import { reconcileThreadLiveActivity } from './threadLiveActivity';
+import { reconcileSettledFlushes } from './flushSettlement';
 import { recoverThreadWindows } from './threadWindowRecovery';
 import { resyncLiveCodeRows } from '../components/chat/markdown/liveCodeSpans.svelte';
 
@@ -214,14 +217,23 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // Working through minutes of silence, a missed close leaves it
       // saying Compacting after the turn moved on. The flag is read from
       // the registry by panes and rows alike, so no pane refresh is owed.
-    case 'provider:sends_pending':
-      // A missed clear leaves a row running with nothing queued; panes
-      // read their own queue, so only the registry needs the snapshot.
     case 'provider:session_live':
       // A missed frame leaves End Session offered for a session that
       // ended, or withheld from one that started.
       resyncThreadLiveActivity(origin);
       return;
+    case 'provider:sends_pending': {
+      // A missed clear leaves a row running with nothing queued; panes
+      // read their own queue, so only the registry needs the snapshot. It
+      // also leaves a thread with no pane holding its flushed messages,
+      // which the settlement read releases.
+      resyncThreadLiveActivity(origin);
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      holdBackendRecovery(backend, reconcileSettledFlushes(backend).catch((err: unknown) => {
+        console.warn(`events: refresh pending messages after transport gap: ${err}`);
+      }));
+      return;
+    }
     case 'provider:item_event':
       // An item-event loss the server attributed: the sidebar and every
       // other thread are as current as before the loss.
@@ -330,9 +342,29 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       return;
     // Log frames are deltas against the text held: re-sending the follow
     // set answers every followed job's full text.
-    case 'pr:ci_log':
-      resendPRCILogFollowsForBackend(backendKeyForOrigin(origin?.backendId ?? ''));
+    case 'pr:ci_log': {
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      resendPRCILogFollowsForBackend(backend);
+      const resync = resyncPipelinesAfterGap(backend);
+      if (resync) holdBackendRecovery(backend, resync);
       return;
+    }
+    // One frame per change of the list pump's snapshot, or of a pipeline:
+    // a lost one is not restated, so the page reads again. The list's
+    // re-subscribe holds the recovery until its snapshot is applied.
+    case 'pulls:updated': {
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      const resync = resyncPullsAfterGap(backend);
+      if (resync) holdBackendRecovery(backend, resync);
+      return;
+    }
+    // Each pipeline's re-subscribe holds the recovery until it settles.
+    case 'ci:pipeline_updated': {
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      const resync = resyncPipelinesAfterGap(backend);
+      if (resync) holdBackendRecovery(backend, resync);
+      return;
+    }
     case 'mcp:status':
       resyncMcpServersAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
@@ -477,6 +509,13 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // Scoped to threads whose row says a setup ran — every other thread
       // would be an RPC for a guaranteed-idle answer.
       resyncWorktreeSetups(getThreads());
+      return;
+    }
+    case 'shell:command': {
+      // A lost `finished` frame would leave a command running forever here.
+      // The store re-reads the runs it holds; a run it never saw start
+      // announces itself with its next output frame.
+      resyncShellRuns();
       return;
     }
     case 'session-import:progress': {

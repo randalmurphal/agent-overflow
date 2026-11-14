@@ -524,54 +524,6 @@ describe('cold-open window sync', () => {
     vi.restoreAllMocks();
   });
 
-  it('keeps an optimistic marker until the WIRE echoes the row', async () => {
-    const pane = createThreadPane();
-    installSync(() => ({ status: 'stale', epoch: 1, rev: 2, page: page([row('i0')]) }));
-    await pane.switchThread(makeThread({ id: THREAD_ID }));
-
-    pane.trackOptimisticItem('user:1');
-    pane.upsertItems([row('user:1', { turnIndex: 1, itemIndex: 0 })]);
-    // The pane's OWN optimistic insert must not discharge the marker —
-    // only the backend can say the row exists. Discharging it here left
-    // `isOptimisticItem` permanently false, so the failed-send rollback
-    // never ran and every phantom filter downstream was dead code.
-    expect(pane.isOptimisticItem('user:1')).toBe(true);
-
-    pane.applyProviderItemUpserts([
-      row('user:1', { turnIndex: 1, itemIndex: 0, summary: 'persisted' }),
-    ]);
-    expect(pane.isOptimisticItem('user:1')).toBe(false);
-  });
-
-  it('keeps an optimistic row, and its stamp, out of the cached tiers', async () => {
-    const pane = createThreadPane();
-    installSync(() => ({ status: 'stale', epoch: 1, rev: 2, page: page([row('i0')]) }));
-    await pane.switchThread(makeThread({ id: THREAD_ID }));
-
-    // The composer's optimistic user row: it exists only in this pane's
-    // hope until the wire echoes the persisted one.
-    pane.trackOptimisticItem('user:1');
-    pane.upsertItems([row('user:1', { turnIndex: 1, itemIndex: 0 })]);
-    expect(pane.items.map((it) => it.id)).toEqual(['i0', 'user:1']);
-
-    await pane.switchThread(makeThread({ id: 'other-thread' }));
-
-    // `resetIncomingPaneState` clears the optimistic-id ledger, so a row
-    // cached here would come back on a warm re-entry as an untracked
-    // phantom — and the snapshot's stamp would let the next answer
-    // attest it straight into the durable replica.
-    const cached = threadItemCache.get(THREAD_ID);
-    expect(cached?.items.map((it) => it.id)).toEqual(['i0']);
-    expect(cached?.newestLoadedCursor?.itemId ?? '').not.toBe('user:1');
-    // …and the pairing goes with the row: this is no longer the window
-    // any rev had, so the next open re-fetches instead of asking `fresh`
-    // about rows it edited on the way out.
-    expect(cached?.historyStamp ?? null).toBeNull();
-    // The replica has no way to hold rows without a stamp, so it simply
-    // is not written while the send is unresolved.
-    expect(await getReplicaWindow(THREAD_ID)).toBeNull();
-  });
-
   it('refuses the coincidental fresh in EVERY pane in flight across one generation flip', async () => {
     const backendId = `backend-${Math.random().toString(36).slice(2)}`;
     setBackendIdentityFromBootstrap(backendId, 'gen-1');

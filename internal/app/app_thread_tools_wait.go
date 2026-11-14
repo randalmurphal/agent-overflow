@@ -44,12 +44,17 @@ type threadRequestState struct {
 	// token's value is whether the provider has taken its message in
 	// before the turn that reads it opened (SendDelivery.AwaitingTurn).
 	running map[string]map[string]bool
-	// personStops maps a thread with an entry in running to the turns a
-	// person's Stop cut there, so each turn's receipts settle as the
-	// person's Stop rather than as a restart (turnSettlement). A turn's
-	// entry goes when its receipts have settled, and every entry goes
-	// with the thread's running entry, so the set holds at most one entry
-	// per turn whose receipts are still running.
+	// stops is who stopped a turn on a thread in running, for the requests
+	// that turn answers (app_turn_stop.go). It leaves with the thread's
+	// last running receipt.
+	stops map[string]recordedTurnStop
+	// personStops maps a thread with an entry in running to the turns the
+	// user's own Stop cut there (a stop that carries kill consent), so each
+	// turn's receipts settle with what the turn said by then as its final
+	// answer (turnSettlement); stops still names the cause. A turn's entry
+	// goes when its receipts have settled, and every entry goes with the
+	// thread's running entry, so the set holds at most one entry per turn
+	// whose receipts are still running.
 	personStops map[string][]personStop
 	// answeredReads maps a thread to the turns whose answer to its spawner
 	// settled while they ran (a thread_reply), so the turn's end stamps the
@@ -312,11 +317,12 @@ func (a *App) forgetReceiptRunning(threadID, token string) {
 	if len(tokens) == 0 {
 		delete(a.threadRequests.running, threadID)
 		delete(a.threadRequests.personStops, threadID)
+		delete(a.threadRequests.stops, threadID)
 	}
 }
 
 // personStop names the turn a person's Stop cut: its index and when it
-// started, since an un-send gives the next turn the same index.
+// started, since a revert gives the next turn the same index.
 type personStop struct {
 	turnIndex int
 	startedAt int64
@@ -375,7 +381,7 @@ func (a *App) turnSettlesAReceipt(threadID string, turnIndex int) bool {
 }
 
 // forgetPersonStop drops the marks on turnIndex: the Stop's interrupt did
-// not go out, the Stop un-sent the turn, or the turn's receipts settled.
+// not go out, or the turn's receipts settled.
 func (a *App) forgetPersonStop(threadID string, turnIndex int) {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()

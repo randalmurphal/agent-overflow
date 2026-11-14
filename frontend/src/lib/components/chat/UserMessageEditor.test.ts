@@ -165,6 +165,12 @@ describe('<UserMessageEditor>', () => {
     expect(getByTestId('composer-attachment-row')).toBeInTheDocument();
   });
 
+  it('has no dictation mic: that chrome belongs to the thread composer', async () => {
+    const mounted = await mountEditor();
+    expect(mounted.queryByTestId('composer-dictate')).toBeNull();
+    expect(mounted.textarea).toBeInTheDocument();
+  });
+
   it('submits the composed message with its attachment ids', async () => {
     const item = makeUserItem();
     const { onSubmit, session, type, getByTestId, props, rerender } = await mountEditor(item);

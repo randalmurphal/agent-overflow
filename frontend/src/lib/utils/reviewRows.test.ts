@@ -1,23 +1,30 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 import { setPatchTextBudgetForTest } from './patchMemory.svelte';
-import { materializeRows } from './patchRows';
-import { parseReviewFiles, PatchTextLost, type ReviewFile } from './patchStore';
+import { InsertSlots, materializeRows } from './patchRows';
+import { parseReviewFiles, PatchTextLost, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
+import { mergePatchFilesByPath, parsePatchFiles } from './patchFiles';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 import {
   REVIEW_FILE_HEADER_PX,
   REVIEW_LINE_BLOCK_MAX_LINES,
   REVIEW_LINE_HEIGHT_PX,
+  REVIEW_COMMIT_CARD_ESTIMATE_PX,
+  REVIEW_COMMIT_CARD_ROW_KEY,
   REVIEW_OVERVIEW_ESTIMATE_PX,
   REVIEW_OVERVIEW_ROW_KEY,
   REVIEW_SURFACE_END_PX,
   BlockRowsCache,
   buildReviewRows,
   reviewRowEstimate,
+  REVIEW_GONE_GROUP_ROW_KEY,
   type CommentAnchor,
+  type EditorRow,
+  type ReviewLeadRow,
   type ReviewRow,
 } from './reviewRows';
+import { imageRowHeight, REVIEW_BINARY_ROW_PX } from './reviewImageRows';
 
 function addedPatch(path: string, count: number): string {
   const lines = Array.from({ length: count }, (_, index) => `+line ${index + 1}`);
@@ -29,6 +36,32 @@ function addedPatch(path: string, count: number): string {
     `+++ b/${path}`,
     `@@ -0,0 +1,${count} @@`,
     ...lines,
+  ].join('\n');
+}
+
+function editorOn(id: string, anchor: CommentAnchor): EditorRow {
+  return { id, filePath: anchor.filePath, side: anchor.side, state: 'placed', anchor, suggested: null, armed: false, occurrence: 0, repeated: false, generation: 1 };
+}
+
+function detachedEditor(id: string, filePath: string, suggested: CommentAnchor | null = null): EditorRow {
+  return { id, filePath, side: 'new', state: 'detached', anchor: null, suggested, armed: false, occurrence: 0, repeated: false, generation: 1 };
+}
+
+function goneEditor(id: string, filePath: string): EditorRow {
+  return { id, filePath, side: 'new', state: 'gone', anchor: null, suggested: null, armed: false, occurrence: 0, repeated: false, generation: 1 };
+}
+
+function contextPatch(path: string): string {
+  return [
+    `diff --git a/${path} b/${path}`,
+    'index 1111111..2222222 100644',
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    '@@ -1,3 +1,3 @@',
+    ' keep 1',
+    '-old 2',
+    '+new 2',
+    ' keep 3',
   ].join('\n');
 }
 
@@ -65,13 +98,13 @@ function prThread(overrides: Partial<ReviewThread> = {}): ReviewThread {
   return {
     id: overrides.id ?? 'prt-1',
     path: overrides.path ?? 'src/file.ts',
-    line: overrides.line ?? 2,
+    line: 'line' in overrides ? overrides.line : 2,
     startLine: overrides.startLine,
     side: overrides.side ?? 'right',
     isResolvable: overrides.isResolvable ?? true,
     isResolved: overrides.isResolved ?? false,
     isOutdated: overrides.isOutdated ?? false,
-    comments: overrides.comments ?? [{ authorLogin: 'alice', body: 'Please fix', createdAt: 'now', databaseID: 1 }],
+    comments: overrides.comments ?? [{ authorLogin: 'alice', body: 'Please fix', createdAt: 'now', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
   };
 }
 
@@ -96,9 +129,83 @@ describe('buildReviewRows', () => {
     expect(new Set(result.rowKeys).size).toBe(result.rowKeys.length);
   });
 
+  it('puts a detached editor after its suggested row, under the header with none, and keys every editor by its id', () => {
+    const files = parseReviewFiles(addedPatch('src/file.ts', 12));
+    const line: CommentAnchor = { filePath: 'src/file.ts', side: 'new', newLine: 10 };
+    const result = buildReviewRows({
+      files,
+      viewMode: 'stacked',
+      collapsedPaths: new Set(),
+      drafts: [],
+      openEditors: [detachedEditor('e0', 'src/file.ts'), detachedEditor('e1', 'src/file.ts', line), editorOn('e2', line), editorOn('e3', line)],
+    });
+
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'draft-editor', 'line-block', 'draft-editor', 'draft-editor', 'draft-editor', 'line-block', 'surface-end']);
+    expect(result.rowKeys.filter((key) => key.startsWith('d:'))).toEqual(['d:e0', 'd:e1', 'd:e2', 'd:e3']);
+    expect(new Set(result.rowKeys).size).toBe(result.rowKeys.length);
+  });
+
+  it('groups only the editors whose file is not in the diff, after the lead row, and hides those of a filtered file', () => {
+    const files = parseReviewFiles(addedPatch('src/file.ts', 3));
+    const editors = [
+      goneEditor('gone', 'src/removed.ts'),
+      editorOn('hidden', { filePath: 'src/filtered.ts', side: 'new', newLine: 1 }),
+      detachedEditor('hidden-too', 'src/filtered.ts'),
+      editorOn('here', { filePath: 'src/file.ts', side: 'new', newLine: 2 }),
+    ];
+    const result = buildReviewRows({ files, viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: editors, overview: 'overview' });
+
+    expect(result.rows.map((row) => row.kind)).toEqual([
+      'overview', 'gone-group', 'draft-editor', 'file-header', 'line-block', 'draft-editor', 'line-block', 'surface-end',
+    ]);
+    expect(result.rowKeys.slice(1, 3)).toEqual([REVIEW_GONE_GROUP_ROW_KEY, 'd:gone']);
+    expect(result.rows[1]).toMatchObject({ kind: 'gone-group', count: 1, fileIndex: -1 });
+    expect(result.fileOfRow.slice(0, 3)).toEqual([-1, -1, -1]);
+    expect(result.rowKeys.filter((key) => key.startsWith('d:'))).toEqual(['d:gone', 'd:here']);
+  });
+
+  it('renders a gone editor once, in the group, even if its path is in the files', () => {
+    const files = parseReviewFiles(addedPatch('src/file.ts', 3));
+    const result = buildReviewRows({ files, viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: [goneEditor('gone', 'src/file.ts')] });
+    expect(result.rowKeys.filter((key) => key === 'd:gone')).toHaveLength(1);
+    expect(result.rows.map((row) => row.kind).slice(0, 2)).toEqual(['gone-group', 'draft-editor']);
+  });
+
+  it('shows the group with no files at all', () => {
+    const result = buildReviewRows({ files: [], viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: [goneEditor('gone', 'src/a.ts')] });
+    expect(result.rows.map((row) => row.kind)).toEqual(['gone-group', 'draft-editor']);
+  });
+
+  it('hides every editor of a collapsed file with its body', () => {
+    const files = parseReviewFiles(addedPatch('src/file.ts', 3));
+    const result = buildReviewRows({
+      files,
+      viewMode: 'stacked',
+      collapsedPaths: new Set(['src/file.ts']),
+      drafts: [],
+      openEditors: [detachedEditor('lost', 'src/file.ts'), editorOn('placed', { filePath: 'src/file.ts', side: 'new', newLine: 2 })],
+    });
+    expect(result.rowKeys).toEqual(['h:src/file.ts', 'end']);
+  });
+
+  it('places a split view\'s left-half editor on a context row after that row', () => {
+    const files = parseReviewFiles(contextPatch('src/file.ts'));
+    const result = buildReviewRows({
+      files,
+      viewMode: 'split',
+      collapsedPaths: new Set(),
+      drafts: [],
+      openEditors: [editorOn('left', { filePath: 'src/file.ts', side: 'old', oldLine: 3, newLine: 3 })],
+    });
+    const at = result.rows.findIndex((row) => row.kind === 'draft-editor');
+    const before = result.rows[at - 1];
+    if (before?.kind !== 'line-block') throw new Error('no line block before the editor');
+    expect(new BlockRowsCache().get(files[0], before).rows.at(-1)).toMatchObject({ oldLine: 3, newLine: 3 });
+  });
+
   it('ends a line block at anchors and inserts comment/editor rows immediately after it', () => {
     const files = parseReviewFiles(addedPatch('src/file.ts', 12));
-    const editor: CommentAnchor = { filePath: 'src/file.ts', side: 'new', newLine: 10 };
+    const editor = editorOn('e1', { filePath: 'src/file.ts', side: 'new', newLine: 10 });
     const result = buildReviewRows({
       files,
       viewMode: 'stacked',
@@ -120,7 +227,7 @@ describe('buildReviewRows', () => {
       [11, 2],
     ]);
     expect(result.rowKeys[2]).toBe('t:draft-7');
-    expect(result.rowKeys[3]).toBe('d:src/file.ts:new:0:10');
+    expect(result.rowKeys[3]).toBe('d:e1');
     expect(new Set(result.rowKeys).size).toBe(result.rowKeys.length);
   });
 
@@ -235,7 +342,22 @@ describe('buildReviewRows', () => {
     if (row.kind === 'pr-thread') expect(row.orphaned).toBe(false);
   });
 
-  it('groups outdated and unanchored PR threads under the file header', () => {
+  it('places a PR thread on either side of a context line on that line, as its jump does', () => {
+    const files = parseReviewFiles(contextPatch('src/file.ts'));
+    const result = buildReviewRows({
+      files,
+      viewMode: 'stacked',
+      collapsedPaths: new Set(),
+      drafts: [],
+      openEditors: [],
+      prThreads: [prThread({ id: 'right-3', line: 3, side: 'right' }), prThread({ id: 'left-3', line: 3, side: 'left' })],
+      expandedPRThreadIds: new Set(),
+    });
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'line-block', 'pr-thread', 'pr-thread', 'line-block', 'surface-end']);
+    for (const row of result.rows) if (row.kind === 'pr-thread') expect(row.orphaned, row.thread.id).toBe(false);
+  });
+
+  it('groups unanchored PR threads under the file header; an outdated one on a matching line stays inline', () => {
     const files = parseReviewFiles(addedPatch('src/file.ts', 2));
     const result = buildReviewRows({
       files,
@@ -244,15 +366,20 @@ describe('buildReviewRows', () => {
       drafts: [],
       openEditors: [],
       prThreads: [
-        prThread({ id: 'outdated', line: 1, isOutdated: true }),
+        prThread({ id: 'outdated-gone', line: null, isOutdated: true }),
         prThread({ id: 'missing', line: 99 }),
+        prThread({ id: 'outdated-here', line: 1, isOutdated: true }),
       ],
       expandedPRThreadIds: new Set(),
     });
 
-    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'pr-thread', 'pr-thread', 'line-block', 'surface-end']);
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'pr-thread', 'pr-thread', 'line-block', 'pr-thread', 'line-block', 'surface-end']);
     const prRows = result.rows.filter((row): row is Extract<ReviewRow, { kind: 'pr-thread' }> => row.kind === 'pr-thread');
-    expect(prRows.map((row) => row.orphaned)).toEqual([true, true]);
+    expect(prRows.map((row) => [row.thread.id, row.orphaned, row.collapsed]).sort()).toEqual([
+      ['missing', true, false],
+      ['outdated-gone', true, false],
+      ['outdated-here', false, false],
+    ]);
   });
 
   it('collapses resolved PR threads by default and expands from store state', () => {
@@ -414,6 +541,95 @@ describe('buildReviewRows', () => {
   });
 });
 
+// The file rows above an inserted row: which row it follows.
+function rowsAbove(result: { rows: ReviewRow[]; rowKeys: string[] }, key: string): number {
+  const at = result.rowKeys.indexOf(key);
+  expect(at, key).toBeGreaterThanOrEqual(0);
+  return lineBlocks(result.rows.slice(0, at)).reduce((sum, block) => sum + block.count, 0);
+}
+
+describe('InsertSlots', () => {
+  it('gives an insert only to a row of its own kind, never another row that shares the number', () => {
+    const slots = new InsertSlots<string>((a, b) => a.localeCompare(b));
+    slots.add('unchanged', { side: 'old', oldLine: 3, newLine: 2 });
+    slots.add('added', { side: 'new', newLine: 2 });
+    slots.add('forge', { side: 'new', newLine: 2 }, true);
+    // An added row with new line 2 takes the added and the forge thread's.
+    expect(slots.take('add', 0, 2)).toEqual(['added', 'forge']);
+    // A deleted row with old line 3 takes nothing.
+    expect(slots.take('del', 3, 0)).toBeNull();
+    expect(slots.take('context', 3, 2)).toEqual(['unchanged']);
+    expect(slots.size).toBe(0);
+  });
+
+  it('gives a one-number insert to an unchanged row only when loose', () => {
+    const slots = new InsertSlots<string>((a, b) => a.localeCompare(b));
+    slots.add('strict', { side: 'new', newLine: 2 });
+    slots.add('loose', { side: 'new', newLine: 2 }, true);
+    expect(slots.take('context', 3, 2)).toEqual(['loose']);
+    expect(slots.takeRest()).toEqual(['strict']);
+  });
+});
+
+describe('buildReviewRows: the row a card follows', () => {
+  // ' a', '-b', ' c', ' d': b is old 2; c is old 3 and new 2.
+  const patch = ['diff --git a/f.ts b/f.ts', 'index 1111111..2222222 100644', '--- a/f.ts', '+++ b/f.ts', '@@ -1,4 +1,3 @@', ' a', '-b', ' c', ' d'].join('\n');
+
+  it.each(['split', 'stacked'] as const)('puts a card on the left half of c after c, never under the deletion b (%s)', (viewMode) => {
+    const files = parseReviewFiles(patch);
+    const result = buildReviewRows({
+      files,
+      viewMode,
+      collapsedPaths: new Set(),
+      drafts: [draft({ id: 'saved', filePath: 'f.ts', side: 'old', oldLine: 3, newLine: 2 })],
+      openEditors: [editorOn('open', { filePath: 'f.ts', side: 'old', oldLine: 3, newLine: 2 })],
+      prThreads: [prThread({ id: 'forge', path: 'f.ts', line: 3, side: 'left' })],
+      expandedPRThreadIds: new Set(),
+    });
+    for (const key of ['t:saved', 'd:open', 'pt:forge']) expect(rowsAbove(result, key), key).toBe(3);
+    // The deletion's own card stays on it.
+    const onB = buildReviewRows({
+      files, viewMode, collapsedPaths: new Set(), drafts: [], openEditors: [],
+      prThreads: [prThread({ id: 'b', path: 'f.ts', line: 2, side: 'left' })], expandedPRThreadIds: new Set(),
+    });
+    expect(rowsAbove(onB, 'pt:b')).toBe(2);
+  });
+
+  it('shows a saved draft with one number on an unchanged line on that line, as before', () => {
+    const files = parseReviewFiles(patch);
+    const result = buildReviewRows({
+      files,
+      viewMode: 'split',
+      collapsedPaths: new Set(),
+      drafts: [draft({ id: 'left-only', filePath: 'f.ts', side: 'old', oldLine: 3 }), draft({ id: 'right-only', filePath: 'f.ts', side: 'new', newLine: 2 })],
+      openEditors: [],
+    });
+    expect(rowsAbove(result, 't:left-only')).toBe(3);
+    expect(rowsAbove(result, 't:right-only')).toBe(3);
+  });
+
+  it('puts an editor on the row of its coordinate the reader opened it on', () => {
+    // Line 1 changed twice in one turn: two added rows have new line 1.
+    const file = {
+      ...reviewFileFromPatchFile(mergePatchFilesByPath(parsePatchFiles([
+        ['diff --git a/x.go b/x.go', 'index 1111111..2222222 100644', '--- a/x.go', '+++ b/x.go', '@@ -1,1 +1,1 @@', '-a', '+b'].join('\n'),
+        ['diff --git a/x.go b/x.go', 'index 2222222..3333333 100644', '--- a/x.go', '+++ b/x.go', '@@ -1,1 +1,1 @@', '-b', '+c'].join('\n'),
+      ].join('\n')))[0]),
+      mergedSections: 2,
+    };
+    const one: CommentAnchor = { filePath: 'x.go', side: 'new', newLine: 1 };
+    const result = buildReviewRows({
+      files: [file],
+      viewMode: 'stacked',
+      collapsedPaths: new Set(),
+      drafts: [],
+      openEditors: [{ ...editorOn('first', one), occurrence: 0 }, { ...editorOn('second', one), occurrence: 1 }],
+    });
+    expect(rowsAbove(result, 'd:first')).toBe(2);
+    expect(rowsAbove(result, 'd:second')).toBe(4);
+  });
+});
+
 describe('reviewRowEstimate', () => {
   it('reports exact fixed rows when word wrap is disabled and inexact rows when enabled', () => {
     const files = parseReviewFiles(addedPatch('src/file.ts', 2));
@@ -422,7 +638,7 @@ describe('reviewRowEstimate', () => {
       viewMode: 'stacked',
       collapsedPaths: new Set(),
       drafts: [draft({ id: 'draft-1', newLine: 1 })],
-      openEditors: [{ filePath: 'src/file.ts', side: 'new', newLine: 2 }],
+      openEditors: [editorOn('e1', { filePath: 'src/file.ts', side: 'new', newLine: 2 })],
     });
 
     const plain = reviewRowEstimate(result, false);
@@ -467,7 +683,7 @@ describe('reviewRowEstimate', () => {
 });
 
 describe('buildReviewRows overview row', () => {
-  function build(overview: boolean | undefined) {
+  function build(overview: ReviewLeadRow | undefined) {
     return buildReviewRows({
       files: parseReviewFiles(twoFilePatch()),
       viewMode: 'stacked',
@@ -479,8 +695,8 @@ describe('buildReviewRows overview row', () => {
   }
 
   it('leads the list with the overview row, owned by no file', () => {
-    const result = build(true);
-    expect(result.rows[0]).toEqual({ kind: 'overview', fileIndex: -1 });
+    const result = build('overview');
+    expect(result.rows[0]).toEqual({ kind: 'overview', fileIndex: -1, lead: 'overview' });
     expect(result.rowKeys[0]).toBe(REVIEW_OVERVIEW_ROW_KEY);
     expect(REVIEW_OVERVIEW_ROW_KEY).toBe('overview');
     expect(result.fileOfRow[0]).toBe(-1);
@@ -491,7 +707,7 @@ describe('buildReviewRows overview row', () => {
   });
 
   it('estimates the overview row as a measured guess, not an exact height', () => {
-    const result = build(true);
+    const result = build('overview');
     const estimate = reviewRowEstimate(result, false);
     expect(estimate.at(0)).toBe(REVIEW_OVERVIEW_ESTIMATE_PX);
     // Its content (description, conversation) varies, so it is measured.
@@ -499,8 +715,20 @@ describe('buildReviewRows overview row', () => {
     expect(estimate.at(1)).toBe(REVIEW_FILE_HEADER_PX);
   });
 
-  it('starts with the first file header without the overview flag', () => {
-    for (const result of [build(undefined), build(false)]) {
+  it('leads with a commit card under its own key, estimated smaller than the overview', () => {
+    const result = build('commit');
+    expect(result.rows[0]).toEqual({ kind: 'overview', fileIndex: -1, lead: 'commit' });
+    expect(result.rowKeys[0]).toBe(REVIEW_COMMIT_CARD_ROW_KEY);
+    expect(REVIEW_COMMIT_CARD_ROW_KEY).not.toBe(REVIEW_OVERVIEW_ROW_KEY);
+    expect(result.firstRowOfFile[0]).toBe(1);
+    const estimate = reviewRowEstimate(result, false);
+    expect(estimate.at(0)).toBe(REVIEW_COMMIT_CARD_ESTIMATE_PX);
+    expect(REVIEW_COMMIT_CARD_ESTIMATE_PX).toBeLessThan(REVIEW_OVERVIEW_ESTIMATE_PX);
+    expect(estimate.isExact?.(0)).toBe(false);
+  });
+
+  it('starts with the first file header without a lead row', () => {
+    for (const result of [build(undefined)]) {
       expect(result.rows[0]).toEqual({ kind: 'file-header', fileIndex: 0, path: 'src/one.ts' });
       expect(result.rowKeys[0]).toBe('h:src/one.ts');
       expect(result.firstRowOfFile[0]).toBe(0);
@@ -606,5 +834,81 @@ describe('BlockRowsCache over evicted text', () => {
       expect(cache.get(second, block).rows).toEqual(expected);
     });
     expect(cache.get(second, block).splitRows).toHaveLength(block.splitCount!);
+  });
+});
+
+describe('a binary file\'s media row', () => {
+  const PATCH = [
+    'diff --git a/img/logo.png b/img/logo.png',
+    'index 1111111..2222222 100644',
+    'Binary files a/img/logo.png and b/img/logo.png differ',
+    'diff --git a/img/icon.png b/img/icon.png',
+    'new file mode 100644',
+    'index 0000000..3333333',
+    'Binary files /dev/null and b/img/icon.png differ',
+    'diff --git a/blob.bin b/blob.bin',
+    'index 4444444..5555555 100644',
+    'Binary files a/blob.bin and b/blob.bin differ',
+    'diff --git a/art.svg b/art.svg',
+    'index 6666666..7777777 100644',
+    '--- a/art.svg',
+    '+++ b/art.svg',
+    '@@ -1 +1 @@',
+    '-<svg/>',
+    '+<svg width="2"/>',
+    '',
+  ].join('\n');
+
+  function mediaRows(input: { split?: boolean; rendered?: string[]; media?: boolean; newSideOnly?: boolean }) {
+    const files = parseReviewFiles(PATCH);
+    const result = buildReviewRows({
+      files, viewMode: input.split ? 'split' : 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: [],
+      media: input.media ?? true, renderedPaths: new Set(input.rendered ?? []), newSideOnly: input.newSideOnly,
+    });
+    return { result, rows: result.rows.map((row, index) => ({ row, key: result.rowKeys[index] })) };
+  }
+
+  it('replaces git\'s line with one media row per binary file, sized before any byte arrives', () => {
+    const { result, rows } = mediaRows({});
+    const media = rows.filter(({ row }) => row.kind === 'media');
+    expect(media.map(({ key }) => key)).toEqual(['m:img/logo.png', 'm:img/icon.png', 'm:blob.bin']);
+    const [logo, icon, blob] = media.map(({ row }) => row as Extract<ReviewRow, { kind: 'media' }>);
+    // Unified stacks a change's two sides; an add has one; a non-image is one line.
+    expect(logo).toMatchObject({ image: true, heightPx: imageRowHeight(2, false) });
+    expect(icon).toMatchObject({ image: true, heightPx: imageRowHeight(1, false) });
+    expect(blob).toMatchObject({ image: false, heightPx: REVIEW_BINARY_ROW_PX });
+    expect(imageRowHeight(2, false)).toBeGreaterThan(imageRowHeight(1, false));
+    const estimate = reviewRowEstimate(result, false);
+    const at = result.rows.indexOf(logo);
+    expect(estimate.at(at)).toBe(logo.heightPx);
+    // Measured: a row that settles to the binary line shrinks once.
+    expect(estimate.isExact?.(at)).toBe(false);
+    // The text SVG keeps its lines.
+    expect(rows.some(({ key }) => key === 'm:art.svg')).toBe(false);
+  });
+
+  it('puts a change\'s two sides in two columns in split view', () => {
+    const { rows } = mediaRows({ split: true });
+    const logo = rows.find(({ key }) => key === 'm:img/logo.png')!.row as Extract<ReviewRow, { kind: 'media' }>;
+    expect(logo.heightPx).toBe(imageRowHeight(1, true));
+    expect(imageRowHeight(2, true)).toBe(imageRowHeight(1, true));
+  });
+
+  it('shows a text SVG rendered only while its toggle is on', () => {
+    const { rows } = mediaRows({ rendered: ['art.svg'] });
+    const art = rows.filter(({ row }) => row.kind !== 'file-header' && row.kind !== 'surface-end' && row.kind !== 'media' && 'fileIndex' in row && row.fileIndex === 3);
+    expect(art).toEqual([]);
+    expect(rows.find(({ key }) => key === 'm:art.svg')!.row).toMatchObject({ kind: 'media', image: true, rendered: true });
+  });
+
+  it('shows an edit\'s image by its new side alone', () => {
+    const { rows } = mediaRows({ newSideOnly: true });
+    const logo = rows.find(({ key }) => key === 'm:img/logo.png')!.row as Extract<ReviewRow, { kind: 'media' }>;
+    expect(logo.heightPx).toBe(imageRowHeight(1, false));
+  });
+
+  it('keeps git\'s line where the list has no media (the conflict view)', () => {
+    const { rows } = mediaRows({ media: false, rendered: ['art.svg'] });
+    expect(rows.some(({ row }) => row.kind === 'media')).toBe(false);
   });
 });

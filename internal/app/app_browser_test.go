@@ -20,6 +20,7 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
+	"agent-overflow/internal/transport"
 )
 
 func TestBrowserSettingsDefaultToEnabledPersistent(t *testing.T) {
@@ -256,7 +257,57 @@ func TestBrowserCompanionPaneDetachUnbindsItsConnectionTie(t *testing.T) {
 		unsubscribe: app.BrowserCompanionPaneDetach,
 		key:         companionPaneCleanupKey,
 		live:        func(id string) bool { return manager.SetPaneRect(id, appbrowser.PaneRect{}) == nil },
+		principal:   transport.ConnPrincipal{HostWindow: true},
 	})
+}
+
+// Only the host's own window mounts a browser pane: the native view lives
+// there. A connection that is not it (a browser tab on this machine with the
+// same launch credential) is refused and mounts nothing; an in-process
+// caller is the host.
+func TestBrowserCompanionPaneAttachIsTheHostWindowsAlone(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-host-window")
+	access, err := app.browserAccess(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.NewPage(t.Context(), access); err != nil {
+		t.Fatalf("open page: %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		ctx   func() context.Context
+		mount bool
+	}{
+		{"the host window", func() context.Context {
+			ctx, _ := transport.WithConnState(t.Context(), transport.ConnPrincipal{HostWindow: true})
+			return ctx
+		}, true},
+		{"another client with the launch credential", func() context.Context {
+			ctx, _ := transport.WithConnState(t.Context(), transport.ConnPrincipal{})
+			return ctx
+		}, false},
+		{"an in-process caller", func() context.Context { return t.Context() }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pane, err := app.BrowserCompanionPaneAttach(tc.ctx(), thread.ID)
+			if !tc.mount {
+				if !errors.Is(err, errBrowserPaneNotHostWindow) || pane.ID != "" {
+					t.Fatalf("attach = %+v, %v; want the host-window refusal", pane, err)
+				}
+				return
+			}
+			if err != nil || pane.ID == "" {
+				t.Fatalf("attach = %+v, %v", pane, err)
+			}
+			manager.DetachPane(pane.ID)
+		})
+	}
 }
 
 func TestDeleteThreadReleasesItsBrowserPagesAndToolToggles(t *testing.T) {
@@ -762,5 +813,100 @@ func TestShutdownStopsTheReapersBrowserSuspension(t *testing.T) {
 	}
 	if pages := browserPageStates(manager, access); len(pages) != 1 || pages[0].Suspended {
 		t.Fatalf("pages = %#v, want one live", pages)
+	}
+}
+
+// The pane's find reaches the thread's shown page through the binding, with
+// the caller's thread as the owner every page operation checks.
+func TestBrowserCompanionFindRunsOnTheThreadsShownPage(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-find")
+	other := makeWorkspaceThread(t, app, "thread-companion-find-other")
+	ctx := t.Context()
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "navigate", Address: "https://example.test/alpha-beta-alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := app.BrowserCompanionThreadState(thread.ID)
+	if err != nil || len(state.Pages) != 1 {
+		t.Fatalf("state = %+v, %v", state, err)
+	}
+	pageID := state.Pages[0].ID
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "show", PageID: pageID}); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := app.BrowserCompanionThreadState(thread.ID); err != nil || state.FindMode != appbrowser.FindModeBar {
+		t.Fatalf("state find mode = %+v, %v", state, err)
+	}
+	// The find shows in the mounted pane; with none there is nothing to show it.
+	if _, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha"}); err == nil {
+		t.Fatal("a find started with no pane mounted")
+	}
+	mount, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.BrowserCompanionPaneDetach(context.Background(), mount.ID) })
+	found, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha", Mount: mount.ID, Seq: 1})
+	if err != nil || found.Matches != 2 || found.Current != 0 || !found.Active || found.Mount != mount.ID {
+		t.Fatalf("start = %+v, %v", found, err)
+	}
+	if next, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "next", PageID: pageID, Mount: mount.ID, Seq: 1}); err != nil || next.Current != 1 {
+		t.Fatalf("next = %+v, %v", next, err)
+	}
+	if _, err := app.BrowserCompanionFind(ctx, other.ID, BrowserFindAction{Kind: "next", PageID: pageID, Mount: mount.ID, Seq: 1}); err == nil {
+		t.Fatal("another thread stepped this thread's find")
+	}
+	if stopped, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "stop", PageID: pageID, Mount: mount.ID, Seq: 1}); err != nil || stopped.Active {
+		t.Fatalf("stop = %+v, %v", stopped, err)
+	}
+}
+
+// A find still running when its connection closes is not cancelled
+// (BrowserCompanionFind is not caller-bound) and returns before the
+// connection's cleanup runs, which the transport starts only after joining
+// its handlers. The pane mount it names is the connection's, so that
+// cleanup detaches it and ends the search: a step from it then finds
+// nothing, and a start from it is refused.
+func TestBrowserFindRunAfterItsConnectionClosedIsEndedByTheCleanup(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-find-closed")
+	if _, err := app.BrowserCompanionDo(t.Context(), thread.ID, BrowserCompanionAction{Kind: "navigate", Address: "https://example.test/alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := app.BrowserCompanionThreadState(thread.ID)
+	if err != nil || len(state.Pages) != 1 {
+		t.Fatalf("state = %+v, %v", state, err)
+	}
+	pageID := state.Pages[0].ID
+	if _, err := app.BrowserCompanionDo(t.Context(), thread.ID, BrowserCompanionAction{Kind: "show", PageID: pageID}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, conn := transport.WithConnState(context.Background(), transport.ConnPrincipal{HostWindow: true})
+	mount, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The socket closes while the start runs: the start finishes, then the
+	// cleanup runs.
+	action := BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha", Mount: mount.ID, Seq: 1}
+	if started, err := app.BrowserCompanionFind(ctx, thread.ID, action); err != nil || !started.Active {
+		t.Fatalf("start after the socket closed = %+v, %v", started, err)
+	}
+	conn.RunCleanups()
+	action.Kind = "next"
+	if step, err := app.BrowserCompanionFind(context.Background(), thread.ID, action); err != nil || !step.Foreign || step.Active || step.Mount != "" {
+		t.Fatalf("step after the connection's cleanup = %+v, %v", step, err)
+	}
+	action.Kind = "start"
+	if _, err := app.BrowserCompanionFind(context.Background(), thread.ID, action); err == nil {
+		t.Fatal("a start from the closed connection's mount ran after its cleanup")
 	}
 }

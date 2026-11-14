@@ -294,9 +294,10 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 	isolateE2EProviderSpawns(t, app)
 
 	// Ensure any sessions that remain open at test end are torn down, in
-	// Shutdown's order: a session's end can settle a request and wake its
-	// caller, so session starts are refused before the close, and the
-	// settlements the closes set off finish before the store closes.
+	// Shutdown's order: joinThreadRequestWorkAtCleanup, registered after
+	// this and so run before it, has refused new request work; session
+	// starts are refused before the close, and any settlement still in
+	// flight finishes before the store closes.
 	t.Cleanup(func() {
 		app.stopAgentNoticeWork()
 		sessions := make([]session, 0, len(app.sessionManager().runtime.Snapshot()))
@@ -314,6 +315,8 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 		}
 		app.threadRequestSettling.Wait()
 	})
+
+	joinThreadRequestWorkAtCleanup(t, app)
 
 	return app, bus
 }
@@ -350,6 +353,24 @@ func TestE2EFixtureTeardownJoinsBackgroundWork(t *testing.T) {
 			t.Errorf("%s: the teardown did not wait for it (finished %v, store read %v)", tc.name, done, readErr)
 		}
 	}
+}
+
+// joinThreadRequestWorkAtCleanup ends the App's thread request work when
+// the test ends, as Shutdown does. A settlement or a wake delivery runs on
+// its own goroutine and can start a session. One that outlived the test
+// would read the settings file after its directory is removed, where the
+// provider binaries are the bare defaults on PATH.
+//
+// Call it after the fixture's other cleanups are registered, so it runs
+// before the store closes and before sessions are torn down.
+func joinThreadRequestWorkAtCleanup(t *testing.T, app *App) {
+	t.Helper()
+	t.Cleanup(func() {
+		if app.appCancel != nil {
+			app.appCancel()
+		}
+		app.threadRequestsWG.Close()
+	})
 }
 
 // e2eThread builds a thread record suitable for E2E tests. Caller must insert
@@ -1699,7 +1720,7 @@ func TestE2E_InterruptTurnWithoutSession(t *testing.T) {
 	// MUST NOT synthesize a turn_completed, a stop marker, or an error
 	// event behind the user's back. A regression that swallows the
 	// missing-session check but accidentally fans out a spurious event
-	// (e.g. by routing through triage's MarkUserInterrupt before the
+	// (e.g. by routing through triage's MarkInterrupt before the
 	// session-presence guard) would pass an err-only assertion.
 	after := bus.allEvents()
 	if len(after) != before {
@@ -1785,7 +1806,7 @@ func waitForFileText(t *testing.T, path string, predicate func(string) bool) str
 // TestE2E_ClaudeStoppedThreadPreInitErrorResultSurfaces reproduces the
 // 2026-06-10 wedged-thread incident end-to-end: a thread whose session
 // was stopped (StopSession → CleanupThread sets the stopped-thread
-// marker, exactly what revert-on-interrupt does) is restarted by a
+// marker, exactly what a conversation rollback does) is restarted by a
 // send, and the replacement Claude process dies during startup —
 // emitting a single result{error_during_execution} BEFORE system/init,
 // then lingering alive (the real CLI does not exit after a failed

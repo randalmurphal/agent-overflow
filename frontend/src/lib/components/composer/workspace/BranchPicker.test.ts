@@ -585,7 +585,7 @@ describe('<BranchPicker>', () => {
     const pane = await buildPane('main');
     if (!pane.thread) throw new Error('missing test thread');
     setThreadEnvMode(pane.thread, 'new-worktree');
-    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread, 'main');
     setBindingMock('GitListBranches', async () => [
       { name: 'main', isCurrent: true, isDefault: true },
       { name: 'release', isCurrent: false, isDefault: false },
@@ -670,7 +670,7 @@ describe('<BranchPicker>', () => {
   it('replaces the new-branch popup entry with a cancel action while creating', async () => {
     const pane = await buildPane('main');
     if (!pane.thread) throw new Error('missing test thread');
-    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread, 'main');
     setNewBranchName(pane.thread, 'feat/new');
     setBindingMock('GitListBranches', async () => [
       { name: 'main', isCurrent: true, isDefault: true },
@@ -701,7 +701,7 @@ describe('<BranchPicker>', () => {
     // Local row is a base picker for the new branch — only meaningful
     // when creatingBranch=true. Enter that mode explicitly so the row
     // becomes available.
-    enterCreateBranchMode(pane.thread, { workspaceDirty: true, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread, 'develop');
     setBindingMock('GitListBranches', async () => [
       { name: 'main', isCurrent: true, isDefault: true },
     ]);
@@ -1144,7 +1144,7 @@ describe('<BranchPicker>', () => {
     const pane = await buildPane('main');
     if (!pane.thread) throw new Error('missing test thread');
     pane.replaceThread({ ...pane.thread, projectId: 'project-1' });
-    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(pane.thread, 'main');
     setBindingMock('GitListBranches', async () => [
       { name: 'main', isCurrent: true, isDefault: true },
       { name: 'feat/has-wt', isCurrent: false, isDefault: false, behindCount: 2, worktreePath: '/tmp/wt-feat' },

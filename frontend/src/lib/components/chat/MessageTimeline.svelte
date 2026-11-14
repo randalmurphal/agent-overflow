@@ -47,6 +47,12 @@
   import { createTimelinePaging } from './timelinePaging';
   import { createTimelineWindowAnchor } from './timelineWindowAnchor.svelte';
   import { createTimelineRowProjection } from './timelineRowProjection.svelte';
+  import ResponseDivider from './ResponseDivider.svelte';
+  import { motionReduced } from '../../utils/reducedMotion';
+  import type { Item } from '../../types/models';
+  import RowPromotionStage from './RowPromotionStage.svelte';
+  import { planRowPromotion, type RowPromotionPlan } from './rowPromotionPlan';
+  import { findRowPromotionElements } from './rowPromotionMotion';
   import { responsePillLabel } from './timelineRows';
   import { createTimelineDiagnostics } from './timelineDiagnostics';
   import { createTimelineQuietWork } from './timelineQuietWork';
@@ -55,6 +61,9 @@
   import { createTimelineActivityRunAutoCollapse } from './timelineActivityRunAutoCollapse';
   import { createTimelineVisibilityGeometry } from './timelineVisibilityGeometry';
   import { coldLoadPriors, coldLoadWarmEdge } from '../../utils/coldLoadTrace';
+  import { verifiedThreadMachine } from '../../stores/attachedBackends.svelte';
+  import { readAloudPreferences } from '../../stores/readAloudPreferences.svelte';
+  import { refreshReadAloudSource } from '../../stores/readAloudSource.svelte';
 
   // Extra buffer rendered above + below the viewport so fast scrolls
   // (trackpad fling, scrollbar drag) don't outrun the rendered window —
@@ -143,6 +152,14 @@
   let projectName = $derived(
     pane.thread?.projectId ? getProject(pane.thread.projectId)?.project.name : undefined,
   );
+
+  // Replies read aloud may use the thread's computer's OpenAI voices, so
+  // while read-aloud is on here the timeline asks that computer which it
+  // offers. A thread whose computer is not verified asks none.
+  let readAloudMachine = $derived(pane.threadId ? verifiedThreadMachine(pane.threadId) : null);
+  $effect(() => {
+    if (readAloudMachine !== null && readAloudPreferences().enabled) void refreshReadAloudSource(readAloudMachine);
+  });
 
   /**
    * Strictly after the pending cut in DISPLAY order. Positional, not
@@ -281,6 +298,48 @@
       LIVE_CONTENT_ACTIVE_HOLD_MS,
     );
   }
+
+  // Row promotions. The pane holds back a prose row that replaces the
+  // reasoning row at the end of the tail activity run
+  // (stores/threadRowPromotions.svelte.ts) and offers this timeline its
+  // presentation once the reveal has shown the last word. The presenter
+  // takes it only when the row is on screen and motion is allowed; anything
+  // else installs at once. The plan is decided here, once, so the stage
+  // opens the box the installed row will occupy.
+  const promotionPlans = new Map<string, RowPromotionPlan>();
+  $effect(() => {
+    const presentingPane = pane;
+    return presentingPane.registerRowPromotionPresenter((itemId, row) => {
+      if (motionReduced() || document.visibilityState !== 'visible' || !scrollEl) return false;
+      const turns = presentingPane.timelineTurns;
+      const plan = planRowPromotion({
+        itemId,
+        row,
+        revealed: rows.revealedNodes,
+        structure: rows.groupedNodes,
+        decorations: rows.rowDecorations,
+        activeTurnKey: turns.activeKey,
+        turnKeyOf: turns.keyOf,
+      });
+      if (plan === null || findRowPromotionElements(scrollEl, plan) === null) return false;
+      promotionPlans.set(itemId, plan);
+      return true;
+    });
+  });
+  let promotionStages = $derived.by(() => {
+    const stages: Array<{ plan: RowPromotionPlan; row: Item }> = [];
+    for (const { itemId, row } of pane.presentingRowPromotions) {
+      const plan = promotionPlans.get(itemId);
+      if (plan) stages.push({ plan, row });
+    }
+    return stages;
+  });
+  $effect(() => {
+    const presenting = pane.presentingRowPromotions;
+    for (const itemId of promotionPlans.keys()) {
+      if (!presenting.some((entry) => entry.itemId === itemId)) promotionPlans.delete(itemId);
+    }
+  });
 
   const stick = createUseStickToBottomController({
     liveContentActive: liveContentActiveNow,
@@ -877,11 +936,33 @@
 
   // Take a pane's scroll-to-item request once the pane has installed its
   // window: a switch still loading can replace the window the jump lands
-  // in. Taken once, so a remount cannot replay it.
+  // in. Taken once, so a remount cannot replay it. A marked request lands
+  // through the explicit-jump session, which flashes the row.
+  //
+  // An owned request can be withdrawn after it was taken (a find query
+  // replaced or closed): the withdrawal starts a newer navigation, the
+  // scroller's own supersession, if the request's navigation is still the
+  // current one, so its pending lookup lands nowhere and flashes nothing.
+  let ownedNavigation: { owner: object; navigation: number } | null = null;
   $effect(() => {
     if (!pane.scrollToItemRequest || pane.loading) return;
+    const request = untrack(() => pane.scrollToItemRequest);
     const itemId = untrack(() => pane.takeScrollToItemRequest());
-    if (itemId) void restore.scrollToItem(itemId);
+    if (!itemId || !request) return;
+    if (request.mark) void jump.jumpToItem(itemId);
+    else void restore.scrollToItem(itemId);
+    ownedNavigation = request.owner ? { owner: request.owner, navigation: restore.navigation } : null;
+  });
+  $effect(() => {
+    const withdrawal = pane.scrollToItemWithdrawal;
+    const owned = ownedNavigation;
+    if (!withdrawal || !owned || withdrawal.owner !== owned.owner) return;
+    ownedNavigation = null;
+    untrack(() => {
+      if (restore.navigation !== owned.navigation) return;
+      restore.beginNavigation();
+      jump.invalidate();
+    });
   });
 
   onDestroy(() => {
@@ -994,7 +1075,15 @@
            `visibility: visible` would override the inherited hidden that
            the compact screen swap keys on and paint the timeline over the
            thread list (found on-device 2026-09-04). -->
-      <div style:visibility={hideContentForWarmup ? 'hidden' : undefined}>
+      <!-- `--composer-height` is inherited, and ChatView rewrites it on an
+           ancestor every time the composer overlay resizes. Pinning it here
+           keeps that change from restyling every mounted row: only the
+           scroller, the nav rail and the scroll-to-bottom button read it,
+           and all three sit outside this wrapper. -->
+      <div
+        style:visibility={hideContentForWarmup ? 'hidden' : undefined}
+        style:--composer-height="0px"
+      >
         {#key pane.threadId}
         <TimelineVirtualizer
           bind:this={listRef}
@@ -1080,36 +1169,11 @@
                      contract shared by every row-aligned surface. -->
                 <div class={ROW_SHELL_CLASSES} style={rowShellStyle}>
                   {#if rows.rowDecorations.responseDividerIndexes.has(index)}
-                    {@const showResponsePill = rows.rowDecorations.responsePillIndexes.has(index)}
-                    {@const responseDuration = rows.responsePillDuration(node)}
-                    <!-- Two visual modes share a fixed wrapper height
-                         (`h-[1.625rem]` = 26px = pill chrome: text-[0.625rem]
-                         × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
-                         Labeled mode renders `line | gap | pill | gap | line`,
-                         unlabeled mode renders one continuous full-width line.
-                         The pill's `leading-tight` keeps its content inside
-                         the fixed wrapper across font-loading variance.
-                         Fixed `h-` (not the codebase's usual `min-h-` slot
-                         convention) is deliberate: both branches MUST be the
-                         exact same height so promoting an intermediate
-                         divider to "final" on turn settle never shifts row
-                         geometry — satisfies the "no late transcript
-                         adornments on completion" rule in
-                         `frontend/AGENTS.md`. Re-derive 1.625rem if the pill
-                         classes above change. -->
-                    <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
-                      <div class="my-3 flex h-[1.625rem] items-center gap-3">
-                        <span class="timeline-hairline flex-1" aria-hidden="true"></span>
-                        {#if showResponsePill}
-                          <span
-                            class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[0.625rem] uppercase leading-tight tracking-[0.14em] text-text-secondary"
-                          >
-                            {responsePillLabel(node)}{#if responseDuration}{' '}<span class="normal-case tabular-nums tracking-normal">{responseDuration}</span>{/if}
-                          </span>
-                          <span class="timeline-hairline flex-1" aria-hidden="true"></span>
-                        {/if}
-                      </div>
-                    </div>
+                    <ResponseDivider
+                      final={rows.rowDecorations.responsePillIndexes.has(index)}
+                      label={responsePillLabel(node)}
+                      duration={rows.responsePillDuration(node)}
+                    />
                   {/if}
                 <div data-testid="message-timeline-node">
                   <TimelineNodeView
@@ -1120,6 +1184,21 @@
                     codexSubagentReceiverLabels={rows.codexReceiverLabels}
                   />
                 </div>
+                <!-- A promoted row arrives below the run it leaves, inside
+                     this row, until the pane installs it as its own row. -->
+                {#if promotionStages.length > 0 && node.kind === 'activity_run'}
+                  {#each promotionStages as stage (stage.plan.itemId)}
+                    {#if stage.plan.runId === node.runId}
+                      <RowPromotionStage
+                        {pane}
+                        plan={stage.plan}
+                        row={stage.row}
+                        pillLabel={responsePillLabel(stage.plan.node)}
+                        pillDuration={rows.responsePillDuration(stage.plan.node)}
+                      />
+                    {/if}
+                  {/each}
+                {/if}
               </div>
             </div>
             </div>

@@ -17,6 +17,9 @@ type ownedGroupProof struct {
 	pgid         int
 	rootIdentity instanceinfo.ProcessIdentity
 	members      []ownedGroupMember
+	// custody is the group its launcher recorded at the root's reap, nil
+	// for a group this process did not start.
+	custody exitCustody
 }
 
 var ownedGroupAliveProbe = ownedGroupAliveOS
@@ -34,19 +37,36 @@ func captureUnverifiedProof(pid int) (ownedGroupProof, error) {
 
 func emptyOwnedGroupProof(pid int) ownedGroupProof { return ownedGroupProof{pgid: pid} }
 
-func terminateOwnedProcess(ctx context.Context, pid int, expected instanceinfo.ProcessIdentity, grace time.Duration) error {
+// recordExitCustody waits for the launch's leader to exit and captures its
+// group for exitCustody before the caller reaps it. Until that reap the
+// zombie leader holds its PID, so no other group can take the id and
+// every member then is one this launch created.
+func recordExitCustody(pgid int) (ownedGroupProof, error) {
+	if err := awaitExitUnreaped(pgid); err != nil {
+		return ownedGroupProof{}, err
+	}
+	members, err := snapshotProcessGroup(pgid)
+	if err != nil {
+		return ownedGroupProof{}, fmt.Errorf("record process group %d at its leader's exit: %w", pgid, err)
+	}
+	return ownedGroupProof{pgid: pgid, members: members}, nil
+}
+
+func terminateOwnedProcess(ctx context.Context, pid int, expected instanceinfo.ProcessIdentity, grace time.Duration, custody exitCustody) error {
 	proof, err := captureOwnedGroupProof(pid, expected)
 	if err != nil {
 		return err
 	}
+	proof.custody = custody
 	return terminateProcessGroup(ctx, pid, expected, proof, grace)
 }
 
-func killOwnedProcess(pid int, expected instanceinfo.ProcessIdentity) (ownedGroupProof, error) {
+func killOwnedProcess(pid int, expected instanceinfo.ProcessIdentity, custody exitCustody) (ownedGroupProof, error) {
 	proof, err := captureOwnedGroupProof(pid, expected)
 	if err != nil {
 		return ownedGroupProof{}, err
 	}
+	proof.custody = custody
 	if !ownedGroupAliveProbe(proof.pgid) {
 		return proof, nil
 	}
@@ -125,10 +145,22 @@ func terminateProcessGroup(ctx context.Context, pid int, expected instanceinfo.P
 	if err := signalOwnedGroupProbe(proof.pgid, false); err != nil && (processAlive(pid) || ownedGroupAliveProbe(proof.pgid)) {
 		return fmt.Errorf("terminate process group %d: %w", pid, err)
 	}
+	// A member the leader started after the signal never received it: a
+	// shell blocks TERM across its fork, so a signal landing then reaches
+	// only the shell, and the command it forks runs on. Once the leader is
+	// gone with members left, they get a SIGTERM of their own as soon as
+	// the group is proven ours.
+	resignaled := false
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
 		if !processAlive(pid) && !ownedGroupAliveProbe(proof.pgid) {
 			return nil
+		}
+		if !resignaled && !processAlive(pid) && verifyOwnedGroup(proof) == nil {
+			resignaled = true
+			if err := signalOwnedGroupProbe(proof.pgid, false); err != nil && ownedGroupAliveProbe(proof.pgid) {
+				return fmt.Errorf("terminate process group %d after its leader exited: %w", pid, err)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -192,17 +224,35 @@ func verifyOwnedGroup(proof ownedGroupProof) error {
 	if !ownedGroupAliveProbe(proof.pgid) {
 		return nil
 	}
-	for _, member := range proof.members {
-		if !processAlive(member.pid) {
-			continue
+	if groupHasRecordedMember(proof.pgid, proof.members) {
+		return nil
+	}
+	if proof.custody != nil {
+		exit, recorded, err := proof.custody()
+		if err != nil {
+			return fmt.Errorf("no recorded member identity remains in the process group: %w", err)
 		}
-		if got, err := memberGroupIDProbe(member.pid); err == nil && got == proof.pgid {
-			if err := verifyProcessIdentity(member.pid, member.identity); err == nil {
-				return nil
-			}
+		if recorded && groupHasRecordedMember(proof.pgid, exit.members) {
+			return nil
 		}
 	}
 	return errors.New("no recorded member identity remains in the process group")
+}
+
+// groupHasRecordedMember reports whether one of members is still alive in
+// pgid with its recorded identity.
+func groupHasRecordedMember(pgid int, members []ownedGroupMember) bool {
+	for _, member := range members {
+		if !processAlive(member.pid) {
+			continue
+		}
+		if got, err := memberGroupIDProbe(member.pid); err == nil && got == pgid {
+			if err := verifyProcessIdentity(member.pid, member.identity); err == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func ownedGroupAliveOS(pgid int) bool {

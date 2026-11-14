@@ -682,6 +682,11 @@ func (h *Harness) HarnessReset() (err error) {
 	h.mu.Unlock()
 	h.forge.Reset()
 	h.forgeAPIServer().setOffline(false)
+	if h.config.Host != nil {
+		if usage := h.config.Host.ClaudeUsageFake(); usage != nil {
+			usage.Clear("")
+		}
+	}
 	if replayer != nil {
 		replayer.Stop()
 	}
@@ -809,6 +814,12 @@ func (h *Harness) HarnessReset() (err error) {
 	// longer exist for up to its TTL. Nothing else invalidates it (the
 	// production reset is an import run finishing), so reset drops it here.
 	h.config.Host.ResetSessionImporter()
+	// What the forge adapters remember of a host or project (its schema,
+	// merge settings, viewer, a failing read's backoff) belongs to the
+	// fixture just cleared, which the next can contradict. The merged PR
+	// cleanup is paused and the projects whose lists and pumps read the
+	// forge are gone.
+	h.config.Host.ResetForgeCaches()
 	// One spec's wakes must not be readable by the next: HarnessPushSent
 	// is a ledger with the same per-test lifetime as the mock registrations
 	// above, and an unbounded one, so nothing else would ever drop it.
@@ -818,6 +829,7 @@ func (h *Harness) HarnessReset() (err error) {
 	// launch the window before its first connection), so an activation one
 	// test sent would open its target, or toast its absence, on the next.
 	h.config.Host.DropRetainedEvents()
+	h.config.Host.DropReviewDiffImages()
 	// Generated seed workspaces live under <dataRoot>/workspaces only —
 	// removing the tree lets the next test seed the same project names
 	// (CreateRepo refuses a surviving .git). User-supplied Path projects

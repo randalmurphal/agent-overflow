@@ -40,20 +40,21 @@ export interface MigrationException {
 }
 
 export const migrationExceptions: MigrationException[] = [
-  { version: 144, table: 'channels', dropped: true, reason: 'v144 removes discussions and their channels' },
-  { version: 144, table: 'channel_messages', dropped: true, reason: 'v144 removes discussions and their channel messages' },
-  { version: 144, table: 'discussion_definitions', dropped: true, reason: 'v144 removes discussion definitions' },
-  { version: 144, table: 'threads', columns: ['mode'], reason: 'v144 turns a former discussion thread into a chat thread' },
-  { version: 144, table: 'scratch_threads', columns: ['return_mode'], reason: 'v144 returns a side chat opened from a discussion to chat mode' },
-  { version: 144, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v144 keeps only model favorites; discussion favorites are removed' },
-  { version: 146, table: 'automations', dropped: true, reason: 'v146 removes the workflow scheduler and drops its automations' },
-  { version: 146, table: 'automation_cursors', dropped: true, reason: "v146 drops the scheduler's per-source cursors with its automations" },
-  { version: 146, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v146 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
-  { version: 155, table: 'standing_agents', dropped: true, reason: 'v155 moves every standing agent to an agents record whose id is its thread id, and drops the table' },
-  { version: 155, table: 'threads', columns: ['project_id', 'workspace_path', 'worktree_path', 'branch', 'group_id', 'created_branch', 'created_remote_url', 'created_head_commit'], reason: "v155 moves a standing agent's thread into its home, outside every project, with no group, worktree, branch or recorded git origin" },
-  { version: 156, table: 'agent_wakes', columns: ['last_output', 'last_stderr'], rowsMayShrink: true, reason: 'v156 clears what a cancelled loop or watch carried and keeps each thread its 16 newest cancelled rows' },
-  { version: 156, table: 'remote_watches', rowsMayShrink: true, reason: 'v156 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
-  { version: 158, table: 'thread_requests', columns: ['lineage_only'], reason: 'v158 keeps the newest of two local spawns of one thread and makes the older one lineage-only' },
+  { version: 146, table: 'pr_views', dropped: true, reason: 'the Pull requests page no longer records which PRs the app opened; attention comes from the forge' },
+  { version: 149, table: 'channels', dropped: true, reason: 'v149 removes discussions and their channels' },
+  { version: 149, table: 'channel_messages', dropped: true, reason: 'v149 removes discussions and their channel messages' },
+  { version: 149, table: 'discussion_definitions', dropped: true, reason: 'v149 removes discussion definitions' },
+  { version: 149, table: 'threads', columns: ['mode'], reason: 'v149 turns a former discussion thread into a chat thread' },
+  { version: 149, table: 'scratch_threads', columns: ['return_mode'], reason: 'v149 returns a side chat opened from a discussion to chat mode' },
+  { version: 149, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v149 keeps only model favorites; discussion favorites are removed' },
+  { version: 151, table: 'automations', dropped: true, reason: 'v151 removes the workflow scheduler and drops its automations' },
+  { version: 151, table: 'automation_cursors', dropped: true, reason: "v151 drops the scheduler's per-source cursors with its automations" },
+  { version: 151, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v151 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
+  { version: 160, table: 'standing_agents', dropped: true, reason: 'v160 moves every standing agent to an agents record whose id is its thread id, and drops the table' },
+  { version: 160, table: 'threads', columns: ['project_id', 'workspace_path', 'worktree_path', 'branch', 'group_id', 'created_branch', 'created_remote_url', 'created_head_commit'], reason: "v160 moves a standing agent's thread into its home, outside every project, with no group, worktree, branch or recorded git origin" },
+  { version: 161, table: 'agent_wakes', columns: ['last_output', 'last_stderr'], rowsMayShrink: true, reason: 'v161 clears what a cancelled loop or watch carried and keeps each thread its 16 newest cancelled rows' },
+  { version: 161, table: 'remote_watches', rowsMayShrink: true, reason: 'v161 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
+  { version: 163, table: 'thread_requests', columns: ['lineage_only'], reason: 'v163 keeps the newest of two local spawns of one thread and makes the older one lineage-only' },
 ];
 
 /**
@@ -241,6 +242,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'proposed_plan_comments', reason: 'review comments on a proposed plan' },
   { table: 'thread_drafts', columns: ['pending_plan_implementation'], values: { has_content: [0] }, reason: 'a draft seeded from an accepted plan, and an empty draft that only holds attachments' },
   { table: 'diff_review_comments', reason: 'review comments on a pull request diff through the forge' },
+  { table: 'pr_list_projects', reason: "the Pull requests list's stored copy of a forge project's read; the top-up's one forge-origin project names a repository the fake forge does not have, so its read fails and nothing is stored" },
   { table: 'thread_pull_requests', reason: "an open pull request a forge reports for a thread's linked worktree; the top-up seeds no forge pull request" },
   { table: 'chat_bar_favorites', values: { provider: ['codex', 'claude-tui'] }, reason: 'favorites of other providers; one favorite proves the table' },
   { table: 'chat_model_profiles', values: { provider: ['claude-tui'], reasoning_effort: ['none', 'minimal', 'low', 'high', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last; the claude-tui provider has no mock' },

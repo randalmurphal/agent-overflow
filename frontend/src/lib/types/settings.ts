@@ -42,6 +42,8 @@ export type PaneDensityMode = "compact" | "comfortable" | "spacious";
 export type ActivityRunDefaultMode = "expanded" | "collapsed";
 export type ProjectSortMode = "lastActivity" | "createdAt" | "manual";
 export type CommitMessageStyle = "conventional" | "repo" | "custom";
+/** Preferred order of the auto-switch pool; mirrors internal/settings AccountAutoSwitch*. */
+export type AccountAutoSwitchStrategy = "soonest-reset" | "account-order";
 /** The four readings of "quiet when"; mirrors internal/settings NotifyQuiet*. */
 export type NotifyQuietWhen = "never" | "focused" | "threadVisible" | "focusedAndThreadVisible";
 
@@ -94,7 +96,8 @@ export interface AgentPaneScopeSnapshot {
 
 export interface PaneLayoutPersistedPane {
   paneId: string;
-  kind: "thread" | "plan" | "review" | "agent";
+  /** Tool kinds (`pulls`, `workflows`) carry only an id and a width. */
+  kind: "thread" | "plan" | "review" | "agent" | "pulls" | "workflows";
   threadId?: string;
   sourcePaneId?: string;
   widthPx: number;
@@ -279,6 +282,32 @@ export interface Settings {
    * whether this is on or off.
    */
   threadToolsEnabled: boolean;
+  /**
+   * Let composers dictate through this computer's Codex sign-in with
+   * ChatGPT, which sends each recording to OpenAI. Off by default; with no
+   * dictation source on, no composer shows a mic.
+   */
+  dictationSubscriptionEnabled: boolean;
+  /**
+   * Let composers dictate live through this computer's OpenAI API key file,
+   * which streams the recording to OpenAI while it is spoken. Off by
+   * default. The four settings after it tune that transcription.
+   */
+  dictationAPIEnabled: boolean;
+  /** gpt-live-transcribe's latency; empty leaves OpenAI's default. */
+  dictationAPIDelay: string;
+  /** Language codes the speaker uses, such as "en"; empty detects them. */
+  dictationAPILanguages: string[];
+  /** Terms the transcription should spell as written. */
+  dictationAPIKeywords: string[];
+  /** Describes the speaker or setting to the model. */
+  dictationAPIPrompt: string;
+  /**
+   * Let any client read replies aloud in OpenAI voices through this
+   * computer's OpenAI API key file, which sends each sentence to OpenAI.
+   * Off by default.
+   */
+  readAloudAPIEnabled: boolean;
   /**
    * Append Agent Overflow's guide to every interactive Claude, claude-tui
    * and Codex session's system prompt: what the chat pane renders and which
@@ -551,6 +580,19 @@ export interface Settings {
   claudeAutoCompactExtendedPercent: number;
   codexAutoCompactStandardPercent: number;
   codexAutoCompactExtendedPercent: number;
+  /**
+   * Account auto-switch, for every provider
+   * (docs/specs/account-auto-switch.md). The strategy is the preferred
+   * order of the pool; the threshold is the usage percent at which an
+   * account is past threshold (range in FRONTEND_SETTING_RANGES).
+   */
+  accountAutoSwitchStrategy: AccountAutoSwitchStrategy;
+  accountAutoSwitchThreshold: number;
+  /**
+   * Continue a thread refused for a usage limit once an account can serve
+   * it. Off by default.
+   */
+  accountAutoContinue: boolean;
   observabilityTracingEnabled: boolean;
   observabilityOtlpEndpoint: string;
   observabilityEventLogEnabled: boolean;

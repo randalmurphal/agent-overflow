@@ -77,6 +77,9 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
 		return store.Thread{}, err
 	}
+	if err := refusePRDraftSource(opts); err != nil {
+		return store.Thread{}, err
+	}
 	unlockAdmission, err := a.lockClientSendAdmission(ctx, threadID, opts.SendID)
 	if err != nil {
 		return store.Thread{}, err
@@ -119,7 +122,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 //
 // Spec: on user interrupt, any streaming items on the current turn are
 // flipped to errored with a " — stopped" suffix, and a system `error`
-// row with Summary "Stopped by user" is appended. This happens AFTER
+// row with Summary triage.StoppedByUser is appended. This happens AFTER
 // the provider interrupt signal is sent so the UI gets a consistent
 // "signal sent, now here's the record" ordering. If the triage
 // bookkeeping fails we log — the provider interrupt already fired, so
@@ -133,8 +136,31 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 //
 //ao:scope threads:operate
 func (a *App) InterruptTurn(threadID string, confirmedAgents []string) error {
-	_, err := a.interruptTurnAtIndex(context.Background(), threadID, anyOpenTurn, personalStop(confirmedAgents))
+	_, err := a.interruptTurnAtIndex(context.Background(), threadID, anyOpenTurn, stopByUser(confirmedAgents))
 	return err
+}
+
+// InterruptRevertOptions is InterruptAndRevertIfClean's second argument.
+// Older clients send {expectedSendId, draft}; the fields are ignored.
+type InterruptRevertOptions struct{}
+
+// InterruptAndRevertResult answers InterruptAndRevertIfClean. Older clients
+// read reverted:false as "the Stop was a plain interrupt; keep the message".
+type InterruptAndRevertResult struct {
+	Reverted bool   `json:"reverted"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// InterruptAndRevertIfClean is InterruptTurn, retained for wire
+// compatibility with clients that call it for a Stop on a just-sent message.
+// It never reverts.
+//
+//ao:scope threads:operate
+func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOptions, confirmedAgents []string) (InterruptAndRevertResult, error) {
+	if err := a.InterruptTurn(threadID, confirmedAgents); err != nil {
+		return InterruptAndRevertResult{}, err
+	}
+	return InterruptAndRevertResult{Reason: "plain interrupt"}, nil
 }
 
 // SwitchThread returns the requested thread. Provider sessions are
@@ -253,6 +279,8 @@ func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {
 	if err := a.store.UpdateThread(sanitized); err != nil {
 		return store.Thread{}, err
 	}
+	// The model fields changed (SameModelFields above), and clients show them.
+	a.announceThread(triage.ThreadActionFull, threadID)
 	return sanitized, nil
 }
 

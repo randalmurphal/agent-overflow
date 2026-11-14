@@ -15,14 +15,13 @@ function send(id: string, itemIndex = 0, overrides: Partial<Item> = {}): Item {
 function apply(current: Item[], incoming: Item[]) {
   return applyItemUpsertsToWindow({ current, incoming,
     itemIndexById: new Map(current.map((item, index) => [item.id, index])),
-    optimisticItemIds: new Set(current.filter(item => item.id.startsWith('optimistic:')).map(item => item.id)),
     currentThreadId: 'thread-1', oldestLoadedCursor: cursorFromItem(current[0]),
     newestLoadedCursor: cursorFromItem(current.at(-1)!), hasMoreHistory: true, hasMoreNewer: true });
 }
 
 describe('send identity', () => {
   it('is independent of position, backend id and provider metadata', () => {
-    const before = send('optimistic:send-1', 12);
+    const before = send('user:earlier', 12);
     const after = send('user:canonical', -1, { turnIndex: 3, meta: '{"sendId":"send-1","provider_item_id":"provider"}' });
     expect(userMessageIdentity(before)).toBe(userMessageIdentity(after));
     expect(timelineNodeKey({ kind: 'leaf', item: before })).toBe(timelineNodeKey({ kind: 'leaf', item: after }));
@@ -59,65 +58,66 @@ describe('send identity', () => {
   });
 });
 
-describe('confirmation ordering and page coverage', () => {
-  it.each([-1, 11, 20])('moves a confirmed floor to %s without hiding unloaded history', (position) => {
-    const current = [send('optimistic:send-1', 10), makeItem({ id: 'middle', turnIndex: 2, itemIndex: 11 }), makeItem({ id: 'tail', turnIndex: 2, itemIndex: 12 })];
-    const confirmed = send('user:canonical', position);
-    const next = apply(current, [confirmed])!;
-    expect(next.appendedItems).toEqual([]);
-    expect(next.items).toContain(confirmed);
-    expect(next.items.map(item => item.itemIndex)).toEqual([position, 11, 12].sort((a, b) => a - b));
-    const cursors = cursorsAfterItemUpserts(cursorFromItem(current[0]), cursorFromItem(current[2]), current, [confirmed], 'thread-1');
+describe('page coverage when a send’s row moves or arrives under another id', () => {
+  it.each([-1, 11, 20])('moves the floor to %s without hiding unloaded history', (position) => {
+    const current = [send('user:earlier', 10), makeItem({ id: 'middle', turnIndex: 2, itemIndex: 11 }), makeItem({ id: 'tail', turnIndex: 2, itemIndex: 12 })];
+    const renamed = send('user:canonical', position);
+    const cursors = cursorsAfterItemUpserts(cursorFromItem(current[0]), cursorFromItem(current[2]), current, [renamed], 'thread-1');
     expect(cursors.oldest?.itemIndex).toBe(position < 10 ? 10 : 11);
     expect(cursors.newest?.itemIndex).toBe(12);
+
+    const moved = send('user:earlier', position);
+    const next = apply(current, [moved])!;
+    expect(next.appendedItems).toEqual([]);
+    expect(next.items).toContain(moved);
+    expect(next.items.map(item => item.itemIndex)).toEqual([position, 11, 12].sort((a, b) => a - b));
+    const movedCursors = cursorsAfterItemUpserts(cursorFromItem(current[0]), cursorFromItem(current[2]), current, [moved], 'thread-1');
+    expect(movedCursors.oldest?.itemIndex).toBe(cursors.oldest?.itemIndex);
+    expect(movedCursors.newest?.itemIndex).toBe(12);
   });
 
   it.each([false, true])('admits a filled extension regardless of event ordering, insert first=%s', (first) => {
-    const current = [makeItem({ id: 'head', turnIndex: 2, itemIndex: 10 }), send('optimistic:send-1', 12)];
-    const confirmed = send('user:canonical', 14);
+    const current = [makeItem({ id: 'head', turnIndex: 2, itemIndex: 10 }), send('user:earlier', 12)];
     const inserted = makeItem({ id: 'inserted', turnIndex: 2, itemIndex: 13 });
-    const incoming = first ? [inserted, confirmed] : [confirmed, inserted];
-    const result = apply(current, incoming)!;
-    expect(result.items.map(item => item.id)).toEqual(['head', 'inserted', confirmed.id]);
+    const order = (row: Item) => (first ? [inserted, row] : [row, inserted]);
+    const moved = send('user:earlier', 14);
+    const result = apply(current, order(moved))!;
+    expect(result.items.map(item => item.id)).toEqual(['head', 'inserted', moved.id]);
     expect(result.appendedItems).toEqual([inserted]);
-    expect(cursorsAfterItemUpserts(cursorFromItem(current[0]), cursorFromItem(current[1]), current, incoming, 'thread-1').newest).toEqual(cursorFromItem(confirmed));
+    expect(cursorsAfterItemUpserts(cursorFromItem(current[0]), cursorFromItem(current[1]), current, order(moved), 'thread-1').newest).toEqual(cursorFromItem(moved));
+    const renamed = send('user:canonical', 14);
+    expect(cursorsAfterItemUpserts(cursorFromItem(current[0]), cursorFromItem(current[1]), current, order(renamed), 'thread-1').newest).toEqual(cursorFromItem(renamed));
   });
 
   it('proves a translated span using renamed interior sends as well as endpoints', () => {
-    const current = [10, 11, 12].map(i => send(`optimistic:${i}`, i, { meta: JSON.stringify({ sendId: `send-${i}` }) }));
+    const current = [10, 11, 12].map(i => send(`user:earlier:${i}`, i, { meta: JSON.stringify({ sendId: `send-${i}` }) }));
     const incoming = current.map(item => ({ ...item, id: `user:${item.itemIndex}`, itemIndex: item.itemIndex + 5 }));
     expect(cursorsAfterItemUpserts(cursorFromItem(current[0]), cursorFromItem(current[2]), current, incoming, 'thread-1'))
       .toEqual({ oldest: cursorFromItem(incoming[0]), newest: cursorFromItem(incoming[2]) });
-    expect(apply(current, incoming)?.items).toEqual(incoming);
+    const translated = current.map(item => ({ ...item, itemIndex: item.itemIndex + 5 }));
+    expect(apply(current, translated)?.items).toEqual(translated);
   });
 
-  it('deduplicates repeated confirmations within one batch and uses the last position', () => {
-    const before = send('optimistic:send-1', 12);
-    const confirmed = send('user:canonical', 11);
-    const corrected = { ...confirmed, itemIndex: 10 };
-    const result = apply([before], [confirmed, confirmed, corrected])!;
+  it('applies repeated writes of one row within a batch once, at the last position', () => {
+    const before = send('user:canonical', 12);
+    const moved = send('user:canonical', 11);
+    const corrected = { ...moved, itemIndex: 10 };
+    const result = apply([before], [moved, moved, corrected])!;
     expect(result.items).toEqual([corrected]);
-    expect(result.replacedItems).toEqual([before]);
     expect(result.appendedItems).toEqual([]);
   });
 
-  it('rejects conflicting authoritative ids before committing a partial batch', () => {
-    const before = send('optimistic:send-1');
-    expect(() => apply([before], [send('user:one'), send('user:two')])).toThrow('Conflicting confirmation ids');
-    expect(before.id).toBe('optimistic:send-1');
-  });
-
-  it('does not match another thread or a parented message to the local send', () => {
-    const before = send('optimistic:send-1');
+  it('does not admit a row of another thread or another scope that carries a held send’s id', () => {
+    const before = send('user:earlier');
     expect(apply([before], [send('user:other-thread', 0, { threadId: 'other' })])).toBeNull();
     const parented = send('user:agent', 0, { parentId: 'absent' });
     expect(apply([before], [parented])).toBeNull();
   });
 });
 
-describe('confirmation through history loading', () => {
-  it('a snapshot supersedes the same send even if its provisional row was touched during the fetch', () => {
-    const before = send('optimistic:send-1', 12);
+describe('one send through history loading', () => {
+  it('a snapshot supersedes the same send held under another id, even if that row was touched during the fetch', () => {
+    const before = send('user:earlier', 12);
     const confirmed = send('user:canonical', 10);
     expect(reconcileSnapshotPage([confirmed], [before], new Set([before.id]))).toEqual([confirmed]);
     expect(mergeItemsById([confirmed], [before])).toEqual([confirmed]);
@@ -125,17 +125,17 @@ describe('confirmation through history loading', () => {
   });
 
   it('missing-row merges retain the current representation of an already displayed send', () => {
-    const before = send('optimistic:send-1', 12);
-    const deferred = send('user:canonical', 10);
+    const before = send('user:earlier', 12);
+    const other = send('user:canonical', 10);
     const current = [before];
-    expect(mergeMissingItemsById([deferred], current)).toBe(current);
-    expect(mergeMissingItemsById([before], [deferred])).toEqual([deferred]);
+    expect(mergeMissingItemsById([other], current)).toBe(current);
+    expect(mergeMissingItemsById([before], [other])).toEqual([other]);
   });
+
   it('does not retain a stale send alias when a same-id update changes its metadata', () => {
     const before = send('user:one');
     const changed = { ...before, meta: '{"sendId":"send-2"}' };
     const originalSend = send('user:two', 1);
     expect(mergeItemsById([changed, originalSend], [before])).toEqual([changed, originalSend]);
   });
-
 });

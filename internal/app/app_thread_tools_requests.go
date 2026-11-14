@@ -706,7 +706,7 @@ func (t threadToolsApp) Cancel(ctx context.Context, caller threadtools.Caller, c
 		return t.cancelRequest(ctx, caller, call.Token)
 	}
 	if t.remoteDestination(call.ComputerID) {
-		return t.cancelRemoteThread(ctx, caller, call)
+		return t.cancelRemoteThread(ctx, caller, call, false)
 	}
 	return t.cancelThread(ctx, caller, call.ThreadID)
 }
@@ -717,7 +717,9 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 		return threadtools.CancelReport{}, err
 	}
 	report := threadtools.CancelReport{Token: token, ThreadID: row.TargetThreadID, ComputerID: row.TargetComputerID}
-	if threadRequestSettled(row) {
+	// A cancelled request may still have work its first cancel did not reach
+	// stopping; a repeat finishes it. Every other settled state is final.
+	if threadRequestSettled(row) && (row.State != store.ThreadRequestCancelled || row.Kind == store.ThreadRequestRemind) {
 		report.State, report.Effect = threadRequestStateWord(row.State), threadtools.EffectNothing
 		return report, nil
 	}
@@ -832,7 +834,10 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 // cancelRemoteThread interrupts a thread on another computer the caller
 // started there. The lineage check runs on the destination, against the
 // receipts it holds for this source.
-func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtools.Caller, call threadtools.CancelCall) (threadtools.CancelReport, error) {
+//
+// userStop marks a Stop a person made from the caller's Agents tray, so the
+// stopped thread's timeline names the user and not the caller's agent.
+func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtools.Caller, call threadtools.CancelCall, userStop bool) (threadtools.CancelReport, error) {
 	if _, err := t.Peer(ctx, call.ComputerID); err != nil {
 		return threadtools.CancelReport{}, err
 	}
@@ -852,10 +857,11 @@ func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtoo
 	defer cancel()
 	var reply ThreadPeerReply
 	err = t.app.backends.CallThreadPeer(rpc, call.ComputerID, "ThreadToolCall", &reply, ThreadPeerCall{
-		Tool:   "thread_cancel",
-		Args:   args,
-		Token:  newThreadRequestToken(),
-		Source: source,
+		Tool:     "thread_cancel",
+		Args:     args,
+		Token:    newThreadRequestToken(),
+		Source:   source,
+		UserStop: userStop,
 	})
 	if err != nil {
 		return threadtools.CancelReport{}, t.app.threadOperationError("cancel", call.ComputerID, call.ThreadID, err)
@@ -888,7 +894,7 @@ func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Cal
 	if !linked {
 		return threadtools.CancelReport{}, threadNotYoursToInterrupt(threadID)
 	}
-	effect, err := t.interruptRunningThread(ctx, thread.ID)
+	effect, err := t.interruptRunningThread(ctx, thread.ID, stopByThread(caller.Title, caller.ThreadID, ""))
 	if err != nil {
 		return threadtools.CancelReport{}, err
 	}
@@ -902,7 +908,7 @@ func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Cal
 // interruptRunningThread is what both cancel-by-thread doors do once lineage
 // is settled: a thread with no turn in flight has nothing to stop, and one
 // that is working gets that turn interrupted.
-func (t threadToolsApp) interruptRunningThread(ctx context.Context, threadID string) (string, error) {
+func (t threadToolsApp) interruptRunningThread(ctx context.Context, threadID string, stop turnStop) (string, error) {
 	live, err := t.LiveState(ctx, threadID)
 	if err != nil {
 		return "", err
@@ -910,7 +916,7 @@ func (t threadToolsApp) interruptRunningThread(ctx context.Context, threadID str
 	if !live.ActiveTurn {
 		return threadtools.EffectNothing, nil
 	}
-	if err := t.app.interruptTurnCtx(ctx, threadID); err != nil {
+	if err := t.app.interruptTurnCtx(ctx, threadID, stop); err != nil {
 		return "", err
 	}
 	return threadtools.EffectInterrupted, nil
@@ -920,7 +926,7 @@ func (t threadToolsApp) interruptRunningThread(ctx context.Context, threadID str
 // thread id: the same lineage rule as cancelThread, read from the receipts
 // this computer holds for the calling thread rather than from source rows
 // it does not have.
-func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threadRequestOrigin, threadID string) (string, error) {
+func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threadRequestOrigin, threadID string, userStop bool) (string, error) {
 	thread, err := t.localThread(threadID)
 	if err != nil {
 		return "", err
@@ -939,7 +945,17 @@ func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threa
 	if !linked {
 		return "", threadNotYoursToInterrupt(threadID)
 	}
-	return t.interruptRunningThread(ctx, thread.ID)
+	return t.interruptRunningThread(ctx, thread.ID, t.foreignThreadStop(origin.caller, userStop))
+}
+
+// foreignThreadStop is who a paired computer's thread-id cancel names as
+// stopping the turn: the user for a Stop from the Agents tray, otherwise
+// the thread that made the call.
+func (t threadToolsApp) foreignThreadStop(caller threadtools.Caller, userStop bool) turnStop {
+	if userStop {
+		return stopFromAgentsTray()
+	}
+	return stopByThread(caller.Title, caller.ThreadID, t.app.stoppingComputerName(caller.ComputerID))
 }
 
 // threadNotYoursToInterrupt is the refusal both lineage checks give. The

@@ -55,7 +55,7 @@ const BOOTSTRAP_PREFIX = '__AO_HARNESS__:';
 // routes' per-peer budget (internal/transport/ratelimit.go). A spec that
 // needs product timing, or a further interval, passes its own
 // AO_HARNESS_TIMING in `env`.
-export const HARNESS_TIMING = 'pairing-probe=500ms,thread-poll=250ms,transfer-retry=250ms,pr-update-retry=250ms,pr-ci-live=250ms,pr-ci-follow=250ms,pr-ci-log-wait=500ms,wake-floor=1s';
+export const HARNESS_TIMING = 'pairing-probe=500ms,thread-poll=250ms,transfer-retry=250ms,pr-update-retry=250ms,pr-ci-live=250ms,pr-ci-follow=250ms,pr-ci-log-wait=500ms,wake-floor=1s,usage-probe-gap=250ms';
 
 // macOS exposes /var and /tmp as root-owned aliases under /private. Normalize
 // only those system prefixes; resolving arbitrary descendants would follow a
@@ -90,6 +90,12 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
   // suite's fake listeners live, and at the backend's own. Nothing else on
   // the machine is dialled.
   if (!opts.savedRelease) args.push('--scan-scope-pid', String(process.pid));
+  // The backend runs in a process group of its own (below), so the group
+  // teardown that stops a killed worker would miss it; it ends itself when
+  // this worker is no longer its parent. Windows' Job Object owns the tree.
+  if (!opts.savedRelease && process.platform !== 'win32') {
+    args.push('--exit-with-parent', String(process.pid));
+  }
 
   let consoleLog: BackendConsoleLog;
   try {

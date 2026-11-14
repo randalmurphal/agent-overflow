@@ -7,9 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"agent-overflow/internal/provider/claude/claudefake"
 )
 
 // The mock's account sign-in surfaces. Both providers' real flows finish
@@ -43,6 +46,9 @@ const mockClaudeLoginCode = "mock-auth-code"
 // its email into the home's oauthAccount record, which is what the probe
 // reports from (claudeAccountForHome).
 const mockLoginEmail = "mock@agent-overflow.test"
+
+// mockClaudeOrgID is the organization every mock Claude sign-in lands on.
+const mockClaudeOrgID = "mock-org-uuid"
 
 // isClaudeLoginInvocation matches claude.loginArgs(). `-p` plus
 // `--output-format stream-json` is unambiguous: a streaming SESSION never
@@ -182,10 +188,9 @@ func (m *claudeLoginMock) callback(requestID string, request json.RawMessage) {
 	writeClaudeControlSuccess(m.w, requestID, mustJSON(map[string]claudeAccount{"account": claudeAccountFor(email)}))
 }
 
-// writeCredential lands the two files adoption reads out of the login home:
+// writeCredential lands the two files the real sign-in leaves in its home:
 // the native credential (.credentials.json) and the identity record the CLI
-// caches beside it (.claude.json), which is the only on-disk source of the
-// organization uuid.
+// caches beside it (.claude.json), which the probe reports its account from.
 //
 // An invocation with no CLAUDE_CONFIG_DIR writes nothing and says so. That is
 // not a degradation to tolerate — it is the guard that keeps this mock out of
@@ -204,10 +209,14 @@ func (m *claudeLoginMock) writeCredential(email string) error {
 	// sign-in (docs/references/claude.md).
 	expiresAt := time.Now().Add(8 * time.Hour).UnixMilli()
 	refreshDeadline := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
+	// The access token spells the identity the isolated profile endpoint
+	// answers for it (claudefake), as the real server knows who it issued a
+	// token to.
 	credential := fmt.Sprintf(
-		`{"claudeAiOauth":{"accessToken":"mock-access-%d","refreshToken":"mock-refresh-%d",`+
+		`{"claudeAiOauth":{"accessToken":%q,"refreshToken":"mock-refresh-%d",`+
 			`"expiresAt":%d,"refreshTokenExpiresAt":%d,"scopes":["user:inference","user:profile"],"subscriptionType":"max"}}`,
-		expiresAt, expiresAt, expiresAt, refreshDeadline)
+		claudefake.AccessToken(email, mockClaudeOrgID, strconv.FormatInt(expiresAt, 10)),
+		expiresAt, expiresAt, refreshDeadline)
 	if err := writeMockLoginFile(filepath.Join(m.configDir, ".credentials.json"), credential); err != nil {
 		return err
 	}
@@ -219,7 +228,7 @@ func (m *claudeLoginMock) writeCredential(email string) error {
 	}
 	identity := mustJSON(map[string]oauthAccount{"oauthAccount": {
 		AccountUUID: "mock-account-uuid", EmailAddress: email,
-		OrganizationUUID: "mock-org-uuid", OrganizationName: "Mock Org",
+		OrganizationUUID: mockClaudeOrgID, OrganizationName: claudefake.OrgName(mockClaudeOrgID),
 	}})
 	return writeMockLoginFile(filepath.Join(m.configDir, ".claude.json"), identity)
 }

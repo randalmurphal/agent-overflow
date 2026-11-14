@@ -10,7 +10,8 @@ details below reflect the design as written, not the current code).
 Superseded in part 2026-07-19: the checkpoint-backed **Turn**/**Session**
 scopes were removed with the git-checkpoint machinery; the shipped
 scopes are Workspace / Branch / PR, with a per-commit selector on the
-branch and PR scopes (`app_review_diffs.go`, `internal/gitdiff/`).
+branch and PR scopes (`app_review_diffs.go`, `internal/gitdiff/`); the PR
+scope also reads a contiguous run of its commits (`OpenPRCommitDiff`).
 Superseded in part 2026-08-08: PR polling is keyed by PR, not by
 subscription. One refcounted pump per PR key (`PRReference.Key`:
 `forge:namespace/repo:number` on the forge's public host,
@@ -21,16 +22,38 @@ the PR, not by the pane".
 Superseded in part 2026-09-27: standalone PR review (`pr://` threads
 started from a PR URL) and the forge CLI patch (`gh pr diff` /
 `glab mr diff`) were removed. The PR scope needs a local clone whose
-branch has the PR. Every PR read (diff, commit list, merge conflicts) runs
-at the revision of the pane's PR snapshot, the head and base branch tip
-the forge reported (`git.PRRevision`), and fetches from origin only the
-commits the clone lacks (`Core.EnsurePRObjects`). A failed refresh keeps
-the diff on screen under its error; a failed read retries on the next
-frame of the PR's poll pump, which emits once after a failed read even
-when nothing changed. Diffs of every scope are read in chunks with no
+branch has the PR. Every PR read (diff, commit run, commit list, merge conflicts) runs
+at the revision of the pane's PR snapshot, the head and the base commit
+the forge recorded (`git.PRRevision`), and fetches from origin only the
+commits the clone lacks (`Core.EnsurePRObjects`). The recorded base does
+not follow the base branch (GitLab's `start_sha` is usually the merge
+base), so the conflict read merges the head with the base branch's tip,
+read from origin on every read and fetched when the clone lacks it
+(`Core.RemoteBranchTip`); a failed read
+is the view's error, never "no conflicts". Every PR read takes
+`userInitiated`. A read a person asked for (opening the pane or the
+conflict view, picking a scope, a commit or hide-whitespace, Reload or
+Retry) may ask for git credentials, and its failure has the PR's poll pump
+emit its next successful poll even when nothing changed. A read the app
+starts (a pump frame, a conflict reconcile, a retry, a pane restored with
+its layout) runs with prompts disabled, shows its failure in the pane, and
+arms nothing. The review store's entry points default to the unattended
+read. So a failed user read is retried once, unattended, on the pump's
+next frame; after that only a forge change, a reopen or the user's Reload
+or Retry reads again. A failed refresh keeps the diff on screen under its
+error. Diffs of every scope are read in chunks with no
 size limit, and the frontend holds patch text within a memory budget
 ([review diff streaming](review-diff-streaming.md)), replacing the
 constraint below that full patch text is parsed and held.
+Extended 2026-10-20: merge readiness, approve and merge live in a Merge
+section of the overview row, forge events join the Conversation feed, and
+the pane also opens from a Pull requests page with no thread
+([pull requests](../specs/pull-requests.md)).
+Extended 2026-11-13: the PR scope's commit picker picks a run of commits,
+a run that ends at the head comments in the PR's own home on the lines the
+whole PR changes, binary files show their images or sizes, and a line's
+gutter menu copies its link
+([pull requests](../specs/pull-requests.md#reading-the-diff)).
 
 ## Goal
 
@@ -118,11 +141,23 @@ polling.
   `unresolveReviewThread` behind `@include` / `@skip`; review submission,
   file comments and replies are REST POSTs. GitLab: one merge request
   read per tick, with its approvals, discussions with position objects and
-  head pipeline jobs as the parts ask; a `PUT` on the discussion itself
+  head pipeline rows (GraphQL `PipelineJobs`) as the parts ask; a `PUT` on the discussion itself
   with a JSON `resolved` body.
   Provider specifics stay in `github.go` / `gitlab.go`; the normalized
   types are ours (the same pattern `forge.go` already uses, not the
   Claude/Codex unified-abstraction anti-pattern).
+- **Merge lives in the overview.** The overview row leads every PR with
+  a Merge section: readiness as one state and a blocker list
+  (`PRDetail.Readiness`), the project's merge options
+  (`PRDetail.Merge`), approve, unapprove, merge now, auto-merge and its
+  cancel, update branch and mark ready as bound methods
+  (`app_forge_merge.go`) over `git.ForgeMerger`. The title bar's refs
+  line carries only the readiness pill, which jumps to the section.
+  Nothing is optimistic: a successful action asks the PR's pump for one
+  poll and the pane follows the frame. A failure is one sentence with a
+  kind (`git.ExplainForgeError`, code `forge_<kind>` on the wire). Forge
+  events (`PRRead.Events`) ride the same snapshot and join the
+  Conversation feed. Contract: [pull requests](../specs/pull-requests.md).
 - **Polling is Go-owned and keyed by the PR.** `SubscribePRUpdates` when a
   pane enters PR scope; the pump is refcounted per PR key
   (`PRReference.Key`), so N panes on one PR share one poll. Go
@@ -136,9 +171,9 @@ polling.
   failure over a snapshot on screen is not shown unless the retry fails
   too; each kind has its own surface ([failure
   presentation](forge-transport.md#failure-presentation)). A GitLab merge
-  request read with no base tip (`diff_refs` is null until GitLab has
+  request read with no recorded base (`diff_refs` is null until GitLab has
   computed a new MR's diff) also polls on the retry delay, and the pane
-  shows it as waiting until a frame carries the tip. The pane reads its PR from
+  shows it as waiting until a frame carries the base. The pane reads its PR from
   the workspace's git status; the fast first status marks its PR lookup
   pending (`openPrLookupPending`) and carries the branch's last known PR,
   which the pane loads; with none, it waits on the lookup rather than
@@ -155,7 +190,8 @@ polling.
   every job from the rollup (a `PRTick` that asks for the checks alone) and steps, which only
   the open log view shows, from one REST jobs list per run holding a
   followed job whose steps can still change; GitLab reads the MR view and
-  the jobs list. `SetPRCILogFollows` names the jobs a subscription watches:
+  the pipeline's rows (`PipelineJobs`: builds, bridges and external
+  commit statuses; only a build has a log). `SetPRCILogFollows` names the jobs a subscription watches:
   the pump downloads each into the backend's log cache (`internal/cilog`,
   a disk store bounded at 512 MiB, least recently used out, a followed
   log pinned) and sends its index on `pr:ci_log` whenever it moves: the
@@ -173,7 +209,11 @@ polling.
   then every 45s while the job stays followed. The pause, dedup, caller-safe error and
   connection-cleanup rules of the snapshot pump apply to all of it; `RefreshPRCI` and a re-sent follow
   are the manual refreshes and run while paused. The frontend sends the
-  union of the jobs its panes show per PR (`prReviewCIFollows.svelte.ts`).
+  union of the jobs its panes show per CI key (`prReviewCIFollows.svelte.ts`):
+  a PR's head pipeline, or a repository pipeline the Pipelines tab follows
+  through `SubscribePipeline` (`pipelineCI.svelte.ts`). One CI subject
+  state (`ciSubject.svelte.ts`) drives the chips and the log view for
+  either.
 - **The CI log view** (`ReviewCILogView.svelte`) shows a job's log as one
   collapsible row per GitHub step or top-level GitLab section, as the
   backend's index lists them (`internal/cilog/sections.go`). A GitHub
@@ -218,31 +258,186 @@ polling.
   row). Drafts batch across files; one submit action with target picker:
   - *Linked agent*: extends the existing `SendDiffReviewComments` saga.
   - *The PR*: `SubmitReview` with Comment / Approve / Request changes.
+    On a backend with capability `pr-review-drafts.v1`, `SubmitPRReview`
+    takes the draft ids, posts their stored text and marks the posted
+    ones sent in the same call, one submit per PR at a time
+    (`internal/app/app_pr_review_submit.go` owns the contract). An older
+    backend gets the comments and the pane marks them after.
   Drafts clear only on confirmed success; failures surface in the pane and
-  keep drafts (errors are user-facing state).
+  keep drafts (errors are user-facing state). Only the backend says what a
+  submit did: its answer, or after a lost answer its record of the
+  attempt (`GetPRReviewSubmitOutcome`, by the attempt id each press of
+  Send mints). The pane never infers it from drafts reading as sent.
+  "Not posted" needs proof: the request never left the process, or the
+  forge refused it in full with a 4xx (`forgeapi.WriteNotApplied`).
+  Anything else is unconfirmed: the drafts stay drafts and the pane says
+  the review may already be on the PR. A GitLab publish whose answer was
+  lost is settled by reading the pending draft notes. A review that was
+  not posted, or is unconfirmed, keeps its summary and verdict in the
+  send strip, which stays while either is set.
 - **Agent context rule (deterministic, no toggle).** If the target thread's
   workspace is the diff source (commenting on that agent's own live work),
   keep today's lean prompt. The agent sees the diff in-turn. Otherwise
   (fresh thread, or any PR scope), the prompt includes per-comment anchored
   hunk excerpts plus the diff source reference (PR number/URL or checkpoint
   range) so the agent can fetch the rest itself via `gh`/`git`.
-- **Replies send immediately.** They are conversational, not a review
-  pass; batching applies to fresh line comments only. A thread's actions
+- **Send now or hold.** With `pr-comment-actions.v1` in the PR scope, a
+  new comment and a reply each post now or are held as a draft, the
+  primary following whether the pane holds drafts; a held reply is a
+  draft of its thread and goes with the batch. The gates, the reply
+  composers and the held replies are `stores/reviewCommentActions.svelte.ts`;
+  writes posted now settle by the pump's seq
+  (`stores/reviewCommentWrites.svelte.ts`). The product
+  contract is in [Pull requests](../specs/pull-requests.md#sending-and-managing-comments).
+  Elsewhere a reply posts now and a line comment is a draft. A thread's actions
   sit at its foot as on the forges: a reply field that opens the composer,
   **Copy** (the location and every comment as text, for pasting into an
   agent composer) and **Resolve** / **Unresolve**.
+- **Suggestions, reactions and preview.** With
+  `pr-suggestions-reactions.v1`, `stores/reviewCommentExtras.svelte.ts`
+  composes the pane's slice: Apply and reaction chips run through one
+  operation runner (`stores/reviewForgeOps.svelte.ts`) that keys each
+  write by the PR and its chip or suggestion, settles it by the pump's
+  seq as the posted writes do, and routes a failure to its surface, a
+  held toast (`stores/lostWrite.ts`) or nowhere. A comment body renders
+  through `ReviewCommentMarkdown` as one Markdown document: each fence
+  at the lines the backend reports (one parser, `internal/mdsuggest`,
+  also behind a preview's `ParseCommentSuggestions`) is marked in its
+  info string (`utils/suggestionMarks.ts`) and `ChatMarkdown`'s
+  `codeClaim` renders it as a `ReviewSuggestionDiff`; find skips the
+  marked fences through the same projection. The replaced lines come from the forge or the
+  diff's resident text (`utils/suggestionLines.ts`). Each editor's
+  Preview state (caret and box height) lives in
+  `stores/reviewEditorPreview.svelte.ts`, keyed as the editor's text is.
+  The product contract is in
+  [Pull requests](../specs/pull-requests.md#suggestions-reactions-and-preview).
 - **Transport classification.** Every new App method that reaches a forge
   or runs `glab`/`git` annotates `//ao:scope git:operate`, so only a
   session granted that scope reaches it.
+- **Find searches the view on screen.** `ReviewPaneFind.svelte` registers
+  the pane's find provider under `ReviewPane`'s `findKey`: the companion's
+  layout pane id, or the Pull requests page's detail region key. The diff
+  and the conflict view are scanned in memory by `utils/reviewFindScan.ts`
+  in slices that yield, with the count growing while `pending`; it covers
+  header paths, line text without the gutter, expanded hunk-gap lines,
+  folded conflict lines, draft bodies, and PR thread comments as their
+  markdown renders (`chat/markdown/markdownFindText.ts`), in row order.
+  Text the patch budget evicted is read back through `whenResident`. A CI
+  log is searched by `SearchPRCILog` (`cilog.Store.Search`, bounded and
+  cancellable). Matching is `utils/findMatch.ts` everywhere (trimmed
+  literal, each code point folded to its simple lower case);
+  `stringsx.FoldForFind` folds the same for the CI log and thread find, held by
+  shared vectors. A step expands what hides its match (a collapsed file, a
+  resolved thread, a conflict fold, a closed log step). A match is in view
+  only inside the scroller on both axes. With wrap off, the one line
+  shifted sideways is the line that clips the current match, derived from
+  it; every other line, and every line once there is no current match,
+  reads from its start. A content, filter
+  or view change, or a `<details>` in a comment opened or closed by hand,
+  re-runs the query in place and keeps the current match by identity; a
+  current match that is gone gives way to the next surviving one, else the
+  previous, painted where it is. Only a new query's count grows as it
+  scans; a recount shows the matches it replaces, marked pending (in words
+  for a screen reader), and swaps its result in whole when it ends. A
+  match is a logical identity: its file's path, its element (a line by
+  side and number, a conflict marker by its place, a draft by id, a thread
+  comment by thread and forge id), the run of the element's text it is in
+  (a comment's runs numbered in walk order, a closed `<details>` body's
+  included) and its index in that run. Whether it is present now, and its
+  file index, row, fold and index among the element's painted matches,
+  are found in the content shown at each paint, shift and reveal by the
+  scan's own matching rule (`utils/reviewFindRows.ts`, `utils/ciLogFind.ts`
+  for a log line, counted in the text AnsiText shows, `utils/ansiText.ts`,
+  whose escapes the backend's search hides too), so a recount never
+  paints, shifts or reveals a match the content no longer has. Such a
+  recount never scrolls; only a new query's first match and a step bring
+  a match on screen, and that reveal is asked again at every publish, swap
+  and content change until it completes once, which is when the painted
+  match is in view: a log line whose block has not loaded is waited for,
+  and a block that fails to load puts its error in the bar. A step's
+  reveal that nothing has shown when its match goes at the swap passes to
+  the survivor, asked once a host call still in flight ends. A comment is
+  projected with the parse and sanitizer options ChatMarkdown renders it
+  with (`chat/markdown/chatMarkdownOptions.ts`). Mermaid, math and
+  attachment chips carry `data-find-skip`, so they are neither counted nor
+  painted.
+
+## Open new-comment editors
+
+An open new-comment box (an editor with an id, its text, focus and row
+keyed by that id) is on its line only while exact identity proves it:
+the file version its line was proven in (git's blob id of the posting
+side, or the byte-identical file section when the patch names no blob)
+is the version the new diff shows (`utils/editorPlacement.ts`). Text
+never proves a line. The contract the reader sees:
+
+- Proven same line: nothing visible happens; the box moves with its line.
+- Not proven: the box stays in its file, in place on screen with its
+  focus, caret and text, after a suggested row (the one row on its side
+  with its text, else the row with its line number, else the nearest).
+  It says "The file changed under this comment." and offers "Use this
+  line" (the row shown, as if opened there now) and "Move" (the next line
+  the reader opens a comment on takes the box; Cancel, Escape and Back
+  disarm it). It cannot be saved until then, and returns to its line by
+  itself when a later diff proves it, unless the reader chose one.
+- An editor shows wherever its file shows: a collapsed file or one the
+  type or test filter hides hides it, with its text kept.
+- Only an editor whose file is not in the loaded diff shows in the group
+  "Comments on files not in this diff", with its path, its text, "This
+  file is no longer in the diff.", "Copy text" and "Discard"; it returns
+  to its file when a later diff has it again.
+- A box on a line number several rows of its file share (an Edits file
+  that changed the same line twice) says "This line appears more than once
+  in this view, so a comment cannot be attached to it." and offers only
+  "Move": a saved comment names a coordinate, not a row
+  (`patchRows.namesOneRow`, used by saving and relocation alike).
+
+A comment on an unchanged line is saved with both its old and new numbers,
+whichever half of a split row it was written on, and the review posts it
+as that line: GitHub on the right at its new number, GitLab with
+`old_line` and `new_line` both set; a draft saved before this with one
+number there still shows on its line and is left out of the review.
+
+A gutter add button and "Use this line" act on the row, suggestion and
+diff that were on screen when the press began (`utils/seenActivation.ts`):
+a press begun before a reload is refused, and the next press works. A
+refresh leaves focus on the editor control that had it. An editor whose
+file a reload renamed finds it by the `rename from` path the parser
+recorded, reading no file's text.
+
+A save is checked synchronously against the diff on screen (its subject,
+source and head, committed with its files), never against the controls'
+subject while another loads. Rows an expansion supplied carry no version
+proof: an editor on one saves in the load it was opened in and is not
+proven at the next. Verified expansions would need a backend change.
+
+A range editor is a new-comment editor placed at the range's last line;
+its first line and origin are part of its record and kept only while the
+editor stays on the same anchor, so a relocation drops it back to one
+line. `utils/reviewRange.ts` checks a span against the file as loaded,
+before expansion.
+
+The other open editors are virtualized rows too, and their text and open
+state live in the review state the same way: a sent comment's edit and
+its delete confirm, keyed by thread and comment id, and the
+Conversation's PR comment field (`sentComments`), a reply's composer
+(`replyBodyFor`, `replyOpen`) and a held reply's edit (a draft's,
+`draftEditBodyFor`). Each write's pending state and error are keyed the
+same way (`commentWriteKey`), so a remounted row shows them. Find skips
+a sent comment open in its editor as it skips an open draft.
 
 ## Edge Cases
 
 - **PR head moves mid-review:** poll detects a new head SHA → non-blocking
   "PR updated, reload" banner. Drafts stay anchored to the old SHA (valid
   for the API); after reload, drafts whose lines vanished are flagged
-  orphaned, never silently dropped.
-- **Resolved / outdated threads:** rendered collapsed at their anchors
-  (outdated grouped per file), toggleable.
+  orphaned, never silently dropped. An open new comment's box follows the
+  reload as described under "Open new-comment editors" below.
+- **Resolved threads:** rendered collapsed at their anchors, toggleable.
+  Outdated is a marker, not a state: an outdated thread keeps its resolve
+  state, stays at its anchor while the diff still has the line, and
+  groups under the file header once it does not (GitHub reports no
+  current line for an outdated thread; the original line is shown).
 - **Huge diffs:** files over a line threshold and lockfile/generated files
   render collapsed by default; the virtualizer handles the rest.
 - **Context expansion (`···`):** available only when the commit exists

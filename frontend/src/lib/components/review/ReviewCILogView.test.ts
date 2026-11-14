@@ -420,6 +420,15 @@ describe('<ReviewCILogView> sections', () => {
     expect(onSendSection).toHaveBeenCalledWith(STEPS[1]);
   });
 
+  it('offers no Send to chat for a review with no chat', async () => {
+    const { view } = renderStepped({ onSend: undefined, onSendSection: undefined });
+    await settle();
+    expect(view.queryByTestId('review-ci-log-send')).toBeNull();
+    expect(within(sectionRow(view, 'step:2')).queryByTestId('review-ci-section-send')).toBeNull();
+    // Copy stays: it needs no chat.
+    expect(within(sectionRow(view, 'step:2')).getByTestId('review-ci-section-copy')).toBeInTheDocument();
+  });
+
   it('shows a running GitLab section with its line count', async () => {
     const job: CIJob = { id: '20', name: 'unit', status: 'running', logsAvailable: true };
     const fake = new FakeCILog(['Preparing the docker executor', 'Executing step_script', '$ make test'], [

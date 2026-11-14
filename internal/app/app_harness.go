@@ -18,6 +18,8 @@ import (
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -86,6 +88,12 @@ func (h *harnessHost) ReleaseProviderEvents(threadID string) error {
 
 func (h *harnessHost) PendingProviderEvents(threadID string) int {
 	return h.app.providerEvents.pending(threadID)
+}
+
+func (h *harnessHost) ClaudeUsageFake() *claudefake.Usage { return h.app.claudeUsageFake }
+
+func (h *harnessHost) RequestClaudeUsageReading() {
+	h.app.providerLifecycleService().RequestReading(string(provider.Claude))
 }
 
 func (h *harnessHost) PauseMergedPRCleanup() (resume func()) { return h.app.pauseMergedPRCleanup() }
@@ -339,8 +347,15 @@ func (h *harnessHost) ClearUIState() error {
 	return nil
 }
 
+func (h *harnessHost) ResetForgeCaches() { h.app.gitCore().ResetForgeCaches() }
+
 func (h *harnessHost) ResetSessionImporter() {
 	h.app.sessionImporter().Reset()
+}
+
+func (h *harnessHost) DropReviewDiffImages() {
+	h.app.reviewDiffImages().Clear()
+	h.app.dropReviewDiffRecords()
 }
 
 func (h *harnessHost) DropRetainedEvents() {

@@ -11,7 +11,8 @@
   // refused while this one holds the lease, and a socket that dies without
   // unmounting gives the lease back on its own — so the detach below is the
   // tidy path, not the only one.
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
+  import Search from '@lucide/svelte/icons/search';
   import type { Terminal } from '@xterm/xterm';
   import type { FitAddon } from '@xterm/addon-fit';
   import Hand from '@lucide/svelte/icons/hand';
@@ -38,12 +39,17 @@
     createTerminalInputWriter,
     createTerminalResizeWriter,
   } from '../terminal/terminalIoQueue';
-  import { notifyTerminalFocus } from '../terminal/terminalStore.svelte';
+  import { terminalFocusRegion } from '../terminal/terminalStore.svelte';
   import { wailsEventOn } from '../../stores/wailsEvents';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import Icon from '../primitives/Icon.svelte';
   import Button from '../primitives/Button.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
+  import PaneFindBar from '../panes/PaneFindBar.svelte';
+  import { TERMINAL_FIND_OVERLAY_CLASS, registerTerminalFind, type TerminalFindRegistration } from '../terminal/terminalFind.svelte';
+  import { isPaneFindBarFocused, isPaneFindOpen, openPaneFind } from '../../stores/paneFind.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   let { paneId, threadId }: { paneId: string; threadId: string } = $props();
 
@@ -53,8 +59,11 @@
   let resizeObserver: ResizeObserver | null = null;
   let dataDisposable: { dispose(): void } | null = null;
   let cancelOutput: (() => void) | null = null;
+  // The mirror's find, registered under this pane once the replay is parsed.
+  let find: TerminalFindRegistration | null = null;
+  // True once find is registered: the find button needs it.
+  let termReady = $state(false);
   let destroyed = false;
-  let focusCounted = false;
 
   // The human take-control lease. Read-only by default: keystrokes are swallowed
   // until the user acquires control, so AO's programmatic Send and the human
@@ -112,18 +121,6 @@
     if (term && !destroyed) term.write(bytes);
   }
 
-  function handleFocusIn(): void {
-    if (focusCounted) return;
-    focusCounted = true;
-    notifyTerminalFocus(paneId, true);
-  }
-
-  function handleFocusOut(): void {
-    if (!focusCounted) return;
-    focusCounted = false;
-    notifyTerminalFocus(paneId, false);
-  }
-
   async function hydrate(): Promise<void> {
     if (!mountEl || destroyed) return;
 
@@ -150,12 +147,15 @@
     if (destroyed) return;
     attaching = false;
 
-    const built = buildTerminal(mountEl, { onInput: writeInput, isDisposed: () => destroyed });
+    // A paste whose clipboard read outlived the xterm's focus never reaches
+    // the PTY from the find bar.
+    const built = buildTerminal(mountEl, {
+      onInput: writeInput,
+      isDisposed: () => destroyed,
+      acceptsPaste: () => !isPaneFindBarFocused(paneId),
+    });
     term = built.term;
     fit = built.fit;
-
-    mountEl.addEventListener('focusin', handleFocusIn);
-    mountEl.addEventListener('focusout', handleFocusOut);
 
     // Size to the width the provider last drew at BEFORE writing the replay, so
     // the frame's cursor/erase escapes land against the right grid (same
@@ -169,10 +169,13 @@
       }
     }
 
+    // Find registers once the last of these writes is parsed (TerminalBody).
+    let wrote = false;
     try {
       const replay = normalizeTerminalReplay(await ProviderTerminalReplay(threadId));
       if (!destroyed && replay.data) {
         term.write(decodeTerminalOutput(replay.data));
+        wrote = true;
       }
       replayThrough = replay.throughSequence;
     } catch (err) {
@@ -189,12 +192,28 @@
       if (chunk.sequence <= replayThrough) continue;
       try {
         term.write(chunk.bytes);
+        wrote = true;
       } catch (err) {
         console.error('take-control: write during hydrate drain failed', err);
       }
     }
     hydrated = true;
 
+    // As in TerminalBody: find registers a frame after the grid is fitted
+    // to the parsed buffer, so a restored search keeps its match in view.
+    const registerFind = () => {
+      if (destroyed) return;
+      find = registerTerminalFind(paneId, built);
+      termReady = true;
+    };
+    const fitThenRegister = () => {
+      requestAnimationFrame(() => {
+        fitNow();
+        requestAnimationFrame(registerFind);
+      });
+    };
+    if (wrote) term.write('', fitThenRegister);
+    else fitThenRegister();
     dataDisposable = term.onData(writeInput);
     attachResizeObserver();
     scheduleFit();
@@ -212,15 +231,19 @@
     fitPending = true;
     requestAnimationFrame(() => {
       fitPending = false;
-      if (!fit || !term || destroyed) return;
-      try {
-        fit.fit();
-        const { rows, cols } = term;
-        resizeWriter.resize(rows, cols);
-      } catch (err) {
-        console.error('take-control: fit failed', err);
-      }
+      fitNow();
     });
+  }
+
+  function fitNow(): void {
+    if (!fit || !term || destroyed) return;
+    try {
+      fit.fit();
+      const { rows, cols } = term;
+      resizeWriter.resize(rows, cols);
+    } catch (err) {
+      console.error('take-control: fit failed', err);
+    }
   }
 
   // Follow the app palette live — mode flips AND theme-file edits, since
@@ -230,6 +253,7 @@
     const theme = getXtermTheme(getResolvedTheme());
     if (!term) return;
     term.options.theme = theme;
+    untrack(() => find?.restyle());
   });
 
   // Follow the app font-size setting (the mod+/- zoom chords) live; same
@@ -285,6 +309,14 @@
     }
   }
 
+  // A close from the bar returns focus to the mirror (the bar's fallback).
+  function openFind(): void {
+    openPaneFind(paneId);
+  }
+
+  // Under compact the open bar sits over the header row.
+  const headerCovered = $derived(isCompactLayout() && isPaneFindOpen(paneId));
+
   onMount(() => {
     void hydrate();
   });
@@ -293,14 +325,6 @@
     destroyed = true;
     cancelOutput?.();
     cancelOutput = null;
-    if (mountEl) {
-      mountEl.removeEventListener('focusin', handleFocusIn);
-      mountEl.removeEventListener('focusout', handleFocusOut);
-    }
-    if (focusCounted) {
-      focusCounted = false;
-      notifyTerminalFocus(paneId, false);
-    }
     // Detach releases this connection's take-control lease and drops it from
     // the output fan-out in one call. Another pane attached to the same
     // session keeps both.
@@ -309,6 +333,8 @@
     });
     dataDisposable?.dispose();
     dataDisposable = null;
+    find?.release();
+    find = null;
     inputWriter.dispose();
     resizeWriter.dispose();
     resizeObserver?.disconnect();
@@ -319,10 +345,14 @@
   });
 </script>
 
-<div class="flex h-full min-h-0 flex-col bg-terminal-bg" data-testid={`take-control-terminal-${paneId}`}>
+<div class="relative flex h-full min-h-0 flex-col bg-terminal-bg" data-testid={`take-control-terminal-${paneId}`}>
+  <!-- Under compact the open find bar covers this row, which takes no taps
+       or focus until it closes. -->
   <div
     class="flex items-center gap-2 px-2 py-1 border-b border-border-subtle/70 shrink-0"
     data-thread-id={threadId}
+    data-testid="take-control-header"
+    inert={headerCovered}
   >
     <Button
       variant={controlHeld ? 'primary' : 'secondary'}
@@ -343,6 +373,14 @@
     <span class="text-[11px] text-fg-muted">
       {#if attaching}Attaching…{:else if controlHeld}You are driving the terminal{:else}Live mirror{/if}
     </span>
+    {#if termReady}
+      <!-- mod+f inside the focused xterm is the TUI's; this is the find entry there. -->
+      <div class="ml-auto">
+        <IconButton size="sm" label="Find in Terminal" testId="take-control-find" onClick={openFind}>
+          {#snippet children()}<Icon icon={Search} size={13} />{/snippet}
+        </IconButton>
+      </div>
+    {/if}
   </div>
 
   {#if attachError}
@@ -350,6 +388,21 @@
       Could not attach to the Claude TUI session: {attachError}
     </div>
   {:else}
-    <div bind:this={mountEl} class="flex-1 min-h-0 bg-terminal-bg" data-testid="take-control-mount"></div>
+    <!-- Static under compact, so the bar places against the root and covers
+         the header row there. -->
+    <div class="relative compact:static flex flex-1 min-h-0 min-w-0 flex-col" data-terminal-find-host>
+      <div
+        bind:this={mountEl}
+        class="relative flex-1 min-h-0 bg-terminal-bg"
+        data-testid="take-control-mount"
+        {@attach terminalFocusRegion(paneId)}
+      ></div>
+      <!-- The bar floats over the grid (over the header row under compact),
+           so opening it changes neither the mirror's rows nor the PTY's
+           size. Focus in it is focus in the terminal (terminalFocusRegion). -->
+      <div class={TERMINAL_FIND_OVERLAY_CLASS} data-terminal-find-overlay {@attach terminalFocusRegion(paneId)}>
+        <PaneFindBar {paneId} title="Claude TUI terminal" floating fallbackFocus={() => term?.textarea ?? null} />
+      </div>
+    </div>
   {/if}
 </div>

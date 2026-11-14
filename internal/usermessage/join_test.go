@@ -160,8 +160,8 @@ func TestImageAttachmentCountTreatsEmptyKindAsImage(t *testing.T) {
 	}
 }
 
-// The frontend's personTextOfUserMessage reads the same fixture, so the
-// un-send's composer text agrees on both sides of the Stop.
+// SplitPersonParts cuts each fixture row into the person's text and the
+// agents' members, or declines a row whose parts cannot be told apart.
 func TestSplitPersonPartsFixture(t *testing.T) {
 	t.Parallel()
 	raw, err := os.ReadFile("testdata/person_parts.json")

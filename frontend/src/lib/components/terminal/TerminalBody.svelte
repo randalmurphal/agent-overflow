@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import type { Terminal } from '@xterm/xterm';
   import type { FitAddon } from '@xterm/addon-fit';
   import {
@@ -12,10 +12,15 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { decodeTerminalOutput, encodeTerminalInput, normalizeTerminalReplay } from '../../types/terminal';
   import { getXtermTheme } from './terminalTheme';
+  import { registerTerminalFind, type TerminalFindRegistration } from './terminalFind.svelte';
   import {
-    notifyTerminalFocus,
+    terminalFocusRegion,
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
+  import { closePaneFind, isPaneFindBarFocused } from '../../stores/paneFind.svelte';
+  import { insertIntoFocusedFindInput } from '../panes/PaneFindBar.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
   import { buildTerminal } from './terminalXterm';
   import { applyStickyCtrl } from './terminalKeys';
   import TerminalKeyRow from './TerminalKeyRow.svelte';
@@ -30,25 +35,28 @@
     // The owning pane's id. The focus registry is keyed by pane so two
     // terminal panes gate their `terminalFocus` chords independently.
     paneId: string;
+    // This terminal's find key: its find provider registers under it while
+    // the xterm lives (stores/paneFind.svelte.ts).
+    findKey: string;
   }
 
-  let { handle, terminalID, paneId }: Props = $props();
+  let { handle, terminalID, paneId, findKey }: Props = $props();
 
   let mountEl: HTMLDivElement | undefined = $state();
   let term: Terminal | null = null;
   let fit: FitAddon | null = null;
-  // The widget's clipboard paste, handed to the compact key row. Null until
-  // hydrate() has built the term; a press before then does nothing.
+  // The widget's clipboard paste and read, for the compact key row. Null
+  // until hydrate() has built the term; a press before then does nothing.
   let paste: (() => void) | null = null;
+  let readClipboard: (() => Promise<string>) | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let dataDisposable: { dispose(): void } | null = null;
   // Unregisters this xterm from the store handle (terminal.clear reaches the
   // active tab's xterm through it). Null until hydrate() has built the term.
   let detachXterm: (() => void) | null = null;
+  // The xterm's registered find. Null until hydrate()'s writes are parsed.
+  let find: TerminalFindRegistration | null = null;
   let destroyed = false;
-  // Track whether we've already told the focus registry we're focused so
-  // we don't double-decrement on teardown.
-  let focusCounted = false;
   // A focus() request can arrive before hydrate() has opened the xterm (it
   // awaits a replay round-trip). Latch it here; hydrate()'s tail focuses once
   // the terminal exists.
@@ -70,18 +78,6 @@
     (err) => console.error('terminal: ResizeTerminal failed', err),
   );
 
-  function handleFocusIn(): void {
-    if (focusCounted) return;
-    focusCounted = true;
-    notifyTerminalFocus(paneId, true);
-  }
-
-  function handleFocusOut(): void {
-    if (!focusCounted) return;
-    focusCounted = false;
-    notifyTerminalFocus(paneId, false);
-  }
-
   // Compact (phone) layout docks a key row under the terminal for the keys a
   // soft keyboard has no way to produce. Nothing below this point runs on
   // desktop, where `compact` is false and the row never mounts.
@@ -89,6 +85,12 @@
   // Sticky Ctrl, armed by the key row's Ctrl button and spent by the next input
   // chunk on the path below — whatever its source.
   let ctrlArmed = $state(false);
+  // While this terminal's find bar holds keyboard focus, nothing the reader
+  // does reaches the PTY: the key row types into the query instead, and a
+  // paste whose clipboard read outlived the xterm's focus is dropped.
+  // xterm's own replies to the program (cursor and focus reports) still go
+  // through writeInput, so the gate is on the reader's entries, not there.
+  const findFocused = $derived(isPaneFindBarFocused(findKey));
 
   // Every keystroke (main stream via term.onData, plus the Shift+Enter newline
   // the widget produces internally, plus every compact key-row press, which
@@ -112,6 +114,11 @@
   // writer, one place sticky Ctrl applies, and xterm's own user-input side
   // effects (selection clear, scroll-to-bottom) still happen.
   function pressKeyRow(data: string): void {
+    if (findFocused) {
+      if (data === '\x1b') closePaneFind(findKey);
+      else insertIntoFocusedFindInput(data);
+      return;
+    }
     term?.input(data, true);
   }
 
@@ -120,22 +127,33 @@
   }
 
   function pasteKeyRow(): void {
-    paste?.();
+    if (!findFocused) {
+      paste?.();
+      return;
+    }
+    readClipboard?.()
+      .then((text) => {
+        if (!destroyed) insertIntoFocusedFindInput(text);
+      })
+      .catch((err) => {
+        console.error('terminal: clipboard paste into find failed', err);
+        addErrorToast(`Paste failed: ${errString(err)}`, err);
+      });
   }
 
   async function hydrate() {
     if (!mountEl || destroyed) return;
 
-    const built = buildTerminal(mountEl, { onInput: writeInput, isDisposed: () => destroyed });
+    const built = buildTerminal(mountEl, {
+      onInput: writeInput,
+      isDisposed: () => destroyed,
+      acceptsPaste: () => !isPaneFindBarFocused(findKey),
+    });
     term = built.term;
     fit = built.fit;
     paste = built.paste;
+    readClipboard = built.readClipboard;
     detachXterm = handle.attachXterm(terminalID, term);
-
-    // Wire focus/blur listeners on the xterm mount. xterm puts a focusable
-    // textarea inside mountEl, so focusin/focusout bubble up reliably.
-    mountEl.addEventListener('focusin', handleFocusIn);
-    mountEl.addEventListener('focusout', handleFocusOut);
 
     // Size the grid to the width the provider last drew at BEFORE writing the
     // replay. A fresh xterm defaults to 80x24; the replay blob is the provider's
@@ -159,11 +177,16 @@
       }
     }
 
+    // Writes parse asynchronously; find registers after the last of
+    // hydrate()'s writes is parsed, so a kept query searches the restored
+    // buffer rather than an empty one.
+    let wrote = false;
     // Load replay buffer before draining pending output so order is correct.
     try {
       const replay = normalizeTerminalReplay(await GetTerminalReplay(terminalID) as unknown);
       if (!destroyed && replay.data) {
         term.write(decodeTerminalOutput(replay.data));
+        wrote = true;
       }
       handle.markReplayed(terminalID, replay.fromSequence, replay.throughSequence);
     } catch (err) {
@@ -181,6 +204,7 @@
     for (const chunk of handle.drainOutput(terminalID)) {
       try {
         term.write(chunk);
+        wrote = true;
       } catch (err) {
         console.error('terminal: write during hydrate drain failed', err);
       }
@@ -190,6 +214,22 @@
     // output from here on. (Flipping this re-runs the effect, which finds the
     // queue empty after the drain above; subsequent output drains normally.)
     hydrated = true;
+
+    // Find registers once the grid is fitted to the parsed buffer, a frame
+    // after the fit: a change of rows after the search drops its match, and
+    // xterm's viewport, catching up with a resize later, can scroll back a
+    // search made right after the fit.
+    const registerFind = () => {
+      if (!destroyed) find = registerTerminalFind(findKey, built);
+    };
+    const fitThenRegister = () => {
+      requestAnimationFrame(() => {
+        fitNow();
+        requestAnimationFrame(registerFind);
+      });
+    };
+    if (wrote) term.write('', fitThenRegister);
+    else fitThenRegister();
 
     dataDisposable = term.onData(writeInput);
 
@@ -214,15 +254,19 @@
     fitPending = true;
     requestAnimationFrame(() => {
       fitPending = false;
-      if (!fit || !term || destroyed) return;
-      try {
-        fit.fit();
-        const { rows, cols } = term;
-        resizeWriter.resize(rows, cols);
-      } catch (err) {
-        console.error('terminal: fit failed', err);
-      }
+      fitNow();
     });
+  }
+
+  function fitNow() {
+    if (!fit || !term || destroyed) return;
+    try {
+      fit.fit();
+      const { rows, cols } = term;
+      resizeWriter.resize(rows, cols);
+    } catch (err) {
+      console.error('terminal: fit failed', err);
+    }
   }
 
   // React to output chunks accumulated in the store. An $effect fires whenever
@@ -249,6 +293,8 @@
     const theme = getXtermTheme(getResolvedTheme());
     if (!term) return;
     term.options.theme = theme;
+    // Match grounds come from the same palette; repaint them with it.
+    untrack(() => find?.restyle());
   });
 
   // Follow the app font-size setting (the mod+/- zoom chords) live. Writing
@@ -270,18 +316,11 @@
 
   onDestroy(() => {
     destroyed = true;
-    if (mountEl) {
-      mountEl.removeEventListener('focusin', handleFocusIn);
-      mountEl.removeEventListener('focusout', handleFocusOut);
-    }
-    // If the terminal was focused when the drawer closed, drop this pane's
-    // count so terminalFocus doesn't remain sticky in the keybindings context.
-    if (focusCounted) {
-      focusCounted = false;
-      notifyTerminalFocus(paneId, false);
-    }
     dataDisposable?.dispose();
     dataDisposable = null;
+    // Before the xterm goes: the release clears the provider's paint.
+    find?.release();
+    find = null;
     detachXterm?.();
     detachXterm = null;
     inputWriter.dispose();
@@ -292,6 +331,7 @@
     term = null;
     fit = null;
     paste = null;
+    readClipboard = null;
   });
 
   export function focus() {
@@ -309,11 +349,16 @@
     // this.textarea.focus(), guarded only by the textarea existing.)
     term.focus();
   }
+
+  /** The element that holds the terminal's keyboard focus, once built. */
+  export function focusTarget(): HTMLElement | null {
+    return term?.textarea ?? null;
+  }
 </script>
 
 <div class="flex-1 min-h-0 flex flex-col bg-terminal-bg" data-testid={`terminal-body-${terminalID}`}>
-  <div bind:this={mountEl} class="flex-1 min-h-0 bg-terminal-bg"></div>
+  <div bind:this={mountEl} class="relative flex-1 min-h-0 bg-terminal-bg" {@attach terminalFocusRegion(paneId)}></div>
   {#if compact}
-    <TerminalKeyRow onKey={pressKeyRow} {ctrlArmed} onToggleCtrl={toggleStickyCtrl} onPaste={pasteKeyRow} />
+    <TerminalKeyRow onKey={pressKeyRow} {ctrlArmed} onToggleCtrl={toggleStickyCtrl} onPaste={pasteKeyRow} {findFocused} />
   {/if}
 </div>

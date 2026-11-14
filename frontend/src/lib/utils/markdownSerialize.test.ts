@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { serializeRangeToMarkdown } from './markdownSerialize';
+import { lex } from '../markdown';
 import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
 import { buildForgeAttachmentHref } from './forgeAttachments';
 
@@ -533,6 +534,22 @@ describe('serializeRangeToMarkdown — tables', () => {
     expect(serializeRangeToMarkdown(selectAll(host))).toBe(
       '| op |\n| --- |\n| a \\| b |',
     );
+  });
+
+  it('keeps a pipe that follows a backslash inside its cell', () => {
+    const host = asMarkdownBody(
+      '<table><thead><tr><th>op</th></tr></thead><tbody><tr><td>a\\|b</td></tr></tbody></table>',
+    );
+    const markdown = serializeRangeToMarkdown(selectAll(host));
+    expect(markdown).toBe('| op |\n| --- |\n| a\\\\\\|b |');
+    // Read back by the app's own grammar: still one cell, same characters.
+    type Node = { type: string; text?: string; tokens?: Node[] };
+    const find = (nodes: Node[], type: string): Node[] =>
+      nodes.flatMap((node) => (node.type === type ? [node] : find(node.tokens ?? [], type)));
+    const body = find(lex(markdown ?? '') as Node[], 'tbody');
+    const cells = find(body, 'td');
+    expect(cells).toHaveLength(1);
+    expect((cells[0]!.tokens ?? []).map((token) => token.text).join('')).toBe('a\\|b');
   });
 
   it('emits body rows for a table that has no <thead>', () => {

@@ -225,6 +225,60 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			st := r.threadStateIfPresent(threadID)
 			return st != nil && len(st.deliveriesAwaitingTurn) != 0
 		}},
+		{"deliveries awaiting a turn", "send confirmed between turns", func(t *testing.T, r *Router, token string) {
+			// Confirmed with no turn open and no turn that took it, the
+			// delivery waits for the turn that opens next.
+			row := store.Item{ID: "user:0:flush:1", ThreadID: threadID, Kind: "user_text", Meta: `{"sendId":"thread-request:tok"}`}
+			r.reportSendsDelivered(threadID, token, []*pendingSend{{AOItemID: "user:0:flush:1", QuietItem: &row, WrittenDuringTurn: -1}})
+		}, func(r *Router) bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			st := r.threadStateIfPresent(threadID)
+			return st != nil && len(st.deliveriesAwaitingTurn) != 0
+		}},
+		{"turn settlement", "soft-closed turn", func(t *testing.T, r *Router, token string) {
+			r.mu.Lock()
+			r.state(threadID)
+			r.mu.Unlock()
+			r.noteTurnSettled(threadID, 3, fromSession(provider.ProviderEvent{ThreadID: threadID, TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"}}, token))
+		}, func(r *Router) bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			st := r.threadStateIfPresent(threadID)
+			return st != nil && st.softClosedTurnSet
+		}},
+		{"open turn and round", "soft-closed turn continuation", func(t *testing.T, r *Router, token string) {
+			r.mu.Lock()
+			st := r.state(threadID)
+			st.softClosedTurn, st.softClosedTurnSet = 3, true
+			r.mu.Unlock()
+			// The turns row is not seeded, so the reopen's write fails; the
+			// assertion reads the open-turn state it sets first.
+			_, _ = r.reopenSoftClosedTurn(fromSession(provider.ProviderEvent{ThreadID: threadID, Timestamp: time.Now()}, token))
+		}, func(r *Router) bool { return r.HasInFlightTurnOrRound(threadID) }},
+		{"death announcement", "session death announcement", func(t *testing.T, r *Router, token string) {
+			r.claimDeathAnnouncement(threadID, "session-died:1", token)
+		}, func(r *Router) bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			st := r.threadStateIfPresent(threadID)
+			return st != nil && st.announcedDeath != ""
+		}},
+		{"workspace path", "workspace change", func(t *testing.T, r *Router, token string) {
+			r.mu.Lock()
+			r.state(threadID)
+			r.mu.Unlock()
+			meta, err := json.Marshal(provider.WorkspaceChangeMeta{Tool: "EnterWorktree", Cwd: "/moved"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.followWorkspaceChange(fromSession(provider.ProviderEvent{ThreadID: threadID, Meta: meta, Timestamp: time.Now()}, token))
+		}, func(r *Router) bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			st := r.threadStateIfPresent(threadID)
+			return st != nil && st.workspacePathSet
+		}},
 		{"effective model", "model fallback", func(t *testing.T, r *Router, token string) {
 			if err := r.handleModelFallback(fromSession(modelFallback(t), token)); err != nil {
 				t.Fatal(err)

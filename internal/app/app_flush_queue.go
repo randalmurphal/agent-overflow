@@ -119,6 +119,7 @@ func (a *App) newTriageRouter(st *store.Store) *triage.Router {
 	r.SetGeneratedImageImporter(a.importCodexGeneratedImage)
 	r.SetPromptRouter(a.routeWorkerPrompt)
 	r.SetQuietTurnClassifier(a.agentTurnIsTick)
+	r.SetUnsavedRowObserver(unsavedRowSink{app: a})
 	return r
 }
 
@@ -209,6 +210,35 @@ func (a *App) flushDispatchItemCount(threadID string) int {
 	return a.flushDispatch.inflightItems[threadID]
 }
 
+// pendingFlushWorkCount sums every queued and in-flight follow-up message,
+// the work idle eviction and a conversation transfer must not lose. It
+// reads three counters that the flush handoff updates non-atomically
+// (triage queue length, deferred pending count, App inflight count), so it
+// holds a.flushDispatch.handoffMu across all three: the mutex
+// RegisterQueueItem holds across its enqueue-to-flush handoff. A message
+// mid-handoff is then counted as still queued or already in flight, never
+// neither.
+//
+// The lock-free boundary drains do not hold handoffMu; for them the triage
+// claim count (see tryFlushQueue) keeps a draining batch inside
+// QueuedFlushItemCount until the App inflight count has it. That overlap
+// closes the gap only if the triage counts are read first: a batch moving
+// from claimed to in flight between the reads is double-counted, never
+// missed. Do not reorder these reads.
+//
+// Callers hold the per-thread action lock, not handoffMu.
+func (a *App) pendingFlushWorkCount(threadID string) int {
+	a.flushDispatch.handoffMu.Lock()
+	defer a.flushDispatch.handoffMu.Unlock()
+	total := 0
+	if a.triage != nil {
+		total += a.triage.QueuedFlushItemCount(threadID)
+		total += a.triage.DeferredPendingFlushItemCount(threadID)
+	}
+	total += a.flushDispatchItemCount(threadID)
+	return total
+}
+
 func (a *App) ensureFlushDispatchMapsLocked() {
 	if a.flushDispatch.queues == nil {
 		a.flushDispatch.queues = make(map[string][]flushDispatchBatch)
@@ -227,6 +257,9 @@ func (a *App) ensureFlushDispatchMapsLocked() {
 	}
 	if a.flushDispatch.generation == nil {
 		a.flushDispatch.generation = make(map[string]uint64)
+	}
+	if a.flushDispatch.flushUnsettled == nil {
+		a.flushDispatch.flushUnsettled = make(map[string]struct{})
 	}
 }
 
@@ -584,6 +617,12 @@ func (a *App) publishFlushDispatch(threadID string, group []triage.QueuedFlushIt
 	for _, item := range group {
 		a.noteFlushDispatchItemSettledLocked(threadID, item.ID)
 	}
+	a.ensureFlushDispatchMapsLocked()
+	a.flushDispatch.flushUnsettled[threadID] = struct{}{}
+	// The items just left dispatching, which marks the answer dirty only
+	// when it found them there. The frame owed for this flush needs a
+	// publish either way.
+	a.markSendsPendingDirty(threadID)
 	a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{ThreadID: threadID, Items: items})
 }
 
@@ -619,8 +658,11 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// happens. A joined group is one message: a failure on its third member
 	// must leave all three requeueable with nothing on the wire.
 	members := make([]flushMember, 0, len(group))
+	// memberOf maps a group index to its member, or -1 for an empty item.
+	memberOf := make([]int, len(group))
 	var staleRows []string
-	for _, item := range group {
+	for i, item := range group {
+		memberOf[i] = -1
 		var payload flushQueuePayload
 		if len(item.Payload) > 0 {
 			if err := json.Unmarshal(item.Payload, &payload); err != nil {
@@ -660,10 +702,19 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			originThread: payload.OriginThread,
 			originWake:   payload.OriginWake,
 			joinedParts:  payload.JoinedParts,
+			// The review drafts a previous dispatch's stale row still
+			// holds are this message's; the cleanup below returns them
+			// before the claim takes them again.
+			heldBy: staleRowsOf(item),
+			// A message rebuilt from its row renders its review comments
+			// already; it claims them again without rendering them.
+			textBeforeReviewComments: payload.TextBeforeReviewComments,
+			renderedReviewComments:   payload.RenderedReviewComments,
 		})
 		if err != nil {
 			return nil, false, requeue, err
 		}
+		memberOf[i] = len(members)
 		members = append(members, flushMember{item: item, payload: payload, resolved: resolved})
 	}
 	if len(members) == 0 {
@@ -685,6 +736,18 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	}
 	defer unlockAccount()
 
+	// Placement through registration runs under the turn allocation lock,
+	// so a turn the provider starts on its own can neither take the index
+	// chosen here nor miss the registered send (LockTurnAllocation).
+	unlockAllocation := a.triage.LockTurnAllocation(threadID)
+	allocationHeld := true
+	releaseAllocation := func() {
+		if allocationHeld {
+			allocationHeld = false
+			unlockAllocation()
+		}
+	}
+	defer releaseAllocation()
 	placement, err := a.resolveUserMessagePlacement(thread, messageFlush)
 	if err != nil {
 		return nil, false, requeue, fmt.Errorf("resolve placement: %w", err)
@@ -735,11 +798,33 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 		// message twice (round-11, R11-1). The remaining loss windows
 		// (allocation, persist, send) are the same ones a first
 		// dispatch of any message already has.
-		if err := a.cleanupStaleFlushRows(threadID, staleRows); err != nil {
-			return nil, false, requeue, err
-		}
+		//
+		// A message whose text renders its review comments claims again
+		// the ones its stale row returns, which hold the bodies it renders.
+		// Its requeue copy carries them from here on: once the row is gone,
+		// nothing else records them.
 		for i := range requeue {
+			if requeue[i].StaleUserItemID == "" {
+				continue
+			}
+			returned, err := a.cleanupStaleFlushRow(threadID, requeue[i].StaleUserItemID)
+			if err != nil {
+				return nil, false, requeue, fmt.Errorf("cleanup stale flush row %s: %w", requeue[i].StaleUserItemID, err)
+			}
 			requeue[i].StaleUserItemID = ""
+			m := memberOf[i]
+			if m < 0 || !addReturnedReviewComments(&members[m].payload, returned) {
+				continue
+			}
+			encoded, err := json.Marshal(members[m].payload)
+			if err != nil {
+				return nil, false, requeue, fmt.Errorf("encode payload: %w", err)
+			}
+			requeue[i].Payload = encoded
+			members[m].resolved.reviewDeliveries, err = a.renderedReviewDeliveries(threadID, members[m].payload.RenderedReviewComments)
+			if err != nil {
+				return nil, false, requeue, err
+			}
 		}
 	}
 
@@ -812,6 +897,23 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	leadQueueItemID := members[0].item.ID
 	leadEnqueuedAt := members[0].item.EnqueuedAt
 
+	// The review drafts each member carries are claimed for the row's turn
+	// before anything reaches the provider, so two threads dispatching the
+	// same drafts cannot both deliver them (claimDiffReviewDelivery). Every
+	// path below that requeues the group hands them back (unclaim). The
+	// claims settle when the provider confirms the message, not when its
+	// quiet row lands, and a session death that takes the message back
+	// returns them with it (cleanupStaleFlushRow).
+	var claims diffReviewClaims
+	for _, member := range members {
+		claim, claimErr := a.claimDiffReviewDelivery(threadID, persistTurnIndex, userItem.ID, member.resolved, true)
+		if claimErr != nil {
+			return nil, false, requeue, errors.Join(claimErr, claims.release(a))
+		}
+		claims = append(claims, claim...)
+	}
+	unclaim := func(err error) error { return errors.Join(err, claims.release(a)) }
+
 	if eagerPersist {
 		// Before the row is registered, so its echo always finds the note.
 		a.noteAgentWakeQueued(threadID, userItem.ID, persistTurnIndex, allWakes)
@@ -823,7 +925,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 		if persistErr := a.triage.PersistAndRegisterPendingQuietFlushSendWithExpectation(
 			threadID, leadQueueItemID, userItem, responseTurnIndex, leadEnqueuedAt, sendExpect); persistErr != nil {
 			a.forgetAgentWakeQueued(threadID, userItem.ID)
-			return nil, false, requeue, fmt.Errorf("eager persist flush: %w", persistErr)
+			return nil, false, requeue, unclaim(fmt.Errorf("eager persist flush: %w", persistErr))
 		}
 		a.publishFlushDispatch(threadID, group, flushedItems)
 		// One row, one cleanup obligation: the first member owns it.
@@ -833,6 +935,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 		// Deferred: row persists at echo time via persistDeferredUserText.
 		a.triage.RegisterPendingFlushSendWithExpectation(threadID, leadQueueItemID, userItem, leadEnqueuedAt, sendExpect)
 	}
+	releaseAllocation()
 
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
@@ -852,7 +955,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	if dispatchErr != nil {
 		if codex.IsAmbiguousSteerTimeout(dispatchErr) {
 			log.Printf("flush dispatch: thread=%s items=[%s]: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, flushGroupIDs(group))
-			a.applyJoinedPlanAcceptance(threadID, userItem, members)
+			a.applyJoinedPlanAcceptance(threadID, userItem, members, claims)
 			return flushedItems, eagerPersist, nil, nil
 		}
 		// A turn IS running and simply cannot take input — Codex is running a
@@ -869,25 +972,31 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 			log.Printf("flush dispatch: thread=%s items=[%s]: the active codex turn cannot take input (%v); leaving the message queued for the next turn boundary",
 				threadID, flushGroupIDs(group), dispatchErr)
-			return nil, eagerPersist, requeue, dispatchErr
+			return nil, eagerPersist, requeue, unclaim(dispatchErr)
 		}
 		if sess.Codex != nil && codex.IsNoActiveTurnRace(dispatchErr) {
 			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 			fallback, allocErr := a.resolveUserMessagePlacement(thread, messageFlushFallback)
 			if allocErr != nil {
-				return nil, eagerPersist, requeue, allocErr
+				return nil, eagerPersist, requeue, unclaim(allocErr)
 			}
 			responseTurnIndex = fallback.responseTurn
 			a.noteAgentWakeDispatch(threadID, allWakes, true)
 			freshFlushItemID, allocErr := a.userMessageItemID(threadID, joined.sendID, responseTurnIndex, messageFlushFallback)
 			if allocErr != nil {
 				a.persistFlushDispatchError(threadID, responseTurnIndex, allocErr)
-				return nil, eagerPersist, requeue, allocErr
+				return nil, eagerPersist, requeue, unclaim(allocErr)
 			}
 			userItem.ID = freshFlushItemID
 			userItem.TurnIndex = responseTurnIndex
 			userItem.CreatedAt = time.Now().UnixMilli()
 			userItem.UpdatedAt = userItem.CreatedAt
+			// The claims follow the row before it can land, so its insert
+			// settles them.
+			if retargetErr := claims.retarget(a, userItem.TurnIndex, userItem.ID); retargetErr != nil {
+				a.persistFlushDispatchError(threadID, responseTurnIndex, retargetErr)
+				return nil, eagerPersist, requeue, unclaim(retargetErr)
+			}
 			// Legacy callers may get a new row id. Derive both
 			// wire stamp and expectation together; identified client sends
 			// preserve both across this placement-only fallback.
@@ -904,33 +1013,35 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 					// coming. A requeue would double-send (round-14,
 					// D14-2) — leave the pending entry for the echo.
 					log.Printf("flush dispatch: thread=%s items=[%s]: codex turn/start timed out after write; leaving pending confirmation for provider echo", threadID, flushGroupIDs(group))
-					a.applyJoinedPlanAcceptance(threadID, userItem, members)
+					a.applyJoinedPlanAcceptance(threadID, userItem, members, claims)
 					return retargetFlushedItems(flushedItems, userItem.ID), eagerPersist, nil, nil
 				}
 				a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 				a.persistFlushDispatchError(threadID, responseTurnIndex, sendErr)
-				return nil, eagerPersist, requeue, sendErr
+				return nil, eagerPersist, requeue, unclaim(sendErr)
 			}
-			a.applyJoinedPlanAcceptance(threadID, userItem, members)
+			a.applyJoinedPlanAcceptance(threadID, userItem, members, claims)
 			return retargetFlushedItems(flushedItems, userItem.ID), eagerPersist, nil, nil
 		}
 		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 		a.forgetAgentWakeQueued(threadID, userItem.ID)
 		a.persistFlushDispatchError(threadID, persistTurnIndex, dispatchErr)
-		return nil, eagerPersist, requeue, dispatchErr
+		return nil, eagerPersist, requeue, unclaim(dispatchErr)
 	}
-	a.applyJoinedPlanAcceptance(threadID, userItem, members)
+	a.applyJoinedPlanAcceptance(threadID, userItem, members, claims)
 	return flushedItems, eagerPersist, nil, nil
 }
 
 // applyJoinedPlanAcceptance marks each member's plan / comment bookkeeping
 // against the single row the group became. The refs are per-message even when
 // the message is joined, so the marking loop is too; the joined row's meta
-// carries only the refs it renders (joinFlushMeta).
-func (a *App) applyJoinedPlanAcceptance(threadID string, userItem store.Item, members []flushMember) {
+// carries only the refs it renders (joinFlushMeta). The members' review
+// drafts were claimed for that row before dispatch.
+func (a *App) applyJoinedPlanAcceptance(threadID string, userItem store.Item, members []flushMember, claims diffReviewClaims) {
 	for _, member := range members {
 		a.applyProposedPlanAcceptance(threadID, userItem, member.resolved)
 	}
+	claims.announce(a)
 }
 
 // retargetFlushedItems re-points a group's acknowledgements at the row id a
@@ -948,7 +1059,7 @@ func retargetFlushedItems(items []QueueFlushedItem, userItemID string) []QueueFl
 // up all of their rows.
 func (a *App) cleanupStaleFlushRows(threadID string, userItemIDs []string) error {
 	for _, id := range userItemIDs {
-		if err := a.cleanupStaleFlushRow(threadID, id); err != nil {
+		if _, err := a.cleanupStaleFlushRow(threadID, id); err != nil {
 			return fmt.Errorf("cleanup stale flush row %s: %w", id, err)
 		}
 	}
@@ -1062,6 +1173,9 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 //ao:scope threads:operate
 func (a *App) RegisterQueueItem(ctx context.Context, threadID string, message string, opts SendMessageOptions) (RegisteredQueueItem, error) {
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
+		return RegisteredQueueItem{}, err
+	}
+	if err := refusePRDraftSource(opts); err != nil {
 		return RegisteredQueueItem{}, err
 	}
 	unlockAdmission, err := a.lockClientSendAdmission(ctx, threadID, opts.SendID)
@@ -1238,11 +1352,12 @@ func (a *App) registerQueueItem(
 	a.ensureTriageRouter()
 
 	// Hold a.flushDispatch.handoffMu across the queue append and the immediate flush
-	// handoff below: the revert predicate reads the same queued / in-flight
-	// counters under this mutex (pendingFlushWorkCount), so holding it here
-	// keeps a Stop click from observing tryFlushQueue's handoff window and
-	// discarding the turn-starting prompt. See the a.flushDispatch.handoffMu field doc
-	// (app.go) for the window and why this isn't the per-thread action lock.
+	// handoff below: idle eviction and transfer reservation read the same
+	// queued / in-flight counters under this mutex (pendingFlushWorkCount),
+	// so holding it here keeps them from observing tryFlushQueue's handoff
+	// window and treating the thread as having no queued work. See the
+	// a.flushDispatch.handoffMu field doc (app_state.go) for the window and
+	// why this isn't the per-thread action lock.
 	//
 	// Lock order: action -> ordinary mutation -> handoff -> triage/runtime.
 	// Queue admission holds only the mutation and handoff locks, so a slow
@@ -1524,4 +1639,13 @@ func (a *App) nextFlushUserItemID(threadID string, turnIndex int) (string, error
 		return "", err
 	}
 	return fmt.Sprintf("user:%d:flush:%d", turnIndex, seq), nil
+}
+
+// staleRowsOf is the stale row a requeued item's earlier dispatch left, if
+// any (QueuedFlushItem.StaleUserItemID).
+func staleRowsOf(item triage.QueuedFlushItem) []string {
+	if item.StaleUserItemID == "" {
+		return nil
+	}
+	return []string{item.StaleUserItemID}
 }

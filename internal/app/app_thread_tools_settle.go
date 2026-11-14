@@ -314,60 +314,107 @@ func notReadSettlement(why string) store.ThreadRequestSettlement {
 // The binding is the turn, not the event: an end of some other turn on the
 // same thread leaves this receipt's turn row unfinished and settles nothing,
 // which is what keeps a user's own turn from answering an agent's request.
+// A receipt no delivery has named a turn for is bound first to the turn
+// that took its message, when one did (bindUndeliveredReceiptToTakingTurn).
+func (a *App) settleReceiptOnTurnEnd(threadID, token string) (int, error) {
+	index, undelivered, err := a.settleBoundReceiptOnTurnEnd(threadID, token)
+	if err != nil || undelivered == "" {
+		return index, err
+	}
+	bound, err := a.bindUndeliveredReceiptToTakingTurn(threadID, token, undelivered)
+	if err != nil || !bound {
+		return -1, err
+	}
+	index, _, err = a.settleBoundReceiptOnTurnEnd(threadID, token)
+	return index, err
+}
+
+// settleBoundReceiptOnTurnEnd is settleReceiptOnTurnEnd for a receipt whose
+// delivery named its turn. For a running receipt no delivery has named a
+// turn for, it settles nothing and returns the row of the receipt's message
+// (undelivered).
 //
 // The receipt is read once, under the token's settle lock, and that read is
 // the one the settlement writes from.
-func (a *App) settleReceiptOnTurnEnd(threadID, token string) (int, error) {
-	work, index, err := func() (threadSettlementWork, int, error) {
+func (a *App) settleBoundReceiptOnTurnEnd(threadID, token string) (index int, undelivered string, err error) {
+	work, index, undelivered, err := func() (threadSettlementWork, int, string, error) {
 		unlock := a.threadRequestSettleLock(token)
 		defer unlock()
 		receipt, found, err := a.store.GetThreadRequestReceipt(token)
 		if err != nil {
-			return threadSettlementWork{}, -1, err
+			return threadSettlementWork{}, -1, "", err
 		}
 		if !found || receipt.TargetThreadID != threadID {
 			// Gone, or bound to another thread: nothing here owns it any more.
 			a.forgetReceiptRunning(threadID, token)
-			return threadSettlementWork{}, -1, nil
+			return threadSettlementWork{}, -1, "", nil
 		}
 		if receipt.State == store.ThreadReceiptAccepted {
 			// The dispatch has not bound its turn yet. The gate is set before
 			// the row, so dropping it here would take away the only thing
 			// watching for this receipt's turn end.
-			return threadSettlementWork{}, -1, nil
+			return threadSettlementWork{}, -1, "", nil
 		}
 		if receipt.State != store.ThreadReceiptRunning {
 			// Replied, cancelled or settled: nothing here owns it any more.
 			a.forgetReceiptRunning(threadID, token)
-			return threadSettlementWork{}, -1, nil
+			return threadSettlementWork{}, -1, "", nil
 		}
 		if receipt.TurnID == "" {
-			// The message is with the provider but not delivered yet: the turn
-			// that ended is one it was written during, not one that read it.
-			// The gate stays for the turn the delivery names.
-			return threadSettlementWork{}, -1, nil
+			// The message is with the provider and no delivery has named its
+			// turn: the turn that ended may be one it was written during, not
+			// one that read it. The gate stays for the turn that is named.
+			return threadSettlementWork{}, -1, receipt.MessageItemID, nil
 		}
 		index, ok := threadRequestTurnIndex(threadID, receipt.TurnID)
 		if !ok {
-			return threadSettlementWork{}, -1, fmt.Errorf("receipt names turn %q, which is not a turn of this thread", receipt.TurnID)
+			return threadSettlementWork{}, -1, "", fmt.Errorf("receipt names turn %q, which is not a turn of this thread", receipt.TurnID)
+		}
+		if a.triage != nil && a.triage.OpenTurnIndex(threadID) == index {
+			// The turn is running. A row that still carries an earlier
+			// completion (a soft-closed turn the model continued, a re-sent
+			// turn start) is not this turn's end.
+			return threadSettlementWork{}, -1, "", nil
 		}
 		turn, found, err := a.store.GetTurnByThreadIndex(threadID, index)
 		if err != nil {
-			return threadSettlementWork{}, -1, err
+			return threadSettlementWork{}, -1, "", err
 		}
 		if !found || turn.CompletedAt == nil {
 			// The request's own turn is still running. Some other turn ended.
-			return threadSettlementWork{}, -1, nil
+			return threadSettlementWork{}, -1, "", nil
 		}
 		settlement, err := a.turnSettlement(threadID, turn)
 		if err != nil {
-			return threadSettlementWork{}, index, err
+			return threadSettlementWork{}, index, "", err
 		}
 		work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread)
-		return work, index, err
+		return work, index, "", err
 	}()
 	a.runThreadSettlementWork(work)
-	return index, err
+	return index, undelivered, err
+}
+
+// bindUndeliveredReceiptToTakingTurn binds a running receipt no delivery has
+// named a turn for to the turn that took its message (the row
+// messageItemID) and ran it (triage.PendingSendTurn): a provider that opens
+// the message's turn and never echoes the message still answers there. A
+// delivery that arrives first wins as always (BindThreadReceiptTurn). It
+// reports whether the receipt is bound now.
+//
+// The caller holds no settle lock: the read of the send waits on the
+// thread's flush anchor, which a delivery holds when it takes that lock.
+func (a *App) bindUndeliveredReceiptToTakingTurn(threadID, token, messageItemID string) (bool, error) {
+	if a.triage == nil {
+		return false, nil
+	}
+	turnIndex, state := a.triage.PendingSendTurn(threadID, messageItemID)
+	if state != triage.PendingSendClaimed {
+		return false, nil
+	}
+	unlock := a.threadRequestSettleLock(token)
+	defer unlock()
+	return a.store.BindThreadReceiptTurn(token, messageItemID, threadRequestTurnKey(threadID, turnIndex), true)
 }
 
 // turnSettlement maps one ended turn onto the answer its requester reads.
@@ -399,7 +446,7 @@ func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequ
 	case turn.StopReason == "interrupted":
 		return store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptInterrupted,
-			Answer:     []byte(threadtools.InterruptTurn),
+			Answer:     []byte(a.turnStopCause(threadID, turn.TurnIndex)),
 			AnswerKind: store.ThreadAnswerError,
 			SettledAt:  settledAt,
 		}, nil

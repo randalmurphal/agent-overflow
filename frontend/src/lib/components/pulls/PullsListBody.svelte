@@ -1,0 +1,212 @@
+<script lang="ts" generics="R extends { key: string }">
+  import { onDestroy, tick, untrack, type Snippet } from 'svelte';
+  import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
+  import PullsGroupHeader from './PullsGroupHeader.svelte';
+  import PullsProjectError from './PullsProjectError.svelte';
+  import { headingIndexOf, type PullsListHeading, type PullsListItem } from './pullsListItems';
+  import type { RowEstimate } from '../../utils/virtual/types';
+
+  // The scrolling body of one of the page's lists, virtualized: only the
+  // rows near the viewport are mounted, so a list of any length costs the
+  // rows on screen. A list that asks (`onVisible`) is told the rows on
+  // screen, the virtualizer's viewport range, by key on every scroll,
+  // resize and data change, and none while the list is not shown (the
+  // compact detail covers it) or once it unmounts. When the rows move
+  // under the list (a refresh re-sorts by update time, a filter changes),
+  // a list at its top stays at its top, and a list scrolled into its rows
+  // keeps the row at the viewport top in view, as the virtualizer does;
+  // an order the reader chose (`orderKey`) scrolls to the top from
+  // anywhere. The heading of
+  // the group under the viewport top sticks over the list once its own
+  // row has scrolled under the top; the rows' own headings cannot stick,
+  // each row being positioned on its own. `focusFirstRow` (the list
+  // find's Enter) scrolls the first row into view and focuses its button;
+  // a row's root carries `data-list-row-key`.
+
+  const IS_TEST = import.meta.env.MODE === 'test'
+    && typeof window !== 'undefined' && 'happyDOM' in window;
+
+  const HEADING_ESTIMATE_PX = 29;
+  const ERROR_ESTIMATE_PX = 80;
+
+  interface Props {
+    testid: string;
+    items: readonly PullsListItem<R>[];
+    /** A row's estimated height; the virtualizer measures the rows it mounts. */
+    rowEstimatePx: number;
+    /** False while the list is hidden: no row is on screen. */
+    shown: boolean;
+    /** The order the reader chose; a change scrolls the list to its top. */
+    orderKey?: string;
+    /** The rows on screen, for a list whose store reads detail for them. */
+    onVisible?: (keys: string[]) => void;
+    onRetry: () => void;
+    retrying: boolean;
+    row: Snippet<[R]>;
+    /** The empty, loading or error state under the rows. */
+    after?: Snippet;
+  }
+
+  let { testid, items, rowEstimatePx, shown, orderKey = '', onVisible, onRetry, retrying, row: renderRow, after }: Props = $props();
+
+  // Stable identity for the virtualizer's constructor; reads the current items.
+  const estimate: RowEstimate = {
+    at: (index) => {
+      const item = items[index];
+      if (!item || item.kind === 'row') return rowEstimatePx;
+      return item.kind === 'heading' ? HEADING_ESTIMATE_PX : ERROR_ESTIMATE_PX;
+    },
+    isExact: () => false,
+  };
+  const getKey = (item: PullsListItem<R>) => item.key;
+
+  let scrollEl: HTMLElement | undefined = $state();
+  let listRef: LongListHandle | undefined = $state();
+  let stuck: PullsListHeading | null = $state(null);
+  let reported = '';
+  // The scroll offset as of the last scroll, resize or data change.
+  let lastOffset = 0;
+
+  // This list is the only writer of its scrollTop.
+  function applyScrollTarget(top: number): void {
+    if (scrollEl) scrollEl.scrollTop = top;
+  }
+
+  function update(): void {
+    const ref = listRef;
+    const viewport = ref?.getViewportSize() ?? 0;
+    const keys: string[] = [];
+    let heading: PullsListHeading | null = null;
+    if (ref && shown && items.length > 0 && viewport > 0) {
+      const offset = ref.getScrollOffset();
+      lastOffset = offset;
+      const first = ref.findItemIndex(offset);
+      const last = ref.findItemIndex(offset + viewport - 1);
+      for (let index = first; index <= last; index += 1) {
+        const item = items[index];
+        if (item?.kind === 'row') keys.push(item.row.key);
+      }
+      const owner = headingIndexOf(items, first);
+      const item = items[owner];
+      if (item && item.kind !== 'row' && (owner !== first || ref.getItemOffset(first) < offset)) heading = item.heading;
+    }
+    if (stuck !== heading) stuck = heading;
+    if (!onVisible) return;
+    const joined = keys.join('\u0000');
+    if (joined === reported) return;
+    reported = joined;
+    onVisible(keys);
+  }
+
+  // The engine places its window at the tail until its first scroll
+  // input; this list opens at its top. A list shown again after the
+  // compact detail hid it re-reads its viewport and position.
+  $effect(() => {
+    const ref = listRef;
+    const on = shown;
+    if (!ref) return;
+    untrack(() => {
+      if (on) ref.revalidate();
+      update();
+    });
+  });
+  $effect(() => {
+    void items;
+    untrack(update);
+  });
+  // The virtualizer's compensation keeps the row at the viewport top in
+  // view when rows move under it. A list at its top stays at its top:
+  // the reader was not reading a row there.
+  function compensate(target: number): void {
+    applyScrollTarget(lastOffset === 0 ? 0 : target);
+  }
+  // The reader picked another order: the list opens it from the top.
+  let shownOrder = untrack(() => orderKey);
+  $effect(() => {
+    const order = orderKey;
+    untrack(() => {
+      if (order === shownOrder) return;
+      shownOrder = order;
+      listRef?.scrollToIndex(0, { align: 'start' });
+      update();
+    });
+  });
+  $effect(() => {
+    const ref = listRef;
+    if (!ref) return;
+    // The subscription replays its sample at once, inside this effect.
+    return ref.subscribeContentGeometry(() => untrack(update));
+  });
+  const FOCUS_FRAMES = 4;
+
+  /** The scroller, focusable by script: the list find's focus fallback. */
+  export function scroller(): HTMLElement | null {
+    return scrollEl ?? null;
+  }
+
+  /** Focuses the first row's button, scrolling it into view; false when
+   * the list has no row or the row did not mount. */
+  export async function focusFirstRow(): Promise<boolean> {
+    const index = items.findIndex((item) => item.kind === 'row');
+    const item = items[index];
+    if (!item || item.kind !== 'row' || !listRef) return false;
+    listRef.scrollToIndex(index, { align: 'start' });
+    const selector = `[data-list-row-key="${CSS.escape(item.row.key)}"] button`;
+    for (let frame = 0; frame < FOCUS_FRAMES; frame += 1) {
+      await tick();
+      const button = scrollEl?.querySelector<HTMLElement>(selector);
+      if (button) {
+        button.focus({ preventScroll: true });
+        return document.activeElement === button;
+      }
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    return false;
+  }
+
+  // A list that goes (the tab switches) leaves no row on screen: the
+  // store holds what it was last told.
+  onDestroy(() => {
+    if (reported !== '') onVisible?.([]);
+  });
+</script>
+
+<div
+  bind:this={scrollEl}
+  class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle focus:outline-none"
+  style:overflow-anchor="none"
+  tabindex="-1"
+  data-testid={testid}
+>
+  <!-- Takes no height, so the rows' offsets are the scroller's. -->
+  {#if stuck}
+    <div class="sticky top-0 z-[1] h-0" aria-hidden="true">
+      <div class="absolute inset-x-0 top-0">
+        <PullsGroupHeader label={stuck.label} count={stuck.count} testid="pulls-list-stuck-heading" />
+      </div>
+    </div>
+  {/if}
+  <LongListVirtualizer
+    bind:this={listRef}
+    data={items}
+    {getKey}
+    scrollRef={scrollEl}
+    {estimate}
+    renderAll={IS_TEST}
+    {applyScrollTarget}
+    onCompensation={(compensation) => compensate(compensation.target)}
+    onscroll={update}
+  >
+    {#snippet children(item: PullsListItem<R>)}
+      {#if item.kind === 'row'}
+        {@render renderRow(item.row)}
+      {:else if item.kind === 'heading'}
+        <PullsGroupHeader label={item.heading.label} count={item.heading.count} testid={item.heading.testid} />
+      {:else}
+        <PullsGroupHeader label={item.heading.label} testid={item.heading.testid} />
+        <PullsProjectError message={item.error.message} failure={item.error.failure} forge={item.error.forge} cause={item.error.cause} partial={item.error.partial ?? false} {onRetry} {retrying} />
+      {/if}
+    {/snippet}
+  </LongListVirtualizer>
+  {@render after?.()}
+</div>

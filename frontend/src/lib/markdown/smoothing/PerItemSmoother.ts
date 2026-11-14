@@ -69,6 +69,23 @@ export const MIN_REVEAL_TICK_INTERVAL_MS = 15;
 // a 6ms budget and dropped the frame the scroll spring was gliding on). At
 // 60Hz a slot is one frame, so packing stays. No pane waits past two slots.
 const REVEAL_STARVATION_MS = MIN_REVEAL_TICK_INTERVAL_MS * 2;
+// The longest frame gap that is a paint period rather than a stall, and
+// so the most elapsed time one processed tick accrues budget for. Any
+// paint cadence down to 20Hz, the gate's two-slot wait plus a panel
+// frame, and ordinary jitter all earn their full elapsed time, so a slow
+// paint keeps the ceiling within reach. A longer gap is a stall (a long
+// task, a GC pause, an occluded window): the tick after it accrues this
+// much instead of the whole gap, so the reveal resumes at its pace rather
+// than landing the gap's text at once. The thinking tail's line slide
+// drains each gap up to this same bound (SLIDE_MAX_CATCHUP_FRAMES), so
+// the lines it tickers keep pace with the text that lands on any pattern
+// of paints and recover from a stall with it; the scroll spring resumes
+// at its pace after any gap over a frame (SPRING_MAX_CATCHUP_STEPS). The
+// backlog the gap built is paid
+// off at the ceiling afterwards, as any backlog is. The frame gate
+// measures the panel's period from gaps up to this bound for the same
+// reason.
+export const MAX_REVEAL_TICK_DT_MS = 50;
 let revealFrameAt = -1;
 let previousFrameAt = -1;
 let framePeriodMs = 0;
@@ -76,7 +93,7 @@ let framePeriodMs = 0;
 function frameCarriesReveal(frameTimestamp: number, lastTickAt: number): boolean {
   if (frameTimestamp !== previousFrameAt) {
     const gap = frameTimestamp - previousFrameAt;
-    if (previousFrameAt >= 0 && gap >= 1 && gap <= 50) framePeriodMs = gap;
+    if (previousFrameAt >= 0 && gap >= 1 && gap <= MAX_REVEAL_TICK_DT_MS) framePeriodMs = gap;
     previousFrameAt = frameTimestamp;
   }
   if (framePeriodMs === 0 || framePeriodMs >= MIN_REVEAL_TICK_INTERVAL_MS) return true;
@@ -127,18 +144,18 @@ export function __resetRevealFrameGateForTest(): void {
 export const MAX_ADAPTIVE_CHARS_PER_SEC = 320;
 // Hard cap on how many characters the smoother may reveal in a single
 // PROCESSED tick, regardless of accumulated budget. With the rate
-// ceiling above owning speed, this is purely the per-frame WORK
-// bound: one tick's markdown re-parse + DOM mutation stays bounded
-// even right after a stalled frame (where dt, and so the tick's
-// budget, is large). 21 keeps the 320cps ceiling reachable at the
-// slowest throttled cadence with recovery headroom: the floor is
-// 320/48 ≈ 6.7 chars per processed tick, and the extra room lets a
-// jittered stretch (a ~50ms gap at 320cps = 16 chars of accrued
-// budget) catch back up in one tick instead of throttling the average
-// below the ceiling. Excess budget is clamped after each tick (not
-// rolled over) so a stall can't burst a multi-tick chunk. No rush
-// regime survives — the end-of-turn drain (END_OF_TURN_DRAIN_MS) went
-// in 2026-07 and the successor-waiting fast-drain in 2026-08, both
+// ceiling above owning speed and MAX_REVEAL_TICK_DT_MS owning the stall
+// rule, this is purely the per-frame WORK bound: one tick's markdown
+// re-parse + DOM mutation stays bounded. It sits well above one tick's
+// accrual (320/48 ≈ 6.7 chars at the slowest regular processed cadence,
+// 9.6 at the longest wait the gate grants) because the reveal is
+// word-aligned: budget a unit does not fit carries to the next tick, and
+// the cap must leave room for the units that then fit together (two
+// four-letter words and their spaces are 10), or it, not the rate,
+// becomes the ceiling. Excess budget is clamped after each tick (not
+// rolled over) so leftover budget never bursts a multi-tick chunk. No
+// rush regime survives — the end-of-turn drain (END_OF_TURN_DRAIN_MS)
+// went in 2026-07 and the successor-waiting fast-drain in 2026-08, both
 // because rushed reveal motion read as jank; a long final message
 // finishing a few seconds after the wire settles is the accepted trade
 // for uniform reveal speed. One path still puts more than this cap in a
@@ -523,7 +540,7 @@ export class PerItemSmoother {
       this.scheduleTick();
       return;
     }
-    const dt = Math.max(0, now - this.lastTickAt);
+    const dt = Math.min(MAX_REVEAL_TICK_DT_MS, Math.max(0, now - this.lastTickAt));
     this.lastTickAt = now;
     if (this.isCaughtUp()) return;
 

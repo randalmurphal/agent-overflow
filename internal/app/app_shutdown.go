@@ -153,6 +153,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 		return nil
 	}())
 	a.codexThreadService().Close()
+	// The auto-switch worker switches accounts, reads usage and queues
+	// continues into threads; appCtx is cancelled, so it is returning or
+	// finishing one bounded step.
+	a.accountSwitch().Stop()
 	a.transfers.close()
 	// The preview listeners come down with the app context, and for the
 	// same reason: they are network-facing, and every request they carry
@@ -185,6 +189,16 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.worktreeWatch != nil {
 		a.closeWorktreeWatch()
 		record("close worktree registry watcher", nil)
+	}
+	// Review diff pins run git in the background; stop and join them.
+	a.dropReviewDiffRecords()
+	record("stop review diff pins", nil)
+	// A tool command is stopped with SIGTERM first, so its reaper is joined
+	// here: before the engine it reports to closes, and so the process does
+	// not outlive the app inside the grace.
+	if runner := a.workflowApplication().Runner(); runner != nil {
+		runner.StopTools()
+		record("stop workflow tool commands", nil)
 	}
 	if a.workflowApplication().Engine() != nil {
 		engineErr := a.workflowApplication().CloseEngine()
@@ -259,6 +273,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// record; appCtx is cancelled, so it is waking to exit or finishing one
 	// bounded probe.
 	a.startupProbeWG.Wait()
+	// The usage poll loops, requested readings and trailing gate runs persist
+	// readings; appCtx is cancelled, so each is exiting or finishing one probe.
+	a.providerLifecycleService().Close()
+	// The passive release check emits status frames. It has its own
+	// lifetime, which this cancels before joining it.
+	a.stopServiceUpdateChecks()
 	// A permission-mode follow writes the thread row; appCtx is cancelled,
 	// so it is returning or finishing one bounded write.
 	a.permissionModeFollowWG.Wait()
@@ -315,6 +335,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// failure. Idempotent and blocks until every goroutine returns.
 	a.stopThreadWorktreeSetups()
 	record("stop worktree setups", nil)
+
+	// A composer shell command that settles saves its output and writes a
+	// message row, so the runs are stopped and joined before the stores
+	// close. A stopped run sends nothing.
+	a.stopShellCommands()
+	record("stop composer shell commands", nil)
 
 	// Step 3f: stop an in-flight session import. It writes threads, items and
 	// turns straight into SQLite, so it must join before Step 9's store close.

@@ -4,6 +4,11 @@ This directory is the only place that turns layout items into mounted panes.
 `PaneHost.svelte` owns pane selection and lazy companion mounting;
 `PaneFrame.svelte` owns the common frame and title controls.
 
+Tool panes (`pulls`, `workflows`) have no ThreadPane. `ToolPane.svelte` loads
+the tool body lazily and the body renders `ToolPaneHeader.svelte`, whose title
+is the drag handle. Open, close and placement belong to
+`stores/toolPanes.svelte.ts`; titles and icons to `toolPaneMeta.ts`.
+
 - Preserve mounted pane identity across selection and compact-screen changes.
   Thread state, scroll position, and observers must survive navigation.
 - A thread may appear in only one pane. Multiple panes may share a workspace.
@@ -13,9 +18,71 @@ This directory is the only place that turns layout items into mounted panes.
   constructing it reactively remounts the surface on unrelated updates.
 - Wrap each pane body in `shared/RenderBoundary.svelte` so one render failure
   does not stop updates in other panes.
+- A drag that places a pane (thread row, tool, pane title) is over the
+  strip's shield while it is over the strip, so `usePaneThreadDrag` is its
+  only handler and pane bodies never see it. A pane body sees the drags
+  that place nothing: dragged text and files.
 - Desktop owns resizers and multi-pane layout. Compact mode shows one pane at a
   time while keeping the strip mounted; use the shared layout mode rather than
   device or runtime detection.
+
+## Find
+
+Every pane kind with find mounts `PaneFindBar.svelte` directly under its
+header, in the flow (a terminal floats it instead, `floating`, so opening
+it never resizes the PTY: [terminal guide](../terminal/AGENTS.md#find)), keyed by its layout pane id (a companion's own id, not
+its source's), and registers a `PaneFindProvider` for that id while its body
+is mounted (`stores/paneFind.svelte.ts`). The store owns open, query,
+focus return and which bar holds keyboard focus (`isPaneFindBarFocused`);
+the provider owns matching, stepping and clearing. Escape
+belongs to the `find.close` command, never the bar. A bar's `fallbackFocus`
+must be focusable by script (a scroller takes `tabindex="-1"`); the bar
+checks that focus landed and reports a fallback that refused it. Paint
+matches with `utils/findHighlights.ts` under `findHighlightName(paneId)`.
+Thread timelines use `chat/ThreadPaneFind.svelte`; a plain scroll container
+uses `scrollTextFind.svelte.ts`. A provider with asynchronous reads runs
+them through `paneFindReads(paneId)`, which keeps one in flight per layout
+pane across body remounts, applies an answer only for the query and owner
+it asked, updates in place on a content change without moving the view,
+and withdraws any jump it requested when its query changes or it closes.
+Find acts on the focused pane, or under compact on the pane on screen, and
+on no overlay above it; the store drops a pane's state and reads when the
+pane leaves the layout. Review panes use `review/ReviewPaneFind.svelte`
+over `stores/reviewFind.svelte.ts`, keyed by `ReviewPane`'s `findKey`: its
+layout pane id as a companion, the detail region key on the Pull requests
+page; a review hosted without a key registers nothing. The browser pane uses
+`stores/browserFind.svelte.ts`, where the engine searches and matches are
+the engine's to paint; its calls run on its own queue, not
+`paneFindReads`, because a queued stop is backend cleanup that no other
+read may replace. A provider that cannot count reports `count: null`,
+and one with `openNative` opens its engine's own find UI instead of the bar,
+which never reads as open, so its Escape stays the engine's
+([browser-tools.md](../../../../../docs/architecture/browser-tools.md#find)).
+The thread terminal, in a drawer or a terminal pane, is a nested find
+surface (`declarePaneFindSurface`, attached with `paneFindSurface`): each
+tab has its own provider, bar and state, and the pane's find commands act on
+the active tab's while the pane's last focus or press was inside the
+terminal, or while the pane has no provider of its own. A closed tab's
+state goes with it (`dropPaneFind`).
+
+A pane whose body holds a list beside a detail declares find regions
+(`declarePaneFindRegions`) and keys each region's provider, bar, reads
+and highlights by its region key (`paneFindListKey`, `paneFindDetailKey`)
+instead of the layout pane id. Find acts on one region at a time
+(`paneFindTarget`): the one on screen when only one is (compact, a stacked
+level), else the one last focused or pressed (`paneFindRegion.ts` on the
+region's element), else the declared initial one. Each region's state is
+its own, so both bars may be open; a region with no provider has no find
+and mod+f falls through. Everything the store does per pane (open, close,
+focus return, `paneFindAvailable`, drop on layout removal) holds per
+region. A list region's provider is a filter: it has no `next` or
+`previous`, the bar shows the matching row count and Enter calls
+`focusFirst`, and its query narrows the rows in the page's store so every
+count follows one source. Every find, filter and highlighter matches by
+`utils/findMatch.ts`, terminal find included
+([terminal guide](../terminal/AGENTS.md#find)). The Pull requests page
+(`pulls/pullsPaneFind.svelte.ts`) and Workflows home
+(`workflows/workflowsPaneFind.svelte.ts`) filter this way.
 
 Timeline scroll ownership belongs to
 [`components/chat/`](../chat/AGENTS.md). Generic virtualization belongs to

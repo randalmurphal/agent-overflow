@@ -398,7 +398,7 @@ card (`collab_agent`); a Codex child's rows are settled by the parent
 turn (`internal/store/agent_rows.go`).
 
 - A turn's end (§Force-close safety net), a Stop's flip of the
-  interrupted turn (`MarkUserInterrupt`) and the boot sweep of an
+  interrupted turn (`MarkInterrupt`) and the boot sweep of an
   unfinished turn (§Crash behavior) settle only the rows no agent owns.
   The router's turn boundaries leave an agent's open streams, their
   counts, its queued rows and its open prompts alone
@@ -635,7 +635,8 @@ One-to-one with a user → assistant round-trip. The authoritative
   `assistant` envelope's `message.id`.
 - Soft round-close: a top-level `stream_event.message_delta` with
   `delta.stop_reason` in `{end_turn, stop_sequence, refusal}` closes
-  the current wire round before the trailing `result` arrives.
+  the current round and settles the turn before the trailing `result`
+  arrives (§Rounds and turns).
 
 **Codex**:
 - Turn start: `turn/started` notification.
@@ -656,111 +657,119 @@ One-to-one with a user → assistant round-trip. The authoritative
   and it precedes the queue boundary flush that can start the next
   turn.
 
-### Wire-round vs logical-turn cadence
+### Rounds and turns
 
-`provider:turn_started` and `provider:turn_completed` fire **per wire
-round**, not per logical turn. A round corresponds to one provider
-stop signal: Claude `result`, Claude soft message_delta stop_reason,
-or Codex `turn/completed`. A logical agent-overflow turn (one
-user-typed prompt) can span multiple
-rounds. The canonical multi-round case is Claude's CLI synthesizing a
-`type:"user"` envelope from a `task_notification`: the assistant's
-first `end_turn` lands as result envelope #1, the synthesized prompt
-provokes another model call, and the second response lands as result
-envelope #2 (the `interactive_outlives_taskoutput_monitor.ndjson`
-fixture captures seven such envelopes in one logical turn).
+A **round** is one stretch of model work the user sees.
+`provider:turn_started` opens it and `provider:turn_completed` ends it,
+each carrying the round's own id as `TurnID`; it drives the working
+indicator, Stop, the composer block and read state
+(`currentRoundByThread`, `setOpenRoundSnapshot`, `takeOpenRound`). A
+**logical turn** is one `turns` row and the rows it owns (`openTurn`,
+`claimTurnSettlement`). Codex rounds and turns coincide.
 
-Two cadences run in parallel:
+A Claude soft round-close ends the round and settles the turn, as a
+`result` does: the `turns` row, streaming items and orphan foreground
+tool calls. The CLI turn's `result` can still follow, milliseconds later
+or, while a `local_agent` runs, when the agent finishes
+([claude-wire.md](../references/claude-wire.md#result-turn-complete-signal)).
+Until it does the router remembers the soft-closed turn
+(`softClosedTurn`), and what follows decides what it means:
 
-| Cadence | Driver | Granularity | What it controls |
-|---|---|---|---|
-| Frontend visibility | `currentRoundByThread` / `setOpenRoundSnapshot` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions: working indicator, Stop button, composer block, read-state projection |
-| Persistence | `claimTurnSettlement` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, streaming-item settlement |
+| After a soft close | What it is | Router |
+|---|---|---|
+| Parent `content_block_start`, no `system/init` | The model continues its turn (a ToolSearch or ExitPlanMode continuation) | `reopenSoftClosedTurn`: the `turns` row is in flight again (`ReopenTurn`), so `GetActiveTurn`-gated callers see the work, and the open-turn state returns with the turn's id-allocating counters, so later rows cannot collide with earlier ones; a new round |
+| `system/init` | The CLI acts on new input: an AO message or a wake | A new turn (§Turns the provider starts) |
+| `result` | The CLI turn ends | Folds its usage and payload onto the soft-closed turn (`completionTurnIndex`, `persistLateTurnPayload`) |
 
-Round entry points:
-
-- **`handleTurnStart`** opens round 1 of every logical turn. It calls
-  BOTH `setOpenTurn` (per-turn flow-control + counter re-init) AND
-  `setOpenRoundSnapshot` (per-round id allocation), then emits
-  `provider:turn_started` with the per-round uuid as TurnID.
-- **`handleInit` re-round branch** opens rounds 2+ when an
-  `EventInit` arrives for a thread whose current logical turn is
-  already settled (`settledTurns[turnKey]==true`). Calls
-  `setOpenRoundSnapshot` only, and does NOT call `setOpenTurn`. This is
-  required: id-allocating counters must survive across the
-  multi-result-per-turn boundary so post-round-1 rows don't collide
-  with rows already persisted under the same logical turn (see
-  `internal/triage/multi_result_test.go`).
-- **`handleTurnComplete`** uses `takeOpenRound` (read-and-clear) to
-  decide whether to emit. An empty slot means a synthetic complete
-  already raced ahead (the fatal-error-then-real-result pattern in
-  `handleError`); the second wire complete then emits nothing, so
-  the frontend sees exactly one `turn_completed` per round.
-  Persistence work stays gated by `claimTurnSettlement` at logical-turn
-  granularity.
-
-The persisted `turns.turn_id` stays on `resolveTurnID` (logical-turn
-granularity) so multi-round logical turns share a single row.
+While the turn is settled the thread is idle everywhere: no working
+indicator or Stop, the composer sends directly, and revert or transfer
+see no active turn. A completion with no turn open settles the
+soft-closed turn, else the newest turn that started when this session
+settled it (a duplicate result); otherwise no turn of the session owns
+it and it settles nothing, so it never rewrites a sent message's turn
+that has not started or a turn a previous session finished
+(`completionTurnIndex`). Subagent
+content never reopens the parent's turn. A second completion for a settled turn (a
+synthetic truncated complete from `handleError`, then the real result)
+finds no round to emit and folds its late payload only.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-
-    Idle --> RoundOpen: handleTurnStart
-    note right of RoundOpen
-      openTurns[thread]=turnIndex
-      currentRoundByThread[thread]=roundID
-      emit provider:turn_started
-    end note
-
-    RoundOpen --> SettledBetweenRounds: soft or real EventTurnComplete, first claim
-    note right of SettledBetweenRounds
-      takeOpenRound()
-      settledTurns[thread|turn]=true
-      update turns row
-      clearOpenTurn()
-      emit provider:turn_completed
-    end note
-
-    SettledBetweenRounds --> ReRoundOpen: EventInit after settled turn
-    note right of ReRoundOpen
-      currentRoundByThread[thread]=newRoundID
-      openTurns remains empty
-      emit provider:turn_started
-    end note
-
-    ReRoundOpen --> SettledBetweenRounds: soft or real EventTurnComplete, already settled
-    note right of SettledBetweenRounds
-      takeOpenRound()
-      UpdateTurnLatePayload()
-      emit provider:turn_completed
-    end note
-
-    RoundOpen --> Idle: session_died / cleanup
-    note right of Idle
-      synthesize truncated complete if open turn exists
-      delete openTurns/currentRoundByThread/settledTurns
-    end note
-
-    SettledBetweenRounds --> Idle: cleanup
+    Idle --> Running: turn start (AO send or provider-started)
+    Running --> SoftClosed: soft close (settle, emit turn_completed)
+    SoftClosed --> Running: parent content, no init (reopen)
+    SoftClosed --> Running: init (open next turn)
+    SoftClosed --> Idle: result (late fold)
+    Running --> Idle: result (settle)
+    Running --> Idle: session_died / cleanup
 ```
 
-Cascade shapes pinned by fixtures/tests:
+Shapes pinned by tests:
 
-- Single round soft → real: soft emits `provider:turn_completed` and
-  settles; trailing real result folds usage / final assistant id only.
-- Multi-result real → init → real: first real settles; init opens a
-  re-round; second real emits round completion and folds late payload.
-- Soft + subagent wait + init + real: soft clears working UI; later
-  init/re-round and real behave as above.
-- Soft + init + soft + init + soft + real: each init opens one new
-  round; each soft closes that round; trailing real folds final payload.
+- Soft close, content, soft close, result: one turn, settled, reopened
+  and settled again (`TestContinuationReopensSoftClosedTurn`,
+  `TestSoftCloseContinuationStaysInItsTurn`).
+- Soft close, init, soft close, init, soft close, result
+  (`local_agent_user_input_during_wait`, `local_agent_plus_bg_bash`): a
+  turn per init, each settled by its own soft close; the result's usage
+  lands on the last (`TestInitDuringWithheldResultOpensNextTurn`).
+- Result, init: a provider-started turn.
+- The same shapes against the app: `claude-self-wake-turn.spec.ts`.
+
+### Turns the provider starts
+
+`handleInit` decides what a `system/init` opens:
+
+1. An AO internal command (`/effort`, `/fast`, `/rename`;
+   `SessionInfo.TurnOpener`, stamped while a `command_lifecycle`
+   `started` frame is open) opens nothing and claims no waiting message.
+2. A pending send that has not opened a turn: `handleTurnStart` at its
+   dispatcher-stamped index. A wake that races a send already on stdin
+   takes the send's turn (§Stdin race).
+3. An init while a round is open opens nothing.
+4. Any other command opens a provider-started turn.
+5. No opener, so the CLI woke itself (a background-task notification, a
+   scheduled wakeup) or a peer session's message started it: a
+   provider-started turn when the session has settled a turn. Otherwise
+   the session is attaching and nothing opens; background work does not
+   survive a CLI restart.
+
+Parent content with no turn open after a `result` (no init, which the
+CLI does not send) opens a pending send's turn when one waits, else a
+provider-started turn, rather than writing into the settled one.
+
+A provider-started turn (`openProviderStartedTurn`) takes
+`store.NextTurnIndex` and has no user row; the completion notice that
+woke it stays above it. The exception is a scheduled prompt (a
+ScheduleWakeup wake or a cron job's fire), which the transcript carries
+as a user record: it is the turn's first row, badged Scheduled, and a
+cron fire, which sends no init, opens the turn with it
+(`openScheduledTurn`). It has its own round, timer and Stop. A message
+sent while it runs is queued and drained into it as into any running
+turn.
+
+The router and the App choose turn indexes independently, so both do it
+under the thread's turn allocation lock (`Router.LockTurnAllocation`):
+steps 2 to 5 and the init-less content decision on the router, and on
+the App a send's placement through its registration. A direct send
+places again under the lock and registers with its row's persist when a
+session is live, and again before its provider write if a session
+teardown cleared the registry since (a Codex account switch reconnects
+there); a cold session registers after it starts, since no turn of its
+own can come first. A queued message's dispatch holds the
+lock from placement through registration. A send placed while a
+provider-started turn opens therefore takes the next index, and a wake
+decided while a send is being placed or sent finds the registered send
+and takes its turn. The App holds the
+lock only across store writes and router calls. Session import applies the same rule: a top-level
+`task-notification` user row starts a turn with no user row.
 
 ### Required contract
 
 > **Turn state is live backend state.** The UI's "Working…" indicator
 > and active-turn flag come exclusively from the provider's live turn
-> registry: pushed `EventTurnStart` / `EventTurnComplete` (per wire
+> registry: pushed `EventTurnStart` / `EventTurnComplete` (per
 > round; see above) and, for a client that connects or recovers
 > mid-turn, the snapshots `GetThreadLiveState` (one thread, pane
 > hydration) and `ListThreadLiveActivity` (every thread of a computer,
@@ -816,8 +825,9 @@ the current turn" error is unsatisfiable when no session exists to
 interrupt.
 
 The boot sweeps (`App.settlePriorInstance`: crashed turns, Codex
-background runtime, orphaned Claude background launches and running
-worktree setups) each run in their own boot phase. A sweep that fails
+background runtime, orphaned Claude background launches, running
+worktree setups and review-comment claims whose message was never
+delivered) each run in their own boot phase. A sweep that fails
 does not stop the boot: it is reported as a failed boot phase, which
 every client shows ([startup readiness](transport.md#startup-readiness)),
 and the next start runs it again.
@@ -987,7 +997,17 @@ active turn persists the row QUIETLY at the active turn's index, with no
 `provider:item_event`; every other case defers the row until its provider
 echo. Either way the message is visible above the composer, not in the
 timeline, until its confirmation proves consumption
-(`docs/architecture/user-message-ordering.md` § Confirmation).
+(`docs/architecture/user-message-ordering.md` § Confirmation). The review
+comments a queued message carries are delivered by that confirmation, not
+by the quiet row. A restore that takes the message back returns them to
+drafts with its row (`RetireUndeliveredUserRow`) and gives the composer
+the text before them (`usermessage.Meta.TextBeforeReviewComments`), never
+both. A requeue rebuilt from the row sends the row's summary as it is,
+since it renders what only the first dispatch had (a PR's hunk excerpts,
+every joined member's comments of every source), and claims again the
+comments the row's retire returned, with the bodies the summary renders: a
+comment edited meanwhile stays a draft. A stale row the restore could not
+delete is retired by the resend, which claims what it returns.
 
 **The frontend mirror** (`frontend/src/lib/stores/sendQueue.svelte.ts`) has
 two zones, both per-thread and both surviving thread switches:
@@ -1018,6 +1038,49 @@ arms the append spring for the hand-off. A scrolled-back window keeps the
 message in the preview until it loads that far. A thread with no mounted
 pane has no timeline for the row to be in; its item-stream handler confirms
 on arrival, which is also what lets the sidebar's working indicator settle.
+
+**Release without a row.** A thread this client does not watch is sent no
+rows, so nothing above confirms its entries. The backend confirms them
+instead (capability `flush-settlement.v1`): an answer that none of a thread's
+sends is pending, as of a `provider:queue_flushed` sequence, settles every
+message the thread flushed up to that sequence. The answer and the sequence
+are read under the dispatch bookkeeping lock that `queue_flushed` is emitted
+under. It has two legs:
+
+- Every `provider:sends_pending` frame carries the sequence as
+  `flushedThrough`, and the backend publishes a frame that reads nothing
+  pending after every flush, also when the published answer did not change
+  (`publishSendsPending`).
+- `ListUnsettledFlushes` restates it for the whole computer: the sequence,
+  and the threads that still hold a flush no frame has covered. The client
+  reads it on every connection edge and after a gap on
+  `provider:sends_pending`, which repairs a frame that was lost or that a
+  replay delivered ahead of the flush frames it covers. Its reply can
+  overtake flush frames emitted before it, so the newest answer per computer
+  is kept and late flush frames are checked against it.
+
+The client marks each entry with the backend, launch and sequence of the
+frame that added it, or with `ThreadLiveState.flushedThrough` for an entry a
+live-state read added, and releases the entries an answer covers
+(`flushSettlement.ts`, `settleFlushed`). An answer speaks for its own
+backend: sequences compare within one launch of it, a current answer also
+releases the entries of its earlier launches, and an entry another backend
+flushed, or one with no mark, is not covered. A mounted pane keeps its
+entries until it renders the rows. An answer that arrives meanwhile tags the
+entries it covers, and the tagged entries the pane never rendered leave when
+it leaves the thread; a later flush of the same message clears the tag. A
+live-state read that finds an entry's row in history tags it the same way. Each
+backend's newest answer is kept while the pane is mounted, for an entry
+installed after it. A backend's detach releases the entries it flushed, and
+tags them for a mounted thread.
+
+A send an interrupt places in the timeline stops reading as pending only
+once the store write behind that claim lands (`anchoredInTimeline`), so a
+claim whose write fails never produces an answer that nothing is pending.
+
+**The preview is bounded.** `SendQueuePreview` renders the newest four
+pending messages and a count of the earlier ones. Its height is part of the
+composer clearance, so an unbounded list would cover the timeline.
 
 **Removal before dispatch.** `removeQueuedItem` deletes a queued message that
 has not been sent: it takes the durable row and the triage entry out together
@@ -1109,7 +1172,7 @@ working indicator clears and the user gets actionable copy:
    sends to the composer draft, so the next send lazy-starts fresh;
    recovery is a manual retry: the failure mode is deterministic, so
    auto-retry would loop silently. The error-item upsert is the single
-   frontend surface (it clears the optimistic pending-send indicator);
+   frontend surface (it clears the pending-send working indicator);
    no `session_died` banner fires for a session that never lived. Subsequent
    events are covered by the stopped-thread gate in
    [`triage-routing.md`](triage-routing.md#pre-dispatch-rewrites).
@@ -1136,7 +1199,7 @@ counterpart "retry succeeded" wire signal from either provider.
 | Component | State read | Render rule |
 |---|---|---|
 | `ChatWorkingIndicator` | `pane.activeTurn.startedAt` | Self-ticking timer, appears iff `activeTurn !== null`. |
-| `MessageTimeline` (response divider) | Ordered timeline nodes | Separator rendered before assistant text when tool activity immediately precedes the response in the same turn. |
+| `MessageTimeline` (response divider) | Ordered timeline nodes | Separator rendered before assistant text directly below an activity run, in any turn. |
 | Launch row `backgrounded` indicator (`rowState.ts`) | `item.isBackground && item.status === 'running'` and `meta.live_background_active` not `false` | Three dots on the launch row until the launch settles, then the same box with the dots hidden (`settled`). |
 | `BackgroundTaskLiveTail` (open tray row) | `WatchBackgroundTaskOutput(threadId, launchId)`, then `provider:background_task_output` frames | Follows a running Claude command's `output_file` from the backend (`internal/tasktail`) while the row is open; released on collapse, ended by the tray delta that completes the launch. |
 | `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)`, then `provider:background_tray` deltas | Shows running launches and pending Codex unifiedExec commands; completed Codex commands leave the live tray when typed completion clears the transient tracker. |

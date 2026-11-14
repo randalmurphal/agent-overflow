@@ -1,4 +1,3 @@
-import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { afterEach, describe, expect, it, beforeEach } from 'vitest';
 import {
   createComposerDraftStore,
@@ -8,7 +7,7 @@ import {
 } from './composerDraft.svelte';
 import type { Attachment } from '../types/attachment';
 import { getToasts } from './toast.svelte';
-import { pendingDraftRestore, getRememberedDraftSnapshot } from './composerDraftSnapshots';
+import { getRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function installMocks(draft: {
@@ -61,23 +60,6 @@ describe('composerDraft store', () => {
   beforeEach(() => {
     resetComposerDraftSnapshotsForTest();
     installMocks({ content: '', attachmentIds: [], terminalChips: [] });
-  });
-
-  it('releases a restore barrier on history invalidation without writing queued edits to the new history', async () => {
-    const store = createStore();
-    await store.setThread('thread-1');
-    const writes: string[] = [];
-    setBindingMock('SaveDraft', async (_id: unknown, content: string) => { writes.push(content); });
-    store.applyOptimisticRestoredDraft('thread-1', { content: 'restored', attachments: [], terminalChips: [], sourceProposedPlan: null });
-    store.setContent('edited during cleanup');
-    const saving = store.flushPending();
-    setBackendIdentityFromBootstrap('restore-owner', 'after-history-reset');
-    await saving;
-    expect(pendingDraftRestore('thread-1')).toBeUndefined();
-    expect(writes).toEqual([]);
-    expect(store.content).toBe('edited during cleanup');
-    await store.flushPending();
-    expect(writes).toEqual(['edited during cleanup']);
   });
 
   it('hydrates content and attachments from the backend on setThread', async () => {
@@ -197,87 +179,6 @@ describe('composerDraft store', () => {
     expect(store.attachments).toHaveLength(1);
     store.removeAttachment('att-x');
     expect(store.attachments).toHaveLength(0);
-  });
-
-  it('applies an optimistic restored draft locally without saving', async () => {
-    const saveMock = setBindingMock('SaveDraft', async () => {});
-    const store = createStore({ debounceMs: 0 });
-    await store.setThread('thread-1');
-
-    store.applyOptimisticRestoredDraft('thread-1', {
-      content: 'interrupted prompt',
-      attachments: [sampleAttachment('att-1')],
-      terminalChips: [],
-      sourceProposedPlan: { threadId: 'src', itemId: 'plan-1' },
-    });
-
-    expect(store.content).toBe('interrupted prompt');
-    expect(store.attachments.map((a) => a.id)).toEqual(['att-1']);
-    expect(store.sourceProposedPlan).toEqual({ threadId: 'src', itemId: 'plan-1' });
-    expect(saveMock).not.toHaveBeenCalled();
-  });
-
-  it('clears an unchanged optimistic restored draft when the revert is declined', async () => {
-    const store = createStore({ debounceMs: 0 });
-    await store.setThread('thread-1');
-    const snapshot = {
-      content: 'interrupted prompt',
-      attachments: [sampleAttachment('att-1')],
-      terminalChips: [],
-      sourceProposedPlan: null,
-    };
-
-    store.applyOptimisticRestoredDraft('thread-1', snapshot);
-    // true = cleared to the empty baseline; the caller may safely
-    // repaint the pre-revert draft (the revert-to-message failure path).
-    expect(store.clearOptimisticRestoredDraft('thread-1', snapshot)).toBe(true);
-
-    expect(store.content).toBe('');
-    expect(store.attachments).toEqual([]);
-  });
-
-  it('preserves user edits made before backend confirmation reloads the draft', async () => {
-    installMocks({
-      content: 'backend prompt',
-      attachmentIds: [],
-      terminalChips: [],
-    });
-    const store = createStore({ debounceMs: 50 });
-    await store.setThread('thread-1');
-    const snapshot = {
-      content: 'interrupted prompt',
-      attachments: [],
-      terminalChips: [],
-      sourceProposedPlan: null,
-    };
-
-    store.applyOptimisticRestoredDraft('thread-1', snapshot);
-    store.setContent('edited prompt');
-    await store.reloadFromBackend('thread-1');
-
-    expect(store.content).toBe('edited prompt');
-    await store.settleOptimisticRestoredDraft('thread-1');
-    await store.flushPending();
-  });
-
-  it('preserves user edits when clearing a declined optimistic restore', async () => {
-    const store = createStore({ debounceMs: 50 });
-    await store.setThread('thread-1');
-    const snapshot = {
-      content: 'interrupted prompt',
-      attachments: [],
-      terminalChips: [],
-      sourceProposedPlan: null,
-    };
-
-    store.applyOptimisticRestoredDraft('thread-1', snapshot);
-    store.setContent('edited prompt');
-    // false = the user's newer edits were preserved; repainting the
-    // pre-revert draft over them would clobber their typing.
-    expect(store.clearOptimisticRestoredDraft('thread-1', snapshot)).toBe(false);
-
-    expect(store.content).toBe('edited prompt');
-    await store.flushPending();
   });
 
   it('retains the saved draft if the frontend closes before its send is accepted', async () => {
@@ -697,11 +598,9 @@ describe('composerDraft store', () => {
     expect(store.hasPendingSave).toBe(true);
   });
 
-  it('a failed restore leaves no optimistic marker behind', async () => {
-    // The marker means "painted locally, expecting the backend to already
-    // hold this". A failed write makes that false, so the state is the
-    // ordinary unsaved-draft one — which a reload discards, exactly as it
-    // does for any other unsaved local draft.
+  it('a failed restore leaves an ordinary unsaved draft', async () => {
+    // A reload discards it, exactly as it does for any other unsaved local
+    // draft.
     installMocks({ content: 'backend prompt', attachmentIds: [], terminalChips: [] });
     setBindingMock('SaveDraft', async () => {
       throw new Error('offline');
@@ -715,7 +614,6 @@ describe('composerDraft store', () => {
       sourceProposedPlan: null,
     };
 
-    store.applyOptimisticRestoredDraft('thread-1', snapshot);
     await expect(store.restoreDraftFor('thread-1', snapshot)).rejects.toThrow(/offline/);
     store.setContent('edited prompt');
     await store.reloadFromBackend('thread-1');
@@ -880,28 +778,3 @@ describe('composerDraft store', () => {
   });
 });
 
-
-it('orders edits after rollback across pane switches and remounts', async () => {
-  resetComposerDraftSnapshotsForTest();
-  const rows = new Map<string, string>();
-  setBindingMock('GetDraft', async (id: string) => ({ content: rows.get(id) ?? '', attachmentIds: [], terminalChips: [] }));
-  setBindingMock('ListAttachments', async () => []);
-  const writes: string[] = [];
-  setBindingMock('SaveDraft', async (id: string, content: string) => { rows.set(id, content); writes.push(content); });
-  const first = createStore({ debounceMs: 10000 });
-  await first.setThread('a');
-  first.applyOptimisticRestoredDraft('a', { content: 'raw /command', attachments: [], terminalChips: [], sourceProposedPlan: null });
-  first.setContent('raw /command plus edits');
-  await first.setThread('b');
-  expect(writes).toEqual([]);
-  const reopened = createStore({ debounceMs: 10000 });
-  await reopened.setThread('a');
-  expect(reopened.content).toBe('raw /command plus edits');
-  rows.set('a', 'raw /command'); // backend rollback restores the original
-  await reopened.reloadFromBackend('a');
-  expect(reopened.content).toBe('raw /command plus edits');
-  await first.settleOptimisticRestoredDraft('a');
-  expect(rows.get('a')).toBe('raw /command plus edits');
-  expect(first.content).toBe('');
-  await reopened.setThread(null);
-});

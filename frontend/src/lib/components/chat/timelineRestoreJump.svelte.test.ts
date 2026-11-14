@@ -13,6 +13,7 @@ import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import { createTimelineRestore } from './timelineRestore.svelte';
 import { getToasts } from '../../stores/toast.svelte';
+import type { Item } from '../../types/models';
 import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
@@ -40,7 +41,7 @@ function deferred(): Deferred {
   return { promise, resolve };
 }
 
-function harness(opts: { revealed?: string[]; grouped?: string[]; nodes?: TimelineNode[]; resolveAs?: Record<string, number> } = {}) {
+function harness(opts: { revealed?: string[]; grouped?: string[]; nodes?: TimelineNode[]; resolveAs?: Record<string, number>; items?: Item[] } = {}) {
   const revealed = opts.nodes ?? (opts.revealed ?? ['a', 'b', 'c']).map(leaf);
   const grouped = opts.nodes ?? (opts.grouped ?? opts.revealed ?? ['a', 'b', 'c']).map(leaf);
   const lookups: Deferred[] = [];
@@ -53,11 +54,13 @@ function harness(opts: { revealed?: string[]; grouped?: string[]; nodes?: Timeli
     loading: false,
     hasMoreNewer: false,
     activityRuns: {},
+    getItemById: (id: string) => opts.items?.find((item) => item.id === id),
     loadUntilItem: vi.fn((): Promise<LoadUntilItemResult> => {
       const lookup = deferred();
       lookups.push(lookup);
       return lookup.promise;
     }),
+    releaseEndedNavigation: vi.fn(),
   };
   const stick = {
     markEscaped: vi.fn(),

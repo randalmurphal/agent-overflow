@@ -30,6 +30,8 @@
  * never a URL this file resolves, fetches or writes to an href.
  */
 
+import { codespanClass } from './codespan';
+
 // Allowlisted tag → allowlisted attributes. Presence means the element
 // renders as itself; anything else renders as escaped literal tags.
 const ALLOWED_ATTRS: Record<string, readonly string[]> = {
@@ -185,6 +187,11 @@ const sanitizeInto = (
 			if (value === null) continue;
 			if ((name === 'href' || name === 'src') && !SAFE_URL.test(value.trim())) continue;
 			clean.setAttribute(name, value);
+		}
+		// Inline code only: a `<pre><code>` is a block, sized by its `pre`.
+		if (tag === 'code' && parent.localName !== 'pre') {
+			const className = codespanClass('', element.textContent ?? '');
+			if (className !== '') clean.setAttribute('class', className);
 		}
 		parent.append(clean);
 		sanitizeInto(element, clean, claimMedia);

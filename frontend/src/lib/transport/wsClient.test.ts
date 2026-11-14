@@ -293,6 +293,39 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('carries a forge rate limit’s reserve and release onto the rejection, and only that code’s', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const p = client.callByID(9, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    ws.pushFrame({
+      type: 'rpc',
+      id: ws.sent[1]!.id as string,
+      error: { code: 'forge_rate_limited', message: 'paused', reserve: true, resumeAt: '2026-10-21T08:30:00Z' },
+    });
+    await expect(p).rejects.toMatchObject({ code: 'forge_rate_limited', reserve: true, resumeAt: '2026-10-21T08:30:00Z' });
+
+    const rejections: TransportError[] = [];
+    for (const error of [
+      { code: 'forge_rate_limited', message: 'reached', resumeAt: 'soon' },
+      { code: 'forge_transient', message: 'down', reserve: true, resumeAt: '2026-10-21T08:30:00Z' },
+    ]) {
+      const q = client.callByID(10, []);
+      await flushMicrotasks();
+      ws.pushFrame({ type: 'rpc', id: ws.sent.at(-1)!.id as string, error });
+      try {
+        await q;
+      } catch (err) {
+        rejections.push(err as TransportError);
+      }
+    }
+    // A release that is no time is dropped; another code carries neither.
+    expect(rejections.map((err) => [err.reserve, err.resumeAt])).toEqual([[false, undefined], [undefined, undefined]]);
+    client.close();
+  });
+
   it.each(['thread_moved', 'thread_transfer_pending'])('preserves %s ownership on a lost-owner call', async (code) => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
     const promise = client.callByID(7, []);
@@ -349,7 +382,7 @@ describe('WSClient', () => {
     const [first, second] = ws.sent.filter((frame) => frame.type === 'rpc');
     ws.pushFrame({ type: 'rpc', id: first!.id, error: {
       code: 'method_error', message: `revert: ${longLayer}`,
-      detail: { ref: 'rKVz', method: 'InterruptAndRevertIfClean', at: 1, chain: ['revert', longLayer, 7] },
+      detail: { ref: 'rKVz', method: 'RevertConversationAndResendMessage', at: 1, chain: ['revert', longLayer, 7] },
     } });
     ws.pushFrame({ type: 'rpc', id: second!.id, error: {
       code: 'method_error', message: 'boom', detail: { ref: 42, method: 'X', at: 1 },
@@ -357,7 +390,7 @@ describe('WSClient', () => {
     await settled;
     const [withDetail, withoutDetail] = caught as TransportError[];
     expect(withDetail!.message.length).toBeLessThan(longLayer.length);
-    expect(withDetail!.detail).toEqual({ ref: 'rKVz', method: 'InterruptAndRevertIfClean', at: 1, chain: ['revert', longLayer], backend: '' });
+    expect(withDetail!.detail).toEqual({ ref: 'rKVz', method: 'RevertConversationAndResendMessage', at: 1, chain: ['revert', longLayer], backend: '' });
     expect(withoutDetail!.detail).toBeUndefined();
     client.close();
   });
@@ -749,21 +782,23 @@ describe('WSClient', () => {
     vi.useRealTimers();
   });
 
-  it('ships exactly the two idempotent sends in the retry-on-transient-close allowlist', () => {
+  it('ships exactly the idempotent calls in the retry-on-transient-close allowlist', () => {
     // A tripwire, not a formality. The allowlist is the one place an RPC
     // can be re-sent without its caller knowing, and every entry trades a
     // lost answer for a possibly-duplicated action. THE RULE: a call is
-    // admissible only when the backend is idempotent for it. Both entries
-    // here are, because both carry a client-minted `sendId` the backend
-    // answers a repeat from. Growing this must be a reviewed decision that
+    // admissible only when the backend is idempotent for it. Every entry
+    // here is, because each carries a client-minted id (`sendId`, or a
+    // shell command's `runId`) the backend answers a repeat from. Growing
+    // this must be a reviewed decision that
     // also updates this expectation and the entry's `why`, never a quiet
     // append.
     expect(RETRY_ON_TRANSIENT_CLOSE.map((entry) => entry.methodId)).toEqual([
       3632185196, // SendMessageWithOptions
       1034543696, // RegisterQueueItem
+      651196145, // RunThreadShellCommand
     ]);
     for (const entry of RETRY_ON_TRANSIENT_CLOSE) {
-      expect(entry.why).toContain('sendId');
+      expect(entry.why).toMatch(/sendId|runId/);
     }
   });
 

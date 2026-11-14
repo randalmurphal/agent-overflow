@@ -66,6 +66,7 @@ import type { PayloadExpansionHandle } from '../utils/payloadExpansion.svelte';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import type { PaneErrorRow } from './threadPaneErrors.svelte';
+import type { UnsavedThreadRowsEvent } from '../../../bindings/agent-overflow/internal/app/models';
 import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import type { TextWindow } from '../utils/liveText';
 import type { TimelineCursorLike } from './threadItems';
@@ -74,7 +75,9 @@ import type {
   LoadUntilItemResult,
   PaneErrorKind,
   PaneScrollController,
+  ScrollToItemOptions,
   ScrollToItemRequest,
+  ScrollToItemWithdrawal,
 } from './threadPaneShared';
 import type {
   PayloadExpansionLease,
@@ -84,6 +87,7 @@ import type {
 import type { SettledTurn, TimelineTurnFacet } from './threadTurnProjection';
 import type { ThreadPane } from './thread.svelte';
 import type { ProvenAppend } from '../markdown';
+import type { PresentingRowPromotion, RowPromotionPresenter } from './threadRowPromotions.svelte';
 
 /**
  * Pane identity, the thread it is holding, and the switch-load
@@ -130,7 +134,7 @@ export interface PaneSession {
   readonly ensureMaterializedThread: () => Promise<string | null>;
   /** Dev-only memory probe; opaque to every consumer, which just records it. */
   readonly debugMemoryStats: () => unknown;
-  /** A Stop drops the send-in-flight flag with the turn it clears (`revertOnInterrupt.svelte.ts`). */
+  /** A Stop drops the send-in-flight flag with the turn it clears (`threadInterrupt.svelte.ts`). */
   readonly setSendInFlight: (value: boolean) => void;
 }
 
@@ -152,6 +156,14 @@ export interface TimelineSource {
   readonly getItemById: (itemId: string) => Item | undefined;
   readonly timelineRevision: number;
   readonly historyRevision: number;
+  /** Advances when loaded rows' text may have changed; read only by find. */
+  readonly searchRevision: number;
+  /**
+   * While watched, `searchRevision` also advances for upserts, deltas,
+   * patches and removals of rows the window refuses or does not hold.
+   * Returns the stop; a find watches only while open.
+   */
+  watchSearchableEvents(): () => void;
   readonly rowUiRetentionRevision: number;
   readonly activityRuns: ThreadActivityRuns;
   /**
@@ -185,7 +197,9 @@ export interface TimelineWindow {
   readonly loadOlder: () => Promise<LoadOlderResult>;
   readonly loadNewer: () => Promise<LoadOlderResult>;
   readonly loadRecentTail: () => Promise<boolean>;
-  readonly loadUntilItem: (itemID: string) => Promise<LoadUntilItemResult>;
+  readonly loadUntilItem: (itemID: string, live?: () => boolean) => Promise<LoadUntilItemResult>;
+  /** Free an ended navigation's paging claims; see `ThreadTimelineWindow`. */
+  readonly releaseEndedNavigation: () => void;
   /** Set when a wire settle deferred its window prune to visual quiet. */
   readonly hasDeferredRecentWindowPrune: boolean;
   readonly retryDeferredRecentWindowPrune: () => void;
@@ -215,9 +229,11 @@ export interface ScrollHost {
   readonly attachScrollController: (controller: PaneScrollController) => void;
   readonly detachScrollController: (controller: PaneScrollController) => void;
   readonly scrollToItemRequest: ScrollToItemRequest | null;
-  readonly requestScrollToItem: (itemID: string) => void;
+  readonly requestScrollToItem: (itemID: string, options?: ScrollToItemOptions) => void;
   /** Take-once: clears the pending request; null when none or stale. */
   readonly takeScrollToItemRequest: () => string | null;
+  readonly scrollToItemWithdrawal: ScrollToItemWithdrawal | null;
+  readonly withdrawScrollToItem: (owner: object) => void;
   /** One-shot structural-append spring window; call before the mutation. */
   readonly armStructuralSpring: () => boolean;
 }
@@ -256,10 +272,8 @@ export interface RowUiRegistry {
   ) => PayloadExpansionLease;
   readonly isSubagentGroupExpanded: (groupKey: string) => boolean;
   readonly toggleSubagentGroupExpanded: (groupKey: string) => boolean;
-  readonly isUserMessageExpanded: (itemId: string) => boolean;
-  readonly setUserMessageExpanded: (itemId: string, expanded: boolean) => void;
-  readonly isUnsendDeclined: (itemId: string) => boolean;
-  readonly setUnsendDeclined: (itemId: string) => void;
+  readonly isUserMessageExpanded: (itemId: string, part?: string) => boolean;
+  readonly setUserMessageExpanded: (itemId: string, expanded: boolean, part?: string) => void;
   readonly diffCardExpandedOverride: (itemId: string, filePath: string) => boolean | undefined;
   readonly setDiffCardExpanded: (itemId: string, filePath: string, expanded: boolean) => void;
   readonly attachmentCacheFor: (itemId: string) => AttachmentPreviewCache;
@@ -285,6 +299,15 @@ export interface RevealRead {
   readonly liveThinkingTailForItem: (itemId: string) => string | null;
   readonly liveThinkingWindowForItem: (itemId: string) => TextWindow | null;
   readonly isItemSmoothing: (itemId: string) => boolean;
+  /**
+   * Held rows a timeline is presenting: the pane still holds the row each
+   * replaces (threadRowPromotions.svelte.ts).
+   */
+  readonly presentingRowPromotions: readonly PresentingRowPromotion[];
+  /** Offer this timeline the presentation of held rows, for its lifetime. */
+  readonly registerRowPromotionPresenter: (presenter: RowPromotionPresenter) => () => void;
+  /** The presentation of the hold for `itemId` ended: install its row. */
+  readonly completeRowPromotion: (itemId: string) => void;
   /** Changes after pane-wide reveal disposal so mounted rows re-register. */
   readonly assistantRevealRegistrationGeneration: number;
   readonly registerAssistantRevealSink: (
@@ -317,7 +340,7 @@ export interface RevealRead {
  * provider banner's action needs the thread's provider.
  *
  * Consumers: `chat/ProviderStatusBanner.svelte` (the whole role),
- * `stores/interruptErrors.ts` (`Pick<…, 'setGeneralError'>`), and
+ * `stores/threadInterrupt.svelte.ts` (`Pick<…, 'threadId' | 'setGeneralError'>`), and
  * `stores/eventsProvider.ts` (a `Pick` of the writers, intersected with
  * `ThreadPaneIngest`). `composer/Composer.svelte` also reaches
  * `setGeneralError`, but through the whole pane — it is one of the
@@ -336,6 +359,8 @@ export interface ErrorSurface {
   readonly providerBanner: ProviderStatusEvent | null | undefined;
   /** Thread-owned banner rows (stale binary, stale prompt), in display order. */
   readonly sessionBanners: readonly ProviderStatusEvent[];
+  /** Thread errors the backend could not save to history, null when none. */
+  readonly unsavedRows: UnsavedThreadRowsEvent | null;
   readonly setPaneError: (message: string, kind?: PaneErrorKind, err?: unknown) => void;
   readonly clearPaneError: (kind?: PaneErrorKind) => void;
   /** `err`, when given, is the failure behind `message` (details and copy). */
@@ -348,6 +373,8 @@ export interface ErrorSurface {
   /** Raise (event) or withdraw (null) one thread-owned banner by kind. */
   readonly setSessionBanner: (kind: SessionBannerKind, status: ProviderStatusEvent | null) => void;
   readonly clearSessionBanners: () => void;
+  /** Apply a `thread:unsaved_rows` frame: the thread's whole list. */
+  readonly applyUnsavedRows: (evt: UnsavedThreadRowsEvent) => void;
   readonly retryHistoryLoad: () => Promise<void>;
   readonly refreshFromBackend: (requireItems?: boolean) => Promise<void>;
 }
@@ -380,17 +407,16 @@ export interface PaneDoors {
  * (intersected with a `Pick` of `ErrorSurface`'s writers),
  * `stores/eventsQueue.ts`,
  * `stores/eventsMessageRevert.ts`, `stores/eventsDraftRows.ts`,
- * `stores/eventsThreadRows.ts`, `stores/eventsTransportGap.ts`,
- * `stores/revertOnInterrupt.svelte.ts`. Each narrows at its pane
- * acquisition point (the registry hands out whole `ThreadPane`s), so a
- * new member use in any of them fails to compile until it is added
- * here. `stores/eventsTerminal.ts` stays off this role on purpose: its
+ * `stores/eventsThreadRows.ts`, `stores/eventsTransportGap.ts`. Each
+ * narrows at its pane acquisition point (the registry hands out whole
+ * `ThreadPane`s), so a new member use in any of them fails to compile
+ * until it is added here. `stores/eventsTerminal.ts` stays off this role on purpose: its
  * two members (`paneId`, `requestTerminalFocus`) are a focus request,
  * not ingest, and it states its own `Pick`.
  */
 export interface ThreadPaneIngest {
   readonly armStructuralSpring: () => boolean;
-  readonly confirmOptimisticSend: (threadId: string, sendId: string | undefined, canonicalItemId?: string) => void;
+  readonly confirmSend: (threadId: string, sendId: string | undefined) => void;
   readonly syncRenderedFlushRows: () => void;
   readonly paneId: string;
   readonly threadId: string | null;
@@ -406,9 +432,7 @@ export interface ThreadPaneIngest {
   readonly applyItemDelta: (evt: ItemDeltaEvent) => void;
   readonly applyItemMeta: (evt: ItemMetaEvent) => void;
   readonly applyItemPatch: (evt: ItemPatchEvent) => void;
-  readonly upsertItems: (incoming: Item[]) => boolean;
   readonly removeItemById: (itemId: string, expectedThreadId: string) => Item | null;
-  readonly removeItemsFromTurn: (fromTurnIndex: number, expectedThreadId: string) => Item[];
   readonly removeRevertedItems: (turnIndex: number, keptAnchorTurnItemIds: string[]) => Item[];
   readonly addApproval: (approval: ApprovalRequest) => void;
   readonly removeApproval: (requestId: string) => void;

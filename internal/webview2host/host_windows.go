@@ -118,6 +118,9 @@ type hostPage struct {
 	// per bounds directive.
 	bgUnsupported bool
 	failHandler   *iProcessFailedHandler
+	// findStarted is the page's one Start completion handler, made on the
+	// first find and kept in pendingHandlers (find_windows.go).
+	findStarted *iFindStartCompletedHandler
 	// pendingHandlers keeps every COM callback object this page handed to
 	// WebView2 alive for as long as WebView2 can invoke it.
 	pendingHandlers []any
@@ -232,13 +235,13 @@ func (h *Host) Apply(directive Directive) {
 			// capture would wait for a frame that never comes (spike
 			// 2026-09-14). Only the unclipped fallback, with no container
 			// to hide, has to hide the controller itself.
+			held := focusWithin(page.raiseTarget())
 			if page.container != 0 {
 				showWindow(page.container, false)
-				return
-			}
-			if err := page.controller.putIsVisible(false); err != nil {
+			} else if err := page.controller.putIsVisible(false); err != nil {
 				h.config.Logf("browser host: page %s hide: %v", page.id, err)
 			}
+			h.releaseFocus(page, held)
 		})
 	case OpDevTools:
 		h.withPage(directive.PageID, func(page *hostPage) {
@@ -254,6 +257,10 @@ func (h *Host) Apply(directive Directive) {
 		h.clearData(directive.PageID)
 	case OpAccelerators:
 		h.setAccelerators(directive.Accelerators)
+	case OpFind:
+		h.withPage(directive.PageID, func(page *hostPage) { h.startFind(page, directive.Query) })
+	case OpFindStop:
+		h.withPage(directive.PageID, h.stopFind)
 	}
 }
 
@@ -377,6 +384,7 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 				page.controller2 = nil
 			}
 			if page.controller != nil {
+				held := focusWithin(page.raiseTarget())
 				if err := page.controller.close(); err != nil {
 					h.config.Logf("browser host: close page %s: %v", page.id, err)
 				}
@@ -386,6 +394,7 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 				// is an invisible window eating every click over its rectangle.
 				destroyWindow(page.container)
 				page.container = 0
+				h.releaseFocus(page, held)
 			}
 			// A container with no controller is the parent of an asynchronous
 			// create still in flight. Its completion owns both the controller
@@ -846,6 +855,12 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	page.pendingHandlers = append(page.pendingHandlers, keyHandler)
 	if _, err := controller.addAcceleratorKeyPressed(keyHandler); err != nil {
 		h.config.Logf("browser host: page %s accelerator subscription: %v", page.id, err)
+	}
+
+	// A runtime without the find API has to be known before the page is
+	// used, so its report precedes created.
+	if !h.findSupported(view) {
+		h.config.Report(page.id, ReportFindUnavailable, "")
 	}
 
 	// Target.getTargetInfo through the controller's own DevTools session

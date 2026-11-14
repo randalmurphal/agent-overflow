@@ -6,7 +6,7 @@
 		acquireDocumentInteraction,
 		type DocumentInteraction
 	} from './documentInteraction';
-	import { lex } from '../parser/index';
+	import { lex, type Alignment, type Extension } from '../parser/index';
 	import { reconcileParagraphGapsInNodes } from './paragraphSpacing';
 	import { renderStaticTokenHtml } from './staticHtml';
 
@@ -14,11 +14,13 @@
 	type StaticRecord = {
 		kind: 'static';
 		block: string;
+		align: Alignment | 'marker';
 		nodes: ChildNode[];
 	};
 	type ComponentRecord = {
 		kind: 'component';
 		block: string;
+		align: Alignment;
 		start: Comment;
 		end: Comment;
 		instance: Mounted;
@@ -50,11 +52,15 @@
 	let {
 		root,
 		blocks,
+		alignments,
 		revision,
 		id
 	}: {
 		root: HTMLElement | undefined;
 		blocks: string[];
+		/** Parallel to blocks: the alignment in force before each block, or
+		 * `marker` for a marker block, which renders nothing. */
+		alignments: (Alignment | 'marker')[];
 		/** Fresh wrapper published after parseBlocks mutates its stable array. */
 		revision: object;
 		id: string;
@@ -92,6 +98,34 @@
 			left.allowedLinkPrefixes === right.allowedLinkPrefixes &&
 			left.renderHtml === right.renderHtml &&
 			left.staticRenderers === right.staticRenderers;
+	}
+
+	function sameExceptExtensions(left: Configuration, right: Configuration): boolean {
+		return sameConfiguration({ ...left, extensions: right.extensions }, right);
+	}
+
+	/**
+	 * For a change to the extension list alone, returns which block sources
+	 * still render as they did. Null when any changed extension cannot say.
+	 */
+	function extensionChangeKeeps(
+		previous: unknown,
+		next: unknown
+	): ((source: string) => boolean) | null {
+		if (!Array.isArray(previous) || !Array.isArray(next) || previous.length !== next.length) {
+			return null;
+		}
+		const changed: { before: Extension; after: Extension }[] = [];
+		for (let index = 0; index < next.length; index++) {
+			const before = previous[index] as Extension;
+			const after = next[index] as Extension;
+			if (before === after) continue;
+			if (typeof after?.tokenizesAlike !== 'function') return null;
+			changed.push({ before, after });
+		}
+		return (source) => changed.every(({ before, after }) =>
+			after.tokenizesAlike?.(before, source) === true
+		);
 	}
 
 	function reportUnmountFailure(error: unknown): void {
@@ -138,22 +172,35 @@
 		};
 	}
 
-	function appendStaticRecord(target: HTMLElement, block: string, html: string): void {
+	// Records are inserted before `anchor`, or appended when it is null.
+	function insertStaticRecord(
+		target: HTMLElement,
+		anchor: ChildNode | null,
+		block: string,
+		align: Alignment,
+		html: string
+	): StaticRecord {
 		const { fragment, nodes } = staticNodes(html);
 		try {
-			target.append(fragment);
+			target.insertBefore(fragment, anchor);
 			reconcileParagraphGapsInNodes(nodes);
 		} catch (error) {
 			for (const node of nodes) node.remove();
 			throw error;
 		}
-		records.push({ kind: 'static', block, nodes });
+		return { kind: 'static', block, align, nodes };
 	}
 
-	function appendComponentRecord(target: HTMLElement, block: string): void {
+	function insertComponentRecord(
+		target: HTMLElement,
+		anchor: ChildNode | null,
+		block: string,
+		align: Alignment
+	): ComponentRecord {
 		const start = document.createComment('');
 		const end = document.createComment('');
-		target.append(start, end);
+		target.insertBefore(start, anchor);
+		target.insertBefore(end, anchor);
 		let instance: Mounted | undefined;
 		try {
 			instance = mount(Block, {
@@ -162,6 +209,7 @@
 				context: contexts,
 				props: {
 					block,
+					align,
 					static: false,
 					compactStaticHtml: false
 				}
@@ -171,12 +219,13 @@
 				nodes.push(node);
 			}
 			reconcileParagraphGapsInNodes(nodes);
-			records.push({ kind: 'component', block, start, end, instance, retryStatic: true });
+			return { kind: 'component', block, align, start, end, instance, retryStatic: true };
 		} catch (error) {
 			if (instance) {
 				removeComponentRecord({
 					kind: 'component',
 					block,
+					align,
 					start,
 					end,
 					instance,
@@ -190,14 +239,41 @@
 		}
 	}
 
-	function appendRecord(target: HTMLElement, block: string, index: number): void {
+	function buildRecord(
+		target: HTMLElement,
+		anchor: ChildNode | null,
+		block: string,
+		align: Alignment | 'marker',
+		index: number
+	): Record {
+		if (align === 'marker') return { kind: 'static', block, align, nodes: [] };
 		const html = renderStaticTokenHtml(
 			lex(block, streamdown.extensions),
 			streamdown,
-			`${id}-${index}`
+			`${id}-${index}`,
+			align
 		);
-		if (html === null) appendComponentRecord(target, block);
-		else appendStaticRecord(target, block, html);
+		return html === null
+			? insertComponentRecord(target, anchor, block, align)
+			: insertStaticRecord(target, anchor, block, align, html);
+	}
+
+	function firstNodeFrom(index: number): ChildNode | null {
+		for (let at = index; at < records.length; at++) {
+			const record = records[at];
+			const node = record.kind === 'component' ? record.start : record.nodes[0];
+			if (node) return node;
+		}
+		return null;
+	}
+
+	/** Rebuilds one static record where it stands. The new nodes enter before
+	 * the old ones leave, so a failed build leaves the record intact. */
+	function replaceStaticRecord(target: HTMLElement, index: number): void {
+		const old = records[index];
+		const next = buildRecord(target, firstNodeFrom(index), old.block, old.align, index);
+		removeRecord(old);
+		records[index] = next;
 	}
 
 	function recordHasActiveInteraction(record: ComponentRecord): boolean {
@@ -237,7 +313,8 @@
 			const html = renderStaticTokenHtml(
 				lex(record.block, streamdown.extensions),
 				streamdown,
-				`${id}-${index}`
+				`${id}-${index}`,
+				record.align
 			);
 			if (html === null) {
 				record.retryStatic = false;
@@ -255,7 +332,7 @@
 				throw error;
 			}
 			removeComponentRecord(record);
-			records[index] = { kind: 'static', block: record.block, nodes };
+			records[index] = { kind: 'static', block: record.block, align: record.align, nodes };
 			if (attempts >= limit) return retryCursor < records.length;
 		}
 		return false;
@@ -308,26 +385,52 @@
 	}
 
 	function reconcile(target: HTMLElement, nextConfiguration: Configuration): void {
-		const reset = target !== renderedRoot ||
-			configuration === undefined ||
-			!sameConfiguration(configuration, nextConfiguration);
+		const previous = configuration;
+		let reset = target !== renderedRoot || previous === undefined;
+		// A changed extension list normally invalidates every record. When
+		// each changed extension can name the sources it tokenizes as before,
+		// only the other records are rebuilt.
+		let keeps: ((source: string) => boolean) | null = null;
+		if (!reset && previous && !sameConfiguration(previous, nextConfiguration)) {
+			keeps = sameExceptExtensions(previous, nextConfiguration)
+				? extensionChangeKeeps(previous.extensions, nextConfiguration.extensions)
+				: null;
+			reset = keeps === null;
+		}
 		let common = reset ? 0 : Math.min(records.length, blocks.length);
 		if (!reset) {
 			let index = 0;
-			while (index < common && records[index].block === blocks[index]) index++;
+			while (
+				index < common &&
+				records[index].block === blocks[index] &&
+				records[index].align === alignments[index]
+			) index++;
 			common = index;
 		}
 		truncateRecords(common);
 		if (target !== renderedRoot) renderedRoot = target;
 		configuration = nextConfiguration;
-		for (let index = common; index < blocks.length; index++) {
-			appendRecord(target, blocks[index], index);
+		let replaced = false;
+		if (keeps) {
+			for (let index = 0; index < common; index++) {
+				const record = records[index];
+				// A component record's Block reads the extensions reactively.
+				if (record.kind !== 'static' || record.align === 'marker') continue;
+				if (keeps(record.block)) continue;
+				replaceStaticRecord(target, index);
+				replaced = true;
+			}
 		}
-		scheduleStaticRetry();
+		for (let index = common; index < blocks.length; index++) {
+			records.push(buildRecord(target, null, blocks[index], alignments[index], index));
+		}
+		// A rebuilt record may be a component record behind the retry cursor.
+		if (replaced) restartStaticRetry();
+		else scheduleStaticRetry();
 	}
 
 	$effect(() => {
-		revision;
+		void revision;
 		const target = root;
 		const nextConfiguration = readConfiguration();
 		if (!target || destroyed) return;

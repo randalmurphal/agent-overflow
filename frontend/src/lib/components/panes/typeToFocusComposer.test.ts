@@ -45,7 +45,7 @@ import {
   redirectTypingToFocusedComposer,
 } from './typeToFocusComposer';
 
-const OPEN_NOTHING = { workflowsOverlayOpen: false, anyModalOpen: false, anyPickerOpen: false };
+const OPEN_NOTHING = { toolPaneFocused: false, anyModalOpen: false, anyPickerOpen: false };
 
 function keyEvent(key: string, init: KeyboardEventInit & { keyCode?: number } = {}): KeyboardEvent {
   const { keyCode, isComposing, ...rest } = init;
@@ -173,9 +173,9 @@ describe('redirectTypingToFocusedComposer', () => {
     expect(prevent).not.toHaveBeenCalled();
   });
 
-  it('stands down while an overlay, modal, or picker is open', () => {
+  it('stands down while a tool pane is focused or a modal or picker is open', () => {
     setupFocusedPane();
-    expect(redirectTypingToFocusedComposer(keyEvent('a'), { ...OPEN_NOTHING, workflowsOverlayOpen: true })).toBe(false);
+    expect(redirectTypingToFocusedComposer(keyEvent('a'), { ...OPEN_NOTHING, toolPaneFocused: true })).toBe(false);
     expect(redirectTypingToFocusedComposer(keyEvent('a'), { ...OPEN_NOTHING, anyModalOpen: true })).toBe(false);
     expect(redirectTypingToFocusedComposer(keyEvent('a'), { ...OPEN_NOTHING, anyPickerOpen: true })).toBe(false);
   });

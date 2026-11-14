@@ -14,6 +14,9 @@
     /** Absolute base directory for resolving relative file paths the
      *  linkifier finds in the plan markdown. */
     workspacePath?: string;
+    /** The workspace the plan was written in, when its row recorded one:
+     *  relative image paths resolve against it. */
+    imageWorkspacePath?: string;
     /** Go-validated path allowlist stamped on the proposed_plan item's
      *  meta at handleProposedPlan time. Empty = no linkification. */
     pathRefs?: PathRef[];
@@ -26,6 +29,7 @@
     error = null,
     threadId,
     workspacePath = '',
+    imageWorkspacePath,
     pathRefs = [],
   }: Props = $props();
 </script>
@@ -41,7 +45,7 @@
     aria-busy={loading ? 'true' : undefined}
     use:nestedScroll
   >
-    <ChatMarkdown source={markdown} {threadId} {workspacePath} {pathRefs} />
+    <ChatMarkdown source={markdown} {threadId} {workspacePath} {imageWorkspacePath} {pathRefs} />
     {#if error}
       <p class="mt-2 text-xs text-error" role="alert">
         Failed to load full plan.

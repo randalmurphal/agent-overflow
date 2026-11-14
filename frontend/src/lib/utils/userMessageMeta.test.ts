@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import agentMessageMetas from '../../../../internal/usermessage/testdata/agent_message_metas.json';
-import personParts from '../../../../internal/usermessage/testdata/person_parts.json';
 
 import {
   isAgentMessageMeta,
   isReaderAuthoredUserText,
   parseUserMessageAttachments,
-  personTextOfUserMessage,
   parseUserMessageMeta,
+  restoredDraftSnapshotAttachmentsFromUserItem,
   userMessageOriginThread,
   userMessageOriginWake,
   agentWakeOriginLabel,
@@ -51,6 +50,57 @@ describe('parseUserMessageAttachments — attachment kind', () => {
       'thread-1',
     );
     expect(attachment).toMatchObject({ kind: 'file', mimeType: 'application/pdf' });
+  });
+
+  it('reads a shell command off a file and bounds what it trusts', () => {
+    const shell = {
+      command: 'make test', commandLength: 640, exitCode: 2, durationMs: 340,
+      truncated: true, timedOut: true, preview: 'FAIL\n', more: true, unknown: 'dropped',
+    };
+    const [attachment] = parseUserMessageAttachments(
+      meta([entry({ kind: 'file', filename: 'output.txt', mimeType: 'text/plain', shell })]),
+      'thread-1',
+    );
+    expect(attachment?.shell).toEqual({
+      command: 'make test', commandLength: 640, exitCode: 2, durationMs: 340,
+      truncated: true, timedOut: true, preview: 'FAIL\n', more: true,
+    });
+
+    // Absent flags stay absent; malformed numbers read as zero.
+    const [plain] = parseUserMessageAttachments(
+      meta([entry({ kind: 'file', mimeType: 'text/plain', shell: { command: 'ls', exitCode: 'x', durationMs: null } })]),
+      'thread-1',
+    );
+    expect(plain?.shell).toEqual({ command: 'ls', exitCode: 0, durationMs: 0 });
+
+    // A whole length that is not longer than the command says nothing.
+    const [whole] = parseUserMessageAttachments(
+      meta([entry({ kind: 'file', mimeType: 'text/plain', shell: { command: 'ls', commandLength: 2, exitCode: 0, durationMs: 1 } })]),
+      'thread-1',
+    );
+    expect(whole?.shell).toEqual({ command: 'ls', exitCode: 0, durationMs: 1 });
+  });
+
+  it('never reads a shell command off an image or without a command', () => {
+    const [image] = parseUserMessageAttachments(
+      meta([entry({ shell: { command: 'ls', exitCode: 0, durationMs: 1 } })]),
+      'thread-1',
+    );
+    expect(image?.kind).toBe('image');
+    expect(image?.shell).toBeUndefined();
+    const [file] = parseUserMessageAttachments(
+      meta([entry({ kind: 'file', mimeType: 'text/plain', shell: { command: '  ', exitCode: 0 } })]),
+      'thread-1',
+    );
+    expect(file?.shell).toBeUndefined();
+  });
+
+  it('carries a shell command back into a restored draft', () => {
+    const item = {
+      id: 'user-1', threadId: 'thread-1', createdAt: 5,
+      meta: meta([entry({ kind: 'file', mimeType: 'text/plain', shell: { command: 'ls', exitCode: 0, durationMs: 1 } })]),
+    } as unknown as Parameters<typeof restoredDraftSnapshotAttachmentsFromUserItem>[0];
+    expect(restoredDraftSnapshotAttachmentsFromUserItem(item)[0]?.shell).toEqual({ command: 'ls', exitCode: 0, durationMs: 1 });
   });
 
   it('still refuses an IMAGE whose MIME is not one we can render', () => {
@@ -212,8 +262,8 @@ describe('isAgentMessageMeta and isReaderAuthoredUserText', () => {
     expect(isReaderAuthoredUserText(row({ origin: 'agent-thread', expandComposerCommands: true }))).toBe(true);
   });
 
-  // The same rows Go's IsAgentMessage, the store's SQL filter and Stop's
-  // un-send predicate are held to (TestAgentMessageClassifierAgreesInGoAndSQL).
+  // The same rows Go's IsAgentMessage, the store's SQL filter and
+  // isReaderAuthoredUserItem are held to (TestAgentMessageClassifierAgreesInGoAndSQL).
   for (const tc of agentMessageMetas) {
     it(`agrees with Go and SQL: ${tc.name}`, () => {
       const meta = tc.meta === '' ? {} : (JSON.parse(tc.meta) as Record<string, unknown>);
@@ -229,16 +279,4 @@ describe('isAgentMessageMeta and isReaderAuthoredUserText', () => {
     expect(isReaderAuthoredUserText(row({ wire_only: true }))).toBe(false);
     expect(isReaderAuthoredUserText(row({}, 'tool-1'))).toBe(false);
   });
-});
-
-describe('personTextOfUserMessage', () => {
-  // The rows Go's usermessage.SplitPersonParts is held to
-  // (TestSplitPersonPartsFixture): Stop's un-send gives the composer the
-  // same text on both sides.
-  for (const tc of personParts) {
-    it(`agrees with Go: ${tc.name}`, () => {
-      const meta = tc.meta === '' ? {} : (JSON.parse(tc.meta) as Record<string, unknown>);
-      expect(personTextOfUserMessage(tc.text, meta)).toBe(tc.person);
-    });
-  }
 });

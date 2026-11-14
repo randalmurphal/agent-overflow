@@ -2,19 +2,47 @@ import { recordCatalogMutation, type CatalogMutation } from './computerCatalogRe
 // Persist metadata at store mutation boundaries, never from a render effect.
 // One write per computer may run at once; bursts collapse into the latest
 // snapshot. Tokens prevent a queued write reaching a replaced/detached store.
+//
+// A write encodes every row of the computer's catalog, so its cost grows
+// with the catalog while changes arrive per row. A computer's writes
+// therefore start at least CATALOG_WRITE_SPACING_MS apart: the first change
+// after a quiet spell is written at once, and changes during the spacing are
+// written together when it ends. A page going hidden writes what is waiting,
+// so a window that closes does not leave the offline snapshot behind.
 import { untrack } from 'svelte';
 import { backendById } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { putReplicaCatalog, replicaToken } from '../replica/session';
 import { observedCatalogStamp } from '../replica/catalogStamp';
-import type { CatalogKind, CatalogRows } from '../replica/catalog';
+import type { CatalogKind, CatalogRowCache, CatalogRows } from '../replica/catalog';
+
+export const CATALOG_WRITE_SPACING_MS = 2000;
+
+const flushers = new Set<() => void>();
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') for (const flush of flushers) flush();
+  });
+}
+
+export interface CatalogWriterOptions {
+  /**
+   * The store never writes into a row it holds: a change replaces the row.
+   * Each write then encodes only the rows replaced since the last one.
+   */
+  rowsAreValues?: boolean;
+}
 
 export function computerCatalogWriter<K extends CatalogKind>(
   kind: K, rows: () => CatalogRows[K][], commit: (rows: CatalogRows[K][]) => void,
   owner: (row: CatalogRows[K]) => BackendKey | undefined,
+  options: CatalogWriterOptions = {},
 ) {
+  const encoded: [CatalogRowCache] | [] = options.rowsAreValues ? [new WeakMap()] : [];
   const pending = new Map<BackendKey, number>();
   const running = new Set<BackendKey>();
+  // Computers whose last write started less than the spacing ago.
+  const spacing = new Map<BackendKey, ReturnType<typeof setTimeout>>();
   let queued = false;
   let epoch = 0;
 
@@ -27,12 +55,16 @@ export function computerCatalogWriter<K extends CatalogKind>(
       queued = false;
       const snapshot = untrack(rows);
       for (const [backend, token] of pending) {
-        if (running.has(backend)) continue;
+        if (running.has(backend) || spacing.has(backend)) continue;
         pending.delete(backend);
         if (!backendById(backend) || replicaToken(backend) !== token) continue;
         running.add(backend);
+        spacing.set(backend, setTimeout(() => {
+          spacing.delete(backend);
+          if (pending.has(backend)) schedule();
+        }, CATALOG_WRITE_SPACING_MS));
         const selected = snapshot.filter((row) => (owner(row) ?? HOME_BACKEND) === backend);
-        void putReplicaCatalog(backend, kind, selected, observedCatalogStamp(backend, kind), token).finally(() => {
+        void putReplicaCatalog(backend, kind, selected, observedCatalogStamp(backend, kind), token, ...encoded).finally(() => {
           if (version !== epoch) return;
           running.delete(backend);
           if (pending.has(backend)) schedule();
@@ -40,6 +72,15 @@ export function computerCatalogWriter<K extends CatalogKind>(
       }
     });
   }
+
+  function endSpacing(): void {
+    for (const timer of spacing.values()) clearTimeout(timer);
+    spacing.clear();
+  }
+  flushers.add(() => {
+    endSpacing();
+    if (pending.size > 0) schedule();
+  });
 
   function persist(backend: BackendKey = HOME_BACKEND): void {
     if (!backendById(backend)) return;
@@ -66,7 +107,10 @@ export function computerCatalogWriter<K extends CatalogKind>(
     },
     /** Persist rows a read committed. Nothing is recorded: they are an answer, not a change. */
     persist,
-    reset(): void { ++epoch; queued = false; pending.clear(); running.clear(); },
+    reset(): void {
+      ++epoch; queued = false; pending.clear(); running.clear();
+      endSpacing();
+    },
   };
 }
 

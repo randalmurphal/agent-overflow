@@ -29,6 +29,10 @@ func (m *Manager) ownedPages(threadID string) []*managedPage {
 // errPageNotFound answers a page that is gone or that another thread owns.
 var errPageNotFound = errors.New("browser: page not found")
 
+// errViewClosed answers an operation that reached a native engine's page
+// after the page closed: the view is never touched then.
+var errViewClosed = errors.New("browser: the page is closed")
+
 func (m *Manager) lookupOwnedPage(access Access, pageID string) (*managedPage, *workspaceScope, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

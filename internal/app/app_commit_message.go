@@ -20,10 +20,12 @@ type GeneratedCommitMessage struct {
 	Body    string `json:"body"`
 }
 
-// GenerateCommitMessage inspects the referenced workspace, stages all
-// changes, and asks the configured text-generation CLI (Codex by
-// default, Claude as an alternative) to draft a structured commit
-// subject + body. Routing mirrors t3-code's RoutingTextGeneration.
+// GenerateCommitMessage asks the configured text-generation CLI (Codex by
+// default, Claude as an alternative) to draft a structured commit subject
+// + body for what the selection covers in the referenced workspace, as
+// GitCommit would commit it. The diff is read from a snapshot, so the
+// workspace's index is left as it is. Routing mirrors t3-code's
+// RoutingTextGeneration.
 //
 // Layer 2 fallback is handled by runTextGenWithFallback: if the configured
 // provider's CLI fails for any reason other than context cancellation,
@@ -34,7 +36,7 @@ type GeneratedCommitMessage struct {
 //
 // Errors short-circuit in four shapes the frontend can render cleanly:
 //   - unresolvable workspace
-//   - empty staged diff ("nothing to commit")
+//   - nothing uncommitted in the selection ("nothing to commit")
 //   - CLI missing on PATH
 //   - CLI exited non-zero (stderr bubbled into the error)
 //
@@ -43,13 +45,13 @@ type GeneratedCommitMessage struct {
 // actually committing.
 //
 //ao:scope git:operate
-func (a *App) GenerateCommitMessage(ws WorkspaceRef) (GeneratedCommitMessage, error) {
+func (a *App) GenerateCommitMessage(ws WorkspaceRef, selection CommitSelection) (GeneratedCommitMessage, error) {
 	_, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
 		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: %w", err)
 	}
 
-	summary, patch, branch, err := a.gatherStagedDiffForCommit(workspace)
+	summary, patch, err := a.commitContext(a.lifeCtx(), workspace, selection)
 	if err != nil {
 		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: %w", err)
 	}
@@ -57,7 +59,7 @@ func (a *App) GenerateCommitMessage(ws WorkspaceRef) (GeneratedCommitMessage, er
 		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: no uncommitted changes to describe")
 	}
 
-	prompt := commitmsg.BuildPrompt(summary, patch, branch, a.commitMessageStyleGuidance(workspace))
+	prompt := commitmsg.BuildPrompt(summary, patch, a.gitCore().CurrentBranch(workspace), a.commitMessageStyleGuidance(workspace))
 	primary := a.resolveTextGenerationConfig()
 	return runTextGenWithFallback(a, primary, commitmsg.Timeout, func(cfg textgen.Config, deadline time.Time) (GeneratedCommitMessage, error) {
 		return a.runCommitMessageOnce(cfg, workspace, prompt, deadline)
@@ -106,34 +108,6 @@ func (a *App) runCommitMessageOnce(
 			cfg.Provider,
 		)
 	}
-}
-
-// gatherStagedDiffForCommit stages everything in the workspace and
-// returns the resulting summary, patch, and current branch. Matches
-// t3-code's GitCore.getCommitContext: stage → read summary → read patch
-// → read branch.
-//
-// NOTE ON STAGE-ALL SAFETY: the commit dialog expects "describe
-// everything I'm about to commit". Users who want to pick files commit
-// through the CommitStep's per-file diff preview after this returns.
-// Running `git add -A` here can pick up untracked files the user didn't
-// mean to commit; the dialog shows the staged diff before the commit is
-// executed, so the user has the last word.
-func (a *App) gatherStagedDiffForCommit(workspace string) (summary, patch, branch string, err error) {
-	core := a.gitCore()
-	if err := core.StageAll(workspace); err != nil {
-		return "", "", "", fmt.Errorf("stage-all: %w", err)
-	}
-	summary, err = core.StagedSummary(workspace)
-	if err != nil {
-		return "", "", "", fmt.Errorf("staged summary: %w", err)
-	}
-	patch, err = core.StagedPatch(workspace)
-	if err != nil {
-		return "", "", "", fmt.Errorf("staged patch: %w", err)
-	}
-	branch = core.CurrentBranch(workspace)
-	return summary, patch, branch, nil
 }
 
 // generateCodexCommitMessage drives the Codex CLI via `codex exec

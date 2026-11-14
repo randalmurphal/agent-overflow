@@ -54,6 +54,10 @@ type Bootstrap struct {
 	// binary can serve a harness without a frontend rebuild. Never a
 	// capability: it announces a mode, it does not grant one.
 	Harness bool `json:"harness,omitempty"`
+	// HostWindow says the page is the host's own window
+	// (Server.hostWindow): the one client that can show the native views
+	// it owns, such as the browser pane.
+	HostWindow bool `json:"hostWindow,omitempty"`
 	// PageMarker is a per-instance marker carried by the harness page URL.
 	// CDP consumers require it in addition to the origin, so another page on
 	// the same debugger endpoint cannot be mistaken for this instance.
@@ -268,6 +272,12 @@ type Config struct {
 	// That is every boot before the App's startup wires it, and every test
 	// that does not ask for byte transfer.
 	AttachmentTransfer AttachmentTransfer
+	// DictationTransfer receives the pieces of a recording uploaded for
+	// dictation (dictationroutes.go). Nil answers that route 404.
+	DictationTransfer DictationTransfer
+	// SpeechTransfer reads admitted sentences aloud (speechroutes.go). Nil
+	// answers that route 404.
+	SpeechTransfer SpeechTransfer
 
 	// ThreadTransfers accepts narrowly authorized computer-to-computer handoffs.
 	// Nil leaves the route absent; control authorization stays in bound RPCs.
@@ -334,6 +344,9 @@ type Config struct {
 	// Test knob, like KeepaliveInterval: only a harness boot sets it
 	// (diagenv.HarnessTiming).
 	WatermarkInterval time.Duration
+	// CoalesceWindow overrides DefaultCoalesceWindow. Zero defaults to it.
+	// Test knob, like KeepaliveInterval.
+	CoalesceWindow time.Duration
 
 	// SessionRecheckInterval is how often an established connection
 	// re-asks whether the session it named is still live
@@ -623,6 +636,12 @@ type Server struct {
 	// local image's content id is not a forge cache id or a thread
 	// attachment, and no ticket minted for one may decode at another.
 	localImageTickets *ticketBook
+	// dictationTickets is a fifth: a recording piece is not an attachment,
+	// and its ticket is minted by a `threads:operate` call.
+	dictationTickets *ticketBook
+	// speechTickets is a sixth: a sentence to read aloud is none of the
+	// above, and its ticket is minted by a `threads:operate` call.
+	speechTickets *ticketBook
 }
 
 // New constructs a Server. Generates a token if one wasn't provided.
@@ -693,6 +712,8 @@ func New(cfg Config) (*Server, error) {
 		attachmentUploadTickets:   newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		forgeAttachmentTickets:    newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		localImageTickets:         newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+		dictationTickets:          newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+		speechTickets:             newTicketBook(maxOutstandingAttachmentTickets, SpeechTicketTTL),
 
 		bindTCP: listenTCPSharing,
 	}
@@ -1086,6 +1107,15 @@ func (s *Server) buildHTTPServer() *http.Server {
 	mux.HandleFunc(LocalImageDownloadPath, withShellCORS(http.MethodGet,
 		s.loopbackHostGuard(s.handleLocalImageDownload)))
 	mux.HandleFunc(LocalImageDownloadPreflightPath, shellPreflightHandler(http.MethodGet))
+	// Recording pieces for dictation, same admission and subtree.
+	mux.HandleFunc(DictationUploadPath, withShellCORS(http.MethodPut,
+		s.loopbackHostGuard(s.handleDictationUpload)))
+	mux.HandleFunc(DictationUploadPreflightPath, shellPreflightHandler(http.MethodPut))
+	// Read-aloud audio, same admission and subtree, and the local-image
+	// route's literal-segment precedence over the download route.
+	mux.HandleFunc(SpeechDownloadPath, withShellCORS(http.MethodGet,
+		s.loopbackHostGuard(s.handleSpeechDownload)))
+	mux.HandleFunc(SpeechDownloadPreflightPath, shellPreflightHandler(http.MethodGet))
 	// The bundle routes. Registered unconditionally for the reason the
 	// attachment pair is: a route whose presence depended on when the mux
 	// happened to be built would be a boot whose shape varies. With no
@@ -1628,6 +1658,11 @@ func (s *Server) WebviewPageURL() string {
 // per-load delivery).
 func (s *Server) MintPageTicket() (string, error) { return s.cred.MintPageTicket() }
 
+// MintWindowTicket hands out a page ticket for a document in the window
+// this backend's own process shows, which marks that document's
+// connections as the host window (Credential.MintWindowTicket).
+func (s *Server) MintWindowTicket() (string, error) { return s.cred.MintWindowTicket() }
+
 // decoratePageURL applies the boot's extra page-URL parameters, if it
 // supplied any. The empty base passes through, since every caller
 // already reads "" as "no page to open yet".
@@ -1778,7 +1813,9 @@ func (s *Server) writeWebviewPageURL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "page url unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	ticket, err := s.cred.MintPageTicket()
+	// The caller owns the window it loads this into (the Windows
+	// launcher), so the document is the host window.
+	ticket, err := s.cred.MintWindowTicket()
 	if err != nil {
 		log.Printf("transport: page url: mint page ticket: %v", err)
 		http.Error(w, "page url unavailable", http.StatusServiceUnavailable)
@@ -1813,7 +1850,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	// the readiness and startup-failure paths below, where issuing the
 	// cookie is exactly right: the credential was good, the backend just
 	// is not serving yet, and the retry should not need another ticket.
-	pageAuthed := s.cred.Exchange(w, r)
+	pageAuthed, windowAuthed := s.cred.Exchange(w, r)
 	if !pageAuthed {
 		// The page credential is not the only door: a durable session —
 		// a paired device presenting its credential header, or a session
@@ -1904,6 +1941,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		// the client posture cannot disagree with LocalOnly enforcement.
 		Remote:            !loopback.PeerAddress(r.RemoteAddr),
 		Harness:           s.cfg.Harness,
+		HostWindow:        s.hostWindow(r, pageAuthed, windowAuthed),
 		PageMarker:        s.cfg.PageMarker,
 		BackendID:         backendID,
 		BackendName:       s.backendName(),
@@ -1912,6 +1950,27 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		Backends:          attached,
 		Routes:            routes,
 	})
+}
+
+// hostWindow reports whether a request comes from the host's own window:
+// a loopback peer holding the page credential and the host-window cookie,
+// or buying both with a window ticket (Credential.MintWindowTicket). A
+// harness has no window of its own, and the pages it opens stand in for it.
+func (s *Server) hostWindow(r *http.Request, pageAuthed, windowAuthed bool) bool {
+	if !pageAuthed || !loopback.PeerAddress(r.RemoteAddr) {
+		return false
+	}
+	return windowAuthed || s.cfg.Harness
+}
+
+// hostWindowPeer answers hostWindow for a WebSocket upgrade from what the
+// request presents. The origin is checked here as well as by the upgrade:
+// the cookies are read, and another port's document is sent them too.
+func (s *Server) hostWindowPeer(r *http.Request) bool {
+	if !OriginAllowed(r, s.currentOriginPatterns()) {
+		return false
+	}
+	return s.hostWindow(r, s.cred.Authenticate(r), s.cred.HostWindow(r))
 }
 
 // sessionAdmitsRequest reports whether the request presents a durable
@@ -1996,6 +2055,9 @@ func withAssetHeaders(next http.Handler, csp ContentSecurityPolicy) http.Handler
 				// The only loopback consumer is the embedded webview,
 				// which loads the SPA once per process and never
 				// renavigates — a cached asset can never be reused.
+				// Images it remounts (the per-turn working sprite)
+				// stay loaded in the page instead: see
+				// frontend/src/lib/spinners/retain.ts.
 				// Cacheable scripts DO cost: Blink's in-memory HTTP
 				// cache retains their decoded text for the page's
 				// lifetime (~6 MB measured 2026-07-21, renderer
@@ -2223,7 +2285,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		// Read from the pre-upgrade request: websocket.Conn does not
 		// re-expose the handshake URL, and the identity has to be in place
 		// before the first RPC is dispatched.
-		client: ParseClientIdentity(r.URL.Query()),
+		client:     ParseClientIdentity(r.URL.Query()),
+		hostWindow: s.hostWindowPeer(r),
 	}
 
 	backendID := ""
@@ -2270,6 +2333,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		keepaliveInterval: s.cfg.KeepaliveInterval,
 		pongTimeout:       s.cfg.KeepalivePongTimeout,
 		watermarkInterval: s.cfg.WatermarkInterval,
+		coalesceWindow:    s.cfg.CoalesceWindow,
 		sessionConns:      s.sessionConns,
 		sessions:          s.cfg.Sessions,
 		stepUpProof:       s.cfg.StepUpProof,

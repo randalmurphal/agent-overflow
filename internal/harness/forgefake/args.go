@@ -20,8 +20,7 @@ type flagDef struct {
 // is the one positional, --method and --hostname are synthesized from
 // the request, and handlers answer status and headers through the
 // response instead of exit codes and --include text. A GraphQL request
-// carries graphQL instead of an endpoint. body is a GitLab REST
-// request's body, which only the write routes read.
+// carries graphQL instead of an endpoint.
 type call struct {
 	cli     string
 	args    []string
@@ -29,10 +28,6 @@ type call struct {
 	stdin   []byte
 	http    *httpCall
 	graphQL *graphQLRequest
-	body    []byte
-	// contentType is the body's media type, an HTTP request's
-	// Content-Type header.
-	contentType string
 
 	flags      map[string][]string
 	positional []string
@@ -42,10 +37,13 @@ type call struct {
 // is the forge host the request is for (its Host header), spelled as
 // PRReference.Host: a port is allowed and compared as given. base is the
 // fake listener's own URL ("http://[::1]:port"), which a next-page link
-// points at.
+// points at. body is the request body a REST mutation carries, and
+// contentType its Content-Type header.
 type httpCall struct {
-	host string
-	base string
+	host        string
+	base        string
+	body        []byte
+	contentType string
 }
 
 func (c *call) flag(long string) string {

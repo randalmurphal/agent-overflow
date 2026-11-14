@@ -1,0 +1,274 @@
+// The Pull requests page over mocked bindings: a row's menu acts on its
+// own MR and leaves the list on screen; a failed refresh and a failed read
+// of the threads on an MR reach the page; and the header's Back is one
+// ladder that closes a view open in the detail before the detail.
+
+import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import PullsPane from './PullsPane.svelte';
+import { selectPR, selectedPR } from '../../stores/pullsPage.svelte';
+import { stepPullsBack } from '../../stores/pullsCommands.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { TransportError } from '../../transport/wsClient';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { PULLS_PANE, installPullsPaneMocks, prDetail, pullItem, pullRowKey, pullsProject, pullsSnapshot, resetPullsPane } from '../../../test/helpers/pullsPane';
+import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
+
+function mountPane() {
+  return render(PullsPane, { paneId: PULLS_PANE });
+}
+
+function rowOf(view: ReturnType<typeof mountPane>, number: number): HTMLElement {
+  return view.container.querySelector<HTMLElement>(`[data-testid="pull-row"][data-pr-key="${pullRowKey(number)}"]`)!;
+}
+
+async function rowsListed(view: ReturnType<typeof mountPane>): Promise<void> {
+  await waitFor(() => expect(view.getAllByTestId('pull-row')).toHaveLength(2));
+}
+
+function menu(): HTMLElement {
+  return document.body.querySelector<HTMLElement>('[data-popover]')!;
+}
+
+beforeEach(() => {
+  resetPullsPane();
+});
+
+afterEach(() => {
+  resetPullsPane();
+});
+
+describe("a row's menu", () => {
+  it('acts on its own MR without opening it, so the list and the anchor stay on compact', async () => {
+    setCompactLayoutForTest(true);
+    const mocks = installPullsPaneMocks();
+    const opened = setBindingMock('OpenPRThread', async () => {
+      throw new Error('no worktree here');
+    });
+    const view = mountPane();
+    await rowsListed(view);
+
+    const trigger = within(rowOf(view, 6)).getByTestId('pull-row-menu');
+    await fireEvent.click(trigger);
+
+    await waitFor(() => expect(within(menu()).getByTestId('open-with-agent-new-thread')).toHaveTextContent('New thread on feature-6'));
+    expect(selectedPR(PULLS_PANE)).toBeNull();
+    expect(view.getByTestId('pulls-list-column')).not.toHaveClass('hidden');
+    expect(view.queryByTestId('review-pane')).toBeNull();
+    expect(trigger.isConnected).toBe(true);
+    expect(mocks.threads).toHaveBeenCalledWith(expect.objectContaining({ headRefName: 'feature-6' }));
+
+    await waitFor(() => expect(within(menu()).getByTestId('open-with-agent-new-thread')).not.toHaveAttribute('aria-disabled', 'true'));
+    await fireEvent.click(within(menu()).getByTestId('open-with-agent-new-thread'));
+    await waitFor(() => expect(opened).toHaveBeenCalledWith(expect.objectContaining({ headRefName: 'feature-6', url: 'https://github.com/owner/repo/pull/6' })));
+    expect(selectedPR(PULLS_PANE)).toBeNull();
+  });
+
+  it('says a failed read of the threads on the MR, keeps New thread off, and retries', async () => {
+    const mocks = installPullsPaneMocks();
+    let fail = true;
+    mocks.threads.mockImplementation(async () => {
+      if (fail) throw new Error('database is locked');
+      return [];
+    });
+    const view = mountPane();
+    await rowsListed(view);
+    await fireEvent.click(within(rowOf(view, 5)).getByTestId('pull-row-menu'));
+
+    await waitFor(() => expect(within(menu()).getByTestId('open-with-agent-threads-error')).toHaveTextContent('database is locked'));
+    expect(within(menu()).queryByTestId('open-with-agent-no-threads')).toBeNull();
+    expect(within(menu()).getByTestId('open-with-agent-new-thread')).toHaveAttribute('aria-disabled', 'true');
+
+    fail = false;
+    await fireEvent.click(within(menu()).getByTestId('open-with-agent-threads-retry'));
+    await waitFor(() => expect(within(menu()).getByTestId('open-with-agent-no-threads')).toBeInTheDocument());
+    expect(within(menu()).queryByTestId('open-with-agent-threads-error')).toBeNull();
+    expect(within(menu()).getByTestId('open-with-agent-new-thread')).not.toHaveAttribute('aria-disabled', 'true');
+  });
+});
+
+describe('a failed refresh', () => {
+  it('reads under the header with its details until dismissed, and again on the next failure', async () => {
+    const mocks = installPullsPaneMocks();
+    mocks.refresh.mockImplementation(async () => {
+      throw new TransportError('method_error', 'pr list: subscription gone', {
+        detail: { ref: 'abc123', method: 'RefreshPRList', at: 1, chain: ['pr list: subscription gone', 'handle 7 released'] },
+      });
+    });
+    const view = mountPane();
+    await rowsListed(view);
+
+    await fireEvent.click(view.getByTestId('pulls-refresh'));
+    const notice = await waitFor(() => view.getByTestId('pulls-refresh-error'));
+    expect(notice).toHaveTextContent('Could not refresh the merge requests');
+    await fireEvent.click(within(notice).getByTestId('error-details-toggle'));
+    expect(within(notice).getByTestId('error-details')).toHaveTextContent('ref abc123');
+    expect(within(notice).getByTestId('error-details')).toHaveTextContent('handle 7 released');
+
+    await fireEvent.click(within(notice).getByTestId('pulls-refresh-error-dismiss'));
+    expect(view.queryByTestId('pulls-refresh-error')).toBeNull();
+
+    await fireEvent.click(view.getByTestId('pulls-refresh'));
+    await waitFor(() => expect(view.getByTestId('pulls-refresh-error')).toBeInTheDocument());
+  });
+});
+
+describe('a detail failure', () => {
+  it('shows beside the rows it leaves with unknown facts, and does not read as a failed list', async () => {
+    installPullsPaneMocks(pullsSnapshot([pullsProject([pullItem(5), pullItem(6)], { detailError: 'GitLab did not answer the review states.' })]));
+    const view = mountPane();
+    await rowsListed(view);
+    const notice = view.getByTestId('pulls-project-error');
+    expect(notice).toHaveAttribute('data-partial', 'true');
+    expect(notice).toHaveTextContent('GitLab did not answer the review states.');
+    expect(view.getByTestId('pulls-project-group')).toHaveTextContent('Repo: facts unavailable');
+    expect(view.queryByTestId('pulls-empty')).toBeNull();
+  });
+});
+
+describe('the Needs you count', () => {
+  it('follows the project picker', async () => {
+    const other = { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'other' };
+    installPullsPaneMocks(pullsSnapshot([
+      pullsProject([pullItem(5), pullItem(6)]),
+      pullsProject([pullItem(7, { ref: { ...other, Number: 7 } }), pullItem(8, { ref: { ...other, Number: 8 }, state: 'open', group: 'waiting' })], { projectId: 'project-2', name: 'Other', repo: other }),
+      pullsProject([pullItem(9, { ref: { ...other, Number: 9 }, state: 'open', group: 'waiting' })], { projectId: 'project-3', name: 'Quiet', repo: { ...other, Repo: 'quiet' } }),
+    ]));
+    const view = mountPane();
+    await waitFor(() => expect(view.getByTestId('pulls-filter-needs-you-count')).toHaveTextContent('3'));
+
+    // Unticking two projects from every project leaves Other picked.
+    await fireEvent.click(view.getByTestId('pulls-projects-picker'));
+    await fireEvent.click(within(menu()).getByTestId('pulls-project-project-1'));
+    await fireEvent.click(within(menu()).getByTestId('pulls-project-project-3'));
+    await waitFor(() => expect(view.getByTestId('pulls-filter-needs-you-count')).toHaveTextContent('1'));
+    expect(view.getAllByTestId('pull-row')).toHaveLength(1);
+
+    // A project with nothing for the reader shows no count.
+    await fireEvent.click(within(menu()).getByTestId('pulls-project-project-3'));
+    await fireEvent.click(within(menu()).getByTestId('pulls-project-project-2'));
+    await waitFor(() => expect(view.queryByTestId('pulls-filter-needs-you-count')).toBeNull());
+  });
+});
+
+describe('Back on compact', () => {
+  it('closes an open pipeline log before the pipeline, with no Back of its own', async () => {
+    setCompactLayoutForTest(true);
+    installPullsPaneMocks();
+    const view = mountPane();
+    await rowsListed(view);
+    await fireEvent.click(view.getByRole('radio', { name: 'Pipelines' }));
+    const pipelineRow = await waitFor(() => view.getByTestId('pipeline-row'));
+    await fireEvent.click(pipelineRow.querySelector('button')!);
+    await waitFor(() => expect(view.getAllByTestId('review-ci-chip')).toHaveLength(1));
+    await fireEvent.click(view.getAllByTestId('review-ci-chip')[0]!);
+    await fireEvent.click(within(document.body).getAllByTestId('review-ci-job')[0]!);
+    await waitFor(() => expect(view.getByTestId('review-ci-log')).toBeInTheDocument());
+
+    expect(view.queryByTestId('review-ci-log-back')).toBeNull();
+    await fireEvent.click(view.getByTestId('pulls-back'));
+    await waitFor(() => expect(view.getByTestId('pipeline-view-empty')).toBeInTheDocument());
+    expect(view.getByTestId('pipeline-view')).toBeInTheDocument();
+
+    await fireEvent.click(view.getByTestId('pulls-back'));
+    await waitFor(() => expect(view.queryByTestId('pipeline-view')).toBeNull());
+    expect(view.getByTestId('pulls-list-column')).not.toHaveClass('hidden');
+    expect(stepPullsBack()).toBe(false);
+  });
+
+  it('closes the conflict view and the rail before the merge request, with no Back of its own', async () => {
+    setCompactLayoutForTest(true);
+    installPullsPaneMocks();
+    const view = mountPane();
+    await rowsListed(view);
+    await fireEvent.click(rowOf(view, 5).querySelector('button')!);
+    const conflicts = await waitFor(() => view.getByRole('button', { name: 'View conflicts' }));
+    await fireEvent.click(conflicts);
+    await waitFor(() => expect(view.getByTestId('review-conflicts-empty')).toBeInTheDocument());
+
+    expect(view.queryByTestId('review-conflicts-back')).toBeNull();
+    await fireEvent.click(view.getByTestId('pulls-back'));
+    await waitFor(() => expect(view.queryByTestId('review-conflicts-empty')).toBeNull());
+    expect(selectedPR(PULLS_PANE)?.key).toBe(pullRowKey(5));
+
+    // The file rail opened with the review (no stored choice, no width
+    // here) and covers the diff on compact: Back closes it next.
+    expect(view.getByTestId('review-rail')).toHaveAttribute('data-open', 'true');
+    await fireEvent.click(view.getByTestId('pulls-back'));
+    await waitFor(() => expect(view.getByTestId('review-rail')).toHaveAttribute('data-open', 'false'));
+    expect(selectedPR(PULLS_PANE)?.key).toBe(pullRowKey(5));
+
+    await fireEvent.click(view.getByTestId('pulls-back'));
+    await waitFor(() => expect(selectedPR(PULLS_PANE)).toBeNull());
+  });
+
+  it('leaves the inner Back controls on desktop', async () => {
+    installPullsPaneMocks();
+    const view = mountPane();
+    await rowsListed(view);
+    await fireEvent.click(rowOf(view, 5).querySelector('button')!);
+    await fireEvent.click(await waitFor(() => view.getByRole('button', { name: 'View conflicts' })));
+    await waitFor(() => expect(view.getByTestId('review-conflicts-back')).toBeInTheDocument());
+    expect(view.queryByTestId('pulls-back')).toBeNull();
+  });
+});
+
+describe('the pinned review', () => {
+  // A person's click may ask for git credentials; a selection the page
+  // makes on its own (a restored page) reads unattended.
+  it('reads the MR attended when a person opens its row, and unattended otherwise', async () => {
+    installPullsPaneMocks();
+    const diff = getBindingMock('OpenPRDiff')!;
+    const view = mountPane();
+    await rowsListed(view);
+    await fireEvent.click(rowOf(view, 5).querySelector('button')!);
+    await waitFor(() => expect(diff).toHaveBeenCalled());
+    expect(diff.mock.calls.at(-1)?.at(-1)).toBe(true);
+
+    const calls = diff.mock.calls.length;
+    expect(selectPR(PULLS_PANE, pullRowKey(6))).toBe(true);
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(diff.mock.calls.at(-1)?.at(-1)).toBe(false);
+  });
+});
+
+describe('a retained review off screen', () => {
+  // A review the page keeps for a step back holds no conflict permit while
+  // it is not on screen: a frame for it computes no merge nobody sees.
+  it('reads no conflicts while its PR is not shown, and catches up when shown again', async () => {
+    installPullsPaneMocks();
+    const conflicts = getBindingMock('GetPRMergeConflicts')!;
+    const frame = (headSHA: string, seq: number) => applyPRReviewUpdated({
+      prKey: 'github:owner/repo:5', detail: { ...prDetail(5), headSHA }, threads: [], headSHA, seq,
+    });
+    const view = mountPane();
+    await rowsListed(view);
+    await fireEvent.click(rowOf(view, 5).querySelector('button')!);
+    await fireEvent.click(await waitFor(() => view.getByRole('button', { name: 'View conflicts' })));
+    await waitFor(() => expect(view.getByTestId('review-conflicts-empty')).toBeInTheDocument());
+    expect(conflicts).toHaveBeenCalledTimes(1);
+
+    // Another MR selected: PR 5's state is retained, its surface is not.
+    await fireEvent.click(rowOf(view, 6).querySelector('button')!);
+    await waitFor(() => expect(selectedPR(PULLS_PANE)?.key).toBe(pullRowKey(6)));
+    frame('sha-5b', 10);
+    await waitFor(() => expect(view.getByTestId('review-pane')).toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(conflicts).toHaveBeenCalledTimes(1);
+
+    // Shown again: the snapshot moved meanwhile, so it reads.
+    await fireEvent.click(rowOf(view, 5).querySelector('button')!);
+    await waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
+    expect((conflicts.mock.calls[1][2] as { headSHA: string }).headSHA).toBe('sha-5b');
+
+    // The Pipelines tab hides it the same way.
+    await fireEvent.click(view.getByRole('radio', { name: 'Pipelines' }));
+    await waitFor(() => expect(view.queryByTestId('review-pane')).toBeNull());
+    frame('sha-5c', 11);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(conflicts).toHaveBeenCalledTimes(2);
+    await fireEvent.click(view.getByRole('radio', { name: 'Merge requests' }));
+    await waitFor(() => expect(conflicts).toHaveBeenCalledTimes(3));
+    expect((conflicts.mock.calls[2][2] as { headSHA: string }).headSHA).toBe('sha-5c');
+  });
+});

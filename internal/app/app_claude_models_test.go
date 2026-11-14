@@ -214,10 +214,10 @@ func TestClaudeModelCapabilityLookupsUseTheEnrichedCatalog(t *testing.T) {
 	if app.reasoningEffortSupportedForModel("claude", "claude-opus-6", "max") {
 		t.Error("max is not on the wire for this model")
 	}
-	// A catalog model the wire omits keeps every catalog capability: absence
-	// from the shortlist is not a denial.
-	if !app.supportsFastModeForModel("claude", "claude-opus-4-8") {
-		t.Error("claude-opus-4-8 is absent from the wire but still fast-mode capable")
+	// A catalog model the wire omits keeps every catalog capability, and the
+	// catalog states no fast mode: only a report can grant it.
+	if app.supportsFastModeForModel("claude", "claude-opus-4-8") {
+		t.Error("claude-opus-4-8 was never reported fast but is offered fast mode")
 	}
 	if !app.reasoningEffortSupportedForModel("claude", "claude-sonnet-4-6", "high") {
 		t.Error("claude-sonnet-4-6 is absent from the wire but still supports high")

@@ -8,7 +8,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { documentHidden } from './lib/utils/pageVisibility';
   import { isSurfaceDismissalEvent } from './lib/utils/surfaceDismissal';
-  import { ensureMainPane, getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
+  import { getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from './lib/stores/eventNames';
   import { getThreads, loadThreads } from './lib/stores/threads.svelte';
@@ -28,10 +28,9 @@
   import { HOME_BACKEND } from './lib/transport/backendKey';
   import { backendReachable } from './lib/stores/attachedBackends.svelte';
   import { syncSidebarFromAppStorage, syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
-  import {
-    isWorkflowsOverlayOpen,
-    syncWorkflowsOverlayFromAppStorage,
-  } from './lib/stores/workflowsOverlay.svelte';
+  import { syncWorkflowsOverlayFromAppStorage } from './lib/stores/workflowsOverlay.svelte';
+  import { installToolPanes, syncToolPanesFromAppStorage } from './lib/stores/toolPanes.svelte';
+  import { syncPullsFiltersFromAppStorage } from './lib/stores/pullsPageFilters.svelte';
   import {
     closeSettingsOverlay,
     getSettingsSection,
@@ -45,6 +44,8 @@
     installScreenPresence,
     refreshScreenPresence,
   } from './lib/stores/screenPresence';
+  import { installDictationSourcesRefresh } from './lib/stores/dictation.svelte';
+  import { installReadAloudSourceRefresh } from './lib/stores/readAloudSource.svelte';
   import { installLongPressContextMenu } from './lib/utils/longPressContextMenu';
   import { installCompactHistoryBack } from './lib/utils/compactHistoryBack.svelte';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
@@ -69,6 +70,7 @@
   import { applyDiscardedDim } from './lib/theme/discardedDim';
   import { applyFonts } from './lib/utils/fonts';
   import { startAmbientTicker } from './lib/utils/ambientTicker';
+  import { installWorkingSpriteReadiness } from './lib/stores/spinners.svelte';
   import { startIdleMemoryTrim } from './lib/utils/idleMemoryTrim';
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
@@ -91,7 +93,7 @@
 import BackgroundKillConfirmationHost from './lib/components/composer/BackgroundKillConfirmationHost.svelte';
   import { getPaletteTargetPaneId, isPaletteOpen } from './lib/stores/palette.svelte';
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
-  import { closeMessageSearch, getMessageSearchMode, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
+  import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
   import { closeThreadPicker, getThreadPickerTargetPaneId, isThreadPickerOpen } from './lib/stores/threadPicker.svelte';
   import { closeAccountSwitcher, isAccountSwitcherOpen } from './lib/stores/accountSwitcher.svelte';
   import { isSessionImportOpen } from './lib/stores/sessionImport.svelte';
@@ -102,7 +104,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     loadKeybindings,
   } from './lib/stores/keybindings.svelte';
   import { clearCommandRegistry, listCommands, type CommandContext } from './lib/stores/commandRegistry.svelte';
-  import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
+  import { registerBuiltinCommands, makeCommandContext, overlayBesidePalette } from './lib/stores/builtinCommands.svelte';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
   import { installLoafTrace } from './lib/utils/loafTrace';
   import { installHarnessBridge } from './lib/stores/harnessBridge';
@@ -124,6 +126,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   import { addErrorToast, addToast } from './lib/stores/toast.svelte';
   import { userFacingError } from './lib/utils/userFacingError';
   import { initUpdates } from './lib/stores/updates.svelte';
+  import { watchReadAloudVoices } from './lib/stores/readAloud.svelte';
   import { initServiceUpdates } from './lib/stores/serviceUpdate.svelte';
   import { initDevServers } from './lib/stores/devServers.svelte';
 
@@ -146,7 +149,8 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     new Set(listCommands().filter((c) => c.editableReachable).map((c) => c.id)),
   );
 
-  function makeAppCommandContext(targetPane = getFocusedPaneOrNull()) {
+  // `forPalette`: the palette's own list, whose command runs after it closes.
+  function makeAppCommandContext(targetPane = getFocusedPaneOrNull(), forPalette = false) {
     const pickerOpen =
       isPaletteOpen() ||
       isCheatSheetOpen() ||
@@ -155,6 +159,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       isAccountSwitcherOpen() ||
       isAnyComposerPickerOpen();
     return makeCommandContext(targetPane, {
+      ...(forPalette ? { overlayOpen: overlayBesidePalette() } : {}),
       paletteOpen: isPaletteOpen(),
       cheatSheetOpen: isCheatSheetOpen(),
       messageSearchOpen: isMessageSearchOpen(),
@@ -171,7 +176,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 
   function makeCommandContextForPaneId(paneId: string): CommandContext | null {
     const targetPane = getPane(paneId);
-    return targetPane ? makeAppCommandContext(targetPane) : null;
+    return targetPane ? makeAppCommandContext(targetPane, true) : null;
   }
 
   // Resolve the pane an overlay/command targets: the overlay's pinned pane when
@@ -195,7 +200,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   // updates replace pane state many times a second, but a hidden palette has
   // nothing to filter or render from those replacements.
   let paletteContext = $derived(
-    isPaletteOpen() ? makeAppCommandContext(currentContextPane()) : null,
+    isPaletteOpen() ? makeAppCommandContext(currentContextPane(), true) : null,
   );
   let messageSearchPane = $derived(resolveContextPane(getMessageSearchTargetPaneId()));
   let threadPickerPane = $derived(resolveContextPane(getThreadPickerTargetPaneId()));
@@ -263,7 +268,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     const targetId = ids[index - 1];
     if (!targetId) return;
     const thread = getThreads().find((t) => t.id === targetId);
-    if (thread) void openThreadFromNavigation(thread, getFocusedPaneOrNull() ?? ensureMainPane());
+    if (thread) void openThreadFromNavigation(thread);
   }
 
   function requestNewThread(openInNewPane: boolean): void {
@@ -421,9 +426,12 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     void loadAppearance();
     const cleanupAppearance = installAppearanceEvents();
     const cleanupLayoutMode = installLayoutMode();
-    // Passive on-launch update check + updater:* event bridge. No-op on builds
+    // Launch and hourly update checks + updater:* event bridge. No-op on builds
     // without an updater; never downloads or installs without an explicit click.
     const cleanupUpdates = initUpdates();
+    // Which voices this device can read replies aloud in; replies offer
+    // read-aloud only once one is known.
+    watchReadAloudVoices();
     // A build without remote access reaches no other computer, so the
     // machinery that serves only other computers is not started:
     // supervised-host updates, conversation transfers, preview ports,
@@ -479,14 +487,17 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         if (disposed) return;
         syncSidebarLayoutFromAppStorage();
         syncSidebarFromAppStorage();
-        // The workflows overlay stack/filter/sweep cursor are durable per
-        // client (UI-SPEC §2.1), so they adopt the hydrated copy the same way
-        // the sidebar's view state does.
+        // The workflows stack/filter/sweep cursor and the last-used tool are
+        // durable per client (UI-SPEC §2.1), so they adopt the hydrated copy
+        // the same way the sidebar's view state does.
         syncWorkflowsOverlayFromAppStorage();
+        syncToolPanesFromAppStorage();
+        syncPullsFiltersFromAppStorage();
         await loadPersistedPaneLayout(threads, restoreRevision);
         if (disposed) return;
         installPaneLayoutPersistence();
         installCompanionPanes();
+        installToolPanes();
         installCompanionStash();
         await Promise.race([
           highlightTablesWarm,
@@ -557,6 +568,9 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     const cleanupCompactHistoryBack = installCompactHistoryBack();
     const cleanupZoomKeys = installZoomKeybindings();
     const cleanupScreenPresence = installScreenPresence();
+    const cleanupDictationSources = installDictationSourcesRefresh();
+    const cleanupReadAloudSources = installReadAloudSourceRefresh();
+    const cleanupWorkingSprites = installWorkingSpriteReadiness();
     const cleanupDeviceNames = installDeviceNameSync();
     const cleanupOwnDevices = remote ? installOwnDeviceSync() : noop;
     const cleanupComputerRoutes = remote ? installComputerRouteUpdates() : noop;
@@ -627,6 +641,9 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       cleanupCompactHistoryBack();
       cleanupZoomKeys();
       cleanupScreenPresence();
+      cleanupDictationSources();
+      cleanupReadAloudSources();
+      cleanupWorkingSprites();
       cleanupDeviceNames();
       cleanupOwnDevices();
       cleanupComputerRoutes();
@@ -660,11 +677,11 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       <StartupScreen />
     {/if}
     <!--
-      Settings and the workflows overlay (UI-SPEC §2.1) are SIBLINGS of
-      PaneHost, layered over it — never a pane kind, never a surface that
-      replaces the strip. The pane tree stays mounted underneath, so opening
-      and closing rebuild nothing. Both load lazily so their chunks stay out
-      of the eager startup graph.
+      Settings (UI-SPEC §2.1) is a SIBLING of PaneHost, layered over it —
+      never a pane kind, never a surface that replaces the strip. The pane
+      tree stays mounted underneath, so opening and closing rebuild nothing.
+      It loads lazily so its chunk stays out of the eager startup graph.
+      Workflows is a tool pane inside the strip (toolPanes.svelte.ts).
     -->
     <LazyOverlay
       load={() => import('./lib/components/settings/SettingsOverlay.svelte')}
@@ -674,11 +691,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         initialSection: getSettingsSection(),
         onClose: closeSettingsOverlay,
       }}
-    />
-    <LazyOverlay
-      load={() => import('./lib/components/workflows/WorkflowsOverlay.svelte')}
-      active={isWorkflowsOverlayOpen()}
-      props={{ open: isWorkflowsOverlayOpen() }}
     />
   </div>
 </main>
@@ -691,7 +703,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 <UnsentMessageConfirmationHost />
 <BackgroundKillConfirmationHost />
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
-<MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} mode={getMessageSearchMode()} onClose={closeMessageSearch} />
+<MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} onClose={closeMessageSearch} />
 <UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />
 <!--
   Account switcher loads lazily: it is a rarely-mounted picker that pulls in the

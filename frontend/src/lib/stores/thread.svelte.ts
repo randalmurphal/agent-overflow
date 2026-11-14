@@ -24,8 +24,9 @@
 // Add per-thread runtime state to one of those (or a new one composed here),
 // never to a store beside the pane.
 
-import { parseUserMessageMeta } from '../utils/userMessageMeta';
+import { untrack } from 'svelte';
 import type { Item, Thread } from '../types/models';
+import { parseUserMessageMeta } from '../utils/userMessageMeta';
 import type {
   ApprovalRequest,
   ContextWindow,
@@ -48,6 +49,7 @@ import type { WorkspaceRef } from '../types/git';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import { createLiveTodoState } from './liveTodoState.svelte';
+import { createThreadUnsavedRows } from './threadUnsavedRows.svelte';
 import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import { createThreadActivityRuns } from './threadActivityRuns.svelte';
 import { addErrorToast } from './toast.svelte';
@@ -58,7 +60,7 @@ import type { TimelineTurnFacet } from './threadTurnProjection';
 import { createThreadRowUiState, type RowUiStateRetention } from './threadRowUiState.svelte';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import { flushedUserItemIdsInTimeline } from './threadFlushRowReveal';
-import { confirmFlushedByUserItemId, getFlushedForThread } from './sendQueue.svelte';
+import { confirmFlushedByUserItemId, getFlushedForThread, releaseFlushedLeftByPane } from './sendQueue.svelte';
 import type { StreamingAssistantRenderContext } from './streamingAssistantReveal';
 import type { TextWindow } from '../utils/liveText';
 import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
@@ -149,20 +151,40 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     const before = thread?.id ?? null;
     thread = next;
     if ((next?.id ?? null) === before) return;
+    // A thread is mounted in one pane, so `before` has none now.
+    if (before) releaseFlushedLeftByPane(before);
     refreshWatchedThreads();
     options.onThreadChanged?.();
   }
   let contextWindow: ContextWindow | null = $state(null);
   let loading: boolean = $state(false);
   let showTerminal: boolean = $state(false);
-  // sendInFlight is the optimistic stop-button gate. The composer flips
-  // it true the moment the user clicks Send and clears it in `finally`.
-  // Used by SendButton to render the stop variant before
-  // `provider:turn_started` arrives, and by the thread.interrupt
-  // keybinding's `when` clause so Esc clears the prompt during the
-  // dispatch window. Cleared on thread switch in clear() so the pane
-  // doesn't carry sending state into the next thread.
+  // sendInFlight is the stop-button gate. The composer flips it true the
+  // moment the user clicks Send and clears it in `finally`. Used by
+  // SendButton to render the stop variant before `provider:turn_started`
+  // arrives, and by the thread.interrupt keybinding's `when` clause so Esc
+  // clears the prompt during the dispatch window. Cleared on thread switch
+  // in clear() so the pane doesn't carry sending state into the next thread.
   let sendInFlight: boolean = $state(false);
+  // The send this pane dispatched and holds no evidence for yet: no row,
+  // no queue entry and no reply. The Send button shows it as pending. The
+  // message is nowhere on screen until one of those arrives.
+  let awaitedSendId: string | null = $state(null);
+  function confirmSend(threadId: string, sendId: string | undefined): void {
+    if (sendId && sendId === awaitedSendId && thread?.id === threadId) awaitedSendId = null;
+  }
+  // The awaited send's row reached the window. A row from a history read
+  // counts like a pushed one: the message is on screen either way. Nothing
+  // is scanned unless a send is awaited.
+  function confirmSendFromRows(rows: readonly Item[]): void {
+    const awaited = untrack(() => awaitedSendId);
+    if (awaited === null) return;
+    for (const row of rows) {
+      if (row.kind !== 'user_text' || parseUserMessageMeta(row.meta).sendId !== awaited) continue;
+      confirmSend(row.threadId, awaited);
+      return;
+    }
+  }
   /**
    * Generation counter for switchThread. Incremented on every switchThread
    * entry so a slow paged fetch from thread A cannot clobber thread B's
@@ -173,7 +195,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * must be `$state` for that effect dependency to track.
    */
   let switchGeneration = $state(0);
-  const optimisticItemIds = new Set<string>();
   // Non-reactive liveness for the main transcript. Only window rows stamp
   // it; subagent children never enter the window, so hidden child activity
   // never extends it. The controller reads it imperatively for its
@@ -196,11 +217,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // bodies. Destructured here because these are the pane's own working
   // vocabulary and several are handed to sub-factories by reference.
   const itemWindow = createThreadItemWindow({
-    optimisticItemIds,
     streamingReveal: () => streamingReveal,
     rowUiState: () => rowUiState,
     activityRuns: () => activityRuns,
     switchLoad: () => switchLoad,
+    rowsCommitted: confirmSendFromRows,
   });
   const {
     getItems,
@@ -292,7 +313,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // Read at dispose time, after the caller has already replaced `items`
     // with the surviving window — so this IS the "still loaded" set.
     loadedItems: getItems,
-    threadId: () => thread?.id ?? null,
   });
   // Per-item smoother + reveal-gate machinery lives in
   // threadStreamingReveal.svelte.ts. Item-window commits finalize through
@@ -311,6 +331,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
     // Declared below; called only once events flow.
     onStreamGap: () => switchLoad.requestStreamRecovery(),
+    commitPromotedRow: (row) => { itemStream.upsertItemsBatch([row]); },
   });
   const timelineWindow = createThreadTimelineWindow({
     getItems,
@@ -451,6 +472,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     effectiveModelRevision += 1;
   }
   const liveTodoState = createLiveTodoState();
+  const unsavedRows = createThreadUnsavedRows();
   // Thread live-state hydration protocol (GetThreadLiveState +
   // ListPendingInteractiveRequests fallback, projected onto the global
   // active-turn/send-queue registries and onto pendingInteractiveState /
@@ -459,11 +481,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const liveStateHydration = createThreadLiveStateHydration({
     getThread: () => thread,
     getItems,
-    isOptimisticItem: (id) => optimisticItemIds.has(id),
     getSwitchGeneration: () => switchGeneration,
     pendingInteractiveState,
     liveTodoState,
-    confirmOptimisticSend,
+    unsavedRows,
+    confirmSend,
     syncRenderedFlushRows,
     getProviderSessionAccountRevision: () => providerSessionAccountRevision,
     hydrateProviderAccount: (account, expectedMutationRevision) => {
@@ -564,36 +586,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       { oldest: timelineWindow.oldestLoadedCursor, newest: timelineWindow.newestLoadedCursor },
     );
     if (rendered.length === 0) return;
-    // The hand-off IS the queued send appearing in the timeline, the same
-    // event the composer's optimistic send arms for. The row mounts in the
-    // flush this commit is about to run, and its confirmation is a held-row
-    // rewrite, not an append, so the wire-upsert arm never sees it; without
+    // The hand-off IS the queued send appearing in the timeline. The row
+    // mounts in the flush this commit is about to run, and its confirmation
+    // is a held-row rewrite, not an append, so the wire-upsert arm never
+    // sees it; without
     // this arm the message lands as a sync pin whenever the live-content
     // latch has gone cold under a long tool call.
     armLiveContentAppendSpring();
     for (const userItemId of rendered) {
       confirmFlushedByUserItemId(threadId, userItemId);
-    }
-  }
-
-  // A remote frontend can predict a new turn while the host is already
-  // active and queues that send. Retire only our own placeholder when the
-  // authoritative queue or user row identifies the SAME send elsewhere.
-  // Walking the tiny optimistic ledger avoids scanning history on events.
-  function confirmOptimisticSend(
-    threadId: string,
-    sendId: string | undefined,
-    canonicalItemId?: string,
-  ): void {
-    if (!sendId || thread?.id !== threadId) return;
-    for (const id of optimisticItemIds) {
-      if (id === canonicalItemId) continue;
-      const index = itemIndexById.get(id);
-      if (index === undefined) continue;
-      const item = getItems()[index];
-      if (parseUserMessageMeta(item.meta).sendId !== sendId) continue;
-      removeMatchedItems((candidate) => candidate.id === id);
-      optimisticItemIds.delete(id);
     }
   }
 
@@ -632,6 +633,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       providerBanner = status;
     },
     clearSessionBanners,
+    clearUnsavedRows: unsavedRows.clear,
     setProviderSessionAccount: updateProviderSessionAccount,
     setSendInFlight: (value) => {
       sendInFlight = value;
@@ -641,7 +643,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       showTerminal = value;
     },
     setEffectiveModel: updateEffectiveModel,
-    optimisticItemIds,
+    clearAwaitedSend: () => { awaitedSendId = null; },
     invalidatedDraftTerminalIds: draftState.invalidatedDraftTerminalIds,
     timelineWindow,
     rowUiState,
@@ -662,8 +664,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     writeItemAt,
     commitUpsertResult,
     armLiveContentAppendSpring,
-    optimisticItemIds,
+    confirmSend,
+    awaitedSendId: () => awaitedSendId,
     timelineWindow,
+    noteSearchableEvent: itemWindow.noteSearchableEvent,
     streamingReveal,
     activityRuns,
   });
@@ -712,11 +716,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     contextWindow = null;
     providerBanner = undefined;
     clearSessionBanners();
+    unsavedRows.clear();
     updateProviderSessionAccount(null);
     paneErrors.clear();
     loading = false;
     sendInFlight = false;
-    optimisticItemIds.clear();
+    awaitedSendId = null;
     showTerminal = false;
     // activeTurn lives in the global registry (threadStatuses) and is
     // cleared by projectTurnCompleted; clearing it from a pane.clear()
@@ -811,9 +816,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     // Stamp a live content advance from a site OUTSIDE the pane's own
     // mutation methods — specifically the live provider-upsert fan-out in
-    // events.ts (a new row arriving). The optimistic user-send echo and
-    // rollback-restore call `upsertItems` directly and intentionally do
-    // NOT route through here, so they stay sync-pinned.
+    // events.ts (a new row arriving). Rollback-restore calls `upsertItems`
+    // directly and intentionally does NOT route through here, so it stays
+    // sync-pinned.
     markLiveContentAdvanced: (_item: Item) => stampLiveContent(),
     setDraftPlaceholderMode: draftState.setDraftPlaceholderMode,
     applyDraftPlaceholderDefaults: draftState.applyDraftPlaceholderDefaults,
@@ -832,6 +837,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return getItems().length > 0;
     },
     get historyRevision() { return itemWindow.historyRevision; },
+    get searchRevision() { return itemWindow.searchRevision; },
+    watchSearchableEvents: itemWindow.watchSearchableEvents,
     get timelineRevision() {
       return itemWindow.timelineRevision;
     },
@@ -853,6 +860,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get sessionBanners() {
       return sessionBanners;
+    },
+    get unsavedRows() {
+      return unsavedRows.current;
     },
     get providerSessionAccount() {
       return providerSessionAccount;
@@ -899,12 +909,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     /**
      * True between the moment the user clicks Send and the moment
      * SendMessage resolves (success or failure). The composer uses
-     * this to render the optimistic stop button before
+     * this to render the stop button before
      * `provider:turn_started` lands; the keybindings dispatcher uses
      * it to enable Esc → thread.interrupt during the same window.
      */
     get sendInFlight() {
       return sendInFlight;
+    },
+    /**
+     * True from a direct send's dispatch until the backend's first
+     * evidence of it: its row, its queue entry, or the reply. The Send
+     * button shows it as pending.
+     */
+    get sendAwaitingConfirmation() {
+      return awaitedSendId !== null;
     },
     get showTerminal() {
       return showTerminal;
@@ -967,7 +985,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         itemSmoothers: streamingStats.itemSmoothers,
         liveThinkingTails: streamingStats.liveThinkingTails,
         liveThinkingTailChars: streamingStats.liveThinkingTailChars,
-        optimisticItems: optimisticItemIds.size,
         oldestLoadedCursor: timelineWindow.oldestLoadedCursor,
         newestLoadedCursor: timelineWindow.newestLoadedCursor,
       };
@@ -979,6 +996,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     get scrollToItemRequest() {
       return paneScroll.scrollToItemRequest;
+    },
+    get scrollToItemWithdrawal() {
+      return paneScroll.scrollToItemWithdrawal;
     },
     // Companion surfaces — see threadPaneCompanions.ts.
     get showPlanSidebar() {
@@ -1077,8 +1097,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     /** Ensure `itemID` is present in the loaded window. See threadTimelineWindow.svelte.ts. */
-    loadUntilItem(itemID: string): Promise<LoadUntilItemResult> {
-      return timelineWindow.loadUntilItem(itemID);
+    loadUntilItem(itemID: string, live?: () => boolean): Promise<LoadUntilItemResult> {
+      return timelineWindow.loadUntilItem(itemID, live);
+    },
+
+    releaseEndedNavigation(): void {
+      timelineWindow.releaseEndedNavigation();
     },
 
     /** Fetch the next batch of newer turns and append them to the window. See threadTimelineWindow.svelte.ts. */
@@ -1093,6 +1117,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     requestScrollToItem: paneScroll.requestScrollToItem,
     takeScrollToItemRequest: paneScroll.takeScrollToItemRequest,
+    withdrawScrollToItem: paneScroll.withdrawScrollToItem,
 
     /**
      * Registered scroll controller for this pane. Read by surfaces that
@@ -1133,8 +1158,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * Neither this nor `upsertItems` arms the structural spring: wire
      * appends route through `applyProviderItemUpserts` below, which
      * does. The un-armed paths are for rows that must NOT animate the
-     * viewport (revert-on-interrupt restores) or arm at their own call
-     * site (the composer's optimistic send).
+     * viewport.
      */
     upsertItem(item: Item): boolean {
       return itemStream.upsertItemsBatch([item]) !== null;
@@ -1163,10 +1187,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     /**
      * Remove a single item from the pane's timeline by id. Returns the
-     * removed Item so optimistic callers (revert-on-interrupt) can
-     * re-insert it on rollback. Idempotent: returns null when the row
-     * is already gone, so a late `user_message:reverted` event after
-     * the optimistic remove is a no-op.
+     * removed Item. Idempotent: returns null when the row is already
+     * gone.
      *
      * `expectedThreadId` is required rather than optional because every
      * caller reaches here across an await or an event hop, and the pane
@@ -1178,6 +1200,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     removeItemById(itemId: string, expectedThreadId: string): Item | null {
       if (!thread || thread.id !== expectedThreadId) return null;
+      itemWindow.noteSearchableEvent();
       // The index answers "is it here?" in O(1); the removal itself goes
       // through the same core as the truncation paths so a one-row drop
       // cannot diverge from a bulk one. The predicate walk replaces the
@@ -1189,25 +1212,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     /**
-     * Remove every item with `turnIndex >= fromTurnIndex` from the
-     * pane's timeline. Mirrors the backend `DeleteConversationFromTurn`
-     * truncate that revert-on-interrupt and explicit revert run under
-     * the thread lock — only `user_message:reverted` notifies the user
-     * row, so synthetic siblings on the same turn (thinking, api_retry,
-     * error, notification, terminal_interaction waits) would otherwise
-     * strand in the timeline without backing SQLite rows.
-     *
-     * Returns the removed items in their previous order so optimistic
-     * callers can restore them via `upsertItems` on rollback (the
-     * plain-interrupt fallback when the backend predicate disagrees).
-     * Idempotent: returns `[]` when no rows match.
-     */
-    removeItemsFromTurn(fromTurnIndex: number, expectedThreadId: string): Item[] {
-      if (thread?.id !== expectedThreadId || !Number.isFinite(fromTurnIndex)) return [];
-      return removeMatchedItems((it) => it.turnIndex >= fromTurnIndex);
-    },
-
-    /**
      * Mirror a backend conversation revert exactly: remove every item
      * with `turnIndex > turnIndex`, and within the anchor turn itself
      * remove everything NOT named in `keptAnchorTurnItemIds` — the
@@ -1215,11 +1219,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * `DeleteConversationFromItem`. The kept-set formulation (rather
      * than a removed-set) is load-bearing: pane-only rows that were
      * never persisted are absent from any backend enumeration, and a
-     * kept-set removes them for free. An empty list degenerates to
-     * `removeItemsFromTurn(turnIndex)`. Idempotent like its sibling.
+     * kept-set removes them for free. An empty list removes the whole
+     * anchor turn. Idempotent: returns `[]` when no rows match.
      */
     removeRevertedItems(turnIndex: number, keptAnchorTurnItemIds: string[]): Item[] {
       if (!Number.isFinite(turnIndex)) return [];
+      itemWindow.noteSearchableEvent();
       const boundaryWasLoaded = getItems().some((item) => item.turnIndex >= turnIndex);
       const kept = new Set(keptAnchorTurnItemIds);
       const removed = removeMatchedItems(
@@ -1297,8 +1302,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      *  nothing about it goes to the backend. */
     isUserMessageExpanded: rowUiState.isUserMessageExpanded,
     setUserMessageExpanded: rowUiState.setUserMessageExpanded,
-    isUnsendDeclined: rowUiState.isUnsendDeclined,
-    setUnsendDeclined: rowUiState.setUnsendDeclined,
     diffCardExpandedOverride: rowUiState.diffCardExpandedOverride,
     setDiffCardExpanded: rowUiState.setDiffCardExpanded,
     /** Validity stamp for replaying a measured-size priors snapshot across a
@@ -1352,6 +1355,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     assistantMarkdownSourceAppend(itemId: string, parserSource: string) {
       return streamingReveal.assistantSourceAppend(itemId, parserSource);
     },
+
+    /**
+     * Held rows a mounted timeline is presenting: a reasoning row the
+     * provider reclassified as prose keeps its place until the timeline
+     * has shown the change (threadRowPromotions.svelte.ts).
+     */
+    get presentingRowPromotions() {
+      return streamingReveal.presentingRowPromotions;
+    },
+    registerRowPromotionPresenter: streamingReveal.registerRowPromotionPresenter,
+    completeRowPromotion: streamingReveal.completeRowPromotion,
 
     // Snap every behind smoother straight to its full received text on
     // visibilitychange → visible or completed reconnect recovery. See threadStreamingReveal.svelte.ts
@@ -1437,18 +1451,23 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     /**
      * Open the one-shot structural-append spring window for a mutation
-     * this pane is about to apply outside the wire-upsert path. Sole
-     * external caller today: the composer's optimistic user-send, so the
-     * just-sent message glides in through the spring instead of
-     * sync-pinning (the send deliberately does NOT stamp the
-     * live-content latch — one append wants one spring window, not
-     * 500ms of spring eligibility for unrelated reflows). Owns the
-     * loading gate; call it synchronously BEFORE the item
-     * mutation so the window is open when the flush delivers geometry.
+     * this pane is about to apply outside the wire-upsert path. External
+     * caller: the replacement row of an edit-and-resend
+     * (eventsMessageRevert.ts), which glides in through the spring
+     * instead of sync-pinning without stamping the live-content latch
+     * (one append wants one spring window, not 500ms of spring
+     * eligibility for unrelated reflows). Owns the loading gate; call it
+     * synchronously BEFORE the item mutation so the window is open when
+     * the flush delivers geometry.
      */
     armStructuralSpring,
 
-    confirmOptimisticSend,
+    /** Start waiting on the direct send the composer just dispatched. */
+    awaitSendConfirmation(sendId: string): void {
+      awaitedSendId = sendId;
+    },
+
+    confirmSend,
 
     /**
      * Re-evaluate which of this thread's flushed messages this pane
@@ -1459,18 +1478,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * the live-state snapshot (threadLiveStateHydration.ts).
      */
     syncRenderedFlushRows,
-
-    trackOptimisticItem(id: string): void {
-      optimisticItemIds.add(id);
-    },
-
-    isOptimisticItem(id: string): boolean {
-      return optimisticItemIds.has(id);
-    },
-
-    untrackOptimisticItem(id: string): void {
-      optimisticItemIds.delete(id);
-    },
 
     setContextWindow(data: ContextWindow): void {
       contextWindow = normalizeContextWindowForThread(data, thread);
@@ -1485,6 +1492,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     setSessionBanner,
     clearSessionBanners,
+    applyUnsavedRows: unsavedRows.apply,
 
     setProviderSessionAccount(account: ProviderSessionAccountEvent | null): void {
       updateProviderSessionAccount(account);

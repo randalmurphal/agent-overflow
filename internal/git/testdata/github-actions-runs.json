@@ -1,0 +1,25 @@
+{
+  "total_count": 3,
+  "workflow_runs": [
+    {
+      "id": 9003, "name": "CI", "node_id": "WFR_3", "head_branch": "feature", "head_sha": "aaaa000000000000000000000000000000000003",
+      "path": ".github/workflows/ci.yml", "display_title": "Fix the parser", "run_number": 41, "event": "pull_request",
+      "status": "in_progress", "conclusion": null, "workflow_id": 11, "url": "https://api.github.com/repos/acme/widgets/actions/runs/9003",
+      "html_url": "https://github.com/acme/widgets/actions/runs/9003",
+      "pull_requests": [ { "url": "https://api.github.com/repos/acme/widgets/pulls/12", "id": 1, "number": 12, "head": { "ref": "feature", "sha": "aaaa000000000000000000000000000000000003" }, "base": { "ref": "main", "sha": "b" } } ],
+      "created_at": "2026-10-20T10:00:00Z", "updated_at": "2026-10-20T10:05:00Z", "run_attempt": 1, "run_started_at": "2026-10-20T10:00:00Z"
+    },
+    {
+      "id": 9002, "name": "Release", "head_branch": "v1.4.0", "head_sha": "aaaa000000000000000000000000000000000002",
+      "display_title": "v1.4.0", "event": "release", "status": "completed", "conclusion": "success",
+      "html_url": "https://github.com/acme/widgets/actions/runs/9002", "pull_requests": [],
+      "created_at": "2026-10-19T10:00:00Z", "updated_at": "2026-10-19T10:20:00Z"
+    },
+    {
+      "id": 9001, "name": "CI", "head_branch": "main", "head_sha": "aaaa000000000000000000000000000000000001",
+      "display_title": "Merge pull request #10", "event": "push", "status": "completed", "conclusion": "failure",
+      "html_url": "https://github.com/acme/widgets/actions/runs/9001", "pull_requests": [],
+      "created_at": "2026-10-18T10:00:00Z", "updated_at": "2026-10-18T10:20:00Z"
+    }
+  ]
+}

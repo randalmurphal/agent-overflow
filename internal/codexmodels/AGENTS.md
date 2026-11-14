@@ -7,5 +7,7 @@ capabilities across expiry and refresh failure until `Reset`.
 
 Subprocess selection and settings reactions belong to the application layer.
 This package owns cache coordination, the `Lister` seam, and defensive copies.
-Keep the short error TTL. Results started before `Reset` must not populate the
+A shared lookup belongs to no caller: it runs without the first caller's
+cancellation, under the lister's own bound, and each caller waits on its own
+context. Keep the short error TTL. Results started before `Reset` must not populate the
 new cache generation.

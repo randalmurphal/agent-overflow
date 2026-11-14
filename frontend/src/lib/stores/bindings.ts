@@ -6,7 +6,11 @@ import {
 import type { TimelineSelection, TimelineScopeContext, TimelineCursor } from '../../../bindings/agent-overflow/internal/store/models';
 import { GetThreadUserMessageTicks as GetThreadUserMessageTicksRaw } from '../../../bindings/agent-overflow/app.js';
 import { GetTimelineUserMessageTicks as GetTimelineUserMessageTicksRaw } from '../../../bindings/agent-overflow/app.js';
-import { requireTimelineSelectionSupport } from './timelineSelectionSupport';
+import {
+  SearchThreadItems as SearchThreadItemsRaw,
+  SearchTimelineItems as SearchTimelineItemsRaw,
+} from '../../../bindings/agent-overflow/app.js';
+import { requireThreadFindSupport, requireTimelineSelectionSupport } from './timelineSelectionSupport';
 // Re-export Wails v3 generated bindings used by components.
 //
 // Every entry here is produced by `wails3 generate bindings -ts`. When
@@ -98,12 +102,14 @@ export {
   StopSession,
   ReconnectSession,
   DismissSessionBanner,
+  DismissUnsavedThreadRows,
+  GetThreadUnsavedRows,
   SendMessage,
   InterruptTurn,
-  InterruptAndRevertIfClean,
   GetConversationMutationState,
   GetThreadLiveState,
   ListThreadLiveActivity,
+  ListUnsettledFlushes,
   ListPendingInteractiveRequests,
   RespondToApproval,
   RespondToUserInput,
@@ -148,8 +154,10 @@ export {
   // Settings
   GetSettings,
   UpdateSettings,
+  GetClaudeTranscriptRetention,
   ClearBrowserSiteData,
   BrowserCompanionDo,
+  BrowserCompanionFind,
   BrowserCompanionThreadState,
   BrowserCompanionPaneAttach,
   BrowserCompanionPaneDetach,
@@ -182,6 +190,17 @@ export {
   GetThreadWorktreeSetup,
   RetryThreadWorktreeSetup,
 
+  // Composer shell commands (`!command`, and Run on a shell code block).
+  // The snapshot is the reconnect companion of the shell:command stream;
+  // the output read serves a sent command's timeline row; the answer types
+  // a line into a running command's terminal and is never retried. See
+  // app_shell_command.go.
+  AnswerThreadShellCommand,
+  RunThreadShellCommand,
+  StopThreadShellCommand,
+  GetThreadShellCommands,
+  ReadShellAttachmentOutput,
+
   // Usage accounting (append-only ledger aggregates; costs are
   // wire-true for Claude, table-priced at read time for Codex /
   // claude-tui — see internal/usagecost).
@@ -203,6 +222,7 @@ export {
   SwitchProviderAccount,
   RemoveProviderAccount,
   ReorderProviderAccounts,
+  SetProviderAccountAutoSwitch,
   RefreshProviderAccountUsage,
 
   // Per-client UI view state (ui_state table) behind stores/appStorage.ts.
@@ -334,8 +354,11 @@ export {
   GitStatusSubscribe,
   GitStatusUnsubscribe,
   GitListBranches,
+  GitListTags,
+  GitRefreshTags,
   GitListWorktrees,
   GitCommit,
+  ListCommitFiles,
   GitPush,
   GitPull,
   GitCheckout,
@@ -382,6 +405,27 @@ export {
   // would pay a mint round trip per tile.
   MintAttachmentUploadTicket,
   MintAttachmentDownloadTicket,
+  // Dictation: a recording opened on the composer's computer, its pieces
+  // uploaded over HTTP under single-use tickets, transcribed on finish
+  // (lib/dictation/, lib/transport/dictationTransfer.ts).
+  DictationSources,
+  BeginDictation,
+  MintDictationChunkTicket,
+  FinishDictation,
+  CancelDictation,
+  // Live dictation: PCM streamed to the composer's computer, which relays
+  // it to OpenAI with its API key and answers with the text heard so far.
+  BeginLiveDictation,
+  AppendLiveDictation,
+  FinishLiveDictation,
+  CancelLiveDictation,
+  // The OpenAI API key file Settings > Voice describes and opens.
+  OpenAIKeyFile,
+  EditOpenAIKeyFile,
+  // Read aloud in OpenAI voices: a sentence admitted on the reply's
+  // computer, its WAV fetched over HTTP under a single-use ticket.
+  ReadAloudSource,
+  MintReadAloudTicket,
   // Writes an image attachment into the owning computer's Downloads folder,
   // for a client that cannot run a browser download (utils/fileSaveAction.ts).
   SaveAttachment,
@@ -401,7 +445,6 @@ export {
 
   // Message search
   SearchThreadMessages,
-  SearchThreadItems,
 
   // Keybindings
   GetKeybindings,
@@ -431,6 +474,7 @@ export {
   // is read by offset and the handle released at the end
   // (stores/reviewDiffStream.ts).
   OpenWorkspaceDiff,
+  OpenCommitFileDiff,
   OpenBranchBaseDiff,
   OpenCommitDiff,
   ReadReviewDiff,
@@ -439,6 +483,11 @@ export {
   ListRecentCommits,
   GetDiffContextLines,
   GetEditDiffContextLines,
+  // A review diff file's sizes, and its image bytes behind a single-use URL
+  // (the local-image byte route, utils/mediaBlobCache.ts).
+  GetReviewDiffFileSizes,
+  GetReviewDiffImage,
+  GetEditDiffImage,
   VerifyEditDiffs,
   ListThreadEditDiffs,
   OpenEditDiff,
@@ -504,6 +553,8 @@ export {
   // A window of a followed CI job log, read from the backend cache by the
   // log view's block cache (ciLogBlocks.svelte.ts).
   GetPRCILogLines,
+  // The review pane's find over a CI job log, on the backend cache.
+  SearchPRCILog,
   // Forge-hosted attachments referenced by PR/MR content: one mints a
   // single-use ticketed URL for the bytes, the other writes the file into
   // the owning computer's Downloads folder.
@@ -511,13 +562,80 @@ export {
   SaveForgeAttachment,
   ListPRReviewThreads,
   SubmitPRReview,
+  // What a submit attempt did, asked after its answer was lost.
+  GetPRReviewSubmitOutcome,
   ReplyToPRThread,
   SetPRThreadResolved,
+  // The comment actions (docs/specs/pull-requests.md): a comment posted
+  // now on a line or on the PR itself, and an edit or delete of a sent
+  // one. Each success has the PR's pump poll at once.
+  PostPRLineComment,
+  PostPRComment,
+  EditPRComment,
+  DeletePRComment,
+  // A comment's reactions and its suggestions' apply: each success has
+  // the PR's pump poll at once.
+  SetPRCommentReaction,
+  ApplyPRSuggestion,
+  // An editor's preview: where the backend reads suggestion fences.
+  ParseCommentSuggestions,
+  // The Merge section's actions (docs/specs/pull-requests.md): each is the
+  // user's own, and a success has the PR's pump poll at once.
+  ApprovePR,
+  UnapprovePR,
+  MergePR,
+  CancelPRAutoMerge,
+  UpdatePRBranch,
+  MarkPRReady,
+  // Managing the PR (stores/prManage.svelte.ts): its text, people, labels,
+  // state and reviews, each confirmed by the pump as the merge actions
+  // are, and the two reads outside the tick (a picker's search, the
+  // default merge commit message).
+  EditPR,
+  SetPRReviewers,
+  SetPRAssignees,
+  SetPRLabels,
+  SetPRState,
+  RerequestPRReview,
+  DismissPRReview,
+  BypassPRRequestedChanges,
+  SearchPRCandidates,
+  GetPRMergeMessage,
   SubscribePRUpdates,
   UnsubscribePRUpdates,
   SetPRUpdatesActive,
   SetPRCILogFollows,
   RefreshPRCI,
+  // The CI actions on a subscribed PR's or pipeline's CI (stores/ciActions.svelte.ts),
+  // and the artifacts download beside the CI log save.
+  RunPRCIAction,
+  RunPipelineAction,
+  SaveCIArtifacts,
+  // The Pull requests page (docs/specs/pull-requests.md): the forge
+  // projects, the list pump, what the user saw of each PR, opening a
+  // thread on a PR's head, the drafts a PR owns, and the Pipelines tab's
+  // reads and pipeline pump. Handle calls are pinned to the computer
+  // whose subscribe answered.
+  ListForgeProjects,
+  SubscribePRList,
+  SetPRListActive,
+  RefreshPRList,
+  UnsubscribePRList,
+  ListThreadsOnPR,
+  OpenPRThread,
+  ListPRDiffReviewComments,
+  CreatePRDiffReviewComment,
+  UpdatePRDiffReviewComment,
+  DeletePRDiffReviewComment,
+  MarkPRDiffReviewCommentsSent,
+  SendPRDiffReviewComments,
+  ListProjectPipelines,
+  ReadPipelineStages,
+  SubscribePipeline,
+  SetPipelineActive,
+  SetPipelineFollows,
+  RefreshPipeline,
+  UnsubscribePipeline,
   ListLiveBackgroundTasks,
   ListThreadWakes,
   ListStandingAgentWakes,
@@ -673,6 +791,7 @@ export {
   TerminalOpenOptions,
   ThreadMCPServer,
   BrowserCompanionAction,
+  BrowserFindAction,
   UpdateAvailability,
   BackgroundKillAgent,
   BusyThread,
@@ -690,6 +809,7 @@ export {
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   CompanionEvent as BrowserCompanionEvent,
+  FindState as BrowserFindState,
   PageInfo as BrowserPageInfo,
   PaneRect as BrowserPaneRect,
 } from '../../../bindings/agent-overflow/internal/browser/models.js';
@@ -706,6 +826,23 @@ export {
 } from '../../../bindings/agent-overflow/internal/network/models.js';
 // One result per launch a Stop All named; read, never constructed.
 export type { BackgroundTaskStop } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { DictationSources as DictationSourceSet } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { OpenAIKeyFile as OpenAIKeyFileStatus } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { ReadAloudSourceStatus, ReadAloudVoice } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type {
+  ForgeProject,
+  OpenPRThreadRequest,
+  OpenPRThreadResult,
+  PipelineListResult,
+  PipelineStages,
+  PipelineSubscriptionResult,
+  PRListItem,
+  PRListSnapshot,
+  PRListSubscriptionResult,
+  PRThread,
+  PRThreadsRequest,
+  ProjectPRList,
+} from '../../../bindings/agent-overflow/internal/app/models.js';
 export type { Snapshot as BackgroundTaskOutputSnapshot } from '../../../bindings/agent-overflow/internal/tasktail/models.js';// Dev-server rows are read-only views of one machine's scan, never
 // constructed by a component.
 export type {
@@ -1138,6 +1275,15 @@ export function GetThreadUserMessageTicks(threadId: string, selection: TimelineS
   return selection.scopeRootId || selection.tools
     ? GetTimelineUserMessageTicksRaw(threadId, selection)
     : GetThreadUserMessageTicksRaw(threadId);
+}
+
+/** Find hits in the selected transcript of one thread, in document order. */
+export function SearchThreadItems(threadId: string, query: string, limit: number, selection: TimelineSelection = {}) {
+  requireThreadFindSupport(threadId);
+  requireTimelineSelectionSupport(threadId, selection);
+  return selection.scopeRootId || selection.tools || selection.digestItemId
+    ? SearchTimelineItemsRaw(threadId, query, selection, limit)
+    : SearchThreadItemsRaw(threadId, query, limit);
 }
 
 export { ListAsyncQuestions, SubmitAsyncAnswers, SetAsyncQuestionDismissed } from '../../../bindings/agent-overflow/app.js';

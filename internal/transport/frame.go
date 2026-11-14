@@ -93,6 +93,47 @@ const CapabilitySendsPending = "sends-pending.v1"
 // without it does not know whether a thread has a session.
 const CapabilitySessionLive = "session-live.v1"
 
+// CapabilityFlushSettlement reports which queue_flushed frames an answer
+// that nothing is pending covers: flushedThrough on provider:sends_pending
+// and GetThreadLiveState, and ListUnsettledFlushes. A client reading a
+// backend without it keeps a flushed message until it sees the row.
+const CapabilityFlushSettlement = "flush-settlement.v1"
+
+// CapabilityThreadFind names the find bar's search contract:
+// SearchTimelineItems for an agent transcript, and SearchThreadItems
+// answering only the main transcript's visible top-level rows. A backend
+// without it answers SearchThreadItems with agent descendants included, so
+// a client offers no find for its threads.
+const CapabilityThreadFind = "thread-find.v1"
+
+// CapabilityPRReviewDrafts names SubmitPRReview's draft submit: a request
+// naming stored drafts posts them from the store and marks the ones the
+// forge received sent in the same call, one submit per PR at a time. A
+// client reading a backend without it posts the comments itself and marks
+// them sent with a second call.
+const CapabilityPRReviewDrafts = "pr-review-drafts.v1"
+
+// CapabilityPRCommentActions names the review pane's comment actions:
+// PostPRLineComment, PostPRComment, EditPRComment and DeletePRComment,
+// ReplyToPRThread answering PRActionResult, and drafts that carry a line
+// range or are a held reply to a thread. A client reading a backend
+// without it offers no comment now, hold, range, edit or delete.
+const CapabilityPRCommentActions = "pr-comment-actions.v1"
+
+// CapabilityPRSuggestionsReactions names the review pane's suggested
+// changes and reactions: ReviewComment's suggestions and reactions, the
+// PR read's reactionsUnavailable, ApplyPRSuggestion, SetPRCommentReaction
+// and ParseCommentSuggestions. A client reading a backend without it
+// offers no Apply, no reaction controls and no Suggest change.
+const CapabilityPRSuggestionsReactions = "pr-suggestions-reactions.v1"
+
+// CapabilityGitTags names tag checkout: GitListTags, GitRefreshTags, a
+// "refs/tags/<name>" ref wherever a branch name travels, the tag and
+// headCommit of GitStatus, GitWorkspaceState's status and
+// leftBehind, WorktreeStatus.orphanCommits and WorktreeListItem.tag. A
+// client reading a backend without it offers no tags.
+const CapabilityGitTags = "git-tags.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -108,6 +149,12 @@ var serverCapabilities = []string{
 	CapabilityTimelineDigests,
 	CapabilitySendsPending,
 	CapabilitySessionLive,
+	CapabilityFlushSettlement,
+	CapabilityThreadFind,
+	CapabilityPRReviewDrafts,
+	CapabilityPRCommentActions,
+	CapabilityPRSuggestionsReactions,
+	CapabilityGitTags,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose
@@ -549,6 +596,13 @@ type FrameError struct {
 	// that refused (app.BackgroundKillAgent), and a client validates it as
 	// untrusted input.
 	BackgroundAgents json.RawMessage `json:"backgroundAgents,omitempty"`
+	// Reserve and ResumeAt are set only alongside ErrCodeForgeRateLimited:
+	// whether the forge's quota is kept for the user's own actions (a
+	// background call refused under the reserve) rather than spent, and
+	// when the forge may be asked again (RFC 3339). Fields for the reason
+	// Scope is one: the client words the refusal from them.
+	Reserve  bool   `json:"reserve,omitempty"`
+	ResumeAt string `json:"resumeAt,omitempty"`
 	// Detail is the diagnostic record of a method failure: present on
 	// method_error, temporarily_unavailable, internal and every reviewed
 	// (errorsx.Public) failure, absent on refusals the caller decides on
@@ -631,6 +685,10 @@ const (
 	// current thread: the text waits in that thread's composer, so a client
 	// does not put it back in this one's.
 	ErrCodeAssistantDraftMoved = "assistant_draft_moved"
+	// ErrCodeForgeRateLimited is a forge call refused for its rate limit
+	// (git.ForgeActionError's code for kind rate_limited); the frame
+	// carries Reserve and ResumeAt.
+	ErrCodeForgeRateLimited = "forge_rate_limited"
 	// ErrCodeClientOverloaded refuses an RPC this connection has no slot
 	// for: it already holds Config.MaxConcurrentRPCs in flight. The call
 	// was never started, so a client may reissue it once one of its own

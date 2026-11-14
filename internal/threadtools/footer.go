@@ -243,8 +243,9 @@ func (w Wake) status() string {
 		}
 		return fmt.Sprintf("%s%s was cancelled.", who, token)
 	case WakeInterrupted:
-		// The reason the interruption recorded, as its own sentence; a
-		// restart names the computer that restarted.
+		// The cause the settlement recorded, as its own sentence: one of the
+		// reasons below, or who stopped the turn (a thread's cancel, a
+		// workflow, the user). A restart names the computer that restarted.
 		switch w.Text {
 		case InterruptRestart:
 			return fmt.Sprintf("%s%s was interrupted by a restart of %s.", who, token, restartedComputer(w.Computer))
@@ -277,8 +278,9 @@ func (w Wake) status() string {
 const WakePersonStopped = "The person stopped this turn before it answered."
 
 // Why a request was interrupted: the answer an interrupted settlement
-// records, which its wake states (WakeInterrupted). A person's Stop is
-// WakeStopped instead, with what the turn said.
+// records, which its wake states (WakeInterrupted). A turn someone stopped
+// records who did instead, as a sentence the app words; a person's own Stop
+// is WakeStopped, with what the turn said.
 const (
 	// InterruptRestart: the computer that held the request restarted.
 	InterruptRestart = "This computer restarted before the request finished."
@@ -293,8 +295,7 @@ const (
 	// read the message. Its answer goes on with what the turn had written
 	// by then (SessionEndedWrittenSoFar), when it wrote anything.
 	InterruptSessionEndedMidTurn = "The thread's session ended during the turn that read the request."
-	// InterruptTurn: something other than a person's Stop interrupted the
-	// turn, such as a workflow taking the thread over.
+	// InterruptTurn: the turn was interrupted and no cause was recorded.
 	InterruptTurn = "The turn was interrupted before it answered."
 	// InterruptNeverStarted: the request was accepted and its thread was
 	// never created.
@@ -371,6 +372,8 @@ func onComputer(name string) string {
 	return ", on " + name
 }
 
+// restartedComputer names the computer a restart stopped a request on:
+// the answering thread's, which is the caller's own when name is empty.
 func restartedComputer(name string) string {
 	if name == "" {
 		return "this computer"

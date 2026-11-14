@@ -41,6 +41,10 @@ type SendDelivery struct {
 	// opensTurn is the turn a deferred send opens for itself, or -1. Its
 	// delivery is never into an earlier turn (deliveryFloor).
 	opensTurn int
+	// tookTurn is the turn a turn start took the send as, known when the
+	// delivery is read from the send's confirmation (tookTurnSet).
+	tookTurn    int
+	tookTurnSet bool
 }
 
 // deliveryFloor is the earliest turn a send can be delivered into. A
@@ -90,13 +94,16 @@ func (r *Router) noteSendStarted(threadID, sessionToken, providerItemID string) 
 	for i := range queue {
 		if queue[i].ExpectedProviderItemID == providerItemID {
 			queue[i].Started = true
+			if st := r.threadStateIfPresent(threadID); st != nil && st.openTurnSet && !queue[i].StartedTurnSet {
+				queue[i].StartedTurn, queue[i].StartedTurnSet = st.openTurn, true
+			}
 			started = append(started, &queue[i])
 			break
 		}
 	}
-	ready, waiting, turnIndex := r.placeDeliveriesLocked(threadID, sessionToken, started)
+	ready, waiting := r.placeDeliveriesLocked(threadID, sessionToken, started, false)
 	r.mu.Unlock()
-	r.reportDeliveries(threadID, ready, turnIndex)
+	r.reportDeliveries(threadID, ready)
 	r.reportDeliveriesAwaitingTurn(threadID, waiting)
 }
 
@@ -111,9 +118,9 @@ func (r *Router) noteSendStarted(threadID, sessionToken, providerItemID string) 
 // (openQueuedEchoTurn) has opened it by then.
 func (r *Router) reportSendsDelivered(threadID, sessionToken string, sends []*pendingSend) {
 	r.mu.Lock()
-	ready, waiting, turnIndex := r.placeDeliveriesLocked(threadID, sessionToken, sends)
+	ready, waiting := r.placeDeliveriesLocked(threadID, sessionToken, sends, true)
 	r.mu.Unlock()
-	r.reportDeliveries(threadID, ready, turnIndex)
+	r.reportDeliveries(threadID, ready)
 	r.reportDeliveriesAwaitingTurn(threadID, waiting)
 }
 
@@ -122,11 +129,18 @@ func (r *Router) reportSendsDelivered(threadID, sessionToken string, sends []*pe
 // is not below its floor (deliveryFloor); otherwise it waits on the thread for
 // the turn start that reaches its floor (releaseDeliveriesAtTurnStart) and is
 // returned as waiting too.
+//
+// confirmed is a delivery read from the send's confirmation, which can
+// arrive after the turn that ran the message has closed. With no turn open,
+// a send the turn start that took it ran (ranInTakingTurn) is delivered
+// there: the next turn to open belongs to someone else. A `started` says
+// nothing of the kind: it precedes the turn it announces.
+//
 // A retired session's frame delivers nothing: its sends belong to a process
 // that is gone. Caller holds r.mu.
-func (r *Router) placeDeliveriesLocked(threadID, sessionToken string, sends []*pendingSend) (ready, waiting []SendDelivery, turnIndex int) {
+func (r *Router) placeDeliveriesLocked(threadID, sessionToken string, sends []*pendingSend, confirmed bool) (ready, waiting []SendDelivery) {
 	if r.frameRetiredLocked(threadID, sessionToken) {
-		return nil, nil, 0
+		return nil, nil
 	}
 	var deliveries []SendDelivery
 	for _, send := range sends {
@@ -142,24 +156,72 @@ func (r *Router) placeDeliveriesLocked(threadID, sessionToken string, sends []*p
 		if len(ids) == 0 {
 			continue
 		}
-		deliveries = append(deliveries, SendDelivery{
+		delivery := SendDelivery{
 			UserItemID: send.AOItemID, SendIDs: ids,
 			writtenDuring: send.WrittenDuringTurn, opensTurn: deliveryFloor(send),
-		})
+		}
+		deliveries = append(deliveries, delivery)
 	}
 	if len(deliveries) == 0 {
-		return nil, nil, 0
+		return nil, nil
 	}
 	st := r.state(threadID)
+	if confirmed {
+		for i := range deliveries {
+			if send := sendByItemID(sends, deliveries[i].UserItemID); send != nil && st.ranInTakingTurn(send) {
+				deliveries[i].tookTurn, deliveries[i].tookTurnSet = send.TurnIndex, true
+			}
+		}
+	}
 	for _, delivery := range deliveries {
-		if !st.openTurnSet || delivery.opensTurn > st.openTurn {
+		switch {
+		case st.openTurnSet && delivery.opensTurn <= st.openTurn:
+			delivery.setTurn(st.openTurn)
+			ready = append(ready, delivery)
+		case !st.openTurnSet && delivery.tookTurnSet:
+			delivery.setTurn(delivery.tookTurn)
+			ready = append(ready, delivery)
+		default:
 			st.deliveriesAwaitingTurn = append(st.deliveriesAwaitingTurn, delivery)
 			waiting = append(waiting, delivery)
-			continue
 		}
-		ready = append(ready, delivery)
 	}
-	return ready, waiting, st.openTurn
+	return ready, waiting
+}
+
+func sendByItemID(sends []*pendingSend, aoItemID string) *pendingSend {
+	for _, send := range sends {
+		if send.AOItemID == aoItemID {
+			return send
+		}
+	}
+	return nil
+}
+
+// ranInTakingTurn reports whether the turn start that took send (OpenedTurn)
+// opened the turn that ran it. Claude announces a queued message it starts
+// (`started`) before that turn's init, so a turn that took a send whose
+// `queued` ack is on record and whose `started` had not arrived is one the
+// provider opened on its own, racing the send (turn-lifecycle.md §Stdin
+// race): the message runs later. A CLI that sends no acks leaves nothing to
+// tell the two apart, and the turn that took the send is the evidence there
+// is.
+func (st *threadState) ranInTakingTurn(send *pendingSend) bool {
+	if !send.OpenedTurn {
+		return false
+	}
+	if send.StartedAtClaim {
+		return true
+	}
+	_, acked := st.commandLifecycle[send.ExpectedProviderItemID]
+	return !acked
+}
+
+// setTurn names the turn the message was delivered into. The turn is the
+// message's own unless the message was written while it ran.
+func (d *SendDelivery) setTurn(turnIndex int) {
+	d.TurnIndex = turnIndex
+	d.OwnTurn = turnIndex != d.writtenDuring
 }
 
 // releaseDeliveriesAtTurnStart reports the deliveries that were waiting for a
@@ -178,6 +240,7 @@ func (r *Router) releaseDeliveriesAtTurnStart(threadID string, turnIndex int, se
 					waiting = append(waiting, delivery)
 					continue
 				}
+				delivery.setTurn(turnIndex)
 				ready = append(ready, delivery)
 			}
 			clear(st.deliveriesAwaitingTurn[len(waiting):])
@@ -188,7 +251,7 @@ func (r *Router) releaseDeliveriesAtTurnStart(threadID string, turnIndex int, se
 		}
 	}
 	r.mu.Unlock()
-	r.reportDeliveries(threadID, ready, turnIndex)
+	r.reportDeliveries(threadID, ready)
 }
 
 // reportReboundDeliveries tells the hook of deliveries a merge fold moved
@@ -228,7 +291,8 @@ func (r *Router) reportDeliveriesAwaitingTurn(threadID string, deliveries []Send
 	}
 }
 
-func (r *Router) reportDeliveries(threadID string, deliveries []SendDelivery, turnIndex int) {
+// reportDeliveries tells the hook of deliveries whose turn is named (setTurn).
+func (r *Router) reportDeliveries(threadID string, deliveries []SendDelivery) {
 	if len(deliveries) == 0 {
 		return
 	}
@@ -239,8 +303,6 @@ func (r *Router) reportDeliveries(threadID string, deliveries []SendDelivery, tu
 		return
 	}
 	for _, delivery := range deliveries {
-		delivery.TurnIndex = turnIndex
-		delivery.OwnTurn = turnIndex != delivery.writtenDuring
 		hook(threadID, delivery)
 	}
 }

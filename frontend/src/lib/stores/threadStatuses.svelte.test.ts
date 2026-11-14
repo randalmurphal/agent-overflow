@@ -80,7 +80,7 @@ describe('the optimistic clear of a Stop and its refusal', () => {
     expect(getActiveTurn('t1')).toBeNull();
 
     projectTurnStarted('t1', 'turn-2', 1, 6);
-    projectTurnCompleted('t1', 'turn-2', { turnIndex: 1 });
+    projectTurnCompleted('t1', 'turn-2');
     expect(getThreadStatus('t1')).toBe('idle');
     expect(projectTurnStopRequested('t1')).toBeNull();
     restoreRefusedTurnStop('t1', null);
@@ -90,7 +90,7 @@ describe('the optimistic clear of a Stop and its refusal', () => {
   it('does not put a turn back once a canonical signal or a later Stop superseded the clear', () => {
     projectTurnStarted('t1', 'turn-1', 0, 5);
     const first = projectTurnStopRequested('t1');
-    projectTurnCompleted('t1', 'turn-1', { turnIndex: 0 });
+    projectTurnCompleted('t1', 'turn-1');
     restoreRefusedTurnStop('t1', first);
     expect(getActiveTurn('t1')).toBeNull();
     expect(getThreadStatus('t1')).toBe('idle');
@@ -111,9 +111,9 @@ describe('the optimistic clear of a Stop and its refusal', () => {
   it('settles the open background-kill question as "keep them" when its turn ends', async () => {
     projectTurnStarted('t1', 'turn-1', 0, 5);
     let ask = confirmBackgroundKill('t1', []);
-    projectTurnCompleted('t1', 'stale-turn', { turnIndex: 0 });
+    projectTurnCompleted('t1', 'stale-turn');
     expect(pendingBackgroundKillConfirmation()?.threadId).toBe('t1');
-    projectTurnCompleted('t1', 'turn-1', { turnIndex: 0 });
+    projectTurnCompleted('t1', 'turn-1');
     await expect(ask).resolves.toBe(false);
 
     projectTurnStarted('t1', 'turn-2', 1, 6);
@@ -390,11 +390,10 @@ describe('threadStatuses store', () => {
     });
 
     it('flips off between wire rounds and re-flips on round 2', () => {
-      // Pins the per-wire-round emission cadence (see
-      // internal/triage/AGENTS.md "Wire-round vs logical-turn"). The
+      // Pins the per-round emission cadence (see
+      // docs/architecture/turn-lifecycle.md § Rounds and turns). The
       // backend emits one provider:turn_started/turn_completed pair per
-      // wire `result` envelope; in Claude's multi-result-per-turn
-      // cascade two pairs flow per logical turn. Each round generates
+      // round; a turn the model continues after a soft close carries two. Each round generates
       // a distinct turnId — round 1 ends, getActiveTurn returns null
       // (composer enabled, indicator off), round 2 starts with a new
       // id and re-flips the indicator on.

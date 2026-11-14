@@ -3,6 +3,8 @@
 package browser
 
 import (
+	"errors"
+	"log"
 	"strconv"
 	"strings"
 )
@@ -98,7 +100,7 @@ func (e *wkEngine) SetPageBounds(handle string, placement PanePlacement) {
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if present {
-		_ = wkPresentView(p.view, placement)
+		_ = wkPresentView(p.liveView(), placement)
 	}
 }
 
@@ -121,7 +123,7 @@ func (e *wkEngine) ShowPage(handle string) {
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if present {
-		_ = wkPresentView(p.view, placement)
+		_ = wkPresentView(p.liveView(), placement)
 	}
 }
 
@@ -141,7 +143,9 @@ func (e *wkEngine) HidePage(handle string) {
 		p.mu.Lock()
 		slot := p.slot
 		p.mu.Unlock()
-		_ = wkHideView(p.view, slot)
+		if err := wkHideView(p.liveView(), slot); err != nil && !errors.Is(err, errViewClosed) {
+			log.Printf("browser: hide page %d: %v", p.id, err)
+		}
 	}
 }
 

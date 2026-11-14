@@ -118,7 +118,7 @@ func TestPRCILogFollowOnANonStreamingForgeWaitsForCompletion(t *testing.T) {
 	if len(state.Sections) != 2 || state.Sections[1].Name != "Run make test" || state.Sections[1].Status != gitops.CIStatusRunning || state.Sections[1].Lines != 0 {
 		t.Fatalf("rows before the log exists = %+v, want the steps without lines", state.Sections)
 	}
-	if _, err := f.app.GetPRCILogLines(testPR, "7", 0, 10); !errors.Is(err, errCILogNotDownloaded) {
+	if _, err := f.app.GetPRCILogLines(testPR.Repository(), "7", 0, 10); !errors.Is(err, errCILogNotDownloaded) {
 		t.Fatalf("lines of an unpublished log = %v", err)
 	}
 	if frame := awaitLogEvent(t, f.logEvents, "unavailable frame"); frame.Available || frame.Error != "" {
@@ -234,8 +234,22 @@ func TestPRCILogFinalFetchFailureSurfacesAfterTheQuickTries(t *testing.T) {
 	}
 	awaitLogEvent(t, f.logEvents, "first log frame")
 
+	// The live follow re-fetches at the follow cadence. Paused, and past a
+	// request the pump serves only between turns, it fetches nothing, so
+	// the job fails and completes between two turns and every fetch after
+	// the resume is a final one.
+	if err := f.app.SetPRUpdatesActive(sub.ID, false); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if err := f.app.RefreshPRCI(context.Background(), sub.ID); err != nil {
+		t.Fatalf("RefreshPRCI: %v", err)
+	}
 	f.setLog("7", "", errors.New("glab: 500"))
 	f.publish(pipelineWith(gitops.CIStatusFailed, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusFailed, LogsAvailable: true}), nil)
+	before := f.logFetches.Load()
+	if err := f.app.SetPRUpdatesActive(sub.ID, true); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
 	awaitCIEvent(t, f.ciEvents, "terminal pipeline frame")
 	frame := awaitLogEvent(t, f.logEvents, "error frame after the quick tries ran out")
 	// The wire error names a correlation id, a hex string that can contain
@@ -243,10 +257,7 @@ func TestPRCILogFinalFetchFailureSurfacesAfterTheQuickTries(t *testing.T) {
 	if frame.Error == "" || strings.Contains(frame.Error, "glab: 500") || frame.Version != 1 || frame.TotalLines != 1 || !frame.Available {
 		t.Fatalf("error frame = %+v, want the failure over the held version", frame)
 	}
-	// The running job's log is fetched at the follow cadence until the
-	// pipeline turns terminal, as often as the test's own pace allows; the
-	// final tries are the fetches after it.
-	if n := f.logFetches.Load() - f.logFetchesAtTerminal.Load(); n != prCILogFinalAttempts {
+	if n := f.logFetches.Load() - before; n != prCILogFinalAttempts {
 		t.Fatalf("final fetch attempted %d times, want %d", n, prCILogFinalAttempts)
 	}
 	if got := f.lines(t, "7"); !slices.Equal(got, []string{"partial"}) {
@@ -318,14 +329,9 @@ func TestPRCILogCutDownloadResumes(t *testing.T) {
 	body := strings.Repeat("0123456789abcdef\n", 2000)
 	f.setLog("7", body, nil)
 	f.cutLog("7", 10000)
-	// The follow cadence can resume the download before the reply is read;
-	// hold the resume so the reply is the cut state.
-	resume := make(chan struct{})
-	f.mu.Lock()
-	f.resumeGate = resume
-	f.mu.Unlock()
+	resume := f.holdLaterLogs(t)
 	sub := f.subscribe(t)
-	awaitCIEvent(t, f.ciEvents, "pipeline frame")
+	awaitSettledCIEvent(t, f, "pipeline frame")
 	result, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
 	if err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
@@ -333,8 +339,8 @@ func TestPRCILogCutDownloadResumes(t *testing.T) {
 	if state := result.Logs["7"]; !state.Downloading || state.Available || state.Error != "" || state.TotalLines != 0 {
 		t.Fatalf("cut download state = %+v, want downloading", state)
 	}
+	resume()
 	awaitLogEvent(t, f.logEvents, "downloading frame")
-	close(resume)
 	done := awaitLogEvent(t, f.logEvents, "resumed log frame")
 	if done.Downloading || !done.Available || done.TotalLines != 2000 {
 		t.Fatalf("resumed frame = %+v", done)
@@ -354,7 +360,7 @@ func TestPRCILogDeletedCacheIsDownloadedAgain(t *testing.T) {
 	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess, LogsAvailable: true}), nil)
 	f.setLog("7", "a\nb\n", nil)
 	sub := f.subscribe(t)
-	awaitCIEvent(t, f.ciEvents, "pipeline frame")
+	awaitSettledCIEvent(t, f, "pipeline frame")
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"}); err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
 	}
@@ -468,15 +474,15 @@ func TestPRCILogFollowPinsItsLogInTheCache(t *testing.T) {
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7", "8"}); err != nil {
 		t.Fatalf("follow 8: %v", err)
 	}
-	if !store.Has(ciLogKey(testPR, "7")) || !store.Has(ciLogKey(testPR, "8")) {
+	if !store.Has(ciLogKey(testPR.Repository(), "7")) || !store.Has(ciLogKey(testPR.Repository(), "8")) {
 		t.Fatal("a followed log was evicted")
 	}
 	// Unfollowing 7 lets the bound take it.
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"8"}); err != nil {
 		t.Fatalf("unfollow 7: %v", err)
 	}
-	if store.Has(ciLogKey(testPR, "7")) || !store.Has(ciLogKey(testPR, "8")) {
-		t.Fatalf("after unfollowing 7: has 7 %v, has 8 %v; want 7 evicted", store.Has(ciLogKey(testPR, "7")), store.Has(ciLogKey(testPR, "8")))
+	if store.Has(ciLogKey(testPR.Repository(), "7")) || !store.Has(ciLogKey(testPR.Repository(), "8")) {
+		t.Fatalf("after unfollowing 7: has 7 %v, has 8 %v; want 7 evicted", store.Has(ciLogKey(testPR.Repository(), "7")), store.Has(ciLogKey(testPR.Repository(), "8")))
 	}
 
 	// A pump that died on its own releases its handles' follows.
@@ -487,14 +493,14 @@ func TestPRCILogFollowPinsItsLogInTheCache(t *testing.T) {
 	if _, err := f.app.SetPRCILogFollows(context.Background(), other.ID, []string{"9"}); err != nil {
 		t.Fatalf("follow 9: %v", err)
 	}
-	if !store.Has(ciLogKey(testPR, "8")) || !store.Has(ciLogKey(testPR, "9")) {
+	if !store.Has(ciLogKey(testPR.Repository(), "8")) || !store.Has(ciLogKey(testPR.Repository(), "9")) {
 		t.Fatal("a followed log was evicted")
 	}
 	f.app.prUpdates.mu.Lock()
 	pump := f.app.prUpdates.pumps[sub.PRKey]
 	f.app.prUpdates.mu.Unlock()
 	f.app.dropPRUpdatePump(pump)
-	if store.Has(ciLogKey(testPR, "8")) || store.Has(ciLogKey(testPR, "9")) {
+	if store.Has(ciLogKey(testPR.Repository(), "8")) || store.Has(ciLogKey(testPR.Repository(), "9")) {
 		t.Fatal("a dropped pump's follows stayed pinned over the bound")
 	}
 }
@@ -513,7 +519,7 @@ func TestGetPRCILogLinesIsBounded(t *testing.T) {
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"}); err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
 	}
-	window, err := f.app.GetPRCILogLines(testPR, "7", 100, maxCILogLinesPerRead)
+	window, err := f.app.GetPRCILogLines(testPR.Repository(), "7", 100, maxCILogLinesPerRead)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,10 +530,10 @@ func TestGetPRCILogLinesIsBounded(t *testing.T) {
 	if window.From != 100 || window.TotalLines != 3000 || len(window.Lines) == 0 || bytes > maxCILogBytesPerRead || len(window.Lines) != maxCILogBytesPerRead/len(line) {
 		t.Fatalf("window from %d: %d lines, %d bytes of %d lines", window.From, len(window.Lines), bytes, window.TotalLines)
 	}
-	if window, err := f.app.GetPRCILogLines(testPR, "7", 2990, 50); err != nil || len(window.Lines) != 10 {
+	if window, err := f.app.GetPRCILogLines(testPR.Repository(), "7", 2990, 50); err != nil || len(window.Lines) != 10 {
 		t.Fatalf("window at the end = %d lines, %v", len(window.Lines), err)
 	}
-	if window, err := f.app.GetPRCILogLines(testPR, "7", 3000, 5); err != nil || len(window.Lines) != 0 || window.Lines == nil {
+	if window, err := f.app.GetPRCILogLines(testPR.Repository(), "7", 3000, 5); err != nil || len(window.Lines) != 0 || window.Lines == nil {
 		t.Fatalf("window past the end = %+v, %v", window.Lines, err)
 	}
 	// A line past the line bound is shown clipped, and listed.
@@ -536,7 +542,7 @@ func TestGetPRCILogLinesIsBounded(t *testing.T) {
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"8"}); err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
 	}
-	long, err := f.app.GetPRCILogLines(testPR, "8", 0, 3)
+	long, err := f.app.GetPRCILogLines(testPR.Repository(), "8", 0, 3)
 	if err != nil || len(long.Lines) != 3 || len(long.Lines[1]) != maxCILogLineBytes || !slices.Equal(long.Clipped, []int{1}) || long.Lines[2] != "after" {
 		t.Fatalf("long line read = %d lines, clipped %v, %v", len(long.Lines), long.Clipped, err)
 	}
@@ -551,7 +557,7 @@ func TestGetPRCILogLinesIsBounded(t *testing.T) {
 		{testPR, "7; rm", 0, 1},
 		{gitops.PRReference{Forge: "github"}, "7", 0, 1},
 	} {
-		if _, err := f.app.GetPRCILogLines(bad.pr, bad.job, bad.from, bad.count); err == nil {
+		if _, err := f.app.GetPRCILogLines(bad.pr.Repository(), bad.job, bad.from, bad.count); err == nil {
 			t.Fatalf("GetPRCILogLines(%+v, %q, %d, %d) was accepted", bad.pr, bad.job, bad.from, bad.count)
 		}
 	}
@@ -568,13 +574,9 @@ func TestPRCILogRefusedResumeStartsOver(t *testing.T) {
 	body := strings.Repeat("0123456789abcdef\n", 2000)
 	f.setLog("7", body, nil)
 	f.cutLog("7", len(body))
-	// Hold the resume so the reply is the cut state (TestPRCILogCutDownloadResumes).
-	resume := make(chan struct{})
-	f.mu.Lock()
-	f.resumeGate = resume
-	f.mu.Unlock()
+	resume := f.holdLaterLogs(t)
 	sub := f.subscribe(t)
-	awaitCIEvent(t, f.ciEvents, "pipeline frame")
+	awaitSettledCIEvent(t, f, "pipeline frame")
 	result, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
 	if err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
@@ -582,8 +584,8 @@ func TestPRCILogRefusedResumeStartsOver(t *testing.T) {
 	if state := result.Logs["7"]; !state.Downloading || state.Error != "" {
 		t.Fatalf("cut download state = %+v, want downloading", state)
 	}
+	resume()
 	awaitLogEvent(t, f.logEvents, "downloading frame")
-	close(resume)
 	done := awaitLogEvent(t, f.logEvents, "restarted log frame")
 	if done.Downloading || !done.Available || done.Error != "" || done.TotalLines != 2000 {
 		t.Fatalf("restarted frame = %+v", done)

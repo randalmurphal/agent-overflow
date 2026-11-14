@@ -9,7 +9,7 @@ import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { getSettings } from '../../stores/settings.svelte';
 import TailClampedText from './TailClampedText.svelte';
 import { transformTranslateY } from './tailSlide';
-import { TAIL_WINDOW_CAP_CHARS, TAIL_WINDOW_KEEP_LINES } from './tailWindow';
+import { TAIL_WINDOW_CAP_CHARS, TAIL_WINDOW_KEEP_LINES, heightAbove } from './tailWindow';
 
 // happy-dom reports zero geometry, so the tail-visibility invariant below can
 // only be checked in a real layout engine. This file runs in the `browser`
@@ -513,6 +513,7 @@ describe('TailClampedText wrap-stable window', () => {
     const { body, rerender } = mountTail(before, 600);
     await tick();
     await raf();
+    await raf(); // initial RO calibration: the first slide needs a baseline
     expect(appliedCut(body, before)).toBe(0);
 
     const samples = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => before.length - k * 40);
@@ -529,7 +530,11 @@ describe('TailClampedText wrap-stable window', () => {
     expect(after[cut - 1]).toBe('\n');
 
     expectSamplesEqual(relBefore, sampleRelative(body, after, samples));
-    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+    // The cut lands in the frame of the line that pushed the window over
+    // the cap, and that line slides in as any landed line does: the content
+    // above the box shrank, the line that landed is the slide.
+    expect(transformTranslateY(getComputedStyle(body.firstElementChild as HTMLElement).transform)).toBeGreaterThan(2);
+    await waitFor(() => tailOverflowPx(body) <= 1, 'the appended line slid into view');
   });
 
   it('measured cut: a newline-less monster paragraph is cut at a rendered line start', async () => {
@@ -547,13 +552,16 @@ describe('TailClampedText wrap-stable window', () => {
     const { body, rerender } = mountTail(before, 600);
     await tick();
     await raf();
+    await raf(); // initial RO calibration: the first slide needs a baseline
     expect(appliedCut(body, before)).toBe(0);
 
     const samples = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => before.length - k * 40);
     const relBefore = sampleRelative(body, before, samples);
     const lh = parseFloat(getComputedStyle(body).lineHeight);
 
-    const after = `${before} and the paragraph keeps running with even more appended words`;
+    // Enough appended text to land a row at any font: the slide is for the
+    // rows that landed, and words that fit on the previous row land none.
+    const after = `${before} and the paragraph keeps running with even more appended words`.padEnd(before.length + 3 * 120, ' word');
     await rerender({ text: after });
     flushSync();
     await raf();
@@ -568,7 +576,88 @@ describe('TailClampedText wrap-stable window', () => {
     expect(contentSpanPx(body)).toBeLessThanOrEqual((TAIL_WINDOW_KEEP_LINES + 2) * lh);
 
     expectSamplesEqual(relBefore, sampleRelative(body, after, samples));
-    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+    expect(transformTranslateY(getComputedStyle(body.firstElementChild as HTMLElement).transform)).toBeGreaterThan(2);
+    await waitFor(() => tailOverflowPx(body) <= 1, 'the appended words slid into view');
+  });
+
+  it('heightAbove counts wrapped rows and blank lines above a line start', async () => {
+    const { body } = mountTail('a\n\nb\nc', 600);
+    await tick();
+    const lh = parseFloat(getComputedStyle(body).lineHeight);
+    const node = bodyTextNode(body);
+    expect(heightAbove(node, 0, lh)).toBe(0);
+    expect(heightAbove(node, 2, lh)).toBeCloseTo(lh, 3); // the blank row
+    expect(heightAbove(node, 3, lh)).toBeCloseTo(2 * lh, 3); // 'b'
+    expect(heightAbove(node, 5, lh)).toBeCloseTo(3 * lh, 3); // 'c'
+    expect(heightAbove(node, 6, lh)).toBeNull();
+
+    const wrapped = mountTail('word '.repeat(100).trimEnd(), 600);
+    await tick();
+    const wrappedNode = bodyTextNode(wrapped.body);
+    const top = (i: number): number => {
+      const range = document.createRange();
+      range.setStart(wrappedNode, i);
+      range.setEnd(wrappedNode, i + 1);
+      return range.getBoundingClientRect().top;
+    };
+    let secondRow = 1;
+    while (top(secondRow) <= top(0) + 1) secondRow += 1;
+    expect(heightAbove(wrappedNode, secondRow, lh)).toBeCloseTo(lh, 3);
+    expect(heightAbove(wrappedNode, secondRow - 1, lh)).toBe(0);
+  });
+
+  it('slides a cut whose append carries the previous last character onto a new row', async () => {
+    // The frame that crosses the cap completes a word at the right margin:
+    // the whole word wraps, so the previous last character leaves its row
+    // and no character marks where the text ended before the append. The
+    // landed height must come from the geometry before the cut, not from
+    // that character's rectangle, or the cut's credit cancels the landed
+    // row and the line teleports.
+    const line = 'n'.repeat(100);
+    const lineCount = Math.floor((TAIL_WINDOW_CAP_CHARS - 300) / (line.length + 1));
+    const prefix = Array.from({ length: lineCount }, () => line).join('\n') + '\n';
+    const lastLen = TAIL_WINDOW_CAP_CHARS - 1 - prefix.length;
+    const fill = 'word '.repeat(Math.floor((lastLen - 2) / 5));
+    const before = prefix + fill + 'w'.repeat(lastLen - 2 - fill.length) + 'fo';
+    expect(before.length).toBe(TAIL_WINDOW_CAP_CHARS - 1);
+
+    const { body, rerender } = mountTail(before, 600);
+    await tick();
+    await raf();
+    await raf(); // initial RO calibration: the first slide needs a baseline
+    expect(appliedCut(body, before)).toBe(0);
+
+    // Extend the final word past the room left on its row.
+    const node = bodyTextNode(body);
+    const wordStart = before.lastIndexOf(' ') + 1;
+    const rectAt = (i: number): DOMRect => {
+      const range = document.createRange();
+      range.setStart(node, i);
+      range.setEnd(node, i + 1);
+      return range.getBoundingClientRect();
+    };
+    const last = rectAt(before.length - 1);
+    expect(rectAt(wordStart - 2).top).toBeCloseTo(last.top, 1);
+    const room = body.firstElementChild!.getBoundingClientRect().right - last.right;
+    const after = before + 'o'.repeat(Math.ceil(room / last.width) + 3);
+    await rerender({ text: after });
+    flushSync();
+    await raf();
+
+    const cut = appliedCut(body, after);
+    expect(cut).toBeGreaterThan(0);
+    const cutNode = bodyTextNode(body);
+    const row = (i: number): number => {
+      const range = document.createRange();
+      range.setStart(cutNode, i - cut);
+      range.setEnd(cutNode, i - cut + 1);
+      return range.getBoundingClientRect().top;
+    };
+    // The reflow happened: the previous last character is below the word
+    // before it, on the row the append landed.
+    expect(row(before.length - 1)).toBeGreaterThan(row(wordStart - 2) + 1);
+    expect(transformTranslateY(getComputedStyle(body.firstElementChild as HTMLElement).transform)).toBeGreaterThan(2);
+    await waitFor(() => tailOverflowPx(body) <= 1, 'the completed word slid into view');
   });
 
   it('keeps every rendered character in place when the source window moves', async () => {

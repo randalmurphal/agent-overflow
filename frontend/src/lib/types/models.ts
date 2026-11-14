@@ -497,7 +497,19 @@ export interface DiffReviewPRContext {
 export interface DiffReviewPRContextEntry {
   commentId: string;
   hunkExcerpt: string;
+  /** A held reply's thread as the pane showed it, quoted to the agent. */
+  thread?: DiffReviewThreadContext;
 }
+
+export interface DiffReviewThreadContext {
+  path?: string;
+  line?: number;
+  startLine?: number;
+  comments: { author: string; body: string }[];
+}
+
+/** Where a line comment sits; a held reply (`reply`) has no line. */
+export type DiffReviewLineSide = "file" | "old" | "new" | "context";
 
 export interface DiffReviewComment {
   id: string;
@@ -509,7 +521,15 @@ export interface DiffReviewComment {
   status: "draft" | "sent" | "resolved";
   oldLine?: number;
   newLine?: number;
-  side: "file" | "old" | "new" | "context";
+  side: DiffReviewLineSide | "reply";
+  /** A range's first line, as oldLine/newLine give its last; 0 or absent
+   * for one line. */
+  startOldLine?: number;
+  startNewLine?: number;
+  /** A held reply (side `reply`, pr scope): the forge thread it answers
+   * and that thread's first comment's database id. */
+  replyThreadId?: string;
+  replyRootId?: number;
   selectedText: string;
   body: string;
   sentAt?: number;
@@ -526,6 +546,10 @@ export interface DiffReviewCommentInput {
   oldLine?: number;
   newLine?: number;
   side: DiffReviewComment["side"];
+  startOldLine?: number;
+  startNewLine?: number;
+  replyThreadId?: string;
+  replyRootId?: number;
   selectedText: string;
   body: string;
 }
@@ -565,6 +589,184 @@ export interface PRDetail {
   latestReviews: ReviewVerdict[];
   checks: CheckSummary;
   mergeability: string;
+  /** Can it merge, and what stands in the way (git.MergeReadiness). */
+  readiness: MergeReadiness;
+  /** What the project allows and what the viewer may do (git.MergeOptions). */
+  merge: MergeOptions;
+  mergedAt?: string;
+  mergedBy?: string;
+  closedAt?: string;
+  /** The Details section and the management controls (git.PRManage);
+   *  absent from an older backend, which offers none of them. */
+  manage?: PRManage;
+}
+
+/** Mirrors git.PRManage. */
+export interface PRManage {
+  reviewers: PRReviewer[];
+  assignees: PRPerson[];
+  labels: PRLabel[];
+  can: PRManageCan;
+  /** One sentence when the management read failed: every flag is false
+   *  and the lists are empty. */
+  unavailable?: string;
+}
+
+/** Mirrors git.PRManageCan: one flag per control, from the forge's answer. */
+export interface PRManageCan {
+  editTitle: boolean;
+  editDescription: boolean;
+  reviewers: boolean;
+  assignees: boolean;
+  labels: boolean;
+  close: boolean;
+  reopen: boolean;
+  convertToDraft: boolean;
+  rerequest: boolean;
+  dismiss: boolean;
+  bypass: boolean;
+  reviewerTeams: boolean;
+}
+
+/** A user, or on GitHub a team (`login` "org/slug"); `id` is GitLab's user id. */
+export interface PRPerson {
+  login: string;
+  name?: string;
+  id?: string;
+  team?: boolean;
+}
+
+/** APPROVED, CHANGES_REQUESTED, COMMENTED or PENDING. */
+export interface PRReviewer extends PRPerson {
+  state: string;
+  /** GitHub: the review is on an older commit than the head. */
+  stale?: boolean;
+}
+
+/** GitHub addresses a label by `id`, GitLab by `name`. `color` is "#rrggbb". */
+export interface PRLabel {
+  id?: string;
+  name: string;
+  color?: string;
+}
+
+/** EditPR's change; `expectedDescription` goes with `description` only. */
+export interface PREdit {
+  title?: string;
+  description?: string;
+  expectedDescription?: string;
+}
+
+export interface PRPeopleChange {
+  add: PRPerson[];
+  remove: PRPerson[];
+}
+
+export interface PRLabelChange {
+  add: PRLabel[];
+  remove: PRLabel[];
+}
+
+/** One picker search's first page; `more` when the forge has more. */
+export interface PRCandidates {
+  people: PRPerson[];
+  labels: PRLabel[];
+  more: boolean;
+}
+
+/** A merge commit's title and body (git.MergeMessage). */
+export interface MergeMessage {
+  title: string;
+  body: string;
+}
+
+/** A GitHub review that requested changes and blocks the merge. */
+export interface ChangeRequest {
+  reviewId: string;
+  authorLogin: string;
+  authorName?: string;
+}
+
+/** The merge's state and its conditions; mirrors git.MergeReadiness. */
+export interface MergeReadiness {
+  /** ready, blocked, checking, draft, merged or closed. */
+  state: string;
+  /** What stands in the way, in the forge's order. */
+  blockers: MergeBlocker[];
+  /** Conditions already met, so a ready PR's section is never empty. */
+  settled: MergeBlocker[];
+}
+
+export type MergeBlockerKind =
+  | 'approvals' | 'checks' | 'threads' | 'conflicts' | 'rebase' | 'draft' | 'rules' | 'changes_requested' | 'other';
+
+export interface MergeBlocker {
+  kind: MergeBlockerKind | string;
+  text: string;
+  detail?: string;
+  url?: string;
+  /** changes_requested, GitHub: the reviews DismissPRReview can dismiss. */
+  changeRequests?: ChangeRequest[];
+  /** changes_requested, GitLab: BypassPRRequestedChanges is offered. */
+  bypassable?: boolean;
+  /** A settled changes_requested row: the requested changes were bypassed. */
+  bypassed?: boolean;
+}
+
+/** Mirrors git.MergeOptions: methods the project allows (default first). */
+export interface MergeOptions {
+  /** merge, squash, rebase; the project default first. */
+  methods: string[];
+  deleteBranchOffered: boolean;
+  deleteBranchDefault: boolean;
+  autoMergeAvailable: boolean;
+  autoMerge?: AutoMergeRequest | null;
+  viewerCanMerge: boolean;
+  viewerCanApprove: boolean;
+  viewerApproved: boolean;
+  cannotApproveReason?: string;
+  cannotMergeReason?: string;
+}
+
+export interface AutoMergeRequest {
+  method: string;
+  byLogin: string;
+  byName?: string;
+  at: string;
+  waitsFor: string;
+  canCancel: boolean;
+}
+
+/** One forge activity row in the Conversation feed (git.ReviewEvent). */
+export interface ReviewEvent {
+  id: string;
+  /** approved, unapproved, review_dismissed, merged, closed, reopened,
+   *  marked_draft, marked_ready, auto_merge_set, auto_merge_canceled,
+   *  force_pushed, rebased, review_requested, base_changed. */
+  kind: string;
+  actorLogin: string;
+  actorName?: string;
+  /** RFC 3339. */
+  at: string;
+  text?: string;
+  /** A SHA or branch the event names. */
+  ref?: string;
+}
+
+/** What the user asked of MergePR (git.MergeRequest). */
+export interface MergeRequest {
+  method: string;
+  headSHA: string;
+  deleteBranch: boolean;
+  autoMerge: boolean;
+  /** An edited commit message; omitted, the forge's default applies. */
+  commitMessage?: MergeMessage;
+}
+
+export interface MergeOutcome {
+  merged: boolean;
+  autoMerge: boolean;
+  sha?: string;
 }
 
 export interface ReviewVerdict {
@@ -600,9 +802,42 @@ export interface CheckStatus {
 // Normalized CI shapes mirroring internal/git/ci.go. "Stage" is the
 // GitLab pipeline stage or the GitHub workflow name.
 export interface CIPipeline {
+  /** The forge's pipeline or workflow run id; empty for a GitHub PR's
+   * head checks, which span runs. */
+  id?: string;
   status: string;
   url?: string;
+  ref?: string;
+  sha?: string;
   stages: CIStage[];
+  /** Absent on a read from before the actions existed. */
+  actions?: CIPipelineActions;
+  /** Why some actions are not offered: a read behind their flags failed
+   * and the flags it would have set are absent. Absent when every flag
+   * was read. */
+  actionsUnavailable?: string;
+}
+
+/** Whether one CI action applies and whether the viewer may take it:
+ * absent or '' does not apply, 'allowed' may, 'denied' applies but this
+ * login may not (internal/git CIAction). */
+export type CIActionFlag = '' | 'allowed' | 'denied';
+
+export interface CIPipelineActions {
+  retryFailed?: CIActionFlag;
+  cancel?: CIActionFlag;
+  /** GitHub: a completed run of the pipeline keeps artifacts. */
+  artifacts?: CIActionFlag;
+}
+
+export interface CIJobActions {
+  retry?: CIActionFlag;
+  /** GitLab only. */
+  cancel?: CIActionFlag;
+  /** GitLab only: a manual job. */
+  play?: CIActionFlag;
+  /** GitLab only: the job holds an artifacts archive. */
+  artifacts?: CIActionFlag;
 }
 
 export interface CIStage {
@@ -620,6 +855,9 @@ export interface CIJob {
   allowFailure?: boolean;
   logsAvailable: boolean;
   steps?: CIStep[];
+  /** A GitHub Actions job's workflow run id. */
+  runId?: string;
+  actions?: CIJobActions;
 }
 
 export interface CIStep {
@@ -662,6 +900,16 @@ export interface CILogLines {
   version: number;
 }
 
+/** A find over a cached CI log, as internal/cilog Search: the lines
+ * holding matches, in line order, with how many each holds. */
+export interface CILogSearch {
+  version: number;
+  totalLines: number;
+  hits: { line: number; count: number }[];
+  matches: number;
+  capped: boolean;
+}
+
 /** One PR discussion: a file-anchored review thread (path set) or a
  * PR-level conversation thread (path empty). */
 export interface ReviewThread {
@@ -669,7 +917,14 @@ export interface ReviewThread {
   path: string;
   line?: number | null;
   startLine?: number | null;
+  /** Set when the forge reports the line the thread was written against
+   * (GitHub outdated threads). */
+  originalLine?: number | null;
+  originalStartLine?: number | null;
   side: string;
+  /** The half startLine is on ("left" or "right"); differs from side when a
+   * range starts on a removed line and ends on an unchanged or added one. */
+  startSide?: string;
   /** False for flat conversation comments with no resolve state. */
   isResolvable: boolean;
   isResolved: boolean;
@@ -678,18 +933,67 @@ export interface ReviewThread {
 }
 
 export interface ReviewComment {
+  /** What an edit or a delete names (CommentTarget.commentId). */
+  id: string;
   authorLogin: string;
   authorName?: string;
   body: string;
   createdAt: string;
+  /** When the forge says the body was last edited; GitHub only. */
+  editedAt?: string;
   databaseID: number;
   replyTo?: { id: string; databaseID: number };
+  /** The forge's answer for the signed-in viewer. */
+  viewerCanEdit: boolean;
+  viewerCanDelete: boolean;
+  /** The forge's link to the comment (GitLab: the MR's URL with `#note_<id>`). */
+  url?: string;
+  /** The body's suggestion blocks, in body order (pr-suggestions-reactions.v1). */
+  suggestions?: CommentSuggestion[];
+  /** One entry per reaction present, by GitLab award name. */
+  reactions?: CommentReaction[];
+}
+
+/** One suggestion block of a comment (gitops.CommentSuggestion). `from`
+ * is the replaced text when `fromKnown` (GitLab); GitHub sends none and
+ * the pane reads it from the diff it holds. `startLine`/`endLine` are the
+ * new-side lines it replaces, absent when the anchor names none. */
+export interface CommentSuggestion {
+  index: number;
+  id?: string;
+  startLine?: number;
+  endLine?: number;
+  from?: string[];
+  fromKnown?: boolean;
+  to: string[];
+  appliable: boolean;
+  applied?: boolean;
+  /** The block's place in the comment's body: 0-based lines of the body
+   * split on "\n", its opening fence through its closing one. Meaningful
+   * only when `bodyPlaced` (GitLab places none when its suggestions do
+   * not match the body's fences one to one). */
+  bodyStartLine: number;
+  bodyEndLine: number;
+  bodyPlaced: boolean;
+  /** The block's identity as loaded (64 hex); Apply passes it as read. */
+  digest: string;
+}
+
+/** One reaction on a comment (gitops.CommentReaction): its GitLab award
+ * name, how many, whether the viewer reacted, and who (GitLab only). */
+export interface CommentReaction {
+  name: string;
+  count: number;
+  viewerReacted: boolean;
+  users?: string[];
 }
 
 export interface ReviewLineComment {
   path: string;
   body: string;
   line?: number;
+  /** An unchanged line's old number; `line` is its new one (side right). */
+  oldLine?: number;
   side: string;
   startLine?: number;
 }
@@ -697,8 +1001,32 @@ export interface ReviewLineComment {
 export interface SubmitPRReviewResult {
   postedReview: boolean;
   postedFileComments: number;
+  /** Held replies GitHub posted after the review. */
+  postedReplies?: number;
   partialFailurePath?: string;
+  /** The thread of a held reply that failed after the review posted. */
+  partialFailureThreadId?: string;
   partialFailure?: string;
+  partialFailureKind?: string;
+  /** A draft submit's drafts marked sent, and the ones posted with text
+   * edited since, which stay drafts (pr-review-drafts.v1). */
+  sentDraftIds?: string[];
+  editedDraftIds?: string[];
+  /** A draft submit's own fact that the forge took a review from it. */
+  posted?: boolean;
+  /** A draft submit the forge did not confirm: it may be on the PR, and
+   * its drafts stay drafts. */
+  unconfirmed?: boolean;
+}
+
+/** What a submit attempt did (GetPRReviewSubmitOutcome). */
+export interface PRReviewSubmitOutcome {
+  /** unknown: this process never received the attempt; forgotten: it may
+   * have, and no longer keeps the outcome. */
+  state: 'posted' | 'unconfirmed' | 'failed' | 'unknown' | 'forgotten';
+  result?: SubmitPRReviewResult;
+  code?: string;
+  message?: string;
 }
 
 export interface ProposedPlanComment {

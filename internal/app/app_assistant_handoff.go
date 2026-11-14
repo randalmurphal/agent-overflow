@@ -655,13 +655,13 @@ func (a *App) continueAfterHandOff(oldThreadID, newThreadID string, handOff stor
 			}
 		}
 	}
-	if err := a.withdrawQueuedAgentMessages(oldThreadID, func(string) bool { return true }, "the assistant moved to a new thread before the agent took it in"); err != nil {
+	if err := a.withdrawQueuedAgentMessages(oldThreadID, everyQueuedMessage, "the assistant moved to a new thread before the agent took it in"); err != nil {
 		log.Printf("assistants: hand off %s: %v", oldThreadID, err)
 	}
-	if err := a.withdrawHeldThreadWakes(oldThreadID); err != nil {
+	if err := a.withdrawHeldThreadWakes(oldThreadID, everyQueuedMessage); err != nil {
 		log.Printf("assistants: hand off %s: %v", oldThreadID, err)
 	}
-	if err := a.withdrawHeldRemoteCompletions(oldThreadID); err != nil {
+	if err := a.withdrawHeldRemoteCompletions(oldThreadID, everyQueuedMessage); err != nil {
 		log.Printf("assistants: hand off %s: %v", oldThreadID, err)
 	}
 	a.restartMovedAgentWakes(oldThreadID, newThreadID, handOff.MovedWakeIDs)

@@ -17,6 +17,10 @@ an allowlist entry when its exception is fixed.
 - Use `keyedSignalRegistry.svelte.ts` for push-fed keyed state with no resource
   lifecycle. `set` is the only box creator. Svelte does not track state created
   inside the reaction currently reading it.
+- Use `snapshotStream.ts` for a keyed stream of sequenced frames that converges
+  with a full-snapshot RPC. It owns the buffer of frames that arrive during a
+  read, newest-read-wins, and the replay over the snapshot; the owning store
+  keeps the state, what a snapshot means, and how a frame folds in.
 - Entity values use deep `$state` by default. Set `rawValue: true` only when all
   writers replace values wholesale. In-place mutation of a raw value does not
   wake readers.
@@ -49,6 +53,15 @@ One thread may be mounted in only one pane. Enter through `mountThreadInPane`;
 through `assignThread`, which refreshes transport watches and saves the pane
 layout before any load the change starts. Use `revealPane` for actions that
 expose a pane so compact layout moves to the thread screen.
+
+Tool panes are layout items only (`toolPanes.svelte.ts`), one per kind. A
+thread open that names no pane resolves through
+`panes.svelte#focusedOpenTargetPane`, which gives a focused tool pane's slot
+to the thread; do not pass `getFocusedPaneOrNull() ?? ensureMainPane()` as a
+target, which bypasses it. A tool's open that answers after an await goes
+through `mountThreadForToolPane` with the tool pane, or null once the
+surface that asked is gone, so it never lands in a pane that gained focus
+meanwhile.
 
 ## Events and convergence
 
@@ -84,7 +97,24 @@ queued replay, and later live events must not extend that recovery wait.
 A PR's `pr:updated` and `pr:ci_updated` frames carry its pump's one
 sequence, so both rank against one watermark per PR key, seeded by the
 `SubscribePRUpdates` result, and a join replays buffered frames in sequence
-order. CI is sourced only by that subscription; the frontend never polls it.
+order. A PR thread read (`GetPRDetail` with `ListPRReviewThreads`)
+carries no sequence: take `prReadStart` before the call and pass it to
+`applyPRSnapshot` or `applyPRThreads`, which keep what a frame brought
+during the read. A merge action answers with the pump's sequence after
+the poll it asked for; the pane reads as pending until the watermark reaches it, and
+gives the wait up when the backend's launch (its hello's `launchId`) changes, since
+a restarted backend's pump numbers from one again, while a re-subscribe to
+the same process keeps it. CI is sourced only by
+that subscription, or for a repository pipeline by its `SubscribePipeline`
+handle (`pipelineCI.svelte.ts`), whose `ci:pipeline_updated` frames rank
+the same way against one watermark per pipeline key, seeded by the result,
+with the frames of its join replayed in sequence order; the frontend never
+polls it. Both feed the CI entry under one CI key and register their follow,
+refresh and action calls and their applied CI sequence in `ciHandles.ts`.
+A CI action (`ciActions.svelte.ts`) is held under the run identities the
+backend reserves for it and reads as pending on every CI key whose
+pipeline shows one; it is pending until the initiating key's sequence
+reaches the one the action answered with, as a merge action is.
 `pr:ci_log` frames carry a followed job's whole log state, its index and
 never its text, so the newest by sequence wins; the follow set lives on the
 subscription handle, so it is restated after every subscribe and after a
@@ -110,6 +140,14 @@ computer on each connection edge and after a gap on one of those channels,
 one read per computer at a time; a pane additionally reads
 `GetThreadLiveState` when it mounts. A push that lands while a snapshot is
 in flight wins over the snapshot.
+
+A flushed message of a thread with no pane leaves the send-queue mirror when
+the backend settles it (`flushSettlement.ts`, capability
+`flush-settlement.v1`): by the `flushedThrough` of a sends-pending frame, or
+by `ListUnsettledFlushes`, read on every connection edge and after a gap on
+`provider:sends_pending`. Both are facts about a `provider:queue_flushed`
+position, so they apply in any order. The contract is in
+[turn-lifecycle.md](../../../../docs/architecture/turn-lifecycle.md).
 
 `watchedThreads.ts` unions registered sources for every thread whose surface
 exists and for every subagent scope a surface reads. Watches never depend on
@@ -197,6 +235,15 @@ Provider completion and an empty reveal backlog do not release successor rows.
 The message must be terminal and its smoother drained. Exercise reveal ordering
 through `eventsItemStream`, because independent rows may be batched differently
 even while each item's order is preserved.
+
+A settled read that turns a revealing `thinking` row into `assistant_text`
+under the same id (a Claude narration block) is not installed when it arrives.
+`threadRowPromotions.svelte.ts` holds it: the pane keeps its own row until the
+reveal has drained and a mounted timeline has presented the change, then the
+held row installs through `upsertItemsBatch`. Until then the pane's items
+describe what is on screen, the held id gates the reveal queue, and patches,
+meta and later reads for the id go to the held row. `snapAllToReceived`
+installs every held row at once.
 
 ## Draft and model writes
 

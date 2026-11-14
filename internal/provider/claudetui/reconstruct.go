@@ -62,10 +62,9 @@ type assistantEnvelope struct {
 	// ParentToolUseID nests a subagent assistant message (and the tool_use
 	// starts inside it) under its parent Agent tool_call. Empty for the main loop.
 	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
-	// RequestEffort is the main-loop request's `output_config.effort` (""
-	// when it named none), the parser's record of the session's effort for
-	// the Agent launches in this message (claude.RequestEffortKey). Nil for a
-	// subagent message.
+	// RequestEffort is the request's `output_config.effort` ("" when it
+	// named none; claude.RequestEffortKey): on a main-loop message the
+	// session's effort, on a subagent message the effort that agent runs at.
 	RequestEffort *string `json:"ao_request_effort,omitempty"`
 }
 

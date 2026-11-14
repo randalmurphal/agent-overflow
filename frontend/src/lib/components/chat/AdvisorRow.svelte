@@ -40,7 +40,7 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
-  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getAuthoredWorkspaceFromMeta, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
 
   // Server-side preview is capped at 240 chars in
@@ -198,6 +198,6 @@ let hasExpandableBody = $derived(Boolean(item.payloadId));
 
 {#snippet advisorBodyContent({ data, testId }: { data: string; testId: string })}
   <div class="px-3 py-2 text-[0.75rem] leading-relaxed text-fg-muted" data-testid={testId}>
-    <ChatMarkdown source={data} threadId={item.threadId} workspacePath={paneWorkspacePath(pane)} {pathRefs} />
+    <ChatMarkdown source={data} threadId={item.threadId} workspacePath={paneWorkspacePath(pane)} imageWorkspacePath={getAuthoredWorkspaceFromMeta(item.meta)} {pathRefs} />
   </div>
 {/snippet}

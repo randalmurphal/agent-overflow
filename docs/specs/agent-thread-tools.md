@@ -327,13 +327,26 @@ serve is refused naming the ones it serves, and so is its `from_thread`
 fork of a thread in such a project or under another assistant
 ([standing agents](standing-agents.md) ruling 38). `workspace_path` names a checkout git has for the
 project, the root or any linked worktree, including one made outside the
-app. `worktree` (optional branch name) runs the thread on that branch
+app. `worktree` (optional branch or tag name) runs the thread on that branch
 instead of inheriting the workspace. A branch already checked out runs in
 that checkout, the project root included, because git checks a branch out
-in one place. A branch that exists locally, or on origin after a fetch,
-gets a fresh worktree that checks it out as it is (tracking origin's when
-only origin has it), the same checkout the composer's branch picker makes;
-`base` and `base_local` are refused for an existing branch. A branch that
+in one place. A worktree git still registers whose folder is gone is
+refused, named in the error. A branch that exists locally, or on a remote
+after a fetch of origin, gets a fresh worktree that checks it out as it is,
+the same checkout the composer's branch picker makes: one only a remote has
+becomes a local branch tracking origin's, else the one remote's that has
+it, and one only several remotes other than origin have is refused.
+`base` and `base_local` are refused for an existing branch. A name that is
+no branch but is a tag, bare or spelled `refs/tags/<name>`, gets a fresh
+worktree detached at the tag, the thread on no branch, the same checkout
+the branch picker makes for a tag; `base` and `base_local` are refused for
+it. Branch versus tag is decided once, after the fetch, so a tag that
+fetch brings counts. That fetch is a plain bounded `git fetch origin`,
+skipped when origin was fetched recently, so it brings only the tags on
+the commits it fetches; a tag spelling no tag on this computer has is
+refused as missing as of the last fetch. In `worktree` and `base`, `refs/heads/<name>` names a
+branch only, which addresses a branch whose own name starts with
+`refs/`. A branch that
 does not exist is created in a fresh worktree through the existing
 draft-worktree path. `base` names the branch it starts from, default the
 project's current branch; the cut starts from origin's head of that
@@ -342,10 +355,12 @@ worktree, unless `base_local` asks for the local head with no fetch.
 A fetch that fails leaves the tracking ref as it stands, so the cut
 falls back to the local branch of that name, and to the stale tracking
 ref when there is no local branch: a base that exists only on origin
-still cuts from origin.
-A `base` the project has neither locally nor on origin (or, with
-`base_local`, not locally) is refused before a request exists, through
-`git.Core.BaseBranchKnown`. `group` (optional name) puts the new thread in
+still cuts from origin. A `base` that is no branch but is a tag (or
+`refs/tags/<name>`) cuts from the tag locally, with or without
+`base_local`, and the new branch has no upstream.
+A `base` the project has as neither a branch, locally or on origin (or,
+with `base_local`, locally), nor a tag is refused before a request
+exists, through `git.Core.ResolveRef`. `group` (optional name) puts the new thread in
 that sidebar group inside its own project, creating the group when it
 does not exist, through the same organize patch `thread_update` uses.
 A group name is unique per project, compared without case, and the
@@ -488,7 +503,8 @@ whose `text` is the agent's reason. A form-style MCP elicitation can
 only be denied this way. The prompt stays open in the worker, so the
 user can still answer it there; that withdraws a wake still queued and
 refuses the agent's later reply. A wake the agent's session never took
-in, or that its Stop cleared, hands the prompt back to the user. The
+in, or that
+the end of its session cleared, hands the prompt back to the user. The
 token lives as long as the prompt, in memory: a restart ends the
 worker's session and its prompts with it. `decision` and `answers` on
 any other token are refused.
@@ -738,8 +754,10 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > Starting work. `thread_spawn` opens a new visible thread and runs
 > your `prompt` there; `from_thread` gives it an existing thread's
 > history first, `worktree` runs it on that branch, checked out as it
-> is when the branch exists here or on origin and otherwise created from
-> `base` (origin's head of it unless `base_local`), and `group` files it
+> is when the branch exists here or on a remote, detached at the tag when
+> the name is no branch but a tag, and otherwise created from `base` (a
+> branch or tag; origin's head of a branch unless `base_local`), and
+> `group` files it
 > in a sidebar group beside the threads of one sweep.
 > `thread_send` continues an existing thread as if the
 > user typed your `message`, queued after its current turn. `thread_ask`
@@ -1016,12 +1034,12 @@ caller archived after the request was made is unarchived by delivery;
 archiving the caller turns `notify` off for its open requests (see
 Lifecycle interactions), so only a request made before the archive and
 re-armed by a later wait or `thread_status` reaches it. A wake already
-queued when the caller is archived, or when a Stop or a revert drops
+queued when the caller is archived, or when an End Session or a revert drops
 the caller's queue, goes back to its request: one transaction removes
 the queue row, clears its delivery and turns `notify` off, so
 `thread_status` still returns the answer and nothing reaches the
 thread at its next start. So does a wake the caller's session ended,
-or a Stop, an archive or a Codex resend that failed ended it, without
+or an End Session, an archive or a Codex resend that failed ended it, without
 taking in, still queued or written and unconfirmed, and one still
 queued, or written and never confirmed, when the caller's computer
 restarts; on either provider such a wake can reach the agent twice
@@ -1060,14 +1078,21 @@ What settles a request, in order:
    as a second wake, so a responder that ended its turn to wait on a
    command costs the caller nothing.
 3. An errored turn settles `errored` with the error text.
-4. `thread_cancel` settles `cancelled`. A turn cut any other way
-   settles `interrupted` with why (`threadtools.Interrupt*`): the
-   responder's computer restarted, the thread's session ended (a crash,
-   a stop, a teardown or a replacement; one of three sentences, by how
-   far the request got), the thread moved to another computer, or
-   something else interrupted it, such as a workflow takeover. The
-   person's Stop settles `interrupted` with what the turn said by then
-   as its `final` answer; its wake says the person stopped the turn.
+4. `thread_cancel` by token settles `cancelled`; a Stop of the request
+   in the caller's Agents tray settles `cancelled` saying the user
+   stopped it. A turn stopped some other way settles `interrupted` with
+   its cause as the text, and the wake states it: another thread's
+   `thread_cancel` (named, with its computer when it is another one),
+   the user stopping it from the Agents tray, the user taking the thread
+   over from its workflow, the workflow ending its attempt, a restart of
+   the responder's computer, the thread's session ending (a crash, a
+   stop, a teardown or a replacement; one of three sentences, by how far
+   the request got), or the thread moving to another computer. Every
+   interrupt names who is stopping the turn, recorded before the
+   interrupt is sent; the stopped thread's timeline row names the same
+   stopper. The user's own Stop of the thread settles `interrupted`
+   with what the turn said by then as its `final` answer; its wake says
+   the person stopped the turn.
 
 A request settles once and its wake fires once, plus one more for a
 late reply. Every settlement and late reply bumps the request's
@@ -1245,7 +1270,7 @@ none. A provider session file imported later shows the marks in the
 text, as it shows a composer command's context block.
 
 Such a row is not a tick on the message navigator, not recalled by the
-composer, never un-sent by Stop, and not listed in the send-queue
+composer, and not listed in the send-queue
 preview; the queue wire marks it `agentMessage`, with its origin, so the
 Agents rail can list it as incoming. The review pane's Edits selector
 names a turn one started by the row's sender and first line. Title
@@ -1253,15 +1278,13 @@ generation and worktree branch naming read a request without its footer.
 
 Headless Claude can join a person's queued message with an agent's into
 one row. The row records each member's length and origin when it is
-joined (`joinedParts`), so a Stop that un-sends it puts only the
-person's text back in the composer and gives each agent's message back
-to its owner: an answer or a completion to its request or watch, a loop
-or watch wake to its row, and a request to its queue, owed again, its
-receipt `accepted` and its sender told nothing. A session that ends
-before the agent took such a message in gives back the person's text and
-settles the request with why, as above. A row with no
-recorded parts that holds an agent's message is not un-sent. A request
-still queued when the app quits is not put in the composer at the next
+joined (`joinedParts`), so a session that ends before the agent took
+such a message in puts only the person's text back in the composer and
+gives each agent's message back to its owner: an answer or a completion
+to its request or watch, a loop or watch wake to its row, and a request
+to its queue, owed again, its receipt `accepted` and its sender told
+nothing, or settled with why when its queue refuses it, as above. A
+request still queued when the app quits is not put in the composer at the next
 start; the boot sweep tells its sender.
 
 ## How calls surface in the timeline

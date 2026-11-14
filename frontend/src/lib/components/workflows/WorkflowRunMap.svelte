@@ -12,7 +12,7 @@
   import WorkflowRunMapFrontierStrip from './WorkflowRunMapFrontierStrip.svelte';
   import WorkflowRunMapWave from './WorkflowRunMapWave.svelte';
   import { createRunMapFollow } from './runMapFollow.svelte';
-  import { requireWorkflowsOverlayScroller } from './overlayScroller';
+  import { requireWorkflowsScroller } from './workflowsScroller';
   import { runMapRefusalHeadline } from '../../utils/workflowRunMapStyle';
   import { createSharedNowClock } from '../chat/useRunningElapsed.svelte';
   import { buildRunMap, runMapViewIsLive, runMapWaveIsOpen } from '../../utils/workflowRunMap';
@@ -30,7 +30,7 @@
   } from '../../stores/workflowsOverlay.svelte';
 
   interface Props {
-    /** The run the overlay is looking at; the view covers its whole tree. */
+    /** The run the pane is looking at; the view covers its whole tree. */
     itemId: string;
   }
   let { itemId }: Props = $props();
@@ -82,11 +82,11 @@
   // answer that cannot change.
   let refusal = $derived(model?.refusal ?? null);
 
-  // The overlay body is the scroller and it is an ANCESTOR of this component,
+  // The workflows pane body is the scroller and it is an ANCESTOR of this component,
   // so the frame that owns it hands it down (§9.9). Required, not optional: a
   // map with no scroller cannot place, jump, follow or compensate, and the
   // context read throws rather than letting all four quietly do nothing.
-  const scrollerOf = requireWorkflowsOverlayScroller();
+  const scrollerOf = requireWorkflowsScroller();
 
   // The resolved follow-target element, keyed on the target it was resolved
   // FOR. The controller asks for it on every scroll frame, resize and frontier
@@ -286,7 +286,7 @@
 
   <!--
     The jump chip sits OUTSIDE the scrolled content (§9.10, the
-    ScrollToBottomButton lesson). The overlay's scroller is an ancestor, not
+    ScrollToBottomButton lesson). The pane's scroller is an ancestor, not
     this component's own element, so "outside" is expressed as a zero-height
     sticky layer at the map level: it never scrolls away with the content and
     never takes part in the map's flow.

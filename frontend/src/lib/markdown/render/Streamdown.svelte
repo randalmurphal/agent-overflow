@@ -5,8 +5,10 @@
 	import {
 		lex,
 		parseBlocks,
+		blockAlignment,
 		createParseBlocksCache,
 		matchesProvenAppend,
+		type Alignment,
 		type IncrementalLexObserver,
 		type IncrementalLexPath,
 		updateParseBlockStringMaterialization
@@ -18,6 +20,7 @@
 	let {
 		content = '',
 		contentAppend,
+		alignStart = null,
 		class: className,
 		parseIncompleteMarkdown,
 		allowedLinkPrefixes = ['*'],
@@ -194,6 +197,7 @@
 	// that path; it publishes this shared empty array rather than give the same
 	// field two shapes.
 	const NO_BLOCKS: string[] = [];
+	const NO_ALIGNMENTS: (Alignment | 'marker')[] = [];
 	const blocksState = $derived.by(() => {
 		if (isStatic) {
 			isolatedBlockSource = null;
@@ -230,7 +234,8 @@
 			content,
 			streamdown.extensions,
 			blocksCache,
-			contentAppend
+			contentAppend,
+			alignStart
 		);
 		updateParseBlockStringMaterialization(
 			blocksCache,
@@ -250,19 +255,33 @@
 		};
 	});
 
+	// A block lexes alone, without the alignment before it, so a marker
+	// block (a closer would lex as text) is not rendered at all.
+	const alignmentOf = (index: number): Alignment | 'marker' =>
+		blocksState.path === 'single-block' ? alignStart : blockAlignment(blocksCache, index);
+	const compactAlignments = $derived.by(() => {
+		if (isStatic || !compactStaticHtml || parseIncompleteMarkdown !== false) return NO_ALIGNMENTS;
+		return blocksState.values.map((_, index) => alignmentOf(index));
+	});
+
 	// The committed/volatile seam needs to know whether the committed root's
 	// final rendered block is a paragraph. Publish the actual render lexer type,
 	// not parseBlocks' boundary token: inline extensions can turn a boundary
-	// paragraph into math/MDX/etc. This runs only for completed content and is
-	// memoized by the final block, so the volatile per-word path pays nothing.
+	// paragraph into math/MDX/etc. An aligned block publishes `align`, and
+	// trailing markers, which render nothing, are passed over. This runs only
+	// for completed content and is memoized by the final block, so the
+	// volatile per-word path pays nothing.
 	let lastTypedBlock: string | undefined;
 	let lastTypedExtensions: typeof streamdown.extensions | undefined;
 	let cachedLastBlockType: string | undefined;
 	const lastRenderedBlockType = $derived.by(() => {
 		if (isStatic || parseIncompleteMarkdown !== false) return undefined;
 		const values = blocksState.values;
-		const block = values[values.length - 1];
+		let index = values.length - 1;
+		while (index >= 0 && blockAlignment(blocksCache, index) === 'marker') index--;
+		const block = values[index];
 		if (block === undefined) return undefined;
+		if (blockAlignment(blocksCache, index) !== null) return 'align';
 		const currentExtensions = streamdown.extensions;
 		if (block === lastTypedBlock && currentExtensions === lastTypedExtensions) {
 			return cachedLastBlockType;
@@ -313,10 +332,10 @@
 		}
 	}
 	$effect(() => {
-		content;
-		blocksState;
-		trimFirstBlockMargin;
-		trimLastBlockMargin;
+		void content;
+		void blocksState;
+		void trimFirstBlockMargin;
+		void trimLastBlockMargin;
 		const root = element;
 		const generation = ++trimGeneration;
 		if (!root) return;
@@ -406,26 +425,30 @@
 >
 	{#if isStatic}
 		{@const compactHtml = compactStaticHtml
-			? renderStaticTokenHtml(lex(content, streamdown.extensions), streamdown, id)
+			? renderStaticTokenHtml(lex(content, streamdown.extensions), streamdown, id, alignStart)
 			: null}
 		{#if compactHtml !== null}
 			{@html compactHtml}
 		{:else}
-			<Block static={isStatic} block={content} />
+			<Block static={isStatic} block={content} align={alignStart} />
 		{/if}
 	{:else}
 		{#if compactStaticHtml && parseIncompleteMarkdown === false}
 			<CompactBlocks
 				root={element}
 				blocks={blocksState.values}
+				alignments={compactAlignments}
 				revision={blocksState}
 				{id}
 			/>
 		{:else}
 			{#each blocksState.values as block, index (`${id}-block-${index}`)}
+				{@const align = alignmentOf(index)}
+				{#if align !== 'marker'}
 				<Block
 					static={isStatic}
 					{block}
+					{align}
 					append={
 						index === blocksState.values.length - 1
 							? blocksState.lastBlockAppend
@@ -436,6 +459,7 @@
 					}
 					{compactStaticHtml}
 				/>
+				{/if}
 			{/each}
 		{/if}
 	{/if}

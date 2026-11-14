@@ -146,7 +146,7 @@ type ThreadRequest struct {
 	// AnswerAgent is set when the thread that answered is a standing agent,
 	// as recorded with the answer; nil for any other thread.
 	AnswerAgent *ThreadAnswerAgent `json:"-"`
-	// AnswerAgentUnrecorded is true on a row written before v151, which
+	// AnswerAgentUnrecorded is true on a row written before v156, which
 	// recorded nothing about the thread that answered.
 	AnswerAgentUnrecorded bool `json:"-"`
 	// MadeInThreadID is the assistant's past thread that made this request
@@ -1224,8 +1224,7 @@ func (s *Store) QueueThreadWake(token string, late bool, item FlushQueueItem) er
 // Otherwise a row already gone means the wake was sent, and changes
 // nothing. A wake the provider was handed and never confirmed
 // (unconfirmed) has no row left and goes back all the same, while the
-// request still reads queued and the provider has not confirmed it, and one
-// whose turn a Stop un-sent (WithdrawUnsent) goes back confirmed or not. A
+// request still reads queued and the provider has not confirmed it. A
 // late wake clears only its own mark; the first answer's delivery stands. A
 // lineage-only row keeps its marks (clearLineagePayloadSQL): a cleared
 // delivered_at would read as a wake still owed.

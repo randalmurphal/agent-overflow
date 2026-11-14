@@ -201,6 +201,7 @@ type bootFlags struct {
 	mockProvider       *string
 	mockForge          *string
 	scanScopePIDs      *pidList
+	exitWithParent     *int
 	resetTransportPort *bool
 	updatingTo         *string
 	updateFailedTo     *string
@@ -245,6 +246,7 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 		"harness/soak mode only: a further process whose tree dev-server discovery may look at; repeatable or comma-separated. Discovery always looks at this backend's own tree and nothing outside the given trees.")
 	return flagSet, bootFlags{
 		scanScopePIDs:      scanScopePIDs,
+		exitWithParent:     flagSet.Int("exit-with-parent", 0, "--harness only: shut down once this process ID is no longer this backend's parent. The e2e harness passes its test worker, so a killed worker cannot leave its backend running. Unix only."),
 		listen:             flagSet.String("listen", "", "transport bind address (e.g. 127.0.0.1:0). Empty honors saved network settings (default: loopback with a stable automatic port)."),
 		printURLFD:         flagSet.String("print-url-fd", "", "run headless and write {port,token} to this file descriptor as JSON. Falls back to a stdout sentinel when the fd isn't open."),
 		connect:            flagSet.String("connect", "", "remote client mode: attach the desktop window to a backend instead of booting a local one. Takes a pairing link (pairs this device, then attaches), a backend this device is already paired with (its id, its endpoint, or host:port), or ws://host:port/?token=<value> for a backend on this machine. Skips local execution boot."),
@@ -348,6 +350,9 @@ type cliFlags struct {
 	// scanScopePIDs are the processes whose trees an isolated boot's
 	// dev-server discovery may look at (app.IsolationConfig.ScanScopePIDs).
 	scanScopePIDs []int
+	// exitWithParent is the process whose exit ends this harness backend
+	// (main_harness_parent_unix.go); zero when nothing ties it to one.
+	exitWithParent int
 	// resetTransportPort discards the persisted transport port before
 	// binding, so this boot adopts a fresh one. See
 	// main_transport_port.go for the pin it clears and
@@ -397,6 +402,7 @@ func parseFlags(args []string) (cliFlags, error) {
 		mockProvider:           *values.mockProvider,
 		mockForge:              *values.mockForge,
 		scanScopePIDs:          *values.scanScopePIDs,
+		exitWithParent:         *values.exitWithParent,
 		resetTransportPort:     *values.resetTransportPort,
 		updatingTo:             strings.TrimSpace(*values.updatingTo),
 		updateFailure: appupdate.LauncherFailure{
@@ -550,6 +556,12 @@ func parseFlags(args []string) (cliFlags, error) {
 	}
 	if len(out.scanScopePIDs) > 0 && !out.harness && !out.soak {
 		return cliFlags{}, errors.New("--scan-scope-pid requires --harness or --soak")
+	}
+	if out.exitWithParent < 0 {
+		return cliFlags{}, fmt.Errorf("--exit-with-parent needs a process ID, got %d", out.exitWithParent)
+	}
+	if out.exitWithParent > 0 && !out.harness {
+		return cliFlags{}, errors.New("--exit-with-parent requires --harness")
 	}
 	if out.connect != "" && out.resetTransportPort {
 		// --connect boots no local transport, so there is no pin to

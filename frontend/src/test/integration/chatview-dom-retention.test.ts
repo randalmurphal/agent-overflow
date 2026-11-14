@@ -62,6 +62,7 @@ import {
 } from '../../lib/stores/accountInfo.svelte';
 import type { Thread } from '../../lib/types/models';
 import { setBindingMock, setReviewDiffMock, resetBindingMocks } from '../mocks/bindings-app';
+import { commitList } from '../helpers/commitList';
 import { installPaneMocks, makeItem } from '../helpers/chat';
 import type { Item } from '../../lib/types/models';
 import { idleWorkspaceActivity } from '../helpers/workspaceLock';
@@ -202,9 +203,9 @@ describe.runIf(gc)('closed review companion DOM is collectable', () => {
     setBindingMock('GetGitStatus', async () => ({}));
     setReviewDiffMock('OpenWorkspaceDiff', async () => diff);
     setReviewDiffMock('OpenBranchBaseDiff', async () => '');
-    setBindingMock('ListBranchCommits', async () => []);
+    setBindingMock('ListBranchCommits', async () => commitList([]));
     setReviewDiffMock('OpenCommitDiff', async () => '');
-    setBindingMock('ListPRCommits', async () => []);
+    setBindingMock('ListPRCommits', async () => commitList([]));
     setReviewDiffMock('OpenPRCommitDiff', async () => '');
     setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
     setReviewDiffMock('OpenTurnEditsDiff', async () => '');
@@ -329,7 +330,7 @@ describe.runIf(gc)('closed pane after the rate-limit popover was re-hovered post
     setProviderAccount('claude', { email: 'ring@example.test', subscriptionType: 'max' }, 'acct-ring');
 
     async function hoverRingOnceAndLeave(root: Element, expectEmail: boolean): Promise<void> {
-      const ring = root.querySelector('[data-testid="composer-rate-limit-5h"] button');
+      const ring = root.querySelector('[data-testid="composer-rate-limit-7d"] button');
       expect(ring, 'probe precondition: rate-limit ring mounted (pane locked + provider)').not.toBeNull();
       ring!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
       flushSync();

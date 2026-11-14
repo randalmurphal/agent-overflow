@@ -56,6 +56,7 @@ type TimelinePageOptions struct {
 // tail — the bottom-snapshot restore case.
 //
 //ao:scope threads:read
+//ao:callerbound
 func (a *App) ListThreadSliceAround(ctx context.Context, threadID, anchorItemID string, targetItemCount int, options TimelinePageOptions) (store.PagedItems, error) {
 	if err := a.readyThreadHistory(threadID); err != nil {
 		return store.PagedItems{}, err
@@ -109,6 +110,7 @@ func clampPaginationItemBudget(itemBudget int) int {
 // Same-turn rows outside the cursor range stay omitted until explicitly paged.
 //
 //ao:scope threads:read
+//ao:callerbound
 func (a *App) ListItemsBeforeCursor(ctx context.Context, threadID string, before store.TimelineCursor, itemBudget int, options TimelinePageOptions) (store.PagedItems, error) {
 	if err := a.readyThreadHistory(threadID); err != nil {
 		return store.PagedItems{}, err
@@ -127,6 +129,7 @@ func (a *App) ListItemsBeforeCursor(ctx context.Context, threadID string, before
 // companion to ListItemsBeforeCursor.
 //
 //ao:scope threads:read
+//ao:callerbound
 func (a *App) ListItemsAfterCursor(ctx context.Context, threadID string, after store.TimelineCursor, itemBudget int, options TimelinePageOptions) (store.PagedItems, error) {
 	if err := a.readyThreadHistory(threadID); err != nil {
 		return store.PagedItems{}, err

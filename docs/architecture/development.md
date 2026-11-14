@@ -25,93 +25,6 @@ Nothing watches the tree for changes: rerun the target after editing. Use the ro
 commands for completion: the Go Make targets apply platform flags and
 `go-build` also compiles the `nogui` variant.
 
-### A database from a pre-sync personal-assistant build
-
-main is trunk and its next release ships its migrations, so when main takes
-a version personal-assistant's chain already used, the personal-assistant
-migrations from that version on move up one. A database a
-personal-assistant build migrated before that sync holds them under the old
-numbers and lacks main's table. Opening it fails with "this database was
-migrated by a pre-sync personal-assistant build" and names the section
-below that repairs it: [Before main's v142](#before-mains-v142) when it
-has no `thread_pull_requests`, [Before main's v143](#before-mains-v143)
-otherwise. Repair it with the app stopped, in
-`sqlite3 <data dir>/agent-overflow.db`. A database without
-`thread_pull_requests` takes both blocks, the first one first. Each block
-stops at its first error (`.bail on`) and changes nothing on a database it
-already repaired, so running one again is safe. The runner reads only the
-highest recorded version, so the names of rows below it may not match
-their numbers. `TestThePreSyncRepairsOpen` runs these blocks on databases
-each pre-sync build left and opens the results.
-
-#### Before main's v142
-
-main's `thread_pull_requests` is migration v142. A database from before
-that sync holds `receipt_own_turn` as v151 and has no
-`thread_pull_requests`. Opening it fails at v152, or at v153 after only the
-next section's block.
-
-```sql
-.bail on
-BEGIN;
-INSERT INTO migration_versions (version, name)
- SELECT CASE WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_developer_instructions') THEN 153 ELSE 152 END, 'receipt_own_turn'
- WHERE NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_pull_requests');
-CREATE TABLE IF NOT EXISTS thread_pull_requests (
- thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
- forge TEXT NOT NULL CHECK(forge IN ('github', 'gitlab')),
- host TEXT NOT NULL,
- project TEXT NOT NULL,
- number INTEGER NOT NULL CHECK(number > 0),
- url TEXT NOT NULL,
- node_id TEXT NOT NULL DEFAULT '',
- branch TEXT NOT NULL,
- worktree_path TEXT NOT NULL,
- seen_open_at INTEGER NOT NULL,
- merged_at INTEGER NOT NULL DEFAULT 0,
- handled_at INTEGER NOT NULL DEFAULT 0,
- removal_failed_at INTEGER NOT NULL DEFAULT 0,
- outcome TEXT NOT NULL DEFAULT '' CHECK(outcome IN ('', 'removed', 'kept', 'gone', 'closed', 'skipped'))
-);
-CREATE INDEX IF NOT EXISTS idx_thread_pull_requests_pending ON thread_pull_requests(forge, host, project) WHERE handled_at = 0;
-COMMIT;
-```
-
-The table is `threadPullRequestsV142SQL`
-(`internal/store/migration_v142_thread_pull_requests.go`). The block
-records `receipt_own_turn` at v152, which the next block moves to v153, or
-at v153 when the next block already ran.
-
-#### Before main's v143
-
-main's `codex_developer_instructions` is migration v143. A database from
-before that sync holds personal-assistant's migrations one below their
-current numbers and has no `codex_developer_instructions`. Opening it fails
-at the first one it already holds: v153, v154, v155, v156 or v158.
-
-```sql
-.bail on
-BEGIN;
-UPDATE migration_versions SET version = -version
- WHERE version BETWEEN 143 AND 157
-   AND NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_developer_instructions');
-UPDATE migration_versions SET version = 1 - version WHERE version < 0;
-INSERT INTO migration_versions (version, name)
- SELECT 143, 'codex_developer_instructions'
- WHERE NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_developer_instructions');
-CREATE TABLE IF NOT EXISTS codex_developer_instructions (
- thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
- session_ref TEXT NOT NULL CHECK(session_ref <> ''),
- digest TEXT NOT NULL CHECK(length(digest) = 64)
-);
-COMMIT;
-```
-
-The table is `codexDeveloperInstructionsV143SQL`
-(`internal/store/migration_v143_codex_developer_instructions.go`). The two
-updates move rows v143 to v157 up one; going through negative numbers
-keeps the primary key unique at every row.
-
 ## Generated artifacts
 
 - After changing `info` or `fileAssociations` in `build/config.yml`, run
@@ -177,8 +90,8 @@ The jobs fill the Free plan's 20 concurrent slots where the time is: one
 Linux job for `fmt-check`, `tidy-check`, `go-vet`, `go-build`, `provider-smoke-compile`
 and `bindings-check`, a macOS `go-build`, one job for `go-lint` and
 `go-vuln`, the frontend job (`check`, `build`, `frontend-lint`), `go-test`
-in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`), plus one with
-`GO_TEST_FLAGS='-tags noremote'`, the
+in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus
+two with `GO_TEST_FLAGS='-tags noremote'`, the
 Vitest unit and browser projects as two jobs under `bin/ao-netns`, and
 `make e2e` in eight Playwright shards with three workers each (`E2E_ARGS`,
 `AO_E2E_WORKERS`), and `make release-upgrade-check` as `upgrade-lineage`
@@ -208,8 +121,9 @@ runner; the setup action installs its toolchains from the same pins.
 Go build caches are saved only by pushes to `main`; a pull request restores
 the newest `main` cache for its job slot, so it rebuilds and retests what
 it changed. `codeql.yml` scans Go and
-TypeScript; `dependabot.yml` tracks Go, npm, Gradle and action versions;
-`dependency-review-action` checks pull request dependency changes.
+TypeScript; `dependabot.yml` opens only security updates for Go, npm,
+Gradle and actions; `dependency-review-action` checks pull request
+dependency changes.
 
 The two lint jobs gate new issues only: `scripts/ci-change.sh` writes the
 change (a pull request's merge against the base branch it merged into,

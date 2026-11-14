@@ -107,7 +107,7 @@ describe('<ConfirmDialog>', () => {
   it('Escape on the backdrop fires onCancel', async () => {
     const onConfirm = vi.fn();
     const onCancel = vi.fn();
-    const { container } = render(ConfirmDialog, {
+    render(ConfirmDialog, {
       props: {
         open: true,
         title: 't',
@@ -117,7 +117,7 @@ describe('<ConfirmDialog>', () => {
       },
     });
     await flushFocus();
-    const backdrop = container.querySelector('[data-modal-backdrop]')!;
+    const backdrop = document.querySelector('[data-modal-backdrop]')!;
     await fireEvent.keyDown(backdrop, { key: 'Escape' });
     expect(onCancel).toHaveBeenCalled();
     expect(onConfirm).not.toHaveBeenCalled();
@@ -126,7 +126,7 @@ describe('<ConfirmDialog>', () => {
   it('backdrop click fires onCancel', async () => {
     const onConfirm = vi.fn();
     const onCancel = vi.fn();
-    const { container } = render(ConfirmDialog, {
+    render(ConfirmDialog, {
       props: {
         open: true,
         title: 't',
@@ -136,7 +136,7 @@ describe('<ConfirmDialog>', () => {
       },
     });
     await flushFocus();
-    const backdrop = container.querySelector('[data-modal-backdrop]') as HTMLElement;
+    const backdrop = document.querySelector('[data-modal-backdrop]') as HTMLElement;
     await fireEvent.click(backdrop);
     expect(onCancel).toHaveBeenCalled();
     expect(onConfirm).not.toHaveBeenCalled();

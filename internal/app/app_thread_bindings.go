@@ -124,25 +124,78 @@ func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store
 // createThread is shared with agent requests and harness seeds. Only the
 // user-facing binding above remembers the selection as composer defaults.
 func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, error) {
-	endWork, admitErr := a.workAdmission.begin(ctx)
-	if admitErr != nil {
-		return store.Thread{}, admitErr
-	}
-	defer endWork()
-	thread, err := a.createThreadRow(ctx, opts, rememberDefaults)
-	if thread.ID != "" {
-		a.announceThread(triage.ThreadActionListed, thread.ID)
-	}
+	thread, _, err := a.createThreadWithWorktree(ctx, opts, rememberDefaults)
 	return thread, err
 }
 
-// createThreadRow is createThread without the broadcast, for a caller that
-// writes more of the row's derived state (an assistant's record) before the
-// sidebar first sees it. The caller holds a work admission from before it
-// until after that broadcast, so no host handoff starts between them.
+// createThreadWithWorktree is createThread that also reports the worktree
+// it cut, for a caller that undoes the thread and so owns what the cut made.
+// opts.WorktreeBranch is resolved here, once (resolveWorktreeTarget).
+func (a *App) createThreadWithWorktree(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, threadapp.CutWorktree, error) {
+	cut, err := a.wireWorktreeCut(opts)
+	if err != nil {
+		return store.Thread{}, threadapp.CutWorktree{}, err
+	}
+	return a.createThreadCutting(ctx, opts, cut, rememberDefaults)
+}
+
+// wireWorktreeCut is the fresh worktree opts names by WorktreeBranch,
+// resolved; nil when it names none or inherits WorktreePath.
+func (a *App) wireWorktreeCut(opts CreateThreadOptions) (*threadapp.WorktreeCut, error) {
+	name := strings.TrimSpace(opts.WorktreeBranch)
+	if name == "" || strings.TrimSpace(opts.WorktreePath) != "" {
+		return nil, nil
+	}
+	projectID := strings.TrimSpace(opts.ProjectID)
+	if projectID == "" {
+		return nil, fmt.Errorf("create thread: projectId is required")
+	}
+	project, err := a.store.GetProject(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("create thread: resolve project %s: %w", projectID, err)
+	}
+	target, err := a.resolveWorktreeTarget(a.lifeCtx(), project.Path, name)
+	if err != nil {
+		return nil, fmt.Errorf("create thread: worktree: %w", err)
+	}
+	return &threadapp.WorktreeCut{Target: target, Base: strings.TrimSpace(opts.WorktreeBase), BaseLocal: opts.WorktreeBaseLocal}, nil
+}
+
+// createThreadCutting creates the thread, cutting cut (nil for none). opts'
+// WorktreeBranch, WorktreeBase and WorktreeBaseLocal are not read: cut is
+// the worktree, already resolved.
+func (a *App) createThreadCutting(
+	ctx context.Context, opts CreateThreadOptions, cut *threadapp.WorktreeCut, rememberDefaults bool,
+) (store.Thread, threadapp.CutWorktree, error) {
+	endWork, admitErr := a.workAdmission.begin(ctx)
+	if admitErr != nil {
+		return store.Thread{}, threadapp.CutWorktree{}, admitErr
+	}
+	defer endWork()
+	thread, made, err := a.createThreadRowCutting(ctx, opts, cut, rememberDefaults)
+	if thread.ID != "" {
+		a.announceThread(triage.ThreadActionListed, thread.ID)
+	}
+	return thread, made, err
+}
+
+// createThreadRow is createThread without the broadcast or a worktree cut,
+// for a caller that writes more of the row's derived state (an assistant's
+// record) before the sidebar first sees it. The caller holds a work
+// admission from before it until after that broadcast, so no host handoff
+// starts between them.
 func (a *App) createThreadRow(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, error) {
+	thread, _, err := a.createThreadRowCutting(ctx, opts, nil, rememberDefaults)
+	return thread, err
+}
+
+// createThreadRowCutting is createThreadRow cutting cut (nil for none), and
+// reports the worktree it cut.
+func (a *App) createThreadRowCutting(
+	ctx context.Context, opts CreateThreadOptions, cut *threadapp.WorktreeCut, rememberDefaults bool,
+) (store.Thread, threadapp.CutWorktree, error) {
 	settingsBucket, settingsClass := a.callerSettingsScreen(ctx)
-	thread, err := a.threadApplication().Create(threadapp.CreateOptions{
+	thread, made, err := a.threadApplication().CreateWithWorktree(threadapp.CreateOptions{
 		ProjectID:                  opts.ProjectID,
 		GroupID:                    opts.GroupID,
 		Title:                      opts.Title,
@@ -155,9 +208,7 @@ func (a *App) createThreadRow(ctx context.Context, opts CreateThreadOptions, rem
 		AutoCompactStandardPercent: opts.AutoCompactStandardPercent,
 		AutoCompactExtendedPercent: opts.AutoCompactExtendedPercent,
 		RuntimeMode:                opts.RuntimeMode,
-		WorktreeBranch:             opts.WorktreeBranch,
-		WorktreeBase:               opts.WorktreeBase,
-		WorktreeBaseLocal:          opts.WorktreeBaseLocal,
+		Worktree:                   cut,
 		WorkspaceOverride:          opts.WorkspaceOverride,
 		WorktreePath:               opts.WorktreePath,
 		Branch:                     opts.Branch,
@@ -173,13 +224,13 @@ func (a *App) createThreadRow(ctx context.Context, opts CreateThreadOptions, rem
 		},
 	})
 	if err != nil {
-		return store.Thread{}, err
+		return store.Thread{}, threadapp.CutWorktree{}, err
 	}
 	var profileErr error
 	if rememberDefaults {
 		profileErr = a.rememberCreatedThreadProfile(thread, opts)
 	}
-	return thread, profileErr
+	return thread, made, profileErr
 }
 
 // StartTerminal mints a terminal-mode thread and returns it.

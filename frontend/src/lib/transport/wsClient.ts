@@ -422,12 +422,13 @@ export interface RetryOnTransientCloseEntry {
   why: string;
 }
 
-// The production allowlist. Two entries, and the rule that admitted them
+// The production allowlist. Three entries, and the rule that admitted them
 // is the one stated above: a call is admissible only when it is IDEMPOTENT
-// ON THE BACKEND. These two are, and not by luck — each carries a
+// ON THE BACKEND. These are, and not by luck — each send carries a
 // client-minted `sendId` and the backend answers a repeated id from the
 // record the first arrival left behind, without sending anything
-// (internal/app/app_send_idempotency.go). The retry re-sends the RETAINED
+// (internal/app/app_send_idempotency.go); a composer shell command carries
+// a `runId` the backend answers the same way (internal/shellrun). The retry re-sends the RETAINED
 // frame, so the id is the same one; a retry that rebuilt its options would
 // mint a second id and defeat the whole mechanism.
 //
@@ -448,6 +449,10 @@ export const RETRY_ON_TRANSIENT_CLOSE: readonly RetryOnTransientCloseEntry[] = O
   {
     methodId: 1034543696,
     why: 'RegisterQueueItem carries the same sendId and is answered from the durable queue row the first arrival wrote',
+  },
+  {
+    methodId: 651196145,
+    why: 'RunThreadShellCommand carries a client-minted runId; a repeated arrival is answered from the running command, the message it became, or how the run settled',
   },
 ]);
 
@@ -488,11 +493,16 @@ export class TransportError extends Error {
   // shape belongs to the method that refused, so ./backgroundKillRefusal.ts
   // validates it before anything renders it.
   backgroundAgents?: unknown;
+  // reserve and resumeAt are set only on code 'forge_rate_limited':
+  // whether the forge's quota was kept for the user's own actions, and
+  // when the forge may be asked again (RFC 3339).
+  reserve?: boolean;
+  resumeAt?: string;
   // detail is the backend's diagnostic record of a failure: its log
   // reference, method and, for a same-machine caller, the wrap chain.
   detail?: ErrorDetail;
   constructor(code: string, message: string, fields: TransportErrorFields = {}) {
-    const { reason, scope, transfer, backgroundAgents, detail, backend = HOME_BACKEND } = fields;
+    const { reason, scope, transfer, backgroundAgents, reserve, resumeAt, detail, backend = HOME_BACKEND } = fields;
     super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
     this.name = 'TransportError';
     this.code = code;
@@ -506,6 +516,10 @@ export class TransportError extends Error {
     if (code === 'background_agents_running' && backgroundAgents !== undefined) {
       this.backgroundAgents = backgroundAgents;
     }
+    if (code === 'forge_rate_limited') {
+      this.reserve = reserve === true;
+      if (typeof resumeAt === 'string' && resumeAt.length <= 64 && Number.isFinite(Date.parse(resumeAt))) this.resumeAt = resumeAt;
+    }
     this.detail = parseErrorDetail(detail, backend);
   }
 }
@@ -516,6 +530,8 @@ export interface TransportErrorFields {
   scope?: string;
   transfer?: { operationId: string; backendId: string };
   backgroundAgents?: unknown;
+  reserve?: unknown;
+  resumeAt?: unknown;
   detail?: unknown;
   /** The backend that answered, stamped onto detail. Defaults to HOME. */
   backend?: BackendKey;
@@ -3054,6 +3070,8 @@ export class WSClient {
               scope: frame.error.scope,
               transfer: frame.error.transfer,
               backgroundAgents: frame.error.backgroundAgents,
+              reserve: frame.error.reserve,
+              resumeAt: frame.error.resumeAt,
               detail: frame.error.detail,
               backend: this.backend,
             },

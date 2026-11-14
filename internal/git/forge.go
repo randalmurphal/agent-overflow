@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/forgeattach"
 )
 
@@ -21,9 +22,11 @@ import (
 // or the PR pump's lifetime. Cancelling it ends the request. A context
 // marked with forgeapi.WithInteractive is a user's own action.
 //
-// Repository-scoped operations (ListOpenPRs, ListMergedPRHeads, CreatePR)
-// resolve the repository from cwd. PR-scoped operations take the
-// PRReference, which carries the forge host, and no cwd.
+// Checkout-scoped operations (ListOpenPRs, ListMergedPRHeads, CreatePR)
+// resolve the repository from cwd. Repository-scoped operations
+// (ListProjectPRs, the pipeline reads, job logs, attachments, PR states)
+// take a RepoReference and PR-scoped ones a PRReference, both carrying
+// the forge host, and no cwd.
 type Forge interface {
 	// ID returns "github" or "gitlab", the canonical short id for this forge.
 	ID() string
@@ -41,7 +44,10 @@ type Forge interface {
 	// ReadPRStates reads the state and merge time of every PR in prs, all
 	// of repo's repository, in one request per 100 PRs. A PR the forge does
 	// not resolve is absent from the answer. See pr_state.go.
-	ReadPRStates(ctx context.Context, repo PRReference, prs []TrackedPR) (map[int]PRState, error)
+	ReadPRStates(ctx context.Context, repo RepoReference, prs []TrackedPR) (map[int]PRState, error)
+	// ListProjectPRs reads every open PR/MR of repo in one list read (see
+	// pr_list.go).
+	ListProjectPRs(ctx context.Context, repo RepoReference) ([]PRListRow, error)
 	// CreatePR opens a PR/MR for the current branch in cwd. Returns the URL.
 	CreatePR(ctx context.Context, cwd, title, body, base string, draft bool) (string, error)
 	// ReadPR reads the parts of a PR/MR want names, the PR pump's one
@@ -63,36 +69,66 @@ type Forge interface {
 	// threadID is the same id ReadPR reported: a GitHub review thread node
 	// id, a GitLab discussion id.
 	SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error
-	// StreamCIJobLog reads the raw log/trace of one CI job of ref's
-	// repository (see Core.StreamCIJobLog).
-	StreamCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error)
+	// StreamCIJobLog reads the raw log/trace of one CI job of repo
+	// (see Core.StreamCIJobLog).
+	StreamCIJobLog(ctx context.Context, repo RepoReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error)
+	// ListPipelines lists repo's pipelines (GitLab pipelines, GitHub
+	// workflow runs) with filter already validated; ReadPipeline reads one
+	// by id into stages and jobs, steps on the stepsFor jobs (see
+	// Core.ListPipelines, Core.ReadPipeline).
+	ListPipelines(ctx context.Context, repo RepoReference, filter PipelineListFilter) ([]PipelineSummary, error)
+	ReadPipeline(ctx context.Context, repo RepoReference, id string, prev *CIPipeline, stepsFor []string) (CIPipeline, error)
 	// CILogStreams reports whether StreamCIJobLog serves a running job's log
 	// as it grows (GitLab's trace), so following it at a quick cadence
 	// shows progress. GitHub answers 404 until the job's log blob exists,
 	// in practice once the job completed (ErrCIJobLogNotFound).
 	CILogStreams() bool
 	// FetchAttachment downloads one forge-hosted attachment referenced by
-	// ref's body or review comments, through the user's own forge login.
-	// A body larger than maxBytes is an error, not a truncation. See
-	// forge_attachment.go.
-	FetchAttachment(ctx context.Context, ref PRReference, target forgeattach.Target, maxBytes int64) ([]byte, error)
+	// markdown of repo (a PR body or review comment), through the user's
+	// own forge login. A body larger than maxBytes is an error, not a
+	// truncation. See forge_attachment.go.
+	FetchAttachment(ctx context.Context, repo RepoReference, target forgeattach.Target, maxBytes int64) ([]byte, error)
+	// The merge actions: approvals, merging, auto-merge, branch updates
+	// (forge_merge.go).
+	ForgeMerger
+	// The comment actions: comment now, edit and delete a sent comment
+	// (forge_comments.go).
+	ForgeCommenter
+	// The CI actions: retry, cancel, run a manual job, artifacts
+	// (ci_actions.go).
+	ForgeCIActor
+	// The management actions: title, description, reviewers, assignees,
+	// labels, state, reviews (forge_manage.go).
+	ForgeManager
+	// Suggestions and reactions on comments (forge_suggestions.go).
+	ForgeSuggester
 }
 
-// PRReadParts names the parts of a PR one ReadPR decodes.
+// PRReadParts names the parts of a PR one ReadPR decodes. Events are the
+// forge's activity rows (ReviewEvent); a forge reads them with the
+// threads' request when it can (GitLab's system notes are discussions,
+// GitHub's timeline items ride PRTick), so asking for both costs nothing
+// more than threads alone.
 type PRReadParts struct {
-	Detail, Threads, CI bool
+	Detail, Threads, CI, Events bool
 }
 
-func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI }
+func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI && !p.Events }
 
 // PRRead is one ReadPR answer. A part ReadPR was not asked for is zero.
 // HasCI reports that the CI part was read, so a caller can tell a PR
 // with no pipeline (HasCI, empty CI) from a read that did not ask.
+//
+// ReactionsUnavailable is the sentence saying the threads carry no
+// reactions because the read that has them failed (GitLab's award emoji
+// read, which is apart from its discussions); the threads stand.
 type PRRead struct {
-	Detail  PRDetail
-	Threads []ReviewThread
-	CI      CIPipeline
-	HasCI   bool
+	Detail               PRDetail
+	Threads              []ReviewThread
+	Events               []ReviewEvent
+	CI                   CIPipeline
+	HasCI                bool
+	ReactionsUnavailable string
 }
 
 // MergedPRHead is one merged PR/MR's head coordinates as returned by
@@ -132,9 +168,11 @@ type PRDetail struct {
 	Draft       bool   `json:"draft"`
 	HeadRefName string `json:"headRefName"`
 	BaseRefName string `json:"baseRefName"`
-	// BaseRefSHA is the base branch's tip the forge compares the PR
-	// against: GitHub's baseRefOid, GitLab's diff_refs.start_sha. Empty
-	// while GitLab is still preparing the merge request's diff.
+	// BaseRefSHA is the base commit the forge recorded for the PR's diff:
+	// GitHub's baseRefOid, GitLab's diff_refs.start_sha. It does not follow
+	// the base branch, so it is not the branch's current tip (see
+	// PRRevision.BaseSHA). Empty while GitLab is still preparing the merge
+	// request's diff.
 	BaseRefSHA     string          `json:"baseRefSHA"`
 	HeadSHA        string          `json:"headSHA"`
 	URL            string          `json:"url"`
@@ -147,6 +185,17 @@ type PRDetail struct {
 	Checks         CheckSummary    `json:"checks"`
 	Mergeability   string          `json:"mergeability"`
 	DiffRefs       *PRDiffRefs     `json:"diffRefs,omitempty"`
+	// Readiness and Merge feed the review pane's Merge section
+	// (forge_merge.go). MergedAt, MergedBy and ClosedAt name the end of a
+	// PR that is no longer open; empty while it is.
+	Readiness MergeReadiness `json:"readiness"`
+	Merge     MergeOptions   `json:"merge"`
+	MergedAt  string         `json:"mergedAt,omitempty"`
+	MergedBy  string         `json:"mergedBy,omitempty"`
+	ClosedAt  string         `json:"closedAt,omitempty"`
+	// Manage is the Details section and the management capabilities
+	// (forge_manage.go).
+	Manage PRManage `json:"manage"`
 }
 
 type PRDiffRefs struct {
@@ -187,13 +236,24 @@ type CheckStatus struct {
 
 // ReviewThread is one PR discussion: a file-anchored review thread
 // (Path set) or a PR-level conversation thread (Path empty — GitLab
-// position-less discussions, GitHub PR conversation comments).
+// position-less discussions, GitHub PR conversation comments). A GitHub
+// conversation comment is a thread of its own whose ID is the comment's
+// ID, which is how a write tells it from a review thread comment
+// (CommentTarget).
 type ReviewThread struct {
 	ID        string `json:"id"`
 	Path      string `json:"path"`
 	Line      *int   `json:"line"`
 	StartLine *int   `json:"startLine"`
-	Side      string `json:"side"`
+	// OriginalLine and OriginalStartLine are set when the forge reports the
+	// line the thread was written against (GitHub outdated threads).
+	OriginalLine      *int   `json:"originalLine,omitempty"`
+	OriginalStartLine *int   `json:"originalStartLine,omitempty"`
+	Side              string `json:"side"`
+	// StartSide is the half StartLine (or OriginalStartLine) is on, "left"
+	// or "right", set with it. It differs from Side when a range starts on
+	// a removed line and ends on an unchanged or added one.
+	StartSide string `json:"startSide,omitempty"`
 	// IsResolvable distinguishes threads with a real resolve state from
 	// flat comments (GitHub conversation comments, non-resolvable GitLab
 	// notes) where IsResolved=false would misread as "needs attention".
@@ -203,13 +263,33 @@ type ReviewThread struct {
 	Comments     []ReviewComment `json:"comments"`
 }
 
+// ReviewComment is one comment of a thread. ID is what an edit or a
+// delete names (CommentTarget.CommentID): a GitHub comment's node id, a
+// GitLab note's id in decimal. ViewerCanEdit and ViewerCanDelete are the
+// forge's answer for the signed-in login: GitHub's viewerCanUpdate and
+// viewerCanDelete; GitLab's REST notes carry no permission, so there they
+// are the viewer's own notes (GitLab lets only a note's author edit it).
+// EditedAt is when the forge says the body was last edited (GitHub's
+// lastEditedAt), empty when it was not or the forge does not say (GitLab's
+// REST notes do not: their updated_at also moves on a resolve). URL is the
+// comment on the forge's web UI, which the client copies as the comment's
+// link: GitHub's url, GitLab's merge request page at #note_<id>.
+// Suggestions are the comment's suggestion blocks and Reactions its
+// reaction groups with a count above zero (forge_suggestions.go).
 type ReviewComment struct {
-	AuthorLogin string         `json:"authorLogin"`
-	AuthorName  string         `json:"authorName,omitempty"`
-	Body        string         `json:"body"`
-	CreatedAt   string         `json:"createdAt"`
-	DatabaseID  int64          `json:"databaseID"`
-	ReplyTo     *ReviewReplyTo `json:"replyTo,omitempty"`
+	ID              string              `json:"id"`
+	AuthorLogin     string              `json:"authorLogin"`
+	AuthorName      string              `json:"authorName,omitempty"`
+	Body            string              `json:"body"`
+	CreatedAt       string              `json:"createdAt"`
+	EditedAt        string              `json:"editedAt,omitempty"`
+	DatabaseID      int64               `json:"databaseID"`
+	ReplyTo         *ReviewReplyTo      `json:"replyTo,omitempty"`
+	ViewerCanEdit   bool                `json:"viewerCanEdit"`
+	ViewerCanDelete bool                `json:"viewerCanDelete"`
+	URL             string              `json:"url,omitempty"`
+	Suggestions     []CommentSuggestion `json:"suggestions,omitempty"`
+	Reactions       []CommentReaction   `json:"reactions,omitempty"`
 }
 
 type ReviewReplyTo struct {
@@ -223,26 +303,109 @@ type SubmitReviewRequest struct {
 	Comments []ReviewLineComment `json:"comments"`
 }
 
+// ReviewLineComment is one comment of a review: a file comment, a line on
+// the left (Line is its old number) or the right (its new number), a range
+// of lines ending at Line and starting at Start, or a reply to a thread
+// (InReplyTo, with no line). An unchanged line is on the right with its
+// old number in OldLine, which GitLab needs beside the new one.
 type ReviewLineComment struct {
-	Path      string `json:"path"`
-	Body      string `json:"body"`
-	Line      *int   `json:"line,omitempty"`
-	Side      string `json:"side"`
-	StartLine *int   `json:"startLine,omitempty"`
+	Path    string `json:"path"`
+	Body    string `json:"body"`
+	Line    *int   `json:"line,omitempty"`
+	OldLine *int   `json:"oldLine,omitempty"`
+	Side    string `json:"side"`
+	// Start is the first line of a range, described as Line, OldLine and
+	// Side describe the last; nil for one line.
+	Start *ReviewLineStart `json:"start,omitempty"`
+	// InReplyTo makes the comment a reply to an existing thread. Path and
+	// Line then only name the thread for a failure's sentence.
+	InReplyTo *ReviewThreadReply `json:"inReplyTo,omitempty"`
 }
 
+// ReviewLineStart is the first line of a range comment: Line on Side
+// ("left" at its old number, "right" at its new one), and an unchanged
+// line's old number in OldLine beside its new one on the right.
+type ReviewLineStart struct {
+	Line    int    `json:"line"`
+	OldLine int    `json:"oldLine,omitempty"`
+	Side    string `json:"side"`
+}
+
+// ReviewThreadReply names the thread a reply answers: ThreadID as ReadPR
+// reported it, and RootDatabaseID its first comment's DatabaseID, which a
+// GitHub reply is posted under.
+type ReviewThreadReply struct {
+	ThreadID       string `json:"threadId"`
+	RootDatabaseID int64  `json:"rootDatabaseId"`
+}
+
+// SubmitReviewResult is what a submit posted: the review itself, and the
+// follow-ups a forge posts after it one at a time (GitHub's file comments
+// and replies), in the order of the request's comments of each kind.
 type SubmitReviewResult struct {
 	PostedReview       bool `json:"postedReview"`
 	PostedFileComments int  `json:"postedFileComments"`
+	PostedReplies      int  `json:"postedReplies"`
 }
 
 // PartialSubmitError reports that the primary review landed but a later
-// provider-specific follow-up call failed.
+// provider-specific follow-up call failed. Unconfirmed is a follow-up the
+// forge may have applied all the same (forgeapi.WriteNotApplied could not
+// prove it did not). FailedPath names a failed file comment's file and
+// FailedThreadID a failed reply's thread; a reply whose thread is gone
+// wraps a *ReplyThreadGoneError. PostedReview is false when the request
+// had nothing for the review itself and its first follow-up posted.
 type PartialSubmitError struct {
 	PostedReview       bool
 	PostedFileComments int
+	PostedReplies      int
 	FailedPath         string
-	Err                error
+	FailedThreadID     string
+	// UnpostedReplies are the ordinals, among the request's replies, of
+	// the replies that are not on the forge (GitHub's after a failed
+	// follow-up, GitLab's that a publish dropped).
+	UnpostedReplies []int
+	Unconfirmed     bool
+	Err             error
+	// ApproveErr is an approval the forge refused or did not confirm
+	// besides Err (GitLab approves after the publish): a second outcome,
+	// reported with the first.
+	ApproveErr error
+}
+
+// ReplyThreadGoneError is a held reply the forge refused because its
+// thread no longer exists (deleted, or its only comment deleted).
+type ReplyThreadGoneError struct {
+	ThreadID string
+	Err      error
+}
+
+func (e *ReplyThreadGoneError) Error() string {
+	return fmt.Sprintf("the thread %s this reply answers is gone: %v", e.ThreadID, e.Err)
+}
+
+func (e *ReplyThreadGoneError) Unwrap() error { return e.Err }
+
+// UnconfirmedSubmitError is a review submit the forge may have applied:
+// its write failed in a way that does not prove the forge refused it (a
+// reset or timeout after sending, a body cut short, a 5xx). A caller must
+// not read it as nothing posted, nor as posted. Every other SubmitReview
+// error posted nothing.
+type UnconfirmedSubmitError struct{ Err error }
+
+func (e *UnconfirmedSubmitError) Error() string {
+	return fmt.Sprintf("the forge did not confirm the review: %v", e.Err)
+}
+
+func (e *UnconfirmedSubmitError) Unwrap() error { return e.Err }
+
+// submitWriteError is the SubmitReview error of a write that failed: as
+// it is when the forge did not apply it, else unconfirmed.
+func submitWriteError(err error) error {
+	if forgeapi.WriteNotApplied(err) {
+		return err
+	}
+	return &UnconfirmedSubmitError{Err: err}
 }
 
 func (e *PartialSubmitError) Error() string {
@@ -251,6 +414,13 @@ func (e *PartialSubmitError) Error() string {
 	}
 	if e.FailedPath != "" {
 		return fmt.Sprintf("review submitted, but posting file-level comment for %s failed: %v", e.FailedPath, e.Err)
+	}
+	if e.FailedThreadID != "" {
+		msg := fmt.Sprintf("review submitted, but posting the reply to thread %s failed: %v", e.FailedThreadID, e.Err)
+		if e.ApproveErr != nil {
+			msg += fmt.Sprintf("; the approval failed too: %v", e.ApproveErr)
+		}
+		return msg
 	}
 	return fmt.Sprintf("review submitted, but a follow-up step failed: %v", e.Err)
 }
@@ -303,6 +473,16 @@ func (r PRReference) Key() string {
 		return fmt.Sprintf("%s:%s:%d", r.Forge, r.Project(), r.Number)
 	}
 	return fmt.Sprintf("%s@%s:%s:%d", r.Forge, r.Host, r.Project(), r.Number)
+}
+
+// Identity is the PR's identity as the forge resolves it: Key with the
+// host, owner or namespace path and repository lowercased, since GitHub
+// and GitLab both resolve them case-insensitively. Two references with
+// one Identity name the same PR however the user spelled it; a lock or
+// other guard of a write keys on it, while entity keys stay Key.
+func (r PRReference) Identity() string {
+	r.Host, r.Namespace, r.Repo = strings.ToLower(r.Host), strings.ToLower(r.Namespace), strings.ToLower(r.Repo)
+	return r.Key()
 }
 
 // Validate reports whether r names a PR a forge operation can address: a
@@ -362,7 +542,7 @@ func (nullForge) ListMergedPRHeads(context.Context, string, int) ([]MergedPRHead
 	return nil, ErrUnsupportedForge
 }
 
-func (nullForge) ReadPRStates(context.Context, PRReference, []TrackedPR) (map[int]PRState, error) {
+func (nullForge) ReadPRStates(context.Context, RepoReference, []TrackedPR) (map[int]PRState, error) {
 	return nil, ErrUnsupportedForge
 }
 
@@ -388,7 +568,7 @@ func (nullForge) SetThreadResolved(context.Context, PRReference, string, bool) e
 
 func (nullForge) CILogStreams() bool { return false }
 
-func (nullForge) StreamCIJobLog(context.Context, PRReference, CIJobLogRequest, func(CIJobLogStart) (io.Writer, error)) (bool, error) {
+func (nullForge) StreamCIJobLog(context.Context, RepoReference, CIJobLogRequest, func(CIJobLogStart) (io.Writer, error)) (bool, error) {
 	return false, ErrUnsupportedForge
 }
 
@@ -485,6 +665,15 @@ func NormalizePRState(s string) string {
 // The PR-scoped Core operations validate ref before dispatching, so no
 // caller's precondition decides what reaches a forge.
 
+// forgeWrite is the context a forge write runs on: the caller's values
+// without its cancellation. A write the forge may already have applied must
+// finish and report, because a caller that stopped waiting cannot tell an
+// applied write from one never sent. Each request keeps its own bound
+// (forgeapi's read timeout, the Core command timeout).
+func forgeWrite(ctx context.Context) context.Context {
+	return context.WithoutCancel(ctx)
+}
+
 // ReadPR reads the parts of ref want names in one forge read (see
 // Forge.ReadPR). Asking for no part is an error.
 func (c *Core) ReadPR(ctx context.Context, ref PRReference, want PRReadParts, prev *CIPipeline, stepsFor []string) (PRRead, error) {
@@ -513,21 +702,21 @@ func (c *Core) SubmitReview(ctx context.Context, ref PRReference, review SubmitR
 	if err := ref.Validate(); err != nil {
 		return SubmitReviewResult{}, err
 	}
-	return c.ForgeByID(ref.Forge).SubmitReview(ctx, ref, review)
+	return c.ForgeByID(ref.Forge).SubmitReview(forgeWrite(ctx), ref, review)
 }
 
 func (c *Core) ReplyToThread(ctx context.Context, ref PRReference, threadID string, databaseID int64, body string) error {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	return c.ForgeByID(ref.Forge).ReplyToThread(ctx, ref, threadID, databaseID, body)
+	return c.ForgeByID(ref.Forge).ReplyToThread(forgeWrite(ctx), ref, threadID, databaseID, body)
 }
 
 func (c *Core) SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	return c.ForgeByID(ref.Forge).SetThreadResolved(ctx, ref, threadID, resolved)
+	return c.ForgeByID(ref.Forge).SetThreadResolved(forgeWrite(ctx), ref, threadID, resolved)
 }
 
 // ListPRCIJobs is ReadPR for the pipeline alone.
@@ -536,10 +725,10 @@ func (c *Core) ListPRCIJobs(ctx context.Context, ref PRReference, prev *CIPipeli
 	return read.CI, err
 }
 
-// CILogStreams reports whether ref's forge streams a running job's
+// CILogStreams reports whether repo's forge streams a running job's
 // log (see Forge.CILogStreams).
-func (c *Core) CILogStreams(ref PRReference) bool {
-	return c.ForgeByID(ref.Forge).CILogStreams()
+func (c *Core) CILogStreams(repo RepoReference) bool {
+	return c.ForgeByID(repo.Forge).CILogStreams()
 }
 
 // StreamCIJobLog reads one CI job's raw log as the forge serves it, for
@@ -547,9 +736,9 @@ func (c *Core) CILogStreams(ref PRReference) bool {
 // calls begin, and the body goes to the writer begin returns, of any size.
 // It reports a 304 to the request's ETag as notModified, begin never
 // called; a 404 is ErrCIJobLogNotFound.
-func (c *Core) StreamCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
-	if err := ref.Validate(); err != nil {
+func (c *Core) StreamCIJobLog(ctx context.Context, repo RepoReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
+	if err := repo.Validate(); err != nil {
 		return false, err
 	}
-	return c.ForgeByID(ref.Forge).StreamCIJobLog(ctx, ref, req, begin)
+	return c.ForgeByID(repo.Forge).StreamCIJobLog(ctx, repo, req, begin)
 }

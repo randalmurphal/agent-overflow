@@ -266,8 +266,8 @@ func TestResolveSendMessageAttachments_NeverPutsAFileInTheProviderSlice(t *testi
 			t.Fatalf("provider slice carries a non-image: %+v", image)
 		}
 	}
-	if len(resolved.fileLines) != 1 {
-		t.Fatalf("fileLines = %d, want 1", len(resolved.fileLines))
+	if len(resolved.files) != 1 {
+		t.Fatalf("files = %d, want 1", len(resolved.files))
 	}
 	if len(resolved.records) != 3 {
 		t.Fatalf("records = %d, want 3 (the meta keeps both kinds)", len(resolved.records))

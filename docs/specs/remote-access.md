@@ -1484,11 +1484,12 @@ that port on the reader's own machine), middle-click included, and only
 so a link is plain rather than wrongly inert before the machine has
 spoken; a pushed frame outranks a read in flight. One deviation from
 "mod+click ... when the page holds `host`": the companion browser is
-the THREAD's machine's engine, so the gesture is gated on
-`threadActsHere` (thread on the page's own machine AND `host` held);
-with `host` alone it would mint a page in an engine this window cannot
-paint. `previewRouted` is that predicate's negation, stated once in
-`attachedBackends.svelte.ts`. Settings → Remote access lists attributed ports
+the THREAD's machine's engine, shown only in the host's own window, so
+the gesture is gated on `canUseNativeBrowser` (thread on the page's own
+machine, `host` held, and the page is the host window); with `host`
+alone it would mint a page in an engine this window cannot paint.
+`previewRouted` is the negation of `threadActsHere`, its first two
+halves, stated once in `attachedBackends.svelte.ts`. Settings → Remote access lists attributed ports
 as a sentence ("Shared while vite runs it") with no control, because
 `DisallowPreviewPort` edits only the persisted set. **Headless engine**
 (`internal/browser`): as specified; the launch argv never contains
@@ -1778,8 +1779,10 @@ trial refusal in review):
   (`serviceArtifactPlatform()`: `headless-<GOOS>` for the windowless
   build, `linux` or `darwin` for the ordinary build, empty on Windows).
   macOS ZIPs are expanded and staged with their complete bundle. An empty answer is the `Unavailable` sentence, not a
-  button that cannot work. The passive `Latest` check runs once,
-  unparked, during a trial too.
+  button that cannot work. The passive `Latest` check runs at boot and
+  hourly until shutdown, unparked, during a trial too; it publishes a
+  frame only when its answer changes and keeps the last answer when a
+  check fails.
 - *Frontend half LANDED (2026-09-02)*: `stores/serviceUpdate.svelte.ts`,
   one box per attached backend keyed by the frame origin, status
   replaced wholesale, read on every hello the session holds
@@ -1793,7 +1796,7 @@ trial refusal in review):
   callout (committed / rolled back with the reason), the flow error,
   the `Unavailable` sentence with no button, and the rollback picker
   (`VersionPicker` became prop-driven so the in-app updater and each
-  machine drive one component). The footer badge lights through
+  machine drive one component). The sidebar's Update button shows through
   `hasPendingUpdate()` for any supervised machine with a newer
   release. Nothing renders on a desktop with no supervised backend
   attached, which is every harness run, so the e2e suite proves only
@@ -2431,11 +2434,15 @@ third breakpoint, not a new app. Compact rules:
   compact, not a bottom drawer, so the keyboard and the key row own the
   bottom edge.
 
-**Voice.** Comes free: the composer is a real text field, so the phone
-keyboard's dictation key types into it, and the platform's recognizer is
-better than anything a laptop has. No plugin, no permission, nothing to
-build. A dedicated mic button that streams to a recognizer is a later
-option, not a first-shell need.
+**Voice.** The composer is a real text field, so the phone keyboard's
+dictation key types into it. The composer's mic is the same on the phone
+as on the desktop: the WebView records and the thread's computer
+transcribes (`docs/references/voice-dictation.md`). The shell declares
+`RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS`, which Capacitor's WebView
+client asks for on the first press. Read-aloud speaks through Android's
+TextToSpeech in the shell's `Speech` plugin, since the WebView has no
+`speechSynthesis`; an OpenAI voice plays in the WebView as audio the
+thread's computer made.
 
 **Opening the app.** The app lock is the platform's biometric or
 credential prompt, run on cold start and on a resume past a
@@ -2553,8 +2560,8 @@ text above was deviated from:
   phone-sized BROWSER pointed at a remote host answers its own Back
   (swipe or button) the same way: `utils/compactHistoryBack.svelte.ts`
   keeps one sentinel `pushState` entry while the app is away from root
-  (the thread screen, or any registered overlay surface: settings and
-  workflows overlays, companions, modals, popovers, context menus), a
+  (the thread screen, or any registered overlay surface: the settings
+  overlay, companions, modals, popovers, context menus), a
   `popstate` over it runs the shell's `stepBack` ladder, and the sentinel
   is re-pushed while there is still somewhere to go back to. At the
   list with nothing open there is no sentinel, so Back leaves the page,
@@ -2636,7 +2643,7 @@ text above was deviated from:
   inputs, and `boot.ts` whose `adoptPairingEndpoint` is the one place
   scanned codes, pasted invitations and pairing hashes point the shell at a backend. Deviations from the
   text above: `minSdkVersion` 26 (the scanner's native library declares
-  it); dictation is the keyboard's, as ruled; the composer's Take photo, Photos
+  it); the composer's Take photo, Photos
   and Files choices use the WebView's native capture/chooser; no dedicated
   picker plugin is needed. iOS is not added. Signed distribution now uses
   `make apk-release` and a persistent keystore (see
@@ -3393,8 +3400,10 @@ frame.**
   video and audio go out under the signature-derived type, every other
   payload as `application/octet-stream` with an attachment disposition,
   so nothing a comment linked can render at the SPA origin. An SVG
-  image also carries an attachment disposition, because it is a
-  document that can run script. A positive `maxWidth` serves an image
+  image also carries an attachment disposition and the policy
+  `default-src 'none'; style-src 'unsafe-inline'; sandbox`, because it
+  is a document that can run script; the local-image route answers an
+  SVG the same way. A positive `maxWidth` serves an image
   as a display-size derivative (`attachment.Derive`, held in the same
   LRU under the original's id and the tier). `SaveForgeAttachment`
   writes the original bytes to the host's Downloads directory instead.
@@ -3414,7 +3423,13 @@ frame.**
   per request and answers 404 when its size or mtime changed since it was
   resolved; a derivative whose file was evicted or deleted answers 404,
   and the client's re-mint derives it again. The response carries the
-  sniffed image type, and an SVG an attachment disposition.
+  sniffed image type, and an SVG an attachment disposition. The sides of
+  a review diff file ride the same route (`GetReviewDiffImage`,
+  `GetEditDiffImage`, files:read): the bytes, at most 25 MiB a side,
+  sit in their own store, whose 100 MiB budget also covers loads in
+  flight and bodies still being sent (10 min, cleared by the harness
+  reset); a read names only the open's server-held files handle and a
+  path ([review diff streaming](../architecture/review-diff-streaming.md#reading-a-diffs-files)).
   `SaveLocalImage` copies the original file to the host's Downloads
   directory.
 
@@ -4060,7 +4075,8 @@ backend answers a repeat from the record the first arrival left, the
 before any side effect. No id table: the message is the record, matched
 through sparse indexes over retained history
 (`store.FindUserTextItemBySendID`, migration v89). `RETRY_ON_TRANSIENT_CLOSE` holds
-exactly those two methods, and a send whose retry ALSO failed asks
+those two methods and `RunThreadShellCommand`, whose `runId` is the same
+kind of id, and a send whose retry ALSO failed asks
 before restoring ("This message may have reached the agent. Put it back
 in the composer?"; "Leave it" discards and reports nothing further) while
 a definite failure restores silently as before. (8) A reconnect ladder

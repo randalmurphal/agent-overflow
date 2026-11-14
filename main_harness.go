@@ -86,6 +86,12 @@ type harnessPaths struct {
 // bootTransportOptions.HarnessReceiver), and the harness bootstrap line
 // that hands agents the URL, token, and data paths in one place.
 func runHarness(flags cliFlags) {
+	// First: a worker that died while this backend booted must still end it.
+	if flags.exitWithParent > 0 {
+		if err := watchParentExit(flags.exitWithParent); err != nil {
+			fatalf("harness: %v", err)
+		}
+	}
 	if flags.window {
 		// Before any work: a nogui payload can never open a window, and
 		// finding that out after seeding a data directory would be a worse
@@ -298,6 +304,9 @@ type harnessTiming struct {
 	// event worker to handle its next event
 	// (app.IsolationConfig.ProviderEventDrainStall).
 	DrainStall time.Duration
+	// UsageProbeGap is the shortest gap between two usage probes of one
+	// provider (app.IsolationConfig.UsageProbeGap).
+	UsageProbeGap time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -323,6 +332,7 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"wake-floor":        &timing.WakeFloor,
 		"remote-watch-poll": &timing.RemoteWatchPoll,
 		"drain-stall":       &timing.DrainStall,
+		"usage-probe-gap":   &timing.UsageProbeGap,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -429,6 +439,7 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		AgentWakeFloor:          opts.Timing.WakeFloor,
 		RemoteWatchPoll:         opts.Timing.RemoteWatchPoll,
 		ProviderEventDrainStall: opts.Timing.DrainStall,
+		UsageProbeGap:           opts.Timing.UsageProbeGap,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

@@ -28,7 +28,7 @@ func (c *Credentials) Activate(providerName, currentAccountID, targetAccountID s
 			currentAccountID = ""
 		case err != nil:
 			return fmt.Errorf("provideraccounts: read current account before switch: %w", err)
-		case c.credentialSignedOut(providerName, snapshot.Data):
+		case c.credentialSignedOut(providerName, snapshot.Bytes()):
 			currentAccountID = ""
 		default:
 			current = &snapshot
@@ -60,9 +60,9 @@ func (c *Credentials) ActivateWithSnapshot(
 		// login nothing inside the app ever replaces (incident 2026-08-03).
 		// Dropping the snapshot also stands the re-preserve below down: there
 		// is no rotation to detect against bytes that were never a token.
-		if c.credentialSignedOut(providerName, current.Data) {
+		if c.credentialSignedOut(providerName, current.Bytes()) {
 			current = nil
-		} else if err := c.WriteAccountCredential(providerName, currentAccountID, current.Data); err != nil {
+		} else if err := c.WriteAccountCredential(providerName, currentAccountID, current.Bytes()); err != nil {
 			return fmt.Errorf("provideraccounts: preserve current account before switch: %w", err)
 		}
 	}
@@ -93,9 +93,9 @@ func (c *Credentials) ActivateWithSnapshot(
 	// worth keeping beyond the snapshot already preserved above.
 	if currentAccountID != "" && currentAccountID != targetAccountID && current != nil {
 		if latest, err := c.ReadCredentialSnapshot(providerName, "", true); err == nil &&
-			!bytes.Equal(latest.Data, current.Data) &&
-			!c.credentialSignedOut(providerName, latest.Data) {
-			if err := c.WriteAccountCredential(providerName, currentAccountID, latest.Data); err != nil {
+			!bytes.Equal(latest.Bytes(), current.Bytes()) &&
+			!c.credentialSignedOut(providerName, latest.Bytes()) {
+			if err := c.WriteAccountCredential(providerName, currentAccountID, latest.Bytes()); err != nil {
 				return fmt.Errorf(
 					"provideraccounts: preserve rotated current account before switch: %w",
 					err,
@@ -155,7 +155,22 @@ func (c *Credentials) RemoveActive(providerName string) error {
 
 // RemoveAccount deletes one saved credential slot. The validated account ID
 // and non-symlink managed root confine removal to Agent Overflow's own storage.
-func (c *Credentials) RemoveAccount(providerName, accountID string) error {
+// It holds the slot lock, so no slot write lands inside the removal and an
+// adoption that waited on it finds the slot gone.
+func (c *Credentials) RemoveAccount(providerName, accountID string) (retErr error) {
+	if _, err := c.accountDirectory(providerName, accountID); err != nil {
+		return err
+	}
+	lock, err := c.lockSlot(providerName, accountID)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
+	return c.removeAccountLocked(providerName, accountID)
+}
+
+// removeAccountLocked is RemoveAccount for a caller holding the slot lock.
+func (c *Credentials) removeAccountLocked(providerName, accountID string) error {
 	paths, err := c.Paths(providerName)
 	if err != nil {
 		return err
@@ -180,7 +195,7 @@ func (c *Credentials) RemoveAccount(providerName, accountID string) error {
 	if err := root.RemoveAll(filepath.Join(accountDirectoryName, accountID)); err != nil {
 		return fmt.Errorf("provideraccounts: remove saved account credentials: %w", err)
 	}
-	return nil
+	return c.removeConsumedMarker(providerName, accountID)
 }
 
 // PruneOrphanedAccounts removes credential slots that have no corresponding

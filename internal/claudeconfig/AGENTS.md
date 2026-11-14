@@ -8,9 +8,9 @@ project state with `ProjectKey` so worktrees share the CLI's project entry.
 Only MCP server names may leave configuration rows; commands, arguments, and
 environment values can contain credentials.
 
-`ReadOAuthAccount` is an adoption-time read. Accept organization data only
-when its email matches the probe identity. AO may clear `oauthAccount` during
-account switching but never writes a replacement identity.
+AO may clear `oauthAccount` during account switching but never writes a
+replacement identity, and never reads one: the record can describe another
+login than the installed credential (see `internal/provideraccounts`).
 
 `ListSkills` merges user, project, and enabled-plugin roots. Project skills
 win name collisions; plugin skills remain namespaced. Missing roots are empty,

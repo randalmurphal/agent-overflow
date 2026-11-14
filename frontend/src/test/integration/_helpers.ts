@@ -29,7 +29,9 @@ import { resetProviderModelsForTest } from '../../lib/stores/providerModels.svel
 import { resetSettingsForTest } from '../../lib/stores/settings.svelte';
 import { resetThreadActionConfirmationsForTest } from '../../lib/stores/threadActionConfirmations.svelte';
 import { resetSettingsOverlayForTest } from '../../lib/stores/settingsOverlay.svelte';
+import { resetForTest as resetUpdatesForTest } from '../../lib/stores/updates.svelte';
 import { resetWorkflowsOverlayForTest } from '../../lib/stores/workflowsOverlay.svelte';
+import { resetToolPanesForTest } from '../../lib/stores/toolPanes.svelte';
 import { closeAccountSwitcher } from '../../lib/stores/accountSwitcher.svelte';
 import {
   getQueueForThread,
@@ -78,10 +80,14 @@ export function resetAppState(): void {
   resetSidebarForTest();
   resetSettingsForTest();
   resetThreadActionConfirmationsForTest();
-  // Both full-height overlays are module state now, so an open one would
-  // otherwise ride into the next test (and each closes the other on open).
+  // Settings and the workflows navigation are module state, so an open one
+  // would otherwise ride into the next test.
   resetSettingsOverlayForTest();
+  // A release one case's launch check found would show the sidebar's Update
+  // button in the next.
+  resetUpdatesForTest();
   resetWorkflowsOverlayForTest();
+  resetToolPanesForTest();
   closeAccountSwitcher();
   resetProviderModelsForTest();
   // Per-thread send queue is in-memory only; clear it between tests
@@ -151,6 +157,9 @@ export function installAppDefaults(): void {
   // than that under a loaded full run reaches this binding from a timer,
   // not from any assertion. Answer as a backend with nothing to trim.
   setBindingMock('RequestWebviewMemoryTrim', async () => 'skipped-recent');
+  // Settings > Voice and, while read-aloud is on here, every thread timeline
+  // ask the computer whether it reads aloud in OpenAI voices.
+  setBindingMock('ReadAloudSource', async () => ({ available: false, voices: [] }));
 }
 
 /**

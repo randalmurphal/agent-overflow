@@ -32,6 +32,10 @@ type SourceInfo struct {
 	// APIProtocol://APIHost/api/v4/, defaulting to https and the host.
 	APIHost     string
 	APIProtocol string
+	// ExpiryLookup marks a GitLab personal access token from glab's
+	// config, whose expiry the client asks personal_access_tokens/self
+	// for once (expiry.go). An OAuth2 login is refreshed by glab instead.
+	ExpiryLookup bool
 }
 
 // TokenSource reads a host's token. forge is ForgeGitHub or ForgeGitLab;
@@ -119,7 +123,7 @@ func (s CLITokenSource) gitlabToken(ctx context.Context, name string) ([]byte, S
 	if err != nil {
 		return nil, SourceInfo{}, err
 	}
-	info := SourceInfo{Header: AuthPrivateToken}
+	info := SourceInfo{Header: AuthPrivateToken, ExpiryLookup: oauth2 != "true"}
 	if oauth2 == "true" {
 		info.Header = AuthBearer
 		if _, err := s.run(ctx, ForgeGitLab, false, "glab", "api", "--hostname", name, "version"); err != nil {

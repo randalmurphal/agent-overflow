@@ -37,6 +37,9 @@ type ManagedAccount struct {
 	// It is always false in listings, where NeedsLogin already says the card
 	// needs repair and nothing is being attempted.
 	SignInRequired bool `json:"signInRequired"`
+	// AutoSwitch reports that the account is in the provider's auto-switch
+	// pool.
+	AutoSwitch bool `json:"autoSwitch"`
 }
 
 func (m *Manager) ListProviderAccounts() ([]ManagedAccount, error) {
@@ -54,6 +57,7 @@ func (m *Manager) ListProviderAccounts() ([]ManagedAccount, error) {
 				Account:    account,
 				Active:     hasActive && active.ID == account.ID,
 				Generation: generation,
+				AutoSwitch: m.store.AutoSwitch(providerName, account.ID),
 			})
 		}
 	}
@@ -113,11 +117,26 @@ func (m *Manager) providerAccountCredentialState(
 // account's saved credential is gone: sign in again. The metadata row stays,
 // so the user is told what to do rather than shown the missing path.
 func errProviderAccountNeedsLogin(providerName string, account provideraccounts.Account) error {
-	return fmt.Errorf(
+	return needsLoginError{message: fmt.Sprintf(
 		"the saved %s credentials for %s are gone; sign in to this account again to reconnect it",
 		providerName,
 		describeProviderAccount(account),
-	)
+	)}
+}
+
+// needsLoginError is the type of errProviderAccountNeedsLogin.
+type needsLoginError struct{ message string }
+
+func (e needsLoginError) Error() string { return e.message }
+
+// IsNeedsLogin reports whether err says the switch target can be used only
+// after a fresh sign-in because its saved credential is missing or signed
+// out. A switch reports an expired target through SignInRequired instead.
+// The login sentinels are not matched: a switch wraps the reconcile of the
+// current account with %w, and that verdict is not about the target.
+func IsNeedsLogin(err error) bool {
+	var needsLogin needsLoginError
+	return errors.As(err, &needsLogin)
 }
 
 // errProviderAccountLoginExpired names the account whose OAuth session ran
@@ -189,7 +208,115 @@ func (m *Manager) ReorderProviderAccounts(providerName string, accountIDs []stri
 	return nil
 }
 
+// SetProviderAccountAutoSwitch puts one saved account in or out of the
+// provider's auto-switch pool. A saved account is in the pool until taken
+// out. The selection and its generation are untouched.
+func (m *Manager) SetProviderAccountAutoSwitch(providerName, accountID string, enabled bool) error {
+	if m.shuttingDown() {
+		return m.shutdownError()
+	}
+	if err := ValidateProvider(providerName); err != nil {
+		return err
+	}
+	if m.store == nil {
+		return errors.New("provider account storage is unavailable")
+	}
+	m.mu.Lock()
+	err := m.store.SetAutoSwitch(providerName, accountID, enabled)
+	m.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if enabled {
+		m.audit("put %s account %s in the auto-switch pool", providerName, accountID)
+	} else {
+		m.audit("took %s account %s out of the auto-switch pool", providerName, accountID)
+	}
+	m.emitProviderAccountsChanged()
+	return nil
+}
+
+// AutoSwitchAccount is one saved account as auto-switch sees it.
+type AutoSwitchAccount struct {
+	ID string
+	// Label is the account's email, else its display name, else its id.
+	Label  string
+	InPool bool
+	// LoginExpired is read from the saved session deadline, not the
+	// credential.
+	LoginExpired bool
+}
+
+// AutoSwitchPool is one provider's selection and pool, accounts in card
+// order.
+type AutoSwitchPool struct {
+	SelectedID string
+	// AutoSelected is true while auto-switch made the current selection.
+	AutoSelected bool
+	Accounts     []AutoSwitchAccount
+}
+
+// AutoSwitchPool reads the provider's selection and pool from saved
+// metadata. It reads no credential and makes no request, so the send path
+// can call it.
+func (m *Manager) AutoSwitchPool(providerName string) AutoSwitchPool {
+	if m.store == nil {
+		return AutoSwitchPool{}
+	}
+	m.mu.RLock()
+	view := m.store.Pool(providerName)
+	m.mu.RUnlock()
+	now := time.Now().UnixMilli()
+	pool := AutoSwitchPool{
+		SelectedID:   view.ActiveAccountID,
+		AutoSelected: view.AutoSelected,
+		Accounts:     make([]AutoSwitchAccount, len(view.Accounts)),
+	}
+	for i, account := range view.Accounts {
+		pool.Accounts[i] = AutoSwitchAccount{
+			ID: account.ID,
+			Label: describeProviderAccount(provideraccounts.Account{
+				ID: account.ID, Email: account.Email, DisplayName: account.DisplayName,
+			}),
+			InPool: account.AutoSwitch,
+			// Zero is unknown and never expired.
+			LoginExpired: account.RefreshTokenExpiresAt > 0 && account.RefreshTokenExpiresAt <= now,
+		}
+	}
+	return pool
+}
+
+// switchKind is who chose a selection: a person, or auto-switch.
+type switchKind int
+
+const (
+	manualSwitch switchKind = iota
+	automaticSwitch
+)
+
+// String names the kind in audit lines.
+func (k switchKind) String() string {
+	if k == automaticSwitch {
+		return "auto-switch"
+	}
+	return "switch"
+}
+
+// SwitchProviderAccount selects a saved account for the person.
 func (m *Manager) SwitchProviderAccount(providerName, accountID string) (ManagedAccount, error) {
+	return m.switchProviderAccount(providerName, accountID, manualSwitch)
+}
+
+// AutoSwitchProviderAccount is SwitchProviderAccount for auto-switch: the
+// selection is recorded as automatic until another selection replaces it.
+func (m *Manager) AutoSwitchProviderAccount(providerName, accountID string) (ManagedAccount, error) {
+	return m.switchProviderAccount(providerName, accountID, automaticSwitch)
+}
+
+func (m *Manager) switchProviderAccount(
+	providerName, accountID string,
+	kind switchKind,
+) (ManagedAccount, error) {
 	if m.shuttingDown() {
 		return ManagedAccount{}, m.shutdownError()
 	}
@@ -229,6 +356,7 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 			Account:    current,
 			Active:     true,
 			Generation: m.store.Generation(providerName),
+			AutoSwitch: m.store.AutoSwitch(providerName, current.ID),
 		}, nil
 	}
 	target, exists := m.store.Get(providerName, accountID, time.Now())
@@ -253,9 +381,10 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	// A husked slot is a login the provider already ended. Installing it into
 	// the canonical store would retire the working account for a dead one and
 	// leave the app looking signed in until the next request failed.
-	if m.credentials.CredentialSignedOut(providerName, targetCredential.Data) {
+	if m.credentials.CredentialSignedOut(providerName, targetCredential.Bytes()) {
 		m.audit(
-			"refused to switch to %s account %s: its saved credential is the provider's sign-out marker",
+			"refused to %s to %s account %s: its saved credential is the provider's sign-out marker",
+			kind,
 			providerName,
 			accountID,
 		)
@@ -267,19 +396,21 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	// So the switch stops here instead: the account is reported as needing a
 	// sign-in, and the answer says so rather than failing, because nothing
 	// went wrong.
-	if m.credentials.CredentialLoginExpired(providerName, targetCredential.Data, time.Now()) {
+	if m.credentials.CredentialLoginExpired(providerName, targetCredential.Bytes(), time.Now()) {
 		m.audit(
-			"declined to switch to %s account %s: its login expired at %s",
+			"declined to %s to %s account %s: its login expired at %s",
+			kind,
 			providerName,
 			accountID,
-			describeLoginExpiry(providerName, targetCredential.Data),
+			describeLoginExpiry(providerName, targetCredential.Bytes()),
 		)
-		expired := m.withRecordedLoginExpiry(target, targetCredential.Data)
+		expired := m.withRecordedLoginExpiry(target, targetCredential.Bytes())
 		return ManagedAccount{
 			Account:        expired,
 			Generation:     m.store.Generation(providerName),
 			NeedsLogin:     true,
 			SignInRequired: true,
+			AutoSwitch:     m.store.AutoSwitch(providerName, expired.ID),
 		}, nil
 	}
 	currentID := ""
@@ -310,11 +441,15 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	}
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
-		targetCredential.Data,
+		targetCredential.Bytes(),
 	); err != nil {
 		return ManagedAccount{}, err
 	}
-	account, err := m.store.Activate(providerName, accountID)
+	activate := m.store.Activate
+	if kind == automaticSwitch {
+		activate = m.store.ActivateAuto
+	}
+	account, err := activate(providerName, accountID)
 	if err != nil {
 		if rollbackErr := m.rollbackProviderAccountActivation(providerName, accountID, currentID); rollbackErr != nil {
 			return ManagedAccount{}, fmt.Errorf("%w (credential rollback also failed: %v)", err, rollbackErr)
@@ -324,14 +459,17 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	// Both accounts just had credential bytes committed for them: the incoming
 	// one into the canonical store, the outgoing one into its slot. Record
 	// what each says about its session deadline while the bytes are in hand.
-	account = m.withRecordedLoginExpiry(account, targetCredential.Data)
+	account = m.withRecordedLoginExpiry(account, targetCredential.Bytes())
 	if currentCredential != nil {
-		m.recordLoginExpiry(providerName, preserveID, currentCredential.Data)
+		m.recordLoginExpiry(providerName, preserveID, currentCredential.Bytes())
 	}
 	binary := m.providerBinaryPath(providerName)
-	m.rememberProviderCredentialFingerprintLocked(providerName, targetCredential.Data)
+	m.rememberProviderCredentialFingerprintLocked(providerName, targetCredential.Bytes())
 	generation := m.store.Generation(providerName)
 	m.mu.Unlock()
+	if kind == automaticSwitch {
+		m.audit("auto-switched %s account from %s to %s", providerName, currentID, accountID)
+	}
 	accountLocked = false
 	// Probe invalidation derives the newly active account from Manager state.
 	// Keep it outside mu: taking Selection's read side while this write side is
@@ -345,7 +483,12 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	m.applySelection(providerName, generation, account.ID)
 	reconcileMu.Unlock()
 	reconcileLocked = false
-	return ManagedAccount{Account: account, Active: true, Generation: generation}, nil
+	return ManagedAccount{
+		Account:    account,
+		Active:     true,
+		Generation: generation,
+		AutoSwitch: m.store.AutoSwitch(providerName, account.ID),
+	}, nil
 }
 
 // reconciledActiveCredentialLocked captures the credential value already
@@ -403,10 +546,10 @@ func (m *Manager) verifiedActiveCredentialLocked(
 	// Checked before the fingerprint: a husk can never match the remembered
 	// fingerprint, and "changed; retry" would misdiagnose a sign-out as a
 	// concurrent login.
-	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(snapshot.Data) {
+	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(snapshot.Bytes()) {
 		return provideraccounts.CredentialSnapshot{}, errActiveCredentialSignedOut
 	}
-	fingerprint := sha256.Sum256(snapshot.Data)
+	fingerprint := sha256.Sum256(snapshot.Bytes())
 	known, ok := m.fingerprints[providerName]
 	if !ok || known != fingerprint {
 		return provideraccounts.CredentialSnapshot{}, fmt.Errorf(
@@ -512,7 +655,7 @@ func (m *Manager) adoptCurrentProviderAccount(
 	}
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
-		credential.Data,
+		credential.Bytes(),
 	); err != nil {
 		return provideraccounts.Account{}, SignIn{}, err
 	}
@@ -526,7 +669,7 @@ func (m *Manager) adoptCurrentProviderAccount(
 		if err := m.credentials.WriteAccountCredential(
 			providerName,
 			accountID,
-			credential.Data,
+			credential.Bytes(),
 		); err != nil {
 			return provideraccounts.Account{}, SignIn{}, fmt.Errorf(
 				"save existing %s credentials: %w",
@@ -538,11 +681,11 @@ func (m *Manager) adoptCurrentProviderAccount(
 			AccountFromInfo(accountID, providerName, info),
 		)
 		if err != nil {
-			cleanupErr := m.credentials.RestoreAccountCredential(saved)
+			cleanupErr := m.credentials.RestoreAccountCredential(saved, credential.Bytes())
 			return provideraccounts.Account{}, SignIn{}, errors.Join(err, cleanupErr)
 		}
-		account = m.withRecordedLoginExpiry(account, credential.Data)
-		m.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
+		account = m.withRecordedLoginExpiry(account, credential.Bytes())
+		m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
 		return account, SignIn{Provider: providerName, Account: account, Added: true, Active: true}, nil
 	}
 	account, signIn, _, err := m.reconcileObservedAccountLocked(
@@ -553,7 +696,7 @@ func (m *Manager) adoptCurrentProviderAccount(
 	if err != nil {
 		return provideraccounts.Account{}, SignIn{}, err
 	}
-	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
+	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
 	return account, signIn, nil
 }
 
@@ -578,9 +721,12 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 		)
 		return SignIn{}, nil
 	}
+	// mu is held here, and nothing is selected to attribute the credential
+	// to, so it is asked about directly.
 	info, credential, err := m.runStableAccountProbe(
 		providerName,
 		m.canonicalProviderAccountProbe(providerName, binary),
+		m.identifyClaudeCredential,
 	)
 	if err != nil {
 		return SignIn{}, err
@@ -590,7 +736,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	}
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
-		credential.Data,
+		credential.Bytes(),
 	); err != nil {
 		return SignIn{}, err
 	}
@@ -618,14 +764,14 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 		return SignIn{}, err
 	}
 	restore := func() {
-		if cleanupErr := m.credentials.RestoreAccountCredential(saved); cleanupErr != nil {
+		if cleanupErr := m.credentials.RestoreAccountCredential(saved, credential.Bytes()); cleanupErr != nil {
 			log.Printf("provider accounts: restore adoption credential: %v", cleanupErr)
 		}
 	}
 	if err := m.credentials.WriteAccountCredential(
 		providerName,
 		accountID,
-		credential.Data,
+		credential.Bytes(),
 	); err != nil {
 		restore()
 		return SignIn{}, err
@@ -635,8 +781,8 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 		restore()
 		return SignIn{}, err
 	}
-	account = m.withRecordedLoginExpiry(account, credential.Data)
-	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
+	account = m.withRecordedLoginExpiry(account, credential.Bytes())
+	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
 	return SignIn{Provider: providerName, Account: account, Added: !found, Active: true}, nil
 }
 

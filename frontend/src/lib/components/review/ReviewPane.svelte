@@ -1,73 +1,126 @@
 <script lang="ts">
   import { onDestroy, onMount, setContext, untrack } from 'svelte';
+  import { companionForSource } from '../../stores/companionPanes.svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
-  import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
-  import Columns2 from '@lucide/svelte/icons/columns-2';
-  import ListTree from '@lucide/svelte/icons/list-tree';
-  import MessagesSquare from '@lucide/svelte/icons/messages-square';
-  import Pilcrow from '@lucide/svelte/icons/pilcrow';
-  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import WrapText from '@lucide/svelte/icons/wrap-text';
-  import X from '@lucide/svelte/icons/x';
   import ReviewCILogView from './ReviewCILogView.svelte';
+  import ReviewConflictHeader from './ReviewConflictHeader.svelte';
+  import ReviewPaneBanners from './ReviewPaneBanners.svelte';
+  import ReviewPaneFind, { type ReviewFindView } from './ReviewPaneFind.svelte';
   import ReviewCommentThread from './ReviewCommentThread.svelte';
+  import ReviewCommitCard from './ReviewCommitCard.svelte';
+  import ReviewRangeCard from './ReviewRangeCard.svelte';
+  import ReviewLineMenu from './ReviewLineMenu.svelte';
   import ReviewDiffBody from './ReviewDiffBody.svelte';
   import ReviewDraftEditor from './ReviewDraftEditor.svelte';
   import ReviewOverview from './ReviewOverview.svelte';
   import ReviewPRThreadRow from './ReviewPRThreadRow.svelte';
   import ReviewPRTitleBar from './ReviewPRTitleBar.svelte';
   import ReviewRail from './ReviewRail.svelte';
+  import ReviewSendStrip from './ReviewSendStrip.svelte';
+  import ReviewToolbar from './ReviewToolbar.svelte';
   import { appStorageGet, appStorageSet } from '../../stores/appStorage';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
     disposeReviewStateForPane,
     reviewStateForPane,
     reviewSubjectForPane,
-    type ReviewScope,
+    type ReviewPaneState,
+    type ReviewSubject,
   } from '../../stores/reviewPane.svelte';
+  import { reviewStateForPR, reviewSubjectForPR } from '../../stores/reviewPanePinned.svelte';
   import { GitListBranches } from '../../stores/bindings';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { registerPaneBackStep } from '../../stores/paneBackSteps';
   import { getPane } from '../../stores/panes.svelte';
-  import type { GitBranch, GitStatus } from '../../types/git';
+  import type { BackendKey } from '../../transport/backendKey';
+  import type { GitBranch } from '../../types/git';
   import type { DiffReviewComment } from '../../types/models';
+  import type { PRRef } from '../../utils/prReference';
   import { countReviewComments, type CommentCounts } from '../../utils/reviewComments';
-  import { fileExtensionLabel } from '../../utils/reviewTree';
-  import { rateLimitMessage } from '../../utils/forgeFailure';
+  import { commitOrdinal, commitSelectionIndexes } from '../../utils/commitRange';
+  import type { EditorRow, ReviewLeadRow } from '../../utils/reviewRows';
+  import { filterReviewFiles } from '../../utils/reviewTree';
   import { forgeLabels } from '../../utils/forgeLabels';
-  import { threadHasScope } from '../../transport/entityScopes';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
-  import Icon from '../primitives/Icon.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
+  import { commentWriteKey } from '../../stores/reviewCommentWrites.svelte';
+  import { EDITOR_PREVIEW_KEY } from '../../stores/reviewEditorPreview.svelte';
+  import type { SuggestionSource } from './ReviewCommentMarkdown.svelte';
+  import { draftNewSideSpan, editorNewSideSpan, readNewSideLines, type NewSideSpan } from '../../utils/suggestionLines';
 
   interface Props {
-    ctx: PanelContext;
+    /** A review companion beside a thread pane. */
+    ctx?: PanelContext;
+    /** A review pinned to one PR with no thread (the Pull requests page).
+     * The owner keys this component on the PR and calls
+     * `disposePRReviewStates(ownerPaneId)` when its page goes; the states
+     * of the PR on screen and the one before it outlive this component. */
+    pr?: { ownerPaneId: string; backend: BackendKey; projectId: string; pr: PRRef };
+    /** Pinned: whether a person opened this PR, which a new state's first
+     * read carries (a restored page's does not). */
+    userInitiated?: boolean;
+    /** The key of this review's find (state, provider, bar, highlights).
+     * A companion defaults to its layout pane id; a pinned review has no
+     * find unless its host passes one. */
+    findKey?: string;
   }
 
-  let { ctx }: Props = $props();
-  // Extension-filter state is owned here (not in the tree) so the
-  // dropdown's "Apply filter to diff" toggle can also narrow the diff
-  // body, and the selection survives rail tab switches.
+  let { ctx, pr, userInitiated = false, findKey: findKeyProp }: Props = $props();
+  // File-filter state (type chips, hide tests) is owned here, not in the
+  // tree, so it narrows the diff body too, and the selection survives the
+  // rail hiding. The dropdown's "Apply filter to diff" item is the switch
+  // that turns the diff narrowing off.
   const activeExtensions = new SvelteSet<string>();
-  let extensionsFilterDiff = $state(false);
-  // Drafting, sending and submitting comments all write under
-  // `threads:operate` on the thread's computer (Create/SendDiffReviewComments).
-  // The gutter affordance is withheld and the send button goes inert with a
-  // reason; reading the diff and existing comments is unaffected.
-  let operateUngranted = $derived(!threadHasScope('threads:operate', ctx.threadId, ctx.thread?.projectId));
+  let hideTests = $state(false);
+  let filterDiff = $state(true);
   // Captured at init, NOT $derived: the subject is fixed for this instance
   // (CompanionPane keys the body on conversation, ownership epoch and checkout,
-  // so a move, workspace change or draft materialization remounts it), and
-  // reviewStateForPane is side-effectful: its
-  // subject-mismatch branch disposes the replaced state, which writes
-  // $state and is therefore illegal inside a derived
-  // (state_unsafe_mutation). As a derived, a source-pane thread switch
-  // could re-evaluate it on the OLD instance before the {#key} teardown
-  // and crash the render flush.
+  // so a move, workspace change or draft materialization remounts it; the
+  // Pull requests page keys it on the PR), and the state lookups are
+  // side-effectful: a subject mismatch or the pinned retention bound
+  // disposes a state, which writes $state and is therefore illegal inside
+  // a derived (state_unsafe_mutation). As a derived, a source-pane thread
+  // switch could re-evaluate it on the OLD instance before the {#key}
+  // teardown and crash the render flush.
+  function initialSubject(): { subject: ReviewSubject | null; error: string | null } {
+    if (!pr) return { subject: ctx ? reviewSubjectForPane(ctx) : null, error: null };
+    try {
+      return { subject: reviewSubjectForPR(pr), error: null };
+    } catch (err) {
+      return { subject: null, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  const { subject, error: subjectError } = initialSubject();
   // svelte-ignore state_referenced_locally
-  const subject = reviewSubjectForPane(ctx);
+  const sourcePaneId = pr?.ownerPaneId ?? ctx?.paneId ?? '';
+  function initialState(): ReviewPaneState | null {
+    if (!subject) return null;
+    return subject.pinned ? reviewStateForPR(sourcePaneId, subject, { userInitiated }) : reviewStateForPane(sourcePaneId, subject);
+  }
+  const review = initialState();
+  // The conflict view's reconcile permit follows this mount, and whether
+  // the layout pane hosting it is on screen, not how long the state is
+  // retained. A pinned review lives in its owner's pane; a companion in
+  // its own layout pane, fixed for its life.
   // svelte-ignore state_referenced_locally
-  const sourcePaneId = ctx.paneId;
-  const review = subject ? reviewStateForPane(sourcePaneId, subject) : null;
+  const companionPaneId = pr ? null : (untrack(() => companionForSource(sourcePaneId, 'review')?.paneId) ?? null);
+  // svelte-ignore state_referenced_locally
+  const hostPaneId = pr?.ownerPaneId ?? companionPaneId ?? sourcePaneId;
+  $effect(() => review?.attachSurface(hostPaneId));
+  // Back steps out of a view open inside the review before the review
+  // goes: the CI log, the conflict view, then on compact the open rail,
+  // which covers the diff.
+  let rail: ReviewRail | undefined = $state();
+  onDestroy(registerPaneBackStep(hostPaneId, () => {
+    if (!review) return false;
+    if (review.armedEditorId !== null) review.cancelEditorMove();
+    else if (review.ciLogView) review.closeCILogView();
+    else if (review.conflictView) review.closeConflictView();
+    else if (rail && treeVisible && isCompactLayout()) toggleTree();
+    else return false;
+    return true;
+  }));
+  const findKey = $derived(findKeyProp ?? companionPaneId);
   // Forge attachments in every ChatMarkdown under this pane — the PR body,
   // the conversation, each thread's comments, the comments list. A reader
   // rather than a value: the PR reference and its web URL arrive after
@@ -81,19 +134,27 @@
   // The diff body keys scroll memory by `review.identity` (conversation,
   // owner epoch and checkout) and files its span-cache entries under
   // `review.rowId`, the row id that thread eviction and draft adoption use.
+  const workspace = subject?.workspace ?? null;
+  // A pinned review has no source pane: no thread, no git status to watch.
+  const threadId = $derived(subject?.pinned ? null : (ctx?.threadId ?? null));
+  const gitStatus = $derived(subject?.pinned || !ctx ? null : (getPane(ctx.paneId)?.gitStatus.status ?? null));
   let branches: GitBranch[] = $state([]);
   let branchesError: string | null = $state(null);
   const storedTreeVisible = readTreeVisiblePref();
   let rootEl: HTMLElement | undefined = $state();
   let treeVisible = $state(storedTreeVisible ?? true);
   let jumpFilePath: string | null = $state(null);
+  let diffBody: ReviewDiffBody | undefined = $state();
+  let ciLogView: ReviewCILogView | undefined = $state();
+  const findView = $derived<ReviewFindView>(!review ? 'none' : review.ciLogView ? 'log' : review.conflictView ? 'conflicts' : 'diff');
   let topFileIndex = $state(-1);
-  // The files the diff body renders: the full set, or the extension-
-  // filtered subset when the dropdown's apply-to-diff toggle is on.
+  // The files the diff body renders: the tree's filtered subset (type
+  // chips, hide tests; never the search box), or the full set once the
+  // dropdown's apply-to-diff item is turned off.
   const diffFiles = $derived.by(() => {
     const files = review?.files ?? [];
-    if (!extensionsFilterDiff || activeExtensions.size === 0) return files;
-    return files.filter((file) => activeExtensions.has(fileExtensionLabel(file.path)));
+    if (!filterDiff || (activeExtensions.size === 0 && !hideTests)) return files;
+    return filterReviewFiles(files, '', activeExtensions, hideTests, review?.revealedPaths).files;
   });
   // The tree highlights by index into the FULL file list; the diff body
   // reports indexes into diffFiles — map through the path.
@@ -103,12 +164,14 @@
     if (path === undefined) return -1;
     return (review?.files ?? []).findIndex((file) => file.path === path);
   });
-  const totalAdditions = $derived(
-    diffFiles.reduce((sum, file) => sum + file.additions, 0),
-  );
-  const totalDeletions = $derived(
-    diffFiles.reduce((sum, file) => sum + file.deletions, 0),
-  );
+  // Open comment editors keep the diff list mounted through an empty,
+  // failed or loading diff: their text is the user's.
+  const editorsKept = $derived((review?.openEditors.length ?? 0) > 0);
+  const diffStats = $derived({
+    files: diffFiles.length,
+    additions: diffFiles.reduce((sum, file) => sum + file.additions, 0),
+    deletions: diffFiles.reduce((sum, file) => sum + file.deletions, 0),
+  });
   const collapsibleFileCount = $derived(
     review
       ? (review.conflictView ? (review.conflicts?.paths.length ?? 0) : review.files.length)
@@ -118,21 +181,22 @@
   const commentCounts = $derived(
     review ? countReviewComments({ prThreads: review.prThreads, drafts: review.drafts }) : EMPTY_COUNTS,
   );
-  const tally = $derived(commentCounts.tally);
-  const tallyLabel = $derived.by(() => {
-    const parts: string[] = [];
-    if (tally.unresolved > 0) parts.push(`${tally.unresolved} unresolved`);
-    if (tally.drafts > 0) parts.push(`${tally.drafts} ${tally.drafts === 1 ? 'draft' : 'drafts'}`);
-    if (parts.length === 0) parts.push(`${tally.total} ${tally.total === 1 ? 'comment' : 'comments'}`);
-    return parts.join(' · ');
-  });
+  // The picked commit or run, when the list holds it (branch and pr scope).
+  const selectedAt = $derived(commitSelectionIndexes(review?.commits ?? [], review?.selectedCommits ?? null));
+  const selectedCommit = $derived(selectedAt && selectedAt.newer === selectedAt.older ? (review?.commits[selectedAt.newer] ?? null) : null);
+  const selectedRun = $derived(selectedAt && selectedAt.newer !== selectedAt.older ? (review?.commits.slice(selectedAt.newer, selectedAt.older + 1) ?? null) : null);
 
-  // The overview (Description + Conversation) is the diff list's first
-  // row in PR scope; it exists when there is anything to put in it.
-  const overviewShown = $derived(
-    review?.scope === 'pr' && review.prDetail !== null
-      && (review.prDetail.body !== '' || review.prThreads.length + review.prDetail.latestReviews.length > 0),
-  );
+  // The diff list's first row: the picked commit's card (its subject,
+  // author and message live there, not in the toolbar); else, in PR
+  // scope, the overview (Merge + Description + Conversation): the Merge
+  // section always has something to say about a PR, so the row exists
+  // for every one; else nothing.
+  const leadRow = $derived.by((): ReviewLeadRow | null => {
+    if (selectedCommit || selectedRun) return 'commit';
+    if (review?.scope === 'pr' && review.prDetail !== null) return 'overview';
+    return null;
+  });
+  const overviewShown = $derived(leadRow === 'overview');
   // True once the overview row has scrolled off the top: the title bar
   // then shows peek buttons back to it.
   let overviewOff = $state(false);
@@ -144,7 +208,6 @@
   });
 
   $effect(() => {
-    const workspace = ctx.workspace;
     const scope = review?.scope;
     if (!workspace || scope !== 'branch') return;
     let cancelled = false;
@@ -164,32 +227,35 @@
     };
   });
 
+  // A pinned state is the page's retention to dispose, not this mount's:
+  // the companion registry never holds one, so this leaves it alone.
   onDestroy(() => {
     if (review) disposeReviewStateForPane(sourcePaneId, review);
   });
 
-  function setScope(value: string): void {
-    if (!review || !isReviewScope(value)) return;
-    void review.setScope(value);
-  }
-
-  function setCommit(value: string): void {
-    if (!review) return;
-    void review.selectCommit(value || null);
-  }
-
-  function setBaseBranch(value: string): void {
-    if (!review) return;
-    void review.setScope('branch', { baseBranch: value });
-  }
+  // Escape anywhere in the pane cancels a Move waiting for its line.
+  $effect(() => {
+    const root = rootEl;
+    if (!root) return;
+    const onKeydown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented || review?.armedEditorId == null) return;
+      event.preventDefault();
+      review.cancelEditorMove();
+    };
+    root.addEventListener('keydown', onKeydown);
+    return () => root.removeEventListener('keydown', onKeydown);
+  });
 
   function toggleTree(): void {
     treeVisible = !treeVisible;
     appStorageSet('reviewTreeVisible', treeVisible ? 'true' : 'false');
   }
 
+  // On the phone the open tree covers the diff, so picking a file is also
+  // the way back to it.
   function jumpToFile(filePath: string): void {
     jumpFilePath = filePath;
+    if (isCompactLayout() && treeVisible) toggleTree();
   }
 
   function onJumpConsumed(): void {
@@ -197,39 +263,45 @@
     review?.consumePendingJumpFilePath();
   }
 
-  function isReviewScope(value: string): value is ReviewScope {
-    return value === 'workspace' || value === 'branch' || value === 'pr' || value === 'edits';
+  // Where a new comment's or a draft's suggestion reads the lines it
+  // replaces: its new-side line or range in the PR's current diff.
+  function spanSource(span: NewSideSpan | null): SuggestionSource | null {
+    return span ? (review?.suggestions.lineSource(span.path, span.from, span.to) ?? null) : null;
+  }
+  function editorSource(editor: EditorRow): SuggestionSource | null {
+    return spanSource(editorNewSideSpan(editor));
+  }
+  // `Suggest change` where the editor's lines are in the diff: it reads
+  // their text when pressed.
+  function suggestFor(editor: EditorRow): (() => Promise<string[] | null>) | null {
+    const source = editorSource(editor);
+    return source ? () => readNewSideLines(source.file, source.from, source.to) : null;
   }
 
-  function setEdit(value: string): void {
-    if (!review) return;
-    void review.selectEdit(value || null);
+  // In a head-ending run an editor posts now only on a PR line.
+  function editorLineComment(editor: EditorRow): { target: string; reason: string | null } | null {
+    return editor.anchor ? (review?.lineComment(editor.anchor) ?? null) : null;
+  }
+  function postFor(editor: EditorRow): { primary: 'now' | 'draft'; withheld: string | null } | null {
+    if (!review?.canPostNow) return null;
+    const line = editorLineComment(editor);
+    if (line && line.target !== 'pr') return null;
+    return { primary: review.primaryCommentAction, withheld: review.nowWithheldReason };
   }
 
-  // Edits selector groups: ascending turn order; each group offers the
-  // whole-turn option first, then every edit — including single-edit
-  // turns, so a pinned `item:` selection always has a matching option.
-  const editGroups = $derived.by(() => {
-    if (!review || review.scope !== 'edits') return [];
-    const groups = new Map<number, typeof review.edits[number][]>();
-    for (const entry of review.edits) {
-      const group = groups.get(entry.turnIndex);
-      if (group) group.push(entry);
-      else groups.set(entry.turnIndex, [entry]);
-    }
-    return [...groups.entries()].map(([turnIndex, entries]) => ({
-      turnIndex,
-      label: review.editTurnLabels.get(turnIndex) ?? `Turn ${turnIndex}`,
-      entries,
-    }));
+  // Copy link to line: the PR's whole diff (All commits) only, the one
+  // the forge's diff page shows; a picked commit's or run's numbers are
+  // not that page's.
+  let lineMenu: ReviewLineMenu | undefined = $state();
+  const lineLinkTarget = $derived.by(() => {
+    const forge = review?.prRef?.forge;
+    const url = review?.prDetail?.url ?? '';
+    if (review?.scope !== 'pr' || review.selectedCommitSHA || !url || (forge !== 'github' && forge !== 'gitlab')) return null;
+    return { forge, url } as const;
   });
-
-  // Native <select> popups size to their longest option with no CSS
-  // truncation available, so unbounded label text (a pathological
-  // commit subject) must be capped before render. Edits-scope labels
-  // arrive pre-capped from Go (editSelectorLabel).
-  function capOptionLabel(label: string): string {
-    return label.length > 80 ? `${label.slice(0, 77).trimEnd()}...` : label;
+  function openLineMenu(event: MouseEvent, path: string, lineIndex: number): boolean {
+    const file = diffFiles.find((candidate) => candidate.path === path);
+    return file ? (lineMenu?.open(event, file, lineIndex) ?? false) : false;
   }
 
   function commentById(commentId: string): DiffReviewComment | null {
@@ -242,351 +314,45 @@
     if (raw === 'false') return false;
     return null;
   }
-
-  // ------------------------------------------------------------------
-  // Working-tree staleness hint
-  // ------------------------------------------------------------------
-  // The source chat pane already owns a live gitwatch slot; reading its
-  // status here costs nothing extra. A signature captured when the diff
-  // finished loading, diverging from the live one, means the loaded
-  // patch no longer matches the working tree — surfaced as a dot on the
-  // refresh button, NEVER as an automatic reload (the diff must not
-  // move under the reader).
-  function gitStatusSignature(status: GitStatus | null): string | null {
-    if (!status?.isRepo) return null;
-    return [
-      status.branch,
-      status.fileCount,
-      status.insertions,
-      status.deletions,
-      status.aheadCount,
-      status.behindCount,
-    ].join(':');
-  }
-
-  const liveGitSignature = $derived(
-    gitStatusSignature(getPane(ctx.paneId)?.gitStatus.status ?? null),
-  );
-  let loadedGitSignature = $state<string | null>(null);
-  let wasLoading = false;
-  $effect(() => {
-    const loading = review?.loading ?? false;
-    const live = liveGitSignature;
-    untrack(() => {
-      if (wasLoading && !loading) {
-        // A load just completed: the diff corresponds to this status.
-        loadedGitSignature = live;
-      } else if (loadedGitSignature === null && live !== null) {
-        // The diff loaded before the gitwatch slot produced its first
-        // status; adopt it as the baseline instead of flagging stale.
-        loadedGitSignature = live;
-      }
-      wasLoading = loading;
-    });
-  });
-  const WORKTREE_SCOPES: readonly ReviewScope[] = ['workspace', 'branch'];
-  const diffStale = $derived(
-    !!review && !review.loading && !review.conflictView
-      && WORKTREE_SCOPES.includes(review.scope)
-      && loadedGitSignature !== null && liveGitSignature !== null
-      && liveGitSignature !== loadedGitSignature,
-  );
 </script>
 
 <section bind:this={rootEl} class="flex h-full min-h-0 flex-col bg-surface-1" data-testid="review-pane">
-  <div class="flex shrink-0 items-center gap-2 compact:flex-wrap border-b border-border-subtle px-3 py-2">
-    <select
-      class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
-      aria-label="Review scope"
-      data-testid="review-scope-select"
-      value={review?.scope ?? 'workspace'}
-      onchange={(event) => setScope(event.currentTarget.value)}
-      disabled={!review}
-    >
-      {#if ctx.workspace}
-        <option value="workspace">Workspace</option>
-        <option value="branch">Branch</option>
-      {/if}
-      {#if ctx.threadId}
-        <option value="edits">Edits</option>
-      {/if}
-      {#if review?.prRef}
-        <option value="pr">{review.prScopeLabel ?? 'PR'}</option>
-      {/if}
-    </select>
-
-    {#if review?.scope === 'branch'}
-      <select
-        class="min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
-        aria-label="Base branch"
-        data-testid="review-base-branch-select"
-        value={review.baseBranch ?? ''}
-        onchange={(event) => setBaseBranch(event.currentTarget.value)}
-        disabled={review.loading}
-      >
-        {#if review.baseBranch && !branches.some((branch) => branch.name === review.baseBranch)}
-          <option value={review.baseBranch}>{review.baseBranch}</option>
-        {/if}
-        {#each branches as branch (branch.name)}
-          <option value={branch.name}>{branch.name}</option>
-        {/each}
-      </select>
-    {/if}
-
-    {#if review && (review.scope === 'branch' || review.scope === 'pr') && review.commits.length > 0}
-      <select
-        class="min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
-        aria-label="Commit"
-        data-testid="review-commit-select"
-        value={review.selectedCommitSHA ?? ''}
-        onchange={(event) => setCommit(event.currentTarget.value)}
-        disabled={review.loading}
-      >
-        <option value="">All commits</option>
-        {#each review.commits as commit (commit.sha)}
-          <option value={commit.sha}>{commit.shortSha} {capOptionLabel(commit.subject)}</option>
-        {/each}
-      </select>
-    {/if}
-
-    {#if review && review.scope === 'edits' && editGroups.length > 0}
-      <select
-        class="min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
-        aria-label="Edit"
-        data-testid="review-edit-select"
-        value={review.selectedEditKey ?? ''}
-        onchange={(event) => setEdit(event.currentTarget.value)}
-        disabled={review.loading}
-      >
-        {#each editGroups as group (group.turnIndex)}
-          <optgroup label={group.label}>
-            <option value={`turn:${group.turnIndex}`}>
-              All edits in turn ({group.entries.length})
-            </option>
-            {#each group.entries as entry (entry.itemId)}
-              <option value={`item:${entry.itemId}`}>{entry.title} +{entry.insertions} −{entry.deletions}</option>
-            {/each}
-          </optgroup>
-        {/each}
-      </select>
-    {/if}
-
-    <div class="min-w-0 flex-1 truncate text-right text-[0.6875rem] tabular-nums text-fg-muted">
-      {#if review && !review.conflictView}
-        {#if review.scope === 'pr' && review.prDetail}
-          <span data-testid="review-pr-meta">
-            <span class="rounded border border-border-subtle px-1.5 py-0.5">{review.prDetail.draft ? 'draft' : review.prDetail.state}</span>
-            <span class="ml-1.5">{review.prDetail.baseRefName} ← {review.prDetail.headRefName}</span>
-          </span>
-        {/if}
-        {#if diffFiles.length > 0}
-          <span data-testid="review-diff-stats" class="ml-2">
-            {diffFiles.length} {diffFiles.length === 1 ? 'file' : 'files'}
-            {#if totalAdditions > 0}<span class="text-success">+{totalAdditions}</span>{/if}
-            {#if totalDeletions > 0}<span class="text-error">-{totalDeletions}</span>{/if}
-          </span>
-        {/if}
-        {#if tally.total > 0 && overviewShown}
-          <button
-            type="button"
-            class="ml-2 rounded border border-border-subtle px-1.5 py-0.5 text-fg-muted hover:text-fg"
-            title="Open the conversation"
-            data-testid="review-comment-tally"
-            onclick={() => review?.jumpToOverview('conversation')}
-          >
-            {tallyLabel}
-          </button>
-        {:else if tally.total > 0}
-          <span class="ml-2 text-fg-muted" data-testid="review-comment-tally">{tallyLabel}</span>
-        {/if}
-      {/if}
-    </div>
-
-    <button
-      type="button"
-      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {treeVisible ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
-      aria-label="Toggle file tree"
-      aria-pressed={treeVisible}
-      title="File tree"
-      data-testid="review-tree-toggle"
-      disabled={!review}
-      onclick={toggleTree}
-    >
-      <Icon icon={ListTree} size={14} />
-    </button>
-
-    <button
-      type="button"
-      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.viewMode === 'split' ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
-      aria-label="Toggle split view"
-      aria-pressed={review?.viewMode === 'split'}
-      title="Split view"
-      data-testid="review-split-toggle"
-      disabled={!review}
-      onclick={() => review?.setViewMode(review.viewMode === 'split' ? 'stacked' : 'split')}
-    >
-      <Icon icon={Columns2} size={14} />
-    </button>
-
-    <button
-      type="button"
-      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.wordWrap ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
-      aria-label="Toggle word wrap"
-      aria-pressed={review?.wordWrap}
-      title="Word wrap"
-      data-testid="review-wrap-toggle"
-      disabled={!review}
-      onclick={() => review?.setWordWrap(!review.wordWrap)}
-    >
-      <Icon icon={WrapText} size={14} />
-    </button>
-
-    <button
-      type="button"
-      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.ignoreWhitespace ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
-      aria-label="Toggle hide whitespace changes"
-      aria-pressed={review?.ignoreWhitespace}
-      title={review && !review.canIgnoreWhitespace
-        ? 'Hide whitespace changes — not available for this diff'
-        : 'Hide whitespace changes'}
-      data-testid="review-ignore-whitespace-toggle"
-      disabled={!review || !review.canIgnoreWhitespace || review.loading}
-      onclick={() => { void review?.setIgnoreWhitespace(!review.ignoreWhitespace); }}
-    >
-      <Icon icon={Pilcrow} size={14} />
-    </button>
-
-    <button
-      type="button"
-      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
-      aria-label={review?.allCollapsed ? 'Expand all files' : 'Collapse all files'}
-      title={review?.allCollapsed ? 'Expand all files' : 'Collapse all files'}
-      data-testid="review-collapse-all-toggle"
-      disabled={!review || !!review.ciLogView || collapsibleFileCount === 0}
-      onclick={() => { void review?.toggleCollapseAll(); }}
-    >
-      <Icon icon={review?.allCollapsed ? ChevronsUpDown : ChevronsDownUp} size={14} />
-    </button>
-
-    {#if review?.scope === 'pr'}
-      <button
-        type="button"
-        class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
-        aria-label="Refresh PR comments"
-        title="Refresh comments (diff stays put)"
-        data-testid="review-refresh-comments"
-        disabled={review.refreshingPRData || review.loading}
-        onclick={() => { void review?.refreshPRThreads(); }}
-      >
-        {#if review.refreshingPRData}
-          <Icon icon={RefreshCw} size={14} class="animate-spin" />
-        {:else}
-          <Icon icon={MessagesSquare} size={14} />
-        {/if}
-      </button>
-    {/if}
-
-    <button
-      type="button"
-      class="relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
-      aria-label="Reload review diff"
-      title={diffStale ? 'Workspace changed — reload' : 'Reload'}
-      data-testid="review-reload"
-      data-stale={diffStale ? 'true' : undefined}
-      disabled={!review || review.loading}
-      onclick={() => { void review?.reload(); }}
-    >
-      <Icon icon={RefreshCw} size={14} class={review?.loading ? 'animate-spin' : ''} />
-      {#if diffStale}
-        <span
-          class="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-warning ring-2 ring-surface-1"
-          data-testid="review-stale-dot"
-          aria-hidden="true"
-        ></span>
-      {/if}
-    </button>
-
-    <!-- Close sits past a divider so it reads as "leave", not as one more
-         view toggle in the run. Same close the header badge / chord perform;
-         it exists because re-clicking the badge is not discoverable. -->
-    <span class="h-[18px] w-px shrink-0 bg-border-subtle" aria-hidden="true"></span>
-    <button
-      type="button"
-      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg"
-      aria-label="Close review pane"
-      title="Close review pane"
-      data-testid="review-close"
-      onclick={() => ctx.close()}
-    >
-      <Icon icon={X} size={14} />
-    </button>
-  </div>
+  <ReviewToolbar
+    {review}
+    {workspace}
+    {threadId}
+    {branches}
+    {gitStatus}
+    stats={diffStats}
+    {collapsibleFileCount}
+    onClose={ctx ? () => ctx?.close() : undefined}
+  />
+  {#if findKey && review}
+    <ReviewPaneFind
+      {findKey}
+      title="Review"
+      {review}
+      view={findView}
+      files={findView === 'conflicts' ? review.conflictFiles : diffFiles}
+      root={rootEl}
+      diff={() => diffBody}
+      log={() => ciLogView}
+    />
+  {/if}
 
   {#if !review}
-    <div class="p-3 text-sm text-fg-muted">No thread selected.</div>
+    <div class="p-3 text-sm text-fg-muted" data-testid="review-no-subject">{subjectError ?? 'No thread selected.'}</div>
   {:else}
     <!-- A render throw below this point (a keyed-each collision, a row
          model that cannot build) used to abort the flush mid-branch and
          leave whatever DOM the previous branch had — "Loading…" with a
          fully loaded store and nothing on screen to say why. -->
     <RenderBoundary label="The review pane" testId="review-render-error">
-    {#if review.error}
-      <!-- A failed refresh keeps the diff it was refreshing below this
-           banner; Retry runs the same load again. -->
-      <div class="flex items-start justify-between gap-3 border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-error">
-        <span class="max-h-32 min-w-0 overflow-y-auto whitespace-pre-wrap break-words" data-testid="review-error-message">{review.error}</span>
-        <button
-          type="button"
-          class="shrink-0 rounded border border-error/40 px-2 py-0.5 disabled:opacity-50"
-          disabled={review.loading}
-          onclick={() => { void review?.reload(); }}
-          data-testid="review-error-retry"
-        >Retry</button>
-      </div>
-    {/if}
-    {#if branchesError && review.scope === 'branch'}
-      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-branches-error">
-        {branchesError}
-      </div>
-    {/if}
-    {#if review.submitError}
-      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-submit-error">
-        {review.submitError}
-      </div>
-    {/if}
-    {#if review.conflictsError}
-      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-conflicts-error">
-        {review.conflictsError}
-      </div>
-    {/if}
-    {#if review.prUpdateError}
-      {@const failure = review.prUpdateFailure}
-      {#if failure?.kind === 'rate_limited'}
-        <div class="border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-rate-limited">
-          {rateLimitMessage(review.prRef?.forge, failure)}
-        </div>
-      {:else if failure?.kind === 'setup'}
-        <!-- A login to fix outside the app: the message names it, and no
-             retry will change it until the user does. -->
-        <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-pr-setup">
-          {review.prUpdateError}
-        </div>
-      {:else}
-        <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-pr-update-error">
-          Retrying: {review.prUpdateError}
-        </div>
-      {/if}
-    {/if}
-    {#if review.prStale}
-      <div class="flex items-center justify-between gap-3 border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-stale">
-        <span>PR updated.</span>
-        <button type="button" class="rounded border border-warning/40 px-2 py-0.5" onclick={() => { void review?.reload(); }}>Reload</button>
-      </div>
-    {/if}
+    <ReviewPaneBanners {review} {branchesError} />
     {#if review.scope === 'pr' && review.prDetail}
       <ReviewPRTitleBar
         detail={review.prDetail}
-        hasWorkspace={ctx.workspace !== null}
+        hasWorkspace={workspace !== null}
         onViewConflicts={() => { void review?.openConflictView(); }}
         ciPipeline={review.ciPipeline}
         ciLoading={review.ciLoading}
@@ -596,12 +362,14 @@
         forge={review.prRef?.forge}
         onOpenCIJob={(stageName, job) => review?.openCIJobLog(stageName, job)}
         onRefreshCI={() => { void review?.refreshCI(); }}
+        ciActions={review.ciActions}
         {review}
-        {overviewOff}
+        overviewOff={overviewShown && overviewOff}
       />
     {/if}
     {#if review.ciLogView}
       <ReviewCILogView
+        bind:this={ciLogView}
         view={review.ciLogView}
         log={review.ciLog}
         fetchLines={(from, count) => review?.readCILogLines(from, count) ?? Promise.reject(new Error('No CI job log is open.'))}
@@ -614,38 +382,16 @@
         onBack={() => review?.closeCILogView()}
         onRefresh={() => review?.refreshCILog()}
         onSave={() => { void review?.saveCILog(); }}
-        onSend={() => { void review?.sendCILogToChat(); }}
+        onSend={review.pinned ? undefined : () => { void review?.sendCILogToChat(); }}
         onToggleSection={(sectionKey) => review?.toggleCILogSection(sectionKey)}
         onSetSectionsOpen={(sectionKeys, open) => review?.setCILogSectionsOpen(sectionKeys, open)}
         onCopySection={(section) => review?.copyCILogSection(section) ?? Promise.resolve(false)}
-        onSendSection={(section) => { void review?.sendCILogSectionToChat(section); }}
+        onSendSection={review.pinned ? undefined : (section) => { void review?.sendCILogSectionToChat(section); }}
+        actions={review.ciActions}
+        retriedFrom={review.ciLogRetriedFrom}
       />
     {:else if review.conflictView}
-      <div class="flex items-center justify-between gap-3 border-b border-border bg-surface-1 px-3 py-2 text-xs">
-        <span class="min-w-0 truncate text-fg-muted">
-          {#if review.conflicts}
-            Conflicts: {review.conflicts.baseLabel} ← {review.conflicts.headLabel} — read-only
-          {:else}
-            Conflicts — read-only
-          {/if}
-        </span>
-        <button
-          type="button"
-          class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
-          onclick={() => review?.closeConflictView()}
-        >
-          Back
-        </button>
-      </div>
-      {#if review.conflicts && review.conflicts.messages.length > 0}
-        <!-- Fallback only: per-file messages render as note rows inside
-             their file's body; this strip carries the rare merge-tree
-             message that names no conflicted path. -->
-        <div
-          class="max-h-28 overflow-y-auto border-b border-warning/30 bg-warning/5 px-3 py-2 font-mono text-[0.6875rem] leading-relaxed text-fg-muted whitespace-pre-wrap"
-          data-testid="review-conflict-messages"
-        >{review.conflicts.messages.join('\n')}</div>
-      {/if}
+      <ReviewConflictHeader {review} />
       {#if review.conflictsLoading && review.conflictFiles.length === 0}
         <div class="px-4 py-3 text-xs text-fg-muted">Loading…</div>
       {:else if review.conflicts && review.conflicts.paths.length === 0}
@@ -658,6 +404,7 @@
                draft editors, or PR thread rows. The tree is hidden here to
                keep the conflict surface scoped to the marker-bearing files. -->
           <ReviewDiffBody
+            bind:this={diffBody}
             subjectId={review.identity}
             spanOwner={review.rowId}
             scope={`${review.scope}:conflicts`}
@@ -677,39 +424,58 @@
           />
         </div>
       {/if}
-    {:else if review.loading && review.files.length === 0}
+    {:else if review.loading && review.files.length === 0 && !editorsKept}
       <div class="px-4 py-3 text-xs text-fg-muted">Loading…</div>
-    {:else if review.files.length === 0 && review.awaitingPR}
+    {:else if review.files.length === 0 && review.awaitingPR && !editorsKept}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-awaiting-pr">Waiting for the {forgeLabels(review.prRef?.forge).longSingular.toLowerCase()}…</div>
-    {:else if review.files.length === 0 && review.error}
+    {:else if review.files.length === 0 && review.error && !editorsKept}
       <!-- Nothing loaded: the banner above says why. An empty diff is not
            what the load found. -->
-    {:else if review.files.length === 0}
+    {:else if review.files.length === 0 && !overviewShown && !editorsKept}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-empty">No changed files.</div>
     {:else}
-      <div class="flex min-h-0 flex-1">
-        {#if treeVisible}
+      <!-- Relative: on the phone the open rail lays over the diff. The
+           overview (Merge, Description, Conversation) leads the list for
+           every PR, with no file rows under it when the diff is empty or
+           the filter hides every file; the rail stays while there are
+           files to unhide. -->
+      <div class="relative flex min-h-0 flex-1">
+        {#if review.files.length > 0}
           <ReviewRail
+            bind:this={rail}
             files={review.files}
             activeFileIndex={treeActiveFileIndex}
             onSelectFile={jumpToFile}
             commentCounts={commentCounts.byFile}
+            open={treeVisible}
+            onToggleOpen={toggleTree}
             {activeExtensions}
-            filterDiff={extensionsFilterDiff}
-            onFilterDiffChange={(value) => { extensionsFilterDiff = value; }}
+            {hideTests}
+            onHideTestsChange={(value) => { hideTests = value; }}
+            {filterDiff}
+            onFilterDiffChange={(value) => { filterDiff = value; }}
+            revealedPaths={review.revealedPaths}
+            onFilterSelectionChange={() => review?.clearRevealedPaths()}
           />
         {/if}
-        {#if diffFiles.length === 0}
-          <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-filter-empty">
-            No files match the type filter.
-          </div>
-        {:else}
-        {#snippet overviewRow()}
-          {#if review?.prDetail}
-            <ReviewOverview {review} detail={review.prDetail} />
+        {#snippet leadRowContent()}
+          {#if selectedCommit}
+            <ReviewCommitCard commit={selectedCommit} ordinal={commitOrdinal(selectedAt?.newer ?? 0, review?.commitsTotal ?? null)} total={review?.commitsTotal ?? null} />
+          {:else if selectedRun}
+            <ReviewRangeCard
+              commits={selectedRun}
+              olderIndex={selectedAt?.older ?? 0}
+              total={review?.commitsTotal ?? null}
+              onLeave={() => { void review?.selectCommits(null, { userInitiated: true }); }}
+              indexError={review?.headRange && review.prDiffIndexState === 'failed' ? review.prDiffIndexError : null}
+              onRetryIndex={() => review?.retryPRDiffIndex()}
+            />
+          {:else if review?.prDetail}
+            <ReviewOverview {review} detail={review.prDetail} hasWorkspace={workspace !== null} />
           {/if}
         {/snippet}
         <ReviewDiffBody
+          bind:this={diffBody}
           subjectId={review.identity}
           spanOwner={review.rowId}
           scope={review.scope}
@@ -720,28 +486,53 @@
           painted={review.paintedSpans}
           collapsedPaths={review.collapsedPaths}
           onToggleCollapsed={review.toggleCollapsed}
-          drafts={review.drafts}
+          drafts={review.shownDrafts}
+          mediaHost={review.mediaHost}
           openEditors={review.openEditors}
-          prThreads={review.prThreads}
+          prThreads={review.shownPRThreads}
           expandedPRThreadIds={review.expandedPRThreadIds}
-          onAddComment={ctx.threadId && !operateUngranted ? (anchor) => review?.openDraftEditor(anchor) : undefined}
+          generation={review.shownGeneration}
+          onAddComment={review.canDraftComments && review.commentsGranted ? (anchor, generation) => review?.openDraftEditor(anchor, generation) : undefined}
+          onExtendRange={review.canDraftComments && review.commentsGranted && review.canPostNow && !review.headRange ? (anchor, generation) => review?.extendEditorRange(anchor, generation) : undefined}
+          lineComment={review.headRange ? (anchor) => review?.lineComment(anchor) ?? null : undefined}
+          onLineMenu={lineLinkTarget ? openLineMenu : undefined}
+          rangesFor={(path) => review?.rangeTintsFor(path) ?? []}
           onExpandGap={(path, gap, dir) => { void review?.expandDiffContext(path, gap, dir); }}
           jumpToFilePath={jumpFilePath ?? review.pendingJumpFilePath}
           onJumpConsumed={onJumpConsumed}
           jumpToRowKey={review.pendingJumpRowKey}
           onJumpRowConsumed={() => review?.consumePendingJumpRowKey()}
           onTopFileChange={(fileIndex) => { topFileIndex = fileIndex; }}
-          overview={overviewShown ? overviewRow : undefined}
+          overview={leadRow ? leadRowContent : undefined}
+          overviewLead={leadRow ?? 'overview'}
           onOverviewOffChange={(off) => { overviewOff = off; }}
         >
-          {#snippet draftEditor(anchor)}
+          {#snippet empty()}
+            {#if review?.files.length === 0}
+              <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-empty">No changed files.</div>
+            {:else}
+              <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-filter-empty">No files match the filter.</div>
+            {/if}
+          {/snippet}
+          {#snippet draftEditor(editor)}
             <ReviewDraftEditor
-              {anchor}
-              body={review?.draftBodyFor(anchor) ?? ''}
-              onBodyChange={(nextAnchor, body) => review?.setDraftBody(nextAnchor, body)}
-              onCancel={(nextAnchor) => review?.closeDraftEditor(nextAnchor)}
-              onSubmit={(nextAnchor, body) => review?.createComment(nextAnchor, body)}
-              consumeFocus={(nextAnchor) => review?.consumeDraftEditorFocus(nextAnchor) ?? false}
+              {editor}
+              body={review?.draftBodyFor(editor.id) ?? ''}
+              onBodyChange={(editorId, body) => review?.setDraftBody(editorId, body)}
+              onCancel={(editorId) => review?.closeDraftEditor(editorId)}
+              onSubmit={(editorId, body, mode) => review?.createComment(editorId, body, mode)}
+              post={postFor(editor)}
+              agentOnlyReason={editorLineComment(editor)?.reason ?? null}
+              pending={review?.commentWritePending(commentWriteKey.editor(editor.id)) ?? false}
+              error={review?.commentWriteError(commentWriteKey.editor(editor.id)) ?? null}
+              onDropRange={(editorId) => review?.dropEditorRange(editorId)}
+              consumeFocus={(editorId) => review?.consumeDraftEditorFocus(editorId) ?? false}
+              onUseLine={(editorId, seen) => review?.useSuggestedLine(editorId, seen) ?? false}
+              onMove={(editorId) => review?.moveEditor(editorId)}
+              onCancelMove={() => review?.cancelEditorMove()}
+              preview={review?.editorPreviews.control(commentWriteKey.editor(editor.id)) ?? null}
+              previewSource={editorSource(editor)}
+              suggest={review?.canPostNow && review.suggestions.available ? suggestFor(editor) : null}
             />
           {/snippet}
           {#snippet commentThread(threadKey, _anchor, pulse)}
@@ -751,8 +542,12 @@
                 {comment}
                 {pulse}
                 orphaned={review?.orphanedDraftIds().has(comment.id) ?? false}
+                editBody={review?.draftEditBodyFor(comment.id) ?? null}
+                onEditBodyChange={(commentId, body) => review?.setDraftEditBody(commentId, body)}
                 onUpdate={(commentId, body) => review?.updateComment(commentId, body)}
                 onDelete={(commentId) => review?.deleteComment(commentId)}
+                preview={review?.editorPreviews.control(EDITOR_PREVIEW_KEY.draftEdit(comment.id)) ?? null}
+                previewSource={spanSource(draftNewSideSpan(comment))}
               />
             {/if}
           {/snippet}
@@ -764,79 +559,33 @@
               {orphaned}
               {pulse}
               body={review?.replyBodyFor(thread.id) ?? ''}
+              replying={review?.replyOpen(thread.id, 'diff') ?? false}
               error={review?.replyErrorFor(thread.id) ?? null}
               sending={review?.sendingReply(thread.id) ?? false}
               resolving={review?.resolvingThread(thread.id) ?? false}
               resolveError={review?.resolveErrorFor(thread.id) ?? null}
               onToggle={() => review?.togglePRThread(thread.id)}
               onBodyChange={(body) => review?.setReplyBody(thread.id, body)}
+              onOpenReply={() => review?.openReply(thread.id, 'diff')}
+              onCloseReply={() => review?.closeReply(thread.id, 'diff')}
               onSendReply={() => review?.sendPRThreadReply(thread)}
               onResolve={thread.isResolvable
                 ? (resolved) => { void review?.setPRThreadResolved(thread, resolved); }
                 : undefined}
-              onJumpToConversation={review?.scope === 'pr' && review.prDetail
+              onJumpToConversation={overviewShown
                 ? () => review?.jumpToConversationThread(thread.id)
                 : undefined}
+              {review}
             />
           {/snippet}
         </ReviewDiffBody>
-        {/if}
       </div>
     {/if}
-    {#if !review.conflictView && review.drafts.length > 0}
-      <section class="border-t border-border bg-surface-1/85 px-3 py-2" aria-label="Review comments" data-testid="review-send-strip">
-        <div class="flex items-center justify-between gap-3">
-          <div class="text-[0.6875rem] font-medium uppercase tracking-[0.08em] text-fg-muted">
-            {review.drafts.length} {review.drafts.length === 1 ? 'draft' : 'drafts'}
-          </div>
-          <div class="flex items-center gap-2">
-            {#if review.scope === 'pr' && !review.selectedCommitSHA}
-              <!-- Single-commit view: drafts anchor to that commit's diff,
-                   not the PR head diff — PR submission would mis-place
-                   them, so the only target is the linked agent. -->
-              <select
-                class="rounded border border-border-subtle bg-surface-0 px-2 py-1 text-[0.6875rem]"
-                value={review.submitTarget}
-                onchange={(event) => review?.setSubmitTarget(event.currentTarget.value === 'pr' ? 'pr' : 'agent')}
-              >
-                <option value="agent">Linked agent</option>
-                <option value="pr">{review.prScopeLabel ?? 'PR'} review</option>
-              </select>
-            {/if}
-            <button
-              type="button"
-              class="rounded border border-accent/45 px-2 py-1 text-[0.6875rem] font-medium text-accent hover:bg-accent/10 disabled:opacity-45"
-              disabled={operateUngranted || review.sendingComments || (review.effectiveSubmitTarget === 'agent' && review.isTurnActive)}
-              title={operateUngranted ? 'Not granted to this device' : review.isTurnActive && review.effectiveSubmitTarget === 'agent' ? 'Send from the chat box while the agent is working' : 'Send comments'}
-              onclick={() => { void (review?.effectiveSubmitTarget === 'pr' ? review?.submitPRReview() : review?.sendComments()); }}
-            >
-              Send comments
-            </button>
-          </div>
-        </div>
-        {#if review.effectiveSubmitTarget === 'pr'}
-          <div class="mt-2 flex flex-wrap items-center gap-2">
-            {#each ['comment', 'approve', 'request-changes'] as nextVerdict}
-              {@const ownPRBlocked = review.prRef?.forge === 'github' && review.prDetail?.viewerIsAuthor && nextVerdict !== 'comment'}
-              <button
-                type="button"
-                class="rounded border px-2 py-1 text-[0.6875rem] transition-colors disabled:cursor-not-allowed disabled:opacity-40 {review.verdict === nextVerdict ? 'border-accent bg-accent/10 text-accent' : 'border-border-subtle text-fg-muted hover:text-fg'}"
-                disabled={ownPRBlocked}
-                title={ownPRBlocked ? 'GitHub rejects approving or requesting changes on your own PR' : ''}
-                onclick={() => review?.setVerdict(nextVerdict as 'comment' | 'approve' | 'request-changes')}
-              >
-                {nextVerdict === 'request-changes' ? 'Request changes' : nextVerdict[0].toUpperCase() + nextVerdict.slice(1)}
-              </button>
-            {/each}
-          </div>
-          <textarea
-            class="mt-2 w-full resize-none rounded border border-border-subtle bg-surface-0 px-2 py-1.5 text-xs"
-            rows="2"
-            value={review.summaryBody}
-            oninput={(event) => review?.setSummaryBody(event.currentTarget.value)}
-          ></textarea>
-        {/if}
-      </section>
+    {#if lineLinkTarget}
+      <ReviewLineMenu bind:this={lineMenu} forge={lineLinkTarget.forge} prUrl={lineLinkTarget.url} />
+    {/if}
+    {#if !review.conflictView && review.sendStripShown}
+      <ReviewSendStrip {review} />
     {/if}
     </RenderBoundary>
   {/if}

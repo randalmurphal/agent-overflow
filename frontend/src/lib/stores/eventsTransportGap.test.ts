@@ -4,6 +4,11 @@
 // tier that holds a stamp, not just the registry.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTransportGap } from './eventsTransportGap';
+import { __setTransportHelloForTest } from './transportStatus.svelte';
+import type { TransportHello } from '../transport/wsClient';
+import { applyShellCommandEvent, getShellRun, resetShellRunsForTest } from './shellCommands.svelte';
+import { prependThread, removeThread } from './threads.svelte';
+import { setPullsReceiver } from './pullsStore.svelte';
 import { resetPanesForTest } from './panes.svelte';
 import {
   registerComposerDraft,
@@ -49,6 +54,7 @@ import { itemEventQueued, itemEventsSettled } from './itemEventSettlement';
 import { __resetSystemsForTest, loadSystems } from './systems.svelte';
 import { resetToLocalPage, pairViewOnly } from '../../test/helpers/scopes';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { onBackendRecovery } from './transportRecovery';
 import { backendById } from '../transport/backends';
 import { __resetManifestBackendsForTest, manifestBackendDescriptors } from '../transport/manifestBackends';
 
@@ -104,6 +110,42 @@ describe('transport gap', () => {
     // The burst shares the read in flight and one read after it.
     await vi.waitFor(() => expect(getBindingMock('ListThreadLiveActivity')).toHaveBeenCalledTimes(4));
     await vi.waitFor(() => expect(getBindingMock('ListThreads')).toHaveBeenCalled());
+  });
+
+  it('re-reads which flushed messages are settled on a sends-pending gap', async () => {
+    const settlement = setBindingMock('ListUnsettledFlushes', async () => ({ flushedThrough: 0, unsettledThreadIds: [] }));
+    const hello: TransportHello = {
+      protocolVersion: 1, capabilities: ['flush-settlement.v1'], backendId: 'home', backendName: 'home', serverTimeMs: 0,
+      clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0, launchId: 'launch-1',
+    };
+    __setTransportHelloForTest(hello);
+    try {
+      applyTransportGap({ channel: 'provider:compacting', seq: 3 });
+      await vi.waitFor(() => expect(getBindingMock('ListThreadLiveActivity')).toHaveBeenCalledTimes(1));
+      expect(settlement).not.toHaveBeenCalled();
+      applyTransportGap({ channel: 'provider:sends_pending', seq: 3 });
+      await vi.waitFor(() => expect(settlement).toHaveBeenCalledTimes(1));
+    } finally {
+      __setTransportHelloForTest(null);
+    }
+  });
+
+  it('re-reads a running composer shell command on a shell:command gap', async () => {
+    // A lost `finished` frame is the only push that would have ended the run
+    // here, so the gap asks the backend whether it is still running.
+    resetShellRunsForTest();
+    prependThread(makeThread({ id: 'gap-shell' }));
+    applyShellCommandEvent({ phase: 'started', threadId: 'gap-shell', runId: 'run-1', command: 'make test', startedAt: 1 });
+    setBindingMock('GetThreadShellCommands', async () => []);
+    try {
+      applyTransportGap({ channel: 'shell:command', seq: 3 });
+      await vi.waitFor(() => expect(getBindingMock('GetThreadShellCommands')).toHaveBeenCalledWith('gap-shell'));
+      await vi.waitFor(() => expect(getShellRun('gap-shell')).toBeNull());
+      expect(getBindingMock('ListThreads')).not.toHaveBeenCalled();
+    } finally {
+      removeThread('gap-shell');
+      resetShellRunsForTest();
+    }
   });
 
   it('coalesces a replay gap burst into one sidebar read but preserves later invalidations', async () => {
@@ -563,3 +605,77 @@ describe('transport gap — computer membership', () => {
     expect(list).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('transport gap — the Pull requests channels', () => {
+  it('holds the computer\'s recovery until the list\'s re-subscribe settles', async () => {
+    const laptop = stageBackend();
+    const phases: string[] = [];
+    const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
+    let done!: () => void;
+    const resync = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    const remove = setPullsReceiver({ pullsGap: () => resync });
+    try {
+      laptop.replay('start');
+      applyTransportGap({ channel: 'pulls:updated', seq: 3 }, { backendId: backendById('laptop')!.backendId });
+      laptop.replay('complete');
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      expect(phases).toEqual(['laptop:start']);
+      done();
+      await vi.waitFor(() => expect(phases).toEqual(['laptop:start', 'laptop:complete']));
+    } finally {
+      remove();
+      off();
+      resetStagedBackends();
+    }
+  });
+
+  it('holds the computer\'s recovery until the pipelines\' re-subscribes settle', async () => {
+    const laptop = stageBackend();
+    const phases: string[] = [];
+    const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
+    let done!: () => void;
+    const resync = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    const remove = setPullsReceiver({ pipelinesGap: () => resync });
+    try {
+      laptop.replay('start');
+      applyTransportGap({ channel: 'ci:pipeline_updated', seq: 3 }, { backendId: backendById('laptop')!.backendId });
+      laptop.replay('complete');
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      expect(phases).toEqual(['laptop:start']);
+      done();
+      await vi.waitFor(() => expect(phases).toEqual(['laptop:start', 'laptop:complete']));
+    } finally {
+      remove();
+      off();
+      resetStagedBackends();
+    }
+  });
+
+  it('reads the list or the pipelines again on their computer', () => {
+    const got: string[] = [];
+    const remove = setPullsReceiver({
+      pullsGap: (backend) => {
+        got.push(`pulls ${backend}`);
+        return undefined;
+      },
+      pipelinesGap: (backend) => {
+        got.push(`pipelines ${backend}`);
+        return undefined;
+      },
+    });
+    try {
+      applyTransportGap({ channel: 'pulls:updated', seq: 3 });
+      applyTransportGap({ channel: 'ci:pipeline_updated', seq: 3 });
+      // A followed log is a PR's or a pipeline's: both are re-sent.
+      applyTransportGap({ channel: 'pr:ci_log', seq: 3 });
+      expect(got).toEqual([`pulls ${HOME_BACKEND}`, `pipelines ${HOME_BACKEND}`, `pipelines ${HOME_BACKEND}`]);
+    } finally {
+      remove();
+    }
+  });
+});
+

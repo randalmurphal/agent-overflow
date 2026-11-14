@@ -6,6 +6,10 @@ import {
   prReferenceWire,
   prScopeLabel,
   prSourceKey,
+  prRefFromWire,
+  repoKey,
+  repoRefFromWire,
+  repoReferenceWire,
 } from './prReference';
 
 describe('parsePRReference — GitHub', () => {
@@ -288,6 +292,22 @@ describe('prKey — the shared PR wire address', () => {
     const mr = prRefFromUrl('gitlab', 'https://gitlab.com/group/sub/repo/-/merge_requests/12', 12);
     if (mr === null) throw new Error('expected a ref');
     expect(prSourceKey(mr)).toBe('pr:gitlab:group/sub/repo:12');
+  });
+
+  // RepoReference.Key in internal/git/repo_reference.go: the PR key
+  // without its number. A job log and a pipeline pump are addressed by it.
+  it.each([
+    [{ forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo' } as const, 'github:owner/repo'],
+    [{ forge: 'gitlab', host: 'gitlab.example.com:8443', namespace: 'group/sub', repo: 'repo' } as const, 'gitlab@gitlab.example.com:8443:group/sub/repo'],
+  ])('repoKey(%o) === %s', (ref, want) => {
+    expect(repoKey(ref)).toBe(want);
+  });
+
+  it('converts wire repositories and PRs, refusing an unknown forge', () => {
+    const wire = { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'group', Repo: 'repo', Number: 7 };
+    expect(prRefFromWire(wire)).toEqual({ forge: 'gitlab', host: 'gitlab.com', namespace: 'group', repo: 'repo', number: 7 });
+    expect(repoReferenceWire(repoRefFromWire(wire)!)).toEqual({ Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'group', Repo: 'repo' });
+    expect(repoRefFromWire({ ...wire, Forge: 'bitbucket' })).toBeNull();
   });
 
   it('prSourceKey is prKey behind the pr: scope prefix', () => {

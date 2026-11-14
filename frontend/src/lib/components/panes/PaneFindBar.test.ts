@@ -1,0 +1,365 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { tick } from 'svelte';
+import PaneFindBar from './PaneFindBar.svelte';
+import {
+  closePaneFind,
+  getPaneFind,
+  openPaneFind,
+  registerPaneFindProvider,
+  resetPaneFindForTest,
+} from '../../stores/paneFind.svelte';
+import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { fakeFilterProvider, fakeFindProvider, type FakeFilterProvider, type FakeFindProvider } from '../../../test/helpers/paneFind.svelte';
+
+let provider: FakeFindProvider;
+let fallback: HTMLElement;
+let fallbackTarget: () => HTMLElement | null;
+
+beforeEach(() => {
+  resetPaneFindForTest();
+  setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 }]);
+  provider = fakeFindProvider();
+  registerPaneFindProvider('a', provider);
+  // Like the panes' scrollers: focusable by script, never a tab stop.
+  fallback = document.createElement('div');
+  fallback.tabIndex = -1;
+  document.body.appendChild(fallback);
+  fallbackTarget = () => fallback;
+});
+
+afterEach(() => {
+  resetPaneFindForTest();
+  resetPaneLayoutForTest();
+  document.body.replaceChildren();
+});
+
+// The status as it is seen: without the words only a screen reader reads.
+function seen(count: HTMLElement): string {
+  const copy = count.cloneNode(true) as HTMLElement;
+  copy.querySelectorAll('.sr-only').forEach((el) => el.remove());
+  return copy.textContent?.trim() ?? '';
+}
+
+function renderBar() {
+  return render(PaneFindBar, { paneId: 'a', title: 'My thread', fallbackFocus: () => fallbackTarget() });
+}
+
+async function openBar(returnFocus: HTMLElement | null = null) {
+  openPaneFind('a', { returnFocus });
+  await tick();
+}
+
+describe('<PaneFindBar>', () => {
+  it('renders nothing until its pane opens find, then a labelled search landmark with a focused input', async () => {
+    const { queryByTestId, getByRole, getByTestId } = renderBar();
+    expect(queryByTestId('pane-find-bar')).toBeNull();
+    await openBar();
+    expect(getByRole('search', { name: 'Find in My thread' })).toBe(getByTestId('pane-find-bar'));
+    const input = getByTestId('pane-find-input') as HTMLInputElement;
+    expect(input.placeholder).toBe('Find in thread');
+    await waitFor(() => expect(document.activeElement).toBe(input));
+  });
+
+  it('shows nothing for an empty query, a spinner while pending, the position, then No results', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    const count = getByTestId('pane-find-count');
+    expect(count.getAttribute('aria-live')).toBe('polite');
+    expect(count.textContent?.trim()).toBe('');
+
+    await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'needle' } });
+    expect(provider.search).toHaveBeenLastCalledWith('needle');
+    provider.set({ pending: true });
+    await tick();
+    expect(count.querySelector('[data-testid="pane-find-spinner"]')).not.toBeNull();
+
+    provider.set({ pending: false, count: 41, current: 2 });
+    await tick();
+    expect(count.textContent?.trim()).toBe('3/41');
+
+    provider.set({ count: 1000, current: 0, capped: true });
+    await tick();
+    expect(count.textContent?.trim()).toBe('1/1000+');
+
+    provider.set({ count: 0, current: -1, capped: false });
+    await tick();
+    expect(count.textContent?.trim()).toBe('No results');
+  });
+
+  it('says found without numbers for a provider that cannot count, and steps through it', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'needle' } });
+    const count = getByTestId('pane-find-count');
+    const next = getByTestId('pane-find-next') as HTMLButtonElement;
+    provider.set({ count: null, current: -1 });
+    await tick();
+    expect(count.textContent?.trim()).toBe('Found');
+    expect(next.disabled).toBe(false);
+    await fireEvent.keyDown(getByTestId('pane-find-input'), { key: 'Enter' });
+    expect(provider.next).toHaveBeenCalledTimes(1);
+
+    provider.set({ count: 0 });
+    await tick();
+    expect(count.textContent?.trim()).toBe('No results');
+    expect(next.disabled).toBe(true);
+  });
+
+  it('shows only the count when the position is unknown past a capped count', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'needle' } });
+    provider.set({ count: 1000, current: -1, capped: true });
+    await tick();
+    expect(getByTestId('pane-find-count').textContent?.trim()).toBe('1000+');
+  });
+
+  it('shows a progressive count beside the spinner while it grows, and a failure in place of the count', async () => {
+    const { getByTestId, queryByTestId } = renderBar();
+    await openBar();
+    const count = getByTestId('pane-find-count');
+    await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'needle' } });
+    provider.set({ pending: true, count: 7, current: -1 });
+    await tick();
+    // A provider that does not grow its count shows the spinner alone.
+    expect([seen(count), count.textContent?.trim()]).toEqual(['', 'Searching']);
+    provider.set({ progressive: true });
+    await tick();
+    expect(count.querySelector('[data-testid="pane-find-spinner"]')).not.toBeNull();
+    expect([seen(count), count.textContent?.trim()]).toEqual(['7', '7, updating']);
+    provider.set({ current: 2 });
+    await tick();
+    expect([seen(count), count.textContent?.trim()]).toEqual(['3/7', '3/7, updating']);
+    provider.set({ pending: false, count: 0, current: -1, error: 'the log is gone' });
+    await tick();
+    expect(getByTestId('pane-find-error').textContent).toBe('Find failed: the log is gone');
+    expect(getByTestId('pane-find-error').getAttribute('role')).toBe('alert');
+    provider.set({ error: null, count: 1, current: 0 });
+    await tick();
+    expect(queryByTestId('pane-find-error')).toBeNull();
+    expect(count.textContent?.trim()).toBe('1/1');
+  });
+
+  it('says a pending count is being recomputed, once, and not again while the same count restarts', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    const count = getByTestId('pane-find-count');
+    await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'needle' } });
+    provider.set({ pending: false, progressive: true, count: 41, current: 2 });
+    await tick();
+    expect(count.textContent?.trim()).toBe('3/41');
+    // A recount: the published count stays, with the words.
+    provider.set({ pending: true });
+    await tick();
+    expect([seen(count), count.textContent?.trim()]).toEqual(['3/41', '3/41, updating']);
+    // The recount restarts (more content changes) with the count unchanged:
+    // the live region does not change, so nothing is announced again.
+    const changes: MutationRecord[] = [];
+    const observer = new MutationObserver((records) => changes.push(...records));
+    observer.observe(count, { childList: true, subtree: true, characterData: true, attributes: true });
+    for (let i = 0; i < 3; i += 1) {
+      provider.set({ pending: false });
+      provider.set({ pending: true, count: 41, current: 2 });
+      await tick();
+    }
+    await Promise.resolve();
+    observer.disconnect();
+    expect(changes).toEqual([]);
+    provider.set({ pending: false, count: 40 });
+    await tick();
+    expect(count.textContent?.trim()).toBe('3/40');
+    expect(getByTestId('pane-find-count').querySelector('[data-testid="pane-find-pending"]')).toBeNull();
+  });
+
+  it('disables stepping at zero results and steps with the buttons', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    const prev = getByTestId('pane-find-previous') as HTMLButtonElement;
+    const next = getByTestId('pane-find-next') as HTMLButtonElement;
+    expect(prev.disabled).toBe(true);
+    expect(next.disabled).toBe(true);
+    provider.set({ count: 2, current: 0 });
+    await tick();
+    expect(prev.disabled).toBe(false);
+    await fireEvent.click(next);
+    await fireEvent.click(prev);
+    expect(provider.next).toHaveBeenCalledTimes(1);
+    expect(provider.previous).toHaveBeenCalledTimes(1);
+  });
+
+  it('Enter steps forward, Shift+Enter back, and IME composition is left alone', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    provider.set({ count: 3, current: 0 });
+    await tick();
+    const input = getByTestId('pane-find-input');
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    await fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(provider.next).toHaveBeenCalledTimes(1);
+    expect(provider.previous).toHaveBeenCalledTimes(1);
+  });
+
+  it('a close clears and returns focus to where it was', async () => {
+    const before = document.createElement('textarea');
+    document.body.appendChild(before);
+    before.focus();
+    const { getByTestId, queryByTestId } = renderBar();
+    await openBar(before);
+    const input = getByTestId('pane-find-input');
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    closePaneFind('a');
+    await tick();
+    expect(queryByTestId('pane-find-bar')).toBeNull();
+    expect(provider.clear).toHaveBeenCalled();
+    await waitFor(() => expect(document.activeElement).toBe(before));
+  });
+
+  // `find.close` decides which find Escape dismisses (builtinCommands tests);
+  // the bar keeps only an IME composition's Escape from reaching it.
+  it('leaves Escape to the find.close command, except one that ends an IME composition', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    const input = getByTestId('pane-find-input');
+    const seen: KeyboardEvent[] = [];
+    const onKey = (event: KeyboardEvent) => seen.push(event);
+    window.addEventListener('keydown', onKey);
+    try {
+      const plain = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      input.dispatchEvent(plain);
+      expect(seen).toEqual([plain]);
+      expect(plain.defaultPrevented).toBe(false);
+      expect(getPaneFind('a')?.open).toBe(true);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true, cancelable: true }));
+      expect(seen).toEqual([plain]);
+    } finally {
+      window.removeEventListener('keydown', onKey);
+    }
+  });
+
+  it('returns focus to the pane when the element it came from is gone', async () => {
+    const before = document.createElement('textarea');
+    document.body.appendChild(before);
+    const { getByTestId } = renderBar();
+    await openBar(before);
+    before.remove();
+    await fireEvent.click(getByTestId('pane-find-close'));
+    await tick();
+    await waitFor(() => expect(document.activeElement).toBe(fallback));
+  });
+
+  it('returns focus to the pane when the element it came from is still there but cannot take focus', async () => {
+    const before = document.createElement('textarea');
+    document.body.appendChild(before);
+    const { getByTestId } = renderBar();
+    await openBar(before);
+    before.disabled = true;
+    await fireEvent.click(getByTestId('pane-find-close'));
+    await tick();
+    await waitFor(() => expect(document.activeElement).toBe(fallback));
+  });
+
+  it('a reopen selects the last query', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'kept' } });
+    closePaneFind('a');
+    await tick();
+    await openBar();
+    const input = getByTestId('pane-find-input') as HTMLInputElement;
+    expect(input.value).toBe('kept');
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 4]);
+  });
+
+  it('Ctrl+F while open refocuses and selects the input', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    const input = getByTestId('pane-find-input') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'again' } });
+    fallback.focus();
+    openPaneFind('a');
+    await tick();
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 5]);
+  });
+});
+
+describe('<PaneFindBar> for a filter', () => {
+  let filter: FakeFilterProvider;
+  let list: HTMLElement;
+  let firstRow: HTMLButtonElement;
+
+  beforeEach(() => {
+    setPaneLayoutItemsForTest([{ id: 'f', paneId: 'f', kind: 'thread', widthPx: 600 }]);
+    list = document.createElement('div');
+    list.tabIndex = -1;
+    firstRow = document.createElement('button');
+    list.appendChild(firstRow);
+    document.body.appendChild(list);
+    filter = fakeFilterProvider('merge requests', () => {
+      firstRow.focus();
+      return document.activeElement === firstRow;
+    });
+    registerPaneFindProvider('f', filter);
+  });
+
+  function renderFilterBar() {
+    return render(PaneFindBar, { paneId: 'f', title: 'Merge requests', fallbackFocus: () => list });
+  }
+
+  it('shows the matching row count and no step buttons', async () => {
+    const { getByTestId, queryByTestId } = renderFilterBar();
+    openPaneFind('f');
+    await tick();
+    expect(getByTestId('pane-find-bar').dataset.findMode).toBe('filter');
+    expect(queryByTestId('pane-find-previous')).toBeNull();
+    expect(queryByTestId('pane-find-next')).toBeNull();
+    expect(getByTestId('pane-find-close')).not.toBeNull();
+    expect((getByTestId('pane-find-input') as HTMLInputElement).placeholder).toBe('Filter merge requests');
+    const count = getByTestId('pane-find-count');
+    expect(count.textContent?.trim()).toBe('');
+    await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'retry' } });
+    expect(filter.search).toHaveBeenLastCalledWith('retry');
+    filter.set({ count: 12 });
+    await tick();
+    expect(count.textContent?.trim()).toBe('12 matches');
+    filter.set({ count: 1 });
+    await tick();
+    expect(count.textContent?.trim()).toBe('1 match');
+    filter.set({ count: 0 });
+    await tick();
+    expect(count.textContent?.trim()).toBe('No matches');
+  });
+
+  it('Enter moves focus to the first row; Shift+Enter and a composing Enter do not step', async () => {
+    const { getByTestId } = renderFilterBar();
+    openPaneFind('f');
+    await tick();
+    const input = getByTestId('pane-find-input');
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    await fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(filter.focusFirst).not.toHaveBeenCalled();
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(document.activeElement).toBe(firstRow));
+    expect(filter.focusFirst).toHaveBeenCalledTimes(1);
+    // The bar stays open with its query while focus is in the list.
+    expect(getPaneFind('f')?.open).toBe(true);
+  });
+
+  it('a close (what find.close runs on Escape) clears the filter and returns focus', async () => {
+    const before = document.createElement('button');
+    list.appendChild(before);
+    before.focus();
+    const { getByTestId, queryByTestId } = renderFilterBar();
+    openPaneFind('f', { returnFocus: before });
+    await tick();
+    await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'retry' } });
+    closePaneFind('f');
+    await tick();
+    expect(queryByTestId('pane-find-bar')).toBeNull();
+    expect(filter.clear).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(document.activeElement).toBe(before));
+  });
+});

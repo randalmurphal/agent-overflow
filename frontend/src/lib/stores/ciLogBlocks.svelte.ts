@@ -25,7 +25,7 @@ import { GetPRCILogLines } from './bindings';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import type { CILogLines } from '../types/models';
-import type { PRReferenceWire } from '../utils/prReference';
+import type { RepoReferenceWire } from '../utils/prReference';
 import { errString } from '../utils/errors';
 
 /** Lines per block: a row of the view shows at most one block's lines. */
@@ -43,9 +43,10 @@ export const CI_LOG_READ_LINES_MAX = 2000;
 /** Reads lines [from, from + count) of the log, as GetPRCILogLines. */
 export type CILogFetch = (from: number, count: number) => Promise<CILogLines>;
 
-/** GetPRCILogLines for one job on the computer the PR lives on. */
-export function ciLogFetch(backend: BackendKey, pr: PRReferenceWire, jobId: string): CILogFetch {
-  return (from, count) => withBackendTarget(backend, () => GetPRCILogLines(pr, jobId, from, count));
+/** GetPRCILogLines for one job of a repository, on the computer that
+ * follows it: a log is its repository's, whichever PR or pipeline showed it. */
+export function ciLogFetch(backend: BackendKey, repo: RepoReferenceWire, jobId: string): CILogFetch {
+  return (from, count) => withBackendTarget(backend, () => GetPRCILogLines(repo, jobId, from, count));
 }
 
 /** Reads lines [from, to) of the log whole, all from one version, a read
@@ -240,9 +241,11 @@ export class CILogBlockCache {
     block.clipped = clipped.size > 0 ? clipped : NO_CLIPPED;
     block.version = version;
     block.loading = false;
-    // The index moved on while the load ran: read the block again. A
-    // reply ahead of the index waits for the index to reach it.
-    if (block.uses > 0 && version < this.#version) this.#refresh(index, block);
+    // The index moved on while the load ran (a new version, or more lines
+    // of this one, whose refresh the load in flight turned away): read the
+    // block again if it is not current. A reply ahead of the index waits
+    // for the index to reach it.
+    if (block.uses > 0 && version <= this.#version) this.#refresh(index, block);
     this.#evict();
   }
 

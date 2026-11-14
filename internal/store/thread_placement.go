@@ -6,13 +6,13 @@ import (
 	"fmt"
 )
 
-// Where the sidebar shows a thread (migration v159,
+// Where the sidebar shows a thread (migration v164,
 // docs/specs/standing-agents.md ruling 36). The schema makes a row grouped
 // exactly when it has a group, so a group move is the one writer of
 // grouped (SetThreadGroup) and this file writes the other two. Nested needs
 // a local spawn row naming the thread. A thread outside every project (an
 // assistant's own, past or helper thread) takes no placement. A row
-// created later starts standalone or grouped, and the triggers of v159
+// created later starts standalone or grouped, and the triggers of v164
 // return a nested row to standalone when its last link is deleted.
 
 const (

@@ -48,6 +48,7 @@ import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { patchThreadDurableStatus, syncLatestTurnCompleted, syncThreadActivity, updateThreadUsageCache } from './eventsThreadRows';
 
 import type { ErrorSurface, ThreadPaneIngest } from './threadPaneRoles';
+import type { UnsavedThreadRowsEvent } from '../../../bindings/agent-overflow/internal/app/models';
 import { getConnectionId } from '../transport/clientIdentity';
 
 // The provider fan-out writes the ingest surface AND the slice of the
@@ -66,6 +67,7 @@ type ProviderEventPane = ThreadPaneIngest &
     | 'setProviderBanner'
     | 'setSessionBanner'
     | 'clearSessionBanners'
+    | 'applyUnsavedRows'
   >;
 
 function ingestPanes(): Iterable<ProviderEventPane> {
@@ -409,6 +411,22 @@ export function applyProviderAccount(evt: ProviderAccountEvent, backend: Backend
   setProviderAccount(provider, evt.account, evt.accountId, evt.generation, backend);
 }
 
+// thread:unsaved_rows carries the thread's whole list of errors the
+// backend could not save, so the pane showing that thread replaces its
+// list. Not tied to the session: the error can arrive after the session
+// ended, and only a dismiss or a newer list changes it.
+export function applyThreadUnsavedRows(
+  evt: UnsavedThreadRowsEvent,
+  backend: BackendKey = HOME_BACKEND,
+): void {
+  if (!evt?.threadId) return;
+  for (const pane of ingestPanes()) {
+    if (pane.threadId !== evt.threadId) continue;
+    if (threadMachine(pane.threadId, pane.thread?.projectId) !== backend) continue;
+    pane.applyUnsavedRows(evt);
+  }
+}
+
 export function applyProviderSessionAccount(evt: ProviderSessionAccountEvent): void {
   if (!evt?.threadId) return;
   for (const pane of ingestPanes()) {
@@ -486,14 +504,10 @@ export function applyTurnCompleted(evt: TurnCompletedEvent, sequence?: number): 
     errorMessage: evt.errorMessage ?? '',
   };
   // Clear the turn from the sidebar projection. Errored turns flip the
-  // pill to Failed; clean aborts flip it to Interrupted UNLESS the
-  // backend marked this as a revert-on-interrupt, in which case the
-  // pill stays clean (nothing happened, so don't paint it like it did).
+  // pill to Failed; clean aborts flip it to Interrupted.
   projectTurnCompleted(evt.threadId, evt.turnId, {
-    turnIndex: evt.turnIndex,
     aborted: settled.aborted,
     errorMessage: settled.errorMessage,
-    revertedUserMessage: Boolean(evt.revertedUserMessage),
   });
   patchThreadDurableStatus(evt.threadId, {
     hasIncompleteTurn: false,

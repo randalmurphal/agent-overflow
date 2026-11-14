@@ -961,6 +961,36 @@ func TestCreateWorkflowThreadRefusesAClaudeAlias(t *testing.T) {
 	}
 }
 
+// A phase thread that cannot be read back is no thread: the read shares
+// the insert's transaction, so the failed creation leaves no row behind.
+func TestCreateWorkflowThreadLeavesNoRowWhenTheThreadCannotBeRead(t *testing.T) {
+	t.Parallel()
+	dbPath := storetest.ClonePath(t)
+	app, _ := setupE2EAppOn(t, dbPath, t.TempDir())
+	repo := initMainGitRepo(t)
+	projectRow := testutil.EnsureProject(t, app.store, repo)
+	execOnStore(t, dbPath, `CREATE TRIGGER unreadable_thread AFTER INSERT ON threads BEGIN UPDATE threads SET last_read_at = 'unreadable' WHERE id = NEW.id; END`)
+
+	_, err := app.createWorkflowThread(workflowhost.ThreadSpec{
+		ItemID: "item-unreadable", Label: `phase "review"`,
+		Title:        workflowhost.ThreadTitle("", "review"),
+		ProviderName: string(provider.Claude), Model: "claude-opus-4-7",
+		Access:    def.AccessWrite,
+		Workspace: workflowhost.PreparedWorkspace{Path: repo, Project: projectRow},
+	})
+	if err == nil {
+		t.Fatal("createWorkflowThread returned a thread it could not read")
+	}
+	execOnStore(t, dbPath, `DROP TRIGGER unreadable_thread`)
+	threads, err := app.store.ListThreadsByProject(projectRow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(threads) != 0 {
+		t.Fatalf("the failed creation left %d thread(s)", len(threads))
+	}
+}
+
 func writeMixedAccessWorkflow(t *testing.T, configRoot string) {
 	t.Helper()
 	writeAccessWorkflowFixture(t, configRoot, "mixed-access", `id: mixed-access

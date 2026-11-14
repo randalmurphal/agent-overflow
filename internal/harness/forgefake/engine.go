@@ -49,8 +49,9 @@ type Invocation struct {
 	Via string `json:"via"`
 	// Route names the handler that answered. Empty when Unhandled.
 	Route string `json:"route,omitempty"`
-	// Unhandled marks an invocation no handler implements. Stderr (CLI) or
-	// Detail (HTTP) then carries the reason and the call.
+	// Unhandled marks an invocation no handler implements, or a GraphQL
+	// request the forge would refuse as invalid. Stderr (CLI) or Detail
+	// (HTTP) then carries the reason and the call.
 	Unhandled bool      `json:"unhandled,omitempty"`
 	At        time.Time `json:"at"`
 
@@ -77,8 +78,12 @@ type Invocation struct {
 	// variables as sent.
 	Operation string          `json:"operation,omitempty"`
 	Variables json.RawMessage `json:"variables,omitempty"`
-	Status    int             `json:"status,omitempty"`
-	Detail    string          `json:"detail,omitempty"`
+	// Body is a REST write's JSON body (POST, PUT, PATCH, DELETE), so a
+	// spec can assert what the forge received; at most maxRecordedBody
+	// bytes, and none when it is not JSON.
+	Body   json.RawMessage `json:"body,omitempty"`
+	Status int             `json:"status,omitempty"`
+	Detail string          `json:"detail,omitempty"`
 }
 
 // Invocation variants.
@@ -109,9 +114,10 @@ func (inv Invocation) MarshalJSON() ([]byte, error) {
 			Path      string          `json:"path"`
 			Operation string          `json:"operation,omitempty"`
 			Variables json.RawMessage `json:"variables,omitempty"`
+			Body      json.RawMessage `json:"body,omitempty"`
 			Status    int             `json:"status"`
 			Detail    string          `json:"detail,omitempty"`
-		}{head, inv.Forge, inv.Host, inv.Method, inv.Path, inv.Operation, inv.Variables, inv.Status, inv.Detail})
+		}{head, inv.Forge, inv.Host, inv.Method, inv.Path, inv.Operation, inv.Variables, inv.Body, inv.Status, inv.Detail})
 	}
 	return json.Marshal(struct {
 		common
@@ -148,6 +154,12 @@ type Options struct {
 	// the create calls that open a pull or merge request from the
 	// checkout. Defaults to asking git.
 	Head func(cwd string) (CheckoutHead, error)
+	// Commit writes a commit the fake makes on a pull's head branch (an
+	// applied suggestion) to the git repository the pull's head is bound
+	// to, and answers its sha; "" when the pull is bound to none, which
+	// keeps a generated sha. Called with the engine lock held. Nil binds
+	// nothing.
+	Commit func(CommitRequest) (string, error)
 	// APIToken is the fixed token every request to the HTTP mounts must
 	// carry (Authorization: Bearer or Private-Token). Empty refuses every
 	// request.
@@ -170,6 +182,11 @@ type Engine struct {
 	offline bool
 	// rateLimits are the pools under a limit (SetRateLimit).
 	rateLimits map[rateLimitKey]RateLimit
+	// refusals are the routes answering a refusal (SetRefusal), by name.
+	refusals map[string]*Refusal
+	// holds are the held refusals' gates by route, closed by
+	// ReleaseRefusal.
+	holds map[string]*heldAnswer
 	// traceRequests counts the trace requests each running synthetic
 	// GitLab job answered, which is how far its trace has grown.
 	traceRequests map[int64]int
@@ -230,7 +247,8 @@ func (e *Engine) Seed(fixture Fixture) (Fixture, error) {
 	return fixture.clone(), nil
 }
 
-// Reset drops the seeded state, the rate limits and the invocation log.
+// Reset drops the seeded state, the rate limits, the refusals and the
+// invocation log.
 // Ids keep counting
 // so none repeats across tests.
 func (e *Engine) Reset() {
@@ -241,6 +259,11 @@ func (e *Engine) Reset() {
 	clear(e.sshHosts)
 	e.offline = false
 	clear(e.rateLimits)
+	clear(e.refusals)
+	for _, held := range e.holds {
+		close(held.done)
+	}
+	clear(e.holds)
 	clear(e.traceRequests)
 	e.log = nil
 	e.dropped = 0
@@ -317,6 +340,13 @@ func (e *Engine) Handle(fc control.ForgeCall) control.ForgeResult {
 		StdoutBytes: len(resp.stdout),
 	}
 	e.record(inv)
+	if resp.held != nil {
+		<-resp.held.done
+		if resp.held.drop {
+			// A lost answer: the CLI reports the connection it lost.
+			resp = offlineResponse(c)
+		}
+	}
 	return control.ForgeResult{Stdout: resp.stdout, Stderr: resp.stderr, ExitCode: resp.exit}
 }
 
@@ -382,6 +412,10 @@ type response struct {
 	status    int
 	header    http.Header
 	unhandled string
+	// invalid is why a GraphQL request fails the forge's validation; the
+	// answer is the forge's own errors body, and the invocation is
+	// recorded as unhandled with this detail.
+	invalid string
 	// body is a job log, served over HTTP in place of stdout: bytes
 	// [from, to) of it on a 206, all of it otherwise. etag is its
 	// validator when the handler names one; a conditional route hashes
@@ -392,6 +426,8 @@ type response struct {
 	// ranges is how the endpoint answers Range, for a route that lists
 	// the range flag.
 	ranges rangePolicy
+	// held, when set, is the held refusal this answer waits for.
+	held *heldAnswer
 }
 
 func unhandled(reason string, args ...any) response {

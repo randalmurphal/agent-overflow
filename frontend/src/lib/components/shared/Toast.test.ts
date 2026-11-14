@@ -15,9 +15,9 @@ function revertFailure(): TransportError {
   return new TransportError('method_error', 'failed', {
     detail: {
       ref: 'rKVz',
-      method: 'InterruptAndRevertIfClean',
+      method: 'RevertConversationAndResendMessage',
       at: 1,
-      chain: ['interrupt-and-revert: claude rollback: uuid missing', 'claude rollback: uuid missing', 'uuid missing'],
+      chain: ['revert and resend: claude rollback: uuid missing', 'claude rollback: uuid missing', 'uuid missing'],
     },
   });
 }
@@ -42,13 +42,13 @@ describe('<Toast> error reports', () => {
 
   it('expands the error chain and stays up while expanded', async () => {
     vi.useFakeTimers();
-    addErrorToast('Could not undo the message', revertFailure(), 1000);
+    addErrorToast('Could not resend the edited message', revertFailure(), 1000);
     const { getByTestId, queryByTestId, getByLabelText } = render(Toast);
     expect(queryByTestId('error-details')).toBeNull();
 
     await fireEvent.click(getByTestId('error-details-toggle'));
     const details = getByTestId('error-details');
-    expect(details.textContent).toContain('InterruptAndRevertIfClean');
+    expect(details.textContent).toContain('RevertConversationAndResendMessage');
     expect(details.textContent).toContain('ref rKVz');
     expect(details.querySelectorAll('li')).toHaveLength(3);
     expect(getByLabelText('Hide details').getAttribute('aria-expanded')).toBe('true');
@@ -59,6 +59,22 @@ describe('<Toast> error reports', () => {
     await fireEvent.click(getByTestId('error-details-toggle'));
     vi.advanceTimersByTime(1001);
     expect(getToasts()).toHaveLength(0);
+  });
+
+  // An action closes its toast, unless it keeps it (a copy, which the
+  // reader may want to repeat).
+  it('closes on its action unless the action keeps it', async () => {
+    const closes = vi.fn();
+    const keeps = vi.fn();
+    addToast('info', 'Undo the move', 0, { label: 'Undo', run: closes });
+    addErrorToast('Your comment was not sent.', new Error('refused'), 0, { label: 'Copy text', run: keeps, keep: true });
+    const { getByText } = render(Toast);
+    await fireEvent.click(getByText('Undo'));
+    await fireEvent.click(getByText('Copy text'));
+    await fireEvent.click(getByText('Copy text'));
+    expect(closes).toHaveBeenCalledTimes(1);
+    expect(keeps).toHaveBeenCalledTimes(2);
+    expect(getToasts().map((toast) => toast.message)).toEqual(['Your comment was not sent.']);
   });
 
   it('waits while the pointer is on it', async () => {
@@ -74,14 +90,14 @@ describe('<Toast> error reports', () => {
   });
 
   it('copies the report with the backend log for an agent', async () => {
-    addErrorToast('Could not undo the message', revertFailure());
+    addErrorToast('Could not resend the edited message', revertFailure());
     const { getByLabelText } = render(Toast);
     // The log is read at capture, before the copy click.
     await waitFor(() => expect(getToasts()[0].captured?.backendLog).toBeDefined());
     await fireEvent.click(getByLabelText('Copy error for an agent'));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const text = writeText.mock.calls[0][0];
-    expect(text).toContain('Agent Overflow error: Could not undo the message');
+    expect(text).toContain('Agent Overflow error: Could not resend the edited message');
     expect(text).toContain('- ref: rKVz');
     expect(text).toContain('3. uuid missing');
     expect(text).toContain('transport: failed (id: rKVz)');

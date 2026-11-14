@@ -98,10 +98,10 @@ describe('<KeybindingsCheatSheet> — grouping and rows', () => {
     registerCommand({ id: 'z.alpha', label: 'Z: Alpha', run: () => {} });
     registerCommand({ id: 'a.alpha', label: 'A: Alpha', run: () => {} });
     registerCommand({ id: 'a.beta', label: 'A: Beta', run: () => {} });
-    const { container } = render(KeybindingsCheatSheet, { open: true, onClose: vi.fn() });
-    const groupOrder = Array.from(container.querySelectorAll('section h3')).map((h) => h.textContent?.trim());
+    render(KeybindingsCheatSheet, { open: true, onClose: vi.fn() });
+    const groupOrder = Array.from(document.querySelectorAll('section h3')).map((h) => h.textContent?.trim());
     expect(groupOrder).toEqual(['A', 'Z']);
-    const aRows = container.querySelectorAll(
+    const aRows = document.querySelectorAll(
       '[data-testid^="keybindings-cheatsheet-row-a."]',
     );
     expect(Array.from(aRows).map((r) => r.textContent)).toEqual([
@@ -194,8 +194,8 @@ describe('<KeybindingsCheatSheet> — closing', () => {
   it('calls onClose on Escape', async () => {
     seedThreeCommands();
     const onClose = vi.fn();
-    const { container } = render(KeybindingsCheatSheet, { open: true, onClose });
-    const backdrop = container.querySelector('[data-modal-backdrop]')!;
+    render(KeybindingsCheatSheet, { open: true, onClose });
+    const backdrop = document.querySelector('[data-modal-backdrop]')!;
     await fireEvent.keyDown(backdrop, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -203,8 +203,8 @@ describe('<KeybindingsCheatSheet> — closing', () => {
   it('calls onClose on backdrop click (but not on dialog click)', async () => {
     seedThreeCommands();
     const onClose = vi.fn();
-    const { getByTestId, container } = render(KeybindingsCheatSheet, { open: true, onClose });
-    const backdrop = container.querySelector('[data-modal-backdrop]') as HTMLElement;
+    const { getByTestId } = render(KeybindingsCheatSheet, { open: true, onClose });
+    const backdrop = document.querySelector('[data-modal-backdrop]') as HTMLElement;
     const dialog = getByTestId('keybindings-cheatsheet');
     // Clicking the dialog should NOT close (event.target != currentTarget).
     await fireEvent.click(dialog);

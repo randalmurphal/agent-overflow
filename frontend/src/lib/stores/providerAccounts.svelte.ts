@@ -4,7 +4,7 @@ import type { ProviderAccountActions, ProviderAccountGroup } from './computerAcc
 export type { ProviderAccountActions, ProviderAccountGroup } from './computerAccounts.svelte';
 import type { ManagedProviderAccount, ProviderLoginState } from './bindings';
 import type { ProviderID } from '../types/providers';
-import type { ProviderAccountSignInEvent } from '../types/events';
+import type { ProviderAccountAutoSwitchEvent, ProviderAccountSignInEvent } from '../types/events';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { attachedBackends, onBackendsChanged } from '../transport/backends';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
@@ -91,6 +91,14 @@ export function removeProviderAccount(provider: ProviderID, account: ManagedProv
 
 export function reorderProviderAccounts(provider: ProviderID, orderedIds: string[], backend: BackendKey = HOME_BACKEND): Promise<void> {
   return editComputer(backend).reorderProviderAccounts(provider, orderedIds);
+}
+
+export function setProviderAccountAutoSwitch(provider: ProviderID, accountId: string, enabled: boolean, backend: BackendKey = HOME_BACKEND): Promise<void> {
+  return editComputer(backend).setProviderAccountAutoSwitch(provider, accountId, enabled);
+}
+
+export function applyProviderAccountAutoSwitch(event: ProviderAccountAutoSwitchEvent | null | undefined, backend: BackendKey = HOME_BACKEND): void {
+  return editComputer(backend).applyProviderAccountAutoSwitch(event);
 }
 
 export function applyProviderAccountSignIn(event: ProviderAccountSignInEvent | null | undefined, backend: BackendKey = HOME_BACKEND): void {

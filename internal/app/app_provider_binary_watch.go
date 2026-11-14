@@ -209,7 +209,7 @@ func (a *App) refreshProviderCatalogAfterUpgrade(providerName string) error {
 		_, err := a.providerDiscoveryService().RecheckCodexAccount()
 		return err
 	case string(provider.Claude):
-		// Learned wire-only models are claims about the binary that reported
+		// Learned models and flags are claims about the binary that reported
 		// them, and claudemodels retains them across probes of one binary —
 		// so they must be dropped BEFORE the recheck, or the re-probe's
 		// store would carry the old binary's models into the new one's

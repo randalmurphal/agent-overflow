@@ -40,7 +40,7 @@ async function expandFile(patch: string) {
 
 async function waitForBox(host: HTMLElement): Promise<HTMLElement> {
   let box: HTMLElement | null = null;
-  await waitFor(() => (box = host.querySelector('[data-testid="wf-diff-hunks"]')) !== null, 'expanded file');
+  await waitFor(() => (box = host.querySelector('[data-testid="patch-lines"]')) !== null, 'expanded file');
   return box!;
 }
 

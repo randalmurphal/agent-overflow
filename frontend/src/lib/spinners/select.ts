@@ -45,6 +45,22 @@ export function resolveCompactionSprite(
 }
 
 /**
+ * Every sprite a working turn can show under these settings: the random
+ * pool plus the compaction override, which may sit outside the pool.
+ */
+export function showableSprites(
+  customs: readonly SpinnerSprite[],
+  disabledIds: readonly string[],
+  compactionId: string,
+): SpinnerSprite[] {
+  const all = mergedSprites(customs);
+  const showable = assembleSpritePool(all, disabledIds);
+  const override = resolveCompactionSprite(all, compactionId);
+  if (override !== null && !showable.includes(override)) showable.push(override);
+  return showable;
+}
+
+/**
  * The one entry the rail uses: compaction override when compacting,
  * otherwise the per-turn stable pick from the pool. Null means "show
  * the LED chase" (empty pool, or animations resolved to nothing).

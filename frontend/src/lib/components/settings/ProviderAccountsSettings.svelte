@@ -34,6 +34,7 @@
     refreshProviderAccountUsage,
     removeProviderAccount,
     reorderProviderAccounts,
+    setProviderAccountAutoSwitch,
     switchProviderAccount,
   } from '../../stores/providerAccounts.svelte';
   import { displacement, dropIndex, moveItem } from '../../utils/listReorder';
@@ -57,6 +58,10 @@
   // One answer for "is a credential op running", shared with the store's own
   // refusal, so a disabled button and a rejected call can never disagree.
   let credentialOpInFlight = $derived(isProviderCredentialOpInFlight(provider, backend));
+  // The pool needs two members before auto-switch can move between them.
+  let poolTooSmall = $derived(
+    accounts.length >= 2 && accounts.filter((account) => account.autoSwitch).length < 2,
+  );
   let pendingRemoval = $state<ManagedProviderAccount | null>(null);
   // The flow panel renders for a live sign-in AND for one that ended badly,
   // since a failure is what the user has to read before trying again.
@@ -428,6 +433,27 @@
             </button>
 
             <div class="flex shrink-0 items-center gap-1">
+              <label
+                class="flex cursor-pointer items-center gap-1.5 whitespace-nowrap px-1 text-[0.71875rem] text-fg-muted has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50 compact:select-none"
+                title={ungrantedTitle ?? 'Let Agent Overflow switch to and from this account when a usage limit is near'}
+              >
+                <input
+                  type="checkbox"
+                  class="accent-accent"
+                  aria-label={`Auto-switch for ${providerAccountName(account)}`}
+                  checked={account.autoSwitch}
+                  disabled={credentialOpInFlight || !admin}
+                  onchange={(event) =>
+                    void setProviderAccountAutoSwitch(
+                      provider,
+                      account.id,
+                      (event.currentTarget as HTMLInputElement).checked,
+                      backend,
+                    )}
+                  data-testid="provider-account-auto-switch-{account.id}"
+                />
+                Auto-switch
+              </label>
               <!-- Signing in renews whichever saved account the login belongs
                    to, and never switches; offered from the week before the
                    login ends. -->
@@ -478,6 +504,11 @@
         </div>
       {/each}
     </div>
+    {#if poolTooSmall}
+      <p class="mt-2 text-[0.71875rem] leading-snug text-fg-hint" data-testid="provider-accounts-pool-hint-{provider}">
+        Auto-switch needs two or more accounts ticked to move between them when a usage limit is near.
+      </p>
+    {/if}
   {/if}
 </div>
 

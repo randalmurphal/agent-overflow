@@ -4,14 +4,14 @@
   // computer when the thread lives on another one, and reads as plain text
   // when this client cannot reach it); a run opens in the workflows overlay.
   import type { BackendKey } from '../../transport/backendKey';
-  import { openWorkflowRunInOverlay } from '../../stores/workflowsOverlay.svelte';
+  import { openWorkflowRunInPane } from '../../stores/workflowsOverlay.svelte';
   import { agentThreadOpener } from './agentThreadOrigin';
   import type { AoResultLink } from './aoToolResults';
 
   let { link, viewer, testId = 'ao-tool-link' }: { link: AoResultLink; viewer: BackendKey; testId?: string } = $props();
 
   let target = $derived.by(() => {
-    if (link.kind === 'run') return { computer: '', open: () => openWorkflowRunInOverlay(link.id) };
+    if (link.kind === 'run') return { computer: '', open: () => openWorkflowRunInPane(link.id) };
     return agentThreadOpener(
       { threadId: link.id, title: link.label, computerId: link.computerId, computerName: link.computerName, token: '', kind: '' },
       viewer,

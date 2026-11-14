@@ -6,7 +6,7 @@ import "encoding/json"
 // echo (a row triage synthesised from a Codex `userMessage` /
 // Claude `replay-user-messages` envelope after the user had already
 // withdrawn the live composer draft). Such rows carry `wire_only:
-// true` on their persisted Meta JSON; the fork / revert-on-interrupt
+// true` on their persisted Meta JSON; the fork / edit-and-resend
 // paths skip them because there is no message anchor to slice at —
 // they were never preceded by a real user send.
 //

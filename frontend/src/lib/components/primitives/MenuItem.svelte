@@ -6,9 +6,10 @@
   // keyboard navigation as ordinary actions.
   //
   // The `onSelect` callback is what Menu consumers actually care about;
-  // after firing it we also bubble a `menuitem-select` CustomEvent so an
-  // outer Popover / Menu can trigger `onClose` without wiring a prop on
-  // every item.
+  // after firing it we also bubble a `menuitem-select` CustomEvent, which
+  // only MenuSubmenuItem listens for (to close its submenu). Neither Menu
+  // nor Popover closes on a select: a single-choice picker closes itself
+  // from its onSelect, and a checkbox picker stays open for more ticks.
 
   import type { Snippet } from 'svelte';
 
@@ -25,12 +26,17 @@
     checkbox?: boolean;
     disabled?: boolean;
     title?: string;
+    /** `data-testid` on the row, for tests that drive a menu by hook. */
+    testId?: string;
     onSelect?: () => void;
     actionLabel?: string;
     actionPressed?: boolean;
     actionPosition?: 'start' | 'end';
     actionDisabled?: boolean;
     actionTitle?: string;
+    /** `hover`: the action shows while the row is hovered or focused (and
+     * always on compact), holding its place so nothing shifts. */
+    actionReveal?: 'always' | 'hover';
     onAction?: () => void;
     variant?: 'default' | 'danger';
   }
@@ -56,6 +62,7 @@
     checkbox = false,
     disabled = false,
     title,
+    testId,
     onSelect,
     action,
     actionLabel,
@@ -64,6 +71,7 @@
     actionPosition = 'end',
     actionDisabled = false,
     actionTitle,
+    actionReveal = 'always',
     onAction,
     variant = 'default',
   }: Props = $props();
@@ -103,9 +111,12 @@
 
   function handleKeydown(e: KeyboardEvent): void {
     // Enter / Space activate the item. Arrow nav is handled by the
-    // parent Menu — this handler only claims the activation keys.
+    // parent Menu — this handler only claims the activation keys. A
+    // held key's repeat never activates: the press that opened the menu
+    // and moved focus here keeps repeating into the item.
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
+      if (e.repeat) return;
       activate();
     }
   }
@@ -140,6 +151,7 @@
         ? 'opacity-50 cursor-not-allowed'
         : 'hover:bg-surface-2/70 hover:text-fg',
       actionPressed ? 'text-warning' : '',
+      actionReveal === 'hover' ? 'opacity-0 group-hover/menuitem:opacity-100 group-focus/menuitem:opacity-100 focus-visible:opacity-100 compact:opacity-100' : '',
     ].join(' ')}
   >
     {#if actionText}{actionText}{:else if action}{@render action()}{/if}
@@ -155,13 +167,14 @@
   aria-checked={checkbox ? checked : undefined}
   aria-disabled={disabled ? 'true' : undefined}
   data-menuitem
+  data-testid={testId}
   data-disabled={disabled ? 'true' : undefined}
   tabindex={-1}
   title={title}
   onclick={handleClick}
   onkeydown={handleKeydown}
   class={[
-    'w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left compact:py-2.5',
+    'group/menuitem w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left compact:py-2.5',
     'cursor-pointer select-none',
     'focus-visible:outline-none',
     'hover:bg-surface-2/40 focus:bg-surface-2/40',

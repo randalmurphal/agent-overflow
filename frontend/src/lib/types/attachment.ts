@@ -1,3 +1,5 @@
+import type { ShellOutputMeta } from '../utils/shellInvocation';
+
 /**
  * An attachment is one of two KINDS, and the kind is what every layer
  * switches on (`internal/attachment` decides it server-side, from the
@@ -13,6 +15,11 @@
 export type AttachmentKind = 'image' | 'file';
 
 export interface Attachment {
+  /**
+   * Set on a `file` that is the output of a command the person ran from the
+   * composer. Its chip and its timeline row show the command, not a filename.
+   */
+  shell?: ShellOutputMeta;
   id: string;
   threadId: string;
   filename: string;

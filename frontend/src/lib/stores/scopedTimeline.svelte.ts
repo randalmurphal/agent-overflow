@@ -48,7 +48,6 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
   const reads = new Map<AbortSignal, Set<string>>();
   const unheldItems = new Map<AbortSignal, Map<string, Item>>();
   const unheldMutations = new Map<AbortSignal, Set<string>>();
-  const optimisticItemIds = new Set<string>();
   const includes = (item: Item) => isWindowedTimelineRow(item, selection)
     && (!selection.digestItemId || includesDigestItem(item, scope?.digest));
   const noteItemMutation = (id: string) => { for (const touched of reads.values()) touched.add(id); };
@@ -61,12 +60,12 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     },
   };
   const itemWindow = createThreadItemWindow({
-    optimisticItemIds, selection: () => selection, streamingReveal: () => reveal, rowUiState: () => rows,
+    selection: () => selection, streamingReveal: () => reveal, rowUiState: () => rows,
     activityRuns: () => runs, switchLoad: () => mutations,
   });
   const { getItems, getItemById, itemIndexById, writeItemAt, appendDirectAssistantLiteral,
     replaceTimelineItems, installTimelineItems, commitUpsertResult } = itemWindow;
-  const rows = createThreadRowUiState({ getItemById, loadedItems: getItems, threadId: () => thread.id });
+  const rows = createThreadRowUiState({ getItemById, loadedItems: getItems });
   const scroll = createThreadPaneScroll({
     getLoading: () => loading, getSwitchGeneration: () => generation,
     getItemCount: () => getItems().length, stampLiveContent: () => { lastLiveContentAt = nowForLiveContent(); },
@@ -81,6 +80,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       if (reads.size) streamGapDuringRead = true;
       else contextRefresh.request();
     },
+    commitPromotedRow: (row) => { stream.upsertItemsBatch([row]); },
   });
   const window = createThreadTimelineWindow({
     getItems, replaceTimelineItems, installTimelineItems, getThread: () => thread, windowedRowCount: itemWindow.windowedRowCount,
@@ -101,8 +101,10 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
   });
   const stream = createThreadItemStreamApply({
     getItems, getItemById, itemIndexById, getThread: () => thread, writeItemAt, commitUpsertResult,
-    armLiveContentAppendSpring: scroll.armLiveContentAppendSpring, optimisticItemIds,
-    timelineWindow: window, streamingReveal: reveal, activityRuns: runs, get scopeRootId() { return selection.scopeRootId; },
+    armLiveContentAppendSpring: scroll.armLiveContentAppendSpring,
+    // A scoped surface holds child rows only; sends belong to the thread's pane.
+    confirmSend: () => {}, awaitedSendId: () => null,
+    timelineWindow: window, noteSearchableEvent: itemWindow.noteSearchableEvent, streamingReveal: reveal, activityRuns: runs, get scopeRootId() { return selection.scopeRootId; },
   });
   const contextRefresh = createRefreshScheduler({
     name: 'agent scope context', delayMs: 100, maxWaitMs: 500,
@@ -166,12 +168,14 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       return;
     }
     if (mutation.kind === 'remove') {
+      itemWindow.noteSearchableEvent();
       remove(new Set([mutation.itemId]));
       if (mutation.itemId === selection.scopeRootId) { gone = true; generation++; }
       else contextRefresh.request();
       return;
     }
     if (mutation.kind === 'revert') {
+      itemWindow.noteSearchableEvent();
       const cut = mutation.event;
       const kept = new Set(cut.keptAnchorTurnItemIds ?? []);
       const survives = (item: Item) => item.turnIndex < cut.turnIndex

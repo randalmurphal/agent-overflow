@@ -45,6 +45,39 @@ type Credential struct {
 	// not be able to grow it without limit, and a ticket older than the
 	// last maxOutstandingTickets is one nobody is going to open.
 	tickets *ticketBook
+
+	// window is the per-launch host-window token (MintWindowTicket).
+	// Immutable after New.
+	window string
+}
+
+// windowTicketSubject marks a page ticket minted for the host's own window.
+const windowTicketSubject = "host-window"
+
+// windowCookiePrefix names the host-window cookie, port-suffixed like the
+// page cookie.
+const windowCookiePrefix = ReservedCookiePrefix + "window_"
+
+// MintWindowTicket returns a page ticket for a document in the window the
+// process that serves this backend owns (the desktop app's window, the
+// Windows launcher's), delivered by injection and never written into a URL
+// (internal/uiwindow.DeliverPageTicket, the /pageurl webview answer). Its
+// exchange sets the page cookie and the host-window cookie, which is how the
+// backend tells that window's connections from another client holding the
+// same launch credential, such as a browser tab on this machine
+// (HostWindow). It is an identity, not an authority: a tab already holds
+// every grant the window does.
+func (c *Credential) MintWindowTicket() (string, error) { return c.tickets.mint(windowTicketSubject) }
+
+// HostWindow reports whether r carries the host-window cookie.
+func (c *Credential) HostWindow(r *http.Request) bool {
+	name := cookieNameForHost(windowCookiePrefix, r.Host)
+	for _, cookie := range r.Cookies() {
+		if cookie.Name == name && ConstantTimeEqual(c.window, cookie.Value) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // maxOutstandingTickets caps how many minted-but-unexchanged page
@@ -96,7 +129,11 @@ func NewCredential(token string) (*Credential, error) {
 		}
 		token = minted
 	}
-	return &Credential{token: token, tickets: newTicketBook(maxOutstandingTickets, 0)}, nil
+	window, err := NewToken()
+	if err != nil {
+		return nil, err
+	}
+	return &Credential{token: token, tickets: newTicketBook(maxOutstandingTickets, 0), window: window}, nil
 }
 
 // Token returns the session token, the carrier for clients that are not
@@ -146,8 +183,10 @@ func (c *Credential) Authenticate(r *http.Request) bool {
 
 // Exchange authenticates a page load and issues the page cookie when
 // the request paid for one with a ticket. Reports whether the request
-// is authenticated at all; the caller answers a false with its own
-// refusal shape.
+// is authenticated at all, which the caller answers with its own refusal
+// shape when false, and whether it is the host's own window: it holds the
+// host-window cookie, or it paid with a window ticket, whose exchange sets
+// that cookie as well (MintWindowTicket).
 //
 // Order matters. A request that already holds a valid credential is
 // answered as-is, which is what makes a reload of the scrubbed URL work
@@ -155,15 +194,22 @@ func (c *Credential) Authenticate(r *http.Request) bool {
 // was spent. Only when nothing valid is presented does the ticket get
 // consumed, and the cookie it buys replaces whatever stale value the
 // browser was holding.
-func (c *Credential) Exchange(w http.ResponseWriter, r *http.Request) bool {
+func (c *Credential) Exchange(w http.ResponseWriter, r *http.Request) (authed, hostWindow bool) {
 	if c.Authenticate(r) {
-		return true
+		return true, c.HostWindow(r)
 	}
-	if !c.consumeTicket(r.URL.Query().Get(PageTicketParam)) {
-		return false
+	subject, ok := c.tickets.consume(r.URL.Query().Get(PageTicketParam))
+	if !ok {
+		return false, false
 	}
 	http.SetCookie(w, c.pageCookie(r))
-	return true
+	if subject != windowTicketSubject {
+		return true, false
+	}
+	window := c.pageCookie(r)
+	window.Name, window.Value = cookieNameForHost(windowCookiePrefix, r.Host), c.window
+	http.SetCookie(w, window)
+	return true, true
 }
 
 // pageCookie builds the page cookie for this request's authority.

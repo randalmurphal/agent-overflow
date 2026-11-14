@@ -1,17 +1,25 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"maps"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/computerroute"
+	"agent-overflow/internal/dictation"
 	"agent-overflow/internal/network"
+	"agent-overflow/internal/openai/openaifake"
+	"agent-overflow/internal/provider/claude/claudefake"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/windowgeom"
 )
@@ -89,6 +97,10 @@ type IsolationConfig struct {
 	// event, so a test can stall a worker past it without waiting seconds.
 	// Zero keeps the product bound.
 	ProviderEventDrainStall time.Duration
+	// UsageProbeGap replaces the shortest gap between two usage probes of
+	// one provider, so a spec that sets a usage answer is not held behind a
+	// probe the boot just made. Zero keeps the product gap.
+	UsageProbeGap time.Duration
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -109,6 +121,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.preview.scanScope = isolatedScanScope(config.ScanScopePIDs)
 	a.downloadsIsolated = true
 	a.threadPollOverride = config.ThreadRequestPoll
+	a.usageProbeGap = config.UsageProbeGap
 	a.transferPendingRetry = config.TransferPendingRetry
 	a.prUpdates.interval = config.PRUpdateInterval
 	a.prUpdates.retryBase = config.PRUpdateRetryBase
@@ -127,7 +140,14 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.
-	a.rateLimitProbeClientOverride = isolatedHTTPClient
+	// Usage is answered only for an identity a harness sets a reading for.
+	a.claudeUsageFake = claudefake.NewUsage()
+	a.rateLimitProbeClientOverride = &http.Client{
+		Transport: isolatedProviderTransport{claudeUsage: a.claudeUsageFake},
+	}
+	// The user's OpenAI key file lives under the test's own data root, and
+	// what it would send to OpenAI is answered in process.
+	a.openAIClientOverride = isolatedHTTPClient
 	// A sign-in or link opened from a loopback page would otherwise start the
 	// developer's own browser.
 	a.externalURLsIsolated = true
@@ -140,15 +160,82 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 // to a real service.
 var errIsolatedNetwork = errors.New("isolated boot: outbound provider requests are disabled")
 
-var isolatedHTTPClient = &http.Client{Transport: refusingTransport{}}
+var isolatedHTTPClient = &http.Client{Transport: isolatedProviderTransport{}}
 
-type refusingTransport struct{}
+// isolatedProviderTransport refuses every request except Claude's OAuth
+// profile, the two transcriptions and OpenAI speech, which it answers
+// in-process so account identification, dictation and read aloud run end to
+// end through the real clients. The profile is claudefake's. Claude usage is
+// answered from claudeUsage for an identity it holds a reading for and
+// refused otherwise. Codex transcription names the bytes and type it
+// received, and an access token of "refused" is answered as an expired
+// login; OpenAI live transcription and speech are openaifake's.
+type isolatedProviderTransport struct {
+	claudeUsage *claudefake.Usage
+}
 
-func (refusingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t isolatedProviderTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if req.Body != nil {
-		_ = req.Body.Close()
+		defer func() {
+			if closeErr := req.Body.Close(); closeErr != nil && err == nil {
+				resp, err = nil, fmt.Errorf("isolated boot: close request body: %w", closeErr)
+			}
+		}()
+	}
+	if claudefake.IsProfile(req) {
+		return claudefake.ServeProfile(req)
+	}
+	if resp, ok, err := t.claudeUsage.Serve(req); ok {
+		return resp, err
+	}
+	if req.Method == http.MethodPost && req.URL.String() == codex.TranscribeURL {
+		return fakeTranscription(req)
+	}
+	if openaifake.IsLiveTranscription(req) {
+		return openaifake.ServeLiveTranscription(req)
+	}
+	if openaifake.IsSpeech(req) {
+		return openaifake.ServeSpeech(req)
 	}
 	return nil, errIsolatedNetwork
+}
+
+func fakeTranscription(req *http.Request) (resp *http.Response, err error) {
+	if req.Header.Get("Authorization") == "Bearer refused" {
+		return fakeTranscriptionResponse(req, http.StatusUnauthorized, `{"detail":"token expired"}`), nil
+	}
+	if err := req.ParseMultipartForm(codexFakeTranscribeMemory); err != nil {
+		return nil, fmt.Errorf("isolated transcription: %w", err)
+	}
+	file, header, err := req.FormFile("file")
+	if err != nil {
+		return nil, fmt.Errorf("isolated transcription: %w", err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			resp, err = nil, fmt.Errorf("isolated transcription: close recording: %w", closeErr)
+		}
+	}()
+	body, err := json.Marshal(map[string]string{
+		"text": fmt.Sprintf("Heard %d bytes of %s", header.Size, header.Header.Get("Content-Type")),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return fakeTranscriptionResponse(req, http.StatusOK, string(body)), nil
+}
+
+// codexFakeTranscribeMemory holds the largest recording in memory.
+const codexFakeTranscribeMemory = dictation.MaxRecordingBytes + 1<<20
+
+func fakeTranscriptionResponse(req *http.Request, status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Status:     strconv.Itoa(status) + " " + http.StatusText(status),
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
 }
 
 // UseFileKeychain moves provider credentials and the browser companion's

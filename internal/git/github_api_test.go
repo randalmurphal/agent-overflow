@@ -83,7 +83,7 @@ func newForgeAPIService(t *testing.T, answer func(call forgeAPICall) forgeAPIAns
 		body, _ := io.ReadAll(r.Body)
 		call := forgeAPICall{RESTBase: restBase, Host: r.Host, Method: r.Method, Header: r.Header.Clone(), Body: body}
 		switch {
-		case r.URL.Path == "/github/graphql":
+		case r.URL.Path == "/github/graphql" || r.URL.Path == "/gitlab/api/graphql":
 			var payload struct {
 				Query         string         `json:"query"`
 				OperationName string         `json:"operationName"`
@@ -94,6 +94,11 @@ func newForgeAPIService(t *testing.T, answer func(call forgeAPICall) forgeAPIAns
 				return
 			}
 			call.Op, call.Query, call.Vars = payload.OperationName, payload.Query, payload.Variables
+			if invalid, ok := checkGraphQLRequest(t, call.Op, call.Query, call.Vars); !ok {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, invalid)
+				return
+			}
 		case strings.HasPrefix(r.URL.Path, "/github/rest/"):
 			call.Path = strings.TrimPrefix(r.URL.EscapedPath(), "/github/rest/")
 		case strings.HasPrefix(r.URL.Path, "/gitlab/api/v4/"):
@@ -130,6 +135,35 @@ func newForgeAPIService(t *testing.T, answer func(call forgeAPICall) forgeAPIAns
 	return svc, calls
 }
 
+// githubCIExtras answers the reads a GitHub pipeline read adds for its
+// actions, for a test about something else: a run's artifacts list
+// (none) and the repository's permissions (push). ok is false for any
+// other request.
+func githubCIExtras(call forgeAPICall) (forgeAPIAnswer, bool) {
+	path, _, _ := strings.Cut(call.Path, "?")
+	switch {
+	case call.Op != "" || call.Method != http.MethodGet:
+		return forgeAPIAnswer{}, false
+	case strings.HasPrefix(path, "repos/") && strings.HasSuffix(path, "/artifacts") && strings.Contains(path, "/actions/runs/"):
+		return forgeAPIAnswer{Body: `{"total_count":0,"artifacts":[]}`}, true
+	case strings.Count(path, "/") == 2 && strings.HasPrefix(path, "repos/"):
+		return forgeAPIAnswer{Body: `{"id":1,"permissions":{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}}`}, true
+	}
+	return forgeAPIAnswer{}, false
+}
+
+// withoutCIExtras drops githubCIExtras' requests from ops.
+func withoutCIExtras(ops []string) []string {
+	return slices.DeleteFunc(ops, func(op string) bool {
+		method, path, ok := strings.Cut(op, " ")
+		if !ok {
+			return false
+		}
+		_, extra := githubCIExtras(forgeAPICall{Method: method, Path: path})
+		return extra
+	})
+}
+
 func githubData(data string) forgeAPIAnswer {
 	return forgeAPIAnswer{Body: `{"data":` + data + `}`}
 }
@@ -153,6 +187,9 @@ func TestReadPRParsesRecordedTicks(t *testing.T) {
 		t.Helper()
 		answer := readTestdata(t, fixture)
 		core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+			if extra, ok := githubCIExtras(call); ok {
+				return extra
+			}
 			if call.Op != "PRTick" {
 				return forgeUnexpected(t, call)
 			}
@@ -162,7 +199,7 @@ func TestReadPRParsesRecordedTicks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadPR: %v", err)
 		}
-		if ops := calls.ops(); len(ops) != 1 {
+		if ops := withoutCIExtras(calls.ops()); len(ops) != 1 {
 			t.Fatalf("requests = %v, want the one PRTick", ops)
 		}
 		if !got.HasCI {
@@ -271,10 +308,14 @@ func TestReadPRActorShapes(t *testing.T) {
 		]},
 		"commits":{"nodes":[{"commit":{"id":"C_1","statusCheckRollup":null}}]},
 		"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-			{"id":"T1","isResolved":false,"isOutdated":false,"path":"a.go","line":3,"startLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
+			{"id":"T1","isResolved":false,"isOutdated":false,"path":"a.go","line":3,"startLine":null,"originalLine":3,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
 			 "comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
 				{"id":"c1","databaseId":11,"author":{"login":"github-actions"},"body":"bot","createdAt":"2026-01-01T00:00:00Z","replyTo":null},
 				{"id":"c2","databaseId":12,"author":null,"body":"ghost","createdAt":"2026-01-01T00:00:01Z","replyTo":{"id":"c1","databaseId":11}}
+			 ]}},
+			{"id":"T2","isResolved":false,"isOutdated":true,"path":"a.go","line":null,"startLine":null,"originalLine":5,"originalStartLine":4,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
+			 "comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
+				{"id":"c3","databaseId":13,"author":{"login":"plain"},"body":"old","createdAt":"2026-01-01T00:00:02Z","replyTo":null}
 			 ]}}
 		]},
 		"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
@@ -298,14 +339,23 @@ func TestReadPRActorShapes(t *testing.T) {
 		d.LatestReviews[1].AuthorLogin != "plain" || d.LatestReviews[1].AuthorName != "" {
 		t.Fatalf("latest reviews = %+v, want the two with an author", d.LatestReviews)
 	}
-	if len(got.Threads) != 2 {
-		t.Fatalf("threads = %+v, want the review thread and the unminimized comment", got.Threads)
+	if len(got.Threads) != 3 {
+		t.Fatalf("threads = %+v, want the two review threads and the unminimized comment", got.Threads)
+	}
+	// A current thread carries both lines; an outdated one has no current
+	// line and keeps the line it was written against.
+	if current := got.Threads[0]; current.Line == nil || *current.Line != 3 || current.OriginalLine == nil || *current.OriginalLine != 3 || current.OriginalStartLine != nil {
+		t.Fatalf("current thread lines = line %v original %v start %v", current.Line, current.OriginalLine, current.OriginalStartLine)
+	}
+	if outdated := got.Threads[1]; !outdated.IsOutdated || outdated.Line != nil || outdated.StartLine != nil ||
+		outdated.OriginalLine == nil || *outdated.OriginalLine != 5 || outdated.OriginalStartLine == nil || *outdated.OriginalStartLine != 4 {
+		t.Fatalf("outdated thread lines = %+v", outdated)
 	}
 	review := got.Threads[0].Comments
 	if len(review) != 2 || review[0].AuthorLogin != "github-actions" || review[1].AuthorLogin != "" || review[1].ReplyTo == nil || review[1].ReplyTo.DatabaseID != 11 {
 		t.Fatalf("review thread comments = %+v", review)
 	}
-	if c := got.Threads[1].Comments[0]; c.Body != "shown" || c.AuthorLogin != "plain" || c.AuthorName != "" {
+	if c := got.Threads[2].Comments[0]; c.Body != "shown" || c.AuthorLogin != "plain" || c.AuthorName != "" {
 		t.Fatalf("conversation comment = %+v", c)
 	}
 }
@@ -316,28 +366,34 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 	t.Parallel()
 	answer := readTestdata(t, "github-pr-tick-cli-14571.json")
 	cases := []struct {
-		want                    PRReadParts
-		detail, threads, checks bool
+		want                            PRReadParts
+		detail, threads, events, checks bool
 	}{
-		{PRReadParts{CI: true}, false, false, true},
-		{PRReadParts{Threads: true}, false, true, false},
-		{PRReadParts{Detail: true}, true, false, true},
-		{PRReadParts{Detail: true, Threads: true}, true, true, true},
+		{PRReadParts{CI: true}, false, false, false, true},
+		{PRReadParts{Threads: true}, false, true, false, false},
+		{PRReadParts{Events: true}, false, false, true, false},
+		{PRReadParts{Detail: true}, true, false, false, true},
+		{PRReadParts{Detail: true, Threads: true, Events: true}, true, true, true, true},
 	}
 	var query string
 	for _, tc := range cases {
-		core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer { return forgeAPIAnswer{Body: answer} })
+		core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+			if extra, ok := githubCIExtras(call); ok {
+				return extra
+			}
+			return forgeAPIAnswer{Body: answer}
+		})
 		got, err := core.ReadPR(t.Context(), githubTestRef(14571), tc.want, nil, nil)
 		if err != nil {
 			t.Fatalf("%+v: %v", tc.want, err)
 		}
-		sent := calls.all()
+		sent := slices.DeleteFunc(calls.all(), func(call forgeAPICall) bool { _, extra := githubCIExtras(call); return extra })
 		if len(sent) != 1 || sent[0].Op != "PRTick" || sent[0].Host != testForgeHost {
 			t.Fatalf("%+v: requests = %+v", tc.want, sent)
 		}
 		vars := sent[0].Vars
 		if vars["owner"] != "o" || vars["name"] != "r" || vars["number"] != float64(14571) ||
-			vars["wantDetail"] != tc.detail || vars["wantThreads"] != tc.threads || vars["wantChecks"] != tc.checks {
+			vars["wantDetail"] != tc.detail || vars["wantThreads"] != tc.threads || vars["wantEvents"] != tc.events || vars["wantChecks"] != tc.checks {
 			t.Fatalf("%+v: variables = %v", tc.want, vars)
 		}
 		if query != "" && sent[0].Query != query {
@@ -354,6 +410,7 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		"commits(last: 1) @include(if: $wantChecks)",
 		"reviewThreads(first: 100) @include(if: $wantThreads)",
 		"comments(first: 100) @include(if: $wantThreads)",
+		"]) @include(if: $wantEvents)",
 	} {
 		if !strings.Contains(query, gate) {
 			t.Fatalf("PRTick lacks %q", gate)
@@ -365,7 +422,7 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 }
 
 func githubThreadJSON(id string, comments []string, hasNext bool) string {
-	return fmt.Sprintf(`{"id":%q,"isResolved":false,"isOutdated":false,"path":"a.go","line":1,"startLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE","comments":{"pageInfo":{"hasNextPage":%t,"endCursor":"c-%s"},"nodes":[%s]}}`,
+	return fmt.Sprintf(`{"id":%q,"isResolved":false,"isOutdated":false,"path":"a.go","line":1,"startLine":null,"originalLine":1,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE","comments":{"pageInfo":{"hasNextPage":%t,"endCursor":"c-%s"},"nodes":[%s]}}`,
 		id, hasNext, id, strings.Join(comments, ","))
 }
 
@@ -395,6 +452,9 @@ func githubContextsJSON(from, n int) []string {
 func TestReadPRPagesEveryConnection(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if extra, ok := githubCIExtras(call); ok {
+			return extra
+		}
 		switch call.Op {
 		case "PRTick":
 			return githubData(`{"viewer":{"login":"v"},"repository":{"pullRequest":{"number":5,"title":"t","author":{"login":"a"},"state":"OPEN",
@@ -429,7 +489,7 @@ func TestReadPRPagesEveryConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadPR: %v", err)
 	}
-	if ops := calls.ops(); fmt.Sprint(ops) != "[PRTick RollupContextsPage PRThreadsPage ThreadCommentsPage PRCommentsPage]" {
+	if ops := withoutCIExtras(calls.ops()); fmt.Sprint(ops) != "[PRTick RollupContextsPage PRThreadsPage ThreadCommentsPage PRCommentsPage]" {
 		t.Fatalf("requests = %v", ops)
 	}
 	if len(got.Threads) != 2+150 {
@@ -496,7 +556,7 @@ func TestGitHubWithoutATransportIsErrNoForgeAPI(t *testing.T) {
 	if _, err := core.ReadPR(t.Context(), githubTestRef(1), allParts, nil, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("ReadPR = %v", err)
 	}
-	if _, err := core.StreamCIJobLog(t.Context(), githubTestRef(1), CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
+	if _, err := core.StreamCIJobLog(t.Context(), githubTestRef(1).Repository(), CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("StreamCIJobLog = %v", err)
 	}
 }
@@ -519,6 +579,9 @@ func newGitHubCICore(t *testing.T) (*Core, *githubCIFake, func() []string) {
 	t.Helper()
 	fake := &githubCIFake{}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if extra, ok := githubCIExtras(call); ok {
+			return extra
+		}
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		if call.Op == "PRTick" {
@@ -537,7 +600,7 @@ func newGitHubCICore(t *testing.T) (*Core, *githubCIFake, func() []string) {
 	return core, fake, func() []string {
 		var rest []string
 		for _, call := range calls.all() {
-			if call.Op == "" {
+			if _, extra := githubCIExtras(call); call.Op == "" && !extra {
 				rest = append(rest, call.Path)
 			}
 		}
@@ -759,7 +822,7 @@ func streamTestLog(t *testing.T, core *Core, ref PRReference, req CIJobLogReques
 	var start CIJobLogStart
 	var body strings.Builder
 	begun := false
-	notModified, err := core.StreamCIJobLog(t.Context(), ref, req, func(s CIJobLogStart) (io.Writer, error) {
+	notModified, err := core.StreamCIJobLog(t.Context(), ref.Repository(), req, func(s CIJobLogStart) (io.Writer, error) {
 		start, begun = s, true
 		return &body, nil
 	})
@@ -957,7 +1020,7 @@ func TestGitHubOriginScopedLists(t *testing.T) {
 			// the repository's own.
 			return githubData(`{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
 				`{"url":"https://github.com/acme/repo/pull/7","number":7,"title":"Fork","state":"OPEN","isCrossRepository":true},` +
-				`{"url":"https://github.com/acme/repo/pull/3","number":3,"title":"Fix","state":"OPEN","isCrossRepository":false}]}}}`)
+				`{"url":"https://github.com/acme/repo/pull/3","number":3,"title":"Fix","state":"OPEN","baseRefName":"release","isCrossRepository":false}]}}}`)
 		case "MergedPRs":
 			first := int(call.Vars["first"].(float64))
 			after, _ := call.Vars["after"].(string)
@@ -976,8 +1039,11 @@ func TestGitHubOriginScopedLists(t *testing.T) {
 	cwd := t.TempDir()
 	seedForgeCacheGitHubOrigin(t, core, cwd, "git@github.com:Acme/Repo.git")
 	pulls, err := core.ListOpenPRs(t.Context(), cwd, "feature/x")
-	if err != nil || len(pulls) != 1 || pulls[0].Number != 3 || pulls[0].State != "open" {
+	if err != nil || len(pulls) != 1 || pulls[0].Number != 3 || pulls[0].State != "open" || pulls[0].BaseBranch != "release" {
 		t.Fatalf("ListOpenPRs = %+v, %v", pulls, err)
+	}
+	if !strings.Contains(calls.all()[0].Query, "baseRefName") {
+		t.Fatal("OpenPRsByHead does not ask for each PR's base")
 	}
 	heads, err := core.ListMergedPRHeads(t.Context(), cwd, 150)
 	if err != nil || len(heads) != 150 || heads[149].HeadRefName != "b149" {
@@ -1073,7 +1139,7 @@ func TestGitHubOriginUnknown(t *testing.T) {
 		},
 	}
 	for name, seed := range cases {
-		cwd := t.TempDir()
+		cwd := initGitRepo(t)
 		seed(cwd)
 		_, err := forge.ListOpenPRs(t.Context(), cwd, "b")
 		var unknown *OriginUnknownError
@@ -1102,17 +1168,17 @@ func TestGitHubFetchAttachment(t *testing.T) {
 	})
 	ref := PRReference{Forge: "github", Host: "github.com", Namespace: "o", Repo: "r", Number: 1}
 	href := "https://github.com/user-attachments/assets/0f0e0d0c-0b0a-0908-0706-050403020100"
-	data, name, err := core.FetchAttachment(t.Context(), ref, href, 1<<20)
+	data, name, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 1<<20)
 	if err != nil || string(data) != content || name != "0f0e0d0c-0b0a-0908-0706-050403020100" {
 		t.Fatalf("FetchAttachment = %q %q %v", data, name, err)
 	}
 	if sent := calls.all(); len(sent) != 1 || sent[0].Header.Get("Accept") != "*/*" || sent[0].Header.Get("Authorization") != "Bearer test-token" {
 		t.Fatalf("attachment request = %+v", sent)
 	}
-	if _, _, err := core.FetchAttachment(t.Context(), ref, href, 4); err == nil || !strings.Contains(err.Error(), "larger than 4 bytes") {
+	if _, _, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 4); err == nil || !strings.Contains(err.Error(), "larger than 4 bytes") {
 		t.Fatalf("over-cap attachment = %v", err)
 	}
-	if _, err := core.ForgeByID("github").FetchAttachment(t.Context(), ref, forgeattach.Target{Forge: "gitlab", Request: "projects/1/uploads/x/y"}, 10); err == nil {
+	if _, err := core.ForgeByID("github").FetchAttachment(t.Context(), ref.Repository(), forgeattach.Target{Forge: "gitlab", Request: "projects/1/uploads/x/y"}, 10); err == nil {
 		t.Fatal("a GitLab target went to GitHub")
 	}
 	if n := len(calls.all()); n != 2 {
@@ -1128,7 +1194,7 @@ func TestGitHubFetchAttachmentFailure(t *testing.T) {
 		return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"Not Found"}`}
 	})
 	ref := PRReference{Forge: "github", Host: "github.com", Namespace: "o", Repo: "r", Number: 1}
-	_, _, err := core.FetchAttachment(t.Context(), ref, "https://private-user-images.githubusercontent.com/1/2.png?jwt=SIGNED", 1<<20)
+	_, _, err := core.FetchAttachment(t.Context(), ref.Repository(), "https://private-user-images.githubusercontent.com/1/2.png?jwt=SIGNED", 1<<20)
 	status, ok := errors.AsType[*forgeapi.StatusError](err)
 	if !ok || status.Status != http.StatusNotFound || strings.Contains(err.Error(), "SIGNED") {
 		t.Fatalf("FetchAttachment = %v, want a redacted 404", err)

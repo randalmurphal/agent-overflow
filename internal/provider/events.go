@@ -369,6 +369,14 @@ const MetaTranscriptMirroredKey = "transcript_mirrored"
 // thinking stream after the transcript has already advanced beyond it.
 const MetaTranscriptSnapshotKey = "transcript_snapshot"
 
+// MetaNarrationKey marks a reasoning block the provider marked as prose for
+// the user. The provider adapter sets it to true on the event that settles
+// the block: a thinking block's stop, or a complete thinking block read from
+// a snapshot or a transcript. Consumers persist that block as assistant
+// text carrying the same key in its item meta, and never read the provider's
+// own marker.
+const MetaNarrationKey = "narration"
+
 // MetaSubagentLaunchKey marks a tool start whose input creates a new agent.
 // Provider adapters know this from their typed wire shape; triage must not
 // maintain a tool-name list to recover it.
@@ -456,6 +464,12 @@ const (
 	// consumers must not infer narrower model/bucket availability from them.
 	FailureReasonUsageLimit FailureReason = "usage-limit"
 )
+
+// IsUsageLimitRefusal reports whether evt is a provider's typed usage-limit
+// refusal of a turn.
+func IsUsageLimitRefusal(evt ProviderEvent) bool {
+	return evt.Kind == EventError && evt.Failure != nil && evt.Failure.Reason == FailureReasonUsageLimit
+}
 
 type FailureBoundary uint8
 

@@ -152,6 +152,9 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// drain barrier runs. Cancelling after the drain would let
 		// in-flight goroutines slip past it.
 		"cancel app context",
+		// "stop review diff pins" joins the background git runs that pin
+		// review diffs' files; nothing they do outlives the app.
+		"stop review diff pins",
 		"drain triage",
 		"drain flush dispatch",
 		// "drain notifications" MUST appear before "close store" — a queued
@@ -199,6 +202,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// a run writes the thread's durable worktree_setup_state. It joins
 		// alongside the other background cadences for the same reason.
 		"stop worktree setups",
+		// "stop composer shell commands" MUST appear before "close provider
+		// sessions" and "close store" — a run that settles saves an
+		// attachment and sends a message; a stopped one sends nothing.
+		"stop composer shell commands",
 		// "stop session imports" MUST appear before "close store" — an
 		// import run writes threads, items and turns straight into SQLite.
 		// Same slot as the other background work for the same reason.

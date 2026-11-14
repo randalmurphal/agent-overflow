@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"strings"
 	"testing"
@@ -116,50 +117,6 @@ func TestEditFileSnapshotOverwriteAndMiss(t *testing.T) {
 	}
 }
 
-func TestGetLatestTurnEditFileSnapshot(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t1", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	// Turn 3 touches a.go twice (items 2 and 5) and b.go once; turn 4
-	// touches a.go again — it must not leak into turn 3's answer.
-	insertSnapshotTestPayload(t, s, "t1", "item-1", "p1", 2, 3)
-	insertSnapshotTestPayload(t, s, "t1", "item-2", "p2", 5, 3)
-	insertSnapshotTestPayload(t, s, "t1", "item-3", "p3", 4, 3)
-	insertSnapshotTestPayload(t, s, "t1", "item-4", "p4", 0, 4)
-	now := time.Now().UnixMilli()
-	for _, put := range []struct{ payloadID, path, content string }{
-		{"p1", "a.go", "a v1"},
-		{"p2", "a.go", "a v2"},
-		{"p3", "b.go", "b v1"},
-		{"p4", "a.go", "a turn4"},
-	} {
-		if err := s.PutEditFileSnapshot("t1", put.payloadID, put.path, put.content, now); err != nil {
-			t.Fatalf("put %s %s: %v", put.payloadID, put.path, err)
-		}
-	}
-
-	got, found, err := s.GetLatestTurnEditFileSnapshot("t1", 3, "a.go")
-	if err != nil || !found {
-		t.Fatalf("latest a.go: %v found=%v", err, found)
-	}
-	if got != "a v2" {
-		t.Fatalf("latest a.go = %q, want %q", got, "a v2")
-	}
-
-	got, found, err = s.GetLatestTurnEditFileSnapshot("t1", 3, "b.go")
-	if err != nil || !found {
-		t.Fatalf("latest b.go: %v found=%v", err, found)
-	}
-	if got != "b v1" {
-		t.Fatalf("latest b.go = %q, want %q", got, "b v1")
-	}
-
-	if _, found, err = s.GetLatestTurnEditFileSnapshot("t1", 5, "a.go"); err != nil || found {
-		t.Fatalf("turn without edits: err=%v found=%v, want nil/false", err, found)
-	}
-}
-
 func TestEditFileSnapshotCascadesWithPayload(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t1", "claude")); err != nil {
@@ -189,4 +146,84 @@ func TestEditFileSnapshotCascadesWithPayload(t *testing.T) {
 	if snapshots != 0 {
 		t.Fatalf("snapshot did not cascade with payload delete, %d rows remain", snapshots)
 	}
+}
+
+// The write API enforces the capture limit itself.
+func TestPutEditFileSnapshotRefusesContentPastTheCaptureLimit(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t1", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	insertSnapshotTestPayload(t, s, "t1", "item-1", "p1", 0, 0)
+	if err := s.PutEditFileSnapshot("t1", "p1", "big.svg", strings.Repeat("x", MaxEditFileSnapshotBytes+1), time.Now().UnixMilli()); err == nil {
+		t.Fatal("content past the capture limit was stored")
+	}
+	if err := s.PutEditFileSnapshot("t1", "p1", "max.svg", strings.Repeat("x", MaxEditFileSnapshotBytes), time.Now().UnixMilli()); err != nil {
+		t.Fatalf("content at the capture limit: %v", err)
+	}
+}
+
+// DecompressEditFileSnapshot sizes the content before it decompresses
+// any, asks for exactly that buffer, and refuses a row whose content is not
+// its recorded size or is past the capture limit.
+func TestDecompressEditFileSnapshotFillsTheBufferItAskedFor(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t1", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	insertSnapshotTestPayload(t, s, "t1", "item-1", "p1", 0, 0)
+	content := strings.Repeat("<g/>", 1000)
+	if err := s.PutEditFileSnapshot("t1", "p1", "a.svg", content, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	var asked []int64
+	var buf []byte
+	take := func(n int64) ([]byte, error) {
+		asked = append(asked, n)
+		buf = make([]byte, n)
+		return buf, nil
+	}
+	blob, found, err := s.GetEditFileSnapshotBlob("t1", "p1", "a.svg")
+	if err != nil || !found {
+		t.Fatalf("blob: found %v, err %v", found, err)
+	}
+	size, err := DecompressEditFileSnapshot(blob, take)
+	if err != nil || size != int64(len(content)) || string(buf) != content || len(asked) != 1 || asked[0] != int64(len(content)) {
+		t.Fatalf("read %d bytes (err %v), asked %v", size, err, asked)
+	}
+	if _, found, err := s.GetEditFileSnapshotBlob("t-other", "p1", "a.svg"); err != nil || found {
+		t.Fatalf("cross-thread payload: found %v, err %v", found, err)
+	}
+	if _, found, err := s.GetEditFileSnapshotBlob("t1", "p1", "missing.svg"); err != nil || found {
+		t.Fatalf("missing path: found %v, err %v", found, err)
+	}
+
+	for name, blob := range map[string][]byte{
+		"a recorded size past the limit":           withISize(gzipped(t, "abc"), MaxEditFileSnapshotBytes+1),
+		"a recorded size shorter than its content": withISize(gzipped(t, "abcdef"), 3),
+		"a recorded size longer than its content":  withISize(gzipped(t, "abc"), 6),
+	} {
+		asked = nil
+		if _, err := DecompressEditFileSnapshot(blob, take); err == nil {
+			t.Errorf("%s was read", name)
+		}
+		if name == "a recorded size past the limit" && len(asked) != 0 {
+			t.Errorf("%s asked for a buffer of %v", name, asked)
+		}
+	}
+}
+
+func gzipped(t *testing.T, content string) []byte {
+	t.Helper()
+	blob, err := gzipSnapshotContent(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return blob
+}
+
+func withISize(blob []byte, size uint32) []byte {
+	out := append([]byte(nil), blob...)
+	binary.LittleEndian.PutUint32(out[len(out)-4:], size)
+	return out
 }

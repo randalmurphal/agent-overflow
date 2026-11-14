@@ -37,6 +37,20 @@ it('keeps a consumed message pending while its row is outside the loaded window'
   expect(getFlushedForThread(threadId)).toEqual([]);
 });
 
+it('releases a consumed message it never rendered when the pane leaves the thread', async () => {
+  pane = await buildPane(makeThread({ id: 'recovery-left' }));
+  const threadId = pane.threadId!;
+  markItemsFlushed(threadId, [{ queueItemId: 'q', userItemId: 'user:flush:1', message: 'consumed outside window' }]);
+  const row = makeItem({ id: 'user:flush:1', threadId, kind: 'user_text', role: 'user', summary: 'consumed outside window', meta: '{"provider_item_id":"echo"}' });
+  setBindingMock('GetThreadItem', async () => row);
+  setBindingMock('GetThreadLiveState', async (id: string) => ({ threadId: id, activeTurn: null, queueItems: [], flushedItems: [] }));
+  await pane.refreshFromBackend(true);
+  expect(getFlushedForThread(threadId)).toHaveLength(1);
+
+  await pane.switchThread(makeThread({ id: 'recovery-elsewhere' }));
+  expect(getFlushedForThread(threadId)).toEqual([]);
+});
+
 it('hands a consumed message to history when its row is older than the loaded window', async () => {
   const threadId = 'recovery-before-window';
   const tail = [
@@ -76,7 +90,7 @@ it.each([false, true])('preserves the preview and reports a failed confirmation 
   expect(pane.generalError).toContain('confirmation read failed');
 });
 
-it('history recovery confirms a provisional send when both its queue event and echo were lost', async () => {
+it('history recovery confirms a queued send when both its queue event and echo were lost', async () => {
   pane = await buildPane(makeThread({ id: 'recovery-pending-rpc' }));
   const threadId = pane.threadId!;
   const options = buildSendOptions({ attachmentIds: [] });
@@ -93,32 +107,6 @@ it('history recovery confirms a provisional send when both its queue event and e
   reply({ id: 'q', threadId, message: 'consumed', sendId: options.sendId, enqueuedAt: 1 });
   await sending;
   expect(getQueueForThread(threadId)).toHaveLength(0);
-});
-
-it('a provisional timeline row cannot acknowledge its own queued submission during recovery', async () => {
-  pane = await buildPane(makeThread({ id: 'recovery-provisional-row' }));
-  const threadId = pane.threadId!;
-  const options = buildSendOptions({ attachmentIds: [] });
-  let reply!: (item: unknown) => void;
-  setBindingMock('RegisterQueueItem', () => new Promise(resolve => { reply = resolve; }));
-  const sending = registerQueueItem(threadId, 'pending', options);
-  let release!: () => void;
-  const read = setBindingMock('GetThreadLiveState', () => new Promise(resolve => {
-    release = () => resolve({ threadId, queueItems: [], flushedItems: [] });
-  }));
-  const refreshing = pane.refreshFromBackend(true);
-  await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
-  const row = makeItem({ id: 'optimistic:pending', threadId, kind: 'user_text', role: 'user',
-    summary: 'pending', meta: JSON.stringify({ sendId: options.sendId }) });
-  pane.trackOptimisticItem(row.id);
-  pane.upsertItems([row]);
-  release();
-  await refreshing;
-  expect(pane.isOptimisticItem(row.id)).toBe(true);
-  expect(getQueueForThread(threadId)).toHaveLength(1);
-  expect(getFlushedForThread(threadId)).toHaveLength(0);
-  reply({ id: 'q', threadId, message: 'pending', sendId: options.sendId, enqueuedAt: 1 });
-  await sending;
 });
 
 it('waits for old replay and queued item mutations before reading current state', async () => {

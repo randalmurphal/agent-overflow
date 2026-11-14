@@ -159,6 +159,9 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 		// The prompt of a turn the provider started from its own schedule
 		// (a Claude cron job's fire or ScheduleWakeup wake). The model
 		// stored it when it scheduled the turn; nobody typed it now.
+		if err := r.openScheduledTurn(evt); err != nil {
+			return err
+		}
 		return r.persistExternalOriginMessage(evt, providerItemID, "scheduled", scheduledTurnOrigin, nil)
 	}
 	if origin == externalQueueOrigin {
@@ -252,7 +255,7 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 	if handleErr != nil && !r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
 		// This confirmation IS the consumption boundary even though the
 		// write failed: record the message anchor now so fork /
-		// revert-on-interrupt can slice at this message without
+		// edit-and-resend can slice at this message without
 		// waiting for a retry or session-death self-heal. The
 		// anchor row doesn't depend on the failed stamp, only on
 		// the item row existing (FK) — so record for found rows
@@ -541,6 +544,24 @@ const userEchoClientIDMetaKey = "client_id"
 // `TestPeerMessageOriginMatchesTheProviderConstant`.
 const crossSessionMessageOrigin = "peer-session"
 
+// openScheduledTurn opens the turn a scheduled prompt starts when nothing
+// has opened it yet. A ScheduleWakeup wake sends `system/init` first, which
+// opens the turn (handleInit); a cron job's fire sends none, so its prompt
+// is the first frame of its turn and would otherwise join the turn before
+// it. A send waiting for a turn takes the fire into its own, as an init
+// would (docs/architecture/turn-lifecycle.md §Turns the provider starts).
+func (r *Router) openScheduledTurn(evt provider.ProviderEvent) error {
+	if _, open := r.openTurnIndex(evt.ThreadID); open {
+		return nil
+	}
+	unlock := r.LockTurnAllocation(evt.ThreadID)
+	defer unlock()
+	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
+		return r.handleTurnStart(evt)
+	}
+	return r.openProviderStartedTurn(evt, true)
+}
+
 // scheduledTurnOrigin mirrors `claude.ScheduledTurnOrigin`: the user row
 // of a turn the provider started from its own schedule. Duplicated for the
 // same reason as crossSessionMessageOrigin and pinned by
@@ -615,9 +636,9 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 		log.Printf("triage: Claude did not honour the supplied uuid %q; echo carries %q", oldID, providerItemID)
 	}
 	// A direct send owns a fresh turn that a provider turn start normally
-	// opens. Drained into a turn the provider started itself (a background
-	// re-round), it gets no start of its own, so its consumption opens it,
-	// exactly as a deferred row's does. A no-op when its turn is open.
+	// opens. Drained mid-loop into a running turn, it gets no start of its
+	// own, so its consumption opens it, exactly as a deferred row's does.
+	// A no-op when its turn is open.
 	if pending.Shape == sendShapeDirect && !pending.OpenedTurn {
 		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex, evt.SessionToken)
 	}
@@ -627,6 +648,12 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 			return err
 		}
 		if merged == existing.Meta {
+			// Nothing to write, but the provider has the message: the
+			// review drafts it carries are delivered, as a write's
+			// confirmation would settle them.
+			if err := r.store.SettleDiffReviewClaims(threadID, pending.AOItemID); err != nil {
+				return err
+			}
 			r.markWireOnlyUserTextSeen(threadID, providerItemID)
 			return r.store.UpdateMessageAnchorProviderIDs(threadID, pending.AOItemID, providerItemID, pending.EchoParentUUID)
 		}

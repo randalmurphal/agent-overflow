@@ -46,6 +46,7 @@
   import ThreadRowPinButton from './ThreadRowPinButton.svelte';
   import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { roleButtonKeys } from '../../utils/roleButtonKeys';
   import {
     archiveThreadAction,
     deleteThreadAction,
@@ -238,6 +239,9 @@
     else void openThreadFromNavigation(thread);
   }
 
+  // Enter and Space open the row as they would a native button.
+  const rowKeys = roleButtonKeys(() => handleClick());
+
   function startRename() {
     editing = true;
     editValue = thread.title || '';
@@ -329,11 +333,7 @@
 
   function handleRowKeydown(e: KeyboardEvent): void {
     if (editing) return;
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      handleClick();
-      return;
-    }
+    if (rowKeys.keydown(e)) return;
     if (e.key === 'F2') {
       e.preventDefault();
       startRename();
@@ -400,7 +400,6 @@
     };
     e.dataTransfer.effectAllowed = 'copyMove';
     e.dataTransfer.setData(THREAD_ROW_DRAG_MIME, encodeThreadDragPayload(payload));
-    e.dataTransfer.setData('text/plain', thread.id);
     // The group drop targets read this during dragover, where the
     // DataTransfer is in protected mode and hands back nothing.
     beginThreadRowDrag(payload);
@@ -504,6 +503,8 @@
   <div
     bind:this={rowEl}
     onkeydown={handleRowKeydown}
+    onkeyup={(e) => { if (!editing) rowKeys.keyup(e); }}
+    onblur={rowKeys.blur}
     role="button"
     tabindex={0}
     aria-pressed={selected}

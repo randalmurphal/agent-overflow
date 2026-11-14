@@ -1,8 +1,7 @@
 import type { Item } from './models';
 /**
- * Event emitted via `user_message:reverted` after a successful
- * conversation revert — the Stop/Esc un-send and the edit-and-resend
- * saga. The backend has truncated SQLite; this
+ * Event emitted via `user_message:reverted` after the edit-and-resend
+ * saga's committed revert. The backend has truncated SQLite; this
  * event tells the frontend exactly how to mirror that cut:
  *
  * - Every item with `turnIndex > turnIndex` is gone.
@@ -30,7 +29,7 @@ export interface UserMessageRevertedEvent {
   userItemId: string;
   turnIndex: number;
   keptAnchorTurnItemIds?: string[];
-  /** Replacement operations preserve composer WIP and do not rehydrate it. */
+  /** Marks the cut of an edit-and-resend; its replacement is the resent message. */
   draftPendingResend?: boolean;
   /**
    * Post-cut history stamps, read inside the cut transaction

@@ -114,6 +114,7 @@ func TestSameAccountActivationKeepsTheIdentity(t *testing.T) {
 	if err := credentials.CommitSelectedCredential(
 		"claude",
 		"same",
+		nil,
 		[]byte(`{"claudeAiOauth":{"accessToken":"rotated"}}`),
 	); err != nil {
 		t.Fatalf("CommitSelectedCredential: %v", err)

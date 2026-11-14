@@ -32,6 +32,9 @@ destructive order this package exists to inform.
   first-class and a thread from any project row can make one unsafe.
 - A force flag may bypass loss-of-work confirmation in root; it must never
   bypass registered-worktree membership.
+- `Find` also returns a registration whose directory is gone, which removal
+  and status need. A caller that puts a thread in the worktree uses
+  `FindPresent`.
 - `Activity` is the one busy-thread projection workspace REMOVAL gates on
   (`App.ensureWorkspaceChangeAllowed`), so a live frontend affordance and a
   backend refusal cannot disagree. Branch changes (checkout, create-branch,

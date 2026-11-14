@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/stringsx"
 )
 
@@ -105,8 +106,14 @@ type Config struct {
 	// message and thread-title generation would be the one surface that
 	// silently kept talking to the vendor default. Applied over the process
 	// environment by ExecCLI.
-	Env  map[string]string
-	Exec CLIExecutor
+	Env map[string]string
+	// ClaudeCleanupPeriodDays answers the `cleanupPeriodDays` a Claude run
+	// in workspace carries, from claude.CleanupPeriodOverride. Nil or zero
+	// sends none. A run outlives the few seconds the CLI waits before its
+	// transcript sweep, so it carries what a session in that workspace
+	// does (claude/retention.go).
+	ClaudeCleanupPeriodDays func(workspace string) int
+	Exec                    CLIExecutor
 }
 
 // CLIExecutor is the seam tests use to stub out Codex/Claude CLI
@@ -128,6 +135,9 @@ type CLISpec struct {
 	// cannot go missing on one of them, and so the AppImage launch artifacts
 	// that rule scrubs are gone from this CLI's environment too.
 	Env map[string]string
+	// UnsetEnv names inherited variables removed from the child's
+	// environment.
+	UnsetEnv []string
 }
 
 // CLIResult is the observable outcome of a provider-CLI invocation.
@@ -165,7 +175,7 @@ func ExecCLI(ctx context.Context, spec CLISpec) (CLIResult, error) {
 	// resolve its own runtime against. Gating it on len(spec.Env) would leave
 	// the override-free callers — the ones that look most like a plain inherit
 	// — as the only spawns without the shared rule.
-	cmd.Env = provider.BuildEnvironment(spec.Env)
+	cmd.Env = provider.BuildEnvironment(spec.Env, spec.UnsetEnv...)
 
 	stdout := newCappedOutput(ProcessOutputLimit)
 	stderr := newCappedOutput(ProcessOutputLimit)
@@ -443,6 +453,9 @@ func RunClaude(
 	if cfg.Effort != "" {
 		args = append(args, "--effort", cfg.Effort)
 	}
+	if cfg.ClaudeCleanupPeriodDays != nil {
+		args = append(args, claude.CleanupPeriodArgs(cfg.ClaudeCleanupPeriodDays(workspace))...)
+	}
 	args = append(args, extraArgs...)
 
 	result, err := cfg.Exec(ctx, CLISpec{
@@ -451,6 +464,9 @@ func RunClaude(
 		Cwd:    workspace,
 		Stdin:  stdin,
 		Env:    cfg.Env,
+		// The run uses the config home every other Claude launch uses, the
+		// one its retention period was resolved against.
+		UnsetEnv: claude.ConfigHomeUnsetEnv(),
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("claude", timeout, err)

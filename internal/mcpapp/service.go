@@ -40,25 +40,28 @@ type Deps struct {
 	Context        func() context.Context
 	IsShuttingDown func() bool
 	// EnsureSession starts the thread's session when none is live.
-	EnsureSession        func(threadID string) error
-	Session              func(threadID string) (Session, bool)
-	CodexSessions        func() []CodexLiveSession
-	ClaudeSessions       func(workspacePath string) []ClaudeLiveSession
-	ProviderBinary       func(providerName string) string
-	SessionProcessEnv    func(providerName string) map[string]string
-	ReadClaudeCredential func() ([]byte, error)
-	Emit                 func(eventchan.Channel, any)
-	EmitThreadError      func(threadID, message string)
-	EmitWireError        func(threadID, message string)
-	Store                *store.Store
-	Logger               *logging.Logger
-	ClaudeConfig         *claudeconfig.Store
-	ClaudeConfigPath     func() (string, error)
-	CodexConfig          *codexconfig.Store
-	CodexConfigPath      func() (string, error)
-	StatusCache          *mcpstatus.Cache
-	WorkspaceAuthStarter WorkspaceAuthStarter
-	ShutdownError        error
+	EnsureSession     func(threadID string) error
+	Session           func(threadID string) (Session, bool)
+	CodexSessions     func() []CodexLiveSession
+	ClaudeSessions    func(workspacePath string) []ClaudeLiveSession
+	ProviderBinary    func(providerName string) string
+	SessionProcessEnv func(providerName string) map[string]string
+	// ClaudeCleanupPeriodDays is the `cleanupPeriodDays` a Claude sign-in
+	// process carries, 0 for none (claude.Config.CleanupPeriodDays).
+	ClaudeCleanupPeriodDays func(workDir string) int
+	ReadClaudeCredential    func() ([]byte, error)
+	Emit                    func(eventchan.Channel, any)
+	EmitThreadError         func(threadID, message string)
+	EmitWireError           func(threadID, message string)
+	Store                   *store.Store
+	Logger                  *logging.Logger
+	ClaudeConfig            *claudeconfig.Store
+	ClaudeConfigPath        func() (string, error)
+	CodexConfig             *codexconfig.Store
+	CodexConfigPath         func() (string, error)
+	StatusCache             *mcpstatus.Cache
+	WorkspaceAuthStarter    WorkspaceAuthStarter
+	ShutdownError           error
 }
 
 // Service owns MCP configuration, status, OAuth, and live reload coordination.
@@ -119,6 +122,13 @@ func (a *Service) sessionProcessEnv(providerName string) map[string]string {
 		return nil
 	}
 	return a.deps.SessionProcessEnv(providerName)
+}
+
+func (a *Service) claudeCleanupPeriodDays(workDir string) int {
+	if a == nil || a.deps.ClaudeCleanupPeriodDays == nil {
+		return 0
+	}
+	return a.deps.ClaudeCleanupPeriodDays(workDir)
 }
 
 func (a *Service) shutdownError() error {

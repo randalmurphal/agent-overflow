@@ -199,7 +199,7 @@ func TestProbeAccountBuildsMaxTurnsZeroArgs(t *testing.T) {
 	// Zero-token guarantee depends on --max-turns 0 being passed to the
 	// CLI even though the probe never sends a user turn — defense in
 	// depth in case the process linger past our control_request reply.
-	args := buildProbeArgs()
+	args := buildProbeArgs(ProbeConfig{})
 
 	var hasMaxTurnsZero bool
 	for i, arg := range args {

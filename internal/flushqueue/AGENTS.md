@@ -5,7 +5,9 @@ live `triage.QueuedFlushItem` representation and a durable
 `store.FlushQueueItem`; both project to the same `QueuedItem`.
 
 - Keep `Payload` aligned with the queued subset of send options. Runtime mode is
-  intentionally absent because dispatch uses the active round's mode.
+  intentionally absent because dispatch uses the active round's mode. The
+  review fields a requeue rebuilds from a row (`TextBeforeReviewComments`,
+  `RenderedReviewComments`) are set only by the app, never from send options.
 - Preserve queue id, send id, message, attachment ids, plan and review sources,
   and enqueue timestamp across both projectors.
 - A malformed opaque payload logs the decode error and returns the typed message

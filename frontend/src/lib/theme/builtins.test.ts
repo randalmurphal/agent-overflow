@@ -298,4 +298,7 @@ const OPTIONAL_KEYS = new Set<string>([
   'md-inline-code',
   'md-blockquote',
   'md-marker',
+  // Find highlights follow each palette's warning hue.
+  'find-match',
+  'find-match-current',
 ]);

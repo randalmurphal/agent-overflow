@@ -95,7 +95,10 @@ func RunHelper(args []string, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "netisolate: helper needs `path -- argv...`")
 		return 2
 	}
-	err := syscall.Exec(args[0], args[2:], os.Environ())
+	err := recordNamespace()
+	if err == nil {
+		err = syscall.Exec(args[0], args[2:], os.Environ())
+	}
 	fmt.Fprintln(stderr, "netisolate: start isolated command:", err)
 	return 1
 }
@@ -154,6 +157,35 @@ func setLinkUp(conn *rtnetlink.Conn, index int, flags uint32) error {
 	}
 	flags |= unix.IFF_UP
 	return conn.Link.Set(&rtnetlink.LinkMessage{Index: uint32(index), Flags: flags, Change: flags})
+}
+
+func namespaceID() (string, error) { return os.Readlink("/proc/self/ns/net") }
+
+// recordNamespace sets EnvNamespace for the target the helper execs.
+func recordNamespace() error {
+	id, err := namespaceID()
+	if err != nil {
+		return fmt.Errorf("read network namespace: %w", err)
+	}
+	if err := os.Setenv(EnvNamespace, id); err != nil {
+		return fmt.Errorf("record network namespace: %w", err)
+	}
+	return nil
+}
+
+// Inside reports whether this process runs in a namespace Command built: its
+// interfaces have that shape and EnvNamespace, set by the helper, names this
+// process's own network namespace. A host with a lookalike interface set,
+// or a process that inherited the variable outside that namespace, is not
+// inside. Launchers use it to decide whether a namespace is already there to
+// run in; a wrong answer would put listeners on the host.
+func Inside() bool {
+	want := os.Getenv(EnvNamespace)
+	if want == "" {
+		return false
+	}
+	id, err := namespaceID()
+	return err == nil && id == want && Contained()
 }
 
 // Contained reports whether this process runs inside the namespace Command

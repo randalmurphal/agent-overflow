@@ -34,7 +34,7 @@ import { hydrateSessionLive, sessionLiveRevision } from './threadSessionLive.sve
 import {
   beginSendsPendingRead,
   endSendsPendingRead,
-  getCanonicalActiveTurn as getActiveTurn,
+  getActiveTurn,
   hydrateSendsPending,
   interactiveRequestsRevision,
   projectTurnCompleted,

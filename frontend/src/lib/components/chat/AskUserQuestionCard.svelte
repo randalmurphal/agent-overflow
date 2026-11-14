@@ -54,7 +54,7 @@
     type AskQuestion,
   } from './askUserQuestionData';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
-  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getAuthoredWorkspaceFromMeta, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
@@ -99,6 +99,7 @@
   // to every question/option body the card renders through ChatMarkdown
   // — they all flowed through the validator off the same workspace.
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
+  const imageWorkspacePath = $derived(getAuthoredWorkspaceFromMeta(item.meta));
 
   const questions = $derived.by<AskQuestion[]>(() => {
     return extractQuestions(itemMeta);
@@ -223,6 +224,7 @@
                   source={q.question}
                   threadId={item.threadId}
                   workspacePath={paneWorkspacePath(pane)}
+                  {imageWorkspacePath}
                   {pathRefs}
                 />
               </div>
@@ -261,6 +263,7 @@
                               source={option.preview}
                               threadId={item.threadId}
                               workspacePath={paneWorkspacePath(pane)}
+                              {imageWorkspacePath}
                               {pathRefs}
                               class="text-[0.6875rem]"
                             />

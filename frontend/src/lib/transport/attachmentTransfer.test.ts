@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import {
+  TransferRefusedError,
   TransferUnavailableError,
   fetchAttachmentBytes,
   fetchTicketedBytes,
@@ -186,7 +187,7 @@ describe('fetchTicketedBytes', () => {
     }) as typeof globalThis.fetch;
     const controller = new AbortController();
 
-    const pending = fetchTicketedBytes(HOME_BACKEND, '/attachments/image/abc?ticket=t', controller.signal);
+    const pending = fetchTicketedBytes(HOME_BACKEND, '/attachments/image/abc?ticket=t', 'Could not load image', controller.signal);
     controller.abort();
 
     await expect(pending).rejects.toBe(controller.signal.reason);
@@ -194,15 +195,59 @@ describe('fetchTicketedBytes', () => {
 
   it('names a spent ticket as TransferUnavailableError and any other refusal as a plain Error', async () => {
     answerWith(() => new Response('404 page not found', { status: 404 }));
-    const spent = await fetchTicketedBytes(HOME_BACKEND, '/attachments/image/abc?ticket=t').catch((err: unknown) => err);
+    const spent = await fetchTicketedBytes(HOME_BACKEND, '/attachments/image/abc?ticket=t', 'Could not load image').catch((err: unknown) => err);
     expect(spent).toBeInstanceOf(TransferUnavailableError);
     expect((spent as Error).message).toBe('Could not load image: this transfer is no longer available. Try again.');
 
     answerWith(() => new Response('attachment is larger than 100 MiB', { status: 413 }));
-    const refused = await fetchTicketedBytes(HOME_BACKEND, '/attachments/image/abc?ticket=t').catch((err: unknown) => err);
+    const refused = await fetchTicketedBytes(HOME_BACKEND, '/attachments/image/abc?ticket=t', 'Could not load image').catch((err: unknown) => err);
     expect(refused).toBeInstanceOf(Error);
     expect(refused).not.toBeInstanceOf(TransferUnavailableError);
     expect((refused as Error).message).toBe('Could not load image: the file is larger than this backend accepts.');
+  });
+
+  it('carries the route\'s status on every refusal, a 404 as TransferUnavailableError', async () => {
+    const url = '/attachments/speech/s1?ticket=t';
+    for (const [status, body, message] of [
+      [403, 'read aloud in OpenAI voices is off on this computer', 'read aloud in OpenAI voices is off on this computer'],
+      [404, 'this sentence was already read aloud or has expired', 'this sentence was already read aloud or has expired'],
+      [409, 'the key file is empty', 'the key file is empty'],
+      [502, 'OpenAI did not read the text as written', 'OpenAI did not read the text as written'],
+    ] as const) {
+      answerWith(() => new Response(body, { status }));
+      const refused = await fetchTicketedBytes(HOME_BACKEND, url, null).catch((err: unknown) => err);
+      expect(refused).toBeInstanceOf(TransferRefusedError);
+      expect(refused).toMatchObject({ status, message });
+      expect(refused instanceof TransferUnavailableError).toBe(status === 404);
+    }
+    answerWith(() => new Response('', { status: 403 }));
+    const prefixed = await fetchTicketedBytes(HOME_BACKEND, '/attachments/image/abc?ticket=t', 'Could not load image').catch((err: unknown) => err);
+    expect(prefixed).toMatchObject({ status: 403, message: 'Could not load image (403).' });
+  });
+
+  it('words a failure with the caller\'s prefix, or with the route\'s reason alone', async () => {
+    const url = '/attachments/speech/s1?ticket=t';
+    const failure = async (body: string, status: number, prefix: string | null) => {
+      answerWith(() => new Response(body, { status }));
+      return fetchTicketedBytes(HOME_BACKEND, url, prefix).then(() => new Error('the fetch succeeded'), (err: unknown) => err as Error);
+    };
+    expect((await failure('OpenAI did not read the text as written', 502, null)).message)
+      .toBe('OpenAI did not read the text as written');
+    expect((await failure('OpenAI did not read the text as written', 502, 'Could not load image')).message)
+      .toBe('Could not load image: OpenAI did not read the text as written');
+    expect((await failure('', 500, null)).message).toBe('the computer answered 500.');
+    expect((await failure('', 500, 'Could not load image')).message).toBe('Could not load image (500).');
+
+    // Without a prefix a 404 with a reason of its own is quoted; the plain
+    // ticket 404 is not, and with a prefix no 404 body is.
+    expect((await failure('not found', 404, 'Could not load image')).message)
+      .toBe('Could not load image: this transfer is no longer available. Try again.');
+    const expired = await failure('this sentence was already read aloud or has expired', 404, null);
+    expect(expired).toBeInstanceOf(TransferUnavailableError);
+    expect(expired.message).toBe('this sentence was already read aloud or has expired');
+    const spent = await failure('404 page not found', 404, null);
+    expect(spent).toBeInstanceOf(TransferUnavailableError);
+    expect(spent.message).toBe('this transfer is no longer available. Try again.');
   });
 });
 
@@ -228,7 +273,7 @@ describe('under a shell origin', () => {
     const seen: RequestInit[] = [];
     const real = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      seen.push({ ...init, ...{ url: String(input) } } as RequestInit & { url: string });
+      seen.push({ ...init, url: String(input) } as RequestInit & { url: string });
       return new Response(JSON.stringify({ id: 'att-1', threadId: 'thr-1' }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },

@@ -27,30 +27,60 @@
   // `showArc={false}` renders just the grey track: RateLimitMeter's
   // pre-first-update ring must read as "no data yet", distinct from a
   // genuine 0% fill (which would also leak a rounded-linecap dot).
+  //
+  // `inner` adds a second, concentric limit. Both rings then thin to
+  // fit the same 28-unit box, with the main limit outside so it keeps
+  // the single ring's position.
   let {
     label,
     percentage,
     strokeClass,
     showArc = true,
+    inner,
   }: {
     label: string;
     percentage: number;
     /** Tailwind stroke-* class for the progress arc. */
     strokeClass: string;
     showArc?: boolean;
+    inner?: { percentage: number; strokeClass: string };
   } = $props();
 
-  const RADIUS = 11.375;
-  const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
+  const SINGLE = { radius: 11.375, width: 3.5 };
+  const OUTER = { radius: 12, width: 2 };
+  const INNER = { radius: 9, width: 2 };
   // Label-to-ring ratio the meters have always had: 8.5px text in a
   // 28px ring at default zoom, and the 28-unit viewBox IS 28px there,
   // so the ratio is the px value.
   const LABEL_FONT_SIZE = 8.5;
 
-  let clamped = $derived(
-    Number.isFinite(percentage) ? Math.max(0, Math.min(100, percentage)) : 0,
-  );
-  let dashOffset = $derived(CIRCUMFERENCE - (clamped / 100) * CIRCUMFERENCE);
+  function dashFor(radius: number, value: number): { array: number; offset: number } {
+    const circumference = 2 * Math.PI * radius;
+    const clamped = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+    return { array: circumference, offset: circumference - (clamped / 100) * circumference };
+  }
+
+  let rings = $derived.by(() => {
+    const shape = inner ? OUTER : SINGLE;
+    const main = {
+      ...shape,
+      key: 'main',
+      strokeClass,
+      showArc,
+      dash: dashFor(shape.radius, percentage),
+    };
+    if (!inner) return [main];
+    return [
+      main,
+      {
+        ...INNER,
+        key: 'inner',
+        strokeClass: inner.strokeClass,
+        showArc: true,
+        dash: dashFor(INNER.radius, inner.percentage),
+      },
+    ];
+  });
 </script>
 
 <!-- The circles rotate -90° (arc origin at 12 o'clock) via the <g>;
@@ -68,23 +98,26 @@
      default is the steady state we optimize. -->
 <svg class="h-7 w-7" viewBox="0 0 28 28" aria-hidden="true">
   <g transform="rotate(-90 14 14)">
-    <circle
-      cx="14" cy="14" r={RADIUS}
-      fill="none"
-      stroke-width="3.5"
-      class="stroke-text-secondary/20"
-    />
-    {#if showArc}
+    {#each rings as ring (ring.key)}
       <circle
-        cx="14" cy="14" r={RADIUS}
+        cx="14" cy="14" r={ring.radius}
         fill="none"
-        stroke-width="3.5"
-        stroke-linecap="round"
-        stroke-dasharray={CIRCUMFERENCE}
-        stroke-dashoffset={dashOffset}
-        class={strokeClass}
+        stroke-width={ring.width}
+        class="stroke-text-secondary/20"
       />
-    {/if}
+      {#if ring.showArc}
+        <circle
+          cx="14" cy="14" r={ring.radius}
+          fill="none"
+          stroke-width={ring.width}
+          stroke-linecap="round"
+          stroke-dasharray={ring.dash.array}
+          stroke-dashoffset={ring.dash.offset}
+          class={ring.strokeClass}
+          data-meter-arc={ring.key}
+        />
+      {/if}
+    {/each}
   </g>
   <text
     x="14" y="14"

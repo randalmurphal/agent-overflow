@@ -123,6 +123,11 @@ func TestWakeTemplates(t *testing.T) {
 			want: "\"Parser\" (7f3a) [token tok] was cancelled: The user stopped it.",
 		},
 		{
+			name: "interrupted states the recorded cause",
+			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "Its workflow stopped the turn before it answered."},
+			want: "\"Parser\" (7f3a) [token tok]: Its workflow stopped the turn before it answered.",
+		},
+		{
 			name: "interrupted by a restart of another computer",
 			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Token: "tok", Text: InterruptRestart},
 			want: "\"Parser\" (7f3a, on Studio) [token tok] was interrupted by a restart of Studio.",

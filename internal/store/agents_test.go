@@ -11,7 +11,7 @@ import (
 )
 
 // mustCreateAssistant records an assistant on an existing thread, its id the
-// thread's as v155 migrates a promoted thread.
+// thread's as v160 migrates a promoted thread.
 // mustCreateAssistant moves threadID into home and records an assistant on
 // it, its id the thread's.
 func mustCreateAssistant(t *testing.T, s *Store, threadID, home string) StandingAgent {
@@ -728,7 +728,7 @@ func TestArchivedChildrenAreCountedByContainer(t *testing.T) {
 	if _, err := s.SetThreadPlacement([]string{"grouped"}, PlacementStandalone); err != nil {
 		t.Fatal(err)
 	}
-	// A helper whose spawn row went is standalone by the v159 trigger; it
+	// A helper whose spawn row went is standalone by the v164 trigger; it
 	// is still the assistant's.
 	if _, err := s.db.Exec(`UPDATE threads SET placement = 'standalone' WHERE id = 'helper-standalone'`); err != nil {
 		t.Fatal(err)

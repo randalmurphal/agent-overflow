@@ -16,23 +16,28 @@ import (
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
+	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/triage"
 )
 
 // WorktreeStatus describes a worktree's safety classification for the cleanup
 // UI: whether the working tree has uncommitted changes, whether the branch
 // has unpushed commits, whether an upstream is configured, how many threads
-// are currently attached to the worktree, and how many open terminals
-// removing it would close.
+// are currently attached to the worktree, how many open terminals removing it
+// would close, and whether its directory is already gone.
 type WorktreeStatus struct {
 	Path             string `json:"path"`
 	Branch           string `json:"branch"`
 	Dirty            bool   `json:"dirty"`
 	UncommittedCount int    `json:"uncommittedCount"`
 	UnpushedCommits  int    `json:"unpushedCommits"`
-	HasUpstream      bool   `json:"hasUpstream"`
-	AttachedThreads  int    `json:"attachedThreads"`
-	Terminals        int    `json:"terminals"`
+	// OrphanCommits counts, for a worktree with no branch, the commits only
+	// its HEAD reaches; removal treats them as unsaved work.
+	OrphanCommits   int  `json:"orphanCommits"`
+	HasUpstream     bool `json:"hasUpstream"`
+	AttachedThreads int  `json:"attachedThreads"`
+	Terminals       int  `json:"terminals"`
+	Missing         bool `json:"missing"`
 }
 
 // WorktreeRemoval is what an in-app worktree removal answers its caller.
@@ -68,8 +73,10 @@ type WorktreeRemovedEvent struct {
 // task. Removal repeats the authoritative check while holding the thread locks;
 // this field only keeps the UI affordance in sync with that backend rule.
 type WorktreeListItem struct {
-	Path          string `json:"path"`
-	Branch        string `json:"branch"`
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+	// Tag is, for a worktree with no branch, the tag at its HEAD.
+	Tag           string `json:"tag,omitempty"`
 	Head          string `json:"head"`
 	DeleteBlocked bool   `json:"deleteBlocked"`
 	// Missing is true when git still registers the worktree but its
@@ -90,14 +97,18 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 }
 
 // PrepareThreadWorktree creates a new worktree from baseBranch, switches the
-// thread to it, and returns the updated thread. requestedBranch is optional:
-// blank means "create a temporary auto branch using the configured prefix".
+// thread to it, and returns the updated thread. baseBranch may be a tag ref,
+// which the new branch is cut from locally with no upstream. An empty base
+// is the thread's source workspace's current ref: its branch, else the tag
+// at HEAD, else the HEAD commit. requestedBranch is optional: blank means
+// "create a temporary auto branch using the configured prefix".
 //
 // When carryLocalChanges is true, the source workspace's dirty tree (staged
 // + unstaged + untracked) is stashed under a per-call message, the worktree
 // is created, and the stash is applied in the new worktree before the entry
 // is dropped from the stash stack. carryLocalChanges only applies when the
-// new worktree's base branch matches the source thread's current branch — a
+// new worktree's base is the source workspace's current ref
+// (gitops.Core.IsCurrentBase) — a
 // "Local with changes" semantic only makes sense when both ends agree on the
 // base. When base diverges from current, the request is rejected with a
 // clear error so the caller can surface it.
@@ -148,35 +159,51 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 		return store.Thread{}, fmt.Errorf("create worktree: branch is required")
 	}
 
-	core := a.gitCore()
-	resolvedBase := strings.TrimSpace(baseBranch)
-	if resolvedBase == "" {
-		resolvedBase = strings.TrimSpace(thread.Branch)
+	base, err := gitops.ParseRef(baseBranch)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("create worktree: base: %w", err)
 	}
-	if resolvedBase == "" {
-		resolvedBase = core.CurrentBranch(project)
-	}
-	if resolvedBase == "" {
-		return store.Thread{}, fmt.Errorf("create worktree: base branch is required")
-	}
-
-	// Carry-over only makes sense from the thread's current branch. The
-	// source workspace's dirty state is what we'd be moving — moving it
-	// onto an unrelated base is a different semantic (rebase-style) we
-	// deliberately don't support.
-	if carryLocalChanges && resolvedBase != strings.TrimSpace(thread.Branch) {
-		return store.Thread{}, fmt.Errorf("create worktree: %w", errCarryRequiresCurrentBase)
-	}
-
 	sourceWorkspace := strings.TrimSpace(thread.WorkspacePath)
 	if sourceWorkspace == "" {
 		sourceWorkspace = project
+	}
+	// An empty base is the thread row's branch, else the source workspace's
+	// own current ref, never the project root's: a thread in another
+	// worktree branches from where it is. The row answers without reading
+	// the directory, which may be gone.
+	if base.IsZero() {
+		if rowBranch := strings.TrimSpace(thread.Branch); rowBranch != "" {
+			base = gitops.BranchRef(rowBranch)
+		}
+	}
+	if base.IsZero() || carryLocalChanges {
+		core := a.gitCore()
+		head, err := core.Head(sourceWorkspace)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("create worktree: read HEAD: %w", err)
+		}
+		if base.IsZero() {
+			base = head.Ref()
+		}
+		// Carry-over only makes sense from where the source is
+		// (IsCurrentBase). Its dirty state is what we'd be moving — moving it
+		// onto an unrelated base is a different semantic (rebase-style) we
+		// deliberately don't support.
+		if carryLocalChanges {
+			current, err := core.IsCurrentBase(sourceWorkspace, head, base)
+			if err != nil {
+				return store.Thread{}, fmt.Errorf("create worktree: base: %w", err)
+			}
+			if !current {
+				return store.Thread{}, fmt.Errorf("create worktree: %w", errCarryRequiresCurrentBase)
+			}
+		}
 	}
 
 	worktreePath, err := a.cutWorktreeWithCarry(worktreeCutRequest{
 		projectPath:       project,
 		sourceWorkspace:   sourceWorkspace,
-		baseBranch:        resolvedBase,
+		base:              base,
 		newBranch:         resolvedBranch,
 		carryLocalChanges: carryLocalChanges,
 	})
@@ -191,7 +218,7 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	// back down rather than leaking a directory — and a transcript that
 	// cannot be relocated refuses the whole create, leaving the thread
 	// resumable from the workspace it still occupies.
-	move.rollback = func() { _ = core.RemoveWorktreeForce(project, worktreePath, true) }
+	move.rollback = func() { a.undoWorktreeCut(project, worktreePath, resolvedBranch, true) }
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = resolvedBranch
@@ -205,12 +232,13 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	return refreshed, nil
 }
 
-// AttachThreadWorktree creates a worktree pointing at an existing branch and
-// switches the thread to it. Distinct from PrepareThreadWorktree (which always
+// AttachThreadWorktree creates a worktree pointing at an existing branch, or
+// detached at a tag ("refs/tags/<name>"), and switches the thread to it. Distinct from PrepareThreadWorktree (which always
 // creates a new branch via `git worktree add -b`): this path is `git worktree
 // add <path> <existing>` and refuses if the branch is already checked out
 // elsewhere — git's own one-branch-one-worktree invariant. Frontend dedups by
-// flipping to the existing worktree before calling here.
+// flipping to the existing worktree before calling here. Any number of
+// worktrees may sit on one tag; each gets its own directory named after it.
 //
 //ao:scope git:operate
 func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error) {
@@ -246,26 +274,34 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 		return store.Thread{}, err
 	}
 
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
+	ref, err := gitops.ParseRef(branch)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("attach worktree: %w", err)
+	}
+	if ref.IsZero() {
 		return store.Thread{}, fmt.Errorf("attach worktree: branch is required")
 	}
+	// A tag is checked out detached, so the thread has no branch.
+	branch = ""
+	if ref.IsBranch() {
+		branch = ref.Name
+	}
 
-	core := a.gitCore()
-
-	worktreePath, err := a.defaultWorktreePath(project, branch)
+	worktreePath, err := a.defaultWorktreePath(project, ref.Name)
 	if err != nil {
 		return store.Thread{}, err
 	}
-	if err := core.AttachWorktree(project, worktreePath, branch); err != nil {
+	createdBranch, err := a.gitCore().AttachWorktreeAt(project, worktreePath, ref)
+	if err != nil {
 		return store.Thread{}, err
 	}
 
 	move := checkoutMoveFrom(thread, "attach worktree")
 	// Same posture as the create path: the checkout exists on disk now, so a
 	// transcript that cannot be relocated (or a store write that fails) tears
-	// it back down instead of leaving it behind.
-	move.rollback = func() { _ = core.RemoveWorktreeForce(project, worktreePath, true) }
+	// it back down instead of leaving it behind, with the local branch the
+	// attach made from origin's.
+	move.rollback = func() { a.undoWorktreeCut(project, worktreePath, branch, createdBranch) }
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = branch
@@ -394,8 +430,10 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 		if policy.keepsBranch && status.Dirty {
 			return nil, &errWorktreeDirty{path: worktreePath, count: status.UncommittedCount}
 		}
-		if !policy.keepsBranch && (status.Dirty || status.UnpushedCommits > 0) {
-			return nil, fmt.Errorf("worktree %s has unsaved work (dirty=%v unpushed=%d); pass force to discard", worktreePath, status.Dirty, status.UnpushedCommits)
+		// Commits on no branch are lost with the worktree whatever happens
+		// to any branch, so keepsBranch does not waive them.
+		if status.Dirty || (!policy.keepsBranch && status.UnpushedCommits > 0) || status.OrphanCommits > 0 {
+			return nil, fmt.Errorf("worktree %s has unsaved work (dirty=%v unpushed=%d orphan=%d); pass force to discard", worktreePath, status.Dirty, status.UnpushedCommits, status.OrphanCommits)
 		}
 	}
 
@@ -447,6 +485,9 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 	// A run can belong to a thread that has since moved away, so the attached
 	// thread list is not an authoritative set of processes to stop.
 	a.cancelWorktreeSetupsForPath(worktreePath)
+	// A composer shell command running in the directory would race the
+	// removal the same way.
+	a.cancelShellCommandsInDir(worktreePath)
 	// Then clear the durable state of every thread that pointed here — a "Setup
 	// failed" pill for a worktree that no longer exists has nothing to offer.
 	// Their runs are already gone, so this is the column and nothing else.
@@ -970,49 +1011,23 @@ func (a *App) purgeRelocatedClaudeSessions(threadID string, purge []string) {
 }
 
 func (a *App) resolveProjectWorkspaceStateAfterRemoval(project, currentWorkspacePath, removedWorktreePath string) (GitWorkspaceState, error) {
-	core := a.gitCore()
 	currentWorkspacePath = strings.TrimSpace(currentWorkspacePath)
 	switch {
-	case currentWorkspacePath == "":
-		return GitWorkspaceState{
-			WorkspacePath: project,
-			Branch:        core.CurrentBranch(project),
-		}, nil
-	case gitops.SameFilesystemPath(currentWorkspacePath, project):
-		return GitWorkspaceState{
-			WorkspacePath: project,
-			Branch:        core.CurrentBranch(project),
-		}, nil
-	case gitops.SameFilesystemPath(currentWorkspacePath, removedWorktreePath):
-		return GitWorkspaceState{
-			WorkspacePath: project,
-			Branch:        core.CurrentBranch(project),
-		}, nil
+	case currentWorkspacePath == "",
+		gitops.SameFilesystemPath(currentWorkspacePath, project),
+		gitops.SameFilesystemPath(currentWorkspacePath, removedWorktreePath):
+		return a.workspaceState(project, project)
 	}
 
 	worktree, ok, err := a.findWorktree(project, currentWorkspacePath)
 	if err != nil {
 		log.Printf("worktree removal: refresh workspace %q after removing %q: %v", currentWorkspacePath, removedWorktreePath, err)
-		return GitWorkspaceState{
-			WorkspacePath: project,
-			Branch:        core.CurrentBranch(project),
-		}, nil
+		return a.workspaceState(project, project)
 	}
 	if !ok {
-		return GitWorkspaceState{
-			WorkspacePath: project,
-			Branch:        core.CurrentBranch(project),
-		}, nil
+		return a.workspaceState(project, project)
 	}
-	branch := strings.TrimSpace(worktree.Branch)
-	if branch == "" {
-		branch = core.CurrentBranch(worktree.Path)
-	}
-	return GitWorkspaceState{
-		WorkspacePath: worktree.Path,
-		WorktreePath:  worktree.Path,
-		Branch:        branch,
-	}, nil
+	return a.workspaceState(project, worktree.Path)
 }
 
 // threadsReferencingWorkspace returns every thread id whose workspace or
@@ -1045,9 +1060,11 @@ func (a *App) computeWorktreeStatus(project, worktreePath string) (WorktreeStatu
 		Dirty:            status.Dirty,
 		UncommittedCount: status.UncommittedCount,
 		UnpushedCommits:  status.UnpushedCommits,
+		OrphanCommits:    status.OrphanCommits,
 		HasUpstream:      status.HasUpstream,
 		AttachedThreads:  status.AttachedThreads,
 		Terminals:        a.worktreeTerminalCount(worktreePath),
+		Missing:          status.Missing,
 	}, nil
 }
 
@@ -1102,9 +1119,9 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 		thread.WorktreePath = ""
 		thread.Branch = core.CurrentBranch(project)
 	default:
-		worktree, ok, err := a.findWorktree(project, target)
+		worktree, ok, err := a.worktreeApplication().FindPresent(project, target)
 		if err != nil {
-			return store.Thread{}, err
+			return store.Thread{}, fmt.Errorf("switch workspace: %w", err)
 		}
 		if !ok {
 			return store.Thread{}, fmt.Errorf("switch workspace: %s is not a worktree for %s", target, project)
@@ -1225,21 +1242,31 @@ func (a *App) findWorktree(project, path string) (gitops.Worktree, bool, error) 
 	return a.worktreeApplication().Find(project, path)
 }
 
-// cutWorktreeFromFreshBase is the app's one entry point for cutting a NEW
-// worktree branch from a base branch that may also live on origin: chat
-// threads (new-thread and switch-to-worktree) and workflow items all route
-// through it, so the fetch-first rule can't drift between them.
+// undoWorktreeCut takes back a worktree a checkout move cut, and its branch
+// when the cut made it. The move's own error is what its caller reports, so
+// a failure here is logged.
+func (a *App) undoWorktreeCut(projectPath, worktreePath, branch string, createdBranch bool) {
+	err := (threadWorkspacePort{app: a}).RemoveCutWorktree(projectPath, threadapp.CutWorktree{Path: worktreePath, Branch: branch, CreatedBranch: createdBranch})
+	if err != nil {
+		log.Printf("worktree %s: undo the cut after a failed move: %v", worktreePath, err)
+	}
+}
+
+// cutWorktreeFromFreshRef is the app's one entry point for cutting a NEW
+// worktree branch from a base that may also live on origin: chat threads
+// (new-thread and switch-to-worktree) and workflow items all route through
+// it, so the fetch-first rule can't drift between them. A tag or commit
+// base is cut locally with nothing fetched.
 //
 // It owns the failure posture that internal/git deliberately leaves to the
 // caller: a fetch that fails or times out is a log line and nothing more.
 // The user asked for a worktree, not for a network round trip, and the cut
-// they asked for succeeded — from the local base, exactly as it did before
-// this behaviour existed.
-func (a *App) cutWorktreeFromFreshBase(ctx context.Context, projectPath, worktreePath, baseBranch, newBranch string) error {
-	seed, err := a.gitCore().CreateWorktreeFromFreshBase(ctx, projectPath, worktreePath, baseBranch, newBranch)
+// they asked for succeeded, from the local base.
+func (a *App) cutWorktreeFromFreshRef(ctx context.Context, projectPath, worktreePath string, base gitops.Ref, newBranch string) error {
+	seed, err := a.gitCore().CreateWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, newBranch)
 	if seed.FetchErr != nil {
 		log.Printf("create worktree %s: fetch origin for base %q: %v (cutting from the local branch)",
-			projectPath, baseBranch, seed.FetchErr)
+			projectPath, base.Wire(), seed.FetchErr)
 	}
 	return err
 }
@@ -1252,8 +1279,9 @@ type worktreeCutRequest struct {
 	// sourceWorkspace is where a carried dirty tree is stashed FROM: the
 	// thread's own workspace for a thread-scoped cut. Read only when
 	// carryLocalChanges is set.
-	sourceWorkspace   string
-	baseBranch        string
+	sourceWorkspace string
+	// base is what the new branch is cut from; the zero Ref is HEAD.
+	base              gitops.Ref
 	newBranch         string
 	carryLocalChanges bool
 }
@@ -1291,9 +1319,9 @@ func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (string, error) {
 	// whole create (the worktree is torn down, the stash left for manual
 	// recovery). Every other cut takes the fetched base.
 	if req.carryLocalChanges {
-		err = core.CreateWorktreeFromBranch(req.projectPath, worktreePath, req.baseBranch, req.newBranch)
+		err = core.CreateWorktreeFromRef(req.projectPath, worktreePath, req.base, req.newBranch)
 	} else {
-		err = a.cutWorktreeFromFreshBase(a.lifeCtx(), req.projectPath, worktreePath, req.baseBranch, req.newBranch)
+		err = a.cutWorktreeFromFreshRef(a.lifeCtx(), req.projectPath, worktreePath, req.base, req.newBranch)
 	}
 	if err != nil {
 		if stashed {

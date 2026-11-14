@@ -5,10 +5,15 @@ import {
   canUngroupDroppedThread,
   decodeThreadDragPayload,
   encodeThreadDragPayload,
+  beginToolPaneDrag,
+  decodeToolDragPayload,
+  encodeToolDragPayload,
   endThreadRowDrag,
-  projectedPaneDropWidth,
+  endToolPaneDrag,
   threadDragPayloadForEvent,
+  toolDragPayloadForEvent,
   THREAD_ROW_DRAG_MIME,
+  TOOL_PANE_DRAG_MIME,
 } from './threadDragPayload';
 
 describe('pane thread drop helpers', () => {
@@ -95,65 +100,6 @@ describe('pane thread drop helpers', () => {
       projectId: '',
     });
   });
-
-  it('projects the fit-mode share of the row for the new pane', () => {
-    // avg 800 of a 2400 post-insert total over a 3200px row -> 1067.
-    const width = projectedPaneDropWidth([
-      { widthPx: 700 },
-      { widthPx: 900 },
-    ], 3200, 560);
-
-    expect(width).toBe(1067);
-  });
-
-  it('meets exactly at the average where fit and overflow regimes cross', () => {
-    // The two regimes cross where paneRowWidth === total + average. Here
-    // total 1800, average 900, row 2700: the fit share equals the base
-    // width, so both formulas agree at 900.
-    const width = projectedPaneDropWidth(
-      [{ widthPx: 900 }, { widthPx: 900 }],
-      2700,
-      560,
-    );
-
-    expect(width).toBe(900);
-  });
-
-  it('projects the average base width when the strip overflows', () => {
-    // Post-insert total (4000) exceeds the row (1000): no stretch, the
-    // new pane lands at its base width (the average) verbatim.
-    const width = projectedPaneDropWidth(
-      Array.from({ length: 4 }, () => ({ widthPx: 800 })),
-      1000,
-      560,
-    );
-
-    expect(width).toBe(800);
-  });
-
-  it('uses full available width for the first dropped pane', () => {
-    expect(projectedPaneDropWidth([], 900, 560)).toBe(900);
-  });
-
-  it('clamps the projection to minPaneWidth when the share is small', () => {
-    // four 100px widths -> share = 100/500 -> 200 of 1000; average is
-    // even smaller. minPaneWidth (560) wins.
-    const width = projectedPaneDropWidth(
-      Array.from({ length: 4 }, () => ({ widthPx: 100 })),
-      1000,
-      560,
-    );
-    expect(width).toBe(560);
-  });
-
-  it('falls back to minPaneWidth when widths sum to zero', () => {
-    expect(projectedPaneDropWidth([{ widthPx: 0 }, { widthPx: 0 }], 1000, 320)).toBe(320);
-  });
-
-  it('falls back to minPaneWidth when widths are non-finite', () => {
-    expect(projectedPaneDropWidth([{ widthPx: Number.NaN }], 1000, 240)).toBe(240);
-    expect(projectedPaneDropWidth([{ widthPx: Number.POSITIVE_INFINITY }], 1000, 240)).toBe(240);
-  });
 });
 
 // ── The in-flight record ─────────────────────────────────────────────────
@@ -222,5 +168,48 @@ describe('group drop predicates', () => {
     expect(canUngroupDroppedThread(inG1, 'p1')).toBe(true);
     expect(canUngroupDroppedThread(inG1, 'p2')).toBe(false);
     expect(canUngroupDroppedThread(loose, 'p1')).toBe(false);
+  });
+});
+
+// A tool button drags its kind under its own type, so a thread target never
+// reads it as a thread and a pane drop never reads a thread as a tool.
+describe('tool drag payloads', () => {
+  afterEach(() => {
+    endToolPaneDrag();
+    endThreadRowDrag();
+  });
+
+  function evt(types: string[], data: Record<string, string>): DragEvent {
+    return {
+      dataTransfer: { types, getData: (type: string) => data[type] ?? '' },
+    } as unknown as DragEvent;
+  }
+
+  it('round-trips a tool kind and refuses anything else', () => {
+    expect(decodeToolDragPayload(encodeToolDragPayload({ kind: 'workflows' }))).toEqual({ kind: 'workflows' });
+    expect(decodeToolDragPayload(encodeToolDragPayload({ kind: 'pulls' }))).toEqual({ kind: 'pulls' });
+    expect(decodeToolDragPayload('{"kind":"thread"}')).toBeNull();
+    expect(decodeToolDragPayload('{}')).toBeNull();
+    expect(decodeToolDragPayload('null')).toBeNull();
+    expect(decodeToolDragPayload('not json')).toBeNull();
+  });
+
+  it('reads the DataTransfer when it answers and the in-flight record when it does not', () => {
+    beginToolPaneDrag({ kind: 'pulls' });
+    expect(toolDragPayloadForEvent(evt([TOOL_PANE_DRAG_MIME], { [TOOL_PANE_DRAG_MIME]: encodeToolDragPayload({ kind: 'workflows' }) }))).toEqual({ kind: 'workflows' });
+    expect(toolDragPayloadForEvent(evt([TOOL_PANE_DRAG_MIME], {}))).toEqual({ kind: 'pulls' });
+    endToolPaneDrag();
+    expect(toolDragPayloadForEvent(evt([TOOL_PANE_DRAG_MIME], {}))).toBeNull();
+  });
+
+  it('is never a thread, and a thread is never a tool', () => {
+    beginToolPaneDrag({ kind: 'pulls' });
+    beginThreadRowDrag({ threadId: 'stale', title: 'Stale', projectId: 'p1' });
+    const tool = evt([TOOL_PANE_DRAG_MIME], { [TOOL_PANE_DRAG_MIME]: encodeToolDragPayload({ kind: 'pulls' }) });
+    expect(threadDragPayloadForEvent(tool)).toBeNull();
+    const thread = evt([THREAD_ROW_DRAG_MIME], { [THREAD_ROW_DRAG_MIME]: encodeThreadDragPayload({ threadId: 't', title: 'T', projectId: 'p1' }) });
+    expect(toolDragPayloadForEvent(thread)).toBeNull();
+    expect(toolDragPayloadForEvent(evt(['Files'], {}))).toBeNull();
+    expect(TOOL_PANE_DRAG_MIME).not.toBe(THREAD_ROW_DRAG_MIME);
   });
 });

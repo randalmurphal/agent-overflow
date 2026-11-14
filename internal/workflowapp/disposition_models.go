@@ -20,6 +20,8 @@ type Git interface {
 	HeadSHA(cwd string) (string, error)
 	PushUnattended(cwd string) error
 	CreatePR(ctx context.Context, cwd, title, body, base string, draft bool) (string, error)
+	// ListOpenPRs is the open PRs whose head is branch of cwd's origin.
+	ListOpenPRs(ctx context.Context, cwd, head string) ([]gitops.GitPR, error)
 	// ReadPR is one forge read of the parts of a PR its caller names.
 	ReadPR(ctx context.Context, ref gitops.PRReference, want gitops.PRReadParts, prev *gitops.CIPipeline, stepsFor []string) (gitops.PRRead, error)
 }

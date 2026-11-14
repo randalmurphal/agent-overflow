@@ -31,6 +31,8 @@ import { attachPR } from './prReviewStore.svelte';
 import { peekPRCI } from './prReviewCI.svelte';
 import { setPRCILogFollow } from './prReviewCIFollows.svelte';
 import { prKey } from '../utils/prReference';
+import { setPullsReceiver } from './pullsStore.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
 import { getConnectionId } from '../transport/clientIdentity';
 import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
@@ -126,6 +128,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:status')).toBe(1);
     expect(wailsListenerCount('provider:session_account')).toBe(1);
     expect(wailsListenerCount('provider:account_usage_error')).toBe(1);
+    expect(wailsListenerCount('provider:account_auto_switch')).toBe(1);
     expect(wailsListenerCount('provider:item_event')).toBe(1);
     expect(wailsListenerCount('provider:turn_started')).toBe(1);
     expect(wailsListenerCount('provider:turn_completed')).toBe(1);
@@ -148,6 +151,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:status')).toBe(0);
     expect(wailsListenerCount('provider:session_account')).toBe(0);
     expect(wailsListenerCount('provider:account_usage_error')).toBe(0);
+    expect(wailsListenerCount('provider:account_auto_switch')).toBe(0);
     expect(wailsListenerCount('provider:item_event')).toBe(0);
     expect(wailsListenerCount('provider:turn_started')).toBe(0);
     expect(wailsListenerCount('provider:turn_completed')).toBe(0);
@@ -158,6 +162,18 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('notification:sound')).toBe(0);
 
     cleanup = setupEventListeners();
+  });
+
+  it('toasts an auto-switch the home computer reports', () => {
+    emitWailsEvent('provider:account_auto_switch', {
+      provider: 'claude',
+      toLabel: 'b@y.com',
+      fromLabel: 'a@x.com',
+      reason: 'refused',
+    });
+    expect(getToasts().map((toast) => toast.message)).toContain(
+      'Switched Claude account to b@y.com. a@x.com was refused for a usage limit.',
+    );
   });
 
   it('routes the PR CI channels to the PR they name', async () => {
@@ -195,6 +211,41 @@ describe('setupEventListeners', () => {
     cleanup();
     expect(wailsListenerCount('pr:ci_updated')).toBe(0);
     expect(wailsListenerCount('pr:ci_log')).toBe(0);
+    cleanup = setupEventListeners();
+  });
+
+  it('routes the Pull requests channels to the page store with their computer', () => {
+    expect(wailsListenerCount('pulls:updated')).toBe(1);
+    expect(wailsListenerCount('ci:pipeline_updated')).toBe(1);
+    const got: string[] = [];
+    const remove = setPullsReceiver({
+      pulls: (snapshot, backend) => got.push(`pulls ${snapshot.seq} ${backend}`),
+      pipeline: (event, backend) => got.push(`pipeline ${event.key} ${event.seq} ${backend}`),
+      pipelineLog: (event, backend) => got.push(`log ${event.pipelineKey} ${event.jobId} ${backend}`),
+    });
+    try {
+      emitWailsEvent('pulls:updated', { seq: 7, fetchedAt: '', projects: [] });
+      emitWailsEvent('pulls:updated', { seq: 8 });
+      emitWailsEvent('ci:pipeline_updated', { key: 'github:o/r:pipeline:41', seq: 9 });
+      emitWailsEvent('ci:pipeline_updated', { seq: 10 });
+      emitWailsEvent('pr:ci_log', {
+        prKey: '', pipelineKey: 'github:o/r:pipeline:41', repoKey: 'github:o/r', jobId: '20', seq: 11, version: 1,
+        totalLines: 1, totalBytes: 2, stableLines: 0, sections: [], available: true, downloading: false, error: '',
+      });
+      expect(got).toEqual([
+        `pulls 7 ${HOME_BACKEND}`,
+        `pipeline github:o/r:pipeline:41 9 ${HOME_BACKEND}`,
+        `log github:o/r:pipeline:41 20 ${HOME_BACKEND}`,
+      ]);
+    } finally {
+      remove();
+    }
+    emitWailsEvent('pulls:updated', { seq: 12, projects: [] });
+    expect(got).toHaveLength(3);
+
+    cleanup();
+    expect(wailsListenerCount('pulls:updated')).toBe(0);
+    expect(wailsListenerCount('ci:pipeline_updated')).toBe(0);
     cleanup = setupEventListeners();
   });
 
@@ -3940,7 +3991,7 @@ describe('setupEventListeners', () => {
     expect(pane.items).toHaveLength(1);
 
     // NaN slips past `typeof === 'number'` in JS, so
-    // removeItemsFromTurn's own Number.isFinite guard is the second
+    // removeRevertedItems' own Number.isFinite guard is the second
     // line of defense.
     emitWailsEvent('user_message:reverted', {
       threadId: 'thread-a',

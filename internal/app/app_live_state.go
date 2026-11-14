@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/slicesx"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -35,14 +36,9 @@ type ThreadLiveState struct {
 	ActiveTurn             *LiveStateActiveTurn           `json:"activeTurn,omitempty"`
 	QueueItems             []QueuedItem                   `json:"queueItems"`
 	FlushedItems           []QueueFlushedItem             `json:"flushedItems"`
-	// DeferredItems are NON-FLUSH pending-send timeline rows not yet
-	// persisted to SQLite (they persist on their wire echo), in FIFO send
-	// order. A refresh reconciling against a ListThreadSliceAround page
-	// merges these in so the user's own just-sent message survives the
-	// install. A queued (flush-shaped) send is published in FlushedItems
-	// instead and stays above the composer until the client renders its
-	// row — never in both lists (internal/triage/live_state.go).
-	DeferredItems   []store.Item                        `json:"deferredItems"`
+	// FlushedThrough is the newest provider:queue_flushed sequence when
+	// FlushedItems was read: every item in it was flushed at or before it.
+	FlushedThrough  uint64                              `json:"flushedThrough"`
 	Interactive     provider.PendingInteractiveRequests `json:"interactive"`
 	Todo            *LiveStateTodo                      `json:"todo,omitempty"`
 	ProviderAccount *ProviderSessionAccountEvent        `json:"providerAccount,omitempty"`
@@ -65,6 +61,11 @@ type ThreadLiveState struct {
 	// the user has not dismissed this revision. See app_prompt_stale.go.
 	PromptStale         bool `json:"promptStale,omitempty"`
 	PromptStaleRevision int  `json:"promptStaleRevision,omitempty"`
+	// ShellCommandRunID is the id of the composer shell command running in
+	// this thread's workspace, empty when none is. It carries no output: a
+	// client that may read it calls GetThreadShellCommands, and a client
+	// holding a run this does not name drops it.
+	ShellCommandRunID string `json:"shellCommandRunId,omitempty"`
 }
 
 type LiveStateActiveTurn struct {
@@ -103,7 +104,6 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 		ThreadID:         threadID,
 		QueueItems:       []QueuedItem{},
 		FlushedItems:     []QueueFlushedItem{},
-		DeferredItems:    []store.Item{},
 		SubagentProgress: []triage.SubagentProgressEvent{},
 		Interactive: provider.PendingInteractiveRequests{
 			Approvals:  []provider.ApprovalRequest{},
@@ -120,6 +120,9 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	state.Todo = a.threadLiveTodo(threadID)
 	state.SessionCLIVersion, state.InstalledCLIVersion = a.staleProviderBinaryVersions(threadID)
 	state.PromptStale, state.PromptStaleRevision = a.promptStaleRevision(threadID)
+	if a.shellCommands != nil {
+		state.ShellCommandRunID = a.shellCommands.ActiveRunID(threadID)
+	}
 	if a.triage == nil {
 		return state, nil
 	}
@@ -128,6 +131,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	a.flushDispatch.mu.Lock()
 	queued := a.queueSnapshotForThreadLocked(threadID)
 	live := a.triage.LiveStateSnapshotForThread(threadID)
+	state.FlushedThrough = a.eventSequence(eventchan.ProviderQueueFlushed)
 	a.flushDispatch.mu.Unlock()
 	state.CodexAgents = itemwire.ProjectItems(a.triage.CodexAgentRuntimeSnapshot(threadID), true)
 	state.SubagentProgress = a.triage.LiveSubagentProgress(threadID)
@@ -143,13 +147,6 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 		}
 	}
 	state.Interactive = live.Interactive
-	// Deferred rows are merged straight into the same window the slice
-	// RPCs filled, so they take the same projection. A page whose rows
-	// came from two paths that shaped them differently is one window
-	// holding mixed rows, which reads as a bug wherever the difference
-	// shows. These are un-echoed user sends with no diff previews to
-	// weigh, so previews stay on and only the meta budget applies.
-	state.DeferredItems = append(state.DeferredItems, itemwire.ProjectItems(live.DeferredItems, true)...)
 	state.QueueItems = append(state.QueueItems, queued...)
 	queuedIDs := make(map[string]bool, len(queued))
 	for _, item := range queued {

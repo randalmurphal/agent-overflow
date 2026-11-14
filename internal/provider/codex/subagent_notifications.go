@@ -544,7 +544,7 @@ func rawMessageSingleTextOfType(item map[string]json.RawMessage, allowedType str
 // parser update; the load-bearing `agent_path` / `status` keys win on
 // collision so a stray Extra entry can't poison the contract.
 func buildSubagentNotificationMeta(n subagentNotification) json.RawMessage {
-	fields := make(map[string]any, 2+len(n.Extra))
+	fields := make(map[string]any, len(n.Extra))
 	for k, v := range n.Extra {
 		fields[k] = v
 	}

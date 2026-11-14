@@ -38,6 +38,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == supervise.UpdateTrialCommand && os.Getenv(updateTrialStubEnv) != "" {
 		os.Exit(runTrialStub(os.Getenv(updateTrialStubEnv), os.Args[2:]))
 	}
+	if os.Getenv(parentWatchChildEnv) != "" && os.Getenv(parentWatchParentEnv) != "" {
+		os.Exit(runParentWatchChild())
+	}
 	os.Exit(providerpath.Run(m))
 }
 

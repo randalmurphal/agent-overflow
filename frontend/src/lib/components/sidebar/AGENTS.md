@@ -45,6 +45,8 @@ which adds the project's empty state and drop targets.
 A drag carries one thread. Use `utils/threadDragPayload.ts` and include its
 project and current group. During `dragover`, read the in-process drag record
 because browsers do not expose `DataTransfer` payloads consistently.
+A sidebar drag sets its own data type only, never `text/plain`: plain text
+makes every text field a drop target for the row.
 
 Clear the record on every drop target as well as `dragend`; the source row may
 unmount before `dragend`. Groups accept same-project threads not already in the
@@ -76,6 +78,13 @@ Synchronizing one project's tree must not remove another project's state.
 - Usage and system statistics retain explicit computer identity. Do not present
   cached offline data as current totals or combine separately priced account
   reports as one host-local value.
+
+`ToolsRow.svelte` lists `panes/toolPaneMeta.ts` in order and opens through
+`toolPanes.svelte#openTool`; the Workflows count comes from its own store.
+Each tool is a `role="button"` element styled by
+`primitives/buttonClasses.ts`, never a native `<button>`, because Firefox
+starts no drag from one. It drags its kind under `TOOL_PANE_DRAG_MIME` with
+the same in-flight record pattern, so no thread drop target reads it.
 
 Compact rows expose a visible menu button and use the shared long-press bridge.
 Do not add row-specific touch handlers or enable dragging in compact mode.

@@ -31,6 +31,9 @@ import {
 import type { Thread } from '../../types/models';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { getPinnedBackend } from '../../transport/backends';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 
 function makeCtx(thread: Partial<Thread>): ThreadActionCtx {
   const t: Thread = {
@@ -106,6 +109,29 @@ describe('forkThreadAction', () => {
     expect(toast?.type).toBe('info');
   });
 
+  // The backend announces the fork as preparing while the call runs and as
+  // ready when it ends, and the answer can arrive before the ready frame. A
+  // preparing row cannot be mounted, so the answer has to win.
+  it('opens the fork when its answer arrives before the ready frame', async () => {
+    const forked = { ...makeCtx({}).thread, id: 'fork-2', title: 'Source thread (fork)', createdAt: 1, updatedAt: 1 };
+    setBindingMock('ForkThread', vi.fn(async () => {
+      applyThreadUpdated({ action: 'listed', thread: { ...forked, forkPreparing: true, sessionRef: '' } });
+      return forked;
+    }));
+    setBindingMock('PinThread', vi.fn(async () => ({ ...forked, pinnedAt: 2, pinGroup: 0 })));
+    const ctx = makeCtx({});
+    prependThread(ctx.thread);
+
+    await forkThreadAction(ctx);
+
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    const opened = (ctx.switchPane as ReturnType<typeof vi.fn>).mock.calls[0][0] as Thread;
+    expect(opened.forkPreparing ?? false).toBe(false);
+    expect(opened.sessionRef).toBe('session-1');
+    expect(getThreadById('fork-2')?.forkPreparing ?? false).toBe(false);
+    expect(getToasts().some((t) => t.message.includes('Forked'))).toBe(true);
+  });
+
   it('reports the user-facing error on fork failure', async () => {
     const failure = new Error('source thread is missing a session reference');
     setBindingMock('ForkThread', vi.fn(async () => {
@@ -133,8 +159,8 @@ describe('deleteThreadAction', () => {
     const siblingPane = await buildPane(sibling, [], 'pane-sibling');
     const order: string[] = [];
     setBindingMock('StopSession', async () => {});
-    setBindingMock('GitRemoveWorktree', async () => {
-      order.push('remove');
+    setBindingMock('RemoveOtherWorktree', async (_ws: unknown, path: string) => {
+      order.push(`remove ${path}`);
       return {
         workspace: { workspacePath: worktree, worktreePath: worktree, branch: 'feature' },
         reattached: [{ ...sibling, workspacePath: '/tmp/work', worktreePath: '', branch: 'main' }],
@@ -144,11 +170,36 @@ describe('deleteThreadAction', () => {
       order.push(`delete, sibling at ${siblingPane.thread?.workspacePath}`);
     });
 
-    await deleteThreadAction(makeCtx({ workspacePath: worktree, worktreePath: worktree }));
+    await deleteThreadAction(makeCtx({ projectId: 'project-1', workspacePath: worktree, worktreePath: worktree }));
 
-    expect(order).toEqual(['remove', 'delete, sibling at /tmp/work']);
+    expect(order).toEqual([`remove ${worktree}`, 'delete, sibling at /tmp/work']);
     expect(siblingPane.thread?.worktreePath).toBe('');
     expect(siblingPane.thread?.branch).toBe('main');
+  });
+
+  it('removes the worktree on the computer the thread lives on', async () => {
+    stageBackend();
+    try {
+      noteThread('thread-1', 'laptop');
+      const worktree = '/tmp/work-wt/laptop';
+      const targets: Array<string | null> = [];
+      setBindingMock('StopSession', async () => {});
+      setBindingMock('RemoveOtherWorktree', async () => {
+        targets.push(getPinnedBackend());
+        return { workspace: { workspacePath: '/tmp/work', worktreePath: '', branch: 'main' }, reattached: [] };
+      });
+      const deleted = setBindingMock('DeleteThread', async () => {});
+      const ctx = makeCtx({ projectId: 'project-laptop', workspacePath: worktree, worktreePath: worktree });
+
+      await deleteThreadAction(ctx);
+
+      expect(ctx.reportError).not.toHaveBeenCalled();
+      expect(targets).toEqual(['laptop']);
+      expect(deleted).toHaveBeenCalledWith('thread-1');
+    } finally {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+    }
   });
 });
 

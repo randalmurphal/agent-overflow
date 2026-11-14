@@ -66,11 +66,11 @@ describe('<AddProjectModal>', () => {
 
   it('Escape closes the modal', async () => {
     const onClose = vi.fn();
-    const { container } = render(AddProjectModal, {
+    render(AddProjectModal, {
       props: { open: true, onClose },
     });
     await flushModalBoot();
-    const backdrop = container.querySelector('[data-modal-backdrop]');
+    const backdrop = document.querySelector('[data-modal-backdrop]');
     expect(backdrop).toBeTruthy();
     await fireEvent.keyDown(backdrop!, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();

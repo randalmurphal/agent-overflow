@@ -33,7 +33,7 @@ import {
   toolUseLine,
   waitForGate,
 } from './agent-visibility-helpers.js';
-import { expectEveryForgeCallHandled, seedForge, type ForgePull } from './forge-helpers.js';
+import { expectEveryForgeCallHandled, forgeOrigin, seedForge, type ForgePull } from './forge-helpers.js';
 import {
   expectHandled,
   expectNoMoreStateReads,
@@ -140,7 +140,7 @@ test('a PR on the project root\'s branch is never tracked, and its merge removes
   const rootId = fixture.threadIds[1];
   // The root checks out a branch of its own with an open PR.
   harnessGit(harness, fixture.root, 'checkout', '--quiet', '-b', 'root-branch');
-  harnessGit(harness, fixture.root, 'push', '--quiet', path.join(harness.bootstrap.dataRoot, 'forge-origin', `${fixture.repo.project}.git`), 'root-branch');
+  harnessGit(harness, fixture.root, 'push', '--quiet', (await forgeOrigin(harness, fixture.repo.project)).path, 'root-branch');
   harnessGit(harness, fixture.root, 'fetch', '--quiet', 'origin');
   const rootPR = { number: 2, title: 'Root work', headRef: 'root-branch', baseRef: 'main' };
   await movePR(harness, fixture, {}, [rootPR]);
@@ -232,7 +232,7 @@ test('a clean worktree git refuses to remove is told once with no path, retried,
 
   // git refuses to remove a worktree holding a submodule without --force;
   // committed, the tree is clean.
-  const origin = path.join(harness.bootstrap.dataRoot, 'forge-origin', `${fixture.repo.project}.git`);
+  const origin = (await forgeOrigin(harness, fixture.repo.project)).path;
   harnessGit(harness, fixture.worktreePath, '-c', 'protocol.file.allow=always', 'submodule', '--quiet', 'add', origin, 'vendored');
   harnessGit(harness, fixture.worktreePath, 'commit', '--quiet', '-m', 'vendor a submodule');
   expect(harnessGit(harness, fixture.worktreePath, 'status', '--porcelain')).toBe('');

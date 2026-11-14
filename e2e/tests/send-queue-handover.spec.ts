@@ -273,7 +273,7 @@ test('a queued message the pane already holds hands over when Claude picks it up
 
 // A message sent after the turn completed on the wire but while its text is
 // still revealing. The backend is idle, so nothing queues there; the pane's
-// reveal frontier is still up, so a directly sent optimistic row would be
+// reveal frontier is still up, so a directly sent message's row would be
 // withheld behind the draining prose with everything else past the frontier,
 // and the person's own message would leave the composer and appear nowhere
 // until the drain ended. The composer routes the send through the queue
@@ -311,7 +311,7 @@ test('a message sent while the previous turn is still revealing stays in the pre
   await startZoneSampler(page, QUEUED);
 
   // The send is accepted into the queue (and dispatched at once by the
-  // idle backend) rather than appended as an optimistic row.
+  // idle backend) rather than sent directly.
   const flushed = harness.waitForEvent('provider:queue_flushed', (ev: any) => ev.threadId === threadId);
   await input.fill(QUEUED);
   await input.press('Enter');
@@ -409,3 +409,91 @@ for (const loseDispatch of [false, true]) {
   });
 
 }
+
+// An edit-and-resend clears the thread's queue state when its cut lands
+// (`user_message:reverted`). The preview is mounted through that clear, so it
+// has to pick up the next queued message: a preview left reading the
+// released state shows nothing while the backend holds the message, until
+// the timeline row arrives.
+test('a message queued after an edit-and-resend shows in the preview', async ({
+  harness,
+  page,
+}) => {
+  test.setTimeout(90_000);
+
+  const QUEUED_AFTER_RESEND = 'Queued after the resend.';
+  // One tool call held at a gate, then the held input consumed mid-turn.
+  const toolTurn = (n: number) => [
+    emit([
+      ...textLines(`msg-${n}-working`, `Running step ${n}.`),
+      toolUseLine(`msg-${n}-tool`, `tu-${n}`, 'Bash', { command: `sleep ${n}` }),
+    ]),
+    { waitSignal: { name: `tool-${n}` } },
+    emit([toolResultLine(`tu-${n}`, '')]),
+    { drainQueuedInput: true as const },
+    emit([...textLines(`msg-${n}-final`, `Step ${n} done.`), RESULT_LINE]),
+  ];
+
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeTurnsScenario('queue-after-resend', [toolTurn(1)], { holdQueuedInput: true }),
+  });
+  const threadId = await seedAgentThread(harness, 'queue-after-resend', 'Queue after resend');
+  await harness.open(page);
+  await page.getByText('Queue after resend', { exact: true }).click();
+  const firstMock = await startMock(harness, threadId);
+  const input = page.getByLabel('Message Input');
+  const previewRows = page.getByTestId('send-queue-preview-row');
+
+  // Turn 1 queues and consumes a message, so the thread's queue state
+  // exists and is empty when the resend's cut clears it.
+  await input.fill('Start step 1.');
+  await input.press('Enter');
+  await waitForGate(harness, 'tool-1');
+  await input.fill('Queued during step 1.');
+  await input.press('Enter');
+  await harness.waitForEvent('provider:queue_flushed', (ev: any) => ev.threadId === threadId);
+  await expect(previewRows.filter({ hasText: 'Queued during step 1.' })).toBeVisible();
+  await advance(harness, firstMock, 'tool-1');
+  await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
+  await expect(previewRows).toHaveCount(0);
+  await expect(page.getByTestId('user-message-bubble').filter({ hasText: 'Queued during step 1.' })).toBeVisible();
+
+  // Editing the thread's first message drops the Claude session, so the
+  // replacement starts a new one, which takes the scenario set now.
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeTurnsScenario('queue-after-resend-replacement', [toolTurn(3)], { holdQueuedInput: true }),
+  });
+  const reverted = harness.waitForEvent('user_message:reverted', (ev: any) => ev.threadId === threadId);
+  const restarted = harness.waitForEvent<{ mockId: string }>(
+    'harness:mock',
+    (ev: any) => ev.report.kind === 'registered',
+  );
+  await page.getByText('set the stage', { exact: true }).hover();
+  await page.getByLabel('Edit message and resend from here').first().click();
+  await page.getByTestId('user-message-editor').getByLabel('Message Input').fill('Set the stage again.');
+  await page.getByTestId('user-message-edit-send').click();
+  await reverted;
+  const { mockId } = await restarted;
+  await waitForGate(harness, 'tool-3');
+  await expect(page.getByTestId('user-message-bubble').filter({ hasText: 'Queued during step 1.' })).toHaveCount(0);
+
+  await startZoneSampler(page, QUEUED_AFTER_RESEND);
+  await input.fill(QUEUED_AFTER_RESEND);
+  await input.press('Enter');
+  // This message's own flush: a send made while the previous turn's text
+  // was still revealing is queued too, and its flush frame is older.
+  await harness.waitForEvent('provider:queue_flushed', (ev: any) =>
+    ev.threadId === threadId && ev.items.some((item: any) => item.message === QUEUED_AFTER_RESEND));
+  const live = await harness.rpc<{ flushedItems: Array<{ message: string }> }>('GetThreadLiveState', threadId);
+  expect(live.flushedItems.map((item) => item.message)).toEqual([QUEUED_AFTER_RESEND]);
+  await expect(previewRows.filter({ hasText: QUEUED_AFTER_RESEND })).toBeVisible();
+  await expect(page.getByTestId('user-message-bubble').filter({ hasText: QUEUED_AFTER_RESEND })).toHaveCount(0);
+  // The sampler has a preview-only frame before the pickup can end it.
+  await expect.poll(lastZoneSample(page)).toBe('1/0');
+
+  await advance(harness, mockId, 'tool-3');
+  await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
+  await expect.poll(lastZoneSample(page), { timeout: 30_000 }).toBe('0/1');
+  expectOneHomePerFrame(await stopZoneSampler(page));
+  await expect(previewRows).toHaveCount(0);
+});

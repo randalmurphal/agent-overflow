@@ -58,7 +58,7 @@ func TestParseGitLabPRDetailAndApprovalsFixtures(t *testing.T) {
 func TestParseGitLabReviewThreadsFiltersSystemGroupsAndStaleness(t *testing.T) {
 	t.Parallel()
 	detail := gitlabPRDetail(decodeTestJSON[gitlabMRRaw](t, readTestdata(t, "gitlab-mr-detail.json")), nil)
-	threads := gitlabReviewThreads(decodeTestJSON[[]gitlabDiscussionRaw](t, readTestdata(t, "gitlab-discussions-all.json")), detail.HeadSHA)
+	threads := gitlabReviewThreads(decodeTestJSON[[]gitlabDiscussionRaw](t, readTestdata(t, "gitlab-discussions-all.json")), gitlabThreadContext{headSHA: detail.HeadSHA})
 	if len(threads) == 0 {
 		t.Fatal("expected positioned GitLab threads")
 	}
@@ -143,7 +143,7 @@ func TestParseForgeAuthorWithoutName(t *testing.T) {
 	if gitlab.AuthorLogin != "dave" || gitlab.AuthorName != "" {
 		t.Fatalf("GitLab detail without name = %+v", gitlab)
 	}
-	threads := gitlabReviewThreads(decodeTestJSON[[]gitlabDiscussionRaw](t, `[{"id":"d1","notes":[{"id":1,"body":"b","author":{"username":"dave"}}]}]`), "")
+	threads := gitlabReviewThreads(decodeTestJSON[[]gitlabDiscussionRaw](t, `[{"id":"d1","notes":[{"id":1,"body":"b","author":{"username":"dave"}}]}]`), gitlabThreadContext{})
 	if fmt.Sprint(commentAuthors(threads)) != fmt.Sprint([][2]string{{"dave", ""}}) {
 		t.Fatalf("GitLab note without name = %+v", threads)
 	}

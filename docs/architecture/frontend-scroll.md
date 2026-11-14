@@ -278,8 +278,7 @@ The switch edge is not the only cache writer: pane close is the other
 `destroyPane` before `clear()` empties the items, and by
 `startDraftPlaceholder` when "+ New" replaces a mounted thread). Both
 edges share `cacheOutgoingWindow` (size priors, write-back timer
-retirement, optimistic-row stripping, the L1 snapshot + durable
-replica), so a reopened thread restores warm instead of cold-fetching
+retirement, the L1 snapshot + durable replica), so a reopened thread restores warm instead of cold-fetching
 and paying the estimate→measure cascade as a visible spring
 (bug-report-20260822T020840Z: every reopen in the trace was
 `source: "fetch"`). The close path skips a thread the store no longer
@@ -572,6 +571,18 @@ growing is live content; chasing it re-fired the navigation as instant
 writes when streaming resumed inside the settle window of an auto-collapse
 bottom restore (bug-report-20260731T211929Z; regression:
 `appendAfterQuiet.browser.test.ts`, the settle-window test).
+
+The same holds for a target past the end of the rows, at any alignment. The
+engine clamps it to that end, so it moves when the rows from the destination
+on grow. While one of those rows is an estimate, that movement is the
+correction the passes exist for. Once all are measured it is live content (a
+log's next line, a row appended): the first pass that finds the clamped
+target over a fully measured tail records the height from the destination's
+top to the end, and growth past it is kept out of the clamp. A view that
+landed at the end of a short list stays there until its owner moves it
+(regression: the "list's end stopped short" tests in
+`timelineVirtualizer.browser.test.ts`, the grown-log test in
+`reviewCILogFind.browser.test.ts`).
 
 **Bounded by the scrollback that exists.** Opening upward spends `scrollTop`,
 and a run near the top of a thread may not have enough. The write clamps at 0
@@ -1089,6 +1100,15 @@ teleport to a slightly unnecessary glide.
 the one input that turns growth back into an instant pin, which is the
 correct semantic for it.
 
+### Motion that is not a scroll write
+
+A row promotion (a narration block leaving its activity run, see
+[activity-runs.md](activity-runs.md#a-narration-block-leaves-the-run-on-the-spring))
+changes two box heights per frame. It steps them with `SpringValue`, which
+shares `SpringVelocity` with `SpringMotion`, so the boxes and the follow that
+chases them move on one velocity law. The controller sees ordinary content
+growth and needs no promotion-specific input.
+
 ### Liveness is a separate question
 
 `lastLiveContentAt` still exists, and `ThreadPane` still stamps it
@@ -1167,8 +1187,9 @@ already in `pane.items` and mount without any upsert in that flush) and
 moved past the loaded tail: the hand-off from the send-queue preview to the
 timeline is that message appearing, and the row is rewritten in place, so
 the wire-upsert arm never sees an append), and bare
-`armStructuralSpring` (arm only, no stamp) for the composer's optimistic
-user-send. All arm sites run
+`armStructuralSpring` (arm only, no stamp) for the replacement row of an
+edit-and-resend. A sent message appears through the wire-append arm when
+its row arrives. All arm sites run
 synchronously with the data change, strictly before the Svelte flush in
 which the virtualizer measures the new/released rows and delivers their
 geometry sample. An effect-based arm (MessageTimeline's former
@@ -1249,7 +1270,18 @@ scroller:
 2. **The streaming line-slide** (`TailClampedText`'s inverted translateY,
    drained by a rAF tracker — `tailSlide.ts`) is the one in-content
    animation, on the one region that is genuinely in motion: the line
-   being streamed.
+   being streamed. The slide drains each gap up to the reveal smoother's
+   stall bound (`MAX_REVEAL_TICK_DT_MS`, `SLIDE_MAX_CATCHUP_FRAMES`), the
+   elapsed time the reveal lands text for, so the lines keep pace with
+   the text under any pattern of paint gaps, and after a stalled frame
+   the slide and the reveal recover together, three frames' worth on the
+   first paint, while the spring resumes at its own pace.
+   The slide's pending offset is capped at `SLIDE_MAX_WINDOWS` clamp
+   windows, the bound on how far the visible text moves in one frame
+   (the drain's share of the cap), and at the content above the box; the
+   tail window and the live text window retain the clamp plus that many
+   windows of lines (`TAIL_WINDOW_KEEP_LINES`), so a cut never removes a
+   line the slide has yet to show.
 
 Everything else is still ink. No CSS transitions (the app.css timeline
 kill rule zeroes them, per the chat guide's
@@ -1379,7 +1411,10 @@ print: instant, settled, already there.
 `ChatView.svelte` positions the composer and live-turn UI as an absolute
 overlay. A `--composer-height` CSS variable drives `scrollEl`
 `padding-bottom`, keeping composer growth from changing the scroll
-surface's `clientHeight`.
+surface's `clientHeight`. The variable is inherited, so the timeline's
+content wrapper pins it to `0px`: a composer resize restyles the scroller,
+the nav rail and the scroll-to-bottom button, which read it, and none of
+the mounted rows.
 
 The composer ResizeObserver writes `--composer-height` directly before
 observing `'composer-geometry'` on the scroll controller. Waiting for
@@ -1663,9 +1698,14 @@ mermaid/math rendered-height caches; the media blob cache behind forge
 attachments and local images, whose settled bytes at the image's last
 display tier (`utils/imageTiers.ts`) a remount reads synchronously; the
 `<img>` carries the original's pixel size whichever tier is painted, so its
-box is reserved in the frame it mounts and a sharper tier never changes it),
-and `remountReturn.browser.test.ts` and
-`e2e/tests/local-image-pane-stability.spec.ts` pin the outcomes. Two pieces
+box is reserved in the frame it mounts and a sharper tier never changes it;
+a local image is keyed by the file it names, and a relative path names it
+in the workspace its row recorded at settle (`items.meta.authoredWorkspace`),
+so a thread whose workspace moves under its mounted rows keeps the images
+it painted),
+and `remountReturn.browser.test.ts`,
+`e2e/tests/local-image-pane-stability.spec.ts` and
+`e2e/tests/worktree-entry-image-stability.spec.ts` pin the outcomes. Two pieces
 survive the deletion:
 
 - The scroll surface width signal: the **content-box** width, observed
@@ -1689,9 +1729,62 @@ history rows or late adornments that change row geometry.
 
 ## Search
 
-Full-thread search goes through the `MessageSearch` palette and the
-`SearchThreadMessages` binding. Browser find only sees mounted virtual
-rows and is not a complete search surface.
+Cross-thread search (`search.messages`, mod+shift+f) goes through the
+`MessageSearch` dialog and the `SearchThreadMessages` binding. Browser find
+only sees mounted virtual rows and is not a complete search surface.
+
+Find inside one pane (`find.in-pane`, mod+f) is that pane's find bar, never
+the dialog. A pane body registers a provider (`stores/paneFind.svelte.ts`)
+while it is mounted; the command opens the target pane's bar: the focused
+layout pane, or under compact the pane on the thread screen, since opening a
+companion leaves focus on its source. In a pane with find regions it is the
+target region's bar, and in a pane whose thread terminal holds its focus,
+the active terminal tab's
+([panes guide](../../frontend/src/lib/components/panes/AGENTS.md#find)). It is disabled for a pane with no
+provider or under an overlay (`overlayOpen`, the airspace registry,
+palette included; the palette's own list leaves the palette out through
+`overlayBesidePalette` because its command runs after it closes). Escape
+(`find.close`) closes the target's bar from the transcript, the composer
+or the bar's own input before it can interrupt a turn; the bar has no
+Escape handling of its own beyond an IME composition's. Back closes the
+target's bar after any overlay above it, so a find off screen is never
+Back's rung. A pane's find state is dropped when the pane
+leaves the layout.
+
+A pane that renders a thread timeline uses `stores/threadFind.svelte.ts`,
+and only for an owner advertising `thread-find.v1`: `SearchThreadItems` and
+`SearchTimelineItems` return the hits of the transcript the pane shows
+(main top-level rows, or an agent scope's direct children) in document
+order with their `(turnIndex, itemIndex)`, walking the timeline arms on the
+call's context. One read is in flight per layout pane
+(`paneFindReads`), across body remounts: a newer query or an invalidation
+waits behind it and replaces any other waiting read, and a close drops
+it. An answer applies only for its query, transcript, owner and switch
+generation; a change of transcript, owner or generation drops the hits and
+searches again. The window's `searchRevision` (any summary change, streaming
+deltas included) drives a rate-bounded re-read. While a find is open it
+calls `watchSearchableEvents`, and the window also counts upserts, deltas,
+patches and removals of its thread or scope that it refuses or does not
+hold, retaining none of them. That re-read that updates the count and
+the current hit without moving the view.
+
+A new query starts at the first hit at or below the reading position
+recorded in the pane's scroll snapshot, else the last; it moves only when
+that row is off screen. Steps wrap and always move. Every move is the pane's
+scroll-to-item request with `mark` and the find as its `owner`;
+`MessageTimeline` lands it through the explicit-jump session (load until
+item, then the landing flash). A replaced query or a close withdraws it
+(`withdrawScrollToItem`): an untaken request is dropped, and a taken one
+whose navigation is still current is superseded by a newer navigation, so a
+lookup still loading lands nowhere. The navigation's liveness reaches
+`loadUntilItem(itemId, live)`, so its window slice and any run members it
+fetches are not committed once it ends. Its paging claims
+(`loadingOlder`, `loadingNewer`) go when it ends or is superseded, not
+when its request settles: the timeline calls `releaseEndedNavigation` at
+every navigation end, and a newer page load or cut releases them too, so
+the window pages again while the request is still out. A newer claim is
+never released by an older navigation. Matches in mounted rows paint through
+`utils/findHighlights.ts`.
 
 A hit goes through `navigateToThreadItem(pane, threadId, itemId)`
 (`stores/threadItemNavigation.ts`). A pane that shows another thread by then

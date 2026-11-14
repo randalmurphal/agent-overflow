@@ -17,6 +17,10 @@ import (
 	"agent-overflow/internal/procutil"
 )
 
+// interruptSignals end the suite: a terminal's interrupt, and the stop a
+// supervising script or service manager sends.
+var interruptSignals = []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP}
+
 func configureProcessGroup(command *exec.Cmd) {
 	if command.SysProcAttr == nil {
 		command.SysProcAttr = &syscall.SysProcAttr{}

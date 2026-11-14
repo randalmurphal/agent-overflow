@@ -193,6 +193,51 @@ func TestHarnessForgeRateLimitReachesTheTransport(t *testing.T) {
 	}
 }
 
+// HarnessForgeRefuse takes the wire's {route, status, header, body,
+// times}; the app's transport reads the refusal as the forge's, and
+// HarnessReset clears it.
+func TestHarnessForgeRefuseReachesTheTransport(t *testing.T) {
+	h, _ := newHarnessTestHost(t)
+	server, endpoint, err := StartForgeAPI(h)
+	if err != nil {
+		t.Fatalf("StartForgeAPI: %v", err)
+	}
+	t.Cleanup(server.Shutdown)
+	seed := json.RawMessage(`{"repos":[{"forge":"gitlab","project":"grp/refused","pulls":[{"number":5,"title":"Refused","headSha":"5555555555555555555555555555555555555555"}]}]}`)
+	if _, err := h.HarnessForgeSeed(seed); err != nil {
+		t.Fatal(err)
+	}
+	var refusal forgefake.Refusal
+	if err := json.Unmarshal([]byte(`{"route":"glab api approve","status":403,"body":{"error":"insufficient_scope","scope":"api"}}`), &refusal); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.HarnessForgeRefuse(refusal); err != nil {
+		t.Fatalf("HarnessForgeRefuse: %v", err)
+	}
+	if err := h.HarnessForgeRefuse(forgefake.Refusal{Route: "glab api nothing", Status: 403}); err == nil {
+		t.Fatal("a route the fake does not have was accepted")
+	}
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", Isolated: &forgeapi.Isolated{BaseURL: endpoint.BaseURL, Token: endpoint.Token}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	approve := forgeapi.Request{Method: http.MethodPost, Path: "projects/grp%2Frefused/merge_requests/5/approve", Body: map[string]string{"sha": strings.Repeat("5", 40)}}
+	_, err = svc.GitLab("gitlab.com").Do(t.Context(), approve)
+	if forbidden, ok := errors.AsType[*forgeapi.ForbiddenError](err); !ok || forbidden.Scope != "api" {
+		t.Fatalf("a refused approve = %v", err)
+	}
+	if err := h.HarnessReset(); err != nil {
+		t.Fatalf("HarnessReset: %v", err)
+	}
+	if _, err := h.HarnessForgeSeed(seed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GitLab("gitlab.com").Do(t.Context(), approve); err != nil {
+		t.Fatalf("after reset the approve = %v", err)
+	}
+}
+
 // A response the forge is still writing when it goes offline is delivered
 // whole: the request was answered while online, and a spec that waits for
 // its record before going offline must not see it fail.

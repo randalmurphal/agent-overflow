@@ -87,6 +87,18 @@ var tierByKey = map[string]Tier{
 	// authority to read and drive this computer's other threads. Host, for
 	// the reason the browser keys are.
 	"threadToolsEnabled": TierHost,
+	// dictationSubscriptionEnabled spends this machine's Codex sign-in on
+	// every client's dictation. Host, like the other grants above.
+	"dictationSubscriptionEnabled": TierHost,
+	// The OpenAI API dictation switch spends this machine's key, and its
+	// options shape every client's transcription through it.
+	"dictationAPIEnabled":   TierHost,
+	"dictationAPIDelay":     TierHost,
+	"dictationAPILanguages": TierHost,
+	"dictationAPIKeywords":  TierHost,
+	"dictationAPIPrompt":    TierHost,
+	// Read aloud in OpenAI voices spends this machine's key too.
+	"readAloudAPIEnabled": TierHost,
 	// Keep-awake inhibits THIS machine's sleep, and workflowPaused is the
 	// backend engine's own run state.
 	"keepAwakeEnabled": TierHost,
@@ -139,6 +151,11 @@ var tierByKey = map[string]Tier{
 	"codexNativeMemoryDisabled":  TierUser,
 	// The command timeout ceiling is the same kind of preference.
 	"claudeMaxCommandTimeoutHours": TierUser,
+	// Account auto-switch applies to every provider and travels with the
+	// person (docs/specs/account-auto-switch.md#settings).
+	"accountAutoSwitchStrategy":  TierUser,
+	"accountAutoSwitchThreshold": TierUser,
+	"accountAutoContinue":        TierUser,
 
 	// Retiered from device 2026-08-31: both are read by BACKEND behaviour
 	// rather than rendered by a client, and one backend behaviour cannot

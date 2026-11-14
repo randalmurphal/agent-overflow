@@ -1,13 +1,15 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewPane from './ReviewPane.svelte';
+import ReviewConversationCommits from './ReviewConversationCommits.svelte';
 import type { PanelContext } from '../../stores/panelContext.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
+import { __resetReviewPaneStateForTest, reviewStateForPane, reviewSubjectForPane, type ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { CIPipeline, DiffReviewComment, DiffReviewCommentInput, PRDetail, ReviewThread, Thread } from '../../types/models';
 import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { commitList } from '../../../test/helpers/commitList';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from '../../stores/eventsPRReview';
 import { formatTimeOfDay } from '../../utils/format';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
@@ -16,6 +18,46 @@ import { resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
 import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
+import { stepPaneBack } from '../../stores/paneBackSteps';
+
+// The view toggles (whitespace, wrap, split) are checkbox rows of the
+// toolbar's "..." menu, which closes on every pick: open it, find the row.
+/** Opens a toolbar menu by its trigger and picks the row the matcher
+ *  accepts; the pick closes the menu. */
+async function pickFromMenu(
+  view: { getByTestId: (id: string) => HTMLElement; getAllByTestId: (id: string) => HTMLElement[] },
+  triggerId: string,
+  optionId: string,
+  match: (row: HTMLElement) => boolean = () => true,
+): Promise<void> {
+  const trigger = view.getByTestId(triggerId);
+  await waitFor(() => {
+    expect(trigger).toBeEnabled();
+  });
+  if (trigger.getAttribute('aria-expanded') !== 'true') await fireEvent.click(trigger);
+  const row = await waitFor(() => {
+    const found = view.getAllByTestId(optionId).find(match);
+    if (!found) throw new Error(`no  row matched`);
+    return found;
+  });
+  await fireEvent.click(row);
+  await waitFor(() => {
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  });
+}
+
+async function pickScope(
+  view: { getByTestId: (id: string) => HTMLElement; getAllByTestId: (id: string) => HTMLElement[] },
+  scope: string,
+): Promise<void> {
+  await pickFromMenu(view, 'review-scope-select', `review-scope-option-${scope}`);
+}
+
+async function openViewOption(view: { getByTestId: (id: string) => HTMLElement }, testId: string): Promise<HTMLElement> {
+  const trigger = view.getByTestId('review-view-options');
+  if (trigger.getAttribute('aria-expanded') !== 'true') await fireEvent.click(trigger);
+  return await waitFor(() => view.getByTestId(testId));
+}
 
 function makeCtx(): PanelContext {
   return makeStubPanelContext();
@@ -84,9 +126,9 @@ beforeEach(() => {
   setBindingMock('UpdateThreadBranch', async () => []);
   setReviewDiffMock('OpenWorkspaceDiff', async () => patch());
   setReviewDiffMock('OpenBranchBaseDiff', async () => '');
-  setBindingMock('ListBranchCommits', async () => []);
+  setBindingMock('ListBranchCommits', async () => commitList([]));
   setReviewDiffMock('OpenCommitDiff', async () => '');
-  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRCommits', async () => commitList([]));
   setReviewDiffMock('OpenPRCommitDiff', async () => '');
   setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
   setReviewDiffMock('OpenTurnEditsDiff', async () => '');
@@ -97,6 +139,116 @@ beforeEach(() => {
   setBindingMock('UpdateDiffReviewComment', async () => ({}));
   setBindingMock('DeleteDiffReviewComment', async () => undefined);
   setBindingMock('SendDiffReviewComments', async () => ({}));
+});
+
+describe('<ReviewPane> open new-comment editors whose line is not shown', () => {
+  const filePatch = (path: string, index = '1111111..2222222', added = 'new') => [
+    `diff --git a/${path} b/${path}`,
+    `index ${index} 100644`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    '@@ -1 +1,2 @@',
+    '-old',
+    `+${added}`,
+    '+tail',
+  ].join('\n');
+
+  beforeEach(() => {
+    setBindingMock('HighlightSchemaVersion', async () => 'test-schema');
+    setBindingMock('HighlightClassNames', async () => ['none']);
+    setBindingMock('HighlightPatch', async () => ({ lines: [] }));
+    setBindingMock('HighlightPatchWithContext', async () => ({ lines: [] }));
+  });
+
+  // The diff rows sit in a grid the role queries do not reach into.
+  function buttonNamed(view: { container: HTMLElement }, name: string): HTMLButtonElement {
+    const found = [...view.container.querySelectorAll('button')].find((button) => button.textContent?.trim() === name);
+    if (!found) throw new Error(`no button ${name}`);
+    return found;
+  }
+
+  async function withEditorOn(path: string, patchText: () => string) {
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patchText());
+    const ctx = makeCtx();
+    const view = render(ReviewPane, { ctx });
+    await waitFor(() => expect(view.getAllByTestId('review-file-header').length).toBeGreaterThan(0));
+    const review = reviewStateForPane(ctx.paneId, reviewSubjectForPane(ctx)!);
+    const id = review.openDraftEditor({ filePath: path, side: 'new', newLine: 1, selectedText: 'new' })!;
+    review.setDraftBody(id, 'Keep me.');
+    await waitFor(() => expect(view.getAllByTestId('review-draft-editor')).toHaveLength(1));
+    const texts = () => view.queryAllByTestId('review-draft-editor').map((node) => node.querySelector('textarea')!.value);
+    return { view, review, id, texts, paneId: ctx.paneId };
+  }
+
+  it('hides the editor of a file the type or test filter hides, with its text kept', async () => {
+    const { view, texts } = await withEditorOn('src/app.test.ts', () => [filePatch('src/app.ts'), filePatch('src/app.test.ts')].join('\n'));
+    if (view.queryByTestId('review-tree-filter-diff') === null) await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    await fireEvent.click(view.getByTestId('review-tree-hide-tests'));
+    await waitFor(() => expect(view.getAllByTestId('review-file-header').map((node) => node.getAttribute('data-path'))).toEqual(['src/app.ts']));
+    expect(texts()).toEqual([]);
+    expect(view.queryByTestId('review-gone-editors')).toBeNull();
+    await fireEvent.click(view.getByTestId('review-tree-hide-tests'));
+    await waitFor(() => expect(texts()).toEqual(['Keep me.']));
+  });
+
+  it('groups the editor of the last changed file once it is reverted, to copy or discard', async () => {
+    let patchText = filePatch('src/app.ts');
+    const { view, review, texts } = await withEditorOn('src/app.ts', () => patchText);
+    patchText = '';
+    await review.reload();
+    await waitFor(() => expect(view.getByTestId('review-gone-editors').textContent).toContain('Comments on files not in this diff'));
+    expect(view.queryAllByTestId('review-file-header')).toHaveLength(0);
+    expect(texts()).toEqual(['Keep me.']);
+    expect(view.getByTestId('review-draft-editor-path').textContent).toBe('src/app.ts');
+    expect(view.getByTestId('review-draft-editor-note').textContent).toContain('This file is no longer in the diff.');
+    await fireEvent.click(buttonNamed(view, 'Discard'));
+    await waitFor(() => expect(view.queryByTestId('review-gone-editors')).toBeNull());
+    expect(review.openEditors).toEqual([]);
+  });
+
+  it('keeps a detached editor in its file after the suggested row, marked, and hides it with a collapsed body', async () => {
+    let patchText = filePatch('src/app.ts');
+    const { view, review, texts } = await withEditorOn('src/app.ts', () => patchText);
+    patchText = filePatch('src/app.ts', '1111111..3333333', 'newer');
+    await review.reload();
+    await waitFor(() => expect(view.getByTestId('review-draft-editor-note').textContent).toContain('The file changed under this comment.'));
+    expect(view.container.querySelectorAll('[data-review-target]')).toHaveLength(1);
+    expect(view.container.querySelector('[data-review-target]')!.textContent).toContain('newer');
+    expect(buttonNamed(view, 'Add comment').disabled).toBe(true);
+    expect(view.container.textContent?.toLowerCase()).not.toMatch(/unplaced|detached/);
+    await fireEvent.click(view.getAllByTestId('review-file-header-path')[0]!);
+    expect(view.queryAllByTestId('review-line-block')).toHaveLength(0);
+    expect(texts()).toEqual([]);
+    await fireEvent.click(view.getAllByTestId('review-file-header-path')[0]!);
+    await waitFor(() => expect(texts()).toEqual(['Keep me.']));
+    await fireEvent.click(buttonNamed(view, 'Use this line'));
+    await waitFor(() => expect(view.queryByTestId('review-draft-editor-note')).toBeNull());
+    expect(view.container.querySelectorAll('[data-review-target]')).toHaveLength(0);
+    expect(buttonNamed(view, 'Add comment').disabled).toBe(false);
+  });
+
+  it('arms a move; Escape in the pane or a line pick ends it', async () => {
+    let patchText = filePatch('src/app.ts');
+    const { view, review, id, paneId } = await withEditorOn('src/app.ts', () => patchText);
+    patchText = filePatch('src/app.ts', '1111111..3333333', 'newer');
+    await review.reload();
+    await waitFor(() => expect(buttonNamed(view, 'Move')).toBeInTheDocument());
+    await fireEvent.click(buttonNamed(view, 'Move'));
+    await waitFor(() => expect(view.getByTestId('review-draft-editor-note').textContent).toContain('Choose a line for this comment.'));
+    await fireEvent.keyDown(view.getByTestId('review-scroll'), { key: 'Escape' });
+    await waitFor(() => expect(review.armedEditorId).toBeNull());
+    // Back cancels the move before anything else it would do.
+    await fireEvent.click(await waitFor(() => buttonNamed(view, 'Move')));
+    expect(review.armedEditorId).toBe(id);
+    expect(stepPaneBack(paneId)).toBe(true);
+    expect(review.armedEditorId).toBeNull();
+    expect(review.openEditors).toHaveLength(1);
+    await fireEvent.click(await waitFor(() => buttonNamed(view, 'Move')));
+    const adds = view.getAllByTestId('review-add-comment');
+    await fireEvent.click(adds[adds.length - 1]!);
+    await waitFor(() => expect(review.openEditors).toMatchObject([{ id, state: 'placed', anchor: { newLine: 2 } }]));
+    expect(view.getAllByTestId('review-draft-editor')).toHaveLength(1);
+  });
 });
 
 describe('<ReviewPane>', () => {
@@ -149,9 +301,18 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getAllByTestId('review-file-header')).toHaveLength(2);
     });
-    const select = view.getByTestId('review-scope-select') as HTMLSelectElement;
-    expect([...select.options].map((o) => o.value)).toEqual(['workspace', 'branch']);
-    expect(select.disabled).toBe(false);
+    const trigger = view.getByTestId('review-scope-select');
+    expect(trigger).toBeEnabled();
+    expect(trigger).toHaveTextContent('Workspace');
+    await fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(view.getByTestId('review-scope-option-workspace')).toBeInTheDocument();
+    });
+    const options = [...document.querySelectorAll('[data-testid^="review-scope-option-"]')]
+      .map((row) => row.getAttribute('data-testid')?.replace('review-scope-option-', ''));
+    expect(options).toEqual(['workspace', 'branch']);
+    expect(view.getByTestId('review-scope-option-workspace').getAttribute('aria-checked')).toBeNull();
+    expect(view.getByTestId('review-scope-option-workspace')).toHaveTextContent('✓');
   });
 
   // The header badge is a toggle, but re-clicking it to close is not
@@ -206,14 +367,11 @@ describe('<ReviewPane>', () => {
     setBindingMock('ListDiffReviewComments', async () => [draft]);
 
     const view = render(ReviewPane, { ctx: makeCtx() });
-    await waitFor(() => {
-      expect(view.getByTestId('review-comment-tally')).toHaveTextContent('1 draft');
-    });
-    // Workspace scope has no conversation to open, so the tally is text.
-    expect(view.getByTestId('review-comment-tally').tagName).toBe('SPAN');
-
     // The commented file carries a count badge; a draft is not unresolved.
-    const badge = view.getByTestId('review-tree-comment-count');
+    // The toolbar carries no comment tally: the counts live on the tree,
+    // the Conversation header and the title bar's stepper.
+    const badge = await waitFor(() => view.getByTestId('review-tree-comment-count'));
+    expect(view.queryByTestId('review-comment-tally')).toBeNull();
     expect(badge).toHaveTextContent('1');
     expect(badge.classList.contains('text-warning')).toBe(false);
     expect(view.getByTestId('review-tree-search')).toBeInTheDocument();
@@ -240,6 +398,8 @@ describe('<ReviewPane>', () => {
       latestReviews: [],
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
+      readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     };
     const threads: ReviewThread[] = [{
       id: 't-1',
@@ -249,7 +409,7 @@ describe('<ReviewPane>', () => {
       isResolvable: true,
       isResolved: false,
       isOutdated: false,
-      comments: [{ authorLogin: 'alice', authorName: 'Alice Doe', body: '**Guard this.** It can be null.', createdAt: '2026-01-01T00:00:00Z', databaseID: 1 }],
+      comments: [{ authorLogin: 'alice', authorName: 'Alice Doe', body: '**Guard this.** It can be null.', createdAt: '2026-01-01T00:00:00Z', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
     }];
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
@@ -267,21 +427,19 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
     await waitFor(() => {
       expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
       expect(view.getByTestId('review-overview')).toBeInTheDocument();
     });
 
-    // Both sections start folded; the tally is a button here that opens
-    // the conversation at the thread's card.
+    // Both sections start folded; the Conversation header carries the
+    // count and opens at the thread's card. The toolbar has no tally.
     expect(view.getByTestId('review-pr-description').getAttribute('data-open')).toBe('false');
     expect(view.getByTestId('review-pr-conversation').getAttribute('data-open')).toBe('false');
     expect(view.queryByTestId('review-conversation-thread')).toBeNull();
-    const tally = view.getByTestId('review-comment-tally');
-    expect(tally.tagName).toBe('BUTTON');
-    expect(tally).toHaveTextContent('1 unresolved');
-    await fireEvent.click(tally);
+    expect(view.queryByTestId('review-comment-tally')).toBeNull();
+    await fireEvent.click(view.getByTestId('review-pr-conversation').querySelector('button')!);
     await waitFor(() => {
       expect(view.getByTestId('review-pr-conversation').getAttribute('data-open')).toBe('true');
     });
@@ -295,28 +453,138 @@ describe('<ReviewPane>', () => {
     expect(view.getByTestId('review-tree-comment-count').classList.contains('text-warning')).toBe(true);
   });
 
-  it('applies the extension filter to the diff when the dropdown toggle is checked', async () => {
-    const view = render(ReviewPane, { ctx: makeCtx() });
-    // Distinct paths, because the sticky overlay can duplicate the top
-    // file's header row.
-    const headerPaths = () =>
-      [...new Set(view.getAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+  it('applies the extension filter to the diff by default, and the dropdown item turns that off', async () => {
+    const mount = () => {
+      const view = render(ReviewPane, { ctx: makeCtx() });
+      // Distinct paths, because the sticky overlay can duplicate the top
+      // file's header row.
+      const headerPaths = () =>
+        [...new Set(view.getAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+      const treePaths = () =>
+        view.getAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path'));
+      return { view, headerPaths, treePaths };
+    };
+    const { view, headerPaths, treePaths } = mount();
     await waitFor(() => {
       expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
     });
 
     await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    expect(view.getByTestId('review-tree-filter-diff')).toHaveTextContent('✓');
     await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
-    // Rail-only by default: the diff still shows both files.
-    expect(headerPaths()).toHaveLength(2);
-
-    await fireEvent.click(view.getByRole('menuitem', { name: /apply filter to diff/i }));
+    // Nothing else touched: the diff narrows with the tree.
+    expect(treePaths()).toEqual(['src/app.ts']);
     expect(headerPaths()).toEqual(['src/app.ts']);
     expect(view.getByTestId('review-diff-stats').textContent).toContain('1 file');
 
-    // Unchecking restores the full diff; the rail filter stays active.
-    await fireEvent.click(view.getByRole('menuitem', { name: /apply filter to diff/i }));
-    expect(headerPaths()).toHaveLength(2);
+    // Unchecking restores the full diff; the tree stays filtered.
+    await fireEvent.click(view.getByTestId('review-tree-filter-diff'));
+    expect(view.getByTestId('review-tree-filter-diff')).not.toHaveTextContent('✓');
+    expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
+    expect(treePaths()).toEqual(['src/app.ts']);
+
+    // Checking it again narrows the diff again.
+    await fireEvent.click(view.getByTestId('review-tree-filter-diff'));
+    expect(headerPaths()).toEqual(['src/app.ts']);
+    await fireEvent.click(view.getByTestId('review-tree-filter-diff'));
+    view.unmount();
+
+    // A new pane starts with no filter and the item back on.
+    const again = mount();
+    await waitFor(() => {
+      expect(again.headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
+    });
+    expect(again.treePaths()).toHaveLength(2);
+    await fireEvent.click(again.view.getByTestId('review-tree-ext-trigger'));
+    expect(again.view.getByTestId('review-tree-filter-diff')).toHaveTextContent('✓');
+    await fireEvent.click(again.view.getByRole('menuitem', { name: /^\.ts/ }));
+    expect(again.headerPaths()).toEqual(['src/app.ts']);
+  });
+
+  // An explicit jump reveals its target: a thread's location in the
+  // Conversation on a file the filter hides shows that file in the diff
+  // and the tree, until the filter selection changes.
+  it('a Conversation location jump reveals a file hidden by hide tests or a type filter', async () => {
+    const filePatch = (path: string) => [
+      `diff --git a/${path} b/${path}`,
+      'index 1111111..2222222 100644',
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+    ];
+    const detail: PRDetail = {
+      number: 5, title: 'Add feature', body: '', authorLogin: 'octocat', state: 'open', draft: false,
+      headRefName: 'feature', baseRefName: 'main', baseRefSHA: 'base-main', headSHA: 'sha-a',
+      url: 'https://github.com/owner/repo/pull/5', additions: 3, deletions: 3, changedFiles: 3,
+      viewerIsAuthor: false, reviewDecision: '', latestReviews: [],
+      checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
+      mergeability: 'clean', readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
+    };
+    const thread = (id: string, path: string): ReviewThread => ({
+      id, path, line: 1, side: 'right', isResolvable: true, isResolved: false, isOutdated: false,
+      comments: [{ authorLogin: 'alice', body: `About ${path}.`, createdAt: '2026-01-01T00:00:00Z', databaseID: Number(id.slice(2)), id: `n${id}`, viewerCanEdit: false, viewerCanDelete: false }],
+    });
+    const threads = [thread('t-1', 'src/app.test.ts'), thread('t-2', 'docs/notes.md')];
+    setBindingMock('SubscribePRUpdates', async () => ({ id: 'sub-1', prKey: 'github:owner/repo:5', detail, threads, headSHA: 'sha-a' }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setReviewDiffMock('OpenPRDiff', async () =>
+      [...filePatch('src/app.ts'), ...filePatch('src/app.test.ts'), ...filePatch('docs/notes.md')].join('\n'));
+    setBindingMock('ListPRReviewThreads', async () => threads);
+
+    seedSourcePanePR();
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => expect(view.getByTestId('review-diff-stats')).toBeInTheDocument());
+    await pickScope(view, 'pr');
+    const headerPaths = () =>
+      [...new Set(view.queryAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+    const treePaths = () =>
+      view.queryAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path'));
+    await waitFor(() => expect(headerPaths()).toHaveLength(3));
+    const jumpTo = async (path: string) => {
+      const conversation = view.getByTestId('review-pr-conversation');
+      if (conversation.getAttribute('data-open') !== 'true') await fireEvent.click(conversation.querySelector('button')!);
+      const card = await waitFor(() => {
+        const found = view.getAllByTestId('review-conversation-thread').find((node) => node.textContent?.includes(`About ${path}.`));
+        expect(found).toBeDefined();
+        return found!;
+      });
+      await fireEvent.click(within(card).getByTestId('review-conversation-jump-diff'));
+    };
+    const filterItem = async (testIdOrName: string | RegExp) => {
+      if (view.queryByTestId('review-tree-filter-diff') === null) await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+      const item = typeof testIdOrName === 'string'
+        ? view.getByTestId(testIdOrName)
+        : view.getByRole('menuitem', { name: testIdOrName });
+      await fireEvent.click(item);
+    };
+
+    // Hide tests: the jump brings the test file into the diff and the tree.
+    await filterItem('review-tree-hide-tests');
+    expect(headerPaths()).not.toContain('src/app.test.ts');
+    expect(treePaths()).not.toContain('src/app.test.ts');
+    await jumpTo('src/app.test.ts');
+    await waitFor(() => expect(headerPaths()).toContain('src/app.test.ts'));
+    expect(treePaths()).toContain('src/app.test.ts');
+    // Changing the filter hides it again.
+    await filterItem('review-tree-hide-tests');
+    await filterItem('review-tree-hide-tests');
+    expect(headerPaths()).not.toContain('src/app.test.ts');
+    expect(treePaths()).not.toContain('src/app.test.ts');
+    await filterItem('review-tree-hide-tests');
+
+    // A type filter: the same for a file of another type.
+    await filterItem(/^\.ts/);
+    expect(headerPaths()).toEqual(['src/app.test.ts', 'src/app.ts']);
+    await jumpTo('docs/notes.md');
+    await waitFor(() => expect(headerPaths()).toContain('docs/notes.md'));
+    expect(treePaths()).toContain('docs/notes.md');
+    await filterItem(/^\.ts/);
+    await filterItem(/^\.ts/);
+    expect(headerPaths()).not.toContain('docs/notes.md');
+    expect(treePaths()).not.toContain('docs/notes.md');
   });
 
   it('toggles hide-whitespace from the toolbar and re-requests the diff', async () => {
@@ -336,30 +604,34 @@ describe('<ReviewPane>', () => {
       expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
     });
 
-    const toggle = view.getByTestId('review-ignore-whitespace-toggle');
-    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    // The toggle is a checkbox row of the view-options menu, which closes
+    // on every pick.
+    let toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
     expect(calls).toEqual([false]);
     // Disabled mid-load so a second flip can't race the reload it starts.
     await waitFor(() => {
-      expect(toggle).toBeEnabled();
+      expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
     });
 
     await fireEvent.click(toggle);
     await waitFor(() => {
       expect(headerPaths()).toEqual(['src/app.ts']);
     });
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
     expect(calls).toEqual([false, true]);
 
+    toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
     await waitFor(() => {
-      expect(toggle).toBeEnabled();
+      expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
     });
     await fireEvent.click(toggle);
     await waitFor(() => {
       expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
     });
-    expect(toggle).toHaveAttribute('aria-pressed', 'false');
     expect(calls).toEqual([false, true, false]);
+    toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
   });
 
   it('disables hide-whitespace for a diff source that cannot honor it', async () => {
@@ -381,17 +653,20 @@ describe('<ReviewPane>', () => {
 
     const view = render(ReviewPane, { ctx: makeCtx() });
     await waitFor(() => {
-      expect(view.getByTestId('review-ignore-whitespace-toggle')).toBeEnabled();
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'edits' } });
+    let toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
     await waitFor(() => {
-      expect(view.getByTestId('review-ignore-whitespace-toggle')).toBeDisabled();
+      expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
     });
-    expect(view.getByTestId('review-ignore-whitespace-toggle')).toHaveAttribute(
-      'title',
-      'Hide whitespace changes — not available for this diff',
-    );
+    await fireEvent.keyDown(toggle, { key: 'Escape' });
+
+    await pickScope(view, 'edits');
+    await waitFor(async () => {
+      toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+      expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    });
+    expect(toggle).toHaveAttribute('title', 'Not available for this diff');
   });
 
   it('switches to split view and back', async () => {
@@ -400,12 +675,12 @@ describe('<ReviewPane>', () => {
       expect(view.getAllByTestId('review-line-block')).toHaveLength(1);
     });
 
-    await fireEvent.click(view.getByTestId('review-split-toggle'));
+    await fireEvent.click(await openViewOption(view, 'review-split-toggle'));
     const block = view.getByTestId('review-line-block');
     // Split view renders the del/add pair side by side on one visual row.
     expect(block.querySelectorAll('.w-1\\/2')).toHaveLength(2);
 
-    await fireEvent.click(view.getByTestId('review-split-toggle'));
+    await fireEvent.click(await openViewOption(view, 'review-split-toggle'));
     expect(view.getByTestId('review-line-block').querySelectorAll('.w-1\\/2')).toHaveLength(0);
   });
 
@@ -536,6 +811,8 @@ describe('<ReviewPane>', () => {
       latestReviews: [],
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
+      readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     };
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
@@ -556,22 +833,21 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
 
     await waitFor(() => {
       expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
     });
 
-    // Toolbar now owns the state badge + branch refs.
-    const meta = view.getByTestId('review-pr-meta');
-    expect(meta.textContent).toContain('open');
-    expect(meta.textContent).toContain('main ← feature');
-
-    // The header no longer duplicates the branch refs or the PR-detail +/- stats.
+    // The title bar owns the state pill (author line) and the branch refs
+    // (refs line); the toolbar keeps only the diff's own counts.
     const header = view.getByTestId('review-pr-header');
-    expect(header.querySelector('[data-testid="review-pr-meta"]')).toBeNull();
-    expect(header.textContent).not.toContain('main ← feature');
+    expect(view.getByTestId('review-pr-state').textContent?.trim()).toBe('open');
+    expect(view.getByTestId('review-pr-author-line').contains(view.getByTestId('review-pr-state'))).toBe(true);
+    expect(view.getByTestId('review-pr-refs').getAttribute('title')).toBe('main ← feature');
+    expect(view.getByTestId('review-pr-refs-line').contains(view.getByTestId('review-pr-refs'))).toBe(true);
     expect(header.textContent).not.toContain('+99');
+    expect(view.getByTestId('review-toolbar').textContent).not.toContain('main ← feature');
   });
 
   it('closing the pane releases its PR hold and its diff read', async () => {
@@ -614,7 +890,7 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
     await waitFor(() => {
       expect(read).toHaveBeenCalledWith('diff-1', 40, expect.any(Number));
     });
@@ -653,6 +929,8 @@ describe('<ReviewPane>', () => {
       latestReviews: [],
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
+      readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     };
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
@@ -693,7 +971,7 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
 
     // Retarget the send from the agent to the PR to reveal the verdict row.
     await waitFor(() => {
@@ -733,6 +1011,8 @@ describe('<ReviewPane>', () => {
       latestReviews: [],
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
+      readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     };
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
@@ -744,9 +1024,9 @@ describe('<ReviewPane>', () => {
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
     setReviewDiffMock('OpenPRDiff', async () => patch());
     setBindingMock('ListPRReviewThreads', async () => []);
-    setBindingMock('ListPRCommits', async () => [
+    setBindingMock('ListPRCommits', async () => commitList([
       { sha: commitSHA, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]);
+    ]));
     setReviewDiffMock('OpenPRCommitDiff', async () => patch());
     // Echo the requested sourceKey so a draft exists (and the send strip
     // renders) in both the whole-PR and single-commit views.
@@ -778,7 +1058,7 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
 
     await waitFor(() => {
       expect(view.getByTestId('review-commit-select')).toBeInTheDocument();
@@ -790,20 +1070,49 @@ describe('<ReviewPane>', () => {
       expect(view.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
     });
 
-    await fireEvent.change(view.getByTestId('review-commit-select'), { target: { value: commitSHA } });
+    // The trigger reads "All commits" and never carries a subject; the
+    // menu row does, with the hash.
+    expect(view.getByTestId('review-commit-select')).toHaveTextContent('All commits');
+    await waitFor(() => {
+      expect(view.getByTestId('review-commit-select')).toBeEnabled();
+    });
+    await fireEvent.click(view.getByTestId('review-commit-select'));
+    const row = await waitFor(() => view.getByTestId('review-commit-option'));
+    expect(row).toHaveTextContent('bbbbbbb');
+    expect(row).toHaveTextContent('first');
+    expect(view.getByTestId('review-commit-position')).toHaveTextContent('1 commit');
+    await fireEvent.click(row);
     // The single-commit view can only send to the agent: the target
     // select and the PR verdict row both leave the strip.
     await waitFor(() => {
       expect(view.getByTestId('review-send-strip').querySelector('select')).toBeNull();
     });
     expect(view.queryByRole('button', { name: 'Approve' })).toBeNull();
+    // The trigger is the ordinal and hash; the subject, author and body
+    // are the commit card leading the diff, in the PR overview's place.
+    const trigger = view.getByTestId('review-commit-select');
+    expect(trigger).toHaveTextContent('1/1');
+    expect(trigger).toHaveTextContent('bbbbbbb');
+    expect(trigger).not.toHaveTextContent('first');
+    expect(trigger).toHaveAttribute('title', 'bbbbbbb first');
+    const card = view.getByTestId('review-commit-card');
+    expect(card.getAttribute('data-sha')).toBe(commitSHA);
+    expect(card).toHaveTextContent('first');
+    expect(card).toHaveTextContent('r');
+    expect(view.queryByTestId('review-overview')).toBeNull();
+    // No peek back to an overview that is not there.
+    expect(view.queryByTestId('review-overview-peek')).toBeNull();
+    expect(view.getAllByTestId('review-file-header')[0].compareDocumentPosition(card) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
 
-    // Back to "All commits" restores the PR target (still selected).
-    await fireEvent.change(view.getByTestId('review-commit-select'), { target: { value: '' } });
+    // Back to "All commits" restores the PR target (still selected) and
+    // drops the card.
+    await pickFromMenu(view, 'review-commit-select', 'review-commit-all');
     await waitFor(() => {
       expect(view.getByTestId('review-send-strip').querySelector('select')).not.toBeNull();
       expect(view.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
     });
+    expect(view.queryByTestId('review-commit-card')).toBeNull();
+    expect(view.getByTestId('review-commit-select')).toHaveTextContent('All commits');
   });
 
   it('edits scope shows the turn-grouped selector and switches to a single edit', async () => {
@@ -825,20 +1134,36 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'edits' } });
+    await pickScope(view, 'edits');
 
     await waitFor(() => {
       expect(view.getByTestId('review-edit-select')).toBeInTheDocument();
     });
-    const select = view.getByTestId('review-edit-select') as HTMLSelectElement;
-    // Default: the latest turn's whole set, grouped under its prompt.
-    expect(select.value).toBe('turn:2');
-    const groups = [...select.querySelectorAll('optgroup')].map((group) => group.label);
+    const trigger = view.getByTestId('review-edit-select');
+    // Default: the latest turn's whole set, named by its prompt.
+    expect(trigger).toHaveTextContent('now the lexer');
+    await waitFor(() => {
+      expect(trigger).toBeEnabled();
+    });
+    await fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(view.getAllByTestId('review-edit-option')).toHaveLength(5);
+    });
+    const groups = [...document.querySelectorAll('[data-menu-section-header]')].map((header) => header.textContent?.trim());
     expect(groups).toEqual(['fix the parser', 'now the lexer']);
+    const rows = view.getAllByTestId('review-edit-option');
+    expect(rows[2]).toHaveTextContent('All edits in turn');
+    expect(rows[2]).toHaveTextContent('✓');
+    expect(rows[0]).not.toHaveTextContent('✓');
+    expect(rows[3]).toHaveTextContent('Edited lexer.go');
+    expect(rows[3]).toHaveTextContent('+2 −1');
 
-    await fireEvent.change(select, { target: { value: 'item:tool:2a' } });
+    await fireEvent.click(rows[3]);
     await waitFor(() => {
       expect(payload).toHaveBeenCalledWith('thread-1', 'pl-2a');
+    });
+    await waitFor(() => {
+      expect(view.getByTestId('review-edit-select')).toHaveTextContent('Edited lexer.go');
     });
   });
 
@@ -864,11 +1189,11 @@ describe('<ReviewPane>', () => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
     const select = view.getByTestId('review-scope-select');
-    await fireEvent.change(select, { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
 
     // Still loading (the diff hangs) — the selector must stay usable.
     expect(select).toBeEnabled();
-    await fireEvent.change(select, { target: { value: 'workspace' } });
+    await pickScope(view, 'workspace');
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
@@ -895,6 +1220,8 @@ describe('<ReviewPane>', () => {
       latestReviews: [],
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
+      readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     };
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
@@ -913,7 +1240,7 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
     await waitFor(() => {
       expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
     });
@@ -1117,6 +1444,8 @@ function prDetailFor(headSHA: string): PRDetail {
     latestReviews: [],
     checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
     mergeability: 'conflicts',
+    readiness: { state: 'ready', blockers: [], settled: [] },
+    merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
   };
 }
 
@@ -1138,6 +1467,8 @@ async function renderPRScope(ci: CIPipeline | null = null) {
   }));
   setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setBindingMock('ListPRReviewThreads', async () => []);
+  // The toolbar's and the banners' reloads re-read the threads.
+  setBindingMock('GetPRDetail', async () => prDetailFor('sha-a'));
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
   seedSourcePanePR();
   const view = render(ReviewPane, {
@@ -1146,7 +1477,7 @@ async function renderPRScope(ci: CIPipeline | null = null) {
   await waitFor(() => {
     expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
   });
-  await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+  await pickScope(view, 'pr');
   await waitFor(() => {
     expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
   });
@@ -1205,6 +1536,87 @@ describe('<ReviewPane> load failures', () => {
     });
     expect(diff.mock.calls.length).toBe(calls + 1);
     expect(view.queryByTestId('review-error')).not.toBeInTheDocument();
+  });
+});
+
+// A PR read the pane's controls start is a person's: it may ask for git
+// credentials (the store reads unattended unless told).
+describe('<ReviewPane> PR read intent', () => {
+  const commitSHA = 'b'.repeat(40);
+  const lastIntent = (mock: { mock: { calls: unknown[][] } }) => mock.mock.calls.at(-1)?.at(-1);
+
+  it('every control that reads the PR says a person asked', async () => {
+    installFakeHighlighter();
+    let fail = false;
+    const diff = setReviewDiffMock('OpenPRDiff', async () => {
+      if (fail) throw new Error('fetch failed');
+      return patch();
+    });
+    const list = setBindingMock('ListPRCommits', async () => commitList([
+      { sha: commitSHA, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]));
+    const commitDiff = setReviewDiffMock('OpenPRCommitDiff', async () => patch());
+    const view = await renderPRScope();
+    await waitFor(() => expect(view.getByTestId('review-diff-stats')).toBeInTheDocument());
+    // The scope pick.
+    expect(lastIntent(list)).toBe(true);
+    expect(lastIntent(diff)).toBe(true);
+
+    // The toolbar's Reload.
+    await waitFor(() => expect(view.getByTestId('review-reload')).toBeEnabled());
+    let calls = diff.mock.calls.length;
+    await fireEvent.click(view.getByTestId('review-reload'));
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // The error banner's Retry.
+    fail = true;
+    await waitFor(() => expect(view.getByTestId('review-reload')).toBeEnabled());
+    await fireEvent.click(view.getByTestId('review-reload'));
+    await waitFor(() => expect(view.getByTestId('review-error')).toBeInTheDocument());
+    fail = false;
+    calls = diff.mock.calls.length;
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-error-retry')));
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // The stale banner's Reload.
+    setReviewDiffMock('OpenPRDiff', async (...args: never[]) => {
+      diff(...args);
+      return patch();
+    });
+    pushTo('sha-b');
+    await waitFor(() => expect(view.getByTestId('review-pr-stale')).toBeInTheDocument());
+    calls = diff.mock.calls.length;
+    await fireEvent.click(view.getByTestId('review-pr-stale').querySelector('button')!);
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // Hide whitespace.
+    calls = diff.mock.calls.length;
+    const toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+    await waitFor(() => expect(toggle).not.toHaveAttribute('aria-disabled', 'true'));
+    await fireEvent.click(toggle);
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // The commit picker.
+    await waitFor(() => expect(view.getByTestId('review-commit-select')).toBeEnabled());
+    await fireEvent.click(view.getByTestId('review-commit-select'));
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-commit-option')));
+    await waitFor(() => expect(commitDiff).toHaveBeenCalled());
+    expect(lastIntent(commitDiff)).toBe(true);
+  });
+
+  it('a commit picked in the Conversation feed says a person asked', async () => {
+    const selectCommit = vi.fn(async () => undefined);
+    const view = render(ReviewConversationCommits, {
+      review: { selectCommit } as unknown as ReviewPaneState,
+      author: 'r',
+      commits: [{ sha: commitSHA, shortSha: 'bbbbbbb', subject: 'first', body: '', author: 'r', authoredAt: 1 }],
+    });
+    await fireEvent.click(view.getByTitle("Show this commit's diff"));
+    expect(selectCommit).toHaveBeenCalledWith(commitSHA, { userInitiated: true });
   });
 });
 
@@ -1268,7 +1680,7 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
       expectOwnColors(view.container);
     });
     if (mode === 'split') {
-      await fireEvent.click(view.getByTestId('review-split-toggle'));
+      await fireEvent.click(await openViewOption(view, 'review-split-toggle'));
       expect(view.getByTestId('review-line-block').querySelectorAll('.w-1\\/2').length).toBeGreaterThan(0);
       expectOwnColors(view.container);
     }
@@ -1465,9 +1877,9 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
       expectOwnColors(view.container);
     });
     const colored = coloredTexts(view.container);
-    const toggle = view.getByTestId('review-ignore-whitespace-toggle');
+    const toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
     await waitFor(() => {
-      expect(toggle).toBeEnabled();
+      expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
     });
 
     const release = hold();
@@ -1594,7 +2006,7 @@ describe('<ReviewPane> CI', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-ci-log-scroll')).toHaveTextContent('error: boom');
     });
-    expect(reads).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }), '20', 0, 1);
+    expect(reads).toHaveBeenCalledWith({ Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo' }, '20', 0, 1);
     expect(jobSection()?.dataset.open).toBe('true');
 
     await fireEvent.click(view.getByRole('button', { name: 'Back' }));

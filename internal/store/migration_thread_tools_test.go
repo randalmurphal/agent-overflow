@@ -72,7 +72,7 @@ func TestThreadToolsMigrationsPreservePopulatedDatabase(t *testing.T) {
 		}
 		want := mode
 		if mode == "discussion" {
-			// v144 removed the mode and converted its threads to chat.
+			// v149 removed the mode and converted its threads to chat.
 			want = "chat"
 		}
 		if stored != want {

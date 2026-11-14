@@ -1,5 +1,7 @@
 import { refreshAsyncQuestions } from './asyncQuestions.svelte';
 import { invalidateClaudeProbeCommands } from './providerCommands.svelte';
+import { applyDictationSourcesChanged } from './dictation.svelte';
+import { applyReadAloudSourceChanged } from './readAloudSource.svelte';
 import { installComputerHydration } from './computerHydration';
 // Composition root for backend event wiring. `setupEventListeners()` is the
 // single place that subscribes to every Wails channel and fans events out
@@ -10,7 +12,7 @@ import { installComputerHydration } from './computerHydration';
 //   - eventsProvider.ts      — approvals, usage, turn/session lifecycle
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit
 //   - eventsQueue.ts         — send-queue mirror (state/flushed/restored, sends pending)
-//   - eventsMessageRevert.ts — user-message revert (Stop/Esc un-send)
+//   - eventsMessageRevert.ts — user-message revert (edit-and-resend)
 //   - eventsDraftRows.ts     — composer-draft convergence across clients
 //   - eventsProjectRows.ts   — project row projections (sidebar list)
 //   - eventsTransportGap.ts  — missed-seq resync
@@ -33,6 +35,7 @@ import type {
   ItemStreamEvent,
   ModelFallbackEvent,
   ProviderAccountEvent,
+  ProviderAccountAutoSwitchEvent,
   ProviderAccountSignInEvent,
   ProviderAccountUsageErrorEvent,
   ProviderSessionAccountEvent,
@@ -46,6 +49,7 @@ import type {
   UsageEvent,
   UserInputEvent,
   WorktreeSetupEvent,
+  ShellCommandEvent,
   WorktreeRemovedEvent,
   ThreadGroupUpdateEvent,
 } from '../types/events';
@@ -60,6 +64,7 @@ import { setSystemStats } from './systemStats.svelte';
 import { applyThreadGroupUpdated } from './threadGroups.svelte';
 import { transportGapChannel, type TransportGap } from '../transport/wsClient';
 import { attachedBackends, backendKeyForOrigin } from '../transport/backends';
+import type { UnsavedThreadRowsEvent } from '../../../bindings/agent-overflow/internal/app/models';
 import type { BackendKey } from '../transport/backendKey';
 import { onBackendHelloChange } from './transportStatus.svelte';
 import {
@@ -122,6 +127,7 @@ import {
   applyProviderAccount,
   hydrateProviderAccounts,
   applyProviderSessionAccount,
+  applyThreadUnsavedRows,
   applyTurnStarted,
   applyTurnCompleted,
   applySessionDied,
@@ -131,6 +137,7 @@ import {
 import {
   applyProviderLogin,
   applyProviderAccountSignIn,
+  applyProviderAccountAutoSwitch,
   hydrateProviderLogins,
 } from './providerAccounts.svelte';
 import type { ProviderLoginState } from './bindings';
@@ -172,12 +179,14 @@ import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
 import { applyWorktreeSetup } from './eventsWorktreeSetup';
+import { applyShellCommandEvent } from './shellCommands.svelte';
 import { applyWorktreeRemoved, revalidateDraftWorktrees } from './eventsWorktreeRemoved';
 import {
   applyThreadTitleGeneration,
   type ThreadTitleGenerationEvent,
 } from './threadTitleGeneration.svelte';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from './eventsPRReview';
+import { applyPipelineUpdated, applyPullsUpdated } from './eventsPulls';
 import { setupSessionImportEvents } from './eventsSessionImport';
 import {
   applyHighlightDiffSeed,
@@ -303,6 +312,12 @@ export function setupEventListeners(): () => void {
     'provider:account_signin',
     (evt, origin) => applyProviderAccountSignIn(evt, backendKeyForOrigin(origin.backendId)),
   );
+  // provider:account_auto_switch — the app changed the selected account, or
+  // failed to. Ephemeral like the sign-in channel.
+  const cancelProviderAccountAutoSwitch = wailsEventOn<ProviderAccountAutoSwitchEvent>(
+    'provider:account_auto_switch',
+    (evt, origin) => applyProviderAccountAutoSwitch(evt, backendKeyForOrigin(origin.backendId)),
+  );
   const cancelProviderAccountUsageError = wailsEventOn<ProviderAccountUsageErrorEvent>(
     'provider:account_usage_error',
     (evt) => {
@@ -378,6 +393,12 @@ export function setupEventListeners(): () => void {
       // the re-read this triggers is a second RPC and every other settings
       // write would otherwise pay for it.
       if (payload?.keys?.includes('editor')) void resyncEditorPreference(backendKeyForOrigin(origin.backendId));
+      // Dictation availability folds these switches in on the computer, so
+      // it is re-read the same way.
+      if (payload?.keys?.some((key) => key === 'dictationSubscriptionEnabled' || key === 'dictationAPIEnabled')) {
+        applyDictationSourcesChanged(backendKeyForOrigin(origin.backendId));
+      }
+      if (payload?.keys?.includes('readAloudAPIEnabled')) applyReadAloudSourceChanged(backendKeyForOrigin(origin.backendId));
     },
   );
   // keybindings:updated — the user keybindings file was rewritten or reset,
@@ -403,6 +424,7 @@ export function setupEventListeners(): () => void {
     const backend = backendKeyForOrigin(origin.backendId);
     invalidateClaudeProbeCommands(backend);
     applyProviderAccountsChanged(backend);
+    applyDictationSourcesChanged(backend);
   });
   // review:comments-changed — one inline review comment SET moved: a plan's
   // (keyed by plan item) or a diff review's (keyed by scope + source key).
@@ -482,9 +504,9 @@ export function setupEventListeners(): () => void {
     'provider:queue_state_changed',
     applyQueueStateChanged,
   );
-  const cancelQueueFlushed = wailsEventOn<QueueFlushedPayload>(
+  const cancelQueueFlushed = wailsEventOn<QueueFlushedPayload | null>(
     'provider:queue_flushed',
-    applyQueueFlushed,
+    (evt, origin, sequence) => applyQueueFlushed(evt, backendKeyForOrigin(origin.backendId), sequence),
   );
   const cancelQueueRestored = wailsEventOn<QueueRestoredPayload>(
     'provider:queue_restored',
@@ -619,6 +641,14 @@ export function setupEventListeners(): () => void {
     applyThreadErrorNotice,
   );
 
+  // thread:unsaved_rows — the thread errors the backend could not save to
+  // history, as the thread's whole list. Live state for the pane showing
+  // the thread; GetThreadLiveState mirrors it for a pane that opens later.
+  const cancelThreadUnsavedRows = wailsEventOn<UnsavedThreadRowsEvent>(
+    'thread:unsaved_rows',
+    (evt, origin) => applyThreadUnsavedRows(evt, backendKeyForOrigin(origin.backendId)),
+  );
+
   // backend:attach — how a pairing this machine started from Settings →
   // Remote access → Connect to a computer ended, minutes after AddBackend
   // returned the verification
@@ -708,6 +738,13 @@ export function setupEventListeners(): () => void {
     'worktree:setup',
     applyWorktreeSetup,
   );
+  // shell:command: a command the person ran from a thread's composer.
+  // Gated on `terminal:operate` like worktree:setup, for the same reason;
+  // stores/shellCommands.svelte.ts owns the sequence and snapshot contract.
+  const cancelShellCommand = wailsEventOn<ShellCommandEvent>(
+    'shell:command',
+    applyShellCommandEvent,
+  );
   // worktree:removed: one frame per removed worktree, whoever removed it.
   // Moved thread rows ride thread:updated; this moves the draft composers
   // parked in the directory, which have no row.
@@ -761,6 +798,10 @@ export function setupEventListeners(): () => void {
   // deltas for the jobs this client follows.
   const cancelPRCIUpdated = wailsEventOn('pr:ci_updated', applyPRReviewCIUpdated);
   const cancelPRCILog = wailsEventOn('pr:ci_log', applyPRReviewCILog);
+  // The Pull requests page: the list pump's snapshot and the pipeline
+  // pumps' frames (a pipeline's logs ride pr:ci_log above).
+  const cancelPullsUpdated = wailsEventOn('pulls:updated', applyPullsUpdated);
+  const cancelPipelineUpdated = wailsEventOn('ci:pipeline_updated', applyPipelineUpdated);
   // workflow:* — the typed run-record channel. Item/phase transitions keep
   // the overlay's run cache live (and the sidebar's needs-attention badge
   // authoritative) without polling; engine-state carries the one global pause
@@ -819,6 +860,7 @@ export function setupEventListeners(): () => void {
     cancelProviderAccount();
     cancelProviderLoginState();
     cancelProviderAccountSignIn();
+    cancelProviderAccountAutoSwitch();
     cancelProviderSessionAccount();
     cancelProviderAccountUsageError();
     cancelSystemStats();
@@ -856,6 +898,7 @@ export function setupEventListeners(): () => void {
     cancelUserMessageReverted();
     cancelThreadUpdated();
     cancelThreadErrorNotice();
+    cancelThreadUnsavedRows();
     cancelBackendAttach();
     cancelBackendSetChanged();
     cancelProjectUpdated();
@@ -863,6 +906,7 @@ export function setupEventListeners(): () => void {
     cancelThreadGroupUpdated();
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();
+    cancelShellCommand();
     cancelWorktreeRemoved();
     cancelWorktreeRemovedRecovery();
     cancelTransportGap();
@@ -871,6 +915,8 @@ export function setupEventListeners(): () => void {
     cancelPRUpdated();
     cancelPRCIUpdated();
     cancelPRCILog();
+    cancelPullsUpdated();
+    cancelPipelineUpdated();
     cancelWorkflowError();
     cancelWorkflowItemState();
     cancelWorkflowPhaseState();

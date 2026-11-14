@@ -46,8 +46,8 @@ func threadWakeFromSendID(sendID string) (token string, late, ok bool) {
 // none reaches the agent when the thread is next started. thread_status
 // still returns each answer, and a wake re-armed by a later wait or
 // thread_status delivers it and unarchives the thread. A wake the dispatch
-// already took stays delivered.
-func (a *App) withdrawHeldThreadWakes(threadID string) error {
+// already took stays delivered. match picks the queued messages by send id.
+func (a *App) withdrawHeldThreadWakes(threadID string, match func(sendID string) bool) error {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
 		return fmt.Errorf("withdraw the queued thread wakes of %s: %w", threadID, err)
@@ -55,7 +55,7 @@ func (a *App) withdrawHeldThreadWakes(threadID string) error {
 	var errs []error
 	for _, row := range rows {
 		token, late, ok := threadWakeFromSendID(row.SendID)
-		if !ok {
+		if !ok || !match(row.SendID) {
 			continue
 		}
 		removal, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
@@ -444,7 +444,7 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 			wake.Title = thread.Title
 		}
 		if row.AnswerAgentUnrecorded {
-			// A row written before v151 recorded nothing; a thread here is
+			// A row written before v156 recorded nothing; a thread here is
 			// read now.
 			agent, err := a.threadTools().senderAgent(row.TargetThreadID)
 			if err != nil {

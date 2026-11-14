@@ -1,10 +1,27 @@
 // Factory for the PaneHost drag/drop controller. Owns:
-//   - pane-reorder drag state (sourcePaneId being moved within the host)
-//   - thread-row drop preview (ghost rectangle showing the target slot)
+//   - the drop slot and its indicator for the three drags that place a pane
+//     in the strip: a sidebar thread row, a tools-row button and a pane
+//     dragged by its title. All three resolve their slot through one
+//     `resolveDrop`, so what the indicator shows is where the drop lands.
 //   - duplicate-pane highlight when dragging a thread already mounted
 //   - edge-driven auto-scroll while a drag hovers the host edges
 // Pulled out of PaneHost.svelte so the host file stays readable and the
 // drag protocol becomes unit-testable through a single public surface.
+//
+// A slot is an edge of a layout block (a pane with its companions): the
+// pointer's x picks the block it is over and the nearer of its two edges,
+// whatever element it is over. The indicator is a bar on that seam plus
+// the half that chose it.
+//
+// While one of these drags is over the strip it is `shielding`: PaneHost
+// covers the panes with an element outside the strip's scroller, so the
+// drag is never over pane content. The browser scrolls a scrollable
+// element a drag is held near the edge of, and a pane's own drop handlers
+// would see the drag; neither can happen through the shield.
+//
+// The DataTransfer answers nothing during dragover, so the payloads come
+// from `threadDragPayloadForEvent` / `toolDragPayloadForEvent`, which fall
+// back to the source's in-flight record; every drop clears that record.
 
 import {
   findPaneShowingThread,
@@ -17,174 +34,191 @@ import {
   paneBlockRangeAt,
   type PaneLayoutItem,
 } from '../../stores/paneLayout.svelte';
+import { isToolAtSlot, openTool } from '../../stores/toolPanes.svelte';
 import {
-  decodeThreadDragPayload,
   endThreadRowDrag,
+  endToolPaneDrag,
   PANE_REORDER_DRAG_MIME,
-  projectedPaneDropWidth,
+  threadDragPayloadForEvent,
+  toolDragPayloadForEvent,
   THREAD_ROW_DRAG_MIME,
-  type ThreadDropTarget,
+  TOOL_PANE_DRAG_MIME,
+  type PaneDropTarget,
 } from '../../utils/threadDragPayload';
 import { edgeAutoScrollVelocity } from './edgeAutoScroll';
 
-const PANE_SELECTOR = '[data-pane-id]';
-const PANE_GAP_SELECTOR = '[data-pane-gap-index]';
+/** Width of the seam bar. */
+export const PANE_DROP_SEAM_PX = 4;
 
 export interface PaneThreadDragOptions {
+  /** The strip's root: the scroller and the shield are inside it. */
+  getStripEl(): HTMLElement | undefined;
+  /** The scroller whose children are the pane sections. */
   getHostEl(): HTMLElement | undefined;
   getLayoutItems(): PaneLayoutItem[];
-  getMinPaneWidth(): number;
-  getScrollLeft(): number;
-  setScrollLeft(value: number): void;
-  getScrollClientWidth(): number;
-  getPaneOffsetLeft(paneId: string): number;
-  getPaneMeasuredWidth(paneId: string): number;
+}
+
+/** Where the indicator paints, in the strip's scroll-content pixels. */
+export interface PaneDropIndicator {
+  seamLeft: number;
+  /** The half of the block under the pointer; `seam` is the side its bar is on. */
+  lit: { left: number; width: number; seam: 'left' | 'right' } | null;
+}
+
+/** A horizontal run in viewport pixels. */
+interface Extent {
+  left: number;
+  right: number;
+}
+
+interface ResolvedDrop {
+  target: PaneDropTarget;
+  /** Viewport x of the seam; null for the empty strip, which has none. */
+  seam: number | null;
+  lit: Extent | null;
 }
 
 export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   let draggingPaneId = $state<string | null>(null);
-  let draggedThreadId = $state<string | null>(null);
   let duplicateDropPaneId = $state<string | null>(null);
-  let threadDropTarget = $state<ThreadDropTarget | null>(null);
-  let threadDropPreviewLeft = $state(0);
-  let threadDropPreviewWidth = $state(0);
+  let dropTarget = $state<PaneDropTarget | null>(null);
+  let dropIndicator = $state.raw<PaneDropIndicator | null>(null);
+  let shielding = $state(false);
 
-  let cachedDragPayloadRaw: string | null = null;
-  let cachedDragThreadId: string | null = null;
   let autoScrollFrame: number | null = null;
   let autoScrollVelocity = 0;
+
+  function sameIndicator(a: PaneDropIndicator | null, b: PaneDropIndicator | null): boolean {
+    if (!a || !b) return a === b;
+    if (a.seamLeft !== b.seamLeft || !a.lit !== !b.lit) return false;
+    return !a.lit || !b.lit || (a.lit.left === b.lit.left && a.lit.width === b.lit.width && a.lit.seam === b.lit.seam);
+  }
+
+  // The bar is held between the strip's left edge and its last pane's
+  // right edge, and the lit half keeps its measured edges unrounded, so the
+  // first and last seams stay whole and neither adds scroll range.
+  function indicatorFor(resolved: ResolvedDrop): PaneDropIndicator | null {
+    const host = options.getHostEl();
+    const lastPaneId = options.getLayoutItems().at(-1)?.paneId;
+    const end = lastPaneId ? paneExtent(lastPaneId) : null;
+    if (!host || !end || resolved.seam === null) return null;
+    const origin = host.getBoundingClientRect().left + host.clientLeft - host.scrollLeft;
+    const maxLeft = Math.max(0, end.right - origin - PANE_DROP_SEAM_PX);
+    const lit = resolved.lit;
+    return {
+      seamLeft: Math.min(maxLeft, Math.max(0, resolved.seam - origin - PANE_DROP_SEAM_PX / 2)),
+      lit: lit && {
+        left: lit.left - origin,
+        width: lit.right - lit.left,
+        seam: resolved.seam <= lit.left ? 'left' : 'right',
+      },
+    };
+  }
+
+  function showDrop(resolved: ResolvedDrop | null): void {
+    const target = resolved?.target ?? null;
+    if (target?.kind !== dropTarget?.kind || target?.insertIndex !== dropTarget?.insertIndex) dropTarget = target;
+    const indicator = resolved ? indicatorFor(resolved) : null;
+    if (!sameIndicator(indicator, dropIndicator)) dropIndicator = indicator;
+  }
+
+  // A drop resolves its slot from its own event against the layout as it
+  // is now, never from the last dragover: the pointer can move, and the
+  // layout change, without one.
+  function dropSlot(event: DragEvent): PaneDropTarget | null {
+    return resolveDrop(event)?.target ?? null;
+  }
+
+  // Every sidebar drag ends here, wherever it ends: a dragend at its source
+  // (a drop, Escape, a drop outside the window) or a drop that bubbles to
+  // the document. A source that unmounted mid-drag gets no dragend; leaving
+  // the strip clears the preview then, and the next pointer event over the
+  // strip (onShieldPointer) ends the drag.
+  function onDocumentDragEnd(): void {
+    draggingPaneId = null;
+    clearDropState();
+    endThreadRowDrag();
+    endToolPaneDrag();
+  }
+  document.addEventListener('dragend', onDocumentDragEnd, true);
+  document.addEventListener('drop', onDocumentDragEnd);
 
   function isThreadDrag(event: DragEvent): boolean {
     return event.dataTransfer?.types.includes(THREAD_ROW_DRAG_MIME) ?? false;
   }
 
-  function threadPayloadFromEvent(event: DragEvent) {
-    const raw = event.dataTransfer?.getData(THREAD_ROW_DRAG_MIME) ?? '';
-    if (raw === cachedDragPayloadRaw) {
-      return cachedDragThreadId ? { threadId: cachedDragThreadId, title: '' } : null;
-    }
-    cachedDragPayloadRaw = raw;
-    const payload = decodeThreadDragPayload(raw);
-    cachedDragThreadId = payload?.threadId ?? null;
-    return payload;
+  function isPaneDrag(event: DragEvent): boolean {
+    return event.dataTransfer?.types.includes(PANE_REORDER_DRAG_MIME) ?? false;
   }
 
-  function lastPaneElement(): HTMLElement | null {
+  function isToolDrag(event: DragEvent): boolean {
+    return event.dataTransfer?.types.includes(TOOL_PANE_DRAG_MIME) ?? false;
+  }
+
+  function paneExtent(paneId: string): Extent | null {
     const host = options.getHostEl();
-    const paneEls = host?.querySelectorAll<HTMLElement>(PANE_SELECTOR);
-    return paneEls?.item(paneEls.length - 1) ?? null;
-  }
-
-  function resolveThreadDropTarget(event: DragEvent): ThreadDropTarget | null {
-    const layoutItems = options.getLayoutItems();
-    if (layoutItems.length === 0) return { kind: 'empty', insertIndex: 0 };
-    const target = event.target as HTMLElement | null;
-    const gap = target?.closest<HTMLElement>(PANE_GAP_SELECTOR);
-    if (gap?.dataset.paneGapIndex) {
-      const insertIndex = Number(gap.dataset.paneGapIndex);
-      if (!Number.isInteger(insertIndex)) return null;
-      // The end-handle wrapper carries the gap index past the last pane
-      // (== length). That is the append slot: normalize it to `end` so the
-      // preview positions after the last pane instead of falling through to
-      // the `gap` branch, where layoutItems[length] is undefined and the
-      // ghost would snap to the strip's left edge.
-      if (insertIndex >= layoutItems.length) {
-        return { kind: 'end', insertIndex: layoutItems.length };
+    if (!host) return null;
+    for (const child of host.children) {
+      if (child instanceof HTMLElement && child.dataset.paneId === paneId) {
+        const rect = child.getBoundingClientRect();
+        return { left: rect.left, right: rect.right };
       }
-      // The gap between a source pane and one of its companions is not a
-      // valid slot (companions glue to their source): snap to the block's
-      // right edge so the preview and the landing agree.
-      if (insertIndex > 0 && insertIndex < layoutItems.length) {
-        const { start, end } = paneBlockRangeAt(layoutItems, insertIndex);
-        if (start < insertIndex) {
-          return end + 1 >= layoutItems.length
-            ? { kind: 'end', insertIndex: layoutItems.length }
-            : { kind: 'gap', insertIndex: end + 1 };
-        }
-      }
-      return { kind: 'gap', insertIndex };
-    }
-
-    const paneEl = target?.closest<HTMLElement>(PANE_SELECTOR);
-    if (paneEl?.dataset.paneId) {
-      const paneId = paneEl.dataset.paneId;
-      const index = layoutItems.findIndex((item) => item.paneId === paneId);
-      if (index < 0) return null;
-      const rect = paneEl.getBoundingClientRect();
-      const after = event.clientX > rect.left + rect.width / 2;
-      // Companions glue to their source, so the slots around ANY pane in
-      // a block are the block's edges — hovering a companion's left half
-      // targets the slot before its source pane.
-      const { start, end } = paneBlockRangeAt(layoutItems, index);
-      if (after) {
-        return { kind: 'pane-right', insertIndex: end + 1, paneId: layoutItems[end].paneId };
-      }
-      return { kind: 'pane-left', insertIndex: start, paneId: layoutItems[start].paneId };
-    }
-
-    const lastPane = lastPaneElement();
-    if (lastPane && event.clientX >= lastPane.getBoundingClientRect().right) {
-      return { kind: 'end', insertIndex: layoutItems.length };
     }
     return null;
   }
 
-  function publishThreadDropPreview(target: ThreadDropTarget): void {
-    const layoutItems = options.getLayoutItems();
-    const host = options.getHostEl();
-    const scrollLeft = options.getScrollLeft();
-    const scrollClientWidth = options.getScrollClientWidth();
-    const width = projectedPaneDropWidth(
-      layoutItems,
-      scrollClientWidth || host?.clientWidth || 0,
-      options.getMinPaneWidth(),
-    );
-    threadDropPreviewWidth = width;
-    if (target.kind === 'empty') {
-      threadDropPreviewLeft = scrollLeft;
-      return;
+  // Companions glue to their source, so the slots around any pane of a
+  // block are the block's edges: the pointer's half of the block picks one.
+  function resolveDrop(event: DragEvent): ResolvedDrop | null {
+    const items = options.getLayoutItems();
+    if (items.length === 0) return { target: { kind: 'empty', insertIndex: 0 }, seam: null, lit: null };
+    const x = event.clientX;
+    for (let start = 0; start < items.length; ) {
+      const { end } = paneBlockRangeAt(items, start);
+      const first = paneExtent(items[start].paneId);
+      const last = paneExtent(items[end].paneId);
+      if (!first || !last) return null;
+      if (x < last.right) {
+        const middle = (first.left + last.right) / 2;
+        return x > middle
+          ? { target: { kind: 'pane-right', insertIndex: end + 1 }, seam: last.right, lit: { left: middle, right: last.right } }
+          : { target: { kind: 'pane-left', insertIndex: start }, seam: first.left, lit: { left: first.left, right: middle } };
+      }
+      if (end === items.length - 1) return { target: { kind: 'end', insertIndex: items.length }, seam: last.right, lit: null };
+      start = end + 1;
     }
-    if (target.kind === 'end') {
-      const lastPaneId = layoutItems.at(-1)?.paneId;
-      const lastWidth = lastPaneId ? options.getPaneMeasuredWidth(lastPaneId) : 0;
-      threadDropPreviewLeft = lastPaneId
-        ? options.getPaneOffsetLeft(lastPaneId) + lastWidth
-        : scrollLeft;
-      return;
-    }
-    const targetPaneId = target.paneId ?? layoutItems[target.insertIndex]?.paneId;
-    if (!targetPaneId) {
-      threadDropPreviewLeft = scrollLeft;
-      return;
-    }
-    const targetPaneLeft = options.getPaneOffsetLeft(targetPaneId);
-    if (target.kind === 'pane-right') {
-      threadDropPreviewLeft =
-        targetPaneLeft + options.getPaneMeasuredWidth(targetPaneId) - width;
-    } else {
-      threadDropPreviewLeft = targetPaneLeft;
-    }
+    return null;
   }
 
   function updateThreadDropTarget(event: DragEvent): void {
-    const payload = threadPayloadFromEvent(event);
-    draggedThreadId = payload?.threadId ?? draggedThreadId;
-    const threadId = payload?.threadId ?? draggedThreadId;
-    if (!threadId) {
-      threadDropTarget = null;
-      duplicateDropPaneId = null;
-      return;
-    }
-    const existing = findPaneShowingThread(threadId);
+    const threadId = threadDragPayloadForEvent(event)?.threadId;
+    const existing = threadId ? findPaneShowingThread(threadId) : null;
     duplicateDropPaneId = existing?.paneId ?? null;
-    if (existing) {
-      threadDropTarget = null;
-      return;
-    }
+    showDrop(threadId && !existing ? resolveDrop(event) : null);
+  }
 
-    const target = resolveThreadDropTarget(event);
-    threadDropTarget = target;
-    if (target) publishThreadDropPreview(target);
+  // An open tool moves rather than opening twice: its own slot shows nothing.
+  function updateToolDropTarget(event: DragEvent): void {
+    duplicateDropPaneId = null;
+    const kind = toolDragPayloadForEvent(event)?.kind;
+    const resolved = kind ? resolveDrop(event) : null;
+    showDrop(resolved && kind && !isToolAtSlot(kind, resolved.target.insertIndex) ? resolved : null);
+  }
+
+  // A pane moves with its block, so the block's own two edges are where it
+  // already is.
+  function reorderMoves(paneId: string, insertIndex: number): boolean {
+    const items = options.getLayoutItems();
+    const index = items.findIndex((item) => item.paneId === paneId);
+    if (index < 0) return false;
+    const { start, end } = paneBlockRangeAt(items, index);
+    return insertIndex < start || insertIndex > end + 1;
+  }
+
+  function updateReorderDropTarget(event: DragEvent, paneId: string): void {
+    duplicateDropPaneId = null;
+    const resolved = resolveDrop(event);
+    showDrop(resolved && reorderMoves(paneId, resolved.target.insertIndex) ? resolved : null);
   }
 
   function stopDragAutoScroll(): void {
@@ -216,27 +250,23 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
         return;
       }
       el.scrollLeft = nextScrollLeft;
-      options.setScrollLeft(el.scrollLeft);
       autoScrollFrame = window.requestAnimationFrame(tick);
     };
     autoScrollFrame = window.requestAnimationFrame(tick);
   }
 
-  function clearThreadDragState(): void {
-    draggedThreadId = null;
+  function clearDropState(): void {
     duplicateDropPaneId = null;
-    threadDropTarget = null;
-    cachedDragPayloadRaw = null;
-    cachedDragThreadId = null;
+    shielding = false;
+    showDrop(null);
     stopDragAutoScroll();
   }
 
   async function handleThreadDrop(event: DragEvent): Promise<void> {
     event.preventDefault();
-    const payload = threadPayloadFromEvent(event);
-    const threadId = payload?.threadId ?? draggedThreadId;
-    const target = threadDropTarget ?? resolveThreadDropTarget(event);
-    clearThreadDragState();
+    const threadId = threadDragPayloadForEvent(event)?.threadId;
+    const target = dropSlot(event);
+    clearDropState();
     // The sidebar's in-flight record: no dragend is guaranteed when the
     // source row unmounted mid-drag, so every drop target clears it.
     endThreadRowDrag();
@@ -253,97 +283,130 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     await openThreadIdInNewPane(threadId, target.insertIndex);
   }
 
+  function handleToolDrop(event: DragEvent): void {
+    event.preventDefault();
+    const kind = toolDragPayloadForEvent(event)?.kind;
+    const target = dropSlot(event);
+    clearDropState();
+    endToolPaneDrag();
+    if (!kind || !target) return;
+    openTool(kind, { insertIndex: target.insertIndex });
+  }
+
   function onPaneDragStart(event: DragEvent, paneId: string): void {
     draggingPaneId = paneId;
     event.dataTransfer?.setData(PANE_REORDER_DRAG_MIME, paneId);
-    if (event.dataTransfer) {
-      event.dataTransfer.setData('text/plain', paneId);
-      event.dataTransfer.effectAllowed = 'move';
-    }
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
   }
 
   function onHostDragOver(event: DragEvent): void {
     if (isThreadDrag(event)) {
       event.preventDefault();
+      shielding = true;
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
       updateThreadDropTarget(event);
       updateDragAutoScroll(event.clientX);
       return;
     }
-    if (draggingPaneId) {
+    if (isToolDrag(event)) {
       event.preventDefault();
+      shielding = true;
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      updateToolDropTarget(event);
+      updateDragAutoScroll(event.clientX);
+      return;
+    }
+    // The drag's own type as well as the pane the strip saw start: a pane
+    // drag that ended unheard must not claim the next drag.
+    if (draggingPaneId && isPaneDrag(event)) {
+      event.preventDefault();
+      shielding = true;
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      updateReorderDropTarget(event, draggingPaneId);
+      updateDragAutoScroll(event.clientX);
     }
   }
 
-  function onPaneDrop(event: DragEvent, targetPaneId: string): void {
-    if (isThreadDrag(event)) {
-      event.stopPropagation();
-      void handleThreadDrop(event);
-      return;
-    }
+  function handleReorderDrop(event: DragEvent, paneId: string): void {
     event.preventDefault();
-    const sourcePaneId = draggingPaneId ?? event.dataTransfer?.getData(PANE_REORDER_DRAG_MIME);
+    const target = dropSlot(event);
     draggingPaneId = null;
-    if (!sourcePaneId || sourcePaneId === targetPaneId) return;
-    const layoutItems = options.getLayoutItems();
-    const targetIndex = layoutItems.findIndex((item) => item.paneId === targetPaneId);
-    const sourceIndex = layoutItems.findIndex((item) => item.paneId === sourcePaneId);
-    if (targetIndex < 0) return;
-    const target = event.currentTarget as HTMLElement;
-    const rect = target.getBoundingClientRect();
-    const after = event.clientX > rect.left + rect.width / 2;
-    const targetInsertIndex = after ? targetIndex + 1 : targetIndex;
-    const adjustedInsertIndex =
-      sourceIndex >= 0 && sourceIndex < targetInsertIndex
-        ? targetInsertIndex - 1
-        : targetInsertIndex;
-    movePaneLayoutItemToIndex(sourcePaneId, adjustedInsertIndex);
+    clearDropState();
+    if (!target || !reorderMoves(paneId, target.insertIndex)) return;
+    // The index is one of the layout without the moved pane; its
+    // companions follow it there.
+    const from = options.getLayoutItems().findIndex((item) => item.paneId === paneId);
+    movePaneLayoutItemToIndex(paneId, from < target.insertIndex ? target.insertIndex - 1 : target.insertIndex);
   }
 
   function onPaneDragEnd(): void {
     draggingPaneId = null;
-    clearThreadDragState();
+    clearDropState();
   }
 
   function onHostDrop(event: DragEvent): void {
     if (isThreadDrag(event)) void handleThreadDrop(event);
+    else if (isToolDrag(event)) handleToolDrop(event);
+    else if (isPaneDrag(event)) {
+      const paneId = draggingPaneId ?? event.dataTransfer?.getData(PANE_REORDER_DRAG_MIME);
+      if (paneId) handleReorderDrop(event, paneId);
+    }
+    // Any other drag (dragged text, a file) is not the strip's: it goes to
+    // whatever inside a pane takes it.
   }
 
+  // A dragleave bubbles from every element the pointer leaves, the pane
+  // content the shield has just covered included. The drag left the strip
+  // when the pointer is outside the strip's box; `relatedTarget` cannot
+  // say, since WebKit leaves it null.
   function onHostDragLeave(event: DragEvent): void {
-    if (event.currentTarget === event.target) clearThreadDragState();
+    const box = options.getStripEl()?.getBoundingClientRect();
+    if (box && event.clientX >= box.left && event.clientX < box.right && event.clientY >= box.top && event.clientY < box.bottom) return;
+    clearDropState();
+  }
+
+  // The shield covers the strip, so a drag that leaves it left the strip,
+  // for the window or for a surface above the strip. The drag goes on.
+  function onShieldDragLeave(): void {
+    clearDropState();
+  }
+
+  // A pointer event reaches the shield only when no drag is in flight: the
+  // drag ended with no dragend or drop the document heard, as when its
+  // source unmounted mid-drag.
+  function onShieldPointer(): void {
+    onDocumentDragEnd();
   }
 
   function destroy(): void {
     stopDragAutoScroll();
+    document.removeEventListener('dragend', onDocumentDragEnd, true);
+    document.removeEventListener('drop', onDocumentDragEnd);
   }
 
   return {
     get draggingPaneId() {
       return draggingPaneId;
     },
-    get draggedThreadId() {
-      return draggedThreadId;
-    },
     get duplicateDropPaneId() {
       return duplicateDropPaneId;
     },
-    get threadDropTarget() {
-      return threadDropTarget;
+    get dropTarget() {
+      return dropTarget;
     },
-    get threadDropPreviewLeft() {
-      return threadDropPreviewLeft;
+    get dropIndicator() {
+      return dropIndicator;
     },
-    get threadDropPreviewWidth() {
-      return threadDropPreviewWidth;
+    get shielding() {
+      return shielding;
     },
-    isThreadDrag,
     onPaneDragStart,
     onHostDragOver,
-    onPaneDrop,
     onPaneDragEnd,
     onHostDrop,
     onHostDragLeave,
+    onShieldDragLeave,
+    onShieldPointer,
     destroy,
   };
 }

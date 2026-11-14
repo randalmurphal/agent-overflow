@@ -9,7 +9,7 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// testAssistant records an assistant on an existing thread as v155 migrates
+// testAssistant records an assistant on an existing thread as v160 migrates
 // a promoted one: its id is the thread's, its home is
 // `<config>/agents/<id>`, made here, the thread moves into it, and it
 // serves the thread's former project. A fixture with no config directory

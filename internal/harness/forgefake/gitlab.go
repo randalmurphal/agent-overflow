@@ -1,11 +1,13 @@
 package forgefake
 
 import (
+	"cmp"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,10 +17,7 @@ import (
 // follow the GitLab REST API; the fields emitted are the ones
 // internal/git parses.
 
-var (
-	gitlabStates      = map[string]string{"open": "opened", "closed": "closed", "merged": "merged"}
-	gitlabMergeStatus = map[string]string{"clean": "mergeable", "conflicts": "conflict", "checking": "checking"}
-)
+var gitlabStates = map[string]string{"open": "opened", "closed": "closed", "merged": "merged"}
 
 func glabNotFound(what string) response {
 	return response{
@@ -76,34 +75,145 @@ func glabMR(e *Engine, c *call, m []string) response {
 	if !ok {
 		return fail
 	}
+	return glabOK(jsonResponse(e.gitlabMRJSON(r, p)))
+}
+
+// gitlabMRJSON is the single merge request as GitLab answers it, the
+// merge fields included. Callers hold mu.
+func (e *Engine) gitlabMRJSON(r *Repo, p *Pull) map[string]any {
 	var pipeline any
 	if p.CI != nil {
-		pipeline = map[string]any{
-			"id":      p.CI.ID,
-			"status":  p.CI.Status,
-			"web_url": fmt.Sprintf("https://%s/%s/-/pipelines/%d", r.Host, r.Project, p.CI.ID),
+		pipeline = gitlabPipelineJSON(r, p.CI)
+	}
+	source := r.ID
+	if p.HeadRepo != "" {
+		source = p.headRepoID
+	}
+	var mergedAt, closedAt, mergeCommit, squashCommit any
+	mergedBy, closedBy, mergeUser := "", "", ""
+	switch p.State {
+	case "merged":
+		mergedAt, mergedBy, mergeUser, mergeCommit = p.MergedAt, p.MergedBy, p.MergedBy, p.MergeCommitSHA
+		if p.squash {
+			squashCommit = p.squashSHA
+		}
+	case "closed":
+		closedAt, closedBy = p.ClosedAt, p.ClosedBy
+	}
+	armed := p.Readiness.AutoMerge
+	if armed != nil {
+		mergeUser = armed.By
+	}
+	out := map[string]any{
+		"id":                            r.ID*1000 + int64(p.Number),
+		"iid":                           p.Number,
+		"project_id":                    r.ID,
+		"source_project_id":             source,
+		"title":                         p.Title,
+		"description":                   p.Body,
+		"state":                         gitlabStates[p.State],
+		"draft":                         p.Draft,
+		"work_in_progress":              p.Draft,
+		"source_branch":                 p.HeadRef,
+		"target_branch":                 p.BaseRef,
+		"sha":                           p.HeadSHA,
+		"web_url":                       gitlabMRURL(r, p),
+		"author":                        gitlabUser(p.Author, p.AuthorName),
+		"changes_count":                 strconv.Itoa(len(diffFiles(p.Diff))),
+		"has_conflicts":                 p.Mergeable == "conflicts",
+		"detailed_merge_status":         e.gitlabDetailedStatus(r, p),
+		"diff_refs":                     gitlabDiffRefs(p),
+		"head_pipeline":                 pipeline,
+		"user":                          map[string]any{"can_merge": gitlabRoles[r.Merge.Permission] >= gitlabRoles["developer"]},
+		"merge_when_pipeline_succeeds":  armed != nil,
+		"merge_user":                    gitlabUserOrNulls(mergeUser),
+		"merged_at":                     mergedAt,
+		"merged_by":                     gitlabUserOrNulls(mergedBy),
+		"closed_at":                     closedAt,
+		"closed_by":                     gitlabUserOrNulls(closedBy),
+		"merge_commit_sha":              mergeCommit,
+		"squash_commit_sha":             squashCommit,
+		"squash":                        p.squash,
+		"force_remove_source_branch":    p.forceRemove,
+		"blocking_discussions_resolved": !r.Merge.DiscussionsMustResolve || !gitlabUnresolved(p),
+		"merge_after":                   nil,
+	}
+	maps.Copy(out, e.gitlabManageJSON(r, p))
+	return out
+}
+
+// gitlabUserOrNulls is a merge request's user field: the user, or an
+// object of nulls when there is none, as GitLab answers it.
+func gitlabUserOrNulls(username string) map[string]any {
+	if username == "" {
+		return map[string]any{"id": nil, "username": nil, "name": nil}
+	}
+	return gitlabUser(username, "")
+}
+
+// gitlabUnresolved is whether a resolvable thread is open.
+func gitlabUnresolved(p *Pull) bool {
+	return slices.ContainsFunc(p.Threads, func(t Thread) bool { return !t.Resolved })
+}
+
+// gitlabDetailedStatus is GitLab's detailed_merge_status: the first
+// merge check that fails, in GitLab's order (open, checking, draft,
+// conflicts, rebase, threads the project requires resolved, the pipeline
+// it requires, approvals), else mergeable.
+func (e *Engine) gitlabDetailedStatus(r *Repo, p *Pull) string {
+	switch {
+	case p.State != "open":
+		return "not_open"
+	case p.Mergeable == "checking":
+		return "checking"
+	case p.Draft:
+		return "draft_status"
+	case p.Mergeable == "conflicts":
+		return "conflict"
+	case p.Readiness.Behind:
+		return "need_rebase"
+	case r.Merge.DiscussionsMustResolve && gitlabUnresolved(p):
+		return "discussions_not_resolved"
+	case len(p.ChangeRequests) > 0 && !p.ChangesOverridden:
+		return "requested_changes"
+	}
+	if r.Merge.PipelineMustSucceed {
+		switch {
+		case p.CI == nil:
+			return "ci_must_pass"
+		case p.CI.Status == "running" || p.CI.Status == "pending":
+			return "ci_still_running"
+		case p.CI.Status != "success" && p.CI.Status != "skipped":
+			return "ci_must_pass"
 		}
 	}
-	return glabOK(jsonResponse(map[string]any{
-		"id":                    r.ID*1000 + int64(p.Number),
-		"iid":                   p.Number,
-		"project_id":            r.ID,
-		"title":                 p.Title,
-		"description":           p.Body,
-		"state":                 gitlabStates[p.State],
-		"draft":                 p.Draft,
-		"work_in_progress":      p.Draft,
-		"source_branch":         p.HeadRef,
-		"target_branch":         p.BaseRef,
-		"sha":                   p.HeadSHA,
-		"web_url":               gitlabMRURL(r, p),
-		"author":                gitlabUser(p.Author, p.AuthorName),
-		"changes_count":         strconv.Itoa(len(diffFiles(p.Diff))),
-		"has_conflicts":         p.Mergeable == "conflicts",
-		"detailed_merge_status": gitlabMergeStatus[p.Mergeable],
-		"diff_refs":             gitlabDiffRefs(p),
-		"head_pipeline":         pipeline,
-	}))
+	if gitlabApprovalsLeft(p) > 0 {
+		return "not_approved"
+	}
+	return "mergeable"
+}
+
+// gitlabApprovalsLeft is the approvals the merge request still needs.
+func gitlabApprovalsLeft(p *Pull) int {
+	return max(p.Readiness.RequiredApprovals-len(p.Reviews), 0)
+}
+
+// gitlabViewerApproved is whether the viewer's approval stands.
+func gitlabViewerApproved(p *Pull, viewer string) bool {
+	return slices.ContainsFunc(p.Reviews, func(r Review) bool { return strings.EqualFold(r.Author, viewer) })
+}
+
+// gitlabCanApprove is user_can_approve: the readiness override, else an
+// open merge request the viewer has not approved yet and a role of
+// developer or above.
+func (e *Engine) gitlabCanApprove(r *Repo, p *Pull) bool {
+	if p.State != "open" || gitlabViewerApproved(p, e.viewer) {
+		return false
+	}
+	if can := p.Readiness.ViewerCanApprove; can != nil {
+		return *can
+	}
+	return gitlabRoles[r.Merge.Permission] >= gitlabRoles["developer"]
 }
 
 func gitlabDiffRefs(p *Pull) any {
@@ -114,10 +224,16 @@ func gitlabDiffRefs(p *Pull) any {
 }
 
 func glabApprovals(e *Engine, c *call, m []string) response {
-	_, p, fail, ok := e.glabMRFrom(c, m)
+	r, p, fail, ok := e.glabMRFrom(c, m)
 	if !ok {
 		return fail
 	}
+	return glabOK(jsonResponse(e.gitlabApprovalsJSON(r, p)))
+}
+
+// gitlabApprovalsJSON is the merge request's approval state. With no
+// approvals required (GitLab Free) any approval approves it.
+func (e *Engine) gitlabApprovalsJSON(r *Repo, p *Pull) map[string]any {
 	approved := []map[string]any{}
 	for _, review := range p.Reviews {
 		approved = append(approved, map[string]any{
@@ -125,7 +241,15 @@ func glabApprovals(e *Engine, c *call, m []string) response {
 			"approved_at": review.SubmittedAt,
 		})
 	}
-	return glabOK(jsonResponse(map[string]any{"approved": len(approved) > 0, "approved_by": approved}))
+	left := gitlabApprovalsLeft(p)
+	return map[string]any{
+		"approvals_required": p.Readiness.RequiredApprovals,
+		"approvals_left":     left,
+		"approved":           len(approved) > 0 && left == 0,
+		"approved_by":        approved,
+		"user_has_approved":  gitlabViewerApproved(p, e.viewer),
+		"user_can_approve":   e.gitlabCanApprove(r, p),
+	}
 }
 
 // glabPage reads per_page and page, refusing any other query parameter
@@ -165,6 +289,31 @@ func paginate[T any](items []T, perPage, page int) ([]T, string) {
 	return items[start:end], next
 }
 
+// glabProjectRead answers `GET projects/P`: the project's identity, its
+// merge settings and the viewer's access, conditional on its ETag as
+// GitLab's is.
+func glabProjectRead(e *Engine, c *call, m []string) response {
+	r, fail, ok := e.glabProject(c, m[1])
+	if !ok {
+		return fail
+	}
+	settings := r.Merge
+	return glabOK(jsonResponse(map[string]any{
+		"id":                                    r.ID,
+		"full_name":                             r.Project,
+		"path_with_namespace":                   r.Project,
+		"merge_method":                          settings.MergeMethod,
+		"squash_option":                         settings.SquashOption,
+		"remove_source_branch_after_merge":      settings.DeleteBranchOnMerge,
+		"only_allow_merge_if_pipeline_succeeds": settings.PipelineMustSucceed,
+		"only_allow_merge_if_all_discussions_are_resolved": settings.DiscussionsMustResolve,
+		"permissions": map[string]any{
+			"project_access": map[string]any{"access_level": gitlabRoles[settings.Permission], "notification_level": 3},
+			"group_access":   nil,
+		},
+	}))
+}
+
 func glabDiscussions(e *Engine, c *call, m []string) response {
 	_, p, fail, ok := e.glabMRFrom(c, m)
 	if !ok {
@@ -190,7 +339,7 @@ func gitlabDiscussions(p *Pull) []map[string]any {
 			"base_sha":      p.BaseSHA,
 			"start_sha":     p.StartSHA,
 			"head_sha":      headSHA,
-			"old_path":      thread.Path,
+			"old_path":      defaultString(thread.OldPath, thread.Path),
 			"new_path":      thread.Path,
 			"position_type": "text",
 			"old_line":      nil,
@@ -204,29 +353,88 @@ func gitlabDiscussions(p *Pull) []map[string]any {
 			position["position_type"] = "file"
 		} else {
 			position[lineKey] = *thread.Line
+			if thread.OldLine != nil {
+				position["old_line"] = *thread.OldLine
+			}
 		}
 		if thread.StartLine != nil {
-			position["line_range"] = map[string]any{
-				"start": map[string]any{lineKey: *thread.StartLine, "type": "new"},
-				"end":   map[string]any{lineKey: *thread.Line, "type": "new"},
-			}
+			position["line_range"] = gitlabLineRange(p, thread)
 		}
 		notes := make([]map[string]any, 0, len(thread.Comments))
 		for _, comment := range thread.Comments {
 			notes = append(notes, gitlabNote(comment, map[string]any{
 				"type": "DiffNote", "position": position, "resolvable": true, "resolved": thread.Resolved,
+				"suggestions": gitlabNoteSuggestions(p, &thread, comment),
 			}))
 		}
 		out = append(out, map[string]any{"id": thread.ID, "individual_note": false, "notes": notes})
 	}
+	// A conversation comment is its own discussion until a reply joins it.
 	for _, comment := range p.Comments {
+		notes := []map[string]any{gitlabNote(comment, map[string]any{"resolvable": false})}
+		for _, reply := range comment.Replies {
+			notes = append(notes, gitlabNote(reply, map[string]any{"resolvable": false}))
+		}
 		out = append(out, map[string]any{
-			"id":              fmt.Sprintf("%040x", comment.ID),
-			"individual_note": true,
-			"notes":           []map[string]any{gitlabNote(comment, map[string]any{"resolvable": false})},
+			"id":              gitlabConversationID(comment),
+			"individual_note": len(comment.Replies) == 0,
+			"notes":           notes,
 		})
 	}
+	// The system notes, oldest first, each its own discussion.
+	events := slices.Clone(p.Events)
+	slices.SortStableFunc(events, func(a, b Event) int {
+		at, _ := time.Parse(time.RFC3339, a.At)
+		bt, _ := time.Parse(time.RFC3339, b.At)
+		return at.Compare(bt)
+	})
+	for _, event := range events {
+		note := gitlabNote(Comment{ID: event.ID, Author: event.Actor, AuthorName: event.ActorName, Body: gitlabNoteBody(event), CreatedAt: event.At}, map[string]any{"resolvable": false})
+		note["system"] = true
+		out = append(out, map[string]any{"id": fmt.Sprintf("%040x", event.ID), "individual_note": true, "notes": []map[string]any{note}})
+	}
 	return out
+}
+
+// gitlabNoteBody is an event's system note in the phrasing GitLab writes
+// (app/services/system_notes/; docs/references/forge-api-measurements.md).
+func gitlabNoteBody(event Event) string {
+	switch event.Kind {
+	case "approved":
+		return "approved this merge request"
+	case "unapproved":
+		return "unapproved this merge request"
+	case "marked_draft":
+		return "marked this merge request as **draft**"
+	case "marked_ready":
+		return "marked this merge request as **ready**"
+	case "auto_merge_set":
+		return "enabled an automatic merge when all merge checks for " + event.Ref + " pass"
+	case "auto_merge_canceled":
+		if event.Text != "" {
+			return "aborted the automatic merge because " + event.Text
+		}
+		return "canceled the automatic merge"
+	case "base_changed":
+		return "changed target branch from `" + event.Text + "` to `" + event.Ref + "`"
+	case "review_requested":
+		var names []string
+		for _, name := range strings.Split(event.Ref, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				names = append(names, "@"+name)
+			}
+		}
+		switch len(names) {
+		case 0, 1:
+			return "requested review from " + strings.Join(names, "")
+		case 2:
+			return "requested review from " + names[0] + " and " + names[1]
+		}
+		return "requested review from " + strings.Join(names[:len(names)-1], ", ") + ", and " + names[len(names)-1]
+	}
+	// merged, closed, reopened: the notes of a GitLab from before state
+	// changes became resource events.
+	return event.Kind
 }
 
 // gitlabUser is GitLab's user summary, which always carries a name.
@@ -240,6 +448,7 @@ func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 		"body":       comment.Body,
 		"system":     false,
 		"created_at": comment.CreatedAt,
+		"updated_at": cmp.Or(comment.EditedAt, comment.CreatedAt),
 		"author":     gitlabUser(comment.Author, comment.AuthorName),
 	}
 	for key, value := range extra {
@@ -263,7 +472,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 		return unhandled("%v", err)
 	}
 	if iids, named := query["iids[]"]; named {
-		return glabMRsByIID(r, query, iids, perPage, page)
+		return e.glabMRsByIID(r, query, iids, perPage, page)
 	}
 	if order := query.Get("order_by"); order != "" && order != "updated_at" {
 		return unhandled("order_by=%q is not implemented", order)
@@ -284,7 +493,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 		if gitlabStates[p.State] != state || (branch != "" && p.HeadRef != branch) {
 			continue
 		}
-		matches = append(matches, gitlabMRListItem(r, p))
+		matches = append(matches, e.gitlabMRListItem(r, p))
 	}
 	items, next := paginate(matches, perPage, page)
 	if items == nil {
@@ -295,7 +504,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 
 // glabMRsByIID answers the merge requests iids names, in any state, newest
 // first. An iid the project does not have is absent, as GitLab answers it.
-func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) response {
+func (e *Engine) glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) response {
 	if state := query.Get("state"); state != "all" {
 		return unhandled("iids[] with state=%q is not implemented", state)
 	}
@@ -315,7 +524,7 @@ func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) r
 	var matches []map[string]any
 	for i := len(r.Pulls) - 1; i >= 0; i-- {
 		if p := &r.Pulls[i]; wanted[p.Number] {
-			matches = append(matches, gitlabMRListItem(r, p))
+			matches = append(matches, e.gitlabMRListItem(r, p))
 		}
 	}
 	items, next := paginate(matches, perPage, page)
@@ -325,8 +534,11 @@ func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) r
 	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
 }
 
-// gitlabMRListItem is one merge request as the list endpoint answers it.
-func gitlabMRListItem(r *Repo, p *Pull) map[string]any {
+// gitlabMRListItem is one merge request as the list endpoint answers it:
+// the fields the app reads of the list's basic view (measured in
+// docs/references/forge-api-measurements.md). It carries no pipeline.
+// Callers hold mu.
+func (e *Engine) gitlabMRListItem(r *Repo, p *Pull) map[string]any {
 	var mergedAt any
 	if p.MergedAt != "" {
 		mergedAt = p.MergedAt
@@ -346,47 +558,143 @@ func gitlabMRListItem(r *Repo, p *Pull) map[string]any {
 		"target_branch":     p.BaseRef,
 		"sha":               p.HeadSHA,
 		"merged_at":         mergedAt,
+		"author":            gitlabUser(p.Author, p.AuthorName),
+		"reviewers":         gitlabReviewerList(p.Reviewers),
+		"draft":             p.Draft,
+		"work_in_progress":  p.Draft,
+		"created_at":        p.CreatedAt,
+		"updated_at":        p.UpdatedAt,
+		"user_notes_count":  userNoteCount(p),
+		"has_conflicts":     p.Mergeable == "conflicts",
+		// blocking_discussions_resolved reads as the single merge
+		// request's does.
+		"blocking_discussions_resolved": !r.Merge.DiscussionsMustResolve || !gitlabUnresolved(p),
+		"detailed_merge_status":         e.gitlabDetailedStatus(r, p),
 	}
 }
 
-func glabPipelineJobs(e *Engine, c *call, m []string) response {
-	r, fail, ok := e.glabProject(c, m[1])
-	if !ok {
-		return fail
+// gitlabReviewerList is a merge request's reviewers as users. GitLab's
+// state on them is the account's, not a review's.
+func gitlabReviewerList(logins []string) []map[string]any {
+	out := make([]map[string]any, 0, len(logins))
+	for _, login := range logins {
+		user := gitlabUser(login, "")
+		user["state"] = "active"
+		out = append(out, user)
 	}
-	id, _ := strconv.ParseInt(m[2], 10, 64)
+	return out
+}
+
+// userNoteCount is the pull's human comments: its conversation comments
+// and every comment of its review threads (GitLab user_notes_count,
+// GitHub totalCommentsCount).
+func userNoteCount(p *Pull) int {
+	n := len(p.Comments)
+	for _, thread := range p.Threads {
+		n += len(thread.Comments)
+	}
+	return n
+}
+
+// glabPipelineJobs answers PipelineJobs(fullPath, id, after):
+// project { pipeline(id) { stages, jobs(first: 100, after, retried:
+// false) } } with the pipeline's stages in fixture order and its rows
+// newest first, each a build, a bridge or an external commit status as
+// its kind says, spelled as gitlab.com answers them. A project not on the
+// host is a null project, a pipeline it lacks a null pipeline.
+func glabPipelineJobs(e *Engine, c *call, v graphQLVars) response {
+	fullPath, err1 := v.str("fullPath")
+	gid, err2 := v.str("id")
+	offset, err3 := v.cursor("after")
+	if err := firstErr(err1, err2, err3); err != nil {
+		return unhandled("GitLab pipeline jobs read: %v", err)
+	}
+	digits, ok := strings.CutPrefix(gid, "gid://gitlab/Ci::Pipeline/")
+	id, err := strconv.ParseInt(digits, 10, 64)
+	if !ok || err != nil {
+		return unhandled("GitLab pipeline jobs read: id %q is not a pipeline gid", gid)
+	}
+	r := e.repoOn("gitlab", c.http.host, fullPath)
+	if r == nil {
+		return graphQLData(map[string]any{"project": nil})
+	}
 	pipeline := r.pipeline(id)
 	if pipeline == nil {
-		return glabNotFound("Pipeline")
+		return graphQLData(map[string]any{"project": map[string]any{"pipeline": nil}})
 	}
-	_, perPage, page, err := glabPage(m[3])
-	if err != nil {
-		return unhandled("%v", err)
-	}
-	jobs := make([]map[string]any, 0, len(pipeline.Jobs))
+	stages := []map[string]any{}
+	seen := map[string]bool{}
 	for _, job := range pipeline.Jobs {
-		var startedAt, duration any
-		if job.StartedAt != "" {
-			startedAt = job.StartedAt
-			if seconds, ok := jobSeconds(job); ok {
-				duration = seconds
-			}
+		if !seen[job.Stage] {
+			seen[job.Stage] = true
+			stages = append(stages, map[string]any{"name": job.Stage})
 		}
-		jobs = append(jobs, map[string]any{
-			"id":            job.ID,
-			"name":          job.Name,
-			"stage":         job.Stage,
-			"status":        job.Status,
-			"duration":      duration,
-			"web_url":       fmt.Sprintf("https://%s/%s/-/jobs/%d", r.Host, r.Project, job.ID),
-			"allow_failure": job.AllowFailure,
-			"started_at":    startedAt,
-		})
 	}
-	// The API lists jobs newest first.
-	sort.SliceStable(jobs, func(i, j int) bool { return jobs[i]["id"].(int64) > jobs[j]["id"].(int64) })
-	items, next := paginate(jobs, perPage, page)
-	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
+	// The read asks for retried: false, so a job a retry replaced is left
+	// out; GitLab answers the rows newest first.
+	var jobs []Job
+	for _, job := range pipeline.current() {
+		jobs = append(jobs, *job)
+	}
+	slices.SortStableFunc(jobs, func(a, b Job) int { return cmp.Compare(b.ID, a.ID) })
+	nodes := make([]map[string]any, 0, len(jobs))
+	for _, job := range jobs {
+		nodes = append(nodes, gitlabJobNode(r, job))
+	}
+	out := map[string]any{
+		"stages": map[string]any{"nodes": stages},
+		"jobs":   graphQLConnection(nodes, offset, githubGraphQLPageSize),
+	}
+	maps.Copy(out, gitlabPipelineActionFields(r, pipeline))
+	return graphQLData(map[string]any{"project": map[string]any{"pipeline": out}})
+}
+
+// gitlabJobNode is one PipelineJobs row. A build's webPath and
+// detailsPath are its job page. A bridge has no webPath, and its
+// detailsPath and downstreamPipeline are its downstream pipeline once
+// one exists. A commit status has the job webPath GitLab gives one (no
+// page) and its target URL as detailsPath.
+func gitlabJobNode(r *Repo, job Job) map[string]any {
+	var startedAt, duration any
+	if job.StartedAt != "" {
+		startedAt = job.StartedAt
+		if seconds, ok := jobSeconds(job); ok {
+			duration = int(seconds)
+		}
+	}
+	jobPath := fmt.Sprintf("/%s/-/jobs/%d", r.Project, job.ID)
+	node := map[string]any{
+		"name":               job.Name,
+		"status":             strings.ToUpper(job.Status),
+		"allowFailure":       job.AllowFailure,
+		"duration":           duration,
+		"startedAt":          startedAt,
+		"stage":              map[string]any{"name": job.Stage},
+		"downstreamPipeline": nil,
+	}
+	var details any
+	switch job.Kind {
+	case JobKindBridge:
+		node["id"] = fmt.Sprintf("gid://gitlab/Ci::Bridge/%d", job.ID)
+		node["webPath"] = nil
+		if job.Downstream != "" {
+			details = job.Downstream
+			node["downstreamPipeline"] = map[string]any{"path": job.Downstream}
+		}
+	case JobKindExternal:
+		node["id"] = fmt.Sprintf("gid://gitlab/GenericCommitStatus/%d", job.ID)
+		node["webPath"] = jobPath
+		if job.TargetURL != "" {
+			details = job.TargetURL
+		}
+	default:
+		node["id"] = fmt.Sprintf("gid://gitlab/Ci::Build/%d", job.ID)
+		node["webPath"] = jobPath
+		details = jobPath
+	}
+	node["detailedStatus"] = map[string]any{"detailsPath": details}
+	maps.Copy(node, gitlabJobActionFields(r, job))
+	return node
 }
 
 func jobSeconds(job Job) (float64, bool) {
@@ -405,7 +713,8 @@ func glabJobTrace(e *Engine, c *call, m []string) response {
 	}
 	id, _ := strconv.ParseInt(m[2], 10, 64)
 	job := r.job(id)
-	if job == nil || job.StartedAt == "" || job.LogWithheld {
+	// A bridge or a commit status has no trace.
+	if job == nil || job.Kind != "" || job.StartedAt == "" || job.LogWithheld {
 		return glabNotFound("Job")
 	}
 	resp := glabOK(response{ranges: rangeTrace}, "Content-Type: text/plain")
@@ -487,4 +796,203 @@ func glabMRCreate(e *Engine, c *call) response {
 		return response{exit: 1, stderr: "ao-mockforge: " + err.Error() + "\n"}
 	}
 	return response{stdout: []byte(gitlabMRURL(r, pull) + "\n")}
+}
+
+// glabStatus is a GitLab REST refusal: status and {"message": message}.
+func glabStatus(status int, message string) response {
+	out, _ := json.Marshal(map[string]any{"message": message})
+	return response{stdout: out, stderr: message, status: status, header: http.Header{"Content-Type": {"application/json"}}}
+}
+
+// glabNow is the time an action happens, as GitLab spells it.
+func glabNow() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z") }
+
+// glabSHAMismatch is GitLab's 409 for a sha that is not the head.
+func glabSHAMismatch(p *Pull) response {
+	return glabStatus(http.StatusConflict, "SHA does not match HEAD of source branch: "+p.HeadSHA)
+}
+
+// glabApprove approves the merge request as the viewer: `{sha}` pins the
+// head (409 when it moved). A viewer GitLab does not take an approval
+// from, the merge request's own approver included, is refused with 401.
+// The approval joins approved_by and leaves its system note.
+func glabApprove(e *Engine, c *call, m []string) response {
+	var in struct {
+		SHA string `json:"sha"`
+	}
+	if err := decodeRESTBody(c, &in, true); err != nil {
+		return unhandled("%v", err)
+	}
+	r, p, fail, ok := e.glabMRFrom(c, m)
+	if !ok {
+		return fail
+	}
+	switch {
+	case !e.gitlabCanApprove(r, p):
+		return glabStatus(http.StatusUnauthorized, "401 Unauthorized")
+	case in.SHA != "" && in.SHA != p.HeadSHA:
+		return glabSHAMismatch(p)
+	}
+	now := glabNow()
+	p.Reviews = append(p.Reviews, Review{ID: e.ids.next(), Author: e.viewer, State: "APPROVED", SubmittedAt: now, CommitSHA: p.HeadSHA})
+	// An approval replaces the viewer's change request, as on GitLab.
+	p.ChangeRequests = slices.DeleteFunc(p.ChangeRequests, func(login string) bool { return strings.EqualFold(login, e.viewer) })
+	p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "approved", Actor: e.viewer, At: now})
+	resp := glabOK(jsonResponse(e.gitlabApprovalsJSON(r, p)))
+	resp.status = http.StatusCreated
+	return resp
+}
+
+// glabUnapprove withdraws the viewer's approval (404 when there is none)
+// and leaves its system note.
+func glabUnapprove(e *Engine, c *call, m []string) response {
+	if err := noRESTBody(c); err != nil {
+		return unhandled("%v", err)
+	}
+	r, p, fail, ok := e.glabMRFrom(c, m)
+	if !ok {
+		return fail
+	}
+	if !gitlabViewerApproved(p, e.viewer) {
+		return glabStatus(http.StatusNotFound, "404 Not Found")
+	}
+	p.Reviews = slices.DeleteFunc(p.Reviews, func(r Review) bool { return strings.EqualFold(r.Author, e.viewer) })
+	p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "unapproved", Actor: e.viewer, At: glabNow()})
+	resp := glabOK(jsonResponse(e.gitlabApprovalsJSON(r, p)))
+	resp.status = http.StatusCreated
+	return resp
+}
+
+// gitlabArmMethod is the method an auto-merge of the project merges
+// with: squash when asked, else the project's merge method.
+func gitlabArmMethod(r *Repo, squash bool) string {
+	switch {
+	case squash:
+		return "squash"
+	case r.Merge.MergeMethod == "ff":
+		return "rebase"
+	}
+	return "merge"
+}
+
+// glabMerge answers `PUT .../merge` with `{sha, squash,
+// should_remove_source_branch, auto_merge, merge_when_pipeline_succeeds}`,
+// either auto-merge key alone or both together.
+// A merge request that is not open is refused with 405, a viewer who
+// cannot merge with 401, a moved head with 409. Auto-merge on a merge
+// request that cannot merge yet arms it (the system note names the head)
+// and answers it with merge_when_pipeline_succeeds; a conflict refuses
+// it (405). A mergeable merge request merges now, auto-merge asked or
+// not: merged by the viewer now with a new merge commit (and a squash
+// commit when squashed), its source branch removed when asked. Anything
+// else that cannot merge is refused with 405.
+func glabMerge(e *Engine, c *call, m []string) response {
+	var in struct {
+		SHA                       string `json:"sha"`
+		Squash                    *bool  `json:"squash"`
+		ShouldRemoveSourceBranch  *bool  `json:"should_remove_source_branch"`
+		AutoMerge                 bool   `json:"auto_merge"`
+		MergeWhenPipelineSucceeds bool   `json:"merge_when_pipeline_succeeds"`
+		// The edited commit messages GitLab takes for the merge; the
+		// invocation records what was sent.
+		MergeCommitMessage  *string `json:"merge_commit_message"`
+		SquashCommitMessage *string `json:"squash_commit_message"`
+	}
+	if err := decodeRESTBody(c, &in, true); err != nil {
+		return unhandled("%v", err)
+	}
+	r, p, fail, ok := e.glabMRFrom(c, m)
+	if !ok {
+		return fail
+	}
+	switch {
+	case p.State != "open":
+		return glabStatus(http.StatusMethodNotAllowed, "405 Method Not Allowed")
+	case gitlabRoles[r.Merge.Permission] < gitlabRoles["developer"]:
+		return glabStatus(http.StatusUnauthorized, "401 Unauthorized")
+	case in.SHA != "" && in.SHA != p.HeadSHA:
+		return glabSHAMismatch(p)
+	}
+	squash := p.squash
+	switch {
+	case r.Merge.SquashOption == "always":
+		squash = true
+	case r.Merge.SquashOption == "never":
+		squash = false
+	case in.Squash != nil:
+		squash = *in.Squash
+	}
+	remove := p.forceRemove
+	if in.ShouldRemoveSourceBranch != nil {
+		remove = *in.ShouldRemoveSourceBranch
+	}
+	status := e.gitlabDetailedStatus(r, p)
+	if status != "mergeable" {
+		if (!in.AutoMerge && !in.MergeWhenPipelineSucceeds) || status == "conflict" {
+			return glabStatus(http.StatusMethodNotAllowed, "405 Method Not Allowed")
+		}
+		now := glabNow()
+		p.squash, p.forceRemove = squash, remove
+		p.Readiness.AutoMerge = &AutoMerge{Method: gitlabArmMethod(r, squash), By: e.viewer, At: now}
+		p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "auto_merge_set", Actor: e.viewer, At: now, Ref: p.HeadSHA})
+		return glabOK(jsonResponse(e.gitlabMRJSON(r, p)))
+	}
+	now := glabNow()
+	p.squash, p.forceRemove = squash, remove
+	p.State, p.MergedAt, p.MergedBy, p.ClosedAt, p.ClosedBy = "merged", now, e.viewer, now, e.viewer
+	p.MergeCommitSHA = e.ids.sha()
+	if squash {
+		p.squashSHA = e.ids.sha()
+	}
+	p.Readiness.AutoMerge = nil
+	if remove && p.HeadRepo == "" {
+		r.deleteBranch(p.HeadRef)
+	}
+	return glabOK(jsonResponse(e.gitlabMRJSON(r, p)))
+}
+
+// glabCancelAutoMerge disarms an armed auto-merge (409 when none is
+// armed, 403 for a viewer who cannot merge) and answers the merge request
+// with its system note added.
+func glabCancelAutoMerge(e *Engine, c *call, m []string) response {
+	if err := noRESTBody(c); err != nil {
+		return unhandled("%v", err)
+	}
+	r, p, fail, ok := e.glabMRFrom(c, m)
+	if !ok {
+		return fail
+	}
+	switch {
+	case gitlabRoles[r.Merge.Permission] < gitlabRoles["developer"]:
+		return glabStatus(http.StatusForbidden, "403 Forbidden")
+	case p.Readiness.AutoMerge == nil:
+		return glabStatus(http.StatusConflict, "409 Conflict: Can't cancel the automatic merge")
+	}
+	p.Readiness.AutoMerge = nil
+	p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "auto_merge_canceled", Actor: e.viewer, At: glabNow()})
+	resp := glabOK(jsonResponse(e.gitlabMRJSON(r, p)))
+	resp.status = http.StatusCreated
+	return resp
+}
+
+// glabRebase rebases the source branch onto the target: 202
+// {"rebase_in_progress": true}, the head moved to a new commit and no
+// longer behind. A viewer who cannot push, or a merge request that is
+// not open, is refused with 403.
+func glabRebase(e *Engine, c *call, m []string) response {
+	if err := noRESTBody(c); err != nil {
+		return unhandled("%v", err)
+	}
+	r, p, fail, ok := e.glabMRFrom(c, m)
+	if !ok {
+		return fail
+	}
+	if p.State != "open" || gitlabRoles[r.Merge.Permission] < gitlabRoles["developer"] {
+		return glabStatus(http.StatusForbidden, "403 Forbidden - Cannot push to source branch")
+	}
+	p.HeadSHA = e.ids.sha()
+	p.Readiness.Behind = false
+	resp := glabOK(jsonResponse(map[string]any{"rebase_in_progress": true}))
+	resp.status = http.StatusAccepted
+	return resp
 }

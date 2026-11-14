@@ -1,0 +1,979 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/forgeapi"
+	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/store"
+)
+
+var (
+	prListRepoA = gitops.RepoReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets"}
+	prListRepoB = gitops.RepoReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "team", Repo: "app"}
+)
+
+// prListFake stands in for the forge behind the list pump: each
+// repository's rows and failure, and the reads made with their admission
+// (interactive). listGate, when set, runs before each list read, outside
+// the fake's lock, so a test can hold a read; projectsGate likewise
+// before each project listing.
+type prListFake struct {
+	mu           sync.Mutex
+	projects     []ForgeProject
+	rows         map[string][]gitops.PRListRow
+	listErr      map[string]error
+	lists        map[string]int
+	interactive  map[string][]bool
+	listGate     func(ctx context.Context, repo gitops.RepoReference)
+	projectsGate func(ctx context.Context)
+}
+
+func newPRListFake(t *testing.T, app *App) *prListFake {
+	f := &prListFake{
+		projects: []ForgeProject{
+			{ProjectID: "p-a", Name: "Widgets", Path: "/w", Repo: prListRepoA},
+			{ProjectID: "p-b", Name: "App", Path: "/a", Repo: prListRepoB},
+		},
+		rows:        map[string][]gitops.PRListRow{},
+		listErr:     map[string]error{},
+		lists:       map[string]int{},
+		interactive: map[string][]bool{},
+	}
+	// Registered before any subscription, so it runs after their release.
+	t.Cleanup(app.prUpdates.wg.Wait)
+	app.prUpdates.listProjectsFn = func(ctx context.Context) ([]ForgeProject, error) {
+		f.mu.Lock()
+		gate := f.projectsGate
+		f.mu.Unlock()
+		if gate != nil {
+			gate(ctx)
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return slices.Clone(f.projects), nil
+	}
+	app.prUpdates.listFetchFn = func(ctx context.Context, repo gitops.RepoReference) ([]gitops.PRListRow, error) {
+		f.mu.Lock()
+		gate := f.listGate
+		f.mu.Unlock()
+		if gate != nil {
+			gate(ctx, repo)
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.lists[repo.Key()]++
+		f.interactive[repo.Key()] = append(f.interactive[repo.Key()], forgeapi.IsInteractive(ctx))
+		rows := slices.Clone(f.rows[repo.Key()])
+		var detail *gitops.PRListDetailError
+		if err := f.listErr[repo.Key()]; err != nil && !errors.As(err, &detail) {
+			return nil, err
+		} else if err != nil {
+			return rows, err
+		}
+		return rows, nil
+	}
+	return f
+}
+
+func (f *prListFake) set(fn func(f *prListFake)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
+}
+
+func (f *prListFake) listCount(repo gitops.RepoReference) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lists[repo.Key()]
+}
+
+func prListRow(repo gitops.RepoReference, number int, mutate func(*gitops.PRListRow)) gitops.PRListRow {
+	row := gitops.PRListRow{
+		Ref:       gitops.PRReference{Forge: repo.Forge, Host: repo.Host, Namespace: repo.Namespace, Repo: repo.Repo, Number: number},
+		Title:     fmt.Sprintf("PR %d", number),
+		UpdatedAt: "2026-01-01T00:00:00Z",
+		HeadSHA:   fmt.Sprintf("%040x", number),
+	}
+	if mutate != nil {
+		mutate(&row)
+	}
+	return row
+}
+
+// prListEvents are the list's pulls:updated snapshots a test captured.
+type prListEvents struct {
+	updates chan PRListSnapshot
+}
+
+func capturePRList(t *testing.T, app *App) prListEvents {
+	t.Helper()
+	events := prListEvents{updates: make(chan PRListSnapshot, 64)}
+	app.testEmitHook = func(name string, data any) {
+		if name != "pulls:updated" {
+			return
+		}
+		snapshot, ok := data.(PRListSnapshot)
+		if !ok {
+			t.Errorf("pulls:updated payload type = %T", data)
+			return
+		}
+		events.updates <- snapshot
+	}
+	return events
+}
+
+// awaitPRList waits for a frame that satisfies ok, skipping the others.
+func awaitPRList(t *testing.T, events prListEvents, why string, ok func(PRListSnapshot) bool) PRListSnapshot {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case snapshot := <-events.updates:
+			if ok(snapshot) {
+				return snapshot
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", why)
+			return PRListSnapshot{}
+		}
+	}
+}
+
+// awaitPRListRead waits for the frame that ends the first tick.
+func awaitPRListRead(t *testing.T, events prListEvents) PRListSnapshot {
+	t.Helper()
+	return awaitPRList(t, events, "the first tick's last frame", func(s PRListSnapshot) bool { return !s.Stale })
+}
+
+func prListProject(t *testing.T, snapshot PRListSnapshot, projectID string) ProjectPRList {
+	t.Helper()
+	for _, project := range snapshot.Projects {
+		if project.ProjectID == projectID {
+			return project
+		}
+	}
+	t.Fatalf("snapshot has no project %s: %+v", projectID, snapshot.Projects)
+	return ProjectPRList{}
+}
+
+func prListPumpLive(app *App) bool {
+	app.prUpdates.mu.Lock()
+	defer app.prUpdates.mu.Unlock()
+	return app.prUpdates.list != nil && !app.prUpdates.list.dead
+}
+
+func subscribePRList(t *testing.T, app *App) PRListSubscriptionResult {
+	t.Helper()
+	sub, err := app.SubscribePRList(context.Background())
+	if err != nil {
+		t.Fatalf("SubscribePRList: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := app.UnsubscribePRList(context.Background(), sub.ID); err != nil {
+			t.Errorf("UnsubscribePRList: %v", err)
+		}
+	})
+	return sub
+}
+
+func prListSnapshotNow(app *App) PRListSnapshot {
+	app.prUpdates.mu.Lock()
+	defer app.prUpdates.mu.Unlock()
+	return app.prUpdates.list.snapshot
+}
+
+// storePRList writes a repository's read into the store as a tick would,
+// readAt ago.
+func storePRList(t *testing.T, app *App, projectID string, repo gitops.RepoReference, rows []gitops.PRListRow, ago time.Duration) {
+	t.Helper()
+	at := time.Now().Add(-ago)
+	encoded, err := json.Marshal(prListReadOf(projectID, "stored", repo, rows, at, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.PutPRListProject(store.PRListProject{RepoKey: repo.Key(), ProjectJSON: encoded, ReadAt: at.UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func storedPRListKeys(t *testing.T, app *App) []string {
+	t.Helper()
+	records, err := app.store.ListPRListProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := make([]string, 0, len(records))
+	for key := range records {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// The subscribe answers from the store before any forge read: the stored
+// rows, Stale while a project's stored read is old or missing, and the
+// read the first tick then makes is published as it lands. The answer
+// comes while every forge read is held, and no forge request starts
+// before the stored copy is read. A stored copy younger than the
+// interval is not stale.
+func TestPRListSubscribeAnswersFromTheStoreBeforeAnyForgeCall(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	storePRList(t, app, "p-a", prListRepoA, []gitops.PRListRow{prListRow(prListRepoA, 1, func(r *gitops.PRListRow) { r.ViewerReviewState = "unreviewed" })}, 2*time.Hour)
+	release := make(chan struct{})
+	releaseReads := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseReads)
+	entered := make(chan struct{}, 2)
+	var started atomic.Int32
+	fake.set(func(f *prListFake) {
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 2, nil)}
+		f.listGate = func(context.Context, gitops.RepoReference) {
+			started.Add(1)
+			entered <- struct{}{}
+			<-release
+		}
+		// The subscribe's own listing (not the pump's interactive tick)
+		// reads the stored copy: a forge read that starts while it runs
+		// came before the answer. An absence has no event to wait for, so
+		// the listing gives one the time to start.
+		f.projectsGate = func(ctx context.Context) {
+			if forgeapi.IsInteractive(ctx) {
+				return
+			}
+			for deadline := time.Now().Add(200 * time.Millisecond); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+				if started.Load() > 0 {
+					t.Error("a forge read started before the stored answer")
+					return
+				}
+			}
+		}
+	})
+	events := capturePRList(t, app)
+	answered := make(chan PRListSubscriptionResult, 1)
+	go func() {
+		sub, err := app.SubscribePRList(context.Background())
+		if err != nil {
+			t.Errorf("SubscribePRList: %v", err)
+		}
+		answered <- sub
+	}()
+	var sub PRListSubscriptionResult
+	select {
+	case sub = <-answered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the subscribe waited for the held forge reads")
+	}
+	t.Cleanup(func() {
+		if err := app.UnsubscribePRList(context.Background(), sub.ID); err != nil {
+			t.Errorf("UnsubscribePRList: %v", err)
+		}
+	})
+	fake.set(func(f *prListFake) { f.projectsGate = nil })
+	snapshot := sub.Snapshot
+	a := prListProject(t, snapshot, "p-a")
+	if !snapshot.Stale || snapshot.Seq == 0 || len(a.Rows) != 1 || a.Rows[0].Ref.Number != 1 || a.Rows[0].State != PRStateYourTurn || a.ReadAt == "" || a.Name != "Widgets" {
+		t.Fatalf("stored answer = %+v", snapshot)
+	}
+	if len(prListProject(t, snapshot, "p-b").Rows) != 0 {
+		t.Fatalf("stored answer project B %+v", prListProject(t, snapshot, "p-b"))
+	}
+	// The pump's reads are under way and held: the answer did not wait.
+	for range 2 {
+		<-entered
+	}
+	if got := fake.listCount(prListRepoA); got != 0 {
+		t.Fatalf("a read finished before the answer: %d", got)
+	}
+	releaseReads()
+	read := awaitPRListRead(t, events)
+	if rows := prListProject(t, read, "p-a").Rows; len(rows) != 1 || rows[0].Ref.Number != 2 || read.Seq <= snapshot.Seq {
+		t.Fatalf("read = %+v (seq %d after %d)", rows, read.Seq, snapshot.Seq)
+	}
+
+	fresh := newTestAppWithStore(t)
+	fresh.prUpdates.interval = time.Hour
+	freshFake := newPRListFake(t, fresh)
+	freshFake.set(func(f *prListFake) { f.projects = f.projects[:1] })
+	storePRList(t, fresh, "p-a", prListRepoA, nil, time.Minute)
+	if sub := subscribePRList(t, fresh); sub.Snapshot.Stale {
+		t.Fatalf("a stored copy younger than the interval answered stale: %+v", sub.Snapshot)
+	}
+}
+
+// A tick publishes each project, and stores it, as its read lands: the
+// project whose read is held does not hold back the other, and the frames
+// stay Stale until every project of the first tick landed.
+func TestPRListTickPublishesEachProjectAsItLands(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	release := make(chan struct{})
+	// A failed assertion before B's release still releases it, so the
+	// pump's stop is not held by the gated read.
+	releaseB := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseB)
+	fake.set(func(f *prListFake) {
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, func(r *gitops.PRListRow) { r.ViewerReviewState = "unreviewed" })}
+		f.rows[prListRepoB.Key()] = []gitops.PRListRow{prListRow(prListRepoB, 7, nil)}
+		f.listGate = func(_ context.Context, repo gitops.RepoReference) {
+			if repo == prListRepoB {
+				<-release
+			}
+		}
+	})
+	events := capturePRList(t, app)
+	subscribePRList(t, app)
+	first := awaitPRList(t, events, "project A alone", func(s PRListSnapshot) bool {
+		return len(prListProject(t, s, "p-a").Rows) == 1
+	})
+	if !first.Stale || len(prListProject(t, first, "p-b").Rows) != 0 || prListProject(t, first, "p-a").ReadAt == "" {
+		t.Fatalf("frame before B landed = %+v", first)
+	}
+	if keys := storedPRListKeys(t, app); !slices.Equal(keys, []string{prListRepoA.Key()}) {
+		t.Fatalf("stored before B landed = %v", keys)
+	}
+	releaseB()
+	last := awaitPRListRead(t, events)
+	if len(prListProject(t, last, "p-b").Rows) != 1 || last.Seq <= first.Seq {
+		t.Fatalf("last frame = %+v", last)
+	}
+	if keys := storedPRListKeys(t, app); len(keys) != 2 {
+		t.Fatalf("stored after both landed = %v", keys)
+	}
+}
+
+// The subscribe's first tick reads each repository once however many
+// projects clone it, as the user's action; a joiner is answered with the
+// pump's last frame and reads nothing.
+func TestPRListSubscribeReadsEachRepositoryOnceAndJoinersShareIt(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		// A second clone of the same repository is a second project.
+		f.projects = append(f.projects, ForgeProject{ProjectID: "p-a2", Name: "Widgets clone", Path: "/w2", Repo: prListRepoA})
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{
+			prListRow(prListRepoA, 1, nil),
+			prListRow(prListRepoA, 2, func(r *gitops.PRListRow) { r.ReviewRequested, r.ViewerReviewState = true, "unreviewed" }),
+			prListRow(prListRepoA, 3, func(r *gitops.PRListRow) { r.ViewerIsAuthor, r.MergeStatus = true, "clean" }),
+		}
+		f.rows[prListRepoB.Key()] = []gitops.PRListRow{prListRow(prListRepoB, 7, func(r *gitops.PRListRow) { r.Draft = true })}
+	})
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+	snapshot := awaitPRListRead(t, events)
+	if got := fake.listCount(prListRepoA); got != 1 {
+		t.Fatalf("repository A read %d times, want 1 for its two projects", got)
+	}
+	fake.set(func(f *prListFake) {
+		if !slices.Equal(f.interactive[prListRepoA.Key()], []bool{true}) {
+			t.Errorf("the subscribe's read admission = %v, want interactive", f.interactive[prListRepoA.Key()])
+		}
+	})
+	var order []string
+	for _, row := range prListProject(t, snapshot, "p-a").Rows {
+		order = append(order, fmt.Sprintf("%d:%s", row.Ref.Number, row.State))
+	}
+	if want := []string{"2:your_turn", "3:ready", "1:open"}; !slices.Equal(order, want) {
+		t.Fatalf("rows = %v, want %v", order, want)
+	}
+	if clone := prListProject(t, snapshot, "p-a2"); len(clone.Rows) != 3 || clone.Name != "Widgets clone" {
+		t.Fatalf("the clone = %+v", clone)
+	}
+	if b := prListProject(t, snapshot, "p-b"); len(b.Rows) != 1 || b.Rows[0].State != PRStateDraft || b.Rows[0].Group != PRGroupWaiting {
+		t.Fatalf("project B = %+v", b)
+	}
+
+	joiner := subscribePRList(t, app)
+	if joiner.ID == sub.ID || joiner.Snapshot.Seq != snapshot.Seq || joiner.Snapshot.Stale {
+		t.Fatalf("joiner = %s seq %d, want a new id on seq %d", joiner.ID, joiner.Snapshot.Seq, snapshot.Seq)
+	}
+	if got := fake.listCount(prListRepoA); got != 1 {
+		t.Fatalf("the joiner read the forge: %d reads", got)
+	}
+}
+
+// The last unsubscribe stops the pump and drops what it held; a read in
+// flight then is cancelled and lands nowhere. The next subscribe starts a
+// new pump and answers from the store.
+func TestPRListPumpHoldsNothingAfterTheLastUnsubscribe(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)}
+	})
+	events := capturePRList(t, app)
+	sub, err := app.SubscribePRList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := awaitPRListRead(t, events)
+	// The next read is held in flight until its context ends.
+	inFlight, cancelled := make(chan struct{}), make(chan error, 2)
+	fake.set(func(f *prListFake) {
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 9, nil)}
+		f.listGate = func(ctx context.Context, repo gitops.RepoReference) {
+			if repo != prListRepoA {
+				return
+			}
+			close(inFlight)
+			select {
+			case <-ctx.Done():
+				cancelled <- ctx.Err()
+			case <-time.After(3 * time.Second):
+				cancelled <- errors.New("the read was not cancelled")
+			}
+		}
+	})
+	// The refresh's answer is moot: its subscription ends while it runs.
+	go func() { _ = app.RefreshPRList(context.Background(), sub.ID) }()
+	<-inFlight
+	app.prUpdates.mu.Lock()
+	pump := app.prUpdates.list
+	app.prUpdates.mu.Unlock()
+	if err := app.UnsubscribePRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-cancelled; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the in-flight read ended with %v, want its cancellation", err)
+	}
+	app.prUpdates.wg.Wait()
+	records, err := app.store.ListPRListProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored := string(records[prListRepoA.Key()].ProjectJSON); strings.Contains(stored, `"number":9`) {
+		t.Fatalf("the cancelled read was stored: %s", stored)
+	}
+	if prListPumpLive(app) {
+		t.Fatal("the pump survived its last subscriber")
+	}
+	app.prUpdates.mu.Lock()
+	held := pump.projects != nil || pump.encoded != nil || pump.snapshot.Seq != 0 || pump.forge != nil || app.prUpdates.list != nil
+	app.prUpdates.mu.Unlock()
+	if held {
+		t.Fatalf("the stopped pump still holds state: projects %v encoded %d bytes snapshot seq %d", pump.projects, len(pump.encoded), pump.snapshot.Seq)
+	}
+
+	fake.set(func(f *prListFake) {
+		f.listGate = func(context.Context, gitops.RepoReference) { time.Sleep(50 * time.Millisecond) }
+	})
+	again := subscribePRList(t, app)
+	if rows := prListProject(t, again.Snapshot, "p-a").Rows; len(rows) != 1 || again.Snapshot.Seq <= read.Seq {
+		t.Fatalf("the next subscribe = %+v, want the stored rows", again.Snapshot)
+	}
+}
+
+func TestPRListPausesWhileHiddenAndCatchesUpOnResume(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = 5 * time.Millisecond
+	fake := newPRListFake(t, app)
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+	awaitPRListRead(t, events)
+
+	if err := app.SetPRListActive(context.Background(), sub.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	// A refresh runs on the pump goroutine once no tick is in flight, so
+	// after it every tick sees the pause.
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := fake.listCount(prListRepoA)
+	time.Sleep(60 * time.Millisecond)
+	if got := fake.listCount(prListRepoA); got != before {
+		t.Fatalf("hidden list read the forge %d times", got-before)
+	}
+
+	fake.set(func(f *prListFake) { f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 4, nil)} })
+	if err := app.SetPRListActive(context.Background(), sub.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the row read after resuming", func(s PRListSnapshot) bool {
+		return len(prListProject(t, s, "p-a").Rows) == 1
+	})
+}
+
+// A read whose detail request failed lists its rows with the failure on
+// the project, stored like any read; the next clean read clears it.
+func TestPRListDetailFailureListsTheRowsBesideIt(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.rows[prListRepoB.Key()] = []gitops.PRListRow{prListRow(prListRepoB, 2, func(r *gitops.PRListRow) { r.ViewerIsReviewer = true })}
+		f.listErr[prListRepoB.Key()] = &gitops.PRListDetailError{Errs: []error{&forgeapi.TransientError{Err: errors.New("events: connection reset")}}}
+	})
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+	read := awaitPRListRead(t, events)
+	b := prListProject(t, read, "p-b")
+	if b.DetailError == "" || b.Error != "" || len(b.Rows) != 1 || b.Rows[0].State != PRStateYourTurn {
+		t.Fatalf("project = %+v", b)
+	}
+	if strings.Contains(b.DetailError, "connection reset") {
+		t.Fatalf("the detail failure leaked the raw error: %q", b.DetailError)
+	}
+	stored, err := app.store.ListPRListProjects()
+	if err != nil || !strings.Contains(string(stored[prListRepoB.Key()].ProjectJSON), `"detailError"`) {
+		t.Fatalf("stored read = %s, %v", stored[prListRepoB.Key()].ProjectJSON, err)
+	}
+	fake.set(func(f *prListFake) { delete(f.listErr, prListRepoB.Key()) })
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if b := prListProject(t, prListSnapshotNow(app), "p-b"); b.DetailError != "" {
+		t.Fatalf("a clean read kept the detail failure: %+v", b)
+	}
+}
+
+// A failing project keeps the rows last read beside its error and leaves
+// the other projects alone; a transient failure is held back once. A
+// removed project takes its rows along, in the pump and in the store.
+func TestPRListProjectFailureKeepsRowsAndIsolatesProjects(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)}
+		f.rows[prListRepoB.Key()] = []gitops.PRListRow{prListRow(prListRepoB, 2, nil)}
+	})
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+	awaitPRListRead(t, events)
+
+	fake.set(func(f *prListFake) {
+		f.listErr[prListRepoB.Key()] = &forgeapi.TransientError{Err: errors.New("dial refused")}
+		f.rows[prListRepoA.Key()] = append(f.rows[prListRepoA.Key()], prListRow(prListRepoA, 3, nil))
+	})
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := prListSnapshotNow(app)
+	if b := prListProject(t, snapshot, "p-b"); b.Error != "" || len(b.Rows) != 1 {
+		t.Fatalf("a first transient failure was reported: %+v", b)
+	}
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot = prListSnapshotNow(app)
+	b := prListProject(t, snapshot, "p-b")
+	if b.ErrorKind != forgeFailureTransient || b.Error == "" || len(b.Rows) != 1 || b.Rows[0].Ref.Number != 2 {
+		t.Fatalf("failing project = %+v", b)
+	}
+	if a := prListProject(t, snapshot, "p-a"); a.Error != "" || len(a.Rows) != 2 {
+		t.Fatalf("healthy project = %+v", a)
+	}
+
+	fake.set(func(f *prListFake) { delete(f.listErr, prListRepoB.Key()) })
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if b := prListProject(t, prListSnapshotNow(app), "p-b"); b.Error != "" || b.ErrorKind != "" {
+		t.Fatalf("recovered project still fails: %+v", b)
+	}
+
+	fake.set(func(f *prListFake) { f.projects = f.projects[:1] })
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot = prListSnapshotNow(app)
+	if len(snapshot.Projects) != 1 {
+		t.Fatalf("projects after removal = %+v", snapshot.Projects)
+	}
+	app.prUpdates.mu.Lock()
+	_, kept := app.prUpdates.list.projects[prListRepoB.Key()]
+	app.prUpdates.mu.Unlock()
+	if kept {
+		t.Fatal("the removed project's rows were kept")
+	}
+	if keys := storedPRListKeys(t, app); !slices.Equal(keys, []string{prListRepoA.Key()}) {
+		t.Fatalf("stored after removal = %v, want the removed repository's row deleted", keys)
+	}
+}
+
+// A failed project carries the correlation id and the forge's raw text
+// behind its sentence, fixed while the same failure repeats, so a repeat
+// publishes nothing new; recovery clears it. The failing project is the
+// only one: a healthy project's re-read moves its ReadAt, a new frame.
+func TestPRListProjectFailureCarriesItsDetails(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.projects = f.projects[1:]
+		f.rows[prListRepoB.Key()] = []gitops.PRListRow{prListRow(prListRepoB, 2, nil)}
+	})
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+	awaitPRListRead(t, events)
+
+	refused := &forgeapi.ForbiddenError{
+		Status:  &forgeapi.StatusError{Method: "GET", URL: "https://gitlab.com/api/v4/projects/team%2Fapp/merge_requests", Status: 403, Body: `{"error":"insufficient_scope"}`},
+		Scope:   "api",
+		Message: "insufficient_scope",
+	}
+	fake.set(func(f *prListFake) { f.listErr[prListRepoB.Key()] = refused })
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := prListSnapshotNow(app)
+	b := prListProject(t, snapshot, "p-b")
+	if b.ErrorKind != forgeFailureForbidden || b.ErrorDetails == nil || len(b.Rows) != 1 {
+		t.Fatalf("failing project = %+v", b)
+	}
+	detail := *b.ErrorDetails
+	if detail.Ref == "" || detail.Method == "" || detail.At == 0 {
+		t.Fatalf("detail = %+v", detail)
+	}
+	if chain := strings.Join(detail.Chain, "\n"); !strings.Contains(chain, "insufficient_scope") || !strings.Contains(chain, "HTTP 403") {
+		t.Fatalf("detail chain lacks the forge's text: %q", detail.Chain)
+	}
+
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	again := prListSnapshotNow(app)
+	if got := prListProject(t, again, "p-b").ErrorDetails; got == nil || got.Ref != detail.Ref || got.At != detail.At {
+		t.Fatalf("a repeated failure moved its detail: %+v, was %+v", got, detail)
+	}
+	if again.Seq != snapshot.Seq {
+		t.Fatalf("a repeated failure published a new snapshot: seq %d, was %d", again.Seq, snapshot.Seq)
+	}
+
+	fake.set(func(f *prListFake) { delete(f.listErr, prListRepoB.Key()) })
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if b := prListProject(t, prListSnapshotNow(app), "p-b"); b.ErrorDetails != nil {
+		t.Fatalf("recovered project keeps its details: %+v", b.ErrorDetails)
+	}
+}
+
+// A project whose origin could not be read is listed with its error,
+// beside the rows its repository's stored read holds.
+func TestPRListReportsAProjectWhoseOriginFailed(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	repoC := gitops.RepoReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "broken"}
+	storePRList(t, app, "p-c", repoC, []gitops.PRListRow{prListRow(repoC, 5, nil)}, time.Hour)
+	fake.set(func(f *prListFake) {
+		f.projects = append(f.projects, ForgeProject{ProjectID: "p-c", Name: "Broken", Path: "/c", Error: "origin unreadable"})
+	})
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+	for _, snapshot := range []PRListSnapshot{sub.Snapshot, awaitPRListRead(t, events)} {
+		c := prListProject(t, snapshot, "p-c")
+		if c.Error != "origin unreadable" || c.ErrorKind != forgeFailureForge || len(c.Rows) != 1 || c.Repo != repoC {
+			t.Fatalf("project = %+v", c)
+		}
+	}
+	if fake.listCount(repoC) != 0 {
+		t.Fatal("the unreadable origin's repository was read")
+	}
+	if keys := storedPRListKeys(t, app); !slices.Contains(keys, repoC.Key()) {
+		t.Fatalf("stored = %v, want the unreadable project's rows kept", keys)
+	}
+}
+
+// The boot prefetch reads every project with background admission,
+// stores each read, prunes the repository no project names and holds
+// nothing; it reads nothing while the stored copy is younger than the
+// interval or a pump runs.
+func TestPRListPrefetchWritesTheStoreAndSkipsWhenFresh(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, func(r *gitops.PRListRow) { r.ViewerReviewState = "unreviewed" })}
+		f.rows[prListRepoB.Key()] = []gitops.PRListRow{prListRow(prListRepoB, 2, nil)}
+	})
+	gone := gitops.RepoReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "gone"}
+	storePRList(t, app, "p-gone", gone, nil, 2*time.Hour)
+	stored, err := app.prefetchPRList(context.Background())
+	if err != nil || stored != 2 {
+		t.Fatalf("prefetch = %d, %v", stored, err)
+	}
+	if keys := storedPRListKeys(t, app); !slices.Equal(keys, []string{prListRepoA.Key(), prListRepoB.Key()}) {
+		t.Fatalf("stored = %v", keys)
+	}
+	fake.set(func(f *prListFake) {
+		if !slices.Equal(f.interactive[prListRepoA.Key()], []bool{false}) {
+			t.Errorf("prefetch admission = %v, want background", f.interactive[prListRepoA.Key()])
+		}
+	})
+	if prListPumpLive(app) || app.prUpdates.list != nil {
+		t.Fatal("the prefetch left a pump")
+	}
+	if got, err := app.prefetchPRList(context.Background()); err != nil || got != 0 || fake.listCount(prListRepoA) != 1 {
+		t.Fatalf("a prefetch over a fresh copy = %d, %v, reads %d", got, err, fake.listCount(prListRepoA))
+	}
+
+	live := newTestAppWithStore(t)
+	live.prUpdates.interval = time.Hour
+	liveFake := newPRListFake(t, live)
+	hold := make(chan struct{})
+	liveFake.set(func(f *prListFake) { f.listGate = func(context.Context, gitops.RepoReference) { <-hold } })
+	subscribePRList(t, live)
+	t.Cleanup(func() { close(hold) })
+	if got, err := live.prefetchPRList(context.Background()); err != nil || got != 0 {
+		t.Fatalf("a prefetch beside a live pump = %d, %v", got, err)
+	}
+}
+
+func TestUnsubscribePRListUnbindsItsConnectionTie(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	newPRListFake(t, app)
+	checkByIDTie(t, byIDTie{
+		subscribe: func(ctx context.Context) (string, error) {
+			sub, err := app.SubscribePRList(ctx)
+			return sub.ID, err
+		},
+		unsubscribe: app.UnsubscribePRList,
+		key:         prListCleanupKey,
+		live: func(id string) bool {
+			app.prUpdates.mu.Lock()
+			defer app.prUpdates.mu.Unlock()
+			_, ok := app.prUpdates.listHandles[id]
+			return ok
+		},
+	})
+	app.prUpdates.wg.Wait()
+}
+
+// A prefetch whose read is still in flight when a pump starts loses the
+// stored copy to it: the pump's newer read lands and is stored first,
+// and the prefetch's older read, landing after, is dropped, as is a
+// prune it would make.
+func TestPRListPrefetchLosesTheStoredCopyToAPumpThatStarted(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	held, release := make(chan struct{}), make(chan struct{})
+	reads := 0
+	fake.set(func(f *prListFake) {
+		f.projects = f.projects[:1]
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)}
+		f.listGate = func(context.Context, gitops.RepoReference) {
+			f.mu.Lock()
+			reads++
+			first := reads == 1
+			f.mu.Unlock()
+			if first {
+				close(held)
+				<-release
+			}
+		}
+	})
+	events := capturePRList(t, app)
+	type result struct {
+		stored int
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		stored, err := app.prefetchPRList(context.Background())
+		done <- result{stored, err}
+	}()
+	<-held
+	// The prefetch's read is in flight; a pump starts and stores newer
+	// rows.
+	fake.set(func(f *prListFake) { f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 2, nil)} })
+	subscribePRList(t, app)
+	awaitPRListRead(t, events)
+	// The prefetch's read lands with the rows it read.
+	fake.set(func(f *prListFake) { f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)} })
+	close(release)
+	got := <-done
+	if got.err != nil || got.stored != 0 {
+		t.Fatalf("prefetch = %d, %v; want nothing stored", got.stored, got.err)
+	}
+	stored, _, err := app.storedPRLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows := stored[prListRepoA.Key()].Rows; len(rows) != 1 || rows[0].Ref.Number != 2 {
+		t.Fatalf("stored = %+v, want the pump's read", rows)
+	}
+	// The prefetch's generation (the first taken) no longer owns the
+	// copy: its prune is dropped too.
+	app.prunePRListStore(prListWriter{gen: 1}, map[string]bool{})
+	if keys := storedPRListKeys(t, app); !slices.Equal(keys, []string{prListRepoA.Key()}) {
+		t.Fatalf("stored after a superseded prune = %v", keys)
+	}
+}
+
+// Removing a project's repository deletes its stored rows, even when
+// every remaining read fails.
+func TestPRListPruneDeletesARemovedRepositoryEvenWhenEveryReadFails(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, func(r *gitops.PRListRow) { r.ViewerReviewState = "unreviewed" })}
+		f.listErr[prListRepoB.Key()] = errors.New("forge down")
+	})
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+	awaitPRList(t, events, "project A's read", func(s PRListSnapshot) bool {
+		return len(prListProject(t, s, "p-a").Rows) == 1
+	})
+	if keys := storedPRListKeys(t, app); !slices.Equal(keys, []string{prListRepoA.Key()}) {
+		t.Fatalf("stored before the removal = %v", keys)
+	}
+	fake.set(func(f *prListFake) { f.projects = f.projects[1:] })
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if keys := storedPRListKeys(t, app); len(keys) != 0 {
+		t.Fatalf("stored = %v, want the removed repository's rows deleted", keys)
+	}
+}
+
+// The prefetch is fresh per repository: with one repository read a
+// minute ago and another never, it reads only the one missing.
+func TestPRListPrefetchReadsOnlyTheStaleOrMissingRepositories(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	storePRList(t, app, "p-a", prListRepoA, nil, time.Minute)
+	stored, err := app.prefetchPRList(context.Background())
+	if err != nil || stored != 1 {
+		t.Fatalf("prefetch = %d, %v; want the missing one stored", stored, err)
+	}
+	if a, b := fake.listCount(prListRepoA), fake.listCount(prListRepoB); a != 0 || b != 1 {
+		t.Fatalf("reads: fresh %d, missing %d; want 0 and 1", a, b)
+	}
+}
+
+// A pump that prepared its read and lost its last subscriber before
+// storing it is not the copy's writer any more: a boot prefetch that
+// starts then takes its own generation and stores newer rows, and the
+// stopped pump's write, landing after, is dropped.
+func TestPRListStoppedPumpLosesTheCopyToAPrefetch(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.projects = f.projects[:1]
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)}
+	})
+	ids := make(chan string, 1)
+	prefetched := make(chan int, 1)
+	changes, inPrefetch := 0, false
+	// Runs on the pump's goroutine: its first change is the prune, its
+	// second the prepared read's write, before it takes the store lock.
+	app.prUpdates.listStoreHook = func(stage string) {
+		if stage != "enter" || inPrefetch {
+			return
+		}
+		if changes++; changes != 2 {
+			return
+		}
+		app.unsubscribePRList(<-ids)
+		fake.set(func(f *prListFake) { f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 2, nil)} })
+		inPrefetch = true
+		stored, err := app.prefetchPRList(context.Background())
+		inPrefetch = false
+		if err != nil {
+			t.Errorf("prefetch: %v", err)
+		}
+		prefetched <- stored
+	}
+	sub, err := app.SubscribePRList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids <- sub.ID
+	select {
+	case stored := <-prefetched:
+		if stored != 1 {
+			t.Fatalf("prefetch stored %d, want its read", stored)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the pump never reached its write")
+	}
+	app.prUpdates.wg.Wait()
+	lists, _, err := app.storedPRLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows := lists[prListRepoA.Key()].Rows; len(rows) != 1 || rows[0].Ref.Number != 2 {
+		t.Fatalf("stored = %+v, want the prefetch's read, not the stopped pump's", rows)
+	}
+}
+
+// A pump that lost its last subscriber stores nothing more, though no
+// other writer took the copy: its prepared read is dropped.
+func TestPRListStoppedPumpStoresNothing(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.projects = f.projects[:1]
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)}
+	})
+	ids := make(chan string, 1)
+	left := make(chan struct{})
+	changes := 0
+	// The pump's first change is its prune, its second the prepared
+	// read's write, before it takes the store lock.
+	app.prUpdates.listStoreHook = func(stage string) {
+		if stage != "enter" {
+			return
+		}
+		if changes++; changes == 2 {
+			app.unsubscribePRList(<-ids)
+			close(left)
+		}
+	}
+	sub, err := app.SubscribePRList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids <- sub.ID
+	select {
+	case <-left:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the pump never reached its write")
+	}
+	app.prUpdates.wg.Wait()
+	lists, _, err := app.storedPRLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list, ok := lists[prListRepoA.Key()]; ok {
+		t.Fatalf("stored = %+v, want the stopped pump's read dropped", list.Rows)
+	}
+}

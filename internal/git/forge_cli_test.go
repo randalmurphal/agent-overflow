@@ -111,7 +111,7 @@ func TestIsolatedCoreWithoutFakeRefusesForgeCLIs(t *testing.T) {
 			t.Errorf("error %q does not say why", err)
 		}
 	}
-	if _, _, err := core.FetchAttachment(t.Context(), PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "acme", Repo: "widgets", Number: 7},
+	if _, _, err := core.FetchAttachment(t.Context(), PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "acme", Repo: "widgets", Number: 7}.Repository(),
 		"/uploads/0123456789abcdef0123456789abcdef/a.png", 1<<20); err == nil {
 		t.Fatal("attachment download succeeded with no fake configured")
 	}

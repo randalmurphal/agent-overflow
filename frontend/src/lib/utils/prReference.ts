@@ -182,11 +182,21 @@ const PUBLIC_FORGE_HOST: Record<Forge, string> = { github: 'github.com', gitlab:
  * never parsed.
  */
 export function prKey(ref: PRRef): string {
+  return `${repoKey(ref)}:${ref.number}`;
+}
+
+/** A repository on its forge host: a PR reference without its number. */
+export type RepoRef = Omit<PRRef, 'number'>;
+
+/**
+ * The entity key for a repository: the PR key without its number
+ * (`RepoReference.Key` in internal/git/repo_reference.go builds the
+ * identical string). Compared, never parsed.
+ */
+export function repoKey(ref: RepoRef): string {
   const project = `${ref.namespace}/${ref.repo}`;
-  if (ref.host === PUBLIC_FORGE_HOST[ref.forge]) {
-    return `${ref.forge}:${project}:${ref.number}`;
-  }
-  return `${ref.forge}@${ref.host}:${project}:${ref.number}`;
+  if (ref.host === PUBLIC_FORGE_HOST[ref.forge]) return `${ref.forge}:${project}`;
+  return `${ref.forge}@${ref.host}:${project}`;
 }
 
 /**
@@ -205,6 +215,31 @@ export interface PRReferenceWire {
   Namespace: string;
   Repo: string;
   Number: number;
+}
+
+/** The wire shape the Go `git.RepoReference` parameter expects. */
+export interface RepoReferenceWire {
+  Forge: string;
+  Host: string;
+  Namespace: string;
+  Repo: string;
+}
+
+export function repoReferenceWire(ref: RepoRef): RepoReferenceWire {
+  return { Forge: ref.forge, Host: ref.host, Namespace: ref.namespace, Repo: ref.repo };
+}
+
+/** A wire repository (a listed project's, a list row's) as a RepoRef; null
+ * for a forge this app does not speak. */
+export function repoRefFromWire(wire: { Forge: string; Host: string; Namespace: string; Repo: string }): RepoRef | null {
+  if (wire.Forge !== 'github' && wire.Forge !== 'gitlab') return null;
+  return { forge: wire.Forge, host: wire.Host, namespace: wire.Namespace, repo: wire.Repo };
+}
+
+/** A wire PR reference as a PRRef; null for a forge this app does not speak. */
+export function prRefFromWire(wire: PRReferenceWire): PRRef | null {
+  const repo = repoRefFromWire(wire);
+  return repo ? { ...repo, number: wire.Number } : null;
 }
 
 export function prReferenceWire(ref: PRRef): PRReferenceWire {

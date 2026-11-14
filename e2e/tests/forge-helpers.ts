@@ -6,12 +6,14 @@
 // handlers.
 
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { crc32, deflateSync } from 'node:zlib';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
-import { expect } from './fixtures.js';
+import { expect, type SeedResult } from './fixtures.js';
 
 export interface ForgeComment {
   id?: number;
@@ -19,6 +21,15 @@ export interface ForgeComment {
   authorName?: string;
   body: string;
   createdAt?: string;
+  /** RFC 3339; GitHub reads it as lastEditedAt. The viewer may edit its own
+   * comments and delete them, or any as a maintainer. */
+  editedAt?: string;
+  /** GitLab conversation comments only: the further notes of its discussion. */
+  replies?: ForgeComment[];
+  /** One per user and name, in GitLab's award names (GitHub: the eight shared). */
+  reactions?: { name: string; user: string; id?: number }[];
+  /** GitLab: the indexes of the comment's suggestions already applied. */
+  appliedSuggestions?: number[];
 }
 
 /** A review thread anchored to the diff; `side` defaults to right. */
@@ -27,6 +38,9 @@ export interface ForgeThread {
   path: string;
   line?: number;
   startLine?: number;
+  /** A range's first line as the forge's position names it, when it lies
+   * on the other half from `line` (a removed line, type `old`). */
+  startPoint?: { type?: 'old' | 'new'; oldLine?: number; newLine?: number };
   side?: 'right' | 'left' | 'file';
   resolved?: boolean;
   outdated?: boolean;
@@ -35,6 +49,8 @@ export interface ForgeThread {
 
 /** A submitted verdict; on GitLab only APPROVED has a counterpart (an approval). */
 export interface ForgeReview {
+  /** GitHub databaseId; generated when omitted. */
+  id?: number;
   author: string;
   authorName?: string;
   state: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED';
@@ -58,12 +74,23 @@ export interface ForgePull {
   headRef?: string;
   /** The fork the head branch lives in ("owner/repo", a GitLab path); unset is the repository itself. */
   headRepo?: string;
+  /** Logins a review is requested from (GitHub reviewRequests, GitLab reviewers). */
+  reviewers?: string[];
+  /** RFC 3339; default 2026-01-01T00:00:00Z, updatedAt and committedAt (the head commit's time) to createdAt. */
+  createdAt?: string;
+  updatedAt?: string;
+  committedAt?: string;
+  /** GitHub's commit count; defaults to 1. */
+  commits?: number;
   baseRef?: string;
   headSha?: string;
   /** GitLab's merge base. */
   baseSha?: string;
-  /** The base branch's tip: GitHub baseRefOid, GitLab start_sha. */
+  /** The base the forge recorded for the diff (GitHub baseRefOid, GitLab
+   * start_sha); defaults to baseSha. It does not follow the base branch. */
   startSha?: string;
+  /** Default clean; conflicts is GitHub CONFLICTING, GitLab has_conflicts. */
+  mergeable?: 'clean' | 'conflicts' | 'checking';
   /** GitLab only: the merge request's diff is not computed yet, so
    * diff_refs reads null. */
   diffPending?: boolean;
@@ -74,6 +101,78 @@ export interface ForgePull {
   reviews?: ForgeReview[];
   /** The head pipeline (GitLab) or workflow run (GitHub Actions). */
   ci?: ForgePipeline;
+  /** What the base and project require beyond reviews, CI, threads and
+   * conflicts; omitted, nothing (an open pull is ready). */
+  readiness?: ForgeReadiness;
+  /** A merged pull's merger (defaults to its author) and merge commit. */
+  mergedBy?: string;
+  mergeCommitSha?: string;
+  /** A closed or merged pull's close, RFC 3339, and who closed it. */
+  closedAt?: string;
+  closedBy?: string;
+  /** GitHub timeline items or GitLab system notes besides the reviews. */
+  events?: ForgeEvent[];
+  /** GitLab: the reviewers (each one of `reviewers`) who requested changes. */
+  changeRequests?: string[];
+  /** GitHub: teams asked to review, "owner/slug". */
+  teamReviewers?: string[];
+  /** Logins of the repository's `members`. */
+  assignees?: string[];
+  /** Names of the repository's `labels`. */
+  labels?: string[];
+  /** What the viewer may do here, each derived from the role and authorship when omitted. */
+  viewer?: { update?: boolean; label?: boolean; triage?: boolean; admin?: boolean; push?: boolean };
+  /** The head's files by path, which a suggestion's apply rewrites. */
+  files?: Record<string, string>;
+  /** GitLab: close, reopen and merge events (resource state events). */
+  stateEvents?: { id?: number; state: 'closed' | 'reopened' | 'merged'; actor?: string; at?: string }[];
+  /** GitLab: the requested changes were bypassed. */
+  changesOverridden?: boolean;
+}
+
+/** A pull's merge box (forgefake Readiness). */
+export interface ForgeReadiness {
+  /** GitHub's base protection approvals, GitLab's approvals_required. */
+  requiredApprovals?: number;
+  /** GitHub only: CI job names the base requires to pass. */
+  requiredChecks?: string[];
+  /** GitHub only: the base requires conversation resolution. */
+  resolveThreads?: boolean;
+  /** The head is behind a base that requires it up to date (GitLab: a ff or rebase_merge project). */
+  behind?: boolean;
+  /** GitLab only: user_can_approve, overriding the role's. */
+  viewerCanApprove?: boolean;
+  autoMerge?: { method?: 'merge' | 'squash' | 'rebase'; by?: string; byName?: string; at?: string };
+}
+
+/** One timeline item (GitHub) or system note (GitLab); kinds per forge in forgefake Event. */
+export interface ForgeEvent {
+  id?: number;
+  kind: string;
+  actor?: string;
+  actorName?: string;
+  at?: string;
+  ref?: string;
+  method?: 'merge' | 'squash' | 'rebase';
+  text?: string;
+}
+
+/** A project's merge settings and the viewer's role (forgefake RepoMerge). */
+export interface ForgeRepoMerge {
+  /** GitHub READ..ADMIN (default WRITE); GitLab guest..owner (default developer). */
+  permission?: string;
+  /** GitHub: allowed methods (all by default), the viewer's default, "Allow auto-merge". */
+  methods?: ('merge' | 'squash' | 'rebase')[];
+  defaultMethod?: 'merge' | 'squash' | 'rebase';
+  autoMergeAllowed?: boolean;
+  deleteBranchOnMerge?: boolean;
+  /** GitLab: merge_method, squash_option, and the merge checks the project requires. */
+  mergeMethod?: 'merge' | 'rebase_merge' | 'ff';
+  squashOption?: 'default_off' | 'default_on' | 'always' | 'never';
+  pipelineMustSucceed?: boolean;
+  discussionsMustResolve?: boolean;
+  /** GitLab: the least role that may cancel a job or pipeline (default developer). */
+  cancelRole?: 'developer' | 'maintainer' | 'no_one';
 }
 
 export interface ForgePipeline {
@@ -82,10 +181,40 @@ export interface ForgePipeline {
   /** GitHub workflow name. Defaults to "CI". */
   name?: string;
   status?: ForgeJobStatus;
+  /** What it ran on: a pull's defaults to a merge request pipeline of its
+   * head, a repository's to a branch pipeline of main (forgefake Pipeline). */
+  refKind?: 'branch' | 'tag' | 'merge_request';
+  ref?: string;
+  sha?: string;
+  /** GitLab source or GitHub event; defaults by refKind. */
+  source?: string;
+  /** GitHub run display title; defaults to name. */
+  title?: string;
+  /** RFC 3339; defaults to the seed time. GitHub re-runs a run only within 30 days of it. */
+  createdAt?: string;
+  updatedAt?: string;
+  /** Job ids are unique per repository; a seed that repeats one is refused. */
   jobs: ForgeJob[];
+  /** GitHub only: the run's artifacts. */
+  artifacts?: ForgeArtifact[];
 }
 
-export type ForgeJobStatus = 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'canceled';
+/** A GitLab job's archive or a GitHub run's artifact, served as its bytes. */
+export interface ForgeArtifact {
+  /** GitHub's artifact id; generated when omitted. */
+  id?: number;
+  /** GitHub's artifact name. */
+  name?: string;
+  text?: string;
+  base64?: string;
+  /** GitHub: listed expired, its download a 410. */
+  expired?: boolean;
+  /** GitHub: the list's expires_at (RFC 3339); 90 days after the run by default. */
+  expiresAt?: string;
+}
+
+/** `manual` is GitLab's: a job waiting for a manual start. */
+export type ForgeJobStatus = 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'canceled' | 'manual';
 
 export interface ForgeJob {
   /** Generated when omitted. Give one to re-seed the same job. */
@@ -106,6 +235,17 @@ export interface ForgeJob {
   synthetic?: ForgeSyntheticLog;
   /** GitHub Actions steps. */
   steps?: ForgeStep[];
+  /** A GitLab row that is not a build: a bridge (trigger job) or an
+   * external commit status (stage "external" by default). Neither has a log. */
+  kind?: 'bridge' | 'external';
+  /** An external status's absolute link. */
+  targetUrl?: string;
+  /** A bridge's downstream pipeline path ("/grp/child/-/pipelines/9"). */
+  downstream?: string;
+  /** GitLab only: the job's artifacts archive. */
+  artifacts?: ForgeArtifact;
+  /** Set by the fake on a job a retry replaced. */
+  retried?: boolean;
 }
 
 export interface ForgeSyntheticLog {
@@ -147,6 +287,22 @@ export interface ForgeRepo {
   host?: string;
   pulls?: ForgePull[];
   attachments?: ForgeAttachment[];
+  merge?: ForgeRepoMerge;
+  /** Pipelines on any ref beside the pulls' CI. */
+  pipelines?: ForgePipeline[];
+  deletedBranches?: string[];
+  /** GitLab: the viewer's events here are dropped from an events page after it is selected, as GitLab drops hidden ones. */
+  eventsHidden?: boolean;
+  /** Who can be asked to review and be assigned; `id` is GitLab's user id, generated when omitted. */
+  members?: { login: string; name?: string; id?: number }[];
+  /** GitHub: an organization's teams (`organization`), and a token whose teams search is refused. */
+  teams?: { slug: string; name?: string }[];
+  organization?: boolean;
+  teamsRefused?: boolean;
+  /** The repository's labels; color "#rrggbb". */
+  labels?: { name: string; color?: string; id?: string }[];
+  /** GitLab: what an older server lacks. */
+  serverLacks?: ('rereview' | 'overrideRequestedChanges' | 'operationMode' | 'awardEmoji')[];
 }
 
 interface ForgeInvocationCommon {
@@ -184,6 +340,8 @@ export interface ForgeHTTPInvocation extends ForgeInvocationCommon {
   path: string;
   operation?: string;
   variables?: Record<string, unknown>;
+  /** A REST write's JSON body. */
+  body?: unknown;
   status: number;
   detail?: string;
 }
@@ -192,6 +350,18 @@ export type ForgeInvocation = ForgeCLIInvocation | ForgeHTTPInvocation;
 
 export async function seedForge(harness: HarnessApp, repos: ForgeRepo[]): Promise<void> {
   await harness.rpc('HarnessForgeSeed', { repos });
+}
+
+/**
+ * Move one current CI job of a seeded repository on, as its runner would
+ * (HarnessForgeAdvanceJob): `job` names the newest attempt of that name,
+ * `id` one job. The pipeline's status follows its jobs. Answers the job.
+ */
+export async function advanceForgeJob(
+  harness: HarnessApp,
+  advance: { forge: 'github' | 'gitlab'; project: string; job?: string; id?: number; status: ForgeJobStatus; log?: string; artifacts?: ForgeArtifact },
+): Promise<ForgeJob> {
+  return harness.rpc<ForgeJob>('HarnessForgeAdvanceJob', advance);
 }
 
 /** Take the fake forge off the network, or put it back. */
@@ -214,9 +384,43 @@ export async function setForgeRateLimit(
   await harness.rpc('HarnessForgeRateLimit', limit);
 }
 
+/**
+ * Make one fake forge route answer `status`, `header` and the JSON `body`
+ * in place of its handler, `times` requests or until cleared (0): 401,
+ * 403, 405, 409 or 422, or 200 with an `errors` body on a GraphQL
+ * operation. `route` is a REST route's name (`glab api approve`) or
+ * `gh graphql <operation>`. Nothing in the fixture changes; the request is
+ * recorded under its route. With `hold` the request is recorded at once
+ * and answered, or its answer lost, on `releaseForgeRoute`. HarnessReset
+ * clears it.
+ */
+export async function refuseForgeRoute(
+  harness: HarnessApp,
+  refusal: { route: string; status: number; header?: Record<string, string>; body?: unknown; times?: number; hold?: boolean },
+): Promise<void> {
+  await harness.rpc('HarnessForgeRefuse', refusal);
+}
+
+/** End a held refusal on `route`: its requests get the refusal, or with
+ * `drop` lose their answer (closed with no reply). */
+export async function releaseForgeRoute(harness: HarnessApp, route: string, drop = false): Promise<void> {
+  await harness.rpc('HarnessForgeRelease', { route, drop });
+}
+
+/** Clear a route's refusal. */
+export async function clearForgeRefusal(harness: HarnessApp, route: string): Promise<void> {
+  await harness.rpc('HarnessForgeRefuse', { route, status: 0 });
+}
+
 export async function forgeInvocations(harness: HarnessApp): Promise<ForgeInvocation[]> {
   const log = await harness.rpc<{ invocations: ForgeInvocation[] }>('HarnessForgeInvocations', 0);
   return log.invocations;
+}
+
+/** The fake's answered HTTP requests on `route` (status below 300), oldest first. */
+export async function forgeRouteCalls(harness: HarnessApp, route: string): Promise<ForgeHTTPInvocation[]> {
+  return (await forgeInvocations(harness))
+    .filter((call): call is ForgeHTTPInvocation => call.via === 'http' && call.route === route && call.status < 300);
 }
 
 /** Fail on any invocation the fake has no handler for, naming the call. */
@@ -250,11 +454,195 @@ exec git upload-pack --strict '${root}'"$repo"
 `;
 }
 
+/** Seed one project with a git repository and a thread titled `title`,
+ * for a pull request `publishPullRequest` publishes from it; answers its
+ * path. */
+export async function seedThreadProject(harness: HarnessApp, title: string, prefix = 'ci'): Promise<string> {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: `${prefix}-${randomBytes(4).toString('hex')}`,
+        repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+        threads: [{ title, turns: [{ userText: 'Hello.', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }],
+      },
+    ],
+  });
+  return seed.projects[0].path;
+}
+
+/** One commit of a pull request's history (`PullHistory`). */
+export interface PullCommit {
+  message: string;
+  body?: string;
+  /** Files written before the commit: text, or bytes for a binary file. */
+  files?: Record<string, string | Uint8Array>;
+  /** Paths deleted. */
+  remove?: string[];
+  /** Renames, old path to new path (`git mv`). */
+  rename?: Record<string, string>;
+  /** Commit this on a side branch off the feature tip and merge it into
+   * feature with a merge commit (`merge <message>`), so the PR carries both
+   * the side commit and the merge. */
+  merge?: boolean;
+  /** The commit's author name (email `<name>@example.com`, lowercased
+   * and dashed); default the harness's git identity. */
+  author?: string;
+}
+
+/** A pull request's history: files committed on `main` first (the base
+ * side of a delete, a change or a rename), then the feature commits, oldest
+ * first. Commit dates are one second apart in order, so the PR's commit
+ * list is the same on every run. */
+export interface PullHistory {
+  base?: Record<string, string | Uint8Array>;
+  commits: PullCommit[];
+}
+
+/** A solid `width` x `height` PNG of one RGB color, for an image a diff
+ * shows; different colors or sizes make different bytes. */
+export function solidPNG(width: number, height: number, rgb: [number, number, number]): Uint8Array {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB, no interlace
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: width }, () => rgb).flat())]);
+  const pixels = deflateSync(Buffer.concat(Array.from({ length: height }, () => row)));
+  return new Uint8Array(Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', header),
+    chunk('IDAT', pixels),
+    chunk('IEND', Buffer.alloc(0)),
+  ]));
+}
+
+/** A diagram SVG: text, so its diff has lines, and an image. */
+export const DIAGRAM_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">\n  <rect width="40" height="20" fill="#3a7"/>\n</svg>\n';
+
+/**
+ * A pull request history with images and a merge, for the commit range
+ * and image diff views. Base (on main): `logo.png` 16x16, `old.png`,
+ * `moved.png`. Feature commits, oldest first, each listed by the PR as its
+ * subject:
+ *
+ * 1. `add icon` adds `icon.png` 24x12 and `src/app.ts`.
+ * 2. `restyle logo` changes `logo.png` to 32x32 and deletes `old.png`.
+ * 3. `add diagram` on a side branch adds `diagram.svg`, and
+ *    `merge add diagram` merges it (the PR lists both).
+ * 4. `rename moved` renames `moved.png` to `img/moved.png` unchanged and
+ *    adds a line to `src/app.ts`.
+ * 5. `add blob` adds `data.bin`, a binary file that is not an image.
+ */
+/** The author of `imagePullHistory`'s later commits, so the PR's
+ * Conversation has two commit groups. */
+export const SECOND_AUTHOR = 'Sam Lee';
+
+export function imagePullHistory(): PullHistory {
+  return {
+    base: {
+      'logo.png': solidPNG(16, 16, [200, 40, 40]),
+      'old.png': solidPNG(8, 8, [40, 40, 200]),
+      'moved.png': solidPNG(10, 10, [40, 160, 40]),
+    },
+    commits: [
+      { message: 'add icon', files: { 'icon.png': solidPNG(24, 12, [240, 200, 0]), 'src/app.ts': 'export const app = 1;\n' } },
+      { message: 'restyle logo', files: { 'logo.png': solidPNG(32, 32, [40, 200, 200]) }, remove: ['old.png'] },
+      { message: 'add diagram', files: { 'diagram.svg': DIAGRAM_SVG }, merge: true },
+      { message: 'rename moved', author: SECOND_AUTHOR, rename: { 'moved.png': 'img/moved.png' }, files: { 'src/app.ts': 'export const app = 1;\nexport const moved = 2;\n' } },
+      { message: 'add blob', author: SECOND_AUTHOR, files: { 'data.bin': new Uint8Array([0, 1, 2, 3, 0, 255, 254, 0]) } },
+    ],
+  };
+}
+
+type GitEnv = Record<string, string | undefined>;
+
+/** The single feature commit: `files` added on a `feature` branch off
+ * `main`. Answers the base commit. */
+async function commitFeatureFiles(workspace: string, env: GitEnv, files: Record<string, string>): Promise<string> {
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, env, encoding: 'utf8' }).trim();
+  const baseSha = git('rev-parse', 'HEAD');
+  git('checkout', '--quiet', '-b', 'feature');
+  for (const [name, content] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(workspace, name)), { recursive: true });
+    await writeFile(path.join(workspace, name), content);
+  }
+  git('add', '--', ...Object.keys(files));
+  git('commit', '--quiet', '-m', 'feature work', '-m', 'Adds the mailer and its tests.');
+  return baseSha;
+}
+
+/** `history` committed: its base files on `main`, then its commits on a
+ * `feature` branch, one second apart. Answers the base commit. */
+async function commitPullHistory(workspace: string, env: GitEnv, history: PullHistory): Promise<string> {
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, env, encoding: 'utf8' }).trim();
+  let second = 0;
+  const dated = (args: string[], author?: string) => {
+    second += 1;
+    const date = new Date(Date.UTC(2026, 0, 1) + second * 1000).toISOString().replace('.000Z', 'Z');
+    const identity = author ? { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: `${author.toLowerCase().replace(/\s+/g, '-')}@example.com` } : {};
+    execFileSync('git', args, { cwd: workspace, env: { ...env, ...identity, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+  };
+  const write = async (files: Record<string, string | Uint8Array>) => {
+    for (const [name, data] of Object.entries(files)) {
+      await mkdir(path.dirname(path.join(workspace, name)), { recursive: true });
+      await writeFile(path.join(workspace, name), data);
+    }
+    if (Object.keys(files).length) git('add', '--', ...Object.keys(files));
+  };
+  const apply = async (step: PullCommit) => {
+    await write(step.files ?? {});
+    for (const [from, to] of Object.entries(step.rename ?? {})) {
+      await mkdir(path.dirname(path.join(workspace, to)), { recursive: true });
+      git('mv', '--', from, to);
+    }
+    if (step.remove?.length) git('rm', '--quiet', '--', ...step.remove);
+    dated(['commit', '--quiet', '--allow-empty', '-m', step.message, ...(step.body ? ['-m', step.body] : [])], step.author);
+  };
+  if (history.base) {
+    await write(history.base);
+    dated(['commit', '--quiet', '-m', 'base files']);
+  }
+  const baseSha = git('rev-parse', 'HEAD');
+  git('checkout', '--quiet', '-b', 'feature');
+  for (const [index, step] of history.commits.entries()) {
+    if (!step.merge) {
+      await apply(step);
+      continue;
+    }
+    const side = `side-${index}`;
+    git('checkout', '--quiet', '-b', side);
+    await apply(step);
+    git('checkout', '--quiet', 'feature');
+    dated(['merge', '--quiet', '--no-ff', '-m', `merge ${step.message}`, side]);
+    git('branch', '--quiet', '-D', side);
+  }
+  return baseSha;
+}
+
+/**
+ * The bare origin repository of a forge `project`, created by the harness
+ * on the first call (`HarnessForgeOrigin`) and answered again after: the
+ * fake forge writes an applied suggestion's commit only to an origin the
+ * harness created. `root` is the directory of every origin of this
+ * harness process, which the git proxy serves.
+ */
+export async function forgeOrigin(harness: HarnessApp, project: string): Promise<{ root: string; path: string }> {
+  return harness.rpc<{ root: string; path: string }>('HarnessForgeOrigin', project);
+}
+
 /**
  * Publish the seeded `workspace` as `repo`'s first pull request and seed
- * the fake forge with `repo`. The workspace gets a `feature` branch one
- * commit ahead of `main` (the fixture's default head and base refs) that
- * writes `files`, and an origin that publishes it the way the forge does. The origin URL is
+ * the fake forge with `repo`. The workspace gets a `feature` branch off
+ * `main` (the fixture's default head and base refs): one commit that writes
+ * `content` when it is a file map, or `content.commits` of a `PullHistory`.
+ * An origin publishes it the way the forge does. The origin URL is
  * `git://<forge host>/<project>.git`, so forge detection sees the forge's
  * own host, and the workspace's `core.gitProxy` answers every connection
  * from a bare repository under the harness data root: git opens no socket.
@@ -266,27 +654,19 @@ export async function publishPullRequest(
   harness: HarnessApp,
   workspace: string,
   repo: ForgeRepo,
-  files: Record<string, string> = { 'feature.md': 'Feature work.\n' },
+  content: Record<string, string> | PullHistory = { 'feature.md': 'Feature work.\n' },
 ): Promise<ForgeRepo> {
   const [pull, ...rest] = repo.pulls ?? [];
   if (!pull) throw new Error(`publishPullRequest: ${repo.project} has no pull request to publish`);
   const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
-  const root = path.join(harness.bootstrap.dataRoot, 'forge-origin');
+  const { root, path: bare } = await forgeOrigin(harness, repo.project);
   const proxy = path.join(root, 'git-proxy.sh');
-  const bare = path.join(root, `${repo.project}.git`);
-  await mkdir(bare, { recursive: true });
   await writeFile(proxy, gitProxyScript(root), { mode: 0o755 });
-  git(bare, 'init', '--bare', '--quiet');
 
-  const baseSha = git(workspace, 'rev-parse', 'HEAD');
-  git(workspace, 'checkout', '--quiet', '-b', 'feature');
-  for (const [name, content] of Object.entries(files)) {
-    await mkdir(path.dirname(path.join(workspace, name)), { recursive: true });
-    await writeFile(path.join(workspace, name), content);
-  }
-  git(workspace, 'add', '--', ...Object.keys(files));
-  git(workspace, 'commit', '--quiet', '-m', 'feature work');
+  const baseSha = 'commits' in content && Array.isArray(content.commits)
+    ? await commitPullHistory(workspace, env, content as PullHistory)
+    : await commitFeatureFiles(workspace, env, content as Record<string, string>);
   const headSha = git(workspace, 'rev-parse', 'HEAD');
   git(workspace, 'push', '--quiet', bare, 'main', 'feature');
   git(bare, 'update-ref', PULL_HEAD_REF[repo.forge](pull.number), headSha);
@@ -298,7 +678,14 @@ export async function publishPullRequest(
   git(workspace, 'update-ref', 'refs/remotes/origin/main', baseSha);
   git(workspace, 'update-ref', 'refs/remotes/origin/feature', headSha);
 
-  const seeded: ForgeRepo = { ...repo, pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha, startSha: baseSha }, ...rest] };
+  // A GitLab position names lines by the merge request's diff, which the
+  // fake answers from the pull's `diff`: the pushed change, unless the spec
+  // seeds its own. A GitHub pull needs none for its comments.
+  const diff = pull.diff ?? (repo.forge === 'gitlab' ? git(workspace, 'diff', '-M', '--no-color', baseSha, headSha) + '\n' : undefined);
+  const seeded: ForgeRepo = {
+    ...repo,
+    pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha, startSha: baseSha, ...(diff === undefined ? {} : { diff }) }, ...rest],
+  };
   await seedForge(harness, [seeded]);
   git(workspace, 'config', 'core.gitProxy', proxy);
   git(workspace, 'remote', 'add', 'origin', `git://${FORGE_HOST[repo.forge]}/${repo.project}.git`);
@@ -324,12 +711,9 @@ export async function publishBranch(
 ): Promise<void> {
   const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
-  const root = path.join(harness.bootstrap.dataRoot, 'forge-origin');
+  const { root, path: bare } = await forgeOrigin(harness, repo.project);
   const proxy = path.join(root, 'git-proxy.sh');
-  const bare = path.join(root, `${repo.project}.git`);
-  await mkdir(bare, { recursive: true });
   await writeFile(proxy, gitProxyScript(root), { mode: 0o755 });
-  git(bare, 'init', '--bare', '--quiet');
   git(workspace, 'push', '--quiet', bare, 'main', branch);
 
   await seedForge(harness, [repo]);
@@ -352,6 +736,15 @@ export async function openPullRequestReview(page: Page, title: string) {
   const review = page.locator('section[data-pane-kind="review"]');
   await expect(review.getByTestId('review-pr-header')).toBeVisible();
   return review;
+}
+
+/** Open a stage chip's list and a job's log from it; answers the log view. */
+export async function openCIJobLog(page: Page, surface: Locator, stage: string, job: string): Promise<Locator> {
+  await surface.getByTestId('review-ci-chip').filter({ hasText: stage }).click();
+  await page.getByTestId('review-ci-job').filter({ hasText: job }).click();
+  const log = surface.getByTestId('review-ci-log');
+  await expect(log).toBeVisible();
+  return log;
 }
 
 /** Expand one collapsed review header section (`review-pr-description`, ...). */

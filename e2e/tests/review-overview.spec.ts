@@ -1,8 +1,8 @@
 // The pull request overview in the review pane, through the shipped UI,
 // the real backend and the fake forge CLI. The PR carries a description,
 // a PR-level comment, review threads in every state (a bot finding with a
-// folded prompt, a resolved exchange, an outdated note, an open nit on a
-// second file) and two verdicts. Covered: the overview is the diff list's
+// folded prompt, a resolved exchange, an open note the forge calls
+// outdated, an open nit on a second file) and two verdicts. Covered: the overview is the diff list's
 // first row with both sections folded; every thread is a card that names
 // its author and state and jumps to its diff row;
 // scrolling into the diff replaces the overview with peek buttons in the
@@ -24,8 +24,8 @@ import {
 
 const TITLE = 'Overview thread';
 // Enough rows that the overview row is unmounted, not just off screen,
-// once the reader is at the end of the file, and under the 400-row
-// default-collapse rule (stores/reviewPaneLoad.ts collapsedByDefault).
+// once the reader is at the end of the file, and under the default-collapse
+// row limit (stores/reviewPaneLoad.ts COLLAPSE_ROW_LIMIT).
 const PARSER_LINES = 380;
 
 const BOT = 'coderabbitai[bot]';
@@ -193,9 +193,16 @@ test('the overview heads the diff, its cards read every thread state, and the ti
   await expect(card(review, 'T_bot')).toContainText('Guard against a null token');
   await expect(card(review, 'T_resolved')).toHaveAttribute('data-state', 'resolved');
   await expect(card(review, 'T_resolved')).toContainText('Alice Doe');
-  await expect(card(review, 'T_outdated')).toHaveAttribute('data-state', 'outdated');
+  // Outdated is a marker on an open thread, not a state: the card stays
+  // unresolved and resolvable, says the code moved, and names the line
+  // it was written at (GitHub drops the current line once outdated).
+  await expect(card(review, 'T_outdated')).toHaveAttribute('data-state', 'unresolved');
+  await expect(card(review, 'T_outdated')).toHaveAttribute('data-outdated', 'true');
+  await expect(card(review, 'T_outdated').getByTestId('review-thread-outdated')).toHaveAttribute('title', 'Written against an earlier revision, at line 5 then');
+  await expect(card(review, 'T_outdated')).toContainText('parser.ts:5');
+  await expect(card(review, 'T_outdated').getByTestId('review-thread-resolve')).toHaveText('Resolve');
   await expect(card(review, 'T_nit')).toHaveAttribute('data-state', 'unresolved');
-  await expect(review.getByTestId('review-conversation-open-count')).toContainText('2 unresolved');
+  await expect(review.getByTestId('review-conversation-open-count')).toContainText('3 unresolved');
   await page.screenshot({ path: testInfo.outputPath('overview-open.png') });
   // Newest first: the verdicts and the oldest (outdated) thread sit
   // further down the section's own scroller.
@@ -225,7 +232,7 @@ test('the overview heads the diff, its cards read every thread state, and the ti
   const barHeightBefore = (await review.getByTestId('review-pr-header').boundingBox())!.height;
   await scrollPastOverview(review);
   expect((await review.getByTestId('review-pr-header').boundingBox())!.height).toBe(barHeightBefore);
-  await expect(review.getByTestId('review-peek-conversation')).toContainText('2 unresolved');
+  await expect(review.getByTestId('review-peek-conversation')).toContainText('3 unresolved');
   await page.screenshot({ path: testInfo.outputPath('diff-scrolled.png') });
 
   // The stepper lands on the newest open thread's diff row, expanded.

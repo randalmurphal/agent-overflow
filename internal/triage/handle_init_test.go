@@ -174,20 +174,16 @@ func TestHandleInit_NoPendingSend_NoSettledTurn_NoEmission(t *testing.T) {
 	}
 }
 
-// TestHandleInit_NoPendingSend_PriorTurnSettled_FiresReRound locks in
-// the cascade re-round path post-Phase-F. With no pending-send marker,
-// handleInit falls through to maybeEmitReRoundOnInit; a settled prior
-// turn unlocks the re-round emission so the frontend re-lights its
-// working indicator for the second result envelope in the
-// multi-result-per-turn cascade. Without this fallback, Claude's
-// task_notification → CLI-synthesized user envelope → second result
-// pattern would leave the frontend in "complete" state for the second
-// half of the cascade.
-func TestHandleInit_NoPendingSend_PriorTurnSettled_FiresReRound(t *testing.T) {
+// TestHandleInit_NoPendingSend_PriorTurnSettled_OpensProviderStartedTurn
+// pins the self-wake: after a turn settles, an init no AO send started is
+// a CLI turn the provider started (a background-task notification woke
+// it), so it opens the NEXT logical turn with its own turns row, open-turn
+// state and round. Rows it streams are that turn's, never the settled
+// turn's.
+func TestHandleInit_NoPendingSend_PriorTurnSettled_OpensProviderStartedTurn(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	// Open and complete a logical turn so settledTurns marks t1:0.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventTurnStart,
 		ThreadID:  "t1",
@@ -204,48 +200,115 @@ func TestHandleInit_NoPendingSend_PriorTurnSettled_FiresReRound(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
-	emissions.reset() // discard round-1 turn_started/turn_completed
+	emissions.reset()
 
-	// No pending-send: handleInit must fall through to
-	// maybeEmitReRoundOnInit and emit a fresh round.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventInit,
 		ThreadID:  "t1",
 		Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("handle re-init: %v", err)
+		t.Fatalf("handle self-wake init: %v", err)
 	}
 
 	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 1 {
-		t.Fatalf("expected 1 provider:turn_started emission via re-round path, got %d", len(starts))
+		t.Fatalf("expected 1 provider:turn_started for the provider-started turn, got %d", len(starts))
 	}
 	payload, ok := starts[0].data.(TurnStartedEvent)
 	if !ok {
 		t.Fatalf("payload type = %T, want TurnStartedEvent", starts[0].data)
 	}
-	if payload.TurnID == "" {
-		t.Errorf("re-round payload.TurnID is empty")
+	if payload.TurnIndex != 1 {
+		t.Errorf("provider-started turn index = %d, want 1 (a turn of its own)", payload.TurnIndex)
 	}
-	if payload.TurnIndex != 0 {
-		t.Errorf("re-round payload.TurnIndex = %d, want 0 (same logical turn)", payload.TurnIndex)
+	if got := router.OpenTurnIndex("t1"); got != 1 {
+		t.Errorf("OpenTurnIndex = %d, want 1", got)
+	}
+	active, found, err := st.GetActiveTurn("t1")
+	if err != nil {
+		t.Fatalf("GetActiveTurn: %v", err)
+	}
+	if !found || active.TurnIndex != 1 {
+		t.Errorf("GetActiveTurn = (%+v, %v), want turn 1 open", active, found)
+	}
+}
+
+// TestHandleInit_InternalCommandOpensNoTurn: AO's own `/effort`, `/fast`
+// and `/rename` run as CLI turns of their own (lifecycle started → init →
+// synthetic output → result). They are AO bookkeeping, not conversation,
+// so their init opens nothing even after a settled turn.
+func TestHandleInit_InternalCommandOpensNoTurn(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	emissions.reset()
+
+	meta, err := json.Marshal(provider.SessionInfo{TurnOpener: provider.TurnOpenerInternalCommand})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventInit, ThreadID: "t1", Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle internal-command init: %v", err)
+	}
+	if starts := filterEmissions(emissions.snapshot(), "provider:turn_started"); len(starts) != 0 {
+		t.Errorf("internal command init emitted %d provider:turn_started, want 0", len(starts))
+	}
+	if got := router.OpenTurnIndex("t1"); got != -1 {
+		t.Errorf("OpenTurnIndex = %d, want -1", got)
+	}
+	if _, found, err := st.GetActiveTurn("t1"); err != nil || found {
+		t.Errorf("GetActiveTurn found=%v err=%v, want no active turn", found, err)
+	}
+}
+
+// TestHandleInit_PeerTurnOnFreshSessionOpensTurn: a turn another session's
+// message started carries a command opener, so it opens a turn even
+// before this session settled one. With no opener the same init is an
+// idle attach and opens nothing (TestHandleInit_NoPendingSend_NoSettledTurn_NoEmission).
+func TestHandleInit_PeerTurnOnFreshSessionOpensTurn(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	meta, err := json.Marshal(provider.SessionInfo{TurnOpener: provider.TurnOpenerCommand})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventInit, ThreadID: "t1", Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle peer init: %v", err)
+	}
+	if starts := filterEmissions(emissions.snapshot(), "provider:turn_started"); len(starts) != 1 {
+		t.Fatalf("peer init emitted %d provider:turn_started, want 1", len(starts))
+	}
+	if got := router.OpenTurnIndex("t1"); got != 0 {
+		t.Errorf("OpenTurnIndex = %d, want 0", got)
 	}
 }
 
 // TestHandleInit_PendingSendPlusSettledTurn_PrefersTurnStartPath pins
 // the precedence rule: when both a pending-send marker AND a settled
-// prior turn are present (an AO send launched during the cascade settle
-// window), handleInit must choose the handleTurnStart path — round 1
-// of a NEW logical turn — not the re-round path on the prior turn.
+// prior turn are present, handleInit must choose the handleTurnStart
+// path (the send's turn at its stamped index), not a provider-started
+// turn.
 //
-// The discriminator: handleTurnStart sets `openTurns[t1]` via
-// setOpenTurn; the re-round path explicitly does NOT (per the
-// load-bearing invariant in internal/triage/CLAUDE.md "setOpenTurn
-// does NOT fire from handleInit"). The presence of an entry in
-// openTurns is the wire-typed signal that handleTurnStart ran. The
-// frontend turn_started payload also carries the new turnIndex —
-// 1, not 0 — so the frontend opens a fresh row for the new logical
-// turn rather than re-lighting the settled one.
+// The discriminator is the opened index: handleTurnStart opens the
+// send's stamped turn 1, while openProviderStartedTurn would take
+// NextTurnIndex past the persisted user row (turn 2). The frontend
+// turn_started payload carries the same index, so the frontend opens a
+// fresh row for the send's turn rather than re-lighting the settled one.
 func TestHandleInit_PendingSendPlusSettledTurn_PrefersTurnStartPath(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -270,11 +333,9 @@ func TestHandleInit_PendingSendPlusSettledTurn_PrefersTurnStartPath(t *testing.T
 	emissions.reset()
 
 	// Mirror the production sequence in app_send.go: the AO user item is
-	// persisted under the new turnIndex BEFORE the wire init arrives.
-	// handleTurnStart's LastTurnIndex fallback then resolves the
-	// turnIndex to the user item's row, not the prior settled turn's
-	// row. (Without this, the handleTurnStart fallback would land on
-	// turn 0 and re-stamp the settled row instead of opening turn 1.)
+	// persisted under the send's turnIndex BEFORE the wire init arrives.
+	// handleTurnStart opens the index the pending send carries; a
+	// provider-started turn would take NextTurnIndex past this row.
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
 		ID:        "user:1",
@@ -304,9 +365,9 @@ func TestHandleInit_PendingSendPlusSettledTurn_PrefersTurnStartPath(t *testing.T
 		t.Fatalf("handle init: %v", err)
 	}
 
-	// handleTurnStart calls setOpenTurn(threadID, turnIndex). The re-round
-	// path explicitly does NOT, so this assertion is the load-bearing
-	// distinguishing signal between the two paths.
+	// handleTurnStart opens the send's stamped index; a provider-started
+	// turn would open past the persisted user row, so the index is the
+	// signal that distinguishes the two paths.
 	router.mu.Lock()
 	openState := router.threadStateIfPresent("t1")
 	openIdx, openOK := openState.openTurn, openState.openTurnSet
@@ -328,6 +389,6 @@ func TestHandleInit_PendingSendPlusSettledTurn_PrefersTurnStartPath(t *testing.T
 		t.Fatalf("payload type = %T, want TurnStartedEvent", starts[0].data)
 	}
 	if payload.TurnIndex != 1 {
-		t.Errorf("payload.TurnIndex = %d, want 1 (handleTurnStart resolves the new logical turn via LastTurnIndex over the freshly-persisted user row)", payload.TurnIndex)
+		t.Errorf("payload.TurnIndex = %d, want 1 (handleTurnStart opens the pending send's stamped turn)", payload.TurnIndex)
 	}
 }

@@ -10,7 +10,7 @@ import { attachedBackends, backendById, withBackendTarget } from '../transport/b
 import { currentThreadRow, resolveThreadBackend, noteThread, workflowItemBackend, noteWorkflowItem } from '../transport/entityIndex';
 import { hasScope } from '../transport/scopes';
 import { openThreadInPane } from './panes.svelte';
-import { openWorkflowRunInOverlay } from './workflowsOverlay.svelte';
+import { openWorkflowRunInPane } from './workflowsOverlay.svelte';
 import { addErrorToast, removeToast } from './toast.svelte';
 import { isTemporarilyUnavailableError } from './transportStatus.svelte';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
@@ -85,7 +85,7 @@ function createAppNotificationActivationQueue() {
     getThreadById: resolveNotificationThread,
     openThread: (thread) => openThreadInPane(thread),
     openWorkflowRun: async (workItemId, backendId) => {
-      if (await resolveNotificationWorkflow(workItemId, backendId)) openWorkflowRunInOverlay(workItemId);
+      if (await resolveNotificationWorkflow(workItemId, backendId)) openWorkflowRunInPane(workItemId);
       else throw new Error('This workflow run is no longer available on its computer.');
     },
     console,

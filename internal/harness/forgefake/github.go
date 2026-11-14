@@ -4,20 +4,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 )
 
-// GitHub handlers. The PR reads, open and merged lists and the thread
-// resolve mutation are GraphQL operations (github_graphql.go); the REST
-// routes here serve repository identity, a run's jobs, job logs and
-// attachments, and `gh pr create` is the one gh command the app runs.
+// GitHub handlers. The PR reads, open and merged lists, the thread
+// resolve mutation and the merge actions are GraphQL operations
+// (github_graphql.go); the REST routes here serve repository identity, a
+// run's jobs, job logs, attachments, review submission, the head branch
+// delete and the viewer's own user, and `gh pr create` is the one gh
+// command the app runs.
 
-var (
-	githubMergeable  = map[string]string{"clean": "MERGEABLE", "conflicts": "CONFLICTING", "checking": "UNKNOWN"}
-	githubMergeState = map[string]string{"clean": "CLEAN", "conflicts": "DIRTY", "checking": "UNKNOWN"}
-)
+var githubMergeable = map[string]string{"clean": "MERGEABLE", "conflicts": "CONFLICTING", "checking": "UNKNOWN"}
 
 func githubPullURL(r *Repo, p *Pull) string {
 	return fmt.Sprintf("https://%s/%s/pull/%d", r.Host, r.Project, p.Number)
@@ -44,8 +45,11 @@ func ghRunJobs(e *Engine, c *call, m []string) response {
 	if pipeline == nil {
 		return ghHTTPNotFound()
 	}
+	// The list answers the run's latest attempt: a job a re-run replaced
+	// is left out.
 	jobs := make([]map[string]any, 0, len(pipeline.Jobs))
-	for _, job := range pipeline.Jobs {
+	for _, current := range pipeline.current() {
+		job := *current
 		status, conclusion := githubRESTState(job.Status)
 		steps := make([]map[string]any, 0, len(job.Steps))
 		for _, step := range job.Steps {
@@ -100,22 +104,22 @@ func githubRESTTime(value string) any {
 	return value
 }
 
+// pipeline is the repository's pipeline with id: a pull's or one of its
+// Pipelines.
 func (r *Repo) pipeline(id int64) *Pipeline {
-	for i := range r.Pulls {
-		if ci := r.Pulls[i].CI; ci != nil && ci.ID == id {
-			return ci
+	for _, pipeline := range r.pipelines() {
+		if pipeline.ID == id {
+			return pipeline
 		}
 	}
 	return nil
 }
 
 func (r *Repo) job(id int64) *Job {
-	for i := range r.Pulls {
-		if ci := r.Pulls[i].CI; ci != nil {
-			for j := range ci.Jobs {
-				if ci.Jobs[j].ID == id {
-					return &ci.Jobs[j]
-				}
+	for _, pipeline := range r.pipelines() {
+		for j := range pipeline.Jobs {
+			if pipeline.Jobs[j].ID == id {
+				return &pipeline.Jobs[j]
 			}
 		}
 	}
@@ -289,4 +293,153 @@ func ghPRCreate(e *Engine, c *call) response {
 		return response{exit: 1, stderr: "ao-mockforge: " + err.Error() + "\n"}
 	}
 	return response{stdout: []byte(githubPullURL(r, pull) + "\n")}
+}
+
+// githubReviewEvents maps a REST review event to the state it submits.
+var githubReviewEvents = map[string]string{"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}
+
+// ghPullReview submits a review: `{event, body?, commit_id?}`. The review
+// is the viewer's, pinned to commit_id (the head when omitted), and is
+// the pull's latest review and its newest timeline item. Each of its
+// `comments` ({path, body, line, side, start_line?, start_side?}) opens a
+// review thread on that line, the viewer's. GitHub refuses the author's
+// own approval or change request, a change request or comment without a
+// body, and a line comment without a path, body, line or side (422). The
+// fake does not check that the line is in the pull's diff.
+func ghPullReview(e *Engine, c *call, m []string) response {
+	var in struct {
+		Event    string                `json:"event"`
+		Body     string                `json:"body"`
+		CommitID string                `json:"commit_id"`
+		Comments []ghReviewLineComment `json:"comments"`
+	}
+	if err := decodeRESTBody(c, &in, false); err != nil {
+		return unhandled("%v", err)
+	}
+	state, ok := githubReviewEvents[in.Event]
+	if !ok {
+		return unhandled("review event %q is not APPROVE, REQUEST_CHANGES or COMMENT", in.Event)
+	}
+	r := e.repoOn("github", c.http.host, m[1])
+	if r == nil {
+		return ghHTTPNotFound()
+	}
+	number, _ := strconv.Atoi(m[2])
+	p := r.pull(number)
+	if p == nil {
+		return ghHTTPNotFound()
+	}
+	commit := defaultString(in.CommitID, p.HeadSHA)
+	switch {
+	case in.CommitID != "" && !gitSHA.MatchString(in.CommitID):
+		return ghUnprocessable("commit_id is not part of the pull request")
+	case state != "COMMENTED" && strings.EqualFold(p.Author, e.viewer):
+		verb := map[string]string{"APPROVED": "approve", "CHANGES_REQUESTED": "request changes on"}[state]
+		return ghUnprocessable("Can not " + verb + " your own pull request")
+	case state != "APPROVED" && strings.TrimSpace(in.Body) == "" && len(in.Comments) == 0:
+		return ghUnprocessable("Body is required for this review event")
+	}
+	threads := make([]Thread, 0, len(in.Comments))
+	for _, comment := range in.Comments {
+		thread, reason := comment.thread(e)
+		if reason != "" {
+			return ghUnprocessable(reason)
+		}
+		threads = append(threads, thread)
+	}
+	p.Threads = append(p.Threads, threads...)
+	review := Review{ID: e.ids.next(), Author: e.viewer, State: state, Body: in.Body, SubmittedAt: githubNow(), CommitSHA: commit}
+	p.Reviews = append(p.Reviews, review)
+	// A review answers the reviewer's request.
+	p.Reviewers = slices.DeleteFunc(p.Reviewers, func(login string) bool { return strings.EqualFold(login, review.Author) })
+	return jsonResponse(map[string]any{
+		"id":           review.ID,
+		"node_id":      githubReviewNodeID(review.ID),
+		"user":         map[string]any{"login": review.Author},
+		"body":         review.Body,
+		"state":        review.State,
+		"commit_id":    review.CommitSHA,
+		"submitted_at": review.SubmittedAt,
+		"html_url":     fmt.Sprintf("%s#pullrequestreview-%d", githubPullURL(r, p), review.ID),
+	})
+}
+
+var gitSHA = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+
+// ghReviewLineComment is one line comment of a submitted review.
+type ghReviewLineComment struct {
+	Path      string `json:"path"`
+	Body      string `json:"body"`
+	Line      int    `json:"line"`
+	Side      string `json:"side"`
+	StartLine *int   `json:"start_line"`
+	StartSide string `json:"start_side"`
+}
+
+// thread is the review thread the comment opens, or GitHub's reason to
+// refuse it.
+func (in ghReviewLineComment) thread(e *Engine) (Thread, string) {
+	side := map[string]string{"RIGHT": "right", "LEFT": "left"}[in.Side]
+	switch {
+	case strings.TrimSpace(in.Path) == "" || strings.TrimSpace(in.Body) == "":
+		return Thread{}, "path and body are required for a review comment"
+	case in.Line <= 0 || side == "":
+		return Thread{}, "line and side (LEFT or RIGHT) are required for a review comment"
+	case in.StartLine != nil && (*in.StartLine <= 0 || *in.StartLine > in.Line || in.StartSide != in.Side):
+		return Thread{}, "start_line must precede line on the same side"
+	case in.StartLine == nil && in.StartSide != "":
+		return Thread{}, "start_side needs start_line"
+	}
+	line := in.Line
+	return Thread{
+		ID: fmt.Sprintf("PRRT_ao%d", e.ids.next()), Path: in.Path, Line: &line, StartLine: in.StartLine, Side: side,
+		Comments: []Comment{{ID: e.ids.next(), Author: e.viewer, Body: in.Body, CreatedAt: githubNow()}},
+	}, ""
+}
+
+// ghUnprocessable is GitHub REST's 422 with the reason in errors.
+func ghUnprocessable(reason string) response {
+	out, _ := json.Marshal(map[string]any{"message": "Unprocessable Entity", "errors": []string{reason}, "status": "422"})
+	return response{stdout: out, stderr: "422 " + reason, status: http.StatusUnprocessableEntity, header: http.Header{"Content-Type": {"application/json; charset=utf-8"}}}
+}
+
+// ghDeleteBranch deletes refs/heads/B, each path segment escaped: 204
+// while a pull names the branch and it is not deleted yet, then 422
+// "Reference does not exist", as for a branch the repository never had.
+func ghDeleteBranch(e *Engine, c *call, m []string) response {
+	if err := noRESTBody(c); err != nil {
+		return unhandled("%v", err)
+	}
+	r := e.repoOn("github", c.http.host, m[1])
+	if r == nil {
+		return ghHTTPNotFound()
+	}
+	segments := strings.Split(m[2], "/")
+	for i, segment := range segments {
+		name, err := url.PathUnescape(segment)
+		if err != nil || name == "" {
+			return unhandled("branch %q is not path-escaped segments", m[2])
+		}
+		segments[i] = name
+	}
+	branch := strings.Join(segments, "/")
+	if githubRoles[r.Merge.Permission] < githubRoles["WRITE"] {
+		out, _ := json.Marshal(map[string]any{"message": fmt.Sprintf("Permission to %s.git denied to %s.", r.Project, e.viewer), "status": "403"})
+		return response{stdout: out, stderr: "403 permission denied", status: http.StatusForbidden, header: http.Header{"Content-Type": {"application/json; charset=utf-8"}}}
+	}
+	if !r.branchExists(branch) {
+		out, _ := json.Marshal(map[string]any{"message": "Reference does not exist", "documentation_url": "https://docs.github.com/rest/git/refs#delete-a-reference", "status": "422"})
+		return response{stdout: out, stderr: "422 Reference does not exist", status: http.StatusUnprocessableEntity, header: http.Header{"Content-Type": {"application/json; charset=utf-8"}}}
+	}
+	r.deleteBranch(branch)
+	return response{status: http.StatusNoContent}
+}
+
+// forgeUser answers `GET user` on either forge with the fixture's viewer,
+// which the transport reads to tell a refused action from a dead login.
+func forgeUser(e *Engine, c *call, _ []string) response {
+	if c.cli == "glab" {
+		return glabOK(jsonResponse(map[string]any{"id": 1, "username": e.viewer, "name": e.viewer, "state": "active"}))
+	}
+	return jsonResponse(map[string]any{"login": e.viewer, "id": 1, "type": "User"})
 }

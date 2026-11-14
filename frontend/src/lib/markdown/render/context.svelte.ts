@@ -4,7 +4,9 @@ import type { Component, Snippet } from 'svelte';
 import type { Theme } from './theme';
 import type { MermaidConfig } from 'mermaid';
 import type { KatexOptions } from 'katex';
-import type { ProvenAppend } from '../parser/index';
+import type { Alignment, ProvenAppend } from '../parser/index';
+// The class below assigns these props at runtime (`bind`); the interface types them.
+// eslint-disable-next-line typescript/no-unsafe-declaration-merging
 export interface StreamdownContext extends Omit<StreamdownProps, keyof Snippets | 'class' | 'theme'> {
     snippets: Snippets;
     theme: Theme;
@@ -150,6 +152,8 @@ export type StreamdownProps = {
     content: string;
     /** Opaque proof that content extends the previous value. */
     contentAppend?: ProvenAppend;
+    /** The `[center]`/`[right]` alignment in force before content (parser/extensions/align.ts). */
+    alignStart?: Alignment;
     class?: string;
     parseIncompleteMarkdown?: boolean;
     /** Host proof that content is an isolated volatile tail, permitting one render lex. */

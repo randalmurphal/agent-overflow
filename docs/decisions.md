@@ -131,6 +131,9 @@ Mechanism in
   (ruling 2026-10-16). The rows are not rewritten: the note is its own row
   naming them, and a read of a row it names serves the row marked
   (`Item.discardedBy`) whether or not the note is in the loaded window.
+  The note joins the activity run of discarded reasoning or tool rows like
+  any notification, and stands alone after discarded prose (ruling
+  2026-10-21).
 
 ## Sidebar, threads, drafts
 
@@ -186,6 +189,12 @@ Mechanism in
   close, and one `worktree:removed` event moves draft placeholders on it to
   Base on every client. A project whose root is itself gone is left alone;
   there is nothing to reattach to.
+- A worktree git still registers whose directory is gone stays in the
+  workspace picker, marked missing. The app never prunes it: a directory
+  that is only unreachable (an unmounted drive) would lose its
+  registration. No thread can enter it, and its Remove deletes git's
+  registration alone, without the uncommitted-changes check a present
+  directory gets.
 - When a thread's pull request merges, its linked worktree is removed and
   its threads move to Base (user ruling 2026-10-13). The app tracks the PR
   a thread's worktree branch has OPEN when a lookup finds it (git status,
@@ -307,6 +316,21 @@ Mechanism in
   owns that turn as it stands. The fork's timeline holds no origin row;
   the thread row records where it came from
   ([pointer forks](architecture/sqlite-store.md#pointer-forks)).
+- A tag is picked like a branch: in place, as a new worktree, or as the base
+  of a new branch. Picking a tag checks out the tag itself, which leaves the
+  workspace on no branch; no branch is made for it. The workspace then reads
+  the tag's name, or "detached at" the short commit once HEAD is at no tag,
+  never "No branch". There, Push gives way to "Create branch from here", and
+  removing a worktree counts commits no branch holds as unsaved work.
+- The branch picker has no tags section. With no search text, tags not
+  recently picked follow every branch; while searching, branches and tags
+  share the branch order (default branch, recent picks, newest first). Tags
+  are rare, so they never take list space from branches.
+- Tags are never force-fetched or pruned automatically. "Refresh tags from
+  origin", the last row of the picker's list, force-fetches them without
+  pruning when clicked: a forced fetch replaces a local tag of the same name,
+  and an unforced one stores no tags at all once any tag has moved upstream.
+- Workflows take branches only: a run merges its work back into its base.
 
 ## Subagents and background work
 
@@ -355,14 +379,24 @@ Mechanism in
 - Monitor idle-wake: the CLI writes `<task-notification>` to the
   transcript only. A transcript-tail backfill was proposed and declined.
 - A Claude Stop kills every running or parked background agent, from any
-  turn, with the shells it owns. Stop and the Stop un-send therefore ask
-  for confirmation while such an agent is live, and the backend refuses
-  them until confirmed (ruling 2026-09-24). The app asks through one
+  turn, with the shells it owns. Stop therefore asks for confirmation
+  while such an agent is live, and the backend refuses it until
+  confirmed (ruling 2026-09-24). The app asks through one
   dialog at the root (`BackgroundKillConfirmationHost.svelte`) that names
   the agents; declining stops nothing, and the sent message stays either
   way. Agent thread requests, their cancels and workflow takeovers are
   not gated. Wire facts:
   [claude-wire.md §Background task ownership](references/claude-wire.md#background-task-ownership).
+- Work the Claude CLI starts on its own (a background-task wake, a
+  scheduled wakeup, a peer session's message) is a turn of its own, with
+  its own timer and Stop and no user row; the completion notice that woke
+  it stays above it. A scheduled prompt is the exception: the turn opens
+  with it as a row badged Scheduled. `/effort`, `/fast` and `/rename` open no turn. A
+  turn ends when the model's message ends, so a thread waiting on a
+  running `local_agent` is idle; it runs again only if the model
+  continues that turn (ruling 2026-10-24).
+  Mechanism:
+  [turn-lifecycle.md §Rounds and turns](architecture/turn-lifecycle.md#rounds-and-turns).
 - A forked skill is an awaited agent with a different label. Its card has
   no Stop and no background action; its agent pane's Stop ends the fork
   alone (the main turn goes on after a fork the model launched, and a
@@ -412,12 +446,9 @@ Mechanism in
   sender. A Claude join holding the person's composer message stays the
   person's, and so do a workflow phase prompt, which is a phase thread's
   only user message, and the messages the person starts from a button
-  (answers, review comments, triage and PR discussion). A Stop that
-  un-sends such a join gives the person their text alone and gives each
-  agent's message back to its owner; a request is owed again and its
-  sender is told nothing. A person's Stop on a turn a request started
-  reaches the sender as the person's Stop, never as a restart (ruling
-  2026-10-14). On the wire every such message opens with a line naming
+  (answers, review comments, triage and PR discussion). A person's Stop
+  on a turn a request started reaches the sender as the person's Stop,
+  never as a restart (ruling 2026-10-14). On the wire every such message opens with a line naming
   its sender and closes with an end mark, and the person's own messages
   are the only turns without them (ruling 2026-10-21). Mechanism:
   [how agent messages appear](specs/agent-thread-tools.md#how-agent-messages-appear).
@@ -452,6 +483,9 @@ Mechanism in
   sending. Provider rejections remain timeline errors without a duplicate toast.
   The Claude catalog learned by an account probe is persisted per account and
   seeded at boot while the binary is unchanged (`internal/claudemodels/AGENTS.md`).
+  Claude fast mode is the exception: only the CLI's report states it, so it is
+  offered only on a model a report marks fast. Once a report exists, a saved
+  fast flag on any other model is cleared before launch; before one, it stands.
 
 - AO never calls Codex `thread/queue/add`; a mid-turn send is `turn/steer`
   (`internal/provider/codex/AGENTS.md`).
@@ -462,6 +496,14 @@ Mechanism in
 - Sharing `~/.claude` between AO, terminal `claude`, and Claude Code is the
   designed mode; never "fix" it with per-account `CLAUDE_CONFIG_DIR`
   (`internal/provideraccounts/AGENTS.md` has the case table).
+- The retention window lengthens Claude Code's own transcript cleanup for
+  the Claude processes AO starts and never shortens it: the
+  `cleanupPeriodDays` override is sent only when the window is longer than
+  the period the process resolves from `~/.claude/settings.json` and its
+  workspace's `.claude/settings.json` and `settings.local.json`, and
+  disabled cleanup sends the cap. AO does not write those files; the storage
+  settings page names the value to set for `claude` run outside AO. Codex
+  keeps its sessions indefinitely and AO leaves them.
 - A model that exists only as probe enrichment (`claude-fable-5-1`) is not
   added to the hand catalog; the point of enrichment is that a new model
   needs no release (see `internal/claudemodels/AGENTS.md`). The exception is
@@ -485,6 +527,22 @@ Mechanism in
   first account on a machine becomes active by signing in. Saved accounts
   stay in the order the user drags them into; being active does not move a
   card.
+- The composer shows one usage meter per duration the account has a
+  provider-wide limit of, so a plan without a 5h window has no 5h ring. An
+  account with no such limit yet shows the weekly meter alone. A scoped limit
+  of the same duration (a per-model weekly quota) is the meter's inner ring,
+  colored by its own threshold; with several, the most-used one. The
+  provider-wide limit keeps the outer ring so a scoped quota never reads as
+  the account being exhausted.
+- Account auto-switch ([spec](specs/account-auto-switch.md)): every saved
+  account is in the pool until its Auto-switch checkbox is cleared, with no
+  master switch.
+  It changes the one provider-wide selection, never per thread and never
+  through a proxy. A selection a person or an outside login made holds until
+  that account can no longer serve the running models. Continue after a
+  usage limit is off by default, kept in memory only, and never sent to a
+  workflow-owned or hidden thread; a workflow run parked on a usage limit
+  stays parked until resumed.
 - Claude usage meters read only `/api/oauth/usage`. The stdio
   `rate_limit_event` (including 2.1.257 `unifiedWindows`) is not a quota
   source: it names no account, and responses to requests sent before an
@@ -657,6 +715,53 @@ and anti-changes that live only here:
 - Icon buttons with hovertext, never text buttons, for thread actions
   (owner preference, stated for the comments overhaul; applies to new
   review chrome).
+- The PR title bar reads one fact per line (title; author and state;
+  base ← head, conflicts and verdicts; CI with its refresh wrapping among
+  the chips) instead of one wrapped meta line; the toolbar keeps the diff's
+  own counts and folds whitespace, wrap and split into a view-options
+  menu; the file-tree toggle sits with the tree (a thin strip when hidden,
+  full width over the diff on compact); the conversation refresh sits on
+  the Conversation header. Files auto-collapse only past 5000 rows (or
+  lockfiles): a normal source file is never folded by default. The tree's
+  filter can hide test files by naming convention, accepting that helpers
+  without a test name are missed (ruling 2026-10-19).
+- The toolbar's selectors are one dropdown style (the app's menu), and the
+  commit picker's trigger is fixed-width content that never clips: `All
+  commits`, or the commit's ordinal and short hash once one is picked. The
+  subject, author, time and message belong where there is room: one row
+  per commit in the menu (with a previous/next stepper in its header), and
+  a commit card that leads the diff list and scrolls away with it; in
+  `All commits` there is no card. No always-present row for the picked
+  commit (a height shift with nothing to show in most states) and no
+  toolbar comment tally (ruling 2026-10-20).
+- Merge actions have one home: the Merge section that leads the overview
+  row (readiness pill, Approve or Unapprove, `Merge ▾`), identical in a
+  thread's companion pane and on the Pull requests page. The title bar's
+  refs line carries the readiness pill and never an action. Merge has no
+  confirmation step (the forge refuses a stale head; gh and glab do not
+  confirm either); the button is never disabled, offering auto-merge while
+  blocked with "Merge now" greyed and naming what it waits for. The forge's
+  events (approved, revoked, merged, closed, draft, ready, auto-merge,
+  force push) are rows of the Conversation feed. Pipelines on the page
+  default to every status; the review pane's CI line stays the head
+  pipeline only (rulings 2026-10-20, `docs/specs/pull-requests.md`).
+- Tools (Workflows, Pull requests, later Issues) are pane kinds behind
+  one sidebar tools row above Settings: the active tool carries its label,
+  the others their icon with hover text; only Workflows carries a count
+  (ruling 2026-11-11: no Pull requests count in the sidebar, and the
+  page's `Needs you` count follows its project picker). A click
+  opens the tool in the focused pane like a thread; ctrl+click opens a new
+  pane, so two tools sit side by side with no special case; a drag places
+  it in the pane strip like a thread row (2026-11-11). Workflows
+  loses its modal. The row's label follows the focused pane when it is a
+  tool, else the tool used last (ruling 2026-10-20).
+- The Pull requests page never records which PRs the user opened. A row's
+  attention comes from the forge's own record of the viewer's activity
+  (GitHub's latest review, GitLab's reviewer state and the viewer's notes
+  and approvals in its events feed), so it reads the same on every
+  computer and in the forge's own UI. The list opens on its stored copy
+  and never reads one PR on its own (ruling 2026-10-21,
+  `docs/specs/pull-requests.md`).
 - PR comments live in the overview: Description (collapsed by default)
   and Conversation (also collapsed by default, and capped short enough
   that the diff stays visible under it), two collapsible sections that head
@@ -666,13 +771,27 @@ and anti-changes that live only here:
   the rail tab). The Conversation is one chronological feed (newest
   first) of thread cards on a timeline rail, review verdicts and commit
   pushes, mirroring the forge's overview; a card's edge and chip carry
-  its state (warning unresolved, success resolved, dashed outdated) and
-  the thread's row on the diff is the same card. A top-level comment is
+  its state (warning unresolved, success resolved); outdated is a marker
+  on either state (dashed edge, "outdated" chip, the line it was written
+  at), never a third state: a thread on moved code is still open or
+  settled, still counted, stepped and resolvable (ruling 2026-10-19). The
+  thread's row on the diff is the same card. A top-level comment is
   NEVER truncated or clamped; only settled threads' replies may fold.
-  Reading is protected from updates: ordering freezes from the
-  section's first render, arrivals wait behind an "N new" chip, and a
-  remote resolve never moves an open card ("nothing worse than
-  GitLab"). Each section fits its content up to a cap and is
+  Reading is protected from updates without hiding them: a card keeps
+  its place once shown and never moves or disappears for a remote update
+  (a resolve, a reply), and every arrival joins the feed at its
+  chronological place on its own, never behind a press. An explicit
+  refresh or reload shows everything it read. While the reader is
+  scrolled into the feed or has focus in it, the card at the top of the
+  viewport holds its position to the pixel and an "N new" chip points
+  up at the arrivals, already in the feed; at the top, an arrival simply
+  pushes the cards down. "Hide resolved threads" is remembered on the
+  computer so it need not be ticked per PR, and hides only what was
+  resolved at the last decision point and never a thread the reader is
+  using; between decision points the hidden set only shrinks, and a
+  review already open takes up a change made elsewhere only at its own
+  refresh or reload, so nothing vanishes under the cursor. A thread
+  read never removes a card a push brought while it ran. Each section fits its content up to a cap and is
   user-resizable (bottom drag handle, remembered height). Mechanism:
   `frontend/src/lib/components/review/AGENTS.md`.
 - Forge attachments referenced by PR/MR bodies and comments (images,
@@ -692,6 +811,22 @@ and anti-changes that live only here:
 
 ## Miscellany
 
+- Composer shell commands (`!command`, Run on a shell code block): the app
+  runs the command for every provider and always sends the output; Stop
+  discards it. Codex's native shell command is not used because it never
+  starts a reply. Run on a code block runs on click. Claude TUI `!` history
+  is not converted. See
+  [composer-shell-commands.md](specs/composer-shell-commands.md).
+- Commit dialog: the changed files are listed with none selected, and a
+  commit records exactly the selected files, whole. Files that appear
+  while it is open arrive unselected. It stays open on what is left and
+  closes after the commit that leaves nothing. Generate describes the
+  selection. Neither touches what the user staged outside the selection.
+  A selected file that changed after it was listed fails the commit, so
+  nothing is recorded that the dialog did not show. During a merge,
+  cherry-pick or revert a commit takes every change, so every file is
+  selected and locked. Not built: hunk staging, discard, amend, push
+  after commit.
 - Same-pane outside-click dismissal leaving focus on body (Enter-to-send
   after a background click stops working) is accepted; type-to-focus
   covers typing.
@@ -736,8 +871,42 @@ and anti-changes that live only here:
   screenshot is reduced once per tier, not once per pane or boot; memory
   holds a derivative only while the directory cannot take it. Deleting the
   directory, even while the app runs, is the whole cleanup.
-- Voice dictation: not built; the researched options and their auth
-  constraints are in `docs/references/voice-dictation.md`.
+- Voice dictation: a mic in Send's grid, an outlined circle of Send's
+  diameter. On the desktop it is in the toolbar immediately left of Send;
+  on the phone it sits in the input row in Send's column, beside the
+  attachment picker, centered on the last text line, so the toolbar keeps
+  the model label's room. It records on the device and
+  transcribes on the thread's computer through its Codex sign-in with
+  ChatGPT. It inserts at the caret and never sends; Escape or switching
+  the pane's thread abandons a recording. Dictation is off until Settings
+  > Voice turns it on for that computer, and with no dictation source on
+  there is no mic. The endpoint and its 30-day retention are in
+  `docs/references/voice-dictation.md`.
+- Live dictation: a second source that streams the microphone to OpenAI
+  with an API key while the user speaks and shows the text heard so far.
+  The key lives only in an owner-only file under the config root, never in
+  settings, the environment or a client. Where both sources are on, live
+  wins; there is no per-device source picker. An engine that cannot
+  stream uses the subscription when it is on and otherwise shows no mic.
+- Read aloud: a play control beside Copy on finished replies, in Copy's
+  grid, that pauses while playing and offers a restart while paused. While
+  a reply is read the row adds previous section, back (10 seconds, or the
+  sentence for a device voice) and next section, a rule marks the section
+  being read, and a "read from here" button shows beside another section
+  on hover (always on the compact layout). A reply that is not being read
+  shows nothing new on hover. One reply is read at a time across the app;
+  a device voice resumes at the start of its sentence, an OpenAI voice
+  where it paused. Code, tables and URLs are skipped silently. It is off
+  until this device turns it on in Settings > Voice, and a device with no
+  voice shows no control unless the reply's computer offers OpenAI voices.
+- Read aloud in OpenAI voices: a computer whose host switch is on (off by
+  default) makes each section's audio with the key in its key file, one
+  request per section so pace and intonation carry across its sentences,
+  and the voice picker lists those voices with a preview for each. The choice
+  of voice stays per device; the reply's computer makes the request, so
+  the key never reaches a client. A reply from a computer that does not
+  offer the saved OpenAI voice is read in the device's voice, and a device
+  with no voice reads through the computer.
 - Wide blocks pan inside their own box on every layout: markdown tables,
   inline diff bodies and unwrapped fenced code scroll horizontally only
   when they overflow (the `pan-x` rules in `frontend/src/app.css`), with
@@ -745,6 +914,9 @@ and anti-changes that live only here:
   nothing changes for a block that fits. Fenced code wraps by default; the
   block overlay toggles unwrap per block, recorded by content identity so
   it survives retirement and remounts.
+- Markdown tables take their content width: one that fits does not stretch
+  across the pane. In a cell, inline code of 32 characters or fewer stays on
+  one line and longer code wraps; a table whose short code cannot fit pans.
 - Rejected from the t3-code survey, do not re-propose: hard steer, codex
   shadow homes, workspace file browser, changed-files card, global word
   wrap (per-block opt-in only), top-edge fade, favicon fetching, settled

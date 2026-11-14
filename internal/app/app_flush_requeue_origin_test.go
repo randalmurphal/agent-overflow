@@ -28,7 +28,7 @@ func requireAgentPayload(t *testing.T, name string, raw json.RawMessage) {
 
 // A message requeued after a failed restore, a failed stale-row cleanup or a
 // failed Codex resend keeps who wrote it, so its next row is the agent's and
-// no Stop un-sends it into the person's composer.
+// never the person's to take back into the composer.
 func TestARequeuedMessageKeepsWhoWroteIt(t *testing.T) {
 	t.Parallel()
 	row := store.Item{ID: "u:0", ThreadID: "t", Kind: "user_text", Summary: requeuedRequestText, Meta: requeuedRequestMeta}
@@ -36,13 +36,13 @@ func TestARequeuedMessageKeepsWhoWroteIt(t *testing.T) {
 		"deferred": {QueueItemID: "q1", Message: requeuedRequestText, DeferredItem: &row},
 		"quiet":    {QueueItemID: "q1", Message: requeuedRequestText, QuietItem: &row},
 	} {
-		queued, ok := queuedFlushItemFromUnconfirmed(item)
+		queued, ok := queuedFlushItemFromUnconfirmed(item, nil)
 		if !ok {
 			t.Fatalf("%s: not requeued", name)
 		}
 		requireAgentPayload(t, name, queued.Payload)
 	}
-	raw, err := flushPayloadFromUserMeta(requeuedRequestMeta)
+	raw, err := flushPayloadFromUserMeta(requeuedRequestMeta, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

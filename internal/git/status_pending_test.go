@@ -59,6 +59,37 @@ func TestPendingOperationMerge(t *testing.T) {
 	}
 }
 
+func TestPendingOperationCherryPick(t *testing.T) {
+	t.Parallel()
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("feature side\n"), 0o644); err != nil {
+		t.Fatalf("write feature README: %v", err)
+	}
+	testutil.RunGit(t, repo, "commit", "-am", "feature change")
+	testutil.RunGit(t, repo, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("main side\n"), 0o644); err != nil {
+		t.Fatalf("write main README: %v", err)
+	}
+	testutil.RunGit(t, repo, "commit", "-am", "main change")
+
+	// The conflict leaves CHERRY_PICK_HEAD in place until resolved or aborted.
+	_ = testutil.RunGitAllowError(repo, "cherry-pick", "feature")
+
+	core := NewCore()
+	status, err := core.Status(t.Context(), repo)
+	if err != nil {
+		t.Fatalf("Status returned error: %v", err)
+	}
+	if status.PendingOperation != "cherry-pick" {
+		t.Fatalf("PendingOperation = %q, want 'cherry-pick'", status.PendingOperation)
+	}
+	testutil.RunGit(t, repo, "cherry-pick", "--abort")
+	if status, err = core.Status(t.Context(), repo); err != nil || status.PendingOperation != "" {
+		t.Fatalf("after abort: PendingOperation = %q, err = %v", status.PendingOperation, err)
+	}
+}
+
 func TestPendingOperationRebase(t *testing.T) {
 	t.Parallel()
 	repo := initGitRepo(t)

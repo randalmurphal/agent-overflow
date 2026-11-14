@@ -4,9 +4,14 @@
 //   Commit dialog says "A merge is in progress. Committing completes the
 //   merge.", committing records the merge commit (two parents, no
 //   MERGE_HEAD), and a later commit's dialog no longer says so.
+//   While the merge is pending every file row is selected and locked.
+// - The Commit dialog lists the changed files with none selected, previews
+//   the active file's diff, commits only the selected files (leaving
+//   another file's staged change in the index), stays open on the rest,
+//   and closes after the commit that leaves nothing.
 // - Push is enabled for a branch with no upstream, pushes it to origin,
 //   sets the upstream, and is disabled once nothing is ahead.
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
 
@@ -81,6 +86,12 @@ test('committing a resolved merge says it completes the merge and records the me
 
   const dialog = await openCommitDialog(page);
   await expect(dialog.getByTestId('commit-dialog-pending-operation')).toHaveText(MERGE_NOTICE);
+  // Git records a merge whole, so the one row is selected and stays so.
+  const mergedRow = dialog.getByRole('option', { name: 'notes.md', exact: true });
+  await expect(mergedRow).toHaveAttribute('aria-selected', 'true');
+  await mergedRow.getByTestId('commit-file-check').click();
+  await expect(mergedRow).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByTestId('commit-dialog-toggle-all')).toHaveCount(0);
   await dialog.getByLabel('Subject').fill('Merge side into main');
   await dialog.getByRole('button', { name: 'Commit', exact: true }).click();
 
@@ -100,6 +111,82 @@ test('committing a resolved merge says it completes the merge and records the me
   await expect(next.getByLabel('Subject')).toBeVisible();
   await expect(next.getByTestId('commit-dialog-pending-operation')).toHaveCount(0);
   await next.getByRole('button', { name: 'Cancel' }).click();
+  await expect(errorToasts(page)).toHaveCount(0);
+});
+
+test('the Commit dialog commits the selected files and stays open until nothing is left', async ({ harness, page }) => {
+  const { root, title } = await seedThread(harness, 'git-commit-selection');
+  await commitFile(harness, root, 'staged.md', 'staged base\n', 'add staged');
+  await commitFile(harness, root, 'old-name.md', 'one\ntwo\nthree\nfour\n', 'add old-name');
+
+  await harness.open(page);
+  await openThread(page, title);
+
+  await writeFile(path.join(root, 'notes.md'), 'base\nedited in notes\n');
+  await writeFile(path.join(root, 'fresh [1].md'), 'a brand new file\n');
+  await rename(path.join(root, 'old-name.md'), path.join(root, 'new-name.md'));
+  // Staged by hand and left out of the first commit.
+  await writeFile(path.join(root, 'staged.md'), 'staged base\nstaged by hand\n');
+  harnessGit(harness, root, 'add', 'staged.md');
+  const stagedEntry = harnessGit(harness, root, 'ls-files', '--stage', '--', 'staged.md');
+  const startHead = harnessGit(harness, root, 'rev-parse', 'HEAD');
+
+  const dialog = await openCommitDialog(page);
+  const rows = dialog.getByRole('option');
+  const row = (name: string) => dialog.getByRole('option', { name, exact: true });
+  await expect(rows).toHaveCount(4);
+  await expect(dialog.getByTestId('commit-dialog-selection')).toHaveText('0 of 4 files selected');
+  await expect(dialog.getByRole('button', { name: 'Commit', exact: true })).toBeDisabled();
+  // The list has focus, so its keys work without a click.
+  await expect(dialog.getByRole('listbox', { name: 'Files to commit' })).toBeFocused();
+
+  // The first row is active and previewed; the arrows move the preview.
+  const preview = dialog.getByTestId('commit-file-preview');
+  await expect(row('fresh [1].md')).toHaveAttribute('data-active', '');
+  await expect(preview).toContainText('+a brand new file');
+  await page.keyboard.press('ArrowDown');
+  await expect(row('new-name.md')).toHaveAttribute('data-active', '');
+  await expect(preview).toContainText('rename from old-name.md');
+  await page.keyboard.press('ArrowDown');
+  await expect(preview).toContainText('+edited in notes');
+  await expect(preview).not.toContainText('rename from');
+
+  // Select with space, the checkbox, and a rename row.
+  await page.keyboard.press('Space');
+  await expect(row('notes.md')).toHaveAttribute('aria-selected', 'true');
+  await row('fresh [1].md').getByTestId('commit-file-check').click();
+  await row('new-name.md').getByTestId('commit-file-check').click();
+  await expect(dialog.getByTestId('commit-dialog-selection')).toHaveText('3 of 4 files selected');
+
+  await dialog.getByLabel('Subject').fill('Commit three of four');
+  await dialog.getByLabel('Subject').press('Control+Enter');
+
+  // The dialog stays open on the file that was left out.
+  await expect(rows).toHaveCount(1);
+  await expect(row('staged.md')).toHaveAttribute('aria-selected', 'false');
+  await expect(dialog.getByLabel('Subject')).toHaveValue('');
+  const firstHead = harnessGit(harness, root, 'rev-parse', 'HEAD');
+  expect(harnessGit(harness, root, 'rev-parse', 'HEAD~1')).toBe(startHead);
+  expect(harnessGit(harness, root, 'log', '-1', '--format=%s')).toBe('Commit three of four');
+  expect(harnessGit(harness, root, 'show', '--format=', '--name-status', '-M', 'HEAD').split('\n')).toEqual([
+    'A\tfresh [1].md',
+    'R100\told-name.md\tnew-name.md',
+    'M\tnotes.md',
+  ]);
+  expect(harnessGit(harness, root, 'ls-files', '--stage', '--', 'staged.md')).toBe(stagedEntry);
+  expect(harnessGit(harness, root, 'status', '--porcelain')).toBe('M  staged.md');
+
+  // A click on a row leaves the keys with the list. `a` selects what is
+  // left; committing it closes the dialog.
+  await row('staged.md').click();
+  await expect(dialog.getByRole('listbox', { name: 'Files to commit' })).toBeFocused();
+  await page.keyboard.press('a');
+  await expect(dialog.getByTestId('commit-dialog-selection')).toHaveText('1 of 1 file selected');
+  await dialog.getByLabel('Subject').fill('Commit the rest');
+  await dialog.getByRole('button', { name: 'Commit', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(harnessGit(harness, root, 'rev-parse', 'HEAD~1')).toBe(firstHead);
+  expect(harnessGit(harness, root, 'status', '--porcelain')).toBe('');
   await expect(errorToasts(page)).toHaveCount(0);
 });
 

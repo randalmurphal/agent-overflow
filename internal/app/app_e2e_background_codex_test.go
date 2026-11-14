@@ -685,7 +685,7 @@ func TestE2E_InterruptDoesNotKillBackground(t *testing.T) {
 
 			// Open a turn so the interrupt path has a current turn to
 			// operate on. Seed a backgrounded tool_call row inside that
-			// turn — the shape MarkUserInterrupt would otherwise flip
+			// turn — the shape MarkInterrupt would otherwise flip
 			// to errored absent the is_background guard.
 			if err := app.triage.Handle(provider.ProviderEvent{
 				Kind: provider.EventTurnStart, ThreadID: thread.ID, TurnID: "turn-0",

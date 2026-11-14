@@ -132,6 +132,9 @@ type connProfile struct {
 	// ordinary case for the local webview afterwards — and such a
 	// connection is not tracked by the live-session registry.
 	sessionID string
+	// hostWindow records whether the peer is the host's own window
+	// (Server.hostWindow).
+	hostWindow bool
 }
 
 // connSettings carries the server-config knobs runConnHandler needs.
@@ -142,6 +145,7 @@ type connSettings struct {
 	keepaliveInterval time.Duration
 	pongTimeout       time.Duration
 	watermarkInterval time.Duration
+	coalesceWindow    time.Duration
 	// sessionConns is the server's live-session registry, or nil when the
 	// handler runs outside one (unit tests). A connection naming a session
 	// registers itself here so a revocation can reach it.
@@ -184,23 +188,36 @@ type connHandler struct {
 	// Acquired before `go handleRPC`, released in the goroutine's defer.
 	rpcSem chan struct{}
 
-	// rpcWG tracks in-flight RPC goroutines so connection teardown can
-	// wait for responses to finish writing before closing the WS.
+	// rpcWG tracks in-flight RPC goroutines; loops tracks the pump,
+	// keepalive and session watchdog. Teardown joins both after cancelling
+	// the connection context and before running connection cleanups.
 	rpcWG sync.WaitGroup
+	loops sync.WaitGroup
 
 	// writeMu serialises writes to the WS. Both the request handler
 	// goroutines and the event-pump goroutine share the connection;
 	// concurrent writes corrupt the frame stream.
 	writeMu sync.Mutex
 
-	// keepaliveInterval / pongTimeout / watermarkInterval are the resolved
-	// timing knobs (connSettings with defaults applied).
+	// keepaliveInterval / pongTimeout / watermarkInterval / coalesceWindow
+	// are the resolved timing knobs (connSettings with defaults applied).
 	keepaliveInterval time.Duration
 	pongTimeout       time.Duration
 	watermarkInterval time.Duration
+	coalesceWindow    time.Duration
 
-	sessions       SessionAuthority
-	cancel         context.CancelFunc
+	// replies carries RPC replies to the pump, which writes each one after
+	// every event already queued for this connection (writeReply).
+	// pumpDone closes when the pump returns; a reply then goes straight to
+	// the socket, since nothing is left to order it behind.
+	replies  chan replyWrite
+	pumpDone chan struct{}
+
+	sessions SessionAuthority
+	cancel   context.CancelFunc
+	// lifetime is the server's context, which a call not bound to its
+	// caller runs on (callcontext.go).
+	lifetime       context.Context
 	sessionRecheck time.Duration
 	maxLifetime    time.Duration
 
@@ -269,6 +286,9 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	if settings.watermarkInterval <= 0 {
 		settings.watermarkInterval = WatermarkEvery
 	}
+	if settings.coalesceWindow <= 0 {
+		settings.coalesceWindow = DefaultCoalesceWindow
+	}
 	ws.SetReadLimit(settings.readLimit)
 
 	sub, replayBaseline := bus.SubscribeWithReplayBaseline()
@@ -293,6 +313,9 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		keepaliveInterval: settings.keepaliveInterval,
 		pongTimeout:       settings.pongTimeout,
 		watermarkInterval: settings.watermarkInterval,
+		coalesceWindow:    settings.coalesceWindow,
+		replies:           make(chan replyWrite),
+		pumpDone:          make(chan struct{}),
 		sessions:          settings.sessions,
 		sessionRecheck:    settings.sessionRecheck,
 		maxLifetime:       settings.maxLifetime,
@@ -300,29 +323,38 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		rpcBeforeReady:    settings.rpcBeforeReady,
 		eventScopes:       eventScopes,
 		leaseWake:         make(chan struct{}, 1),
+		lifetime:          ctx,
 	}
 	h.lastReadAt.Store(time.Now().UnixNano())
-	defer h.sub.Close()
 
 	connCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	h.cancel = cancel
 
 	// Per-connection scratch space. Handlers (e.g. GitStatusSubscribe)
 	// register cleanup callbacks here so a dropped WS releases their
 	// long-lived server-side resources without waiting for the App to
-	// shut down. runCleanups runs in LIFO order after the read loop
-	// exits and after in-flight RPC goroutines drain.
+	// shut down. Cleanups run in LIFO order once the connection's calls
+	// and loops have returned.
 	//
 	// The principal carries BOTH halves of "who is this": the session the
 	// upgrade admitted and the screen that declared itself on the URL.
 	// Handlers that scope durable state read the session first and fall
 	// back to the screen, which is why neither may be dropped here.
 	connCtx, state := WithConnState(connCtx, ConnPrincipal{
-		Client:    profile.client,
-		SessionID: profile.sessionID,
+		Client:     profile.client,
+		SessionID:  profile.sessionID,
+		HostWindow: profile.hostWindow,
 	})
-	defer state.RunCleanups()
+	// Teardown, in order: stop event delivery and cancel every call the
+	// moment the caller is gone, join the calls and loops so nothing still
+	// uses a connection resource, then release those resources.
+	defer func() {
+		h.sub.Close()
+		cancel()
+		h.rpcWG.Wait()
+		h.loops.Wait()
+		state.RunCleanups()
+	}()
 
 	// A connection carrying a durable session joins the live-session
 	// registry, so revoking that session force-closes this socket instead
@@ -396,20 +428,20 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// Lives on its own goroutine so a slow read doesn't backpressure
 	// the publisher (the EventBus already drops on full subscriber
 	// channels).
-	go h.pumpEvents(connCtx)
+	h.loops.Go(func() { h.pumpEvents(connCtx) })
 
 	// Keepalive: heartbeat frames + periodic protocol pings. Exits on
 	// ctx cancel or the first failed write/pong (the read loop owns
 	// teardown; on pong timeout the keepalive closes the conn itself
 	// to unblock it).
-	go h.keepalive(connCtx)
+	h.loops.Go(func() { h.keepalive(connCtx) })
 
 	// Session watchdog: the interval re-check and the lifetime cap. Only
 	// for a connection that named a session — one that named none has
 	// nothing to re-validate and no credential to force back through the
 	// ticket route.
 	if profile.sessionID != "" {
-		go h.watchSession(connCtx, cancel)
+		h.loops.Go(func() { h.watchSession(connCtx, cancel) })
 	}
 
 	started := time.Now()
@@ -424,10 +456,6 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	log.Printf("transport: ws %s closed after %s (loopback=%t device=%q page=%q): %s",
 		profile.remoteAddr, time.Since(started).Round(time.Millisecond),
 		profile.isLoopback, profile.client.DeviceID, profile.client.ConnectionID, h.closeReason(readErr))
-
-	// Wait for in-flight RPC handlers to finish writing their
-	// responses before we let the parent close the WS underneath them.
-	h.rpcWG.Wait()
 }
 
 // keepalive runs the per-connection heartbeat loop. Every tick writes
@@ -833,13 +861,13 @@ func (h *connHandler) dispatchRPC(ctx context.Context, frame ClientFrame) {
 func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 	method, fe := h.dispatcher.ResolveForOrigin(frame.MethodID, frame.Method, h.profile.isLoopback)
 	if fe != nil {
-		h.writeError(ctx, frame.ID, fe)
+		h.replyError(ctx, frame.ID, fe)
 		return
 	}
 	// Before the proof: a refused call must not spend a step-up token.
 	if h.rpcBeforeReady != nil {
 		if fe := h.rpcBeforeReady(method.Name); fe != nil {
-			h.writeError(ctx, frame.ID, fe)
+			h.replyError(ctx, frame.ID, fe)
 			return
 		}
 	}
@@ -850,17 +878,17 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 	// token and a second resolution would find it gone.
 	proof := h.callerProof(frame)
 	if fe := h.authorizeSession(method.Name, proof); fe != nil {
-		h.writeError(ctx, frame.ID, fe)
+		h.replyError(ctx, frame.ID, fe)
 		if fe.Code == "auth_failed" {
 			h.endSession(ctx, fe.Reason, h.cancel)
 		}
 		return
 	}
-	ctx = WithCallerProof(ctx, proof)
+	ctx = withServerLifetime(WithCallerProof(ctx, proof), h.lifetime)
 
 	result, fe := h.dispatcher.Invoke(ctx, method, frame.Params)
 	if fe != nil {
-		h.writeError(ctx, frame.ID, fe)
+		h.replyError(ctx, frame.ID, fe)
 		// A method can refuse its own proof while the connection remains
 		// authorized. Only current session admission can end this socket.
 		if fe.Code == "auth_failed" && h.profile.sessionID != "" {
@@ -871,7 +899,7 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 		return
 	}
 
-	h.writeFrame(ctx, ServerFrame{
+	h.writeReply(ctx, ServerFrame{
 		Type:   frameTypeRPC,
 		ID:     frame.ID,
 		Result: result,
@@ -1012,7 +1040,8 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 // unaffected: a single-event window falls through to a regular
 // `type:"event"` frame with at most one window of added latency.
 func (h *connHandler) pumpEvents(ctx context.Context) {
-	buf := newCoalesceBuffer(DefaultCoalesceMaxEvents, DefaultCoalesceWindow, func(batch []Event) {
+	defer close(h.pumpDone)
+	buf := newCoalesceBuffer(DefaultCoalesceMaxEvents, h.coalesceWindow, func(batch []Event) {
 		h.writeBatchFrame(ctx, batch)
 	})
 	defer buf.stop()
@@ -1051,8 +1080,79 @@ func (h *connHandler) pumpEvents(ctx context.Context) {
 			h.sendWatermarks(buf, &deltas)
 		case e := <-h.sub.Events():
 			h.pumpEvent(e, buf, &deltas)
+		case r := <-h.replies:
+			h.flushQueued(buf, &deltas)
+			r.err = h.writeRaw(r.ctx, r.frame)
+			close(r.done)
 		}
 	}
+}
+
+// replyWrite is one RPC reply handed to the pump.
+type replyWrite struct {
+	ctx   context.Context
+	frame []byte
+	err   error
+	done  chan struct{}
+}
+
+// writeReply writes an RPC reply behind every event already queued for this
+// connection. A method's own announcements are emitted before it returns,
+// and Emit enqueues to every subscriber before it returns, so they are in
+// the subscriber queue or the batch buffer by now. The pump owns both, so
+// the reply goes through it: it moves the queued events out first, then
+// writes the reply. Item deltas a background lease is merging stay merged
+// (lease.go); a reply never depends on a streaming delta, and flushing the
+// window on every call would undo the lease. Events emitted after the reply
+// still coalesce as before.
+func (h *connHandler) writeReply(ctx context.Context, frame ServerFrame) {
+	buf, err := json.Marshal(frame)
+	if err != nil {
+		log.Printf("transport: marshal server frame: %v", err)
+		return
+	}
+	if h.replies != nil {
+		req := replyWrite{ctx: ctx, frame: buf, done: make(chan struct{})}
+		select {
+		case h.replies <- req:
+			<-req.done
+			err = req.err
+		case <-h.pumpDone:
+			err = h.writeRaw(ctx, buf)
+		}
+	} else {
+		err = h.writeRaw(ctx, buf)
+	}
+	if err != nil && !isClosedError(err) {
+		log.Printf("transport: ws write: %v", err)
+	}
+}
+
+// replyError writes an RPC's refusal or failure through writeReply.
+func (h *connHandler) replyError(ctx context.Context, id string, fe *FrameError) {
+	h.writeReply(ctx, ServerFrame{Type: frameTypeRPC, ID: id, Error: fe})
+}
+
+// drainQueued moves every event queued in the subscriber when it is called
+// into buf, through the path a live event takes.
+func (h *connHandler) drainQueued(buf *coalesceBuffer, deltas *deltaCoalescer) {
+drain:
+	for range len(h.sub.Events()) {
+		select {
+		case e := <-h.sub.Events():
+			h.pumpEvent(e, buf, deltas)
+		default:
+			break drain
+		}
+	}
+}
+
+// flushQueued writes every event queued for this connection except the held
+// lease merges, in the order the pump would have written them, ahead of a
+// reply.
+func (h *connHandler) flushQueued(buf *coalesceBuffer, deltas *deltaCoalescer) {
+	h.drainQueued(buf, deltas)
+	buf.flushNow()
 }
 
 // pumpEvent moves one event from the subscriber queue toward the wire.
@@ -1110,15 +1210,7 @@ func (h *connHandler) sendWatermarks(buf *coalesceBuffer, deltas *deltaCoalescer
 	if marks == nil {
 		return
 	}
-drain:
-	for range len(h.sub.Events()) {
-		select {
-		case e := <-h.sub.Events():
-			h.pumpEvent(e, buf, deltas)
-		default:
-			break drain
-		}
-	}
+	h.drainQueued(buf, deltas)
 	deltas.flushAll()
 	for channel, seq := range marks {
 		if h.eventVisible(channel) {

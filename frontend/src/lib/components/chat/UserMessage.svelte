@@ -13,6 +13,8 @@
   import { openImageLightbox } from '../../stores/imageLightbox.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import UserMessageBody from './UserMessageBody.svelte';
+  import ShellCommandBlock from './ShellCommandBlock.svelte';
+  import { textWithoutShellInvocations } from '../../utils/shellInvocation';
   import UserMessageEditor from './UserMessageEditor.svelte';
   import { preservePaneScrollAnchorAt } from './preserveScrollAnchor';
   import Icon from '../primitives/Icon.svelte';
@@ -38,7 +40,6 @@
   import type { UserMessageActions } from './userMessageActions';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
-  import { joinedAgentMessageName } from '../../utils/agentMessage';
 
   interface Props {
     item: Item;
@@ -49,12 +50,6 @@
   let { item, pane, actions }: Props = $props();
 
   const userMeta = $derived(parseUserMessageMeta(item.meta));
-  // A Stop left this message in place: it joins an agent's message nothing
-  // can split from it (revertOnInterrupt). Named from the row as it is now,
-  // which the join may have reached after the Stop.
-  const unsendDeclined = $derived(
-    pane?.isUnsendDeclined(item.id) ? (joinedAgentMessageName(item) ?? "an agent's message") : '',
-  );
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
   // A message that reached this thread from outside Agent Overflow keeps the
   // user bubble: it IS user-role content and the model answered it, but says
@@ -101,6 +96,8 @@
         if (!wake) return null;
         return { testid: 'user-message-wake-origin', label: agentWakeOriginLabel(wake) };
       }
+      case 'app':
+        return { testid: 'user-message-app-origin', label: 'Agent Overflow' };
       default:
         return null;
     }
@@ -152,27 +149,38 @@
   // `#2` names the same thing the message text's `[Image #2]` does; a file is
   // an inert chip, because its bytes are never served back to a client.
   const images = $derived(imageAttachments(attachments));
-  const files = $derived(attachments.filter((attachment) => attachment.kind === 'file'));
+  // A file that is the output of a composer shell command is a command block,
+  // the one file whose content the row shows; every other file is a chip.
+  const shellOutputs = $derived(attachments.filter((attachment) => attachment.kind === 'file' && attachment.shell));
+  const files = $derived(attachments.filter((attachment) => attachment.kind === 'file' && !attachment.shell));
   // Pane-owned blob cache: blob URLs survive the window's overscan eviction,
   // so back-scrolling to a previously-mounted UserMessage doesn't refetch
   // attachments from Go or re-allocate object URLs. The IntersectionObserver
   // gate has been dropped — the virtualizer's buffer already bounds which
   // rows are mounted to "near the visible viewport"; loading on mount
   // costs at most a small read-ahead and the cache de-dupes across remounts.
-  // The message-owned cache survives its provisional item ID being confirmed.
+  // The cache is keyed by the message's send identity, not its item id.
   const cache = untrack(() => (pane ? pane.attachmentCacheFor(item.id) : undefined));
   const attachmentPreviews = createAttachmentPreviews(
     () => attachments,
     { cache },
   );
   // A wake quotes its data escaped for the agent; the person reads it
-  // decoded. A wake expands no composer command, so it has no command ranges
-  // to keep in step with the decoded text.
+  // decoded. A wake expands no composer command and runs no shell command,
+  // so it has no command ranges or blocks to keep in step with the decoded
+  // text.
   const isWake = $derived(messageOrigin === 'agent-wake');
+  // The typed `!command` a shell output stands for is shown by its block.
   const visibleSummary = $derived.by(() => {
     const summary = stripAttachmentImages(item.summary).trimEnd();
-    return isWake ? readableWakeText(summary) : summary;
+    if (isWake) return readableWakeText(summary);
+    return textWithoutShellInvocations(summary, shellOutputs.map((attachment) => attachment.shell!));
   });
+  // A message that is nothing but commands is drawn as the blocks themselves,
+  // without the message bubble around them.
+  const commandsOnly = $derived(
+    shellOutputs.length > 0 && images.length === 0 && files.length === 0 && !visibleSummary && !originBadge,
+  );
   // A composer command that expanded at send time (D31) keeps its words in the
   // transcript — the block it added is never stored — and every occurrence
   // renders in the accent colour, exactly as the composer showed them while
@@ -279,6 +287,17 @@
       {/each}
     </div>
   {/if}
+  {#each shellOutputs as attachment (attachment.id)}
+    <ShellCommandBlock
+      itemId={item.id}
+      threadId={attachment.threadId}
+      attachmentId={attachment.id}
+      shell={attachment.shell!}
+      size={attachment.size}
+      {pane}
+      standalone={commandsOnly}
+    />
+  {/each}
   {#if files.length > 0}
     <div class="mb-2 flex flex-wrap gap-2" data-testid="user-message-file-attachments">
       {#each files as attachment (attachment.id)}
@@ -309,8 +328,9 @@
     <div
       bind:this={bubbleEl}
       class={[
-        'rounded-[18px] rounded-br-[8px] border border-accent/20 bg-accent/15',
-        'px-4 py-2.5 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet',
+        commandsOnly && !editsInline
+          ? 'flex min-w-[min(18rem,100%)] max-w-full flex-col gap-1.5 text-[0.8125rem] leading-[1.55] text-fg'
+          : 'rounded-[18px] rounded-br-[8px] border border-accent/20 bg-accent/15 px-4 py-2.5 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet',
         editsInline && 'w-[46rem] max-w-full',
         editsElsewhere && 'ring-2 ring-accent/50',
       ]}
@@ -368,10 +388,6 @@
             onError={() => addToast('error', 'Failed to copy')}
           />
         </span>
-      {/if}
-      {#if unsendDeclined}
-        <!-- The meta line's own height: the fact never moves the row. -->
-        <span class="min-w-0 truncate" data-testid="user-message-unsend-declined">Not un-sent: joined with {unsendDeclined}</span>
       {/if}
       <time class="tabular-nums" datetime={isoTime}>
         {time}

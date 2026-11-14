@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,18 +45,25 @@ func gitlabDiscussion(id, headSHA string) string {
 		"author":{"username":"rev","name":"Rev"},"position":{"head_sha":%q,"new_path":"a.go","old_path":"a.go","position_type":"text","new_line":4}}]}`, id, id, headSHA)
 }
 
-func gitlabJobs(from, n int) string {
+// gitlabJobs is a PipelineJobs answer of n started builds in stage test,
+// ids from on.
+func gitlabJobs(from, n int) forgeAPIAnswer {
 	jobs := make([]string, 0, n)
 	for i := from; i < from+n; i++ {
-		jobs = append(jobs, fmt.Sprintf(`{"id":%d,"name":"job%d","stage":"test","status":"success","started_at":"2026-01-01T00:00:00Z"}`, i, i))
+		jobs = append(jobs, gitlabJobNode("Ci::Build", int64(i), fmt.Sprintf("job%d", i), "test", "SUCCESS", `"startedAt":"2026-01-01T00:00:00Z"`))
 	}
-	return "[" + strings.Join(jobs, ",") + "]"
+	return gitlabJobsPage([]string{"test"}, "", jobs...)
 }
 
-// gitlabPaths lists the method and path of every request.
+// gitlabPaths lists the method and path of every REST request and the
+// operation of every GraphQL one ("GRAPHQL PipelineJobs").
 func gitlabPaths(calls *forgeAPICalls) []string {
 	var out []string
 	for _, call := range calls.all() {
+		if call.Op != "" {
+			out = append(out, "GRAPHQL "+call.Op)
+			continue
+		}
 		out = append(out, call.Method+" "+call.Path)
 	}
 	return out
@@ -79,6 +87,12 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op == "PipelineJobs" {
+			return gitlabJobs(1, 3)
+		}
+		if reply, ok := gitlabManageExtras(call); ok {
+			return reply
+		}
 		switch call.Path {
 		case mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 77)}
@@ -88,8 +102,10 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d1", "head2") + "]", Header: http.Header{"X-Next-Page": {"2"}}}
 		case mr + "/discussions?page=2&per_page=100":
 			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d2", "head1") + "]", Header: http.Header{"X-Next-Page": {""}}}
-		case gitlabTestProject + "/pipelines/77/jobs?per_page=100":
-			return forgeAPIAnswer{Body: gitlabJobs(1, 3)}
+		case gitlabTestProject:
+			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		case "user":
+			return forgeAPIAnswer{Body: `{"username":"viewer"}`}
 		}
 		return forgeUnexpected(t, call)
 	})
@@ -98,8 +114,8 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := gitlabPaths(calls)
-	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 5 {
-		t.Fatalf("requests = %q, want one MR read, the approvals, two discussion pages and one jobs page", paths)
+	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 10 {
+		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, PRManageSchema, PRManage, two discussion pages, one MRNoteReactions page and one PipelineJobs page", paths)
 	}
 	for _, call := range calls.all() {
 		if call.Host != testForgeHost || call.Header.Get("Private-Token") != "test-token" {
@@ -119,7 +135,9 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 }
 
 // A part not wanted costs no request; a merge request without a head
-// pipeline costs no jobs read.
+// pipeline costs no jobs read. Threads and events share one discussions
+// read, and only the first detail reads the project's settings and the
+// viewer.
 func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
@@ -133,8 +151,20 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 			return forgeAPIAnswer{Body: `{"approved_by":[]}`}
 		case strings.HasPrefix(call.Path, mr+"/discussions?"):
 			return forgeAPIAnswer{Body: `[]`}
-		case strings.HasPrefix(call.Path, gitlabTestProject+"/pipelines/77/jobs?"):
-			return forgeAPIAnswer{Body: gitlabJobs(1, 1)}
+		case call.Op == "PipelineJobs":
+			return gitlabJobs(1, 1)
+		case call.Op == "PRManageSchema":
+			return forgeAPIAnswer{Body: gitlabSchemaBare}
+		case call.Op == "PRManage":
+			return forgeAPIAnswer{Body: gitlabManageEmpty}
+		case call.Op == "MRNoteReactions":
+			return forgeAPIAnswer{Body: gitlabNoReactions}
+		case call.Path == mr+"/resource_state_events?per_page=100":
+			return forgeAPIAnswer{Body: `[]`}
+		case call.Path == gitlabTestProject:
+			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		case call.Path == "user":
+			return forgeAPIAnswer{Body: `{"username":"viewer"}`}
 		}
 		return forgeUnexpected(t, call)
 	})
@@ -143,9 +173,14 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		pipeline int32
 		paths    []string
 	}{
-		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals"}},
-		{PRReadParts{Threads: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100"}},
-		{PRReadParts{CI: true}, 77, []string{"GET " + mr, "GET " + gitlabTestProject + "/pipelines/77/jobs?per_page=100"}},
+		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject, "GET user", "GRAPHQL PRManageSchema", "GRAPHQL PRManage"}},
+		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GRAPHQL PRManage"}},
+		// The first threads read reads the reactions; the next, with the
+		// same notes, answers them from memory.
+		{PRReadParts{Threads: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100", "GRAPHQL MRNoteReactions"}},
+		{PRReadParts{Events: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100", "GET " + mr + "/resource_state_events?per_page=100"}},
+		{PRReadParts{Threads: true, Events: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100", "GET " + mr + "/resource_state_events?per_page=100"}},
+		{PRReadParts{CI: true}, 77, []string{"GET " + mr, "GRAPHQL PipelineJobs"}},
 		{PRReadParts{CI: true}, 0, []string{"GET " + mr}},
 	}
 	seen := 0
@@ -158,9 +193,10 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		if read.HasCI != tc.want.CI {
 			t.Fatalf("%+v: HasCI = %v", tc.want, read.HasCI)
 		}
-		paths := gitlabPaths(calls)[seen:]
+		// The detail's reads beside the merge request run concurrently.
+		paths := slices.Sorted(slices.Values(gitlabPaths(calls)[seen:]))
 		seen += len(paths)
-		if strings.Join(paths, "\n") != strings.Join(tc.paths, "\n") {
+		if strings.Join(paths, "\n") != strings.Join(slices.Sorted(slices.Values(tc.paths)), "\n") {
 			t.Fatalf("%+v (pipeline %d): requests = %q, want %q", tc.want, tc.pipeline, paths, tc.paths)
 		}
 	}
@@ -180,6 +216,12 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 		case strings.HasPrefix(call.Path, mr+"/discussions?"):
 			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d", "head2") + "]", Header: http.Header{"X-Next-Page": {"1"}}}
+		case call.Path == gitlabTestProject:
+			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		case call.Path == "user":
+			return forgeAPIAnswer{Body: `{"id":1,"username":"viewer"}`}
+		case call.Op == "MRNoteReactions":
+			return forgeAPIAnswer{Body: gitlabNoReactions}
 		}
 		return forgeUnexpected(t, call)
 	})
@@ -187,50 +229,8 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 	if err != nil || len(threads) != 1 {
 		t.Fatalf("ListReviewThreads = %+v, %v", threads, err)
 	}
-	if n := len(calls.all()); n != 2 {
-		t.Fatalf("requests = %q, want the MR and one discussions page", gitlabPaths(calls))
-	}
-}
-
-// The pipeline's jobs are paged by X-Next-Page until a short page, and at
-// most gitlabCIJobsMaxPages pages are read.
-func TestGitLabPipelineJobsPageToTheCap(t *testing.T) {
-	t.Parallel()
-	mr := gitlabTestProject + "/merge_requests/7"
-	var short atomic.Bool
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Path == mr {
-			return forgeAPIAnswer{Body: gitlabTestMR(7, 77)}
-		}
-		u, err := url.Parse(call.Path)
-		if err != nil || u.EscapedPath() != gitlabTestProject+"/pipelines/77/jobs" {
-			return forgeUnexpected(t, call)
-		}
-		page, _ := strconv.Atoi(u.Query().Get("page"))
-		page = max(page, 1)
-		if short.Load() && page == 2 {
-			return forgeAPIAnswer{Body: gitlabJobs(5000, 10)}
-		}
-		return forgeAPIAnswer{Body: gitlabJobs(page*1000, gitlabPageSize), Header: http.Header{"X-Next-Page": {strconv.Itoa(page + 1)}}}
-	})
-	pipeline, err := core.ListPRCIJobs(t.Context(), gitlabTestRef(7), nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := len(pipeline.Stages[0].Jobs); n != gitlabCIJobsMaxPages*gitlabPageSize {
-		t.Fatalf("jobs = %d, want %d", n, gitlabCIJobsMaxPages*gitlabPageSize)
-	}
-	if n := countPrefix(gitlabPaths(calls), "GET "+gitlabTestProject+"/pipelines/77/jobs"); n != gitlabCIJobsMaxPages {
-		t.Fatalf("jobs pages = %d, want %d", n, gitlabCIJobsMaxPages)
-	}
-	short.Store(true)
-	before := len(calls.all())
-	pipeline, err = core.ListPRCIJobs(t.Context(), gitlabTestRef(7), nil, nil)
-	if err != nil || len(pipeline.Stages[0].Jobs) != gitlabPageSize+10 {
-		t.Fatalf("short second page: %v, %v", pipeline, err)
-	}
-	if n := len(calls.all()) - before; n != 3 {
-		t.Fatalf("requests = %d, want the MR and two jobs pages", n)
+	if n := len(calls.all()); n != 5 {
+		t.Fatalf("requests = %q, want the MR, one discussions page, the project, the viewer and the reactions", gitlabPaths(calls))
 	}
 }
 
@@ -262,7 +262,7 @@ func TestGitLabWithoutATransportIsErrNoForgeAPI(t *testing.T) {
 	if _, err := core.ReadPR(t.Context(), ref, allParts, nil, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("ReadPR = %v", err)
 	}
-	if _, err := core.StreamCIJobLog(t.Context(), ref, CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
+	if _, err := core.StreamCIJobLog(t.Context(), ref.Repository(), CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("StreamCIJobLog = %v", err)
 	}
 	if _, err := core.SubmitReview(t.Context(), ref, SubmitReviewRequest{Verdict: ReviewVerdictApprove}); !errors.Is(err, ErrNoForgeAPI) {
@@ -281,6 +281,8 @@ func TestGitLabSubmitReview(t *testing.T) {
 		switch call.Method + " " + call.Path {
 		case "GET " + mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+		case "GET " + mr + "/diffs?per_page=100":
+			return gitlabTestDiffsAnswer()
 		case "POST " + mr + "/draft_notes":
 			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":1}`}
 		case "POST " + mr + "/draft_notes/bulk_publish":
@@ -293,7 +295,7 @@ func TestGitLabSubmitReview(t *testing.T) {
 		}
 		return forgeUnexpected(t, call)
 	})
-	line, old := 4, 9
+	line, old := 3, 3
 	review := SubmitReviewRequest{Verdict: ReviewVerdictApprove, Body: "Looks good", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 		{Path: "b.go", Body: "gone", Line: &old, Side: "left"},
@@ -302,7 +304,7 @@ func TestGitLabSubmitReview(t *testing.T) {
 	if err != nil || !result.PostedReview {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	want := []string{"GET " + mr, "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
+	want := []string{"GET " + mr, "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
 	if got := gitlabPaths(calls); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests = %q, want %q", got, want)
 	}
@@ -311,28 +313,28 @@ func TestGitLabSubmitReview(t *testing.T) {
 		Note     string             `json:"note"`
 		Position *gitlabPositionRaw `json:"position"`
 	}
-	if err := json.Unmarshal(sent[1].Body, &summary); err != nil || summary.Note != "Looks good" || summary.Position != nil {
-		t.Fatalf("summary note body = %s (%v)", sent[1].Body, err)
+	if err := json.Unmarshal(sent[2].Body, &summary); err != nil || summary.Note != "Looks good" || summary.Position != nil {
+		t.Fatalf("summary note body = %s (%v)", sent[2].Body, err)
 	}
-	if err := json.Unmarshal(sent[2].Body, &right); err != nil || right.Note != "nit" || right.Position == nil || right.Position.PositionType != "text" ||
+	if err := json.Unmarshal(sent[3].Body, &right); err != nil || right.Note != "nit" || right.Position == nil || right.Position.PositionType != "text" ||
 		right.Position.HeadSHA != "head2" || right.Position.BaseSHA != "base" || right.Position.StartSHA != "start" ||
-		right.Position.NewLine == nil || *right.Position.NewLine != 4 || right.Position.OldLine != nil {
-		t.Fatalf("right-side note body = %s (%v)", sent[2].Body, err)
+		right.Position.NewLine == nil || *right.Position.NewLine != 3 || right.Position.OldLine != nil {
+		t.Fatalf("right-side note body = %s (%v)", sent[3].Body, err)
 	}
-	if err := json.Unmarshal(sent[3].Body, &left); err != nil || left.Position == nil || left.Position.OldLine == nil || *left.Position.OldLine != 9 || left.Position.NewLine != nil {
-		t.Fatalf("left-side note body = %s (%v)", sent[3].Body, err)
+	if err := json.Unmarshal(sent[4].Body, &left); err != nil || left.Position == nil || left.Position.OldLine == nil || *left.Position.OldLine != 3 || left.Position.NewLine != nil {
+		t.Fatalf("left-side note body = %s (%v)", sent[4].Body, err)
 	}
-	for _, call := range sent[1:4] {
+	for _, call := range sent[2:5] {
 		if call.Header.Get("Content-Type") != "application/json" {
 			t.Fatalf("draft note Content-Type = %q", call.Header.Get("Content-Type"))
 		}
 	}
-	if len(sent[4].Body) != 0 {
-		t.Fatalf("bulk publish body = %q, want none", sent[4].Body)
+	if len(sent[5].Body) != 0 {
+		t.Fatalf("bulk publish body = %q, want none", sent[5].Body)
 	}
 	var approve map[string]string
-	if err := json.Unmarshal(sent[5].Body, &approve); err != nil || len(approve) != 1 || approve["sha"] != "head2" {
-		t.Fatalf("approve body = %s (%v), want the head the MR read named", sent[5].Body, err)
+	if err := json.Unmarshal(sent[6].Body, &approve); err != nil || len(approve) != 1 || approve["sha"] != "head2" {
+		t.Fatalf("approve body = %s (%v), want the head the MR read named", sent[6].Body, err)
 	}
 
 	failApprove.Store(true)
@@ -536,7 +538,7 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 			// A fork's merge request from a branch of the same name comes
 			// first; it is not the project's own.
 			return forgeAPIAnswer{Body: `[{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/7","iid":7,"title":"Fork","state":"opened","project_id":10,"source_project_id":99},` +
-				`{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/3","iid":3,"title":"Fix","state":"opened","project_id":10,"source_project_id":10}]`}
+				`{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/3","iid":3,"title":"Fix","state":"opened","project_id":10,"source_project_id":10,"target_branch":"release"}]`}
 		case "merged":
 			perPage, _ := strconv.Atoi(q.Get("per_page"))
 			page, _ := strconv.Atoi(q.Get("page"))
@@ -558,7 +560,7 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 		t.Fatalf("origin classified as %q", forge)
 	}
 	pulls, err := core.ListOpenPRs(t.Context(), cwd, "feature/x y")
-	if err != nil || len(pulls) != 1 || pulls[0].Number != 3 || pulls[0].State != "open" || pulls[0].URL == "" {
+	if err != nil || len(pulls) != 1 || pulls[0].Number != 3 || pulls[0].State != "open" || pulls[0].URL == "" || pulls[0].BaseBranch != "release" {
 		t.Fatalf("ListOpenPRs = %+v, %v", pulls, err)
 	}
 	if pulls, err := core.ListOpenPRs(t.Context(), cwd, "none"); err != nil || len(pulls) != 0 {
@@ -648,7 +650,7 @@ func TestGitLabOriginScopedListFailures(t *testing.T) {
 	}
 	sent := len(calls.all())
 	for name, origin := range map[string]string{"no origin": "", "github": "https://github.com/acme/repo.git", "no project": "https://gitlab.com/grp"} {
-		cwd := t.TempDir()
+		cwd := initGitRepo(t)
 		if origin != "" {
 			core.recordOrigin(cwd, originIdentity{url: origin, known: true}, core.nowFn())
 		}
@@ -682,7 +684,7 @@ func TestGitLabFetchAttachment(t *testing.T) {
 	})
 	ref := PRReference{Forge: "gitlab", Host: "gitlab.example.com:8443", Namespace: "group/x", Repo: "y", Number: 4}
 	href := "https://gitlab.example.com:8443/grp/sub/widget/uploads/" + testUploadSecretB + "/Screen%20Shot.png"
-	data, name, err := core.FetchAttachment(t.Context(), ref, href, 1<<20)
+	data, name, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 1<<20)
 	if err != nil || string(data) != content || name != "Screen Shot.png" {
 		t.Fatalf("FetchAttachment = %q %q %v", data, name, err)
 	}
@@ -690,7 +692,7 @@ func TestGitLabFetchAttachment(t *testing.T) {
 	if len(sent) != 1 || sent[0].Host != "gitlab.example.com:8443" || sent[0].Header.Get("Accept") != "*/*" || sent[0].Header.Get("Private-Token") != "test-token" {
 		t.Fatalf("attachment request = %+v", sent)
 	}
-	if _, _, err := core.FetchAttachment(t.Context(), ref, href, 4); err == nil || err.Error() != "attachment is larger than 4 bytes" {
+	if _, _, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 4); err == nil || err.Error() != "attachment is larger than 4 bytes" {
 		t.Fatalf("over-cap attachment = %v", err)
 	}
 }
@@ -714,7 +716,7 @@ func TestGitLabFetchAttachmentFailureHidesTheSecret(t *testing.T) {
 	href := "/uploads/" + testUploadSecretB + "/a.png"
 	check := func(name string, match func(error) bool) {
 		t.Helper()
-		_, _, err := core.FetchAttachment(t.Context(), ref, href, 1<<20)
+		_, _, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 1<<20)
 		if err == nil || !match(err) {
 			t.Fatalf("%s: FetchAttachment = %v", name, err)
 		}

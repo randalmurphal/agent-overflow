@@ -8,7 +8,7 @@
   // current query.
 
   import { onDestroy } from 'svelte';
-  import type { ProjectWithCounts } from '../../types/models';
+  import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     entryIdFor,
@@ -32,6 +32,7 @@
   import { UpdateProjectSortPositions } from '../../stores/bindings';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
+  import { reuseUnchangedBuckets } from '../../utils/stableBuckets';
   import {
     openDraftThreadForProject,
     openTerminalThread,
@@ -84,13 +85,20 @@
   // it), filtered by the search query, with the assistants' cards and
   // what they hold apart (bucketSidebarThreads).
   //
-  // Both maps are re-minted per derivation, as threadsByProject always
-  // was: the ROWS inside them are stable references, and the identity
+  // Both maps are re-minted per derivation, and the ROWS inside them are
+  // stable references. A bucket whose rows did not change keeps its array,
+  // so a thread change rebuilds only its own project's tree; the identity
   // cutoffs downstream (visibleProjects here, sameSidebarVisibleNodes in
-  // SidebarTreeList) are what keep a streaming beat off the DOM.
+  // SidebarTreeList) keep a streaming beat off the DOM. The assistants'
+  // cards and what they hold keep their arrays the same way, so a project
+  // thread's change does not rebuild the Assistants section's tree.
+  let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
+  let previousGroupBuckets: ReadonlyMap<string, ThreadGroup[]> = new Map();
+  let previousAgentBuckets: ReadonlyMap<string, Thread[]> = new Map();
+  let previousAssistantLists: ReadonlyMap<'assistants' | 'held', Thread[]> = new Map();
   let searchBuckets = $derived.by(() => {
     const filterDevices = sidebarDeviceFilterActive();
-    return bucketSidebarThreads({
+    const buckets = bucketSidebarThreads({
       threads: getThreads(),
       groups: getThreadGroups(),
       query,
@@ -98,11 +106,25 @@
       threadVisible: sidebarThreadVisible,
       filterDevices,
     });
+    previousThreadBuckets = reuseUnchangedBuckets(previousThreadBuckets, buckets.threadsByProject);
+    previousGroupBuckets = reuseUnchangedBuckets(previousGroupBuckets, buckets.groupsByProject);
+    previousAgentBuckets = reuseUnchangedBuckets(previousAgentBuckets, buckets.agentsByProject);
+    previousAssistantLists = reuseUnchangedBuckets(previousAssistantLists, new Map<'assistants' | 'held', Thread[]>([
+      ['assistants', buckets.assistants],
+      ['held', buckets.assistantChildren],
+    ]));
+    return {
+      ...buckets,
+      assistants: previousAssistantLists.get('assistants') ?? buckets.assistants,
+      assistantChildren: previousAssistantLists.get('held') ?? buckets.assistantChildren,
+    };
   });
 
   let threadsByProject = $derived(searchBuckets.threadsByProject);
   let groupsByProject = $derived(searchBuckets.groupsByProject);
   let agentsByProject = $derived(searchBuckets.agentsByProject);
+  let assistants = $derived(searchBuckets.assistants);
+  let assistantChildren = $derived(searchBuckets.assistantChildren);
   let projectsShown = $derived(isSidebarSectionShown('projects', query !== ''));
 
   // Visible computers whose threads or projects have not loaded, each with
@@ -322,8 +344,8 @@
 -->
 <div class="flex-1 min-h-0 overflow-y-auto" data-testid="sidebar-sections">
   <AssistantsSection
-    assistants={searchBuckets.assistants}
-    held={searchBuckets.assistantChildren}
+    {assistants}
+    held={assistantChildren}
     {pane}
     searching={query !== ''}
   />

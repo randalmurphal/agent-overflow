@@ -221,7 +221,7 @@ func TestRowSettleLeavesARowFlippedAfterItsRead(t *testing.T) {
 			return router.settleStreamingTextRow("t1", itemID, statusErrored, summarise, "", false, nil)
 		}},
 		{"thinking", provider.EventThinking, func(router *Router, itemID string, summarise func(string) string) error {
-			return router.settleStreamingThinkingRow("t1", itemID, statusErrored, summarise, "", false)
+			return router.settleStreamingThinkingRow("t1", itemID, statusErrored, summarise, "", false, false)
 		}},
 	} {
 		t.Run(kind.name, func(t *testing.T) {

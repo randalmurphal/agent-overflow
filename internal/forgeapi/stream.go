@@ -30,13 +30,16 @@ func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int
 	if limit <= 0 && limit != NoLimit {
 		return nil, errors.New("forgeapi: Stream needs a positive limit or NoLimit")
 	}
+	if r.MaxBodyBytes != 0 {
+		return nil, errors.New("forgeapi: Stream takes its limit as an argument, not Request.MaxBodyBytes")
+	}
 	ctx, cancel := c.withTimeout(ctx, r.Timeout)
 	defer cancel()
 	refreshed := false
 	for {
 		resp, retry, err := c.streamAttempt(ctx, r, dst, limit, refreshed)
 		if !retry {
-			return resp, err
+			return resp, c.settleProbe(ctx, err)
 		}
 		refreshed = true
 	}
@@ -85,11 +88,12 @@ func (c *Client) streamAttempt(ctx context.Context, r Request, dst io.Writer, li
 		if limit != NoLimit && written > limit {
 			return nil, false, fmt.Errorf("forge %s %s: %w (limit %d)", ex.req.Method, c.redact(answered.URL), ErrBodyTooLarge, limit)
 		}
-		return &Response{Status: resp.StatusCode, Header: resp.Header, Rate: parseRateLimit(resp.Header, ex.key.pool)}, false, nil
+		return &Response{Status: resp.StatusCode, Header: resp.Header, Rate: parseRateLimit(resp.Header, ex.key.pool), Credential: ex.credential()}, false, nil
 	}
 	body, readErr := readBounded(resp.Body, c.svc.opts.MaxBodyBytes)
 	if readErr != nil && !errors.Is(readErr, ErrBodyTooLarge) {
 		return nil, false, c.bodyError(ctx, answered, readErr)
 	}
-	return c.settle(ctx, ex, answered, resp, body, refreshed)
+	// Stream never consults the ETag store, so no stored body is bounded here.
+	return c.settle(ctx, ex, answered, resp, body, c.svc.opts.MaxBodyBytes, refreshed)
 }

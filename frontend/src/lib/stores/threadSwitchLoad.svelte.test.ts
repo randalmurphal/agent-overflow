@@ -883,6 +883,19 @@ describe('threadSwitchLoad', () => {
       }
     });
 
+    // Unsaved rows are threads:read state, so a view-only session sees them.
+    it('hydrates unsaved rows under threads:read alone', async () => {
+      await grantBackendScopes(LAPTOP, OBSERVE_SCOPES);
+      setBindingMock('GetThreadUnsavedRows', async (threadId: string) => ({
+        threadId,
+        rows: [{ id: 'unsaved-1', severity: 'warning', message: 'session ended', saveError: 'full', occurredAt: 1 }],
+      }));
+      const pane = createThreadPane();
+      await pane.switchThread(makeThread({ id: 't-laptop' }));
+      expect(pane.unsavedRows?.rows.map((row) => row.id)).toEqual(['unsaved-1']);
+      expect(getBindingMock('GetThreadLiveState')).not.toHaveBeenCalled();
+    });
+
     it('runs them when the thread computer grants threads:operate that home withholds', async () => {
       await pairViewOnly();
       await grantBackendScopes(LAPTOP, [...OBSERVE_SCOPES, 'threads:operate', 'approvals:respond']);

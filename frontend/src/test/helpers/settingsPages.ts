@@ -15,6 +15,13 @@ export async function seedSettingsPages(): Promise<void> {
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('ListThreads', async () => []);
   setBindingMock('ListArchivedThreads', async () => []);
+  // The storage page reads Claude Code's own transcript retention on mount.
+  setBindingMock('GetClaudeTranscriptRetention', async () => ({
+    settingsPath: '/home/test/.claude/settings.json',
+    claudeDays: 30,
+    explicit: false,
+    sessionDays: 0,
+  }));
   setBindingMock('GetThemeFiles', async () => ({
     dir: '/tmp/themes',
     themes: [],
@@ -80,6 +87,7 @@ export async function seedSettingsPages(): Promise<void> {
   setBindingMock('GetWSLDistroPreference', async () => '');
   setBindingMock('GetWebviewGPUVsyncDisabled', async () => false);
   setBindingMock('ListBackends', async () => []);
+  setBindingMock('ReadAloudSource', async () => ({ available: false, voices: [] }));
   resetKeybindingsStore();
   await loadSettings();
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	"agent-overflow/internal/keybindings"
 )
@@ -51,6 +52,13 @@ const (
 	// network hop away and WebView2 wants the Handled answer synchronously —
 	// and reports a match as ReportAccelerator. It addresses no page.
 	OpAccelerators Op = "accelerators"
+	// OpFind opens the page's own find bar (ICoreWebView2Find with the
+	// default dialog) searching for Query, which may be empty. A runtime
+	// without the find API answers ReportFindUnavailable at create and does
+	// nothing here.
+	OpFind Op = "find"
+	// OpFindStop ends the page's find and hides its find bar.
+	OpFindStop Op = "find-stop"
 )
 
 // Directive is one pane-host command. It is the JSON payload of an
@@ -60,6 +68,10 @@ const (
 // launcher validates BEFORE dispatching, so no field below is ever
 // consumed unchecked.
 const maxAccelerators = 2048
+
+// MaxFindQueryBytes bounds OpFind's query. It travels as a UTF-16 string into
+// COM, which cannot carry a NUL.
+const MaxFindQueryBytes = 1024
 
 type Directive struct {
 	Op        Op      `json:"op"`
@@ -91,6 +103,8 @@ type Directive struct {
 	// Accelerators is OpAccelerators' payload: the whole bound set, `mod`
 	// already resolved by the backend.
 	Accelerators []keybindings.Accelerator `json:"accelerators,omitempty"`
+	// Query is OpFind's search term.
+	Query string `json:"query,omitempty"`
 	// Ephemeral asks for an InPrivate profile on create, and on
 	// close-profile says the profile directory is expected to be
 	// discarded. It is meaningless on every other op.
@@ -123,8 +137,19 @@ func (d Directive) Validate() error {
 			return err
 		}
 		return d.validateBounds()
-	case OpShow, OpHide, OpClose, OpDevTools:
+	case OpShow, OpHide, OpClose, OpDevTools, OpFindStop:
 		return ValidatePageID(d.PageID)
+	case OpFind:
+		if err := ValidatePageID(d.PageID); err != nil {
+			return err
+		}
+		if len(d.Query) > MaxFindQueryBytes {
+			return fmt.Errorf("find query of %d bytes exceeds the %d cap", len(d.Query), MaxFindQueryBytes)
+		}
+		if !utf8.ValidString(d.Query) || strings.ContainsRune(d.Query, 0) {
+			return errors.New("find query must be UTF-8 text without NUL")
+		}
+		return nil
 	case OpClearData:
 		// Same strictness as a page op even though nothing here is a page:
 		// the id is echoed back in a report and reaches log lines, and the
@@ -222,6 +247,11 @@ const (
 	// ReportAccelerator carries one keybindings.Accelerator as JSON: a bound
 	// chord the launcher took from the page named by the report's page id.
 	ReportAccelerator ReportKind = "accelerator"
+	// ReportFindUnavailable says the page's runtime has no find API
+	// (ICoreWebView2_28 or ICoreWebView2Environment15 is missing). Sent
+	// before the page's ReportCreated, so the backend knows it before the
+	// page is used.
+	ReportFindUnavailable ReportKind = "find-unavailable"
 )
 
 // RPCReport is the method name the launcher posts its answers under, over
@@ -242,7 +272,7 @@ const MaxReportDetailBytes = 4096
 func ValidKind(kind ReportKind) bool {
 	switch kind {
 	case ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
-		ReportCleared, ReportClearFailed, ReportAccelerator:
+		ReportCleared, ReportClearFailed, ReportAccelerator, ReportFindUnavailable:
 		return true
 	default:
 		return false

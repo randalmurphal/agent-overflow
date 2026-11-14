@@ -8,7 +8,7 @@ session, scheduler, queue, or frontend-lifetime service.
 
 - Accept exact argv or a bounded script plus caller-selected interpreter for a
   registered workspace. Use the destination-owned environment and
-  `procutil.ConfigureGroup`. Never interpolate scripts into another shell
+  `procutil.RunGroup`. Never interpolate scripts into another shell
   command or detach processes implicitly.
 - Persist the immutable request identity, owner, source conversation,
   destination workspace, and digest before spawning. An identical retry returns
@@ -21,10 +21,11 @@ session, scheduler, queue, or frontend-lifetime service.
   asked about for `OwnerGrace` is canceled with a receipt saying so.
   Cancellation, the lease and destination shutdown stop every job. Shutdown
   cancels process groups and joins them before storage closes.
-- The runner owns the output pipe so grandchildren's output is captured,
-  stops the group with SIGTERM then SIGKILL, and sweeps processes left in the
-  group after the leader exits. The receipt keeps the leader's exit code and
-  records the sweep in `warning`.
+- The runner is `procutil.RunGroup`: it owns the output pipe so
+  grandchildren's output is captured, stops the group with SIGTERM then
+  SIGKILL, and sweeps processes left in the group after the leader exits.
+  The receipt keeps the leader's exit code and records the sweep in
+  `warning`.
 - A completion-persistence failure retains the result and capacity slot until it
   is stored or the backend stops. Do not advise rerunning an operation with an
   unknown completion record.

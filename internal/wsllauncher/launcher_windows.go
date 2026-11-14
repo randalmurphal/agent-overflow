@@ -14,6 +14,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"agent-overflow/internal/platform"
 )
 
 func resolveCommand(opts LaunchOptions) CommandRunner {
@@ -78,7 +80,7 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 	runner := resolveCommand(opts)
 	cmd := runner(ctx, "wsl.exe", args...)
 	if len(opts.PassthroughEnv) > 0 {
-		cmd.Env = AppendWSLENV(os.Environ(), opts.PassthroughEnv...)
+		cmd.Env = platform.AppendWSLENV(os.Environ(), opts.PassthroughEnv...)
 	}
 	// CREATE_SUSPENDED + HideWindow:
 	//   - CREATE_SUSPENDED gives us a window to adopt the child into

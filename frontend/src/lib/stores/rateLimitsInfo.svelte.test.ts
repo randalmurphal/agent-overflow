@@ -4,7 +4,9 @@ import {
   getProviderRateLimit,
   getProviderRateLimits,
   getProviderRateLimitsForWindow,
+  getComposerRateLimitWindows,
   rateLimitDisplayName,
+  rateLimitWindowLabel,
   resetForTest,
   setProviderRateLimits,
 } from './rateLimitsInfo.svelte';
@@ -64,7 +66,7 @@ describe('rateLimitsInfo', () => {
     expect(getProviderRateLimit('codex', 300, 'different-account')).toBeNull();
     expect(
       getProviderRateLimitsForWindow('codex', 300, 'different-account'),
-    ).toEqual({ primary: null, limits: [] });
+    ).toEqual({ primary: null, secondary: null, limits: [] });
   });
 
   // A partial reading (Claude's header fallback, a Codex notification)
@@ -574,6 +576,120 @@ describe('rateLimitsInfo', () => {
       'weekly_scoped:fable',
     ]);
     expect(group.limits.map((entry) => entry.usedPercent)).toEqual([52, 99]);
+    expect(group.secondary?.limitId).toBe('weekly_scoped:fable');
+  });
+
+  it('picks the most-used scoped limit as secondary and keeps the list in name order', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 52, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'weekly_scoped:alpha', limitName: 'Alpha', usedPercent: 10, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'weekly_scoped:fable', limitName: 'Fable', usedPercent: 70, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'weekly_scoped:zeta', limitName: 'Zeta', usedPercent: 30, windowMins: 10080, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776283000,
+    });
+
+    const group = getProviderRateLimitsForWindow('claude', 10080);
+    expect(group.secondary?.limitId).toBe('weekly_scoped:fable');
+    expect(group.limits.map((entry) => entry.limitId)).toEqual([
+      'weekly_all',
+      'weekly_scoped:alpha',
+      'weekly_scoped:fable',
+      'weekly_scoped:zeta',
+    ]);
+  });
+
+  it('breaks a secondary tie by display name and ignores a non-finite reading', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 52, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'weekly_scoped:zeta', limitName: 'Zeta', usedPercent: 40, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'weekly_scoped:beta', limitName: 'Beta', usedPercent: 40, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'weekly_scoped:nan', limitName: 'Aardvark', usedPercent: NaN, windowMins: 10080, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776283000,
+    });
+
+    expect(getProviderRateLimitsForWindow('claude', 10080).secondary?.limitId).toBe('weekly_scoped:beta');
+  });
+
+  it('reports no secondary when the account has only the provider-wide limit', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 52, windowMins: 10080, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776283000,
+    });
+
+    expect(getProviderRateLimitsForWindow('claude', 10080).secondary).toBeNull();
+  });
+
+  it('gives the composer the weekly meter alone before an account has a reading', () => {
+    expect(getComposerRateLimitWindows('claude', 'acct')).toEqual([10080]);
+    expect(getComposerRateLimitWindows(undefined)).toEqual([10080]);
+  });
+
+  it('gives the composer one meter per duration with a provider-wide limit, shortest first', () => {
+    const session = { limitId: 'session', limitName: 'Current session', usedPercent: 5, windowMins: 300, resetsAt: 1776300000 };
+    const weekly = { limitId: 'weekly_all', limitName: 'All models', usedPercent: 52, windowMins: 10080, resetsAt: 1776981600 };
+    setProviderRateLimits({
+      provider: 'claude', accountId: 'acct', complete: true, limits: [weekly, session], updatedAt: 1776283000,
+    });
+    expect(getComposerRateLimitWindows('claude', 'acct')).toEqual([300, 10080]);
+    // Other accounts and providers are unaffected.
+    expect(getComposerRateLimitWindows('claude', 'other')).toEqual([10080]);
+    expect(getComposerRateLimitWindows('codex', 'acct')).toEqual([10080]);
+
+    // A complete reading without the 5h limit removes its meter.
+    setProviderRateLimits({
+      provider: 'claude', accountId: 'acct', complete: true, limits: [{ ...weekly, usedPercent: 53 }], updatedAt: 1776283100,
+    });
+    expect(getComposerRateLimitWindows('claude', 'acct')).toEqual([10080]);
+
+    // An account that only has a 5h limit gets only the 5h meter.
+    setProviderRateLimits({
+      provider: 'claude', accountId: 'acct', complete: true, limits: [session], updatedAt: 1776283200,
+    });
+    expect(getComposerRateLimitWindows('claude', 'acct')).toEqual([300]);
+  });
+
+  it('gives the composer no meter for a duration that has only scoped or undated limits', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'acct',
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 52, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'monthly_other', limitName: 'Monthly other', usedPercent: 80, windowMins: 43200, resetsAt: 1779000000 },
+        { limitId: 'session_scoped:fable', limitName: 'Fable', usedPercent: 80, windowMins: 300, resetsAt: 1776300000 },
+        { limitId: 'new_bucket', limitName: 'New bucket', usedPercent: 80, windowMins: 0, resetsAt: 0 },
+      ],
+      updatedAt: 1776283000,
+    });
+    expect(getComposerRateLimitWindows('claude', 'acct')).toEqual([10080]);
+  });
+
+  it('keeps a duration in the composer after its reset boundary passes', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'acct',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 5, windowMins: 300, resetsAt: 1776000060 },
+      ],
+      updatedAt: 1776000000,
+    });
+    vi.setSystemTime(new Date(1_776_000_120_000));
+    expect(getComposerRateLimitWindows('claude', 'acct')).toEqual([300]);
+  });
+
+  it('labels durations the same way for the composer and Settings', () => {
+    expect(rateLimitWindowLabel(300)).toBe('5h');
+    expect(rateLimitWindowLabel(10080)).toBe('7d');
+    expect(rateLimitWindowLabel(1440)).toBe('24h');
+    expect(rateLimitWindowLabel(20)).toBe('1h');
   });
 
   it('keeps scoped-only composer details separate from the account-wide primary', () => {
@@ -587,6 +703,9 @@ describe('rateLimitsInfo', () => {
 
     const group = getProviderRateLimitsForWindow('codex', 300);
     expect(group.primary).toBeNull();
+    expect(group.secondary?.limitId).toBe('spark');
+    // No provider-wide 5h limit, so the composer keeps only its weekly meter.
+    expect(getComposerRateLimitWindows('codex')).toEqual([10080]);
     expect(group.limits.map((entry) => entry.limitId)).toEqual(['spark']);
     expect(getProviderRateLimit('codex', 300)).toBeNull();
   });

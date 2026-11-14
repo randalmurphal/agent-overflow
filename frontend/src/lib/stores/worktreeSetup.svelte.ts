@@ -18,10 +18,11 @@ import { threadHasScope } from '../transport/entityScopes';
 //     above the next expected one means frames were lost, and the snapshot is
 //     re-fetched rather than leaving a hole in the transcript.
 //
-// Events arriving while a hydration is in flight are BUFFERED and replayed on
-// top of the snapshot. Without that, a `finished` frame landing between the
-// backend's read and this store's apply would be overwritten by a snapshot
-// that still said "running", and nothing would ever correct it.
+// Events arriving while a hydration is in flight are buffered and replayed on
+// top of the snapshot (snapshotStream.ts). Without that, a `finished` frame
+// landing between the backend's read and this store's apply would be
+// overwritten by a snapshot that still said "running", and nothing would ever
+// correct it.
 
 import type { WorktreeSetupEvent } from '../types/events';
 import {
@@ -30,6 +31,7 @@ import {
   RetryThreadWorktreeSetup,
 } from './bindings';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+import { createSnapshotStream } from './snapshotStream';
 
 export type WorktreeSetupState = 'idle' | 'running' | 'failed' | 'succeeded' | 'cancelled';
 export type WorktreeSetupStepStatus = 'pending' | 'running' | 'succeeded' | 'failed';
@@ -72,11 +74,12 @@ const views = createKeyedSignalRegistry<WorktreeSetupView | null>(null);
 // a timer, and its view would otherwise survive until the thread is opened.
 const successExpiry = new Map<string, ReturnType<typeof setTimeout>>();
 
-// Keys with a hydration in flight. Presence is what makes an event buffer
-// rather than apply; the array is replayed after the snapshot lands.
-const hydrationBuffers = new Map<string, WorktreeSetupEvent[]>();
-const hydrationTokens = new Map<string, number>();
-let nextHydrationToken = 1;
+const stream = createSnapshotStream<WorktreeSetupEvent, unknown>({
+  name: 'worktreeSetup',
+  read: (threadId) => GetThreadWorktreeSetup(threadId),
+  applySnapshot,
+  applyFrame: applyEvent,
+});
 
 /** Tracked read. Null means this key has nothing to show. */
 export function getWorktreeSetup(key: string): WorktreeSetupView | null {
@@ -95,13 +98,6 @@ export function getWorktreeSetup(key: string): WorktreeSetupView | null {
  */
 export function hasWorktreeSetupSurface(key: string): boolean {
   return views.get(key) !== null;
-}
-
-export function dropWorktreeSetup(key: string): void {
-  cancelSuccessExpiry(key);
-  hydrationBuffers.delete(key);
-  hydrationTokens.delete(key);
-  views.drop(key);
 }
 
 /**
@@ -187,38 +183,10 @@ export async function hydrateWorktreeSetup(threadId: string): Promise<void> {
   // asking would be one refusal per open of any thread whose row says a
   // setup ran.
   if (!threadHasScope('terminal:operate', threadId)) return;
-  await hydrateInto(threadId, () => GetThreadWorktreeSetup(threadId));
+  await stream.hydrate(threadId);
 }
 
-async function hydrateInto(key: string, fetch: () => Promise<unknown>): Promise<void> {
-  const token = nextHydrationToken++;
-  hydrationTokens.set(key, token);
-  // Buffer from here, not from when the response lands: an event that arrives
-  // mid-flight describes state the snapshot may predate.
-  if (!hydrationBuffers.has(key)) hydrationBuffers.set(key, []);
-
-  let snapshot: unknown;
-  try {
-    snapshot = await fetch();
-  } catch (err) {
-    // A failed hydration must not leave the key buffering forever — the
-    // stream would go silent with no way back.
-    if (hydrationTokens.get(key) === token) {
-      hydrationTokens.delete(key);
-      const buffered = hydrationBuffers.get(key) ?? [];
-      hydrationBuffers.delete(key);
-      for (const evt of buffered) applyEvent(key, evt, true);
-    }
-    console.warn(`worktreeSetup: hydrate ${key}: ${String(err)}`);
-    return;
-  }
-  // A newer hydration started while this one was in flight; it owns the buffer
-  // and will replay everything this one would have.
-  if (hydrationTokens.get(key) !== token) return;
-  hydrationTokens.delete(key);
-  const buffered = hydrationBuffers.get(key) ?? [];
-  hydrationBuffers.delete(key);
-
+function applySnapshot(key: string, snapshot: unknown): void {
   const previous = views.get(key);
   const view = viewFromSnapshot(snapshot);
   // A dismissal in flight applies to the run the user dismissed, not to a
@@ -226,34 +194,21 @@ async function hydrateInto(key: string, fetch: () => Promise<unknown>): Promise<
   if (view && previous?.dismissed && previous.runId === view.runId) view.dismissed = true;
   views.set(key, view);
   if (view?.state === 'succeeded') scheduleSuccessExpiry(key, view.runId);
-  // Replayed as reconciliation, not as live input: a chunk still ahead of the
-  // snapshot here must not start another hydration, or a fast-streaming run
-  // could re-enter this path indefinitely.
-  for (const evt of buffered) applyEvent(key, evt, true);
 }
 
 /** Fan-in target of eventsWorktreeSetup.ts. */
 export function applyWorktreeSetupEvent(evt: WorktreeSetupEvent): void {
   const threadId = evt?.threadId ?? '';
   if (!threadId) return;
-  const key = threadId;
-  const buffer = hydrationBuffers.get(key);
-  if (buffer) {
-    buffer.push(evt);
-    return;
-  }
-  applyEvent(key, evt, false);
+  stream.push(threadId, evt);
 }
 
+// Starts no read for an event the stream is replaying over a snapshot.
 function rehydrate(key: string): void {
   void hydrateWorktreeSetup(key);
 }
 
-function applyEvent(
-  key: string,
-  evt: WorktreeSetupEvent,
-  replaying: boolean,
-): void {
+function applyEvent(key: string, evt: WorktreeSetupEvent): void {
   switch (evt.phase) {
     case 'started': {
       const steps = evt.steps ?? [];
@@ -273,16 +228,16 @@ function applyEvent(
       return;
     }
     case 'step-started':
-      patchStepStatus(key, evt, 'running', replaying);
+      patchStepStatus(key, evt, 'running');
       return;
     case 'step-finished':
-      patchStepStatus(key, evt, evt.state === 'failed' ? 'failed' : 'succeeded', replaying);
+      patchStepStatus(key, evt, evt.state === 'failed' ? 'failed' : 'succeeded');
       return;
     case 'output':
-      appendOutput(key, evt, replaying);
+      appendOutput(key, evt);
       return;
     case 'finished':
-      finishRun(key, evt, replaying);
+      finishRun(key, evt);
       return;
     default:
       // A phase this client doesn't know is a backend/frontend version skew.
@@ -295,14 +250,10 @@ function applyEvent(
  * Resolves the view an event applies to, or requests a hydration when the
  * event describes a run this client never saw start.
  */
-function currentRun(
-  key: string,
-  evt: WorktreeSetupEvent,
-  replaying: boolean,
-): WorktreeSetupView | null {
+function currentRun(key: string, evt: WorktreeSetupEvent): WorktreeSetupView | null {
   const view = views.get(key);
   if (view && view.runId === evt.runId) return view;
-  if (!replaying) rehydrate(key);
+  rehydrate(key);
   return null;
 }
 
@@ -310,9 +261,8 @@ function patchStepStatus(
   key: string,
   evt: WorktreeSetupEvent,
   status: WorktreeSetupStepStatus,
-  replaying: boolean,
 ): void {
-  const view = currentRun(key, evt, replaying);
+  const view = currentRun(key, evt);
   if (!view) return;
   const index = evt.stepIndex ?? -1;
   if (index < 0 || index >= view.stepStatuses.length) return;
@@ -322,13 +272,13 @@ function patchStepStatus(
   views.set(key, { ...view, stepStatuses });
 }
 
-function appendOutput(key: string, evt: WorktreeSetupEvent, replaying: boolean): void {
-  const view = currentRun(key, evt, replaying);
+function appendOutput(key: string, evt: WorktreeSetupEvent): void {
+  const view = currentRun(key, evt);
   if (!view) return;
   const seq = evt.seq ?? 0;
   // Already folded in by a snapshot that raced this frame.
   if (seq <= view.outputSeq) return;
-  if (seq > view.outputSeq + 1 && !replaying) {
+  if (seq > view.outputSeq + 1) {
     // Frames were lost. Take what we have so the panel keeps moving, and pull
     // the tail — which contains the whole run — to fill the hole.
     rehydrate(key);
@@ -340,8 +290,8 @@ function appendOutput(key: string, evt: WorktreeSetupEvent, replaying: boolean):
   });
 }
 
-function finishRun(key: string, evt: WorktreeSetupEvent, replaying: boolean): void {
-  const view = currentRun(key, evt, replaying);
+function finishRun(key: string, evt: WorktreeSetupEvent): void {
+  const view = currentRun(key, evt);
   if (!view) return;
   const state = normalizeState(evt.state);
   if (state === 'cancelled') {
@@ -409,8 +359,6 @@ function normalizeStepStatus(status: string): WorktreeSetupStepStatus {
 export function resetWorktreeSetupForTest(): void {
   for (const timer of successExpiry.values()) clearTimeout(timer);
   successExpiry.clear();
-  hydrationBuffers.clear();
-  hydrationTokens.clear();
-  nextHydrationToken = 1;
+  stream.reset();
   views.reset();
 }

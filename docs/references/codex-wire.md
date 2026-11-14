@@ -139,7 +139,7 @@ Authoritative method list from
 | `rawResponseItem/completed` | Raw response items: `spawn_agent` / `wait_agent` / `write_stdin` enrichment and the live mailbox carrier. Only available on a fresh `thread/start` with `experimentalRawEvents`. See §`<subagent_notification>`. |
 | `item/mcpToolCall/progress`, `item/autoApprovalReview/started`, `item/autoApprovalReview/completed` | Recognised and dropped (consumed, so never opted out). |
 | `autoApprovalReview/strictReviewRequired` | 0.149. Reachable only in the `auto` runtime mode: strict review replaced the cheap in-line assessment, so tool calls slow down. One warning row; the payload carries no reason. |
-| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each, except the runs of the thread's own SessionStart and UserPromptSubmit hooks (`source` `sessionFlags`), which render none. See §SessionStart hooks. |
+| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each, except the runs of the thread's own SessionStart and UserPromptSubmit hooks (`source` `sessionFlags`), which render none. `run.eventName` and `run.status` are camelCase (`HookEventName`, `HookRunStatus`: `running`, `completed`, `failed`, `blocked`, `stopped`). `preModelRequest` and `postModelRequest` (0.164) fire around every model request, so they get no row on `hook/started` and a row on `hook/completed` only when the status is not `completed`. Codex does not write hook runs to the rollout. See §SessionStart hooks. |
 | `thread/started` | Session-level. First notification on a new thread; emits `EventSessionInit`. |
 | `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
 | `thread/archived`, `thread/unarchived`, `thread/closed` | Recognised, no event. |
@@ -154,7 +154,7 @@ Authoritative method list from
 | `account/updated`, `account/login/completed` | Recognised, no event. A SESSION never signs in, so neither is acted on there; the sign-in connection is a separate process that opts out of everything except `account/login/completed` and settles on it. See §Account sign-in. |
 | `model/rerouted` | Model reroute notice (Codex fell back to a different model). |
 | `model/verification` | Model-verification warning row. |
-| `model/safetyBuffering/updated` | Response held while OpenAI reviews the turn. Emits a notification row on the show edge only. |
+| `model/safetyBuffering/updated` | OpenAI held a response for review. Repeats on every stream frame of that response; one notification row per turn. |
 | `mcpServer/startupStatus/updated` | Per-server MCP startup delta. Side channel to the App's status cache, not a transcript event. |
 | `mcpServer/oauthLogin/completed` | Side channel: an MCP server finished its OAuth login. |
 | `serverRequest/resolved` | A previously-sent server request (approval / elicitation) was resolved. `EventApprovalResolved`. |
@@ -173,8 +173,8 @@ methods for that connection before serializing them
 an unrecognized entry is inert. Agent Overflow sends the complement of
 what it consumes. See `internal/provider/codex/notification_catalog.go`,
 whose catalogue is the `server_notification_definitions!` block at
-`codex-rs/app-server-protocol/src/protocol/common.rs` @ **rust-v0.149.0**
-(77 entries). A method upstream adds and the catalogue has not listed is
+`codex-rs/app-server-protocol/src/protocol/common.rs` @ **rust-v0.168.0**
+(88 entries). A method upstream adds and the catalogue has not listed is
 never opted out: it arrives, no classifier claims it, and the per-session
 drift log names it once.
 
@@ -229,6 +229,20 @@ the parent's usage accounting and is never emitted as `EventTokenUsage`.
 This is the only channel through which a child's usage is visible on the
 parent thread. AO's suppression and carve-out rules are in
 [`internal/provider/codex/AGENTS.md` §Routing and collaboration](../../internal/provider/codex/AGENTS.md#routing-and-collaboration).
+
+### `account/read`
+
+`{account, requiresOpenaiAuth}`; `account` is tagged by `type`. The `chatgpt`
+variant carries `email` (nullable), `planType` and, from 0.166,
+`workspaceName`: the display name of the selected ChatGPT workspace, `null`
+when unknown and absent on older versions. AO reads it as
+`AccountInfo.OrgName`. Codex has no other source for the name, so a
+successful `chatgpt` answer with an email is marked `OrgNameReported` and its
+blank clears the saved name (`provideraccounts.mergeOrgFields`); a failed
+read, a missing email or another account type leaves it. Every attributed
+answer, including an inactive account's usage refresh, records its name and
+plan on that account (`accountIDForObservedIdentity`). AO takes the workspace
+id from `auth.json` (`CredentialOrgID`), not from this response.
 
 ### `account/rateLimits/updated` and `account/rateLimits/read`
 
@@ -542,6 +556,31 @@ input) lands. The `item/started userMessage` half is still
 dropped: there is no UI signal for the in-flight envelope.
 Mirrors the Claude side's `isReplay:true` promotion in
 `internal/provider/claude/parse_user.go`.
+
+### `thread/shellCommand` and the user shell record (verified 0.163.0)
+
+`thread/shellCommand` runs a command for the person and records it in the
+rollout, but never starts a model reply. The record's text is:
+
+```
+<user_shell_command>
+<command>
+{command}
+</command>
+<result>
+Exit code: {n}
+Duration: {seconds:.4f} seconds
+Output:
+{output}
+</result>
+</user_shell_command>
+```
+
+The same text sent as an ordinary `turn/start` or `turn/steer` input is
+read by the model the same way and gets a reply; it is stored as a plain
+`userMessage`. Agent Overflow's composer shell commands run the command
+themselves and send this text (`internal/provider/codex/user_shell.go`), so
+both providers answer a command. A timeout is exit code 124.
 
 ### `status` values (per ItemType)
 
@@ -1417,13 +1456,20 @@ no such rows and retires only its own legacy ones before the resume
             "showBufferingUi": true, "fasterModel": "gpt-5.6-luna"}}
 ```
 
-The model's response is being held while OpenAI reviews it. `reasons`
-and `useCases` are server-authored free-form strings, not a closed enum
+OpenAI held the model's response for review. `reasons` and `useCases`
+are server-authored free-form strings, not a closed enum
 (`codex-rs/core/src/session/turn.rs` passes the response's lists
 straight through), so render them verbatim rather than mapping them.
-`showBufferingUi: false` is the hold ending. The Codex TUI ignores this
-notification entirely; without surfacing it a client is
-indistinguishable from a hung app during the hold.
+
+The signal is a level, not an edge. Codex derives it from every stream
+frame that carries `safety_buffering` and forwards each one
+(`codex-rs/codex-api/src/sse/responses.rs`), so a held answer repeats it
+once per delta, and it arrives with the response rather than ahead of
+it. `showBufferingUi` is always `true` on the wire; nothing announces
+the hold ending. The session emits the first notice of each turn and
+drops the rest (`claimSafetyBufferingNotice`). The Codex TUI collapses
+the repeats the same way and stops reacting once the agent message
+starts (`codex-rs/tui/src/chatwidget/safety_buffering.rs`).
 
 ### `mcpServer/startupStatus/updated`
 
@@ -1698,15 +1744,14 @@ missing either, since it could be shown but not invoked.
 Types: [`codex-rs/app-server-protocol/src/protocol/v2/review.rs`](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/review.rs).
 `ReviewStart => "review/start"` with `serialization:
 thread_id(params.thread_id)`; **not** `#[experimental]`. Since codex
-0.59.0; `detached` delivery since 0.64.0.
+0.59.0.
 
 ```json
 {"method": "review/start",
- "params": {"threadId": "...",
-            "target": {"type": "baseBranch", "branch": "main"},
-            "delivery": "detached"}}
+ "params": {"threadId": "thread-1",
+            "target": {"type": "baseBranch", "branch": "main"}}}
 → {"turn": {"id": "turn-1", "items": [], "status": "inProgress"},
-   "reviewThreadId": "review-thread-9"}
+   "reviewThreadId": "thread-1"}
 ```
 
 `ReviewTarget` is an internally-tagged union: `#[serde(tag = "type",
@@ -1725,15 +1770,13 @@ variant:
 `commit.title` is `Option<String>` with **no** `skip_serializing_if`, so
 the key is always present and `null` when there is no label.
 
-`delivery` ∈ `"inline"` (default when omitted) | `"detached"`
-(`ReviewDelivery`, camelCase via `v2_enum_from_core!`).
+AO omits `delivery`. Omitted means inline on every supported version, and
+since 0.166.0 `"inline"` is the only value (`ReviewDelivery`).
 
-⚠ **Route on the returned `reviewThreadId`, never on the requested
-delivery and never on your own thread id.** Upstream's TUI does exactly
-this (`codex-rs/tui/src/app/thread_routing.rs`). For an inline review the
-returned id is the original thread; for a detached one it is a freshly
-created thread. Assuming inline means the original thread happens to be
-true today and is not what the protocol promises.
+`reviewThreadId` names the thread the review runs on; upstream's TUI
+routes on it (`codex-rs/tui/src/app/thread_routing.rs`). AO verifies it
+equals the requesting thread and treats any other id, or a missing one, as
+a protocol fault.
 
 The transcript is bracketed by two thread items
 (`codex-rs/app-server-protocol/src/protocol/v2/item.rs`):
@@ -1771,8 +1814,9 @@ top-level sourced `command_result`, so it reads as "Code review result"
 without claiming the parent agent authored it.
 
 `config/read` resolves `review_model`; the parent model is the fallback. A
-DETACHED review is still refused because its returned thread is not registered
-with this session's routing tables.
+response naming another thread, or none, fails the send and closes the
+session, because a review elsewhere cannot be scoped or interrupted through
+it.
 
 On disk, the root rollout contains the review boundary and formatted result,
 while a separate `source:{"subagent":"review"}` rollout contains the reviewer
@@ -2147,9 +2191,8 @@ Five facts that decide how a client must call it:
 - **It is NOT refused mid-turn.** The handler subscribes to shutdown events,
   submits a shutdown, waits for both the runtime and listener to drain, reverts,
   then reloads the runtime with
-  `has_live_in_progress_turn = false`. AO uses that whole operation for an Esc
-  un-send. It does not send a separate `turn/interrupt` or replace the
-  app-server connection around the cut.
+  `has_live_in_progress_turn = false`. AO's in-place cut keeps the live
+  app-server connection around it (`rollbackCodexThreadToMessage`).
 - **Nothing is destroyed on disk.** `revert_thread` writes a NEW immutable
   rollout referencing the retained prefix and moves only the SQLite
   rollout pointer (`codex-rs/thread-store/src/local/revert_thread.rs`),
@@ -2181,10 +2224,9 @@ Checked against rust-v0.150.1 for every consumer of thread shape:
   validate the resulting tail with one descending
   `thread/turns/list {itemsView:"notLoaded", limit:1}` page. The one
   paginated-specific fork refusal needs `ephemeral: true`.
-- Two methods are refused outright on a paginated thread: `thread/rollback`
-  ("paginated threads do not support thread/rollback") and DETACHED review
-  ("paginated threads do not support detached review",
-  `turn_processor.rs:1308`). Inline review is unaffected.
+- `thread/rollback` is refused outright on a paginated thread
+  ("paginated threads do not support thread/rollback"). Review is
+  unaffected.
 - Rollout persistence: `RolloutItem::ResponseItem` and
   `RolloutItem::InterAgentCommunication` are written in BOTH modes
   (`codex-rs/rollout/src/policy.rs`). What paginated drops is the legacy
@@ -2481,7 +2523,8 @@ wrong-shape request from a refused one.
 
 ## Wire surface Agent Overflow declines
 
-Everything below exists at rust-v0.150.1 and is deliberately not consumed.
+Everything below exists at rust-v0.150.1, or at the later version its entry
+names, and is deliberately not consumed.
 Listed so a future sync can tell "we have not looked at this" from "we looked
 and declined". None of these methods is in `codexNotificationCatalog`'s
 consumed set, and the notification methods here are opted out at initialize.
@@ -2508,6 +2551,12 @@ consumed set, and the notification methods here are opted out at initialize.
 - `thread/realtime/item/started`, `thread/realtime/item/transcript/delta`,
   `thread/realtime/item/completed` (0.150): AO starts no realtime session.
   Historical `realtime_item` transcript segments are still imported.
+- `thread/attachment/updated` (0.155), `account/gatewayOAuth/changed`
+  (0.157), `thread/prediction/updated` (0.161), `thread/readState/changed`
+  (0.163), `thread/section/changed` (0.167): thread and account surfaces AO
+  has no UI for.
+- `modelProvider/authRecoveryStarted` / `authRecoveryCompleted` (0.152):
+  progress text for a credential refresh inside one request.
 - `thread/rollback`: deprecated upstream, mutates in place, and its `num_turns`
   counts user-MESSAGE boundaries rather than wire turns.
 - `close_agent` / `write_stdin`: model tools, not client-callable.

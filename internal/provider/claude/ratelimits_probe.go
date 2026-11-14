@@ -240,11 +240,14 @@ func loadOAuthBearer(data []byte) (string, error) {
 	return token, nil
 }
 
+// UsageURL is the OAuth usage endpoint the rate-limit probe reads.
+const UsageURL = anthropicAPIBaseURL + "/api/oauth/usage"
+
 func executeUsageProbe(ctx context.Context, httpClient *http.Client, bearer string) ([]byte, http.Header, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, anthropicAPIBaseURL+"/api/oauth/usage", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, UsageURL, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("claude: build usage request: %w", err)
 	}

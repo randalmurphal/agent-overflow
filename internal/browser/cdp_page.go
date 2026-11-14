@@ -130,9 +130,20 @@ func (p *cdpPage) installHandlers() error {
 	onTargetEvent(ctx, page.FrameAttached, logf, func(event page.EventFrameAttached) {
 		p.frames.attached(event.FrameID)
 	})
+	// Page.frameNavigated fires when a frame is associated with a new loader,
+	// that is a new document; a same-document navigation fires
+	// Page.navigatedWithinDocument instead (DevTools protocol, Page domain).
+	// The commit is ordered where the event arrives, on chromedp's event
+	// goroutine; nothing on that goroutine waits for the Manager.
 	onTargetEvent(ctx, page.FrameNavigated, logf, func(event page.EventFrameNavigated) {
-		if event.Frame != nil {
-			p.frames.navigated(event.Frame.ID)
+		if event.Frame == nil {
+			return
+		}
+		p.frames.navigated(event.Frame.ID)
+		if event.Frame.ParentID == "" && p.hooks.DocumentCommitted != nil {
+			if finish := p.hooks.DocumentCommitted(); finish != nil {
+				finish()
+			}
 		}
 	})
 	onTargetEvent(ctx, page.FrameDetached, logf, func(event page.EventFrameDetached) {

@@ -66,7 +66,7 @@ test('a pull request diff past 10 MiB and past the browser height limit opens an
 
   await expect(review.getByTestId('review-diff-stats')).toHaveText(`${FILES} files +${FILES * LINES}`, { timeout: 60_000 });
   await expect(review.getByTestId('review-error')).toHaveCount(0);
-  // Files over 400 rows start collapsed.
+  // Files over 5000 rows start collapsed.
   const expandAll = review.getByTestId('review-collapse-all-toggle');
   await expect(expandAll).toHaveAccessibleName('Expand all files');
   await expandAll.click();

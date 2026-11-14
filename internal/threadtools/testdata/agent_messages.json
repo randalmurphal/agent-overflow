@@ -525,6 +525,48 @@
     ]
   },
   {
+    "name": "interrupted by a workflow, its recorded cause",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: Its workflow stopped the turn before it answered.",
+    "parts": [
+      {
+        "body": "Its workflow stopped the turn before it answered.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by the person's Stop with no last message recorded",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The person stopped this turn before it answered.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the person",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
     "name": "interrupted with no reason recorded",
     "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The turn was interrupted before it answered.",
     "parts": [

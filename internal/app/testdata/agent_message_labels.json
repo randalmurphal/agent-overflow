@@ -78,6 +78,12 @@
     "label": "Worker"
   },
   {
+    "name": "a stop with its recorded cause",
+    "text": "\"Worker\" (t-worker) [token tok-1]: Its workflow stopped the turn before it answered.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker: Its workflow stopped the turn before it answered."
+  },
+  {
     "name": "a session that ended: The thread's session ended before it read the request.",
     "text": "\"Worker\" (t-worker) [token tok-1]: The thread's session ended before it read the request.",
     "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",

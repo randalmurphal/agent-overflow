@@ -551,6 +551,7 @@ export interface MockSessionConfig {
   /** Codex: the report came from thread/resume in a process that only resumed. */
   resumed?: boolean;
   bashMaxTimeoutMs?: string;
+  cleanupPeriodDays?: number;
 }
 
 /** One message a Codex mock received through `thread/inject_items`. */

@@ -139,15 +139,16 @@ func (a *App) mcpDeps() mcpapp.Deps {
 		SessionProcessEnv: func(providerName string) map[string]string {
 			return a.sessionProcessEnv(providerName, nil, aoSessionCredential{})
 		},
-		ReadClaudeCredential: a.readClaudeMCPCredential,
-		ClaudeConfigPath:     a.claudeConfigJSONPath,
-		CodexConfigPath:      a.codexConfigTOMLPath,
-		Emit:                 a.emit,
-		EmitThreadError:      a.emitErrorToThread,
-		EmitWireError:        a.emitWireErrorToThread,
-		Store:                a.store,
-		Logger:               a.logger,
-		ShutdownError:        ErrShuttingDown,
+		ClaudeCleanupPeriodDays: a.claudeCleanupPeriodDays,
+		ReadClaudeCredential:    a.readClaudeMCPCredential,
+		ClaudeConfigPath:        a.claudeConfigJSONPath,
+		CodexConfigPath:         a.codexConfigTOMLPath,
+		Emit:                    a.emit,
+		EmitThreadError:         a.emitErrorToThread,
+		EmitWireError:           a.emitWireErrorToThread,
+		Store:                   a.store,
+		Logger:                  a.logger,
+		ShutdownError:           ErrShuttingDown,
 	}
 }
 
@@ -162,7 +163,7 @@ func (a *App) readClaudeMCPCredential() ([]byte, error) {
 	if !present {
 		return nil, fs.ErrNotExist
 	}
-	return snapshot.Data, nil
+	return snapshot.Bytes(), nil
 }
 
 func mcpAuthInitResult(result mcpapp.MCPAuthInitResult) MCPAuthInitResult {

@@ -20,6 +20,7 @@ import (
 type parserHarness struct {
 	rec    *reconstructor
 	events *[]provider.ProviderEvent
+	parser *claude.Parser
 }
 
 func newParserHarness(t *testing.T) parserHarness {
@@ -33,7 +34,7 @@ func newParserHarness(t *testing.T) parserHarness {
 		}
 		*out = append(*out, evs...)
 	})
-	return parserHarness{rec: rec, events: out}
+	return parserHarness{rec: rec, events: out, parser: parser}
 }
 
 // runMain drives one main-loop request (registers any Agent launches at end()).
@@ -55,11 +56,24 @@ func (h parserHarness) runMain(t *testing.T, reqBody string, sse []string) {
 // matching the gateway).
 func (h parserHarness) runSubagent(t *testing.T, agentID, firstUser string, sse []string) string {
 	t.Helper()
+	return h.runSubagentRequest(t, agentID, firstUser, "", sse)
+}
+
+// runSubagentRequest is runSubagent for a request with the given body ("" for
+// none).
+func (h parserHarness) runSubagentRequest(t *testing.T, agentID, firstUser, reqBody string, sse []string) string {
+	t.Helper()
 	parent := h.rec.resolveSubagentParent(agentID, firstUser)
 	if parent == "" {
 		return ""
 	}
-	ar := h.rec.beginSubagentRequest(parent)
+	var req *messagesRequest
+	if reqBody != "" {
+		if _, req = classifyRequest([]byte(reqBody)); req == nil {
+			t.Fatalf("classifyRequest(%s) did not yield a request", reqBody)
+		}
+	}
+	ar := h.rec.beginSubagentRequest(parent, req)
 	for _, s := range sse {
 		ar.onSSE(json.RawMessage(s))
 	}

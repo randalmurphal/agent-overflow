@@ -113,6 +113,8 @@ func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, de
 	// A move takes the conversation away from the computer that owns its
 	// remote commands; stop them before fencing the thread. A copy leaves
 	// the original in place and waits for them like any other pending work.
+	// Stopping them is the move's first effect, so from there the fence is
+	// recorded whether or not the caller still waits.
 	if kind == "move" {
 		// An assistant stays on this computer, so its current thread does
 		// not move. Refused before the stops below change anything; the
@@ -122,6 +124,7 @@ func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, de
 		} else if found {
 			return ThreadTransferIntent{}, errAssistantStays
 		}
+		ctx = context.WithoutCancel(ctx)
 		if err := a.cancelThreadRemoteCommands(ctx, threadID, false); err != nil {
 			return ThreadTransferIntent{}, err
 		}

@@ -86,6 +86,10 @@ func importTransferAttachment(tx *sql.Tx, a Attachment) error {
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO attachments (`+attachmentColumns+`) VALUES (?,?,?,?,?,?,?,?)`, a.ID, a.ThreadID, a.Filename, a.MimeType, a.Size, a.RelativePath, a.CreatedAt, a.Kind)
+	shell, err := a.Shell.column()
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO attachments (`+attachmentColumns+`) VALUES (?,?,?,?,?,?,?,?,?)`, a.ID, a.ThreadID, a.Filename, a.MimeType, a.Size, a.RelativePath, a.CreatedAt, a.Kind, shell)
 	return err
 }

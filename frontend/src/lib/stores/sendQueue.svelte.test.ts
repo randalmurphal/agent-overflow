@@ -2,6 +2,8 @@ import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app
 import { buildSendOptions } from '../utils/sendOptions';
 import { makeItem as makeChatItem } from '../../test/helpers/chat';
 import { describe, it, expect, beforeEach } from 'vitest';
+import { flushSync } from 'svelte';
+import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
   clearForThread,
   registerQueueItem,
@@ -17,6 +19,7 @@ import {
   replaceFlushedForThread,
   replaceQueueForThread,
   resetForTest as resetSendQueueForTest,
+  settleFlushed,
   type QueueItem,
 } from './sendQueue.svelte';
 
@@ -75,6 +78,18 @@ describe('sendQueue store', () => {
     ].map((item, index) => (index === 0 ? { ...item, agentMessage: true } : item)));
     expect(personPendingMessages('t1')).toEqual(['mine, sent', 'mine, queued']);
     expect(personPendingMessages(null)).toEqual([]);
+  });
+
+  it('settles a flushed agent message with the person\'s, keeping it out of the person\'s messages', () => {
+    const mark = (sequence: number) => ({ backend: 'home', launchId: 'launch-1', sequence });
+    markItemsFlushed('t1', [{ queueItemId: 'q:wake', userItemId: 'u:wake', message: 'a wake', agentMessage: true }], mark(1));
+    markItemsFlushed('t1', [{ queueItemId: 'q:mine', userItemId: 'u:mine', message: 'mine' }], mark(2));
+    expect(getFlushedForThread('t1')[0]).toMatchObject({ agentMessage: true, flushMark: mark(1) });
+    expect(personPendingMessages('t1')).toEqual(['mine']);
+    settleFlushed('t1', mark(1), false);
+    expect(getFlushedForThread('t1').map((entry) => entry.userItemId)).toEqual(['u:mine']);
+    settleFlushed('t1', mark(2), false);
+    expect(getFlushedForThread('t1')).toEqual([]);
   });
 
   describe('Zone 2 (flushed)', () => {
@@ -298,6 +313,39 @@ describe('sendQueue store', () => {
       expect(getQueueForThread('t1')).toHaveLength(0);
       expect(getFlushedForThread('t1')).toHaveLength(0);
       expect(getQueueForThread('t2')).toHaveLength(1);
+    });
+  });
+
+  describe('readers across clearForThread', () => {
+    it('a mounted reader sees a message queued after a clear of a drained thread', () => {
+      // A thread that queued once and drained holds both zones empty. A
+      // clear at that point (a revert, an
+      // archive) changes nothing a reader can see, and the reader must
+      // still follow the thread's next queued message.
+      replaceQueueForThread('t1', [makeItem({ message: 'first', threadId: 't1' })]);
+      markItemsFlushed('t1', [{ queueItemId: 'queue:first', userItemId: 'user:flush:first', message: 'first' }]);
+      const queued = probeReactivity(() => getQueueForThread('t1'));
+      const flushed = probeReactivity(() => getFlushedForThread('t1'));
+      try {
+        confirmFlushedByUserItemId('t1', 'user:flush:first');
+        flushSync();
+        expect(queued.latest).toEqual([]);
+        expect(flushed.latest).toEqual([]);
+
+        clearForThread('t1');
+        flushSync();
+
+        replaceQueueForThread('t1', [makeItem({ message: 'second', threadId: 't1' })]);
+        flushSync();
+        expect(queued.latest.map((item) => item.message)).toEqual(['second']);
+        markItemsFlushed('t1', [{ queueItemId: 'queue:second', userItemId: 'user:flush:second', message: 'second' }]);
+        flushSync();
+        expect(queued.latest).toEqual([]);
+        expect(flushed.latest.map((item) => item.message)).toEqual(['second']);
+      } finally {
+        queued.dispose();
+        flushed.dispose();
+      }
     });
   });
 

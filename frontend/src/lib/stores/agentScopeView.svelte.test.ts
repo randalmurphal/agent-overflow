@@ -523,6 +523,18 @@ describe('independent agent timeline', () => {
     expect(recovery.mock.calls[0][1]).toMatchObject({ selection: { scopeRootId: root.id } });
   });
 
+  it('a removal that invalidates pending reads releases a lookup\'s paging claims', async () => {
+    const pane = await setup();
+    const view = await open(pane);
+    setBindingMock('GetThreadItem', () => new Promise(() => {}));
+    void view.pane.loadUntilItem('unloaded');
+    expect(view.pane.loadingOlder && view.pane.loadingNewer).toBe(true);
+    applyItemStreamEvent({ action: 'remove', threadId, itemId: 'child' });
+    flushItemEventQueue();
+    expect(view.pane.loadingOlder).toBe(false);
+    expect(view.pane.loadingNewer).toBe(false);
+  });
+
   it('retains loaded rows on both sides of an escaped reading anchor during recovery', async () => {
     const pane = await setup([root]);
     setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page([row('early', 1), row('middle', 5), row('late', 10)], false, true) }));
@@ -577,6 +589,17 @@ describe('independent agent timeline', () => {
     push(row('nested-done', 2, { kind: 'tool_completion', completionOf: nested.id, summary: 'nested result' }));
     expect(view.items.map(item => item.id)).toEqual(['nested', 'nested-done']);
     expect(pane.getItemById(root.id)).toMatchObject({ summary: 'original launch', status: 'completed' });
+  });
+
+  it('reads and settles a send awaiting confirmation on the thread pane', async () => {
+    const pane = await setup();
+    const view = await open(pane);
+    view.pane.awaitSendConfirmation('mine');
+    expect(pane.sendAwaitingConfirmation).toBe(true);
+    expect(view.pane.sendAwaitingConfirmation).toBe(true);
+    view.pane.confirmSend(threadId, 'mine');
+    expect(pane.sendAwaitingConfirmation).toBe(false);
+    expect(view.pane.sendAwaitingConfirmation).toBe(false);
   });
 
   it('owns streaming reveal and releases it without touching another scope', async () => {

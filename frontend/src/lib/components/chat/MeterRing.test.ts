@@ -91,6 +91,55 @@ describe('<MeterRing>', () => {
     expect(Number(arc.getAttribute('stroke-dashoffset'))).toBeCloseTo(CIRCUMFERENCE, 6);
   });
 
+  it('draws a single ring at the full stroke width without an inner limit', () => {
+    const { container } = renderRing();
+    const circles = [...container.querySelectorAll('svg circle')];
+    expect(circles.map((c) => c.getAttribute('r'))).toEqual(['11.375', '11.375']);
+    expect(circles.map((c) => c.getAttribute('stroke-width'))).toEqual(['3.5', '3.5']);
+    expect(container.querySelector('[data-meter-arc="inner"]')).toBeNull();
+  });
+
+  // With an inner limit both rings thin to fit the same 28-unit box: the
+  // main limit outside (outer edge 13 of 14), the inner one a unit inside it.
+  it('draws two thin concentric rings when an inner limit is given', () => {
+    const { container } = renderRing({
+      percentage: 50,
+      inner: { percentage: 25, strokeClass: 'stroke-error' },
+    });
+    const circles = [...container.querySelectorAll('svg circle')];
+    expect(circles.map((c) => c.getAttribute('r'))).toEqual(['12', '12', '9', '9']);
+    expect(circles.map((c) => c.getAttribute('stroke-width'))).toEqual(['2', '2', '2', '2']);
+
+    const main = container.querySelector('[data-meter-arc="main"]')!;
+    expect(main.getAttribute('class')).toContain('stroke-fg-subtle');
+    expect(Number(main.getAttribute('stroke-dashoffset'))).toBeCloseTo(Math.PI * 12, 6);
+
+    const inner = container.querySelector('[data-meter-arc="inner"]')!;
+    expect(inner.getAttribute('class')).toContain('stroke-error');
+    expect(Number(inner.getAttribute('stroke-dasharray'))).toBeCloseTo(2 * Math.PI * 9, 6);
+    expect(Number(inner.getAttribute('stroke-dashoffset'))).toBeCloseTo(2 * Math.PI * 9 * 0.75, 6);
+    // The viewBox and label are unchanged, so the meter keeps its footprint.
+    expect(container.querySelector('svg')!.getAttribute('viewBox')).toBe('0 0 28 28');
+    expect(container.querySelector('svg text')!.textContent).toBe('34');
+  });
+
+  it('guards the inner percentage against out-of-range and non-finite values', () => {
+    const over = renderRing({ inner: { percentage: 150, strokeClass: 'stroke-error' } });
+    expect(Number(over.container.querySelector('[data-meter-arc="inner"]')!.getAttribute('stroke-dashoffset'))).toBe(0);
+    const nan = renderRing({ inner: { percentage: NaN, strokeClass: 'stroke-error' } });
+    expect(Number(nan.container.querySelector('[data-meter-arc="inner"]')!.getAttribute('stroke-dashoffset')))
+      .toBeCloseTo(2 * Math.PI * 9, 6);
+  });
+
+  it('returns to the single ring when the inner limit goes away', async () => {
+    const { container, rerender } = renderRing({ inner: { percentage: 25, strokeClass: 'stroke-error' } });
+    expect(container.querySelectorAll('svg circle').length).toBe(4);
+    await rerender({ inner: undefined });
+    const circles = [...container.querySelectorAll('svg circle')];
+    expect(circles.map((c) => c.getAttribute('r'))).toEqual(['11.375', '11.375']);
+    expect(circles.map((c) => c.getAttribute('stroke-width'))).toEqual(['3.5', '3.5']);
+  });
+
   it('omits the arc when showArc is false, leaving only the track', () => {
     const { container } = renderRing({ showArc: false });
     expect(container.querySelectorAll('svg circle').length).toBe(1);

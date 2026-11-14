@@ -10,8 +10,11 @@
   } from '../../stores/threadPaneRoles';
   import ChatMarkdown from './ChatMarkdown.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
+  import ReadAloudButton from './ReadAloudButton.svelte';
+  import ReadAloudSections from './ReadAloudSections.svelte';
+  import { readAloudAvailable, readAloudPosition, replyReadingKey } from '../../stores/readAloud.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getAuthoredWorkspaceFromMeta, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { formatTimeOfDay } from '../../utils/format';
   import { getSettings } from '../../stores/settings.svelte';
   import { copyMarkdownToClipboard } from '../../utils/markdownClipboard';
@@ -26,7 +29,7 @@
   import type { StreamingAssistantRenderContext } from '../../stores/streamingAssistantReveal';
   import { previewRewriteKey } from '../../stores/devServers.svelte';
   import { hasScope } from '../../transport/scopes';
-  import { threadMachine } from '../../stores/attachedBackends.svelte';
+  import { threadMachine, verifiedThreadMachine } from '../../stores/attachedBackends.svelte';
   import { isHarnessSession } from '../../transport/harnessMode';
 
   type AssistantMarkdownDiagnostics = {
@@ -96,6 +99,18 @@
   // long streaming summaries this matters; .trim() would allocate the
   // full string every reactive tick.
   const canCopy = $derived(!streaming && /\S/.test(item.summary));
+  // Read-aloud takes the same gate as Copy, where this device offers it.
+  // It hides with the hover chrome, except while its reply is being read:
+  // the control that pauses it must stay where it was found.
+  // It reads through this device's voice or the thread's computer's OpenAI
+  // voice, so the computer is part of whether it is offered. A thread whose
+  // computer is not verified reads in this device's voice only.
+  const readAloudMachine = $derived(verifiedThreadMachine(item.threadId));
+  const canReadAloud = $derived(canCopy && readAloudAvailable(readAloudMachine));
+  const readingKey = $derived(replyReadingKey(item.threadId, item.id));
+  // Being read or paused: the meta-row controls stay shown and the section
+  // layer (`ReadAloudSections`) is mounted; an idle reply mounts nothing.
+  const readingThis = $derived(readAloudPosition(readingKey) !== null);
 
   // The timestamp/copy row is a completion artifact — it must not float
   // above an EMPTY body. With live updates disabled the body is withheld
@@ -139,6 +154,7 @@
   // rebuild ChatMarkdown's marked extension and re-lex every block.
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
   const workspacePath = $derived(paneWorkspacePath(pane));
+  const imageWorkspacePath = $derived(getAuthoredWorkspaceFromMeta(item.meta));
   const threadId = $derived(pane?.threadId ?? '');
   // Names the row to its code blocks, which paint from the spans the backend
   // pushes while it streams.
@@ -183,6 +199,12 @@
     (parseJsonObject(item.meta)?.delivery ?? '') === 'async',
   );
 
+  // Claude replaces some of its mid-turn notes with a summary and sends them
+  // as a thinking block tagged as narration; the backend stores those as
+  // prose with `narration: true` (docs/references/claude-wire.md). The tag
+  // says the words are a summary, not the model's own.
+  const isSummarized = $derived(parseJsonObject(item.meta)?.narration === true);
+
   // Streamdown reads the router's stable parser checkpoint while sink-owned
   // literal text extends its trailing leaf. Punctuation and authoritative
   // rewrites clear the checkpoint and hand the canonical source back to it.
@@ -209,7 +231,9 @@
   const markdownSourceAppend = $derived(rendered.append);
   const directSourceIsRawJson = $derived(rendered.rawJson);
   const pathCompletionGuard = new AllowlistedPathCompletionGuard();
-  let bodyRoot: HTMLElement;
+  // State so the section layer, mounted in the same pass when a row
+  // remounts mid-reading, receives the element once it is bound.
+  let bodyRoot = $state<HTMLElement>();
   const directRevealSink = createStreamingAssistantLiteralOwner({
     getRoot: () => bodyRoot,
     canAppendSource: (source, nextSource, delta) =>
@@ -224,7 +248,7 @@
   // full-source data attribute or a second retained answer. Ordinary sessions
   // install no property and allocate no object.
   $effect(() => {
-    if (!isHarnessSession()) return;
+    if (!isHarnessSession() || !bodyRoot) return;
     const root = bodyRoot as DiagnosticAssistantBody;
     const diagnostics: AssistantMarkdownDiagnostics = {
       get itemId() { return item.id; },
@@ -317,11 +341,15 @@
       sourceAppend={markdownSourceAppend}
       {streaming}
       {workspacePath}
+      {imageWorkspacePath}
       {pathRefs}
       {threadId}
       {liveCodeRow}
     />
   </div>
+  {#if readingThis && bodyRoot}
+    <ReadAloudSections body={bodyRoot} {readingKey} markdown={item.summary} />
+  {/if}
   {#if hasVisibleBody}
     <div
       class="mt-1.5 flex items-center gap-1.5 text-[0.625rem] text-fg-hint"
@@ -337,6 +365,15 @@
           title="Sent while the model kept working; not the turn's final answer"
         >
           Interim
+        </span>
+      {/if}
+      {#if isSummarized}
+        <span
+          class="rounded-full border border-border px-1.5 py-px text-[0.5625rem] uppercase tracking-wide text-fg-hint"
+          data-testid="assistant-message-summarized"
+          title="Claude's note from between steps, summarized before it reached the app"
+        >
+          Summarized
         </span>
       {/if}
       {#if discarded}
@@ -363,6 +400,11 @@
           </span>
         {/if}
       </span>
+      {#if canReadAloud}
+        <span class="flex shrink-0 items-center transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 compact:opacity-100 {readingThis ? 'opacity-100' : 'opacity-0'}">
+          <ReadAloudButton {readingKey} markdown={item.summary} threadId={item.threadId} />
+        </span>
+      {/if}
     </div>
   {/if}
 </div>

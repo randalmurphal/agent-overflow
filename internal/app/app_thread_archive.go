@@ -1,9 +1,10 @@
 package app
 
 import (
-	"context"
 	"errors"
+	"fmt"
 	"log"
+	"slices"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -48,43 +49,92 @@ import (
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) ArchiveThread(id string) error {
-	if err := a.archiveThreadLocked(id); err != nil {
+	work, err := a.archiveThreadLocked(id)
+	if err != nil {
 		return err
 	}
-	return a.stopArchivedThreadWork(context.Background(), id)
+	return a.stopArchivedThreadWork(work)
 }
 
-// stopArchivedThreadWork ends what a thread that has just been archived can
-// no longer receive. Both doors that archive (this binding and the agents'
-// thread_update patch) run it, in this order, so a thread archived from
-// either one is left in the same state.
+// archivedThreadWork is what a thread was waiting on at the moment its
+// archive committed: the asks it owns and the remote commands it started.
+type archivedThreadWork struct {
+	threadID string
+	// archived is set when this archive changed the row; a repeated one
+	// captures and stops nothing.
+	archived bool
+	asks     []store.ThreadRequest
+	commands []store.RemoteWatch
+	// queued are the send ids of the messages in the thread's queue.
+	queued []string
+	err    error
+}
+
+// held reports whether sendID was in the thread's queue when it was
+// archived.
+func (w archivedThreadWork) held(sendID string) bool {
+	return slices.Contains(w.queued, sendID)
+}
+
+// captureArchivedThreadWork runs in the critical section that commits the
+// archive, under the thread's mutation lock, which remote command
+// admission and every queue write also take. It ends the thread's parked
+// calls, disarms its wakes and names the work open and the messages queued
+// at that moment. A later wait or thread_status re-arms the wakes, and
+// delivering one unarchives the thread.
 //
-// An archived thread cannot receive an answer, so its parked calls end and
-// its wakes are disarmed. A later wait or thread_status re-arms them, and
-// delivering a re-armed one unarchives the thread. The session is stopped by
-// then, so nothing can admit another remote command; both cancellations run
-// outside the locks because reaching the other computer may take a while.
-func (a *App) stopArchivedThreadWork(ctx context.Context, id string) error {
+// Nothing keeps new work from starting on an archived thread afterwards: a
+// wake unarchives it and a remote command is admitted to it whatever its
+// archive state. So only the archive that changes the row captures, and
+// the stop acts on these identities alone, never on what the thread is
+// running or holds queued by the time it gets there.
+func (a *App) captureArchivedThreadWork(id string) archivedThreadWork {
+	work := archivedThreadWork{threadID: id, archived: true}
+	asks, askErr := a.disarmThreadRequests(id)
+	commands, commandErr := a.disarmRemoteCommands(id)
+	if askErr != nil {
+		log.Printf("thread tools: archive %s: cancel requests: %v", id, askErr)
+	}
+	rows, queueErr := a.store.ListFlushQueueItems(id)
+	if queueErr != nil {
+		queueErr = fmt.Errorf("archive %s: read its queue: %w", id, queueErr)
+	}
+	for _, row := range rows {
+		work.queued = append(work.queued, row.SendID)
+	}
+	work.asks, work.commands, work.err = asks, commands, errors.Join(commandErr, queueErr)
+	return work
+}
+
+// stopArchivedThreadWork stops exactly the work its archive captured. Both
+// doors that archive (this binding and the agents' thread_update patch)
+// run it, so a thread archived from either one is left in the same state.
+// It runs on the app's lifetime, not its caller's, because the archive is
+// already durable, and outside the locks because reaching the other
+// computer may take a while.
+func (a *App) stopArchivedThreadWork(work archivedThreadWork) error {
+	if !work.archived {
+		return work.err
+	}
+	ctx, id := a.lifeCtx(), work.threadID
 	// Loops and watches are cancelled outright: nothing re-arms them, and
-	// an archived thread's schedule is over. What the app queued for the
-	// thread goes too, live session or not, so nothing of it reaches the
-	// agent when the thread is next started.
+	// an archived thread's schedule is over. What the app had queued for
+	// the thread goes too, live session or not, so nothing of it reaches
+	// the agent when the thread is next started.
 	a.cancelAgentWakesForThread(id, "cancelled: the thread was archived")
-	withdrawErr := a.withdrawQueuedAgentMessages(id, func(string) bool { return true }, "the thread was archived before the agent took it in")
+	withdrawErr := a.withdrawQueuedAgentMessages(id, work.held, "the thread was archived before the agent took it in")
 	// A request's answer or reminder goes back to its request, disarmed
 	// with it, so the retry cannot bring the thread back.
-	wakesErr := a.withdrawHeldThreadWakes(id)
-	if err := a.cancelThreadRequests(ctx, id); err != nil {
-		log.Printf("thread tools: archive %s: cancel requests: %v", id, err)
-	}
-	remoteErr := a.cancelThreadRemoteCommands(ctx, id, true)
+	wakesErr := a.withdrawHeldThreadWakes(id, work.held)
+	a.cancelOwnedAsks(ctx, id, work.asks)
+	remoteErr := a.cancelRemoteCommands(ctx, id, work.commands, true)
 	// A finished job's completion is kept for the thread: the cancel keeps
 	// its watch, and one already held in the queue goes back to its watch
 	// after the cancel has run. It arrives once the thread is unarchived.
-	return errors.Join(withdrawErr, wakesErr, remoteErr, a.withdrawHeldRemoteCompletions(id))
+	return errors.Join(work.err, withdrawErr, wakesErr, remoteErr, a.withdrawHeldRemoteCompletions(id, work.held))
 }
 
-func (a *App) archiveThreadLocked(id string) error {
+func (a *App) archiveThreadLocked(id string) (archivedThreadWork, error) {
 	// Stamped BEFORE the lock, because waiting for the lock is exactly
 	// the window in which this archive can go stale: a send already
 	// holding it can dispatch a whole turn before this call gets its
@@ -92,28 +142,39 @@ func (a *App) archiveThreadLocked(id string) error {
 	requestedAt := time.Now().UnixMilli()
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
-	// The flip takes the mutation lock too, as the organize patch's does, so
-	// a queue write that holds app messages from an archived thread
-	// (registerQueueItem) sees it either way round, never between its check
-	// and its write.
-	unlockMutable, err := a.threadApplication().LockMutable(context.Background(), id)
+	work, row, changed, err := a.commitArchive(id)
 	if err != nil {
-		return err
-	}
-	row, changed, err := a.threadApplication().Archive(id)
-	unlockMutable()
-	if err != nil {
-		return err
+		return archivedThreadWork{}, err
 	}
 	// Broadcast as `unlisted` so a second attached client drops the row
 	// from its sidebar too; re-archiving an already-archived thread
 	// changes nothing and says nothing.
-	a.announceThreadIfChanged(triage.ThreadActionUnlisted, row.ID, changed)
+	a.announceThreadIfChanged(triage.ThreadActionUnlisted, id, changed)
 	if changed {
 		a.broadcastSpawnerRow(row)
 	}
 	a.stopArchivedThreadSession(id, requestedAt)
-	return nil
+	return work, nil
+}
+
+// commitArchive flips the row and, when that changed it, captures the work
+// the archive stops, in one critical section under the mutation lock. A
+// queue write that holds app messages from an archived thread
+// (registerQueueItem) takes the same lock, so it sees the flip either way
+// round, never between its check and its write. The lock is released
+// before the session stops: the teardown's queue drop takes it, and it is
+// not reentrant.
+func (a *App) commitArchive(id string) (archivedThreadWork, store.Thread, bool, error) {
+	unlock, err := a.threadApplication().LockMutable(a.lifeCtx(), id)
+	if err != nil {
+		return archivedThreadWork{}, store.Thread{}, false, err
+	}
+	defer unlock()
+	row, changed, err := a.threadApplication().Archive(id)
+	if err != nil || !changed {
+		return archivedThreadWork{threadID: id}, row, changed, err
+	}
+	return a.captureArchivedThreadWork(id), row, true, nil
 }
 
 // UnarchiveThread flips archived back to false so the thread reappears in the

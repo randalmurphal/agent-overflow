@@ -60,7 +60,7 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	if f.Cwd != "" {
 		cmd.Dir = f.Cwd
 	}
-	cmd.Env = provider.FilterEnvironment(f.Env, "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR")
+	cmd.Env = provider.FilterEnvironment(f.Env, ConfigHomeUnsetEnv()...)
 	// TERM at the deadline, KILL only after WaitDelay — never exec's default
 	// instant SIGKILL. This runs in the canonical home under a tight timeout,
 	// and the CLI may be mid OAuth refresh when the deadline lands; Anthropic

@@ -82,7 +82,6 @@ function pane(): ThreadPane {
     paneId: 'pane-1',
     attachmentCacheFor: () => undefined,
     setUserMessageExpanded: () => {},
-    isUnsendDeclined: () => false,
   } as unknown as ThreadPane;
 }
 

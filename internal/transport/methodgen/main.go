@@ -308,6 +308,8 @@ type MethodEntry struct {
 	Route  string
 	StepUp bool
 	Remote bool
+	// CallerBound comes from //ao:callerbound.
+	CallerBound bool
 }
 
 func main() {
@@ -544,13 +546,14 @@ func scanReceivers(root string, specs []receiverSpec, skip, scopes, routes map[s
 				}
 
 				entries = append(entries, MethodEntry{
-					Name:   name,
-					ID:     fnvHash(fqn),
-					FQN:    fqn,
-					Scope:  scope,
-					Route:  route,
-					StepUp: ann.stepUp,
-					Remote: ann.remote,
+					Name:        name,
+					ID:          fnvHash(fqn),
+					FQN:         fqn,
+					Scope:       scope,
+					Route:       route,
+					StepUp:      ann.stepUp,
+					Remote:      ann.remote,
+					CallerBound: ann.callerBound,
 				})
 			}
 		}
@@ -692,6 +695,8 @@ func methodAnnotations(doc *ast.CommentGroup) (methodAnnotation, error) {
 			ann.stepUp = true
 		case c.Text == remoteDirective:
 			ann.remote = true
+		case c.Text == callerBoundDirective:
+			ann.callerBound = true
 		case strings.HasPrefix(c.Text, scopeDirective):
 			value := strings.TrimSpace(strings.TrimPrefix(c.Text, scopeDirective))
 			if value == "" {
@@ -719,8 +724,8 @@ func methodAnnotations(doc *ast.CommentGroup) (methodAnnotation, error) {
 
 // methodAnnotation is what one method's //ao: directives declare.
 type methodAnnotation struct {
-	scope, route   string
-	stepUp, remote bool
+	scope, route                string
+	stepUp, remote, callerBound bool
 }
 
 // The directive spellings, named once so the parser and every error
@@ -731,6 +736,9 @@ const (
 	routeDirective  = "//ao:route"
 	stepUpDirective = "//ao:stepup"
 	remoteDirective = "//ao:remote"
+	// callerBoundDirective marks a method whose context ends when its
+	// caller's connection does (internal/transport/callcontext.go).
+	callerBoundDirective = "//ao:callerbound"
 )
 
 // isPointerReceiver returns true when expr is "*<typeName>" — the
@@ -810,13 +818,18 @@ package transport
 // Remote comes from //ao:remote and marks a method that exists only for
 // remote access; a build without it refuses the call
 // (internal/buildvariant).
+//
+// CallerBound comes from //ao:callerbound and marks a method whose context
+// ends when its caller's connection does. Every other method's context
+// ends only at server shutdown (callcontext.go).
 type MethodMeta struct {
-	Name   string
-	ID     uint32
-	Scope  Scope
-	Route  MethodRoute
-	StepUp bool
-	Remote bool
+	Name        string
+	ID          uint32
+	Scope       Scope
+	Route       MethodRoute
+	StepUp      bool
+	Remote      bool
+	CallerBound bool
 }
 
 // GeneratedMethods is the static, sorted-by-name list of every method
@@ -832,6 +845,9 @@ var GeneratedMethods = []MethodMeta{
 		}
 		if e.Remote {
 			buf.WriteString(", Remote: true")
+		}
+		if e.CallerBound {
+			buf.WriteString(", CallerBound: true")
 		}
 		fmt.Fprintf(&buf, "}, // %s\n", e.FQN)
 	}

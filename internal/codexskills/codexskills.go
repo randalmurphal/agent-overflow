@@ -8,6 +8,7 @@ package codexskills
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -135,8 +136,10 @@ func Key(binary, cwd string) string {
 // Fetch reads the skills for one working directory. The Cache never
 // chooses HOW to read: the caller supplies a closure that prefers a live
 // session's already-open connection and falls back to an ephemeral
-// process, because only the App knows which sessions exist.
-type Fetch func(ctx context.Context) (CwdSkills, error)
+// process, because only the App knows which sessions exist. One read
+// answers every waiter, so it runs on its owner's lifetime under its own
+// timeout, never on a caller's context.
+type Fetch func() (CwdSkills, error)
 
 // Cache TTLs skills lookups per Key and single-flights concurrent calls.
 // Construct with New; the zero value is unusable.
@@ -236,10 +239,23 @@ func (c *Cache) get(ctx context.Context, key string, fetch Fetch, bypass bool) (
 	startedAt := c.generation
 	c.mu.Unlock()
 
-	skills, err := fetch(ctx)
+	go c.run(key, l, startedAt, fetch)
+	select {
+	case <-ctx.Done():
+		return CwdSkills{}, ctx.Err()
+	case <-l.done:
+		return l.skills.Clone(), l.err
+	}
+}
+
+// run is one shared read. It belongs to no caller: each waits on its own
+// context and leaving ends only that wait.
+func (c *Cache) run(key string, l *load, startedAt uint64, fetch Fetch) {
+	skills, err := fetch()
 
 	c.mu.Lock()
-	if c.generation == startedAt {
+	// A read its owner's shutdown cancelled is no answer to keep.
+	if c.generation == startedAt && !errors.Is(err, context.Canceled) {
 		now := c.now()
 		// An expired entry is never served, so dropping it only releases a
 		// workspace's list that nothing has asked for since. Expired entries
@@ -261,7 +277,6 @@ func (c *Cache) get(ctx context.Context, key string, fetch Fetch, bypass bool) (
 	delete(c.inflight, key)
 	c.mu.Unlock()
 	close(l.done)
-	return skills.Clone(), err
 }
 
 // Invalidate drops the cached entry for one key so the next Get refetches.

@@ -511,7 +511,9 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if !s.cred.Exchange(w, r) {
+	// The stub's window is not the backend's: the host-window answer is the
+	// backend's own, from the bootstrap it carries.
+	if authed, _ := s.cred.Exchange(w, r); !authed {
 		http.NotFound(w, r)
 		return
 	}

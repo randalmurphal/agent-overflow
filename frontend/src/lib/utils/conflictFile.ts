@@ -32,6 +32,8 @@ export interface ConflictFileOptions {
    * For a file with no textual conflict regions these are the only
    * signal of what went wrong. */
   notes?: readonly string[];
+  /** Receives the hidden lines of every fold row the file renders. */
+  onFold?: (id: number, lines: readonly string[]) => void;
 }
 
 type Segment =
@@ -116,6 +118,7 @@ export function conflictPatchFile(
       type: 'marker',
       fold: { id, lines: count },
     });
+    options.onFold?.(id, runLines.slice(from, to));
     oldLine += count;
     newLine += count;
     headerPending = true;

@@ -172,3 +172,13 @@ func parseShortStatusBranch(header string) string {
 	}
 	return strings.TrimSpace(header)
 }
+
+// limitSection caps s at maxBytes, appending a "\n\n[truncated]" marker
+// so the reader (human or model) knows bytes were dropped. Mirrors
+// t3-code's limitSection in git/Utils.ts.
+func limitSection(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	return s[:maxBytes] + "\n\n[truncated]"
+}

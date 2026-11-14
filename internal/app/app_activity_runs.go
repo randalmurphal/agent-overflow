@@ -78,6 +78,7 @@ func (r ActivityRunMembersRequest) storeRequest(limit int) store.ActivityRunMemb
 // keeping the returned span exact without walking the whole run twice.
 //
 //ao:scope threads:read
+//ao:callerbound
 func (a *App) ListActivityRunMembers(ctx context.Context, threadID string, req ActivityRunMembersRequest) (store.ActivityRunMembers, error) {
 	if err := a.readyThreadHistory(threadID); err != nil {
 		return store.ActivityRunMembers{}, err

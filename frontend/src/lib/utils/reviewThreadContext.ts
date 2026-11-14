@@ -1,6 +1,6 @@
 import type { ReviewThread } from '../types/models';
 import type { ReviewFile } from './patchStore';
-import { exactLineRow, materializeRows, rowStartAt, type MaterializedRows } from './patchRows';
+import { anchorRow, materializeRows, rowStartAt, type MaterializedRows } from './patchRows';
 
 // The lines a review thread was written against, read from the diff the
 // pane already holds (no forge fetch): the anchored line and a few rows
@@ -11,12 +11,13 @@ import { exactLineRow, materializeRows, rowStartAt, type MaterializedRows } from
 export const THREAD_CONTEXT_ROWS = 4;
 
 /** The thread's anchored display row in `file`, or -1 when the diff does
- * not show that exact line (the diff row treats it as orphaned too). */
+ * not show that exact line (the diff row treats it as orphaned too): the
+ * row the diff puts its card after (patchRows' rowMatchesAnchor). */
 export function threadAnchorRow(file: ReviewFile, thread: ReviewThread): number {
   const line = thread.line ?? thread.startLine ?? null;
   if (!line) return -1;
   const side = thread.side === 'left' || thread.side === 'old' ? 'old' : 'new';
-  return exactLineRow(file, side, line);
+  return anchorRow(file, side === 'old' ? { side, oldLine: line } : { side, newLine: line }, true);
 }
 
 /** Up to THREAD_CONTEXT_ROWS display rows ending at the thread's line,

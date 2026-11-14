@@ -19,12 +19,14 @@ import { providerSupports } from '../providers/catalog';
 import { closeCheatSheet, isCheatSheetOpen, openCheatSheet } from './cheatSheet.svelte';
 import { closeMessageSearch, isMessageSearchOpen, openMessageSearch } from './messageSearch.svelte';
 import { closePalette, isPaletteOpen, openPalette } from './palette.svelte';
+import { airspaceSurfaces } from '../utils/paneAirspace.svelte';
 import { closeThreadPicker, isThreadPickerOpen, openThreadPicker } from './threadPicker.svelte';
 import { toggleAccountSwitcher } from './accountSwitcher.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
   focusAdjacentPane,
+  getFocusedPaneId,
   getFocusedThreadPaneId,
   getPane,
   moveFocusedPane,
@@ -34,10 +36,12 @@ import {
   syncThreadReply,
 } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
+import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
+import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
-import { closeFocusedBrowserTab } from './browserCompanion.svelte';
+import { closeFocusedBrowserTab, isReplayingBrowserPageChord } from './browserCompanion.svelte';
 import type { PaneLayoutItem } from './paneLayout.svelte';
-import { focusPaneComposer, focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
+import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
 import {
@@ -68,8 +72,7 @@ import {
 } from './bindings';
 import { cycleMode } from '../utils/modeCycle';
 import { isScratchThreadMode } from '../utils/threadModes';
-import { runInterrupt, runInterruptOrRevert } from './revertOnInterrupt.svelte';
-import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
+import { reportNonBenignInterruptError, runInterrupt } from './threadInterrupt.svelte';
 import { getSettings, updateSetting } from './settings.svelte';
 import { openReviewCompanion, reviewSubjectForPane } from './reviewPane.svelte';
 import { requestThreadActionConfirmation } from './threadActionConfirmations.svelte';
@@ -87,20 +90,23 @@ import {
   toggleComposerPicker,
   type ComposerPickerId,
 } from './composerPickerRegistry.svelte';
-import { reportNonBenignInterruptError } from './interruptErrors';
+import { toggleComposerDictation } from './dictation.svelte';
+import { toggleReadAloud } from './readAloud.svelte';
 import { PICKER_TOGGLE_INPUT_EVENT, type GitDialogKind } from './eventNames';
 import { startPaneTitleRename } from './paneTitleRename';
 import { registerWorkflowCommands } from './workflowCommands.svelte';
+import { isPullsPaneFocused, registerPullsCommands } from './pullsCommands.svelte';
 import {
   getWorkflowsOverlayTop,
-  isWorkflowsOverlayOpen,
+  isWorkflowsPaneFocused,
 } from './workflowsOverlay.svelte';
+import { focusedToolDetailOpen, focusedToolKind } from './toolPanes.svelte';
 import {
   escapeSettingsOverlay,
   isSettingsOpen,
   openSettingsOverlay,
 } from './settingsOverlay.svelte';
-import { isCompactLayout } from './layoutMode.svelte';
+import { getCompactScreen, isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
 import { hasScope } from '../transport/scopes';
 
 export interface BuiltinCommandHooks {
@@ -155,7 +161,7 @@ function withWorkspace(
 function openWorkspaceReview(pane: ThreadPane): void {
   const subject = reviewSubjectForPane(pane);
   if (!subject) return;
-  void openReviewCompanion(pane.paneId, subject, { scope: 'workspace' });
+  void openReviewCompanion(pane.paneId, subject, { scope: 'workspace', userInitiated: true });
 }
 
 /**
@@ -486,30 +492,16 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           decision: 'decline',
           answers: {},
         })).catch((err) => reportNonBenignInterruptError(pane, err));
-        // Approval / user-input cancels are mid-turn responses, not the
-        // "stop before the agent answered" affordance — a plain interrupt
-        // rather than the revert path. It owns the optimistic clear and
-        // asks first when a background agent would die with the turn.
-        runInterrupt(pane);
       } else if (approval) {
         pane.removeApproval(approval.requestId);
         void RespondToApproval(threadID, new ApprovalResponse({
           requestId: approval.requestId,
           decision: 'cancel',
         })).catch((err) => reportNonBenignInterruptError(pane, err));
-        runInterrupt(pane);
-      } else {
-        const draft = getComposerDraftForPane(pane.paneId);
-        const restored = runInterruptOrRevert(pane, draft ?? {
-          content: '',
-          attachments: [],
-          terminalChips: [],
-        });
-        if (restored) {
-          pane.setSendInFlight(false);
-          queueMicrotask(() => { if (pane.threadId === threadID) focusPaneComposer(pane.paneId); });
-        }
       }
+      // The Stop owns the optimistic clear and asks first when a
+      // background agent would die with the turn.
+      runInterrupt(pane);
     },
   });
 
@@ -633,6 +625,29 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     });
   }
 
+  registerCommand({
+    id: 'composer.dictate',
+    label: 'Composer: Start or Stop Dictation',
+    description: 'Dictate into the focused composer at the caret. Never sends.',
+    icon: '●',
+    when: 'hasActiveThread && threadsOperate',
+    editableReachable: true,
+    run: (ctx) => {
+      toggleComposerDictation(ctx.paneId);
+    },
+  });
+
+  registerCommand({
+    id: 'readAloud.toggle',
+    label: 'Read Aloud: Pause or Resume',
+    description: 'Pause the reply being read aloud, or resume it where it paused.',
+    icon: '▶',
+    editableReachable: true,
+    run: () => {
+      toggleReadAloud();
+    },
+  });
+
   // mod+/ within any open picker toggles focus between its search
   // input and its result list. Pickers register a per-mount handler
   // by dispatching a custom event on the window; we route the chord
@@ -697,23 +712,41 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     },
   });
 
+  // The target pane's own find bar, or its target region's
+  // (stores/paneFind.svelte.ts; target: `paneFindTargetId`, then
+  // `paneFindTarget`). A pane kind with no provider, or a pane under an
+  // overlay, leaves the command disabled.
   registerCommand({
-    id: 'search.in-thread',
-    label: 'Find in Thread',
-    description: 'Search the messages in the current thread.',
+    id: 'find.in-pane',
+    label: 'Find in Pane',
+    description: 'Find text in the focused pane.',
     icon: '⌕',
-    // Reachable while the composer textarea is focused, like search.messages.
+    when: 'paneFindAvailable && !overlayOpen',
+    // Reachable while the composer textarea (or the bar's own input) has focus.
     editableReachable: true,
-    run: (ctx) => {
-      if (isMessageSearchOpen()) {
-        closeMessageSearch();
-        return;
-      }
-      if (!ctx.hasActiveThread) {
-        addToast('warning', 'Open a thread to search within it.');
-        return;
-      }
-      openMessageSearch(ctx.paneId, 'thread');
+    run: () => {
+      const key = paneFindTarget(paneFindTargetId());
+      if (!key || !hasPaneFindProvider(key)) return;
+      const root = paneFindRegionElement(key) ?? paneElement(paneOfFindKey(key));
+      const active = typeof document === 'undefined' ? null : document.activeElement;
+      openPaneFind(key, {
+        seed: root ? findSeedIn(root) : '',
+        returnFocus: active instanceof HTMLElement && !isInFindBar(active) ? active : null,
+      });
+    },
+  });
+
+  // Escape and Back close the target pane's bar, from the composer too,
+  // but never while an overlay above the pane owns them.
+  registerCommand({
+    id: 'find.close',
+    dismissesSurface: true,
+    label: 'Find: Close',
+    when: 'paneFindOpen && !overlayOpen',
+    editableReachable: true,
+    run: () => {
+      const key = paneFindTarget(paneFindTargetId());
+      if (key) closePaneFind(key);
     },
   });
 
@@ -1114,6 +1147,29 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   // Workflows overlay + `/workflow` composer context. Kept in their own module
   // so this file doesn't grow another surface's worth of registrations.
   registerWorkflowCommands();
+  registerPullsCommands();
+}
+
+/**
+ * The pane find commands act on: the focused pane, or under compact the
+ * pane on the thread screen, since opening a companion leaves focus on its
+ * source thread. The compact list screen shows no pane.
+ */
+function paneFindTargetId(): string | null {
+  if (!isCompactLayout()) return getFocusedPaneId();
+  return getCompactScreen() === 'thread' ? onScreenCompactPaneId() : null;
+}
+
+/**
+ * `overlayOpen` for the palette's own list: a command picked there runs
+ * after the palette closes, so only another overlay above the panes counts.
+ */
+export function overlayBesidePalette(): boolean {
+  return airspaceSurfaces().length > (isPaletteOpen() ? 1 : 0);
+}
+
+function documentHasFocus(): boolean {
+  return typeof document !== 'undefined' && document.hasFocus();
 }
 
 /**
@@ -1122,15 +1178,23 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
  */
 export function makeCommandContext(pane: ThreadPane | null, extra: Partial<CommandFlags>): CommandContext {
   const thread = pane?.thread ?? null;
+  const overlayOpen = extra.overlayOpen ?? airspaceSurfaces().length > 0;
+  const findTarget = paneFindTarget(paneFindTargetId());
   const flags: CommandFlags = {
     paletteOpen: false,
     terminalOpen: pane?.showTerminal ?? false,
-    // terminalFocus mirrors whether THIS pane's xterm element has DOM focus.
-    // The TerminalBody component bumps the per-pane registry on focus/blur
-    // events. With no pane there's no terminal to gate against, so false —
+    // terminalFocus: THIS pane's xterm has DOM focus, so its keys are the
+    // shell's. The pane's terminal focus (getTerminalFocused) includes the
+    // terminal's find bar, but keys typed there reach no shell, so a focused
+    // bar leaves app chords their usual meaning. With no pane there's no
+    // terminal to gate against, so false —
     // never fall through to "any terminal anywhere is focused", which would
-    // suppress an unrelated pane's chords.
-    terminalFocus: pane ? getTerminalFocused(pane.paneId) : false,
+    // suppress an unrelated pane's chords. A document without keyboard focus
+    // has no focused terminal, whatever DOM focus it kept, and a chord the
+    // browser pane's native view replays was typed in the page.
+    terminalFocus: pane && !isReplayingBrowserPageChord()
+      ? getTerminalFocused(pane.paneId) && !hasPaneFindBarFocus() && documentHasFocus()
+      : false,
     approvalPending: pane ? pane.pendingApprovals.length > 0 : false,
     anyModalOpen: false,
     hasActiveThread: thread !== null,
@@ -1146,14 +1210,23 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // chosen by a selection nobody can see.
     sidebarCursorActive: getSidebarCursorThreadId() !== null && !isSidebarCollapsed(),
     anyPickerOpen: false,
-    // Both full-height overlays scope their chords off these. Derived here
-    // rather than passed in by App.svelte so every context builder — palette,
-    // per-keypress dispatch, tests — sees the same answer as the overlay
-    // itself, and no caller can forget to supply one (`settings.close` gates
-    // on `settingsOpen`, so a missing flag would silently make Esc inert).
+    // The settings overlay and the tool panes scope their chords off these.
+    // Derived here rather than passed in by App.svelte so every context
+    // builder — palette, per-keypress dispatch, tests — sees the same answer
+    // as the surface itself, and no caller can forget to supply one
+    // (`settings.close` gates on `settingsOpen`, so a missing flag would
+    // silently make Esc inert).
     settingsOpen: isSettingsOpen(),
-    workflowsOverlayOpen: isWorkflowsOverlayOpen(),
-    workflowsRunDetail: isWorkflowsOverlayOpen() && getWorkflowsOverlayTop().level === 'run',
+    toolPaneFocused: focusedToolKind() !== null,
+    overlayOpen,
+    paneFindAvailable: hasPaneFindProvider(findTarget),
+    paneFindOpen: isPaneFindOpen(findTarget),
+    toolDetailOpen: focusedToolDetailOpen(),
+    workflowsPaneFocused: isWorkflowsPaneFocused(),
+    pullsPaneFocused: isPullsPaneFocused(),
+    // The run detail's bare keys act on the pane, so an overlay above it
+    // (settings, a dialog) leaves them to the overlay.
+    workflowsRunDetail: isWorkflowsPaneFocused() && getWorkflowsOverlayTop().level === 'run' && !overlayOpen,
     compactLayout: isCompactLayout(),
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for

@@ -6,10 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
-	"agent-overflow/internal/triage"
 )
 
 func TestNormalizeThreadWindowSyncErrorClassifiesOnlyExpiredContexts(t *testing.T) {
@@ -220,41 +218,6 @@ func TestClampSliceItemBudget(t *testing.T) {
 		if got := clampSliceItemBudget(tc.in); got != tc.want {
 			t.Fatalf("clampSliceItemBudget(%d) = %d, want %d", tc.in, got, tc.want)
 		}
-	}
-}
-
-// TestInterruptRevertEventCarriesPostCutStamps — the un-send path writes
-// nothing to items after the cut, so the event's stamps must be exactly
-// the store's. A client that adopted a PRE-cut stamp here would keep the
-// truncated rows in its replica forever, since no later write mentions
-// them.
-func TestInterruptRevertEventCarriesPostCutStamps(t *testing.T) {
-	t.Parallel()
-	app := newTestApp(t)
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-	bus := newCapturedEventBus()
-	app.testEmitHook = bus.emit
-
-	thread := createAppTestThread(t, app, "revert-stamps", "claude", t.TempDir())
-	insertUserItem(t, app.store, thread.ID, "u:0", 0, "the original prompt")
-	before := appHistoryStamp(t, app, thread.ID)
-
-	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, nil)
-	if err != nil {
-		t.Fatalf("interrupt-and-revert: %v", err)
-	}
-	if !result.Reverted {
-		t.Fatalf("expected Reverted=true, got reason=%q", result.Reason)
-	}
-
-	after := appHistoryStamp(t, app, thread.ID)
-	if after.Epoch <= before.Epoch {
-		t.Fatalf("fixture cut nothing: epoch %d -> %d", before.Epoch, after.Epoch)
-	}
-	_, ev := findRevertedEvent(t, bus)
-	if ev.HistoryRev != after.Rev || ev.HistoryEpoch != after.Epoch {
-		t.Fatalf("event stamps = (%d, %d), want the post-cut (%d, %d)",
-			ev.HistoryRev, ev.HistoryEpoch, after.Rev, after.Epoch)
 	}
 }
 

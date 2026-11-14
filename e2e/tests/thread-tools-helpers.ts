@@ -181,6 +181,12 @@ export function threadToolsScenario(opts: {
    * own.
    */
   echoUserMessage?: boolean;
+  /**
+   * Claude only: a message that arrives while a turn runs is held until that
+   * turn ends and then opens a turn of its own, as the CLI picks a queued
+   * message up. Off, the mock opens its turn at once, over the running one.
+   */
+  holdQueuedInput?: boolean;
 }): Record<string, unknown> {
   const turns = opts.turns.map((turn, index) => {
     const steps: Array<Record<string, unknown>> = [];
@@ -215,6 +221,7 @@ export function threadToolsScenario(opts: {
     provider: opts.provider,
     turns,
     afterTurns: opts.afterTurns ?? 'repeatLast',
+    ...(opts.holdQueuedInput ? { claude: { holdQueuedInput: true } } : {}),
   };
 }
 

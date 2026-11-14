@@ -21,6 +21,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 )
 
 // agentPeerPair is a source thread whose spawn on a paired computer has a
@@ -1092,5 +1093,52 @@ func TestThreadAgentRowsForgetRacingAnswersKeepsNothing(t *testing.T) {
 		if row.NestedOpen || cached || queue != 0 {
 			t.Errorf("round %d: nested_open=%v cached=%v queue=%d after the forget", round, row.NestedOpen, cached, queue)
 		}
+	}
+}
+
+// A thread-id cancel of a spawn on a paired computer names who stopped its
+// turn there: the user for a Stop from the Agents tray, the calling thread
+// for its agent's thread_cancel.
+func TestRemoteThreadCancelNamesTheUserForATrayStop(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		userStop bool
+	}{
+		{name: "the tray's Stop", userStop: true},
+		{name: "the agent's cancel", userStop: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+			waitUntil(t, 10*time.Second, func() bool {
+				_, running, err := pair.dest.store.GetActiveTurn(pair.child)
+				return err == nil && running
+			})
+			report, err := pair.source.threadTools().cancelRemoteThread(t.Context(),
+				pair.source.threadAgentCaller(pair.caller.ID),
+				threadtools.CancelCall{ThreadID: pair.child, ComputerID: pair.spawn.TargetComputerID}, tc.userStop)
+			if err != nil || report.Effect != threadtools.EffectInterrupted {
+				t.Fatalf("cancelRemoteThread = %+v, %v, want the child's turn interrupted", report, err)
+			}
+			var labels []string
+			waitUntil(t, 10*time.Second, func() bool {
+				items, err := pair.dest.store.ListItems(pair.child)
+				if err != nil {
+					t.Fatalf("ListItems: %v", err)
+				}
+				labels = labels[:0]
+				for _, item := range items {
+					if item.Kind == triage.ItemKindError {
+						labels = append(labels, item.Summary)
+					}
+				}
+				return len(labels) > 0
+			})
+			byUser := slices.Contains(labels, triage.StoppedByUser)
+			if byUser != tc.userStop {
+				t.Fatalf("the stopped turn says %q, want the user named: %v", labels, tc.userStop)
+			}
+		})
 	}
 }

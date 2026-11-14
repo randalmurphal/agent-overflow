@@ -83,10 +83,10 @@ func (h workflowHostAdapter) FindWorktree(project, path string) (gitops.Worktree
 	return h.app.findWorktree(project, path)
 }
 
-func (h workflowHostAdapter) CutWorktreeFromFreshBase(
-	ctx context.Context, projectPath, worktreePath, baseBranch, newBranch string,
+func (h workflowHostAdapter) CutWorktreeFromFreshRef(
+	ctx context.Context, projectPath, worktreePath string, base gitops.Ref, newBranch string,
 ) error {
-	return h.app.cutWorktreeFromFreshBase(ctx, projectPath, worktreePath, baseBranch, newBranch)
+	return h.app.cutWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, newBranch)
 }
 
 func (h workflowHostAdapter) DefaultWorktreePath(projectPath, branch string) (string, error) {
@@ -126,8 +126,21 @@ func (h workflowHostAdapter) ClaudeProjectsDir() (string, error) {
 // the seam exists.
 func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSource) *workflowhost.Runner {
 	return workflowhost.New(
-		workflowHostAdapter{app: app}, app.store, dataRoot, profiles, app.interruptTurnCtx,
+		workflowHostAdapter{app: app}, app.store, dataRoot, profiles, app.interruptTurnForWorkflow,
 	)
+}
+
+// interruptTurnForWorkflow is the workflow runner's stop: the user taking a
+// thread over from its workflow, or the workflow ending an attempt.
+func (a *App) interruptTurnForWorkflow(ctx context.Context, threadID string, why workflowhost.Interrupt) error {
+	switch why {
+	case workflowhost.InterruptForTakeover:
+		return a.interruptTurnCtx(ctx, threadID, stopForTakeover())
+	case workflowhost.InterruptStoppedAttempt:
+		return a.interruptTurnCtx(ctx, threadID, stopByWorkflow())
+	default:
+		return fmt.Errorf("interrupt turn %s: unknown workflow interrupt %d", threadID, why)
+	}
 }
 
 // WorkflowArtifact is one app-managed file deliverable copied from a phase
@@ -877,10 +890,11 @@ func (a *App) createWorkflowThread(spec workflowhost.ThreadSpec) (store.Thread, 
 	// stampThreadCreation records the workspace's git coordinates and leaves
 	// the device empty, which is the true answer for engine-created work.
 	a.stampThreadCreation(context.Background(), &thread)
-	if err := a.store.CreateThread(thread); err != nil {
+	created, err := a.store.CreateThreadAndRead(thread)
+	if err != nil {
 		return store.Thread{}, fmt.Errorf("workflow runner: create thread for %s: %w", spec.Label, err)
 	}
-	return a.store.GetThread(thread.ID)
+	return created, nil
 }
 
 // workflowPhaseRuntimeMode maps a phase's or unit's effective access declaration

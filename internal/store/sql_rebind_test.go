@@ -252,7 +252,7 @@ func TestStatementsCompileOnce(t *testing.T) {
 	if _, err := s.SearchThreadMessages("answer", 10); err != nil {
 		t.Errorf("search messages: %v", err)
 	}
-	if _, err := s.SearchThreadItems(keyedThreadID, "answer", 10); err != nil {
+	if _, err := s.SearchThreadItems(context.Background(), keyedThreadID, "answer", TimelineSelection{}, 10); err != nil {
 		t.Errorf("search thread items: %v", err)
 	}
 	if _, _, err := s.GetWorkItemBySourceRef("agent", "phase-ref"); err != nil {

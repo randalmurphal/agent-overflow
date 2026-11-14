@@ -64,9 +64,7 @@ func TestRevertAndResendRefusesDuringShutdown(t *testing.T) {
 
 // TestRevertAndResendRejectsActiveTurn guards the defense-in-depth
 // check: an in-place revert must not truncate a timeline the provider is
-// still writing to. The live-turn un-send (InterruptAndRevertIfClean)
-// owns that case and lets Codex thread/revert perform shutdown and cut
-// together.
+// still writing to.
 func TestRevertAndResendRejectsActiveTurn(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(t)
@@ -112,10 +110,8 @@ func TestRevertAndResendRejectsNonUserTargets(t *testing.T) {
 
 // TestRevertAndResendRejectsClaudeTUI makes the provider contract
 // structural instead of relying on the UI never wiring the button:
-// rollbackConversationLocked's claude-tui branch assumes a native
-// Esc-revert was already delivered for a live turn, which this
-// idle-thread path can never satisfy — accepting the call would truncate
-// AO's history cache while the live TUI keeps the full conversation.
+// accepting the call would truncate AO's history cache while the live
+// TUI keeps the full conversation.
 func TestRevertAndResendRejectsClaudeTUI(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(t)

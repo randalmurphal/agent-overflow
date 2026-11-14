@@ -49,7 +49,6 @@ describe('<UserMessage>', () => {
       thread: makeThread({ id: 'thread-1' }),
       attachmentCacheFor: () => undefined,
       setUserMessageExpanded: () => {},
-      isUnsendDeclined: () => false,
     } as unknown as ThreadPane;
   }
 
@@ -141,6 +140,29 @@ describe('<UserMessage>', () => {
       props: { item: makeItem({ kind: 'user_text', role: 'user', summary: quoted }) },
     });
     expect(typed.container.textContent).toContain('\\u003csystem\\u003e');
+  });
+
+  // The "Continue" sent after a usage limit is written by the app itself.
+  it('marks a row Agent Overflow wrote, and leaves a locally typed one unmarked', () => {
+    const app = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'Continue. The usage limit that stopped this thread no longer applies.',
+          meta: JSON.stringify({ origin: 'app' }),
+        }),
+      },
+    });
+    const badge = app.getByTestId('user-message-app-origin');
+    expect(badge.textContent).toContain('Agent Overflow');
+    expect(badge.tagName).toBe('DIV');
+    app.unmount();
+
+    const local = render(UserMessage, {
+      props: { item: makeItem({ kind: 'user_text', role: 'user', summary: 'Continue.' }) },
+    });
+    expect(local.queryByTestId('user-message-app-origin')).toBeNull();
   });
 
   // An imported Codex thread that another Codex thread started opens with
@@ -597,25 +619,6 @@ describe('<UserMessage>', () => {
     }
   });
 
-  it('keeps the reason a Stop left the message in place', () => {
-    const pane = { ...makeActionsPane(), isUnsendDeclined: (id: string) => id === 'user:1' } as unknown as ThreadPane;
-    const { getByTestId } = render(UserMessage, {
-      props: {
-        pane,
-        item: makeItem({
-          id: 'user:1', threadId: 'thread-1', turnIndex: 1, kind: 'user_text', role: 'user',
-          summary: 'Fix it.\n\n---\nAgent request from thread "Lead" (t-lead).\nIt is not waiting.\n\n---\n\nmine',
-          meta: JSON.stringify({
-            origin: 'agent-thread', originThread: { threadId: 't-lead', title: 'Lead', kind: 'send', token: 'tok-1' },
-            expandComposerCommands: true, joinedSendIds: ['thread-request:tok-1', 's-person'],
-          }),
-        }),
-      },
-    });
-
-    expect(getByTestId('user-message-unsend-declined').textContent).toBe("Not un-sent: joined with Lead's request");
-  });
-
   it('does not show the edit action for wire-only user messages', () => {
     const pane = makeActionsPane();
     const actions: UserMessageActions = {
@@ -743,6 +746,83 @@ describe('<UserMessage>', () => {
     expect(queryByLabelText('Preview report.pdf')).toBeNull();
     await waitFor(() => expect(thumbnail).toHaveBeenCalledTimes(2));
     expect(thumbnail.mock.calls.map((call) => call[1])).toEqual(['att-1', 'att-3']);
+  });
+
+  describe('composer shell commands', () => {
+    function shellAttachment(id: string, command: string, extra: Record<string, unknown> = {}) {
+      return {
+        id,
+        threadId: 'thread-1',
+        filename: 'output.txt',
+        mimeType: 'text/plain; charset=utf-8',
+        size: 15,
+        kind: 'file',
+        shell: { command, exitCode: 0, durationMs: 12, preview: 'On branch main\n', ...extra },
+      };
+    }
+
+    it('draws a message that is only a command as its block, without the typed line or a file chip', () => {
+      const { getByTestId, queryByTestId, queryByText } = render(UserMessage, {
+        props: {
+          item: makeItem({
+            id: 'user-shell',
+            kind: 'user_text',
+            role: 'user',
+            summary: '!git status',
+            meta: JSON.stringify({ attachments: [shellAttachment('att-1', 'git status')] }),
+          }),
+        },
+      });
+      expect(getByTestId('shell-command-line').textContent).toBe('git status');
+      expect(getByTestId('shell-command-output').querySelector('pre')?.textContent).toBe('On branch main\n');
+      expect(queryByText('!git status')).toBeNull();
+      expect(queryByText('output.txt')).toBeNull();
+      expect(queryByTestId('user-message-file-attachments')).toBeNull();
+      // The block is the message: no accent bubble is drawn around it.
+      expect(getByTestId('user-message-bubble').className).not.toContain('bg-accent');
+    });
+
+    it('keeps the words of a joined message beside its command block, inside the bubble', () => {
+      const { getByTestId, getByText, queryByText, getAllByTestId } = render(UserMessage, {
+        props: {
+          item: makeItem({
+            id: 'user-shell-joined',
+            kind: 'user_text',
+            role: 'user',
+            summary: '!make test\n\n---\n\nfix those failures',
+            meta: JSON.stringify({
+              attachments: [
+                shellAttachment('att-1', 'make test', { exitCode: 2 }),
+                { id: 'att-2', threadId: 'thread-1', filename: 'notes.txt', mimeType: 'text/plain', size: 10, kind: 'file' },
+              ],
+            }),
+          }),
+        },
+      });
+      expect(getAllByTestId('shell-command-block')).toHaveLength(1);
+      expect(getByTestId('shell-command-outcome').textContent).toContain('exit 2');
+      expect(getByText('fix those failures')).toBeInTheDocument();
+      expect(queryByText(/!make test/)).toBeNull();
+      // The ordinary file is still a chip, and the bubble is still a bubble.
+      expect(getByText('notes.txt')).toBeInTheDocument();
+      expect(getByTestId('user-message-bubble').className).toContain('bg-accent');
+    });
+
+    it('keeps text that is more than the invocation', () => {
+      const { getByText, getByTestId } = render(UserMessage, {
+        props: {
+          item: makeItem({
+            id: 'user-shell-edited',
+            kind: 'user_text',
+            role: 'user',
+            summary: '!git status and explain it',
+            meta: JSON.stringify({ attachments: [shellAttachment('att-1', 'git status')] }),
+          }),
+        },
+      });
+      expect(getByText('!git status and explain it')).toBeInTheDocument();
+      expect(getByTestId('shell-command-line').textContent).toBe('git status');
+    });
   });
 
   it('loads history attachment thumbnails on mount (windowing bufferSize bounds the mount window)', async () => {

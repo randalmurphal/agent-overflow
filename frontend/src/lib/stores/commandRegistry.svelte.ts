@@ -56,9 +56,35 @@ export interface CommandFlags {
   anyPickerOpen: boolean;
   /** True while the settings overlay is mounted over the pane strip. */
   settingsOpen: boolean;
-  /** True while the workflows overlay is mounted over the pane strip. */
-  workflowsOverlayOpen: boolean;
-  /** True while the workflows overlay is showing a run detail level. */
+  /**
+   * True while an overlay surface sits above the panes: the airspace
+   * registry holds every mounted overlay (settings, dialogs, popovers, the
+   * palette). A pane surface's keyboard and Back commands gate on it so they
+   * never act behind what the reader sees. The palette's own list leaves the
+   * palette out (`overlayBesidePalette`) because a command picked there runs
+   * after it closes.
+   */
+  overlayOpen: boolean;
+  /**
+   * True while the find target has a provider (stores/paneFind.svelte.ts):
+   * the raw focused pane, or under compact the pane on the thread screen.
+   */
+  paneFindAvailable: boolean;
+  /** True while the find target's bar is open. */
+  paneFindOpen: boolean;
+  /** True while the raw focused pane is a tool pane (Pull requests, Workflows). */
+  toolPaneFocused: boolean;
+  /**
+   * True while the focused tool pane has a detail step open above its list
+   * (toolPanes.svelte#focusedToolDetailOpen). A tool's surface-dismissal
+   * command gates on it so Back steps to the list before leaving the pane.
+   */
+  toolDetailOpen: boolean;
+  /** True while the raw focused pane is the workflows pane. */
+  workflowsPaneFocused: boolean;
+  /** True while the raw focused pane is the Pull requests pane. */
+  pullsPaneFocused: boolean;
+  /** True while the focused workflows pane is showing a run detail level. */
   workflowsRunDetail: boolean;
   /**
    * True under the compact (phone) layout, where the strip shows one

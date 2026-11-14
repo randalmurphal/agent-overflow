@@ -22,8 +22,13 @@ export {
   createProvenAppend,
   createMaterializedProvenAppend,
   matchesProvenAppend,
+  alignmentAfter,
+  alignmentAtEnd,
+  isAlignmentMarkerBlock,
+  topLevelShape,
 } from './parser/index';
 export type {
+  Alignment,
   Extension,
   LexerOptions,
   Token,
@@ -58,3 +63,6 @@ export type {
   StreamdownLiteralHostHandle,
 } from './render/literalHost';
 export { DENIED_LINK_SCHEMES, isOpenableScheme, urlScheme } from './render/elements/urlSchemes';
+// The renderers' own decisions about what text a token shows, for find's
+// projection of rendered markdown (chat/markdown/markdownFindText.ts).
+export { linkTagText, tableCellRenders } from './render/elements/url';

@@ -311,7 +311,9 @@ func TestViewportSetReportsAPageThatRefusesTheSize(t *testing.T) {
 // A second mount for the thread (the harness screenshot path mounts one
 // beside the UI's pane) takes the pages to its size; releasing it hands them
 // back to the mount that stays instead of leaving them at a size no pane has.
-func TestDetachingAMountHandsPagesBackToTheRemainingPane(t *testing.T) {
+// Only the presenting mount sizes the pages; when it detaches, the mount
+// that remains presents and hands the pages its size.
+func TestDetachingThePresenterHandsPagesToTheRemainingPane(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	first := f.attach(t)
 	if err := f.manager.SetPaneRect(first, paneRect(800, 600)); err != nil {
@@ -323,12 +325,14 @@ func TestDetachingAMountHandsPagesBackToTheRemainingPane(t *testing.T) {
 	if err := f.manager.SetPaneRect(second, paneRect(900, 700)); err != nil {
 		t.Fatalf("set second pane rect: %v", err)
 	}
-	f.awaitPagesAt(t, 900, 700)
+	if info := f.session(t); info.PaneW != 800 || info.PaneH != 600 {
+		t.Fatalf("a mount that does not present resized the pages: %+v", info)
+	}
 
-	f.manager.DetachPane(second)
-	f.awaitPagesAt(t, 800, 600)
-	if info := f.session(t); info.PaneW != 800 || info.PaneH != 600 || info.ViewportW != 800 {
-		t.Fatalf("detach must restore the remaining pane's size: %+v", info)
+	f.manager.DetachPane(first)
+	f.awaitPagesAt(t, 900, 700)
+	if info := f.session(t); info.PaneW != 900 || info.PaneH != 700 || info.ViewportW != 900 {
+		t.Fatalf("detach must hand the pages the remaining pane's size: %+v", info)
 	}
 }
 

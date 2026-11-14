@@ -573,6 +573,142 @@ describe('streaming assistant literal owner', () => {
   });
 });
 
+describe('streaming assistant literal owner host tracking', () => {
+  /**
+   * Mounts a host after the existing ones, the way `LiteralHost.svelte` does
+   * when the trailing leaf moves; the caller detaches the old host, as the
+   * old `LiteralHost` teardown does in the same flush.
+   */
+  function mountHost(container: HTMLElement, text: string): {
+    host: HTMLSpanElement;
+    handle: StreamdownLiteralHostHandle;
+  } {
+    const host = document.createElement('span');
+    host.dataset.streamdownDirectAppendSafe = '';
+    container.append(host);
+    const handle = attachStreamdownLiteralHost(host);
+    handle.publish({}, text);
+    return { host, handle };
+  }
+
+  function appendWord(
+    sink: StreamingAssistantRevealSink,
+    source: string,
+    word: string,
+  ): string | null {
+    const next = `${source}${word} `;
+    if (!canAppendLiteral(sink, source, next, `${word} `)) return null;
+    sink.appendLiteral(next, `${word} `);
+    return next;
+  }
+
+  it('does not query the message root while the adopted host is unchanged', () => {
+    const { root, host } = makeRoot();
+    // Finished blocks the old per-tick query walked.
+    for (let index = 0; index < 50; index++) {
+      root.prepend(document.createElement('p'));
+    }
+    const sink = createStreamingAssistantLiteralOwner({
+      getRoot: () => root,
+      canAppendSource: () => true,
+    });
+    const query = vi.spyOn(root, 'querySelectorAll');
+    try {
+      let source: string | null = 'seed ';
+      for (let index = 0; index < 20; index++) {
+        source = appendWord(sink, source!, `w${index}`);
+        expect(source).not.toBeNull();
+      }
+      // One query adopts the host; every later tick reuses it.
+      expect(query).toHaveBeenCalledTimes(1);
+      expect(host.textContent).toBe(source!.trimEnd());
+    } finally {
+      query.mockRestore();
+      sink.reset();
+      root.remove();
+    }
+  });
+
+  it('adopts a later host on the next tick after the renderer moves the leaf', () => {
+    const { root, host, handle } = makeRoot();
+    const volatile = host.parentElement!;
+    const sink = createStreamingAssistantLiteralOwner({
+      getRoot: () => root,
+      canAppendSource: () => true,
+    });
+    expect(appendWord(sink, 'seed ', 'next')).toBe('seed next ');
+
+    const later = mountHost(volatile, 'tail');
+    handle.detach();
+    expect(appendWord(sink, 'tail ', 'more')).toBe('tail more ');
+    expect(later.handle.owned).toBe(true);
+    expect(later.host.textContent).toBe('tail more');
+    expect(host.textContent).toBe('seed next');
+    sink.reset();
+    root.remove();
+  });
+
+  it('notices the adopted host leaving the DOM without a release', () => {
+    const { root, host, handle } = makeRoot();
+    const sink = createStreamingAssistantLiteralOwner({
+      getRoot: () => root,
+      canAppendSource: () => true,
+    });
+    expect(appendWord(sink, 'seed ', 'next')).toBe('seed next ');
+
+    host.remove();
+    expect(appendWord(sink, 'seed next ', 'gone')).toBeNull();
+    // The owner forgot the removed host and released its controller.
+    expect(handle.owned).toBe(false);
+    root.remove();
+  });
+
+  it('notices a controller release and a takeover by another owner', () => {
+    const { root, host, handle } = makeRoot();
+    const sink = createStreamingAssistantLiteralOwner({
+      getRoot: () => root,
+      canAppendSource: () => true,
+    });
+    expect(appendWord(sink, 'seed ', 'next')).toBe('seed next ');
+
+    const other = { present: vi.fn(), release: vi.fn() };
+    handle.adopt(other);
+    // Released by the takeover, the sink re-adopts the still-mounted host
+    // from what is on screen rather than writing through a stale claim.
+    expect(appendWord(sink, 'seed next ', 'again')).toBe('seed next again ');
+    expect(other.release).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toBe('seed next again');
+
+    handle.detach();
+    expect(appendWord(sink, 'seed next again ', 'after')).toBeNull();
+    root.remove();
+  });
+
+  it('follows repeated host attach and detach in one volatile tail', () => {
+    const { root, host, handle } = makeRoot('h0');
+    const volatile = host.parentElement!;
+    const sink = createStreamingAssistantLiteralOwner({
+      getRoot: () => root,
+      canAppendSource: () => true,
+    });
+    let current = { host: host as HTMLSpanElement, handle };
+    for (let index = 0; index < 5; index++) {
+      expect(appendWord(sink, `h${index} `, 'x')).toBe(`h${index} x `);
+      expect(current.handle.owned).toBe(true);
+      expect(current.host.textContent).toBe(`h${index} x`);
+      const next = mountHost(volatile, `h${index + 1}`);
+      current.handle.detach();
+      current.host.remove();
+      expect(current.handle.owned).toBe(false);
+      current = next;
+    }
+    current.handle.detach();
+    current.host.remove();
+    expect(appendWord(sink, 'h5 ', 'x')).toBeNull();
+    root.remove();
+  });
+});
+
 describe('AllowlistedPathCompletionGuard', () => {
   it('detects a path completed across a direct delta boundary', () => {
     const guard = new AllowlistedPathCompletionGuard();

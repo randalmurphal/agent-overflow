@@ -170,7 +170,7 @@ func TestListCommitsMeasuresAgainstTheRemoteBase(t *testing.T) {
 	t.Parallel()
 	repo := unpushedMainClone(t)
 
-	commits, err := ListCommits(context.Background(), repo, "main")
+	commits, err := commitsOf(ListCommits(context.Background(), repo, "main"))
 	if err != nil {
 		t.Fatalf("ListCommits: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestListCommitsWithoutARemoteUsesTheLocalBase(t *testing.T) {
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "feature.txt", "feature work\n", "feature work")
 
-	commits, err := ListCommits(context.Background(), repo, "main")
+	commits, err := commitsOf(ListCommits(context.Background(), repo, "main"))
 	if err != nil {
 		t.Fatalf("ListCommits: %v", err)
 	}

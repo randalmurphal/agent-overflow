@@ -94,10 +94,6 @@ type Migration struct {
 	// REFUSES the combination by name rather than dropping the Fix on the
 	// floor.
 	Fix func(tx *sql.Tx) error
-	// Check is an optional precondition that runs inside the migration's
-	// transaction before SQL. It refuses, with the cause, a database the
-	// migration cannot apply to; it changes nothing.
-	Check func(tx *sql.Tx) error
 	// Rebuild marks a migration whose SQL performs a full table rebuild
 	// (CREATE new / copy / DROP old / RENAME) to change a CHECK or drop a
 	// NOT NULL that SQLite can't alter in place. Such a migration MUST run
@@ -202,7 +198,7 @@ CREATE INDEX idx_payload_chunks_payload_start
 	{
 		Version: 12,
 		Name:    "channel_max_turns",
-		// v144 drops channels.
+		// v149 drops channels.
 		SQL: `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
 	},
 	{
@@ -330,7 +326,7 @@ ALTER TABLE payloads ADD COLUMN spans TEXT NOT NULL DEFAULT '';`,
 		Version: 23,
 		Name:    "message_anchors_replace_checkpoints",
 		// The per-message git-checkpoint machinery is gone. What fork-
-		// from-message and revert-on-interrupt still need from the old
+		// from-message and conversation rollback still need from the old
 		// thread_checkpoints row is pure provider correlation — turn
 		// index + Claude wire uuids — so the table slims into
 		// message_anchors and the git-side columns (ref_name,
@@ -403,7 +399,7 @@ DELETE FROM diff_review_comments WHERE scope IN ('turn', 'session');`,
 	{
 		Version: 26,
 		Name:    "workflow_persistence",
-		// v146 drops automations and automation_cursors.
+		// v151 drops automations and automation_cursors.
 		SQL: `CREATE TABLE work_items (
     id             TEXT    PRIMARY KEY,
     project_id     TEXT    NOT NULL,
@@ -639,7 +635,7 @@ CREATE INDEX idx_work_item_units_worktree
 		// else entirely (an agent proposal id, a call site) and none of them are
 		// ever queried this way.
 		//
-		// v146 drops automations and this index.
+		// v151 drops automations and this index.
 		SQL: `ALTER TABLE automations ADD COLUMN last_fired_at INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE automations ADD COLUMN last_run_item_id TEXT NOT NULL DEFAULT '';
@@ -1736,23 +1732,28 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 141, Name: "repository_identity", SQL: repositoryIdentityV141SQL, Fix: scrubRepositoryCoordinates},
 	{Version: threadPullRequestsMigrationVersion, Name: "thread_pull_requests", SQL: threadPullRequestsV142SQL},
 	{Version: codexDeveloperInstructionsMigrationVersion, Name: "codex_developer_instructions", SQL: codexDeveloperInstructionsV143SQL},
-	{Version: removeDiscussionsMigrationVersion, Name: "remove_discussions", SQL: removeDiscussionsV144SQL, Rebuild: true},
-	{Version: standingAgentsMigrationVersion, Name: "standing_agents", SQL: standingAgentsV145SQL},
-	{Version: removeAutomationsMigrationVersion, Name: "remove_automations", SQL: removeAutomationsV146SQL, Fix: mapAutomationRunsToManual},
-	{Version: workItemSourcesMigrationVersion, Name: "work_item_sources", SQL: workItemSourcesV147SQL, Rebuild: true},
-	{Version: agentWakeStderrMigrationVersion, Name: "agent_wake_stderr", SQL: agentWakeStderrV148SQL},
-	{Version: spawnLineageMigrationVersion, Name: "spawn_lineage", SQL: spawnLineageV149SQL},
-	{Version: deliveryConfirmationsMigrationVersion, Name: "delivery_confirmations", SQL: deliveryConfirmationsV150SQL},
-	{Version: answerAgentMigrationVersion, Name: "answer_agent", SQL: answerAgentV151SQL},
-	{Version: agentRowsRemoteMigrationVersion, Name: "agent_rows_remote", SQL: agentRowsRemoteV152SQL, Check: refusePreSyncColumn("thread_requests", "nested_open")},
-	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV153SQL, Check: refusePreSyncColumn("thread_request_receipts", "own_turn")},
-	{Version: lateDeliveryRouteMigrationVersion, Name: "late_delivery_route", SQL: lateDeliveryRouteV154SQL, Check: refusePreSyncColumn("thread_requests", "late_delivered_how")},
-	{Version: agentRecordsMigrationVersion, Name: "agent_records", SQL: agentRecordsV155SQL, Check: refusePreSyncObject("table", "agents")},
-	{Version: ledgerIndexesMigrationVersion, Name: "ledger_indexes", SQL: ledgerIndexesV156SQL, Rebuild: true, Check: refusePreSyncObject("index", "idx_thread_requests_caller_settled")},
-	{Version: wakeItemsMigrationVersion, Name: "wake_items", SQL: wakeItemsV157SQL, Fix: recordConfirmedWakeItems},
-	{Version: agentTreeMarksMigrationVersion, Name: "agent_tree_marks", SQL: agentTreeMarksV158SQL, Fix: fillAgentTreeMarks, Check: refusePreSyncColumn("thread_requests", "open_below_0")},
-	{Version: spawnPlacementMigrationVersion, Name: "spawn_placement", SQL: spawnPlacementV159SQL},
-	{Version: threadAttentionMigrationVersion, Name: "thread_attention", SQL: threadAttentionV160SQL},
+	{Version: pullRequestsPageMigrationVersion, Name: "pull_requests_page", SQL: pullRequestsPageV144SQL, Rebuild: true},
+	{Version: reviewClaimRowsMigrationVersion, Name: "review_claim_rows", SQL: reviewClaimRowsV145SQL},
+	{Version: prListSnapshotMigrationVersion, Name: "pr_list_snapshot", SQL: prListSnapshotV146SQL},
+	{Version: attachmentShellMigrationVersion, Name: "attachment_shell", SQL: attachmentShellV147SQL},
+	{Version: reviewRangesRepliesMigrationVersion, Name: "review_ranges_replies", SQL: reviewRangesRepliesV148SQL, Rebuild: true},
+	{Version: removeDiscussionsMigrationVersion, Name: "remove_discussions", SQL: removeDiscussionsV149SQL, Rebuild: true},
+	{Version: standingAgentsMigrationVersion, Name: "standing_agents", SQL: standingAgentsV150SQL},
+	{Version: removeAutomationsMigrationVersion, Name: "remove_automations", SQL: removeAutomationsV151SQL, Fix: mapAutomationRunsToManual},
+	{Version: workItemSourcesMigrationVersion, Name: "work_item_sources", SQL: workItemSourcesV152SQL, Rebuild: true},
+	{Version: agentWakeStderrMigrationVersion, Name: "agent_wake_stderr", SQL: agentWakeStderrV153SQL},
+	{Version: spawnLineageMigrationVersion, Name: "spawn_lineage", SQL: spawnLineageV154SQL},
+	{Version: deliveryConfirmationsMigrationVersion, Name: "delivery_confirmations", SQL: deliveryConfirmationsV155SQL},
+	{Version: answerAgentMigrationVersion, Name: "answer_agent", SQL: answerAgentV156SQL},
+	{Version: agentRowsRemoteMigrationVersion, Name: "agent_rows_remote", SQL: agentRowsRemoteV157SQL},
+	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV158SQL},
+	{Version: lateDeliveryRouteMigrationVersion, Name: "late_delivery_route", SQL: lateDeliveryRouteV159SQL},
+	{Version: agentRecordsMigrationVersion, Name: "agent_records", SQL: agentRecordsV160SQL},
+	{Version: ledgerIndexesMigrationVersion, Name: "ledger_indexes", SQL: ledgerIndexesV161SQL, Rebuild: true},
+	{Version: wakeItemsMigrationVersion, Name: "wake_items", SQL: wakeItemsV162SQL, Fix: recordConfirmedWakeItems},
+	{Version: agentTreeMarksMigrationVersion, Name: "agent_tree_marks", SQL: agentTreeMarksV163SQL, Fix: fillAgentTreeMarks},
+	{Version: spawnPlacementMigrationVersion, Name: "spawn_placement", SQL: spawnPlacementV164SQL},
+	{Version: threadAttentionMigrationVersion, Name: "thread_attention", SQL: threadAttentionV165SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a
@@ -2089,12 +2090,6 @@ func applyMigrationContext(ctx context.Context, db *sql.DB, m Migration) error {
 		return fmt.Errorf("begin migration v%d: %w", m.Version, err)
 	}
 
-	if m.Check != nil {
-		if err := m.Check(tx); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("migration v%d (%s) refused: %w", m.Version, m.Name, err)
-		}
-	}
 	if strings.TrimSpace(m.SQL) != "" {
 		if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 			_ = tx.Rollback()
@@ -2199,12 +2194,6 @@ func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, ac
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin rebuild v%d: %w", m.Version, err)
-	}
-	if m.Check != nil {
-		if err := m.Check(tx); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("migration v%d (%s) refused: %w", m.Version, m.Name, err)
-		}
 	}
 	for _, stmt := range sqlStatements(m.SQL) {
 		if index, ok := createIndexName(stmt); ok && activity != nil {

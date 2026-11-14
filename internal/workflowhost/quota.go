@@ -24,11 +24,6 @@ import (
 // lands on one run-status line and in a wake.
 const maxWorkflowFailureDetailRunes = 400
 
-func workflowUsageLimitRefusal(event provider.ProviderEvent) bool {
-	return event.Kind == provider.EventError && event.Failure != nil &&
-		event.Failure.Reason == provider.FailureReasonUsageLimit
-}
-
 // parkForUsageLimit synchronously detaches the refused attempt, then records
 // the provider/account identity captured at the send boundary and parks off the
 // provider event goroutine. Losing correlation metadata never turns the

@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  closeWorkflowsOverlay,
+  closeWorkflowsPane,
   consumeWorkflowsOverlayEscape,
   getWorkflowArmedAction,
   getWorkflowProjectFilter,
@@ -11,9 +11,10 @@ import {
   getWorkflowsOverlayStack,
   getWorkflowsOverlayTop,
   isWorkflowSweepActive,
-  isWorkflowsOverlayOpen,
-  openWorkflowRunInOverlay,
-  openWorkflowsOverlay,
+  isWorkflowsDetailOpen,
+  isWorkflowsPaneFocused,
+  openWorkflowRunInPane,
+  openWorkflowsPane,
   parsePersistedOverlayState,
   popWorkflowsOverlay,
   pruneWorkflowsOverlayStack,
@@ -27,25 +28,42 @@ import {
   syncWorkflowsOverlayFromAppStorage,
   toggleWorkflowRunMapComposition,
   toggleWorkflowRunMapWave,
-  toggleWorkflowsOverlay,
+  toggleWorkflowsPane,
 } from './workflowsOverlay.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
+import { createPane, focusPane, focusedOpenTargetPane, resetPanesForTest } from './panes.svelte';
+import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { installToolPanes, isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
 
 const STACK_KEY = 'workflows:overlay';
 
-describe('workflows overlay navigation', () => {
+function resetPaneState(): void {
+  resetToolPanesForTest();
+  resetPanesForTest();
+  resetPaneLayoutForTest();
+  setPaneLayoutItemsForTest([]);
+  installToolPanes();
+}
+
+describe('workflows navigation', () => {
   beforeEach(() => {
     resetAppStorageForTest();
     resetWorkflowsOverlayForTest();
+    resetPaneState();
   });
 
-  it('opens and closes without touching the stack', () => {
+  afterEach(() => {
+    resetPaneState();
+  });
+
+  it('opens and closes the pane without touching the stack', () => {
     pushWorkflowRunDetail('run-1');
-    expect(isWorkflowsOverlayOpen()).toBe(false);
-    toggleWorkflowsOverlay();
-    expect(isWorkflowsOverlayOpen()).toBe(true);
-    toggleWorkflowsOverlay();
-    expect(isWorkflowsOverlayOpen()).toBe(false);
+    expect(isToolOpen('workflows')).toBe(false);
+    toggleWorkflowsPane();
+    expect(isToolOpen('workflows')).toBe(true);
+    expect(isWorkflowsPaneFocused()).toBe(true);
+    toggleWorkflowsPane();
+    expect(isToolOpen('workflows')).toBe(false);
     expect(getWorkflowsOverlayRunId()).toBe('run-1');
   });
 
@@ -72,9 +90,25 @@ describe('workflows overlay navigation', () => {
     expect(getWorkflowSweepIndex()).toBe(-1);
   });
 
+  // A deep link opens Workflows the way a thread notification opens its
+  // thread: in the focused pane's place (stores/toolPanes.svelte.ts).
+  it('opens a deep link in the focused pane\'s place', () => {
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 560 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 640 },
+    ]);
+    createPane('left');
+    createPane('right');
+    focusPane('right');
+    openWorkflowRunInPane('run-3');
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'tool-workflows']);
+    expect(getPaneLayoutItems()[1].widthPx).toBe(640);
+    expect(getWorkflowsOverlayRunId()).toBe('run-3');
+  });
+
   it('opens a deep link straight into the sweep at that run', () => {
-    openWorkflowRunInOverlay('run-9', 4);
-    expect(isWorkflowsOverlayOpen()).toBe(true);
+    openWorkflowRunInPane('run-9', 4);
+    expect(isWorkflowsPaneFocused()).toBe(true);
     expect(getWorkflowsOverlayRunId()).toBe('run-9');
     expect(isWorkflowSweepActive()).toBe(true);
     expect(getWorkflowSweepIndex()).toBe(4);
@@ -82,17 +116,17 @@ describe('workflows overlay navigation', () => {
 
   describe('escape precedence', () => {
     it('disarms a confirm before anything else', () => {
-      openWorkflowsOverlay();
+      openWorkflowsPane();
       pushWorkflowRunDetail('run-1');
       setWorkflowArmedAction('cancel:run-1');
       expect(consumeWorkflowsOverlayEscape()).toBe('disarmed');
       expect(getWorkflowArmedAction()).toBeNull();
       expect(getWorkflowsOverlayRunId()).toBe('run-1');
-      expect(isWorkflowsOverlayOpen()).toBe(true);
+      expect(isToolOpen('workflows')).toBe(true);
     });
 
     it('closes a dialog before it pops', () => {
-      openWorkflowsOverlay();
+      openWorkflowsPane();
       pushWorkflowRunDetail('run-1');
       setWorkflowsOverlayDialog('discard');
       expect(consumeWorkflowsOverlayEscape()).toBe('dialog-closed');
@@ -100,17 +134,28 @@ describe('workflows overlay navigation', () => {
       expect(getWorkflowsOverlayRunId()).toBe('run-1');
     });
 
-    it('pops to home, then closes the overlay', () => {
-      openWorkflowsOverlay();
+    it('pops to home, then consumes nothing and leaves the pane open', () => {
+      openWorkflowsPane();
       pushWorkflowRunDetail('run-1');
+      expect(isWorkflowsDetailOpen()).toBe(true);
       expect(consumeWorkflowsOverlayEscape()).toBe('popped');
       expect(getWorkflowsOverlayTop()).toEqual({ level: 'home' });
-      expect(consumeWorkflowsOverlayEscape()).toBe('closed');
-      expect(isWorkflowsOverlayOpen()).toBe(false);
+      expect(isWorkflowsDetailOpen()).toBe(false);
+      expect(consumeWorkflowsOverlayEscape()).toBeNull();
+      expect(isToolOpen('workflows')).toBe(true);
+    });
+
+    it('reports a dialog or an armed confirm at home as an open detail step', () => {
+      expect(isWorkflowsDetailOpen()).toBe(false);
+      setWorkflowsOverlayDialog('intake');
+      expect(isWorkflowsDetailOpen()).toBe(true);
+      setWorkflowsOverlayDialog(null);
+      setWorkflowArmedAction('pause-all');
+      expect(isWorkflowsDetailOpen()).toBe(true);
     });
 
     it('drops a stale armed confirm when the level changes under it', () => {
-      openWorkflowsOverlay();
+      openWorkflowsPane();
       pushWorkflowRunDetail('run-1');
       setWorkflowArmedAction('cancel:run-1');
       pushWorkflowRunDetail('run-2');
@@ -123,13 +168,21 @@ describe('workflows overlay navigation', () => {
       expect(getWorkflowArmedAction()).toBeNull();
     });
 
-    it('clears transient state when the overlay closes', () => {
-      openWorkflowsOverlay();
+    it('clears transient state when the pane closes', () => {
+      openWorkflowsPane();
       setWorkflowsOverlayDialog('intake');
       setWorkflowArmedAction('discard:run-1');
-      closeWorkflowsOverlay();
+      closeWorkflowsPane();
       expect(getWorkflowsOverlayDialog()).toBeNull();
       expect(getWorkflowArmedAction()).toBeNull();
+    });
+
+    it('clears transient state when a thread open takes the pane\'s slot', () => {
+      openWorkflowsPane();
+      setWorkflowsOverlayDialog('discard');
+      focusedOpenTargetPane();
+      expect(isToolOpen('workflows')).toBe(false);
+      expect(getWorkflowsOverlayDialog()).toBeNull();
     });
   });
 
@@ -173,8 +226,8 @@ describe('workflows overlay navigation', () => {
   });
 
   describe('persistence', () => {
-    it('writes the stack, filter and cursor — but never `open`', () => {
-      openWorkflowsOverlay();
+    it('writes the stack, filter and cursor', () => {
+      openWorkflowsPane();
       setWorkflowProjectFilter('project-a');
       pushWorkflowRunDetail('run-1', { sweep: true, sweepIndex: 2 });
       expect(JSON.parse(appStorageGet(STACK_KEY) ?? '{}')).toEqual({
@@ -196,7 +249,6 @@ describe('workflows overlay navigation', () => {
       expect(getWorkflowsOverlayRunId()).toBe('restored');
       expect(getWorkflowProjectFilter()).toBe('project-b');
       expect(getWorkflowSweepIndex()).toBe(5);
-      expect(isWorkflowsOverlayOpen()).toBe(false);
     });
 
     it('leaves the live state alone when nothing is stored', () => {
@@ -241,6 +293,11 @@ describe('workflows overlay navigation', () => {
 describe('run-map expansion (RUN-MAP §8)', () => {
   beforeEach(() => {
     resetWorkflowsOverlayForTest();
+    resetPaneState();
+  });
+
+  afterEach(() => {
+    resetPaneState();
   });
 
   it('remembers what one run expanded without touching another run', () => {
@@ -294,7 +351,7 @@ describe('run-map expansion (RUN-MAP §8)', () => {
     toggleWorkflowRunMapWave('come-back-to-me', 'wave-1');
     for (let index = 0; index < 7; index += 1) toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
 
-    openWorkflowsOverlay();
+    openWorkflowsPane();
     pushWorkflowRunDetail('come-back-to-me');
 
     for (let index = 7; index < 12; index += 1) toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
@@ -307,7 +364,7 @@ describe('run-map expansion (RUN-MAP §8)', () => {
   // run is exactly the revisit the bound must respect.
   it('a sweep step back onto a run counts as use', () => {
     toggleWorkflowRunMapWave('swept', 'wave-1');
-    openWorkflowsOverlay();
+    openWorkflowsPane();
     pushWorkflowRunDetail('swept', { sweep: true, sweepIndex: 0 });
     for (let index = 0; index < 7; index += 1) {
       toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
@@ -323,7 +380,7 @@ describe('run-map expansion (RUN-MAP §8)', () => {
   // than a run have nothing to record and must not disturb the order.
   it('a stack write that lands off a run leaves the order alone', () => {
     for (let index = 0; index < 8; index += 1) toggleWorkflowRunMapWave(`run-${index}`, 'wave-1');
-    openWorkflowsOverlay();
+    openWorkflowsPane();
     pushWorkflowAllClear();
     popWorkflowsOverlay();
 

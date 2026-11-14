@@ -16,7 +16,10 @@ import (
 const (
 	defaultReadTimeout  = 45 * time.Second
 	defaultMaxBodyBytes = 1 << 20
-	hostConcurrency     = 4
+	// maxRequestBodyBytes caps Request.MaxBodyBytes at a quarter of the
+	// ETag store's byte bound, so one stored body cannot evict the rest.
+	maxRequestBodyBytes = etagMaxBytes / 4
+	hostConcurrency     = 8
 	tokenRereadAfter    = 5 * time.Minute
 	tokenFailureTTL     = 5 * time.Second
 	githubAPIVersion    = "2022-11-28"
@@ -37,14 +40,15 @@ type Options struct {
 	// ReadTimeout bounds a call whose Request.Timeout is zero; zero means
 	// 45s.
 	ReadTimeout time.Duration
-	// MaxBodyBytes bounds a body Do, JSON and GraphQL read; zero means
-	// 1 MiB.
+	// MaxBodyBytes bounds a body Do, JSON and GraphQL read unless the
+	// request names its own (Request.MaxBodyBytes); zero means 1 MiB.
 	MaxBodyBytes int64
 }
 
 // Isolated is the fake forge an isolated boot talks to. Every host's REST
-// base becomes BaseURL/github/rest/ or BaseURL/gitlab/api/v4/ and the
-// GitHub GraphQL URL BaseURL/github/graphql; a request carries the forge
+// base becomes BaseURL/github/rest/ or BaseURL/gitlab/api/v4/ and its
+// GraphQL URL BaseURL/github/graphql or BaseURL/gitlab/api/graphql; a
+// request carries the forge
 // host it is for as its Host header. An attachment's absolute URL becomes
 // BaseURL/{forge}/absolute/<host>/<path>. Token is sent on every request.
 // An empty BaseURL refuses every request.
@@ -70,13 +74,21 @@ type Service struct {
 	gates     *gates
 	etags     *etagStore
 
-	// now and resolveBase are replaced only by tests, before first use.
+	// now, resolveBase and prepared are replaced only by tests, before
+	// first use; prepared observes every exchange the moment it is prepared.
 	now         func() time.Time
 	resolveBase func(forge, host string, info SourceInfo) (rest, graphQL *url.URL, err error)
+	prepared    func(ex *exchange)
 
 	mu      sync.Mutex
 	closed  bool
 	clients map[clientKey]*Client
+
+	// life bounds the shared token reads (Client.read); Close ends it and
+	// joins them.
+	life  context.Context
+	stop  context.CancelFunc
+	reads sync.WaitGroup
 }
 
 type clientKey struct{ forge, host string }
@@ -105,6 +117,7 @@ func New(opts Options) (*Service, error) {
 		now:       time.Now,
 		clients:   make(map[clientKey]*Client),
 	}
+	s.life, s.stop = context.WithCancel(context.Background())
 	s.resolveBase = s.defaultBase
 	switch {
 	case opts.Isolated != nil && opts.TokenSource != nil:
@@ -171,7 +184,7 @@ func (s *Service) client(forge, host string) *Client {
 	if c := s.clients[key]; c != nil {
 		return c
 	}
-	c := &Client{svc: s, forge: forge, host: host, slots: make(chan struct{}, hostConcurrency), readLock: make(chan struct{}, 1)}
+	c := &Client{svc: s, forge: forge, host: host, slots: make(chan struct{}, hostConcurrency)}
 	if err := validHost(host); err != nil {
 		c.err = err
 	}
@@ -215,14 +228,17 @@ func (s *Service) DropNegative(host string) {
 	}
 }
 
-// Close zeroes every token, drops the gates, quota and ETag entries and
-// closes idle connections. A request after Close fails.
+// Close ends and joins the token reads in flight, zeroes every token,
+// drops the gates, quota and ETag entries and closes idle connections. A
+// request after Close fails.
 func (s *Service) Close() {
 	s.mu.Lock()
 	s.closed = true
 	clients := s.clients
 	s.clients = make(map[clientKey]*Client)
 	s.mu.Unlock()
+	s.stop()
+	s.reads.Wait()
 	for _, c := range clients {
 		c.credMu.Lock()
 		c.token.Zero()
@@ -235,21 +251,33 @@ func (s *Service) Close() {
 	s.transport.CloseIdleConnections()
 }
 
+// startRead runs read on the Service's lifetime, or reports false after
+// Close.
+func (s *Service) startRead(read func(context.Context)) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.reads.Go(func() { read(s.life) })
+	return true
+}
+
 func (s *Service) isClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closed
 }
 
-// defaultBase resolves a host's REST base and GraphQL URL (nil for
-// GitLab) per the table in docs/architecture/forge-transport.md.
+// defaultBase resolves a host's REST base and GraphQL URL per the table
+// in docs/architecture/forge-transport.md.
 func (s *Service) defaultBase(forge, host string, info SourceInfo) (*url.URL, *url.URL, error) {
 	if s.isolated != nil {
 		switch forge {
 		case ForgeGitHub:
 			return s.isolated.JoinPath("github", "rest/"), s.isolated.JoinPath("github", "graphql"), nil
 		default:
-			return s.isolated.JoinPath("gitlab", "api", "v4/"), nil, nil
+			return s.isolated.JoinPath("gitlab", "api", "v4/"), s.isolated.JoinPath("gitlab", "api", "graphql"), nil
 		}
 	}
 	switch forge {
@@ -272,7 +300,8 @@ func (s *Service) defaultBase(forge, host string, info SourceInfo) (*url.URL, *u
 		if err := validHost(strings.ToLower(apiHost)); err != nil {
 			return nil, nil, fmt.Errorf("forgeapi: glab api_host for %s: %w", host, err)
 		}
-		return &url.URL{Scheme: scheme, Host: strings.ToLower(apiHost), Path: "/api/v4/"}, nil, nil
+		apiHost = strings.ToLower(apiHost)
+		return &url.URL{Scheme: scheme, Host: apiHost, Path: "/api/v4/"}, &url.URL{Scheme: scheme, Host: apiHost, Path: "/api/graphql"}, nil
 	}
 }
 

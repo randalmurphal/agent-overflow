@@ -1019,12 +1019,11 @@ func TestARequestDiscardedByAReplacedSessionGoesBackToItsQueue(t *testing.T) {
 	assertRequestOwedAgain(t, f, h.thread.ID, token)
 }
 
-// A request queued during turn 0 and flushed after a task-notification
-// cascade re-opened a wire round on that settled turn. The CLI drains it
-// mid-loop: `started` with no logical turn open, then the echo, which opens
-// turn 1 for it (no init follows). Turn 1 is the request's, and its end
-// answers it.
-func TestARequestDrainedAfterACascadeSettlesWithTheTurnItsEchoOpened(t *testing.T) {
+// A request queued during turn 0 and flushed while the turn a task
+// notification woke the CLI for runs. The CLI drains it mid-loop into that
+// turn, as into any running turn: the turn is not the request's own, and
+// its end answers it.
+func TestARequestDrainedIntoASelfWokenTurnSettlesWithThatTurn(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	callerMidTurn(t, f)
@@ -1043,16 +1042,16 @@ func TestARequestDrainedAfterACascadeSettlesWithTheTurnItsEchoOpened(t *testing.
 	h.text(t, "a-cascade", "A background task finished.")
 	f.app.dispatchFlush(h.thread.ID, f.app.triage.QueuedFlushItems(h.thread.ID))
 	head, ok := f.app.triage.PeekPendingSendHeadForTest(h.thread.ID)
-	if !ok || head.ExpectedProviderItemID == "" || head.TurnIndex != 1 {
-		t.Fatalf("fixture: the flush was not deferred at turn 1: %+v ok=%v", head, ok)
+	if !ok || head.ExpectedProviderItemID == "" || head.HasDeferred || head.TurnIndex != 2 {
+		t.Fatalf("fixture: the flush did not go into the running turn 1: %+v ok=%v", head, ok)
 	}
 	uuid := head.ExpectedProviderItemID
 
 	h.lifecycle(t, uuid, provider.CommandQueued)
 	h.lifecycle(t, uuid, provider.CommandStarted)
 	h.echo(t, uuid, "where does the stall come from?")
-	if receipt := f.receipt(t, token); receipt.TurnID != threadRequestTurnKey(h.thread.ID, 1) || !receipt.OwnTurn {
-		t.Fatalf("receipt bound to %q (own turn %v), want turn 1, which the echo opened for it", receipt.TurnID, receipt.OwnTurn)
+	if receipt := f.receipt(t, token); receipt.TurnID != threadRequestTurnKey(h.thread.ID, 1) || receipt.OwnTurn {
+		t.Fatalf("receipt bound to %q (own turn %v), want the running turn 1, not its own", receipt.TurnID, receipt.OwnTurn)
 	}
 	h.text(t, "a-turn1", "The stall is in the watchdog.")
 	h.turnComplete(t)

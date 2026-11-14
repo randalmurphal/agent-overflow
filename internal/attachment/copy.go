@@ -65,6 +65,7 @@ func (s *Store) CopyToThread(sourceThreadID, targetThreadID, attachmentID string
 		RelativePath: filepath.ToSlash(relativePath),
 		CreatedAt:    createdAt,
 		Kind:         source.Kind,
+		Shell:        source.Shell,
 	}
 	if err := s.commitStagedWrite(record, tmpPath, absolutePath); err != nil {
 		return store.Attachment{}, err

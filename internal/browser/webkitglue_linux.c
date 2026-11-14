@@ -14,6 +14,7 @@ extern void aoWebKitSnapshotDone(uint64_t call_id, void *pixels, int width,
 extern void aoWebKitAllow(uint64_t page_id, uint64_t profile_id, void *decision, char *uri);
 extern void aoWebKitConsole(uint64_t page_id, char *payload);
 extern void aoWebKitPageInfo(uint64_t page_id, char *uri, char *title);
+extern void aoWebKitDocumentCommitted(uint64_t page_id);
 extern void aoWebKitPageClosed(uint64_t page_id);
 extern void aoWebKitPopup(uint64_t opener_page_id, uint64_t profile_id,
                           void *view, char *uri);
@@ -24,7 +25,8 @@ extern void aoWebKitDownloadStarted(uint64_t profile_id, uint64_t page_id,
 extern void aoWebKitDownloadProgress(uint64_t download_id, double received,
                                      int state, char *path);
 extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int meta,
-                            int alt, int shift);
+                            int alt, int shift, int held, int composing);
+extern void aoWebKitFindDone(uint64_t call_id, int found, unsigned int match_count);
 
 // The download state vocabulary the Go seam uses (driver.go).
 #define AO_DL_IN_PROGRESS 0
@@ -36,6 +38,7 @@ extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int met
 #define AO_SESSION_DL_DIR "ao-download-dir"
 #define AO_SESSION_KEY "ao-session"
 #define AO_DOWNLOAD_KEY "ao-download-id"
+#define AO_FIND_CALLS_KEY "ao-find-calls"
 
 static uint64_t ao_view_page_id(gpointer view) {
   return (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(view), AO_PAGE_KEY));
@@ -162,6 +165,24 @@ static void ao_view_host_init(AoViewHost *host) {
 
 static GtkWidget *ao_overlay = NULL;
 static GtkWidget *ao_park = NULL; // the GtkFixed inside the clipping scroller
+// The Wails SPA's own WebKitWebView, the widget a claimed chord hands
+// keyboard focus to (ao_wk_focus_app). Weak: it is the window's.
+static GtkWidget *ao_app_view = NULL;
+
+// ao_find_web_view answers the first WebKitWebView in w's subtree.
+static GtkWidget *ao_find_web_view(GtkWidget *w) {
+  if (WEBKIT_IS_WEB_VIEW(w)) {
+    return w;
+  }
+  for (GtkWidget *child = gtk_widget_get_first_child(w); child != NULL;
+       child = gtk_widget_get_next_sibling(child)) {
+    GtkWidget *found = ao_find_web_view(child);
+    if (found != NULL) {
+      return found;
+    }
+  }
+  return NULL;
+}
 
 // ao_view_host answers a view's host, or NULL — a plain cast, never
 // GTK_WIDGET(): glib warns on a NULL instance cast.
@@ -257,7 +278,43 @@ int ao_wk_host_attach(void *gtk_window) {
   // gtk_scrolled_window_get_child() returns the auto-inserted GtkViewport, not
   // this GtkFixed, so keep our own pointer.
   ao_park = fixed;
+  // The SPA view sits in the Wails window's child (its box), which is the
+  // overlay's main child now; no page view has been added yet.
+  ao_app_view = ao_find_web_view(existing);
+  if (ao_app_view != NULL) {
+    g_object_add_weak_pointer(G_OBJECT(ao_app_view), (gpointer *)&ao_app_view);
+  }
   return 1;
+}
+
+int ao_wk_focus_app(void) {
+  if (ao_app_view == NULL) {
+    return 0;
+  }
+  return gtk_widget_grab_focus(ao_app_view) ? 1 : 0;
+}
+
+void ao_wk_view_grab_focus(void *view) { gtk_widget_grab_focus(GTK_WIDGET(view)); }
+
+int ao_wk_focus_holder(void *view) {
+  GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(view));
+  GtkWidget *focus = root == NULL ? NULL : gtk_root_get_focus(root);
+  if (focus == NULL) {
+    return 0;
+  }
+  if (focus == GTK_WIDGET(view) || gtk_widget_is_ancestor(focus, GTK_WIDGET(view))) {
+    return 1;
+  }
+  if (ao_app_view != NULL &&
+      (focus == ao_app_view || gtk_widget_is_ancestor(focus, ao_app_view))) {
+    return 2;
+  }
+  return 3;
+}
+
+int ao_wk_window_active(void *view) {
+  GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(view));
+  return root != NULL && GTK_IS_WINDOW(root) && gtk_window_is_active(GTK_WINDOW(root)) ? 1 : 0;
 }
 
 void ao_wk_host_park(void *view, int slot) {
@@ -366,10 +423,31 @@ void ao_wk_host_present(void *view, double x, double y, double width,
   gtk_widget_queue_allocate(w);
 }
 
-void ao_wk_host_hide(void *view) {
-  // Presentation ends when the caller parks the host; nothing to undo here
-  // beyond the offset and scale, which park resets.
-  (void)view;
+// ao_view_holds_focus answers whether the window's focus widget is the view
+// or inside it.
+static int ao_view_holds_focus(GtkWidget *view) {
+  GtkRoot *root = gtk_widget_get_root(view);
+  GtkWidget *focus = root == NULL ? NULL : gtk_root_get_focus(root);
+  return focus != NULL && (focus == view || gtk_widget_is_ancestor(focus, view));
+}
+
+// ao_release_focus ends a page's hold on keyboard focus when the page stops
+// being visible. A parked view stays mapped in the 1x1 clip and would go on
+// taking every key unseen; a closed one leaves the window with no focus
+// widget. Either way the focus goes to the SPA's webview, as a claimed
+// chord's does (ao_wk_focus_app).
+static int ao_release_focus(int held) {
+  if (!held) {
+    return 0;
+  }
+  return ao_wk_focus_app() ? 1 : -1;
+}
+
+int ao_wk_host_hide(void *view, int slot) {
+  // Presentation ends with the park, which resets the offset and scale.
+  int held = ao_view_holds_focus(GTK_WIDGET(view));
+  ao_wk_host_park(view, slot);
+  return ao_release_focus(held);
 }
 
 // ao_wk_host_presented is read off the WIDGET TREE, never a pointer: a view is
@@ -568,8 +646,14 @@ static void ao_notify_info(GObject *object, GParamSpec *spec, gpointer data) {
                    title ? g_strdup(title) : NULL);
 }
 
+// A load commits a new document; a navigation within the same page changes
+// the URI without a load (WebKit-6.0.gir, webkit_web_view_get_uri and
+// WebKitWebView::load-changed), so COMMITTED is the document signal.
 static void ao_load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer data) {
   (void)data;
+  if (event == WEBKIT_LOAD_COMMITTED) {
+    aoWebKitDocumentCommitted(ao_view_page_id(view));
+  }
   if (event == WEBKIT_LOAD_COMMITTED || event == WEBKIT_LOAD_FINISHED) {
     ao_notify_info(G_OBJECT(view), NULL, NULL);
   }
@@ -665,9 +749,42 @@ static void ao_script_message(WebKitUserContentManager *manager, JSCValue *value
 // Once the user clicks into page content the view owns every key, Ctrl+W
 // included. A capture-phase key controller on the view offers modifier chords
 // to Go first (aoWebKitKeyChord, a synchronous set lookup); a chord AO binds
-// is stopped here and dispatched by the SPA, everything else reaches the page.
+// is stopped here and dispatched by the SPA, which Go has given keyboard
+// focus by then (ao_wk_focus_app); everything else reaches the page.
+// A bare Escape is offered too, and always reaches the page: Go only observes
+// it. GTK 4 reports no key repeat, so a held Escape is told apart here: it is
+// down from its press until its release or the view losing focus.
 // The controller sits on the view, so it only ever sees events targeted at
 // the page — a chord typed into the SPA never passes through it.
+
+#define AO_ESCAPE_DOWN_KEY "ao-escape-down"
+
+static void ao_escape_up(GtkWidget *view) {
+  g_object_set_data(G_OBJECT(view), AO_ESCAPE_DOWN_KEY, NULL);
+}
+
+// ao_view_composing reports whether the view's input method has a
+// composition in progress (a non-empty preedit). This controller runs in the
+// capture phase, before WebKit hands the key to the input method, so an
+// Escape that will cancel the composition is still seen with it.
+static int ao_view_composing(GtkWidget *view) {
+  WebKitInputMethodContext *im = webkit_web_view_get_input_method_context(WEBKIT_WEB_VIEW(view));
+  if (im == NULL) {
+    return 0;
+  }
+  char *text = NULL;
+  GList *underlines = NULL;
+  guint cursor = 0;
+  webkit_input_method_context_get_preedit(im, &text, &underlines, &cursor);
+  int composing = text != NULL && text[0] != '\0';
+  g_free(text);
+  g_list_free_full(underlines, (GDestroyNotify)webkit_input_method_underline_free);
+  return composing;
+}
+
+int ao_wk_view_has_input_method(void *view) {
+  return webkit_web_view_get_input_method_context(WEBKIT_WEB_VIEW(view)) != NULL;
+}
 // ---------------------------------------------------------------------------
 
 // ao_key_name spells a keyval the way KeyboardEvent.key does, which is the
@@ -712,7 +829,7 @@ static gboolean ao_key_pressed(GtkEventControllerKey *controller, guint keyval, 
   int meta = (state & (GDK_META_MASK | GDK_SUPER_MASK)) != 0;
   int alt = (state & GDK_ALT_MASK) != 0;
   int shift = (state & GDK_SHIFT_MASK) != 0;
-  if (!ctrl && !meta && !alt) {
+  if (!ctrl && !meta && !alt && keyval != GDK_KEY_Escape) {
     return FALSE;
   }
   char buf[8];
@@ -721,7 +838,133 @@ static gboolean ao_key_pressed(GtkEventControllerKey *controller, guint keyval, 
     return FALSE;
   }
   GtkWidget *view = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller));
-  return aoWebKitKeyChord(ao_view_page_id(view), key, ctrl, meta, alt, shift) == 1;
+  int held = 0;
+  int composing = 0;
+  if (keyval == GDK_KEY_Escape) {
+    held = g_object_get_data(G_OBJECT(view), AO_ESCAPE_DOWN_KEY) != NULL;
+    g_object_set_data(G_OBJECT(view), AO_ESCAPE_DOWN_KEY, GINT_TO_POINTER(1));
+    composing = ao_view_composing(view);
+  }
+  return aoWebKitKeyChord(ao_view_page_id(view), key, ctrl, meta, alt, shift, held, composing) == 1;
+}
+
+static void ao_key_released(GtkEventControllerKey *controller, guint keyval, guint keycode,
+                            GdkModifierType state, gpointer data) {
+  (void)keycode;
+  (void)state;
+  (void)data;
+  if (keyval == GDK_KEY_Escape) {
+    ao_escape_up(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)));
+  }
+}
+
+static void ao_focus_left(GtkEventControllerFocus *controller, gpointer data) {
+  (void)data;
+  ao_escape_up(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)));
+}
+
+int ao_wk_view_offer_ctrl_key(void *view, unsigned int unicode) {
+  GtkEventController *keys = g_object_get_data(G_OBJECT(view), "ao-key-controller");
+  if (keys == NULL) {
+    return -1;
+  }
+  gboolean handled = FALSE;
+  g_signal_emit_by_name(keys, "key-pressed", gdk_unicode_to_keyval(unicode), 0u, GDK_CONTROL_MASK,
+                        &handled);
+  return handled ? 1 : 0;
+}
+
+int ao_wk_view_offer_escape(void *view, int ctrl, int release) {
+  GtkEventController *keys = g_object_get_data(G_OBJECT(view), "ao-key-controller");
+  if (keys == NULL) {
+    return -1;
+  }
+  GdkModifierType state = ctrl ? GDK_CONTROL_MASK : 0;
+  gboolean handled = FALSE;
+  g_signal_emit_by_name(keys, "key-pressed", (guint)GDK_KEY_Escape, 0u, state, &handled);
+  if (release) {
+    g_signal_emit_by_name(keys, "key-released", (guint)GDK_KEY_Escape, 0u, state);
+  }
+  return handled ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Find: WebKitFindController (WebKitFindController.h). search, search_next and
+// search_previous each answer once, asynchronously, with found-text or
+// failed-to-find-text (WebKit-6.0.gir). The controller keeps the call ids in
+// issue order, so each answer goes to the call that caused it, and an answer
+// for a call whose caller gave up completes nothing.
+// ---------------------------------------------------------------------------
+
+static void ao_find_answer(WebKitFindController *finder, int found, guint match_count) {
+  GQueue *calls = g_object_get_data(G_OBJECT(finder), AO_FIND_CALLS_KEY);
+  if (calls == NULL || g_queue_is_empty(calls)) {
+    return;
+  }
+  uint64_t call_id = (uint64_t)GPOINTER_TO_SIZE(g_queue_pop_head(calls));
+  aoWebKitFindDone(call_id, found, match_count);
+}
+
+static void ao_found_text(WebKitFindController *finder, guint match_count, gpointer data) {
+  ao_find_answer(finder, 1, match_count);
+}
+
+static void ao_failed_to_find_text(WebKitFindController *finder, gpointer data) {
+  ao_find_answer(finder, 0, 0);
+}
+
+static void ao_connect_find(WebKitWebView *view) {
+  WebKitFindController *finder = webkit_web_view_get_find_controller(view);
+  if (finder == NULL || g_object_get_data(G_OBJECT(finder), AO_FIND_CALLS_KEY) != NULL) {
+    return;
+  }
+  g_object_set_data_full(G_OBJECT(finder), AO_FIND_CALLS_KEY, g_queue_new(),
+                         (GDestroyNotify)g_queue_free);
+  g_signal_connect(finder, "found-text", G_CALLBACK(ao_found_text), NULL);
+  g_signal_connect(finder, "failed-to-find-text", G_CALLBACK(ao_failed_to_find_text), NULL);
+}
+
+void ao_wk_view_find(void *view, int op, const char *text, unsigned int max_match_count,
+                     uint64_t call_id) {
+  WebKitFindController *finder = webkit_web_view_get_find_controller(WEBKIT_WEB_VIEW(view));
+  GQueue *calls = finder ? g_object_get_data(G_OBJECT(finder), AO_FIND_CALLS_KEY) : NULL;
+  if (calls == NULL) {
+    aoWebKitFindDone(call_id, -1, 0);
+    return;
+  }
+  g_queue_push_tail(calls, GSIZE_TO_POINTER((gsize)call_id));
+  switch (op) {
+    case AO_FIND_SEARCH:
+      webkit_find_controller_search(
+          finder, text, WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE | WEBKIT_FIND_OPTIONS_WRAP_AROUND,
+          max_match_count);
+      break;
+    case AO_FIND_NEXT:
+      webkit_find_controller_search_next(finder);
+      break;
+    default:
+      webkit_find_controller_search_previous(finder);
+      break;
+  }
+}
+
+void ao_wk_view_find_finish(void *view) {
+  WebKitFindController *finder = webkit_web_view_get_find_controller(WEBKIT_WEB_VIEW(view));
+  if (finder != NULL) {
+    webkit_find_controller_search_finish(finder);
+  }
+}
+
+// The find's frame script (webkitFindFrameScript), set once with the host;
+// every view gets it in the find's isolated world.
+static char *ao_find_frame_script = NULL;
+static char *ao_find_world = NULL;
+
+void ao_wk_set_find_frame_script(const char *script, const char *world) {
+  if (ao_find_frame_script == NULL) {
+    ao_find_frame_script = g_strdup(script);
+    ao_find_world = g_strdup(world);
+  }
 }
 
 static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *user_script,
@@ -730,7 +973,12 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
   GtkEventController *keys = gtk_event_controller_key_new();
   gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
   g_signal_connect(keys, "key-pressed", G_CALLBACK(ao_key_pressed), NULL);
+  g_signal_connect(keys, "key-released", G_CALLBACK(ao_key_released), NULL);
   gtk_widget_add_controller(GTK_WIDGET(view), keys);
+  g_object_set_data(G_OBJECT(view), "ao-key-controller", keys);
+  GtkEventController *focus = gtk_event_controller_focus_new();
+  g_signal_connect(focus, "leave", G_CALLBACK(ao_focus_left), NULL);
+  gtk_widget_add_controller(GTK_WIDGET(view), focus);
   WebKitSettings *settings = webkit_web_view_get_settings(view);
   webkit_settings_set_enable_developer_extras(settings, TRUE);
   webkit_settings_set_javascript_can_open_windows_automatically(settings, TRUE);
@@ -747,6 +995,16 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
         WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
     webkit_user_content_manager_add_script(ucm, script);
     webkit_user_script_unref(script);
+    // A popup shares its opener's content manager (related-view), which
+    // already carries the frame script.
+    if (ao_find_frame_script != NULL && g_object_get_data(G_OBJECT(ucm), "ao-find-frames") == NULL) {
+      g_object_set_data(G_OBJECT(ucm), "ao-find-frames", GINT_TO_POINTER(1));
+      WebKitUserScript *frames = webkit_user_script_new_for_world(
+          ao_find_frame_script, WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+          WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, ao_find_world, NULL, NULL);
+      webkit_user_content_manager_add_script(ucm, frames);
+      webkit_user_script_unref(frames);
+    }
   }
 
   g_signal_connect(view, "notify::title", G_CALLBACK(ao_notify_info), NULL);
@@ -757,6 +1015,7 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
   g_signal_connect(view, "run-file-chooser", G_CALLBACK(ao_file_chooser), NULL);
   g_signal_connect(view, "context-menu", G_CALLBACK(ao_context_menu), NULL);
   g_signal_connect(view, "create", G_CALLBACK(ao_create_view), NULL);
+  ao_connect_find(view);
 }
 
 void *ao_wk_view_new(void *session, uint64_t page_id, const char *user_script,
@@ -782,16 +1041,18 @@ void ao_wk_view_adopt(void *view, uint64_t page_id, const char *user_script,
   ao_connect_view(WEBKIT_WEB_VIEW(view), page_id, user_script, console_handler);
 }
 
-void ao_wk_view_close(void *view) {
+int ao_wk_view_close(void *view) {
   if (view == NULL) {
-    return;
+    return 0;
   }
   GtkWidget *w = GTK_WIDGET(view);
+  int held = ao_view_holds_focus(w);
   // The host leaves the tree and is dropped first; its dispose unparents the
   // view, which the engine's own reference keeps alive for the close.
   ao_host_forget(w);
   webkit_web_view_try_close(WEBKIT_WEB_VIEW(view));
   g_object_unref(G_OBJECT(view));
+  return ao_release_focus(held);
 }
 
 // ao_wk_view_set_background paints the page's base color — what shows wherever
@@ -893,9 +1154,9 @@ static void ao_eval_finished(GObject *object, GAsyncResult *result, gpointer dat
   aoWebKitEvalDone(call_id, json, NULL);
 }
 
-void ao_wk_view_eval(void *view, const char *body, uint64_t call_id) {
+void ao_wk_view_eval(void *view, const char *body, const char *world, uint64_t call_id) {
   webkit_web_view_call_async_javascript_function(
-      WEBKIT_WEB_VIEW(view), body, -1, NULL, NULL, NULL, NULL, ao_eval_finished,
+      WEBKIT_WEB_VIEW(view), body, -1, NULL, world, NULL, NULL, ao_eval_finished,
       GSIZE_TO_POINTER((gsize)call_id));
 }
 

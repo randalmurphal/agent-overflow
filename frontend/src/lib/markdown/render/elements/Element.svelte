@@ -3,10 +3,12 @@
 	import Link from './Link.svelte';
 	import Image from './Image.svelte';
 	import Alert from './Alert.svelte';
-	import type { ProvenAppend, StreamdownToken } from '../../parser/index';
+	import type { GenericToken, ProvenAppend, StreamdownToken } from '../../parser/index';
 	import Slot from './Slot.svelte';
 	import { useStreamdown } from '../context.svelte';
+	import { codespanClass } from '../codespan';
 	import FootnoteRef from './FootnoteRef.svelte';
+	import { tableCellRenders } from './url';
 	let {
 		token,
 		children,
@@ -26,6 +28,12 @@
 	const MathComponent = $derived(streamdown.components?.math);
 
 	const id = $props.id();
+
+	// Compile-time exhaustiveness: a StreamdownToken type with no branch
+	// above fails the type check here instead of rendering nothing.
+	function extensionToken(token: never): GenericToken {
+		return token;
+	}
 </script>
 
 {#snippet sourceText(text: string)}
@@ -75,6 +83,8 @@
 			{@render children()}
 		</p>
 	</Slot>
+{:else if token.type === 'align'}
+	<!-- A marker renders nothing; Block.svelte applies its alignment. -->
 {:else if token.type === 'blockquote'}
 	<Slot props={{ children, token }} render={streamdown.snippets.blockquote}>
 		<blockquote data-streamdown-blockquote={id} class={streamdown.theme.blockquote.base}>
@@ -101,7 +111,10 @@
 	</Slot>
 {:else if token.type === 'codespan'}
 	<Slot props={{ children, token }} render={streamdown.snippets.codespan}>
-		<code data-streamdown-codespan={id} class={streamdown.theme.codespan.base}>
+		<code
+			data-streamdown-codespan={id}
+			class={codespanClass(streamdown.theme.codespan.base, token.text)}
+		>
 			{@render children()}
 		</code>
 	</Slot>
@@ -179,7 +192,7 @@
 		</tr>
 	</Slot>
 {:else if token.type === 'td'}
-	{#if token.rowspan > 0}
+	{#if tableCellRenders(token)}
 		<Slot props={{ children, token }} render={streamdown.snippets.td}>
 			<td
 				data-streamdown-td={id}
@@ -195,7 +208,7 @@
 		</Slot>
 	{/if}
 {:else if token.type === 'th'}
-	{#if token.rowspan > 0}
+	{#if tableCellRenders(token)}
 		<Slot props={{ children, token }} render={streamdown.snippets.th}>
 			<th
 				data-streamdown-th={id}
@@ -348,6 +361,8 @@
 		</Slot>
 	{/if}
 {:else}
-	<!-- For tokens we don't handle specifically, it may certainely be a custom extension to to the children props to handle -->
-	{@render streamdown.children?.({ token, children, streamdown })}
+	<!-- Every StreamdownToken type has a branch above (`extensionToken`
+	     takes `never`); a host extension's own token type reaches the
+	     host's `children` snippet. -->
+	{@render streamdown.children?.({ token: extensionToken(token), children, streamdown })}
 {/if}

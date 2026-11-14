@@ -26,7 +26,6 @@
 // it cannot derive alone — see `ActivityRunIdentity`.
 
 import type { Item } from '../types/models';
-import { ABANDONED_BLOCKS_NOTIFICATION_KIND } from './discardedItems';
 import { fileChangeDisplayRowCount } from './fileChangeRows';
 import {
   timelineNodeRepresentativeItem,
@@ -206,18 +205,7 @@ function isRunMember(node: TimelineNode, getItem: (id: string) => Item | undefin
   if (node.kind === 'activity_run') return false;
   const item = currentLeafItem(node, getItem);
   return timelineNodeHasRail(node, item)
-    || (item !== null && isBell(item) && identity.isLoadedMember(item.id));
-}
-
-/**
- * A notification a run can absorb: every notification but the
- * abandoned-blocks record, which is about the prose before it, not about
- * activity, and breaks the run as that prose would. Mirrors the store's
- * `isBell` (internal/store/activity_runs.go) so a page's run stubs and this
- * pass agree on membership.
- */
-function isBell(item: Item): boolean {
-  return item.kind === 'notification' && item.toolName !== ABANDONED_BLOCKS_NOTIFICATION_KIND;
+    || (item?.kind === 'notification' && identity.isLoadedMember(item.id));
 }
 
 /**
@@ -239,13 +227,18 @@ function isBell(item: Item): boolean {
  * settles the run, so membership never churns when the next node arrives. A
  * bell with no rail member before it (idle-time ping after prose) is not a
  * run and renders standalone, as before.
+ *
+ * The abandoned-blocks record is a bell too: it lands right after the rows
+ * Claude discarded, so it joins the run of discarded thinking or tool rows
+ * and stands alone after discarded prose. The store applies the same rule
+ * (`isBell`, internal/store/activity_runs.go).
  */
 function isAbsorbedNotification(
   node: TimelineNode,
   getItem: (id: string) => Item | undefined,
 ): boolean {
   const item = currentLeafItem(node, getItem);
-  return item !== null && isBell(item);
+  return item !== null && item.kind === 'notification';
 }
 
 /** Every positional identity item one run row represents. */

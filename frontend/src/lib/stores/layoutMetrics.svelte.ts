@@ -4,8 +4,8 @@ function initialViewportWidth(): number {
 
 let appShellWidth = $state(initialViewportWidth());
 let paneHostWidth = $state(Number.POSITIVE_INFINITY);
-// Deliberately NOT reactive: every consumer reads it imperatively
-// (drag-start snapshots, drop-preview math), and ResizeObserver writes
+// Deliberately NOT reactive: every consumer reads it imperatively (a
+// divider's drag-start snapshot), and ResizeObserver writes
 // land every frame during a resize drag — a clone-on-write $state Map
 // here would be pure GC churn.
 const paneWidthById: Map<string, number> = new Map();

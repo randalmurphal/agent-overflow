@@ -1,4 +1,7 @@
+import { isToolKind, type ToolPaneKind } from '../stores/paneLayout.svelte';
+
 export const THREAD_ROW_DRAG_MIME = 'application/x-agent-overflow-thread';
+export const TOOL_PANE_DRAG_MIME = 'application/x-agent-overflow-tool';
 export const PANE_REORDER_DRAG_MIME = 'application/x-agent-overflow-pane';
 
 export interface ThreadDragPayload {
@@ -21,16 +24,12 @@ export interface ThreadDragPayload {
   agentBound?: boolean;
 }
 
-export type ThreadDropKind = 'pane-left' | 'pane-right' | 'gap' | 'end' | 'empty';
+export type PaneDropKind = 'pane-left' | 'pane-right' | 'end' | 'empty';
 
-export interface ThreadDropTarget {
-  kind: ThreadDropKind;
+/** A slot in the pane strip: the index a placed pane takes. */
+export interface PaneDropTarget {
+  kind: PaneDropKind;
   insertIndex: number;
-  paneId?: string;
-}
-
-interface PaneWidthLike {
-  widthPx: number;
 }
 
 export function encodeThreadDragPayload(payload: ThreadDragPayload): string {
@@ -95,6 +94,50 @@ export function threadDragPayloadForEvent(event: DragEvent): ThreadDragPayload |
 }
 
 /**
+ * A sidebar tools-row button dragged into the pane strip. Its own type, so
+ * every thread target (`threadDragPayloadForEvent`) ignores it and a pane
+ * drop never reads a thread as a tool. Like a thread row, the source records
+ * the payload at `dragstart` for dragover, and every pane drop clears it.
+ */
+export interface ToolDragPayload {
+  kind: ToolPaneKind;
+}
+
+export function encodeToolDragPayload(payload: ToolDragPayload): string {
+  return JSON.stringify({ kind: payload.kind });
+}
+
+export function decodeToolDragPayload(raw: string): ToolDragPayload | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<ToolDragPayload> | null;
+    return isToolKind(parsed?.kind) ? { kind: parsed.kind } : null;
+  } catch {
+    return null;
+  }
+}
+
+let inFlightToolDrag: ToolDragPayload | null = null;
+
+export function beginToolPaneDrag(payload: ToolDragPayload): void {
+  inFlightToolDrag = payload;
+}
+
+export function endToolPaneDrag(): void {
+  inFlightToolDrag = null;
+}
+
+/** The tool behind a drag event, as `threadDragPayloadForEvent` answers for
+ * a thread: null unless the event carries the tool type. */
+export function toolDragPayloadForEvent(event: DragEvent): ToolDragPayload | null {
+  const data = event.dataTransfer;
+  if (!data) return null;
+  if (!data.types.includes(TOOL_PANE_DRAG_MIME)) return null;
+  const raw = data.getData(TOOL_PANE_DRAG_MIME);
+  if (raw) return decodeToolDragPayload(raw);
+  return inFlightToolDrag;
+}
+
+/**
  * A group row (or any row inside it) accepts a thread from its OWN project
  * that is not already a member. Cross-project is refused outright — a group
  * belongs to one project and the backend would reject the move anyway — and
@@ -118,24 +161,4 @@ export function canUngroupDroppedThread(
   projectId: string,
 ): boolean {
   return Boolean(projectId) && payload.projectId === projectId && Boolean(payload.groupId);
-}
-
-export function projectedPaneDropWidth(
-  items: PaneWidthLike[],
-  paneRowWidth: number,
-  minPaneWidth: number,
-): number {
-  if (items.length === 0) return Math.max(minPaneWidth, paneRowWidth);
-  const total = items.reduce((sum, item) => sum + item.widthPx, 0);
-  const average = total / items.length;
-  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(average) || average <= 0) {
-    return minPaneWidth;
-  }
-  // Fit mode stretches panes proportionally, so the new pane's share of
-  // the row is average/(total+average); in overflow mode there is no
-  // stretch and the pane lands at its base width (the average) verbatim.
-  // The two regimes cross exactly where total+average === paneRowWidth,
-  // so the rendered width is simply the larger of the two.
-  const projected = (average / (total + average)) * paneRowWidth;
-  return Math.max(minPaneWidth, Math.round(Math.max(projected, average)));
 }

@@ -9,6 +9,7 @@ import {
   tryParseChord,
   tryParseWhen,
 } from './keybindingParser';
+import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
 
 describe('keybindingParser — chords', () => {
   it('parses a plain key', () => {
@@ -165,6 +166,32 @@ describe('keybindingParser — chordMatches', () => {
       expect(chordMatches(chord, ev('`', { ctrlKey: true, shiftKey: true, code: 'Backquote' }), true)).toBe(false);
       // mac, meta without shift: modifier mismatch, and no fallback either.
       expect(chordMatches(chord, ev('`', { metaKey: true, code: 'Backquote' }), true)).toBe(false);
+    });
+  });
+
+  // A shifted punctuation chord names the glyph Shift produces, the key
+  // Chromium reports; WKWebView's unshifted report reaches it through the
+  // Cmd+Shift fallback.
+  describe('shifted punctuation defaults (mod+shift+> and mod+shift+?)', () => {
+    for (const [spelling, shifted, unshifted, code] of [
+      ['mod+shift+>', '>', '.', 'Period'],
+      ['mod+shift+?', '?', '/', 'Slash'],
+    ] as const) {
+      it(`${spelling} matches Chromium on every platform and WKWebView on mac`, () => {
+        const chord = parseChord(spelling);
+        expect(chordMatches(chord, ev(shifted, { ctrlKey: true, shiftKey: true, code }), false)).toBe(true);
+        expect(chordMatches(chord, ev(shifted, { metaKey: true, shiftKey: true, code }), true)).toBe(true);
+        expect(chordMatches(chord, ev(unshifted, { metaKey: true, shiftKey: true, code }), true)).toBe(true);
+      });
+    }
+
+    it('no default spells a shifted chord with the unshifted key, which Chromium never reports', () => {
+      const unshiftedKeys = new Set(['`', '-', '=', '[', ']', '\\', ';', "'", ',', '.', '/', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0']);
+      const unreachable = KEYBINDING_DEFAULTS.filter((rule) => {
+        const chord = tryParseChord(rule.key);
+        return chord !== null && chord.shiftKey && unshiftedKeys.has(chord.key);
+      }).map((rule) => `${rule.command}: ${rule.key}`);
+      expect(unreachable).toEqual([]);
     });
   });
 

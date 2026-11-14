@@ -21,6 +21,7 @@ import (
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/openaikey"
 	"agent-overflow/internal/promptoverride"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
@@ -205,6 +206,10 @@ func (a *App) startUnattendedWork() error {
 	// restart sessions when a checkout was removed outside the app. See
 	// app_worktree_watch.go.
 	a.armWorktreeWatch()
+	// Read every forge project's pull requests once into the list's
+	// stored copy, so the sidebar badge is current before the Pull
+	// requests page opens (app_pr_list_store.go).
+	a.startPRListPrefetch()
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens
 	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
@@ -537,6 +542,7 @@ func repairStartupOwnedPaths(dbDir string) error {
 		filepath.Join(dbDir, "replay"),
 		filepath.Join(dbDir, uitrace.DirName),
 		filepath.Join(dbDir, uitrace.DirName, uitrace.BookmarkSubdir),
+		filepath.Join(dbDir, openaikey.DirName),
 	} {
 		if err := repairAppOwnedTreeIfExists(dir); err != nil {
 			return fmt.Errorf("failed to repair permissions for %s: %w", dir, err)
@@ -749,6 +755,13 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		)
 	}
 	a.attachments = attachmentStore
+	if err := a.initShellCommands(dbDir); err != nil {
+		closeErr := st.Close()
+		return errors.Join(
+			fmt.Errorf("failed to initialise composer shell commands: %w", err),
+			errorsx.WrapLifecycle("close store after shell command init failure", closeErr),
+		)
+	}
 	a.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 	a.configDir = dbDir
 	endPhase = a.bootPhase("app.sweep_review_diffs", "Removing review diff snapshots from the last run")
@@ -773,6 +786,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	}
 	endPhase()
 	a.installThreadRequestObserver()
+	a.startAccountSwitch()
 	if err := a.initWorkflowEngine(dbDir); err != nil {
 		return err
 	}

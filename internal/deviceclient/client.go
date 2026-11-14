@@ -193,7 +193,11 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string, op
 		return nil, Pairing{}, fmt.Errorf("deviceclient: encode the redemption: %w", err)
 	}
 
-	issued, err := client.exchange(ctx, authPairPath, body, nil)
+	// The redemption spends the single-use link on the far side, so it and
+	// the save below finish once sent: a caller that stopped waiting would
+	// otherwise burn the link with nothing stored. The HTTP client's
+	// timeout bounds it.
+	issued, err := client.exchange(context.WithoutCancel(ctx), authPairPath, body, nil)
 	if err != nil {
 		return nil, Pairing{}, err
 	}

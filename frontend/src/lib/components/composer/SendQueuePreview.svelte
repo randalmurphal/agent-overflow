@@ -49,6 +49,10 @@
     return '';
   }
 
+  // The preview sits over the timeline and its height is the composer
+  // clearance, so it shows the newest few messages and counts the rest.
+  const MAX_VISIBLE = 4;
+
   // A wake reads decoded here as it does in the timeline.
   function shown(message: string, sendId: string | undefined): string {
     return isWakeSendId(sendId) ? readableWakeText(message) : message;
@@ -80,6 +84,8 @@
       hint: '',
     })),
   ]);
+  let visible = $derived(pending.length > MAX_VISIBLE ? pending.slice(-MAX_VISIBLE) : pending);
+  let earlier = $derived(pending.length - visible.length);
 </script>
 
 {#if pending.length > 0 && pane.threadId}
@@ -88,8 +94,13 @@
     data-testid="send-queue-preview"
     aria-label="Pending user messages"
   >
+    {#if earlier > 0}
+      <div class="pl-[1.125rem] text-fg-hint/70" data-testid="send-queue-preview-earlier">
+        {earlier} earlier {earlier === 1 ? 'message' : 'messages'} waiting
+      </div>
+    {/if}
     <ul class="flex flex-col gap-0.5">
-      {#each pending as item (item.key)}
+      {#each visible as item (item.key)}
         <li
           class="flex items-start gap-1.5"
           data-testid="send-queue-preview-row"

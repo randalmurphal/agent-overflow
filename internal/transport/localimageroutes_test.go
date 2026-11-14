@@ -76,7 +76,8 @@ func TestLocalImageAnswersRange(t *testing.T) {
 
 // SVG is the one image type that is also a document. A fetch reads it
 // either way; a navigation to the URL must download rather than render at
-// the SPA origin. Both image routes answer it the same way.
+// the SPA origin, and a client that renders it anyway must run nothing.
+// Both image routes answer it the same way.
 func TestImageRoutesServeSVGAsADownload(t *testing.T) {
 	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)
 	t.Run("local image", func(t *testing.T) {
@@ -88,6 +89,7 @@ func TestImageRoutesServeSVGAsADownload(t *testing.T) {
 		if got := resp.Header.Get("Content-Disposition"); got != "attachment" {
 			t.Fatalf("Content-Disposition = %q, want attachment", got)
 		}
+		expectSVGSandboxed(t, resp)
 	})
 	t.Run("forge attachment", func(t *testing.T) {
 		f := attachmentFixture(t, &stubTransfer{content: svg, mime: "image/svg+xml", forgeKind: "image", forgeFilename: "diagram.svg"})
@@ -98,13 +100,76 @@ func TestImageRoutesServeSVGAsADownload(t *testing.T) {
 		if got := resp.Header.Get("Content-Disposition"); got != "attachment; filename=diagram.svg" {
 			t.Fatalf("Content-Disposition = %q, want an attachment naming the file", got)
 		}
+		expectSVGSandboxed(t, resp)
 	})
 	t.Run("a raster image still renders inline", func(t *testing.T) {
 		f := attachmentFixture(t, &stubTransfer{content: pngPayload(), mime: "image/png", forgeKind: "image"})
-		if got := get(t, f.srv.Addr(), mintForge(t, f, "png"), nil).Header.Get("Content-Disposition"); got != "" {
+		resp := get(t, f.srv.Addr(), mintForge(t, f, "png"), nil)
+		if got := resp.Header.Get("Content-Disposition"); got != "" {
 			t.Fatalf("forge png Content-Disposition = %q, want none", got)
 		}
+		if got := resp.Header.Get("Content-Security-Policy"); got == svgContentSecurityPolicy {
+			t.Fatalf("a png carries the SVG policy %q", got)
+		}
 	})
+}
+
+// The SVG policy rides every answer the routes give, not only a full GET:
+// a HEAD, a Range read and a 304 carry it too, since http.ServeContent
+// writes each of them after the type headers.
+func TestImageRoutesSandboxSVGOnEveryAnswer(t *testing.T) {
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)
+	for name, route := range map[string]struct {
+		stub        *stubTransfer
+		mint        func(*testing.T, *serverFixture, string) string
+		disposition string
+	}{
+		"local image":      {&stubTransfer{content: svg, mime: "image/svg+xml"}, mintLocalImage, "attachment"},
+		"forge attachment": {&stubTransfer{content: svg, mime: "image/svg+xml", forgeKind: "image", forgeFilename: "diagram.svg"}, mintForge, "attachment; filename=diagram.svg"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := attachmentFixture(t, route.stub)
+			for _, tc := range []struct {
+				method  string
+				headers map[string]string
+				status  int
+			}{
+				{http.MethodHead, nil, http.StatusOK},
+				{http.MethodGet, map[string]string{"Range": "bytes=0-3"}, http.StatusPartialContent},
+				{http.MethodGet, map[string]string{"If-Modified-Since": "Tue, 14 Nov 2023 22:13:20 GMT"}, http.StatusNotModified},
+			} {
+				req, err := http.NewRequest(tc.method, "http://"+f.srv.Addr()+route.mint(t, f, "svg"), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for header, value := range tc.headers {
+					req.Header.Set(header, value)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = resp.Body.Close()
+				if resp.StatusCode != tc.status {
+					t.Fatalf("%s %v: status %d, want %d", tc.method, tc.headers, resp.StatusCode, tc.status)
+				}
+				if got := resp.Header.Get("Content-Disposition"); got != route.disposition {
+					t.Fatalf("%s %v: Content-Disposition = %q, want %q", tc.method, tc.headers, got, route.disposition)
+				}
+				expectSVGSandboxed(t, resp)
+			}
+		})
+	}
+}
+
+func expectSVGSandboxed(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if got := resp.Header.Values("Content-Security-Policy"); len(got) != 1 || got[0] != "default-src 'none'; style-src 'unsafe-inline'; sandbox" {
+		t.Fatalf("Content-Security-Policy = %q, want the sandboxed SVG policy alone", got)
+	}
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
 }
 
 // Every refusal is the same unfingerprintable 404, and the ones the ticket

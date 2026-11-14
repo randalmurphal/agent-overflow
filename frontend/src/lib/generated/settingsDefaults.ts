@@ -23,6 +23,13 @@ export const SETTINGS_DEFAULTS = {
   browserAllowOutsideWorkspace: false,
   browserChromiumPath: "",
   threadToolsEnabled: true,
+  dictationSubscriptionEnabled: false,
+  dictationAPIEnabled: false,
+  dictationAPIDelay: "",
+  dictationAPILanguages: [],
+  dictationAPIKeywords: [],
+  dictationAPIPrompt: "",
+  readAloudAPIEnabled: false,
   agentGuideEnabled: true,
   sharedMemoryEnabled: false,
   claudeNativeMemoryDisabled: false,
@@ -54,6 +61,9 @@ export const SETTINGS_DEFAULTS = {
   claudeAutoCompactExtendedPercent: 90,
   codexAutoCompactStandardPercent: 90,
   codexAutoCompactExtendedPercent: 90,
+  accountAutoSwitchStrategy: "soonest-reset",
+  accountAutoSwitchThreshold: 95,
+  accountAutoContinue: false,
   observabilityTracingEnabled: false,
   observabilityOtlpEndpoint: "",
   observabilityEventLogEnabled: false,
@@ -191,6 +201,7 @@ export const FRONTEND_DEVICE_SETTINGS_KEYS = [
 ] as const satisfies readonly (keyof Settings)[];
 
 export const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly string[]>> = {
+  "accountAutoSwitchStrategy": ["account-order","soonest-reset"],
   "activityRunDefault": ["collapsed","expanded"],
   "defaultThreadEnvMode": ["local","worktree"],
   "monoFont": ["geist","hack-nerd","system"],
@@ -212,4 +223,5 @@ export const FRONTEND_SETTING_RANGES: Partial<Record<keyof Settings, readonly [n
   fontSize: [10, 20],
   activityRunWindowRows: [10, 200],
   claudeMaxCommandTimeoutHours: [2, 168],
+  accountAutoSwitchThreshold: [50, 100],
 };
