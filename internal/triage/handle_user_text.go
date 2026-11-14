@@ -556,10 +556,10 @@ func (r *Router) openScheduledTurn(evt provider.ProviderEvent) error {
 	}
 	unlock := r.LockTurnAllocation(evt.ThreadID)
 	defer unlock()
-	if pending, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
-		return r.startPendingSendTurn(evt, pending, true)
+	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
+		return r.handleTurnStart(evt)
 	}
-	return r.openProviderStartedTurn(evt, true)
+	return r.openProviderStartedTurn(evt)
 }
 
 // scheduledTurnOrigin mirrors `claude.ScheduledTurnOrigin`: the user row

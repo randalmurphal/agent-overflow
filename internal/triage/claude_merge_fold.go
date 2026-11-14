@@ -238,12 +238,8 @@ func (r *Router) settleFoldEmptiedTurns(threadID, sessionToken string, survivor 
 		if !empty {
 			continue
 		}
-		ids := sendIDsOf(member.meta)
-		if len(ids) == 0 {
-			continue
-		}
 		moved = append(moved, SendDelivery{
-			UserItemID: survivorItemID, SendIDs: ids,
+			UserItemID: survivorItemID, SendIDs: sendIDsOf(member.meta), Members: usermessage.MemberSendIDs(member.meta),
 			TurnIndex: survivorTurn, OwnTurn: survivorTurn != survivor.WrittenDuringTurn,
 			Rebind: true, ReboundFrom: member.turnIndex,
 		})

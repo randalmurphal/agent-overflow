@@ -24,9 +24,6 @@ var processBoundState = []processBoundEntry{
 	// The soft-closed turn is the dead process's: only its own result or
 	// continuation could have resumed it.
 	{name: "turn settlement", clear: stateClear(func(st *threadState) { st.settledTurns, st.softClosedTurnSet = nil, false })},
-	// The turn the dead process woke itself for is not a turn of its
-	// replacement, which reuses indexes after a revert.
-	{name: "self-woken turn", clear: stateClear(func(st *threadState) { st.selfWokenTurnSet = false })},
 	{name: "effective model", clear: stateClear(func(st *threadState) { st.effectiveModel, st.effectiveModelSet = "", false })},
 	// A pending wakeup and armed cron jobs live in the previous CLI
 	// process. A stale deadline would shield the replacement from the

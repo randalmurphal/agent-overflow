@@ -195,16 +195,45 @@ func IsTickSendID(id string) bool { return strings.HasPrefix(id, TickSendIDRoot)
 // wake: its send id, or each one Claude joined into it. Such a row is not
 // the thread's activity, and a turn of only such rows is a tick.
 func IsTick(meta Meta) bool {
-	ids := meta.JoinedSendIDs
-	if len(ids) == 0 {
-		ids = []string{meta.SendID}
-	}
-	for _, id := range ids {
+	return AllTicks(MemberSendIDs(meta))
+}
+
+// AllTicks reports whether members, one send id per message, "" for one
+// without, are all loop or watch wakes, and there is at least one.
+func AllTicks(members []string) bool {
+	for _, id := range members {
 		if !IsTickSendID(id) {
 			return false
 		}
 	}
-	return true
+	return len(members) > 0
+}
+
+// MemberSendIDs is the send id of every message a user row holds, in order,
+// "" for one without: a joined row's recorded parts, which name a member a
+// person sent with no id, else its joined ids, else its own.
+func MemberSendIDs(meta Meta) []string {
+	if len(meta.JoinedParts) > 0 {
+		ids := make([]string, len(meta.JoinedParts))
+		for i, part := range meta.JoinedParts {
+			ids[i] = part.SendID
+		}
+		return ids
+	}
+	if len(meta.JoinedSendIDs) > 0 {
+		return meta.JoinedSendIDs
+	}
+	return []string{meta.SendID}
+}
+
+// MemberSendIDsOfRow is MemberSendIDs of a row's encoded meta. Meta that
+// does not decode names one member with no id: a person's.
+func MemberSendIDsOfRow(meta string) []string {
+	decoded, err := FromItem(store.Item{Meta: meta})
+	if err != nil {
+		return []string{""}
+	}
+	return MemberSendIDs(decoded)
 }
 
 // Input is the per-entry-point projection Marshal encodes. A struct

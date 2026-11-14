@@ -354,15 +354,10 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			}
 		}, func(r *Router) bool { return r.hasActiveStreamingItem(threadID) }},
 		{"open turn and round", "open turn", func(t *testing.T, r *Router, token string) {
-			if _, err := r.setOpenTurn(threadID, 2, token, false); err != nil {
+			if _, err := r.setOpenTurn(threadID, 2, token); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { return r.HasInFlightTurnOrRound(threadID) }},
-		{"self-woken turn", "self-woken turn", func(t *testing.T, r *Router, token string) {
-			if _, err := r.setOpenTurn(threadID, 2, token, true); err != nil {
-				t.Fatal(err)
-			}
-		}, func(r *Router) bool { return r.TurnSelfWoken(threadID, 2) }},
 		{"open turn and round", "open round", func(t *testing.T, r *Router, token string) {
 			r.setOpenRoundSnapshot(ActiveTurnSnapshot{ThreadID: threadID, TurnID: "round-1", TurnIndex: 2, StartedAt: 1}, token)
 		}, func(r *Router) bool { return r.openRoundID(threadID) != "" }},

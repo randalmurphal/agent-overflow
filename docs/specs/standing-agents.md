@@ -1058,11 +1058,12 @@ queued to the CLI, which takes it in at its next step or as a turn of
 its own after the current one, and on Codex it is steered into the
 running turn.
 
-A turn is a tick when only wakes started it. Whether a turn was a tick
-is read from the rows of the turn that ended; a Claude wake the CLI
-runs as a turn of its own keeps its row in the turn it was queued
-during, so that pickup turn is a tick when everything it was waiting
-on was a wake. A reminder, a request, an answer and a remote job's
+A turn is a tick when every message the provider delivered into it was
+a wake, whichever turn their rows show in: a Claude wake the CLI runs
+as a turn of its own keeps its row in the turn it was queued during.
+Each delivered message names its members, so a person's text Claude
+joined to a wake makes the turn the user's. A turn that took no message
+in is not a tick. A reminder, a request, an answer and a remote job's
 completion are not wakes: a turn they start is the user's. A tick that
 ends cleanly is quiet ([Attention](#attention)).
 
@@ -1182,8 +1183,9 @@ unless an earlier round of it failed, which leaves the whole turn the
 user's to read. A turn the Claude CLI starts on its own after a tick (a
 background task finishing, a scheduled wakeup) is a turn of its own
 ([Rounds and turns](../architecture/turn-lifecycle.md#rounds-and-turns))
-and is never quiet: nothing says a wake started the work it reports. A
-tick's start withdraws no notification.
+and is never quiet: nothing says a wake started the work it reports,
+even when wakes were waiting as it started and a later turn takes them
+in. A tick's start withdraws no notification.
 
 A top-level turn that ends with the flag pending, a tick or not,
 notifies as `thread-attention` in place of Completed, with the kind's

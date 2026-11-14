@@ -342,9 +342,9 @@ func TestLateConfirmationDeliversIntoTheTurnTheSendStartedIn(t *testing.T) {
 }
 
 // A direct send drained into a running turn opens its own turn when it is
-// consumed, and the rest of the loop runs there. Its sender wrote the row at
-// that turn and binds to it there, so the hook, which reports queued sends,
-// names nothing.
+// consumed, and the rest of the loop runs there. Its delivery is that turn,
+// never the one running when `started` arrived. Its sender wrote the row at
+// that turn and binds to it there, so the delivery names no send id to bind.
 func TestDirectSendDrainedMidTurnOpensItsOwnTurn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -366,8 +366,8 @@ func TestDirectSendDrainedMidTurnOpensItsOwnTurn(t *testing.T) {
 	if open, ok := router.openTurnIndex("t1"); !ok || open != 1 {
 		t.Fatalf("open turn = %d/%v, want the send's own turn 1", open, ok)
 	}
-	if seen, awaiting := log.snapshot(), log.awaitingSnapshot(); len(seen) != 0 || len(awaiting) != 0 {
-		t.Fatalf("deliveries = %+v awaiting %+v, want none for a direct send", seen, awaiting)
+	if seen := log.snapshot(); len(seen) != 1 || seen[0].TurnIndex != 1 || !seen[0].OwnTurn || len(seen[0].SendIDs) != 0 {
+		t.Fatalf("deliveries = %+v, want one into the send's own turn 1 naming no send id", seen)
 	}
 }
 
@@ -379,7 +379,7 @@ func TestRetriedConfirmationKeepsItsDelivery(t *testing.T) {
 	log := recordDeliveries(router)
 	startTurnZero(t, router)
 	row := queueDuringTurnZero(t, router, 1, "send-1", "echo-1", 1)
-	consumed := pendingSend{AOItemID: row.ID, TurnIndex: 1, QuietItem: &row, WrittenDuringTurn: 0}
+	consumed := pendingSend{AOItemID: row.ID, TurnIndex: 1, QuietItem: &row, WrittenDuringTurn: 0, Shape: sendShapeFlush}
 
 	router.reportSendsDelivered("t1", "", []*pendingSend{&consumed})
 	endOpenTurn(t, router)
@@ -482,8 +482,9 @@ func TestMergedSendsAreDeliveredIntoTheSurvivorsTurn(t *testing.T) {
 	wantPendingSend(t, router, "user:0:flush:2", "the survivor", 0, PendingSendNone)
 }
 
-// A row with no send id names no one to tell.
-func TestConfirmedSendWithoutASendIDIsNotDelivered(t *testing.T) {
+// A row with no send id names no one to tell, and its delivery still says
+// the turn took in a message no send id names: a person's.
+func TestConfirmedSendWithoutASendIDIsAPersonsMessage(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	log := recordDeliveries(router)
@@ -495,7 +496,9 @@ func TestConfirmedSendWithoutASendIDIsNotDelivered(t *testing.T) {
 	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventUserText, ThreadID: "t1", Content: "sent", Meta: json.RawMessage(`{"provider_item_id":"echo-direct"}`), Timestamp: time.Now()}); err != nil {
 		t.Fatalf("echo: %v", err)
 	}
-	wantDelivered(t, log)
+	if seen := log.snapshot(); len(seen) != 1 || seen[0].TurnIndex != 1 || len(seen[0].SendIDs) != 0 || !slices.Equal(seen[0].Members, []string{""}) {
+		t.Fatalf("deliveries = %+v, want one into turn 1 naming a person's message", seen)
+	}
 	wantAwaiting(t, log)
 }
 

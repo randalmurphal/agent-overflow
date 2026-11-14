@@ -790,7 +790,7 @@ func (a *App) sendMessageLocked(
 	// it starts: no turn of its own can come first.
 	if !isCodexReview {
 		if live, ok := a.sessionManager().get(threadID); ok {
-			_, earlyExpect := providerSendIdentity(live, userItem.ID, sendUUID)
+			_, earlyExpect := providerSendIdentity(live, userItem.ID, userItem.Meta, sendUUID)
 			a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, earlyExpect)
 		}
 	}
@@ -911,7 +911,7 @@ func (a *App) sendMessageLocked(
 	// A send registered with its row is registered again when the session
 	// it was registered against was torn down since (an account switch
 	// reconnects Codex here), since teardown clears the registry.
-	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
+	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, userItem.Meta, sendUUID)
 	if !a.triage.HasPendingSend(threadID, userItem.ID) {
 		a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, sendExpect)
 	}
@@ -1729,11 +1729,14 @@ func (a *App) refreshProposedPlanItem(threadID, itemID string) {
 // onto the user envelope and the CLI echoes it verbatim as the item id
 // (claude-tui echoes id-less, which the registry's head-pop carve-out
 // absorbs). Codex callers, which never mint a uuid, pass sendUUID "".
-func providerSendIdentity(sess session, rowID, sendUUID string) (clientUserMessageID string, expect triage.PendingSendExpectation) {
+// rowMeta is the row's meta, whose members the send's delivery names
+// (triage.SendDelivery.Members).
+func providerSendIdentity(sess session, rowID, rowMeta, sendUUID string) (clientUserMessageID string, expect triage.PendingSendExpectation) {
+	members := usermessage.MemberSendIDsOfRow(rowMeta)
 	if sess.Codex != nil {
-		return rowID, triage.PendingSendExpectation{ByClientID: true}
+		return rowID, triage.PendingSendExpectation{ByClientID: true, Members: members}
 	}
-	return "", triage.PendingSendExpectation{ProviderItemID: sendUUID}
+	return "", triage.PendingSendExpectation{ProviderItemID: sendUUID, Members: members}
 }
 
 // sendToProvider forwards the user content to the active provider

@@ -464,3 +464,29 @@ func TestProjectionCarriesBoundedShellMetadata(t *testing.T) {
 		t.Fatalf("round trip: %+v %v", decoded.Attachments, err)
 	}
 }
+
+// A row is a tick only when every message in it is a wake: a person's
+// message joined to one, which only the recorded parts name, makes it not.
+func TestIsTickNeedsEveryMemberToBeAWake(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		meta Meta
+		want bool
+	}{
+		{"a wake", Meta{SendID: "agent-wake:w1:1"}, true},
+		{"a person's", Meta{}, false},
+		{"joined wakes", Meta{JoinedSendIDs: []string{"agent-wake:w1:1", "agent-wake:w2:1"}}, true},
+		{"a person joined to a wake", Meta{
+			JoinedSendIDs: []string{"agent-wake:w1:1"},
+			JoinedParts:   []JoinedPart{{Bytes: 5}, {SendID: "agent-wake:w1:1", Bytes: 5}},
+		}, false},
+		{"a request joined to a wake", Meta{JoinedSendIDs: []string{"agent-wake:w1:1", "thread-request:t"}}, false},
+	} {
+		if got := IsTick(tc.meta); got != tc.want {
+			t.Errorf("%s: IsTick = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if AllTicks(nil) {
+		t.Error("AllTicks(nil) = true, want false: no message is no tick")
+	}
+}

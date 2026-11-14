@@ -1242,7 +1242,7 @@ func (a *App) codexResendAfterInterrupt(
 	// The merged re-send is correlated to the FIRST item's row, which is
 	// the row the pending entry below is registered for. Items 2+ share
 	// that correlation, exactly as they share the turn.
-	resendClientID, resendExpect := providerSendIdentity(sess, persisted[0].UserItemID, "")
+	resendClientID, resendExpect := providerSendIdentity(sess, persisted[0].UserItemID, persisted[0].Meta, "")
 	sendOpts := provider.SendOptions{
 		InteractionMode:     provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:         attachments.images,

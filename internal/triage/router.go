@@ -921,14 +921,14 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 	}
 	unlock := r.LockTurnAllocation(evt.ThreadID)
 	defer unlock()
-	if pending, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
-		return r.startPendingSendTurn(evt, pending, info.TurnOpener == "")
+	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
+		return r.handleTurnStart(evt)
 	}
 	if r.openRoundID(evt.ThreadID) != "" {
 		return nil
 	}
 	if info.TurnOpener == provider.TurnOpenerCommand {
-		return r.openProviderStartedTurn(evt, false)
+		return r.openProviderStartedTurn(evt)
 	}
 	// No message opened it. Background work does not survive a CLI
 	// restart, so a self-wake follows a turn this session settled.
@@ -936,7 +936,7 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 	if !r.sessionSettledATurn(evt.ThreadID) {
 		return nil
 	}
-	return r.openProviderStartedTurn(evt, true)
+	return r.openProviderStartedTurn(evt)
 }
 
 // handleParentContentResume keeps a turn and a round under every parent
@@ -958,13 +958,13 @@ func (r *Router) handleParentContentResume(evt provider.ProviderEvent) error {
 	if reopened, err := r.reopenSoftClosedTurn(evt); reopened || err != nil {
 		return err
 	}
-	if pending, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
-		return r.startPendingSendTurn(evt, pending, true)
+	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
+		return r.handleTurnStart(evt)
 	}
 	if !r.sessionSettledATurn(evt.ThreadID) {
 		return nil
 	}
-	return r.openProviderStartedTurn(evt, true)
+	return r.openProviderStartedTurn(evt)
 }
 
 // openProviderStartedTurn opens a logical turn for a CLI turn no pending AO
@@ -973,27 +973,18 @@ func (r *Router) handleParentContentResume(evt provider.ProviderEvent) error {
 // counters, the turn span, a round and `provider:turn_started`. No-op while
 // a round is open. The caller holds the turn allocation lock and found no
 // pending send waiting for a turn, so no send holds or is choosing the
-// index. selfWoken is a turn no command opened (selfWokenTurn).
-func (r *Router) openProviderStartedTurn(evt provider.ProviderEvent, selfWoken bool) error {
+// index.
+func (r *Router) openProviderStartedTurn(evt provider.ProviderEvent) error {
 	if r.openRoundID(evt.ThreadID) != "" {
 		return nil
 	}
-	return r.startTurn(evt, selfWoken, func() (int, error) {
+	return r.startTurn(evt, func() (int, error) {
 		turnIndex, err := r.store.NextTurnIndex(evt.ThreadID)
 		if err != nil {
 			return 0, fmt.Errorf("provider-started turn index: %w", err)
 		}
 		return turnIndex, nil
 	})
-}
-
-// TurnSelfWoken reports whether threadID's turn turnIndex is the open turn
-// and one no command opened (selfWokenTurn).
-func (r *Router) TurnSelfWoken(threadID string, turnIndex int) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	st := r.threadStateIfPresent(threadID)
-	return st != nil && st.selfWokenTurnSet && st.selfWokenTurn == turnIndex
 }
 
 // LockTurnAllocation holds threadID's turn allocation lock and returns its

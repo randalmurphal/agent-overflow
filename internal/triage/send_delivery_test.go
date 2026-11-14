@@ -266,13 +266,22 @@ func TestSendDeliveryStartedBeforeAMidLoopEchoIsTheTurnTheEchoOpens(t *testing.T
 	handle(echo(first, "run the suite"))
 	handle(provider.ProviderEvent{Kind: provider.EventTextDelta, Content: "running it"})
 	handle(commandLifecycleEvent(threadID, second, provider.CommandStarted))
-	if seen := log.snapshot(); len(seen) != 0 {
+	ofSecond := func() []SendDelivery {
+		var out []SendDelivery
+		for _, d := range log.snapshot() {
+			if d.UserItemID == "user:2:flush:2" {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+	if seen := ofSecond(); len(seen) != 0 {
 		t.Fatalf("delivered before the turn it runs in opened: %+v", seen)
 	}
 	handle(echo(second, "look at the crash report"))
 	handle(provider.ProviderEvent{Kind: provider.EventTextDelta, Content: "the stall is in the watchdog"})
 	handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: normalTurnCompleteMeta()})
-	seen := log.snapshot()
+	seen := ofSecond()
 	if len(seen) != 1 || seen[0].TurnIndex != 2 || !seen[0].OwnTurn || seen[0].UserItemID != "user:2:flush:2" {
 		t.Fatalf("deliveries = %+v, want one into turn 2, its own", seen)
 	}

@@ -2,6 +2,8 @@ package triage
 
 import (
 	"context"
+	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -237,62 +239,40 @@ func TestQuietLaterRoundLeavesAnEarlierFailureUnread(t *testing.T) {
 	}
 }
 
-// A turn the CLI woke itself for (a background-task notification, a
-// scheduled wakeup) is never quiet, even when the classifier would take it
-// for the pickup of queued wakes: no command opened it, so no queued wake
-// did. A turn a queued command opened is the classifier's to name.
-func TestSelfWokenTurnIsNeverQuiet(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		opener provider.TurnOpener
-		quiet  bool
-	}{
-		{name: "self-woken", opener: "", quiet: false},
-		{name: "a queued command", opener: provider.TurnOpenerCommand, quiet: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			router, _, emissions, _ := quietTurnRouter(t, true)
-			completeAt := time.Now().UnixMilli() + 10_000
-			runTurn(t, router, completeAt-2_000, completeAt-1_000, normalTurnCompleteMeta())
-			if err := router.Handle(openerInit(t, tc.opener)); err != nil {
-				t.Fatalf("init: %v", err)
-			}
-			if err := router.Handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta(), Timestamp: millis(completeAt)}); err != nil {
-				t.Fatalf("turn complete: %v", err)
-			}
-			events := completedEvents(emissions)
-			if len(events) != 2 || events[1].TurnIndex != 1 {
-				t.Fatalf("turn_completed = %+v, want the first turn's and the provider-started turn 1's", events)
-			}
-			if events[1].Quiet != tc.quiet {
-				t.Fatalf("provider-started turn quiet = %v, want %v", events[1].Quiet, tc.quiet)
-			}
-		})
-	}
-}
-
-// A turn the CLI woke itself for can open under the index of a send that is
-// waiting for a turn. With the send's `queued` ack on record and no
-// `started`, the provider began its own work before the send, so the turn
-// is self-woken and never quiet. A CLI that sends no acks leaves the two
-// alike, and the turn is the send's for the classifier to name.
-func TestSelfWokenTurnUnderAWaitingSendsIndexIsNeverQuiet(t *testing.T) {
+// What a turn took in is named by its deliveries, which reach the hook
+// before the turn ends and whichever order Claude writes `started`, init
+// and echo in. A turn the CLI opened for itself under the index of a send
+// waiting for a turn took nothing in: no delivery names it, and the send's
+// delivery names the turn that read it. Each delivery names the message's
+// members, an id-less person's among them.
+func TestDeliveriesNameWhatEachTurnTookIn(t *testing.T) {
 	const uuid = "uuid-waiting-1"
+	members := []string{"", "agent-wake:w1:1"}
 	for _, tc := range []struct {
-		name  string
-		acked bool
-		open  func(t *testing.T) provider.ProviderEvent
-		quiet bool
+		name string
+		take func(t *testing.T, router *Router)
+		turn int
 	}{
-		{name: "init, queued ack on record", acked: true, open: func(t *testing.T) provider.ProviderEvent { return openerInit(t, "") }},
-		{name: "content, queued ack on record", acked: true, open: func(*testing.T) provider.ProviderEvent { return parentContentBlockStart("t1", "text") }},
-		{name: "init, no ack", open: func(t *testing.T) provider.ProviderEvent { return openerInit(t, "") }, quiet: true},
-		{name: "a command's init, queued ack on record", acked: true, open: func(t *testing.T) provider.ProviderEvent { return openerInit(t, provider.TurnOpenerCommand) }, quiet: true},
+		{name: "started, init, echo", turn: 1, take: func(t *testing.T, router *Router) {
+			handleAll(t, router, commandLifecycleEvent("t1", uuid, provider.CommandStarted), openerInit(t, provider.TurnOpenerCommand), echoUUID(uuid))
+		}},
+		{name: "init, echo, started", turn: 1, take: func(t *testing.T, router *Router) {
+			handleAll(t, router, openerInit(t, ""), echoUUID(uuid), commandLifecycleEvent("t1", uuid, provider.CommandStarted))
+		}},
+		{name: "a turn of the CLI's own first", turn: 2, take: func(t *testing.T, router *Router) {
+			handleAll(t, router, openerInit(t, ""), turnCompleteNow())
+			handleAll(t, router, commandLifecycleEvent("t1", uuid, provider.CommandStarted), openerInit(t, provider.TurnOpenerCommand), echoUUID(uuid))
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			router, _, emissions, _ := quietTurnRouter(t, true)
-			completeAt := time.Now().UnixMilli() + 10_000
-			runTurn(t, router, completeAt-2_000, completeAt-1_000, normalTurnCompleteMeta())
+			router, _, _, _ := quietTurnRouter(t, false)
+			var got []SendDelivery
+			router.SetSendDeliveredHook(func(_ string, d SendDelivery) {
+				if !d.AwaitingTurn {
+					got = append(got, d)
+				}
+			})
+			handleAll(t, router, provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", Timestamp: time.Now()})
 			now := time.Now().UnixMilli()
 			if err := router.PersistItem(store.Item{
 				ID: "user:1", ThreadID: "t1", TurnIndex: 1, Kind: "user_text", Role: "user",
@@ -300,32 +280,30 @@ func TestSelfWokenTurnUnderAWaitingSendsIndexIsNeverQuiet(t *testing.T) {
 			}, nil); err != nil {
 				t.Fatalf("persist send row: %v", err)
 			}
-			router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: uuid})
-			if tc.acked {
-				if err := router.Handle(commandLifecycleEvent("t1", uuid, provider.CommandQueued)); err != nil {
-					t.Fatalf("queued ack: %v", err)
-				}
-			}
-			started := len(filterEmissions(emissions.snapshot(), eventchan.ProviderTurnStarted.String()))
-			if err := router.Handle(tc.open(t)); err != nil {
-				t.Fatalf("open: %v", err)
-			}
-			if got := len(filterEmissions(emissions.snapshot(), eventchan.ProviderTurnStarted.String())); got != started+1 {
-				t.Fatalf("turn_started emissions = %d, want %d: the turn did not open", got, started+1)
-			}
-			if got := router.TurnSelfWoken("t1", 1); got == tc.quiet {
-				t.Fatalf("TurnSelfWoken = %v, want %v", got, !tc.quiet)
-			}
-			if err := router.Handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta(), Timestamp: millis(completeAt)}); err != nil {
-				t.Fatalf("turn complete: %v", err)
-			}
-			events := completedEvents(emissions)
-			if len(events) != 2 || events[1].TurnIndex != 1 {
-				t.Fatalf("turn_completed = %+v, want the first turn's and turn 1's", events)
-			}
-			if events[1].Quiet != tc.quiet {
-				t.Fatalf("turn 1 quiet = %v, want %v", events[1].Quiet, tc.quiet)
+			router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: uuid, Members: members})
+			handleAll(t, router, commandLifecycleEvent("t1", uuid, provider.CommandQueued), turnCompleteNow())
+			tc.take(t, router)
+			if len(got) != 1 || got[0].TurnIndex != tc.turn || got[0].UserItemID != "user:1" || !slices.Equal(got[0].Members, members) {
+				t.Fatalf("deliveries = %+v, want one into turn %d naming its members", got, tc.turn)
 			}
 		})
 	}
+}
+
+func handleAll(t *testing.T, router *Router, events ...provider.ProviderEvent) {
+	t.Helper()
+	for _, evt := range events {
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("%s: %v", evt.Kind, err)
+		}
+	}
+}
+
+func echoUUID(uuid string) provider.ProviderEvent {
+	meta, _ := json.Marshal(map[string]any{"provider_item_id": uuid})
+	return provider.ProviderEvent{Kind: provider.EventUserText, ThreadID: "t1", ItemID: uuid, Content: "sent", Meta: meta, Timestamp: time.Now()}
+}
+
+func turnCompleteNow() provider.ProviderEvent {
+	return provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now()}
 }

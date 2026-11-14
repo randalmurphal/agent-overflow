@@ -204,6 +204,9 @@ type pendingSend struct {
 	// is one the provider opened for this message (SendDelivery.OwnTurn).
 	WrittenDuringTurn int
 
+	// Members is PendingSendExpectation.Members.
+	Members []string
+
 	Confirmation *userMessageConfirmation
 }
 
@@ -294,6 +297,11 @@ type PendingSendExpectation struct {
 	// text (usermessage.JoinedPart). They match no echo: a session-death
 	// restore splits the message by them (UnconfirmedFlushItem.JoinedParts).
 	JoinedParts []usermessage.JoinedPart
+
+	// Members is the send id of every message the send carries, in order,
+	// "" for one sent without (usermessage.MemberSendIDs). Its delivery
+	// names them (SendDelivery.Members).
+	Members []string
 }
 
 // RegisterPendingSendWithExpectation registers a direct send — the
@@ -382,6 +390,7 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 		Shape:                      shape,
 		InterruptedTurnIndex:       -1,
 		WrittenDuringTurn:          writtenDuring,
+		Members:                    expect.Members,
 	})
 	// The ledger outlives the FIFO entry on purpose: a merge is recognised
 	// from the SURVIVOR's echo, by which time the earlier members' entries

@@ -93,10 +93,9 @@ func (a *App) configureTriageQueueCallbacks() {
 	a.triage.SetFlushDispatcher(a.enqueueFlushDispatch)
 	a.triage.SetFlushUserTextConfirmedHook(func(threadID string, item store.Item) {
 		a.recordMessageAnchor(item)
-		a.agentWakeQueuedConfirmed(threadID, item.ID)
 	})
 	a.triage.SetFlushSendConsumedHook(a.confirmOwnedDeliveries)
-	a.triage.SetSendDeliveredHook(a.bindDeliveredRequests)
+	a.triage.SetSendDeliveredHook(a.onSendDelivered)
 	a.triage.SetSendsPendingObserver(a.markSendsPendingDirty)
 	a.triage.SetSendUndeliveredHook(func(threadID string) {
 		// Off the provider event worker: the restore takes the thread
@@ -874,7 +873,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// The identity this dispatch will be recognised by — wire stamp and
 	// registry expectation derived together (providerSendIdentity), so
 	// the two cannot drift.
-	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
+	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, userItem.Meta, sendUUID)
 	sendExpect.JoinedParts = joined.parts
 	// What this message puts on the wire, block by block. Headless Claude can
 	// acknowledge a queued message whose content is this message CONCATENATED
@@ -915,8 +914,6 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	unclaim := func(err error) error { return errors.Join(err, claims.release(a)) }
 
 	if eagerPersist {
-		// Before the row is registered, so its echo always finds the note.
-		a.noteAgentWakeQueued(threadID, userItem.ID, persistTurnIndex, allWakes)
 		// Emit queue_flushed so the frontend creates the Zone 2 entry
 		// (queued marker above the composer). Persist the row quietly —
 		// no provider:item_event — so the item reserves its timeline
@@ -924,7 +921,6 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 		// until the provider echo confirms it entered context.
 		if persistErr := a.triage.PersistAndRegisterPendingQuietFlushSendWithExpectation(
 			threadID, leadQueueItemID, userItem, responseTurnIndex, leadEnqueuedAt, sendExpect); persistErr != nil {
-			a.forgetAgentWakeQueued(threadID, userItem.ID)
 			return nil, false, requeue, unclaim(fmt.Errorf("eager persist flush: %w", persistErr))
 		}
 		a.publishFlushDispatch(threadID, group, flushedItems)
@@ -1001,7 +997,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			// wire stamp and expectation together; identified client sends
 			// preserve both across this placement-only fallback.
 			var refreshExpect triage.PendingSendExpectation
-			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, "")
+			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, userItem.Meta, "")
 			refreshExpect.JoinedParts = joined.parts
 			a.triage.RegisterPendingFlushSendWithExpectation(
 				threadID, leadQueueItemID, userItem, leadEnqueuedAt, refreshExpect)
@@ -1024,7 +1020,6 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			return retargetFlushedItems(flushedItems, userItem.ID), eagerPersist, nil, nil
 		}
 		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
-		a.forgetAgentWakeQueued(threadID, userItem.ID)
 		a.persistFlushDispatchError(threadID, persistTurnIndex, dispatchErr)
 		return nil, eagerPersist, requeue, unclaim(dispatchErr)
 	}

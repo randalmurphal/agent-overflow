@@ -30,38 +30,17 @@ import (
 // (reopenSoftClosedTurn), keeping its id-allocating counters.
 // See docs/architecture/turn-lifecycle.md §Rounds and turns.
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
-	return r.startTurn(evt, false, func() (int, error) {
-		return r.resolveTurnIndexOnStart(evt), nil
-	})
-}
-
-// startPendingSendTurn opens the turn of pending, the send waiting for one,
-// as handleTurnStart does. providerOpened says no command opened the turn:
-// the provider woke itself. When it did so before starting a send whose
-// `queued` ack is on record, the turn is the provider's own work under the
-// send's index (turn-lifecycle.md §Stdin race) and is self-woken
-// (selfWokenTurn). A CLI that sends no acks leaves the two alike, and the
-// turn is read as the send's.
-func (r *Router) startPendingSendTurn(evt provider.ProviderEvent, pending pendingSend, providerOpened bool) error {
-	selfWoken := false
-	if providerOpened && !pending.Started {
-		r.mu.Lock()
-		if st := r.threadStateIfPresent(evt.ThreadID); st != nil {
-			_, selfWoken = st.commandLifecycle[pending.ExpectedProviderItemID]
-		}
-		r.mu.Unlock()
-	}
-	return r.startTurn(evt, selfWoken, func() (int, error) {
+	return r.startTurn(evt, func() (int, error) {
 		return r.resolveTurnIndexOnStart(evt), nil
 	})
 }
 
 // startTurn opens the logical turn resolve names. Every turn opens here:
 // an AO send's (handleTurnStart) and one the provider started
-// (openProviderStartedTurn). selfWoken marks a turn no command opened
-// (selfWokenTurn); the mark is set with the open turn, before the turn is
-// announced. A retired session's frame opens nothing.
-func (r *Router) startTurn(evt provider.ProviderEvent, selfWoken bool, resolve func() (int, error)) error {
+// (openProviderStartedTurn). What the turn took in is not decided here:
+// its deliveries name it (SendDelivery). A retired session's frame opens
+// nothing.
+func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, error)) error {
 	if r.frameRetired(evt.ThreadID, evt.SessionToken) {
 		return nil
 	}
@@ -108,7 +87,7 @@ func (r *Router) startTurn(evt provider.ProviderEvent, selfWoken bool, resolve f
 
 	// A failed ownership read is reported once the turn is open: the turn
 	// starts either way.
-	opened, openErr := r.setOpenTurn(evt.ThreadID, turnIndex, evt.SessionToken, selfWoken)
+	opened, openErr := r.setOpenTurn(evt.ThreadID, turnIndex, evt.SessionToken)
 	started()
 	if !opened {
 		return openErr
@@ -903,17 +882,11 @@ func turnCountsAsThreadActivity(evt provider.ProviderEvent) bool {
 // turnIsQuiet reports whether the top-level turn turnIndex of threadID,
 // ending with meta, is one nobody needs to read: the classifier names it
 // (SetQuietTurnClassifier) and it ended cleanly, with no error and no
-// interrupt. A turn that failed is the user's to see whoever started it,
-// and so is one the CLI woke itself for (selfWokenTurn): no wake started it.
+// interrupt. A turn that failed is the user's to see whoever started it.
+// The classifier reads what the turn took in from its deliveries
+// (SetSendDeliveredHook), which are reported before its end.
 func (r *Router) turnIsQuiet(threadID string, turnIndex int, meta turnCompleteMeta) bool {
 	if meta.Error != "" || turnCompleteIsTruncated(meta) || canonicalStopReason(meta) == "error" {
-		return false
-	}
-	r.mu.Lock()
-	st := r.threadStateIfPresent(threadID)
-	selfWoken := st != nil && st.selfWokenTurnSet && st.selfWokenTurn == turnIndex
-	r.mu.Unlock()
-	if selfWoken {
 		return false
 	}
 	r.quietTurnMu.Lock()
@@ -1261,9 +1234,8 @@ func (r *Router) AnyInFlightTurnOrRound() bool {
 // setOpenTurn opens turnIndex. A stream an earlier turn left open is over
 // once another turn starts, and is forgotten with its count; an agent's
 // streams are the agent's and stay. A failed ownership read forgets them
-// too, as before agents outlived turns, and is returned. selfWoken marks the
-// turn as one no command opened.
-func (r *Router) setOpenTurn(threadID string, turnIndex int, sessionToken string, selfWoken bool) (bool, error) {
+// too, as before agents outlived turns, and is returned.
+func (r *Router) setOpenTurn(threadID string, turnIndex int, sessionToken string) (bool, error) {
 	agentScopes, scopeErr := r.agentOwnedOpenScopes(threadID)
 	r.mu.Lock()
 	if r.frameRetiredLocked(threadID, sessionToken) {
@@ -1274,11 +1246,6 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int, sessionToken string
 	st.openTurn = turnIndex
 	st.openTurnSet = true
 	st.softClosedTurnSet = false
-	if selfWoken {
-		st.selfWokenTurn, st.selfWokenTurnSet = turnIndex, true
-	} else if st.selfWokenTurn != turnIndex {
-		st.selfWokenTurnSet = false
-	}
 	key := scopeCounterKey(turnIndex, "")
 	if st.segmentIndexByScope == nil {
 		st.segmentIndexByScope = make(map[string]int)
@@ -1376,9 +1343,6 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	st.openTurn = turnIndex
 	st.openTurnSet = true
 	st.softClosedTurnSet = false
-	if st.selfWokenTurn != turnIndex {
-		st.selfWokenTurnSet = false
-	}
 	key := scopeCounterKey(turnIndex, "")
 	if st.segmentIndexByScope == nil {
 		st.segmentIndexByScope = make(map[string]int)

@@ -40,13 +40,6 @@ type threadState struct {
 	// (reopenSoftClosedTurn); the result and every turn start clear it.
 	softClosedTurn    int
 	softClosedTurnSet bool
-	// selfWokenTurn is the open turn the CLI started with no command
-	// behind it (selfWokenTurnSet): a background-task notification, a
-	// scheduled wakeup or a peer session's message. No queued wake took
-	// it up, so it is never quiet (turnIsQuiet). The next turn opened
-	// clears it (setOpenTurn).
-	selfWokenTurn    int
-	selfWokenTurnSet bool
 	// turnStarting is non-nil while handleTurnStart runs, from before it
 	// writes the turns row until the open turn is set, and is closed
 	// when it returns. InterruptTurnIndex waits on it so an interrupt

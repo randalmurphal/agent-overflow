@@ -178,10 +178,9 @@ end, and a teardown does the same before it drops the queue
 (`returnRequestsAtTeardown`). What the app's messages are owed
 is applied once that restore commits (`settleNotTakenIn`): a restore that
 fails requeues them whole. Whether a turn was a tick
-is read from the rows of the turn that ended, because a dispatch cannot know
-what the provider joined into it. The exception is a Claude turn the CLI
-started for messages queued during the previous turn, which keep their rows
-there: it is a tick when every one of them was a wake (`agentWakeQueued`).
+is read from what triage's delivery resolver says the turn took in
+(`SendDelivery.Members`, `noteAgentTurnIntake`), because neither a dispatch
+nor the rows' turn says which turn the provider ran a message in.
 Triage asks whether a turn that ended cleanly was a tick through
 `SetQuietTurnClassifier` (`agentTurnIsTick`), and keeps such a turn out of
 the thread's activity and read state; the marks it reads are kept by

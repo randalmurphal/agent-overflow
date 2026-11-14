@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
 
 const attentionReason = "Pick the release date before Friday"
@@ -280,138 +281,206 @@ func TestAttentionKindsAgreeAcrossTheStoreToolAndNotification(t *testing.T) {
 	}
 }
 
-// A Claude turn that took up queued wakes holds no rows of its own; it is
-// a tick for every round of it, and the pickup is forgotten once a later
-// turn ends.
-func TestAPickupTurnIsATickForEachOfItsRounds(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("pickup-tick")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatal(err)
-	}
-	app.agentWakes.mu.Lock()
-	app.agentWakes.pickups = map[string]agentWakePickup{thread.ID: {turn: 3, tick: true}}
-	app.agentWakes.mu.Unlock()
-
-	if !app.agentTurnIsTick(thread.ID, 3) {
-		t.Fatal("the pickup turn is not a tick")
-	}
-	app.endAgentWakeTickTurn(thread.ID, 3)
-	if !app.agentTurnIsTick(thread.ID, 3) {
-		t.Fatal("a later round of the pickup turn is not a tick")
-	}
-	if app.agentTurnIsTick(thread.ID, 4) {
-		t.Fatal("the turn after the pickup is a tick")
-	}
-	app.endAgentWakeTickTurn(thread.ID, 4)
-	if app.agentTurnIsTick(thread.ID, 3) {
-		t.Fatal("the pickup outlived the turn after it")
-	}
+// tickTurnHarness drives a real router whose deliveries reach the app as in
+// production (onSendDelivered), for a thread whose turn 0 is running.
+type tickTurnHarness struct {
+	t      *testing.T
+	app    *App
+	thread string
 }
 
-// A turn Claude woke itself for after wakes were queued took up none of
-// them: it is not a tick, and the turn a command opens after it is the
-// pickup.
-func TestASelfWokenTurnIsNotThePickupOfQueuedWakes(t *testing.T) {
-	t.Parallel()
+func newTickTurnHarness(t *testing.T, name string) *tickTurnHarness {
+	t.Helper()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, app.emit)
-	thread := testThread("self-woken-pickup")
+	app.triage.SetSendDeliveredHook(app.onSendDelivered)
+	app.triage.SetQuietTurnClassifier(app.agentTurnIsTick)
+	thread := testThread(name)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
-	handle := func(evt provider.ProviderEvent) {
-		t.Helper()
-		evt.ThreadID, evt.Timestamp = thread.ID, time.Now()
-		if err := app.triage.Handle(evt); err != nil {
-			t.Fatalf("%s: %v", evt.Kind, err)
-		}
-	}
-	initOpenedBy := func(opener provider.TurnOpener) provider.ProviderEvent {
-		t.Helper()
-		meta, err := json.Marshal(provider.SessionInfo{TurnOpener: opener})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return provider.ProviderEvent{Kind: provider.EventInit, Meta: meta}
-	}
-	done := provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}}
+	h := &tickTurnHarness{t: t, app: app, thread: thread.ID}
+	h.handle(provider.ProviderEvent{Kind: provider.EventTurnStart})
+	return h
+}
 
-	handle(provider.ProviderEvent{Kind: provider.EventTurnStart})
-	app.noteAgentWakeQueued(thread.ID, "user:0:flush:1", 0, true)
-	handle(done)
-
-	handle(initOpenedBy(""))
-	if got := app.triage.OpenTurnIndex(thread.ID); got != 1 {
-		t.Fatalf("the self-woken turn is %d, want 1", got)
-	}
-	if app.agentTurnIsTick(thread.ID, 1) || app.agentWakeTickStarted(thread.ID) {
-		t.Fatal("the turn Claude woke itself for is a tick")
-	}
-	handle(done)
-
-	handle(initOpenedBy(provider.TurnOpenerCommand))
-	if got := app.triage.OpenTurnIndex(thread.ID); got != 2 {
-		t.Fatalf("the command's turn is %d, want 2", got)
-	}
-	if !app.agentTurnIsTick(thread.ID, 2) || !app.agentWakeTickStarted(thread.ID) {
-		t.Fatal("the turn that took the queued wakes up is not a tick")
+func (h *tickTurnHarness) handle(evt provider.ProviderEvent) {
+	h.t.Helper()
+	evt.ThreadID, evt.Timestamp = h.thread, time.Now()
+	if err := h.app.triage.Handle(evt); err != nil {
+		h.t.Fatalf("%s: %v", evt.Kind, err)
 	}
 }
 
-// A turn's own rows decide: wakes only is a tick, and a person's message,
-// or one joined to a wake, is not.
-func TestATurnOfWakesIsATick(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("rows-tick")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatal(err)
-	}
+// send writes a message into the running turn: its row, persisted at the
+// next turn's index, and its pending send naming its members.
+func (h *tickTurnHarness) send(rowID, uuid, meta string) {
+	h.t.Helper()
 	now := time.Now().UnixMilli()
-	for i, row := range []struct {
-		turn int
-		meta string
-	}{
-		{1, `{"sendId":"agent-wake:w1:1","origin":"agent-wake"}`},
-		{1, `{"sendId":"agent-wake:w2:1","origin":"agent-wake"}`},
-		{2, `{"sendId":"agent-wake:w1:2","joinedSendIds":["agent-wake:w1:2","send-1"],"origin":"agent-wake"}`},
-		{3, `{"sendId":"send-2"}`},
-	} {
-		if _, err := app.store.AppendItem(store.Item{
-			ID: "user:" + string(rune('a'+i)), ThreadID: thread.ID, TurnIndex: row.turn, Kind: "user_text", Role: "user",
-			Status: "completed", Summary: "x", Meta: row.meta, CreatedAt: now, UpdatedAt: now,
-		}); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := h.app.store.AppendItem(store.Item{
+		ID: rowID, ThreadID: h.thread, TurnIndex: 1, Kind: "user_text", Role: "user",
+		Status: "completed", Summary: "x", Meta: meta, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		h.t.Fatal(err)
 	}
-	for turn, want := range map[int]bool{1: true, 2: false, 3: false, 4: false} {
-		if got := app.agentTurnIsTick(thread.ID, turn); got != want {
-			t.Errorf("turn %d tick = %v, want %v", turn, got, want)
-		}
+	h.app.triage.RegisterPendingSendWithExpectation(h.thread, rowID, 1, triage.PendingSendExpectation{
+		ProviderItemID: uuid, Members: usermessage.MemberSendIDsOfRow(meta),
+	})
+	h.lifecycle(uuid, provider.CommandQueued)
+}
+
+func (h *tickTurnHarness) lifecycle(uuid string, state provider.CommandLifecycleState) {
+	h.t.Helper()
+	meta, err := json.Marshal(provider.CommandLifecycleMeta{CommandUUID: uuid, State: state})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	h.handle(provider.ProviderEvent{Kind: provider.EventCommandLifecycle, ItemID: uuid, Meta: meta})
+}
+
+func (h *tickTurnHarness) echo(uuid string) {
+	h.t.Helper()
+	meta, err := json.Marshal(map[string]any{"provider_item_id": uuid})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	h.handle(provider.ProviderEvent{Kind: provider.EventUserText, ItemID: uuid, Content: "x", Meta: meta})
+}
+
+func (h *tickTurnHarness) init(opener provider.TurnOpener) {
+	h.t.Helper()
+	meta, err := json.Marshal(provider.SessionInfo{TurnOpener: opener})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	h.handle(provider.ProviderEvent{Kind: provider.EventInit, Meta: meta})
+}
+
+func (h *tickTurnHarness) end() {
+	h.t.Helper()
+	h.handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}})
+}
+
+const (
+	wakeMeta          = `{"sendId":"agent-wake:w1:1","origin":"agent-wake"}`
+	personMeta        = `{"sendId":"send-1"}`
+	idlessPersonJoin  = `{"sendId":"agent-wake:w1:1","joinedSendIds":["agent-wake:w1:1"],"origin":"agent-wake","joinedParts":[{"bytes":4},{"sendId":"agent-wake:w1:1","bytes":4,"origin":"agent-wake"}]}`
+	personWithWakeIDs = `{"sendId":"agent-wake:w1:1","joinedSendIds":["agent-wake:w1:1","send-1"],"origin":"agent-wake"}`
+)
+
+// A turn is a tick by what it took in, whichever turn its rows show in and
+// in whichever order Claude writes `started`, init and echo: queued wakes
+// taken in make it their pickup, a turn that took nothing in is the
+// provider's own and never one, and a person's message in it makes it
+// theirs, an id-less one joined to a wake included. The start's mark
+// follows what the turn took in before it opened.
+func TestATurnIsATickByWhatItTookIn(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		meta string
+		// pickup takes the message in after turn 0 ends.
+		pickup      func(h *tickTurnHarness, uuid string)
+		turn        int
+		tick        bool
+		tickStarted bool
+	}{
+		{name: "started, init, echo", meta: wakeMeta, turn: 1, tick: true, tickStarted: true, pickup: func(h *tickTurnHarness, uuid string) {
+			h.lifecycle(uuid, provider.CommandStarted)
+			h.init(provider.TurnOpenerCommand)
+			h.echo(uuid)
+		}},
+		{name: "init, echo, started", meta: wakeMeta, turn: 1, tick: true, pickup: func(h *tickTurnHarness, uuid string) {
+			h.init("")
+			h.echo(uuid)
+			h.lifecycle(uuid, provider.CommandStarted)
+		}},
+		{name: "a self-woken turn first", meta: wakeMeta, turn: 2, tick: true, tickStarted: true, pickup: func(h *tickTurnHarness, uuid string) {
+			h.init("")
+			if got := h.app.triage.OpenTurnIndex(h.thread); got != 1 {
+				h.t.Fatalf("the self-woken turn is %d, want 1", got)
+			}
+			if h.app.agentWakeTickStarted(h.thread) {
+				h.t.Fatal("the turn Claude woke itself for started as a tick")
+			}
+			h.end()
+			if h.app.agentTurnIsTick(h.thread, 1) {
+				h.t.Fatal("the turn Claude woke itself for, which took nothing in, is a tick")
+			}
+			h.lifecycle(uuid, provider.CommandStarted)
+			h.init(provider.TurnOpenerCommand)
+			h.echo(uuid)
+		}},
+		{name: "a person's message", meta: personMeta, turn: 1, pickup: func(h *tickTurnHarness, uuid string) {
+			h.lifecycle(uuid, provider.CommandStarted)
+			h.init(provider.TurnOpenerCommand)
+			h.echo(uuid)
+		}},
+		{name: "a person's message joined to a wake", meta: personWithWakeIDs, turn: 1, pickup: func(h *tickTurnHarness, uuid string) {
+			h.lifecycle(uuid, provider.CommandStarted)
+			h.init(provider.TurnOpenerCommand)
+			h.echo(uuid)
+		}},
+		{name: "an id-less person's message joined to a wake", meta: idlessPersonJoin, turn: 1, pickup: func(h *tickTurnHarness, uuid string) {
+			h.lifecycle(uuid, provider.CommandStarted)
+			h.init(provider.TurnOpenerCommand)
+			h.echo(uuid)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTickTurnHarness(t, "tick-"+strings.ReplaceAll(tc.name, " ", "-"))
+			h.send("user:1", "uuid-1", tc.meta)
+			h.end()
+			if h.app.agentTurnIsTick(h.thread, 0) {
+				t.Fatal("the turn the message was written during took it in")
+			}
+			tc.pickup(h, "uuid-1")
+			if got := h.app.triage.OpenTurnIndex(h.thread); got != tc.turn {
+				t.Fatalf("the turn that took the message in is %d, want %d", got, tc.turn)
+			}
+			if got := h.app.agentWakeTickStarted(h.thread); got != tc.tickStarted {
+				t.Fatalf("the turn started as a tick = %v, want %v", got, tc.tickStarted)
+			}
+			h.end()
+			if got := h.app.agentTurnIsTick(h.thread, tc.turn); got != tc.tick {
+				t.Fatalf("turn %d tick = %v, want %v", tc.turn, got, tc.tick)
+			}
+		})
 	}
 }
 
-// A turn whose rows cannot be read is not a tick, whatever the marks say: a
-// person's turn going silent is the worse mistake.
-func TestATurnWhoseRowsCannotBeReadIsNotATick(t *testing.T) {
+// What a turn took in stays for a later round of it, and goes once a later
+// turn ends and with the session.
+func TestATurnsIntakeOutlivesItsRoundsAndNotTheNextTurn(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	thread := testThread("unreadable-tick")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatal(err)
+	const thread = "intake-rounds"
+	app.noteAgentTurnIntake(thread, triage.SendDelivery{UserItemID: "user:3", TurnIndex: 3, Members: []string{"agent-wake:w1:3"}})
+	app.noteAgentTurnIntake(thread, triage.SendDelivery{UserItemID: "user:9", AwaitingTurn: true, Members: []string{"send-1"}})
+	if !app.agentTurnIsTick(thread, 3) {
+		t.Fatal("the pickup turn is not a tick")
 	}
+	app.endAgentWakeTickTurn(thread, 3)
+	if !app.agentTurnIsTick(thread, 3) {
+		t.Fatal("a later round of the pickup turn is not a tick")
+	}
+	if app.agentTurnIsTick(thread, 4) {
+		t.Fatal("the turn after the pickup, which took nothing in, is a tick")
+	}
+	app.endAgentWakeTickTurn(thread, 4)
+	if app.agentTurnIsTick(thread, 3) {
+		t.Fatal("the pickup outlived the turn after it")
+	}
+	app.noteAgentTurnIntake(thread, triage.SendDelivery{UserItemID: "user:5", TurnIndex: 5, Members: []string{"agent-wake:w1:5"}})
+	app.noteAgentTurnIntake(thread, triage.SendDelivery{UserItemID: "user:6", TurnIndex: 6, Rebind: true, ReboundFrom: 5, Members: []string{"send-2"}})
+	if app.agentTurnIsTick(thread, 5) || app.agentTurnIsTick(thread, 6) {
+		t.Fatal("a merge's rebind left the emptied turn a tick or made the person's turn one")
+	}
+	app.forgetAgentWakeTurns(thread)
 	app.agentWakes.mu.Lock()
-	app.agentWakes.pickups = map[string]agentWakePickup{thread.ID: {turn: 2, tick: true}}
-	app.agentWakes.mu.Unlock()
-	if !app.agentTurnIsTick(thread.ID, 2) {
-		t.Fatal("the pickup turn is not a tick while its rows read")
-	}
-	if err := app.store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if app.agentTurnIsTick(thread.ID, 2) {
-		t.Fatal("a turn whose rows could not be read is a tick")
+	defer app.agentWakes.mu.Unlock()
+	if len(app.agentWakes.intake) != 0 {
+		t.Fatalf("intake after the session ended = %v", app.agentWakes.intake)
 	}
 }

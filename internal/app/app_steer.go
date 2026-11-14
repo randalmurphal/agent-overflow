@@ -235,7 +235,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	// provider's own queue can never pop this entry (and this entry can never
 	// pop a direct send's id-less echo). Wire stamp and expectation derived
 	// together — see providerSendIdentity.
-	steerClientID, steerExpect := providerSendIdentity(sess, userItem.ID, "")
+	steerClientID, steerExpect := providerSendIdentity(sess, userItem.ID, userItem.Meta, "")
 	a.triage.RegisterPendingSteerSendWithExpectation(threadID, userItem.ID, turnIndex, steerExpect)
 
 	// Stamp activity before stdin write so the idle reaper can't race

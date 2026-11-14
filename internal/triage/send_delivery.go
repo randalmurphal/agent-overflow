@@ -17,6 +17,9 @@ type SendDelivery struct {
 	// SendIDs are the send ids the row carries, every member's for a
 	// joined message: one delivery answers all of them.
 	SendIDs []string
+	// Members is the send id of every message the row carries, in order,
+	// "" for one sent without (a person's): what the turn took in.
+	Members []string
 	// TurnIndex is the logical turn the message was delivered into.
 	TurnIndex int
 	// OwnTurn reports that the turn opened for this message, or for the
@@ -52,10 +55,12 @@ type SendDelivery struct {
 // turn index: its echo opens that turn (openQueuedEchoTurn) when no init
 // does. A `started` for it can arrive while another message's turn is still
 // open, as when the CLI drains a second deferred send mid-loop into the
-// round of the first, and that turn is not this send's. Any other send has
-// no floor: a message flushed into a running turn can be drained into it.
+// round of the first, and that turn is not this send's. A direct send heads
+// its own turn and a steer is written into the turn it joins, so each has
+// its row's turn as the floor. A message flushed into a running turn has no
+// floor: it can be drained into it.
 func deliveryFloor(send *pendingSend) int {
-	if send.DeferredItem != nil || send.WasDeferred {
+	if send.DeferredItem != nil || send.WasDeferred || send.Shape != sendShapeFlush {
 		return send.TurnIndex
 	}
 	return -1
@@ -148,13 +153,17 @@ func (r *Router) placeDeliveriesLocked(threadID, sessionToken string, sends []*p
 		ids, err := send.sendIDs()
 		if err != nil {
 			log.Printf("triage: delivered send %s/%s names no request: %v", threadID, send.AOItemID, err)
-			continue
 		}
-		if len(ids) == 0 {
-			continue
+		members := send.Members
+		if len(members) == 0 {
+			members = ids
+		}
+		if len(members) == 0 {
+			// A send registered without its members is a person's.
+			members = []string{""}
 		}
 		delivery := SendDelivery{
-			UserItemID: send.AOItemID, SendIDs: ids,
+			UserItemID: send.AOItemID, SendIDs: ids, Members: members,
 			writtenDuring: send.WrittenDuringTurn, opensTurn: deliveryFloor(send),
 		}
 		deliveries = append(deliveries, delivery)
