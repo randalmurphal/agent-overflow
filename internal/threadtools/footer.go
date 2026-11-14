@@ -41,7 +41,7 @@ type Footer struct {
 	Token    string
 	// AnswerRequested is true when the sender waited or asked to be
 	// notified. The token and thread_reply are given either way, since a
-	// reply always reaches the request record.
+	// reply always reaches the sender as a message.
 	AnswerRequested bool
 	// SenderReachable is true when the receiver's computer holds a
 	// credential for the sender's.
@@ -86,9 +86,9 @@ func (f Footer) String() string {
 		}
 		lines = append(lines, body)
 	} else {
-		body := fmt.Sprintf("It is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token %s, once.", f.Token)
+		body := fmt.Sprintf("It is not waiting for an answer. If it should hear something back, call thread_reply with token %s, once: the reply reaches it as a message, and it sees only your reply text.", f.Token)
 		if f.SenderReachable {
-			body += " To answer it, use thread_send with its id."
+			body += " To read the sender's thread, use thread_show with its id."
 		}
 		lines = append(lines, body)
 	}
@@ -109,19 +109,30 @@ const (
 	WakeReminder    = "reminder"
 )
 
-// Wake is the status line and body of a message delivered to the thread
-// that made a request.
-type Wake struct {
-	Kind string
-	// Title, ThreadID and Computer name the thread that answered.
-	// Computer is empty when it is the caller's own.
+// WakeSource is one thread a wake speaks for, with the requests of it the
+// wake answers.
+type WakeSource struct {
+	// Title, ThreadID and Computer name the thread that answered. Computer
+	// is empty when it is the caller's own. All three are empty for a
+	// reminder, which no thread answers.
 	Title    string
 	ThreadID string
 	Computer string
-	Token    string
+	// Tokens are the requests this wake answers, oldest first. One turn can
+	// answer several: it consumed several of the caller's messages.
+	Tokens []string
 	// Age is how long ago the answer was written. Stated only past
 	// AgeFloor.
 	Age time.Duration
+}
+
+// Wake is the status line and body of a message delivered to the thread
+// that made a request. It has one source unless several threads gave the
+// caller the same outcome at once (a restart that interrupted them all), in
+// which case one message lists them instead of one message each.
+type Wake struct {
+	Kind    string
+	Sources []WakeSource
 	// Text is the answer, the final message, the error or the note. It is
 	// clipped to WakePreviewBytes with a pointer to thread_status.
 	Text string
@@ -129,17 +140,24 @@ type Wake struct {
 
 // String renders one wake, status line first.
 func (w Wake) String() string {
-	who := fmt.Sprintf("%q (%s%s%s)", w.Title, w.ThreadID, onComputer(w.Computer), w.answered())
-	token := ""
-	if w.Token != "" {
-		token = fmt.Sprintf(" [token %s]", w.Token)
+	if len(w.Sources) > 1 {
+		return w.digest()
 	}
+	var source WakeSource
+	if len(w.Sources) == 1 {
+		source = w.Sources[0]
+	}
+	who := source.who()
+	token := tokenLabel(source.Tokens)
 	switch w.Kind {
 	case WakeReply:
 		return fmt.Sprintf("Reply from %s%s:\n%s", who, token, w.body())
 	case WakeFinished:
 		return fmt.Sprintf("%s%s finished its turn without calling thread_reply. Its final message:\n%s", who, token, w.body())
 	case WakeErrored:
+		if w.Text == "" {
+			return fmt.Sprintf("%s%s errored.", who, token)
+		}
 		return fmt.Sprintf("%s%s errored: %s", who, token, w.body())
 	case WakeCancelled:
 		return fmt.Sprintf("%s%s was cancelled.", who, token)
@@ -160,7 +178,75 @@ func (w Wake) String() string {
 	}
 }
 
-func (w Wake) body() string { return WakeBody(w.Text, w.Token) }
+// digest renders a wake that speaks for several threads: what happened to
+// each of them, one line naming each with its tokens, then the text they
+// share. The text is last so a long one does not bury the list, and the
+// first line says it is the same for each thread, so a cause written about
+// one thread ("the computer running it restarted") reads as it was written.
+func (w Wake) digest() string {
+	count := len(w.Sources)
+	var head string
+	shared := w.Text != ""
+	switch w.Kind {
+	case WakeReply:
+		head, shared = fmt.Sprintf("%d threads sent the same reply:", count), true
+	case WakeFinished:
+		head, shared = fmt.Sprintf("%d threads finished their turns without calling thread_reply, each with the same final message:", count), true
+	case WakeErrored:
+		head = fmt.Sprintf("%d threads errored.", count)
+		if shared {
+			head = fmt.Sprintf("%d threads errored, each with the same error:", count)
+		}
+	case WakeCancelled:
+		head, shared = fmt.Sprintf("%d threads were cancelled.", count), false
+	case WakeInterrupted:
+		head = fmt.Sprintf("%d threads were interrupted.", count)
+		if shared {
+			head = fmt.Sprintf("%d threads were interrupted, each for the same reason:", count)
+		}
+	case WakeExpired:
+		head, shared = fmt.Sprintf("%d threads did not answer within a day.", count), false
+	default:
+		head, shared = fmt.Sprintf("%d threads settled.", count), false
+	}
+	lines := make([]string, 0, count+2)
+	lines = append(lines, head)
+	for _, source := range w.Sources {
+		lines = append(lines, "- "+source.who()+tokenLabel(source.Tokens))
+	}
+	if shared {
+		lines = append(lines, w.body())
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (s WakeSource) who() string {
+	return fmt.Sprintf("%q (%s%s%s)", s.Title, s.ThreadID, onComputer(s.Computer), answered(s.Age))
+}
+
+// tokenLabel names the requests a wake answers for one thread.
+func tokenLabel(tokens []string) string {
+	switch len(tokens) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf(" [token %s]", tokens[0])
+	default:
+		return fmt.Sprintf(" [tokens %s]", strings.Join(tokens, ", "))
+	}
+}
+
+// firstToken is the request a clipped body points thread_status at.
+func (w Wake) firstToken() string {
+	for _, source := range w.Sources {
+		if len(source.Tokens) > 0 {
+			return source.Tokens[0]
+		}
+	}
+	return ""
+}
+
+func (w Wake) body() string { return WakeBody(w.Text, w.firstToken()) }
 
 // WakeBody clips a wake body to the preview budget and points at the whole
 // answer. A body inside the budget is returned unchanged.
@@ -176,11 +262,11 @@ func WakePreviewPointer(token string) string {
 	return fmt.Sprintf("[preview; thread_status %s for the whole answer]", token)
 }
 
-func (w Wake) answered() string {
-	if w.Age < AgeFloor {
+func answered(age time.Duration) string {
+	if age < AgeFloor {
 		return ""
 	}
-	return ", answered " + Age(w.Age) + " ago"
+	return ", answered " + Age(age) + " ago"
 }
 
 func onComputer(name string) string {

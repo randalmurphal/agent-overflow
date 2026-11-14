@@ -452,9 +452,14 @@ func (c *Core) branchAlreadyExistsAfterCreationError(cwd, stderr, name string) b
 	return err == nil && exists
 }
 
+// gitReportsBranchAlreadyExists reads git's refusal to create a branch that
+// is already there. A name that collides with another ref's path ("cannot
+// lock ref 'refs/heads/a/b': 'refs/heads/a' exists") is a different refusal
+// and keeps git's own message: the branch does not exist, and saying it does
+// sends the caller to check out a branch that is not there.
 func gitReportsBranchAlreadyExists(stderr, name string) bool {
 	message := strings.ToLower(stderr)
-	if !strings.Contains(message, "exists") {
+	if !strings.Contains(message, "already exists") {
 		return false
 	}
 	normalizedName := strings.ToLower(strings.TrimSpace(name))

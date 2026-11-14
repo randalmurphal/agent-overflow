@@ -385,9 +385,11 @@ func TestTheObserverKeepsTheGateOfAnAcceptedReceipt(t *testing.T) {
 	}
 	f.app.noteReceiptRunning(target.ID, token)
 
-	if err := f.app.settleReceiptOnTurnEnd(target.ID, token); err != nil {
+	work, err := f.app.settleReceiptOnTurnEnd(target.ID, token)
+	if err != nil {
 		t.Fatalf("settleReceiptOnTurnEnd: %v", err)
 	}
+	f.app.runThreadSettlementWork(work)
 	tokens, ok := f.app.runningReceiptTokens(target.ID)
 	if !ok || len(tokens) != 1 || tokens[0] != token {
 		t.Fatalf("gate after the observer = %v (%v), want the accepted receipt still watched", tokens, ok)

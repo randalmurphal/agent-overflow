@@ -169,7 +169,7 @@ func (a *App) cancelThreadRequests(ctx context.Context, callerThreadID string) e
 // returns the asks it owns that are still open.
 func (a *App) disarmThreadRequests(callerThreadID string) ([]store.ThreadRequest, error) {
 	a.cancelThreadRequestWaits(callerThreadID)
-	if _, err := a.store.SetThreadRequestsNotifyForCaller(callerThreadID, false); err != nil {
+	if _, err := a.store.DisarmThreadRequestWakesForCaller(callerThreadID); err != nil {
 		return nil, err
 	}
 	rows, err := a.store.ListThreadRequestsByCaller(callerThreadID, threadCancelLineagePage, 0)
@@ -239,6 +239,7 @@ func (a *App) settleReceiptsForThread(threadID, state, reason string) {
 		log.Printf("thread tools: list receipts for %s: %v", threadID, err)
 		return
 	}
+	works := make([]threadSettlementWork, 0, len(receipts))
 	for _, receipt := range receipts {
 		if receipt.State != store.ThreadReceiptAccepted && receipt.State != store.ThreadReceiptRunning {
 			continue
@@ -247,14 +248,20 @@ func (a *App) settleReceiptsForThread(threadID, state, reason string) {
 		// thread's destruction and are running inside it: deleting it again
 		// from the settlement would wait for the thread action lock the
 		// caller already holds, which is nobody's to release.
-		if _, err := a.settleThreadReceiptNoScratch(receipt.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+		work, err := a.settleThreadReceiptNoScratch(receipt.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 			State:      state,
 			Answer:     []byte(reason),
 			AnswerKind: store.ThreadAnswerError,
-		}); err != nil {
+		})
+		if err != nil {
 			log.Printf("thread tools: settle receipt %s as %s: %v", receipt.Token, state, err)
+			continue
 		}
+		works = append(works, work)
 	}
+	// Together, so a caller with several requests open against this thread
+	// is told once that it went.
+	a.runThreadSettlementWorksDetached(works)
 	// This thread is going: deleted, or handed to another computer. The
 	// settlements above are what their callers collect, and a receipt still
 	// bound to the thread would cascade away with it before a paired

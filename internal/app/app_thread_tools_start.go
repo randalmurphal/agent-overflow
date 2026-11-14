@@ -193,7 +193,8 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 		return target, nil
 	}
 	if err := t.dispatchRequest(ctx, origin, token, target, call.Prompt, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
-		return "", t.failRequest(token, err)
+		// The thread exists and stays: it is the caller's to continue.
+		return "", t.settleRefusal(token, threadRequestRefusal(err, target))
 	}
 	return target, nil
 }
@@ -443,13 +444,20 @@ const threadReceiptNeverStarted = "That request was accepted but its thread was 
 
 // failRequest settles a source row on this computer whose acceptance or
 // dispatch failed before the destination ever ran it, and returns the
-// original error.
+// refusal the caller's tool call reads.
 //
 // The row is settled rather than left open because nothing else can settle
 // it: no receipt is running, no turn will end, and no poller will ask. A row
 // left `unconfirmed` would tell the agent to keep checking a token that never
 // changes. A request a paired computer made has no row here at all; its
 // source settles it from the refusal this returns.
+//
+// The call's own error IS the delivery, so the row is settled and marked
+// delivered in one transaction: a request made with notify must not also
+// send the same refusal as a message a moment later. For the same reason the
+// error carries the cause. It is the request's stored answer, which
+// `thread_status` returns to the same agent, and a refusal that hid it sent
+// the agent off to find out why with another call.
 //
 // A receipt accepted before the failure is settled too, through the settle
 // door, which drops the scratch thread an ask had already forked and tells a
@@ -459,10 +467,11 @@ const threadReceiptNeverStarted = "That request was accepted but its thread was 
 // happened to it, `refused`, rather than the `errored` its own receipt
 // collects.
 func (t threadToolsApp) failRequest(token string, cause error) error {
-	message := cause.Error()
-	if _, public, ok := errorsx.PublicDetails(cause); ok {
-		message = public
-	}
+	return t.settleRefusal(token, threadRequestRefusal(cause, ""))
+}
+
+func (t threadToolsApp) settleRefusal(token string, refusal error) error {
+	_, message, _ := errorsx.PublicDetails(refusal)
 	row, found, err := t.app.store.GetThreadRequest(token)
 	if err != nil {
 		log.Printf("thread tools: read request %s to refuse it: %v", token, err)
@@ -470,13 +479,7 @@ func (t threadToolsApp) failRequest(token string, cause error) error {
 	if found && row.TargetComputerID == "" {
 		// A row naming another computer is a request THIS computer sent
 		// there; a failure accepting a forwarded call is not its settlement.
-		if _, err := t.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-			State:      store.ThreadRequestRefused,
-			Answer:     []byte(message),
-			AnswerKind: store.ThreadAnswerError,
-		}); err != nil {
-			log.Printf("thread tools: settle refused request %s: %v", token, err)
-		}
+		t.refuseRequest(token, message)
 	}
 	if err := t.app.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 		State:      store.ThreadReceiptErrored,
@@ -485,7 +488,58 @@ func (t threadToolsApp) failRequest(token string, cause error) error {
 	}); err != nil {
 		log.Printf("thread tools: settle refused receipt %s: %v", token, err)
 	}
-	return cause
+	return refusal
+}
+
+// refuseRequest settles a source row `refused` with the refusal its own call
+// is about to return, already delivered. It takes the token's settle lock, as
+// every settlement of a source row does, so no wake is decided between the
+// two halves.
+func (t threadToolsApp) refuseRequest(token, message string) {
+	unlock := t.app.threadRequestSettleLock(token)
+	defer unlock()
+	if _, err := t.app.store.SettleThreadRequestDelivered(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+		State:      store.ThreadRequestRefused,
+		Answer:     []byte(message),
+		AnswerKind: store.ThreadAnswerError,
+	}); err != nil {
+		log.Printf("thread tools: settle refused request %s: %v", token, err)
+	}
+}
+
+// threadRequestRefusal is the refusal a request that could not be started
+// returns, and the answer its record keeps.
+//
+// A cause that already carries reviewed prose is said as it is. Any other is
+// said in full, in the failing operation's own words, because the caller
+// chose what failed (a branch git refuses, a thread whose queue is full, a
+// provider that cannot start) and cannot fix a cause it is not told. The one
+// cause withheld is the database failing, whose text can quote a statement
+// and describes nothing the caller did: it is logged where it happened and
+// answered with a fixed sentence.
+//
+// `spawned` is the thread a spawn created before its prompt failed to reach
+// it. The refusal names it, because a caller told to make the request again
+// would spawn a second thread beside the first.
+func threadRequestRefusal(cause error, spawned string) error {
+	code, said, reviewed := errorsx.PublicDetails(cause)
+	next := " Nothing ran under it; fix the cause and make the request again."
+	switch {
+	case reviewed && spawned == "":
+		return cause
+	case reviewed:
+	case store.IsDatabaseFailure(cause):
+		log.Printf("thread tools: a request could not be started: %v", cause)
+		code, next = threadtools.CodeInvalidRequest, " Nothing ran under it."
+		said = "That request could not be started: the database on the computer that would run it failed, and the cause is in that computer's log."
+	default:
+		code = threadtools.CodeInvalidRequest
+		said = "That request could not be started: " + strings.TrimSuffix(cause.Error(), ".") + "."
+	}
+	if spawned != "" {
+		next = fmt.Sprintf(" Thread %s was created for it and its prompt did not run. Send the prompt to that thread with thread_send instead of spawning again.", spawned)
+	}
+	return errorsx.Public(code, said+next, cause)
 }
 
 // dispatchRequest sends one request's message into its target thread, as the
@@ -592,7 +646,7 @@ func (t threadToolsApp) markRequestRunning(token, targetThreadID string, item st
 	// This runs inside the target thread's own send or queue dispatch, which
 	// holds that thread's locks. The deferred work takes thread locks of its
 	// own, so it never runs on this goroutine.
-	t.app.runThreadSettlementWorkDetached(work)
+	t.app.runThreadSettlementWorksDetached([]threadSettlementWork{work})
 }
 
 // settleIfTurnAlreadyEnded settles a receipt whose turn completed before the

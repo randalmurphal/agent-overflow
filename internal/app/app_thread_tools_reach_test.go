@@ -1782,7 +1782,7 @@ func TestThreadPeerRepliesLargerThanAMegabyteCrossTheWire(t *testing.T) {
 // so an agent that resumes an hour later is not told a stale reply is news.
 //
 // The hour is injected as the destination's settled-at, which is the only
-// clock the age is measured against (threadWakeBody). Nothing else is
+// clock the age is measured against (threadWake). Nothing else is
 // arranged: the destination holds the answer in its own receipt, the source
 // never polled while it was written, and the pass that collects it is the
 // production poller.

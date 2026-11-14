@@ -370,13 +370,14 @@ func ackNote(result ackResult) string {
 	case OutcomeUnconfirmed:
 		return "The call failed before it was known whether the work started. Do NOT start it again: check thread_status with token " + result.Token + "."
 	default:
-		// Only a request with notify armed wakes this thread. Without it
-		// the work runs unattended, and promising a message would leave
-		// the agent waiting for one that is never sent.
+		// Only a request with notify armed wakes this thread when the other
+		// thread's turn ends. Without it the work runs unattended unless
+		// that thread calls thread_reply, and promising a message would
+		// leave the agent waiting for one that may never be sent.
 		if result.Notify {
 			return "Still working. The answer will arrive in this thread as a message at your next turn boundary; you do not need to poll. To wait again instead of ending your turn, call thread_status with token " + result.Token + "."
 		}
-		return "Still working, and nothing will wake this thread when it finishes: no wait and no notify were asked for. Read the answer with thread_status token " + result.Token + ", or ask again with notify or wait_seconds to have it delivered."
+		return "Still working. With no wait and no notify, this thread hears back only if that thread calls thread_reply; its last message is not delivered when its turn ends. To have the outcome delivered either way, call thread_status with token " + result.Token + " and wait_seconds: a wait that ends first arms the message."
 	}
 }
 

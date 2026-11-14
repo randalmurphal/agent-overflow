@@ -1,9 +1,9 @@
 // The chip on a user row an agent in another thread wrote.
 //
 // `meta.origin = "agent-thread"` with `meta.originThread` is what the thread
-// tools stamp on a spawn's first message, on every thread_send, and on every
-// wake carrying an answer back (docs/specs/agent-thread-tools.md,
-// Attribution). The chip says "from <title>", adds "on <computer>" when the
+// tools stamp on a spawn's first message, on every thread_send, and on a wake
+// carrying one thread's answer back; a wake that speaks for several threads
+// is an `app` row instead (docs/specs/agent-thread-tools.md, Attribution). The chip says "from <title>", adds "on <computer>" when the
 // source is a different computer than the one showing the row, and opens
 // that thread when this client is attached to its computer and that socket
 // is up. Offline, unpaired or unknown, it reads the same and does nothing:

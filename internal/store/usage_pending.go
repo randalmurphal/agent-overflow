@@ -78,11 +78,7 @@ func usageTokens(row UsageLedgerRow) [5]int {
 	return [5]int{row.InputTokens, row.OutputTokens, row.CacheReadInputTokens, row.CacheCreationInputTokens, row.ReasoningOutputTokens}
 }
 
-func rollbackUsageTx(tx *sql.Tx, result *error) {
-	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-		*result = errors.Join(*result, fmt.Errorf("store: usage rollback: %w", err))
-	}
-}
+func rollbackUsageTx(tx *sql.Tx, result *error) { rollbackTx(tx, "store: usage", result) }
 
 // AppendUsageAndReconcile atomically exchanges pending tokens for the final
 // accounting that includes them. Only this process's matching model is

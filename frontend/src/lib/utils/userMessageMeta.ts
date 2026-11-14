@@ -41,8 +41,8 @@ export interface UserMessageMeta {
    *   (`internal/provider/claude/session_peer.go#PeerTurnOrigin`)
    * - `agent-thread` — an agent in another Agent Overflow thread, on this
    *   computer or on a paired one, wrote this row through the thread tools:
-   *   a spawn's first message, a `thread_send`, or the wake carrying an
-   *   answer back. `originThread` names the source thread.
+   *   a spawn's first message, a `thread_send`, or the wake carrying one
+   *   thread's answer back. `originThread` names the source thread.
    *   (`docs/specs/agent-thread-tools.md`, Attribution)
    * - `codex-delegation` — another Codex thread started or messaged this one
    *   through Codex's own `create_thread` / `send_message_to_thread` tools,

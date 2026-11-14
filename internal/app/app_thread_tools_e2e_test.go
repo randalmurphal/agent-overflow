@@ -252,8 +252,12 @@ func TestThreadMCPSpawnAndReplyRunOverTheLoopbackTransport(t *testing.T) {
 		t.Fatalf("reply ack = %+v", reply)
 	}
 
-	// The sender reads the answer in its next call, and reading it is what
-	// delivers it: nothing is owed as a message afterwards.
+	// The reply is owed to the sender as a message although it asked for no
+	// notification, and its next status call still carries the answer and
+	// says the message is the delivery.
+	waitUntilE2E(t, 10*time.Second, "the reply's wake is queued", func() bool {
+		return f.request(t, ack.Token).DeliveredHow == store.ThreadWakeQueued
+	})
 	raw = remoteMCPCall(t, endpoint, "thread_status", map[string]any{"tokens": []string{ack.Token}}, false)
 	var report threadtools.StatusReport
 	if err := json.Unmarshal(raw, &report); err != nil {
@@ -265,13 +269,8 @@ func TestThreadMCPSpawnAndReplyRunOverTheLoopbackTransport(t *testing.T) {
 	if report.Requests[0].State != store.ThreadRequestReplied {
 		t.Errorf("state = %q, want replied", report.Requests[0].State)
 	}
-	// The mark is written once the response has left the server, which is
-	// after this client has read it.
-	waitUntilE2E(t, 10*time.Second, "the inline delivery is recorded", func() bool {
-		return f.request(t, ack.Token).DeliveredHow == store.ThreadWakeInline
-	})
-	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
-		t.Fatalf("a wake was queued for an answer the sender just read: %+v", rows)
+	if report.Requests[0].Delivered != store.ThreadWakeQueued {
+		t.Errorf("delivered = %q, want the queued message", report.Requests[0].Delivered)
 	}
 }
 
