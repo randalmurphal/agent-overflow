@@ -817,16 +817,10 @@ func (a *App) sendMessageLocked(
 		started, startErr := sess.Codex.StartReviewForTurn(
 			reviewCtx,
 			reviewTarget,
-			codex.ReviewDeliveryInline,
 			codex.ReviewRunOptions{TurnIndex: turnIndex},
 		)
 		if startErr != nil {
 			err = fmt.Errorf("start code review: %w", startErr)
-			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
-			return store.Item{}, fmt.Errorf("send message: %w", err)
-		}
-		if started.Detached {
-			err = fmt.Errorf("codex returned detached review thread %s for an inline review", started.ReviewThreadID)
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 			return store.Item{}, fmt.Errorf("send message: %w", err)
 		}

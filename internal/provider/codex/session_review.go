@@ -13,9 +13,9 @@ import (
 // `ReviewStart => "review/start"` with `serialization:
 // thread_id(params.thread_id)`
 // (codex-rs/app-server-protocol/src/protocol/common.rs, rust-v0.146.0-alpha.4),
-// not `#[experimental]`. Shipped in codex 0.59.0; the `detached` delivery
-// in 0.64.0. Both are below AO's 0.143 provider floor, so there is no
-// runtime capability probe.
+// not `#[experimental]`. Shipped in codex 0.59.0, below AO's 0.143 provider
+// floor, so there is no runtime capability probe. AO omits `delivery`;
+// inline is the protocol default.
 const reviewStartMethod = "review/start"
 
 // threadCompactStartMethod asks Codex to compact the thread's context now.
@@ -27,33 +27,6 @@ const reviewStartMethod = "review/start"
 // EventCompactBoundary in protocol_item.go. The older `thread/compacted`
 // notification is deprecated upstream and produces the same event.
 const threadCompactStartMethod = "thread/compact/start"
-
-// ReviewDelivery decides where the review turn runs.
-//
-// Wire values are camelCase (`v2_enum_from_core!` applies
-// `#[serde(rename_all = "camelCase")]`; both variants are single words).
-type ReviewDelivery string
-
-const (
-	// ReviewDeliveryInline runs the review on the requesting thread. This
-	// is the protocol default when `delivery` is omitted.
-	ReviewDeliveryInline ReviewDelivery = "inline"
-	// ReviewDeliveryDetached runs the review on a NEW thread whose id comes
-	// back as reviewThreadId.
-	ReviewDeliveryDetached ReviewDelivery = "detached"
-	// ReviewDeliveryDefault omits the field and lets Codex choose
-	// (currently inline).
-	ReviewDeliveryDefault ReviewDelivery = ""
-)
-
-func (d ReviewDelivery) valid() bool {
-	switch d {
-	case ReviewDeliveryDefault, ReviewDeliveryInline, ReviewDeliveryDetached:
-		return true
-	default:
-		return false
-	}
-}
 
 // ReviewTargetKind names the four things Codex can review.
 type ReviewTargetKind string
@@ -201,13 +174,9 @@ func (t *ReviewTarget) UnmarshalJSON(data []byte) error {
 
 // ReviewStarted is what `review/start` answers with.
 //
-// ReviewThreadID is the ROUTING AUTHORITY for everything the review
-// produces — never the requested delivery, and never the session's own
-// thread id. Upstream's own TUI routes on the returned id
-// (tui/src/app/thread_routing.rs), and it is the id that is correct in
-// both directions: inline returns the original thread, detached returns a
-// freshly created one, and a future delivery mode returns whatever it
-// returns.
+// ReviewThreadID is the thread the server says the review runs on. AO
+// verifies it rather than assuming the requesting thread, as upstream's TUI
+// routes on it (tui/src/app/thread_routing.rs).
 type ReviewStarted struct {
 	// ReviewThreadID identifies the thread the review runs on.
 	ReviewThreadID string
@@ -216,11 +185,6 @@ type ReviewStarted struct {
 	// TurnStatus is the turn's status at the moment the response was
 	// built; the authoritative lifecycle still arrives on `turn/completed`.
 	TurnStatus string
-	// Detached reports whether the review actually landed on a different
-	// thread than the one that asked for it. Derived from ReviewThreadID
-	// rather than from the requested delivery, so a server that answers
-	// differently than asked is observed rather than assumed away.
-	Detached bool
 }
 
 // ReviewRunOptions carries the app-owned logical turn coordinate for the
@@ -239,22 +203,6 @@ type reviewStartResponse struct {
 	} `json:"turn"`
 }
 
-// StartReview asks Codex to run a code review without projecting it into an
-// Agent Overflow logical turn. Low-level protocol callers and wire tests use
-// it. User-visible reviews use StartReviewForTurn.
-//
-// Delivery caveat for callers: an inline review runs on the session's own
-// thread and every notification it produces already routes. A DETACHED
-// review runs on a thread this session does not own, so its notifications
-// hit the child-thread routing gate and cannot enter the root projection.
-// A different session ID is discarded immediately; unresolved identity
-// expires in the bounded quarantine. Surfacing a detached review's
-// transcript needs the returned ReviewThreadID registered with the
-// routing tables first, which is not wired yet.
-func (s *Session) StartReview(ctx context.Context, target ReviewTarget, delivery ReviewDelivery) (ReviewStarted, error) {
-	return s.startReview(ctx, target, delivery, nil)
-}
-
 // StartReviewForTurn projects Codex review mode as one nested Code review
 // agent. Codex exposes an outer visible review turn and a private execution
 // turn. The outer id scopes UI events. The private id remains activeTurnID
@@ -262,24 +210,8 @@ func (s *Session) StartReview(ctx context.Context, target ReviewTarget, delivery
 func (s *Session) StartReviewForTurn(
 	ctx context.Context,
 	target ReviewTarget,
-	delivery ReviewDelivery,
 	opts ReviewRunOptions,
 ) (ReviewStarted, error) {
-	if delivery == ReviewDeliveryDetached {
-		return ReviewStarted{}, fmt.Errorf("codex: %s: detached delivery has no Agent Overflow projection", reviewStartMethod)
-	}
-	return s.startReview(ctx, target, delivery, &opts)
-}
-
-func (s *Session) startReview(
-	ctx context.Context,
-	target ReviewTarget,
-	delivery ReviewDelivery,
-	opts *ReviewRunOptions,
-) (ReviewStarted, error) {
-	if !delivery.valid() {
-		return ReviewStarted{}, fmt.Errorf("codex: %s: unknown delivery %q", reviewStartMethod, string(delivery))
-	}
 	rootThreadID := s.rootThreadID()
 	if rootThreadID == "" {
 		return ReviewStarted{}, fmt.Errorf("codex: %s: session has no thread id", reviewStartMethod)
@@ -291,91 +223,72 @@ func (s *Session) startReview(
 	if err != nil {
 		return ReviewStarted{}, err
 	}
-	projected := opts != nil
-	reserved := false
-	if projected {
-		if err := s.reserveReview(opts.TurnIndex, target); err != nil {
-			return ReviewStarted{}, err
-		}
-		reserved = true
-		defer func() {
-			if reserved {
-				s.releaseReservedReview()
-			}
-		}()
-
-		model, err := s.effectiveReviewModel(ctx)
-		if err != nil {
-			return ReviewStarted{}, err
-		}
-		s.setReservedReviewModel(model)
+	if err := s.reserveReview(opts.TurnIndex, target); err != nil {
+		return ReviewStarted{}, err
 	}
+	reserved := true
+	defer func() {
+		if reserved {
+			s.releaseReservedReview()
+		}
+	}()
+
+	model, err := s.effectiveReviewModel(ctx)
+	if err != nil {
+		return ReviewStarted{}, err
+	}
+	s.setReservedReviewModel(model)
 	params := map[string]any{
 		"threadId": rootThreadID,
 		"target":   json.RawMessage(encodedTarget),
 	}
-	if delivery != ReviewDeliveryDefault {
-		params["delivery"] = string(delivery)
-	}
 
-	if projected {
-		// The only turn/started this request produces is Codex's private review
-		// execution turn. Claim it before the write so external-turn adoption does
-		// not misclassify it if it beats the response.
-		s.beginLocalTurnStart()
-	}
+	// The only turn/started this request produces is Codex's private review
+	// execution turn. Claim it before the write so external-turn adoption does
+	// not misclassify it if it beats the response.
+	s.beginLocalTurnStart()
 	raw, err := s.sendRequest(ctx, reviewStartMethod, params)
 	if err != nil {
-		if projected {
-			s.abandonLocalTurnStart()
-			var timeout *RequestTimeoutError
-			if errors.As(err, &timeout) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-				_ = s.Close()
-			}
+		s.abandonLocalTurnStart()
+		var timeout *RequestTimeoutError
+		if errors.As(err, &timeout) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			_ = s.Close()
 		}
 		return ReviewStarted{}, fmt.Errorf("codex: %s: %w", reviewStartMethod, err)
 	}
 	var resp reviewStartResponse
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &resp); err != nil {
-			if projected {
-				_ = s.Close()
-			}
+			_ = s.Close()
 			return ReviewStarted{}, fmt.Errorf("codex: %s: decode response: %w", reviewStartMethod, err)
 		}
 	}
 	reviewThreadID := strings.TrimSpace(resp.ReviewThreadID)
 	if reviewThreadID == "" {
-		// The whole routing contract rests on this field. An empty one
-		// would silently fall back to "assume inline", which is the exact
-		// assumption the returned id exists to replace.
-		if projected {
-			_ = s.Close()
-		}
+		// Without the returned id AO cannot verify where the review runs, and
+		// assuming the requesting thread is what the field exists to replace.
+		_ = s.Close()
 		return ReviewStarted{}, fmt.Errorf("codex: %s: response carried no reviewThreadId", reviewStartMethod)
 	}
-	if projected && reviewThreadID != rootThreadID {
-		// A projected inline review on another thread cannot be scoped or
-		// interrupted through this Session. Close the process so the billed
-		// review cannot continue invisibly after we report the protocol fault.
+	if reviewThreadID != rootThreadID {
+		// A review on another thread cannot be scoped or interrupted through
+		// this Session. Close the process so the billed review cannot continue
+		// invisibly after we report the protocol fault.
 		_ = s.Close()
 		return ReviewStarted{}, fmt.Errorf(
-			"codex: %s: inline review landed on detached thread %s",
+			"codex: %s: review landed on another thread %s",
 			reviewStartMethod, reviewThreadID,
 		)
 	}
-	if projected {
-		if err := s.bindReviewResponse(resp.Turn.ID); err != nil {
-			_ = s.Close()
-			return ReviewStarted{}, err
-		}
-		reserved = false
+	if err := s.bindReviewResponse(resp.Turn.ID); err != nil {
+		_ = s.Close()
+		return ReviewStarted{}, err
 	}
+	reserved = false
 	return ReviewStarted{
 		ReviewThreadID: reviewThreadID,
 		TurnID:         strings.TrimSpace(resp.Turn.ID),
 		TurnStatus:     strings.TrimSpace(resp.Turn.Status),
-		Detached:       reviewThreadID != rootThreadID,
 	}, nil
 }
 

@@ -1624,15 +1624,14 @@ missing either, since it could be shown but not invoked.
 Types: [`codex-rs/app-server-protocol/src/protocol/v2/review.rs`](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/review.rs).
 `ReviewStart => "review/start"` with `serialization:
 thread_id(params.thread_id)`; **not** `#[experimental]`. Since codex
-0.59.0; `detached` delivery since 0.64.0.
+0.59.0.
 
 ```json
 {"method": "review/start",
- "params": {"threadId": "...",
-            "target": {"type": "baseBranch", "branch": "main"},
-            "delivery": "detached"}}
+ "params": {"threadId": "thread-1",
+            "target": {"type": "baseBranch", "branch": "main"}}}
 → {"turn": {"id": "turn-1", "items": [], "status": "inProgress"},
-   "reviewThreadId": "review-thread-9"}
+   "reviewThreadId": "thread-1"}
 ```
 
 `ReviewTarget` is an internally-tagged union: `#[serde(tag = "type",
@@ -1651,15 +1650,13 @@ variant:
 `commit.title` is `Option<String>` with **no** `skip_serializing_if`, so
 the key is always present and `null` when there is no label.
 
-`delivery` ∈ `"inline"` (default when omitted) | `"detached"`
-(`ReviewDelivery`, camelCase via `v2_enum_from_core!`).
+AO omits `delivery`. Omitted means inline on every supported version, and
+since 0.166.0 `"inline"` is the only value (`ReviewDelivery`).
 
-⚠ **Route on the returned `reviewThreadId`, never on the requested
-delivery and never on your own thread id.** Upstream's TUI does exactly
-this (`codex-rs/tui/src/app/thread_routing.rs`). For an inline review the
-returned id is the original thread; for a detached one it is a freshly
-created thread. Assuming inline means the original thread happens to be
-true today and is not what the protocol promises.
+`reviewThreadId` names the thread the review runs on; upstream's TUI
+routes on it (`codex-rs/tui/src/app/thread_routing.rs`). AO verifies it
+equals the requesting thread and treats any other id, or a missing one, as
+a protocol fault.
 
 The transcript is bracketed by two thread items
 (`codex-rs/app-server-protocol/src/protocol/v2/item.rs`):
@@ -1697,8 +1694,9 @@ top-level sourced `command_result`, so it reads as "Code review result"
 without claiming the parent agent authored it.
 
 `config/read` resolves `review_model`; the parent model is the fallback. A
-DETACHED review is still refused because its returned thread is not registered
-with this session's routing tables.
+response naming another thread, or none, fails the send and closes the
+session, because a review elsewhere cannot be scoped or interrupted through
+it.
 
 On disk, the root rollout contains the review boundary and formatted result,
 while a separate `source:{"subagent":"review"}` rollout contains the reviewer
@@ -1833,10 +1831,9 @@ Checked against rust-v0.150.1 for every consumer of thread shape:
   validate the resulting tail with one descending
   `thread/turns/list {itemsView:"notLoaded", limit:1}` page. The one
   paginated-specific fork refusal needs `ephemeral: true`.
-- Two methods are refused outright on a paginated thread: `thread/rollback`
-  ("paginated threads do not support thread/rollback") and DETACHED review
-  ("paginated threads do not support detached review",
-  `turn_processor.rs:1308`). Inline review is unaffected.
+- `thread/rollback` is refused outright on a paginated thread
+  ("paginated threads do not support thread/rollback"). Review is
+  unaffected.
 - Rollout persistence: `RolloutItem::ResponseItem` and
   `RolloutItem::InterAgentCommunication` are written in BOTH modes
   (`codex-rs/rollout/src/policy.rs`). What paginated drops is the legacy
