@@ -139,7 +139,7 @@ Authoritative method list from
 | `rawResponseItem/completed` | Raw response items: `spawn_agent` / `wait_agent` / `write_stdin` enrichment and the live mailbox carrier. Only available on a fresh `thread/start` with `experimentalRawEvents`. See §`<subagent_notification>`. |
 | `item/mcpToolCall/progress`, `item/autoApprovalReview/started`, `item/autoApprovalReview/completed` | Recognised and dropped (consumed, so never opted out). |
 | `autoApprovalReview/strictReviewRequired` | 0.149. Reachable only in the `auto` runtime mode: strict review replaced the cheap in-line assessment, so tool calls slow down. One warning row; the payload carries no reason. |
-| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each. |
+| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each. `run.eventName` and `run.status` are camelCase (`HookEventName`, `HookRunStatus`: `running`, `completed`, `failed`, `blocked`, `stopped`). `preModelRequest` and `postModelRequest` (0.164) fire around every model request, so they get no row on `hook/started` and a row on `hook/completed` only when the status is not `completed`. Codex does not write hook runs to the rollout. |
 | `thread/started` | Session-level. First notification on a new thread; emits `EventSessionInit`. |
 | `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
 | `thread/archived`, `thread/unarchived`, `thread/closed` | Recognised, no event. |
@@ -229,6 +229,20 @@ the parent's usage accounting and is never emitted as `EventTokenUsage`.
 This is the only channel through which a child's usage is visible on the
 parent thread. AO's suppression and carve-out rules are in
 [`internal/provider/codex/AGENTS.md` §Routing and collaboration](../../internal/provider/codex/AGENTS.md#routing-and-collaboration).
+
+### `account/read`
+
+`{account, requiresOpenaiAuth}`; `account` is tagged by `type`. The `chatgpt`
+variant carries `email` (nullable), `planType` and, from 0.166,
+`workspaceName`: the display name of the selected ChatGPT workspace, `null`
+when unknown and absent on older versions. AO reads it as
+`AccountInfo.OrgName`. Codex has no other source for the name, so a
+successful `chatgpt` answer with an email is marked `OrgNameReported` and its
+blank clears the saved name (`provideraccounts.mergeOrgFields`); a failed
+read, a missing email or another account type leaves it. Every attributed
+answer, including an inactive account's usage refresh, records its name and
+plan on that account (`accountIDForObservedIdentity`). AO takes the workspace
+id from `auth.json` (`CredentialOrgID`), not from this response.
 
 ### `account/rateLimits/updated` and `account/rateLimits/read`
 

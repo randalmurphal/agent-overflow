@@ -92,6 +92,7 @@ func AccountFromInfo(accountID, providerName string, info provider.AccountInfo) 
 		OrgName: strings.TrimSpace(info.OrgName), DisplayName: strings.TrimSpace(info.DisplayName),
 		SubscriptionType: strings.TrimSpace(info.SubscriptionType),
 		TokenSource:      strings.TrimSpace(info.TokenSource), APIProvider: strings.TrimSpace(info.APIProvider),
+		OrgNameReported: info.OrgNameReported,
 	}
 }
 

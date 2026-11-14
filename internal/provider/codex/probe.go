@@ -239,6 +239,9 @@ func readRateLimitsResponse(ctx context.Context, proc *provider.Process, onSnaps
 		if accountInfo.APIProvider != "" {
 			rateLimitInfo.APIProvider = accountInfo.APIProvider
 		}
+		// Only account/read names the workspace; rateLimits never does.
+		rateLimitInfo.OrgName = accountInfo.OrgName
+		rateLimitInfo.OrgNameReported = accountInfo.OrgNameReported
 		return rateLimitInfo, nil
 	}
 	for {
