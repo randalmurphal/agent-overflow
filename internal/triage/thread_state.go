@@ -382,6 +382,27 @@ type threadState struct {
 	subagentCards map[string]*subagentCardEntry
 }
 
+// seedStreamIndexes starts turnIndex's text and thinking block indexes
+// unless the turn already has them. A turn start that repeats (a queued
+// echo and the wire start, a provider retry) keeps counting, so the blocks
+// that follow do not take the ids of the turn's saved blocks. Caller holds
+// r.mu.
+func (st *threadState) seedStreamIndexes(turnIndex int) {
+	key := scopeCounterKey(turnIndex, "")
+	if st.segmentIndexByScope == nil {
+		st.segmentIndexByScope = make(map[string]int)
+	}
+	if st.blockIndexByScope == nil {
+		st.blockIndexByScope = make(map[string]int)
+	}
+	if _, ok := st.segmentIndexByScope[key]; !ok {
+		st.segmentIndexByScope[key] = -1
+	}
+	if _, ok := st.blockIndexByScope[key]; !ok {
+		st.blockIndexByScope[key] = -1
+	}
+}
+
 // threadIdentity is per-thread state that must SURVIVE cleanupThread.
 // Everything here is either a monotonic epoch/generation counter whose
 // reset would let a stale captured value match a fresh session, or a

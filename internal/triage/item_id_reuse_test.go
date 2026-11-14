@@ -166,3 +166,43 @@ func TestAReservedRowIDIsNotHandedOutAgainAcrossCleanup(t *testing.T) {
 		t.Fatalf("second reservation reused %q", first)
 	}
 }
+
+// A turn start that repeats (a queued echo then the wire start, a provider
+// retry) does not hand the turn's saved prose to the blocks that follow.
+func TestProseAfterARepeatedTurnStartKeepsTheEarlierProse(t *testing.T) {
+	for _, settled := range []bool{false, true} {
+		name := "mid-turn"
+		if settled {
+			name = "after the turn settled"
+		}
+		t.Run(name, func(t *testing.T) {
+			router, st, _ := newTestRouter(t)
+			createTestThread(t, st, "t1")
+			handle := func(evt provider.ProviderEvent) {
+				t.Helper()
+				evt.ThreadID, evt.Timestamp = "t1", time.Now()
+				if err := router.Handle(evt); err != nil {
+					t.Fatalf("handle %s: %v", evt.Kind, err)
+				}
+			}
+
+			handle(provider.ProviderEvent{Kind: provider.EventTurnStart, TurnIndex: 1})
+			handle(provider.ProviderEvent{Kind: provider.EventTextDelta, Content: "first prose"})
+			handle(provider.ProviderEvent{Kind: provider.EventThinking, Content: "first thought"})
+			if settled {
+				handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: normalTurnCompleteMeta()})
+			}
+			handle(provider.ProviderEvent{Kind: provider.EventTurnStart, TurnIndex: 1})
+			handle(provider.ProviderEvent{Kind: provider.EventTextDelta, Content: "second prose"})
+			handle(provider.ProviderEvent{Kind: provider.EventThinking, Content: "second thought"})
+			handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: normalTurnCompleteMeta()})
+
+			if got := rowSummaries(t, st, "t1", "assistant_text"); !slices.Equal(got, []string{"first prose", "second prose"}) {
+				t.Errorf("text rows = %q, want the first kept beside the second", got)
+			}
+			if got := len(findItemsByKind(t, st, "t1", "thinking")); got != 2 {
+				t.Errorf("thinking rows = %d, want the first kept beside the second", got)
+			}
+		})
+	}
+}

@@ -1137,9 +1137,9 @@ func (r *Router) nextErrorSequence(threadID string, turnIndex int, scope string)
 // reservation spans the write so a counter that restarts between another
 // caller's check and its write cannot hand out the same id twice. Every row
 // id built from a sequence counter (errors, notices, command results,
-// compactions, terminal interactions) comes from here. Stream block ids do
-// not: a turn start that repeats is the same turn replayed or retried, and
-// its blocks rewrite in place.
+// compactions, terminal interactions) comes from here. Text and thinking
+// block ids do not need it: their indexes are never restarted while the
+// state lives, and a turn starts on a new index after the state is gone.
 //
 // release is never nil. On a failed lookup the id is the one that could not
 // be checked, so the caller can still name the row it did not write.

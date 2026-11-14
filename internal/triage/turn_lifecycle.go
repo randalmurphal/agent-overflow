@@ -1150,15 +1150,7 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
 	st.openTurn = turnIndex
 	st.openTurnSet = true
 	st.softClosedTurnSet = false
-	key := scopeCounterKey(turnIndex, "")
-	if st.segmentIndexByScope == nil {
-		st.segmentIndexByScope = make(map[string]int)
-	}
-	if st.blockIndexByScope == nil {
-		st.blockIndexByScope = make(map[string]int)
-	}
-	st.segmentIndexByScope[key] = -1
-	st.blockIndexByScope[key] = -1
+	st.seedStreamIndexes(turnIndex)
 	r.dropTurnStreamsLocked(threadID, st, turnIndex, true, agentScopes)
 	// Clear the settled marker so a re-init (Claude resend system.init
 	// after an interrupt; Codex resend turn/started) can settle the
@@ -1243,19 +1235,7 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	st.openTurn = turnIndex
 	st.openTurnSet = true
 	st.softClosedTurnSet = false
-	key := scopeCounterKey(turnIndex, "")
-	if st.segmentIndexByScope == nil {
-		st.segmentIndexByScope = make(map[string]int)
-	}
-	if st.blockIndexByScope == nil {
-		st.blockIndexByScope = make(map[string]int)
-	}
-	if _, ok := st.segmentIndexByScope[key]; !ok {
-		st.segmentIndexByScope[key] = -1
-	}
-	if _, ok := st.blockIndexByScope[key]; !ok {
-		st.blockIndexByScope[key] = -1
-	}
+	st.seedStreamIndexes(turnIndex)
 	delete(st.settledTurns, turnIndex)
 	// The thread-level mark list covers the entry the per-entry stamp
 	// structurally cannot: one POPPED from the FIFO just before
@@ -1528,9 +1508,10 @@ func (r *Router) activeRoundTurnIndex(threadID string) (int, bool) {
 //     agent's rows wait for the agent's own streams.
 //   - **Id-allocating counters** (segmentIndexByScope, blockIndexByScope,
 //     errorSeqByScope, compactionSeqByScope, terminalInteractionSeq):
-//     cleared at CleanupThread; setOpenTurn restarts the stream indexes
-//     on a re-init. A row id built from a sequence counter goes through
-//     reserveItemID, so a restarted counter cannot name a saved row.
+//     cleared at CleanupThread and never restarted while the state
+//     lives, a repeated turn start included (seedStreamIndexes). A row
+//     id built from a sequence counter also goes through reserveItemID,
+//     so a counter that CleanupThread restarted cannot name a saved row.
 //     Wiping HERE would
 //     cause id collisions when the wire emits two `result` envelopes
 //     for one logical turn (Claude task_notification → CLI-synthesized
