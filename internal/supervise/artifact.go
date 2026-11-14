@@ -12,7 +12,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"agent-overflow/internal/atomicfile"
 )
@@ -290,16 +289,12 @@ func writeArtifactFile(name string, data []byte, mode fs.FileMode) error {
 }
 
 // writeArtifactFileWith creates name, fills it with write, syncs and closes
-// it. An executable is written with syscall.ForkLock held for reading, so no
-// fork can start while it is open for writing. A child forked then would
-// hold the descriptor until its own exec closes it, and the kernel refuses
-// to run a file that has a writer (ETXTBSY): the preflight that runs the
-// file right after would fail with "text file busy" whenever another
-// goroutine was starting a process. Forks wait for the write instead.
+// it. An executable is written with forks held off (holdForks), because the
+// preflight runs it right after.
 func writeArtifactFileWith(name string, mode fs.FileMode, write func(*os.File) error) error {
 	if mode&0o111 != 0 {
-		syscall.ForkLock.RLock()
-		defer syscall.ForkLock.RUnlock()
+		release := holdForks()
+		defer release()
 	}
 	file, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	if err != nil {
