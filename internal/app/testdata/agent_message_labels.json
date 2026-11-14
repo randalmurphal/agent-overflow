@@ -61,13 +61,13 @@
   },
   {
     "name": "a person's Stop with its last message",
-    "text": "\"Worker\" (t-worker) [token tok-1]: The person stopped this turn before it answered. Its last message:\nHalf done.",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The user stopped this turn before it answered. Its last message:\nHalf done.",
     "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
     "label": "Worker: Half done."
   },
   {
     "name": "a person's Stop before anything was said",
-    "text": "\"Worker\" (t-worker) [token tok-1]: The person stopped this turn before it answered.",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The user stopped this turn before it answered.",
     "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
     "label": "Worker"
   },

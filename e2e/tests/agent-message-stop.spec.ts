@@ -110,12 +110,12 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(wake).toHaveCount(1, { timeout: 60_000 });
     await expect(wake.getByTestId('agent-message-sender')).toHaveText('Stop target');
     const body = await expand(wake);
-    await expect(fact(body, 'Stopped by')).toHaveText('the person');
+    await expect(fact(body, 'Stopped by')).toHaveText('the user');
     await expect(body).not.toContainText('restart');
     if (provider === 'claude') await expect(body.getByTestId('agent-message-text')).toContainText(PARTIAL);
     await captureAgentMessageInView(page, `${provider}-person-stop-expanded.png`, wake);
     const raw = db<{ summary: string }>(harness,
       `SELECT summary FROM items WHERE thread_id = ? AND kind = 'user_text' AND summary LIKE '%[token ' || ? || ']%'`, sender, token);
-    expect(raw.map((row) => row.summary).join('\n')).toContain('The person stopped this turn before it answered.');
+    expect(raw.map((row) => row.summary).join('\n')).toContain('The user stopped this turn before it answered.');
   });
 }

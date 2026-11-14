@@ -133,7 +133,7 @@ func wakePart(wake Wake) (string, fixturePart) {
 		case wake.Text == "" || wake.Text == InterruptTurn:
 			part.Wake.StoppedBy = "an interrupt"
 		case wake.Text == WakePersonStopped:
-			part.Wake.StoppedBy = "the person"
+			part.Wake.StoppedBy = "the user"
 		case isMoved:
 			part.Wake.StoppedBy = "a move to " + strings.TrimSuffix(moved, " before it answered.")
 		case strings.HasPrefix(wake.Text, InterruptHandedOffSentence+" "):
@@ -147,7 +147,7 @@ func wakePart(wake Wake) (string, fixturePart) {
 		// The frontend reads both as an interrupted request, told apart by
 		// who stopped it.
 		part.Wake.Kind = WakeInterrupted
-		part.Wake.StoppedBy = "the person"
+		part.Wake.StoppedBy = "the user"
 	}
 	return wake.String(), part
 }

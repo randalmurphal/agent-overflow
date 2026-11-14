@@ -165,12 +165,12 @@ func TestWakeTemplates(t *testing.T) {
 		{
 			name: "stopped by the person, with its last message",
 			wake: Wake{Kind: WakeStopped, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "Half done."},
-			want: "\"Parser\" (7f3a) [token tok]: The person stopped this turn before it answered. Its last message:\nHalf done.",
+			want: "\"Parser\" (7f3a) [token tok]: The user stopped this turn before it answered. Its last message:\nHalf done.",
 		},
 		{
 			name: "stopped by the person before it said anything",
 			wake: Wake{Kind: WakeStopped, Title: "Parser", ThreadID: "7f3a", Token: "tok"},
-			want: "\"Parser\" (7f3a) [token tok]: The person stopped this turn before it answered.",
+			want: "\"Parser\" (7f3a) [token tok]: The user stopped this turn before it answered.",
 		},
 		{
 			name: "expired",

@@ -271,7 +271,7 @@ func (w Wake) status() string {
 
 // WakePersonStopped is the status of a request whose turn a person's Stop
 // cut before it answered.
-const WakePersonStopped = "The person stopped this turn before it answered."
+const WakePersonStopped = "The user stopped this turn before it answered."
 
 // Why a request was interrupted: the answer an interrupted settlement
 // records, which its wake states (WakeInterrupted). A turn someone stopped

@@ -625,9 +625,9 @@
   },
   {
     "name": "interrupted by the person's Stop with no last message recorded",
-    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The person stopped this turn before it answered.",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The user stopped this turn before it answered.",
     "members": [
-      112
+      110
     ],
     "parts": [
       {
@@ -641,7 +641,7 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "stoppedBy": "the person",
+          "stoppedBy": "the user",
           "clipped": false
         }
       }
@@ -697,9 +697,9 @@
   },
   {
     "name": "stopped by the person with its last message",
-    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The person stopped this turn before it answered. Its last message:\nHalf done.\nSecond line.",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The user stopped this turn before it answered. Its last message:\nHalf done.\nSecond line.",
     "members": [
-      154
+      152
     ],
     "parts": [
       {
@@ -713,7 +713,7 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "stoppedBy": "the person",
+          "stoppedBy": "the user",
           "clipped": false
         }
       }
@@ -721,9 +721,9 @@
   },
   {
     "name": "stopped by the person before it said anything, standing agent",
-    "text": "\"Worker\" (t-work, on desk) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The person stopped this turn before it answered.\nThat thread is a standing agent. Its role, in its own words: \"Runs the builds.\"",
+    "text": "\"Worker\" (t-work, on desk) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The user stopped this turn before it answered.\nThat thread is a standing agent. Its role, in its own words: \"Runs the builds.\"",
     "members": [
-      201
+      199
     ],
     "parts": [
       {
@@ -737,7 +737,7 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": "Runs the builds.",
-          "stoppedBy": "the person",
+          "stoppedBy": "the user",
           "clipped": false
         }
       }

@@ -299,7 +299,7 @@ export function parseRequestText(text: string): AgentMessagePart[] | null {
 const HANDED_OFF = 'The assistant moved to a new thread before it answered.';
 
 /** A person's Stop, in place of the restart line; its last message may follow. */
-const PERSON_STOPPED = ': The person stopped this turn before it answered.';
+const PERSON_STOPPED = ': The user stopped this turn before it answered.';
 const PERSON_STOPPED_ANSWER = ' Its last message:';
 
 /** A request whose thread's session ended before a turn answered it (threadtools InterruptSessionEnded*). */
@@ -416,7 +416,7 @@ export function parseWakeText(text: string): AgentMessagePart | null {
       facts.kind = tail.kind;
       const inline = rest.slice(tail.opening.length);
       if (tail.opening === PERSON_STOPPED) {
-        facts.stoppedBy = 'the person';
+        facts.stoppedBy = 'the user';
         if (inline === PERSON_STOPPED_ANSWER) body = after;
         else if (inline !== '' || after !== '') return null;
       } else if (tail.kind === 'interrupted') {

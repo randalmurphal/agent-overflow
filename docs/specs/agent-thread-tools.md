@@ -945,7 +945,7 @@ routes the receiver's questions. A footer from an ordinary thread is
 unchanged. A wake starts with one line: reply,
 finished without replying, errored, cancelled, interrupted (by a restart
 of its computer, its session ending, a move to another computer or
-another interrupt, as its settlement recorded), stopped by the person
+another interrupt, as its settlement recorded), stopped by the user
 (with the turn's last message), or expired,
 with the thread's title and id, the token, its computer and the
 answer's age when they apply, then the text. When the answering thread
@@ -1095,7 +1095,7 @@ What settles a request, in order:
    interrupt is sent; the stopped thread's timeline row names the same
    stopper. The user's own Stop of the thread settles `interrupted`
    with what the turn said by then as its `final` answer; its wake says
-   the person stopped the turn.
+   the user stopped the turn.
 
 A request settles once and its wake fires once, plus one more for a
 late reply. Every settlement and late reply bumps the request's
