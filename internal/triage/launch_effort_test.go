@@ -217,3 +217,67 @@ func TestLaunchNamedEffort(t *testing.T) {
 		}
 	}
 }
+
+// launchRowMeta is the stored meta of the row itemID on thread t1.
+func launchRowMeta(t *testing.T, router *Router, itemID string) map[string]any {
+	t.Helper()
+	row, found, err := router.store.GetThreadItem("t1", itemID)
+	if err != nil || !found {
+		t.Fatalf("row %s: found=%v err=%v", itemID, found, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(row.Meta), &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	return meta
+}
+
+func handleAgentStart(t *testing.T, router *Router, itemType string, fields map[string]any) {
+	t.Helper()
+	meta, _ := json.Marshal(fields)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "agent-1",
+		ItemType: itemType, Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+}
+
+// The Claude parser stamps an agent's effort with the model its first
+// envelope reports (internal/provider/claude/subagent_effort.go): the row
+// takes the first report's stamps and keeps them.
+func TestModelReportStampsTheLaunchOnce(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	launch := map[string]any{"toolName": "Agent", "input": map[string]any{"description": "look", "prompt": "p"}}
+	handleAgentStart(t, router, "Agent", launch)
+	handleAgentStart(t, router, "", map[string]any{"subagent_model": "claude-opus-4-7", "inherited_effort": "xhigh", "run_effort": "medium"})
+	// The report delivered again after the session's effort moved, then
+	// the launch delivered again with and without a stamp.
+	handleAgentStart(t, router, "", map[string]any{"subagent_model": "claude-opus-4-7", "inherited_effort": "low", "run_effort": "high"})
+	handleAgentStart(t, router, "Agent", map[string]any{"toolName": "Agent", "input": map[string]any{"description": "look", "prompt": "p"}, "inherited_effort": "low"})
+	handleAgentStart(t, router, "Agent", launch)
+
+	meta := launchRowMeta(t, router, "agent-1")
+	if meta["inherited_effort"] != "xhigh" || meta["run_effort"] != "medium" || meta["subagent_model"] != "claude-opus-4-7" {
+		t.Fatalf("meta = %v, want the first report's stamps", meta)
+	}
+}
+
+// A report that reaches triage before its launch row lands on the row.
+func TestModelReportBeforeTheLaunchRowIsHeld(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	handleAgentStart(t, router, "", map[string]any{"subagent_model": "claude-haiku-4-5", "run_effort": "", "inherited_effort": "high"})
+	handleAgentStart(t, router, "Agent", map[string]any{"toolName": "Agent", "input": map[string]any{"description": "look", "prompt": "p"}})
+
+	meta := launchRowMeta(t, router, "agent-1")
+	runEffort, hasRunEffort := meta["run_effort"]
+	if meta["subagent_model"] != "claude-haiku-4-5" || !hasRunEffort || runEffort != "" || meta["inherited_effort"] != "high" {
+		t.Fatalf("meta = %v, want the held report", meta)
+	}
+}

@@ -181,6 +181,16 @@ type Parser struct {
 	// instead of sessionEffort (observeRequestEffort).
 	sessionEffortAlternatives []string
 	agentLaunchEfforts        recentMap[agentLaunchEffort]
+	// mainLoopModel is the model of the latest main-loop response, the
+	// model the session's effort applies to (subagent_effort.go).
+	mainLoopModel string
+	// cliVersion selects the subagent effort rule (SetCLIVersion).
+	cliVersion string
+	// runEffortReported holds the rows that recorded `run_effort`, and
+	// pendingRunEfforts, by agent id, the efforts mirrored before their
+	// agent's task was bound (observeMirroredRunEffort).
+	runEffortReported recentMap[struct{}]
+	pendingRunEfforts recentMap[string]
 	// modelAliases is the CLI's alias map, which resolves an Agent
 	// launch's `model` alias (SetModelAliases).
 	modelAliases map[string]string
@@ -490,6 +500,9 @@ func (p *Parser) Close() {
 	p.ownedBackgroundTasks = nil
 	p.subagentModelStamped = nil
 	p.agentLaunchEfforts = recentMap[agentLaunchEffort]{}
+	p.mainLoopModel = ""
+	p.runEffortReported = recentMap[struct{}]{}
+	p.pendingRunEfforts = recentMap[string]{}
 	p.streamBlockTypes = nil
 	p.streamBlockSignatures = nil
 	p.streamMessageIDs = nil

@@ -8,13 +8,40 @@ import (
 // launchStampKeys are the facts the Claude parser stamps on an Agent launch
 // (and `inherited_effort` on a §E6 resume carrier) about the moment it
 // happened (internal/provider/claude/subagent_effort.go): the effort the
-// launcher ran at, the higher tiers it may have run at instead (claude-tui)
-// and the model the launch's alias resolved to. A later delivery of the same
-// row would stamp a later moment, so a row's first state wins. An effort and
-// its alternatives are one stamp: they settle together.
+// agent runs at absent a named one, the higher tiers it may be instead
+// (claude-tui), the model the launch's alias resolved to, and the effort
+// a claude-tui agent's first request ran at. The effort stamps may arrive
+// with the agent's first model report. A later delivery of the same row
+// would stamp a later moment, so a row's first state wins. An effort and its
+// alternatives are one stamp: they settle together.
 var launchStampGroups = [][]string{
 	{"inherited_effort", "inherited_effort_alternatives"},
 	{"requested_model"},
+	{"run_effort"},
+}
+
+// launchStampFields picks the launch stamps out of a tool start's meta, so
+// a model report that arrives before its launch row can be held for it.
+func launchStampFields(meta json.RawMessage) map[string]json.RawMessage {
+	if !mentionsLaunchStamp(string(meta)) {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(meta, &fields) != nil {
+		return nil
+	}
+	stamps := map[string]json.RawMessage{}
+	for _, group := range launchStampGroups {
+		for _, key := range group {
+			if value, ok := fields[key]; ok {
+				stamps[key] = value
+			}
+		}
+	}
+	if len(stamps) == 0 {
+		return nil
+	}
+	return stamps
 }
 
 // keepLaunchStamps settles the launch stamps of a row whose tool start is

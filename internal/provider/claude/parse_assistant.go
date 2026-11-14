@@ -109,6 +109,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// api_error row (see TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent).
 	errorEnum := assistantErrorEnum(raw, msg)
 	p.observeRequestEffort(raw, parentToolUseID, msg.Model)
+	p.observeMainLoopModel(parentToolUseID, msg.Model)
 
 	// CLI-generated local command output. The CLI runs `/usage`, `/context`,
 	// a skill, a plugin command etc. itself — no API call, num_turns 0 — and
@@ -148,9 +149,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// the model never changes mid-subagent.
 	model := strings.TrimSpace(msg.Model)
 	if parentToolUseID != "" && model != "" && !p.hasStampedSubagentModel(parentToolUseID) {
-		modelMeta, _ := json.Marshal(map[string]any{
-			"subagent_model": model,
-		})
+		modelMeta, _ := json.Marshal(p.subagentModelReport(raw, parentToolUseID, model))
 		events = append(events, provider.ProviderEvent{
 			Kind:      provider.EventToolStart,
 			ThreadID:  threadID,

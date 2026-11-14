@@ -218,8 +218,8 @@ type agentRequest struct {
 	errored bool
 	errMsg  string
 
-	// requestEffort is a main-loop request's effort, stamped on its
-	// assistant envelope (assistantEnvelope.RequestEffort). Nil otherwise.
+	// requestEffort is the request's effort, stamped on its assistant
+	// envelope (assistantEnvelope.RequestEffort). Nil when unknown.
 	requestEffort *string
 }
 
@@ -441,8 +441,13 @@ func (r *reconstructor) logBgDecision(d decisionLog) {
 // request, with parent already resolved to its launching Agent tool_call. Unlike
 // the main path it emits no system:init and arms no interrupt state — a subagent
 // is nested machinery, not a top-level turn.
-func (r *reconstructor) beginSubagentRequest(parent string) *agentRequest {
-	return &agentRequest{r: r, asm: newMessageAssembler(), parent: parent}
+func (r *reconstructor) beginSubagentRequest(parent string, req *messagesRequest) *agentRequest {
+	ar := &agentRequest{r: r, asm: newMessageAssembler(), parent: parent}
+	if req != nil {
+		effort := req.OutputConfig.Effort
+		ar.requestEffort = &effort
+	}
+	return ar
 }
 
 // onSSE streams one raw SSE event: passthrough for live deltas, plus folding
@@ -509,7 +514,7 @@ func (ar *agentRequest) end() {
 		// real turn) and NO usage folded into the main turn (subagent tokens are
 		// the model's private accounting). A subagent cannot itself spawn (Claude
 		// forbids recursive Agent), so it registers no launches.
-		ar.r.emit(ar.asm.assistantLine(ar.parent, nil))
+		ar.r.emit(ar.asm.assistantLine(ar.parent, ar.requestEffort))
 		if ar.r.debug != nil {
 			ar.r.debug(decisionLog{Event: "subagent_end", Route: "subagent", Parent: ar.parent})
 		}

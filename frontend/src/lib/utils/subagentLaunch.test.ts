@@ -319,6 +319,12 @@ describe('subagentLaunchInfo — SendMessage resume carrier (claude-wire.md §E6
         carrier({ subagent_effort: 'low', inherited_effort: 'high', inherited_effort_alternatives: alternatives }),
       ).effortAlternatives,
     ).toEqual([]);
+    // The effort the round's request reported wins.
+    const reported = claudeResumeCarrierIdentity(
+      carrier({ run_effort: 'medium', subagent_effort: 'max', inherited_effort: 'high', inherited_effort_alternatives: alternatives }),
+    );
+    expect(reported.effort).toBe('medium');
+    expect(reported.effortAlternatives).toEqual([]);
   });
 
   it('suppresses the description line when it already is the name', () => {
