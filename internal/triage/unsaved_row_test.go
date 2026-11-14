@@ -56,7 +56,11 @@ func newUnsavedRowRouter(t *testing.T) (*Router, *store.Store, *sql.DB, *unsaved
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	emissions := &emissionLog{}
 	router := NewRouter(st, func(name eventchan.Channel, data any) { emissions.add(emitted{name.String(), data}) })
 	t.Cleanup(router.DrainWireItemRefresh)
@@ -67,7 +71,11 @@ func newUnsavedRowRouter(t *testing.T) (*Router, *store.Store, *sql.DB, *unsaved
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { raw.Close() })
+	t.Cleanup(func() {
+		if err := raw.Close(); err != nil {
+			t.Errorf("close raw database: %v", err)
+		}
+	})
 	return router, st, raw, recorder, emissions
 }
 
