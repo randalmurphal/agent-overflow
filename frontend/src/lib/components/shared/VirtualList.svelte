@@ -12,6 +12,9 @@
   //       <ThreadRow {thread} />
   //     {/snippet}
   //   </VirtualList>
+  //
+  // A row fills its `rowHeight` wrapper (`h-full`). Rows are keyed by
+  // `key`, else by the item's `id`, else by index.
 
   import type { Snippet } from 'svelte';
 
@@ -23,6 +26,7 @@
     role = 'list',
     class: extraClass = '',
     children,
+    key,
     viewportRef = $bindable(undefined),
   }: {
     items: T[];
@@ -32,6 +36,7 @@
     role?: string;
     class?: string;
     children?: Snippet<[T, number]>;
+    key?: (item: T, index: number) => string | number;
     viewportRef?: HTMLDivElement | undefined;
   } = $props();
 
@@ -46,8 +51,11 @@
   });
 
   // Visible window: how many rows fit, plus overscan on each side.
-  let startIndex = $derived(Math.max(0, Math.floor(scrollTop / rowHeight) - overscan));
+  // The window never starts past the last full window: a list that
+  // shrinks under a scrolled reader shows its end at once, without waiting
+  // for the browser's clamped scroll event.
   let visibleCount = $derived(Math.ceil(clientHeight / rowHeight) + overscan * 2);
+  let startIndex = $derived(Math.max(0, Math.min(Math.floor(scrollTop / rowHeight) - overscan, items.length - visibleCount)));
   let endIndex = $derived(Math.min(items.length, startIndex + visibleCount));
   let offsetY = $derived(startIndex * rowHeight);
   let totalHeight = $derived(items.length * rowHeight);
@@ -87,10 +95,8 @@
     style={`height: ${totalHeight}px; position: relative;`}
     data-testid="virtual-list-spacer"
   >
-    <div
-      style={`transform: translateY(${offsetY}px); position: absolute; top: 0; left: 0; right: 0;`}
-    >
-      {#each windowItems as item, windowIdx (keyOf(item, startIndex + windowIdx))}
+    <div style={`position: absolute; top: ${offsetY}px; left: 0; right: 0;`}>
+      {#each windowItems as item, windowIdx (key ? key(item, startIndex + windowIdx) : keyOf(item, startIndex + windowIdx))}
         <div
           style={`height: ${rowHeight}px;`}
           data-testid="virtual-list-row"

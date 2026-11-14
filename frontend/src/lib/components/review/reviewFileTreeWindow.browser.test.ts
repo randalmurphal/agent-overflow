@@ -1,0 +1,123 @@
+import { mount, unmount } from 'svelte';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import '../../../app.css';
+import ReviewFileTree from './ReviewFileTree.svelte';
+import type { PatchFile } from '../../utils/patchFiles';
+import { waitFor } from '../../../test/helpers/browserFrames';
+
+// The file tree mounts only the rows in view. In real Chromium: a diff of
+// thousands of files mounts a window of rows, each as tall as an `h-7` row
+// and laid edge to edge, the scroll range covers every row, the last file
+// is reached by scrolling and opens, and rows follow the root font size.
+
+const FILE_COUNT = 3000;
+// One directory row above the files.
+const ROW_COUNT = FILE_COUNT + 1;
+const PANE_HEIGHT = 420;
+
+const FILES: PatchFile[] = Array.from({ length: FILE_COUNT }, (_, index) => ({
+  path: `src/mod${String(index).padStart(4, '0')}.ts`,
+  kind: 'modified',
+  additions: 1,
+  deletions: 0,
+  lines: [],
+}));
+
+let host: HTMLDivElement | undefined;
+let app: Record<string, unknown> | undefined;
+
+function mountTree(onSelectFile: (path: string) => void = () => {}): HTMLDivElement {
+  host = document.createElement('div');
+  host.style.cssText = `display: flex; flex-direction: column; width: 260px; height: ${PANE_HEIGHT}px;`;
+  document.body.appendChild(host);
+  app = mount(ReviewFileTree, { target: host, props: { files: FILES, onSelectFile } });
+  return host;
+}
+
+afterEach(() => {
+  if (app) void unmount(app);
+  host?.remove();
+  app = undefined;
+  host = undefined;
+  document.documentElement.style.removeProperty('font-size');
+});
+
+const viewport = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="virtual-list-viewport"]')!;
+const rows = (root: HTMLElement) => [...root.querySelectorAll<HTMLElement>('[data-testid="virtual-list-row"]')];
+const filePaths = (root: HTMLElement) =>
+  [...root.querySelectorAll<HTMLElement>('[data-testid="review-tree-file"]')].map((node) => node.dataset.filePath);
+
+/** Every mounted row is `height` tall, holds a button of the same height, and meets the next. */
+function expectTiled(root: HTMLElement, height: number): void {
+  const mounted = rows(root);
+  expect(mounted.length).toBeGreaterThan(0);
+  let previousBottom: number | undefined;
+  for (const row of mounted) {
+    const rect = row.getBoundingClientRect();
+    expect(rect.height).toBeCloseTo(height, 3);
+    expect(row.querySelector('button')!.getBoundingClientRect().height).toBeCloseTo(height, 3);
+    if (previousBottom !== undefined) expect(rect.top).toBeCloseTo(previousBottom, 3);
+    previousBottom = rect.bottom;
+  }
+}
+
+describe('<ReviewFileTree> windowing in a real browser', () => {
+  it('mounts a window of 28px rows over the full scroll range', async () => {
+    const root = mountTree();
+    await waitFor(() => rows(root).length > 16, 'the viewport height to reach the list');
+
+    // 420px pane less the search header: under 15 rows in view, 8 of overscan.
+    expect(rows(root).length).toBeLessThan(40);
+    expectTiled(root, 28);
+    const list = viewport(root);
+    expect(rows(root)[0].getBoundingClientRect().top).toBeCloseTo(list.getBoundingClientRect().top, 3);
+    // Every row plus the list's bottom padding (pb-2).
+    expect(list.scrollHeight).toBe(ROW_COUNT * 28 + 8);
+  });
+
+  it('reaches the last file by scrolling and opens it', async () => {
+    const onSelectFile = vi.fn();
+    const root = mountTree(onSelectFile);
+    await waitFor(() => rows(root).length > 16, 'the viewport height to reach the list');
+    const list = viewport(root);
+    const lastPath = FILES[FILE_COUNT - 1].path;
+
+    list.scrollTop = list.scrollHeight;
+    await waitFor(() => filePaths(root).at(-1) === lastPath, 'the last file to mount');
+    expect(filePaths(root)).not.toContain(FILES[0].path);
+    expectTiled(root, 28);
+    const last = root.querySelector<HTMLElement>(`[data-file-path="${lastPath}"]`)!;
+    // Above the list's bottom padding, within the browser's whole-pixel scroll limit.
+    const gap = list.getBoundingClientRect().bottom - last.getBoundingClientRect().bottom;
+    expect(Math.abs(gap - 8)).toBeLessThan(1);
+
+    last.click();
+    expect(onSelectFile).toHaveBeenCalledWith(lastPath);
+  });
+
+  it('follows the root font size', async () => {
+    const root = mountTree();
+    await waitFor(() => rows(root).length > 16, 'the viewport height to reach the list');
+
+    document.documentElement.style.setProperty('font-size', '20px');
+    await waitFor(() => rows(root)[0].getBoundingClientRect().height === 35, 'rows to take the new height');
+    expectTiled(root, 35);
+    expect(viewport(root).scrollHeight).toBe(ROW_COUNT * 35 + 10);
+  });
+
+  it('shows a filter typed while scrolled to the end', async () => {
+    const root = mountTree();
+    await waitFor(() => rows(root).length > 16, 'the viewport height to reach the list');
+    const list = viewport(root);
+    list.scrollTop = list.scrollHeight;
+    await waitFor(() => filePaths(root).at(-1) === FILES[FILE_COUNT - 1].path, 'the last file to mount');
+
+    const search = root.querySelector<HTMLInputElement>('[data-testid="review-tree-search"]')!;
+    search.value = 'mod001';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await waitFor(() => filePaths(root).length === 10, 'the ten matches to mount');
+    expect(filePaths(root)[0]).toBe('src/mod0010.ts');
+    expect(list.scrollTop).toBe(0);
+    expectTiled(root, 28);
+  });
+});

@@ -203,4 +203,46 @@ describe('<VirtualList>', () => {
     const rows = container.querySelectorAll('[data-testid="virtual-list-row"]');
     expect(rows.length).toBe(3);
   });
+
+  it('shows the end of a list that shrank under a scrolled reader, before any scroll event', async () => {
+    stubDim(500);
+    const props = { rowHeight: 50, overscan: 2, children: null as unknown as undefined };
+    const { container, rerender } = render(VirtualList as any, { props: { ...props, items: makeItems(1000) } });
+    await tick();
+    const viewport = container.querySelector<HTMLElement>('[data-testid="virtual-list-viewport"]')!;
+    viewport.scrollTop = 45000;
+    viewport.dispatchEvent(new Event('scroll'));
+    await tick();
+
+    // The browser clamps scrollTop and reports it a frame later; the
+    // window must not sit past the list's end until then.
+    await rerender({ ...props, items: makeItems(40) });
+    await tick();
+    const indices = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-testid="virtual-list-row"]'),
+    ).map((row) => Number(row.dataset.rowIndex));
+    expect(indices.at(-1)).toBe(39);
+    expect(indices.length).toBe(14);
+  });
+
+  it('keeps a row\'s element with its item when `key` names the item', async () => {
+    const paths = (names: string[]) => names.map((path) => ({ path }));
+    const props = {
+      rowHeight: 50,
+      children: null as unknown as undefined,
+      key: (item: { path: string }) => item.path,
+    };
+    const { container, rerender } = render(VirtualList as any, { props: { ...props, items: paths(['b', 'c']) } });
+    await tick();
+    const rowsNow = () => Array.from(container.querySelectorAll<HTMLElement>('[data-testid="virtual-list-row"]'));
+    const [b, c] = rowsNow();
+
+    await rerender({ ...props, items: paths(['a', 'b', 'c']) });
+    await tick();
+    const after = rowsNow();
+    expect(after).toHaveLength(3);
+    expect(after[1]).toBe(b);
+    expect(after[2]).toBe(c);
+    expect(after.map((row) => row.dataset.rowIndex)).toEqual(['0', '1', '2']);
+  });
 });
