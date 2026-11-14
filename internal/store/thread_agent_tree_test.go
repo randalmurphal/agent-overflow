@@ -100,7 +100,7 @@ func TestListThreadAgentTreeReadsTheAnswerHead(t *testing.T) {
 
 // A confirmed queued answer names the row its echo named, while the
 // caller's rows hold it: a merge's survivor replaces it, an echo naming no
-// row leaves it, and a row gone names nothing. The
+// row leaves it, a give-back clears it, and a row gone names nothing. The
 // tool rows' read says the same, in the order asked, for the caller alone.
 func TestConfirmedWakesNameTheirRow(t *testing.T) {
 	t.Parallel()
@@ -172,6 +172,17 @@ func TestConfirmedWakesNameTheirRow(t *testing.T) {
 	}
 	if id := wake(); id != "" {
 		t.Fatalf("a wake whose row is gone names %q", id)
+	}
+	// An archive that finds the wake's queue row takes the wake back.
+	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queue:tok", ThreadID: "lead", SendID: "thread-wake:tok", Message: "the answer", EnqueuedAt: 330}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WithdrawThreadWake("tok", false, "queue:tok", WithdrawQueued); err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	var cleared int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM thread_requests WHERE token = 'tok' AND wake_item_id = ''`).Scan(&cleared); err != nil || cleared != 1 {
+		t.Fatalf("the give-back kept the wake row: %d, %v", cleared, err)
 	}
 	if got, err := s.ThreadRequestDeliveries("other-thread", []string{"tok"}); err != nil || len(got) != 0 {
 		t.Fatalf("another thread read %+v, %v", got, err)

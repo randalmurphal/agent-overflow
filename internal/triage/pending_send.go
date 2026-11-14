@@ -187,11 +187,6 @@ type pendingSend struct {
 	// the message reached the model. It decides what the send's terminal
 	// lifecycle state means (handleCommandLifecycle).
 	Started bool
-	// StartedTurn is the turn that was open when `started` arrived, when
-	// one was: the turn the model read the message in. It answers for a
-	// confirmation that arrives after that turn closed.
-	StartedTurn    int
-	StartedTurnSet bool
 	// StartedAtClaim records whether `started` had arrived when a turn
 	// start took this send: the provider opened that turn for it. A turn
 	// that took it without one (a provider-started wake, or a provider with

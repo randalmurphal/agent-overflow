@@ -1,6 +1,7 @@
 package store
 
 import (
+	"agent-overflow/internal/threadmode"
 	"database/sql"
 	"errors"
 	"slices"
@@ -662,4 +663,20 @@ func projectIDs(rows []Project) []string {
 		ids = append(ids, row.ID)
 	}
 	return ids
+}
+
+// A holder is in no project and is not a thread to delete: the listing a
+// harness reset deletes from leaves it out.
+func TestThreadIDsOutsideProjectsLeavesHoldersOut(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for id, mode := range map[string]string{"loose": threadmode.ModeChat, "held": threadmode.ModeHolder} {
+		if err := s.CreateThread(Thread{ID: id, Title: id, Provider: "claude", Mode: mode, WorkspacePath: t.TempDir(), CreatedAt: 1, UpdatedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.ThreadIDsOutsideProjects()
+	if err != nil || len(got) != 1 || got[0] != "loose" {
+		t.Fatalf("outside every project: %v, %v; want the loose thread alone", got, err)
+	}
 }

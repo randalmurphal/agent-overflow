@@ -364,8 +364,12 @@ func (a *App) agentWakeTickStarted(threadID string) bool {
 // noteAgentWakeTurnStart marks a turn that starts after the one Claude's
 // queued rows joined as the one that takes them up: a tick when only wakes
 // are in them. A new round of the turn they joined took them in itself, and
-// its rows decide.
+// its rows decide. A turn Claude woke itself for took up nothing: the rows
+// wait for the turn after it.
 func (a *App) noteAgentWakeTurnStart(threadID string, turnIndex int) {
+	if a.triage != nil && a.triage.TurnSelfWoken(threadID, turnIndex) {
+		return
+	}
 	a.agentWakes.mu.Lock()
 	defer a.agentWakes.mu.Unlock()
 	if q := a.agentWakes.queued[threadID]; q != nil && q.ended && turnIndex >= q.turn {

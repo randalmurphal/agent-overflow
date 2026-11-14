@@ -710,6 +710,24 @@ func applyServerCertificate(cfg *transport.Config, appService *App) {
 	log.Printf("transport: TLS certificate fingerprint %s", material.Fingerprint)
 }
 
+// realStdout is the process's stdout once routeStdoutToStderr has replaced
+// os.Stdout. It stays referenced for the life of the process: an os.File
+// nothing references is closed by its finalizer, which would end the
+// reader's stream at whichever moment the collector ran.
+var realStdout *os.File
+
+// routeStdoutToStderr sends everything written to os.Stdout and the log to
+// stderr, so stdout carries the bootstrap line and nothing else, and
+// returns the real stdout for that line.
+func routeStdoutToStderr() *os.File {
+	if realStdout == nil {
+		realStdout = os.Stdout
+	}
+	os.Stdout = os.Stderr
+	log.SetOutput(logging.Output(os.Stderr))
+	return realStdout
+}
+
 // runHeadless is the Phase D entry point used by the Windows-side
 // launcher. It boots the transport server inside the WSL distro,
 // writes a bootstrap line back to the launcher, and runs until SIGTERM.
@@ -786,8 +804,7 @@ func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFai
 	// sentinel; once we've handed off the {port,token} the channel is
 	// done with us. Routing log.Printf to stderr keeps the diagnostics
 	// where the launcher can still surface them via its log mirror.
-	os.Stdout = os.Stderr
-	log.SetOutput(logging.Output(os.Stderr))
+	routeStdoutToStderr()
 
 	// Boot the App's subsystems directly. Wails normally calls
 	// ServiceStartup with a context that lives until shutdown — we

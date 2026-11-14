@@ -309,6 +309,42 @@ func TestSendToAPastThreadGoesToTheCurrentThread(t *testing.T) {
 	}
 }
 
+// A past thread a usage limit stopped is not continued, even unarchived:
+// the app's "Continue" would go to the assistant's current thread, which
+// the limit did not stop.
+func TestAPastThreadIsNotContinuedAfterAUsageLimit(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	f.mockClaude(t, "noted")
+	target, _ := f.assistantTarget(t, "Reviewer of the parser.")
+	if _, ok := f.app.threadContinueModel(target.ID); !ok {
+		t.Fatal("the assistant's current thread cannot be continued")
+	}
+	successor, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeInAssistantHome(t, f.app, successor.ID, target.ID)
+	if _, err := f.app.store.HandOffAssistant(target.ID, successor.ID, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.app.store.UnarchiveThread(target.ID); err != nil {
+		t.Fatal(err)
+	}
+	admit := func() bool {
+		_, ok := f.app.threadContinueModel(target.ID)
+		return ok
+	}
+	if err := f.app.continueAfterUsageLimit(t.Context(), target.ID, admit); err != nil {
+		t.Fatalf("continueAfterUsageLimit: %v", err)
+	}
+	for _, id := range []string{target.ID, successor.ID} {
+		if queued := queuedMessages(f.app, id); len(queued) != 0 {
+			t.Fatalf("thread %s was queued %q, want nothing", id, queued)
+		}
+	}
+}
+
 // New Thread, Same Assistant: the record, the loops and the workers move
 // to the successor, the old thread is archived as a past thread, and the
 // successor opens with the block naming it.

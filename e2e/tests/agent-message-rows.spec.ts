@@ -393,18 +393,14 @@ for (const provider of ['claude', 'codex'] as const) {
     await openThread(page, 'Edits mix');
     await page.getByTestId('review-toggle').click();
     const review = page.getByTestId('review-pane');
-    await review.getByTestId('review-scope-select').selectOption('edits');
-    const groups = review.getByTestId('review-edit-select').locator('optgroup');
+    await review.getByTestId('review-scope-select').click();
+    await page.getByTestId('review-scope-option-edits').click();
+    await review.getByTestId('review-edit-select').click();
+    const select = page.getByRole('menu', { name: 'Edit' });
+    const groups = select.locator('[data-menu-section-header]');
     await expect(groups).toHaveCount(2);
-    await expect(groups.nth(0)).toHaveAttribute('label', 'Lead: Agent request 0.');
-    await expect(groups.nth(1)).toHaveAttribute('label', 'tidy the readme');
-    // A native select's open menu is drawn outside the page, so the shot
-    // lists the groups in place.
-    const select = review.getByTestId('review-edit-select');
-    await select.evaluate((el: HTMLSelectElement) => {
-      el.size = 6;
-      el.style.minWidth = '20rem';
-    });
+    await expect(groups.nth(0)).toHaveText('Lead: Agent request 0.');
+    await expect(groups.nth(1)).toHaveText('tidy the readme');
     await captureAgentMessage(page, `${provider}-edits-selector.png`, select);
   });
 }

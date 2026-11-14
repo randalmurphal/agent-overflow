@@ -291,6 +291,23 @@ describe('<SendButton>', () => {
     expect(onInterrupt).toHaveBeenCalledOnce();
   });
 
+  it('reads as sending beside the session menu while a sent message awaits its confirmation', async () => {
+    const onInterrupt = vi.fn();
+    const view = render(SendButton, {
+      props: { canSend: false, isTurnActive: true, sendInFlight: true, sendPending: true, onSend: vi.fn(), onInterrupt, onEndSession: vi.fn() },
+    });
+    expect(view.queryByTestId('composer-interrupt')).toBeNull();
+    const btn = view.getByTestId('composer-send') as HTMLButtonElement;
+    expect(btn.hasAttribute('data-pending')).toBe(true);
+    expect(btn.getAttribute('aria-busy')).toBe('true');
+    expect(btn.disabled).toBe(true);
+    expect(btn.querySelector('[data-testid="stepped-spinner"]')).not.toBeNull();
+    // The session menu still interrupts the turn the send is waiting on.
+    await fireEvent.click(view.getByTestId('composer-session-menu'));
+    await fireEvent.click(await view.findByRole('menuitem', { name: 'Interrupt' }));
+    expect(onInterrupt).toHaveBeenCalledOnce();
+  });
+
   it('keeps End Session, with Interrupt disabled, while no turn runs', async () => {
     const onInterrupt = vi.fn();
     const onEndSession = vi.fn();

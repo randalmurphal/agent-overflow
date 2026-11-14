@@ -556,8 +556,8 @@ func (r *Router) openScheduledTurn(evt provider.ProviderEvent) error {
 	}
 	unlock := r.LockTurnAllocation(evt.ThreadID)
 	defer unlock()
-	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
-		return r.handleTurnStart(evt)
+	if pending, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
+		return r.startPendingSendTurn(evt, pending, true)
 	}
 	return r.openProviderStartedTurn(evt, true)
 }

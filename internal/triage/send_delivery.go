@@ -94,9 +94,6 @@ func (r *Router) noteSendStarted(threadID, sessionToken, providerItemID string) 
 	for i := range queue {
 		if queue[i].ExpectedProviderItemID == providerItemID {
 			queue[i].Started = true
-			if st := r.threadStateIfPresent(threadID); st != nil && st.openTurnSet && !queue[i].StartedTurnSet {
-				queue[i].StartedTurn, queue[i].StartedTurnSet = st.openTurn, true
-			}
 			started = append(started, &queue[i])
 			break
 		}

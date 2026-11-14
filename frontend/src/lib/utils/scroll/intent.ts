@@ -139,6 +139,22 @@ function editorScrollsItself(editor: EventTarget | null, delta: number): boolean
   return (overflow === 'auto' || overflow === 'scroll') && canConsumeDelta(editor, delta);
 }
 
+/** Which way a navigation key scrolls `scrollEl`: -1 up, 1 down, 0 when it
+ * does not. A key typed into an editor inside the scroller (a message being
+ * edited, a review comment) moves its caret unless macOS binds it to
+ * scrolling, and a key that scrolls moves the first box from its target up
+ * that can move its way: the editor it was typed into, then a nested
+ * scroller. */
+export function navigationKeyScrollDelta(e: KeyboardEvent, scrollEl: HTMLElement | null | undefined): -1 | 0 | 1 {
+  const up = UP_KEYS.has(e.key);
+  if (!up && !DOWN_KEYS.has(e.key)) return 0;
+  if (!navigationKeyScrolls(e)) return 0;
+  const delta = up ? -1 : 1;
+  if (isEditableTarget(e.target) && editorScrollsItself(e.target, delta)) return 0;
+  if (scrollEl && scrollDeltaConsumedBelow(e.target, scrollEl, delta)) return 0;
+  return delta;
+}
+
 /** Whether a pointer press lands on the scroller's own vertical scrollbar. */
 export function inScrollbarGutter(scrollEl: HTMLElement, e: PointerEvent): boolean {
   const scrollbarWidth = scrollEl.offsetWidth - scrollEl.clientWidth;
@@ -851,19 +867,10 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   // Keydown / touch handlers (intent signals).
   function handleKeydown(e: KeyboardEvent): void {
-    const up = UP_KEYS.has(e.key);
-    if (!up && !DOWN_KEYS.has(e.key)) return;
-    // A navigation key typed into an editor inside the scroller (a message
-    // being edited, a plan-review comment) moves its caret unless macOS
-    // binds it to scrolling.
-    if (!navigationKeyScrolls(e)) return;
-    // A key that scrolls moves the first box from its target up that can
-    // move its way: the editor it was typed into, then a nested scroller.
-    const delta = up ? -1 : 1;
-    if (isEditableTarget(e.target) && editorScrollsItself(e.target, delta)) return;
     const scrollEl = deps.getScrollEl();
-    if (scrollEl && scrollDeltaConsumedBelow(e.target, scrollEl, delta)) return;
-    if (up) escapeFromUserInput('key');
+    const delta = navigationKeyScrollDelta(e, scrollEl);
+    if (delta === 0) return;
+    if (delta < 0) escapeFromUserInput('key');
     else if (e.key === 'End') recordRecentDownIntent('key', Number.POSITIVE_INFINITY, false);
     else if (e.key === 'PageDown') recordRecentDownIntent('key', scrollEl?.clientHeight ?? 0, false);
     else recordRecentDownIntent('key', Number.POSITIVE_INFINITY, true);

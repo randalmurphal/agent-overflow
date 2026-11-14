@@ -270,3 +270,62 @@ func TestSelfWokenTurnIsNeverQuiet(t *testing.T) {
 		})
 	}
 }
+
+// A turn the CLI woke itself for can open under the index of a send that is
+// waiting for a turn. With the send's `queued` ack on record and no
+// `started`, the provider began its own work before the send, so the turn
+// is self-woken and never quiet. A CLI that sends no acks leaves the two
+// alike, and the turn is the send's for the classifier to name.
+func TestSelfWokenTurnUnderAWaitingSendsIndexIsNeverQuiet(t *testing.T) {
+	const uuid = "uuid-waiting-1"
+	for _, tc := range []struct {
+		name  string
+		acked bool
+		open  func(t *testing.T) provider.ProviderEvent
+		quiet bool
+	}{
+		{name: "init, queued ack on record", acked: true, open: func(t *testing.T) provider.ProviderEvent { return openerInit(t, "") }},
+		{name: "content, queued ack on record", acked: true, open: func(*testing.T) provider.ProviderEvent { return parentContentBlockStart("t1", "text") }},
+		{name: "init, no ack", open: func(t *testing.T) provider.ProviderEvent { return openerInit(t, "") }, quiet: true},
+		{name: "a command's init, queued ack on record", acked: true, open: func(t *testing.T) provider.ProviderEvent { return openerInit(t, provider.TurnOpenerCommand) }, quiet: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, _, emissions, _ := quietTurnRouter(t, true)
+			completeAt := time.Now().UnixMilli() + 10_000
+			runTurn(t, router, completeAt-2_000, completeAt-1_000, normalTurnCompleteMeta())
+			now := time.Now().UnixMilli()
+			if err := router.PersistItem(store.Item{
+				ID: "user:1", ThreadID: "t1", TurnIndex: 1, Kind: "user_text", Role: "user",
+				Status: "completed", Summary: "sent", CreatedAt: now, UpdatedAt: now,
+			}, nil); err != nil {
+				t.Fatalf("persist send row: %v", err)
+			}
+			router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: uuid})
+			if tc.acked {
+				if err := router.Handle(commandLifecycleEvent("t1", uuid, provider.CommandQueued)); err != nil {
+					t.Fatalf("queued ack: %v", err)
+				}
+			}
+			started := len(filterEmissions(emissions.snapshot(), eventchan.ProviderTurnStarted.String()))
+			if err := router.Handle(tc.open(t)); err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			if got := len(filterEmissions(emissions.snapshot(), eventchan.ProviderTurnStarted.String())); got != started+1 {
+				t.Fatalf("turn_started emissions = %d, want %d: the turn did not open", got, started+1)
+			}
+			if got := router.TurnSelfWoken("t1", 1); got == tc.quiet {
+				t.Fatalf("TurnSelfWoken = %v, want %v", got, !tc.quiet)
+			}
+			if err := router.Handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta(), Timestamp: millis(completeAt)}); err != nil {
+				t.Fatalf("turn complete: %v", err)
+			}
+			events := completedEvents(emissions)
+			if len(events) != 2 || events[1].TurnIndex != 1 {
+				t.Fatalf("turn_completed = %+v, want the first turn's and turn 1's", events)
+			}
+			if events[1].Quiet != tc.quiet {
+				t.Fatalf("turn 1 quiet = %v, want %v", events[1].Quiet, tc.quiet)
+			}
+		})
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/repoidentity"
+	"agent-overflow/internal/threadmode"
 )
 
 // ErrProjectPathInUse is returned by CreateProject when the supplied path
@@ -439,9 +440,10 @@ func (s *Store) DeleteProject(id string) error {
 // ThreadIDsOutsideProjects returns every thread that belongs to no
 // project, archived ones included, assistants' current threads first: a
 // project's delete leaves them, and an assistant's delete takes its past
-// threads and helpers with it.
+// threads and helpers with it. A holder is not a thread to delete: it goes
+// when the last fork that reads it does (holdersMayBeReleased).
 func (s *Store) ThreadIDsOutsideProjects() ([]string, error) {
-	ids, err := queryIDs(s.reader(), `SELECT id FROM threads WHERE project_id IS NULL
+	ids, err := queryIDs(s.reader(), `SELECT id FROM threads WHERE project_id IS NULL AND mode <> `+sqlTextLiteral(threadmode.ModeHolder)+`
 		ORDER BY EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = threads.id) DESC, id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads outside every project: %w", err)

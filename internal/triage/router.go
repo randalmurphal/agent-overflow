@@ -921,8 +921,8 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 	}
 	unlock := r.LockTurnAllocation(evt.ThreadID)
 	defer unlock()
-	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
-		return r.handleTurnStart(evt)
+	if pending, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
+		return r.startPendingSendTurn(evt, pending, info.TurnOpener == "")
 	}
 	if r.openRoundID(evt.ThreadID) != "" {
 		return nil
@@ -958,8 +958,8 @@ func (r *Router) handleParentContentResume(evt provider.ProviderEvent) error {
 	if reopened, err := r.reopenSoftClosedTurn(evt); reopened || err != nil {
 		return err
 	}
-	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
-		return r.handleTurnStart(evt)
+	if pending, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
+		return r.startPendingSendTurn(evt, pending, true)
 	}
 	if !r.sessionSettledATurn(evt.ThreadID) {
 		return nil
@@ -978,21 +978,22 @@ func (r *Router) openProviderStartedTurn(evt provider.ProviderEvent, selfWoken b
 	if r.openRoundID(evt.ThreadID) != "" {
 		return nil
 	}
-	err := r.startTurn(evt, func() (int, error) {
+	return r.startTurn(evt, selfWoken, func() (int, error) {
 		turnIndex, err := r.store.NextTurnIndex(evt.ThreadID)
 		if err != nil {
 			return 0, fmt.Errorf("provider-started turn index: %w", err)
 		}
 		return turnIndex, nil
 	})
-	if selfWoken {
-		r.mu.Lock()
-		if st := r.threadStateIfPresent(evt.ThreadID); st != nil && st.openTurnSet && !r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
-			st.selfWokenTurn, st.selfWokenTurnSet = st.openTurn, true
-		}
-		r.mu.Unlock()
-	}
-	return err
+}
+
+// TurnSelfWoken reports whether threadID's turn turnIndex is the open turn
+// and one no command opened (selfWokenTurn).
+func (r *Router) TurnSelfWoken(threadID string, turnIndex int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	return st != nil && st.selfWokenTurnSet && st.selfWokenTurn == turnIndex
 }
 
 // LockTurnAllocation holds threadID's turn allocation lock and returns its

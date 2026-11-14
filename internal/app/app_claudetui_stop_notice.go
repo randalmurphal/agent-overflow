@@ -90,8 +90,8 @@ func (a *App) noticeClaudeTUIDiscardedMessage(threadID string) {
 
 // isReaderAuthoredUserItem reports whether item is a top-level message the
 // user sent, as opposed to a subagent prompt (parented), a wire-only echo
-// of content the provider consumed without an AO send, or a message an
-// agent or the app wrote (usermessage.IsAgentMessage), which is never the
+// of content the provider consumed without an AO send, or an agent's
+// message or a wake (usermessage.IsAgentMessage), which is never the
 // person's. A row whose meta does not decode is not read as the person's
 // either.
 func isReaderAuthoredUserItem(item store.Item) bool {

@@ -30,7 +30,6 @@ import (
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessrpc"
-	"agent-overflow/internal/logging"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
 )
@@ -156,9 +155,7 @@ func runHarness(flags cliFlags) {
 	// one parseable line (the harness bootstrap), mirroring the
 	// headless path's stdout-hygiene contract. The real stdout is kept
 	// aside for that single write.
-	bootstrapOut := os.Stdout
-	os.Stdout = os.Stderr
-	log.SetOutput(logging.Output(os.Stderr))
+	bootstrapOut := routeStdoutToStderr()
 
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()

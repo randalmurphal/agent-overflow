@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
@@ -305,6 +307,56 @@ func TestAPickupTurnIsATickForEachOfItsRounds(t *testing.T) {
 	app.endAgentWakeTickTurn(thread.ID, 4)
 	if app.agentTurnIsTick(thread.ID, 3) {
 		t.Fatal("the pickup outlived the turn after it")
+	}
+}
+
+// A turn Claude woke itself for after wakes were queued took up none of
+// them: it is not a tick, and the turn a command opens after it is the
+// pickup.
+func TestASelfWokenTurnIsNotThePickupOfQueuedWakes(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, app.emit)
+	thread := testThread("self-woken-pickup")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	handle := func(evt provider.ProviderEvent) {
+		t.Helper()
+		evt.ThreadID, evt.Timestamp = thread.ID, time.Now()
+		if err := app.triage.Handle(evt); err != nil {
+			t.Fatalf("%s: %v", evt.Kind, err)
+		}
+	}
+	initOpenedBy := func(opener provider.TurnOpener) provider.ProviderEvent {
+		t.Helper()
+		meta, err := json.Marshal(provider.SessionInfo{TurnOpener: opener})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return provider.ProviderEvent{Kind: provider.EventInit, Meta: meta}
+	}
+	done := provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}}
+
+	handle(provider.ProviderEvent{Kind: provider.EventTurnStart})
+	app.noteAgentWakeQueued(thread.ID, "user:0:flush:1", 0, true)
+	handle(done)
+
+	handle(initOpenedBy(""))
+	if got := app.triage.OpenTurnIndex(thread.ID); got != 1 {
+		t.Fatalf("the self-woken turn is %d, want 1", got)
+	}
+	if app.agentTurnIsTick(thread.ID, 1) || app.agentWakeTickStarted(thread.ID) {
+		t.Fatal("the turn Claude woke itself for is a tick")
+	}
+	handle(done)
+
+	handle(initOpenedBy(provider.TurnOpenerCommand))
+	if got := app.triage.OpenTurnIndex(thread.ID); got != 2 {
+		t.Fatalf("the command's turn is %d, want 2", got)
+	}
+	if !app.agentTurnIsTick(thread.ID, 2) || !app.agentWakeTickStarted(thread.ID) {
+		t.Fatal("the turn that took the queued wakes up is not a tick")
 	}
 }
 

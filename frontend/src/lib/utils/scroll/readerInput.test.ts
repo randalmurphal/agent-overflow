@@ -67,6 +67,21 @@ describe('watchReaderScrollInput', () => {
     expect(inputs()).toBe(4);
   });
 
+  it('does not count a macOS scroll key the editor it was typed into takes itself', () => {
+    const { field, inputs } = setup();
+    setScrollIntentPlatformForTest(true);
+    field.style.overflowY = 'auto';
+    Object.defineProperty(field, 'scrollHeight', { value: 400, configurable: true });
+    Object.defineProperty(field, 'clientHeight', { value: 100, configurable: true });
+    field.scrollTop = 0;
+    // The field can scroll down and is at its top: End moves the field,
+    // Home has nowhere to go in it and moves the reader's scroller.
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    expect(inputs()).toBe(0);
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    expect(inputs()).toBe(1);
+  });
+
   it('counts a touch drag, and not a still finger', () => {
     const { row, inputs } = setup();
     touch(row, 'touchstart', 10, 10);
