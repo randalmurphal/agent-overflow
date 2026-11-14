@@ -818,7 +818,10 @@ Mechanics, as built:
   partial index `idx_thread_requests_spawn_target` serves the lookup,
   and while the thread it created exists the thread-request retention
   sweep keeps a local spawn row past the floor as `lineage_only`, its
-  answer, late reply and wake cleared. The ledger tools treat that
+  answer, late reply and wake cleared, once no open work is under it:
+  a spawn the Agents segment lists for open work below it, local or
+  remote, waits for that work to settle, so the floor never takes rows
+  out of a tree. The ledger tools treat that
   token as unknown; the lineage reads, and a worker's prompt routing
   (`StandingAgentSpawnerOf`), still find the row.
 - Placement is `threads.placement` (`nested`, `grouped`,

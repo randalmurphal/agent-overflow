@@ -63,6 +63,78 @@ func TestListThreadAgentTreeNestsInTreeOrder(t *testing.T) {
 	}
 }
 
+// The retention floor does not take a spawn out of the tree while work is
+// open under it: a local spawn settled long ago with an open request below
+// its target, and a remote spawn whose computer reported open work, list the
+// same after a sweep, by listing and by name. Once that work settles, the
+// next sweep keeps only the local spawn's lineage and deletes the remote one.
+func TestRetentionKeepsSpawnsWithOpenWorkUnderThem(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "child", "grand"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "l-c", "lead", ThreadRequestSpawn, "child", false, 100)
+	settleAgentRequest(t, s, "l-c", 200)
+	seedAgentRequest(t, s, "c-g", "child", ThreadRequestSpawn, "grand", false, 150)
+	if err := s.InsertThreadRequest(ThreadRequest{Token: "remote", CallerThreadID: "lead", Kind: ThreadRequestSpawn,
+		TargetComputerID: "desk", TargetThreadID: "far", State: ThreadRequestRunning, CreatedAt: 101, UpdatedAt: 101}); err != nil {
+		t.Fatal(err)
+	}
+	settleAgentRequest(t, s, "remote", 200)
+	if ok, err := s.SetThreadRequestNestedOpen("remote", true); err != nil || !ok {
+		t.Fatalf("nested open: %v %v", ok, err)
+	}
+	listed := func(tokens ...string) []string {
+		t.Helper()
+		read := agentTreeRead("lead", 4)
+		read.Tokens = tokens
+		rows, _, err := s.ListThreadAgentTree(read)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, row := range rows {
+			out = append(out, row.Token)
+		}
+		return out
+	}
+	want := []string{"l-c", "c-g", "remote"}
+	if got := listed(); !slices.Equal(got, want) {
+		t.Fatalf("before the sweep the tree = %v, want %v", got, want)
+	}
+	if _, err := s.DeleteThreadRequestsBefore(5_000); err != nil {
+		t.Fatal(err)
+	}
+	if got := listed(); !slices.Equal(got, want) {
+		t.Fatalf("after the sweep the tree = %v, want %v", got, want)
+	}
+	if got := listed("c-g", "remote"); !slices.Equal(got, []string{"c-g", "remote"}) {
+		t.Fatalf("after the sweep the named rows = %v", got)
+	}
+	if _, found, err := s.GetThreadRequest("l-c"); err != nil || !found {
+		t.Fatalf("the kept spawn's token after the sweep = %v %v", found, err)
+	}
+
+	settleAgentRequest(t, s, "c-g", 6_000)
+	if ok, err := s.SetThreadRequestNestedOpen("remote", false); err != nil || !ok {
+		t.Fatalf("nested closed: %v %v", ok, err)
+	}
+	if _, err := s.DeleteThreadRequestsBefore(8_000); err != nil {
+		t.Fatal(err)
+	}
+	if got := listed(); len(got) != 0 {
+		t.Fatalf("after the work settled and the next sweep the tree = %v, want none", got)
+	}
+	if row := rawThreadRequest(t, s, "l-c"); !row.LineageOnly {
+		t.Fatal("the local spawn kept no lineage once the work under it settled")
+	}
+	var remote int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM thread_requests WHERE token = 'remote'`).Scan(&remote); err != nil || remote != 0 {
+		t.Fatalf("the remote spawn after the work settled = %d rows %v, want deleted", remote, err)
+	}
+}
+
 // A row carries the head of its newer answer and whether a late reply came,
 // and a read by token reads that one row.
 func TestListThreadAgentTreeReadsTheAnswerHead(t *testing.T) {

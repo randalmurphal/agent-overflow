@@ -1041,7 +1041,11 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 // (idx_thread_requests_age), a receipt past it
 // (idx_thread_request_receipts_age), and a lineage row whose spawned thread
 // is gone (idx_thread_requests_lineage). An open row is in neither age
-// index: it is still work, and waits for its own settlement.
+// index: it is still work, and waits for its own settlement. A spawn with
+// open work under it, a local one's marks (agentOpenBelowSQL) or a remote
+// one's nested_open, waits for that work the same way: the Agents segment
+// lists it for that work, and clearing or deleting it would take the open
+// rows below it out of its caller's tree.
 //
 // The lineage set is the one the sweep's probe cannot search: "no thread
 // has this id" is an anti-join, so the probe walks every lineage row on
@@ -1049,7 +1053,8 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 // 5 us with none and 1.8 ms with 5,000, once per sweep.
 const (
 	requestPastFloorSQL = `lineage_only = 0 AND state NOT IN ('unconfirmed','accepted','running')
-	    AND COALESCE(settled_at, due_at, created_at) < ?`
+	    AND COALESCE(settled_at, due_at, created_at) < ?
+	    AND (nested_open = 0 OR target_computer_id = '') AND (open_below_0 + open_below_1 + open_below_2 + open_below_3) = 0`
 	receiptPastFloorSQL = `state NOT IN ('accepted','running') AND COALESCE(settled_at, created_at) < ?`
 	orphanLineageSQL    = `lineage_only = 1
 	    AND NOT EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)`
