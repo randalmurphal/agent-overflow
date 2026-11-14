@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -201,7 +202,9 @@ func (a *App) stopThreadAgentWorkHere(ctx context.Context, threadID, token strin
 
 // peerReachesThread reports whether threadID is a thread the source thread
 // of this device spawned here, or one reached from such a thread through
-// this computer's own spawn lineage, within the nesting bound.
+// this computer's own spawn lineage, within the nesting bound. A false
+// answer is certain, as the caller records it (recordPeerOpenWork): a failed
+// read is an error, not a refusal.
 func (a *App) peerReachesThread(owner, sourceThreadID, threadID string) (bool, error) {
 	current := threadID
 	for range threadAgentRowDepth + 1 {
@@ -215,7 +218,13 @@ func (a *App) peerReachesThread(owner, sourceThreadID, threadID string) (bool, e
 			}
 		}
 		thread, err := a.store.GetThread(current)
-		if err != nil || thread.SpawnedByThreadID == "" {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if thread.SpawnedByThreadID == "" {
 			return false, nil
 		}
 		current = thread.SpawnedByThreadID

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -468,6 +469,124 @@ func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
 	})
 	if _, ok := agentRowByToken(pair.listRows(t).Rows, pair.spawn.Token); ok {
 		t.Fatal("the spawn is still listed once its computer lists no open work")
+	}
+}
+
+// askAgainUntil asks the destination about the pair's spawn as the sweep
+// does, with its cached answer aged out, until done holds of the spawn.
+func (p *agentPeerPair) askAgainUntil(t *testing.T, done func(store.ThreadRequest) bool) {
+	t.Helper()
+	waitUntil(t, 10*time.Second, func() bool {
+		cache := &p.source.threadAgentPeers
+		cache.mu.Lock()
+		if entry, ok := cache.entries[p.spawn.Token]; ok {
+			entry.at = time.Time{}
+		}
+		cache.mu.Unlock()
+		p.source.refreshNestedOpenRemoteSpawns()
+		p.source.threadRequestsWG.Wait()
+		return done(p.request(t, p.spawn.Token))
+	})
+}
+
+// Both sides of a remote spawn settled past the retention floor while the
+// spawned thread there still has open work: the sweep on each keeps its
+// half, the spawn here for its nested_open and the receipt there for the
+// open work under its thread, so the forwarded listing and Stop still
+// reach that work. Once it closes, the first sweep there deletes the
+// receipt, the refusal that follows clears nested_open here, and the next
+// sweep here deletes the spawn.
+func TestThreadAgentRetentionKeepsBothSidesOfARemoteSpawnWithOpenWork(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	settleWithOpenWorkThere(t, pair)
+	long := time.Now().Add(-time.Hour).UnixMilli()
+	if settled, err := pair.dest.store.SettleLocalThreadRequest(pair.spawn.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: long,
+	}, store.ThreadRequestFinished); err != nil || !settled.Settled {
+		t.Fatalf("settle the receipt there: %+v %v", settled, err)
+	}
+	floor := time.Now().Add(-time.Minute).UnixMilli()
+	sweep := func(app *App) {
+		t.Helper()
+		if _, err := app.store.DeleteThreadRequestsBefore(floor); err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+	}
+	sweep(pair.source)
+	sweep(pair.dest)
+
+	if !pair.request(t, pair.spawn.Token).NestedOpen {
+		t.Fatal("the sweep here cleared the spawn's open work")
+	}
+	listing, err := pair.source.peerThreadAgentRows(t.Context(), pair.computer, pair.spawn.MadeIn(), pair.child, threadAgentRowDepth-1)
+	if err != nil {
+		t.Fatalf("the forwarded listing after both sweeps: %v", err)
+	}
+	if _, ok := agentRowByToken(listing.Rows, pair.grand); !ok {
+		t.Fatalf("the forwarded listing after both sweeps = %+v, want the open spawn there", listing.Rows)
+	}
+	stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, pair.spawn.Token)
+	if err != nil || stop.Nested < 1 || len(stop.Failures) != 0 {
+		t.Fatalf("the Stop after both sweeps = %+v, %v; want the open spawn there stopped", stop, err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		grand, _, _ := pair.dest.store.GetThreadRequest(pair.grand)
+		return threadRequestSettled(grand)
+	})
+
+	sweep(pair.dest)
+	if _, found, err := pair.dest.store.GetThreadRequestReceipt(pair.spawn.Token); err != nil || found {
+		t.Fatalf("the receipt there once its work closed = found %v, %v; want deleted", found, err)
+	}
+	pair.askAgainUntil(t, func(spawn store.ThreadRequest) bool { return !spawn.NestedOpen })
+	sweep(pair.source)
+	if _, found, err := pair.source.store.GetThreadRequest(pair.spawn.Token); err != nil || found {
+		t.Fatalf("the spawn here once its computer lists no open work = found %v, %v; want deleted", found, err)
+	}
+}
+
+// A computer that refuses a spawn's thread as not the spawn's, as it does
+// once that thread is deleted there, will never list its work again: the
+// spawn records none, so it leaves the listing and the sweep stops asking.
+func TestThreadAgentRowsForgetOpenWorkAComputerRefuses(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	settleWithOpenWorkThere(t, pair)
+	if err := pair.dest.store.DeleteThread(pair.child); err != nil {
+		t.Fatalf("delete the thread there: %v", err)
+	}
+	_, err := pair.source.peerThreadAgentRows(t.Context(), pair.computer, pair.spawn.MadeIn(), pair.child, threadAgentRowDepth-1)
+	if code, _, ok := errorsx.PublicDetails(err); !ok || code != threadtools.CodeNotYours {
+		t.Fatalf("the listing of a thread deleted there = %v, want %s", err, threadtools.CodeNotYours)
+	}
+	pair.askAgainUntil(t, func(spawn store.ThreadRequest) bool { return !spawn.NestedOpen })
+	if schedule, err := pair.source.store.NextThreadRequestWork(); err != nil || schedule.NestedOpen {
+		t.Fatalf("schedule = %+v, %v; the sweep still asks about a refused spawn", schedule, err)
+	}
+	if _, listed := agentRowByToken(pair.listRows(t).Rows, pair.spawn.Token); listed {
+		t.Fatal("a refused settled spawn is still listed")
+	}
+}
+
+// A refusal is certain, since the computer that asked forgets the spawn's
+// open work on it: a lineage walk whose read of a thread fails returns the
+// failure, not a refusal.
+func TestThreadAgentPeerReachReturnsAFailedRead(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	unreadable := reachThread(t, pair.source, uuid.NewString(), "Unreadable")
+	execOnStore(t, pair.dbPath, fmt.Sprintf(`UPDATE threads SET created_at = 'unreadable' WHERE id = '%s'`, unreadable.ID))
+	if _, err := pair.source.store.GetThread(unreadable.ID); err == nil || errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("the thread's read = %v, want a failure other than no row", err)
+	}
+	reached, err := pair.source.peerReachesThread("device", pair.caller.ID, unreadable.ID)
+	if err == nil {
+		t.Fatalf("the walk over an unreadable thread = %v with no error, want the read's failure", reached)
+	}
+	if reached, err := pair.source.peerReachesThread("device", pair.caller.ID, uuid.NewString()); reached || err != nil {
+		t.Fatalf("the walk from a thread that does not exist = %v, %v; want a refusal", reached, err)
 	}
 }
 

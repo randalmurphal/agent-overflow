@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
 
 // The Agents rows a spawn on a paired computer nests, as this computer last
@@ -313,8 +315,13 @@ func (a *App) peerPaired(computerID string) (bool, error) {
 // recordPeerOpenWork writes whether an answer listed open work on the
 // spawn's row. It runs before the answer is cached, so a read that nests
 // the rows finds the spawn kept for them. A computer that did not answer
-// leaves the last record.
+// leaves the last record. One that refused the thread as not this spawn's
+// (its thread, or its receipt past the retention floor, is gone there) will
+// never list it again, so it records none.
 func (a *App) recordPeerOpenWork(spawn store.ThreadRequest, listing ThreadAgentRows, err error) {
+	if code, _, ok := errorsx.PublicDetails(err); ok && code == threadtools.CodeNotYours {
+		err, listing = nil, ThreadAgentRows{}
+	}
 	if err != nil {
 		return
 	}

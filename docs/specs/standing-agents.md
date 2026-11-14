@@ -1349,7 +1349,9 @@ closes up their spacing so the row holds at a phone width.
   Each poll of an open remote spawn asks again; so does the sweep, at the
   poll's pace, for a settled one whose last answer listed open work
   (`thread_requests.nested_open`),
-  until it lists none. A computer that does not answer is said on the row
+  until it lists none or refuses the thread as not the spawn's, which it
+  does once that thread is deleted there and never takes back. A computer
+  that does not answer is said on the row
   (`<computer> did not answer; its agents are not shown`). A computer
   that predates the calls has the request cancelled and the turn
   interrupted, and the row and the Stop's toast say its own work was not
