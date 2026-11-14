@@ -114,7 +114,7 @@ func TestLiveActivitySnapshot_NamesOnlyThreadsWithLiveActivity(t *testing.T) {
 	}
 
 	// A closed round drops the thread from the list on the next read.
-	if _, ok := router.takeOpenRound("running"); !ok {
+	if _, ok := router.takeOpenRound("running", ""); !ok {
 		t.Fatal("takeOpenRound(running) = false, want the open round")
 	}
 	for _, entry := range router.LiveActivitySnapshot() {

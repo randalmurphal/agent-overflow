@@ -775,3 +775,58 @@ func withKind(evt provider.ProviderEvent, kind provider.EventKind) provider.Prov
 	evt.Kind = kind
 	return evt
 }
+
+// A retired session's result already being handled when the replacement
+// commits settles nothing: the replacement's open turn keeps its streams and
+// its row takes none of the dead session's payload. A settled turn and a
+// retired session are different reasons a claim fails.
+func TestARetiredSessionsResultLeavesTheReplacementsTurnAlone(t *testing.T) {
+	const threadID = "thread-retired-result"
+	st := storetest.Clone(t)
+	createTestThread(t, st, threadID)
+	var r *Router
+	replaced := false
+	// The result's fast-mode report is emitted after its retirement check:
+	// the replacement commits and opens its turn there, as a host whose
+	// drain gave up on the stalled frame would.
+	r = NewRouter(st, func(channel eventchan.Channel, _ any) {
+		if channel != eventchan.ProviderFastMode || replaced {
+			return
+		}
+		replaced = true
+		r.MarkThreadActive(threadID, "session-b")
+		if err := r.handleTurnStart(fromSession(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: threadID, TurnID: "turn-b", Timestamp: time.Now()}, "session-b")); err != nil {
+			t.Error(err)
+		}
+		if err := r.handleTextDelta(fromSession(provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: threadID, Content: "still writing", Timestamp: time.Now()}, "session-b")); err != nil {
+			t.Error(err)
+		}
+	})
+	holdWireRefresh(r)
+	t.Cleanup(r.flushAllUsage)
+	t.Cleanup(r.DrainWireItemRefresh)
+	r.MarkThreadActive(threadID, "session-a")
+	late := &provider.WireTurnCompleteMeta{
+		StopReason: "end_turn", Usage: &provider.TokenUsage{InputTokens: 9, OutputTokens: 9},
+		ErrorMessage: "the dead session failed", FastMode: &provider.FastModeStatus{State: "on"},
+	}
+	if err := r.handleTurnComplete(fromSession(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: threadID, TurnComplete: late, Timestamp: time.Now()}, "session-a")); err != nil {
+		t.Fatal(err)
+	}
+	if !replaced {
+		t.Fatal("the result emitted no fast-mode report to commit the replacement in")
+	}
+	if !r.hasActiveStreamingItem(threadID) {
+		t.Fatal("the retired session's result settled the replacement's streams")
+	}
+	if r.openRoundID(threadID) == "" {
+		t.Fatal("the retired session's result closed the replacement's round")
+	}
+	turn, found, err := st.GetTurnByThreadIndex(threadID, 0)
+	if err != nil || !found {
+		t.Fatalf("turn row: found=%v err=%v", found, err)
+	}
+	if turn.TokenUsageJSON != "" || turn.ErrorMessage != "" || turn.StopReason != "" || turn.CompletedAt != nil {
+		t.Fatalf("the retired session's result folded into the replacement's turn: %+v", turn)
+	}
+}

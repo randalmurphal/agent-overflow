@@ -455,7 +455,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// quiet is set below when the turn is one nobody needs to read
 	// (turnIsQuiet), and the event says so.
 	quiet := false
-	round, hasRound := r.takeOpenRound(evt.ThreadID)
+	round, hasRound := r.takeOpenRound(evt.ThreadID, evt.SessionToken)
 	if hasRound {
 		emitIndex := turnIndex
 		if err != nil {
@@ -518,7 +518,14 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		// here, subsequent invocations for the same (thread, turn) skip
 		// lifecycle settlement. Late usage on a duplicate is still folded
 		// into the existing turn row below so accounting is not lost.
-		if !r.claimTurnSettlement(evt.ThreadID, turnIndex, evt.SessionToken) {
+		claim := r.claimTurnSettlement(evt.ThreadID, turnIndex, evt.SessionToken)
+		if claim == settlementRetired {
+			// The session was replaced while this result was handled:
+			// the turn it resolved to is the replacement's.
+			flushQueueAtBoundary = false
+			return nil
+		}
+		if claim == settlementTaken {
 			// Late-fold path: a second activity-counting complete for an
 			// already-settled logical turn (handleError's synthetic
 			// complete, then the real result). persistLateTurnPayload folds
@@ -1453,7 +1460,7 @@ func (r *Router) predecessorStopReason(threadID string, open, interruptedTurnInd
 // this index into persistLateTurnPayload instead of the orphan-error
 // path.
 func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, completedAt int64, stopReason, sessionToken string) {
-	if !r.claimTurnSettlement(threadID, turnIndex, sessionToken) {
+	if r.claimTurnSettlement(threadID, turnIndex, sessionToken) != settlementClaimed {
 		return
 	}
 	var persistErr error
@@ -1491,26 +1498,37 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 	}, persistErr))
 }
 
+// settlementClaim is the outcome of claimTurnSettlement.
+type settlementClaim uint8
+
+const (
+	// settlementClaimed: the caller is the turn's first settler.
+	settlementClaimed settlementClaim = iota
+	// settlementTaken: the turn has settled; a later result folds its late
+	// payload only.
+	settlementTaken
+	// settlementRetired: the frame's session was replaced. The turn it
+	// resolved to is the replacement's, so it settles and folds nothing.
+	settlementRetired
+)
+
 // claimTurnSettlement records that handleTurnComplete has begun logical-turn
-// settlement for (threadID, turnIndex). It returns true only for the first
-// claimant; later callers should take the duplicate/late-payload path. A
-// frame of a retired session claims nothing: the turn it would settle and
-// the round it would close belong to the session that replaced it.
-func (r *Router) claimTurnSettlement(threadID string, turnIndex int, sessionToken string) bool {
+// settlement for (threadID, turnIndex).
+func (r *Router) claimTurnSettlement(threadID string, turnIndex int, sessionToken string) settlementClaim {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.frameRetiredLocked(threadID, sessionToken) {
-		return false
+		return settlementRetired
 	}
 	st := r.state(threadID)
 	if st.settledTurns[turnIndex] {
-		return false
+		return settlementTaken
 	}
 	if st.settledTurns == nil {
 		st.settledTurns = make(map[int]bool)
 	}
 	st.settledTurns[turnIndex] = true
-	return true
+	return settlementClaimed
 }
 
 // isTurnSettled reports whether logical-turn settlement has already run
@@ -1563,9 +1581,12 @@ func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot, sessionToken 
 // the real complete finds it empty and skips, so the frontend sees
 // exactly one `provider:turn_completed` per round even when handleError
 // synthesizes ahead of the wire's own turn-complete.
-func (r *Router) takeOpenRound(threadID string) (ActiveTurnSnapshot, bool) {
+func (r *Router) takeOpenRound(threadID, sessionToken string) (ActiveTurnSnapshot, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return ActiveTurnSnapshot{}, false
+	}
 	st := r.threadStateIfPresent(threadID)
 	if st == nil || !st.currentRoundOpen {
 		return ActiveTurnSnapshot{}, false
