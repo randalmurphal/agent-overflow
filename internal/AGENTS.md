@@ -26,6 +26,7 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | Agent thread tools and `/side-chat` | [threadtools/](threadtools/AGENTS.md), `app/app_thread_tools*.go`; contract in [agent-thread-tools.md](../docs/specs/agent-thread-tools.md) |
 | Loopback MCP transport for built-in tool servers | [threadmcp/](threadmcp/AGENTS.md), `mcpargs/` |
 | Settings ownership and persistence | [settings/](settings/AGENTS.md) |
+| Account auto-switch and continue after a usage limit | `accountswitch/` (package comment); contract in [account-auto-switch.md](../docs/specs/account-auto-switch.md) |
 | Test fixtures and provider isolation | [kerneltest/](kerneltest/AGENTS.md), [testutil/](testutil/AGENTS.md) |
 | Backend harness and scenarios | [harness/](harness/AGENTS.md) |
 

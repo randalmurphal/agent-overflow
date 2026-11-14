@@ -39,6 +39,7 @@ import type {
   ItemStreamEvent,
   ModelFallbackEvent,
   ProviderAccountEvent,
+  ProviderAccountAutoSwitchEvent,
   ProviderAccountSignInEvent,
   ProviderAccountUsageErrorEvent,
   ProviderSessionAccountEvent,
@@ -141,6 +142,7 @@ import {
 import {
   applyProviderLogin,
   applyProviderAccountSignIn,
+  applyProviderAccountAutoSwitch,
   hydrateProviderLogins,
 } from './providerAccounts.svelte';
 import type { ProviderLoginState } from './bindings';
@@ -318,6 +320,12 @@ export function setupEventListeners(): () => void {
   const cancelProviderAccountSignIn = wailsEventOn<ProviderAccountSignInEvent>(
     'provider:account_signin',
     (evt, origin) => applyProviderAccountSignIn(evt, backendKeyForOrigin(origin.backendId)),
+  );
+  // provider:account_auto_switch — the app changed the selected account, or
+  // failed to. Ephemeral like the sign-in channel.
+  const cancelProviderAccountAutoSwitch = wailsEventOn<ProviderAccountAutoSwitchEvent>(
+    'provider:account_auto_switch',
+    (evt, origin) => applyProviderAccountAutoSwitch(evt, backendKeyForOrigin(origin.backendId)),
   );
   const cancelProviderAccountUsageError = wailsEventOn<ProviderAccountUsageErrorEvent>(
     'provider:account_usage_error',
@@ -862,6 +870,7 @@ export function setupEventListeners(): () => void {
     cancelProviderAccount();
     cancelProviderLoginState();
     cancelProviderAccountSignIn();
+    cancelProviderAccountAutoSwitch();
     cancelProviderSessionAccount();
     cancelProviderAccountUsageError();
     cancelSystemStats();

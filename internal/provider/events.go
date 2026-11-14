@@ -448,6 +448,12 @@ const (
 	FailureReasonUsageLimit FailureReason = "usage-limit"
 )
 
+// IsUsageLimitRefusal reports whether evt is a provider's typed usage-limit
+// refusal of a turn.
+func IsUsageLimitRefusal(evt ProviderEvent) bool {
+	return evt.Kind == EventError && evt.Failure != nil && evt.Failure.Reason == FailureReasonUsageLimit
+}
+
 type FailureBoundary uint8
 
 const (

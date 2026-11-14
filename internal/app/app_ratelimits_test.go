@@ -240,9 +240,8 @@ func TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel(t *testing.T) {
 	app.appCancel()
 
 	// The select arm on ctx.Done() must win — no further probe calls.
-	// rateLimitProbeInterval is 2 minutes in production, so any probe
-	// inside this window is the spurious post-cancel call we're
-	// guarding against.
+	// The production interval is one minute, so any probe inside this
+	// window is the spurious post-cancel call we're guarding against.
 	select {
 	case <-probeFired:
 		t.Fatal("probe fired after appCancel — loop did not honour ctx.Done()")

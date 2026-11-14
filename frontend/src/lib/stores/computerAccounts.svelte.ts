@@ -12,12 +12,13 @@ import {
   RefreshProviderAccountUsage,
   RemoveProviderAccount,
   ReorderProviderAccounts,
+  SetProviderAccountAutoSwitch,
   StartProviderLogin,
   SubmitProviderLoginCode,
   SwitchProviderAccount,
 } from './bindings';
 import type { ManagedProviderAccount } from './bindings';
-import type { ProviderAccountSignInEvent } from '../types/events';
+import type { ProviderAccountAutoSwitchEvent, ProviderAccountSignInEvent } from '../types/events';
 import { canUseHostOpenExternalURL } from '../utils/externalLinks';
 import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
 import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
@@ -222,6 +223,7 @@ export class ComputerAccounts {
         const order = this.pendingOrders[provider];
         if (order) accounts = withProviderOrder(accounts, provider, order);
       }
+      accounts = withPendingAutoSwitch(accounts, this.pendingAutoSwitch);
       this.accounts = accounts;
       this.projectListing(this.accounts);
     } catch (error) {
@@ -344,6 +346,49 @@ export class ComputerAccounts {
   // and the chain of writes behind it, per provider.
   private pendingOrders: Partial<Record<ProviderID, string[]>> = {};
   private reorderWrites: Partial<Record<ProviderID, Promise<void>>> = {};
+
+  /**
+   * Put one saved account in or out of the provider's auto-switch pool. The
+   * card changes at once; writes for the same account follow in call order,
+   * and a listing that lands while one is pending keeps the newest value. A
+   * refused write reloads the backend's value.
+   */
+  async setProviderAccountAutoSwitch(
+    provider: ProviderID,
+    accountId: string,
+    enabled: boolean,
+  ): Promise<void> {
+    if (this.disposed) return;
+    const key = autoSwitchKey(provider, accountId);
+    const wanted = { enabled };
+    this.pendingAutoSwitch.set(key, wanted);
+    this.accounts = withPendingAutoSwitch(this.accounts, this.pendingAutoSwitch);
+    const run = (this.autoSwitchWrites.get(key) ?? Promise.resolve()).then(async () => {
+      try {
+        await this.call(() => SetProviderAccountAutoSwitch(provider, accountId, enabled));
+      } catch (error) {
+        if (this.disposed) return;
+        if (this.pendingAutoSwitch.get(key) === wanted) this.pendingAutoSwitch.delete(key);
+        const label = providerLabel(provider);
+        console.error(`${label} account auto-switch change failed:`, error);
+        addErrorToast(
+          `${label} account auto-switch was not ${enabled ? 'turned on' : 'turned off'}. ${userFacingError(error, 'Try again.')}`,
+          error,
+        );
+        await this.reloadProviderAccounts();
+      }
+    });
+    this.autoSwitchWrites.set(key, run);
+    await run;
+    if (this.autoSwitchWrites.get(key) !== run) return;
+    this.autoSwitchWrites.delete(key);
+    if (this.pendingAutoSwitch.get(key) === wanted) this.pendingAutoSwitch.delete(key);
+  }
+
+  // The pool membership a toggle has shown but the backend may not have
+  // written yet, and the chain of writes behind it, per provider and account.
+  private pendingAutoSwitch = new Map<string, { enabled: boolean }>();
+  private autoSwitchWrites = new Map<string, Promise<void>>();
 
   /** Re-read one account's quotas from the provider and reload the listing. */
   async refreshProviderAccountUsage(
@@ -548,6 +593,18 @@ export class ComputerAccounts {
   }
 
   /**
+   * `provider:account_auto_switch`: the app changed the selected account, or
+   * tried to. The listing reload rides `provider:accounts_changed`.
+   */
+  applyProviderAccountAutoSwitch(event: ProviderAccountAutoSwitchEvent | null | undefined): void {
+    if (this.disposed || !event?.provider) return;
+    if (!hasScope('access:admin', this.backend)) return;
+    const provider = event.provider;
+    if (!this.ACCOUNT_PROVIDERS.includes(provider)) return;
+    addToast(event.error ? 'warning' : 'info', autoSwitchToastText(providerLabel(provider), event));
+  }
+
+  /**
    * Rejoin a sign-in that is already running — on mount, and after a transport
    * gap. Only a LIVE flow is adopted: a succeeded or failed state is retained
    * on the backend so the last transition is never lost, but a client arriving
@@ -658,4 +715,45 @@ export function withProviderOrder(
     .map((entry) => entry.account);
   let next = 0;
   return accounts.map((account) => (account.provider === provider ? sorted[next++] : account));
+}
+
+function autoSwitchKey(provider: ProviderID, accountId: string): string {
+  return `${provider}\u0000${accountId}`;
+}
+
+/** `accounts` with every pending auto-switch value laid over the listing. */
+function withPendingAutoSwitch(
+  accounts: ManagedProviderAccount[],
+  pending: ReadonlyMap<string, { enabled: boolean }>,
+): ManagedProviderAccount[] {
+  if (pending.size === 0) return accounts;
+  return accounts.map((account) => {
+    const wanted = pending.get(autoSwitchKey(account.provider as ProviderID, account.id));
+    if (!wanted || account.autoSwitch === wanted.enabled) return account;
+    return { ...account, autoSwitch: wanted.enabled };
+  });
+}
+
+/**
+ * The toast for one auto-switch event. The sentence about why is left out
+ * when the event lacks the fields it needs.
+ */
+function autoSwitchToastText(label: string, event: ProviderAccountAutoSwitchEvent): string {
+  const to = event.toLabel ? ` to ${event.toLabel}` : '';
+  if (event.error) return `Could not auto-switch the ${label} account${to}: ${event.error}`;
+  if (event.reason === 'order' && event.toLabel) {
+    return `Switched ${label} account${to}, the first available in the auto-switch order.`;
+  }
+  const head = `Switched ${label} account${to}.`;
+  const from = event.fromLabel;
+  const limit = event.limitName;
+  let why = '';
+  if (from && event.reason === 'threshold' && limit && typeof event.usedPercent === 'number' && Number.isFinite(event.usedPercent)) {
+    why = `${from} is at ${Math.round(event.usedPercent)}% of its ${limit} limit.`;
+  } else if (from && event.reason === 'exhausted' && limit) {
+    why = `${from} has used all of its ${limit} limit.`;
+  } else if (from && event.reason === 'refused') {
+    why = `${from} was refused for a usage limit.`;
+  }
+  return why ? `${head} ${why}` : head;
 }

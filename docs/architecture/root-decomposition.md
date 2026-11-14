@@ -49,6 +49,7 @@ that recreates App's surface moves files without moving authority.
 | live provider sessions | `internal/sessionruntime` |
 | managed provider accounts | `internal/provideraccountapp` |
 | provider discovery and quota lifecycle | `internal/providerdiscoveryapp`, `internal/providerlifecycleapp` |
+| account auto-switch decisions | `internal/accountswitch` |
 | thread persistence and action locks | `internal/threadapp` |
 | git status/fetch and worktree queries | `internal/gitapp`, `internal/worktreeapp` |
 | worktree registry watch (external removals) | `internal/worktreewatch` |

@@ -16,6 +16,8 @@ import (
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -71,6 +73,12 @@ func (h *harnessHost) Store() *store.Store { return h.app.store }
 func (h *harnessHost) PushSent() []harnessrpc.PushMessage { return h.app.harnessPushMessages() }
 
 func (h *harnessHost) ForgetPushSent() { h.app.harnessPushForget() }
+
+func (h *harnessHost) ClaudeUsageFake() *claudefake.Usage { return h.app.claudeUsageFake }
+
+func (h *harnessHost) RequestClaudeUsageReading() {
+	h.app.providerLifecycleService().RequestReading(string(provider.Claude))
+}
 
 func (h *harnessHost) PauseMergedPRCleanup() (resume func()) { return h.app.pauseMergedPRCleanup() }
 

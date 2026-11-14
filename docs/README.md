@@ -126,6 +126,7 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`workflows-system-ui/UI-SPEC.md`](specs/workflows-system-ui/UI-SPEC.md) | The binding workflows UI spec (rev 2), now the `workflows` tool pane. Cited as `UI-SPEC §N` across the frontend. |
 | [`pull-requests.md`](specs/pull-requests.md) | Merge readiness, approve and merge in the review pane; the Pull requests page with attention states, "Open with agent" and pipelines; tools as pane kinds. Phase 1 in progress since 2026-10-20. |
 | [`cursor-provider.md`](specs/cursor-provider.md) | Cursor as a third provider over ACP, signed off 2026-08-31. Living gap table + spike backlog; not implemented yet. |
+| [`account-auto-switch.md`](specs/account-auto-switch.md) | Switching a provider's selected account within a per-account pool when usage limits approach or refuse a turn, and continuing threads a usage limit stopped. Implemented 2026-11-13. |
 | [`plan-mode.md`](specs/plan-mode.md) | Plan mode as AO's own intent-to-merge-ready protocol: provider plan modes removed, per-thread plan files, the plan pane with anchored comments, project contract and personal settings, `PostCompact` re-injection. Signed off 2026-09-27; not implemented. |
 
 ## References

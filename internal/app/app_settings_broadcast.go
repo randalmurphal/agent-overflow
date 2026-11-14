@@ -82,6 +82,11 @@ func (a *App) registerSettingsBroadcast() {
 		if revision, ok := switchRevision(changes, "readAloudAPIEnabled"); ok {
 			a.readAloudSentences().RevokeBefore(revision)
 		}
+		// The same for continues after a usage limit: threads that started
+		// waiting before this write no longer receive one.
+		if revision, ok := switchRevision(changes, "accountAutoContinue"); ok {
+			a.accountSwitch().RevokeWaitsBefore(revision)
+		}
 	})
 }
 

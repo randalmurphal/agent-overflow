@@ -224,7 +224,8 @@ func emitFrontendConstraints(b *strings.Builder) {
 		"monoFont": allowedFonts, "defaultThreadEnvMode": allowedThreadEnvModes,
 		"paneDensity": allowedPaneDensities, "activityRunDefault": allowedActivityRunDefaults,
 		"notifyQuietWhen": allowedNotifyQuietWhen, "projectSortMode": allowedProjectSortModes,
-		"usagePeriod": allowedUsagePeriods,
+		"usagePeriod":               allowedUsagePeriods,
+		"accountAutoSwitchStrategy": allowedAccountAutoSwitchStrategies,
 	}
 	b.WriteString("\nexport const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly string[]>> = {\n")
 	keys := make([]string, 0, len(options))
@@ -257,5 +258,7 @@ func emitFrontendConstraints(b *strings.Builder) {
 	fmt.Fprintf(b, "  activityRunWindowRows: [%d, %d],\n", MinActivityRunWindowRows, MaxActivityRunWindowRows)
 	fmt.Fprintf(b, "  claudeMaxCommandTimeoutHours: [%d, %d],\n",
 		MinClaudeMaxCommandTimeoutHours, MaxClaudeMaxCommandTimeoutHours)
+	fmt.Fprintf(b, "  accountAutoSwitchThreshold: [%d, %d],\n",
+		MinAccountAutoSwitchThreshold, MaxAccountAutoSwitchThreshold)
 	b.WriteString("};\n")
 }

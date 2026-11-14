@@ -65,9 +65,15 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 func (a *App) providerLifecycleService() *providerlifecycleapp.Service {
 	a.providerLifecycleOnce.Do(func() {
 		a.providerLifecycle = providerlifecycleapp.New(providerlifecycleapp.Deps{
-			Context:        a.lifeCtx,
-			IsShuttingDown: func() bool { return a.shuttingDown.Load() },
-			Emit:           a.emit,
+			Context:          a.lifeCtx,
+			IsShuttingDown:   func() bool { return a.shuttingDown.Load() },
+			ProbeMinInterval: func() time.Duration { return a.usageProbeGap },
+			Emit:             a.emit,
+			OnReading: func(providerName, accountID string) {
+				if accountID != "" {
+					a.accountSwitch().ReadingUpdated(provider.UsageProviderFamily(providerName), accountID)
+				}
+			},
 			Accounts: providerlifecycleapp.AccountDeps{
 				Selection: func(providerName string) providerlifecycleapp.Selection {
 					selection := a.captureProviderAccountSelection(providerName)
@@ -114,6 +120,7 @@ func (a *App) providerLifecycleService() *providerlifecycleapp.Service {
 						CredentialAccount:    snapshot.CredentialAccount,
 					}, ok
 				},
+				TurnInFlight: a.providerHasTurnInFlight,
 				RecordActivity: func(threadID, token string, kind provider.EventKind, content string, now time.Time) {
 					a.sessionManager().runtime.RecordActivity(threadID, token, kind, content, now)
 					switch kind {

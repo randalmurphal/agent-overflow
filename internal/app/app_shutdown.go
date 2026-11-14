@@ -163,6 +163,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 		return nil
 	}())
 	a.codexThreadService().Close()
+	// The auto-switch worker switches accounts, reads usage and queues
+	// continues into threads; appCtx is cancelled, so it is returning or
+	// finishing one bounded step.
+	a.accountSwitch().Stop()
 	a.transfers.close()
 	// The preview listeners come down with the app context, and for the
 	// same reason: they are network-facing, and every request they carry
@@ -272,6 +276,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// record; appCtx is cancelled, so it is waking to exit or finishing one
 	// bounded probe.
 	a.startupProbeWG.Wait()
+	// The usage poll loops, requested readings and trailing gate runs persist
+	// readings; appCtx is cancelled, so each is exiting or finishing one probe.
+	a.providerLifecycleService().Close()
 	// A permission-mode follow writes the thread row; appCtx is cancelled,
 	// so it is returning or finishing one bounded write.
 	a.permissionModeFollowWG.Wait()

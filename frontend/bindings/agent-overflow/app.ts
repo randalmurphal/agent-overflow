@@ -5632,6 +5632,14 @@ export function SetProjectWorktreeSetup(projectID: string, config: app$0.Worktre
 }
 
 /**
+ * SetProviderAccountAutoSwitch puts one saved account in or out of the
+ * provider's auto-switch pool.
+ */
+export function SetProviderAccountAutoSwitch(providerName: string, accountID: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2230720062, providerName, accountID, enabled);
+}
+
+/**
  * SetProviderCustomEnvVar adds or replaces one custom environment variable for
  * a provider and returns the redacted settings snapshot the frontend store
  * re-seeds from. Reserved names, malformed names, oversize values, and

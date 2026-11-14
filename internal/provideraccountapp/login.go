@@ -169,7 +169,11 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 		if err := m.RefreshProviderAccountUsage(providerName, account.ID); err != nil {
 			m.publishUsageError(providerName, account.ID, err)
 		}
-		return ManagedAccount{Account: account, Generation: generation}, nil
+		return ManagedAccount{
+			Account:    account,
+			Generation: generation,
+			AutoSwitch: m.store.AutoSwitch(providerName, account.ID),
+		}, nil
 	}
 	// Capture before the write so a failure downstream restores exactly
 	// what was here — including the case where re-logging into a saved
@@ -274,7 +278,12 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 		// retryable from Settings and must not roll the account back.
 		m.publishUsageError(providerName, account.ID, err)
 	}
-	return ManagedAccount{Account: account, Active: true, Generation: generation}, nil
+	return ManagedAccount{
+		Account:    account,
+		Active:     true,
+		Generation: generation,
+		AutoSwitch: m.store.AutoSwitch(providerName, account.ID),
+	}, nil
 }
 
 // saveLoginBesideActiveLocked lands a login for an account other than the

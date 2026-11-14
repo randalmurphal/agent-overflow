@@ -3,6 +3,7 @@ package provideraccounts
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -103,6 +104,27 @@ type ProviderState struct {
 	// deletes it. It is the one forget site because Remove is the only path
 	// that shrinks Accounts.
 	ClaudeCatalogs map[string]ClaudeCatalogRecord `json:"claudeCatalogs,omitempty"`
+	// AutoSwitchOff holds the accounts taken out of the auto-switch pool,
+	// keyed by account id, with only true entries. Every other saved account
+	// is in the pool. Beside the rows so a rebuilt row keeps it; Remove
+	// forgets it.
+	AutoSwitchOff map[string]bool `json:"autoSwitchOff,omitempty"`
+	// AutoSelected is true only while auto-switch made the current selection.
+	// selectAccount is the one writer of the selection and keeps it true to
+	// that.
+	AutoSelected bool `json:"autoSelected,omitempty"`
+}
+
+// selectAccount makes accountID the selection and records whether
+// auto-switch made it. Re-selecting the selected account changes nothing.
+// It reports whether the selection changed.
+func (state *ProviderState) selectAccount(accountID string, auto bool) bool {
+	if state.ActiveAccountID == accountID {
+		return false
+	}
+	state.ActiveAccountID = accountID
+	state.AutoSelected = auto
+	return true
 }
 
 type persistedState struct {
@@ -282,10 +304,9 @@ func (s *Store) upsertAndActivate(
 	} else {
 		state.Accounts = append(state.Accounts, cloneAccount(account))
 	}
-	if credentialChanged || state.ActiveAccountID != account.ID {
+	if state.selectAccount(account.ID, false) || credentialChanged {
 		state.Generation++
 	}
-	state.ActiveAccountID = account.ID
 	s.state.Providers[account.Provider] = state
 	if err := s.saveLocked(); err != nil {
 		restoreProviderState(s.state.Providers, account.Provider, previous, existed)
@@ -373,7 +394,19 @@ func (s *Store) Reorder(providerName string, accountIDs []string) error {
 	return nil
 }
 
+// Activate selects a saved account for a person or an outside login. The
+// caller owns credential activation and calls this only after it succeeds.
 func (s *Store) Activate(providerName, accountID string) (Account, error) {
+	return s.activate(providerName, accountID, false)
+}
+
+// ActivateAuto is Activate for a selection auto-switch made. It records the
+// selection as automatic until another selection replaces it.
+func (s *Store) ActivateAuto(providerName, accountID string) (Account, error) {
+	return s.activate(providerName, accountID, true)
+}
+
+func (s *Store) activate(providerName, accountID string, auto bool) (Account, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	previous, existed := s.state.Providers[providerName]
@@ -382,10 +415,9 @@ func (s *Store) Activate(providerName, accountID string) (Account, error) {
 		if state.Accounts[i].ID != accountID {
 			continue
 		}
-		if state.ActiveAccountID != accountID {
+		if state.selectAccount(accountID, auto) {
 			state.Generation++
 		}
-		state.ActiveAccountID = accountID
 		s.state.Providers[providerName] = state
 		if err := s.saveLocked(); err != nil {
 			restoreProviderState(s.state.Providers, providerName, previous, existed)
@@ -474,7 +506,7 @@ func (s *Store) Remove(providerName, accountID, replacementAccountID string) err
 				providerName,
 			)
 		}
-		state.ActiveAccountID = replacementAccountID
+		state.selectAccount(replacementAccountID, false)
 		state.Generation++
 	}
 
@@ -485,6 +517,12 @@ func (s *Store) Remove(providerName, accountID, replacementAccountID string) err
 	delete(state.ClaudeCatalogs, accountID)
 	if len(state.ClaudeCatalogs) == 0 {
 		state.ClaudeCatalogs = nil
+	}
+	// Same for the pool exclusion: an account added later under this id
+	// starts in the pool.
+	delete(state.AutoSwitchOff, accountID)
+	if len(state.AutoSwitchOff) == 0 {
+		state.AutoSwitchOff = nil
 	}
 	s.state.Providers[providerName] = state
 	if err := s.saveLocked(); err != nil {
@@ -620,6 +658,89 @@ func (s *Store) RememberRateLimits(providerName, accountID string, snapshot prov
 	return nil
 }
 
+// SetAutoSwitch puts one saved account in or out of the provider's
+// auto-switch pool; a saved account is in it until taken out. The selection
+// and generation are untouched. Setting the value it already has writes
+// nothing.
+func (s *Store) SetAutoSwitch(providerName, accountID string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, existed := s.state.Providers[providerName]
+	if indexOfAccount(previous.Accounts, accountID) < 0 {
+		return fmt.Errorf("provideraccounts: account %q not found for %s", accountID, providerName)
+	}
+	if !previous.AutoSwitchOff[accountID] == enabled {
+		return nil
+	}
+	state := cloneProviderState(previous)
+	if enabled {
+		delete(state.AutoSwitchOff, accountID)
+		if len(state.AutoSwitchOff) == 0 {
+			state.AutoSwitchOff = nil
+		}
+	} else {
+		if state.AutoSwitchOff == nil {
+			state.AutoSwitchOff = make(map[string]bool, 1)
+		}
+		state.AutoSwitchOff[accountID] = true
+	}
+	s.state.Providers[providerName] = state
+	if err := s.saveLocked(); err != nil {
+		restoreProviderState(s.state.Providers, providerName, previous, existed)
+		return err
+	}
+	return nil
+}
+
+// AutoSwitch reports whether one account is in the provider's auto-switch
+// pool: true for a saved account that was not taken out, false for an
+// account that is not saved.
+func (s *Store) AutoSwitch(providerName, accountID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state := s.state.Providers[providerName]
+	return indexOfAccount(state.Accounts, accountID) >= 0 && !state.AutoSwitchOff[accountID]
+}
+
+// PoolAccount is the metadata auto-switch reads for one saved account.
+type PoolAccount struct {
+	ID                    string
+	Email                 string
+	DisplayName           string
+	RefreshTokenExpiresAt int64
+	AutoSwitch            bool
+}
+
+// PoolView is one provider's selection and pool, read in one critical
+// section. Accounts are in card order.
+type PoolView struct {
+	ActiveAccountID string
+	AutoSelected    bool
+	Accounts        []PoolAccount
+}
+
+// Pool returns the provider's selection and pool flags from memory.
+func (s *Store) Pool(providerName string) PoolView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state := s.state.Providers[providerName]
+	view := PoolView{
+		ActiveAccountID: state.ActiveAccountID,
+		AutoSelected:    state.AutoSelected,
+		Accounts:        make([]PoolAccount, len(state.Accounts)),
+	}
+	for i, account := range state.Accounts {
+		view.Accounts[i] = PoolAccount{
+			ID:                    account.ID,
+			Email:                 account.Email,
+			DisplayName:           account.DisplayName,
+			RefreshTokenExpiresAt: account.RefreshTokenExpiresAt,
+			AutoSwitch:            !state.AutoSwitchOff[account.ID],
+		}
+	}
+	return view
+}
+
 // RememberClaudeCatalog records the model answer one Claude probe reported for
 // an account, together with the identity of the binary that reported it. The
 // provider is always Claude: no other provider has a probe-enriched catalog.
@@ -743,6 +864,7 @@ func cloneAccounts(accounts []Account) []Account {
 func cloneProviderState(state ProviderState) ProviderState {
 	state.Accounts = cloneAccounts(state.Accounts)
 	state.ClaudeCatalogs = cloneClaudeCatalogs(state.ClaudeCatalogs)
+	state.AutoSwitchOff = maps.Clone(state.AutoSwitchOff)
 	return state
 }
 

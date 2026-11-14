@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultProbeInterval = 2 * time.Minute
+	defaultProbeInterval = time.Minute
 	probeMinInterval     = 30 * time.Second
 )
 
@@ -60,6 +60,9 @@ type AccountDeps struct {
 type SessionDeps struct {
 	Account        func(threadID string) (RuntimeAccount, bool)
 	RecordActivity func(threadID, sessionToken string, kind provider.EventKind, content string, now time.Time)
+	// TurnInFlight reports whether a thread of the usage family providerName
+	// has a turn in flight now.
+	TurnInFlight func(providerName string) bool
 }
 
 // ClaudeDeps preserves Claude's HTTP usage path as a provider-specific port.
@@ -80,11 +83,19 @@ type CodexDeps struct {
 type Deps struct {
 	Context        func() context.Context
 	IsShuttingDown func() bool
-	Emit           func(eventchan.Channel, any)
-	Accounts       AccountDeps
-	Sessions       SessionDeps
-	Claude         ClaudeDeps
-	Codex          CodexDeps
+	// ProbeMinInterval, read when a provider's gate is built, replaces the
+	// shortest gap between two usage probes of one provider. Nil or zero
+	// keeps the product gap; only a harness boot sets one.
+	ProbeMinInterval func() time.Duration
+	Emit             func(eventchan.Channel, any)
+	// OnReading is called once per reading merged into the cache, for any
+	// account, outside the cache lock and before the reading is published.
+	// It runs on the emitter's goroutine and must not block. Optional.
+	OnReading func(providerName, accountID string)
+	Accounts  AccountDeps
+	Sessions  SessionDeps
+	Claude    ClaudeDeps
+	Codex     CodexDeps
 }
 
 // Service owns every rate-limit cache, cadence, cooldown, and backoff ward.
@@ -103,6 +114,11 @@ type Service struct {
 	claudeGate     *usageProbeGate
 	codexGateOnce  sync.Once
 	codexGate      *usageProbeGate
+
+	// work joins the poll loops, requested readings and trailing gate runs.
+	workMu     sync.Mutex
+	workClosed bool
+	work       sync.WaitGroup
 }
 
 func New(deps Deps) *Service {
@@ -138,3 +154,42 @@ func (s *Service) Note(providerName, accountID string, err error) {
 
 // LoadBackoff restores durable server holds during startup.
 func (s *Service) LoadBackoff(path string) { s.backoff.Load(path) }
+
+// goMember runs fn on its own goroutine unless Close has begun.
+func (s *Service) goMember(fn func()) {
+	if !s.addMember() {
+		return
+	}
+	go func() {
+		defer s.work.Done()
+		fn()
+	}()
+}
+
+// runMember runs fn on the caller's goroutine unless Close has begun.
+func (s *Service) runMember(fn func()) {
+	if !s.addMember() {
+		return
+	}
+	defer s.work.Done()
+	fn()
+}
+
+func (s *Service) addMember() bool {
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	if s.workClosed {
+		return false
+	}
+	s.work.Add(1)
+	return true
+}
+
+// Close refuses later poll loops and readings and waits for the running ones.
+// The poll loops end only when the service context ends, so cancel it first.
+func (s *Service) Close() {
+	s.workMu.Lock()
+	s.workClosed = true
+	s.workMu.Unlock()
+	s.work.Wait()
+}

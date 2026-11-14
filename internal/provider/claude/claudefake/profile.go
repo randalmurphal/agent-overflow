@@ -1,6 +1,6 @@
-// Package claudefake answers Claude's OAuth profile endpoint in process, for
-// tests and isolated boots, so account identification runs through the real
-// client without a network.
+// Package claudefake answers Claude's OAuth profile and usage endpoints in
+// process, for tests and isolated boots, so account identification and usage
+// readings run through the real client without a network.
 //
 // The real endpoint knows who a token belongs to because it issued it. The
 // fake knows because the token says so: AccessToken spells the identity into
@@ -47,26 +47,39 @@ func IsProfile(req *http.Request) bool {
 
 // ServeProfile answers one profile request from its bearer.
 func ServeProfile(req *http.Request) (*http.Response, error) {
-	bearer, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer ")
+	email, orgID, ok := bearerIdentity(req)
 	if !ok {
-		return response(req, http.StatusUnauthorized, `{"error":{"type":"authentication_error"}}`), nil
-	}
-	rest, ok := strings.CutPrefix(bearer, tokenPrefix)
-	if !ok {
-		return response(req, http.StatusUnauthorized, `{"error":{"type":"authentication_error"}}`), nil
-	}
-	parts := strings.SplitN(rest, ":", 3)
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" {
-		return response(req, http.StatusUnauthorized, `{"error":{"type":"authentication_error"}}`), nil
+		return unauthorized(req), nil
 	}
 	body, err := json.Marshal(map[string]any{
-		"account":      map[string]string{"uuid": "mock-account-" + parts[0], "email": parts[0]},
-		"organization": map[string]string{"uuid": parts[1], "name": OrgName(parts[1])},
+		"account":      map[string]string{"uuid": "mock-account-" + email, "email": email},
+		"organization": map[string]string{"uuid": orgID, "name": OrgName(orgID)},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claudefake: encode profile: %w", err)
 	}
 	return response(req, http.StatusOK, string(body)), nil
+}
+
+// bearerIdentity reads the email and organization a fake token spells.
+func bearerIdentity(req *http.Request) (email, orgID string, ok bool) {
+	bearer, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return "", "", false
+	}
+	rest, ok := strings.CutPrefix(bearer, tokenPrefix)
+	if !ok {
+		return "", "", false
+	}
+	parts := strings.SplitN(rest, ":", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func unauthorized(req *http.Request) *http.Response {
+	return response(req, http.StatusUnauthorized, `{"error":{"type":"authentication_error"}}`)
 }
 
 // Transport answers profile requests and refuses everything else, for tests

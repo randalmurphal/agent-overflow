@@ -143,6 +143,11 @@ var tierByKey = map[string]Tier{
 	"agentGuideEnabled":           TierUser,
 	// The command timeout ceiling is the same kind of preference.
 	"claudeMaxCommandTimeoutHours": TierUser,
+	// Account auto-switch applies to every provider and travels with the
+	// person (docs/specs/account-auto-switch.md#settings).
+	"accountAutoSwitchStrategy":  TierUser,
+	"accountAutoSwitchThreshold": TierUser,
+	"accountAutoContinue":        TierUser,
 
 	// Retiered from device 2026-08-31: both are read by BACKEND behaviour
 	// rather than rendered by a client, and one backend behaviour cannot

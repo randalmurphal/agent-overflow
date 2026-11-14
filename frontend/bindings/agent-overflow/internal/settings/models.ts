@@ -930,6 +930,17 @@ export class Settings {
     "codexAutoCompactExtendedPercent": number;
 
     /**
+     * Account auto-switch, for every provider (accountautoswitch.go).
+     * AccountAutoSwitchStrategy is the order the pool is used in,
+     * AccountAutoSwitchThreshold the usage percent at which an account is
+     * past threshold, and AccountAutoContinue continues a thread refused
+     * for a usage limit once an account can serve it.
+     */
+    "accountAutoSwitchStrategy": string;
+    "accountAutoSwitchThreshold": number;
+    "accountAutoContinue"?: boolean;
+
+    /**
      * Observability — all opt-in. Empty/false defaults leave the app quiet.
      * 
      * SECURITY NOTE: this file is stored on disk in plaintext and is
@@ -1382,6 +1393,12 @@ export class Settings {
         if (!("codexAutoCompactExtendedPercent" in $$source)) {
             this["codexAutoCompactExtendedPercent"] = 0;
         }
+        if (!("accountAutoSwitchStrategy" in $$source)) {
+            this["accountAutoSwitchStrategy"] = "";
+        }
+        if (!("accountAutoSwitchThreshold" in $$source)) {
+            this["accountAutoSwitchThreshold"] = 0;
+        }
         if (!("observabilityTracingEnabled" in $$source)) {
             this["observabilityTracingEnabled"] = false;
         }
@@ -1494,13 +1511,13 @@ export class Settings {
         const $$createField42_0 = $$createType6;
         const $$createField43_0 = $$createType7;
         const $$createField45_0 = $$createType8;
-        const $$createField63_0 = $$createType9;
-        const $$createField64_0 = $$createType10;
-        const $$createField65_0 = $$createType11;
-        const $$createField67_0 = $$createType0;
-        const $$createField72_0 = $$createType0;
-        const $$createField74_0 = $$createType0;
-        const $$createField95_0 = $$createType12;
+        const $$createField66_0 = $$createType9;
+        const $$createField67_0 = $$createType10;
+        const $$createField68_0 = $$createType11;
+        const $$createField70_0 = $$createType0;
+        const $$createField75_0 = $$createType0;
+        const $$createField77_0 = $$createType0;
+        const $$createField98_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1545,25 +1562,25 @@ export class Settings {
             $$parsedSource["claudeThinking"] = $$createField45_0($$parsedSource["claudeThinking"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField63_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField66_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField64_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField67_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField65_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField68_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField67_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField70_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("spinnerCustomVerbs" in $$parsedSource) {
-            $$parsedSource["spinnerCustomVerbs"] = $$createField72_0($$parsedSource["spinnerCustomVerbs"]);
+            $$parsedSource["spinnerCustomVerbs"] = $$createField75_0($$parsedSource["spinnerCustomVerbs"]);
         }
         if ("spinnerDisabledAnimations" in $$parsedSource) {
-            $$parsedSource["spinnerDisabledAnimations"] = $$createField74_0($$parsedSource["spinnerDisabledAnimations"]);
+            $$parsedSource["spinnerDisabledAnimations"] = $$createField77_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField95_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField98_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 )
@@ -92,4 +93,9 @@ type Host interface {
 	// recorder, which is every shipping one.
 	PushSent() []PushMessage
 	ForgetPushSent()
+	// ClaudeUsageFake is the isolated boot's Claude usage endpoint, nil on a
+	// boot without one. RequestClaudeUsageReading asks for a reading of the
+	// selected Claude account without waiting for it.
+	ClaudeUsageFake() *claudefake.Usage
+	RequestClaudeUsageReading()
 }

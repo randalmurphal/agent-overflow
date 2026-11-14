@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/accountswitch"
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/assetwatch"
@@ -36,6 +37,7 @@ import (
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/power"
 	"agent-overflow/internal/projectapp"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerdiscoveryapp"
 	"agent-overflow/internal/providerlifecycleapp"
@@ -324,6 +326,17 @@ type App struct {
 	// Wails/event façades.
 	providerLifecycleOnce sync.Once
 	providerLifecycle     *providerlifecycleapp.Service
+	// accountSwitcher decides account auto-switches and continues after a
+	// usage limit (app_account_autoswitch.go).
+	accountSwitcherOnce    sync.Once
+	accountSwitcher        *accountswitch.Coordinator
+	accountSwitchStartOnce sync.Once
+	// accountSwitchCheckInterval shortens the waiting-thread check for a
+	// test. Zero keeps the product interval.
+	accountSwitchCheckInterval time.Duration
+	// switchedAccountProbeFn replaces the identity probe that follows a
+	// Claude account switch in tests. Nil runs ProbeClaudeAccount.
+	switchedAccountProbeFn func() error
 	// forgeAttachCache holds the bytes of forge-hosted PR/MR attachments
 	// between the bound method that fetched them and the ticketed byte
 	// route that serves them (app_forge_attachments.go). Lazily
@@ -637,10 +650,13 @@ type App struct {
 	// canned path (or empty for "cancelled").
 	savePayloadPickerFn savePayloadPicker
 	// rateLimitProbeClientOverride replaces the Claude rate-limit probe's
-	// HTTP client. ConfigureIsolation sets one that refuses every request;
-	// tests assign a client pointing at a local httptest server. Nil uses
-	// the package-level singleton.
+	// HTTP client. ConfigureIsolation sets one that answers in process only
+	// what claudeUsageFake holds; tests assign a client pointing at a local
+	// httptest server. Nil uses the package-level singleton.
 	rateLimitProbeClientOverride *http.Client
+	// claudeUsageFake holds the usage answers an isolated boot's transport
+	// gives, per identity (HarnessSetClaudeUsage). Nil outside isolation.
+	claudeUsageFake *claudefake.Usage
 	// openAIClientOverride replaces the client keyed OpenAI requests use
 	// (app_live_dictation.go). Only an isolated boot sets it, to answer
 	// them in process.
@@ -659,6 +675,10 @@ type App struct {
 	// end-to-end test (IsolationConfig). Zero keeps the product intervals.
 	threadPollOverride   time.Duration
 	transferPendingRetry time.Duration
+	// usageProbeGap shortens the shortest gap between two usage probes of
+	// one provider for an end-to-end test (IsolationConfig). Zero keeps the
+	// product gap.
+	usageProbeGap time.Duration
 	// dataDirOverride overrides the data directory root that initStores
 	// otherwise resolves via os.UserConfigDir(). The app's data lives in
 	// <root>/agent-overflow. Set by the --data-dir CLI flag (harness mode
