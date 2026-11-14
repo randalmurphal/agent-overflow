@@ -17,7 +17,8 @@
 // alone cannot settle the listing: a frame with neither row nor removed, and
 // a reminder change past the listing's bound while the thread has more
 // reminders than it lists. A frame that lands while a read is out is applied
-// again over that read's answer.
+// again over that read's answer: a bulk read's, when the frame's computer is
+// the one it reads.
 //
 // Each thread is its own key, and a known thread keeps its key with no
 // rows, so a frame reruns only the readers of the thread it names.
@@ -87,14 +88,17 @@ const retained = new Map<string, Retention>();
  * The frames that landed while a read was out, latest per row, replayed
  * over its answer. A frame is the row as it stands, so the latest per row
  * is all a replay needs, and the log is bounded by the rows themselves.
+ * `covers` takes the frame's thread and the computer that sent it: a read
+ * logs only the frames its answer can predate, so its replay never applies
+ * one that a newer read of another computer has settled.
  */
 interface FrameLog {
-  covers: (threadId: string) => boolean;
+  covers: (threadId: string, backend: string) => boolean;
   changes: Map<string, { change: ThreadWakeChange; backend: string }>;
 }
 const reads = new Set<FrameLog>();
 
-function openLog(covers: (threadId: string) => boolean): FrameLog {
+function openLog(covers: FrameLog['covers']): FrameLog {
   const log: FrameLog = { covers, changes: new Map() };
   reads.add(log);
   return log;
@@ -210,11 +214,11 @@ export async function refreshAgentWakes(only?: BackendKey): Promise<void> {
 }
 
 async function refreshComputerAgentWakes(backend: BackendKey): Promise<void> {
-  // A newer read of the computer supersedes this one; frames from here
+  // A newer read of the computer supersedes this one; its frames from here
   // until this answer lands replay over it.
   const ticket = {};
   bulkReads.set(backend, ticket);
-  const log = openLog(() => true);
+  const log = openLog((_threadId, origin) => origin === backend);
   try {
     await readComputerRows<StandingAgentWakes>(
       async () => await ListStandingAgentWakes(),
@@ -437,7 +441,7 @@ onThreadWakesChanged((change, backend) => {
     return;
   }
   for (const log of reads) {
-    if (log.covers(change.threadId)) log.changes.set(`${change.threadId}\u0000${change.id}`, { change, backend });
+    if (log.covers(change.threadId, backend)) log.changes.set(`${change.threadId}\u0000${change.id}`, { change, backend });
   }
   applyChange(change, backend);
 });

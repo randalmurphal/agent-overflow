@@ -841,8 +841,8 @@ Mechanics, as built:
   (`utils/agentStateLine.ts`) shows the running row, else the soonest
   loop or watch, with `+N more`. A row the bulk read missed asks
   `ListThreadWakes` once on mount. Each computer's bulk read settles
-  when that computer answers, however late, with the frames that landed
-  meanwhile replayed over its answer; a newer read of the computer
+  when that computer answers, however late, with the frames that computer
+  sent meanwhile replayed over its answer; a newer read of the computer
   supersedes it.
 - `ListArchivedSpawnedThreads` feeds each open done footer its own
   container's archived threads (the rows `archivedChildCounts` counts

@@ -85,6 +85,28 @@ describe('thread wakes store', () => {
     }
   });
 
+  it("replays over a computer's bulk answer only the frames that computer sent", async () => {
+    stageBackend({ id: 'gpu' });
+    let gpuAnswer: (rows: { threadId: string; rows: ThreadWakeRow[] }[]) => void = () => {};
+    let homeRows: { threadId: string; rows: ThreadWakeRow[] }[] = [{ threadId: 'agent', rows: [] }];
+    setBindingMock('ListStandingAgentWakes', () => {
+      if (takePinnedBackend() !== 'gpu') return Promise.resolve(homeRows);
+      return new Promise((resolve) => { gpuAnswer = resolve; });
+    });
+    const done = refreshAgentWakes();
+    await flush();
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l1', row: row('l1', { state: 'running' }) }, HOME_BACKEND);
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
+    // The loop's cancel is lost; this computer's read after the gap settles it.
+    homeRows = [];
+    await refreshAgentWakes(HOME_BACKEND);
+    expect(getAgentWakeRows('agent')).toEqual([]);
+
+    gpuAnswer([]);
+    await done;
+    expect(getAgentWakeRows('agent')).toEqual([]);
+  });
+
   it('lets only the newest bulk read of a computer decide', async () => {
     const answers: ((rows: { threadId: string; rows: ThreadWakeRow[] }[]) => void)[] = [];
     setBindingMock('ListStandingAgentWakes', () => new Promise((resolve) => { answers.push(resolve); }));
