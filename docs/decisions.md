@@ -277,32 +277,31 @@ Mechanism in
   naming the previous thread (ruling 2026-10-15,
   [standing agents](specs/standing-agents.md) rulings 22 to 29,
   "Retention" and "Session loss").
-- Multi-agent discussions are removed. A thread nests under another only
-  as an assistant's nested spawned child or past thread; every other
-  thread renders flat under its project or group
-  ([standing agents](specs/standing-agents.md) ruling 15 and "Sidebar").
+- Multi-agent discussions are removed. No thread nests under another in
+  the sidebar; a thread renders flat under its project or group, and a
+  spawned thread is its spawner's worker with no row unless placed
+  ([standing agents](specs/standing-agents.md) rulings 15 and 36).
 - Agent rows and groups (ruling 2026-10-16,
   [standing agents](specs/standing-agents.md) rulings 4, 5 and 30 to
   35): a spawned thread's answer to its spawner, an error included,
-  marks it read unless it is pinned; a settled idle child folds into the
-  agent's done footer beside the archived ones, and archive stays the
-  only persisted done state; a group and an agent row each show the
-  project's preview limit of members, pinned members exempt; a
+  marks it read unless it is pinned; archive is the only done state
+  (the done fold went with nesting, ruling 2026-11-14); a group shows
+  the project's preview limit of members, pinned members exempt; a
   collapsed agent row or group shows its members' bubbled dot, replacing
   the 2026-09-02 rule that a collapsed group renders none of it; every
   show-more footer (project, group, agent) and a collapsed project's dot
   rank their hidden rows the same way, so an unread one lights it; running
-  sorts above unread inside a container; a child spawned into another
-  project on this computer nests under its agent, not in its own
-  project's list. Mark All Read on either marks every member in one
-  call.
-- A spawned thread's placement (ruling 2026-10-17,
-  [standing agents](specs/standing-agents.md) ruling 36): an assistant
-  puts a thread it spawns under its own row (the default), in a named
-  group, or as a plain row in its project, and it or the user moves it
-  later. Placement is organization only: the spawn record, the reply
-  path and the read mark on an answer do not change. The nesting rules
-  apply to nested threads only. An agent row never joins a group.
+  sorts above unread inside a container. Mark All Read on either marks
+  every member in one call.
+- Owned workers (ruling 2026-11-14, amending 2026-10-17,
+  [standing agents](specs/standing-agents.md) ruling 36): a thread any
+  thread spawns is owned by its spawner, with no sidebar row and no
+  completion notification of its own, unless placed standalone or in a
+  group; the spawner or the user moves it either way later. Archiving a
+  thread archives its owned workers; deleting it leaves them as
+  standalone rows. Placement is organization only: the spawn record, the
+  reply path and the read mark on an answer do not change. An agent row
+  never joins a group.
 - Thread content search matches title and workspace path only. Searching
   message text server-side (t3-code does) is undecided, not rejected.
 - A fork is a snapshot of its source at the cut. Nothing the source does

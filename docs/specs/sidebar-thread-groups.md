@@ -180,7 +180,7 @@ the row. Collapsed, it carries its members' bubbled dot.
 - `DeleteThreadGroup` clears the members' pins, active and archived, in
   the transaction that deletes the group, and returns the member rows as
   they now stand.
-- Migration v149 adds `threads.placement` (`nested`, `grouped`,
+- Migration v149 adds `threads.placement` (`owned`, `grouped`,
   `standalone`) with a CHECK that a row is `grouped` exactly when its
   `group_id` is set. `SetThreadGroup` writes `grouped` with the group;
   an ungroup writes `standalone` on a row that was grouped and leaves
@@ -194,9 +194,8 @@ the row. Collapsed, it carries its members' bubbled dot.
 - A returning conversation transfer arrives ungrouped; the local row's
   pin survives only if the row was not in a group.
 - Fork copies `group_id` from the source row (all fork paths), never the
-  pin. A standing agent's `thread_spawn` fork then takes the spawn's
-  placement, which leaves that group unless the spawn names one; another
-  caller's fork leaves it only when the call names `placement` or `group`
+  pin. A `thread_spawn` fork then takes the spawn's placement, which
+  leaves that group unless the spawn names one
   ([agent thread tools](agent-thread-tools.md)).
 
 ### Backend API
