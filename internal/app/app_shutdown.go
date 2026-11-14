@@ -272,6 +272,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// record; appCtx is cancelled, so it is waking to exit or finishing one
 	// bounded probe.
 	a.startupProbeWG.Wait()
+	// The passive release check emits status frames. It has its own
+	// lifetime, which this cancels before joining it.
+	a.stopServiceUpdateChecks()
 	// A permission-mode follow writes the thread row; appCtx is cancelled,
 	// so it is returning or finishing one bounded write.
 	a.permissionModeFollowWG.Wait()

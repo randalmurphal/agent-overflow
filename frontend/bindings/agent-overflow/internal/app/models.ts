@@ -6926,8 +6926,9 @@ export class ServiceUpdateStatus {
     "currentVersion": string;
 
     /**
-     * LatestVersion is the boot-time passive check's answer, empty when this
-     * host is up to date, when the check failed, or when it never ran.
+     * LatestVersion is the passive release check's answer, empty when this
+     * host is up to date or no check has succeeded yet. A failed check keeps
+     * the previous answer.
      */
     "latestVersion"?: string;
 

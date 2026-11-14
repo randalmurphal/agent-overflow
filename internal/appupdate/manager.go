@@ -137,7 +137,9 @@ const updaterChecksumAsset = "SHASUMS256"
 //
 // Check results (update-available / no-update) are deliberately NOT bridged:
 // the frontend drives Check via the CheckForUpdate RPC and uses its return
-// value, so re-emitting them as events would be redundant.
+// value, so re-emitting them as events would be redundant. The same holds for
+// a failed check, which the library both returns and emits as a check-stage
+// EventError; bridgedChannel drops that event (see there).
 var updaterEventBridge = map[string]eventchan.Channel{
 	updater.EventDownloadStarted:  eventchan.UpdaterDownloadStarted,
 	updater.EventDownloadProgress: eventchan.UpdaterProgress,
@@ -157,6 +159,25 @@ func BridgedEvents() []string {
 	return events
 }
 
+// bridgedChannel is the transport channel a library event is forwarded on, or
+// false when neither host forwards it. Both hosts decide through it.
+//
+// A check-stage EventError is not forwarded: Updater.Check emits it and also
+// returns the error, which CheckForUpdate reports as CheckError and a by-tag
+// DownloadUpdate reports through its own terminal updater:error once busy has
+// dropped. Forwarding it would push a failed background check to every client
+// as an error state, and send a by-tag resolve failure twice.
+func bridgedChannel(name string, data any) (eventchan.Channel, bool) {
+	channel, ok := updaterEventBridge[name]
+	if !ok {
+		return "", false
+	}
+	if info, isError := data.(updater.ErrorInfo); isError && name == updater.EventError && info.Stage == updater.StageCheck {
+		return "", false
+	}
+	return channel, true
+}
+
 // ForwardFrameworkEvent maps one Wails updater event onto the transport
 // channel shared by the desktop and WSL hosts.
 func (a *Service) ForwardFrameworkEvent(name string, data any) {
@@ -164,7 +185,7 @@ func (a *Service) ForwardFrameworkEvent(name string, data any) {
 		// desktopDownloaded emits it once the release is recorded.
 		return
 	}
-	if channel, ok := updaterEventBridge[name]; ok {
+	if channel, ok := bridgedChannel(name, data); ok {
 		a.emit(channel, data)
 	}
 }
@@ -303,6 +324,7 @@ func (a *Service) CheckForUpdate() (UpdateAvailability, error) {
 		// resolve means we no longer know, so drop it rather than let a stale
 		// identity outlive the release it described.
 		a.updater.pending = nil
+		log.Printf("updater: check for update failed: %v", err)
 		return UpdateAvailability{
 			Supported:        true,
 			CurrentVersion:   a.updater.handle.CurrentVersion(),
@@ -467,11 +489,11 @@ func (a *Service) DownloadUpdate(tag string) error {
 			pending = a.updater.pending
 			a.updater.mu.Unlock()
 			rcancel()
-			// Check errors are RETURNED by the updater, not emitted, so on
-			// failure we surface our own updater:error — the frontend has
-			// already flipped to "downloading" and would otherwise hang with no
-			// terminal event. A nil release means the tag isn't installable on
-			// this platform (no matching asset).
+			// The library's own check-stage error event is not bridged, so on
+			// failure we surface our own updater:error, after busy drops: the
+			// frontend has already flipped to "downloading" and would otherwise
+			// hang with no terminal event. A nil release means the tag isn't
+			// installable on this platform (no matching asset).
 			if err != nil {
 				log.Printf("updater: resolve %s failed: %v", tag, err)
 				terminal = a.updaterErrorEmitter(updater.ErrorInfo{Stage: updater.StageCheck, Message: err.Error(), Provider: a.providerName()})

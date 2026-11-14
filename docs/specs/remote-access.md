@@ -1779,8 +1779,10 @@ trial refusal in review):
   (`serviceArtifactPlatform()`: `headless-<GOOS>` for the windowless
   build, `linux` or `darwin` for the ordinary build, empty on Windows).
   macOS ZIPs are expanded and staged with their complete bundle. An empty answer is the `Unavailable` sentence, not a
-  button that cannot work. The passive `Latest` check runs once,
-  unparked, during a trial too.
+  button that cannot work. The passive `Latest` check runs at boot and
+  hourly until shutdown, unparked, during a trial too; it publishes a
+  frame only when its answer changes and keeps the last answer when a
+  check fails.
 - *Frontend half LANDED (2026-09-02)*: `stores/serviceUpdate.svelte.ts`,
   one box per attached backend keyed by the frame origin, status
   replaced wholesale, read on every hello the session holds
@@ -1794,7 +1796,7 @@ trial refusal in review):
   callout (committed / rolled back with the reason), the flow error,
   the `Unavailable` sentence with no button, and the rollback picker
   (`VersionPicker` became prop-driven so the in-app updater and each
-  machine drive one component). The footer badge lights through
+  machine drive one component). The sidebar's Update button shows through
   `hasPendingUpdate()` for any supervised machine with a newer
   release. Nothing renders on a desktop with no supervised backend
   attached, which is every harness run, so the e2e suite proves only

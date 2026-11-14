@@ -3,6 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetSettingsForTest, updateSetting } from '../../stores/settings.svelte';
 import { pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
+import { getUpdateState, resetForTest as resetUpdatesForTest } from '../../stores/updates.svelte';
+import {
+  getSettingsSection,
+  isSettingsOpen,
+  resetSettingsOverlayForTest,
+} from '../../stores/settingsOverlay.svelte';
 import SettingsFooter from './SettingsFooter.svelte';
 
 const mode = vi.hoisted(() => ({ frontend: false }));
@@ -138,5 +144,51 @@ describe('SettingsFooter notification-sound toggle', () => {
     const view = render(SettingsFooter, { onOpenSettings: () => {} });
     expect(view.getByTestId('view-only-indicator')).toBeTruthy();
     expect(view.getByTestId('sidebar-sound-toggle')).toBeVisible();
+  });
+});
+
+// A found release is a button of its own beside Settings. It opens the
+// Updates page; the Settings button keeps opening wherever the caller sends it.
+describe('SettingsFooter update button', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetToLocalPage();
+    resetUpdatesForTest();
+    resetSettingsOverlayForTest();
+  });
+
+  afterEach(() => {
+    resetUpdatesForTest();
+    resetSettingsOverlayForTest();
+    resetBindingMocks();
+  });
+
+  it('is absent while no release is waiting', () => {
+    const view = render(SettingsFooter, { onOpenSettings: () => {} });
+    expect(view.queryByTestId('sidebar-update-button')).toBeNull();
+    expect(view.getByTestId('sidebar-settings-button').textContent?.trim()).toBe('Settings');
+  });
+
+  it('appears when a release is found and goes when it is gone, without a remount', async () => {
+    const view = render(SettingsFooter, { onOpenSettings: () => {} });
+    getUpdateState().latestVersion = '2.0.0';
+    expect(await view.findByTestId('sidebar-update-button')).toHaveTextContent('Update');
+
+    getUpdateState().latestVersion = '';
+    await vi.waitFor(() => expect(view.queryByTestId('sidebar-update-button')).toBeNull());
+  });
+
+  it('opens Settings on the Updates page and leaves the Settings button alone', async () => {
+    const onOpenSettings = vi.fn();
+    getUpdateState().latestVersion = '2.0.0';
+    const view = render(SettingsFooter, { onOpenSettings });
+
+    await fireEvent.click(view.getByTestId('sidebar-update-button'));
+    expect(isSettingsOpen()).toBe(true);
+    expect(getSettingsSection()).toBe('updates');
+    expect(onOpenSettings).not.toHaveBeenCalled();
+
+    await fireEvent.click(view.getByTestId('sidebar-settings-button'));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 });
