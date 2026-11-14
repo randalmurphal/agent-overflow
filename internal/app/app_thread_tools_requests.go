@@ -841,12 +841,14 @@ func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Cal
 // interruptRunningThread is what both cancel-by-thread doors do once lineage
 // is settled: a thread with no turn in flight has nothing to stop, and one
 // that is working gets that turn interrupted.
+//
+// "In flight" is the turn the interrupt itself would cut
+// (SampleInterrupt): the open turn after any turn start in progress, or
+// the turn of a send the provider already holds. The live state's active
+// round opens later than both, so a stop gated on it would report nothing
+// to stop for a turn that then runs to its end.
 func (t threadToolsApp) interruptRunningThread(ctx context.Context, threadID string, stop turnStop) (string, error) {
-	live, err := t.LiveState(ctx, threadID)
-	if err != nil {
-		return "", err
-	}
-	if !live.ActiveTurn {
+	if t.app.triage == nil || t.app.triage.SampleInterrupt(threadID).CutTurn() < 0 {
 		return threadtools.EffectNothing, nil
 	}
 	if err := t.app.interruptTurnCtx(ctx, threadID, stop); err != nil {

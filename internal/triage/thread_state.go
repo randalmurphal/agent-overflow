@@ -42,7 +42,7 @@ type threadState struct {
 	softClosedTurnSet bool
 	// turnStarting is non-nil while handleTurnStart runs, from before it
 	// writes the turns row until the open turn is set, and is closed
-	// when it returns. InterruptTurnIndex waits on it so an interrupt
+	// when it returns. SampleInterrupt waits on it so an interrupt
 	// never samples the turn between its row and its open turn.
 	turnStarting chan struct{}
 

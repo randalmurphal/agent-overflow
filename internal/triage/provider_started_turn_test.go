@@ -112,7 +112,7 @@ func TestSelfWakeStreamKeepsItsTurnWhenASendPersistsLater(t *testing.T) {
 }
 
 // TestStopCutsProviderStartedTurn: Stop during a self-woken turn cuts that
-// turn. With the work filed under a settled turn, InterruptTurnIndex read
+// turn. With the work filed under a settled turn, SampleInterrupt read
 // -1 and the stop recorded nothing.
 func TestStopCutsProviderStartedTurn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
@@ -128,11 +128,11 @@ func TestStopCutsProviderStartedTurn(t *testing.T) {
 		t.Fatalf("wake text: %v", err)
 	}
 
-	sampled := router.InterruptTurnIndex("t1")
-	if sampled != 1 {
-		t.Fatalf("InterruptTurnIndex = %d, want the wake's turn 1", sampled)
+	sampled := router.SampleInterrupt("t1")
+	if sampled.Turn != 1 {
+		t.Fatalf("SampleInterrupt = %d, want the wake's turn 1", sampled.Turn)
 	}
-	tok := router.MarkFlushSendsInterrupted("t1", sampled)
+	tok := router.MarkFlushSendsInterrupted("t1", sampled.Turn)
 	errID, err := router.MarkInterrupt("t1", sampled, tok, StoppedByUser)
 	if err != nil {
 		t.Fatalf("MarkInterrupt: %v", err)

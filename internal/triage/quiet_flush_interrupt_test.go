@@ -948,9 +948,9 @@ func promoteQuietForTest(router *Router, threadID string) []store.Item {
 // pre-ack open-turn sample + Mark, then the post-ack bookkeeping with
 // that sample and token.
 func markUserInterruptForTest(router *Router, threadID string) (string, error) {
-	open := router.InterruptTurnIndex(threadID)
-	tok := router.MarkFlushSendsInterrupted(threadID, open)
-	return router.MarkInterrupt(threadID, open, tok, StoppedByUser)
+	sample := router.SampleInterrupt(threadID)
+	tok := router.MarkFlushSendsInterrupted(threadID, sample.Turn)
+	return router.MarkInterrupt(threadID, sample, tok, StoppedByUser)
 }
 
 // TestMarkFlushSendsInterrupted_PreAckStampSettlesInterrupted
@@ -1243,7 +1243,7 @@ func TestMarkInterrupt_TargetsSampledTurnNotEchoOpenedTurn(t *testing.T) {
 	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), interruptedTurn)
 	router.WaitForPendingSettles()
 
-	errID, err := router.MarkInterrupt("t1", interruptedTurn, tok, StoppedByUser)
+	errID, err := router.MarkInterrupt("t1", InterruptSample{Turn: interruptedTurn}, tok, StoppedByUser)
 	if err != nil {
 		t.Fatalf("MarkInterrupt: %v", err)
 	}
@@ -1263,7 +1263,7 @@ func TestMarkInterrupt_TargetsSampledTurnNotEchoOpenedTurn(t *testing.T) {
 	// CT11-1): the stale token must make the whole call a no-op.
 	tok = router.MarkFlushSendsInterrupted("t1", 1)
 	router.MarkThreadActive("t1")
-	if errID, err := router.MarkInterrupt("t1", 1, tok, StoppedByUser); err != nil || errID != "" {
+	if errID, err := router.MarkInterrupt("t1", InterruptSample{Turn: 1}, tok, StoppedByUser); err != nil || errID != "" {
 		t.Errorf("stale MarkInterrupt = (%q, %v), want a silent no-op", errID, err)
 	}
 }
@@ -1290,7 +1290,7 @@ func TestMarkInterrupt_NegativeSampleIsNoOp(t *testing.T) {
 	}
 
 	tok := router.MarkFlushSendsInterrupted("t1", -1)
-	errID, err := router.MarkInterrupt("t1", -1, tok, StoppedByUser)
+	errID, err := router.MarkInterrupt("t1", InterruptSample{Turn: -1}, tok, StoppedByUser)
 	if err != nil {
 		t.Fatalf("MarkInterrupt: %v", err)
 	}
