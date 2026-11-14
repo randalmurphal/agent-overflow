@@ -63,7 +63,9 @@ type threadState struct {
 
 	// Id-allocating counters, keyed by scopeCounterKey(turnIndex, scope).
 	// These allocate thread-lifetime `items.id` values, so they are
-	// cleaned at session teardown, not at turn boundaries.
+	// cleaned at session teardown, not at turn boundaries. The rows
+	// outlive them: ids built from the sequence counters are checked
+	// against the store (reserveItemID).
 	segmentIndexByScope  map[string]int
 	blockIndexByScope    map[string]int
 	errorSeqByScope      map[string]int
@@ -204,8 +206,7 @@ type threadState struct {
 	// for that process; forwarded-stdin interactions always take the next
 	// id. Bounded the same way other id-allocating counters are: retained
 	// across clearOpenTurn to avoid multi-result id collisions and swept
-	// at session teardown / selective turn re-init reset. See
-	// terminal_interaction.go for the handler.
+	// at session teardown. See terminal_interaction.go for the handler.
 	terminalInteractionSeq map[string]int
 
 	// openAPIRetryRow flags a thread whose current api_retry row is in
@@ -381,6 +382,27 @@ type threadState struct {
 	subagentCards map[string]*subagentCardEntry
 }
 
+// seedStreamIndexes starts turnIndex's text and thinking block indexes
+// unless the turn already has them. A turn start that repeats (a queued
+// echo and the wire start, a provider retry) keeps counting, so the blocks
+// that follow do not take the ids of the turn's saved blocks. Caller holds
+// r.mu.
+func (st *threadState) seedStreamIndexes(turnIndex int) {
+	key := scopeCounterKey(turnIndex, "")
+	if st.segmentIndexByScope == nil {
+		st.segmentIndexByScope = make(map[string]int)
+	}
+	if st.blockIndexByScope == nil {
+		st.blockIndexByScope = make(map[string]int)
+	}
+	if _, ok := st.segmentIndexByScope[key]; !ok {
+		st.segmentIndexByScope[key] = -1
+	}
+	if _, ok := st.blockIndexByScope[key]; !ok {
+		st.blockIndexByScope[key] = -1
+	}
+}
+
 // threadIdentity is per-thread state that must SURVIVE cleanupThread.
 // Everything here is either a monotonic epoch/generation counter whose
 // reset would let a stale captured value match a fresh session, or a
@@ -438,6 +460,13 @@ type threadIdentity struct {
 	// (echo path), before streamFlushMu and r.mu; never replaced (same
 	// reasoning as anchorLock).
 	drainLock sync.Mutex
+	// itemIDLock serializes, PER THREAD, choosing a row id from a sequence
+	// counter with the write of its row (reserveItemID). Taken after the
+	// anchor and drain locks and before r.mu; the row write is the only
+	// work done under it. Never replaced (same reasoning as anchorLock):
+	// the counters it covers are swept by cleanupThread, which is the
+	// case it exists for.
+	itemIDLock sync.Mutex
 	// trayLock serializes, PER THREAD, a background tray delta's read and
 	// emit (background_tray.go), so the thread's frames reach the bus in
 	// the order of the reads they carry. A leaf: nothing else is taken
