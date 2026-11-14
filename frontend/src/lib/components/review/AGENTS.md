@@ -41,6 +41,8 @@ PR stores; components own presentation and interaction.
   height stays reachable. Row indices are indices of the whole list; a
   row outside the held range has no scroll offset, so reach it through
   `scrollToIndex`. Review-specific anchoring and selection stay here.
+  The file tree's rows share one height and mount through
+  `shared/VirtualList`.
 - Remember and restore reading positions as reading anchors (file, line,
   pixel delta; `utils/reviewAnchor.ts`), never as pixel offsets: a pixel
   names a different line once the held range moves.

@@ -120,4 +120,50 @@ describe('<ReviewFileTree> windowing in a real browser', () => {
     expect(list.scrollTop).toBe(0);
     expectTiled(root, 28);
   });
+
+  it('keeps keyboard focus on a row that scrolls out of the window', async () => {
+    const root = mountTree();
+    await waitFor(() => rows(root).length > 16, 'the viewport height to reach the list');
+    const list = viewport(root);
+    const path = FILES[2].path;
+    const button = root.querySelector<HTMLElement>(`[data-file-path="${path}"]`)!;
+    button.focus();
+    expect(document.activeElement).toBe(button);
+
+    list.scrollTop = list.scrollHeight;
+    await waitFor(() => filePaths(root).at(-1) === FILES[FILE_COUNT - 1].path, 'the last file to mount');
+    expect(document.activeElement).toBe(button);
+    expect(button.isConnected).toBe(true);
+    // Out of flow at its own place: file 2 is the fourth row.
+    const top = button.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+    expect(top).toBeCloseTo(3 * 28, 3);
+    expect(viewport(root).scrollHeight).toBe(ROW_COUNT * 28 + 8);
+
+    list.scrollTop = 0;
+    await waitFor(() => filePaths(root)[0] === FILES[0].path, 'the first file to mount');
+    expect(document.activeElement).toBe(button);
+    expectTiled(root, 28);
+
+    list.scrollTop = list.scrollHeight;
+    await waitFor(() => filePaths(root).at(-1) === FILES[FILE_COUNT - 1].path, 'the last file to mount');
+    root.querySelector<HTMLInputElement>('[data-testid="review-tree-search"]')!.focus();
+    await waitFor(() => !filePaths(root).includes(path), 'the unfocused row to unmount');
+  });
+
+  it('positions rows without a transform and names the whole list to a screen reader', async () => {
+    const root = mountTree();
+    await waitFor(() => rows(root).length > 16, 'the viewport height to reach the list');
+    const list = viewport(root);
+    list.scrollTop = 1000 * 28;
+    await waitFor(() => Number(rows(root)[0].dataset.rowIndex) > 900, 'the window to move');
+
+    for (let node: HTMLElement | null = rows(root)[0]; node && node !== list.parentElement; node = node.parentElement) {
+      expect(getComputedStyle(node).transform).toBe('none');
+    }
+    expect(list.getAttribute('role')).toBe('list');
+    const row = rows(root)[0];
+    expect(row.getAttribute('role')).toBe('listitem');
+    expect(row.getAttribute('aria-setsize')).toBe(String(ROW_COUNT));
+    expect(row.getAttribute('aria-posinset')).toBe(String(Number(row.dataset.rowIndex) + 1));
+  });
 });

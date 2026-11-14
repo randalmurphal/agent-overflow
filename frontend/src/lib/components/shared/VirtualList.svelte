@@ -14,7 +14,9 @@
   //   </VirtualList>
   //
   // A row fills its `rowHeight` wrapper (`h-full`). Rows are keyed by
-  // `key`, else by the item's `id`, else by index.
+  // `key`, else by the item's `id`, else by index. The row holding
+  // keyboard focus stays mounted when it scrolls out of the window, so
+  // focus is never dropped by scrolling.
 
   import type { Snippet } from 'svelte';
 
@@ -60,7 +62,53 @@
   let offsetY = $derived(startIndex * rowHeight);
   let totalHeight = $derived(items.length * rowHeight);
 
-  let windowItems = $derived(items.slice(startIndex, endIndex));
+  function rowKey(item: T, index: number): string | number {
+    return key ? key(item, index) : keyOf(item, index);
+  }
+
+  // The key of the row that holds focus, while one does.
+  let focusedKey: string | number | undefined = $state(undefined);
+  let focusedIndex = $derived.by(() => {
+    const wanted = focusedKey;
+    return wanted === undefined ? -1 : items.findIndex((item, index) => rowKey(item, index) === wanted);
+  });
+
+  // A focused row that left the list was removed without a focusout.
+  $effect(() => {
+    if (focusedKey !== undefined && focusedIndex < 0) focusedKey = undefined;
+  });
+
+  // The window's rows in index order, with the focused row before or
+  // after them when it is outside the window.
+  let rows = $derived.by(() => {
+    const out: { item: T; index: number; pinned: boolean }[] = [];
+    if (focusedIndex >= 0 && focusedIndex < startIndex) {
+      out.push({ item: items[focusedIndex], index: focusedIndex, pinned: true });
+    }
+    for (let index = startIndex; index < endIndex; index += 1) {
+      out.push({ item: items[index], index, pinned: false });
+    }
+    if (focusedIndex >= endIndex) {
+      out.push({ item: items[focusedIndex], index: focusedIndex, pinned: true });
+    }
+    return out;
+  });
+
+  function handleFocusIn(e: FocusEvent): void {
+    const row = (e.target as Element).closest<HTMLElement>('[data-row-index]');
+    const index = Number(row?.dataset.rowIndex ?? -1);
+    focusedKey = index >= 0 && index < items.length ? rowKey(items[index], index) : undefined;
+  }
+
+  function handleFocusOut(e: FocusEvent): void {
+    const container = e.currentTarget as HTMLElement;
+    // Focus moving to another row is followed by its focusin. A window
+    // that lost focus still has the row as its active element and gives
+    // focus back to it.
+    if (e.relatedTarget instanceof Node && container.contains(e.relatedTarget)) return;
+    if (!document.hasFocus() && container.contains(document.activeElement)) return;
+    focusedKey = undefined;
+  }
 
   function handleScroll(e: Event): void {
     const target = e.currentTarget as HTMLDivElement;
@@ -91,21 +139,30 @@
 >
   <!-- Spacer keeps the scroll height correct so the native scrollbar
        reflects full content length. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     style={`height: ${totalHeight}px; position: relative;`}
     data-testid="virtual-list-spacer"
+    onfocusin={handleFocusIn}
+    onfocusout={handleFocusOut}
   >
-    <div style={`position: absolute; top: ${offsetY}px; left: 0; right: 0;`}>
-      {#each windowItems as item, windowIdx (key ? key(item, startIndex + windowIdx) : keyOf(item, startIndex + windowIdx))}
-        <div
-          style={`height: ${rowHeight}px;`}
-          data-testid="virtual-list-row"
-          data-row-index={startIndex + windowIdx}
-        >
-          {@render children?.(item, startIndex + windowIdx)}
-        </div>
-      {/each}
-    </div>
+    <!-- The window's rows are in flow under a pad of the rows above them.
+         A pinned row is out of flow at its own offset. -->
+    <div style={`height: ${offsetY}px;`} aria-hidden="true"></div>
+    {#each rows as row (rowKey(row.item, row.index))}
+      <div
+        style={row.pinned
+          ? `position: absolute; top: ${row.index * rowHeight}px; left: 0; right: 0; height: ${rowHeight}px;`
+          : `height: ${rowHeight}px;`}
+        role={role === 'list' ? 'listitem' : undefined}
+        aria-setsize={role === 'list' ? items.length : undefined}
+        aria-posinset={role === 'list' ? row.index + 1 : undefined}
+        data-testid="virtual-list-row"
+        data-row-index={row.index}
+      >
+        {@render children?.(row.item, row.index)}
+      </div>
+    {/each}
   </div>
 </div>
 

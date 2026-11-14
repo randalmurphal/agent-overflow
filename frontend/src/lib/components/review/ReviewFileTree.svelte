@@ -291,7 +291,6 @@
       items={visibleNodes}
       {rowHeight}
       overscan={8}
-      role="presentation"
       class="min-h-0 flex-1 pb-2"
       key={(entry) => entry.node.path}
     >
