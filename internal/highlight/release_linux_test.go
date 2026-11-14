@@ -54,12 +54,26 @@ func TestCacheReturnsFreedParseMemoryOnceIdle(t *testing.T) {
 	debug.FreeOSMemory()
 	base := rssAnon(t)
 
+	// The burst must free a measurable heap before any release runs, at
+	// any host speed: every parse runs to completion, since one cut off by
+	// parseTimeout frees its partial tree early, and the release that
+	// sustained work forces after maxDelay cannot run during a slow burst.
+	prevTimeout := parseTimeout
+	parseTimeout = 0
+	defer func() { parseTimeout = prevTimeout }()
 	cache := NewCache()
+	cache.heap.maxDelay = time.Hour
 	var wg sync.WaitGroup
+	incomplete := make([]bool, len(sources))
 	for i, source := range sources {
-		wg.Go(func() { cache.CodeTransient(langs[i/2], source) })
+		wg.Go(func() { incomplete[i] = cache.CodeTransient(langs[i/2], source).Incomplete })
 	}
 	wg.Wait()
+	for i, failed := range incomplete {
+		if failed {
+			t.Fatalf("burst parse %d did not complete", i)
+		}
+	}
 	debug.FreeOSMemory()
 	retained := rssAnon(t) - base
 	const limit = 32 << 20

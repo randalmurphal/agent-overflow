@@ -34,7 +34,7 @@ func compute(h *heapRelease, d time.Duration) {
 func TestHeapReleaseRunsOnceIdle(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var log releaseLog
-		h := &heapRelease{release: log.release}
+		h := &heapRelease{release: log.release, maxDelay: releaseMaxDelay}
 		compute(h, 0)
 		time.Sleep(releaseIdle / 2)
 		compute(h, 0)
@@ -68,7 +68,7 @@ func TestHeapReleaseRunsOnceIdle(t *testing.T) {
 func TestHeapReleaseWaitsForComputationsInFlight(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var log releaseLog
-		h := &heapRelease{release: log.release}
+		h := &heapRelease{release: log.release, maxDelay: releaseMaxDelay}
 		compute(h, 0)
 		// A long computation starts before the idle release fires.
 		h.begin()
@@ -94,7 +94,7 @@ func TestHeapReleaseWaitsForComputationsInFlight(t *testing.T) {
 func TestHeapReleaseBoundsDelayUnderSustainedWork(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var log releaseLog
-		h := &heapRelease{release: log.release}
+		h := &heapRelease{release: log.release, maxDelay: releaseMaxDelay}
 		start := time.Now()
 		// Computations keep arriving with gaps shorter than releaseIdle.
 		for time.Since(start) < 3*releaseMaxDelay {
