@@ -14,10 +14,17 @@ import (
 // with the agent's first model report. A later delivery of the same row
 // would stamp a later moment, so a row's first state wins. An effort and its
 // alternatives are one stamp: they settle together.
-var launchStampGroups = [][]string{
-	{"inherited_effort", "inherited_effort_alternatives"},
-	{"requested_model"},
-	{"run_effort"},
+var launchStampGroups = []launchStampGroup{
+	{keys: []string{"inherited_effort", "inherited_effort_alternatives"}},
+	{keys: []string{"requested_model"}},
+	{keys: []string{"run_effort"}, reported: true},
+}
+
+type launchStampGroup struct {
+	keys []string
+	// reported marks a stamp the agent's own request reported, not one read
+	// off the launch moment: a row without it takes it from any delivery.
+	reported bool
 }
 
 // launchStampFields picks the launch stamps out of a tool start's meta, so
@@ -32,7 +39,7 @@ func launchStampFields(meta json.RawMessage) map[string]json.RawMessage {
 	}
 	stamps := map[string]json.RawMessage{}
 	for _, group := range launchStampGroups {
-		for _, key := range group {
+		for _, key := range group.keys {
 			if value, ok := fields[key]; ok {
 				stamps[key] = value
 			}
@@ -53,7 +60,7 @@ func holdLaunchStamps(held, next map[string]json.RawMessage) map[string]json.Raw
 	}
 	for _, group := range launchStampGroups {
 		settled := false
-		for _, key := range group {
+		for _, key := range group.keys {
 			if _, ok := held[key]; ok {
 				settled = true
 			}
@@ -61,7 +68,7 @@ func holdLaunchStamps(held, next map[string]json.RawMessage) map[string]json.Raw
 		if settled {
 			continue
 		}
-		for _, key := range group {
+		for _, key := range group.keys {
 			if value, ok := next[key]; ok {
 				held[key] = value
 			}
@@ -73,7 +80,7 @@ func holdLaunchStamps(held, next map[string]json.RawMessage) map[string]json.Raw
 // keepLaunchStamps settles the launch stamps of a row whose tool start is
 // delivered again (a later process, a mirror re-projection): the existing
 // row's state wins in both directions, so a row stored without a stamp never
-// gains one from a replay.
+// gains one from a replay, except a reported stamp.
 func keepLaunchStamps(existing, merged string) string {
 	return settleLaunchStamps(existing, merged, false)
 }
@@ -99,15 +106,15 @@ func settleLaunchStamps(existing, merged string, mayAdd bool) string {
 	changed := false
 	for _, group := range launchStampGroups {
 		had, has := false, false
-		for _, key := range group {
+		for _, key := range group.keys {
 			_, inPrior := prior[key]
 			_, inNext := next[key]
 			had, has = had || inPrior, has || inNext
 		}
-		if !had && (mayAdd || !has) {
+		if !had && (mayAdd || group.reported || !has) {
 			continue
 		}
-		for _, key := range group {
+		for _, key := range group.keys {
 			value, inPrior := prior[key]
 			current, inNext := next[key]
 			switch {
@@ -132,7 +139,7 @@ func settleLaunchStamps(existing, merged string, mayAdd bool) string {
 
 func mentionsLaunchStamp(meta string) bool {
 	for _, group := range launchStampGroups {
-		for _, key := range group {
+		for _, key := range group.keys {
 			if strings.Contains(meta, `"`+key+`"`) {
 				return true
 			}

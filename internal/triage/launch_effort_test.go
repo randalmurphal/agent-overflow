@@ -109,6 +109,18 @@ func TestReplayedStartDoesNotStampAnUnstampedLaunch(t *testing.T) {
 			t.Fatalf("replay stamped %s = %v on a row stored without it", key, v)
 		}
 	}
+
+	// The effort the agent's request reported is not a launch-time reading:
+	// the row takes the first one a redelivered launch carries, once.
+	start(map[string]any{"run_effort": "medium", "inherited_effort": "xhigh"})
+	start(map[string]any{"run_effort": "low"})
+	meta = launchRowMeta(t, router, "agent-1")
+	if meta["run_effort"] != "medium" {
+		t.Fatalf("run_effort = %v, want the first reported effort", meta["run_effort"])
+	}
+	if v, ok := meta["inherited_effort"]; ok {
+		t.Fatalf("replay stamped inherited_effort = %v with the reported effort", v)
+	}
 }
 
 // A resume carrier gets its stamp on a meta-only update, after its row
