@@ -489,13 +489,16 @@ returns to the switch's state once the request settles. A scratch ask
 is created with it on. The switch governs what this computer's agents
 start on their own, not whether they can answer.
 
-A standing agent also answers its workers with it
-([ruling 19](standing-agents.md#decisions)). A thread a standing agent
-spawned on this computer never puts an approval or a question to the
-user: each prompt is delivered to the agent as a wake badged with the
-worker, the worker's text quoted as data, carrying a token for this
-tool. The worker's status reads `waiting on <agent>` and raises no
-approval notification. The reply answers the prompt in the worker at
+A spawner also answers its workers with it
+([ruling 19](standing-agents.md#decisions)). A thread another thread
+spawned on this computer does not put an approval or a question to the
+user while that spawner is not archived: each prompt is delivered to
+the spawner, an assistant, an ordinary thread or another worker alike,
+as a wake badged with the worker, the worker's text quoted as data,
+carrying a token for this tool. The spawner is the caller of the
+newest local spawn of the worker, so a worker's worker asks the worker
+that spawned it. The worker's status reads `waiting on <spawner>` and
+raises no approval notification. The reply answers the prompt in the worker at
 once: `text` for a question with one part, `answers` with one entry per
 part for several, and `decision` `allow` or `deny` for an approval,
 whose `text` is the agent's reason. A form-style MCP elicitation can
@@ -797,7 +800,7 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > not be the answer you asked for. If the wait ends first, the reply
 > says `backgrounded` (still working) or `blocked` (waiting on the user
 > for an approval or a question: leave that to the user or cancel it; a
-> thread you spawned as a standing agent puts its question to you
+> thread you spawned on this computer puts its question to you
 > instead), and the answer will arrive in this thread as a message at your next
 > turn boundary, badged with the thread and token it came from. You do
 > not need to poll. `thread_status` with up to eight `tokens` waits
@@ -830,8 +833,8 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > without replying, the sender receives your final text marked as not
 > a reply, and a later `thread_reply` still reaches it as a follow-up.
 > Use `thread_send` to the sender only to start a separate exchange,
-> never to answer a token. If you are a standing agent, a thread you
-> spawned does not wait on the user: its question or approval wakes you
+> never to answer a token. A thread you spawned on this computer does
+> not wait on the user: its question or approval wakes you
 > as a message badged with that thread, with a token. Answer it with
 > `thread_reply` on that token: your answer in `text`, one per part in
 > `answers` for a question with several parts, or `decision` allow or
@@ -926,12 +929,13 @@ credential for the sender). When the sender is a standing agent, a line
 after the first says so and quotes its role line, the first non-blank
 line of its `instructions.md` after a leading frontmatter block and
 rule lines, read when the message is sent (one cleaned line of at most
-200 characters, the sender's own text), and, when the sender is the standing agent that
-spawned the receiver on this computer, that the receiver's questions
-and approval requests go to it rather than to the user. A sender on
-another computer carries its role in the forwarded call; it never
-routes the receiver's questions. A footer from an ordinary thread is
-unchanged. A wake starts with one line: reply,
+200 characters, the sender's own text). When the sender is the thread
+that spawned the receiver on this computer, the footer says the
+receiver's questions and approval requests go to it rather than to the
+user: after the standing-agent sentence when there is one, else on a
+line of its own after the first. A sender on another computer carries
+its role in the forwarded call; it never routes the receiver's
+questions. A wake starts with one line: reply,
 finished without replying, errored, cancelled, interrupted (by a restart
 of its computer, its session ending, a move to another computer or
 another interrupt, as its settlement recorded), stopped by the user
@@ -1573,8 +1577,8 @@ collects that settlement like any other.
 - Launch cards or subagent treatment for spawned threads. The requests a
   thread is owed list in its activity rail's Agents segment instead
   ([standing agents](standing-agents.md#agents-segment)).
-- Relaying approval requests to the calling agent, except a standing
-  agent's own workers
+- Relaying approval requests to the calling agent, except to the thread
+  that spawned the worker on this computer
   ([ruling 19](standing-agents.md#decisions)).
 - Spawn or wake-loop caps. A notify ping-pong in bypass mode runs until
   the human stops it from the sidebar; accepted.

@@ -383,7 +383,7 @@ func TestHandOffAssistantMovesEverythingAtOnce(t *testing.T) {
 	if source, err := s.RemoteRequestSource("new", "desk", "far"); err != nil || source != "old" {
 		t.Errorf("remote source = %q %v, want the thread that made it", source, err)
 	}
-	if spawner, _, found, err := s.StandingAgentSpawnerOf("worker"); err != nil || !found || spawner != "new" {
+	if spawner, _, found, err := s.SpawnerOf("worker"); err != nil || !found || spawner != "new" {
 		t.Errorf("worker's spawner = %q %v %v, want the current thread", spawner, found, err)
 	}
 
@@ -851,5 +851,54 @@ func TestHandOffMovesOwedRemoteJobs(t *testing.T) {
 		if w.LaunchedIn != "a" {
 			t.Errorf("watch %s launched in %q, want a", request, w.LaunchedIn)
 		}
+	}
+}
+
+// A thread's prompts go to the caller of its newest local spawn, whoever
+// that is, a worker's worker to the worker; a thread whose spawner is
+// archived, or that only a spawn on another computer names, has none. A
+// worker past the ledger's retention still names its spawner through the
+// lineage row the sweep kept.
+func TestSpawnerOfNamesTheThreadThatSpawnedIt(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "worker", "grand", "far", "kept", "orphan"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "lead-worker", "lead", ThreadRequestSpawn, "worker", false, 100)
+	seedAgentRequest(t, s, "worker-grand", "worker", ThreadRequestSpawn, "grand", false, 110)
+	seedAgentRequest(t, s, "lead-kept", "lead", ThreadRequestSpawn, "kept", false, 10)
+	settleAgentRequest(t, s, "lead-kept", 20)
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "lead-far", CallerThreadID: "lead", Kind: ThreadRequestSpawn, TargetComputerID: "desk", TargetThreadID: "orphan",
+		State: ThreadRequestRunning, CreatedAt: 120, UpdatedAt: 120,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteThreadRequestsBefore(50); err != nil {
+		t.Fatal(err)
+	}
+	if !rawThreadRequest(t, s, "lead-kept").LineageOnly {
+		t.Fatal("the old spawn was not kept as lineage")
+	}
+	for _, tc := range []struct{ thread, spawner string }{
+		{"worker", "lead"}, {"grand", "worker"}, {"kept", "lead"}, {"orphan", ""}, {"lead", ""},
+	} {
+		spawner, title, found, err := s.SpawnerOf(tc.thread)
+		if err != nil || found != (tc.spawner != "") || spawner != tc.spawner {
+			t.Errorf("spawner of %s = %q found=%v err=%v; want %q", tc.thread, spawner, found, err, tc.spawner)
+		}
+		if found && title != "Thread "+tc.spawner {
+			t.Errorf("spawner of %s titled %q", tc.thread, title)
+		}
+	}
+	if _, _, err := s.ArchiveThread("worker"); err != nil {
+		t.Fatal(err)
+	}
+	if spawner, _, found, err := s.SpawnerOf("grand"); err != nil || found {
+		t.Errorf("spawner of a worker whose spawner is archived = %q found=%v err=%v; want none", spawner, found, err)
+	}
+	if spawner, _, found, err := s.SpawnerOf("worker"); err != nil || !found || spawner != "lead" {
+		t.Errorf("an archived worker's own spawner = %q found=%v err=%v; want lead", spawner, found, err)
 	}
 }

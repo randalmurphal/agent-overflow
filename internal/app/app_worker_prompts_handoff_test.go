@@ -44,8 +44,8 @@ func TestAWorkerPromptsCurrentRegistrationIsTheOneSettled(t *testing.T) {
 	}
 }
 
-// workerPromptFixture is an assistant thread that spawned a worker whose
-// approval prompt triage routed to it.
+// workerPromptFixture is a thread, an assistant's or an ordinary one, that
+// spawned a worker whose approval prompt triage routed to it.
 type workerPromptFixture struct {
 	app       *App
 	assistant store.Thread
@@ -53,13 +53,15 @@ type workerPromptFixture struct {
 	request   provider.ApprovalRequest
 }
 
-func newWorkerPromptFixture(t *testing.T, id string) workerPromptFixture {
+func newWorkerPromptFixture(t *testing.T, id string, standing bool) workerPromptFixture {
 	t.Helper()
 	a, _ := newAppForFlushQueueRPC(t)
 	a.startSessionFn = func(string) error { return errors.New("the provider binary is missing") }
 	a.triage.SetPromptRouter(a.routeWorkerPrompt)
 	assistant := noticeTestThread(t, a, id+"-assistant")
-	testAssistant(t, a, assistant.ID)
+	if standing {
+		testAssistant(t, a, assistant.ID)
+	}
 	worker := noticeTestThread(t, a, id+"-worker")
 	if err := a.store.InsertThreadRequest(store.ThreadRequest{
 		Token: id + "-spawn", CallerThreadID: assistant.ID, TargetThreadID: worker.ID,
@@ -78,7 +80,7 @@ func newWorkerPromptFixture(t *testing.T, id string) workerPromptFixture {
 		t.Fatalf("approval request: %v", err)
 	}
 	if pending := a.triage.PendingInteractiveRequests(worker.ID).Approvals; len(pending) != 1 || pending[0].RoutedTo == nil || pending[0].RoutedTo.ThreadID != assistant.ID {
-		t.Fatalf("the worker's prompt = %+v, want it open and routed to the assistant", pending)
+		t.Fatalf("the worker's prompt = %+v, want it open and routed to its spawner", pending)
 	}
 	return workerPromptFixture{app: a, assistant: assistant, worker: worker, request: request}
 }
@@ -139,7 +141,7 @@ func TestAHandedOnWorkerPromptGoesBackWhenItsWakeIsWithdrawn(t *testing.T) {
 	for i := range 8 {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			t.Parallel()
-			f := newWorkerPromptFixture(t, fmt.Sprintf("handed-on-%d", i))
+			f := newWorkerPromptFixture(t, fmt.Sprintf("handed-on-%d", i), true)
 			f.deliver(t, f.assistant.ID)
 			first := f.queuedPrompt(t, f.assistant.ID)
 			next := f.handOff(t, f.assistant.ID)
@@ -168,7 +170,7 @@ func TestAHandedOnWorkerPromptGoesBackWhenItsWakeIsWithdrawn(t *testing.T) {
 // answer in the worker withdraws the successor's wake.
 func TestAWorkerPromptStampedBeforeAHandoffBelongsToTheSuccessor(t *testing.T) {
 	t.Parallel()
-	f := newWorkerPromptFixture(t, "stamped-before")
+	f := newWorkerPromptFixture(t, "stamped-before", true)
 	next := f.handOff(t, f.assistant.ID)
 	f.deliver(t, f.assistant.ID)
 	sendID := f.queuedPrompt(t, next.ID)

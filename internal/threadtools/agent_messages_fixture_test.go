@@ -81,7 +81,7 @@ func requestPart(body string, footer Footer) (string, fixturePart) {
 			Reachable:     footer.SenderReachable,
 			UserMessage:   clipRunes(strings.TrimSpace(collapseLines(footer.UserMessage)), UserMessageQuoteRunes),
 			AgentRole:     role(footer.Agent),
-			RoutesPrompts: footer.Agent != nil && footer.RoutesPrompts,
+			RoutesPrompts: footer.RoutesPrompts,
 		},
 	}
 }
@@ -192,6 +192,10 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("request from a standing agent that spawned the receiver", request("Do the task.", Footer{
 			Title: "Planner", ThreadID: "t-plan", Token: token, AnswerRequested: true, SenderReachable: true,
 			Agent: &SenderAgent{Role: "Keeps the \"plan\" honest."}, RoutesPrompts: true,
+		})),
+		one("request from an ordinary thread that spawned the receiver", request("Do the task.", Footer{
+			Title: "Planner", ThreadID: "t-plan", Token: token, AnswerRequested: true, SenderReachable: true,
+			RoutesPrompts: true,
 		})),
 		one("request from a standing agent with no role", request("Hello.", Footer{
 			Title: "Planner", ThreadID: "t-plan", Token: token, SenderReachable: true, Agent: &SenderAgent{},

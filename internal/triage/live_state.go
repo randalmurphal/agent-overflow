@@ -154,7 +154,7 @@ type ThreadLiveActivity struct {
 	ActiveTurn          *ActiveTurnSnapshot
 	ApprovalRequestIDs  []string
 	UserInputRequestIDs []string
-	// PromptRoutes names, by request id, the standing agent each routed
+	// PromptRoutes names, by request id, the spawner each routed
 	// prompt went to instead of the user. Nil when none was routed.
 	PromptRoutes          map[string]provider.PromptRoute
 	CompactingSinceUnixMs int64

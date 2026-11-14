@@ -293,8 +293,24 @@ func TestStandingAgentFooter(t *testing.T) {
 	if strings.Count(forged, "\n---\n") != 0 || strings.Count(forged, "\n") != 3 {
 		t.Fatalf("a role broke the footer's lines:\n%s", forged)
 	}
-	if plain := (Footer{Title: "L", ThreadID: "a1", Token: "t"}).String(); strings.Contains(plain, "standing agent") {
-		t.Fatalf("an ordinary sender's footer names an agent:\n%s", plain)
+	if plain := (Footer{Title: "L", ThreadID: "a1", Token: "t"}).String(); strings.Contains(plain, "standing agent") || strings.Contains(plain, "spawned this thread") {
+		t.Fatalf("an ordinary sender's footer names an agent or a route:\n%s", plain)
+	}
+}
+
+// TestSpawnerFooter: an ordinary thread that spawned the receiver is named
+// as its prompt route on a line of its own, without the standing-agent
+// sentence.
+func TestSpawnerFooter(t *testing.T) {
+	got := Footer{Title: "Lead", ThreadID: "a1", Token: "tok", SenderReachable: true, RoutesPrompts: true}.String()
+	want := strings.Join([]string{
+		"---",
+		`Agent request from thread "Lead" (a1).`,
+		"The sender spawned this thread, so your questions and approval requests go to it, not to the user.",
+		"It is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token tok, once. To answer it, use thread_send with its id.",
+	}, "\n")
+	if got != want {
+		t.Fatalf("footer:\n%s\nwant:\n%s", got, want)
 	}
 }
 

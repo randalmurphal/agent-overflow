@@ -96,6 +96,30 @@
     ]
   },
   {
+    "name": "request from an ordinary thread that spawned the receiver",
+    "text": "Do the task.\n\n---\nAgent request from thread \"Planner\" (t-plan).\nThe sender spawned this thread, so your questions and approval requests go to it, not to the user.\nIt is waiting for your answer. When you are done, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. The sender sees only your reply text, so make it self-contained. To read the sender's thread, use thread_show with its id.",
+    "members": [
+      408
+    ],
+    "parts": [
+      {
+        "body": "Do the task.",
+        "footer": {
+          "title": "Planner",
+          "threadId": "t-plan",
+          "computer": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "waiting": true,
+          "reachable": true,
+          "userMessage": "",
+          "agentRole": null,
+          "routesPrompts": true
+        },
+        "wake": null
+      }
+    ]
+  },
+  {
     "name": "request from a standing agent with no role",
     "text": "Hello.\n\n---\nAgent request from thread \"Planner\" (t-plan).\nThe sender is a standing agent.\nIt is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. To answer it, use thread_send with its id.",
     "members": [

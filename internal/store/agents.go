@@ -297,28 +297,29 @@ func (s *Store) PlaceThreadInHome(threadID, home string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: place thread %s in %s: no such thread outside every assistant", threadID, home))
 }
 
-// StandingAgentSpawnerOf names the assistant thread that spawned a thread on
-// this computer: the caller of a local `spawn` request whose target is the
-// thread, while that caller is an assistant's current thread and not
-// archived. A handoff moves its predecessors' spawn rows to the current
-// thread, so a worker an earlier thread spawned names the current one.
-// Found is false for every other thread. A worker past the request ledger's
-// retention still names its agent: the sweep keeps its spawn row as lineage
-// (spawnLineageSQL), so its prompts keep routing there.
-func (s *Store) StandingAgentSpawnerOf(threadID string) (agentThreadID, title string, found bool, err error) {
-	err = s.reader().QueryRow(`SELECT t.id, t.title FROM agents a
-		JOIN thread_requests r ON r.caller_thread_id = a.thread_id
-		JOIN threads t ON t.id = a.thread_id
+// SpawnerOf names the thread that spawned a thread on this computer, the
+// one its questions and approvals go to: the caller of the newest local
+// `spawn` request whose target is the thread, while that caller is not
+// archived. Any thread can be the spawner, an assistant, an ordinary thread
+// or another worker. A handoff moves its predecessors' spawn rows to the
+// current thread, so a worker an earlier thread of an assistant spawned
+// names the current one. Found is false for a thread no local spawn made
+// and for one whose spawner is archived. A worker past the request ledger's
+// retention still names its spawner: the sweep keeps its spawn row as
+// lineage (spawnLineageSQL), so its prompts keep routing there.
+func (s *Store) SpawnerOf(threadID string) (spawnerThreadID, title string, found bool, err error) {
+	var archived bool
+	err = s.reader().QueryRow(`SELECT t.id, t.title, t.archived FROM thread_requests r
+		JOIN threads t ON t.id = r.caller_thread_id
 		WHERE r.kind = '`+ThreadRequestSpawn+`' AND r.target_computer_id = '' AND r.target_thread_id = ?
-		  AND t.archived = 0
-		ORDER BY r.created_at DESC LIMIT 1`, threadID).Scan(&agentThreadID, &title)
-	if errors.Is(err, sql.ErrNoRows) {
+		ORDER BY r.created_at DESC, r.token DESC LIMIT 1`, threadID).Scan(&spawnerThreadID, &title, &archived)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && archived) {
 		return "", "", false, nil
 	}
 	if err != nil {
-		return "", "", false, fmt.Errorf("store: read the standing agent that spawned %s: %w", threadID, err)
+		return "", "", false, fmt.Errorf("store: read the thread that spawned %s: %w", threadID, err)
 	}
-	return agentThreadID, title, true, nil
+	return spawnerThreadID, title, true, nil
 }
 
 // AssistantListing is one assistant as the thread tools list and address

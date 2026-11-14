@@ -51,11 +51,17 @@ type Footer struct {
 	UserMessage string
 	// Agent is set when the sender is a standing agent.
 	Agent *SenderAgent
-	// RoutesPrompts is true when the sender is the standing agent that
-	// spawned the receiving thread, so the receiver's questions and approval
-	// requests go to the sender rather than to the user.
+	// RoutesPrompts is true when the sender is the thread that spawned the
+	// receiving thread on its computer, so the receiver's questions and
+	// approval requests go to the sender rather than to the user. It follows
+	// the standing-agent sentence when there is one and is a line of its own
+	// otherwise.
 	RoutesPrompts bool
 }
+
+// routesSentence says, after the sender, that the receiver's prompts go to
+// it.
+const routesSentence = "spawned this thread, so your questions and approval requests go to it, not to the user."
 
 // SenderAgent names a standing agent on a footer or a wake.
 type SenderAgent struct {
@@ -128,12 +134,15 @@ func StripFooter(text string) string {
 // marker the server instructions tell the receiver to look for.
 func (f Footer) String() string {
 	lines := []string{"---", fmt.Sprintf("%s%q (%s%s).", FooterMarker, f.Title, f.ThreadID, onComputer(f.Computer))}
-	if f.Agent != nil {
+	switch {
+	case f.Agent != nil:
 		line := f.Agent.sentence("The sender")
 		if f.RoutesPrompts {
-			line += " It spawned this thread, so your questions and approval requests go to it, not to the user."
+			line += " It " + routesSentence
 		}
 		lines = append(lines, line)
+	case f.RoutesPrompts:
+		lines = append(lines, "The sender "+routesSentence)
 	}
 	if f.AnswerRequested {
 		body := fmt.Sprintf("It is waiting for your answer. When you are done, call thread_reply with token %s, once. The sender sees only your reply text, so make it self-contained.", f.Token)

@@ -959,11 +959,11 @@ func (t threadToolsApp) requestMessageBody(
 		UserMessage:     latest,
 		Agent:           origin.agent,
 	}
-	if origin.agent != nil && !origin.foreign {
-		// A worker's questions and approvals reach the standing agent that
-		// spawned it on this computer (StandingAgentSpawnerOf); a sender
-		// on another computer never routes them.
-		spawner, _, found, err := t.app.store.StandingAgentSpawnerOf(targetThreadID)
+	if !origin.foreign {
+		// A worker's questions and approvals reach the thread that spawned
+		// it on this computer (store.SpawnerOf); a sender on another
+		// computer never routes them.
+		spawner, _, found, err := t.app.store.SpawnerOf(targetThreadID)
 		if err != nil {
 			return "", err
 		}

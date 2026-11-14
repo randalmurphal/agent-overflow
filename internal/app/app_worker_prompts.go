@@ -19,12 +19,13 @@ import (
 	"agent-overflow/internal/usermessage"
 )
 
-// A worker's question goes to its agent (standing agents, ruling 19). A
-// thread a standing agent spawned on this computer never stops at the user:
-// triage stamps each of its approval and user-input prompts with the agent
-// (routeWorkerPrompt), the emit tap queues the prompt to the agent as a
-// badged wake, and the agent answers it with thread_reply on the token the
-// wake carries. The prompt stays open in the worker, so the user can still
+// A worker's question goes to the thread that spawned it (standing agents,
+// ruling 19), whoever that is. A thread another thread on this computer
+// spawned does not stop at the user while its spawner is not archived:
+// triage stamps each of its approval and user-input prompts with the
+// spawner (routeWorkerPrompt), the emit tap queues the prompt to the
+// spawner as a badged wake, and the spawner's agent answers it with
+// thread_reply on the token the wake carries. The prompt stays open in the worker, so the user can still
 // answer it there, which settles the wake. A prompt the agent cannot take,
 // because the wake never reached its session or its queue was cleared, is
 // handed back to the user.
@@ -91,10 +92,10 @@ type workerPrompts struct {
 	queue   serialqueue.Queue
 }
 
-// routeWorkerPrompt is triage's prompt router: the standing agent that
-// spawned threadID, or nil when the prompt is the user's.
+// routeWorkerPrompt is triage's prompt router: the thread that spawned
+// threadID (store.SpawnerOf), or nil when the prompt is the user's.
 func (a *App) routeWorkerPrompt(threadID string) *provider.PromptRoute {
-	agentID, title, found, err := a.store.StandingAgentSpawnerOf(threadID)
+	agentID, title, found, err := a.store.SpawnerOf(threadID)
 	if err != nil {
 		log.Printf("worker prompts: %v", err)
 		return nil

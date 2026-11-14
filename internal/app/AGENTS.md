@@ -189,11 +189,11 @@ the thread's activity and read state; the marks it reads are kept by
 `tapAgentWakeTurns`, which runs on the emit funnel before the notification
 tap.
 
-A standing agent's worker prompts are stamped with their route by triage
-(`SetPromptRouter`) and delivered, answered and settled in
+A spawned thread's prompts are stamped with their route to its spawner
+by triage (`SetPromptRouter`) and delivered, answered and settled in
 `app_worker_prompts.go`, off the emit path on one serial queue so a
 resolution never overtakes its delivery. A prompt whose wake cannot reach
-the agent (a failed delivery, a session that ended with it unconfirmed, a
+the spawner (a failed delivery, a session that ended with it unconfirmed, a
 cleared queue) goes back to the user through `triage.UnroutePrompt`; it is
 never left routed to nobody.
 

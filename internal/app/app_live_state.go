@@ -182,7 +182,7 @@ type ThreadLiveActivity struct {
 	ActiveTurn          *LiveStateActiveTurn `json:"activeTurn,omitempty"`
 	ApprovalRequestIDs  []string             `json:"approvalRequestIds"`
 	UserInputRequestIDs []string             `json:"userInputRequestIds"`
-	// PromptRoutes names, by request id, the standing agent a routed
+	// PromptRoutes names, by request id, the spawner a routed
 	// prompt went to instead of the user.
 	PromptRoutes          map[string]provider.PromptRoute `json:"promptRoutes,omitempty"`
 	CompactingSinceUnixMs int64                           `json:"compactingSinceUnixMs,omitempty"`

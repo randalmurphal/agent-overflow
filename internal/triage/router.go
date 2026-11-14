@@ -61,7 +61,7 @@ type Router struct {
 	// app-layer resolution); nil until then. Leaf lock.
 	generatedImageMu       sync.Mutex
 	generatedImageImporter GeneratedImageImporter
-	// promptRouter names the standing agent a thread's approval and
+	// promptRouter names the spawner a thread's approval and
 	// user-input prompts go to instead of the user, or nil. Installed by
 	// the app (SetPromptRouter); nil until then. Leaf lock.
 	promptRouterMu sync.Mutex

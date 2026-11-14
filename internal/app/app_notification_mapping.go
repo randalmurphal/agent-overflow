@@ -137,7 +137,7 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		if moment.RequestID == "" {
 			return
 		}
-		// A worker's approval routed to its standing agent is not the
+		// A worker's approval routed to its spawner is not the
 		// user's to answer, so it does not call them (ruling 19).
 		if event.Request != nil && event.Request.RoutedTo != nil {
 			return
@@ -158,7 +158,7 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		if moment.RequestID == "" {
 			return
 		}
-		// A worker's question routed to its standing agent is not the
+		// A worker's question routed to its spawner is not the
 		// user's to answer, so it does not call them (ruling 19); handed
 		// back, it is announced again without the route and does.
 		if event.Request != nil && event.Request.RoutedTo != nil {
