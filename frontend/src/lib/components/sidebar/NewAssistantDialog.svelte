@@ -9,11 +9,11 @@
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
   import { CreateAssistant } from '../../stores/bindings';
-  import { closeNewAssistantDialog, getNewAssistantRequest } from '../../stores/newAssistant.svelte';
+  import { closeNewAssistantDialog, getNewAssistantRequest, isNewAssistantOpening } from '../../stores/newAssistant.svelte';
   import { prependThreadReply } from '../../stores/threads.svelte';
   import { threadRowFrameMark } from '../../stores/threadRowFrames';
-  import { openThreadInNewPane, openThreadInPane } from '../../stores/panes.svelte';
-  import { selectedBackend } from '../../stores/selectedBackend.svelte';
+  import { getPane, openThreadInNewPane, openThreadInPane } from '../../stores/panes.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { attachedBackendEntry, backendDisplayName, hasMultipleBackends } from '../../stores/attachedBackends.svelte';
   import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
   import { projectBackend } from '../../transport/entityIndex';
@@ -32,8 +32,8 @@
   let error: string | null = $state(null);
 
   // The computer the assistant is made on: the project's it came from, or
-  // the selected one from the Assistants header.
-  let backend = $derived(request?.projectId ? projectBackend(request.projectId) : selectedBackend());
+  // the one selected when the dialog opened from the Assistants header.
+  let backend = $derived(request?.projectId ? projectBackend(request.projectId) : request?.selectedBackend);
   let computerName = $derived.by(() => {
     if (!hasMultipleBackends() || backend === undefined) return '';
     const entry = attachedBackendEntry(backend);
@@ -68,18 +68,31 @@
     submitting = true;
     error = null;
     const options = { name: name.trim(), projectIds: all ? [] : selected.slice(), allProjects: all };
+    let thread: Thread;
     try {
       const target = requireEntityBackend(backend);
       const mark = threadRowFrameMark();
       const reply = (await withBackendTarget(target, () => CreateAssistant(options))) as Thread;
-      const thread = prependThreadReply(reply, mark);
-      closeNewAssistantDialog();
-      if (current.openInNewPane) await openThreadInNewPane(thread);
-      else await openThreadInPane(thread, current.targetPane ?? undefined);
+      // The assistant exists whatever became of this opening: the sidebar
+      // lists it.
+      thread = prependThreadReply(reply, mark);
     } catch (err) {
       console.error('Failed to create an assistant:', err);
+      // A later opening's form is not this one's to mark.
+      if (!isNewAssistantOpening(current)) return;
       error = userFacingError(err);
       submitting = false;
+      return;
+    }
+    // Cancelled or replaced while it was created: the person is elsewhere.
+    if (!isNewAssistantOpening(current)) return;
+    closeNewAssistantDialog(current);
+    try {
+      if (current.openInNewPane) await openThreadInNewPane(thread);
+      // A pane closed meanwhile is not revived; the open takes the focused one.
+      else await openThreadInPane(thread, current.targetPane && getPane(current.targetPane.paneId) === current.targetPane ? current.targetPane : undefined);
+    } catch (err) {
+      addErrorToast('The assistant was created, but its thread could not be opened.', err);
     }
   }
 

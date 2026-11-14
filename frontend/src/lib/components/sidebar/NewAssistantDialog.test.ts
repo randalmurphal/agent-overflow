@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import NewAssistantDialog from './NewAssistantDialog.svelte';
-import { closeNewAssistantDialog, openNewAssistantDialog } from '../../stores/newAssistant.svelte';
+import { closeNewAssistantDialog, getNewAssistantRequest, openNewAssistantDialog } from '../../stores/newAssistant.svelte';
+import { setSelectedBackend } from '../../stores/selectedBackend.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
 import { getThreads } from '../../stores/threads.svelte';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { createPane, destroyPane, ensureMainPane, findPaneShowingThread, getPane, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
 import { __resetEntityIndexForTest } from '../../transport/entityIndex';
@@ -114,6 +116,75 @@ describe('<NewAssistantDialog>', () => {
     expect(create.disabled).toBe(false);
     await fireEvent.click(item(view, 'p1'));
     expect(create.disabled).toBe(true);
+  });
+
+  /** Starts a creation whose answer the test settles, then cancels and reopens the dialog on p2. */
+  async function cancelAndReopenDuringCreate() {
+    let settle!: { resolve: (thread: unknown) => void; reject: (err: unknown) => void };
+    const create = setBindingMock('CreateAssistant', vi.fn(() => new Promise((resolve, reject) => { settle = { resolve, reject }; })));
+    const open = setBindingMock('SwitchThread', vi.fn(async () => {}));
+    const view = render(NewAssistantDialog);
+    openNewAssistantDialog({ projectId: 'p1' });
+    await tick();
+    await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: 'Ops' } });
+    await fireEvent.click(view.getByTestId('new-assistant-create'));
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    await fireEvent.click(view.getByTestId('new-assistant-cancel'));
+    openNewAssistantDialog({ projectId: 'p2' });
+    await tick();
+    await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: 'Second' } });
+    return { view, settle, open };
+  }
+
+  it('lists an assistant created after Cancel, and leaves the newer opening and the panes alone', async () => {
+    const { view, settle, open } = await cancelAndReopenDuringCreate();
+    settle.resolve(makeThread({ id: 'late-assistant', title: 'Ops', projectId: '', agentId: 'agent-late' }));
+    await waitFor(() => expect(getThreads().some((thread) => thread.id === 'late-assistant')).toBe(true));
+    await tick();
+    expect(view.getByTestId('new-assistant-dialog')).toBeInTheDocument();
+    expect((view.getByTestId('new-assistant-name') as HTMLInputElement).value).toBe('Second');
+    expect((view.getByTestId('new-assistant-create') as HTMLButtonElement).disabled).toBe(false);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('keeps a creation that failed after Cancel off the newer opening', async () => {
+    const { view, settle } = await cancelAndReopenDuringCreate();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    settle.reject(new TransportError('assistant_name_taken', 'Taken.'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
+    expect(view.queryByTestId('new-assistant-error')).toBeNull();
+    expect((view.getByTestId('new-assistant-create') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('opens the created thread in the focused pane when the pane it came from closed meanwhile', async () => {
+    const main = ensureMainPane();
+    const side = createPane('side');
+    let resolve!: (thread: unknown) => void;
+    setBindingMock('CreateAssistant', () => new Promise((settle) => { resolve = settle; }));
+    const view = render(NewAssistantDialog);
+    openNewAssistantDialog({ projectId: 'p1', targetPane: side });
+    await tick();
+    await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: 'Ops' } });
+    await fireEvent.click(view.getByTestId('new-assistant-create'));
+    destroyPane('side');
+    resolve(makeThread({ id: 'made', title: 'Ops', projectId: '', agentId: 'a' }));
+    await waitFor(() => expect(findPaneShowingThread('made')).toBe(main));
+    expect(getPane('side')).toBeUndefined();
+  });
+
+  it('keeps the computer selected when it opened from the Assistants header', () => {
+    setSelectedBackend('gpu');
+    try {
+      openNewAssistantDialog({});
+      setSelectedBackend(HOME_BACKEND);
+      expect(getNewAssistantRequest()?.selectedBackend).toBe('gpu');
+      // An opening from a project creates on the project's computer.
+      openNewAssistantDialog({ projectId: 'p1' });
+      expect(getNewAssistantRequest()?.selectedBackend).toBeUndefined();
+    } finally {
+      setSelectedBackend(HOME_BACKEND);
+    }
   });
 
   it('starts each opening clean', async () => {

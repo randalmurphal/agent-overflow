@@ -9,7 +9,11 @@
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
   import { SetAssistantProjects } from '../../stores/bindings';
-  import { closeAssistantProjectsDialog, getAssistantProjectsAgentId } from '../../stores/newAssistant.svelte';
+  import {
+    closeAssistantProjectsDialog,
+    getAssistantProjectsOpening,
+    isAssistantProjectsOpening,
+  } from '../../stores/newAssistant.svelte';
   import { assistantCurrentThread } from '../../stores/threads.svelte';
   import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
   import { threadBackend } from '../../transport/entityIndex';
@@ -17,7 +21,8 @@
   import { userFacingError } from '../../utils/userFacingError';
   import AssistantProjectsPicker from './AssistantProjectsPicker.svelte';
 
-  let agentId = $derived(getAssistantProjectsAgentId());
+  let opening = $derived(getAssistantProjectsOpening());
+  let agentId = $derived(opening?.agentId ?? null);
   let thread = $derived(agentId === null ? undefined : assistantCurrentThread(agentId));
   let all = $state(false);
   let selected: string[] = $state([]);
@@ -32,10 +37,10 @@
   // is tracked: a row frame for the assistant while the dialog is open
   // must not undo the choice being made.
   $effect(() => {
-    const opened = agentId;
+    const opened = opening;
     if (opened === null) return;
     untrack(() => {
-      const current = assistantCurrentThread(opened);
+      const current = assistantCurrentThread(opened.agentId);
       all = current?.agentAllProjects === true;
       selected = [...(current?.agentProjectIds ?? [])];
       error = null;
@@ -45,27 +50,31 @@
 
   // Archived, deleted or detached with its computer: nothing to save to.
   $effect(() => {
-    if (agentId !== null && thread === undefined) closeAssistantProjectsDialog();
+    if (opening !== null && thread === undefined) closeAssistantProjectsDialog(opening);
   });
 
   async function save(): Promise<void> {
     const current = thread;
-    if (!current || !canSave) return;
+    const opened = opening;
+    if (!current || !opened || !canSave) return;
     saving = true;
     error = null;
     try {
       const target = requireEntityBackend(backend);
       await withBackendTarget(target, () => SetAssistantProjects(current.id, all, all ? [] : selected.slice()));
-      closeAssistantProjectsDialog();
+      // The row broadcast updates the card whatever became of this opening.
+      closeAssistantProjectsDialog(opened);
     } catch (err) {
       console.error('Failed to set the assistant\'s projects:', err);
+      // A later opening's form, of this assistant or another, is not this one's to mark.
+      if (!isAssistantProjectsOpening(opened)) return;
       error = userFacingError(err);
       saving = false;
     }
   }
 </script>
 
-<Modal open={thread !== undefined} title={thread ? `${thread.title}'s projects` : 'Projects'} onClose={closeAssistantProjectsDialog} width="md">
+<Modal open={thread !== undefined} title={thread ? `${thread.title}'s projects` : 'Projects'} onClose={() => closeAssistantProjectsDialog()} width="md">
   {#snippet children()}
     <div class="flex flex-col gap-3 text-xs text-fg-muted" data-testid="assistant-projects-dialog">
       <p>The projects this assistant serves. Its next session gets their folders and their memory.</p>
@@ -84,7 +93,7 @@
     </div>
   {/snippet}
   {#snippet footer()}
-    <Button variant="secondary" size="sm" onclick={closeAssistantProjectsDialog} testId="assistant-projects-cancel">
+    <Button variant="secondary" size="sm" onclick={() => closeAssistantProjectsDialog()} testId="assistant-projects-cancel">
       {#snippet children()}Cancel{/snippet}
     </Button>
     <Button

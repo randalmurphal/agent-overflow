@@ -782,8 +782,12 @@ project it was opened from preselected), and Create, enabled once a
 name and a project are chosen. A name in use is refused inline with the
 assistant that holds it. Create opens the new thread in the pane the
 action came from, or a new pane under the same modifier a new thread
-takes. The card's menu adds Projects, which opens the same checklist for
-that assistant.
+takes; from the Assistants header it creates on the computer selected
+when the dialog opened. The card's menu adds Projects, which opens the
+same checklist for that assistant. A Create or Save that answers after
+Cancel still lands (the assistant is listed, the card updated), but
+only the opening that started it closes, shows its error or opens the
+new thread.
 
 Mechanics, as built:
 

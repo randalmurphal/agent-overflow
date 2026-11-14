@@ -105,6 +105,33 @@ describe('<AssistantProjectsDialog>', () => {
     expect(items(view).every((el) => el.checked && el.disabled)).toBe(true);
   });
 
+  it('leaves a newer opening alone when a save from before Cancel answers, for the same assistant or another', async () => {
+    const other = makeThread({ id: 'other', title: 'Scout', projectId: '', agentId: 'scout', agentProjectIds: ['p1'] });
+    for (const [reopen, outcome] of [[agent, 'resolve'], [agent, 'reject'], [other, 'resolve'], [other, 'reject']] as const) {
+      replaceAllThreads([agent, other]);
+      let settle!: { resolve: (thread: unknown) => void; reject: (err: unknown) => void };
+      setBindingMock('SetAssistantProjects', () => new Promise((resolve, reject) => { settle = { resolve, reject }; }));
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const view = render(AssistantProjectsDialog);
+      openAssistantProjectsDialog(agent);
+      await tick();
+      await fireEvent.click(view.getByTestId('assistant-projects-save'));
+      await fireEvent.click(view.getByTestId('assistant-projects-cancel'));
+      openAssistantProjectsDialog(reopen);
+      await tick();
+      if (outcome === 'resolve') settle.resolve(agent);
+      else settle.reject(new TransportError('invalid_argument', 'Refused.'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await tick();
+      const label = `${reopen.id} ${outcome}`;
+      expect(view.queryByTestId('assistant-projects-dialog'), label).toBeInTheDocument();
+      expect(view.queryByTestId('assistant-projects-error'), label).toBeNull();
+      expect((view.getByTestId('assistant-projects-save') as HTMLButtonElement).disabled, label).toBe(false);
+      view.unmount();
+      closeAssistantProjectsDialog();
+    }
+  });
+
   it('shows a refusal inline and stays open', async () => {
     setBindingMock('SetAssistantProjects', async () => {
       throw new TransportError('invalid_argument', 'Project p9 is not on this computer.');
