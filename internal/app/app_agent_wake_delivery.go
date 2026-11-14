@@ -1038,7 +1038,12 @@ func ownedSendID(sendID string) bool {
 // owner still reads queued.
 func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 	returned := false
+	a.retryOwnedEchoes(threadID)
 	for _, m := range messages {
+		if a.echoed(m.sendID) {
+			// The provider took it in; only its confirmation is unwritten.
+			continue
+		}
 		if token, late, ok := threadWakeFromSendID(m.sendID); ok {
 			err := a.store.WithdrawThreadWake(token, late, m.rowID, m.withdrawal())
 			logThreadRequestSweep("return "+m.sendID+" to its request", err)
@@ -1078,19 +1083,23 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 // owners' delivery mark, after which nothing gives them back, with the row
 // that carried an answer, which its request names from then on. It runs on
 // the provider read loop under the flush anchor lock, so a person's send
-// costs nothing but the id check.
+// costs nothing but the id check. A confirmation whose write fails is kept
+// and written again (app_thread_tools_bookkeeping.go), and until then the
+// message reads consumed to every give-back.
 func (a *App) confirmOwnedDeliveries(threadID string, sends []triage.ConsumedSend) {
 	now := time.Now().UnixMilli()
+	retried := false
 	for _, send := range sends {
 		for _, id := range send.SendIDs {
-			if token, late, ok := threadWakeFromSendID(id); ok {
-				_, err := a.store.ConfirmThreadWake(token, late, send.ItemID, now)
-				logThreadRequestSweep("confirm "+id+" in "+threadID, err)
+			if !ownedSendID(id) {
 				continue
 			}
-			if computerID, requestID, ok := remoteCompletionFromSendID(id); ok {
-				_, err := a.store.ConfirmRemoteCompletion(computerID, requestID, now)
-				logThreadRequestSweep("confirm "+id+" in "+threadID, err)
+			if !retried {
+				a.retryOwnedEchoes(threadID)
+				retried = true
+			}
+			if err := a.confirmOwnedEcho(id, ownedEcho{threadID: threadID, itemID: send.ItemID, at: now}); err != nil {
+				log.Printf("thread tools: confirm %s in %s, kept to try again: %v", id, threadID, err)
 			}
 		}
 	}

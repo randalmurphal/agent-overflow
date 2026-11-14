@@ -48,6 +48,10 @@ func (a *App) installThreadRequestObserver() {
 			if a.hasAnsweredReads(threadID) && a.lifeCtx().Err() == nil {
 				a.goThreadRequestSettling(func() { a.finishAnsweredReads(threadID, sessionEnded) })
 			}
+			// So does an echo whose confirmation failed to write.
+			if a.hasUnwrittenEchoes(threadID) && a.lifeCtx().Err() == nil {
+				a.goThreadRequestSettling(func() { a.retryOwnedEchoes(threadID) })
+			}
 			// The gate is read here, on the event worker, because that is what
 			// keeps a turn end on a thread with no requests to one map read
 			// and no goroutine.
@@ -180,6 +184,13 @@ func (a *App) settleReceiptOnSessionEnd(threadID, token string, held map[string]
 		}
 		if !found || receipt.TargetThreadID != threadID || receipt.State != store.ThreadReceiptRunning {
 			return threadSettlementWork{}, false, nil
+		}
+		if receipt.TurnID == "" {
+			// A delivery whose binding failed to write names the turn that
+			// read the message, whether or not the write lands now.
+			if b, kept, _ := a.retryKeptReceiptBindingLocked(token); kept {
+				receipt.TurnID = threadRequestTurnKey(threadID, b.turnIndex)
+			}
 		}
 		if receipt.TurnID == "" {
 			why := threadtools.InterruptSessionEndedUnanswered
@@ -405,6 +416,16 @@ func (a *App) settleBoundReceiptOnTurnEnd(threadID, token string) (index int, un
 // The caller holds no settle lock: the read of the send waits on the
 // thread's flush anchor, which a delivery holds when it takes that lock.
 func (a *App) bindUndeliveredReceiptToTakingTurn(threadID, token, messageItemID string) (bool, error) {
+	// A delivery whose binding failed to write is the evidence, and is
+	// written again first.
+	if kept, err := func() (bool, error) {
+		unlock := a.threadRequestSettleLock(token)
+		defer unlock()
+		_, kept, err := a.retryKeptReceiptBindingLocked(token)
+		return kept, err
+	}(); kept {
+		return err == nil, err
+	}
 	if a.triage == nil {
 		return false, nil
 	}

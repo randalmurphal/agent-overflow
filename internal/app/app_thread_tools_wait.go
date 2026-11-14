@@ -44,6 +44,12 @@ type threadRequestState struct {
 	// token's value is whether the provider has taken its message in
 	// before the turn that reads it opened (SendDelivery.AwaitingTurn).
 	running map[string]map[string]bool
+	// bindings are the delivery turns whose receipt write failed, by
+	// token, and echoes the echoed answers, reminders and completions whose
+	// confirmation write failed, by send id (app_thread_tools_bookkeeping.go).
+	// A binding leaves with its token's running entry.
+	bindings map[string]receiptBinding
+	echoes   map[string]ownedEcho
 	// stops is who stopped a turn on a thread in running, for the requests
 	// that turn answers (app_turn_stop.go). It leaves with the thread's
 	// last running receipt.
@@ -309,6 +315,9 @@ func (a *App) forgetReceiptRunning(threadID, token string) {
 	}
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
+	if b, ok := a.threadRequests.bindings[token]; ok && b.threadID == threadID {
+		delete(a.threadRequests.bindings, token)
+	}
 	tokens := a.threadRequests.running[threadID]
 	if tokens == nil {
 		return

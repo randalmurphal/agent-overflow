@@ -841,10 +841,11 @@ func (a *App) rebindRequestDelivery(token, targetThreadID, messageItemID string,
 	func() {
 		unlock := a.threadRequestSettleLock(token)
 		defer unlock()
-		moved, err := a.store.RebindThreadReceiptTurn(token, messageItemID, targetThreadID, fromIndex,
-			threadRequestTurnKey(targetThreadID, fromIndex), threadRequestTurnKey(targetThreadID, turnIndex), ownTurn)
+		moved, err := a.writeReceiptBindingLocked(token, receiptBinding{
+			threadID: targetThreadID, itemID: messageItemID, turnIndex: turnIndex, ownTurn: ownTurn, rebindFrom: fromIndex,
+		})
 		if err != nil {
-			log.Printf("thread tools: rebind receipt %s to its turn: %v", token, err)
+			log.Printf("thread tools: rebind receipt %s to its turn, kept to try again: %v", token, err)
 			return
 		}
 		if moved {
@@ -878,9 +879,13 @@ func (a *App) bindRequestDelivery(token, targetThreadID, messageItemID string, t
 		a.noteReceiptRunning(targetThreadID, token)
 		// The store moves a source row here to `running` in the same write,
 		// bound or not.
-		bound, err := a.store.BindThreadReceiptTurn(token, messageItemID, threadRequestTurnKey(targetThreadID, turnIndex), ownTurn)
+		bound, err := a.writeReceiptBindingLocked(token, receiptBinding{
+			threadID: targetThreadID, itemID: messageItemID, turnIndex: turnIndex, ownTurn: ownTurn, rebindFrom: -1,
+		})
 		if err != nil {
-			log.Printf("thread tools: bind receipt %s to its turn: %v", token, err)
+			// The delivery is kept (writeReceiptBindingLocked), and the turn's
+			// end or the session's writes it again.
+			log.Printf("thread tools: bind receipt %s to its turn, kept to try again: %v", token, err)
 			return
 		}
 		if !bound {

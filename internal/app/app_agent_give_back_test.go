@@ -653,6 +653,60 @@ func TestAStopKeepsAnAnswerOrCompletionTheProviderConfirmed(t *testing.T) {
 	}
 }
 
+// An echo whose confirmation fails to write is kept: a Stop, or a restart
+// after the thread's next turn end, finds the answer and the completion
+// consumed and gives neither back, and the confirmation lands once the store
+// takes writes again.
+func TestAnEchoWhoseConfirmationFailsIsNeverGivenBack(t *testing.T) {
+	t.Parallel()
+	for _, end := range []string{"stop", "restart"} {
+		t.Run(end, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.app.startSessionFn = func(string) error { return nil }
+			token := owedWakeSeeds()[0].seed(t, f)
+			w := completedRemoteWatch(t, f.app, f.caller)
+			queueOwnedAndPersonMessages(t, f, token, false, w, "build passed")
+			dispatchUnconfirmed(t, f)
+			execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_wake_confirm BEFORE UPDATE OF confirmed_at ON thread_requests WHEN NEW.confirmed_at > 0 BEGIN SELECT RAISE(ABORT, 'injected confirm failure'); END`)
+			execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_watch_confirm BEFORE UPDATE OF confirmed_at ON remote_watches BEGIN SELECT RAISE(ABORT, 'injected confirm failure'); END`)
+			f.app.confirmOwnedDeliveries(f.caller.ID, []triage.ConsumedSend{{SendIDs: []string{threadWakeSendID(token), remoteCompletionSendID(w)}}})
+			if row := f.request(t, token); row.ConfirmedAt != 0 {
+				t.Fatal("confirmed through the refused write")
+			}
+			execOnStore(t, f.dbPath, `DROP TRIGGER refuse_wake_confirm`)
+			execOnStore(t, f.dbPath, `DROP TRIGGER refuse_watch_confirm`)
+
+			app := f.app
+			if end == "stop" {
+				if err := f.app.StopSession(f.caller.ID); err != nil {
+					t.Fatalf("StopSession: %v", err)
+				}
+			} else {
+				handle := startedSessionEventHandler(f.app, f.caller.ID, "tok", string(provider.Claude))
+				for _, kind := range []provider.EventKind{provider.EventTurnStart, provider.EventTurnComplete} {
+					handle(provider.ProviderEvent{Kind: kind, ThreadID: f.caller.ID, Timestamp: time.Now(),
+						TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}})
+				}
+				waitProviderEvents(t, f.app, f.caller.ID)
+				f.app.threadRequestsWG.Wait()
+				after := f.restart(t)
+				after.app.restoreDurableFlushQueueAtBoot()
+				after.app.giveBackUnconfirmedAtBoot()
+				app = after.app
+			}
+
+			row, _, err := app.store.GetThreadRequest(token)
+			if err != nil || row.DeliveredHow != store.ThreadWakeQueued || row.ConfirmedAt == 0 {
+				t.Fatalf("the consumed answer = %+v %v, want it delivered and confirmed", row, err)
+			}
+			if saved, err := app.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil || saved.Notification != "queued" || saved.ConfirmedAt == 0 {
+				t.Fatalf("the consumed completion's watch = %+v %v, want queued and confirmed", saved, err)
+			}
+		})
+	}
+}
+
 // The provider's echo of a queued answer, late reply or reminder is the
 // second phase of its delivery mark: before it, a restart gives the
 // answer back; after it, nothing does.

@@ -870,6 +870,53 @@ func TestTheSessionEndLeavesAHeldRequestToItsRestore(t *testing.T) {
 	assertRequestOwedAgain(t, f, h.thread.ID, token)
 }
 
+// A delivery whose binding fails to write is kept, as resolved, and written
+// again: the echo that follows skips it, as the first delivery decides, and
+// the pending send is gone by the turn's end, so only the kept delivery can
+// name the turn that read the request. The request settles with that turn,
+// at its end or its session's, and the provider is sent nothing again.
+func TestADeliveryWhoseBindingFailsIsKeptUntilItIsWritten(t *testing.T) {
+	t.Parallel()
+	for _, end := range []string{"turn end", "session end"} {
+		t.Run(end, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			callerMidTurn(t, f)
+			h := newHeldRequestTarget(t, f)
+			tokens, uuid := h.send(t, "check the changelog")
+			token := tokens[0]
+			h.lifecycle(t, uuid, provider.CommandQueued)
+			execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_bind BEFORE UPDATE OF turn_id ON thread_request_receipts WHEN NEW.turn_id != '' BEGIN SELECT RAISE(ABORT, 'injected bind failure'); END`)
+			h.lifecycle(t, uuid, provider.CommandStarted)
+			if receipt := f.receipt(t, token); receipt.TurnID != "" {
+				t.Fatalf("receipt bound to %q through the refused write", receipt.TurnID)
+			}
+			execOnStore(t, f.dbPath, `DROP TRIGGER refuse_bind`)
+			h.echo(t, uuid, "check the changelog")
+			h.text(t, "a-turn0", "Halfway through the changelog.")
+			if end == "turn end" {
+				h.turnComplete(t)
+				row := f.awaitRequestState(t, token, store.ThreadRequestFinished)
+				if !strings.Contains(string(row.Answer), "Halfway through the changelog.") {
+					t.Fatalf("answer = %q, want the turn that read it", row.Answer)
+				}
+			} else {
+				h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
+				row := f.awaitRequestState(t, token, store.ThreadRequestInterrupted)
+				if !strings.Contains(string(row.Answer), "Halfway through the changelog.") {
+					t.Fatalf("answer = %q, want the session's end during the turn that read it", row.Answer)
+				}
+			}
+			if receipt := f.receipt(t, token); receipt.TurnID != threadRequestTurnKey(h.thread.ID, 0) || receipt.OwnTurn {
+				t.Fatalf("receipt = %+v, want it bound to the running turn it was drained into", receipt)
+			}
+			if envelopes := recordedUserEnvelopes(t, h.stdinLog); len(envelopes) != 1 {
+				t.Fatalf("the provider was sent %d messages, want the request once", len(envelopes))
+			}
+		})
+	}
+}
+
 // A session that dies during the turn that read a request settles it with
 // what the turn had written.
 func TestARequestReadWhenItsSessionDiesSettlesWithWhatItWrote(t *testing.T) {

@@ -130,7 +130,10 @@ cancel interrupts), only from triage's send-delivered hook or a send that
 opened its own turn (`bindRequestDelivery`); a message handed to the
 provider waits for that, because Claude can hold it for a turn of its own.
 A message a turn took and never echoed is bound to that turn when its end
-is read (`bindUndeliveredReceiptToTakingTurn`). A wake (`app_thread_tools_wake.go`) writes its durable queue row and its
+is read (`bindUndeliveredReceiptToTakingTurn`). Triage reports each
+delivery and echo once, so a binding or an owner's confirmation whose write
+fails is kept and written again, and an echoed message is never given back
+meanwhile (`app_thread_tools_bookkeeping.go`). A wake (`app_thread_tools_wake.go`) writes its durable queue row and its
 delivery mark in one store transaction. Every message the app writes into
 a thread for someone else goes through `queueAgentNotice`
 (`app_agent_notice.go`): it is accepted once queued, without the action
