@@ -824,11 +824,6 @@ func (a *App) sendMessageLocked(
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 			return store.Item{}, fmt.Errorf("send message: %w", err)
 		}
-		if started.Detached {
-			err = fmt.Errorf("codex ran the review on another thread %s", started.ReviewThreadID)
-			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
-			return store.Item{}, fmt.Errorf("send message: %w", err)
-		}
 		if opts.onCodexReviewStarted != nil {
 			opts.onCodexReviewStarted(started)
 		}

@@ -185,11 +185,6 @@ type ReviewStarted struct {
 	// TurnStatus is the turn's status at the moment the response was
 	// built; the authoritative lifecycle still arrives on `turn/completed`.
 	TurnStatus string
-	// Detached reports whether the review actually landed on a different
-	// thread than the one that asked for it. Derived from ReviewThreadID, so
-	// a server that answers differently than asked is observed rather than
-	// assumed away.
-	Detached bool
 }
 
 // ReviewRunOptions carries the app-owned logical turn coordinate for the
@@ -294,7 +289,6 @@ func (s *Session) StartReviewForTurn(
 		ReviewThreadID: reviewThreadID,
 		TurnID:         strings.TrimSpace(resp.Turn.ID),
 		TurnStatus:     strings.TrimSpace(resp.Turn.Status),
-		Detached:       reviewThreadID != rootThreadID,
 	}, nil
 }
 
