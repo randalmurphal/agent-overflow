@@ -133,14 +133,20 @@ type Core struct {
 	gitlabHosts   []string
 
 	// untrackedLines memoizes per-file added-line counts for the
-	// untracked-insertions badge, keyed cwd → rel path → (size, mtime,
-	// lines). Written wholesale by every untrackedStats scan and swept
-	// by untrackedCacheTTL, so it stays bounded by the workspaces
-	// actively being watched. Plain Mutex: both scan phases (snapshot,
-	// store) are single short critical sections with no hot read path
-	// between them.
-	untrackedMu    sync.Mutex
-	untrackedLines map[string]*untrackedLineCache
+	// untracked-insertions badge: rel path → (size, mtime, lines) per
+	// workspace, written by every untrackedStats scan.
+	untrackedLines workspaceMemo[map[string]untrackedLineEntry]
+
+	// trackedChurnMemos memoizes the churn of changed tracked paths per
+	// workspace, written by every trackedChurn scan.
+	trackedChurnMemos workspaceMemo[trackedChurnMemo]
+	// worktreeRootProofs holds, per workspace, whether its cwd is the
+	// working tree's root (worktreeRoot).
+	worktreeRootProofs workspaceMemo[worktreeRootProof]
+	attributeSources   workspaceMemo[attributeSources]
+	// attributeFilesUnnamed is set once this git has shown it cannot name
+	// its attribute files (gitVarPath).
+	attributeFilesUnnamed atomic.Bool
 
 	// gitDirCache memoizes successful resolveGitDir results per cwd. The
 	// resolved git directory is immutable for a given cwd (a repo's .git
@@ -298,7 +304,6 @@ func NewCore(opts ...CoreOption) *Core {
 		originCache:           make(map[string]repoMetaEntry[originIdentity]),
 		repositoryLookupSlots: make(chan struct{}, 4),
 		fetchCache:            make(map[string]time.Time),
-		untrackedLines:        make(map[string]*untrackedLineCache),
 		nowFn:                 time.Now,
 	}
 	core.fetchFn = core.fetchOriginQuiet

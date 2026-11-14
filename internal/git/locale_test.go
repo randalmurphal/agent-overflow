@@ -86,7 +86,7 @@ func TestLocalePinningIsPerCommand(t *testing.T) {
 	locales := commandLocales(t, logPath)
 
 	pinned := []string{
-		"status --porcelain=v2 --branch",
+		"status --porcelain=v2 --branch -z",
 		"rev-parse --absolute-git-dir",
 		"stash push -u -m ao-carry-test",
 		"merge-tree --write-tree --name-only origin/main feature",

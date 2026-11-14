@@ -31,7 +31,7 @@ func countUntrackedWithTimeout(t *testing.T, path string, budget int, d time.Dur
 	type result struct{ ins, read int }
 	done := make(chan result, 1)
 	go func() {
-		ins, read := countUntrackedFileLines(info, path, budget)
+		ins, read := countUntrackedFileLines(info.Mode(), path, budget)
 		done <- result{ins, read}
 	}()
 	select {
