@@ -219,8 +219,6 @@ func TestOneTurnAnsweringTwoRequestsWakesTheirSenderOnce(t *testing.T) {
 	t.Parallel()
 	q := newQueuedRequests(t)
 	f := q.f
-	// The wake starts the sender's session to read it; the open turn keeps
-	// the message queued where the test can see it.
 	f.mockClaudeHoldingTheTurn(t, "mid-thought")
 	f.holdCallerTurn(t)
 	q.notify = true

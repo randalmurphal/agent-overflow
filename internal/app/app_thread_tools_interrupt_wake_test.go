@@ -70,12 +70,7 @@ func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 			t.Parallel()
 			f := newRequestFixture(t)
 			gate := f.mockClaudeHeldUntilStopped(t)
-			// The caller is mid-turn, so the wake queues and stays readable.
-			if err := f.app.store.InsertTurn(store.Turn{
-				TurnID: "caller-open", ThreadID: f.caller.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli(),
-			}); err != nil {
-				t.Fatalf("InsertTurn: %v", err)
-			}
+			f.holdCallerTurn(t)
 			ack := f.runningRequest(t, "filter the previews")
 			// The receipt runs before triage opens the turn; a stop is of an
 			// open turn.
