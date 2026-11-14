@@ -484,8 +484,8 @@ func (a *claudeAdapter) releaseHeldInput() {
 }
 
 // drainHeldInput consumes every held envelope into the running turn, the
-// CLI's mid-loop drain: `started`, then the replay echo, with no init and
-// no new scenario turn.
+// CLI's mid-loop drain: the replay echo, then `started`, with no init and
+// no new scenario turn (claude-wire.md §Frame order per consumption path).
 func (a *claudeAdapter) drainHeldInput(turn int) {
 	a.heldMu.Lock()
 	held := a.held
@@ -496,9 +496,9 @@ func (a *claudeAdapter) drainHeldInput(turn int) {
 			Kind: control.ReportUserInput, Turn: turn,
 			Input: claudeUserText(line), Detail: "midLoop",
 		})
-		a.writeCommandLifecycle(claudeEnvelopeUUID(line), "started")
 		a.runPromptHooks(a.e.currentVars(), claudeUserText(line))
 		a.echoDrainedEnvelope(line)
+		a.writeCommandLifecycle(claudeEnvelopeUUID(line), "started")
 	}
 }
 
@@ -516,7 +516,9 @@ func (a *claudeAdapter) cancelHeldInput() {
 }
 
 // pickUpUserEnvelope opens a turn for a user envelope whose `queued` ack is
-// already written: init, replay echo, `started`, and the turn's steps.
+// already written, in the CLI's boundary and idle pickup order: `started`,
+// init, replay echo, and the turn's steps (claude-wire.md §Frame order per
+// consumption path).
 func (a *claudeAdapter) pickUpUserEnvelope(line []byte) {
 	commandUUID := claudeEnvelopeUUID(line)
 	n, vars := a.e.beginTurn()
@@ -531,12 +533,10 @@ func (a *claudeAdapter) pickUpUserEnvelope(line []byte) {
 		Kind: control.ReportUserInput, Turn: n,
 		Input: input, SessionRef: vars["SESSION_ID"],
 	})
+	a.writeCommandLifecycle(commandUUID, "started")
 	a.writeInit(vars)
 	a.runPromptHooks(vars, input)
 	a.recordUserEnvelope(line)
-	// `started` after the init, so the app classifies this delivery as
-	// a new turn (claude-wire.md §command_lifecycle).
-	a.writeCommandLifecycle(commandUUID, "started")
 	a.e.enqueueTurn(n)
 }
 
