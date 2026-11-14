@@ -888,6 +888,24 @@ func TestAMergeFoldedMemberEchoedIntoATurnOfItsOwnMovesToTheSurvivorsTurn(t *tes
 // The count admission reads covers every send whose boundary is unresolved
 // once: one waiting for its echo, with or without merge evidence, and one
 // echoed whose evidence a merge still to be echoed may need.
+// Sends that leave without an echo (a session's end gives them back) leave
+// evidence no merge can include. It counts for nothing, or a thread whose
+// sends were all given back would refuse new messages with nothing
+// outstanding.
+func TestOutstandingFlushSendsLeaveOutEvidenceNoPendingSendCanMerge(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	mergeFoldSend(t, router, "t1", "user:3:flush:1", "uuid-1", "one", nil, usermessage.Meta{SendID: "send-1"}, 3, 4)
+	mergeFoldSend(t, router, "t1", "user:3:flush:2", "uuid-2", "two", nil, usermessage.Meta{SendID: "send-2"}, 3, 4)
+	if got := router.OutstandingFlushSendCount("t1"); got != 2 {
+		t.Fatalf("outstanding with two sends waiting = %d, want 2", got)
+	}
+	router.DrainUnconfirmedFlushItems("t1")
+	if got := router.OutstandingFlushSendCount("t1"); got != 0 {
+		t.Fatalf("outstanding after both sends were given back = %d, want 0", got)
+	}
+}
+
 func TestOutstandingFlushSendsCountWhatTheLedgerKeeps(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

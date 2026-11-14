@@ -32,8 +32,11 @@ const MaxOutstandingFlushSends = 64
 
 // OutstandingFlushSendCount counts the thread's flush sends the provider was
 // handed and whose boundary has not resolved: those waiting for their echo
-// and those kept as evidence of a merge still to be echoed. Each counts
-// once.
+// and those kept as evidence of a merge still to be echoed
+// (unresolvedFlushDigests). Each counts once. Evidence left by sends that
+// went without an echo (given back, retired unread) counts for nothing: no
+// confirmation is coming to retire it, and counting it would refuse new
+// messages on a thread with nothing outstanding.
 func (r *Router) OutstandingFlushSendCount(threadID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -41,7 +44,7 @@ func (r *Router) OutstandingFlushSendCount(threadID string) int {
 	if st == nil {
 		return 0
 	}
-	count := len(st.recentFlushDigests)
+	count := st.unresolvedFlushDigests()
 	for _, pending := range st.pendingSends {
 		if pending.Shape != sendShapeFlush {
 			continue
@@ -78,12 +81,7 @@ func (st *threadState) recordFlushSendDigest(aoItemID string, digest []string) {
 // last send still pending (pendingSends, including one put back for a
 // retry) is resolved. Caller holds r.mu.
 func (st *threadState) retireResolvedFlushDigests() {
-	keep := 0
-	for i, entry := range st.recentFlushDigests {
-		if slices.ContainsFunc(st.pendingSends, func(send pendingSend) bool { return send.AOItemID == entry.AOItemID }) {
-			keep = i + 1
-		}
-	}
+	keep := st.unresolvedFlushDigests()
 	if keep == len(st.recentFlushDigests) {
 		return
 	}
@@ -93,6 +91,19 @@ func (st *threadState) retireResolvedFlushDigests() {
 	}
 	clear(st.recentFlushDigests[keep:])
 	st.recentFlushDigests = st.recentFlushDigests[:keep]
+}
+
+// unresolvedFlushDigests is how many of the ledger's leading entries a merge
+// still to be echoed can include: those up to the last send still pending.
+// Caller holds r.mu.
+func (st *threadState) unresolvedFlushDigests() int {
+	keep := 0
+	for i, entry := range st.recentFlushDigests {
+		if slices.ContainsFunc(st.pendingSends, func(send pendingSend) bool { return send.AOItemID == entry.AOItemID }) {
+			keep = i + 1
+		}
+	}
+	return keep
 }
 
 // dropFlushSendDigests removes the named rows from the ledger — used when a
