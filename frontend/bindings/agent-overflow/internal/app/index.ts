@@ -191,6 +191,8 @@ export {
     ThreadPeerResolve,
     ThreadTransferIntent,
     TimelinePageOptions,
+    UnsavedThreadRow,
+    UnsavedThreadRowsEvent,
     UpdateAvailability,
     UserMessageRevertedEvent,
     VerifyEditDiffsRequest,

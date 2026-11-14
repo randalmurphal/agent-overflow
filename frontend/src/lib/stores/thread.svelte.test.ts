@@ -709,6 +709,76 @@ describe('createThreadPane', () => {
     expect(pane.sessionBanners).toEqual([]);
   });
 
+  // Unsaved thread rows are live state: the snapshot is the backend's
+  // whole list, so it replaces (and clears) the pane's copy on open and on
+  // reload, and nothing carries across a thread switch.
+  it('hydrates unsaved rows from their snapshot and drops them on reload and switch', async () => {
+    const pane = createThreadPane();
+    const rows = [{ id: 'unsaved-1', severity: 'error', message: 'boom', saveError: 'database or disk is full', occurredAt: 1 }];
+    let kept = rows;
+    setBindingMock('GetThreadUnsavedRows', async (threadId: string) => ({ threadId, rows: kept }));
+
+    await pane.switchThread(makeThread({ id: 'thread-unsaved', provider: 'claude' }));
+    expect(pane.unsavedRows?.rows.map((entry) => entry.message)).toEqual(['boom']);
+
+    kept = [];
+    await pane.refreshFromBackend();
+    expect(pane.unsavedRows).toBeNull();
+
+    kept = rows;
+    await pane.refreshFromBackend();
+    expect(pane.unsavedRows).not.toBeNull();
+    // The switch itself drops them, even when the new thread's read fails.
+    setBindingMock('GetThreadUnsavedRows', async () => {
+      throw new Error('unsaved rows unavailable');
+    });
+    await pane.switchThread(makeThread({ id: 'thread-other', provider: 'claude' }));
+    expect(pane.unsavedRows).toBeNull();
+  });
+
+  // A failed read leaves the pane showing no unsaved rows, so the failure
+  // itself has to be on screen: on open and on reload, with every other
+  // read succeeding.
+  it('reports a failed unsaved-rows read as a pane error', async () => {
+    const pane = createThreadPane();
+    setBindingMock('GetThreadUnsavedRows', async () => {
+      throw new Error('unsaved rows unavailable');
+    });
+    const failure = [{
+      kind: 'general',
+      message: 'Could not synchronize live conversation state: unsaved rows unavailable',
+    }];
+
+    await pane.switchThread(makeThread({ id: 'thread-unsaved', provider: 'claude' }));
+    expect(pane.paneErrorList.map(({ kind, message }) => ({ kind, message }))).toEqual(failure);
+
+    pane.clearPaneError();
+    await pane.refreshFromBackend();
+    expect(pane.paneErrorList.map(({ kind, message }) => ({ kind, message }))).toEqual(failure);
+  });
+
+  it('keeps an unsaved row pushed while the snapshot read was in flight', async () => {
+    const pane = createThreadPane();
+    await pane.switchThread(makeThread({ id: 'thread-race', provider: 'claude' }));
+    let release: (() => void) | null = null;
+    setBindingMock('GetThreadUnsavedRows', (threadId: string) =>
+      new Promise((resolve) => {
+        release = () => resolve({ threadId, rows: [] });
+      }),
+    );
+
+    const refresh = pane.refreshFromBackend();
+    await vi.waitFor(() => expect(release).not.toBeNull());
+    pane.applyUnsavedRows({
+      threadId: 'thread-race',
+      rows: [{ id: 'unsaved-1', severity: 'error', message: 'boom', saveError: 'full', occurredAt: 1 }],
+    });
+    release!();
+    await refresh;
+
+    expect(pane.unsavedRows?.rows.map((entry) => entry.id)).toEqual(['unsaved-1']);
+  });
+
   it('marks hydrated pending sends with the flush position of the read', async () => {
     __setTransportHelloForTest({
       protocolVersion: 1, capabilities: [], backendId: 'home', backendName: 'home', serverTimeMs: 0,

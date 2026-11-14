@@ -58,6 +58,21 @@ sites for the first three live beside the persists that cause them
 `router.go`). Adding a new global consumer of an item row is the thing
 this split exists to prevent.
 
+Every row upsert and its `thread:error_notice` follow a successful write
+in `persistItemWithEmit`. When the store refuses an `error`, `api_error`
+or `notification` row, that funnel hands it to the unsaved row observer
+(`unsaved_rows.go`) instead, whatever produced it, and the app shows it
+live on `thread:unsaved_rows`. The funnel also reports each such row it
+saves, and the app withdraws the entry of the same row (same id, severity
+and text; an id alone repeats across sessions), so it stops reading as
+unsaved. A once-per-event side effect keyed on a row's first write is gated
+on whether a saved row already existed, not on whether this write succeeded
+(`persistTimelineNotificationWithID`). `provider:session_died` adds a
+second gate, because a refused notice reads as a first write on every
+replay: the thread's router state records the death it announced, cleared
+when the next session starts (`MarkThreadActive`) or the thread is cleaned
+up (`session_status.go`).
+
 ## Pre-dispatch rewrites
 
 `Handle` performs exactly two checks before the switch. The stopped-thread

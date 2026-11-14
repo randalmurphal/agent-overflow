@@ -144,6 +144,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DismissPRReview", ID: 1185171749, Scope: "git:operate", Route: "selected"},                                        // main.App.DismissPRReview
 	{Name: "DismissSessionBanner", ID: 1317713039, Scope: "threads:operate", Route: "thread"},                                 // main.App.DismissSessionBanner
 	{Name: "DismissThreadWorktreeSetup", ID: 41472159, Scope: "terminal:operate", Route: "thread"},                            // main.App.DismissThreadWorktreeSetup
+	{Name: "DismissUnsavedThreadRows", ID: 1456387330, Scope: "threads:operate", Route: "thread"},                             // main.App.DismissUnsavedThreadRows
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host", Route: "home"},                                                     // main.App.DownloadUpdate
 	{Name: "EditOpenAIKeyFile", ID: 1579042384, Scope: "host", Route: "selected"},                                             // main.App.EditOpenAIKeyFile
 	{Name: "EditPR", ID: 679416267, Scope: "git:operate", Route: "selected"},                                                  // main.App.EditPR
@@ -225,6 +226,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetThreadTransferStatus", ID: 316516814, Scope: "threads:read", Route: "thread"},                                  // main.App.GetThreadTransferStatus
 	{Name: "GetThreadTransfers", ID: 670257333, Scope: "threads:read", Route: "selected"},                                     // main.App.GetThreadTransfers
 	{Name: "GetThreadTurnPreview", ID: 1512475224, Scope: "threads:read", Route: "thread"},                                    // main.App.GetThreadTurnPreview
+	{Name: "GetThreadUnsavedRows", ID: 2312582214, Scope: "threads:read", Route: "thread"},                                    // main.App.GetThreadUnsavedRows
 	{Name: "GetThreadUserMessageHistory", ID: 3340938325, Scope: "threads:read", Route: "thread"},                             // main.App.GetThreadUserMessageHistory
 	{Name: "GetThreadUserMessageTicks", ID: 556088547, Scope: "threads:read", Route: "thread"},                                // main.App.GetThreadUserMessageTicks
 	{Name: "GetThreadWorktreeSetup", ID: 49371251, Scope: "terminal:operate", Route: "thread"},                                // main.App.GetThreadWorktreeSetup

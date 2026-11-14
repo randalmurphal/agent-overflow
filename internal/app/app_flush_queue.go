@@ -112,6 +112,7 @@ func (a *App) newTriageRouter(st *store.Store) *triage.Router {
 	r.SetCommandSettledObserver(a.observeCommandSettled)
 	r.SetCodeSpanEnricher(a.buildPersistedCodeSpans)
 	r.SetGeneratedImageImporter(a.importCodexGeneratedImage)
+	r.SetUnsavedRowObserver(unsavedRowSink{app: a})
 	return r
 }
 

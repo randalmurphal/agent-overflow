@@ -57,9 +57,11 @@ func (r *Router) handleSessionStatus(evt provider.ProviderEvent) error {
 // a slow exit followed by stdout drain) replays through the same
 // machinery without producing duplicate rows or banners. The
 // notification row uses a deterministic id (`session_died:<turnIndex>`)
-// so the second persist upserts in place, and the emission is gated on
-// "row was new this call" — re-running the same death does not re-fire
-// the banner.
+// so the second persist upserts in place. The emission fires once per
+// death: not when a saved row for it already exists (a recorded death
+// replayed), and not when this session already announced it (a replay
+// while the store still refuses the row). A death whose row is refused is
+// still announced the first time.
 func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 	now := eventTimestampMillis(evt)
 
@@ -67,7 +69,7 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 
 	turnIndex := r.timelineNotificationTurnIndex(evt)
 	deathID := sessionDiedNotificationID(turnIndex)
-	wasNew, err := r.persistTimelineNotificationWithID(evt, deathID, sessionDiedNotificationKind, sessionDiedSummary(info))
+	firstReport, err := r.persistTimelineNotificationWithID(evt, deathID, sessionDiedNotificationKind, sessionDiedSummary(info))
 	if err != nil {
 		r.providerWriteFailed(evt.ThreadID, "persist session_died notification", err)
 	}
@@ -95,7 +97,7 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 		log.Printf("triage: settled %d background launches on session_died for thread %s", settled, evt.ThreadID)
 	}
 
-	if wasNew {
+	if firstReport && r.claimDeathAnnouncement(evt.ThreadID, deathID) {
 		r.emit(eventchan.ProviderSessionDied, SessionDiedEvent{
 			ThreadID:   evt.ThreadID,
 			Reason:     info.Reason,
@@ -106,6 +108,19 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 		})
 	}
 	return nil
+}
+
+// claimDeathAnnouncement records that the thread's session announced the
+// death deathID, and reports whether this call is the first to.
+func (r *Router) claimDeathAnnouncement(threadID, deathID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.state(threadID)
+	if st.announcedDeath == deathID {
+		return false
+	}
+	st.announcedDeath = deathID
+	return true
 }
 
 // sessionDiedNotificationID is the deterministic id pattern for the

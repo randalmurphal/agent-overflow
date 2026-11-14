@@ -16,8 +16,8 @@ import type {
   ProviderSessionAccountEvent,
   SubagentProgressEvent,
 } from '../types/events';
-import type { ThreadLiveState } from '../../../bindings/agent-overflow/internal/app/models';
-import { GetThreadItem, GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
+import type { ThreadLiveState, UnsavedThreadRowsEvent } from '../../../bindings/agent-overflow/internal/app/models';
+import { GetThreadItem, GetThreadLiveState, GetThreadUnsavedRows, ListPendingInteractiveRequests } from './bindings';
 import type { LiveStateHydrationGuard } from './threadPaneShared';
 import { cursorFromItem } from './threadItems';
 import {
@@ -44,6 +44,7 @@ import {
 } from './sendQueue.svelte';
 import type { ThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import type { LiveTodoState } from './liveTodoState.svelte';
+import type { ThreadUnsavedRows } from './threadUnsavedRows.svelte';
 import { compactingRevision, hydrateCompactingState } from './compactingState.svelte';
 import { reconcileShellRun, shellRunRevision } from './shellCommands.svelte';
 
@@ -60,6 +61,8 @@ export interface ThreadLiveStateHydrationOptions {
   pendingInteractiveState: ThreadPendingInteractiveState;
   /** The pane's createLiveTodoState instance. */
   liveTodoState: LiveTodoState;
+  /** The pane's createThreadUnsavedRows instance. */
+  unsavedRows: ThreadUnsavedRows;
   getProviderSessionAccountRevision(): number;
   hydrateProviderAccount(
     account: ProviderSessionAccountEvent | null,
@@ -87,7 +90,10 @@ export interface ThreadLiveStateHydrationOptions {
 }
 
 export interface LiveStateFetchResult {
-  /** Present when the full execution snapshot could not be fetched. */
+  /**
+   * Present when the execution snapshot or the unsaved-rows read failed;
+   * the snapshot's failure when both did.
+   */
   error?: unknown;
   /**
    * Apply the fetched snapshot to the pane and the global registries,
@@ -253,6 +259,7 @@ export function createThreadLiveStateHydration(
       activeTurnAtRequest: getActiveTurn(threadID),
       queueRevisionAtRequest: getQueueRevisionForThread(threadID),
       liveTodoRevisionAtRequest: options.liveTodoState.revision,
+      unsavedRowsRevisionAtRequest: options.unsavedRows.revision,
       providerSessionAccountRevisionAtRequest:
         options.getProviderSessionAccountRevision(),
       effectiveModelRevisionAtRequest: options.getEffectiveModelRevision(),
@@ -280,6 +287,23 @@ export function createThreadLiveStateHydration(
     // Before HOME's manifest the grants are unknown, so neither leg is
     // decided; the switch refreshes once they land (runGatedLegsOnGrants).
     const grantsPending = backend === HOME_BACKEND && !pageGrantsKnown();
+    // Unsaved rows ride `thread:unsaved_rows`, a threads:read channel, so
+    // their snapshot leg is the threads:read GetThreadUnsavedRows rather
+    // than the operate snapshot: a view-only session reads them too. Read
+    // beside the snapshot, applied by the same token.
+    let unsavedRows: UnsavedThreadRowsEvent | null = null;
+    let unsavedRowsError: unknown;
+    const unsavedRowsRead = !grantsPending && threadHasScope('threads:read', threadID)
+      ? withBackendTarget(backend, () => GetThreadUnsavedRows(threadID)).then(
+        (rows) => {
+          unsavedRows = rows as UnsavedThreadRowsEvent;
+        },
+        (err: unknown) => {
+          unsavedRowsError = err;
+          if (currentTarget()) console.error('Failed to read unsaved thread rows:', err);
+        },
+      )
+      : Promise.resolve();
     if (!grantsPending && threadHasScope('threads:operate', threadID)) {
       try {
         snapshot = (await withBackendTarget(backend, () => GetThreadLiveState(threadID))) as ThreadLiveState;
@@ -329,9 +353,11 @@ export function createThreadLiveStateHydration(
       }
     }
 
+    await unsavedRowsRead;
+
     let tokenConsumed = false;
     return {
-      error: snapshotError,
+      error: snapshotError ?? unsavedRowsError,
       apply(onStaleQueue): void {
         if (tokenConsumed) return;
         try {
@@ -347,6 +373,11 @@ export function createThreadLiveStateHydration(
             if (queueStale) onStaleQueue();
           } else if (fallbackInteractive) {
             applyInteractive(fallbackInteractive);
+          }
+          // Replaces, clearing included: the backend's list is the whole
+          // answer, and a push that landed during the read wins.
+          if (unsavedRows) {
+            options.unsavedRows.hydrateSnapshotIfUnchanged(unsavedRows, guard.unsavedRowsRevisionAtRequest);
           }
         } finally {
           tokenConsumed = true;

@@ -306,6 +306,7 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 		Forget: func(threadID string) {
 			a.forgetThreadMCP(threadID)
 			a.terminalThreads.forget(threadID)
+			a.forgetUnsavedThreadRows(threadID)
 		},
 		Deleted: func(thread store.Thread) { a.broadcastThreadDeleted(thread.ID) },
 	}

@@ -203,6 +203,17 @@ export const AutoResumeThread = dispatch('AutoResumeThread');
 export const StopSession = dispatch('StopSession');
 export const ReconnectSession = dispatch('ReconnectSession');
 export const DismissSessionBanner = dispatch('DismissSessionBanner');
+export const DismissUnsavedThreadRows = dispatch('DismissUnsavedThreadRows');
+/**
+ * Every pane open reads it, so like SyncThreadWindow it has a DEFAULT: an
+ * empty list, which is what the backend answers for a thread with nothing
+ * unsaved. An explicit `setBindingMock('GetThreadUnsavedRows', …)` wins.
+ */
+export const GetThreadUnsavedRows = async (threadId: unknown): Promise<unknown> => {
+  const explicit = mocks.get('GetThreadUnsavedRows');
+  if (explicit) return explicit(threadId);
+  return { threadId, rows: [] };
+};
 export const SendMessage = dispatch('SendMessage');
 export const SendMessageWithOptions = dispatch('SendMessageWithOptions');
 export const SteerMessageWithOptions = dispatch('SteerMessageWithOptions');

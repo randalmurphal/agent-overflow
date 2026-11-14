@@ -159,6 +159,8 @@ export interface ThreadSwitchLoadOptions {
   clearPaneError(kind?: PaneErrorKind): void;
   setProviderBanner(status: ProviderStatusEvent | null | undefined): void;
   clearSessionBanners(): void;
+  /** Drop the outgoing thread's unsaved errors (threadUnsavedRows.svelte.ts). */
+  clearUnsavedRows(): void;
   setProviderSessionAccount(account: ProviderSessionAccountEvent | null): void;
   setSendInFlight(value: boolean): void;
   /**
@@ -733,6 +735,7 @@ export function createThreadSwitchLoad(
       () => options.setContextWindow(seedContextWindow(newThread)),
       () => options.setProviderBanner(undefined),
       () => options.clearSessionBanners(),
+      () => options.clearUnsavedRows(),
       () => options.setProviderSessionAccount(null),
       () => options.clearPaneError(),
       () => options.setSendInFlight(false),

@@ -86,6 +86,11 @@ it, mirrored into `GetThreadLiveState`, dismissed through
 `DismissSessionBanner`, and withdrawn with a `withdrawKind` naming it. The
 contract is in
 [prompt-tool-overrides.md](../../docs/specs/prompt-tool-overrides.md#prompt-changed-banner).
+Error and notice rows the store refused are pushed on `thread:unsaved_rows`
+with their severity, at most five per thread, and read back by
+`GetThreadUnsavedRows` at the push's threads:read scope. An entry leaves
+when its row later saves, when `DismissUnsavedThreadRows` names it, or with
+the thread (`app_unsaved_rows.go`).
 
 A method that arms a connection-owned resource registers its release with
 `transport.ConnState.RegisterCleanup`. If registration reports that teardown

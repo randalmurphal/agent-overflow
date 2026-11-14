@@ -228,6 +228,11 @@ type Router struct {
 	// implementations must not block. Wired via SetCommandSettledObserver
 	// at router construction; nil disables it.
 	commandSettled func(threadID, command string)
+	// unsavedRows is the app-layer observer of error and notification
+	// rows the store refused or later saved (unsaved_rows.go). May run on
+	// the provider read loop; implementations must not block. Wired via
+	// SetUnsavedRowObserver at router construction.
+	unsavedRows UnsavedRowObserver
 	// codeSpanEnricher builds the persisted `codeSpans` meta value for
 	// a settled assistant text (see code_spans.go). Wired via
 	// SetCodeSpanEnricher at router construction; nil disables it.
@@ -260,6 +265,13 @@ func (r *Router) SetDiffPayloadObserver(fn func(threadID, payloadID string, prev
 // read without synchronization on the persist paths.
 func (r *Router) SetCommandSettledObserver(fn func(threadID, command string)) {
 	r.commandSettled = fn
+}
+
+// SetUnsavedRowObserver wires the unsaved row observer (see the
+// unsavedRows field). Call before the router handles events: it is read
+// without synchronization on the persist paths.
+func (r *Router) SetUnsavedRowObserver(observer UnsavedRowObserver) {
+	r.unsavedRows = observer
 }
 
 // notifyCommandSettled reports a persisted shell command row that has
@@ -1025,16 +1037,20 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 	// emits, every streaming/running item is already visibly flipped
 	// to errored, so no "still-streaming text next to an error item"
 	// visual state appears in the timeline.
+	//
+	// A failed flip still writes the error row, or reports it unsaved: on
+	// a full disk the flip is the first write to fail, and the error the
+	// provider reported is what the user needs to see.
+	scope := strings.TrimSpace(evt.ParentToolUseID)
+	summary := stringsx.FirstNonEmptyTrimmed(evt.Content, "Provider error")
 	if fatal {
 		if err := r.markTurnItemsErrored(evt.ThreadID, turnIndex, now); err != nil {
-			return err
+			return errors.Join(err, r.persistProviderErrorItem(evt.ThreadID, turnIndex, summary, evt.Meta, scope, eventParentID(evt), now))
 		}
 	} else if r.hasActiveStreamingItem(evt.ThreadID) {
 		r.settleStreamingBeforeTimelineBoundary(evt, "error item", settleAllScopesIfUnscoped)
 	}
 
-	scope := strings.TrimSpace(evt.ParentToolUseID)
-	summary := stringsx.FirstNonEmptyTrimmed(evt.Content, "Provider error")
 	if err := r.persistProviderErrorItem(evt.ThreadID, turnIndex, summary, evt.Meta, scope, eventParentID(evt), now); err != nil {
 		return err
 	}
@@ -1495,8 +1511,10 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 		return err
 	})
 	if err != nil {
+		r.reportUnsavedRow(item, err)
 		return store.Item{}, err
 	}
+	r.reportSavedRow(persisted)
 	r.noteToolCallLink(persisted)
 	r.notifyCommandSettled(persisted)
 	r.countCodexExecutionToolCall(persisted)

@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/triage"
 )
 
 // emitEvent sends an arbitrary event to the frontend. Prefer this over
@@ -61,10 +62,12 @@ const (
 // app-side event the user must know about that is not a failure, so it does
 // not paint the thread Failed the way an error row does. Routed through
 // HandleSynthetic for the reason emitErrorToThread is: its callers fire
-// right after stopping the thread's session.
+// right after stopping the thread's session. A notice the store refuses is
+// delivered live (app_unsaved_rows.go); the error still reaches the caller.
 func (a *App) emitNoticeToThread(threadID, kind, content string) error {
 	if a.triage == nil {
-		return fmt.Errorf("thread %s notice not recorded: event router not wired", threadID)
+		a.deliverUnsavedThreadRow(triage.UnsavedRow{ThreadID: threadID, Severity: triage.UnsavedSeverityWarning, Summary: content}, errEventRouterNotWired)
+		return fmt.Errorf("thread %s notice not recorded: %w", threadID, errEventRouterNotWired)
 	}
 	meta, err := json.Marshal(map[string]string{"kind": kind})
 	if err != nil {
@@ -83,13 +86,14 @@ func (a *App) emitNoticeToThread(threadID, kind, content string) error {
 }
 
 // routeErrorToThread builds the EventError and hands it to triage on
-// the route the caller picked. The triage-nil path logs instead of
-// emitting — if the router is not wired yet, we have neither a store
-// to persist into nor a typed channel to drop the error on, so it
-// degrades to an observability breadcrumb.
+// the route the caller picked. Triage saves the error row, and delivers
+// it live when the store refuses it (app_unsaved_rows.go). Before the
+// router is wired there is no row to write, so the error is delivered live
+// directly.
 func (a *App) routeErrorToThread(threadID, content string, synthetic bool) {
 	if a.triage == nil {
-		log.Printf("emit error to thread %s: triage not wired — dropping error %q", threadID, content)
+		log.Printf("emit error to thread %s: triage not wired, error %q not saved", threadID, content)
+		a.deliverUnsavedThreadRow(triage.UnsavedRow{ThreadID: threadID, Severity: triage.UnsavedSeverityError, Summary: content}, errEventRouterNotWired)
 		return
 	}
 	evt := provider.ProviderEvent{
