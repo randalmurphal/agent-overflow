@@ -8778,6 +8778,12 @@ export class ThreadPeerRequest {
      */
     "answerAgent"?: ThreadPeerAgent | null;
 
+    /**
+     * LateReplyAgent is AnswerAgent for the late reply, as it was when the
+     * late reply was written.
+     */
+    "lateReplyAgent"?: ThreadPeerAgent | null;
+
     /** Creates a new ThreadPeerRequest instance. */
     constructor($$source: Partial<ThreadPeerRequest> = {}) {
         if (!("token" in $$source)) {
@@ -8795,9 +8801,13 @@ export class ThreadPeerRequest {
      */
     static createFrom($$source: any = {}): ThreadPeerRequest {
         const $$createField15_0 = $$createType155;
+        const $$createField16_0 = $$createType155;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answerAgent" in $$parsedSource) {
             $$parsedSource["answerAgent"] = $$createField15_0($$parsedSource["answerAgent"]);
+        }
+        if ("lateReplyAgent" in $$parsedSource) {
+            $$parsedSource["lateReplyAgent"] = $$createField16_0($$parsedSource["lateReplyAgent"]);
         }
         return new ThreadPeerRequest($$parsedSource as Partial<ThreadPeerRequest>);
     }
