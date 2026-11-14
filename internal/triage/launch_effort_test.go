@@ -281,3 +281,22 @@ func TestModelReportBeforeTheLaunchRowIsHeld(t *testing.T) {
 		t.Fatalf("meta = %v, want the held report", meta)
 	}
 }
+
+// The model report and the mirrored effort are separate updates: both can
+// reach triage before the launch row, and each held stamp keeps its first
+// value.
+func TestSeparateReportsBeforeTheLaunchRowAreAllHeld(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	handleAgentStart(t, router, "", map[string]any{"subagent_model": "claude-haiku-4-5", "inherited_effort": "high"})
+	handleAgentStart(t, router, "", map[string]any{"meta_update_only": true, "run_effort": "medium"})
+	handleAgentStart(t, router, "", map[string]any{"meta_update_only": true, "run_effort": "low", "inherited_effort": "max"})
+	handleAgentStart(t, router, "Agent", map[string]any{"toolName": "Agent", "input": map[string]any{"description": "look", "prompt": "p"}})
+
+	meta := launchRowMeta(t, router, "agent-1")
+	if meta["subagent_model"] != "claude-haiku-4-5" || meta["run_effort"] != "medium" || meta["inherited_effort"] != "high" {
+		t.Fatalf("meta = %v, want each stamp's first held value", meta)
+	}
+}

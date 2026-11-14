@@ -2350,9 +2350,7 @@ func (r *Router) holdPendingToolCorrelation(threadID, itemID string, fields item
 	if existing.ParentToolUseID == "" {
 		existing.ParentToolUseID = fields.ParentToolUseID
 	}
-	if existing.LaunchStamps == nil {
-		existing.LaunchStamps = fields.LaunchStamps
-	}
+	existing.LaunchStamps = holdLaunchStamps(existing.LaunchStamps, fields.LaunchStamps)
 	st.pendingToolCorrelations[itemID] = existing
 }
 

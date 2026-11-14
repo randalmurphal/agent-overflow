@@ -3219,9 +3219,13 @@ AO (`internal/provider/claude/subagent_effort.go`):
   first mirrored row of the agent that names a tier, or claude-tui's first
   subagent request (`""` when it named none). It lands on the row the
   agent's task is bound to, so a §E6 resumed round records its own on the
-  carrier. Rows that arrive before `task_started` bind the agent wait for
-  it unless `agent_metadata.toolUseId` names the launch; ownerless metadata
-  (a forked skill) records nothing.
+  carrier. Each mirrored row counts once by `uuid`, so a row delivered
+  again after a resume does not label the later round. Rows that arrive
+  before `task_started` bind the agent wait for it unless
+  `agent_metadata.toolUseId` names the launch, and an effort whose launch
+  the mirror has not delivered yet rides that launch's tool start;
+  ownerless metadata (a forked skill) records nothing. A resumed round's
+  row that precedes its own `task_started` is not attributed.
 - `meta.inherited_effort` is the effort shown until then: what the agent
   runs at when its launch names none, stamped only where rules 4 and 6 prove
   it. Under a named effort, and for a fork, it is the launcher's effort,

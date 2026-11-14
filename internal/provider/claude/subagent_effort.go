@@ -249,6 +249,9 @@ type agentLaunchEffort struct {
 	pendingEffort       string
 	pendingAlternatives []string
 	modelReported       bool
+	// ran is the effort the agent's mirrored request reported before the
+	// launch itself was delivered (holdRunEffort).
+	ran string
 }
 
 // agentLaunchStamps are the launch-time facts a launch row records.
@@ -256,6 +259,7 @@ type agentLaunchStamps struct {
 	inheritedEffort             string
 	inheritedEffortAlternatives []string
 	requestedModel              string
+	runEffort                   string
 }
 
 // agentLauncher is what a launch inherits from the agent it runs inside.
@@ -314,6 +318,11 @@ func (p *Parser) agentLaunchStamps(toolName, toolUseID, parentToolUseID string, 
 			launch.model = launch.requested
 		}
 	}
+	if effort, ok := p.heldRunEfforts.get(toolUseID); ok {
+		p.heldRunEfforts.delete(toolUseID)
+		launch.ran = effort
+		p.runEffortReported.set(toolUseID, struct{}{})
+	}
 	p.agentLaunchEfforts.set(toolUseID, launch)
 	return launch.stamps()
 }
@@ -370,45 +379,64 @@ func (p *Parser) subagentModelReport(raw map[string]json.RawMessage, launchID, m
 	return fields
 }
 
-// observeMirroredRunEffort records the effort an agent's request ran at, as
-// its session-mirror row reports it, on the row the agent's task is bound
-// to now: its launch, or a §E6 resume carrier for a resumed round. Before
-// task_started binds the agent, agent_metadata's toolUseId names the
-// launch; with neither, the effort waits for the binding
-// (takePendingRunEffort).
-func (p *Parser) observeMirroredRunEffort(threadID, agentID, metadataToolUseID, effort string, now time.Time) []provider.ProviderEvent {
+// mirroredRunEffort is one mirrored request row that names an effort tier.
+type mirroredRunEffort struct {
+	uuid   string
+	effort string
+}
+
+// observeMirroredRunEfforts records the effort an agent's request ran at,
+// as its session-mirror rows report it, on the row the agent's task is
+// bound to now: its launch, or a §E6 resume carrier for a resumed round.
+// Before task_started binds the agent, agent_metadata's toolUseId names the
+// launch. The mirror can deliver a row again, after its agent was bound to
+// a later round, so each source row counts once.
+func (p *Parser) observeMirroredRunEfforts(threadID, agentID, metadataToolUseID string, rows []mirroredRunEffort, now time.Time) []provider.ProviderEvent {
 	if agentID == "" {
 		return nil
 	}
-	rowID := firstNonEmpty(p.taskToolUseRef(agentID).ToolUseID, metadataToolUseID)
-	if rowID == "" {
-		p.pendingRunEfforts.set(agentID, effort)
-		return nil
+	var events []provider.ProviderEvent
+	for _, row := range rows {
+		if row.uuid != "" {
+			if _, seen := p.runEffortSourceRows.get(row.uuid); seen {
+				continue
+			}
+			p.runEffortSourceRows.set(row.uuid, struct{}{})
+		}
+		rowID := firstNonEmpty(p.taskToolUseRef(agentID).ToolUseID, metadataToolUseID)
+		events = append(events, p.recordRunEffort(threadID, agentID, rowID, row.effort, now)...)
 	}
-	return p.runEffortEvent(threadID, agentID, rowID, effort, now)
+	return events
 }
 
 // takePendingRunEffort records the effort an agent's rows reported before
 // its task_started bound it to rowID.
 func (p *Parser) takePendingRunEffort(threadID, agentID, rowID string, now time.Time) []provider.ProviderEvent {
-	effort, ok := p.pendingRunEfforts.get(agentID)
+	effort, ok := p.heldRunEfforts.get(agentID)
 	if !ok {
 		return nil
 	}
-	p.pendingRunEfforts.delete(agentID)
-	return p.runEffortEvent(threadID, agentID, rowID, effort, now)
+	p.heldRunEfforts.delete(agentID)
+	return p.recordRunEffort(threadID, agentID, rowID, effort, now)
 }
 
-// runEffortEvent is the meta-only update that records run_effort on rowID,
+// recordRunEffort is the meta-only update that records run_effort on rowID,
 // once per row, when rowID is an Agent launch or the resume carrier of the
-// agent's task.
-func (p *Parser) runEffortEvent(threadID, agentID, rowID, effort string, now time.Time) []provider.ProviderEvent {
+// agent's task. An effort whose row is not known yet is held: under the
+// agent until task_started binds it (takePendingRunEffort), under rowID
+// until the mirror delivers that launch (agentLaunchStamps).
+func (p *Parser) recordRunEffort(threadID, agentID, rowID, effort string, now time.Time) []provider.ProviderEvent {
+	if rowID == "" {
+		p.holdRunEffort(agentID, effort)
+		return nil
+	}
 	if _, done := p.runEffortReported.get(rowID); done {
 		return nil
 	}
 	_, launch := p.agentLaunchEfforts.get(rowID)
 	root := p.taskTranscriptRoot(agentID)
-	if !launch && (root == "" || root == rowID) {
+	if carrier := root != "" && root != rowID; !launch && !carrier {
+		p.holdRunEffort(rowID, effort)
 		return nil
 	}
 	p.runEffortReported.set(rowID, struct{}{})
@@ -422,11 +450,20 @@ func (p *Parser) runEffortEvent(threadID, agentID, rowID, effort string, now tim
 	}}
 }
 
+// holdRunEffort keeps the first effort reported for key, an agent id or a
+// tool use id, until its row is known.
+func (p *Parser) holdRunEffort(key, effort string) {
+	if _, held := p.heldRunEfforts.get(key); !held {
+		p.heldRunEfforts.set(key, effort)
+	}
+}
+
 func (l agentLaunchEffort) stamps() agentLaunchStamps {
 	return agentLaunchStamps{
 		inheritedEffort:             l.inherited,
 		inheritedEffortAlternatives: l.inheritedAlternatives,
 		requestedModel:              l.requested,
+		runEffort:                   l.ran,
 	}
 }
 
@@ -481,7 +518,7 @@ func (p *Parser) stampProjectedAgentLaunchEffort(event *provider.ProviderEvent) 
 		return
 	}
 	stamps := p.agentLaunchStamps(event.ItemType, event.ItemID, event.ParentToolUseID, fields["input"])
-	if stamps.inheritedEffort == "" && stamps.requestedModel == "" {
+	if len(stamps.fields()) == 0 {
 		return
 	}
 	if fields == nil {
@@ -493,16 +530,28 @@ func (p *Parser) stampProjectedAgentLaunchEffort(event *provider.ProviderEvent) 
 	}
 }
 
-// apply writes the non-empty stamps into a meta field map.
-func (s agentLaunchStamps) apply(fields map[string]json.RawMessage) {
+// fields are the non-empty stamps by meta key.
+func (s agentLaunchStamps) fields() map[string]any {
+	fields := map[string]any{}
 	if s.inheritedEffort != "" {
-		fields[inheritedEffortMetaKey], _ = json.Marshal(s.inheritedEffort)
+		fields[inheritedEffortMetaKey] = s.inheritedEffort
+		if len(s.inheritedEffortAlternatives) > 0 {
+			fields[inheritedEffortAlternativesMetaKey] = s.inheritedEffortAlternatives
+		}
 	}
 	if s.requestedModel != "" {
-		fields[requestedModelMetaKey], _ = json.Marshal(s.requestedModel)
+		fields[requestedModelMetaKey] = s.requestedModel
 	}
-	if s.inheritedEffort != "" && len(s.inheritedEffortAlternatives) > 0 {
-		fields[inheritedEffortAlternativesMetaKey], _ = json.Marshal(s.inheritedEffortAlternatives)
+	if s.runEffort != "" {
+		fields[runEffortMetaKey] = s.runEffort
+	}
+	return fields
+}
+
+// apply writes the non-empty stamps into a meta field map.
+func (s agentLaunchStamps) apply(fields map[string]json.RawMessage) {
+	for key, value := range s.fields() {
+		fields[key], _ = json.Marshal(value)
 	}
 }
 

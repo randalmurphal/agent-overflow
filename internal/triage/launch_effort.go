@@ -44,6 +44,32 @@ func launchStampFields(meta json.RawMessage) map[string]json.RawMessage {
 	return stamps
 }
 
+// holdLaunchStamps adds next to the stamps held for a row that does not
+// exist yet. The stamps arrive in separate updates, so each stamp keeps its
+// first value.
+func holdLaunchStamps(held, next map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(held) == 0 {
+		return next
+	}
+	for _, group := range launchStampGroups {
+		settled := false
+		for _, key := range group {
+			if _, ok := held[key]; ok {
+				settled = true
+			}
+		}
+		if settled {
+			continue
+		}
+		for _, key := range group {
+			if value, ok := next[key]; ok {
+				held[key] = value
+			}
+		}
+	}
+	return held
+}
+
 // keepLaunchStamps settles the launch stamps of a row whose tool start is
 // delivered again (a later process, a mirror re-projection): the existing
 // row's state wins in both directions, so a row stored without a stamp never

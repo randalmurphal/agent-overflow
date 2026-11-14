@@ -7,6 +7,7 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -926,15 +927,7 @@ func marshalToolMeta(toolName string, input json.RawMessage, isBackground, isAge
 	if assistantMessageID != "" {
 		fields["assistant_message_id"] = assistantMessageID
 	}
-	if stamps.inheritedEffort != "" {
-		fields[inheritedEffortMetaKey] = stamps.inheritedEffort
-	}
-	if stamps.requestedModel != "" {
-		fields[requestedModelMetaKey] = stamps.requestedModel
-	}
-	if stamps.inheritedEffort != "" && len(stamps.inheritedEffortAlternatives) > 0 {
-		fields[inheritedEffortAlternativesMetaKey] = stamps.inheritedEffortAlternatives
-	}
+	maps.Copy(fields, stamps.fields())
 	out, _ := json.Marshal(fields)
 	return out
 }

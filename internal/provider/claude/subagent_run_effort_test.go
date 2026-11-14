@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -136,5 +137,77 @@ func TestMirroredAPIErrorRowRecordsNoEffort(t *testing.T) {
 	batch := []byte(`{"type":"transcript_mirror","filePath":"/x/subagents/agent-aid1.jsonl","entries":[{"type":"assistant","uuid":"r1","agentId":"aid1","isSidechain":true,"isApiErrorMessage":true,"message":{"id":"m","role":"assistant","model":"<synthetic>","content":[]},"effort":"max"}]}`)
 	if effort, ok := runEffortReport(t, mustParse(t, parser, batch), "toolu-a"); ok {
 		t.Fatalf("API error row recorded %v", effort)
+	}
+}
+
+func mirroredAgentRows(agentID string, rows ...[2]string) []byte {
+	entries := make([]string, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, `{"type":"assistant","uuid":"`+row[0]+`","agentId":"`+agentID+`","isSidechain":true,"message":{"id":"msg-`+row[0]+`","role":"assistant","model":"claude-haiku-4-5","content":[]},"effort":"`+row[1]+`"}`)
+	}
+	return []byte(`{"type":"transcript_mirror","filePath":"/x/subagents/agent-` + agentID + `.jsonl","entries":[` + strings.Join(entries, ",") + `]}`)
+}
+
+// The mirror can deliver a row again after its agent was resumed: the row
+// belongs to the round it already labeled, so the carrier takes the effort
+// of the resumed round's own row, here and in the same batch.
+func TestRedeliveredRowDoesNotLabelALaterRound(t *testing.T) {
+	for name, deliver := range map[string]func(t *testing.T, parser *Parser) []provider.ProviderEvent{
+		"separate batches": func(t *testing.T, parser *Parser) []provider.ProviderEvent {
+			if effort, ok := runEffortReport(t, mustParse(t, parser, mirroredAgentRow("agent-1", "r1", `,"effort":"xhigh"`)), "carrier-2"); ok {
+				t.Fatalf("redelivered row labeled the carrier %v", effort)
+			}
+			return mustParse(t, parser, mirroredAgentRow("agent-1", "r2", `,"effort":"low"`))
+		},
+		"one batch": func(t *testing.T, parser *Parser) []provider.ProviderEvent {
+			return mustParse(t, parser, mirroredAgentRows("agent-1", [2]string{"r1", "xhigh"}, [2]string{"r2", "low"}))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			parser := newModelScopedParser("2.1.321")
+			mustParse(t, parser, agentLaunchLine("launch-1", "", `{"prompt":"p"}`))
+			mustParse(t, parser, agentTaskStarted("agent-1", "launch-1"))
+			mustParse(t, parser, mirroredAgentRow("agent-1", "r1", `,"effort":"xhigh"`))
+			mustParse(t, parser, []byte(sendMessageToolUse("carrier-2")))
+			mustParse(t, parser, []byte(`{"type":"system","subtype":"task_started","task_id":"agent-1","tool_use_id":"carrier-2","task_type":"local_agent","prompt":"keep going"}`))
+			if effort, ok := runEffortReport(t, deliver(t, parser), "carrier-2"); !ok || effort != "low" {
+				t.Fatalf("carrier run_effort = %v (present %v), want low", effort, ok)
+			}
+		})
+	}
+}
+
+// A launch inside a projected scope announces its agent, and the agent can
+// answer, before the mirror delivers the launch: the effort waits for the
+// launch and rides its tool start.
+func TestMirroredEffortBeforeItsLaunchIsDeliveredWaitsForIt(t *testing.T) {
+	for name, bind := range map[string]func(t *testing.T, parser *Parser){
+		"bound then mirrored": func(t *testing.T, parser *Parser) {
+			mustParse(t, parser, agentTaskStarted("aid1", "toolu-nested"))
+			mustParse(t, parser, mirroredAgentRow("aid1", "r1", `,"effort":"medium"`))
+		},
+		"mirrored then bound": func(t *testing.T, parser *Parser) {
+			mustParse(t, parser, mirroredAgentRow("aid1", "r1", `,"effort":"medium"`))
+			mustParse(t, parser, agentTaskStarted("aid1", "toolu-nested"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			parser := newModelScopedParser("2.1.321")
+			bind(t, parser)
+			mustParse(t, parser, mirroredAgentRow("aid1", "r2", `,"effort":"high"`))
+
+			launch := provider.ProviderEvent{
+				Kind: provider.EventToolStart, ItemID: "toolu-nested", ItemType: "Agent",
+				Meta: json.RawMessage(`{"toolName":"Agent","input":{"prompt":"p","model":"haiku"}}`),
+			}
+			parser.stampProjectedAgentLaunchEffort(&launch)
+			if effort, ok := runEffortReport(t, []provider.ProviderEvent{launch}, "toolu-nested"); !ok || effort != "medium" {
+				t.Fatalf("launch run_effort = %v (present %v), want medium", effort, ok)
+			}
+			// Recorded once: a later row adds nothing.
+			if effort, ok := runEffortReport(t, mustParse(t, parser, mirroredAgentRow("aid1", "r3", `,"effort":"low"`)), "toolu-nested"); ok {
+				t.Fatalf("later row recorded run_effort %v", effort)
+			}
+		})
 	}
 }
