@@ -1392,7 +1392,10 @@ func (a *App) registerQueueItem(
 		return QueuedItem{}, fmt.Errorf("register queue item: %w", err)
 	}
 
-	totalQueued := a.triage.QueuedFlushItemCount(threadID) + a.triage.DeferredPendingFlushItemCount(threadID) + a.flushDispatchItemCount(threadID)
+	// Every message between its admission and the boundary that resolves
+	// it counts, whether queued, in flight, or handed to the provider and
+	// not yet echoed: triage keeps merge evidence for each of those.
+	totalQueued := a.triage.QueuedFlushItemCount(threadID) + a.triage.OutstandingFlushSendCount(threadID) + a.flushDispatchItemCount(threadID)
 	if totalQueued >= maxQueueLength() {
 		return QueuedItem{}, fmt.Errorf("register queue item: queue full (max %d items per thread)", maxQueueLength())
 	}
@@ -1606,11 +1609,13 @@ func maxQueueAttachmentCount() int {
 	return attachmentstore.DefaultMaxCount
 }
 
-// maxQueueLength caps the number of pending queue entries per thread.
+// maxQueueLength caps the follow-up messages a thread has between their
+// admission and the boundary that resolves them (triage's
+// MaxOutstandingFlushSends, the bound its merge evidence is kept to).
 // Bounded by user attention in normal operation (single-digit N); the
 // cap exists to fail loudly rather than silently grow router memory
 // when a client misbehaves or a bug puts RegisterQueueItem in a loop.
-const queueMaxLength = 64
+const queueMaxLength = triage.MaxOutstandingFlushSends
 
 func maxQueueLength() int { return queueMaxLength }
 

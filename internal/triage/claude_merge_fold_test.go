@@ -633,15 +633,15 @@ func TestFlushSendDigestLedgerIsBounded(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	for i := 0; i < maxOutstandingFlushSends*2; i++ {
+	for i := 0; i < MaxOutstandingFlushSends*2; i++ {
 		router.RegisterPendingFlushResendWithExpectation("t1", fmt.Sprintf("user:0:flush:%d", i), 0,
 			PendingSendExpectation{ContentBlockDigest: []string{fmt.Sprintf("t:%d", i)}})
 	}
 	router.mu.Lock()
 	got := len(router.threadStateIfPresent("t1").recentFlushDigests)
 	router.mu.Unlock()
-	if got != maxOutstandingFlushSends {
-		t.Errorf("ledger length: got %d, want the %d-entry bound", got, maxOutstandingFlushSends)
+	if got != MaxOutstandingFlushSends {
+		t.Errorf("ledger length: got %d, want the %d-entry bound", got, MaxOutstandingFlushSends)
 	}
 }
 
@@ -882,5 +882,32 @@ func TestAMergeFoldedMemberEchoedIntoATurnOfItsOwnMovesToTheSurvivorsTurn(t *tes
 				t.Fatalf("active turn = %+v found=%v err=%v, want turn 2 alone", active, found, err)
 			}
 		})
+	}
+}
+
+// The count admission reads covers every send whose boundary is unresolved
+// once: one waiting for its echo, with or without merge evidence, and one
+// echoed whose evidence a merge still to be echoed may need.
+func TestOutstandingFlushSendsCountWhatTheLedgerKeeps(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	mergeFoldSend(t, router, "t1", "user:3:flush:1", "uuid-1", "one", nil, usermessage.Meta{SendID: "send-1"}, 3, 4)
+	mergeFoldSend(t, router, "t1", "user:3:flush:2", "uuid-2", "two", nil, usermessage.Meta{SendID: "send-2"}, 3, 4)
+	// A flush send with no digest (a Codex steer) has no evidence.
+	router.RegisterPendingFlushResendWithExpectation("t1", "user:3:flush:3", 3, PendingSendExpectation{})
+	if got := router.OutstandingFlushSendCount("t1"); got != 3 {
+		t.Fatalf("outstanding with three sends waiting = %d, want 3", got)
+	}
+	if err := router.Handle(mergeEcho(t, "t1", "uuid-1", textBlocks("one"), false)); err != nil {
+		t.Fatal(err)
+	}
+	if got := router.OutstandingFlushSendCount("t1"); got != 3 {
+		t.Fatalf("outstanding after the first's echo = %d, want 3: its evidence is kept for the second", got)
+	}
+	if err := router.Handle(mergeEcho(t, "t1", "uuid-2", textBlocks("two"), true)); err != nil {
+		t.Fatal(err)
+	}
+	if got := router.OutstandingFlushSendCount("t1"); got != 1 {
+		t.Fatalf("outstanding with only the steer waiting = %d, want 1", got)
 	}
 }

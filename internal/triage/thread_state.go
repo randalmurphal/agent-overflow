@@ -206,7 +206,7 @@ type threadState struct {
 	// evidence for a provider queue-boundary merge arrives on the LAST
 	// member's echo, after the earlier members' entries have already been
 	// consumed. Lifecycle: retired by the confirmation that resolves it
-	// (retireResolvedFlushDigests), bounded by maxOutstandingFlushSends, and
+	// (retireResolvedFlushDigests), bounded by MaxOutstandingFlushSends, and
 	// swept with the rest of threadState at cleanup. See
 	// claude_merge_digest.go.
 	recentFlushDigests []flushSendDigest

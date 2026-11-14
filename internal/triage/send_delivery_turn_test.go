@@ -223,7 +223,7 @@ func TestSendConfirmedAtABoundaryIsDeliveredIntoTheTurnThatOpensNext(t *testing.
 		createTestThread(t, st, "t1")
 		log := recordDeliveries(router)
 		startTurnZero(t, router)
-		const sends = maxOutstandingFlushSends + 1
+		const sends = MaxOutstandingFlushSends + 1
 		rows := make([]store.Item, 0, sends)
 		for n := 1; n <= sends; n++ {
 			rows = append(rows, queueDuringTurnZero(t, router, n, fmt.Sprintf("send-%d", n), fmt.Sprintf("echo-%d", n), n))

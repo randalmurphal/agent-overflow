@@ -1330,3 +1330,36 @@ func TestJoinFlushMembersRecordsTheTextBeforeReviewComments(t *testing.T) {
 		}
 	}
 }
+
+// Messages the provider was handed mid-turn and has not consumed count
+// against the queue's bound, as the merge evidence triage keeps for each of
+// them does. Their rows are written at dispatch, so none is deferred: a
+// message past the bound while they wait in Claude's own queue is refused,
+// rather than admitted past the evidence for the first.
+func TestMessagesAwaitingTheirEchoCountAgainstTheQueueBound(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	h := newHeldRequestTarget(t, f)
+	for n := range triage.MaxOutstandingFlushSends {
+		if _, err := f.app.registerQueueItem(h.thread.ID, fmt.Sprintf("message %d", n), SendMessageOptions{SendID: fmt.Sprintf("send-%d", n)}, injectedQueueOptions{preserveDraft: true}); err != nil {
+			t.Fatalf("message %d: %v", n, err)
+		}
+		// Its own flush group, taken off the queue as the boundary flush does.
+		queued := f.app.triage.QueuedFlushItems(h.thread.ID)
+		for _, item := range queued {
+			f.app.triage.RemoveQueuedFlushItem(h.thread.ID, item.ID)
+		}
+		f.app.dispatchFlush(h.thread.ID, queued)
+	}
+	pending := f.app.triage.PendingSendsForTest(h.thread.ID)
+	if len(pending) != triage.MaxOutstandingFlushSends || slices.ContainsFunc(pending, func(p triage.PendingSendSnapshot) bool { return p.HasDeferred }) {
+		t.Fatalf("fixture: pending = %+v, want %d written sends awaiting their echo", pending, triage.MaxOutstandingFlushSends)
+	}
+	if queued := f.app.triage.QueuedFlushItemCount(h.thread.ID); queued != 0 {
+		t.Fatalf("fixture: %d messages still queued", queued)
+	}
+	_, err := f.app.registerQueueItem(h.thread.ID, "one more", SendMessageOptions{SendID: "send-over"}, injectedQueueOptions{preserveDraft: true})
+	if err == nil || !strings.Contains(err.Error(), "queue full") {
+		t.Fatalf("a message past the bound = %v, want it refused as queue full", err)
+	}
+}

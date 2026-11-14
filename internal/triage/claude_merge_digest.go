@@ -21,15 +21,41 @@ type flushSendDigest struct {
 	Digest   []string
 }
 
-// maxOutstandingFlushSends bounds recentFlushDigests by the most messages
-// that can wait in a thread's queue at once (the app's queueMaxLength). The
-// ledger holds only sends whose boundary is unresolved
-// (retireResolvedFlushDigests), and every one of them was dispatched from
-// that queue.
-const maxOutstandingFlushSends = 64
+// MaxOutstandingFlushSends is the most follow-up messages a thread has at
+// once between their admission and the boundary that resolves them:
+// queued, in flight to the provider, waiting for their echo, or kept as
+// merge evidence (OutstandingFlushSendCount). The app refuses a message
+// past it (queueMaxLength), so recentFlushDigests, which holds only
+// sends whose boundary is unresolved (retireResolvedFlushDigests), never
+// reaches its eviction for admitted work.
+const MaxOutstandingFlushSends = 64
+
+// OutstandingFlushSendCount counts the thread's flush sends the provider was
+// handed and whose boundary has not resolved: those waiting for their echo
+// and those kept as evidence of a merge still to be echoed. Each counts
+// once.
+func (r *Router) OutstandingFlushSendCount(threadID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return 0
+	}
+	count := len(st.recentFlushDigests)
+	for _, pending := range st.pendingSends {
+		if pending.Shape != sendShapeFlush {
+			continue
+		}
+		if !slices.ContainsFunc(st.recentFlushDigests, func(entry flushSendDigest) bool { return entry.AOItemID == pending.AOItemID }) {
+			count++
+		}
+	}
+	return count
+}
 
 // recordFlushSendDigest appends a flush send to the thread's ledger, evicting
-// the oldest entry past the bound. A re-registration of the same row id (a
+// the oldest entry past the bound, which only a send the app did not admit
+// can reach. A re-registration of the same row id (a
 // requeued dispatch) replaces its previous entry rather than leaving a stale
 // digest that a later decomposition could match against. Caller holds r.mu.
 func (st *threadState) recordFlushSendDigest(aoItemID string, digest []string) {
@@ -41,7 +67,7 @@ func (st *threadState) recordFlushSendDigest(aoItemID string, digest []string) {
 		AOItemID: aoItemID,
 		Digest:   slices.Clone(digest),
 	})
-	if overflow := len(st.recentFlushDigests) - maxOutstandingFlushSends; overflow > 0 {
+	if overflow := len(st.recentFlushDigests) - MaxOutstandingFlushSends; overflow > 0 {
 		st.recentFlushDigests = slices.Clone(st.recentFlushDigests[overflow:])
 	}
 }
