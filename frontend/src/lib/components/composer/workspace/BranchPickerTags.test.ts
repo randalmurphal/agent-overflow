@@ -294,6 +294,30 @@ describe('<BranchPicker> tags', () => {
     expect(getBindingMock('GetGitStatus')).toBeUndefined();
   });
 
+  it('keeps a status pushed during the checkout over the older one the checkout answers with', async () => {
+    __seedGitStatusForTest('/repo', status());
+    const pane = await buildPane('main');
+    mockLists();
+    const onBranch = { branch: 'feat/new', isDefaultBranch: false };
+    setBindingMock('GitCheckout', async () => {
+      // The backend's own push, with the PR lookup answered, lands first.
+      __seedGitStatusForTest('/repo', status({ ...onBranch, openPrNumber: 7, openPrUrl: 'https://forge/pr/7' }));
+      return {
+        workspacePath: '/repo', worktreePath: '', branch: 'feat/new',
+        status: status({ ...onBranch, openPrLookupPending: true }),
+      };
+    });
+    const { findByRole, getByTestId } = await openWithTags(pane);
+
+    await fireEvent.click(await findByRole('menuitem', { name: /^feat\/new/ }));
+
+    const trigger = getByTestId('branch-picker-trigger') as HTMLButtonElement;
+    await waitFor(() => expect(getToasts().map((t) => t.message)).toContain('Checked out feat/new'));
+    expect(trigger.textContent).toContain('feat/new');
+    expect(pane.gitStatus.status?.openPrNumber).toBe(7);
+    expect(pane.gitStatus.status?.openPrLookupPending).toBeFalsy();
+  });
+
   it('keeps the held label for an answer without a status and names the row in the toast', async () => {
     __seedGitStatusForTest('/repo', status());
     const pane = await buildPane('main');
@@ -472,6 +496,26 @@ describe('<BranchPicker> tags', () => {
     expect(queryByTestId('branch-picker-tag-row')).toBeNull();
     expect(queryByTestId('branch-picker-refresh-tags')).toBeNull();
     expect(getByPlaceholderText('Search Branches')).toBeTruthy();
+  });
+
+  it('drops the held tags, and a read still in flight, when the backend stops serving tags', async () => {
+    const pane = await buildPane('main');
+    mockLists();
+    const { queryByTestId, findByRole } = await openWithTags(pane);
+
+    hello([]);
+    await waitFor(() => expect(queryByTestId('branch-picker-tag-row')).toBeNull());
+
+    // A read that answers after support is lost again must not list its tags.
+    let answer: (tags: unknown) => void = () => {};
+    setBindingMock('GitListTags', () => new Promise((resolve) => { answer = resolve; }));
+    hello(['git-tags.v1']);
+    await waitFor(() => expect(getBindingMock('GitListTags')).toHaveBeenCalledTimes(1));
+    hello([]);
+    answer(TAGS);
+    await findByRole('menuitem', { name: /^feat\/new/ });
+    await Promise.resolve();
+    expect(queryByTestId('branch-picker-tag-row')).toBeNull();
   });
 
   it('keeps branches usable when the tag list fails', async () => {

@@ -3,7 +3,8 @@
 // that lands after a clear or a newer read is dropped. The list belongs to
 // one workspace: a read for another workspace supersedes everything in
 // flight, so a reply for one repository never lands as another's tags.
-// Every read is a no-op on a backend without `git-tags.v1`.
+// A backend without `git-tags.v1` is never asked and holds no list, also
+// when it loses the capability while the picker is open.
 
 import { GitListTags, GitRefreshTags } from '../../../stores/bindings';
 import { addErrorToast } from '../../../stores/toast.svelte';
@@ -59,8 +60,16 @@ export function createPickerTags(): PickerTags {
     heldKey = key;
   }
 
+  // Whether `ws`'s backend serves tags. One that does not holds none: the
+  // list and any read in flight are dropped, whichever workspace they were for.
+  function supported(ws: WorkspaceRef): boolean {
+    if (workspaceHasTags(ws)) return true;
+    if (heldKey !== null) clear();
+    return false;
+  }
+
   async function read(ws: WorkspaceRef): Promise<void> {
-    if (!workspaceHasTags(ws)) return;
+    if (!supported(ws)) return;
     bind(ws);
     // A refresh in flight for this workspace answers with a fresher list.
     if (refreshing) return;
@@ -88,13 +97,14 @@ export function createPickerTags(): PickerTags {
       return refreshing;
     },
     ensure(ws) {
-      if (workspaceKeyForRef(ws) === heldKey) return;
+      if (!supported(ws) || workspaceKeyForRef(ws) === heldKey) return;
       void read(ws);
     },
     reload(ws) {
       void read(ws);
     },
     async refresh(ws) {
+      if (!supported(ws)) return;
       bind(ws);
       if (refreshing) return;
       refreshing = true;

@@ -338,6 +338,32 @@ func TestCheckoutRefPicksTheNamedKindWhenABranchAndATagShareAName(t *testing.T) 
 	}
 }
 
+// A local branch named "<remote>/<name>" is checked out as itself; the name
+// reads as that remote's branch only when no branch has it.
+func TestCheckoutRefOfALocalBranchNamedLikeARemoteBranch(t *testing.T) {
+	t.Parallel()
+	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	originOnlyBranch(t, bare, "topic")
+	testutil.RunGit(t, repo, "fetch", "-q", "origin")
+	testutil.RunGit(t, repo, "branch", "origin/topic", "main")
+	core := NewCore()
+
+	if err := core.CheckoutRef(repo, BranchRef("origin/topic")); err != nil {
+		t.Fatal(err)
+	}
+	if branch := core.CurrentBranch(repo); branch != "origin/topic" {
+		t.Fatalf("branch = %q, want the local branch origin/topic", branch)
+	}
+	testutil.RunGit(t, repo, "checkout", "-q", "main")
+	testutil.RunGit(t, repo, "branch", "-q", "-D", "origin/topic")
+	if err := core.CheckoutRef(repo, BranchRef("origin/topic")); err != nil {
+		t.Fatal(err)
+	}
+	if branch := core.CurrentBranch(repo); branch != "topic" {
+		t.Fatalf("branch = %q, want topic tracking origin's", branch)
+	}
+}
+
 // A branch only origin has, whose name is also a local tag, becomes a local
 // branch tracking origin's; `git checkout <name>` would detach at the tag.
 func TestCheckoutRefOfAnOriginOnlyBranchIgnoresASameNamedTag(t *testing.T) {

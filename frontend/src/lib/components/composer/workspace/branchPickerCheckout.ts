@@ -8,7 +8,7 @@ import {
   placeholderWorkspaceOf,
 } from '../../../stores/draftWorkspaceSync';
 import { warnLeftBehind } from '../../../stores/gitLeftBehind';
-import { applyCheckoutAnswer } from '../../../stores/gitStatusStore.svelte';
+import { withCheckoutAnswer } from '../../../stores/gitStatusStore.svelte';
 import { addErrorToast, addToast } from '../../../stores/toast.svelte';
 import type { ThreadPane } from '../../../stores/thread.svelte';
 import type { GitWorkspaceState, WorkspaceRef } from '../../../types/git';
@@ -35,8 +35,10 @@ export async function checkoutPickerRow(
 ): Promise<void> {
   const placeholderId = pane.draftPlaceholder?.id ?? '';
   try {
-    const next = (await GitCheckout(ws, row.ref)) as GitWorkspaceState;
-    applyCheckoutAnswer(ws, next);
+    const next = await withCheckoutAnswer(
+      ws,
+      async () => (await GitCheckout(ws, row.ref)) as GitWorkspaceState,
+    );
     const checkedOut = placeholderWorkspaceOf(next);
     // The answer's status names the branch ('' on a tag). An answer without
     // one comes from an older backend; a branch row names its own branch.

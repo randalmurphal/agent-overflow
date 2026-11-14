@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -9,6 +10,7 @@ import (
 // detached there. A branch is checked out as itself even when a tag shares
 // its name; one only a remote has (checkoutSource) becomes a local branch
 // tracking it, named explicitly so a same-named tag cannot answer for it.
+// A name no branch has that reads "<remote>/<name>" is that remote's branch.
 func (c *Core) CheckoutRef(cwd string, ref Ref) error {
 	if err := ref.validate(); err != nil {
 		return err
@@ -20,28 +22,34 @@ func (c *Core) CheckoutRef(cwd string, ref Ref) error {
 		return c.executeCheckout(cwd, "--detach", ref.revision())
 	}
 	branch := ref.Name
-	if local, ok := c.localBranchFromRemote(cwd, branch); ok {
-		if err := validateBranchName(local); err != nil {
-			return err
-		}
-		exists, err := c.branchExistsChecked(cwd, local)
-		if err != nil {
-			return fmt.Errorf("check branch %q: %w", local, err)
-		}
-		if exists {
-			return c.executeCheckout(cwd, local)
-		}
-		return c.executeCheckout(cwd, "-b", local, "--track", "refs/remotes/"+branch)
-	}
 	local, remote, err := c.checkoutSource(cwd, branch)
-	if err != nil {
-		return err
-	}
-	if local {
+	var notFound branchNotFoundError
+	switch {
+	case err == nil && local:
 		// git prefers refs/heads/<name> over a same-named tag here.
 		return c.executeCheckout(cwd, branch)
+	case err == nil:
+		return c.executeCheckout(cwd, "-b", branch, "--track", "refs/remotes/"+remote+"/"+branch)
+	case !errors.As(err, &notFound):
+		return err
 	}
-	return c.executeCheckout(cwd, "-b", branch, "--track", "refs/remotes/"+remote+"/"+branch)
+	// No branch has this exact name. "<remote>/<name>" then names that
+	// remote's branch: its local branch, made tracking it when missing.
+	short, ok := c.localBranchFromRemote(cwd, branch)
+	if !ok {
+		return err
+	}
+	if err := validateBranchName(short); err != nil {
+		return err
+	}
+	exists, err := c.branchExistsChecked(cwd, short)
+	if err != nil {
+		return fmt.Errorf("check branch %q: %w", short, err)
+	}
+	if exists {
+		return c.executeCheckout(cwd, short)
+	}
+	return c.executeCheckout(cwd, "-b", short, "--track", "refs/remotes/"+branch)
 }
 
 // checkoutSource is the one rule for where a checkout of branch comes from,

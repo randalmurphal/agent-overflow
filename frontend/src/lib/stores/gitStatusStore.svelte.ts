@@ -101,6 +101,10 @@ function removeAlias(cwdKey: string, key: string, owner: AliasOwner): void {
   if (keys.size === 0) localKeysByCwd.delete(cwdKey);
 }
 
+// Statuses applied per held key, from any source. `withCheckoutAnswer` reads
+// it to tell whether a status landed while its mutation was in flight.
+const appliedByKey = new Map<string, number>();
+
 const store = createEntityStore<GitStatus, GitStatusCtx>({
   name: 'gitStatus',
   backendForKey: workspaceKeyBackend,
@@ -139,6 +143,7 @@ const store = createEntityStore<GitStatus, GitStatusCtx>({
     };
   },
   onApply: (key, value, prev) => {
+    appliedByKey.set(key, (appliedByKey.get(key) ?? 0) + 1);
     if (!value.isRepo) return;
     const branch = value.branch ?? '';
     // First observation for a key always writes: the thread rows' cached
@@ -148,6 +153,9 @@ const store = createEntityStore<GitStatus, GitStatusCtx>({
     // nothing back and returns no rows for this side to sync.
     if (prev !== null && (prev.branch ?? '') === branch) return;
     queueBranchPersist(key, branch);
+  },
+  onDrop: (key) => {
+    appliedByKey.delete(key);
   },
 });
 
@@ -337,18 +345,30 @@ export async function refreshGitStatus(
 }
 
 /**
- * A checkout mutation's answer (GitCheckout, GitCreateBranchFrom) applied to
- * the status held for `ws`: its `status` is the workspace's real status right
- * after the change, so every pane on the workspace shows the new checkout and
- * its upstream, counts and default flag at once. An answer without one (an
- * older backend) changes nothing; the pushed status stream catches up. Nothing
- * to do for a workspace no one holds.
+ * Runs a checkout mutation (GitCheckout, GitCreateBranchFrom) in `ws` and
+ * applies the status it answers with to the status held for `ws`: the
+ * workspace's real status right after the change, so every pane on the
+ * workspace shows the new checkout and its upstream, counts and default flag
+ * at once. Returns the answer.
+ *
+ * A status that landed during the call stands instead. The backend pushes
+ * the checkout's status as well, with the open-PR lookup the answer leaves
+ * pending, and the answer can be the older of the two; whatever landed, that
+ * push follows it. An answer without a status (an older backend) changes
+ * nothing, and neither does one for a workspace no one holds.
  */
-export function applyCheckoutAnswer(ws: WorkspaceRef, state: GitWorkspaceState | null | undefined): void {
-  const status = state?.status;
+export async function withCheckoutAnswer<T extends GitWorkspaceState | null>(
+  ws: WorkspaceRef,
+  mutate: () => Promise<T>,
+): Promise<T> {
   const key = workspaceKeyForRef(ws);
-  if (!status || key === null || store.snapshot(key) === null) return;
-  store.apply(key, status);
+  const applied = key === null ? 0 : (appliedByKey.get(key) ?? 0);
+  const state = await mutate();
+  const status = state?.status;
+  if (status && key !== null && store.snapshot(key) !== null && (appliedByKey.get(key) ?? 0) === applied) {
+    store.apply(key, status);
+  }
+  return state;
 }
 
 /**

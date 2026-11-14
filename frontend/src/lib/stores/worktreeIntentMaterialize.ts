@@ -15,7 +15,7 @@ import {
 } from './bindings';
 import { workspaceKeyForThread, workspaceRefForThread } from '../utils/workspaceKey';
 import { checkoutRef, currentCheckout } from '../utils/checkout';
-import { applyCheckoutAnswer, peekGitStatus } from './gitStatusStore.svelte';
+import { peekGitStatus, withCheckoutAnswer } from './gitStatusStore.svelte';
 import { warnLeftBehind } from './gitLeftBehind';
 import type { GitWorkspaceState } from '../types/git';
 import { syncThreadReply } from './panes.svelte';
@@ -175,13 +175,16 @@ async function runThreadMutation(
     // re-branches every thread row in it. This caller wants its own row back,
     // so it re-reads it rather than guessing the fields locally — the returned
     // GitWorkspaceState describes the checkout, not the thread.
-    const state = (await GitCreateBranchFrom(
+    const state = await withCheckoutAnswer(
       workspace,
-      intent.newBranchName,
-      wire.baseBranch,
-      wire.carryLocalChanges,
-    )) as GitWorkspaceState | null;
-    applyCheckoutAnswer(workspace, state);
+      async () =>
+        (await GitCreateBranchFrom(
+          workspace,
+          intent.newBranchName,
+          wire.baseBranch,
+          wire.carryLocalChanges,
+        )) as GitWorkspaceState | null,
+    );
     warnLeftBehind(state);
     updated = (await GetThread(targetThread.id)) as Thread | null;
   }
