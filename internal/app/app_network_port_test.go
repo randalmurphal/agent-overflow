@@ -1,8 +1,13 @@
 package app
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"agent-overflow/internal/buildvariant/remotetest"
@@ -14,33 +19,42 @@ import (
 // applied through the same Rebind the bind toggle uses, with the
 // transport-port cache kept naming where the listener actually is.
 
-// freeLoopbackPort binds and immediately releases a port, yielding a
-// number that is very likely still free on the next bind.
-func freeLoopbackPort(t *testing.T) int {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("probe for a free port: %v", err)
+// loopbackTestPorts numbers the ports saveOnFreeLoopbackPort tries.
+var loopbackTestPorts atomic.Uint32
+
+// saveOnFreeLoopbackPort saves settings with ListenPort set to a loopback
+// port other than the listener's, and returns the saved record and that
+// port. Each try names its own port below the kernel's ephemeral range: a
+// port taken from that range can be handed to another test's `:0` listener
+// while this one binds it, which fails whichever listens second. A save
+// refused because something else holds the port tries the next one.
+func saveOnFreeLoopbackPort(app *App, settings network.Settings) (network.Settings, int, error) {
+	const first, span, attempts = 20000, 10000, 20
+	var err error
+	for range attempts {
+		settings.ListenPort = first + int((uint32(os.Getpid())*31+loopbackTestPorts.Add(1))%span)
+		var saved network.Settings
+		if saved, err = app.SetNetworkSettings(atTheMachine(), settings); err == nil {
+			return saved, settings.ListenPort, nil
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return network.Settings{}, 0, err
+		}
 	}
-	port := portFromAddr(listener.Addr().String())
-	if err := listener.Close(); err != nil {
-		t.Fatalf("release probe listener: %v", err)
-	}
-	return port
+	return network.Settings{}, 0, fmt.Errorf("no free port in %d tries: %w", attempts, err)
 }
 
 func TestSetNetworkSettings_MovesTheListenerToTheChosenPort(t *testing.T) {
 	t.Parallel()
 	app, srv := newNetworkTestApp(t)
 	before := portFromAddr(srv.Addr())
-	chosen := freeLoopbackPort(t)
-	if chosen == before {
-		t.Skip("the probe port collided with the bound one; nothing to move")
-	}
 
-	got, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: chosen})
+	got, chosen, err := saveOnFreeLoopbackPort(app, network.Settings{})
 	if err != nil {
 		t.Fatalf("SetNetworkSettings: %v", err)
+	}
+	if chosen == before {
+		t.Fatalf("the save kept the listener's port %d", before)
 	}
 	if got.ListenPort != chosen {
 		t.Fatalf("ListenPort = %d, want %d", got.ListenPort, chosen)
@@ -68,9 +82,8 @@ func TestSetNetworkSettings_ChangesPortAndBindTogether(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
-	chosen := freeLoopbackPort(t)
-
-	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: true, ListenPort: chosen}); err != nil {
+	_, chosen, err := saveOnFreeLoopbackPort(app, network.Settings{BindAll: true})
+	if err != nil {
 		t.Fatalf("SetNetworkSettings: %v", err)
 	}
 	host, port, err := net.SplitHostPort(srv.Addr())
@@ -92,8 +105,8 @@ func TestSetNetworkSettings_ChangesPortAndBindTogether(t *testing.T) {
 func TestSetNetworkSettings_ClearingThePortLeavesTheListenerAlone(t *testing.T) {
 	t.Parallel()
 	app, srv := newNetworkTestApp(t)
-	chosen := freeLoopbackPort(t)
-	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: chosen}); err != nil {
+	_, chosen, err := saveOnFreeLoopbackPort(app, network.Settings{})
+	if err != nil {
 		t.Fatalf("SetNetworkSettings pinning: %v", err)
 	}
 
@@ -116,15 +129,12 @@ func TestSetNetworkSettings_ClearingThePortLeavesTheListenerAlone(t *testing.T) 
 // and the next boot would silently move there).
 func TestSetNetworkSettings_RecordsTheBoundPortWhenTheOperatorTouchesIt(t *testing.T) {
 	t.Parallel()
-	app, srv := newNetworkTestApp(t)
+	app, _ := newNetworkTestApp(t)
 	var recorded []int
 	app.boundPortRecorder = func(port int) { recorded = append(recorded, port) }
 
-	chosen := freeLoopbackPort(t)
-	if chosen == portFromAddr(srv.Addr()) {
-		t.Skip("the probe port collided with the bound one; nothing to move")
-	}
-	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: chosen}); err != nil {
+	_, chosen, err := saveOnFreeLoopbackPort(app, network.Settings{})
+	if err != nil {
 		t.Fatalf("SetNetworkSettings pinning: %v", err)
 	}
 	if len(recorded) != 1 || recorded[0] != chosen {
@@ -214,7 +224,7 @@ func TestSetNetworkSettings_ToleratesNoBoundPortRecorder(t *testing.T) {
 	app, _ := newNetworkTestApp(t)
 	app.boundPortRecorder = nil
 
-	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: freeLoopbackPort(t)}); err != nil {
+	if _, _, err := saveOnFreeLoopbackPort(app, network.Settings{}); err != nil {
 		t.Fatalf("SetNetworkSettings with no recorder installed: %v", err)
 	}
 }
