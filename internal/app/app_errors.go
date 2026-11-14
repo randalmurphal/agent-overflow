@@ -51,11 +51,12 @@ func (a *App) emitWireErrorToThread(threadID, content string) {
 
 // The notice kinds the app posts itself (notification meta.kind). A warning
 // is a standing fact the user should act on or know (the timeline row's
-// amber tone); a worktree cleanup reports what the app did on its own (the
-// row's neutral tone).
+// amber tone); a worktree cleanup and an account auto-switch report what the
+// app did on its own (the row's neutral tone).
 const (
-	noticeKindWarning         = "warning"
-	noticeKindWorktreeCleanup = "worktree_cleanup"
+	noticeKindWarning           = "warning"
+	noticeKindWorktreeCleanup   = "worktree_cleanup"
+	noticeKindAccountAutoSwitch = "account_auto_switch"
 )
 
 // emitNoticeToThread persists a notification row of kind on the thread: an

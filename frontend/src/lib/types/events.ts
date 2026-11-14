@@ -485,6 +485,25 @@ export interface ProviderAccountSignInEvent {
   active: boolean;
 }
 
+/**
+ * `provider:account_auto_switch`: the app changed the selected account
+ * (docs/specs/account-auto-switch.md). With `error` set the switch failed and
+ * `toLabel` names the account it tried. `resetsAt` is unix seconds.
+ */
+export interface ProviderAccountAutoSwitchEvent {
+  provider: ProviderID;
+  fromAccountId?: string;
+  toAccountId?: string;
+  fromLabel?: string;
+  toLabel?: string;
+  reason?: 'exhausted' | 'threshold' | 'refused' | 'order';
+  limitName?: string;
+  usedPercent?: number;
+  resetsAt?: number;
+  model?: string;
+  error?: string;
+}
+
 export interface ProviderAccountUsageErrorEvent {
   provider: ProviderID;
   accountId: string;

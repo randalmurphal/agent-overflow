@@ -3,7 +3,8 @@
 // warning-band weekly reading and a refusal) leaves the meters and the
 // backend's quota cache untouched. The event cannot say which account it
 // reports, so the meters read only the OAuth usage endpoint, which an
-// isolated boot refuses; "awaiting first update" on the 7d meter and no 5h
+// isolated boot refuses unless a spec sets an answer
+// (claude-usage-reading.spec.ts); "awaiting first update" on the 7d meter and no 5h
 // meter is therefore the only correct state here.
 import { test, expect } from './fixtures.js';
 import {

@@ -156,6 +156,8 @@ func (s providerAccountEventSink) PublishCleared(providerName string, generation
 // be a second, divergent projection of it.
 func (s providerAccountEventSink) PublishAccountsChanged() {
 	s.app.emit(eventchan.ProviderAccountsChanged, nil)
+	s.app.accountSwitch().AccountsChanged(string(provider.Claude))
+	s.app.accountSwitch().AccountsChanged(string(provider.Codex))
 }
 
 func (s providerAccountEventSink) PublishSignIn(signIn provideraccountapp.SignIn) {

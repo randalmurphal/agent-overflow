@@ -287,6 +287,9 @@ type harnessTiming struct {
 	// before the forge is asked again
 	// (app.IsolationConfig.PRLookupRetryBase).
 	PRLookupRetry time.Duration
+	// UsageProbeGap is the shortest gap between two usage probes of one
+	// provider (app.IsolationConfig.UsageProbeGap).
+	UsageProbeGap time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -306,6 +309,7 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"pr-ci-log-wait":  &timing.PRCILogWait,
 		"merged-pr-poll":  &timing.MergedPRPoll,
 		"pr-lookup-retry": &timing.PRLookupRetry,
+		"usage-probe-gap": &timing.UsageProbeGap,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -406,6 +410,7 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		PRCILogWaitInterval:  opts.Timing.PRCILogWait,
 		MergedPRPollInterval: opts.Timing.MergedPRPoll,
 		PRLookupRetryBase:    opts.Timing.PRLookupRetry,
+		UsageProbeGap:        opts.Timing.UsageProbeGap,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

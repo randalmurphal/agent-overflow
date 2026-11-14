@@ -394,6 +394,15 @@ type Settings struct {
 	CodexAutoCompactStandardPercent  int `json:"codexAutoCompactStandardPercent"`
 	CodexAutoCompactExtendedPercent  int `json:"codexAutoCompactExtendedPercent"`
 
+	// Account auto-switch, for every provider (accountautoswitch.go).
+	// AccountAutoSwitchStrategy is the order the pool is used in,
+	// AccountAutoSwitchThreshold the usage percent at which an account is
+	// past threshold, and AccountAutoContinue continues a thread refused
+	// for a usage limit once an account can serve it.
+	AccountAutoSwitchStrategy  string `json:"accountAutoSwitchStrategy"`
+	AccountAutoSwitchThreshold int    `json:"accountAutoSwitchThreshold"`
+	AccountAutoContinue        bool   `json:"accountAutoContinue,omitempty"`
+
 	// Observability — all opt-in. Empty/false defaults leave the app quiet.
 	//
 	// SECURITY NOTE: this file is stored on disk in plaintext and is
@@ -708,6 +717,8 @@ var DefaultSettings = Settings{
 	ClaudeAutoCompactExtendedPercent: 90,
 	CodexAutoCompactStandardPercent:  90,
 	CodexAutoCompactExtendedPercent:  90,
+	AccountAutoSwitchStrategy:        AccountAutoSwitchSoonestReset,
+	AccountAutoSwitchThreshold:       DefaultAccountAutoSwitchThreshold,
 	// Observability defaults to off so there is zero runtime cost for users
 	// who don't opt in. The OTLP endpoint is only meaningful when tracing
 	// is enabled; we leave it blank so a misconfigured endpoint can't cause

@@ -3644,6 +3644,12 @@ export class ManagedProviderAccount {
      */
     "signInRequired": boolean;
 
+    /**
+     * AutoSwitch reports that the account is in the provider's auto-switch
+     * pool.
+     */
+    "autoSwitch": boolean;
+
     /** Creates a new ManagedProviderAccount instance. */
     constructor($$source: Partial<ManagedProviderAccount> = {}) {
         if (!("id" in $$source)) {
@@ -3666,6 +3672,9 @@ export class ManagedProviderAccount {
         }
         if (!("signInRequired" in $$source)) {
             this["signInRequired"] = false;
+        }
+        if (!("autoSwitch" in $$source)) {
+            this["autoSwitch"] = false;
         }
 
         Object.assign(this, $$source);

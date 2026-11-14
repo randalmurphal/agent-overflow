@@ -26,3 +26,8 @@ func (m *Manager) audit(format string, args ...any) {
 		log.Printf("provider accounts: append audit log: %v", err)
 	}
 }
+
+// AuditFailedAutoSwitch records an automatic switch that did not happen.
+func (m *Manager) AuditFailedAutoSwitch(providerName, fromID, toID, reason string) {
+	m.audit("auto-switch of %s account from %s to %s failed: %s", providerName, fromID, toID, reason)
+}

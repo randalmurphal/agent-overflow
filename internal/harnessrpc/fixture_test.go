@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil/providerpath"
@@ -36,6 +37,8 @@ type testHost struct {
 	browserScroll     func(string, string, float64, float64) error
 	browserScreenshot func(string, string) ([]byte, error)
 	pushSent          []PushMessage
+	claudeUsage       *claudefake.Usage
+	usageReadings     int
 	droppedRetained   int
 	droppedImages     int
 	broadcastRows     []string
@@ -102,8 +105,10 @@ func (h *testHost) Notify(string, string, notify.Target) error { return nil }
 
 // The fixture never installs a push recorder, which is what a boot with no
 // push configured looks like.
-func (h *testHost) PushSent() []PushMessage { return h.pushSent }
-func (h *testHost) ForgetPushSent()         { h.pushSent = nil }
+func (h *testHost) PushSent() []PushMessage            { return h.pushSent }
+func (h *testHost) ForgetPushSent()                    { h.pushSent = nil }
+func (h *testHost) ClaudeUsageFake() *claudefake.Usage { return h.claudeUsage }
+func (h *testHost) RequestClaudeUsageReading()         { h.usageReadings++ }
 func (h *testHost) BrowserPressKey(string, string, keybindings.Accelerator) error {
 	return errors.New("no browser engine in the fixture")
 }

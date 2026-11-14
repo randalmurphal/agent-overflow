@@ -48,6 +48,8 @@ export interface UserMessageMeta {
    *   through Codex's own `create_thread` / `send_message_to_thread` tools,
    *   outside Agent Overflow. Only imported history carries it.
    *   (`internal/provider/codex/rollout/delegation.go`)
+   * - `app` — Agent Overflow itself wrote the row, such as the "Continue"
+   *   sent after a usage limit (`docs/specs/account-auto-switch.md`).
    *
    * Absent means locally authored, which is the overwhelmingly common case.
    */

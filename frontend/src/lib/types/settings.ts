@@ -42,6 +42,8 @@ export type PaneDensityMode = "compact" | "comfortable" | "spacious";
 export type ActivityRunDefaultMode = "expanded" | "collapsed";
 export type ProjectSortMode = "lastActivity" | "createdAt" | "manual";
 export type CommitMessageStyle = "conventional" | "repo" | "custom";
+/** Preferred order of the auto-switch pool; mirrors internal/settings AccountAutoSwitch*. */
+export type AccountAutoSwitchStrategy = "soonest-reset" | "account-order";
 /** The four readings of "quiet when"; mirrors internal/settings NotifyQuiet*. */
 export type NotifyQuietWhen = "never" | "focused" | "threadVisible" | "focusedAndThreadVisible";
 
@@ -567,6 +569,19 @@ export interface Settings {
   claudeAutoCompactExtendedPercent: number;
   codexAutoCompactStandardPercent: number;
   codexAutoCompactExtendedPercent: number;
+  /**
+   * Account auto-switch, for every provider
+   * (docs/specs/account-auto-switch.md). The strategy is the preferred
+   * order of the pool; the threshold is the usage percent at which an
+   * account is past threshold (range in FRONTEND_SETTING_RANGES).
+   */
+  accountAutoSwitchStrategy: AccountAutoSwitchStrategy;
+  accountAutoSwitchThreshold: number;
+  /**
+   * Continue a thread refused for a usage limit once an account can serve
+   * it. Off by default.
+   */
+  accountAutoContinue: boolean;
   observabilityTracingEnabled: boolean;
   observabilityOtlpEndpoint: string;
   observabilityEventLogEnabled: boolean;

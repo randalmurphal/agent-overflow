@@ -110,6 +110,29 @@ describe('<UserMessage>', () => {
     expect(local.queryByTestId('user-message-external-origin')).toBeNull();
   });
 
+  // The "Continue" sent after a usage limit is written by the app itself.
+  it('marks a row Agent Overflow wrote, and leaves a locally typed one unmarked', () => {
+    const app = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'Continue. The usage limit that stopped this thread no longer applies.',
+          meta: JSON.stringify({ origin: 'app' }),
+        }),
+      },
+    });
+    const badge = app.getByTestId('user-message-app-origin');
+    expect(badge.textContent).toContain('Agent Overflow');
+    expect(badge.tagName).toBe('DIV');
+    app.unmount();
+
+    const local = render(UserMessage, {
+      props: { item: makeItem({ kind: 'user_text', role: 'user', summary: 'Continue.' }) },
+    });
+    expect(local.queryByTestId('user-message-app-origin')).toBeNull();
+  });
+
   // An imported Codex thread that another Codex thread started opens with
   // the delegated prompt; the reader did not type it.
   it('marks a prompt another Codex thread delegated', () => {

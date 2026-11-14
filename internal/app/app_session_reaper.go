@@ -54,10 +54,8 @@ const (
 // WaitGroup before the parallel session close runs in Step 4, so the
 // reaper can't fire mid-teardown.
 //
-// Unlike startClaudeRateLimitProbeLoop (which selects on appCtx.Done()
-// and can exit on its own), this reaper needs deterministic teardown
-// via the idleReaperStop channel + WaitGroup because its close path
-// races a.sessions mutation; the rate-limit probe only reads a snapshot.
+// The reaper stops on idleReaperStop rather than appCtx because its
+// close path races a.sessions mutation and must end before Step 4.
 func (a *App) startIdleSessionReaper() {
 	stop, started := a.sessionManager().runtime.StartIdleReaper()
 	if !started {

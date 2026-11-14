@@ -284,6 +284,7 @@ describe("provider page — provider accounts", () => {
       provider: "codex",
       email: "second@example.com",
       addedAt: 1,
+      autoSwitch: true,
       active: false,
     }]);
     const { findByRole, findByTestId } = render(CodexSettings);
@@ -316,6 +317,7 @@ describe("provider page — provider accounts", () => {
       email: "second@example.com",
       subscriptionType: "pro",
       addedAt: 1,
+      autoSwitch: true,
       active: true,
       rateLimits: {
         provider: "codex",
@@ -347,6 +349,7 @@ describe("provider page — provider accounts", () => {
       provider: "claude",
       email: "second@example.com",
       addedAt: 1,
+      autoSwitch: true,
       active: false,
     }]);
     setBindingMock("SwitchProviderAccount", async () => {
@@ -369,6 +372,7 @@ describe("provider page — provider accounts", () => {
         provider: "claude",
         email: "active@example.com",
         addedAt: 2,
+        autoSwitch: true,
         active: true,
       },
       {
@@ -376,6 +380,7 @@ describe("provider page — provider accounts", () => {
         provider: "claude",
         email: "next@example.com",
         addedAt: 1,
+        autoSwitch: true,
         active: false,
       },
     ];
@@ -405,6 +410,7 @@ describe("provider page — provider accounts", () => {
       provider: "codex",
       email: "only@example.com",
       addedAt: 1,
+      autoSwitch: true,
       active: true,
     }];
     setBindingMock("ListProviderAccounts", async () => accounts);
@@ -423,6 +429,151 @@ describe("provider page — provider accounts", () => {
         "codex-only",
       ]);
     });
+  });
+});
+
+describe("provider page: account auto-switch pool", () => {
+  const two = (autoSwitch: [boolean, boolean]) => [
+    { id: "claude-a", provider: "claude", email: "a@x.com", addedAt: 2, active: true, autoSwitch: autoSwitch[0] },
+    { id: "claude-b", provider: "claude", email: "b@y.com", addedAt: 1, active: false, autoSwitch: autoSwitch[1] },
+  ];
+  const box = (id: string) =>
+    document.querySelector(`[data-testid="provider-account-auto-switch-${id}"]`) as HTMLInputElement | null;
+
+  it("renders each card's pool membership from the listing", async () => {
+    await seed();
+    setBindingMock("ListProviderAccounts", async () => two([true, false]));
+    const { findByTestId } = render(ClaudeSettings);
+    await findByTestId("provider-account-claude-b");
+    expect(box("claude-a")!.checked).toBe(true);
+    expect(box("claude-b")!.checked).toBe(false);
+    expect(box("claude-b")!.closest("label")!.title).toBe(
+      "Let Agent Overflow switch to and from this account when a usage limit is near",
+    );
+  });
+
+  it("writes the account's new value at once, without switching to it", async () => {
+    await seed();
+    setBindingMock("ListProviderAccounts", async () => two([true, true]));
+    let finish!: () => void;
+    const write = setBindingMock("SetProviderAccountAutoSwitch", () => new Promise<void>((resolve) => { finish = resolve; }));
+    const switched = setBindingMock("SwitchProviderAccount", async () => null);
+    const { findByTestId, queryByTestId } = render(ClaudeSettings);
+    await findByTestId("provider-account-claude-b");
+    expect(queryByTestId("provider-accounts-pool-hint-claude")).toBeNull();
+
+    await fireEvent.click(box("claude-b")!);
+    expect(write).toHaveBeenCalledWith("claude", "claude-b", false);
+    // The pool line reads the store, so it shows the change before the write lands.
+    expect(queryByTestId("provider-accounts-pool-hint-claude")).not.toBeNull();
+    finish();
+    await waitFor(() => expect(box("claude-b")!.checked).toBe(false));
+    expect(switched).not.toHaveBeenCalled();
+  });
+
+  it("reverts and says so when the write is refused", async () => {
+    await seed();
+    setBindingMock("ListProviderAccounts", async () => two([true, true]));
+    setBindingMock("SetProviderAccountAutoSwitch", async () => {
+      throw new Error("disk full");
+    });
+    const { findByTestId } = render(ClaudeSettings);
+    await findByTestId("provider-account-claude-b");
+
+    await fireEvent.click(box("claude-b")!);
+    await waitFor(() => expect(box("claude-b")!.checked).toBe(true));
+    expect(
+      getToasts().some((toast) => toast.message.includes("Claude account auto-switch was not turned off")),
+    ).toBe(true);
+  });
+
+  it("is inert without access:admin", async () => {
+    await seed();
+    setBindingMock("ListProviderAccounts", async () => two([true, true]));
+    const { findByTestId } = render(ClaudeSettings);
+    await findByTestId("provider-account-claude-b");
+    await pairWithScopes([...OBSERVE_SCOPES, "threads:operate"]);
+    try {
+      await waitFor(() => expect(box("claude-b")!.disabled).toBe(true));
+      expect(box("claude-b")!.closest("label")!.title).toBe("Not granted to this device");
+    } finally {
+      resetToLocalPage();
+    }
+  });
+
+  it("asks for a second ticked account only when there are two or more and fewer than two are ticked", async () => {
+    await seed();
+    const cases: { listing: unknown[]; shown: boolean }[] = [
+      { listing: two([false, false]), shown: true },
+      { listing: two([true, false]), shown: true },
+      { listing: two([true, true]), shown: false },
+      { listing: [two([false, false])[0]], shown: false },
+      { listing: [two([true, true])[0]], shown: false },
+    ];
+    for (const { listing, shown } of cases) {
+      resetProviderAccounts();
+      setBindingMock("ListProviderAccounts", async () => listing);
+      const view = render(ClaudeSettings);
+      await view.findByTestId("provider-account-claude-a");
+      expect(view.queryByTestId("provider-accounts-pool-hint-claude") !== null, JSON.stringify(listing)).toBe(shown);
+      view.unmount();
+    }
+  });
+});
+
+describe("provider page: auto-switch settings", () => {
+  const patches = () =>
+    (getBindingMock("UpdateSettings")?.mock.calls ?? []).map((call) => call[0] as Record<string, unknown>);
+
+  it("renders the current values on every provider page and says they apply to every provider", async () => {
+    await seed({ accountAutoSwitchStrategy: "account-order", accountAutoSwitchThreshold: 80, accountAutoContinue: true });
+    for (const Page of [ClaudeSettings, CodexSettings]) {
+      const view = render(Page);
+      const strategy = view.getByTestId("settings-auto-switch-strategy") as HTMLSelectElement;
+      expect(strategy.value).toBe("account-order");
+      expect(view.getByText("The order of the cards above.")).toBeTruthy();
+      expect(view.getByLabelText("Use accounts in order of")).toBe(strategy);
+      expect([...strategy.options].map((option) => option.text)).toEqual(["Soonest weekly reset", "Card order"]);
+      expect((view.getByTestId("settings-auto-switch-threshold") as HTMLInputElement).value).toBe("80");
+      expect(view.getByRole("switch", { name: "Continue threads after a usage limit" }).getAttribute("aria-checked")).toBe("true");
+      expect(view.getByText(/apply to the accounts of every provider/)).toBeTruthy();
+      expect(view.getByTestId("settings-auto-continue-warning").className).toContain("text-warning");
+      view.unmount();
+    }
+  });
+
+  it("writes each setting under its own key", async () => {
+    await seed();
+    const view = render(ClaudeSettings);
+    expect(view.getByText("Uses up the account whose weekly limit resets soonest, so less quota expires unused.")).toBeTruthy();
+    await fireEvent.change(view.getByTestId("settings-auto-switch-strategy"), { target: { value: "account-order" } });
+    await waitFor(() => expect(patches().at(-1)).toEqual({ accountAutoSwitchStrategy: "account-order" }));
+    expect(view.getByText("The order of the cards above.")).toBeTruthy();
+    await fireEvent.change(view.getByTestId("settings-auto-switch-threshold"), { target: { value: "90" } });
+    await waitFor(() => expect(patches().at(-1)).toEqual({ accountAutoSwitchThreshold: 90 }));
+    await fireEvent.click(view.getByRole("switch", { name: "Continue threads after a usage limit" }));
+    await waitFor(() => expect(patches().at(-1)).toEqual({ accountAutoContinue: true }));
+  });
+
+  it("clamps the threshold into its range and keeps the stored value for an empty entry", async () => {
+    await seed({ accountAutoSwitchThreshold: 95 });
+    const view = render(ClaudeSettings);
+    const input = view.getByTestId("settings-auto-switch-threshold") as HTMLInputElement;
+    expect(input.min).toBe("50");
+    expect(input.max).toBe("100");
+
+    await fireEvent.change(input, { target: { value: "10" } });
+    await waitFor(() => expect(patches().at(-1)).toEqual({ accountAutoSwitchThreshold: 50 }));
+    expect(input.value).toBe("50");
+
+    await fireEvent.change(input, { target: { value: "250" } });
+    await waitFor(() => expect(patches().at(-1)).toEqual({ accountAutoSwitchThreshold: 100 }));
+    expect(input.value).toBe("100");
+
+    const before = patches().length;
+    await fireEvent.change(input, { target: { value: "" } });
+    expect(input.value).toBe("100");
+    expect(patches()).toHaveLength(before);
   });
 });
 

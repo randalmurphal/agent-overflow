@@ -783,6 +783,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	}
 	endPhase()
 	a.installThreadRequestObserver()
+	a.startAccountSwitch()
 	if err := a.initWorkflowEngine(dbDir); err != nil {
 		return err
 	}

@@ -127,6 +127,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:status')).toBe(1);
     expect(wailsListenerCount('provider:session_account')).toBe(1);
     expect(wailsListenerCount('provider:account_usage_error')).toBe(1);
+    expect(wailsListenerCount('provider:account_auto_switch')).toBe(1);
     expect(wailsListenerCount('provider:item_event')).toBe(1);
     expect(wailsListenerCount('provider:turn_started')).toBe(1);
     expect(wailsListenerCount('provider:turn_completed')).toBe(1);
@@ -149,6 +150,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:status')).toBe(0);
     expect(wailsListenerCount('provider:session_account')).toBe(0);
     expect(wailsListenerCount('provider:account_usage_error')).toBe(0);
+    expect(wailsListenerCount('provider:account_auto_switch')).toBe(0);
     expect(wailsListenerCount('provider:item_event')).toBe(0);
     expect(wailsListenerCount('provider:turn_started')).toBe(0);
     expect(wailsListenerCount('provider:turn_completed')).toBe(0);
@@ -159,6 +161,18 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('notification:sound')).toBe(0);
 
     cleanup = setupEventListeners();
+  });
+
+  it('toasts an auto-switch the home computer reports', () => {
+    emitWailsEvent('provider:account_auto_switch', {
+      provider: 'claude',
+      toLabel: 'b@y.com',
+      fromLabel: 'a@x.com',
+      reason: 'refused',
+    });
+    expect(getToasts().map((toast) => toast.message)).toContain(
+      'Switched Claude account to b@y.com. a@x.com was refused for a usage limit.',
+    );
   });
 
   it('routes the PR CI channels to the PR they name', async () => {

@@ -418,6 +418,15 @@ Mechanism in
   colored by its own threshold; with several, the most-used one. The
   provider-wide limit keeps the outer ring so a scoped quota never reads as
   the account being exhausted.
+- Account auto-switch ([spec](specs/account-auto-switch.md)): every saved
+  account is in the pool until its Auto-switch checkbox is cleared, with no
+  master switch.
+  It changes the one provider-wide selection, never per thread and never
+  through a proxy. A selection a person or an outside login made holds until
+  that account can no longer serve the running models. Continue after a
+  usage limit is off by default, kept in memory only, and never sent to a
+  workflow-owned or hidden thread; a workflow run parked on a usage limit
+  stays parked until resumed.
 - Claude usage meters read only `/api/oauth/usage`. The stdio
   `rate_limit_event` (including 2.1.257 `unifiedWindows`) is not a quota
   source: it names no account, and responses to requests sent before an
