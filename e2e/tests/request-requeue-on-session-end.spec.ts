@@ -10,7 +10,8 @@
 // leaves the request handed over and not taken in; the Codex mock has no
 // such hold. The same idle reading on
 // both providers is covered by a held wake whose start keeps failing
-// (standing-agent-wakes.spec.ts, "a later fire retries a start that failed").
+// (standing-agent-wake-start-failures.spec.ts, "a later fire retries a start
+// that failed").
 // A thread that cannot take the request back, an archived one, settles it
 // instead, and the sender's row says the session ended before the thread
 // read it. Every sentence a request ends on when it was not answered reads

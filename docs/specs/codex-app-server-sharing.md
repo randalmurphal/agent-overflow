@@ -501,7 +501,8 @@ multi-thread app-server:
   which becomes per engine.
 - `exit` stays process-scoped: it kills the process and so every engine on
   it, which is what a crash is. Specs that use `exit` to end one thread's
-  session (`standing-agent-wakes.spec.ts`, `wake-rows.spec.ts`) put that
+  session (the `standing-agent-wake-*` and `standing-agent-worker-prompts`
+  specs, `wake-rows.spec.ts`) put that
   thread under its own key through a harness-only seam that adds the
   thread id to the key, the stage-1 input, so their meaning is unchanged.
   The seam exists only in isolated harness boots, like the other
@@ -524,7 +525,8 @@ What must pass unchanged, at both stages:
   with particular weight on `codex-steer`, `codex-collab`, `codex-revert`,
   `codex-terminal-polls`, `agent-visibility-codex`, `fork-midturn`,
   `session-replace-midturn`, `stale-session-frames`,
-  `request-requeue-on-session-end`, `standing-agent-wakes`,
+  `request-requeue-on-session-end`, the `standing-agent-wake-*` specs,
+  `standing-agent-worker-prompts`,
   `standing-agent-home-contents`, `mcp-menu` and
   `harness-provider-signin`;
 - the Go tests of every package the rows change: `internal/provider/codex`

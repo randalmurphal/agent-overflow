@@ -1694,7 +1694,7 @@ codex 0.153.4); outcomes recorded in the
       thread with badged, quoted wakes on both providers; a watch on a
       thread that is not a standing agent is refused; `thread_status`
       lists them and `thread_cancel` by label stops one
-      (`e2e/tests/standing-agent-wakes.spec.ts`).
+      (`e2e/tests/standing-agent-wake-registration.spec.ts`).
 - [x] The footer on a spawned thread's first message quotes the user's
       latest message from the caller's thread.
 - [x] Deleting the caller cancels its scratch asks on another computer;
