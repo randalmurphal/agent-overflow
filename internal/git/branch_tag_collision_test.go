@@ -1,6 +1,9 @@
 package git
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/testutil"
@@ -104,5 +107,72 @@ func TestMergeBranchMergesTheBranchNotATagOfItsName(t *testing.T) {
 	}
 	if result.SHA != tip || revParse(t, repo, "refs/heads/main") != tip {
 		t.Errorf("main after merging dup = %s (%+v), want dup's tip %s", revParse(t, repo, "refs/heads/main"), result, tip)
+	}
+}
+
+// A branch that does not exist is never checked out as whatever else its
+// name resolves to: `git worktree add <path> <name>` detaches at a tag or
+// commit of that name.
+func TestAttachWorktreeRefusesABranchNameThatOnlyATagHas(t *testing.T) {
+	t.Parallel()
+	repo, _ := testutil.InitGitRepoWithOrigin(t)
+	testutil.RunGit(t, repo, "tag", "gone")
+	core := NewCore()
+	for _, branch := range []string{"gone", "refs/tags/gone"} {
+		path := filepath.Join(t.TempDir(), "wt")
+		created, err := core.AttachWorktreeAt(repo, path, BranchRef(branch))
+		if err == nil || created || !strings.Contains(err.Error(), "not found") {
+			t.Errorf("AttachWorktreeAt(branch %q) = %v, %v; want a branch not found error", branch, created, err)
+		}
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Errorf("AttachWorktreeAt(branch %q) left %s behind (%v)", branch, path, statErr)
+		}
+	}
+}
+
+// A branch only a remote other than origin has is checked out as a local
+// branch tracking it, by the rule an in-place checkout uses: the one remote
+// that has it, and a refusal when several do.
+func TestAttachWorktreeTracksTheOneRemoteThatHasTheBranch(t *testing.T) {
+	t.Parallel()
+	repo, _ := testutil.InitGitRepoWithOrigin(t)
+	testutil.RunGit(t, repo, "branch", "feature/fork")
+	tip := revParse(t, repo, "refs/heads/feature/fork")
+	for _, remote := range []string{"fork", "mirror"} {
+		bare := t.TempDir()
+		testutil.RunGit(t, bare, "init", "-q", "--bare")
+		testutil.RunGit(t, repo, "remote", "add", remote, bare)
+	}
+	testutil.RunGit(t, repo, "push", "-q", "fork", "feature/fork")
+	testutil.RunGit(t, repo, "branch", "-q", "-D", "feature/fork")
+	// A tag of the same name must not answer for the branch.
+	testutil.RunGit(t, repo, "tag", "feature/fork", "HEAD")
+
+	core := NewCore()
+	path := filepath.Join(t.TempDir(), "wt")
+	created, err := core.AttachWorktreeAt(repo, path, BranchRef("feature/fork"))
+	if err != nil || !created {
+		t.Fatalf("AttachWorktreeAt = %v, %v; want the local branch created", created, err)
+	}
+	if ref, err := core.CurrentRef(path); err != nil || ref != BranchRef("feature/fork") {
+		t.Errorf("worktree is on %+v (%v), want branch feature/fork", ref, err)
+	}
+	if got := revParse(t, repo, "refs/heads/feature/fork"); got != tip {
+		t.Errorf("feature/fork = %s, want the fork's %s", got, tip)
+	}
+	if upstream, ok := core.upstreamFor(repo, "feature/fork"); !ok || upstream != "fork/feature/fork" {
+		t.Errorf("upstream = %q, %v; want fork/feature/fork", upstream, ok)
+	}
+
+	testutil.RunGit(t, repo, "branch", "feature/both")
+	testutil.RunGit(t, repo, "push", "-q", "fork", "feature/both")
+	testutil.RunGit(t, repo, "push", "-q", "mirror", "feature/both")
+	testutil.RunGit(t, repo, "branch", "-q", "-D", "feature/both")
+	both := filepath.Join(t.TempDir(), "wt")
+	if created, err := core.AttachWorktreeAt(repo, both, BranchRef("feature/both")); err == nil || created || !strings.Contains(err.Error(), "several remotes") {
+		t.Errorf("AttachWorktreeAt(branch on two remotes) = %v, %v; want a several remotes error", created, err)
+	}
+	if testutil.RunGitAllowError(repo, "rev-parse", "--verify", "--quiet", "refs/heads/feature/both") == nil {
+		t.Error("a refused attach left the local branch feature/both")
 	}
 }

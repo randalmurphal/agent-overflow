@@ -24,11 +24,12 @@ func (c *Core) AttachWorktree(cwd, path, branch string) (createdBranch bool, err
 }
 
 // AttachWorktreeAt creates a new worktree at path checking out ref as it
-// is. A branch, a local one or one only origin has, is checked out on
-// itself and fails if another worktree has it (git's one branch, one
-// worktree invariant). A tag or commit leaves the worktree detached there,
+// is. A branch, a local one or one only a remote has (origin, else the one
+// remote that does), is checked out on itself and fails if another worktree
+// has it (git's one branch, one worktree invariant); a branch that exists
+// nowhere is an error. A tag or commit leaves the worktree detached there,
 // and any number of worktrees may sit on one tag. createdBranch reports
-// that the branch was origin's alone and this call made the local branch,
+// that the branch was a remote's alone and this call made the local branch,
 // which a caller undoing the attach deletes with the worktree. A failed
 // attach leaves neither a worktree nor a branch it made (checkoutWorktree).
 func (c *Core) AttachWorktreeAt(cwd, path string, ref Ref) (createdBranch bool, err error) {
@@ -47,16 +48,20 @@ func (c *Core) AttachWorktreeAt(cwd, path string, ref Ref) (createdBranch bool, 
 	}
 	defer unlock()
 	if ref.IsBranch() {
-		// A branch only origin has is checked out as a new local branch
-		// tracking origin's, named explicitly: git's own guess needs exactly
-		// one remote to have the name, and a fork's second remote often does
-		// too.
+		// A branch only a remote has is made a local branch tracking it,
+		// named explicitly (remoteTrackingCandidate). Left to git, a name
+		// with no local branch detaches at a tag or commit of that name, and
+		// its remote guess needs exactly one remote to have it.
 		local, err := c.branchExistsChecked(cwd, ref.Name)
 		if err != nil {
 			return false, err
 		}
-		if remoteRef, ok := c.originTrackingRef(cwd, ref.Name); !local && ok {
-			_, stderr, err := c.Execute(cwd, "branch", "--track", "--", ref.Name, "refs/remotes/"+remoteRef)
+		if !local {
+			remote, err := c.remoteTrackingCandidate(cwd, ref.Name)
+			if err != nil {
+				return false, err
+			}
+			_, stderr, err := c.Execute(cwd, "branch", "--track", "--", ref.Name, "refs/remotes/"+remote+"/"+ref.Name)
 			if err != nil {
 				return false, fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
 			}
