@@ -10,8 +10,6 @@ import (
 	"testing"
 )
 
-// mustCreateAssistant records an assistant on an existing thread, its id the
-// thread's as v160 migrates a promoted thread.
 // mustCreateAssistant moves threadID into home and records an assistant on
 // it, its id the thread's.
 func mustCreateAssistant(t *testing.T, s *Store, threadID, home string) StandingAgent {
@@ -846,7 +844,7 @@ func TestArchivedChildrenAreCountedByContainer(t *testing.T) {
 	if _, err := s.SetThreadPlacement([]string{"grouped"}, PlacementStandalone); err != nil {
 		t.Fatal(err)
 	}
-	// A helper whose spawn row went is standalone by the v164 trigger; it
+	// A helper whose spawn row went is standalone by the placement trigger; it
 	// is still the assistant's.
 	if _, err := s.db.Exec(`UPDATE threads SET placement = 'standalone' WHERE id = 'helper-standalone'`); err != nil {
 		t.Fatal(err)
@@ -900,5 +898,81 @@ func TestArchivedChildrenAreCountedByContainer(t *testing.T) {
 	}
 	if plain, err := s.GetThread("here"); err != nil || plain.ArchivedChildCounts != nil {
 		t.Fatalf("a child's row carries counts: %v %v", plain.ArchivedChildCounts, err)
+	}
+}
+
+// Names differing only by case clash, and the refusal
+// names the holder.
+func TestAssistantNameCaseClash(t *testing.T) {
+	s := newTestStore(t)
+	mustExec(t, s.db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
+	mustExec(t, s.db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
+		('a', NULL, 'Ops', 'claude', '/h/A', '', 1, 1, 0),
+		('b', NULL, 'Mail', 'claude', '/h/B', '', 1, 1, 0),
+		('c', NULL, '  OPS ', 'claude', '/h/C', '', 1, 1, 0)`)
+	if err := s.CreateStandingAgent(StandingAgent{ID: "A", ThreadID: "a", Home: "/h/A", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateStandingAgent(StandingAgent{ID: "B", ThreadID: "b", Home: "/h/B", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	var taken *AssistantNameTakenError
+	if err := s.CreateStandingAgent(StandingAgent{ID: "C", ThreadID: "c", Home: "/h/C", CreatedAt: 1}); err == nil {
+		t.Fatal("a case-and-space variant of a taken name was accepted at creation")
+	} else if !asNameTaken(err, &taken) || taken.Name != "Ops" {
+		t.Fatalf("creation refusal = %v", err)
+	}
+	if err := s.UpdateTitle("b", "oPs"); err == nil {
+		t.Fatal("rename to a case variant of a taken name was accepted")
+	} else if !asNameTaken(err, &taken) || taken.Name != "Ops" {
+		t.Fatalf("rename refusal = %v", err)
+	}
+	// A provider title never renames an assistant.
+	if renamed, err := s.UpdateProviderTitle("a", "Provider title"); err != nil || renamed {
+		t.Fatalf("provider title renamed an assistant: %v %v", renamed, err)
+	}
+	if ok, err := s.UpdateTitleIfCurrent("a", "Ops", "Generated"); err != nil || ok {
+		t.Fatalf("generated title renamed an assistant: %v %v", ok, err)
+	}
+}
+
+func asNameTaken(err error, out **AssistantNameTakenError) bool {
+	t, ok := err.(*AssistantNameTakenError)
+	if ok {
+		*out = t
+	}
+	return ok
+}
+
+// A handoff moves the remote jobs still owed to the old
+// thread (pending, or queued and never confirmed) and leaves a confirmed or
+// dismissed one where it was. It moves the owner only: every watch still
+// names the thread that launched its job.
+func TestHandOffMovesOwedRemoteJobs(t *testing.T) {
+	s := newTestStore(t)
+	mustExec(t, s.db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
+	mustExec(t, s.db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
+		('a', NULL, 'Ops', 'claude', '/h/A', '', 1, 1, 0), ('a2', NULL, 'Ops', 'claude', '/h/A', '', 2, 2, 0)`)
+	if err := s.CreateStandingAgent(StandingAgent{ID: "A", ThreadID: "a", Home: "/h/A", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.db, `INSERT INTO remote_watches (computer_id, request_id, thread_id, launched_in_thread_id, fingerprint, label, notification, created_at, confirmed_at) VALUES
+		('c', 'pending', 'a', 'a', 'f', 'l', 'pending', 1, NULL),
+		('c', 'unconfirmed', 'a', 'a', 'f', 'l', 'queued', 1, NULL),
+		('c', 'confirmed', 'a', 'a', 'f', 'l', 'queued', 1, 5),
+		('c', 'dismissed', 'a', 'a', 'f', 'l', 'dismissed', 1, NULL)`)
+	if _, err := s.HandOffAssistant("a", "a2", 10); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"pending": "a2", "unconfirmed": "a2", "confirmed": "a", "dismissed": "a"}
+	for request, thread := range want {
+		w, err := s.GetRemoteWatch("c", request)
+		if err != nil || w.ThreadID != thread {
+			t.Errorf("watch %s on %q %v, want %s", request, w.ThreadID, err, thread)
+		}
+		// The destination's receipt keeps naming the thread that launched it.
+		if w.LaunchedIn != "a" {
+			t.Errorf("watch %s launched in %q, want a", request, w.LaunchedIn)
+		}
 	}
 }

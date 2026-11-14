@@ -9,17 +9,31 @@ import (
 	"unicode"
 )
 
-// TestMigrationV149RemoveDiscussions applies v149 over a v148 store holding
-// what the discussion feature wrote: discussion threads with channels and
-// messages, parent_thread_id children (one pair inside a group), a
-// definition, a discussion favorite beside a model favorite, and a scratch
-// thread forked out of a discussion. Discussion threads and the scratch
-// return mode become chat, every other thread value survives, the feature's
-// columns, tables and indexes are gone, the rebuilt tables restate every
-// other declaration, the three CHECKs refuse 'discussion', and the view,
+// TestMigrationV149RetireFeatures applies v149 over a v148 store holding what
+// the discussion feature and the workflow scheduler wrote, beside spawns,
+// groups and remote watches:
+//
+//   - discussion threads with channels and messages, parent_thread_id
+//     children (one pair inside a group), a definition, a discussion
+//     favorite beside a model favorite, and a scratch thread forked out of a
+//     discussion;
+//   - an automation with a cursor, a run it started, and a manual, an agent
+//     and a called run beside it;
+//   - local spawns of a grouped and an ungrouped thread, a remote spawn and
+//     a send;
+//   - a queued, a pending and a dismissed remote watch, and one whose thread
+//     is gone.
+//
+// Discussion threads and the scratch return mode become chat, the automation
+// run becomes a manual run with no source_ref, the ungrouped spawned thread
+// is nested and the grouped ones grouped, every other value survives, the
+// queued watch reads confirmed at its creation and every kept watch launched
+// by its own thread, the orphan watch is gone, the retired columns, tables
+// and indexes are gone, the rebuilt tables restate every other declaration,
+// the CHECKs refuse the retired values and enforce placement, and the view,
 // trigger and foreign keys that name threads still work.
-func TestMigrationV149RemoveDiscussions(t *testing.T) {
-	db := migrateThrough(t, removeDiscussionsMigrationVersion-1)
+func TestMigrationV149RetireFeatures(t *testing.T) {
+	db := migrateThrough(t, retireFeaturesMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects(id,path,name,created_at,updated_at) VALUES('p','/p','p',1,1)`)
 	mustExec(t, db, `INSERT INTO thread_groups(id,project_id,name,created_at,updated_at) VALUES('g','p','Group',1,1)`)
 	mustExec(t, db, `INSERT INTO threads(id,project_id,title,provider,model,workspace_path,mode,created_at,updated_at,archived,group_id) VALUES
@@ -30,6 +44,7 @@ func TestMigrationV149RemoveDiscussions(t *testing.T) {
 		('grp-child','p','Grouped participant','claude','opus','/p','chat',1,2,0,'g'),
 		('scratch','p','Scratch','claude','opus','/p','scratch',1,1,0,NULL),
 		('fork','p','Fork','claude','opus','/p','chat',1,1,0,NULL)`)
+	mustExec(t, db, `UPDATE threads SET pinned_at = 5, pin_group = 1 WHERE id = 'grp-child'`)
 	mustExec(t, db, `INSERT INTO channels(id,thread_id,type,status,created_at,updated_at) VALUES
 		('chan-1','disc-parent','deliberation','open',1,1),
 		('chan-2','grp-parent','deliberation','concluded',1,1)`)
@@ -52,11 +67,54 @@ func TestMigrationV149RemoveDiscussions(t *testing.T) {
 		('i-scratch','scratch',0,0,'user_text','user','completed','Aside','{}',1,1)`)
 	mustExec(t, db, `UPDATE threads SET fork_source_thread_id='disc-child-a', fork_cut_turn_index=1 WHERE id='fork'`)
 	mustExec(t, db, `INSERT INTO thread_fork_lineage(thread_id,depth,ancestor_id,cut_turn_index,cut_item_index) VALUES('fork',1,'disc-child-a',1,0)`)
+	mustExec(t, db, `INSERT INTO thread_requests(token,caller_thread_id,kind,target_computer_id,target_thread_id,state,created_at,updated_at) VALUES
+		('sp-b','disc-parent','spawn','','disc-child-b','finished',1,1),
+		('sp-grp','disc-parent','spawn','','grp-child','finished',1,1),
+		('sp-far','disc-parent','spawn','laptop','fork','finished',1,1),
+		('send-a','disc-parent','send','','disc-child-a','finished',1,1)`)
+	mustExec(t, db, `INSERT INTO automations(id,project_id,workflow_id,workflow_scope,name,enabled,trigger,notes,created_at,updated_at)
+		VALUES('auto','p','build','project','Nightly',1,'{"kind":"cron","expr":"0 3 * * *"}','carry on',1,1)`)
+	mustExec(t, db, `INSERT INTO automation_cursors(automation_id,source_key,cursor,updated_at) VALUES('auto','jira','42',1)`)
+	mustExec(t, db, `INSERT INTO work_items(id,project_id,goal,workflow_id,workflow_scope,state,source,source_ref,created_at) VALUES
+		('run-auto','p','Nightly','build','project','done','automation','auto',1),
+		('run-manual','p','By hand','build','project','running','manual','',2),
+		('run-agent','p','By agent','build','project','done','agent','item/phase/key',3)`)
+	mustExec(t, db, `INSERT INTO work_items(id,project_id,goal,workflow_id,workflow_scope,state,source,source_ref,parent_item_id,parent_phase_id,parent_attempt,call_depth,created_at)
+		VALUES('run-call','p','Called','build','project','done','call','site','run-manual','plan',1,1,4)`)
+	mustExec(t, db, `INSERT INTO remote_watches(computer_id,request_id,thread_id,fingerprint,label,receipt,error,notification,next_check,created_at,command) VALUES
+		('pc','queued','disc-child-a','f','job','{"id":"queued"}','e','queued',5,6,'cmd'),
+		('pc','pending','fork','f','job','{}','','pending',7,8,''),
+		('pc','dismissed','fork','f','job','{}','','dismissed',9,10,''),
+		('pc','orphan','deleted-thread','f','job','{}','','pending',0,1,'')`)
 
 	removedColumns := []string{"discussion_id", "parent_thread_id"}
-	removedTables := []string{"channels", "channel_messages", "discussion_definitions"}
-	removedIndexes := []string{"idx_channels_thread", "idx_threads_parent"}
-	rebuiltTables := []string{"threads", "scratch_threads", "chat_bar_favorites"}
+	removedTables := []string{"channels", "channel_messages", "discussion_definitions", "automations", "automation_cursors"}
+	removedIndexes := []string{"idx_channels_thread", "idx_threads_parent", "idx_work_items_automation_source_ref"}
+	rebuiltTables := []string{"threads", "scratch_threads", "chat_bar_favorites", "work_items", "remote_watches"}
+	addedObjects := []string{"idx_remote_watches_done"}
+	addedColumns := map[string][]columnShape{
+		"threads": {
+			{Name: "placement", Type: "TEXT", NotNull: true, Default: sql.NullString{String: "'standalone'", Valid: true}},
+			{Name: "attention_kind", Type: "TEXT", NotNull: true, Default: sql.NullString{String: "''", Valid: true}},
+			{Name: "attention_reason", Type: "TEXT", NotNull: true, Default: sql.NullString{String: "''", Valid: true}},
+			{Name: "attention_at", Type: "INTEGER"},
+		},
+		"remote_watches": {
+			{Name: "confirmed_at", Type: "INTEGER"},
+			{Name: "wake_attempts", Type: "INTEGER", NotNull: true, Default: sql.NullString{String: "0", Valid: true}},
+			{Name: "wake_issue", Type: "TEXT", NotNull: true, Default: sql.NullString{String: "''", Valid: true}},
+			{Name: "launched_in_thread_id", Type: "TEXT", NotNull: true, Default: sql.NullString{String: "''", Valid: true}},
+		},
+	}
+	addedChecks := map[string][]string{
+		"threads": {
+			"placementIN('nested','grouped','standalone')AND(placement='grouped')=(group_idISNOTNULL)",
+			"attention_kindIN('','decision','review','problem')",
+		},
+	}
+	addedFKs := map[string][]string{
+		"remote_watches": {"thread_id -> threads(id) ON UPDATE NO ACTION ON DELETE CASCADE"},
+	}
 
 	columnsBefore, err := queryIDs(db, `SELECT name FROM pragma_table_info('threads') ORDER BY cid`)
 	if err != nil {
@@ -73,6 +131,34 @@ func TestMigrationV149RemoveDiscussions(t *testing.T) {
 	wantRows := renderThreadRows(t, db, kept, map[string]string{
 		"mode": "CASE mode WHEN 'discussion' THEN 'chat' ELSE mode END",
 	})
+	workColumns, err := queryIDs(db, `SELECT name FROM pragma_table_info('work_items') ORDER BY cid`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderWork := func() []string {
+		t.Helper()
+		return renderRows(t, db, "work_items", workColumns, "id")
+	}
+	// The automation run reads as a manual run with no source_ref.
+	mustExec(t, db, `UPDATE work_items SET source = 'manual', source_ref = '' WHERE id = 'run-auto'`)
+	wantWork := renderWork()
+	mustExec(t, db, `UPDATE work_items SET source = 'automation', source_ref = 'auto' WHERE id = 'run-auto'`)
+	if slices.Equal(renderWork(), wantWork) {
+		t.Fatal("restoring the automation run left the rows unchanged; the fixture does not exercise the mapping")
+	}
+	watchColumns, err := queryIDs(db, `SELECT name FROM pragma_table_info('remote_watches') ORDER BY cid`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderWatches := func() []string {
+		t.Helper()
+		return renderRows(t, db, "remote_watches", watchColumns, "computer_id, request_id")
+	}
+	mustExec(t, db, `DELETE FROM remote_watches WHERE request_id = 'orphan'`)
+	wantWatches := renderWatches()
+	mustExec(t, db, `INSERT INTO remote_watches(computer_id,request_id,thread_id,fingerprint,label,notification,created_at)
+		VALUES('pc','orphan','deleted-thread','f','job','pending',1)`)
+
 	schemaBefore := migrationSchema(t, db)
 	for _, name := range slices.Concat(removedTables, removedIndexes) {
 		if _, ok := schemaBefore[name]; !ok {
@@ -95,7 +181,7 @@ func TestMigrationV149RemoveDiscussions(t *testing.T) {
 		shapesBefore[table] = readTableShape(t, db, table)
 	}
 
-	migrateFromThrough(t, db, removeDiscussionsMigrationVersion-1, removeDiscussionsMigrationVersion)
+	migrateFromThrough(t, db, retireFeaturesMigrationVersion-1, retireFeaturesMigrationVersion)
 
 	if got := renderThreadRows(t, db, kept, nil); !slices.Equal(got, wantRows) {
 		t.Errorf("thread rows after v149:\n got %q\nwant %q", got, wantRows)
@@ -106,6 +192,17 @@ func TestMigrationV149RemoveDiscussions(t *testing.T) {
 	}
 	if want := []string{"disc-parent=chat", "grp-parent=chat"}; !slices.Equal(modes, want) {
 		t.Errorf("discussion thread modes after v149 = %v, want %v", modes, want)
+	}
+	placements, err := queryIDs(db, `SELECT id || '=' || placement || '|' || attention_kind || '|' || attention_reason || '|' || COALESCE(attention_at, 'NULL')
+		FROM threads ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{
+		"disc-child-a=standalone|||NULL", "disc-child-b=nested|||NULL", "disc-parent=standalone|||NULL", "fork=standalone|||NULL",
+		"grp-child=grouped|||NULL", "grp-parent=grouped|||NULL", "scratch=standalone|||NULL",
+	}; !slices.Equal(placements, want) {
+		t.Errorf("placements after v149:\n got %q\nwant %q", placements, want)
 	}
 	scratch, err := queryIDs(db, `SELECT thread_id || '|' || source_thread_id || '|' || return_mode || '|' || created_at || '|' || request_token FROM scratch_threads`)
 	if err != nil {
@@ -121,10 +218,25 @@ func TestMigrationV149RemoveDiscussions(t *testing.T) {
 	if want := []string{"model|claude|opus|Opus|2"}; !slices.Equal(favorites, want) {
 		t.Errorf("chat_bar_favorites after v149 = %v, want %v", favorites, want)
 	}
+	if got := renderWork(); !slices.Equal(got, wantWork) {
+		t.Errorf("work_items rows after v149:\n got %q\nwant %q", got, wantWork)
+	}
+	if got := renderWatches(); !slices.Equal(got, wantWatches) {
+		t.Errorf("remote_watches rows after v149:\n got %q\nwant %q", got, wantWatches)
+	}
+	watches, err := queryIDs(db, `SELECT request_id || '|' || COALESCE(confirmed_at, 'NULL') || '|' || wake_attempts || '|' || wake_issue || '|' || launched_in_thread_id
+		FROM remote_watches ORDER BY request_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"dismissed|NULL|0||fork", "pending|NULL|0||fork", "queued|6|0||disc-child-a"}; !slices.Equal(watches, want) {
+		t.Errorf("remote_watches new columns after v149 = %q, want %q", watches, want)
+	}
 
-	// The discussion objects are gone and nothing else is: every schema
-	// object other than the three rebuilt tables keeps its SQL, and the
-	// rebuilt tables are compared declaration by declaration below.
+	// The retired objects are gone and nothing else is: every schema object
+	// other than the rebuilt tables keeps its SQL, the rebuilt tables are
+	// compared declaration by declaration below, and the one new object is
+	// the finished-watch index.
 	schemaAfter := migrationSchema(t, db)
 	for name, sqlText := range schemaBefore {
 		if removed(name) {
@@ -140,18 +252,27 @@ func TestMigrationV149RemoveDiscussions(t *testing.T) {
 			t.Errorf("schema object %s changed:\n got %q\nwant %q", name, schemaAfter[name], sqlText)
 		}
 	}
+	var added []string
 	for name := range schemaAfter {
 		if _, ok := schemaBefore[name]; !ok {
-			t.Errorf("schema object %s is new after v149", name)
+			added = append(added, name)
 		}
 	}
+	slices.Sort(added)
+	if !slices.Equal(added, addedObjects) {
+		t.Errorf("v149 added %v, want %v", added, addedObjects)
+	}
+	if got := readIndexSQL(t, db, "idx_remote_watches_done"); !strings.Contains(got, "notification = 'dismissed' OR (notification = 'queued' AND confirmed_at IS NOT NULL)") {
+		t.Errorf("idx_remote_watches_done = %q", got)
+	}
 
-	// Each rebuilt table restates v143's declarations less the discussion
-	// parts: the removed columns and their foreign keys, 'discussion' in
-	// each IN list, the composite favorites CHECK, whose model arm becomes
-	// a provider CHECK, and provider's DEFAULT '', which only discussion
-	// favorites used.
-	withoutDiscussion := strings.NewReplacer(",'discussion'", "", "'discussion',", "")
+	// Each rebuilt table restates v148's declarations less the retired
+	// parts: the removed columns and their foreign keys, 'discussion' and
+	// 'automation' in each IN list, the composite favorites CHECK, whose
+	// model arm becomes a provider CHECK, and provider's DEFAULT '', which
+	// only discussion favorites used. threads and remote_watches append the
+	// columns, CHECKs and foreign key the standing agents need.
+	retired := strings.NewReplacer(",'discussion'", "", "'discussion',", "", ",'automation'", "")
 	for _, table := range rebuiltTables {
 		before, after := shapesBefore[table], readTableShape(t, db, table)
 
@@ -165,6 +286,7 @@ func TestMigrationV149RemoveDiscussions(t *testing.T) {
 			}
 			wantColumns = append(wantColumns, column)
 		}
+		wantColumns = append(wantColumns, addedColumns[table]...)
 		if !slices.Equal(after.columns, wantColumns) {
 			t.Errorf("%s columns after v149:\n got %+v\nwant %+v", table, after.columns, wantColumns)
 		}
@@ -174,12 +296,13 @@ func TestMigrationV149RemoveDiscussions(t *testing.T) {
 			if table == "chat_bar_favorites" && strings.Contains(check, "kind='discussion'") {
 				check = "providerIN('claude','codex','claude-tui')"
 			}
-			wantChecks = append(wantChecks, withoutDiscussion.Replace(check))
+			wantChecks = append(wantChecks, retired.Replace(check))
 		}
+		if table != "remote_watches" && slices.Equal(wantChecks, before.checks) {
+			t.Fatalf("%s CHECKs before v149 never name a retired value; the fixture does not exercise the change: %q", table, before.checks)
+		}
+		wantChecks = append(wantChecks, addedChecks[table]...)
 		slices.Sort(wantChecks)
-		if slices.Equal(wantChecks, before.checks) {
-			t.Fatalf("%s CHECKs before v149 never name 'discussion'; the fixture does not exercise the change: %q", table, before.checks)
-		}
 		if !slices.Equal(after.checks, wantChecks) {
 			t.Errorf("%s CHECKs after v149:\n got %q\nwant %q", table, after.checks, wantChecks)
 		}
@@ -189,34 +312,61 @@ func TestMigrationV149RemoveDiscussions(t *testing.T) {
 				return strings.HasPrefix(fk, column+" ")
 			})
 		})
+		wantFKs = append(wantFKs, addedFKs[table]...)
+		slices.Sort(wantFKs)
 		if !slices.Equal(after.fks, wantFKs) {
 			t.Errorf("%s foreign keys after v149 = %q, want %q", table, after.fks, wantFKs)
 		}
 	}
 
-	// Each CHECK that named the mode refuses it now. The fixture's own
-	// inserts show all three accepted it at v143.
+	// Each CHECK that named a retired value refuses it now. The fixture's
+	// own inserts show each accepted it at v148.
 	for _, refused := range []struct{ name, query string }{
 		{"threads.mode", `UPDATE threads SET mode = 'discussion' WHERE id = 'disc-child-a'`},
 		{"scratch_threads.return_mode", `UPDATE scratch_threads SET return_mode = 'discussion' WHERE thread_id = 'scratch'`},
 		{"chat_bar_favorites.kind", `INSERT INTO chat_bar_favorites(kind,provider,value,label,created_at) VALUES('discussion','claude','def','Discussion favorite',4)`},
+		{"work_items.source", `UPDATE work_items SET source = 'automation' WHERE id = 'run-auto'`},
+		{"grouped without a group", `UPDATE threads SET placement = 'grouped' WHERE id = 'fork'`},
+		{"a group while standalone", `UPDATE threads SET group_id = 'g' WHERE id = 'fork'`},
+		{"a group while nested", `UPDATE threads SET placement = 'nested' WHERE id = 'grp-child'`},
+		{"an unknown placement", `UPDATE threads SET placement = 'floating' WHERE id = 'fork'`},
+		{"an unknown attention kind", `UPDATE threads SET attention_kind = 'urgent' WHERE id = 'fork'`},
+		{"a half-linked call", `UPDATE work_items SET parent_phase_id = '' WHERE id = 'run-call'`},
 	} {
 		if _, err := db.Exec(refused.query); err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
-			t.Errorf("%s = 'discussion' after v149: err = %v, want a CHECK violation", refused.name, err)
+			t.Errorf("%s after v149: err = %v, want a CHECK violation", refused.name, err)
 		}
 	}
 	mustExec(t, db, `UPDATE threads SET mode = 'plan' WHERE id = 'disc-child-a'`)
 	mustExec(t, db, `UPDATE scratch_threads SET return_mode = 'plan' WHERE thread_id = 'scratch'`)
 	mustExec(t, db, `INSERT INTO chat_bar_favorites(kind,provider,value,label,created_at) VALUES('model','codex','gpt','GPT',4)`)
+	for _, kind := range AttentionKinds() {
+		mustExec(t, db, `UPDATE threads SET attention_kind = ?, attention_at = 5 WHERE id = 'fork'`, kind)
+	}
+	mustExec(t, db, `UPDATE threads SET group_id = 'g', placement = 'grouped' WHERE id = 'fork'`)
+	mustExec(t, db, `UPDATE threads SET group_id = NULL, placement = 'standalone' WHERE id = 'fork'`)
+	mustExec(t, db, `UPDATE work_items SET source = 'agent', source_ref = 'item/phase/other' WHERE id = 'run-auto'`)
+	if _, err := db.Exec(`UPDATE work_items SET source_ref = 'item/phase/key' WHERE id = 'run-auto'`); err == nil || !strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		t.Errorf("a duplicate agent source_ref after v149: err = %v, want the unique index to refuse it", err)
+	}
+	var pinnedAt, pinGroup sql.NullInt64
+	if err := db.QueryRow(`SELECT pinned_at, pin_group FROM threads WHERE id = 'grp-child'`).Scan(&pinnedAt, &pinGroup); err != nil {
+		t.Fatal(err)
+	}
+	if pinnedAt.Int64 != 5 || pinGroup.Int64 != 1 {
+		t.Errorf("a grouped member's pin = %v/%v, want it kept", pinnedAt, pinGroup)
+	}
 
-	// Foreign keys into threads: the same set less the two v149 removed,
-	// clean, and enforced on the rebuilt tables.
+	// Foreign keys into threads: the same set less the two v149 removed and
+	// with the watches' owner, clean, and enforced on the rebuilt tables.
 	wantFKs := slices.DeleteFunc(slices.Clone(fksBefore), func(fk string) bool {
 		return fk == "channels.thread_id" || fk == "threads.parent_thread_id"
 	})
 	if len(wantFKs) != len(fksBefore)-2 {
 		t.Fatalf("foreign keys into threads before v149 = %v, want channels.thread_id and threads.parent_thread_id among them", fksBefore)
 	}
+	wantFKs = append(wantFKs, "remote_watches.thread_id")
+	slices.Sort(wantFKs)
 	if got := foreignKeysInto(t, db, "threads"); !slices.Equal(got, wantFKs) {
 		t.Errorf("foreign keys into threads after v149 = %v, want %v", got, wantFKs)
 	}
@@ -231,28 +381,49 @@ func TestMigrationV149RemoveDiscussions(t *testing.T) {
 	if fkErr != nil {
 		t.Fatal(fkErr)
 	}
-	if _, err := db.Exec(`UPDATE threads SET group_id = 'missing' WHERE id = 'grp-child'`); err == nil {
+	if _, err := db.Exec(`UPDATE threads SET group_id = 'missing', placement = 'grouped' WHERE id = 'disc-child-b'`); err == nil {
 		t.Error("a thread joined a missing group; the group_id foreign key is missing")
 	}
-	mustExec(t, db, `DELETE FROM threads WHERE id = 'scratch'`)
-	var orphans int
-	if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM scratch_threads WHERE thread_id = 'scratch') + (SELECT COUNT(*) FROM items WHERE thread_id = 'scratch')`).Scan(&orphans); err != nil {
-		t.Fatal(err)
+	if _, err := db.Exec(`INSERT INTO remote_watches(computer_id,request_id,thread_id,fingerprint,label,notification,created_at)
+		VALUES('pc','late','deleted-thread','f','job','pending',1)`); err == nil {
+		t.Error("a watch named a missing thread; the thread_id foreign key is missing")
 	}
-	if orphans != 0 {
-		t.Errorf("deleting a thread left %d scratch or item rows; the cascades into threads are missing", orphans)
-	}
-
 	if _, err := db.Exec(`DELETE FROM threads WHERE id = 'disc-child-a'`); err == nil || !strings.Contains(err.Error(), "kept as a holder") {
 		t.Errorf("deleting a thread a fork reads = %v, want the fork source trigger's refusal", err)
 	}
+	mustExec(t, db, `DELETE FROM threads WHERE id = 'scratch'`)
+	mustExec(t, db, `DELETE FROM threads WHERE id = 'fork'`)
+	var orphans int
+	if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM scratch_threads WHERE thread_id = 'scratch') + (SELECT COUNT(*) FROM items WHERE thread_id = 'scratch')
+		+ (SELECT COUNT(*) FROM remote_watches WHERE thread_id = 'fork')`).Scan(&orphans); err != nil {
+		t.Fatal(err)
+	}
+	if orphans != 0 {
+		t.Errorf("deleting a thread left %d scratch, item or watch rows; the cascades into threads are missing", orphans)
+	}
+
 	var owned int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM owned_threads`).Scan(&owned); err != nil {
 		t.Fatalf("read owned_threads after v149: %v", err)
 	}
-	if want := len(wantRows) - 1; owned != want {
+	if want := len(wantRows) - 2; owned != want {
 		t.Errorf("owned_threads = %d rows, want %d", owned, want)
 	}
+}
+
+// renderRows renders the named columns of every row of table, ordered by
+// orderBy.
+func renderRows(t *testing.T, db sqlQueryer, table string, columns []string, orderBy string) []string {
+	t.Helper()
+	parts := make([]string, len(columns))
+	for i, column := range columns {
+		parts[i] = "'" + column + "=' || quote(" + column + ")"
+	}
+	rows, err := queryIDs(db, `SELECT `+strings.Join(parts, ` || '|' || `)+` FROM `+table+` ORDER BY `+orderBy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
 }
 
 // renderThreadRows renders the named columns of every thread row, ordered

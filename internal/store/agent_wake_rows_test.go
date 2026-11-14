@@ -1,51 +1,10 @@
 package store
 
 import (
-	"database/sql"
 	"slices"
 	"strings"
 	"testing"
 )
-
-func TestAgentWakeStderrMigration(t *testing.T) {
-	path := fileDBThrough(t, agentWakeStderrMigrationVersion-1)
-	db, err := sql.Open("sqlite", poolDSN(path, writerConnPragmas))
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
-	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
-		('agent', 'p', 'Agent', 'claude', '/p', '', 1, 1, 0)`)
-	mustExec(t, db, `INSERT INTO agent_wakes (id, thread_id, kind, label, command, interval_seconds, next_at, last_outcome, state, created_at)
-		VALUES ('w', 'agent', 'watch', 'poll', 'true', 60, 5, 'no output', 'armed', 1)`)
-	before, err := queryIDs(db, `SELECT id || '|' || label || '|' || last_outcome || '|' || state FROM agent_wakes`)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := applyMigration(db, migrationByVersion(t, agentWakeStderrMigrationVersion)); err != nil {
-		t.Fatalf("apply v%d: %v", agentWakeStderrMigrationVersion, err)
-	}
-
-	if got, err := queryIDs(db, `SELECT id || '|' || label || '|' || last_outcome || '|' || state FROM agent_wakes`); err != nil {
-		t.Fatal(err)
-	} else if !slices.Equal(got, before) {
-		t.Errorf("rows changed:\n got %q\nwant %q", got, before)
-	}
-	got, err := queryIDs(db, `SELECT name || '|' || type || '|' || "notnull" || '|' || COALESCE(dflt_value, 'NULL')
-		FROM pragma_table_info('agent_wakes') WHERE name = 'last_stderr'`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"last_stderr|TEXT|1|''"}; !slices.Equal(got, want) {
-		t.Errorf("last_stderr column = %q, want %q", got, want)
-	}
-	if stderr, err := queryIDs(db, `SELECT last_stderr FROM agent_wakes WHERE id = 'w'`); err != nil || !slices.Equal(stderr, []string{""}) {
-		t.Errorf("existing row's last_stderr = %q, %v; want empty", stderr, err)
-	}
-}
 
 // A watch keeps the tail of its last stderr until a cancel freezes it or a
 // registration replaces the watch; a loop has none to keep.

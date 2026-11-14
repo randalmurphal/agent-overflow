@@ -146,9 +146,6 @@ type ThreadRequest struct {
 	// AnswerAgent is set when the thread that answered is a standing agent,
 	// as recorded with the answer; nil for any other thread.
 	AnswerAgent *ThreadAnswerAgent `json:"-"`
-	// AnswerAgentUnrecorded is true on a row written before v156, which
-	// recorded nothing about the thread that answered.
-	AnswerAgentUnrecorded bool `json:"-"`
 	// LateReplyAgent is AnswerAgent for the late reply, recorded with it.
 	LateReplyAgent *ThreadAnswerAgent `json:"-"`
 	// MadeInThreadID is the assistant's past thread that made this request
@@ -250,9 +247,8 @@ func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) (ThreadRequest, error) {
 	var r ThreadRequest
 	var notify, polling, lineageOnly, nestedOpen int
-	var answerAgent sql.NullInt64
 	var answerAgentRole, lateReplyAgentRole string
-	var lateReplyAgent int64
+	var answerAgent, lateReplyAgent int64
 	if answer == nil {
 		answer = &r.Answer
 	}
@@ -272,9 +268,8 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&lateReplyAgent, &lateReplyAgentRole,
 	}, extra...)...)
 	r.NestedOpen = nestedOpen != 0
-	r.AnswerAgent = answerAgentOf(answerAgent.Int64, answerAgentRole)
+	r.AnswerAgent = answerAgentOf(answerAgent, answerAgentRole)
 	r.LateReplyAgent = answerAgentOf(lateReplyAgent, lateReplyAgentRole)
-	r.AnswerAgentUnrecorded = !answerAgent.Valid
 	r.Notify = notify != 0
 	r.Polling = polling != 0
 	r.LineageOnly = lineageOnly != 0
@@ -333,8 +328,8 @@ func insertThreadRequestTx(ex sqlExecutor, r ThreadRequest) error {
 		`INSERT INTO thread_requests (
 		    token, caller_thread_id, kind, due_at, target_computer_id, target_thread_id,
 		    origin_thread_id, notify, state, answer, answer_kind, revision,
-		    next_check, attempts, issue, lineage_only, created_at, updated_at, answer_agent
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		    next_check, attempts, issue, lineage_only, created_at, updated_at
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Token, r.CallerThreadID, r.Kind, nilIfZero(r.DueAt), r.TargetComputerID, r.TargetThreadID,
 		r.OriginThreadID, boolToInt(r.Notify), r.State, nilIfEmptyBytes(r.Answer), r.AnswerKind, r.Revision,
 		r.NextCheck, r.Attempts, r.Issue, boolToInt(r.LineageOnly), r.CreatedAt, r.UpdatedAt,

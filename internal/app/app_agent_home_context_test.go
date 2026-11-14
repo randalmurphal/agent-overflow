@@ -538,39 +538,28 @@ func (f *answerAgentFixture) settle(t *testing.T, token string) {
 	}
 }
 
-// A row written before v156 recorded nothing about the thread that answered,
-// so its wake reads a thread on this computer when it renders. A row that
-// recorded no agent is not read again.
-func TestWakeOfARowWrittenBeforeV156ReadsTheAgentWhenItRenders(t *testing.T) {
+// A wake names the agent its answer recorded, not what the answering thread
+// is when it renders: a row that recorded no agent names none though its
+// target is a standing agent.
+func TestWakeOfARowThatRecordedNoAgentNamesNone(t *testing.T) {
 	t.Parallel()
 	f := newAnswerAgentFixture(t)
-	for _, tc := range []struct {
-		name       string
-		unrecorded bool
-		wantAgent  bool
-	}{{"before v156", true, true}, {"no agent recorded", false, false}} {
-		token := f.request(t)
-		if settled, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-			State: store.ThreadRequestFinished, Answer: []byte("done here"), AnswerKind: store.ThreadAnswerFinal,
-		}); err != nil || !settled {
-			t.Fatalf("%s: settle: settled=%v err=%v", tc.name, settled, err)
-		}
-		if tc.unrecorded {
-			if _, err := f.db.Exec(`UPDATE thread_requests SET answer_agent = NULL WHERE token = ?`, token); err != nil {
-				t.Fatal(err)
-			}
-		}
-		row := f.row(t, token)
-		if row.AnswerAgentUnrecorded != tc.unrecorded || row.AnswerAgent != nil {
-			t.Fatalf("%s: row = unrecorded %v agent %+v", tc.name, row.AnswerAgentUnrecorded, row.AnswerAgent)
-		}
-		body, err := f.app.threadWakeBody(row, false)
-		if err != nil {
-			t.Fatalf("%s: threadWakeBody: %v", tc.name, err)
-		}
-		if named := strings.Contains(body, "\n"+reviewerAgentLine+"\n"); named != tc.wantAgent {
-			t.Errorf("%s: wake names the agent = %v, want %v:\n%s", tc.name, named, tc.wantAgent, body)
-		}
+	token := f.request(t)
+	if settled, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadRequestFinished, Answer: []byte("done here"), AnswerKind: store.ThreadAnswerFinal,
+	}); err != nil || !settled {
+		t.Fatalf("settle: settled=%v err=%v", settled, err)
+	}
+	row := f.row(t, token)
+	if row.AnswerAgent != nil {
+		t.Fatalf("row agent = %+v, want none recorded", row.AnswerAgent)
+	}
+	body, err := f.app.threadWakeBody(row, false)
+	if err != nil {
+		t.Fatalf("threadWakeBody: %v", err)
+	}
+	if strings.Contains(body, "\n"+reviewerAgentLine+"\n") {
+		t.Errorf("wake names the agent though its answer recorded none:\n%s", body)
 	}
 }
 
@@ -590,8 +579,8 @@ func TestAFailedAgentReadSettlesTheAnswerWithNoAgent(t *testing.T) {
 	token := f.request(t)
 	f.settle(t, token)
 	row := f.row(t, token)
-	if row.State != store.ThreadRequestFinished || string(row.Answer) != "done here" || row.AnswerAgent != nil || row.AnswerAgentUnrecorded {
-		t.Fatalf("settled row = state %s answer %q agent %+v unrecorded %v", row.State, row.Answer, row.AnswerAgent, row.AnswerAgentUnrecorded)
+	if row.State != store.ThreadRequestFinished || string(row.Answer) != "done here" || row.AnswerAgent != nil {
+		t.Fatalf("settled row = state %s answer %q agent %+v", row.State, row.Answer, row.AnswerAgent)
 	}
 	if receipt, _, err := f.app.store.GetThreadRequestReceipt(token); err != nil || receipt.AnswerAgent != nil {
 		t.Fatalf("receipt agent = %+v, %v", receipt.AnswerAgent, err)

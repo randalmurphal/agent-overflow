@@ -2862,12 +2862,11 @@ each pinned by an incident-replay test:
   evaluate them (§4); only the automation condition that also used them is
   gone.
 
-  **Existing rows.** Migration v151 drops both tables and the partial index
-  `idx_work_items_automation_source_ref`, and rewrites every run an
-  automation started as `source = 'manual'` with `source_ref` cleared,
-  because the reference named a row that no longer exists; it logs how many
-  runs it mapped. v152 rebuilds `work_items` so its `source` CHECK admits
-  only `manual`, `agent` and `call`. Keeping `automation` as a value nothing
+  **Existing rows.** Migration v149 drops both tables and the partial index
+  `idx_work_items_automation_source_ref`, and rebuilds `work_items` so its
+  `source` CHECK admits only `manual`, `agent` and `call`, rewriting every
+  run an automation started as `source = 'manual'` with `source_ref`
+  cleared, because the reference named a row that no longer exists. Keeping `automation` as a value nothing
   writes would leave the removed feature in the schema.
 
 ## Workflows are an MCP tool (user ruling, 2026-10-13)

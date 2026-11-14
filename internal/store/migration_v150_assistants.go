@@ -6,44 +6,190 @@ import (
 	"fmt"
 )
 
-// Migration v163 lets the Agents segment's tree cost what it lists and how
-// deep it nests, not the threads' history or the open work elsewhere on
-// the computer (thread_agent_tree.go).
+// Migration v150 adds the assistants (standing agents), their wakes and the
+// request ledger's agent records (docs/specs/standing-agents.md).
+//
+// `agents` is the assistant: its own id, its current thread, its home and
+// the assistant that created it. The unique `thread_id` keeps one current
+// thread per assistant, and it cascades from that thread, so deleting the
+// current thread deletes the assistant. `agent_past_threads` lists the
+// threads an assistant had before, with when each was superseded; it
+// cascades from the thread and from the assistant, so deleting a past
+// thread leaves the assistant alone and deleting the assistant leaves its
+// past threads as ordinary threads. `moved_draft` and
+// `moved_draft_attachments` are the text and attachment ids of the composer
+// draft the handoff moved from the past thread to the next one, so a send of
+// that draft from the past thread can be told where it went; empty when none
+// moved. An assistant serves every project when `all_projects` is set,
+// otherwise the projects `agent_projects` names (ruling 37), each row going
+// with its assistant or its project. `agent_helpers` names the threads an
+// assistant spawned without a project, helpers to its own work that live
+// under it; a row goes with its thread or its assistant.
+//
+// `agent_wakes` holds the loops and watches a thread registered, and the
+// sweep rebuilds its schedule from them at every boot. `last_output` keeps
+// the body of a watch's most recent wake that never reached the agent,
+// `undelivered` that wake's outcome until a later wake tells the agent, and
+// `last_stderr` the tail of the watch's last stderr for the activity rail.
+// `session_start_failures` marks a thread whose session, started for a
+// message the app queued, failed to start and raised the start-failure
+// notification, so the first start that succeeds withdraws it even after a
+// restart. Each cascades from its thread.
+//
+// thread_requests and thread_request_receipts gain:
+//
+//   - `lineage_only`: a local spawn row the retention sweep kept past the
+//     floor with its payload cleared, as the lineage record the sidebar
+//     nests a spawned thread by. The ledger reads skip it.
+//   - `confirmed_at` and `late_confirmed_at`: the provider's echo of a
+//     queued answer and late reply. Every row delivered before this
+//     migration is recorded as confirmed: the rows still queued then are
+//     given back by their queue rows, and the rest reached the agent.
+//   - `answer_agent` and `answer_agent_role`, `late_reply_agent` and
+//     `late_reply_agent_role`: whether the thread that wrote each answer is
+//     a standing agent, and its role line then. An earlier row was answered
+//     by no agent, as none existed.
+//   - `nested_open` and `target_provider`: whether a remote spawn's computer
+//     last listed open work under it, and the remote target's provider.
+//   - `late_delivered_how`: how a late reply reached the caller apart from
+//     the first answer. Before this migration a late delivery overwrote
+//     `delivered_how`, so a row with one delivered gets that route copied;
+//     its first answer's route stays as it reads.
+//   - `made_in_thread_id`: the past thread that made a request a handoff
+//     moved to its assistant's current thread.
+//   - `wake_item_id` and `late_wake_item_id`: the caller's timeline row that
+//     carried a queued answer and late reply. recordConfirmedWakeItems fills
+//     them for the deliveries confirmed here from the send ids the wakes
+//     carried.
+//   - `open_below_0` to `open_below_3` on a local spawn, and on a receipt
+//     `own_turn`, whether the turn its message was delivered into opened
+//     for it (a cancel interrupts only such a turn).
 //
 // A thread is reached by at most one local spawn
 // (idx_thread_requests_spawn_link): every writer that names a local spawn's
 // target names a thread it just made, or the successor New Thread, Same
-// Assistant made, so a thread's place in the tree is the one chain of
-// spawns above it. A database that holds two such rows for one thread
-// keeps the newest, which the sidebar's lineage already reads, and keeps
-// the older ones as lineage rows only, which no ledger read lists.
+// Assistant made, so a thread's place in the tree is the one chain of spawns
+// above it. A database that holds two such rows for one thread keeps the
+// newest, which the sidebar's lineage already reads, and keeps the older
+// ones as lineage rows only.
 //
-// open_below_0 to open_below_3 count, on each such spawn, the requests
-// that count as open work (agentOpenWorkSQL) made by the threads d spawns
-// below its target, d from 0 to 3: the depth within which open work keeps
-// a settled spawn listed. Kept by depth, a spawn that is removed or moved
-// takes exactly what it carried away from the spawns above it. The
-// triggers keep them in the transaction of every write that adds, removes
-// or changes a request, a thread's delete and its cascade included,
-// climbing at most four spawns. The climb counts a path once only while no
-// spawn repeats on it, so a local spawn may not reach its caller or a
-// thread within four spawns above it; no writer makes one, as each names a
-// thread with nothing above it. What the triggers add to a write under a
-// chain four spawns deep, measured: a settle 70 us, an open send's insert
-// 30 us, a spawn's insert, receipt and naming 200 us, and a thread delete
-// 51 us per open local spawn its cascade removes, 208 ms for 5,000
-// (TestAgentTreeMarksCascadeAtScale holds that under 1 s).
-// idx_thread_requests_open_below holds the
-// spawns with open work under them, idx_thread_requests_open_created a
-// caller's open requests in tree order. They replace
-// idx_thread_requests_spawn_caller, which nothing reads.
-const agentTreeMarksMigrationVersion = 163
+// open_below_0 to open_below_3 count, on each such spawn, the requests that
+// count as open work (agentOpenWorkSQL) made by the threads d spawns below
+// its target, d from 0 to 3: the depth within which open work keeps a
+// settled spawn listed. Kept by depth, a spawn that is removed or moved
+// takes exactly what it carried away from the spawns above it. The triggers
+// keep them in the transaction of every write that adds, removes or changes
+// a request, a thread's delete and its cascade included, climbing at most
+// four spawns. The climb counts a path once only while no spawn repeats on
+// it, so a local spawn may not reach its caller or a thread within four
+// spawns above it; no writer makes one, as each names a thread with nothing
+// above it. What the triggers add to a write under a chain four spawns deep,
+// measured: a settle 70 us, an open send's insert 30 us, a spawn's insert,
+// receipt and naming 200 us, and a thread delete 51 us per open local spawn
+// its cascade removes, 208 ms for 5,000 (TestAgentTreeMarksCascadeAtScale
+// holds that under 1 s). fillAgentTreeMarks counts them for the rows here.
+//
+// The Agents segment's read (threadAgentRequestsSQL) searches each thread
+// on a spawn walk by caller through an index that leaves its settled history
+// and lineage rows out: idx_thread_requests_open_created for open rows in
+// tree order, idx_thread_requests_caller_settled for rows settled inside the
+// window, idx_thread_requests_open_below for the local spawns kept for open
+// work under them, idx_thread_requests_nested_caller for remote spawns with
+// open work. idx_thread_requests_nested_open holds the settled remote spawns
+// with open work there, in the order the sweep pages through them.
+// idx_thread_requests_spawn_target serves the lineage reads by spawned
+// thread. idx_thread_requests_age and idx_thread_request_receipts_age index
+// the age of the rows the retention floor can remove, and
+// idx_thread_requests_lineage the lineage rows, which the sweep deletes once
+// their spawned thread is gone.
+//
+// trg_thread_placement_spawn_gone makes a nested thread standalone when the
+// last local spawn row naming it is deleted, as a spawner's delete does.
+const assistantsMigrationVersion = 150
 
-const agentTreeMarksV163SQL = `
+const assistantsV150SQL = `
+CREATE TABLE agents (
+    id               TEXT PRIMARY KEY,
+    thread_id        TEXT NOT NULL UNIQUE REFERENCES threads(id) ON DELETE CASCADE,
+    home             TEXT NOT NULL,
+    creator_agent_id TEXT NOT NULL DEFAULT '',
+    created_at       INTEGER NOT NULL,
+    all_projects     INTEGER NOT NULL DEFAULT 0 CHECK(all_projects IN (0,1))
+);
+CREATE TABLE agent_projects (
+    agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    PRIMARY KEY (agent_id, project_id)
+) WITHOUT ROWID;
+CREATE INDEX idx_agent_projects_project ON agent_projects(project_id);
+CREATE TABLE agent_helpers (
+    thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+    agent_id  TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_agent_helpers_agent ON agent_helpers(agent_id);
+CREATE TABLE agent_past_threads (
+    thread_id        TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+    agent_id         TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    superseded_at    INTEGER NOT NULL,
+    moved_draft      TEXT NOT NULL DEFAULT '',
+    moved_draft_attachments TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX idx_agent_past_threads_agent ON agent_past_threads(agent_id, superseded_at DESC);
+CREATE TABLE agent_wakes (
+    id               TEXT PRIMARY KEY,
+    thread_id        TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    kind             TEXT NOT NULL CHECK(kind IN ('loop','watch')),
+    label            TEXT NOT NULL,
+    note             TEXT NOT NULL DEFAULT '',
+    command          TEXT NOT NULL DEFAULT '',
+    cwd              TEXT NOT NULL DEFAULT '',
+    interval_seconds INTEGER,
+    timeout_seconds  INTEGER,
+    long_running     INTEGER NOT NULL DEFAULT 0 CHECK(long_running IN (0,1)),
+    next_at          INTEGER,
+    last_run_at      INTEGER,
+    last_outcome     TEXT NOT NULL DEFAULT '',
+    last_output      TEXT NOT NULL DEFAULT '',
+    undelivered      TEXT NOT NULL DEFAULT '',
+    missed           INTEGER NOT NULL DEFAULT 0,
+    state            TEXT NOT NULL CHECK(state IN ('armed','running','cancelled')),
+    created_at       INTEGER NOT NULL,
+    last_stderr      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_agent_wakes_due ON agent_wakes(state, next_at);
+CREATE INDEX idx_agent_wakes_thread ON agent_wakes(thread_id, state);
+CREATE TABLE session_start_failures (
+    thread_id        TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+    failed_at        INTEGER NOT NULL
+);
+
+ALTER TABLE thread_requests ADD COLUMN lineage_only INTEGER NOT NULL DEFAULT 0 CHECK(lineage_only IN (0,1));
+ALTER TABLE thread_requests ADD COLUMN confirmed_at INTEGER;
+ALTER TABLE thread_requests ADD COLUMN late_confirmed_at INTEGER;
+ALTER TABLE thread_requests ADD COLUMN answer_agent INTEGER NOT NULL DEFAULT 0 CHECK(answer_agent IN (0,1));
+ALTER TABLE thread_requests ADD COLUMN answer_agent_role TEXT NOT NULL DEFAULT '';
+ALTER TABLE thread_requests ADD COLUMN late_reply_agent INTEGER NOT NULL DEFAULT 0 CHECK(late_reply_agent IN (0,1));
+ALTER TABLE thread_requests ADD COLUMN late_reply_agent_role TEXT NOT NULL DEFAULT '';
+ALTER TABLE thread_requests ADD COLUMN nested_open INTEGER NOT NULL DEFAULT 0 CHECK(nested_open IN (0,1));
+ALTER TABLE thread_requests ADD COLUMN target_provider TEXT NOT NULL DEFAULT '';
+ALTER TABLE thread_requests ADD COLUMN late_delivered_how TEXT NOT NULL DEFAULT ''
+    CHECK(late_delivered_how IN ('','inline','queued','draft'));
+ALTER TABLE thread_requests ADD COLUMN made_in_thread_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE thread_requests ADD COLUMN wake_item_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE thread_requests ADD COLUMN late_wake_item_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE thread_requests ADD COLUMN open_below_0 INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN open_below_1 INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN open_below_2 INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN open_below_3 INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE thread_request_receipts ADD COLUMN answer_agent INTEGER NOT NULL DEFAULT 0 CHECK(answer_agent IN (0,1));
+ALTER TABLE thread_request_receipts ADD COLUMN answer_agent_role TEXT NOT NULL DEFAULT '';
+ALTER TABLE thread_request_receipts ADD COLUMN late_reply_agent INTEGER NOT NULL DEFAULT 0 CHECK(late_reply_agent IN (0,1));
+ALTER TABLE thread_request_receipts ADD COLUMN late_reply_agent_role TEXT NOT NULL DEFAULT '';
+ALTER TABLE thread_request_receipts ADD COLUMN own_turn INTEGER NOT NULL DEFAULT 0 CHECK(own_turn IN (0,1));
+
+UPDATE thread_requests SET confirmed_at = delivered_at WHERE delivered_at IS NOT NULL;
+UPDATE thread_requests SET late_confirmed_at = late_delivered_at, late_delivered_how = delivered_how
+ WHERE late_delivered_at IS NOT NULL;
 
 UPDATE thread_requests SET lineage_only = 1
  WHERE kind = 'spawn' AND target_computer_id = '' AND lineage_only = 0 AND target_thread_id <> ''
@@ -53,6 +199,27 @@ UPDATE thread_requests SET lineage_only = 1
                   AND (n.created_at > thread_requests.created_at
                     OR (n.created_at = thread_requests.created_at AND n.token > thread_requests.token)));
 
+CREATE INDEX idx_thread_requests_spawn_target
+    ON thread_requests(target_thread_id)
+ WHERE kind = 'spawn' AND target_computer_id = '';
+CREATE INDEX idx_thread_requests_nested_open ON thread_requests(settled_at, token)
+  WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
+    AND target_computer_id <> '' AND lineage_only = 0;
+CREATE INDEX idx_thread_requests_caller_settled
+    ON thread_requests(caller_thread_id, settled_at)
+ WHERE lineage_only = 0;
+CREATE INDEX idx_thread_requests_nested_caller
+    ON thread_requests(caller_thread_id)
+ WHERE nested_open = 1 AND kind = 'spawn' AND target_computer_id <> '' AND lineage_only = 0;
+CREATE INDEX idx_thread_requests_age
+    ON thread_requests(COALESCE(settled_at, due_at, created_at))
+ WHERE lineage_only = 0 AND state NOT IN ('unconfirmed','accepted','running');
+CREATE INDEX idx_thread_requests_lineage
+    ON thread_requests(target_thread_id)
+ WHERE lineage_only = 1;
+CREATE INDEX idx_thread_request_receipts_age
+    ON thread_request_receipts(COALESCE(settled_at, created_at))
+ WHERE state NOT IN ('accepted','running');
 CREATE UNIQUE INDEX idx_thread_requests_spawn_link
     ON thread_requests(target_thread_id)
  WHERE kind = 'spawn' AND target_computer_id = '' AND lineage_only = 0 AND target_thread_id <> '';
@@ -63,7 +230,6 @@ CREATE INDEX idx_thread_requests_open_below
 CREATE INDEX idx_thread_requests_open_created
     ON thread_requests(caller_thread_id, created_at, token)
  WHERE lineage_only = 0 AND settled_at IS NULL;
-DROP INDEX idx_thread_requests_spawn_caller;
 
 CREATE TRIGGER trg_thread_requests_open_below_insert AFTER INSERT ON thread_requests
 WHEN (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
@@ -283,7 +449,97 @@ WHEN (NEW.kind = 'spawn' AND NEW.target_computer_id = '' AND NEW.lineage_only = 
 BEGIN
   SELECT RAISE(ABORT, 'thread_requests: a local spawn reaches a thread above its caller');
 END;
+
+CREATE TRIGGER trg_thread_placement_spawn_gone AFTER DELETE ON thread_requests
+WHEN OLD.kind = 'spawn' AND OLD.target_computer_id = '' AND OLD.target_thread_id <> ''
+BEGIN
+  UPDATE threads SET placement = 'standalone'
+   WHERE id = OLD.target_thread_id AND placement = 'nested'
+     AND NOT EXISTS (SELECT 1 FROM thread_requests
+                      WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = OLD.target_thread_id);
+END;
 `
+
+// fillAssistantLedger records the wake rows of the confirmed deliveries,
+// then counts the agent tree marks the triggers keep from here on.
+func fillAssistantLedger(tx *sql.Tx) error {
+	if err := recordConfirmedWakeItems(tx); err != nil {
+		return err
+	}
+	return fillAgentTreeMarks(tx)
+}
+
+// recordConfirmedWakeItems fills wake_item_id and late_wake_item_id for the
+// queued answers and late replies already confirmed: the caller's own user
+// row carrying the wake's send id, alone or joined with other messages.
+// Only the caller's own rows are looked in, which are the only rows the
+// reads accept (wakeItemSQL): a request never moves to a fork, so no
+// inherited row is its caller's, and imported history carries no send ids.
+// One the lookup finds nothing for keeps none. Each request probes its
+// caller's row by the send id (idx_items_send_id), then every joined row is
+// read once and names the requests it carries (idx_items_joined_send_ids),
+// which a probe per request would read once per request of its thread.
+func recordConfirmedWakeItems(tx *sql.Tx) error {
+	for _, wake := range []struct{ column, route, confirmed, sendID string }{
+		{"wake_item_id", "delivered_how", "confirmed_at", "thread-wake:"},
+		{"late_wake_item_id", "late_delivered_how", "late_confirmed_at", "thread-wake-late:"},
+	} {
+		prefix := sqlTextLiteral(wake.sendID)
+		confirmed := `r.lineage_only = 0 AND r.` + wake.route + ` = 'queued' AND r.` + wake.confirmed + ` IS NOT NULL`
+		if _, err := tx.Exec(`UPDATE thread_requests AS r SET ` + wake.column + ` = COALESCE((
+			SELECT i.id FROM items i
+			 WHERE i.thread_id = r.caller_thread_id AND i.kind = 'user_text' AND i.parent_id = '' AND json_valid(i.meta)
+			   AND json_extract(i.meta, '$.sendId') IS NOT NULL AND json_extract(i.meta, '$.sendId') = ` + prefix + ` || r.token
+			   AND COALESCE(json_extract(i.meta, '$.wire_only'), 0) != 1
+			 LIMIT 1), '')
+			WHERE ` + confirmed); err != nil {
+			return fmt.Errorf("record the rows of the confirmed wakes: %w", err)
+		}
+		if err := recordJoinedWakeItems(tx, wake.column, prefix, confirmed); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recordJoinedWakeItems names, for each joined row, the confirmed requests
+// still without a row whose wakes it carries: a read of the joined rows,
+// then one keyed write per wake found.
+func recordJoinedWakeItems(tx *sql.Tx, column, prefix, confirmed string) (err error) {
+	type carried struct{ id, threadID, token string }
+	rows, err := tx.Query(`SELECT i.id, i.thread_id, substr(j.value, length(` + prefix + `) + 1)
+		  FROM items i CROSS JOIN json_each(i.meta, '$.joinedSendIds') j
+		 WHERE i.kind = 'user_text' AND i.parent_id = '' AND json_valid(i.meta)
+		   AND json_extract(i.meta, '$.joinedSendIds') IS NOT NULL
+		   AND COALESCE(json_extract(i.meta, '$.wire_only'), 0) != 1
+		   AND substr(j.value, 1, length(` + prefix + `)) = ` + prefix)
+	if err != nil {
+		return fmt.Errorf("list the joined rows of the confirmed wakes: %w", err)
+	}
+	var found []carried
+	for rows.Next() {
+		var c carried
+		if err := rows.Scan(&c.id, &c.threadID, &c.token); err != nil {
+			return errors.Join(fmt.Errorf("scan a joined row: %w", err), rows.Close())
+		}
+		found = append(found, c)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return fmt.Errorf("list the joined rows of the confirmed wakes: %w", err)
+	}
+	update, err := tx.Prepare(`UPDATE thread_requests AS r SET ` + column + ` = ?1
+		WHERE r.token = ?2 AND r.caller_thread_id = ?3 AND r.` + column + ` = '' AND ` + confirmed)
+	if err != nil {
+		return fmt.Errorf("prepare the joined wake write: %w", err)
+	}
+	defer func() { err = errors.Join(err, update.Close()) }()
+	for _, c := range found {
+		if _, err := update.Exec(c.id, c.token, c.threadID); err != nil {
+			return fmt.Errorf("record the joined row of %s: %w", c.token, err)
+		}
+	}
+	return nil
+}
 
 // fillAgentTreeMarks counts, for every local spawn, the open work below
 // its target, climbing from each thread with open work: the rows the

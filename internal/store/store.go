@@ -539,7 +539,7 @@ type Thread struct {
 	// leaves a group loses its pin (SetThreadGroup, DeleteThreadGroup), and
 	// DeleteThreadGroup ungroups its members before the group row goes.
 	GroupID string `json:"groupId,omitempty"`
-	// Placement is where the sidebar shows the row (migration v164):
+	// Placement is where the sidebar shows the row (migration v149):
 	// PlacementNested under the standing agent that spawned it,
 	// PlacementGrouped in GroupID's group, PlacementStandalone as a plain
 	// row of its project. The schema makes it grouped exactly when GroupID

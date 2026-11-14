@@ -9,7 +9,7 @@ show-more footer's dot counts unread rows, and running members sort
 above unread ones
 ([standing agents](standing-agents.md) rulings 31 to 34). Revised
 2026-10-17: a thread a standing agent spawned may be a member, and
-membership is the row's `placement` (store v164, standing agents
+membership is the row's `placement` (store v149, standing agents
 ruling 36).
 
 ## Goal
@@ -180,7 +180,7 @@ the row. Collapsed, it carries its members' bubbled dot.
 - `DeleteThreadGroup` clears the members' pins, active and archived, in
   the transaction that deletes the group, and returns the member rows as
   they now stand.
-- Migration v164 adds `threads.placement` (`nested`, `grouped`,
+- Migration v149 adds `threads.placement` (`nested`, `grouped`,
   `standalone`) with a CHECK that a row is `grouped` exactly when its
   `group_id` is set. `SetThreadGroup` writes `grouped` with the group;
   an ungroup writes `standalone` on a row that was grouped and leaves

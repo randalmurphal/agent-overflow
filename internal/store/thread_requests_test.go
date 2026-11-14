@@ -54,8 +54,7 @@ func mustGetThreadRequest(t *testing.T, s *Store, token string) ThreadRequest {
 // The settlement records the answering thread as a standing agent, an agent
 // with no role line apart from an ordinary thread; a late reply records the
 // agent it was written under beside the answer's, which it leaves; a
-// settlement with no agent records none. A receipt records it the same way, and a new row is never read as
-// written before v156.
+// settlement with no agent records none. A receipt records it the same way.
 func TestThreadRequestRecordsTheAnsweringAgent(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
@@ -71,8 +70,8 @@ func TestThreadRequestRecordsTheAnsweringAgent(t *testing.T) {
 		return mustGetThreadRequest(t, s, token)
 	}
 	seedThreadRequest(t, s, "tok-open", "t-caller", ThreadRequestSend, 100)
-	if row := mustGetThreadRequest(t, s, "tok-open"); row.AnswerAgentUnrecorded || row.AnswerAgent != nil {
-		t.Errorf("open row = unrecorded %v agent %+v, want no agent recorded", row.AnswerAgentUnrecorded, row.AnswerAgent)
+	if row := mustGetThreadRequest(t, s, "tok-open"); row.AnswerAgent != nil {
+		t.Errorf("open row agent = %+v, want no agent recorded", row.AnswerAgent)
 	}
 	if row := settle("tok-agent", &ThreadAnswerAgent{Role: "Reviewer"}); row.AnswerAgent == nil || row.AnswerAgent.Role != "Reviewer" {
 		t.Errorf("agent with a role = %+v", row.AnswerAgent)
@@ -96,12 +95,6 @@ func TestThreadRequestRecordsTheAnsweringAgent(t *testing.T) {
 	}
 	if row := mustGetThreadRequest(t, s, "tok-roleless"); row.AnswerAgent == nil || row.AnswerAgent.Role != "" || row.LateReplyAgent != nil {
 		t.Errorf("agents after a late reply from an ordinary thread = answer %+v late reply %+v", row.AnswerAgent, row.LateReplyAgent)
-	}
-
-	for _, token := range []string{"tok-agent", "tok-roleless", "tok-ordinary"} {
-		if row := mustGetThreadRequest(t, s, token); row.AnswerAgentUnrecorded {
-			t.Errorf("%s reads as written before v156", token)
-		}
 	}
 
 	receipt := func(token string) ThreadRequestReceipt {
@@ -1658,7 +1651,7 @@ func TestALineageOnlyRowIsNeverGivenBackOrConfirmed(t *testing.T) {
 }
 
 // A wake whose queue row is still there never reached the provider, so it
-// goes back whatever its confirmation reads: a row queued before v155 was
+// goes back whatever its confirmation reads: a row queued before v150 was
 // recorded as confirmed by the migration's backfill.
 func TestWithdrawThreadWakeWithItsRowIgnoresTheConfirmation(t *testing.T) {
 	s := newTestStore(t)

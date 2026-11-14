@@ -47,14 +47,10 @@ export const migrationExceptions: MigrationException[] = [
   { version: 149, table: 'threads', columns: ['mode'], reason: 'v149 turns a former discussion thread into a chat thread' },
   { version: 149, table: 'scratch_threads', columns: ['return_mode'], reason: 'v149 returns a side chat opened from a discussion to chat mode' },
   { version: 149, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v149 keeps only model favorites; discussion favorites are removed' },
-  { version: 151, table: 'automations', dropped: true, reason: 'v151 removes the workflow scheduler and drops its automations' },
-  { version: 151, table: 'automation_cursors', dropped: true, reason: "v151 drops the scheduler's per-source cursors with its automations" },
-  { version: 151, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v151 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
-  { version: 160, table: 'standing_agents', dropped: true, reason: 'v160 moves every standing agent to an agents record whose id is its thread id, and drops the table' },
-  { version: 160, table: 'threads', columns: ['project_id', 'workspace_path', 'worktree_path', 'branch', 'group_id', 'created_branch', 'created_remote_url', 'created_head_commit'], reason: "v160 moves a standing agent's thread into its home, outside every project, with no group, worktree, branch or recorded git origin" },
-  { version: 161, table: 'agent_wakes', columns: ['last_output', 'last_stderr'], rowsMayShrink: true, reason: 'v161 clears what a cancelled loop or watch carried and keeps each thread its 16 newest cancelled rows' },
-  { version: 161, table: 'remote_watches', rowsMayShrink: true, reason: 'v161 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
-  { version: 163, table: 'thread_requests', columns: ['lineage_only'], reason: 'v163 keeps the newest of two local spawns of one thread and makes the older one lineage-only' },
+  { version: 149, table: 'automations', dropped: true, reason: 'v149 removes the workflow scheduler and drops its automations' },
+  { version: 149, table: 'automation_cursors', dropped: true, reason: "v149 drops the scheduler's per-source cursors with its automations" },
+  { version: 149, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v149 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
+  { version: 149, table: 'remote_watches', rowsMayShrink: true, reason: 'v149 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
 ];
 
 /**
@@ -185,7 +181,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
     columns: [
       'due_at', 'target_computer_id', 'origin_thread_id', 'notify', 'late_reply', 'late_reply_at', 'delivered_at', 'delivered_how',
       'late_delivered_at', 'next_check', 'attempts', 'issue', 'polling', 'target_thread_title', 'wake_attempts', 'wake_next_check',
-      'wake_issue', 'lineage_only', 'confirmed_at', 'late_confirmed_at', 'answer_agent_role', 'nested_open', 'target_provider',
+      'wake_issue', 'lineage_only', 'confirmed_at', 'late_confirmed_at', 'answer_agent', 'answer_agent_role', 'nested_open', 'target_provider',
       'late_delivered_how', 'made_in_thread_id', 'wake_item_id', 'late_wake_item_id', 'open_below_0', 'open_below_1', 'open_below_2',
       'open_below_3', 'late_reply_agent', 'late_reply_agent_role',
     ],

@@ -47,8 +47,8 @@ type RemoteWatch struct {
 	WakeIssue    string `json:"wakeIssue,omitempty"`
 }
 
-// remoteWatchesV91SQL is the table as v91 made it. v161 rebuilt it with
-// thread_id cascading from its thread (migration_v161_ledger_indexes.go).
+// remoteWatchesV91SQL is the table as v91 made it. v149 rebuilt it with
+// thread_id cascading from its thread (migration_v149_retire_features.go).
 const remoteWatchesV91SQL = `CREATE TABLE remote_watches (
  computer_id TEXT NOT NULL, request_id TEXT NOT NULL, thread_id TEXT NOT NULL,
  fingerprint TEXT NOT NULL, label TEXT NOT NULL, receipt TEXT NOT NULL DEFAULT '{}',
