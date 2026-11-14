@@ -49,6 +49,42 @@ func TestDeleteEmptyDraftThreadDeletesEmptyChatDraft(t *testing.T) {
 	}
 }
 
+// An assistant's current thread is never an empty draft, history or not:
+// its record, and the past threads and helpers under it, are durable
+// state the cleanup's delete would drop.
+func TestDeleteEmptyDraftThreadKeepsAnAssistantsThread(t *testing.T) {
+	s := newTestStore(t)
+	homeThread(t, s, "old", "")
+	mustRetitle(t, s, "old", "Ops")
+	agent := StandingAgent{ID: "a-ops", ThreadID: "old", Home: "/h/old", CreatedAt: 1}
+	if err := s.CreateStandingAgent(agent); err != nil {
+		t.Fatal(err)
+	}
+	homeThread(t, s, "next", "")
+	mustPlaceInHome(t, s, "next", agent.Home)
+	if _, err := s.HandOffAssistant("old", "next", 10); err != nil {
+		t.Fatal(err)
+	}
+	homeThread(t, s, "helper", agent.ID)
+	var deletedHomes []string
+	s.OnAgentRecordDeleted(func(home string) { deletedHomes = append(deletedHomes, home) })
+	if empty, err := s.IsEmptyDraftThread("next"); err != nil || empty {
+		t.Fatalf("IsEmptyDraftThread(an assistant's current thread) = %v %v, want false", empty, err)
+	}
+	if deleted, err := s.DeleteEmptyDraftThread("next"); err != nil || deleted {
+		t.Fatalf("DeleteEmptyDraftThread(an assistant's current thread) = %v %v, want kept", deleted, err)
+	}
+	if _, found, err := s.GetAgent(agent.ID); err != nil || !found {
+		t.Fatalf("the record after the cleanup = %v %v", found, err)
+	}
+	if ids, err := s.AssistantDependentThreadIDs(agent.ID); err != nil || len(ids) != 2 {
+		t.Fatalf("the threads under the assistant after the cleanup = %q %v", ids, err)
+	}
+	if len(deletedHomes) != 0 {
+		t.Fatalf("the cleanup deleted the records of %q", deletedHomes)
+	}
+}
+
 func TestDeleteEmptyDraftThreadDeletesEmptyPlanDraft(t *testing.T) {
 	s := newTestStore(t)
 	thread := createDraftCleanupThread(t, s, "empty-plan-draft", "plan")

@@ -7,12 +7,15 @@ import (
 // emptyDraftThreadSQL is true for a materialized chat/plan draft that has
 // not gained durable conversation state. A worktree counts as durable
 // state: deleting the thread row would orphan a checkout the user
-// deliberately created.
+// deliberately created. So does an assistant's record on its current
+// thread, which a new assistant or a handoff's successor holds before its
+// opening message lands: its delete goes through deleteAgentRecordTx.
 const emptyDraftThreadSQL = `SELECT EXISTS (SELECT 1
 		   FROM threads
 		  WHERE id = ?
 		    AND mode IN ('chat', 'plan')
 		    AND COALESCE(worktree_path, '') = ''
+		    AND NOT EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = threads.id)
 		    AND NOT EXISTS (
 		      SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id
 		    )
