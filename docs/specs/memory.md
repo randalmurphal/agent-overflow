@@ -76,8 +76,10 @@ saying so in place of its index, and its assistants get a warning
 naming the clash. The project the folder records keeps it.
 
 The app creates a scope's folder, and the project folder's
-`.project-path`, before the session that reads it starts. `.project-path`
-holds one absolute path on one line; anything else in it, and a
+`.project-path`, before the session that reads it starts; the marker
+appears with its content and never replaces one another session wrote
+first. `.project-path` holds one absolute path on one line; anything
+else in it, nothing included, and a
 `.project-path` or project folder that cannot be read (not a regular
 file, unreadable), is a maintenance warning and turns the project's
 memory off as a clash does. A scope folder that is a symbolic link or

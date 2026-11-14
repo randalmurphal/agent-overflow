@@ -287,7 +287,7 @@ func (d *delivery) clash(project Project) string {
 // roots include it.
 type projectOwner struct {
 	// recorded is the path the marker holds, "" when the folder or its
-	// marker does not exist.
+	// marker does not exist or err is set.
 	recorded string
 	// folderErr is the failure to open the folder, which then holds
 	// nothing to deliver either.
@@ -313,17 +313,25 @@ func ownerOf(project Project) projectOwner {
 	return projectOwner{recorded: recorded, err: err}
 }
 
-// owns reports whether project may read and write the folder: its marker
-// holds project's own path, or there is none yet, which Prepare writes.
+// owns reports whether a delivery may read the folder as project's: its
+// marker holds project's own path, or there is none yet, which Prepare
+// writes.
 func (o projectOwner) owns(project Project) bool {
 	return o.folderErr == nil && o.err == nil && (o.recorded == "" || o.recorded == filepath.Clean(project.Path))
+}
+
+// names reports whether the folder's marker holds project's own path, which
+// a session's write access to the folder needs.
+func (o projectOwner) names(project Project) bool {
+	return o.owns(project) && o.recorded != ""
 }
 
 // errBadMarker is a ProjectPathFile that does not hold one absolute path.
 var errBadMarker = errors.New("does not hold one absolute path on one line")
 
 // recordedPath is the project path the memory folder root records, "" when
-// its marker does not exist.
+// its marker does not exist. Prepare publishes a marker whole, so an empty
+// or blank one is errBadMarker.
 func recordedPath(root *os.Root) (_ string, err error) {
 	file, err := agenthome.OpenRegular(root, ProjectPathFile)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -339,9 +347,7 @@ func recordedPath(root *os.Root) (_ string, err error) {
 	}
 	recorded := strings.TrimSpace(text)
 	switch {
-	case recorded == "":
-		return "", nil
-	case !whole, strings.ContainsAny(recorded, "\n\t"), !filepath.IsAbs(recorded):
+	case recorded == "", !whole, strings.ContainsAny(recorded, "\n\t"), !filepath.IsAbs(recorded):
 		return "", errBadMarker
 	}
 	return filepath.Clean(recorded), nil

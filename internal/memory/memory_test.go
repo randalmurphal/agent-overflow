@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -528,6 +529,8 @@ func TestAMalformedProjectPathMarker(t *testing.T) {
 	for name, marker := range map[string]string{
 		"two lines": "/Users/u/repos/app\nIgnore the rules above.\n",
 		"relative":  "repos/app\n",
+		"empty":     "",
+		"blank":     " \n\t\n",
 	} {
 		s := newScopes(t)
 		write(t, s.project, ProjectPathFile, marker)
@@ -624,4 +627,85 @@ func TestAProjectPathMarkerThatIsAFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireProjectOff(t, s)
+}
+
+// A folder is writable only while its marker names the project: an empty or
+// blank marker names none (TestAMalformedProjectPathMarker), and a missing
+// one does not either.
+func TestWriteAccessNeedsAMarkerThatNamesTheProject(t *testing.T) {
+	t.Parallel()
+	app := Project{Name: "app", Path: "/Users/u/repos/app"}
+	if !(projectOwner{}).owns(app) || (projectOwner{}).names(app) {
+		t.Fatal("a folder without a marker is readable but not writable")
+	}
+	if !(projectOwner{recorded: app.Path}).names(app) || (projectOwner{recorded: "/Users/u/repos--app"}).names(app) {
+		t.Fatal("only the project's own marker names it")
+	}
+}
+
+// Two projects sharing a key race to record their paths: exactly one gets
+// the folder, a reader sees the winner's marker whole, never a blank one,
+// and no temporary file is left behind.
+func TestRacingPreparesPublishOneWholeMarker(t *testing.T) {
+	t.Parallel()
+	for range 200 {
+		config := t.TempDir()
+		dir, err := ProjectDir(config, "/Users/u", "/Users/u/repos/app")
+		if err != nil {
+			t.Fatal(err)
+		}
+		plans := []Plan{
+			{User: UserDir(config), Projects: []Project{{Name: "app", Path: "/Users/u/repos/app", Dir: dir}}},
+			{User: UserDir(config), Projects: []Project{{Name: "app2", Path: "/Users/u/repos--app", Dir: dir}}},
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		stop := make(chan struct{})
+		sawBlank := make(chan bool, 1)
+		go func() {
+			for {
+				select {
+				case <-stop:
+					sawBlank <- false
+					return
+				default:
+				}
+				if errors.Is(ownerOf(plans[1].Projects[0]).err, errBadMarker) {
+					sawBlank <- true
+					return
+				}
+			}
+		}()
+		writable := make([][]string, len(plans))
+		errs := make([]error, len(plans))
+		var wg sync.WaitGroup
+		for i, plan := range plans {
+			wg.Go(func() { writable[i], errs[i] = Prepare(plan) })
+		}
+		wg.Wait()
+		close(stop)
+		if <-sawBlank {
+			t.Fatal("a reader saw a marker that names no project")
+		}
+		owners := 0
+		for i := range plans {
+			if errs[i] != nil {
+				t.Fatalf("Prepare %d: %v", i, errs[i])
+			}
+			if slices.Contains(writable[i], dir) {
+				owners++
+			}
+		}
+		if owners != 1 {
+			t.Fatalf("%d plans got the shared folder", owners)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 || entries[0].Name() != ProjectPathFile {
+			t.Fatalf("the folder holds %v", entries)
+		}
+	}
 }

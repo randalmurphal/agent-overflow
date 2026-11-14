@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 const (
@@ -142,10 +144,15 @@ func Prepare(plan Plan) (writable []string, err error) {
 			err = recordProjectPath(project)
 		}
 		if err == nil {
-			// A folder Build turns off is not writable either. A marker
-			// that is not a path is Build's to report.
-			if owner := ownerOf(project); !owner.owns(project) {
-				if err := errors.Join(owner.folderErr, owner.err); err != nil && !errors.Is(err, errBadMarker) {
+			// A folder is writable only once its marker names the
+			// project, so none Build turns off is. A marker that is not a
+			// path is Build's to report.
+			if owner := ownerOf(project); !owner.names(project) {
+				err := errors.Join(owner.folderErr, owner.err)
+				if err == nil && owner.recorded == "" {
+					err = errors.New(ProjectPathFile + " is gone")
+				}
+				if err != nil && !errors.Is(err, errBadMarker) {
 					errs = append(errs, fmt.Errorf("check whose the memory folder %s is: %w", project.Dir, err))
 				}
 				continue
@@ -209,23 +216,39 @@ func folderError(dir string, info fs.FileInfo) error {
 }
 
 // recordProjectPath writes project's path in its folder unless the folder
-// records one.
+// records one. The marker appears whole: it is written to a hidden temporary
+// file, which facts never are, and renamed into place without replacing a
+// marker another Prepare published first.
 func recordProjectPath(project Project) (err error) {
 	name := filepath.Join(project.Dir, ProjectPathFile)
-	file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, fs.ErrExist) {
+	fail := func(err error) error { return fmt.Errorf("record the project's path in %s: %w", name, err) }
+	if _, err := os.Lstat(name); err == nil {
 		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fail(err)
 	}
+	file, err := os.CreateTemp(project.Dir, ProjectPathFile+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("record the project's path in %s: %w", name, err)
+		return fail(err)
 	}
+	temp := file.Name()
 	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("record the project's path in %s: %w", name, closeErr))
+		if removeErr := os.Remove(temp); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			err = errors.Join(err, fail(removeErr))
 		}
 	}()
-	if _, err := file.WriteString(filepath.Clean(project.Path) + "\n"); err != nil {
-		return fmt.Errorf("record the project's path in %s: %w", name, err)
+	_, err = file.WriteString(filepath.Clean(project.Path) + "\n")
+	if err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = atomicfile.RenameNoReplace(temp, name)
+	}
+	if err != nil && !errors.Is(err, fs.ErrExist) {
+		return fail(err)
 	}
 	return nil
 }
