@@ -43,10 +43,11 @@ const (
 	agentStopBody    = "<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Check the release notes\" finished</summary>\n<result>The notes cover every change.</result>\n</task-notification>"
 )
 
-// A background report that starts a turn on an idle session (claude-wire.md
-// §E7) becomes one wake row naming the task, with the report or event line
-// as its detail. The same row injected mid-turn is the replay echo's to
-// report, so nothing is emitted for it here.
+// A Monitor event that starts a turn on an idle session (claude-wire.md
+// §E7) becomes one wake row naming the task, with the event line as its
+// detail. A task that ended has its completion notice already, so its
+// report adds no row. The same row injected mid-turn is the replay echo's
+// to report, so nothing is emitted for it here.
 func TestTaskNotificationMirrorRowWakesOnlyBetweenTurns(t *testing.T) {
 	p := NewParser()
 	wakes := backgroundWakes(t, p,
@@ -57,12 +58,11 @@ func TestTaskNotificationMirrorRowWakesOnlyBetweenTurns(t *testing.T) {
 		string(wakeMirrorLine("wake-1", monitorEventBody)),
 		string(wakeMirrorLine("wake-2", agentStopBody)),
 	)
-	if len(wakes) != 2 {
-		t.Fatalf("wakes = %d, want 2", len(wakes))
+	if len(wakes) != 1 {
+		t.Fatalf("wakes = %d, want 1: the Monitor event's, and none for the agent that finished", len(wakes))
 	}
 	for i, want := range []struct{ summary, detail, id string }{
 		{`Monitor event: "deploy log errors"`, "ERROR step 3", "background-wake:wake-1"},
-		{`Agent "Check the release notes" finished`, "The notes cover every change.", "background-wake:wake-2"},
 	} {
 		var meta map[string]any
 		_ = json.Unmarshal(wakes[i].Meta, &meta)

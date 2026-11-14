@@ -2922,11 +2922,13 @@ code 0)`, `Agent "…" finished`, `Monitor event: "…"`), an agent stop adds
 </task-notification>
 ```
 
-The parser (`parse_turn_origin.go`) turns such a row into one
-`background_wake` notification (summary, plus the `<result>` or `<event>`
-text bounded to 2,000 runes) when the session is between turns: after a
-top-level `result` and before the next turn's first top-level assistant
-frame or `command_lifecycle` start. A row injected mid-turn also reaches
+The parser (`parse_turn_origin.go`) turns a Monitor event's row (a block
+with no `<status>`) into one `background_wake` notification (summary, plus
+the `<event>` text bounded to 2,000 runes) when the session is between
+turns: after a top-level `result` and before the next turn's first
+top-level assistant frame or `command_lifecycle` start. A terminal
+completion's row adds nothing: its `system/task_notification` already put
+the completion notice above the turn. A row injected mid-turn also reaches
 the `isReplay` echo, which reports it already. The timeline shows the row
 ahead of the reply it caused. The rest of what the model read stays in
 the transcript file; a transcript-tail backfill is not built.

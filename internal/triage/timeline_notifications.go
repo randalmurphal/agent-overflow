@@ -367,9 +367,9 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 	return string(encoded)
 }
 
-// backgroundWakeNotificationKind is the row for a background task report
-// that started a turn on an idle session (Claude, claude-wire.md §E7): the
-// summary names the task, `detail` holds its report or event line.
+// backgroundWakeNotificationKind is the row for a Monitor event that
+// started a turn on an idle session (Claude, claude-wire.md §E7): the
+// summary names the task, `detail` holds its event line.
 const backgroundWakeNotificationKind = "background_wake"
 
 // maxBackgroundWakeDetailRunes bounds `detail` here too: the provider
@@ -383,7 +383,6 @@ func addBackgroundWakeNotificationMeta(meta map[string]any, raw json.RawMessage)
 	var wake struct {
 		Detail string `json:"detail"`
 		TaskID string `json:"taskId"`
-		Status string `json:"status"`
 	}
 	if json.Unmarshal(raw, &wake) != nil {
 		return
@@ -393,9 +392,6 @@ func addBackgroundWakeNotificationMeta(meta map[string]any, raw json.RawMessage)
 	}
 	if value := strings.TrimSpace(wake.TaskID); value != "" {
 		meta["taskId"] = value
-	}
-	if value := strings.TrimSpace(wake.Status); value != "" {
-		meta["status"] = value
 	}
 }
 

@@ -28,12 +28,10 @@ const (
 const ScheduledTurnOrigin = sessionimport.ScheduledTurnOrigin
 
 // backgroundWakeNotificationKind is the timeline notification for a
-// background task report that started a turn on an idle session.
+// Monitor event that started a turn on an idle session.
 const backgroundWakeNotificationKind = "background_wake"
 
-// maxBackgroundWakeDetailRunes bounds the report text a wake row carries.
-// An agent's `<result>` is its whole final report; the row shows the start
-// of it and the task's own output stays where it was.
+// maxBackgroundWakeDetailRunes bounds the event text a wake row carries.
 const maxBackgroundWakeDetailRunes = 2000
 
 // appendTurnStart appends the events for a main-transcript user row that
@@ -42,7 +40,10 @@ const maxBackgroundWakeDetailRunes = 2000
 // A scheduled row becomes the turn's user row and moves the cron job
 // table past the fire. A task-notification row becomes a wake row only
 // while the session is between turns: one injected mid-turn reaches the
-// stdout replay echo, which already reports it (parse_user_replay.go).
+// stdout replay echo, which already reports it (parse_user_replay.go). And
+// only for a report with no `<status>`, a Monitor event: a task that ended
+// sent `system/task_notification` first, whose completion notice already
+// sits above the turn it woke.
 func (p *Parser) appendTurnStart(events []provider.ProviderEvent, threadID string, entry json.RawMessage, fact mirrorEntryFact, now time.Time) []provider.ProviderEvent {
 	switch fact.turnOrigin {
 	case mirrorTurnOriginScheduled:
@@ -72,6 +73,9 @@ func (p *Parser) appendTurnStart(events []provider.ProviderEvent, threadID strin
 			return events
 		}
 		for n, fields := range ExtractAllTaskNotificationFields(mirrorUserRowText(entry)) {
+			if fields.Status != "" {
+				continue
+			}
 			if event, ok := backgroundWakeEvent(threadID, fact.uuid, n, fields, now); ok {
 				events = append(events, event)
 			}
@@ -80,24 +84,20 @@ func (p *Parser) appendTurnStart(events []provider.ProviderEvent, threadID strin
 	return events
 }
 
-// backgroundWakeEvent builds the wake row for one `<task-notification>`.
-// The summary already names the task (`Background command "…" completed
-// (exit code 0)`, `Agent "…" finished`, `Monitor event: "…"`); the detail
-// is the agent's report or the Monitor's event line.
+// backgroundWakeEvent builds the wake row for one Monitor event's
+// `<task-notification>`. The summary already names the task (`Monitor
+// event: "…"`); the detail is the event line.
 func backgroundWakeEvent(threadID, rowUUID string, block int, fields TaskNotificationFields, now time.Time) (provider.ProviderEvent, bool) {
 	summary := strings.TrimSpace(fields.Summary)
 	if summary == "" {
 		return provider.ProviderEvent{}, false
 	}
 	meta := map[string]any{"kind": backgroundWakeNotificationKind}
-	if detail := truncateWakeDetail(firstNonEmpty(fields.Result, fields.Event)); detail != "" {
+	if detail := truncateWakeDetail(fields.Event); detail != "" {
 		meta["detail"] = detail
 	}
 	if fields.TaskID != "" {
 		meta["taskId"] = fields.TaskID
-	}
-	if fields.Status != "" {
-		meta["status"] = fields.Status
 	}
 	encoded, err := json.Marshal(meta)
 	if err != nil {

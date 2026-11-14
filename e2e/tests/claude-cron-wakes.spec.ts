@@ -363,7 +363,7 @@ function wakeMirror(uuid: string, body: string): string {
   });
 }
 
-test('a background completion and a Monitor event that wake an idle session say what woke it', async ({ page }, testInfo) => {
+test('a background completion and a Monitor event that wake an idle session each show one notice of what woke it', async ({ page }, testInfo) => {
   const buildSummary = `Background command "${BUILD_DESC}" completed (exit code 0)`;
   const watchEvent = 'ERROR deploy step 3 failed: connection refused';
   await withHarness(page, HARNESS_TIMING, async (harness) => {
@@ -433,16 +433,19 @@ test('a background completion and a Monitor event that wake an idle session say 
     await expect(replyRow(page, WATCH_REPLY)).toBeVisible();
 
     const wakes = page.locator('[data-testid="notification-row"][data-notification-kind="background_wake"]');
-    await expect(wakes).toHaveCount(2);
+    // The Monitor event's only: the build's completion notice is its own
+    // row, checked below.
+    await expect(wakes).toHaveCount(1);
     const watchWake = wakes.filter({ hasText: WATCH_DESC });
     await expectClearOfComposer(page, watchWake);
     await expectClearOfComposer(page, replyRow(page, WATCH_REPLY));
     await shot(page, testInfo, 'e7-idle-wake.png');
 
-    const buildWake = wakes.filter({ hasText: BUILD_DESC });
-    await expect(buildWake).toContainText(buildSummary);
-    await expectAbove(replyRow(page, ARMED_REPLY), buildWake);
-    await expectAbove(buildWake, replyRow(page, 'The release build finished cleanly.'));
+    // The build's completion row is the one notice of what woke its turn.
+    const buildDone = page.locator('[data-item-id]').filter({ hasText: 'make release' });
+    await expect(buildDone).toHaveCount(1);
+    await expectAbove(replyRow(page, ARMED_REPLY), buildDone);
+    await expectAbove(buildDone, replyRow(page, 'The release build finished cleanly.'));
     await expect(watchWake).toContainText(watchEvent);
     await expectAbove(replyRow(page, 'The release build finished cleanly.'), watchWake);
     await expectAbove(watchWake, replyRow(page, WATCH_REPLY));
