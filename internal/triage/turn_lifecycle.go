@@ -1030,10 +1030,8 @@ func (r *Router) OpenTurnIndex(threadID string) int {
 // open. That handler writes the active turns row before it sets the open
 // turn, and GetActiveTurn-gated callers (workflow takeover, revert) can
 // interrupt in between; an immediate sample would read -1 and lose the
-// user's stop. A marker written before setOpenTurn would not hold
-// either, even on a turn a queued echo already opened at the same index:
-// setOpenTurn resets the turn's error sequence (its re-init contract),
-// so the turn's next error row would reuse the marker's id.
+// user's stop. A turn a queued echo already opened at the same index is
+// waited out the same way.
 //
 // The store's row is never consulted. An active row with no open turn
 // and no start in progress is a turn the router already closed: a fatal
@@ -1162,7 +1160,6 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
 	st.segmentIndexByScope[key] = -1
 	st.blockIndexByScope[key] = -1
 	r.dropTurnStreamsLocked(threadID, st, turnIndex, true, agentScopes)
-	delete(st.errorSeqByScope, key)
 	// Clear the settled marker so a re-init (Claude resend system.init
 	// after an interrupt; Codex resend turn/started) can settle the
 	// same turn again. A synthetic complete followed by the real result
@@ -1531,8 +1528,10 @@ func (r *Router) activeRoundTurnIndex(threadID string) (int, bool) {
 //     agent's rows wait for the agent's own streams.
 //   - **Id-allocating counters** (segmentIndexByScope, blockIndexByScope,
 //     errorSeqByScope, compactionSeqByScope, terminalInteractionSeq):
-//     cleared at CleanupThread, with a selective re-init reset in
-//     setOpenTurn. Wiping HERE would
+//     cleared at CleanupThread; setOpenTurn restarts the stream indexes
+//     on a re-init. A row id built from a sequence counter goes through
+//     freeItemID, so a restarted counter cannot name a saved row. Wiping
+//     HERE would
 //     cause id collisions when the wire emits two `result` envelopes
 //     for one logical turn (Claude task_notification → CLI-synthesized
 //     `user` envelope → second result, fatal-error synthetic-truncate
@@ -1764,23 +1763,7 @@ func (r *Router) MarkInterrupt(threadID string, sampledTurnIndex int, tok FlushS
 	if err := r.flipTurnItemsErrored(threadID, turnIndex, now, stoppedSummary); err != nil {
 		return "", err
 	}
-	seq := r.nextErrorSequence(threadID, turnIndex, "")
-	errID := ErrorItemID(turnIndex, "", seq)
-	item := store.Item{
-		ID:        errID,
-		ThreadID:  threadID,
-		TurnIndex: turnIndex,
-		Kind:      ItemKindError,
-		Role:      "system",
-		Status:    statusCompleted,
-		Summary:   summary,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := r.persistItem(item, nil); err != nil {
-		return "", err
-	}
-	return errID, nil
+	return r.persistTurnError(threadID, turnIndex, summary, now)
 }
 
 // Wait blocks until every in-flight Handle call has returned and every

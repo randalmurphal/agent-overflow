@@ -164,18 +164,9 @@ func (r *Router) compactionItemID(evt provider.ProviderEvent, turnIndex int) (st
 	if NormalizeProviderCompactionID(evt.ItemID) != "" {
 		return CompactionItemID(turnIndex, evt.ItemID, 0), nil
 	}
-	return r.nextAvailableSequencedCompactionID(evt.ThreadID, turnIndex)
-}
-
-func (r *Router) nextAvailableSequencedCompactionID(threadID string, turnIndex int) (string, error) {
-	for {
-		itemID := CompactionItemID(turnIndex, "", r.nextCompactionSequence(threadID, turnIndex))
-		if _, ok, err := r.store.GetThreadItem(threadID, itemID); err != nil {
-			return "", fmt.Errorf("compaction id lookup %s: %w", itemID, err)
-		} else if !ok {
-			return itemID, nil
-		}
-	}
+	return r.freeItemID(evt.ThreadID, func() string {
+		return CompactionItemID(turnIndex, "", r.nextCompactionSequence(evt.ThreadID, turnIndex))
+	})
 }
 
 // ExtractCompactionSummary pulls the committed summary out of a compact-

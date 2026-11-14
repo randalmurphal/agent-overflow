@@ -1092,8 +1092,9 @@ func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summar
 	if r.hasMatchingErrorItem(threadID, turnIndex, itemKind, summary, parentID) {
 		return nil
 	}
+	itemID, idErr := r.freeErrorItemID(threadID, turnIndex, scope)
 	errorItem := store.Item{
-		ID:        ErrorItemID(turnIndex, scope, r.nextErrorSequence(threadID, turnIndex, scope)),
+		ID:        itemID,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
 		Kind:      itemKind,
@@ -1104,6 +1105,10 @@ func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summar
 		ParentID:  parentID,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	if idErr != nil {
+		r.reportUnsavedRow(errorItem, idErr)
+		return idErr
 	}
 	return r.persistItem(errorItem, nil)
 }
@@ -1606,19 +1611,36 @@ func (r *Router) PersistItemQuiet(item store.Item, payload *store.Payload) error
 	return r.persistItemQuiet(item, payload)
 }
 
-// NextErrorSequence returns the next per-turn error sequence number for
-// the given thread + turn + scope. Exposed so app-layer callers (e.g.
-// send-failure persistence) can build error IDs via the same counter
-// EventError uses, preventing collisions when a provider error lands on
-// the same turn as a user-visible send failure.
-func (r *Router) NextErrorSequence(threadID string, turnIndex int, scope string) int {
-	return r.nextErrorSequence(threadID, turnIndex, scope)
+// PersistTurnError writes an error row on turnIndex for a failure the
+// provider did not report (a send, steer or queued dispatch that failed),
+// under the turn's next free error id.
+func (r *Router) PersistTurnError(threadID string, turnIndex int, summary string) error {
+	_, err := r.persistTurnError(threadID, turnIndex, summary, time.Now().UnixMilli())
+	return err
 }
 
-// NewErrorID builds a deterministic error:<turnIndex>[:<scope>]:<seq>
-// id. Exposed alongside NextErrorSequence so callers outside triage can
-// build rows that slot in next to provider-sourced errors without
-// reimplementing the id format.
-func NewErrorID(turnIndex int, scope string, seq int) string {
-	return ErrorItemID(turnIndex, scope, seq)
+// persistTurnError writes a thread-level error row on turnIndex and returns
+// its id. A row whose id could not be checked is not written; it reaches
+// the unsaved row observer with the lookup error.
+func (r *Router) persistTurnError(threadID string, turnIndex int, summary string, now int64) (string, error) {
+	id, err := r.freeErrorItemID(threadID, turnIndex, "")
+	item := store.Item{
+		ID:        id,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		Kind:      ItemKindError,
+		Role:      "system",
+		Status:    statusCompleted,
+		Summary:   summary,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err != nil {
+		r.reportUnsavedRow(item, err)
+		return "", err
+	}
+	if err := r.persistItem(item, nil); err != nil {
+		return "", err
+	}
+	return id, nil
 }

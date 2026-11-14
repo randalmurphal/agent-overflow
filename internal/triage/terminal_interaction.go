@@ -46,7 +46,13 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		return nil
 	}
 	now := eventTimestampMillis(evt)
-	seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
+	itemID, err := r.freeItemID(evt.ThreadID, func() string {
+		seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
+		return fmt.Sprintf("interacted:%s:%d:%d", meta.ProcessID, turnIndex, seq)
+	})
+	if err != nil {
+		return fmt.Errorf("terminal interaction id: %w", err)
+	}
 	metaMap := map[string]any{
 		"process_id": meta.ProcessID,
 		"kind":       "terminal_interaction",
@@ -64,7 +70,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		summary += ": " + command
 	}
 	return r.persistItem(store.Item{
-		ID:        fmt.Sprintf("interacted:%s:%d:%d", meta.ProcessID, turnIndex, seq),
+		ID:        itemID,
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
 		Kind:      string(provider.ItemTerminalInteraction),
@@ -80,8 +86,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 
 // nextTerminalInteractionSequence returns a monotonically-increasing counter
 // per (thread, turn, processID). Stored on the Router so it survives
-// clearOpenTurn and multi-result boundaries; CleanupThread / selective
-// turn re-init reset sweep the key by prefix.
+// clearOpenTurn and multi-result boundaries; CleanupThread drops it.
 func (r *Router) nextTerminalInteractionSequence(threadID string, turnIndex int, processID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

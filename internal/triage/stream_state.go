@@ -1126,6 +1126,33 @@ func (r *Router) nextErrorSequence(threadID string, turnIndex int, scope string)
 	return seq
 }
 
+// freeItemID returns the first id mint yields that no saved row of the
+// thread holds. mint draws from one of the thread's id counters. A counter
+// does not outlive the thread's state (CleanupThread, a restart) and the
+// rows do, so a counter alone can mint the id of a saved row, and the upsert
+// would replace that row. Every row id built from a counter goes through
+// here. On a failed lookup it returns the id it could not check with the
+// error, so the caller can still name the row it failed to write.
+func (r *Router) freeItemID(threadID string, mint func() string) (string, error) {
+	for {
+		id := mint()
+		_, found, err := r.store.GetThreadItem(threadID, id)
+		if err != nil {
+			return id, fmt.Errorf("item id lookup %s: %w", id, err)
+		}
+		if !found {
+			return id, nil
+		}
+	}
+}
+
+// freeErrorItemID is the next free error row id of (turnIndex, scope).
+func (r *Router) freeErrorItemID(threadID string, turnIndex int, scope string) (string, error) {
+	return r.freeItemID(threadID, func() string {
+		return ErrorItemID(turnIndex, scope, r.nextErrorSequence(threadID, turnIndex, scope))
+	})
+}
+
 func (r *Router) nextCompactionSequence(threadID string, turnIndex int) int {
 	key := scopeCounterKey(turnIndex, "compaction")
 	r.mu.Lock()

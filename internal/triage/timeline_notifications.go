@@ -213,7 +213,14 @@ func (r *Router) persistTimelineNotification(evt provider.ProviderEvent, notific
 	turnIndex := r.timelineNotificationTurnIndex(evt)
 	itemID := eventItemID(evt)
 	if strings.TrimSpace(itemID) == "" {
-		itemID = NotificationItemID(turnIndex, r.nextNotificationSequence(evt.ThreadID, turnIndex))
+		var err error
+		itemID, err = r.freeItemID(evt.ThreadID, func() string {
+			return NotificationItemID(turnIndex, r.nextNotificationSequence(evt.ThreadID, turnIndex))
+		})
+		if err != nil {
+			r.reportUnsavedRow(r.timelineNotificationItem(evt, itemID, notificationKind, summary), err)
+			return err
+		}
 	}
 	_, err := r.persistTimelineNotificationWithID(evt, itemID, notificationKind, summary)
 	return err
@@ -231,26 +238,7 @@ func (r *Router) persistTimelineNotification(evt provider.ProviderEvent, notific
 // row observer, so a death the store cannot record is still announced. A
 // failed lookup cannot tell, and reads as a first report.
 func (r *Router) persistTimelineNotificationWithID(evt provider.ProviderEvent, itemID, notificationKind, summary string) (bool, error) {
-	notificationKind = strings.TrimSpace(notificationKind)
-	if notificationKind == "" {
-		notificationKind = "notification"
-	}
-	turnIndex := r.timelineNotificationTurnIndex(evt)
-	now := eventTimestampMillis(evt)
-	item := store.Item{
-		ID:        itemID,
-		ThreadID:  evt.ThreadID,
-		TurnIndex: turnIndex,
-		Kind:      itemKindNotification,
-		Role:      "system",
-		Status:    statusCompleted,
-		Summary:   strings.TrimSpace(summary),
-		ParentID:  eventParentID(evt),
-		ToolName:  notificationKind,
-		Meta:      sanitizedTimelineNotificationMeta(notificationKind, summary, evt.Meta),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
+	item := r.timelineNotificationItem(evt, itemID, notificationKind, summary)
 	existing, found, err := r.store.GetThreadItem(evt.ThreadID, item.ID)
 	if err != nil {
 		err = fmt.Errorf("timeline notification existing lookup %s: %w", item.ID, err)
@@ -271,6 +259,29 @@ func (r *Router) persistTimelineNotificationWithID(evt provider.ProviderEvent, i
 // the two differ once a detached agent's transcript is replayed after
 // the main turn moved on). 0 when no turn can be resolved, matching every
 // other timeline-notification writer.
+// timelineNotificationItem is the notification row of evt under itemID.
+func (r *Router) timelineNotificationItem(evt provider.ProviderEvent, itemID, notificationKind, summary string) store.Item {
+	notificationKind = strings.TrimSpace(notificationKind)
+	if notificationKind == "" {
+		notificationKind = "notification"
+	}
+	now := eventTimestampMillis(evt)
+	return store.Item{
+		ID:        itemID,
+		ThreadID:  evt.ThreadID,
+		TurnIndex: r.timelineNotificationTurnIndex(evt),
+		Kind:      itemKindNotification,
+		Role:      "system",
+		Status:    statusCompleted,
+		Summary:   strings.TrimSpace(summary),
+		ParentID:  eventParentID(evt),
+		ToolName:  notificationKind,
+		Meta:      sanitizedTimelineNotificationMeta(notificationKind, summary, evt.Meta),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
 func (r *Router) timelineNotificationTurnIndex(evt provider.ProviderEvent) int {
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err == nil {
@@ -294,7 +305,7 @@ func (r *Router) nextNotificationSequence(threadID string, turnIndex int) int {
 
 // nextScopeSequence allocates the next id ordinal for one (thread, turn,
 // label) namespace. Id-allocating counter: swept by CleanupThread, never at a
-// turn boundary — see the triage area guide's correlation-state categories.
+// turn boundary, so its ids are built through freeItemID.
 func (r *Router) nextScopeSequence(threadID string, turnIndex int, label string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

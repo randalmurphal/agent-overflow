@@ -63,7 +63,9 @@ type threadState struct {
 
 	// Id-allocating counters, keyed by scopeCounterKey(turnIndex, scope).
 	// These allocate thread-lifetime `items.id` values, so they are
-	// cleaned at session teardown, not at turn boundaries.
+	// cleaned at session teardown, not at turn boundaries. The rows
+	// outlive them: ids built from the sequence counters are checked
+	// against the store (freeItemID).
 	segmentIndexByScope  map[string]int
 	blockIndexByScope    map[string]int
 	errorSeqByScope      map[string]int
@@ -204,8 +206,7 @@ type threadState struct {
 	// for that process; forwarded-stdin interactions always take the next
 	// id. Bounded the same way other id-allocating counters are: retained
 	// across clearOpenTurn to avoid multi-result id collisions and swept
-	// at session teardown / selective turn re-init reset. See
-	// terminal_interaction.go for the handler.
+	// at session teardown. See terminal_interaction.go for the handler.
 	terminalInteractionSeq map[string]int
 
 	// openAPIRetryRow flags a thread whose current api_retry row is in
