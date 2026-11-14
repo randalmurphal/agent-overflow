@@ -147,6 +147,7 @@ func (a *App) closeProviderSession(threadID string, sess session) error {
 	// than handled. Callers rely on those being handled when this returns:
 	// a replacement start re-admits the thread right after.
 	a.drainProviderEvents(threadID, "close provider session")
+	a.reportClaudeLostWrites(threadID, sess)
 	a.settlePendingWorktreeExit(threadID, sess.Token, false)
 	if closeErr != nil {
 		return fmt.Errorf("close %s session for thread %s: %w", sess.Provider, threadID, closeErr)
@@ -157,6 +158,22 @@ func (a *App) closeProviderSession(threadID string, sess session) error {
 	// later dies.
 	a.releaseSessionProcess(pgid)
 	return nil
+}
+
+// reportClaudeLostWrites puts a Claude `system/session_writes_lost` on the
+// thread as an error row once the process has ended. The CLI sends it only
+// as it exits, which is usually because AO closed it after marking the
+// thread stopped, so the wire path cannot carry it. Both ends of a session
+// call this: closeProviderSession after Close, and unregisterSession after
+// a self-exit's final event. The session hands the text out once, so a
+// path that reaches both reports it once.
+func (a *App) reportClaudeLostWrites(threadID string, sess session) {
+	if sess.Claude == nil {
+		return
+	}
+	if text := sess.Claude.TakeLostWritesError(); text != "" {
+		a.emitErrorToThread(threadID, text)
+	}
 }
 
 // The `ao` execution surface (spec §5, D15/D17).

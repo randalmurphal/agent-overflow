@@ -642,6 +642,41 @@ error enum respectively, and only the TURN died here.
 
 ---
 
+## `system/session_writes_lost`
+
+**Fires**: at most once, as the CLI exits with status 0 after the last
+result, when it could not save transcript lines, `~/.claude.json`
+changes, or both, because the disk was full or over quota (2.1.317+;
+schema read from the 2.1.321 bundle). A run that exits 1 reports this
+only on stderr.
+
+```json
+{"type":"system","subtype":"session_writes_lost","error_code":"ENOSPC",
+ "lost":["transcript","global_config"],"transcript_session_ids":["..."],
+ "uuid":"...","session_id":"..."}
+```
+
+`error_code` is `ENOSPC` (disk full) or `EDQUOT` (quota used up); when
+both kinds of write failed for different reasons it is the transcript's.
+`lost` is never empty. `transcript_session_ids` is present only when
+`transcript` is listed and names the sessions that lost lines, which after
+`/clear` can be an earlier session. Both enums are documented as open.
+
+AO keeps only an error text naming what was lost and why, plus a line
+saying resuming may miss part of the conversation when a transcript lost
+lines. An unknown code is named in the text; an unknown `lost` value reads
+as "other session data". The code, list and session ids are not stored.
+
+The envelope's usual cause of exit is AO closing the session, after which
+triage drops the thread's wire events, so the parser emits no event. The
+session holds the first text it saw (`Session.TakeLostWritesError`), and
+the app puts it on the thread as one error row once the process has ended:
+`closeProviderSession` after Close returns, and `unregisterSession` after a
+self-exit's final `disconnected` status. The text is handed out once, so a
+session that reaches both paths reports it once.
+
+---
+
 ## Permission notices (`permission_denied`, `permission_retry`)
 
 Two `system` subtypes that report a permission OUTCOME rather than asking
@@ -3715,6 +3750,12 @@ CLI binary; the subtypes we use or plan to use:
   change never kills a working session. The CLI also echoes a replayed
   user envelope containing
   `<local-command-stdout>Set model to ...</local-command-stdout>`.
+
+  From 2.1.307 the ack can wait up to 15 s while the API confirms the
+  model (changelog; not observed on the wire), so AO gives `set_model` a
+  20 s silence budget (`SetModelControlRequestTimeout`) instead of
+  `DefaultControlRequestTimeout`. `controlRequestTimeoutFor` in
+  `session_control.go` chooses every request's budget.
 
   Models without effort need no process reset when switching: the CLI's
   request builder suppresses `output_config.effort` for unsupported models,

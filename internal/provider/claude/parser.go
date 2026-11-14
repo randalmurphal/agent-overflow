@@ -38,6 +38,10 @@ import (
 // readLoop serializes line parsing. A zero-value Parser is valid; the
 // internal maps lazily initialise on first write.
 type Parser struct {
+	// sessionWritesLost is the error text of a system/session_writes_lost
+	// the read loop has not yet handed to the Session
+	// (parse_session_writes_lost.go).
+	sessionWritesLost string
 	// backgroundToolUses marks tool_use IDs expected to answer with a
 	// backgrounding ack, by origin: an input `run_in_background: true`
 	// (a hint the result must confirm) or a task_started resume rebind

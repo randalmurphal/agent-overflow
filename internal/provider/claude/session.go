@@ -25,6 +25,9 @@ type Session struct {
 	cancel   context.CancelFunc
 	closing  atomic.Bool
 	readDone chan struct{}
+	// lostWrites holds a system/session_writes_lost the CLI sent, for the
+	// app to report after the process ends (TakeLostWritesError).
+	lostWrites lostWrites
 	// systemPromptPath and appendSystemPromptPath are the files
 	// cfg.SystemPrompt and cfg.AppendSystemPrompt were written to for
 	// `--system-prompt-file` and `--append-system-prompt-file`, or "" for
@@ -187,7 +190,8 @@ type Session struct {
 	// AskUserQuestion answer projection, the control_cancel_request wiring)
 	// stay in session_approvals.go.
 	approvals provider.ApprovalRegistry
-	// controlRequestTimeout overrides DefaultControlRequestTimeout when non-zero.
+	// controlRequestTimeout overrides every control request's silence
+	// budget (controlRequestTimeoutFor) when non-zero.
 	// Tests set this to a short window so a non-responsive fake CLI
 	// doesn't stall the suite. Production leaves it zero.
 	controlRequestTimeout time.Duration
