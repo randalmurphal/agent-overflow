@@ -5186,6 +5186,59 @@ synthesis attempt on a tiny session didn't trigger compaction at all);
 if one ever occurs, AO's branch walk finds no content row and resumes
 with no cursor, the safe degenerate.
 
+## Transcript cleanup (`cleanupPeriodDays`, verified 2.1.321)
+
+The CLI deletes session transcripts under `<config home>/projects` whose
+mtime is older than `cleanupPeriodDays` (default 30, minimum 1). The sweep
+covers the whole config home and runs inside ordinary CLI processes, with
+the period that process resolved.
+
+Spike, in an isolated config home holding 60- and 200-day-old transcripts
+and no `.last-cleanup`, each process held open 20 seconds:
+
+| Launch | Result |
+|---|---|
+| `-p` stream-json, no period | Both deleted |
+| `--settings '{"cleanupPeriodDays":90}'` | 60-day kept, 200-day deleted |
+| `--settings '{"cleanupPeriodDays":36500}'` | Both kept |
+| `--safe-mode --max-turns 0` (the account probe), no period | Both deleted |
+| `--safe-mode --max-turns 0` with period 90 | 60-day kept |
+| `--no-session-persistence`, no period | 60-day deleted (only file seeded) |
+| `claude mcp list`, 30 seconds | 60-day kept (only file seeded), no `.last-cleanup` written |
+
+The period a process resolves follows settings precedence, user below
+project below local, read from the process's working directory only. Same
+home and seeded files, `-p` stream-json with and without `--safe-mode`:
+
+| Settings files | Result |
+|---|---|
+| `<cwd>/.claude/settings.json` 100 | 60-day kept, 200-day deleted |
+| `<cwd>/.claude/settings.local.json` 100 | 60-day kept, 200-day deleted |
+| User 365, project 100 | 200-day deleted |
+| User 100, project 365 | Both kept |
+| Project 100 in the parent directory or git root, cwd a subdirectory (no `--safe-mode` run) | Both deleted |
+| cwd is the home directory, `~/.claude/settings.local.json` 100 over user 365 (no `--safe-mode` run) | 200-day deleted |
+
+The interactive TUI ran no sweep in any spike: 45 seconds at onboarding in
+a new home, and 12 minutes idle at the prompt past onboarding, trusted and
+untrusted folder, with an unreachable API endpoint. Which period its sweep
+uses is therefore unobserved; the bundle resolves it through the same
+merged settings.
+
+From the bundle, not run: a process schedules the sweep 5 seconds after
+its startup work goes idle, runs it then when `<config home>/.last-cleanup`
+is absent or older than 24 hours, and otherwise runs it 10 minutes later.
+An interactive session defers while the user was active in the last
+minute. `--bare` skips it. A period set by managed policy outranks the
+`--settings` value.
+
+**AO context.** The shortest period among the processes that sweep is the
+home's effective retention, so every Claude process AO starts against the
+user's home carries a `--settings` period, measured against what that
+process resolves from the user, project and local files for its working
+directory. The rule and the list of launches are in
+`internal/provider/claude/retention.go`.
+
 ## Captured samples
 
 Every entry below is real wire output from a `stream-json` session; the

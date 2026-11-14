@@ -615,8 +615,11 @@ type cliInlineSettings struct {
 	// ("Concise" / "Proactive" / "Explanatory" / "Learning"). There is no
 	// CLI flag for this axis — the settings key is the only delivery
 	// mechanism.
-	OutputStyle string            `json:"outputStyle,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
+	OutputStyle string `json:"outputStyle,omitempty"`
+	// CleanupPeriodDays is the transcript retention this process sweeps the
+	// config home with. See retention.go.
+	CleanupPeriodDays int               `json:"cleanupPeriodDays,omitempty"`
+	Env               map[string]string `json:"env,omitempty"`
 }
 
 // inlineSettingsForCLI builds the JSON payload for the `--settings` CLI
@@ -629,11 +632,14 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 		FastMode:            cfg.FastMode,
 		CrossSessionInbound: strings.TrimSpace(cfg.CrossSessionInbound),
 		OutputStyle:         strings.TrimSpace(cfg.OutputStyle),
-		Env:                 inlineSettingsEnvForCLI(cfg),
+		// The CLI's schema rejects a value below one.
+		CleanupPeriodDays: max(cfg.CleanupPeriodDays, 0),
+		Env:               inlineSettingsEnvForCLI(cfg),
 	}
 	if !settings.FastMode &&
 		settings.CrossSessionInbound == "" &&
 		settings.OutputStyle == "" &&
+		settings.CleanupPeriodDays == 0 &&
 		len(settings.Env) == 0 {
 		return "", false
 	}

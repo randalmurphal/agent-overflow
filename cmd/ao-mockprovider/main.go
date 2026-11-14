@@ -195,7 +195,20 @@ func claudeSessionConfig(args []string) *control.SessionConfig {
 		AppendSystemPrompt:   promptFileContent(flagValue(args, "--append-system-prompt-file")),
 		SystemPromptSnapshot: flagValue(args, "--system-prompt-snapshot"),
 		BashMaxTimeoutMs:     os.Getenv("BASH_MAX_TIMEOUT_MS"),
+		CleanupPeriodDays:    claudeCleanupPeriodDays(flagValue(args, "--settings")),
 	}
+}
+
+// claudeCleanupPeriodDays reads `cleanupPeriodDays` out of a --settings
+// block, 0 when the block or the key is absent or unreadable.
+func claudeCleanupPeriodDays(raw string) int {
+	var block struct {
+		CleanupPeriodDays int `json:"cleanupPeriodDays"`
+	}
+	if raw == "" || json.Unmarshal([]byte(raw), &block) != nil {
+		return 0
+	}
+	return block.CleanupPeriodDays
 }
 
 // promptFileContent reads a prompt file the way the real CLI does, at launch.

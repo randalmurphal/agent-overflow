@@ -287,6 +287,31 @@ func TestHookSettingsOmitAnEmptyCrossSessionPolicy(t *testing.T) {
 	}
 }
 
+// The TUI sweeps the same config home a headless session does, so its
+// settings block carries the same transcript retention.
+func TestHookSettingsCarryCleanupPeriodDays(t *testing.T) {
+	rendered, err := hookSettingsJSON(Config{CleanupPeriodDays: 90})
+	if err != nil {
+		t.Fatalf("hookSettingsJSON: %v", err)
+	}
+	if !strings.Contains(rendered, `"cleanupPeriodDays":90`) {
+		t.Fatalf("retention missing from the settings block: %s", rendered)
+	}
+	if !strings.Contains(rendered, `"hooks"`) {
+		t.Fatalf("retention displaced the relay hooks: %s", rendered)
+	}
+
+	for _, days := range []int{0, -1} {
+		rendered, err := hookSettingsJSON(Config{CleanupPeriodDays: days})
+		if err != nil {
+			t.Fatalf("hookSettingsJSON: %v", err)
+		}
+		if strings.Contains(rendered, "cleanupPeriodDays") {
+			t.Fatalf("period %d rendered a key: %s", days, rendered)
+		}
+	}
+}
+
 // B18, TUI half. The PTY launch assembles a full []string environment
 // instead of the override map Spawn takes, so it has to remove the inherited
 // gate itself. A host that exported CLAUDE_CODE_HARBOR_KITE must not bind the
@@ -306,6 +331,27 @@ func TestBuildEnvDropsAnInheritedCrossSessionGateWhenDisabled(t *testing.T) {
 	for _, key := range claude.CrossSessionUnsetEnv() {
 		if value, found := envValueIn(env, key); found {
 			t.Fatalf("%s = %q survived, want it owned and dropped", key, value)
+		}
+	}
+	if value, _ := envValueIn(env, "HOME"); value != "/home/test" {
+		t.Fatalf("HOME = %q, want the inherited value untouched", value)
+	}
+}
+
+// The TUI runs in the config home the headless session uses: an inherited
+// override would move it, and its transcript sweep, to a home the launch's
+// retention period was not resolved against.
+func TestBuildEnvDropsAnInheritedConfigHome(t *testing.T) {
+	base := []string{
+		"CLAUDE_CONFIG_DIR=/alternate",
+		"CLAUDE_SECURESTORAGE_CONFIG_DIR=/alternate",
+		"HOME=/home/test",
+	}
+	env := buildEnv(Config{Env: base}, "http://gw", "http://hook", "tok")
+
+	for _, key := range claude.ConfigHomeUnsetEnv() {
+		if value, found := envValueIn(env, key); found {
+			t.Fatalf("%s = %q survived, want it dropped", key, value)
 		}
 	}
 	if value, _ := envValueIn(env, "HOME"); value != "/home/test" {

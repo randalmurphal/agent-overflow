@@ -177,20 +177,21 @@ func (s providerAccountEventSink) PublishLogin(state provideraccountapp.LoginSta
 
 func newProviderAccountManager(app *App) *provideraccountapp.Manager {
 	return provideraccountapp.NewManager(provideraccountapp.Deps{
-		Context:         app.lifeCtx,
-		BeginWork:       app.workAdmission.begin,
-		IsShuttingDown:  func() bool { return app.shuttingDown.Load() },
-		ShutdownError:   ErrShuttingDown,
-		CurrentSettings: app.currentSettings,
-		ProviderBinary:  app.providerBinaryPath,
-		OpenBrowser:     app.openExternalURL,
-		LoginSpawnEnv:   func() map[string]string { return app.providerExtraEnv },
-		HTTPClient:      app.rateLimitProbeClient,
-		Sessions:        providerAccountSessionGateway{app: app},
-		Probes:          providerAccountProbeInvalidator{app: app},
-		RateLimits:      providerAccountRateLimitSink{app: app},
-		Backoff:         app.providerLifecycleService(),
-		Accounts:        providerAccountEventSink{app: app},
+		Context:                 app.lifeCtx,
+		BeginWork:               app.workAdmission.begin,
+		IsShuttingDown:          func() bool { return app.shuttingDown.Load() },
+		ShutdownError:           ErrShuttingDown,
+		CurrentSettings:         app.currentSettings,
+		ProviderBinary:          app.providerBinaryPath,
+		ClaudeCleanupPeriodDays: app.claudeCleanupPeriodDays,
+		OpenBrowser:             app.openExternalURL,
+		LoginSpawnEnv:           func() map[string]string { return app.providerExtraEnv },
+		HTTPClient:              app.rateLimitProbeClient,
+		Sessions:                providerAccountSessionGateway{app: app},
+		Probes:                  providerAccountProbeInvalidator{app: app},
+		RateLimits:              providerAccountRateLimitSink{app: app},
+		Backoff:                 app.providerLifecycleService(),
+		Accounts:                providerAccountEventSink{app: app},
 	})
 }
 

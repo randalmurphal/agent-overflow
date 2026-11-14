@@ -241,7 +241,7 @@ func validateSettings(current Settings) (Settings, error) {
 	); err != nil {
 		return Settings{}, err
 	}
-	if err := validateRetentionDays(current.Retention.Days); err != nil {
+	if err := ValidateRetentionDays(current.Retention.Days); err != nil {
 		return Settings{}, err
 	}
 	if err := validateFontSize("fontSize", current.FontSize); err != nil {
@@ -537,12 +537,12 @@ func sanitizeAutoCompactPercent(field string, value, fallback int) int {
 // human-scale retention policy.
 const MaxRetentionDays = 36500
 
-// validateRetentionDays rejects negative and arithmetic-unsafe values.
+// ValidateRetentionDays rejects negative and arithmetic-unsafe values.
 // Zero is legal — it means "disable the sweep" — but a negative
 // integer is a caller bug because there is no policy a negative window
 // could represent, and a value above MaxRetentionDays risks Duration
 // overflow downstream.
-func validateRetentionDays(value int) error {
+func ValidateRetentionDays(value int) error {
 	if value < 0 {
 		return fmt.Errorf("retention.days must be non-negative, got %d", value)
 	}

@@ -30,6 +30,7 @@ export {
     ChannelParticipantState,
     ChannelStatePayload,
     ClaudeSlashCommands,
+    ClaudeTranscriptRetention,
     CodexAccountUsage,
     CodexAccountUsageBucket,
     CodexReviewStarted,

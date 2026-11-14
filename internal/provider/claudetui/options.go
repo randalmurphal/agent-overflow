@@ -123,6 +123,11 @@ type Config struct {
 	// CLAUDE_CODE_HARBOR_KITE gate and sets it only when the setting asks.
 	CrossSessionEnabled bool
 	CrossSessionInbound string
+	// CleanupPeriodDays is the `cleanupPeriodDays` the `--settings` block
+	// carries, from claude.CleanupPeriodOverride. Zero sends none. The
+	// TUI sweeps the same config home a headless session does; see
+	// claude/retention.go.
+	CleanupPeriodDays int
 	// Upstream overrides the gateway's forward target. Empty means the real
 	// Anthropic API; tests point it at a stub.
 	Upstream string

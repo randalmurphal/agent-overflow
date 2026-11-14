@@ -312,4 +312,7 @@ type SessionConfig struct {
 	// BashMaxTimeoutMs is the BASH_MAX_TIMEOUT_MS a Claude mock was spawned
 	// with ("" when the variable was absent).
 	BashMaxTimeoutMs string `json:"bashMaxTimeoutMs,omitempty"`
+	// CleanupPeriodDays is the `cleanupPeriodDays` in Claude's --settings
+	// block (0 when the flag or the key was absent).
+	CleanupPeriodDays int `json:"cleanupPeriodDays,omitempty"`
 }

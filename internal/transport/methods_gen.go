@@ -165,6 +165,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetChannelState", ID: 3664812883, Scope: "threads:read", Route: "selected"},                                       // main.App.GetChannelState
 	{Name: "GetClaudeSkills", ID: 1573335127, Scope: "threads:operate", Route: "selected"},                                    // main.App.GetClaudeSkills
 	{Name: "GetClaudeSlashCommands", ID: 2854892544, Scope: "threads:read", Route: "selected"},                                // main.App.GetClaudeSlashCommands
+	{Name: "GetClaudeTranscriptRetention", ID: 1092327307, Scope: "settings:read", Route: "home"},                             // main.App.GetClaudeTranscriptRetention
 	{Name: "GetCodexAccountUsage", ID: 1110466608, Scope: "access:admin", Route: "home"},                                      // main.App.GetCodexAccountUsage
 	{Name: "GetCodexSkills", ID: 1018032480, Scope: "threads:operate", Route: "selected"},                                     // main.App.GetCodexSkills
 	{Name: "GetComputerRoutes", ID: 873893084, Scope: "session", Route: "selected"},                                           // main.App.GetComputerRoutes
