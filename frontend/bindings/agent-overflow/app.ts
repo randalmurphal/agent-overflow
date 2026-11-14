@@ -5725,12 +5725,6 @@ export function ShutdownBackend(): $CancellablePromise<void> {
  * send transaction. The user command, turn, nested agent activity, sourced
  * result, lazy session start, and send-failure state therefore share one path.
  * 
- * Detached delivery is deliberately not exposed. A detached review runs on a
- * thread this session does not own, so every notification it produces hits the
- * child-thread quarantine and is dropped; surfacing one needs the returned
- * review thread id registered with the routing tables first, which is not
- * wired. See codex.Session.StartReview.
- * 
  * The review is a real, billed turn and it is not steerable, so callers should
  * offer it only on an idle thread.
  * 
