@@ -276,7 +276,7 @@ func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {
 	if chatmodel.SameModelFields(thread, sanitized) {
 		return thread, nil
 	}
-	if err := a.store.UpdateThread(sanitized); err != nil {
+	if err := a.store.UpdateThreadModelSettings(threadID, thread.Provider, sanitized.ModelSettings()); err != nil {
 		return store.Thread{}, err
 	}
 	// The model fields changed (SameModelFields above), and clients show them.

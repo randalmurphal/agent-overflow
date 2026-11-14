@@ -424,14 +424,12 @@ func TestProviderSwitchClearsPendingForkPin(t *testing.T) {
 		t.Fatalf("SetThreadForkResume(pin): %v", err)
 	}
 
-	// The switch's UPDATE clears the pin itself (the columns are absent from
-	// updateThreadSetSQL, so without the inline clear a committed switch
-	// could strand a pin into the old provider's session files).
-	switched := thr
+	// The switch's UPDATE clears the pin itself, so a committed switch
+	// cannot strand a pin into the old provider's session files.
+	switched := thr.ModelSettings()
 	switched.Provider = "codex"
-	switched.SessionRef = ""
-	if err := s.UpdateThreadIfProviderSwitchAllowed(switched, "claude"); err != nil {
-		t.Fatalf("UpdateThreadIfProviderSwitchAllowed: %v", err)
+	if err := s.UpdateThreadModelSettings(thr.ID, "claude", switched); err != nil {
+		t.Fatalf("UpdateThreadModelSettings: %v", err)
 	}
 	got, err := s.GetThread(thr.ID)
 	if err != nil {
@@ -443,6 +441,114 @@ func TestProviderSwitchClearsPendingForkPin(t *testing.T) {
 	if got.PendingForkRef != "" || got.PendingForkResumeAt != "" {
 		t.Fatalf("pin survived the provider switch: %q@%q, want empty",
 			got.PendingForkRef, got.PendingForkResumeAt)
+	}
+}
+
+// A model settings write from a stale read writes only the model
+// configuration: a rename and an archive made after the read survive it, a
+// provider switch clears the resume wiring, and a switch is refused once
+// the thread has history or when the provider moved since the read.
+func TestUpdateThreadModelSettingsKeepsIdentity(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	thr := makeThread("thread-model-settings", "claude")
+	thr.SessionRef = "claude-session"
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTitle(thr.ID, "Renamed meanwhile"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ArchiveThread(thr.ID); err != nil {
+		t.Fatal(err)
+	}
+	settings := stale.ModelSettings()
+	settings.Model, settings.ReasoningEffort, settings.FastMode, settings.ContextWindow = "opus-next", "high", true, 200000
+	if err := s.UpdateThreadModelSettings(thr.ID, stale.Provider, settings); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Renamed meanwhile" || !got.Archived || got.SessionRef != "claude-session" {
+		t.Fatalf("after the settings write = title %q archived %v session %q, want the rename, the archive and the session kept",
+			got.Title, got.Archived, got.SessionRef)
+	}
+	if got.Model != "opus-next" || got.ReasoningEffort != "high" || !got.FastMode || got.ContextWindow != 200000 {
+		t.Fatalf("settings = %+v", got.ModelSettings())
+	}
+
+	switched := got.ModelSettings()
+	switched.Provider, switched.ReasoningEffort = "codex", "medium"
+	if err := s.UpdateThreadModelSettings(thr.ID, "codex", switched); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("a write whose provider moved since its read = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.UpdateThreadModelSettings(thr.ID, "claude", switched); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetThread(thr.ID); got.Provider != "codex" || got.SessionRef != "" || got.Title != "Renamed meanwhile" {
+		t.Fatalf("after the switch = provider %q session %q title %q", got.Provider, got.SessionRef, got.Title)
+	}
+	if _, err := s.UpsertItem(Item{ID: "i1", ThreadID: thr.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed", Summary: "hi", CreatedAt: 1, UpdatedAt: 1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	back := switched
+	back.Provider, back.ReasoningEffort = "claude", "high"
+	if err := s.UpdateThreadModelSettings(thr.ID, "codex", back); !errors.Is(err, ErrThreadProviderLocked) {
+		t.Fatalf("a switch with history = %v, want ErrThreadProviderLocked", err)
+	}
+}
+
+// The retained whole-row UpdateThread keeps an assistant's invariants: its
+// current thread cannot take another assistant's name or an empty one, or
+// leave its home.
+func TestUpdateThreadKeepsAssistantInvariants(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"ops", "build"} {
+		mustCreateThread(t, s, id)
+	}
+	mustRetitle(t, s, "ops", "Ops")
+	mustRetitle(t, s, "build", "Build")
+	mustCreateAssistant(t, s, "ops", "/h/ops")
+	mustCreateAssistant(t, s, "build", "/h/build")
+	build, err := s.GetThread("build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var taken *AssistantNameTakenError
+	dup := build
+	dup.Title = "ops"
+	if err := s.UpdateThread(dup); !errors.As(err, &taken) || taken.ThreadID != "ops" {
+		t.Fatalf("UpdateThread to another assistant's name = %v, want it refused naming the holder", err)
+	}
+	empty := build
+	empty.Title = "  "
+	if err := s.UpdateThread(empty); !errors.Is(err, ErrAssistantNameEmpty) {
+		t.Fatalf("UpdateThread to an empty name = %v", err)
+	}
+	moved := build
+	moved.WorkspacePath = "/elsewhere"
+	if err := s.UpdateThread(moved); !errors.Is(err, ErrAssistantThreadNotInHome) {
+		t.Fatalf("UpdateThread out of the home = %v, want ErrAssistantThreadNotInHome", err)
+	}
+	inProject := build
+	inProject.ProjectID = defaultTestProjectID
+	if err := s.UpdateThread(inProject); !errors.Is(err, ErrAssistantThreadNotInHome) {
+		t.Fatalf("UpdateThread into a project = %v, want ErrAssistantThreadNotInHome", err)
+	}
+	if got, _ := s.GetThread("build"); got.Title != "Build" || got.WorkspacePath != "/h/build" || got.ProjectID != "" {
+		t.Fatalf("after the refusals = title %q workspace %q project %q", got.Title, got.WorkspacePath, got.ProjectID)
+	}
+	renamed := build
+	renamed.Title = "Builder"
+	if err := s.UpdateThread(renamed); err != nil {
+		t.Fatalf("UpdateThread to a free name: %v", err)
 	}
 }
 

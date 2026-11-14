@@ -627,7 +627,10 @@ operations retain the same `RETURNING id` and in-transaction readback rule.
 State with a narrower lifecycle stays out of broad projections and
 `UpdateThread`. Dedicated accessors own import provenance, live todo, group
 membership, worktree setup state, and similar columns. This prevents a stale
-whole-row value from clobbering a concurrent lifecycle transition.
+whole-row value from clobbering a concurrent lifecycle transition. Model and
+provider choices write through `UpdateThreadModelSettings`, which carries
+only the model configuration, so no production writer issues the whole-row
+`UpdateThread`; it still keeps an assistant's name and home invariants.
 
 ## Restore boundary
 

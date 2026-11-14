@@ -875,11 +875,11 @@ func (s *Store) ListBlockedThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
 	return refs, rows.Err()
 }
 
-// updateThreadSetSQL is the whole-row thread write every rename, model
-// change, workspace switch, and provider switch issues. It is a hand-kept
-// column list, and what it OMITS is load-bearing: a caller that only meant to
-// rename a thread hands `UpdateThread` a `Thread` struct it read some time
-// ago, so every column in this list is one a stale read can roll back.
+// updateThreadSetSQL is UpdateThread's whole-row thread write. No production
+// writer uses it: each change has a narrow writer (UpdateTitle,
+// UpdateThreadModelSettings, UpdateThreadCheckout, ArchiveThread, ...),
+// because every column in this list is one a stale read can roll back. It
+// is a hand-kept column list, and what it OMITS is load-bearing.
 // Columns owned by a narrow writer, by a trigger, or by the row's own
 // lifecycle are therefore absent — see
 // threadColumnsNotWrittenByUpdateThread (threads_test.go), which names each
@@ -926,6 +926,10 @@ func updateThreadArgs(t Thread) []any {
 	}
 }
 
+// UpdateThread writes the columns updateThreadSetSQL lists from t. It keeps
+// an assistant's invariants as the narrow writers do: the title of its
+// current thread is its name (checkAssistantTitleTx), and that thread stays
+// in its home (ErrAssistantThreadNotInHome).
 func (s *Store) UpdateThread(t Thread) error {
 	t, err := normalizeThreadForUpdate(t)
 	if err != nil {
@@ -937,6 +941,9 @@ func (s *Store) UpdateThread(t Thread) error {
 		return fmt.Errorf("store: begin update thread %s: %w", t.ID, err)
 	}
 	defer tx.Rollback()
+	if err := checkAssistantTitleTx(tx, t.ID, t.Title); err != nil {
+		return err
+	}
 	result, err := tx.Exec(
 		updateThreadSetSQL+` WHERE id=?`,
 		args...,
@@ -946,6 +953,15 @@ func (s *Store) UpdateThread(t Thread) error {
 	}
 	if err := requireRowsAffected(result, fmt.Sprintf("store: update thread %s", t.ID)); err != nil {
 		return err
+	}
+	var outOfHome bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents JOIN threads ON threads.id = agents.thread_id
+		WHERE agents.thread_id = ? AND NOT (threads.project_id IS NULL AND threads.workspace_path = agents.home
+		  AND COALESCE(threads.worktree_path, '') = '' AND COALESCE(threads.branch, '') = ''))`, t.ID).Scan(&outOfHome); err != nil {
+		return fmt.Errorf("store: update thread %s: read its assistant's home: %w", t.ID, err)
+	}
+	if outOfHome {
+		return fmt.Errorf("store: update thread %s: %w", t.ID, ErrAssistantThreadNotInHome)
 	}
 	// The whole-row update carries the title, so it can rename a thread.
 	if err := indexThreadTitleTx(tx, t.ID, t.Title); err != nil {
@@ -957,35 +973,70 @@ func (s *Store) UpdateThread(t Thread) error {
 	return nil
 }
 
-func (s *Store) UpdateThreadIfProviderSwitchAllowed(t Thread, previousProvider string) error {
-	t, err := normalizeThreadForUpdate(t)
+// ThreadModelSettings is a thread's model configuration: what a model or
+// provider choice and the sanitation of stored settings write
+// (UpdateThreadModelSettings), and nothing a stale read could use to roll
+// back a rename, a move or an archive.
+type ThreadModelSettings struct {
+	Provider                   string
+	Model                      string
+	ReasoningEffort            string
+	FastMode                   bool
+	ContextWindow              int
+	AutoCompactStandardPercent int
+	AutoCompactExtendedPercent int
+	RuntimeMode                string
+}
+
+// ModelSettings is the thread's model configuration.
+func (t Thread) ModelSettings() ThreadModelSettings {
+	return ThreadModelSettings{
+		Provider: t.Provider, Model: t.Model, ReasoningEffort: t.ReasoningEffort, FastMode: t.FastMode,
+		ContextWindow: t.ContextWindow, AutoCompactStandardPercent: t.AutoCompactStandardPercent,
+		AutoCompactExtendedPercent: t.AutoCompactExtendedPercent, RuntimeMode: t.RuntimeMode,
+	}
+}
+
+// UpdateThreadModelSettings writes a thread's model configuration, provided
+// its provider is still previousProvider. A change of provider is allowed
+// only while the thread has no history (ErrThreadProviderLocked), and
+// discards the previous provider's resume wiring, the session ref and the
+// lazy-fork pin, in the same UPDATE: a second statement would leave a crash
+// window where the switch committed and a pin into the old provider's
+// session files survived it.
+func (s *Store) UpdateThreadModelSettings(threadID, previousProvider string, settings ThreadModelSettings) error {
+	normalized, err := normalizeThreadForUpdate(Thread{
+		Provider: settings.Provider, Model: settings.Model, ReasoningEffort: settings.ReasoningEffort,
+		FastMode: settings.FastMode, ContextWindow: settings.ContextWindow,
+		AutoCompactStandardPercent: settings.AutoCompactStandardPercent,
+		AutoCompactExtendedPercent: settings.AutoCompactExtendedPercent, RuntimeMode: settings.RuntimeMode,
+	})
 	if err != nil {
 		return err
 	}
-	args := append(updateThreadArgs(t), t.ID, previousProvider, t.ID)
-	// A provider switch discards the previous provider's resume wiring, and
-	// the lazy-fork pin is deliberately absent from updateThreadSetSQL (see
-	// SetThreadForkResume), so the clear rides this UPDATE itself: a second
-	// statement would leave a crash window where the switch committed and a
-	// stale pin into the old provider's session files survived it.
-	result, err := s.db.Exec(
-		updateThreadSetSQL+`, pending_fork_session_ref=NULL, pending_fork_resume_at=''
-		 WHERE id=?
-		 AND provider = ?
-		 AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE thread_id = ? LIMIT 1)`,
-		args...,
-	)
+	settings = normalized.ModelSettings()
+	query := `UPDATE threads SET provider = ?, model = ?, reasoning_effort = ?, fast_mode = ?, context_window = ?,
+	    auto_compact_standard_percent = ?, auto_compact_extended_percent = ?, runtime_mode = ?`
+	guard := ` WHERE id = ? AND provider = ?`
+	if settings.Provider != previousProvider {
+		query += `, session_ref = NULL, pending_fork_session_ref = NULL, pending_fork_resume_at = ''`
+		guard += ` AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE thread_id = threads.id LIMIT 1)`
+	}
+	result, err := s.db.Exec(query+guard,
+		settings.Provider, settings.Model, settings.ReasoningEffort, boolToInt(settings.FastMode), settings.ContextWindow,
+		settings.AutoCompactStandardPercent, settings.AutoCompactExtendedPercent, settings.RuntimeMode,
+		threadID, previousProvider)
 	if err != nil {
-		return fmt.Errorf("store: guarded provider switch for thread %s: %w", t.ID, err)
+		return fmt.Errorf("store: update the model settings of thread %s: %w", threadID, err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("store: guarded provider switch for thread %s: rows affected: %w", t.ID, err)
+		return fmt.Errorf("store: update the model settings of thread %s: rows affected: %w", threadID, err)
 	}
 	if rows != 0 {
 		return nil
 	}
-	return s.explainProviderSwitchNoRows(t.ID, previousProvider)
+	return s.explainProviderSwitchNoRows(threadID, previousProvider)
 }
 
 func (s *Store) explainProviderSwitchNoRows(threadID, previousProvider string) error {

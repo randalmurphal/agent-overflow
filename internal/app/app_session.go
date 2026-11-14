@@ -123,7 +123,7 @@ func (a *App) startSessionNow(threadID string) error {
 	}
 	sanitized := a.sanitizeThreadModelSettings(t)
 	if !chatmodel.SameModelFields(t, sanitized) {
-		if err := a.store.UpdateThread(sanitized); err != nil {
+		if err := a.store.UpdateThreadModelSettings(threadID, t.Provider, sanitized.ModelSettings()); err != nil {
 			return fmt.Errorf("start session: persist live model settings: %w", err)
 		}
 		a.announceThread(triage.ThreadActionFull, threadID)
