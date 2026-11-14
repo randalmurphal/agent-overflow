@@ -65,7 +65,7 @@ type threadState struct {
 	// These allocate thread-lifetime `items.id` values, so they are
 	// cleaned at session teardown, not at turn boundaries. The rows
 	// outlive them: ids built from the sequence counters are checked
-	// against the store (freeItemID).
+	// against the store (reserveItemID).
 	segmentIndexByScope  map[string]int
 	blockIndexByScope    map[string]int
 	errorSeqByScope      map[string]int
@@ -439,6 +439,13 @@ type threadIdentity struct {
 	// (echo path), before streamFlushMu and r.mu; never replaced (same
 	// reasoning as anchorLock).
 	drainLock sync.Mutex
+	// itemIDLock serializes, PER THREAD, choosing a row id from a sequence
+	// counter with the write of its row (reserveItemID). Taken after the
+	// anchor and drain locks and before r.mu; the row write is the only
+	// work done under it. Never replaced (same reasoning as anchorLock):
+	// the counters it covers are swept by cleanupThread, which is the
+	// case it exists for.
+	itemIDLock sync.Mutex
 	// trayLock serializes, PER THREAD, a background tray delta's read and
 	// emit (background_tray.go), so the thread's frames reach the bus in
 	// the order of the reads they carry. A leaf: nothing else is taken

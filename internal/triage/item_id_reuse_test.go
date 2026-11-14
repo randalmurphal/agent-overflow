@@ -122,3 +122,47 @@ func TestErrorAfterATurnRestartKeepsTheEarlierError(t *testing.T) {
 		t.Fatalf("error rows = %q, want the first kept beside the second", got)
 	}
 }
+
+// A cleanup between one writer's id check and its write restarts the
+// counter. A second writer waits for the first row instead of taking the
+// same unchecked id.
+func TestAReservedRowIDIsNotHandedOutAgainAcrossCleanup(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	mint := func() string { return NotificationItemID(0, router.nextNotificationSequence("t1", 0)) }
+
+	first, release, err := router.reserveItemID("t1", mint)
+	if err != nil {
+		t.Fatalf("first reservation: %v", err)
+	}
+	router.CleanupThread("t1")
+
+	second := make(chan string, 1)
+	go func() {
+		id, release, err := router.reserveItemID("t1", mint)
+		release()
+		if err != nil {
+			id = "error: " + err.Error()
+		}
+		second <- id
+	}()
+	select {
+	case id := <-second:
+		release()
+		t.Fatalf("second reservation got %q while the first row %q was unwritten", id, first)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	now := time.Now().UnixMilli()
+	if err := router.PersistItem(store.Item{
+		ID: first, ThreadID: "t1", Kind: itemKindNotification, Role: "system", Status: statusCompleted,
+		Summary: "first", CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("write first row: %v", err)
+	}
+	release()
+
+	if id := <-second; id == first {
+		t.Fatalf("second reservation reused %q", first)
+	}
+}

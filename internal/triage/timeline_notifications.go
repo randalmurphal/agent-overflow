@@ -213,10 +213,11 @@ func (r *Router) persistTimelineNotification(evt provider.ProviderEvent, notific
 	turnIndex := r.timelineNotificationTurnIndex(evt)
 	itemID := eventItemID(evt)
 	if strings.TrimSpace(itemID) == "" {
-		var err error
-		itemID, err = r.freeItemID(evt.ThreadID, func() string {
+		id, release, err := r.reserveItemID(evt.ThreadID, func() string {
 			return NotificationItemID(turnIndex, r.nextNotificationSequence(evt.ThreadID, turnIndex))
 		})
+		defer release()
+		itemID = id
 		if err != nil {
 			r.reportUnsavedRow(r.timelineNotificationItem(evt, itemID, notificationKind, summary), err)
 			return err
@@ -305,7 +306,7 @@ func (r *Router) nextNotificationSequence(threadID string, turnIndex int) int {
 
 // nextScopeSequence allocates the next id ordinal for one (thread, turn,
 // label) namespace. Id-allocating counter: swept by CleanupThread, never at a
-// turn boundary, so its ids are built through freeItemID.
+// turn boundary, so its ids are built through reserveItemID.
 func (r *Router) nextScopeSequence(threadID string, turnIndex int, label string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

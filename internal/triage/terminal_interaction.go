@@ -46,10 +46,11 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		return nil
 	}
 	now := eventTimestampMillis(evt)
-	itemID, err := r.freeItemID(evt.ThreadID, func() string {
+	itemID, release, err := r.reserveItemID(evt.ThreadID, func() string {
 		seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
 		return fmt.Sprintf("interacted:%s:%d:%d", meta.ProcessID, turnIndex, seq)
 	})
+	defer release()
 	if err != nil {
 		return fmt.Errorf("terminal interaction id: %w", err)
 	}

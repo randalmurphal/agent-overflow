@@ -1126,29 +1126,42 @@ func (r *Router) nextErrorSequence(threadID string, turnIndex int, scope string)
 	return seq
 }
 
-// freeItemID returns the first id mint yields that no saved row of the
-// thread holds. mint draws from one of the thread's id counters. A counter
-// does not outlive the thread's state (CleanupThread, a restart) and the
-// rows do, so a counter alone can mint the id of a saved row, and the upsert
-// would replace that row. Every row id built from a counter goes through
-// here. On a failed lookup it returns the id it could not check with the
-// error, so the caller can still name the row it failed to write.
-func (r *Router) freeItemID(threadID string, mint func() string) (string, error) {
+// reserveItemID returns the first id mint yields that no saved row of the
+// thread holds, and keeps the thread's other reservations waiting until
+// release is called. The caller writes the row, then releases.
+//
+// mint draws from one of the thread's sequence counters. A counter does not
+// outlive the thread's state (CleanupThread, a restart) and the rows do, so
+// a counter alone can mint the id of a saved row, and the upsert would
+// replace that row. The id is checked against the store, and the
+// reservation spans the write so a counter that restarts between another
+// caller's check and its write cannot hand out the same id twice. Every row
+// id built from a sequence counter (errors, notices, command results,
+// compactions, terminal interactions) comes from here. Stream block ids do
+// not: a turn start that repeats is the same turn replayed or retried, and
+// its blocks rewrite in place.
+//
+// release is never nil. On a failed lookup the id is the one that could not
+// be checked, so the caller can still name the row it did not write.
+func (r *Router) reserveItemID(threadID string, mint func() string) (id string, release func(), err error) {
+	lock := &r.identity(threadID).itemIDLock
+	lock.Lock()
 	for {
-		id := mint()
+		id = mint()
 		_, found, err := r.store.GetThreadItem(threadID, id)
 		if err != nil {
-			return id, fmt.Errorf("item id lookup %s: %w", id, err)
+			return id, lock.Unlock, fmt.Errorf("item id lookup %s: %w", id, err)
 		}
 		if !found {
-			return id, nil
+			return id, lock.Unlock, nil
 		}
 	}
 }
 
-// freeErrorItemID is the next free error row id of (turnIndex, scope).
-func (r *Router) freeErrorItemID(threadID string, turnIndex int, scope string) (string, error) {
-	return r.freeItemID(threadID, func() string {
+// reserveErrorItemID reserves the next free error row id of (turnIndex,
+// scope).
+func (r *Router) reserveErrorItemID(threadID string, turnIndex int, scope string) (string, func(), error) {
+	return r.reserveItemID(threadID, func() string {
 		return ErrorItemID(turnIndex, scope, r.nextErrorSequence(threadID, turnIndex, scope))
 	})
 }

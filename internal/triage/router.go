@@ -1092,7 +1092,8 @@ func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summar
 	if r.hasMatchingErrorItem(threadID, turnIndex, itemKind, summary, parentID) {
 		return nil
 	}
-	itemID, idErr := r.freeErrorItemID(threadID, turnIndex, scope)
+	itemID, release, idErr := r.reserveErrorItemID(threadID, turnIndex, scope)
+	defer release()
 	errorItem := store.Item{
 		ID:        itemID,
 		ThreadID:  threadID,
@@ -1623,7 +1624,8 @@ func (r *Router) PersistTurnError(threadID string, turnIndex int, summary string
 // its id. A row whose id could not be checked is not written; it reaches
 // the unsaved row observer with the lookup error.
 func (r *Router) persistTurnError(threadID string, turnIndex int, summary string, now int64) (string, error) {
-	id, err := r.freeErrorItemID(threadID, turnIndex, "")
+	id, release, err := r.reserveErrorItemID(threadID, turnIndex, "")
+	defer release()
 	item := store.Item{
 		ID:        id,
 		ThreadID:  threadID,

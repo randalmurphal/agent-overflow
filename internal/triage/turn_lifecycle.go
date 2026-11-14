@@ -1530,8 +1530,8 @@ func (r *Router) activeRoundTurnIndex(threadID string) (int, bool) {
 //     errorSeqByScope, compactionSeqByScope, terminalInteractionSeq):
 //     cleared at CleanupThread; setOpenTurn restarts the stream indexes
 //     on a re-init. A row id built from a sequence counter goes through
-//     freeItemID, so a restarted counter cannot name a saved row. Wiping
-//     HERE would
+//     reserveItemID, so a restarted counter cannot name a saved row.
+//     Wiping HERE would
 //     cause id collisions when the wire emits two `result` envelopes
 //     for one logical turn (Claude task_notification → CLI-synthesized
 //     `user` envelope → second result, fatal-error synthetic-truncate
