@@ -14,8 +14,7 @@ import (
 
 // claudeEffortForModel resolves the `--effort` flag value for a session,
 // dropping it entirely for a model the catalog says has no reasoning tiers
-// (Haiku, per the CLI's own model list). Mirrors claudeFastMode, which gates
-// the same way on the same catalog. See
+// (Haiku, per the CLI's own model list). See
 // provider.ModelDeclaresNoReasoningEffort for why absence beats coercion here.
 func claudeEffortForModel(model string, effort provider.ReasoningEffort) string {
 	if provider.ModelDeclaresNoReasoningEffort(string(provider.Claude), model) {
@@ -167,16 +166,15 @@ func thinkingArgs(thinking ThinkingConfig) []string {
 	}
 }
 
-func claudeFastMode(model string, fastMode bool) bool {
-	return fastMode && provider.ModelSupportsCapability(string(provider.Claude), model, provider.ModelCapabilityFastMode)
-}
-
 // ConfigFromOptions translates a provider-agnostic SessionOptions bundle into
 // the Claude-specific launch Config. This is the single place where the
 // effort flag, 1M-context model suffix, permission flags, and fast-mode
 // settings are applied. Callers in app.go pass the result straight into
 // claude.NewSession plus any ancillary wiring (Binary, EventLogger) that
 // lives outside the session-options abstraction.
+//
+// FastMode is the thread's setting as given: the App clears it for a model
+// the CLI reports cannot run fast, and the CLI has the last word.
 func ConfigFromOptions(opts provider.SessionOptions) Config {
 	model := opts.Model
 	contextWindow := provider.ResolveContextWindowForModel(string(provider.Claude), model, opts.ContextWindow)
@@ -198,7 +196,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		ForkSession:          opts.ForkSession,
 		SystemPrompt:         opts.SystemPrompt,
 		ReasoningEffort:      claudeEffortForModel(model, opts.ReasoningEffort),
-		FastMode:             claudeFastMode(model, opts.FastMode),
+		FastMode:             opts.FastMode,
 		PermissionFlags:      claudePermissionFlags(opts.RuntimeMode),
 		DisallowedTools:      mergeDisallowedTools(claudeDisallowedTools(opts.RuntimeMode), opts.DisabledTools),
 		DisableTodoReminders: opts.DisableTodoReminders,

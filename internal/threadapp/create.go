@@ -190,11 +190,14 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 	} else {
 		effort = models.CoerceReasoningEffort(providerName, model, effort)
 	}
-	if fastMode && !models.SupportsFastMode(providerName, model) {
+	if fastMode {
 		if opts.FastMode != nil {
-			return store.Thread{}, fmt.Errorf("create thread: fast mode unsupported for %s/%s", providerName, model)
+			if !models.SupportsFastMode(providerName, model) {
+				return store.Thread{}, fmt.Errorf("create thread: fast mode unsupported for %s/%s", providerName, model)
+			}
+		} else if !models.SavedFastModeStands(providerName, model) {
+			fastMode = false
 		}
-		fastMode = false
 	}
 	contextOptions := models.ContextWindowOptions(providerName, model)
 	if opts.ContextWindow != 0 && len(contextOptions) > 0 && !chatmodel.ContextWindowSupported(contextOptions, contextWindow) {

@@ -23,7 +23,11 @@ type ModelPolicy interface {
 	Sanitize(profile store.ChatModelProfile) store.ChatModelProfile
 	SupportsReasoningEffort(providerName, model, effort string) bool
 	CoerceReasoningEffort(providerName, model, effort string) string
+	// SupportsFastMode judges a fast-mode choice the caller makes now;
+	// SavedFastModeStands judges one inherited from a remembered profile,
+	// which also stands while the provider has reported no capabilities.
 	SupportsFastMode(providerName, model string) bool
+	SavedFastModeStands(providerName, model string) bool
 	// ContextWindowOptions resolves the selectable context windows against the
 	// best catalog available (merged/live, not just the static registry), so a
 	// wire-only model's windows validate and default correctly.

@@ -57,6 +57,10 @@ func (p threadModelPolicy) SupportsFastMode(providerName, model string) bool {
 	return p.app.supportsFastModeForModel(providerName, model)
 }
 
+func (p threadModelPolicy) SavedFastModeStands(providerName, model string) bool {
+	return p.app.savedFastModeStands(providerName, model)
+}
+
 func (p threadModelPolicy) ContextWindowOptions(providerName, model string) []provider.ContextWindowOption {
 	return p.app.contextWindowOptionsForModel(providerName, model)
 }

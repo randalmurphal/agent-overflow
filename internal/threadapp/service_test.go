@@ -31,7 +31,11 @@ func (m *testModels) CoerceReasoningEffort(providerName, model, effort string) s
 	return string(provider.CoerceReasoningEffortForModel(providerName, model, provider.NormalizeReasoningEffort(effort)))
 }
 func (m *testModels) SupportsFastMode(providerName, model string) bool {
-	return chatmodel.SupportsStoredFastMode(providerName, model)
+	candidate, found := provider.FindModel(providerName, model)
+	return found && chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
+}
+func (m *testModels) SavedFastModeStands(providerName, model string) bool {
+	return m.SupportsFastMode(providerName, model)
 }
 func (m *testModels) ContextWindowOptions(providerName, model string) []provider.ContextWindowOption {
 	return chatmodel.ContextWindowOptions(providerName, model)
