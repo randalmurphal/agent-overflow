@@ -5,8 +5,29 @@
 // a useful heads-up and a card that lies.
 
 import { describe, expect, it } from 'vitest';
-import { providerAccountLoginExpiry } from './providerAccountLabels';
+import { providerAccountLoginExpiry, providerAccountOrgLabel } from './providerAccountLabels';
 import { account } from '../../test/helpers/providerAccounts';
+
+describe('providerAccountOrgLabel', () => {
+  const workspaceId = '5f0c2a9e-1b7d-4c1e-9a33-0d2b7e6f4a10';
+
+  it('shows a reported Codex workspace name instead of its id', () => {
+    expect(
+      providerAccountOrgLabel(account({ provider: 'codex', orgId: workspaceId, orgName: 'Acme Team' })),
+    ).toBe('Acme Team');
+  });
+
+  it('falls back to the truncated id once the name is no longer reported', () => {
+    expect(providerAccountOrgLabel(account({ provider: 'codex', orgId: workspaceId, orgName: '' }))).toBe(
+      '5f0c2a9e-1b7…',
+    );
+    expect(providerAccountOrgLabel(account({ provider: 'codex', orgId: workspaceId }))).toBe('5f0c2a9e-1b7…');
+  });
+
+  it('says nothing when neither name nor id is known', () => {
+    expect(providerAccountOrgLabel(account({ provider: 'codex' }))).toBe('');
+  });
+});
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 0, 15, 12, 0, 0);

@@ -48,7 +48,10 @@ profile arrives on the child's `thread/started` and, when the started
 activity did not carry it (before codex 0.162.1), a metadata-only
 `thread/resume` read (`internal/triage/codex_spawn_identity.go`). Codex
 spawns never take the first, and the runtime state riding on the same
-update stays on the live projection.
+update stays on the live projection. A Claude agent launch row likewise
+takes, once, the model its agent's first envelope reports and the effort
+stamps that model settles (`subagent_model`, `inherited_effort`,
+`run_effort`; `internal/provider/claude/subagent_effort.go`).
 
 The liveness bit has one visible effect: a Claude background launch
 row's (agent or tool) `backgrounded` indicator turns off once, when the

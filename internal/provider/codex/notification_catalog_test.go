@@ -152,6 +152,10 @@ func TestClassifiedMethodsAreDecidedByMethodAlone(t *testing.T) {
 		"model/safetyBuffering/updated":   `{"threadId":"th","turnId":"t1","model":"gpt","reasons":["policy"],"showBufferingUi":true}`,
 		"thread/settings/updated":         `{"threadId":"th","threadSettings":{"model":"gpt"}}`,
 		"item/autoApprovalReview/started": `{"turnId":"t1","itemId":"i1"}`,
+		// Model-request hooks emit no row on start or on success; both
+		// methods must stay subscribed for every other hook event.
+		"hook/started":   `{"threadId":"th","turnId":"t1","run":{"id":"h1","eventName":"preModelRequest","status":"running"}}`,
+		"hook/completed": `{"threadId":"th","turnId":"t1","run":{"id":"h1","eventName":"postModelRequest","status":"completed"}}`,
 	}
 	for method, params := range realistic {
 		_, emptyHandled := classifyNotification("th", method, emptyNotificationParams)

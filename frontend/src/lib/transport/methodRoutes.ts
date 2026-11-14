@@ -126,6 +126,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3664812883: 'selected', // GetChannelState
 	1573335127: 'selected', // GetClaudeSkills
 	2854892544: 'selected', // GetClaudeSlashCommands
+	1092327307: 'home', // GetClaudeTranscriptRetention
 	1110466608: 'home', // GetCodexAccountUsage
 	1018032480: 'selected', // GetCodexSkills
 	873893084: 'selected', // GetComputerRoutes

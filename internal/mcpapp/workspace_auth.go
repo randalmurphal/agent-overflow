@@ -195,20 +195,25 @@ func (a *Service) finishWorkspaceMCPAuth(
 	})
 }
 
+// claudeWorkspaceAuthConfig is the process a Claude MCP sign-in runs in.
+func (a *Service) claudeWorkspaceAuthConfig(workspacePath string) claude.Config {
+	return claude.Config{
+		Binary:            a.providerBinaryPath(string(provider.Claude)),
+		WorkDir:           workspacePath,
+		Env:               a.sessionProcessEnv(string(provider.Claude)),
+		EventLogger:       a.logger,
+		CleanupPeriodDays: a.claudeCleanupPeriodDays(workspacePath),
+	}
+}
+
 func (a *Service) startWorkspaceMCPAuth(
 	ctx context.Context,
 	providerName, workspacePath, serverName string,
 ) (*WorkspaceAuthHandle, error) {
 	switch providerName {
 	case string(provider.Claude):
-		cfg := claude.Config{
-			Binary:      a.providerBinaryPath(providerName),
-			WorkDir:     workspacePath,
-			Env:         a.sessionProcessEnv(providerName),
-			EventLogger: a.logger,
-		}
 		flow, result, err := claude.StartMCPAuth(ctx, claude.MCPAuthConfig{
-			Config:         cfg,
+			Config:         a.claudeWorkspaceAuthConfig(workspacePath),
 			ReadCredential: a.claudeMCPAuthCredentialReader(),
 			RequestTimeout: mcpAuthRoundTripTimeout,
 		}, serverName)

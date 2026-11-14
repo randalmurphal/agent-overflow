@@ -12,8 +12,11 @@
 // restart, agents nested in a resumed run inherit the effort its launch
 // named, from the thread's history. claude-tui reads the session's effort
 // off main-loop requests the CLI clamped to the main model: a high on a
-// model without xhigh may be xhigh, so an Opus child shows no effort and a
-// Sonnet child shows High.
+// model without xhigh may be xhigh. A child that names no effort runs at the
+// session's effort only on the main loop's model (Claude Code 2.1.317+), so
+// a Sonnet child of a Sonnet session shows High, and an Opus child, which
+// runs at Opus's own saved or default effort, is not stamped and shows none
+// until the session mirror's row of its request reports the effort it ran at.
 //
 // Codex: a 0.162+ `subAgentActivity` started item carries the child's
 // resolved `model` and `reasoningEffort`; the spawn row shows them without
@@ -219,9 +222,10 @@ function requestLaunchLine(messageId: string, toolUseId: string, input: Record<s
   return JSON.stringify(envelope);
 }
 
-test('a child inherits an unknown effort when the main model clamped its tier away', async ({ harness, page }, testInfo) => {
-  // An xHigh session on Sonnet 4.6, which lacks xhigh, sends high: an Opus
-  // child may run at xHigh or High, a Sonnet child runs at High either way.
+test('a child runs at the session effort only on the main loop model', async ({ harness, page }, testInfo) => {
+  // An xHigh session on Sonnet 4.6, which lacks xhigh, sends high. A
+  // Sonnet child runs at High either way; an Opus child runs at Opus's own
+  // effort, which AO cannot see.
   const kid = (id: string, description: string): string =>
     requestLaunchLine(`msg-${id}`, `tu-${id}`, { description, subagent_type: 'checker', prompt: description }, 'high', 'claude-sonnet-4-6');
   await harness.rpc('HarnessSetScenario', {
@@ -249,8 +253,15 @@ test('a child inherits an unknown effort when the main model clamped its tier aw
   await harness.rpc('SendMessage', threadId, 'check', null);
   await done;
 
-  const launch = (await listItems(harness, threadId)).find((item) => item.id === 'tu-opus-kid');
-  expect(itemMeta(launch)).toMatchObject({ inherited_effort: 'high', inherited_effort_alternatives: ['xhigh'] });
+  const items = await listItems(harness, threadId);
+  expect(itemMeta(items.find((item) => item.id === 'tu-sonnet-kid'))).toMatchObject({
+    subagent_model: 'claude-sonnet-4-6',
+    inherited_effort: 'high',
+    inherited_effort_alternatives: ['xhigh'],
+  });
+  const opusKid = itemMeta(items.find((item) => item.id === 'tu-opus-kid'));
+  expect(opusKid).toMatchObject({ subagent_model: 'claude-opus-4-7' });
+  expect(opusKid).not.toHaveProperty('inherited_effort');
 
   const timeline = page.getByTestId('chat-timeline-surface').getByTestId('message-timeline-scroll');
   const cards = timeline.getByTestId('subagent-group');
@@ -265,6 +276,70 @@ test('a child inherits an unknown effort when the main model clamped its tier aw
   const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane.getByTestId('agent-pane-model')).toContainText('Opus 4.7');
   await expect(pane.getByTestId('agent-pane-effort')).toHaveCount(0);
+});
+
+test('a Claude subagent on another model shows the effort its request reported', async ({ harness, page }, testInfo) => {
+  // The xHigh session's main loop runs on Mock 1; the child runs on Opus
+  // 4.7 at Opus's own effort, which only its mirrored request row names.
+  const mirroredRow = JSON.stringify({
+    type: 'transcript_mirror',
+    filePath: '/mock/projects/p/s/subagents/agent-task-other.jsonl',
+    entries: [
+      {
+        type: 'assistant',
+        uuid: 'mirror-other-1',
+        agentId: 'task-other',
+        isSidechain: true,
+        timestamp: '2026-11-13T12:00:01Z',
+        message: { id: 'msg-other-text', role: 'assistant', model: 'claude-opus-4-7', content: [{ type: 'text', text: 'Checking.' }] },
+        effort: 'medium',
+      },
+    ],
+  });
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('claude-effort-other-model', [
+      emit([
+        ...textLines('msg-lead-other', 'Asking Opus.'),
+        toolUseLine('msg-other', 'tu-other', 'Agent', {
+          description: 'other check',
+          subagent_type: 'checker',
+          prompt: 'check on opus',
+          model: 'opus',
+        }),
+        taskStartedLine('task-other', 'tu-other', 'other check', { subagentType: 'checker' }),
+        childTextLine('msg-other-text', 'Checking.', 'claude-opus-4-7', 'tu-other'),
+      ]),
+      { waitSignal: { name: 'other-reported' } },
+      emit([
+        mirroredRow,
+        taskUpdatedLine('task-other', { status: 'completed', end_time: 1787415964724 }),
+        toolResultLine('tu-other', 'Opus done.'),
+        RESULT_LINE,
+      ]),
+    ]),
+  });
+  const threadId = await seedAgentThread(harness, 'effort-other-model-app', 'Other model effort');
+  await harness.open(page);
+  await page.getByText('Other model effort').click();
+  const mockId = await startMock(harness, threadId);
+  const gate = waitForGate(harness, 'other-reported');
+  await harness.rpc('SendMessage', threadId, 'check', null);
+  await gate;
+
+  const timeline = page.getByTestId('chat-timeline-surface').getByTestId('message-timeline-scroll');
+  const card = timeline.getByTestId('subagent-group').filter({ hasText: 'other check' });
+  // The session's xHigh is not the child's: no effort until Claude says.
+  await expect(card.getByTestId('subagent-group-label')).toHaveText('Checker(Opus 4.7)');
+  const launchMeta = async () => itemMeta((await listItems(harness, threadId)).find((item) => item.id === 'tu-other'));
+  expect(await launchMeta()).toMatchObject({ subagent_model: 'claude-opus-4-7' });
+  expect(await launchMeta()).not.toHaveProperty('inherited_effort');
+
+  const done = harness.waitForEvent('provider:turn_completed');
+  await advance(harness, mockId, 'other-reported');
+  await done;
+  await expect(card.getByTestId('subagent-group-label')).toHaveText('Checker(Opus 4.7 · Medium)');
+  expect(await launchMeta()).toMatchObject({ run_effort: 'medium' });
+  await shoot(page, testInfo, timeline, 'claude-other-model');
 });
 
 test('after a restart, agents nested in a resumed run inherit the effort its launch named', async ({ harness, page }, testInfo) => {

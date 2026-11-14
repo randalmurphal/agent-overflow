@@ -130,11 +130,13 @@ export function deriveClaudeSubagentModelLabel(
 }
 
 /**
- * The effort slug an Agent tool call asked its subagent to run at:
+ * The effort slug an Agent tool call's subagent runs at: `meta.run_effort`,
+ * the effort its first request ran at (claude-tui; '' for none), else
  * `input.effort` (Claude Code 2.1.292+), else `meta.inherited_effort`, the
- * effort of the agent that launched it, which the parser stamped at launch
- * (internal/provider/claude/subagent_effort.go). A fork ignores its input
- * effort and runs at its launcher's. '' when neither is known.
+ * effort it runs at when the launch names none, which the parser stamps
+ * only where it can prove it (internal/provider/claude/subagent_effort.go).
+ * A fork ignores its input effort and runs at its launcher's. '' when
+ * unknown.
  */
 export function deriveClaudeSubagentEffort(
   input: Record<string, unknown> | null,
@@ -142,6 +144,8 @@ export function deriveClaudeSubagentEffort(
   toolName: string,
 ): string {
   if (toolName !== 'Agent' && toolName !== 'Task') return '';
+  const ran = parentMeta?.run_effort;
+  if (typeof ran === 'string') return ran.trim();
   const inherited = readStringField(parentMeta, 'inherited_effort');
   if (readStringField(input, 'subagent_type') === 'fork') return inherited;
   return knownEffort(readStringField(input, 'effort')) ?? inherited;
@@ -150,7 +154,8 @@ export function deriveClaudeSubagentEffort(
 /**
  * The higher tiers the launcher may have run at instead of the inherited
  * effort deriveClaudeSubagentEffort returns (`inherited_effort_alternatives`,
- * claude-tui). Empty when the launch named its own effort.
+ * claude-tui). Empty when the launch named its own effort or the agent's
+ * request reported the effort it ran at.
  */
 export function deriveClaudeSubagentEffortAlternatives(
   input: Record<string, unknown> | null,
@@ -158,6 +163,7 @@ export function deriveClaudeSubagentEffortAlternatives(
   toolName: string,
 ): string[] {
   if (toolName !== 'Agent' && toolName !== 'Task') return [];
+  if (typeof parentMeta?.run_effort === 'string') return [];
   const fork = readStringField(input, 'subagent_type') === 'fork';
   if (!fork && readStringField(input, 'effort')) return [];
   return readEffortAlternatives(parentMeta);

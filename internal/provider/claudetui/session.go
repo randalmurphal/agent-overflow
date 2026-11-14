@@ -169,6 +169,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// before the reconstructed init lands (mirrors the headless seed).
 	s.parser.SetModel(cfg.Model)
 	s.parser.SetSessionEffort(cfg.ReasoningEffort)
+	s.parser.SetCLIVersion(cfg.InstalledCLIVersion)
 	s.parser.SetModelAliases(maps.Clone(cfg.ModelAliases))
 	s.parser.SetAgentLaunchLookup(cfg.AgentLaunchByTask)
 	s.rec = newReconstructor(s.feedEnvelope)
@@ -358,7 +359,7 @@ func (s *Session) beginSubagentTurn(req *messagesRequest, agentID string) *agent
 		s.logf("claudetui: subagent request agent_id=%s has no matching Agent launch; not reconstructed", agentID)
 		return nil
 	}
-	return s.rec.beginSubagentRequest(parent)
+	return s.rec.beginSubagentRequest(parent, req)
 }
 
 // beginCompactionCapture claims a classAgent request as the compaction

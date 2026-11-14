@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -527,6 +528,71 @@ func TestRunClaude_RendersEffortFromConfig(t *testing.T) {
 			}
 			assertFlagValue(t, got.Args, "--effort", tc.want)
 		})
+	}
+}
+
+// A text-generation run lives long enough to run the CLI's transcript sweep,
+// so it carries the retention a session in its workspace does; none
+// configured sends no flag. It also drops an inherited config-home override,
+// so the home it sweeps is the one the period was resolved against.
+func TestRunClaude_CarriesCleanupPeriodDays(t *testing.T) {
+	// Answers only for the workspace the run is in.
+	forWorkspace := func(days int) func(string) int {
+		return func(workspace string) int {
+			if workspace != "/workspace" {
+				return 0
+			}
+			return days
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		days func(string) int
+		want []string
+	}{
+		{name: "configured", days: forWorkspace(90), want: []string{"--settings", `{"cleanupPeriodDays":90}`}},
+		{name: "none for this workspace", days: forWorkspace(0), want: nil},
+		{name: "no resolver", days: nil, want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got CLISpec
+			cfg := Config{
+				Binary:                  "claude",
+				ClaudeCleanupPeriodDays: tc.days,
+				Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
+					got = spec
+					return CLIResult{Stdout: `{"structured_output":{}}`}, nil
+				},
+			}
+			if _, err := RunClaude(
+				context.Background(), cfg, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute,
+			); err != nil {
+				t.Fatalf("RunClaude: %v", err)
+			}
+			assertFlagValue(t, got.Args, "--settings", tc.want)
+			for _, name := range []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"} {
+				if !slices.Contains(got.UnsetEnv, name) {
+					t.Fatalf("UnsetEnv = %v, want it to drop %s", got.UnsetEnv, name)
+				}
+			}
+		})
+	}
+}
+
+// ExecCLI removes the variables a spec names from the child's environment.
+func TestExecCLI_DropsUnsetEnv(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/alternate")
+	t.Setenv("AO_TEXTGEN_KEPT", "kept")
+	result, err := ExecCLI(context.Background(), CLISpec{
+		Binary:   "/bin/sh",
+		Args:     []string{"-c", `printf '%s|%s' "${CLAUDE_CONFIG_DIR-unset}" "${AO_TEXTGEN_KEPT-unset}"`},
+		UnsetEnv: []string{"CLAUDE_CONFIG_DIR"},
+	})
+	if err != nil {
+		t.Fatalf("ExecCLI: %v", err)
+	}
+	if result.Stdout != "unset|kept" {
+		t.Fatalf("child environment = %q, want the named variable dropped and the rest inherited", result.Stdout)
 	}
 }
 

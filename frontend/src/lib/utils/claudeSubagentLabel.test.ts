@@ -190,6 +190,17 @@ describe('deriveClaudeSubagentEffort', () => {
     expect(deriveClaudeSubagentEffort({ effort: 'max' }, { inherited_effort: 'low' }, 'Skill')).toBe('');
     expect(deriveClaudeSubagentEffort(null, null, 'Agent')).toBe('');
   });
+
+  it('reads the effort the agent\'s request ran at over everything else', () => {
+    expect(deriveClaudeSubagentEffort({ effort: 'max' }, { run_effort: 'high', inherited_effort: 'low' }, 'Agent')).toBe(
+      'high',
+    );
+    expect(deriveClaudeSubagentEffort({ subagent_type: 'fork' }, { run_effort: 'low', inherited_effort: 'xhigh' }, 'Agent')).toBe(
+      'low',
+    );
+    // A request that named no effort ran without one.
+    expect(deriveClaudeSubagentEffort({ effort: 'max' }, { run_effort: '', inherited_effort: 'low' }, 'Agent')).toBe('');
+  });
 });
 
 describe('deriveClaudeSubagentEffortAlternatives', () => {
@@ -206,6 +217,10 @@ describe('deriveClaudeSubagentEffortAlternatives', () => {
     expect(deriveClaudeSubagentEffortAlternatives({ effort: 'low' }, stamped, 'Agent')).toEqual([]);
     expect(deriveClaudeSubagentEffortAlternatives({}, stamped, 'Skill')).toEqual([]);
     expect(deriveClaudeSubagentEffortAlternatives({}, { inherited_effort: 'high' }, 'Agent')).toEqual([]);
+  });
+
+  it('has none once the agent\'s request reported its effort', () => {
+    expect(deriveClaudeSubagentEffortAlternatives({}, { ...stamped, run_effort: 'high' }, 'Agent')).toEqual([]);
   });
 });
 

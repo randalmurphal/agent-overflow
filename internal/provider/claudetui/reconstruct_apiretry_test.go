@@ -171,7 +171,7 @@ func TestReconstructFailedAttemptDiscardsPartialOutput(t *testing.T) {
 // envelope is still emitted (passthrough preserved).
 func TestReconstructSubagentErrorFrameNotSurfacedAsRetry(t *testing.T) {
 	rp := newReconParser(t)
-	ar := rp.rec.beginSubagentRequest("toolu_parent")
+	ar := rp.rec.beginSubagentRequest("toolu_parent", nil)
 	for _, s := range overloadedErrorSSE() {
 		ar.onSSE(json.RawMessage(s))
 	}

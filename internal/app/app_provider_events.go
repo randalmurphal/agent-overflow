@@ -433,6 +433,7 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	}
 	a.revokeSessionMCP(threadID, removed.Token)
 	a.settlePendingWorktreeExit(threadID, removed.Token, false)
+	a.reportClaudeLostWrites(threadID, removed)
 	a.emitProviderSessionDisconnected(threadID, removed.Provider)
 
 	// Self-exit teardown bypasses closeProviderSession (the subprocess is

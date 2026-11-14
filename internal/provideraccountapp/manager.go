@@ -63,7 +63,10 @@ type Deps struct {
 	ShutdownError   error
 	CurrentSettings func() settings.Settings
 	ProviderBinary  func(providerName string) string
-	OpenBrowser     func(context.Context, string) error
+	// ClaudeCleanupPeriodDays is the `cleanupPeriodDays` a Claude probe
+	// carries, 0 for none (claude.ProbeConfig.CleanupPeriodDays).
+	ClaudeCleanupPeriodDays func(workDir string) int
+	OpenBrowser             func(context.Context, string) error
 	// LoginSpawnEnv is the boot-mode environment a sign-in spawn carries on
 	// top of the user's configured provider environment. Empty (or nil) in
 	// production. A harness boot puts the mock-control address and token

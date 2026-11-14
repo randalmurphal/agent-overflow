@@ -101,165 +101,131 @@ func TestReviewTargetUnmarshalValidatesPayloads(t *testing.T) {
 	}
 }
 
-func TestReviewDeliveryWireValues(t *testing.T) {
-	t.Parallel()
-	// `v2_enum_from_core!` applies `#[serde(rename_all = "camelCase")]`;
-	// both variants are single words, so the wire values are lowercase.
-	if string(ReviewDeliveryInline) != "inline" || string(ReviewDeliveryDetached) != "detached" {
-		t.Fatalf("delivery wire values drifted: %q / %q", ReviewDeliveryInline, ReviewDeliveryDetached)
-	}
-	if !ReviewDeliveryDefault.valid() || !ReviewDeliveryInline.valid() || !ReviewDeliveryDetached.valid() {
-		t.Fatal("every declared delivery must validate")
-	}
-	if ReviewDelivery("Inline").valid() {
-		t.Fatal("an unknown delivery must not validate")
-	}
+// startReviewForTurnAsync runs StartReviewForTurn on a goroutine and answers
+// its config/read with an empty config, leaving review/start for the caller.
+func startReviewForTurnAsync(t *testing.T, s *Session, target ReviewTarget) (*pendingAnswerer, <-chan reviewStartResult) {
+	t.Helper()
+	done := make(chan reviewStartResult, 1)
+	go func() {
+		started, err := s.StartReviewForTurn(context.Background(), target, ReviewRunOptions{TurnIndex: 3})
+		done <- reviewStartResult{started: started, err: err}
+	}()
+	answerer := newPendingAnswerer(s)
+	answerer.answer(t, `{"config":{}}`)
+	return answerer, done
 }
 
-func TestStartReviewSendsTheWireFrameAndRoutesOnTheReturnedID(t *testing.T) {
+type reviewStartResult struct {
+	started ReviewStarted
+	err     error
+}
+
+func decodeReviewStartFrame(t *testing.T, capturePath string) (string, map[string]json.RawMessage) {
+	t.Helper()
+	frames := waitForCapturedRawFrames(t, capturePath, 2, backgroundTerminalTestTimeout)
+	var frame struct {
+		Method string                     `json:"method"`
+		Params map[string]json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(frames[1], &frame); err != nil {
+		t.Fatalf("decode captured frame: %v", err)
+	}
+	return frame.Method, frame.Params
+}
+
+// The request carries only threadId and target. Omitting delivery is the
+// protocol's inline default on every supported version; codex 0.166.0
+// removed every other value.
+func TestStartReviewForTurnSendsTheWireFrameWithoutDelivery(t *testing.T) {
 	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-thread-review")
-
-	type result struct {
-		started ReviewStarted
-		err     error
+	target, err := ReviewBaseBranch("main")
+	if err != nil {
+		t.Fatalf("ReviewBaseBranch: %v", err)
 	}
-	done := make(chan result, 1)
-	go func() {
-		target, err := ReviewBaseBranch("main")
-		if err != nil {
-			done <- result{err: err}
-			return
-		}
-		started, err := s.StartReview(context.Background(), target, ReviewDeliveryDetached)
-		done <- result{started: started, err: err}
-	}()
 
-	newPendingAnswerer(s).answer(t, `{"turn":{"id":"turn-1","items":[],"status":"inProgress"},
-		"reviewThreadId":"review-thread-9"}`)
+	answerer, done := startReviewForTurnAsync(t, s, target)
+	answerer.answer(t, `{"turn":{"id":"turn-1","items":[],"status":"inProgress"},
+		"reviewThreadId":"codex-thread-review"}`)
 
 	got := <-done
 	if got.err != nil {
-		t.Fatalf("StartReview: %v", got.err)
+		t.Fatalf("StartReviewForTurn: %v", got.err)
 	}
-	if got.started.ReviewThreadID != "review-thread-9" {
-		t.Errorf("ReviewThreadID = %q, want the returned id", got.started.ReviewThreadID)
-	}
-	if got.started.TurnID != "turn-1" || got.started.TurnStatus != "inProgress" {
-		t.Errorf("turn fields = %+v", got.started)
-	}
-	// Detached is derived from the RETURNED id versus this session's own
-	// thread, not from the requested delivery.
-	if !got.started.Detached {
-		t.Error("Detached = false for a review that came back on another thread")
+	want := ReviewStarted{ReviewThreadID: "codex-thread-review", TurnID: "turn-1", TurnStatus: "inProgress"}
+	if got.started != want {
+		t.Errorf("started = %+v, want %+v", got.started, want)
 	}
 
-	frames := waitForCapturedRawFrames(t, capturePath, 1, backgroundTerminalTestTimeout)
-	var frame struct {
-		Method string `json:"method"`
-		Params struct {
-			ThreadID string          `json:"threadId"`
-			Target   json.RawMessage `json:"target"`
-			Delivery string          `json:"delivery"`
-		} `json:"params"`
+	method, params := decodeReviewStartFrame(t, capturePath)
+	if method != reviewStartMethod {
+		t.Errorf("method = %q, want %q", method, reviewStartMethod)
 	}
-	if err := json.Unmarshal(frames[0], &frame); err != nil {
-		t.Fatalf("decode captured frame: %v", err)
-	}
-	if frame.Method != reviewStartMethod {
-		t.Errorf("method = %q, want %q", frame.Method, reviewStartMethod)
-	}
-	if frame.Params.ThreadID != "codex-thread-review" {
-		t.Errorf("threadId = %q", frame.Params.ThreadID)
-	}
-	if string(frame.Params.Target) != `{"branch":"main","type":"baseBranch"}` {
-		t.Errorf("target = %s", frame.Params.Target)
-	}
-	if frame.Params.Delivery != "detached" {
-		t.Errorf("delivery = %q, want detached", frame.Params.Delivery)
+	if len(params) != 2 || string(params["threadId"]) != `"codex-thread-review"` ||
+		string(params["target"]) != `{"branch":"main","type":"baseBranch"}` {
+		t.Errorf("params = %s, want exactly threadId and target", params)
 	}
 }
 
-func TestStartReviewInlineReportsNotDetachedAndOmitsTheDefaultDelivery(t *testing.T) {
+// A server that answers with a different thread ran the review somewhere this
+// Session cannot scope or interrupt. The call must name that thread and close
+// the process so the billed review does not continue invisibly.
+func TestStartReviewForTurnRefusesAReviewOnAnotherThread(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newCapturingSession(t, "codex-thread-inline")
+	s, _ := newCapturingSession(t, "codex-thread-own")
 
-	done := make(chan ReviewStarted, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		started, err := s.StartReview(context.Background(), ReviewUncommittedChanges(), ReviewDeliveryDefault)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		done <- started
-	}()
+	answerer, done := startReviewForTurnAsync(t, s, ReviewUncommittedChanges())
+	answerer.answer(t, `{"turn":{"id":"turn-2","items":[],"status":"inProgress"},
+		"reviewThreadId":"review-thread-9"}`)
 
-	newPendingAnswerer(s).answer(t, `{"turn":{"id":"turn-2","items":[],"status":"inProgress"},
-		"reviewThreadId":"codex-thread-inline"}`)
-
-	select {
-	case err := <-errCh:
-		t.Fatalf("StartReview: %v", err)
-	case started := <-done:
-		if started.Detached {
-			t.Error("Detached = true for a review returned on this session's own thread")
-		}
+	got := <-done
+	if got.err == nil || !strings.Contains(got.err.Error(), "review-thread-9") {
+		t.Fatalf("StartReviewForTurn on another thread = %+v, %v; want a refusal naming it", got.started, got.err)
 	}
-
-	frames := waitForCapturedRawFrames(t, capturePath, 1, backgroundTerminalTestTimeout)
-	var frame struct {
-		Params map[string]json.RawMessage `json:"params"`
-	}
-	if err := json.Unmarshal(frames[0], &frame); err != nil {
-		t.Fatalf("decode captured frame: %v", err)
-	}
-	// Omitted rather than sent as "inline": the wire field is
-	// `Option<ReviewDelivery>` and absence is already the inline default,
-	// so naming it would assert a default we do not own.
-	if _, present := frame.Params["delivery"]; present {
-		t.Errorf("delivery key present for the default delivery: %v", frame.Params)
+	if !s.closing.Load() {
+		t.Error("session left open after the review landed on another thread")
 	}
 }
 
-func TestStartReviewRefusesMissingReviewThreadID(t *testing.T) {
+func TestStartReviewForTurnRefusesMissingReviewThreadID(t *testing.T) {
 	t.Parallel()
 	s, _ := newCapturingSession(t, "codex-thread-noid")
 
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := s.StartReview(context.Background(), ReviewUncommittedChanges(), ReviewDeliveryInline)
-		errCh <- err
-	}()
-	newPendingAnswerer(s).answer(t, `{"turn":{"id":"turn-3","items":[],"status":"inProgress"}}`)
+	answerer, done := startReviewForTurnAsync(t, s, ReviewUncommittedChanges())
+	answerer.answer(t, `{"turn":{"id":"turn-3","items":[],"status":"inProgress"}}`)
 
-	err := <-errCh
-	// Falling back to "assume inline" here would reintroduce exactly the
-	// assumption the returned id exists to replace.
-	if err == nil || !strings.Contains(err.Error(), "reviewThreadId") {
-		t.Fatalf("StartReview without a reviewThreadId = %v, want a refusal", err)
+	got := <-done
+	// Without the returned id AO cannot verify where the review runs.
+	if got.err == nil || !strings.Contains(got.err.Error(), "reviewThreadId") {
+		t.Fatalf("StartReviewForTurn without a reviewThreadId = %v, want a refusal", got.err)
+	}
+	if !s.closing.Load() {
+		t.Error("session left open after an unverifiable review start")
 	}
 }
 
-func TestStartReviewValidatesBeforeWriting(t *testing.T) {
+func TestStartReviewForTurnValidatesBeforeWriting(t *testing.T) {
 	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-thread-guard")
 
-	if _, err := s.StartReview(context.Background(), ReviewTarget{}, ReviewDeliveryInline); err == nil {
-		t.Fatal("StartReview with an unset target must fail")
-	}
-	if _, err := s.StartReview(context.Background(), ReviewUncommittedChanges(), ReviewDelivery("sideways")); err == nil {
-		t.Fatal("StartReview with an unknown delivery must fail")
+	if _, err := s.StartReviewForTurn(context.Background(), ReviewTarget{}, ReviewRunOptions{}); err == nil {
+		t.Fatal("StartReviewForTurn with an unset target must fail")
 	}
 	if frames := readCapturedRawFrames(t, capturePath); len(frames) != 0 {
-		t.Fatalf("rejected requests still wrote %d frames", len(frames))
+		t.Fatalf("rejected request still wrote %d frames", len(frames))
+	}
+	s.mu.Lock()
+	review := s.review
+	s.mu.Unlock()
+	if review != nil {
+		t.Fatalf("rejected request left a review reservation: %+v", review)
 	}
 
 	// A session that never completed its handshake has no thread id to
 	// name; the RPC must say so rather than sending an empty threadId.
 	bare := &Session{threadID: testThread, pending: map[int64]chan json.RawMessage{}}
-	if _, err := bare.StartReview(context.Background(), ReviewUncommittedChanges(), ReviewDeliveryInline); err == nil {
-		t.Fatal("StartReview without a thread id must fail")
+	if _, err := bare.StartReviewForTurn(context.Background(), ReviewUncommittedChanges(), ReviewRunOptions{}); err == nil {
+		t.Fatal("StartReviewForTurn without a thread id must fail")
 	}
 	if err := bare.CompactThread(context.Background()); err == nil {
 		t.Fatal("CompactThread without a thread id must fail")

@@ -128,7 +128,17 @@ func (m *Manager) claudeProbeConfig(binary string, pins map[string]string) claud
 		WorkDir:        providerProbeWorkDir(),
 		Env:            m.providerProbeEnv(string(provider.Claude), pins),
 		ReadCredential: m.claudeProbeCredentialReader(pins),
+		// Sent to a probe of an isolated home too, where it has nothing to
+		// keep: one rule for every probe.
+		CleanupPeriodDays: m.claudeCleanupPeriodDays(providerProbeWorkDir()),
 	}
+}
+
+func (m *Manager) claudeCleanupPeriodDays(workDir string) int {
+	if m.deps.ClaudeCleanupPeriodDays == nil {
+		return 0
+	}
+	return m.deps.ClaudeCleanupPeriodDays(workDir)
 }
 
 // ClaudeProbeConfig constructs the canonical account probe configuration.

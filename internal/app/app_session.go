@@ -549,6 +549,7 @@ func (a *App) spawnProviderSession(
 		cfg.MCPServers = mcpServers
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
 		applyClaudeSessionAxes(&cfg, a.settings.Get().ClaudeSessionAxesForProvider(t.Provider))
+		cfg.CleanupPeriodDays = a.claudeCleanupPeriodDays(cfg.WorkDir)
 		// The peer-visible name rides the Config rather than the options
 		// bundle on purpose: it is live-changeable through `/rename`, so
 		// letting the reconciler see it would queue a restart every time a
@@ -714,40 +715,7 @@ func (a *App) spawnProviderSession(
 		}, nil
 
 	case string(provider.ClaudeTUI):
-		cfg := claudetui.ConfigFromOptions(opts)
-		// The interactive provider drives the same `claude` binary as the
-		// headless one; there is no separate TUI binary setting.
-		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
-		cfg.AppendSystemPrompt = appGuide
-		cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
-		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
-		cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)
-		// claudetui's Config carries a whole environment rather than an
-		// override map, so the shared rule is applied here instead of inside
-		// the provider package. Skipping this branch would leave one provider
-		// silently without the boot-mode overrides and the ao credential.
-		//
-		// The TUI shares Claude's custom environment (one binary, one backend),
-		// with one variable it cannot take through the process env:
-		// ANTHROPIC_BASE_URL names the per-session loopback gateway for the
-		// child, and claudetui's buildEnv strips any inherited value. Handing it
-		// to the gateway's upstream instead is what keeps the interactive
-		// provider on the same backend as the headless one — dropping it here
-		// would silently run take-control sessions against api.anthropic.com
-		// while every other Claude surface used the user's endpoint.
-		//
-		// The command timeout ceiling is applied to the override map here,
-		// before the host environment is merged under it, so its precedence
-		// matches the headless spawn: custom env over the setting over an
-		// inherited value.
-		cfg.Env = provider.BuildEnvironment(claude.WithCommandTimeoutEnv(
-			a.sessionProcessEnv(string(provider.ClaudeTUI), nil, credential),
-			opts.ClaudeMaxCommandTimeoutHours,
-		))
-		cfg.AdditionalDirs = a.claudeAdditionalDirs()
-		cfg.Upstream = a.claudetuiUpstream()
-		cfg.EventLogger = a.logger
-		cfg.SystemPromptDir, err = a.claudePromptFileDir()
+		cfg, err := a.claudeTUISessionConfig(threadID, opts, appGuide, credential)
 		if err != nil {
 			return session{}, err
 		}
@@ -769,6 +737,53 @@ func (a *App) spawnProviderSession(
 	default:
 		return session{}, fmt.Errorf("unknown Provider: %s", t.Provider)
 	}
+}
+
+// claudeTUISessionConfig is the launch configuration of a thread's
+// interactive Claude session.
+func (a *App) claudeTUISessionConfig(
+	threadID string, opts provider.SessionOptions, appGuide string, credential aoSessionCredential,
+) (claudetui.Config, error) {
+	cfg := claudetui.ConfigFromOptions(opts)
+	// The interactive provider drives the same `claude` binary as the
+	// headless one; there is no separate TUI binary setting.
+	cfg.Binary = a.providerBinaryPath(string(provider.Claude))
+	cfg.AppendSystemPrompt = appGuide
+	cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
+	cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
+	cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)
+	// claudetui's Config carries a whole environment rather than an
+	// override map, so the shared rule is applied here instead of inside
+	// the provider package. Skipping this branch would leave one provider
+	// silently without the boot-mode overrides and the ao credential.
+	//
+	// The TUI shares Claude's custom environment (one binary, one backend),
+	// with one variable it cannot take through the process env:
+	// ANTHROPIC_BASE_URL names the per-session loopback gateway for the
+	// child, and claudetui's buildEnv strips any inherited value. Handing it
+	// to the gateway's upstream instead is what keeps the interactive
+	// provider on the same backend as the headless one — dropping it here
+	// would silently run take-control sessions against api.anthropic.com
+	// while every other Claude surface used the user's endpoint.
+	//
+	// The command timeout ceiling is applied to the override map here,
+	// before the host environment is merged under it, so its precedence
+	// matches the headless spawn: custom env over the setting over an
+	// inherited value.
+	cfg.Env = provider.BuildEnvironment(claude.WithCommandTimeoutEnv(
+		a.sessionProcessEnv(string(provider.ClaudeTUI), nil, credential),
+		opts.ClaudeMaxCommandTimeoutHours,
+	))
+	cfg.AdditionalDirs = a.claudeAdditionalDirs()
+	cfg.CleanupPeriodDays = a.claudeCleanupPeriodDays(cfg.WorkDir)
+	cfg.Upstream = a.claudetuiUpstream()
+	cfg.EventLogger = a.logger
+	var err error
+	cfg.SystemPromptDir, err = a.claudePromptFileDir()
+	if err != nil {
+		return claudetui.Config{}, err
+	}
+	return cfg, nil
 }
 
 func (a *App) codexResumeCollabLaunches(threadID string) ([]codex.ResumeCollabLaunch, error) {

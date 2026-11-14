@@ -18,6 +18,22 @@ func TestClaudeSessionConfigReportsSortedMCPServerNames(t *testing.T) {
 	}
 }
 
+func TestClaudeSessionConfigReportsCleanupPeriodDays(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"carried", []string{"--settings", `{"crossSessionInbound":"refuse","cleanupPeriodDays":90}`}, 90},
+		{"block without the key", []string{"--settings", `{"crossSessionInbound":"refuse"}`}, 0},
+		{"no block", nil, 0},
+	} {
+		if got := claudeSessionConfig(tc.args).CleanupPeriodDays; got != tc.want {
+			t.Errorf("%s: CleanupPeriodDays = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestCodexSessionConfigReportsSortedMCPServerNames(t *testing.T) {
 	params := json.RawMessage(`{"config":{"mcp_servers":{"zeta":{"url":"http://127.0.0.1/secret"},"alpha":{"command":"tool"}}}}`)
 	if got, want := codexMCPServerNames(params), []string{"alpha", "zeta"}; !reflect.DeepEqual(got, want) {

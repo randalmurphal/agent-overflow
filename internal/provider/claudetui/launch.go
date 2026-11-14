@@ -152,6 +152,9 @@ var observeHookEvents = []string{
 // session whose user never opted in. "Off means off" is not a headless-only
 // property, so the refusal is stated on this surface too.
 //
+// cleanupPeriodDays is here because the transcript sweep covers the whole
+// config home, whichever surface runs it (claude/retention.go).
+//
 // The REST of the headless block (fastMode, outputStyle, the env map) is
 // deliberately not mirrored: those axes are spawn options the app resolves for
 // a headless session, and the interactive TUI is the user's own CLI — it keeps
@@ -180,6 +183,9 @@ func hookSettingsJSON(cfg Config) (string, error) {
 	block := map[string]any{"hooks": hooks}
 	if inbound := strings.TrimSpace(cfg.CrossSessionInbound); inbound != "" {
 		block["crossSessionInbound"] = inbound
+	}
+	if cfg.CleanupPeriodDays > 0 {
+		block[claude.CleanupPeriodDaysSetting] = cfg.CleanupPeriodDays
 	}
 
 	data, err := json.Marshal(block)
@@ -251,6 +257,11 @@ func buildEnv(cfg Config, gatewayURL, hookURL, hookToken string) []string {
 	// — and refusing INBOUND messages does not undo being discoverable. Same
 	// list the headless spawn unsets (claude.CrossSessionUnsetEnv).
 	for _, key := range claude.CrossSessionUnsetEnv() {
+		owned[key] = struct{}{}
+	}
+	// The TUI runs in the config home every other Claude launch uses, so an
+	// inherited override of it is dropped as the headless spawn drops it.
+	for _, key := range claude.ConfigHomeUnsetEnv() {
 		owned[key] = struct{}{}
 	}
 	// The task-list key is the thread's identity (Config.TaskListID), so an

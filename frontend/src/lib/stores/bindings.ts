@@ -143,6 +143,7 @@ export {
   // Settings
   GetSettings,
   UpdateSettings,
+  GetClaudeTranscriptRetention,
   ClearBrowserSiteData,
   BrowserCompanionDo,
   BrowserCompanionFind,

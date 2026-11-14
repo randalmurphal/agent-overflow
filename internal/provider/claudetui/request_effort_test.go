@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/provider"
 )
 
 func inheritedEffortOf(t *testing.T, h parserHarness, itemID string) (string, bool) {
@@ -25,7 +27,7 @@ func inheritedEffortOf(t *testing.T, h parserHarness, itemID string) (string, bo
 // `output_config.effort`. A request that names none leaves the effort
 // unknown instead of the startup effort.
 func TestAgentLaunchInheritsItsMainRequestEffort(t *testing.T) {
-	h := newParserHarness(t)
+	h := legacyHarness(t)
 
 	h.runMain(t, `{"model":"claude-opus-4-7","max_tokens":32000,"tools":[{"name":"Agent"}],"output_config":{"effort":"low"}}`,
 		agentLaunchSSE("toolu_LOW", "first"))
@@ -40,20 +42,46 @@ func TestAgentLaunchInheritsItsMainRequestEffort(t *testing.T) {
 	}
 }
 
-// A subagent's request carries the subagent's own effort, not the
-// session's, so it leaves the session's effort alone.
-func TestSubagentRequestEffortLeavesTheSessionEffort(t *testing.T) {
+// legacyHarness is a parser harness for a CLI before 2.1.317, where a
+// launch that names no effort runs at its launcher's, stamped at launch.
+func legacyHarness(t *testing.T) parserHarness {
 	h := newParserHarness(t)
+	h.parser.SetCLIVersion("2.1.316")
+	return h
+}
+
+// modelReportOf is the meta of the update that records the model the agent
+// launched at launchID reports, nil when none was emitted.
+func modelReportOf(t *testing.T, h parserHarness, launchID string) map[string]any {
+	t.Helper()
+	for _, event := range *h.events {
+		if event.Kind != provider.EventToolStart || event.ItemID != launchID || event.ItemType != "" {
+			continue
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(event.Meta, &meta); err != nil {
+			t.Fatalf("decode meta: %v", err)
+		}
+		if _, ok := meta["subagent_model"]; ok {
+			return meta
+		}
+	}
+	return nil
+}
+
+// A subagent's request carries the effort that subagent runs at, which its
+// launch records once, and leaves the session's effort alone.
+func TestSubagentRequestEffortIsTheAgentsRunEffort(t *testing.T) {
+	h := legacyHarness(t)
 	h.runMain(t, `{"model":"claude-opus-4-7","max_tokens":32000,"tools":[{"name":"Agent"}],"output_config":{"effort":"high"}}`,
 		agentLaunchSSE("toolu_A", "investigate the bug"))
-	if parent := h.runSubagent(t, "aid-1", "investigate the bug", subagentBashSSE("toolu_BASH")); parent == "" {
+	sub := `{"model":"claude-haiku","max_tokens":32000,"tools":[{"name":"Bash"}],"output_config":{"effort":"low"}}`
+	if parent := h.runSubagentRequest(t, "aid-1", "investigate the bug", sub, subagentBashSSE("toolu_BASH")); parent == "" {
 		t.Fatal("subagent did not resolve its parent")
 	}
-	sub := h.rec.beginSubagentRequest("toolu_A")
-	if sub.requestEffort != nil {
-		t.Fatalf("subagent request carries a request effort %q", *sub.requestEffort)
+	if report := modelReportOf(t, h, "toolu_A"); report == nil || report["run_effort"] != "low" {
+		t.Fatalf("model report = %v, want run_effort low", report)
 	}
-	sub.end()
 	h.runMain(t, `{"model":"claude-opus-4-7","max_tokens":32000,"tools":[{"name":"Agent"}],"output_config":{"effort":"high"}}`,
 		agentLaunchSSE("toolu_B", "again"))
 	if effort, _ := inheritedEffortOf(t, h, "toolu_B"); effort != "high" {
@@ -61,11 +89,34 @@ func TestSubagentRequestEffortLeavesTheSessionEffort(t *testing.T) {
 	}
 }
 
+// From 2.1.317 an agent on another model than the main loop's runs at that
+// model's own effort: not the session's, which the launch does not claim.
+// The agent's request says what it runs at.
+func TestAgentOnAnotherModelRecordsItsRequestEffortOnly(t *testing.T) {
+	h := newParserHarness(t)
+	h.parser.SetCLIVersion("2.1.321")
+	launch := agentLaunchSSE("toolu_A", "investigate the bug")
+	launch[0] = strings.Replace(launch[0], `"model":"claude-haiku"`, `"model":"claude-sonnet-4-6"`, 1)
+	h.runMain(t, `{"model":"claude-sonnet-4-6","max_tokens":32000,"tools":[{"name":"Agent"}],"output_config":{"effort":"high"}}`, launch)
+	if effort, ok := inheritedEffortOf(t, h, "toolu_A"); ok {
+		t.Fatalf("launch stamped %q before its agent's model is known", effort)
+	}
+	sub := `{"model":"claude-haiku","max_tokens":32000,"tools":[{"name":"Bash"}],"output_config":{"effort":"medium"}}`
+	h.runSubagentRequest(t, "aid-1", "investigate the bug", sub, subagentBashSSE("toolu_BASH"))
+	report := modelReportOf(t, h, "toolu_A")
+	if report == nil || report["run_effort"] != "medium" {
+		t.Fatalf("model report = %v, want run_effort medium", report)
+	}
+	if effort, ok := report["inherited_effort"]; ok {
+		t.Fatalf("agent on Haiku under a Sonnet session inherited %v", effort)
+	}
+}
+
 // The CLI clamps the session's effort to the main model: an xhigh session
 // on Sonnet 4.6, which lacks xhigh, sends high. The launch records xhigh as
 // the tier its high may stand for, which an Opus child would run at.
 func TestClampedRequestEffortRecordsItsAlternatives(t *testing.T) {
-	h := newParserHarness(t)
+	h := legacyHarness(t)
 	// The API answers with the model the request named.
 	launchOn := func(model, toolUseID, prompt string) []string {
 		sse := agentLaunchSSE(toolUseID, prompt)

@@ -163,10 +163,12 @@ type MCPServer struct {
 // guaranteed: a Claude identity is replaced at adoption by the OAuth
 // profile answer for the credential's own token (the probe wire carries
 // only the display name, read from a shared config record that can
-// describe another login), Codex's `account/read` carries neither (the id is
-// parsed out of `auth.json` where the caller holds those bytes), and
-// API-key auth has no organization at all. Blank means UNKNOWN, never
-// "no organization" — matching must treat it as compatible with any.
+// describe another login), Codex's `account/read` carries only the
+// workspace name, from 0.166 (the id is parsed out of `auth.json` where the
+// caller holds those bytes), and API-key auth has no organization at all.
+// A blank OrgID is UNKNOWN, never "no organization", and matching treats it
+// as compatible with any. A blank OrgName is unknown too, except under
+// OrgNameReported.
 type AccountInfo struct {
 	Email            string `json:"email,omitempty"`
 	DisplayName      string `json:"displayName,omitempty"`
@@ -175,6 +177,11 @@ type AccountInfo struct {
 	APIProvider      string `json:"apiProvider,omitempty"`
 	OrgID            string `json:"orgId,omitempty"`
 	OrgName          string `json:"orgName,omitempty"`
+	// OrgNameReported marks an answer that states the organization name
+	// whenever the login has one, so a blank OrgName means "none" rather
+	// than "unknown" and clears a saved name. Only Codex sets it, on a
+	// successful chatgpt account/read that names the login.
+	OrgNameReported bool `json:"-"`
 }
 
 // TokenUsage tracks per-turn token/cost accounting. Values are per-turn

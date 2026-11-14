@@ -38,6 +38,10 @@ import (
 // readLoop serializes line parsing. A zero-value Parser is valid; the
 // internal maps lazily initialise on first write.
 type Parser struct {
+	// sessionWritesLost is the error text of a system/session_writes_lost
+	// the read loop has not yet handed to the Session
+	// (parse_session_writes_lost.go).
+	sessionWritesLost string
 	// backgroundToolUses marks tool_use IDs expected to answer with a
 	// backgrounding ack, by origin: an input `run_in_background: true`
 	// (a hint the result must confirm) or a task_started resume rebind
@@ -177,6 +181,18 @@ type Parser struct {
 	// instead of sessionEffort (observeRequestEffort).
 	sessionEffortAlternatives []string
 	agentLaunchEfforts        recentMap[agentLaunchEffort]
+	// mainLoopModel is the model of the latest main-loop response, the
+	// model the session's effort applies to (subagent_effort.go).
+	mainLoopModel string
+	// cliVersion selects the subagent effort rule (SetCLIVersion).
+	cliVersion string
+	// runEffortReported holds the rows that recorded `run_effort`,
+	// runEffortSourceRows the mirrored rows already counted toward one, and
+	// heldRunEfforts the efforts mirrored before their row was known, by
+	// agent id or tool use id (recordRunEffort).
+	runEffortReported   recentMap[struct{}]
+	runEffortSourceRows recentMap[struct{}]
+	heldRunEfforts      recentMap[string]
 	// modelAliases is the CLI's alias map, which resolves an Agent
 	// launch's `model` alias (SetModelAliases).
 	modelAliases map[string]string
@@ -486,6 +502,10 @@ func (p *Parser) Close() {
 	p.ownedBackgroundTasks = nil
 	p.subagentModelStamped = nil
 	p.agentLaunchEfforts = recentMap[agentLaunchEffort]{}
+	p.mainLoopModel = ""
+	p.runEffortReported = recentMap[struct{}]{}
+	p.runEffortSourceRows = recentMap[struct{}]{}
+	p.heldRunEfforts = recentMap[string]{}
 	p.streamBlockTypes = nil
 	p.streamBlockSignatures = nil
 	p.streamMessageIDs = nil

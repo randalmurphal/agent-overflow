@@ -185,6 +185,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 				TaskID:          meta.TaskID,
 				SubagentModel:   meta.SubagentModel,
 				ParentToolUseID: stringsx.FirstNonEmptyTrimmed(eventParentID(evt), meta.ParentToolUseID),
+				LaunchStamps:    launchStampFields(evt.Meta),
 			})
 			return store.Item{}, false, nil
 		}
@@ -303,6 +304,11 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 		}
 		if item.ParentID == "" && held.ParentToolUseID != "" {
 			item.ParentID = held.ParentToolUseID
+		}
+		if len(held.LaunchStamps) > 0 {
+			if stamps, err := json.Marshal(held.LaunchStamps); err == nil {
+				item.Meta = keepFirstLaunchStamps(item.Meta, mergeItemMetaJSON(item.Meta, stamps))
+			}
 		}
 	}
 
@@ -2242,6 +2248,9 @@ type itemMetaCorrelationFields struct {
 	TaskID          string
 	SubagentModel   string
 	ParentToolUseID string
+	// LaunchStamps are the launch stamps a held model report carried
+	// (launchStampFields). Only the pre-row hold uses them.
+	LaunchStamps map[string]json.RawMessage
 }
 
 // mergeItemMetaCorrelationFields merges optional correlation fields into
@@ -2318,7 +2327,7 @@ const maxPendingToolCorrelationsPerThread = 64
 // non-empty value wins per field — task_started and the
 // subagent-model stamp arrive as separate updates).
 func (r *Router) holdPendingToolCorrelation(threadID, itemID string, fields itemMetaCorrelationFields) {
-	if fields.TaskID == "" && fields.SubagentModel == "" && fields.ParentToolUseID == "" {
+	if fields.TaskID == "" && fields.SubagentModel == "" && fields.ParentToolUseID == "" && len(fields.LaunchStamps) == 0 {
 		return
 	}
 	r.mu.Lock()
@@ -2341,6 +2350,7 @@ func (r *Router) holdPendingToolCorrelation(threadID, itemID string, fields item
 	if existing.ParentToolUseID == "" {
 		existing.ParentToolUseID = fields.ParentToolUseID
 	}
+	existing.LaunchStamps = holdLaunchStamps(existing.LaunchStamps, fields.LaunchStamps)
 	st.pendingToolCorrelations[itemID] = existing
 }
 

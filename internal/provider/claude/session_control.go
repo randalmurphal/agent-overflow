@@ -35,6 +35,12 @@ const DefaultControlRequestTimeout = 10 * time.Second
 // is far past any reachable burst.
 const DefaultControlRequestCeiling = 60 * time.Second
 
+// SetModelControlRequestTimeout is set_model's silence budget. From Claude
+// 2.1.307 the CLI waits up to 15 s for the API to confirm the model before
+// it acks (changelog), so the default budget would fail a switch the CLI
+// is about to accept.
+const SetModelControlRequestTimeout = 20 * time.Second
+
 // controlResponseResult carries the outcome of an outbound control_request
 // round-trip from the read loop back to the waiting caller. Exactly one of
 // errMsg or ok is set: ok=true on subtype=success, errMsg populated on
@@ -142,8 +148,8 @@ func (s *Session) SetInteractionMode(ctx context.Context, mode provider.Interact
 // control_request the session originates (interrupt, stop_task,
 // set_permission_mode). It allocates a request_id, registers the
 // pending response channel, marshals + writes the envelope, and
-// blocks on either ctx.Done, the configured timeout of read-loop
-// silence (DefaultControlRequestTimeout), the ceiling on the whole wait
+// blocks on either ctx.Done, the request's budget of read-loop
+// silence (controlRequestTimeoutFor), the ceiling on the whole wait
 // (DefaultControlRequestCeiling), or the matching control_response. Errors are wrapped with "claude: <opName>: ..."
 // so callers don't repeat the prefix; the raw result is returned for
 // the caller to interpret (success vs error subtype) — usually via
@@ -176,10 +182,8 @@ func (s *Session) sendControlRequest(ctx context.Context, opName string, request
 		return nil, fmt.Errorf("claude: write %s: %w", opName, err)
 	}
 
-	timeout := s.controlRequestTimeout
-	if timeout <= 0 {
-		timeout = DefaultControlRequestTimeout
-	}
+	subtype, _ := request["subtype"].(string)
+	timeout := s.controlRequestTimeoutFor(subtype)
 	ceiling := s.controlRequestCeiling
 	if ceiling <= 0 {
 		ceiling = DefaultControlRequestCeiling
@@ -214,6 +218,19 @@ func (s *Session) sendControlRequest(ctx context.Context, opName string, request
 			return res, nil
 		}
 	}
+}
+
+// controlRequestTimeoutFor is the one place a control request's silence
+// budget is chosen from its wire subtype. The test override replaces every
+// budget.
+func (s *Session) controlRequestTimeoutFor(subtype string) time.Duration {
+	if s.controlRequestTimeout > 0 {
+		return s.controlRequestTimeout
+	}
+	if subtype == "set_model" {
+		return SetModelControlRequestTimeout
+	}
+	return DefaultControlRequestTimeout
 }
 
 // readLoopEpoch anchors readLoopProgress on the monotonic clock, so a

@@ -39,6 +39,15 @@ type RetentionSettings struct {
 	Days int `json:"days"`
 }
 
+// KeepDays is the window for a consumer that needs a positive day count:
+// Days, or MaxRetentionDays when the sweep is disabled.
+func (r RetentionSettings) KeepDays() int {
+	if r.Days <= 0 {
+		return MaxRetentionDays
+	}
+	return r.Days
+}
+
 // CurrentSchemaVersion is the version stamped on every Update-written
 // settings file. Bump on any breaking shape change so a future loader
 // can branch on the version and run a one-shot migration before

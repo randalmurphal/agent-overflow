@@ -1181,6 +1181,69 @@ export class ClaudeSlashCommands {
 }
 
 /**
+ * ClaudeTranscriptRetention reports how Claude Code's transcript cleanup on
+ * this backend relates to a retention window.
+ */
+export class ClaudeTranscriptRetention {
+    /**
+     * SettingsPath is the user-level Claude Code settings file of the home
+     * Claude processes this backend starts run under.
+     */
+    "settingsPath": string;
+
+    /**
+     * ClaudeDays is the `cleanupPeriodDays` that file resolves to: its
+     * value, or Claude Code's default when it sets none. Zero when Error
+     * is set.
+     */
+    "claudeDays": number;
+
+    /**
+     * Explicit reports whether the file sets the key.
+     */
+    "explicit": boolean;
+
+    /**
+     * SessionDays is the `cleanupPeriodDays` a Claude process this backend
+     * starts carries where no workspace settings file sets the key. Zero
+     * means it carries none: the window is no longer than ClaudeDays, or
+     * Error is set.
+     */
+    "sessionDays": number;
+
+    /**
+     * Error says why the file's value is unknown.
+     */
+    "error"?: string;
+
+    /** Creates a new ClaudeTranscriptRetention instance. */
+    constructor($$source: Partial<ClaudeTranscriptRetention> = {}) {
+        if (!("settingsPath" in $$source)) {
+            this["settingsPath"] = "";
+        }
+        if (!("claudeDays" in $$source)) {
+            this["claudeDays"] = 0;
+        }
+        if (!("explicit" in $$source)) {
+            this["explicit"] = false;
+        }
+        if (!("sessionDays" in $$source)) {
+            this["sessionDays"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ClaudeTranscriptRetention instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ClaudeTranscriptRetention {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ClaudeTranscriptRetention($$parsedSource as Partial<ClaudeTranscriptRetention>);
+    }
+}
+
+/**
  * CodexAccountUsage is Codex's own token-usage report for the signed-in
  * account, as the usage overlay renders it.
  * 

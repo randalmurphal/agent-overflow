@@ -69,11 +69,31 @@ func classifyNotification(threadID, method string, params json.RawMessage) ([]pr
 func classifyHookNotification(threadID, method string, params json.RawMessage, now time.Time) ([]provider.ProviderEvent, bool) {
 	switch method {
 	case "hook/started":
+		if isModelRequestHook(params) {
+			return nil, true
+		}
 		return []provider.ProviderEvent{codexNotificationEvent(threadID, "hook", hookSummary(params, "started"), params, now)}, true
 	case "hook/completed":
+		if isModelRequestHook(params) {
+			if status := readNestedString(params, "run", "status"); status == "" || status == "completed" {
+				return nil, true
+			}
+		}
 		return []provider.ProviderEvent{codexNotificationEvent(threadID, "hook", hookSummary(params, "completed"), params, now)}, true
 	}
 	return nil, false
+}
+
+// isModelRequestHook reports a run of the hook events that fire around every
+// model request (HookEventName preModelRequest / postModelRequest, codex
+// 0.164+). They get no row on start and none on a `completed` run; a failed,
+// blocked or stopped run still shows.
+func isModelRequestHook(params json.RawMessage) bool {
+	switch readNestedString(params, "run", "eventName") {
+	case "preModelRequest", "postModelRequest":
+		return true
+	}
+	return false
 }
 
 func hookSummary(params json.RawMessage, fallbackStatus string) string {
