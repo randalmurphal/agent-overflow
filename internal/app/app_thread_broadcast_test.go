@@ -279,27 +279,6 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		broadcasts.expectSilence("re-selecting the effort a thread already carries")
 	})
 
-	t.Run("fast mode", func(t *testing.T) {
-		app := newTestAppWithStore(t)
-		thread, err := createTestThread(t, app, "claude", t.TempDir(), "claude-opus-4-8", "")
-		if err != nil {
-			t.Fatalf("createTestThread: %v", err)
-		}
-		broadcasts := captureThreadBroadcasts(t, app)
-
-		if _, err := app.UpdateThreadFastMode(thread.ID, false); err != nil {
-			t.Fatalf("UpdateThreadFastMode(false): %v", err)
-		}
-		broadcasts.expectSilence("setting fast mode to the value a thread already carries")
-
-		if _, err := app.UpdateThreadFastMode(thread.ID, true); err != nil {
-			t.Fatalf("UpdateThreadFastMode(true): %v", err)
-		}
-		if row := broadcasts.expectRow(triage.ThreadActionFull, thread.ID); !row.FastMode {
-			t.Fatal("broadcast row FastMode = false, want true")
-		}
-	})
-
 	t.Run("context window", func(t *testing.T) {
 		app := newTestAppWithStore(t)
 		thread := mustCreateBroadcastThread(t, app)
@@ -491,6 +470,31 @@ func mustCompleteBroadcastTurn(t *testing.T, app *App, threadID string) {
 	}
 	if err := app.store.UpdateTurnCompleted(threadID+"-turn-0", 1500, "end_turn", "", "", ""); err != nil {
 		t.Fatalf("UpdateTurnCompleted: %v", err)
+	}
+}
+
+// TestThreadFastModeMutationBroadcasts is the fast-mode case of
+// TestThreadMutationsBroadcastTheChangedRow.
+func TestThreadFastModeMutationBroadcasts(t *testing.T) {
+	// Serial: seeds the process-wide Claude model report.
+	app := newTestAppWithStore(t)
+	seedClaudeFastModels(t, app, "claude-opus-4-8")
+	thread, err := createTestThread(t, app, "claude", t.TempDir(), "claude-opus-4-8", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	broadcasts := captureThreadBroadcasts(t, app)
+
+	if _, err := app.UpdateThreadFastMode(thread.ID, false); err != nil {
+		t.Fatalf("UpdateThreadFastMode(false): %v", err)
+	}
+	broadcasts.expectSilence("setting fast mode to the value a thread already carries")
+
+	if _, err := app.UpdateThreadFastMode(thread.ID, true); err != nil {
+		t.Fatalf("UpdateThreadFastMode(true): %v", err)
+	}
+	if row := broadcasts.expectRow(triage.ThreadActionFull, thread.ID); !row.FastMode {
+		t.Fatal("broadcast row FastMode = false, want true")
 	}
 }
 

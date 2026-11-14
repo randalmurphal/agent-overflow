@@ -81,8 +81,9 @@ type ClaudeCatalogRecord struct {
 	ModUnixNano  int64  `json:"modUnixNano"`
 	// ProbedAt is when the answer was captured, in epoch milliseconds.
 	ProbedAt int64 `json:"probedAt"`
-	// Wire is the rows the probe reported; Learned is the wire-only models
-	// the identity had accumulated, which survive a wire that omits them.
+	// Wire is the rows the probe reported; Learned is what the identity's
+	// answers reported beyond the shipped catalog (claudemodels.Snapshot),
+	// which survives a wire that omits it.
 	Wire    []claude.WireModel   `json:"wire"`
 	Learned []provider.ModelInfo `json:"learned,omitempty"`
 }

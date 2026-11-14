@@ -275,9 +275,10 @@ func TestMergeWireOnlyModelTakesExtendedTierFromTheMarker(t *testing.T) {
 	}
 }
 
-// TestMergeAppliesWireCapabilityOverrides covers the brief's decided policy:
-// for a model the wire lists, the running binary's capability flags win over
-// a stale catalog — in both directions — and every change is reported.
+// TestMergeAppliesWireCapabilityOverrides: for a model the wire lists, the
+// running binary's capability flags win over the catalog in both directions.
+// An effort change is reported as drift; fast mode, which the catalog does
+// not own, is not.
 func TestMergeAppliesWireCapabilityOverrides(t *testing.T) {
 	base := []provider.ModelInfo{
 		{
@@ -327,9 +328,10 @@ func TestMergeAppliesWireCapabilityOverrides(t *testing.T) {
 	if got := defaultEffortOf(sonnet.ReasoningEfforts, ""); got != provider.EffortHigh {
 		t.Errorf("default effort = %q, want the catalog's own default preserved", got)
 	}
-	if kinds := driftKinds(drift, "claude-sonnet-5"); !slices.Contains(kinds, DriftCapability) ||
-		!slices.Contains(kinds, DriftEffort) {
-		t.Errorf("both overrides must be reported, got %v", kinds)
+	// The catalog states efforts, so their disagreement is drift; it never
+	// states fast mode, so the row alone decides it.
+	if kinds := driftKinds(drift, "claude-sonnet-5"); !slices.Equal(kinds, []DriftKind{DriftEffort}) {
+		t.Errorf("kinds = %v, want only the effort drift", kinds)
 	}
 
 	haiku, _ := findModel(merged, "claude-haiku-4-5")
@@ -358,8 +360,8 @@ func TestMergeAddsFastModeCapabilityTheCatalogLacks(t *testing.T) {
 	if !slices.Contains(merged[0].Capabilities, provider.ModelCapabilityFastMode) {
 		t.Error("the wire granting a capability must be applied, not only a wire revoking one")
 	}
-	if kinds := driftKinds(drift, "claude-sonnet-5"); !slices.Contains(kinds, DriftCapability) {
-		t.Errorf("kinds = %v, want a capability drift line", kinds)
+	if len(drift) != 0 {
+		t.Errorf("drift = %s, want none: the catalog never states fast mode", FormatDrift(drift))
 	}
 }
 
@@ -618,12 +620,7 @@ func TestCatalogReportsModelReadsTheServedWireRows(t *testing.T) {
 // probe result, never a toast": a probe that repeats the same story says
 // nothing the second time, and a probe that tells a NEW story is heard.
 func TestCatalogDriftIsReportedOncePerDistinctReport(t *testing.T) {
-	catalog := NewCatalogWith([]provider.ModelInfo{{
-		Slug:         "claude-opus-5",
-		Name:         "Opus",
-		Provider:     "claude",
-		Capabilities: []string{provider.ModelCapabilityFastMode},
-	}})
+	catalog := NewCatalogWith([]provider.ModelInfo{effortOnlyOpus()})
 	wire := []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5"}}
 
 	first := catalog.Store(testKey("a"), wire, nil)
@@ -757,18 +754,16 @@ func TestCatalogDropBinary(t *testing.T) {
 // vanishing) must leave a log line, not silence — before DriftCleared, an
 // entry reverting to the plain catalog left no evidence of when.
 func TestCatalogReportsWhenDriftClears(t *testing.T) {
-	catalog := NewCatalogWith([]provider.ModelInfo{{
-		Slug:         "claude-opus-5",
-		Name:         "Opus",
-		Provider:     "claude",
-		Capabilities: []string{provider.ModelCapabilityFastMode},
-	}})
+	catalog := NewCatalogWith([]provider.ModelInfo{effortOnlyOpus()})
 	key := testKey("a")
 	disagreeing := []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5"}}
-	agreeing := []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5", SupportsFastMode: true}}
+	agreeing := []claude.WireModel{{
+		Value: "opus", ResolvedModel: "claude-opus-5",
+		SupportsEffort: true, SupportedEffortLevels: []string{"high"},
+	}}
 
 	if drift := catalog.Store(key, disagreeing, nil); len(drift) == 0 {
-		t.Fatal("the capability disagreement must report")
+		t.Fatal("the effort disagreement must report")
 	}
 	drift := catalog.Store(key, agreeing, nil)
 	if len(drift) != 1 || drift[0].Kind != DriftCleared {
@@ -1005,14 +1000,9 @@ func TestCatalogSeedReproducesTheProbedEntry(t *testing.T) {
 // carries each distinct report once; a seeded dedup state would silence a
 // stale-catalog signal for as long as the catalog stays stale.
 func TestSeedDoesNotInheritTheDriftDedupState(t *testing.T) {
-	base := []provider.ModelInfo{{
-		Slug:         "claude-opus-5",
-		Name:         "Claude Opus 5",
-		Provider:     "claude",
-		Capabilities: []string{provider.ModelCapabilityFastMode},
-	}}
-	// The wire disagrees with the catalog's fast-mode flag, which is a
-	// DriftCapability report on every fresh Store.
+	base := []provider.ModelInfo{effortOnlyOpus()}
+	// The wire reports no effort support where the catalog declares some,
+	// which is a DriftEffort report on every fresh Store.
 	wire := []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5"}}
 	key := testKey("a")
 
@@ -1036,6 +1026,17 @@ func TestSeedDoesNotInheritTheDriftDedupState(t *testing.T) {
 	// And this process dedupes from there, exactly as the previous one did.
 	if repeat := restarted.Store(key, wire, nil); len(repeat) != 0 {
 		t.Errorf("the second identical report must dedupe: %s", FormatDrift(repeat))
+	}
+}
+
+// effortOnlyOpus declares one effort level, so a wire row without effort
+// support disagrees with it.
+func effortOnlyOpus() provider.ModelInfo {
+	return provider.ModelInfo{
+		Slug:             "claude-opus-5",
+		Name:             "Claude Opus 5",
+		Provider:         "claude",
+		ReasoningEfforts: []provider.ReasoningEffortOption{provider.NewReasoningEffortOption("high", true)},
 	}
 }
 
@@ -1275,5 +1276,89 @@ func TestHaiku55TakesItsContextWindowsFromTheShippedEntry(t *testing.T) {
 	}
 	if got := effortSlugs(haiku.ReasoningEfforts); !slices.Equal(got, []string{"low", "medium", "high", "xhigh", "max"}) {
 		t.Errorf("efforts = %v", got)
+	}
+}
+
+func hasFastMode(t *testing.T, catalog *Catalog, key provider.ProbeCacheKey, slug string) bool {
+	t.Helper()
+	model, ok := findModel(modelsFor(catalog, key, string(provider.Claude)), slug)
+	if !ok {
+		t.Fatalf("%s missing from the served catalog", slug)
+	}
+	return slices.Contains(model.Capabilities, provider.ModelCapabilityFastMode)
+}
+
+// TestCatalogRetainsReportedFlagsOfAnOmittedShippedModel: the shipped list
+// states no fast or auto mode, so an answer that omits a shipped model must
+// keep the flags an earlier answer reported for it, through a restart too.
+// Only a row reporting the model without them, or DropBinary, withdraws them.
+func TestCatalogRetainsReportedFlagsOfAnOmittedShippedModel(t *testing.T) {
+	const shipped = "claude-opus-4-8"
+	catalog := NewCatalog()
+	key := testKey("a")
+	if hasFastMode(t, catalog, key, shipped) {
+		t.Fatalf("fixture needs the shipped list to leave %s without fast mode", shipped)
+	}
+
+	noAuto := false
+	catalog.Store(key, []claude.WireModel{
+		{Value: "opus", ResolvedModel: "claude-opus-5"},
+		{Value: shipped, SupportsFastMode: true, SupportsAutoMode: &noAuto},
+	}, nil)
+	if !hasFastMode(t, catalog, key, shipped) {
+		t.Fatal("a row reporting fast mode was not applied")
+	}
+
+	omitting := []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5"}}
+	drift := catalog.Store(key, omitting, nil)
+	if !hasFastMode(t, catalog, key, shipped) {
+		t.Fatal("an answer omitting the model removed the fast mode an earlier answer reported")
+	}
+	model, _ := findModel(modelsFor(catalog, key, string(provider.Claude)), shipped)
+	if model.SupportsAutoMode == nil || *model.SupportsAutoMode {
+		t.Errorf("SupportsAutoMode = %v, want the earlier answer's false", model.SupportsAutoMode)
+	}
+	if !slices.Contains(driftKinds(drift, shipped), DriftRetained) {
+		t.Errorf("drift = %s, want a retained line for %s", FormatDrift(drift), shipped)
+	}
+	if hasFastMode(t, catalog, key, "claude-opus-5") {
+		t.Error("a model the current row reports without fast mode must not be fast")
+	}
+
+	snapshot, ok := catalog.Export(key)
+	if !ok {
+		t.Fatal("Export found no entry")
+	}
+	restarted := NewCatalog()
+	restarted.Seed(key, snapshot)
+	if !hasFastMode(t, restarted, key, shipped) {
+		t.Fatal("a restart lost the retained fast mode")
+	}
+
+	restarted.Store(key, []claude.WireModel{{Value: shipped}}, nil)
+	if hasFastMode(t, restarted, key, shipped) {
+		t.Error("a row reporting the model without fast mode must withdraw it")
+	}
+	restarted.Store(key, omitting, nil)
+	if hasFastMode(t, restarted, key, shipped) {
+		t.Error("an omission after the withdrawal brought fast mode back")
+	}
+
+	catalog.DropBinary(key.Binary)
+	catalog.Store(key, omitting, nil)
+	if hasFastMode(t, catalog, key, shipped) {
+		t.Error("a dropped binary's fast-mode claim must not survive")
+	}
+}
+
+// TestCatalogRetainsReportedFastModeOfAnOmittedWireOnlyModel: the same rule
+// for a model only the wire knows.
+func TestCatalogRetainsReportedFastModeOfAnOmittedWireOnlyModel(t *testing.T) {
+	catalog := NewCatalog()
+	key := testKey("a")
+	catalog.Store(key, []claude.WireModel{{Value: "claude-newthing-1", SupportsFastMode: true}}, nil)
+	catalog.Store(key, []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5"}}, nil)
+	if !hasFastMode(t, catalog, key, "claude-newthing-1") {
+		t.Error("an answer omitting a wire-only model removed its reported fast mode")
 	}
 }

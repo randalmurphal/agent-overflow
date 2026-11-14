@@ -88,7 +88,7 @@ func (c ModelCapture) Store(key provider.ProbeCacheKey) {
 // DropModelsForBinary forgets every model answer learned from one configured
 // binary path, returning how many identities it dropped. Called by the
 // provider-binary watcher when the file behind the path reports a new
-// version: learned wire-only models survive degraded probe answers
+// version: learned models and flags survive degraded probe answers
 // (claudemodels.DriftRetained), so a binary change is the one event that may
 // subtract them — and the watcher re-probes immediately after. The command
 // cache is left alone: it is replace-wholesale per probe, so that same

@@ -395,8 +395,9 @@ func TestUpdateThreadReasoningEffortAcceptsCodexMaxAndUltra(t *testing.T) {
 }
 
 func TestUpdateThreadFastModeToggles(t *testing.T) {
-	t.Parallel()
+	// Serial: seeds the process-wide Claude model report.
 	app := newTestAppWithStore(t)
+	seedClaudeFastModels(t, app, "claude-opus-4-7")
 	thread, err := createTestThread(t, app, "claude", "/tmp/tfm", "claude-opus-4-7", "")
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)

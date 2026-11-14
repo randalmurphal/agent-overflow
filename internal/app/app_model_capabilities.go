@@ -22,6 +22,10 @@ func (a *App) supportsFastModeForModel(providerName, model string) bool {
 	return supported
 }
 
+// supportsFastModeFromModelInfo judges fast mode by the catalog entry the
+// caller resolved: the provider's own report merged over the shipped list.
+// A model no catalog lists can run fast only on Codex, whose accepted
+// choices outlive catalog availability.
 func supportsFastModeFromModelInfo(
 	providerName, model string,
 	candidate provider.ModelInfo,
@@ -30,7 +34,7 @@ func supportsFastModeFromModelInfo(
 	if found {
 		return chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
 	}
-	return chatmodel.SupportsStoredFastMode(providerName, model)
+	return providerName == string(provider.Codex) && strings.TrimSpace(model) != ""
 }
 
 // fastModeTierIDForModel resolves the wire service-tier id a fast-mode turn on
@@ -96,12 +100,22 @@ func (a *App) draftModelDefaults(providerName, model, effort string, fastMode bo
 
 // sanitizeChatModelProfile normalizes stored values without revoking Codex
 // selections when catalog availability changes.
+//
+// Which Claude models run fast is known only from the CLI's reported model
+// list. Once it has reported, fast mode stays only on a model the report
+// marks fast; until then the saved choice stands.
 func (a *App) sanitizeChatModelProfile(profile store.ChatModelProfile) store.ChatModelProfile {
 	profile = chatmodel.SanitizeProfile(profile)
 	if profile.Provider == string(provider.Codex) {
 		return profile
 	}
+	// Read before the lookup, so a report that lands in between is judged
+	// by a lookup at least as new.
+	reported := a.claudeCatalogReported(profile.Provider)
 	candidate, found := a.modelInfoForProvider(profile.Provider, profile.Model)
+	if reported && !supportsFastModeFromModelInfo(profile.Provider, profile.Model, candidate, found) {
+		profile.FastMode = false
+	}
 	if !found {
 		return profile
 	}
@@ -110,7 +124,6 @@ func (a *App) sanitizeChatModelProfile(profile store.ChatModelProfile) store.Cha
 		candidate,
 		provider.NormalizeReasoningEffort(profile.ReasoningEffort),
 	))
-	profile.FastMode = profile.FastMode && chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
 	if !chatmodel.ContextWindowSupported(candidate.ContextWindows, profile.ContextWindow) {
 		if tokens, ok := provider.DefaultContextWindowForOptions(candidate.ContextWindows); ok {
 			profile.ContextWindow = tokens
@@ -178,6 +191,13 @@ func (a *App) validateModelChoice(providerName, model string) error {
 		return nil
 	}
 	return provider.ValidateModelID(providerName, model, a.claudeModelsForProvider(providerName))
+}
+
+// claudeCatalogReported reports whether providerName's models carry a Claude
+// CLI report, live or restored at boot, rather than the shipped list alone.
+func (a *App) claudeCatalogReported(providerName string) bool {
+	return provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.ClaudeProbeEnrichedCatalog &&
+		a.providerDiscoveryService().ClaudeCatalog(providerName).Provenance == provider.CatalogProbed
 }
 
 // modelInfoForProvider uses capability evidence already available locally.

@@ -146,6 +146,12 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('SetChatBarFavorite', { kind: 'model', provider: 'claude', value: MODEL.claude, label: 'Opus' }, true);
 
     // Threads at every chat-bar setting the schema enumerates, drafts only.
+    // Claude fast mode is offered only on a model the CLI reports fast, so
+    // the fast variant waits for the startup probe's report.
+    await expect.poll(async () => {
+      const catalog = await harness.rpc<{ provenance: string }>('GetModelsForProvider', 'claude');
+      return catalog.provenance;
+    }, { timeout: TURN_TIMEOUT_MS }).toBe('probed');
     for (const variant of THREAD_VARIANTS) {
       const thread = await harness.rpc<{ id: string }>('CreateThread', {
         projectId,

@@ -352,6 +352,9 @@ Mechanism in
   sending. Provider rejections remain timeline errors without a duplicate toast.
   The Claude catalog learned by an account probe is persisted per account and
   seeded at boot while the binary is unchanged (`internal/claudemodels/AGENTS.md`).
+  Claude fast mode is the exception: only the CLI's report states it, so it is
+  offered only on a model a report marks fast. Once a report exists, a saved
+  fast flag on any other model is cleared before launch; before one, it stands.
 
 - AO never calls Codex `thread/queue/add`; a mid-turn send is `turn/steer`
   (`internal/provider/codex/AGENTS.md`).
