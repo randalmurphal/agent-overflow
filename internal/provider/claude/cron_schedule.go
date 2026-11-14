@@ -146,30 +146,65 @@ func (s cronSchedule) has(set uint64, v int) bool { return set&(1<<v) != 0 }
 // next returns the first matching minute strictly after `after`, in
 // after's location (the CLI matches in local time). The walk is the
 // CLI's: start at the next whole minute, then skip a whole month, day or
-// hour whenever that field cannot match.
+// hour whenever that field cannot match. Each step sets the wall clock as
+// JavaScript's Date setters do (cronWallTime), so it always moves forward,
+// across a daylight-saving gap included.
 func (s cronSchedule) next(after time.Time) (time.Time, bool) {
-	t := after
-	t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute()+1, 0, 0, t.Location())
+	t, loc := after, after.Location()
+	t = cronWallTime(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute()+1, loc)
 	for range cronSearchLimit {
 		if !s.has(s.month, int(t.Month())) {
-			t = time.Date(t.Year(), t.Month()+1, 1, 0, 0, 0, 0, t.Location())
+			t = cronWallTime(t.Year(), t.Month()+1, 1, 0, 0, loc)
 			continue
 		}
 		if !s.dayMatches(t) {
-			t = time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, t.Location())
+			t = cronWallTime(t.Year(), t.Month(), t.Day()+1, 0, 0, loc)
 			continue
 		}
 		if !s.has(s.hour, t.Hour()) {
-			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour()+1, 0, 0, 0, t.Location())
+			t = cronWallTime(t.Year(), t.Month(), t.Day(), t.Hour()+1, 0, loc)
 			continue
 		}
 		if !s.has(s.minute, t.Minute()) {
-			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute()+1, 0, 0, t.Location())
+			t = cronWallTime(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute()+1, loc)
 			continue
 		}
 		return t, true
 	}
 	return time.Time{}, false
+}
+
+// cronZoneProbe is how far before a wall time the offset in effect before
+// any transition near it is read. Zones change offset at most a few times
+// a year, never twice within a day.
+const cronZoneProbe = 24 * time.Hour
+
+// cronWallTime is the instant JavaScript's Date gives the local wall time
+// year-month-day hour:minute in loc, out-of-range fields carried over as
+// time.Date carries them. A wall time a fall-back repeats is its first
+// occurrence, and one a spring-forward skips is read in the offset before
+// the gap, which lands after it (ECMAScript's "compatible"
+// disambiguation). time.Date leaves both choices unspecified, and for a
+// skipped time can return an instant before the gap, which would stall the
+// walk.
+func cronWallTime(year int, month time.Month, day, hour, minute int, loc *time.Location) time.Time {
+	wall := time.Date(year, month, day, hour, minute, 0, 0, time.UTC)
+	_, before := wall.Add(-cronZoneProbe).In(loc).Zone()
+	early := wall.Add(-time.Duration(before) * time.Second).In(loc)
+	if sameWallTime(early, wall) {
+		return early
+	}
+	_, after := early.Zone()
+	if late := wall.Add(-time.Duration(after) * time.Second).In(loc); sameWallTime(late, wall) {
+		return late
+	}
+	return early
+}
+
+// sameWallTime reports whether t reads wall's date and minute on its clock.
+func sameWallTime(t, wall time.Time) bool {
+	return t.Year() == wall.Year() && t.Month() == wall.Month() && t.Day() == wall.Day() &&
+		t.Hour() == wall.Hour() && t.Minute() == wall.Minute()
 }
 
 // dayMatches is the CLI's day rule: with both day fields restricted a

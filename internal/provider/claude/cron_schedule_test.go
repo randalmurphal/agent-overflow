@@ -116,3 +116,43 @@ func TestCronFireByUsesTheLargestPermittedDelay(t *testing.T) {
 		}
 	}
 }
+
+// The CLI matches in local wall-clock time, where JavaScript's Date carries
+// a time inside a spring-forward gap past it and a fall-back hour happens
+// twice. The search moves forward across both: a 03:00 job is found the
+// morning the clocks skip 02:00, a job in the skipped hour waits for the
+// next day, as the CLI's walk lands on 03:00 and moves on, and the repeated
+// hour matches once, at its first occurrence.
+func TestCronScheduleNextCrossesDaylightSavingChanges(t *testing.T) {
+	zone, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("no tz database:", err)
+	}
+	local := func(year int, month time.Month, day, hour, minute int) time.Time {
+		return time.Date(year, month, day, hour, minute, 0, 0, zone)
+	}
+	for _, tc := range []struct {
+		expr        string
+		after, want time.Time
+	}{
+		// Spring forward, 2026-03-08 02:00 EST -> 03:00 EDT.
+		{"0 3 * * *", local(2026, 3, 7, 12, 0), local(2026, 3, 8, 3, 0)},
+		{"0 2 * * *", local(2026, 3, 7, 12, 0), local(2026, 3, 9, 2, 0)},
+		{"30 2 * * *", local(2026, 3, 7, 12, 0), local(2026, 3, 9, 2, 30)},
+		{"*/20 * * * *", local(2026, 3, 8, 1, 50), local(2026, 3, 8, 3, 0)},
+		{"0 4 * * *", local(2026, 3, 8, 1, 59), local(2026, 3, 8, 4, 0)},
+		// Fall back, 2026-11-01 02:00 EDT -> 01:00 EST.
+		{"0 3 * * *", local(2026, 10, 31, 12, 0), local(2026, 11, 1, 3, 0)},
+		{"30 1 * * *", time.Date(2026, 11, 1, 5, 0, 0, 0, time.UTC).In(zone), time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC)},
+		{"30 1 * * *", time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC).In(zone), local(2026, 11, 2, 1, 30)},
+	} {
+		schedule, ok := parseCronSchedule(tc.expr)
+		if !ok {
+			t.Fatalf("parse %q", tc.expr)
+		}
+		got, ok := schedule.next(tc.after)
+		if !ok || !got.Equal(tc.want) {
+			t.Errorf("%q after %s = %v (%v), want %s", tc.expr, tc.after, got, ok, tc.want)
+		}
+	}
+}

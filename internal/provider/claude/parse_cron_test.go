@@ -196,3 +196,25 @@ func TestCronJobTableIsBounded(t *testing.T) {
 		t.Fatalf("cap %d is below the CLI's own limit of 50", maxTrackedCronJobs)
 	}
 }
+
+// A job the CLI accepted for which AO finds no next fire is reported at its
+// creation and when a fire cannot re-anchor it, not dropped silently: the
+// reaper cannot protect it.
+func TestCronJobWithNoNextFireIsReported(t *testing.T) {
+	at := time.Date(2026, 10, 7, 10, 0, 0, 0, time.UTC)
+	p := NewParser()
+	events := p.appendCronAckEvents(nil, testThread, at, "toolu_y",
+		cronToolUse{name: cronCreateToolName, cron: "0 0 31 2 *"}, nil, json.RawMessage(`{"id":"bbbb0000","recurring":true}`))
+	if len(events) != 1 || events[0].Kind != provider.EventError || !strings.Contains(events[0].Content, "no next fire time") {
+		t.Fatalf("create events = %+v, want one error saying no fire time was found", events)
+	}
+	never, _ := parseCronSchedule("0 0 31 2 *")
+	p.cronJobs = map[string]cronJob{"cccc0000": {id: "cccc0000", cron: "0 0 31 2 *", schedule: never, recurring: true, match: at.Add(-time.Minute)}}
+	events = p.noteScheduledFire(nil, testThread, at)
+	if len(events) == 0 || events[0].Kind != provider.EventError || !strings.Contains(events[0].Content, "cccc0000") {
+		t.Fatalf("fire events = %+v, want the job reported", events)
+	}
+	if _, kept := p.cronJobs["cccc0000"]; kept {
+		t.Fatal("a job with no next fire is still tracked")
+	}
+}

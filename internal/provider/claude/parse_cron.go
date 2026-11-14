@@ -182,7 +182,7 @@ func (p *Parser) armCronJob(id, cron string, recurring bool, anchor time.Time) (
 	}
 	job := cronJob{id: id, cron: cron, schedule: schedule, recurring: recurring}
 	if !job.anchor(anchor) {
-		return false, ""
+		return false, cronUnanchoredProblem(id, cron)
 	}
 	if _, known := p.cronJobs[id]; !known && len(p.cronJobs) >= maxTrackedCronJobs {
 		log.Printf("claude: cron job table full (%d); job %s is not tracked", maxTrackedCronJobs, id)
@@ -239,8 +239,15 @@ func (p *Parser) noteScheduledFire(events []provider.ProviderEvent, threadID str
 			continue
 		}
 		changed = true
-		if !job.recurring || !job.anchor(at) {
+		if !job.recurring {
 			delete(p.cronJobs, id)
+			continue
+		}
+		if !job.anchor(at) {
+			delete(p.cronJobs, id)
+			events = append(events, provider.ProviderEvent{
+				Kind: provider.EventError, ThreadID: threadID, Content: cronUnanchoredProblem(id, job.cron), Timestamp: at,
+			})
 			continue
 		}
 		p.cronJobs[id] = job
@@ -249,6 +256,12 @@ func (p *Parser) noteScheduledFire(events []provider.ProviderEvent, threadID str
 		return events
 	}
 	return p.appendScheduledJobsSnapshot(events, threadID, at)
+}
+
+// cronUnanchoredProblem is what the user is told about a job the CLI
+// accepted for which AO finds no next fire.
+func cronUnanchoredProblem(id, cron string) string {
+	return "Claude scheduled job " + id + " with cron expression \"" + cron + "\", for which Agent Overflow finds no next fire time. The session may be closed while idle before the job fires."
 }
 
 func (j *cronJob) anchor(at time.Time) bool {
