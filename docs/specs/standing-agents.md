@@ -441,9 +441,15 @@ the one a session loss starts included. A client ignores a second click
 while its own handoff of the assistant runs.
 
 1. The successor is created under the assistant with the home as its
-   workspace, and the current thread's provider, model, effort, fast
-   mode, context window and runtime mode, titled with the name.
-2. One store transaction (`HandOffAssistant`) makes it the record's
+   workspace.
+2. One store transaction (`HandOffAssistant`) refuses an assistant
+   archived by then, and a successor that fails the checks creation
+   makes (home, no project, group, worktree or branch, no assistant's
+   thread). It titles the successor with the name and gives it the
+   current thread's provider, model, effort, fast mode, context window,
+   auto-compact thresholds and runtime mode, all read in that
+   transaction, so a rename or settings change made while the successor
+   was being created is kept. It makes the successor the record's
    `thread_id`, records the old thread in `agent_past_threads` with the
    time, archives it, moves its live loops and watches to the successor,
    moves its remote jobs whose completion is still owed (`pending`, or

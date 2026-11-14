@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -225,6 +226,80 @@ func threadCount(t *testing.T, a *App) int {
 		t.Fatal(err)
 	}
 	return len(open) + len(archived)
+}
+
+// A rename of the assistant while New Thread, Same Assistant creates the
+// successor is kept, even when another assistant takes the old name
+// meanwhile: the handoff names the successor from the old thread as it
+// stands in its transaction, not from the snapshot it was created with.
+func TestAHandOffKeepsARenameMadeWhileItRuns(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	f.mockClaude(t, "ok", "ok")
+	f.assistantCaller(t)
+	oldName := f.caller.Title
+	var hookErr error
+	f.app.handOffSuccessorMadeForTest = func(old, _ string) {
+		if hookErr = f.app.RenameThread(old, "Release"); hookErr != nil {
+			return
+		}
+		rival := store.Thread{ID: "rival", Title: oldName, Provider: "claude", Model: "claude-opus-4-7", WorkspacePath: t.TempDir(),
+			CreatedAt: 1, UpdatedAt: 1}
+		if hookErr = f.app.store.CreateThread(rival); hookErr == nil {
+			testAssistant(t, f.app, rival.ID)
+		}
+	}
+	successor, err := f.app.StartNextAssistantThread(t.Context(), f.caller.ID)
+	if hookErr != nil {
+		t.Fatalf("rename and rival during the handoff: %v", hookErr)
+	}
+	if err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	f.app.waitAgentNoticeWork()
+	if successor.Title != "Release" {
+		t.Fatalf("successor title = %q, want the rename made during the handoff", successor.Title)
+	}
+	listed, err := f.app.store.ListAssistants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := map[string]int{}
+	for _, l := range listed {
+		held[strings.ToLower(l.Name)]++
+	}
+	if held["release"] != 1 || held[strings.ToLower(oldName)] != 1 {
+		t.Fatalf("assistant names = %v, want each held once", held)
+	}
+}
+
+// An archive while New Thread, Same Assistant creates the successor refuses
+// the handoff at its transaction: the record stays and the successor goes.
+func TestAHandOffOfAnAssistantArchivedWhileItRunsIsRefused(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	f.mockClaude(t, "ok", "ok")
+	f.assistantCaller(t)
+	before := threadCount(t, f.app)
+	var made string
+	f.app.handOffSuccessorMadeForTest = func(old, successor string) {
+		made = successor
+		if err := f.app.ArchiveThread(old); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := f.app.StartNextAssistantThread(t.Context(), f.caller.ID); !errors.Is(err, store.ErrAssistantArchived) {
+		t.Fatalf("handoff of an assistant archived meanwhile = %v, want ErrAssistantArchived", err)
+	}
+	if _, found, err := f.app.store.GetStandingAgent(f.caller.ID); err != nil || !found {
+		t.Fatalf("the record after the refusal = %v %v, want it on the old thread", found, err)
+	}
+	if _, err := f.app.store.GetThread(made); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("the refused successor %q = %v, want it deleted", made, err)
+	}
+	if got := threadCount(t, f.app); got != before {
+		t.Fatalf("threads = %d, want %d", got, before)
+	}
 }
 
 // A draft move that fails (an attachment the store cannot copy) leaves the

@@ -696,6 +696,10 @@ type App struct {
 	// transaction committed and before the handoff ends
 	// (nextAssistantThread), so a test can act while it still runs.
 	handOffCommittedForTest func(oldThreadID, successorID string)
+	// handOffSuccessorMadeForTest, when set, runs in a handoff after it
+	// created the successor and before it takes the old thread's locks
+	// (nextAssistantThread), so a test can rename or archive meanwhile.
+	handOffSuccessorMadeForTest func(oldThreadID, successorID string)
 	// remoteReplySettledForTest, when set, runs in a parked remote call's
 	// after-response work between the dismissal and the end of its wait.
 	remoteReplySettledForTest func()

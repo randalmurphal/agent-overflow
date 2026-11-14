@@ -96,6 +96,7 @@ func TestAnAssistantIsDeletedOnlyWithNothingUnderIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	homeThread(t, s, "next", "")
+	mustPlaceInHome(t, s, "next", agent.Home)
 	if _, err := s.HandOffAssistant("old", "next", 10); err != nil {
 		t.Fatal(err)
 	}
@@ -163,6 +164,7 @@ func TestAnAssistantsCurrentThreadDoesNotMove(t *testing.T) {
 		t.Fatal(err)
 	}
 	homeThread(t, s, "next", "")
+	mustPlaceInHome(t, s, "next", agent.Home)
 	if _, err := s.HandOffAssistant("old", "next", 10); err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +350,7 @@ func TestHandOffAssistantMovesEverythingAtOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hand off: %v", err)
 	}
-	if handOff.Agent.ID != "old" || handOff.Agent.ThreadID != "new" || !handOff.Archived || !handOff.Old.Archived ||
+	if handOff.Agent.ID != "old" || handOff.Agent.ThreadID != "new" || !handOff.Old.Archived ||
 		!slices.Equal(handOff.MovedWakeIDs, []string{"loop"}) || handOff.MovedRequests != 3 {
 		t.Fatalf("handoff = %+v", handOff)
 	}
@@ -408,6 +410,103 @@ func TestHandOffAssistantMovesEverythingAtOnce(t *testing.T) {
 	}
 	if _, err := s.HandOffAssistant("worker", "taken", 800); !errors.Is(err, ErrNotAssistantCurrentThread) {
 		t.Errorf("hand off a non-assistant = %v", err)
+	}
+}
+
+// A handoff reads the old thread as it stands in its transaction: the
+// successor must pass creation's checks, an archived assistant is refused,
+// and the successor takes the current name and model settings, not the ones
+// it was created with, so a rename made meanwhile survives even when another
+// assistant took the old name. Every refusal leaves everything in place.
+func TestHandOffAssistantKeepsTheCurrentIdentity(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"old", "next", "rival"} {
+		mustCreateThread(t, s, id)
+	}
+	mustRetitle(t, s, "old", "Ops")
+	mustCreateAssistant(t, s, "old", "/h/old")
+	if _, err := s.RegisterAgentWake(AgentWake{ID: "loop", ThreadID: "old", Kind: AgentWakeLoop, Label: "board", Note: "n", IntervalSeconds: 60, NextAt: 100}); err != nil {
+		t.Fatal(err)
+	}
+	// The successor as New Thread, Same Assistant creates it: titled and
+	// set up from a snapshot of the old thread.
+	mustRetitle(t, s, "next", "Ops")
+	unchanged := func(what string) {
+		t.Helper()
+		if agent, found, err := s.GetStandingAgent("old"); err != nil || !found || agent.ID != "old" {
+			t.Fatalf("after %s the record = %+v %v %v", what, agent, found, err)
+		}
+		if wake, _, _ := s.GetAgentWake("loop"); wake.ThreadID != "old" {
+			t.Fatalf("after %s the loop is on %q", what, wake.ThreadID)
+		}
+		if old, _ := s.GetThread("old"); old.PastAgentID != "" {
+			t.Fatalf("after %s the old thread is past", what)
+		}
+	}
+
+	mustPlaceInHome(t, s, "next", "/h/elsewhere")
+	if _, err := s.HandOffAssistant("old", "next", 10); !errors.Is(err, ErrAssistantThreadNotInHome) {
+		t.Fatalf("a successor in another home = %v, want ErrAssistantThreadNotInHome", err)
+	}
+	unchanged("a successor in another home")
+	mustPlaceInHome(t, s, "next", "/h/old")
+
+	if _, _, err := s.ArchiveThread("old"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HandOffAssistant("old", "next", 10); !errors.Is(err, ErrAssistantArchived) {
+		t.Fatalf("a handoff of an archived assistant = %v, want ErrAssistantArchived", err)
+	}
+	unchanged("an archived assistant")
+	if _, _, err := s.UnarchiveThread("old"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Renamed, its settings changed and its old name taken while the
+	// successor was being made.
+	if err := s.UpdateTitle("old", "Release"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE threads SET model = 'opus-current', reasoning_effort = 'high', fast_mode = 1,
+		context_window = 200000, auto_compact_standard_percent = 70, auto_compact_extended_percent = 80,
+		runtime_mode = 'full-access' WHERE id = 'old'`); err != nil {
+		t.Fatal(err)
+	}
+	mustRetitle(t, s, "rival", "Ops")
+	mustCreateAssistant(t, s, "rival", "/h/rival")
+	if _, err := s.HandOffAssistant("old", "next", 10); err != nil {
+		t.Fatal(err)
+	}
+	old, err := s.GetThread("old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.GetThread("next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Title != "Release" || next.AgentID != "old" {
+		t.Fatalf("successor = title %q agent %q, want the current name", next.Title, next.AgentID)
+	}
+	if next.Provider != old.Provider || next.Model != "opus-current" || next.ReasoningEffort != "high" || !next.FastMode ||
+		next.ContextWindow != 200000 || next.AutoCompactStandardPercent != 70 || next.AutoCompactExtendedPercent != 80 ||
+		next.RuntimeMode != "full-access" {
+		t.Fatalf("successor settings = %+v, want the old thread's current ones", next)
+	}
+	if hits := mustSearch(t, s, "release", ThreadSearchFilter{Kinds: []string{ThreadSearchKindTitle}}); !slices.ContainsFunc(hits, func(h ThreadSearchHit) bool { return h.ThreadID == "next" }) {
+		t.Fatalf("title hits for the successor's name = %+v", hits)
+	}
+	listed, err := s.ListAssistants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, l := range listed {
+		names = append(names, l.Name)
+	}
+	if !slices.Equal(names, []string{"Ops", "Release"}) {
+		t.Fatalf("assistant names = %q, want each held once", names)
 	}
 }
 
@@ -660,6 +759,7 @@ func TestHelpersLiveUnderTheirAssistant(t *testing.T) {
 	}
 
 	homeThread(t, s, "next", "")
+	mustPlaceInHome(t, s, "next", "/h/ops")
 	if _, err := s.HandOffAssistant("ops", "next", 10); err != nil {
 		t.Fatal(err)
 	}
@@ -752,6 +852,7 @@ func TestArchivedChildrenAreCountedByContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 	homeThread(t, s, "new", "")
+	mustPlaceInHome(t, s, "new", "/h/old")
 	if _, err := s.HandOffAssistant("old", "new", 20); err != nil {
 		t.Fatal(err)
 	}

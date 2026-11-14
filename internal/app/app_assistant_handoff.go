@@ -478,11 +478,11 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 	if err := a.store.CheckThreadTransferAccess(threadID); err != nil {
 		return store.Thread{}, err
 	}
-	if old.Archived {
-		return store.Thread{}, errors.New("this assistant is archived; unarchive it first")
-	}
 	// The successor lives where an assistant's thread does: outside every
-	// project, in the home.
+	// project, in the home. The handoff's transaction refuses an archived
+	// assistant and replaces this title and these settings with the old
+	// thread's as they stand then, so a rename or a settings change made
+	// meanwhile is kept.
 	standardPercent, extendedPercent := old.AutoCompactStandardPercent, old.AutoCompactExtendedPercent
 	opts := CreateThreadOptions{
 		Title:                      old.Title,
@@ -505,6 +505,9 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 	successor, err := a.createThreadRow(ctx, opts, false)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("create the assistant's next thread: %w", err)
+	}
+	if a.handOffSuccessorMadeForTest != nil {
+		a.handOffSuccessorMadeForTest(threadID, successor.ID)
 	}
 	handOff, interrupted, carried, err := a.handOffAssistantLocked(threadID, successor.ID)
 	if err != nil {

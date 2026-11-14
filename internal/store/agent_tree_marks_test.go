@@ -235,9 +235,13 @@ func (r *agentTreeMarksRun) handOff(check func(what string)) {
 			mustCreateAssistant(t, s, old, "/h/"+old)
 		}
 	}
+	agent, found, err := s.GetStandingAgent(old)
+	if err != nil || !found {
+		t.Fatalf("the assistant of %s = %v %v", old, found, err)
+	}
 	successor := r.name("successor")
 	mustCreateThread(t, s, successor)
-	mustPlaceInHome(t, s, successor, "/h/"+successor)
+	mustPlaceInHome(t, s, successor, agent.Home)
 	token, spawned := r.spawned[old]
 	if spawned {
 		if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: token, OwnerDeviceID: "local",

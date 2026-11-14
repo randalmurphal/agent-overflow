@@ -212,12 +212,11 @@ func refuseAssistantMoveTx(tx *sql.Tx, threadID string) error {
 }
 
 // CreateStandingAgent records an assistant on its thread, serving
-// projectIDs unless agent.AllProjects is set: the thread must exist, be no
-// assistant's, current, past or helper, and be in agent.Home outside every
-// project, with no group, worktree or branch (ErrAssistantThreadNotInHome),
-// as a thread created with a home is (PlaceThreadInHome moves an existing
-// one there). Its title is the assistant's name, which is checked here, in
-// the insert's transaction, so two creations cannot both take one name.
+// projectIDs unless agent.AllProjects is set: the thread must pass
+// requireAssistantThreadTx under its title, as a thread created with a home
+// does (PlaceThreadInHome moves an existing one there). The title is the
+// assistant's name, checked here, in the insert's transaction, so two
+// creations cannot both take one name.
 func (s *Store) CreateStandingAgent(agent StandingAgent, projectIDs ...string) (err error) {
 	action := fmt.Sprintf("store: create assistant %s on %s", agent.ID, agent.ThreadID)
 	tx, err := s.db.Begin()
@@ -226,23 +225,11 @@ func (s *Store) CreateStandingAgent(agent StandingAgent, projectIDs ...string) (
 	}
 	defer rollbackAgentWakeTx(tx, action, &err)
 	var title string
-	var taken, inHome bool
-	if err := tx.QueryRow(`SELECT title, EXISTS(SELECT 1 FROM agents WHERE thread_id = threads.id)
-		OR EXISTS(SELECT 1 FROM agent_past_threads WHERE thread_id = threads.id)
-		OR EXISTS(SELECT 1 FROM agent_helpers WHERE thread_id = threads.id),
-		project_id IS NULL AND workspace_path = ?2 AND group_id IS NULL
-		AND COALESCE(worktree_path, '') = '' AND COALESCE(branch, '') = ''
-		FROM threads WHERE id = ?1`, agent.ThreadID, agent.Home).Scan(&title, &taken, &inHome); err != nil {
+	if err := tx.QueryRow(`SELECT title FROM threads WHERE id = ?`, agent.ThreadID).Scan(&title); err != nil {
 		return fmt.Errorf("%s: read the thread: %w", action, err)
 	}
-	if taken {
-		return fmt.Errorf("%s: the thread is already an assistant's", action)
-	}
-	if err := checkAssistantName(tx, title, agent.ID); err != nil {
+	if err := requireAssistantThreadTx(tx, agent, agent.ThreadID, title); err != nil {
 		return err
-	}
-	if !inHome {
-		return fmt.Errorf("%s: %w", action, ErrAssistantThreadNotInHome)
 	}
 	if _, err := tx.Exec(`INSERT INTO agents (`+standingAgentColumns+`) VALUES (?, ?, ?, ?, ?, ?)`,
 		agent.ID, agent.ThreadID, agent.Home, agent.CreatorAgentID, agent.CreatedAt, agent.AllProjects); err != nil {
@@ -253,6 +240,40 @@ func (s *Store) CreateStandingAgent(agent StandingAgent, projectIDs ...string) (
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return nil
+}
+
+// errAssistantThreadTaken refuses, as an assistant's current thread, a
+// thread that is already an assistant's, current or past, or a helper.
+var errAssistantThreadTaken = errors.New("the thread is already an assistant's")
+
+// requireAssistantThreadTx refuses threadID as agent's current thread named
+// name, the checks creation and a handoff share: the thread is no
+// assistant's, current, past or helper (errAssistantThreadTaken), name is
+// no other assistant's (checkAssistantName), and the thread is in
+// agent.Home outside every project, with no group, worktree or branch
+// (ErrAssistantThreadNotInHome). A name refusal is returned as
+// checkAssistantName returns it.
+func requireAssistantThreadTx(tx *sql.Tx, agent StandingAgent, threadID, name string) error {
+	action := fmt.Sprintf("store: thread %s as the current thread of assistant %s", threadID, agent.ID)
+	var taken, inHome bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE thread_id = threads.id)
+		OR EXISTS(SELECT 1 FROM agent_past_threads WHERE thread_id = threads.id)
+		OR EXISTS(SELECT 1 FROM agent_helpers WHERE thread_id = threads.id),
+		project_id IS NULL AND workspace_path = ?2 AND group_id IS NULL
+		AND COALESCE(worktree_path, '') = '' AND COALESCE(branch, '') = ''
+		FROM threads WHERE id = ?1`, threadID, agent.Home).Scan(&taken, &inHome); err != nil {
+		return fmt.Errorf("%s: read the thread: %w", action, err)
+	}
+	if taken {
+		return fmt.Errorf("%s: %w", action, errAssistantThreadTaken)
+	}
+	if err := checkAssistantName(tx, name, agent.ID); err != nil {
+		return err
+	}
+	if !inHome {
+		return fmt.Errorf("%s: %w", action, ErrAssistantThreadNotInHome)
 	}
 	return nil
 }
@@ -527,8 +548,6 @@ type AssistantHandOff struct {
 	Agent StandingAgent
 	// Old is the superseded thread as it stands, archived.
 	Old Thread
-	// Archived is false when the old thread was already archived.
-	Archived bool
 	// MovedWakeIDs are the live loops and watches now on the successor.
 	MovedWakeIDs []string
 	// MovedRequests counts the requests now the successor's.
@@ -539,17 +558,24 @@ type AssistantHandOff struct {
 // assistant's current thread.
 var ErrNotAssistantCurrentThread = errors.New("the thread is not an assistant's current thread")
 
+// ErrAssistantArchived refuses a handoff of an archived assistant.
+var ErrAssistantArchived = errors.New("this assistant is archived; unarchive it first")
+
 // HandOffAssistant makes newThreadID the current thread of the assistant
-// whose current thread is oldThreadID, in one transaction: the record moves,
-// the old thread is recorded as superseded at now and archived, its live
-// loops and watches and the remote jobs still owed to it move, and every request it is the caller of moves with
-// the thread that made it kept in made_in_thread_id (a reminder's target
-// moves with it). The successor must be outside every project, as an
-// assistant's thread is, and no assistant's thread or helper yet; the old thread keeps
-// its placement, which a thread outside every project does not use.
-// Receipts addressed to the old thread are not moved here:
-// the messages they wait on are in the old thread's queue, and the app
-// queues each again on the successor as it takes it back.
+// whose current thread is oldThreadID, in one transaction, so the old
+// thread's state is read as it stands at the commit: an archived assistant
+// is refused (ErrAssistantArchived); the successor must pass the checks
+// creation makes (requireAssistantThreadTx) under the old thread's title,
+// which is the name, and takes that title and the old thread's model
+// settings (handOffSettingsSQL); the record moves; the old thread is
+// recorded as superseded at now and archived; its live loops and watches
+// and the remote jobs still owed to it move; and every request it is the
+// caller of moves with the thread that made it kept in made_in_thread_id (a
+// reminder's target moves with it). The old thread keeps its placement,
+// which a thread outside every project does not use. Receipts addressed to
+// the old thread are not moved here: the messages they wait on are in the
+// old thread's queue, and the app queues each again on the successor as it
+// takes it back.
 func (s *Store) HandOffAssistant(oldThreadID, newThreadID string, now int64) (handOff AssistantHandOff, err error) {
 	action := fmt.Sprintf("store: hand assistant thread %s off to %s", oldThreadID, newThreadID)
 	tx, err := s.db.Begin()
@@ -564,23 +590,27 @@ func (s *Store) HandOffAssistant(oldThreadID, newThreadID string, now int64) (ha
 	if err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: read the assistant: %w", action, err)
 	}
-	var successorTaken, successorInProject bool
-	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE thread_id = ?1)
-		OR EXISTS(SELECT 1 FROM agent_past_threads WHERE thread_id = ?1)
-		OR EXISTS(SELECT 1 FROM agent_helpers WHERE thread_id = ?1), project_id IS NOT NULL
-		FROM threads WHERE id = ?1`, newThreadID).Scan(&successorTaken, &successorInProject); err != nil {
-		return AssistantHandOff{}, fmt.Errorf("%s: read the successor: %w", action, err)
+	var name string
+	var archived bool
+	if err := tx.QueryRow(`SELECT title, archived FROM threads WHERE id = ?`, oldThreadID).Scan(&name, &archived); err != nil {
+		return AssistantHandOff{}, fmt.Errorf("%s: read the old thread: %w", action, err)
 	}
-	if successorTaken {
-		return AssistantHandOff{}, fmt.Errorf("%s: the successor is already an assistant's thread", action)
+	if archived {
+		return AssistantHandOff{}, ErrAssistantArchived
 	}
-	if successorInProject {
-		return AssistantHandOff{}, fmt.Errorf("%s: the successor is in a project: %w", action, ErrAssistantThreadNotInHome)
+	if err := requireAssistantThreadTx(tx, agent, newThreadID, name); err != nil {
+		return AssistantHandOff{}, err
 	}
 	if _, err := tx.Exec(`UPDATE agents SET thread_id = ? WHERE id = ?`, newThreadID, agent.ID); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: move the record: %w", action, err)
 	}
 	agent.ThreadID = newThreadID
+	if err := updateTitleTx(tx, newThreadID, name); err != nil {
+		return AssistantHandOff{}, fmt.Errorf("%s: name the successor: %w", action, err)
+	}
+	if _, err := tx.Exec(handOffSettingsSQL, oldThreadID, newThreadID); err != nil {
+		return AssistantHandOff{}, fmt.Errorf("%s: copy the model settings: %w", action, err)
+	}
 	if _, err := tx.Exec(`INSERT INTO agent_past_threads (thread_id, agent_id, superseded_at) VALUES (?, ?, ?)`,
 		oldThreadID, agent.ID, now); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: record the old thread: %w", action, err)
@@ -609,7 +639,7 @@ func (s *Store) HandOffAssistant(oldThreadID, newThreadID string, now int64) (ha
 	if handOff.MovedRequests, err = moved.RowsAffected(); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: move the requests: %w", action, err)
 	}
-	if handOff.Old, handOff.Archived, err = applyThreadRowWriteTx(tx, threadArchivedWrite(oldThreadID, true)); err != nil {
+	if handOff.Old, _, err = applyThreadRowWriteTx(tx, threadArchivedWrite(oldThreadID, true)); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: archive the old thread: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -619,6 +649,16 @@ func (s *Store) HandOffAssistant(oldThreadID, newThreadID string, now int64) (ha
 	s.noteThreadRequestChanged(ThreadRequestChange{CallerThreadID: newThreadID})
 	return handOff, nil
 }
+
+// handOffSettingsSQL gives the successor (?2) the old thread's (?1) model
+// settings as they stand in the handoff's transaction, so a change made
+// while the successor was being created is kept. The successor has no
+// history yet, so its provider may still change.
+const handOffSettingsSQL = `UPDATE threads SET (provider, model, reasoning_effort, fast_mode, context_window,
+	auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode) =
+	(SELECT provider, model, reasoning_effort, fast_mode, context_window,
+	   auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode FROM threads WHERE id = ?1)
+	WHERE id = ?2`
 
 // RetargetThreadReceipt points a receipt that waits in `accepted` on a
 // superseded thread at its assistant's current thread, with the request's
