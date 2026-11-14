@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/safecopy"
 	"agent-overflow/internal/workspacepath"
 )
@@ -152,6 +153,12 @@ func copyPath(ctx context.Context, projectRoot, worktreeRoot, relative string) e
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("source %q is not a regular file", source)
 		}
-		return safecopy.File(projectRoot, suffix, worktreeRoot, suffix, info.Mode().Perm())
+		mode := info.Mode().Perm()
+		if mode&0o111 != 0 {
+			// A setup command can run this file next.
+			release := procutil.HoldForks()
+			defer release()
+		}
+		return safecopy.File(projectRoot, suffix, worktreeRoot, suffix, mode)
 	})
 }

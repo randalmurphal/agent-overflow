@@ -1,6 +1,6 @@
 # Process helpers
 
-This package owns five utilities:
+This package owns six utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
   child process group using the platform implementation. On Unix,
@@ -50,6 +50,12 @@ This package owns five utilities:
   the shim's exit status. The caller closes the `Terminal` after `Wait`
   returns. `PollableMaster` makes a read of a pty master end on `Close` on
   Linux; elsewhere the read ends when no process holds the terminal.
+- `HoldForks` keeps this process from starting a child until its release
+  runs. Hold it while writing an executable this process, or a command it
+  starts, runs next: a child forked while the file is open for writing keeps
+  it busy, and running it fails with "text file busy". Every process start
+  waits, so hold it only across the write, and not for an executable another
+  process runs.
 
 Call `ConfigureGroup` before starting the command and pass the same command to
 `KillConfiguredGroup`. These APIs do not verify process identity or establish

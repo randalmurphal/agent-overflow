@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/procutil"
 )
 
 const (
@@ -289,11 +290,11 @@ func writeArtifactFile(name string, data []byte, mode fs.FileMode) error {
 }
 
 // writeArtifactFileWith creates name, fills it with write, syncs and closes
-// it. An executable is written with forks held off (holdForks), because the
+// it. An executable is written with forks held off (procutil.HoldForks), because the
 // preflight runs it right after.
 func writeArtifactFileWith(name string, mode fs.FileMode, write func(*os.File) error) error {
 	if mode&0o111 != 0 {
-		release := holdForks()
+		release := procutil.HoldForks()
 		defer release()
 	}
 	file, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)

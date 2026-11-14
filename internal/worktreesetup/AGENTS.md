@@ -10,6 +10,6 @@ Commands are argv, not shell text. Run them in the new worktree with the inherit
 
 ## Copy safety
 
-Globs are project-root-relative. Refuse absolute paths, traversal, authored `.git`, symbolic links at any level, and no-match globs. Skip wildcard-discovered `.git`. Open through rooted filesystem handles and publish each destination with a unique temporary file, sync, and rename.
+Globs are project-root-relative. Refuse absolute paths, traversal, authored `.git`, symbolic links at any level, and no-match globs. Skip wildcard-discovered `.git`. Open through rooted filesystem handles and publish each destination with a unique temporary file, sync, and rename. Copy an executable file under `procutil.HoldForks`: a setup command can run it next, and a process the app starts during the write would make that fail with "text file busy".
 
 Tests use temporary roots and must cover failure cleanup, observation parity, timeout of descendant processes, kept processes, and path escape attempts.
