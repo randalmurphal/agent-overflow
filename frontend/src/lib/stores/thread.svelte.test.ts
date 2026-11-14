@@ -709,6 +709,58 @@ describe('createThreadPane', () => {
     expect(pane.sessionBanners).toEqual([]);
   });
 
+  // Unsaved thread errors are live state: the snapshot is the backend's
+  // whole list, so it replaces (and clears) the pane's copy on open and on
+  // reload, and nothing carries across a thread switch.
+  it('hydrates unsaved errors from live state and drops them on reload and switch', async () => {
+    const pane = createThreadPane();
+    const unsaved = {
+      threadId: 'thread-unsaved',
+      errors: [{ id: 'unsaved-1', message: 'boom', saveError: 'database or disk is full', occurredAt: 1 }],
+    };
+    let snapshot: { unsavedErrors?: typeof unsaved } = { unsavedErrors: unsaved };
+    setBindingMock('GetThreadLiveState', async (threadId: string) => ({ threadId, ...snapshot }));
+
+    await pane.switchThread(makeThread({ id: 'thread-unsaved', provider: 'claude' }));
+    expect(pane.unsavedErrors?.errors.map((entry) => entry.message)).toEqual(['boom']);
+
+    snapshot = {};
+    await pane.refreshFromBackend();
+    expect(pane.unsavedErrors).toBeNull();
+
+    snapshot = { unsavedErrors: unsaved };
+    await pane.refreshFromBackend();
+    expect(pane.unsavedErrors).not.toBeNull();
+    // The switch itself drops them, even when the new thread's read fails.
+    setBindingMock('GetThreadLiveState', async () => {
+      throw new Error('live state unavailable');
+    });
+    await pane.switchThread(makeThread({ id: 'thread-other', provider: 'claude' }));
+    expect(pane.unsavedErrors).toBeNull();
+  });
+
+  it('keeps an unsaved error pushed while the live-state read was in flight', async () => {
+    const pane = createThreadPane();
+    await pane.switchThread(makeThread({ id: 'thread-race', provider: 'claude' }));
+    let release: (() => void) | null = null;
+    setBindingMock('GetThreadLiveState', (threadId: string) =>
+      new Promise((resolve) => {
+        release = () => resolve({ threadId });
+      }),
+    );
+
+    const refresh = pane.refreshFromBackend();
+    await vi.waitFor(() => expect(release).not.toBeNull());
+    pane.applyUnsavedErrors({
+      threadId: 'thread-race',
+      errors: [{ id: 'unsaved-1', message: 'boom', saveError: 'full', occurredAt: 1 }],
+    });
+    release!();
+    await refresh;
+
+    expect(pane.unsavedErrors?.errors.map((entry) => entry.id)).toEqual(['unsaved-1']);
+  });
+
   it('marks hydrated pending sends with the flush position of the read', async () => {
     __setTransportHelloForTest({
       protocolVersion: 1, capabilities: [], backendId: 'home', backendName: 'home', serverTimeMs: 0,

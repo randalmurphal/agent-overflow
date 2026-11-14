@@ -1431,6 +1431,20 @@ var channelPolicies = []ChannelPolicy{
 			"latest-only.",
 	},
 	{
+		Channel:   eventchan.ThreadUnsavedError,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "The thread errors AO could not save to history: the error " +
+			"text the row would have carried, plus why the write failed. " +
+			"threads:read like provider:item_event, which carries the same " +
+			"prose when the row saves, and GetThreadLiveState, which " +
+			"mirrors this list. Each frame is the thread's whole list, so " +
+			"a replayed frame is idempotent. NOT EntityFiltered: rare, " +
+			"small, and a pane that mounts reads the mirror. Keyed per " +
+			"thread: never latest-only.",
+	},
+	{
 		Channel:   eventchan.ThreadGroupUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

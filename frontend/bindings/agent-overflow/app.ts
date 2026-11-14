@@ -1139,6 +1139,8 @@ export function DismissPRReview(pr: git$0.PRReference, reviewID: string, message
  * the next start would use changes again, `binary_stale` until the
  * installed CLI version changes again. Either way the change still applies
  * when the session next restarts. Every attached client gets the withdraw.
+ * `unsaved_error` clears the thread's errors AO could not save to history
+ * (app_unsaved_errors.go) for every client.
  */
 export function DismissSessionBanner(threadID: string, kind: string): $CancellablePromise<void> {
     return $Call.ByID(1317713039, threadID, kind);

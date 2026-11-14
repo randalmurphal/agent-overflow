@@ -8,6 +8,7 @@
     ReconnectSession,
   } from '../../stores/bindings';
   import type { SessionBannerKind } from '../../types/events';
+  import { UNSAVED_ERROR_BANNER_KIND } from '../../stores/threadUnsavedErrors.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import ErrorReportActions from '../shared/ErrorReportActions.svelte';
   import ErrorReportDetails from '../shared/ErrorReportDetails.svelte';
@@ -131,6 +132,25 @@
       if (pane.threadId === threadID) pane.setGeneralError(userFacingError(err), err);
     } finally {
       dismissing[kind] = false;
+    }
+  }
+
+  // Thread errors the backend could not save to history. Not a session
+  // claim: the row stays until dismissed, which is backend-owned like the
+  // session banners so every screen on the thread clears together.
+  let dismissingUnsaved = $state(false);
+  async function handleDismissUnsaved() {
+    const threadID = pane.threadId;
+    if (!threadID || dismissingUnsaved || operateUngranted) return;
+    dismissingUnsaved = true;
+    try {
+      await DismissSessionBanner(threadID, UNSAVED_ERROR_BANNER_KIND);
+      if (pane.threadId === threadID) pane.applyUnsavedErrors({ threadId: threadID, errors: [] });
+    } catch (err) {
+      console.error('Failed to dismiss unsaved errors:', err);
+      if (pane.threadId === threadID) pane.setGeneralError(userFacingError(err), err);
+    } finally {
+      dismissingUnsaved = false;
     }
   }
 
@@ -351,6 +371,47 @@
         </button>
       </div>
     {/each}
+  {/if}
+  {#if pane.thread && pane.unsavedErrors}
+    {@const unsaved = pane.unsavedErrors}
+    <div
+      transition:fade={{ duration: 150 }}
+      role="alert"
+      aria-live="assertive"
+      data-testid="unsaved-error-banner"
+      class="border-b {ERROR_ROW_CLASSES} px-4 py-2 flex items-start gap-2"
+    >
+      <div class="flex-1 min-w-0 flex flex-col gap-1">
+        <p class="text-xs font-medium">
+          {unsaved.errors.length === 1 ? 'Error' : 'Errors'} not saved to this thread's history
+        </p>
+        <div class="flex flex-col gap-1 max-h-40 overflow-y-auto">
+          {#if unsaved.omitted}
+            <p class="text-xs opacity-80" data-testid="unsaved-error-omitted">
+              {unsaved.omitted} earlier {unsaved.omitted === 1 ? 'error' : 'errors'} not shown.
+            </p>
+          {/if}
+          {#each unsaved.errors as entry (entry.id)}
+            <div data-testid="unsaved-error">
+              <p class="text-xs break-words line-clamp-3" title={entry.message}>{entry.message}</p>
+              <p class="text-xs opacity-80 break-words line-clamp-2" title={entry.saveError}>
+                Could not save: {entry.saveError}
+              </p>
+            </div>
+          {/each}
+        </div>
+      </div>
+      <button
+        onclick={() => void handleDismissUnsaved()}
+        disabled={dismissingUnsaved || operateUngranted}
+        title={operateUngranted ? 'Not granted to this device' : 'Dismiss'}
+        data-testid="unsaved-error-dismiss"
+        aria-label="Dismiss"
+        class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 compact:px-3 compact:py-2 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+      >
+        Dismiss
+      </button>
+    </div>
   {/if}
   {#if providerStatus && pane.thread}
     <div

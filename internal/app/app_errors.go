@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -83,13 +84,14 @@ func (a *App) emitNoticeToThread(threadID, kind, content string) error {
 }
 
 // routeErrorToThread builds the EventError and hands it to triage on
-// the route the caller picked. The triage-nil path logs instead of
-// emitting — if the router is not wired yet, we have neither a store
-// to persist into nor a typed channel to drop the error on, so it
-// degrades to an observability breadcrumb.
+// the route the caller picked. Triage saves the error row, and delivers
+// the error live when the store refuses it (app_unsaved_errors.go). Before
+// the router is wired there is no row to write, so the error is delivered
+// live directly.
 func (a *App) routeErrorToThread(threadID, content string, synthetic bool) {
 	if a.triage == nil {
-		log.Printf("emit error to thread %s: triage not wired — dropping error %q", threadID, content)
+		log.Printf("emit error to thread %s: triage not wired, error %q not saved", threadID, content)
+		a.deliverUnsavedThreadError(threadID, content, errors.New("the event router is not wired yet"))
 		return
 	}
 	evt := provider.ProviderEvent{

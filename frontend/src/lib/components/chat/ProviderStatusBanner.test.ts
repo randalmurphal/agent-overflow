@@ -374,6 +374,96 @@ describe('<ProviderStatusBanner>', () => {
     });
   });
 
+  // Thread errors the backend could not save to history arrive live on
+  // `thread:unsaved_error`, each frame the thread's whole list. They read as
+  // not saved, say why, outlive the session, and clear only on dismiss.
+  describe('unsaved errors', () => {
+    function emitUnsaved(errors: Array<{ id: string; message: string; saveError: string }>, threadId = 'thread-1', omitted = 0): void {
+      emitWailsEvent('thread:unsaved_error', {
+        threadId,
+        omitted,
+        errors: errors.map((entry) => ({ ...entry, occurredAt: 1 })),
+      });
+    }
+
+    it('renders each error marked as not saved, with why', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      emitUnsaved(
+        [
+          { id: 'unsaved-1', message: 'session could not be resumed: boom', saveError: 'database or disk is full' },
+          { id: 'unsaved-2', message: 'discussion sync failed', saveError: 'disk I/O error' },
+        ],
+        'thread-1',
+        3,
+      );
+
+      const { getByTestId, getAllByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      const banner = getByTestId('unsaved-error-banner');
+      expect(banner.textContent).toContain("Errors not saved to this thread's history");
+      const rows = getAllByTestId('unsaved-error');
+      expect(rows).toHaveLength(2);
+      expect(rows[0].textContent).toContain('session could not be resumed: boom');
+      expect(rows[0].textContent).toContain('Could not save: database or disk is full');
+      expect(rows[1].textContent).toContain('Could not save: disk I/O error');
+      expect(getByTestId('unsaved-error-omitted').textContent).toContain('3 earlier errors not shown.');
+      // Not a saved error row and not a session claim.
+      expect(queryByTestId('pane-error-banner')).toBeNull();
+      expect(queryByTestId('provider-status-banner')).toBeNull();
+    });
+
+    it("ignores another thread's list", async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      emitUnsaved([{ id: 'unsaved-1', message: 'elsewhere', saveError: 'full' }], 'thread-2');
+
+      const { queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      expect(queryByTestId('unsaved-error-banner')).toBeNull();
+    });
+
+    it('dismisses through the backend for every screen', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      const dismiss = setBindingMock('DismissSessionBanner', async () => {});
+      emitUnsaved([{ id: 'unsaved-1', message: 'boom', saveError: 'full' }]);
+
+      const { getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      await fireEvent.click(getByTestId('unsaved-error-dismiss'));
+      expect(dismiss).toHaveBeenCalledWith('thread-1', 'unsaved_error');
+      await waitFor(() => expect(queryByTestId('unsaved-error-banner')).toBeNull());
+    });
+
+    it('clears when another screen dismisses', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      emitUnsaved([{ id: 'unsaved-1', message: 'boom', saveError: 'full' }]);
+      const { queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      expect(queryByTestId('unsaved-error-banner')).not.toBeNull();
+
+      emitUnsaved([]);
+      await waitFor(() => expect(queryByTestId('unsaved-error-banner')).toBeNull());
+    });
+
+    it('stays when the session disconnects', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      emitUnsaved([{ id: 'unsaved-1', message: 'boom', saveError: 'full' }]);
+      const { queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+
+      emitWailsEvent('provider:session_account', { threadId: 'thread-1', connected: false });
+      await tick();
+      expect(queryByTestId('unsaved-error-banner')).not.toBeNull();
+    });
+
+    it('keeps a failed dismiss visible as a pane error', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      setBindingMock('DismissSessionBanner', async () => {
+        throw new Error('backend away');
+      });
+      emitUnsaved([{ id: 'unsaved-1', message: 'boom', saveError: 'full' }]);
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      await fireEvent.click(getByTestId('unsaved-error-dismiss'));
+      await waitFor(() => expect(pane.generalError).toBe('Backend away.'));
+      expect(getByTestId('unsaved-error-banner')).toBeInTheDocument();
+    });
+  });
+
   // `{#if providerStatus?.actionable && primaryActionLabel}` sits inside
   // `{#if providerStatus && pane.thread}`, and its deref is the FIRST operand
   // of a two-dep condition. Nulling the status in the same flush that moves

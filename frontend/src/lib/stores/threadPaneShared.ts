@@ -436,6 +436,7 @@ export interface LiveStateHydrationGuard {
   activeTurnAtRequest: ActiveTurn | null;
   queueRevisionAtRequest: number;
   liveTodoRevisionAtRequest: number;
+  unsavedErrorsRevisionAtRequest: number;
   providerSessionAccountRevisionAtRequest: number;
   effectiveModelRevisionAtRequest: number;
 }

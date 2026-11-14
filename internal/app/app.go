@@ -525,6 +525,9 @@ type App struct {
 	// prompt would differ at their next session start
 	// (app_prompt_stale.go).
 	promptStale appPromptStaleState
+	// unsavedErrors is the per-thread list of errors whose rows the store
+	// refused, delivered live instead (app_unsaved_errors.go).
+	unsavedErrors appUnsavedErrorState
 	// taskOutput follows the output files of running background commands
 	// for the tray rows clients expanded (app_background_task_output.go).
 	taskOutput appBackgroundTaskOutputState

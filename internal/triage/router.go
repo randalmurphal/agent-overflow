@@ -228,6 +228,13 @@ type Router struct {
 	// implementations must not block. Wired via SetCommandSettledObserver
 	// at router construction; nil disables it.
 	commandSettled func(threadID, command string)
+	// unsavedError is the app-layer observer of an error row the store
+	// refused: the summary the row would have carried and the write's
+	// error. The app delivers it live (app_unsaved_errors.go), since the
+	// item upsert and the Failed notice emit only after a saved write.
+	// May run on the provider read loop; implementations must not block.
+	// Wired via SetUnsavedErrorObserver at router construction.
+	unsavedError func(threadID, summary string, err error)
 	// codeSpanEnricher builds the persisted `codeSpans` meta value for
 	// a settled assistant text (see code_spans.go). Wired via
 	// SetCodeSpanEnricher at router construction; nil disables it.
@@ -260,6 +267,13 @@ func (r *Router) SetDiffPayloadObserver(fn func(threadID, payloadID string, prev
 // read without synchronization on the persist paths.
 func (r *Router) SetCommandSettledObserver(fn func(threadID, command string)) {
 	r.commandSettled = fn
+}
+
+// SetUnsavedErrorObserver wires the unsaved error observer (see the
+// unsavedError field). Call before the router handles events: it is read
+// without synchronization on the persist paths.
+func (r *Router) SetUnsavedErrorObserver(fn func(threadID, summary string, err error)) {
+	r.unsavedError = fn
 }
 
 // notifyCommandSettled reports a persisted shell command row that has
@@ -1025,16 +1039,20 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 	// emits, every streaming/running item is already visibly flipped
 	// to errored, so no "still-streaming text next to an error item"
 	// visual state appears in the timeline.
+	//
+	// A failed flip still writes the error row, or reports it unsaved: on
+	// a full disk the flip is the first write to fail, and the error the
+	// provider reported is what the user needs to see.
+	scope := strings.TrimSpace(evt.ParentToolUseID)
+	summary := stringsx.FirstNonEmptyTrimmed(evt.Content, "Provider error")
 	if fatal {
 		if err := r.markTurnItemsErrored(evt.ThreadID, turnIndex, now); err != nil {
-			return err
+			return errors.Join(err, r.persistProviderErrorItem(evt.ThreadID, turnIndex, summary, evt.Meta, scope, eventParentID(evt), now))
 		}
 	} else if r.hasActiveStreamingItem(evt.ThreadID) {
 		r.settleStreamingBeforeTimelineBoundary(evt, "error item", settleAllScopesIfUnscoped)
 	}
 
-	scope := strings.TrimSpace(evt.ParentToolUseID)
-	summary := stringsx.FirstNonEmptyTrimmed(evt.Content, "Provider error")
 	if err := r.persistProviderErrorItem(evt.ThreadID, turnIndex, summary, evt.Meta, scope, eventParentID(evt), now); err != nil {
 		return err
 	}
@@ -1060,6 +1078,9 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 // link branch by enum (Add credits, Run /login, ...). Generic provider
 // errors stay as the `error` kind. scope/parentID attribute subagent
 // errors; pass "" for thread-level ones.
+//
+// A row the store refuses goes to the unsaved error observer, which shows
+// it live instead, so no caller has to: the error is still returned.
 func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summary string, meta json.RawMessage, scope, parentID string, now int64) error {
 	// Provider error strings are unbounded boundary input (wire
 	// ErrorMessage / EventError content can carry whole stack traces);
@@ -1089,7 +1110,13 @@ func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summar
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	return r.persistItem(errorItem, nil)
+	if err := r.persistItem(errorItem, nil); err != nil {
+		if r.unsavedError != nil {
+			r.unsavedError(threadID, summary, err)
+		}
+		return err
+	}
+	return nil
 }
 
 // maxErrorSummaryRunes bounds persisted error summaries. 1000 runes

@@ -66,6 +66,10 @@ type ThreadLiveState struct {
 	// client that may read it calls GetThreadShellCommands, and a client
 	// holding a run this does not name drops it.
 	ShellCommandRunID string `json:"shellCommandRunId,omitempty"`
+	// UnsavedErrors mirrors the `thread:unsaved_error` push: the thread
+	// errors AO could not save to history that the user has not dismissed.
+	// Absent when there are none. See app_unsaved_errors.go.
+	UnsavedErrors *UnsavedThreadErrorsEvent `json:"unsavedErrors,omitempty"`
 }
 
 type LiveStateActiveTurn struct {
@@ -120,6 +124,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	state.Todo = a.threadLiveTodo(threadID)
 	state.SessionCLIVersion, state.InstalledCLIVersion = a.staleProviderBinaryVersions(threadID)
 	state.PromptStale, state.PromptStaleRevision = a.promptStaleRevision(threadID)
+	state.UnsavedErrors = a.unsavedErrors.snapshot(threadID)
 	if a.shellCommands != nil {
 		state.ShellCommandRunID = a.shellCommands.ActiveRunID(threadID)
 	}

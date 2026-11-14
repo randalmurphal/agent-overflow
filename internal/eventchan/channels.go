@@ -319,6 +319,7 @@ const (
 	ThreadModeChanged        Channel = "thread:mode_changed"
 	ThreadRuntimeModeChanged Channel = "thread:runtime_mode_changed"
 	ThreadTitleGeneration    Channel = "thread:title_generation"
+	ThreadUnsavedError       Channel = "thread:unsaved_error"
 	ThreadUpdated            Channel = "thread:updated"
 )
 

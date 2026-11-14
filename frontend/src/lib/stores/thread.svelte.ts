@@ -50,6 +50,7 @@ import type { WorkspaceRef } from '../types/git';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import { createLiveTodoState } from './liveTodoState.svelte';
+import { createThreadUnsavedErrors } from './threadUnsavedErrors.svelte';
 import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import { createThreadActivityRuns } from './threadActivityRuns.svelte';
 import { addErrorToast } from './toast.svelte';
@@ -475,6 +476,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     effectiveModelRevision += 1;
   }
   const liveTodoState = createLiveTodoState();
+  const unsavedErrors = createThreadUnsavedErrors();
   // Thread live-state hydration protocol (GetThreadLiveState +
   // ListPendingInteractiveRequests fallback, projected onto the global
   // active-turn/send-queue registries and onto pendingInteractiveState /
@@ -486,6 +488,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getSwitchGeneration: () => switchGeneration,
     pendingInteractiveState,
     liveTodoState,
+    unsavedErrors,
     confirmSend,
     syncRenderedFlushRows,
     getProviderSessionAccountRevision: () => providerSessionAccountRevision,
@@ -634,6 +637,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       providerBanner = status;
     },
     clearSessionBanners,
+    clearUnsavedErrors: unsavedErrors.clear,
     setProviderSessionAccount: updateProviderSessionAccount,
     setSendInFlight: (value) => {
       sendInFlight = value;
@@ -717,6 +721,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     contextWindow = null;
     providerBanner = undefined;
     clearSessionBanners();
+    unsavedErrors.clear();
     updateProviderSessionAccount(null);
     paneErrors.clear();
     loading = false;
@@ -861,6 +866,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get sessionBanners() {
       return sessionBanners;
+    },
+    get unsavedErrors() {
+      return unsavedErrors.current;
     },
     get providerSessionAccount() {
       return providerSessionAccount;
@@ -1525,6 +1533,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     setSessionBanner,
     clearSessionBanners,
+    applyUnsavedErrors: unsavedErrors.apply,
 
     setProviderSessionAccount(account: ProviderSessionAccountEvent | null): void {
       updateProviderSessionAccount(account);
