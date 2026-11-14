@@ -26,6 +26,8 @@ import {
   removeProviderAccount,
   reorderProviderAccounts,
   applyProviderAccountSignIn,
+  applyProviderAccountAutoSwitch,
+  setProviderAccountAutoSwitch,
   resetForTest as resetProviderAccounts,
   switchProviderAccount,
 } from './providerAccounts.svelte';
@@ -38,8 +40,11 @@ import {
   resetForTest as resetRateLimits,
 } from './rateLimitsInfo.svelte';
 import { getToasts, removeToast } from './toast.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { __resetScopesForTest, setCarriedSessionScopes, setPageGrantsFromBootstrap } from '../transport/scopes';
+import { getPinnedBackend } from '../transport/backends';
+import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import type { ProviderAccountAutoSwitchEvent } from '../types/events';
 import { account, deferred } from '../../test/helpers/providerAccounts';
 import type { ManagedProviderAccount } from './bindings';
 import { ProviderLoginMethod, ProviderLoginPhase, ProviderLoginState } from './bindings';
@@ -884,6 +889,145 @@ describe('applyProviderAccountSignIn', () => {
   it('says nothing for an outcome that changed nothing the user made', () => {
     applyProviderAccountSignIn(signIn({}));
     expect(toastMessages()).toEqual([]);
+  });
+});
+
+describe('applyProviderAccountAutoSwitch', () => {
+  const event = (overrides: Partial<ProviderAccountAutoSwitchEvent> = {}): ProviderAccountAutoSwitchEvent => ({
+    provider: 'claude',
+    fromAccountId: 'claude-a',
+    toAccountId: 'claude-b',
+    fromLabel: 'a@x.com',
+    toLabel: 'b@y.com',
+    ...overrides,
+  });
+
+  afterEach(() => {
+    resetStagedBackends();
+  });
+
+  it('names both accounts and the limit that caused the switch', () => {
+    applyProviderAccountAutoSwitch(event({ reason: 'threshold', limitName: 'Current session', usedPercent: 95.6 }));
+    applyProviderAccountAutoSwitch(event({ reason: 'exhausted', limitName: 'Current session', usedPercent: 100 }));
+    applyProviderAccountAutoSwitch(event({ reason: 'refused' }));
+    applyProviderAccountAutoSwitch(event({ reason: 'order' }));
+
+    expect(toastMessages()).toEqual([
+      'Switched Claude account to b@y.com. a@x.com is at 96% of its Current session limit.',
+      'Switched Claude account to b@y.com. a@x.com has used all of its Current session limit.',
+      'Switched Claude account to b@y.com. a@x.com was refused for a usage limit.',
+      'Switched Claude account to b@y.com, the first available in the auto-switch order.',
+    ]);
+    expect(getToasts().map((toast) => toast.type)).toEqual(['info', 'info', 'info', 'info']);
+  });
+
+  it('leaves out the reason when the event lacks what it needs', () => {
+    applyProviderAccountAutoSwitch(event({ reason: 'threshold', limitName: 'Current session' }));
+    applyProviderAccountAutoSwitch(event({ reason: 'exhausted', fromLabel: '', limitName: 'Weekly' }));
+    applyProviderAccountAutoSwitch(event({ reason: 'exhausted' }));
+    applyProviderAccountAutoSwitch(event({ reason: undefined }));
+
+    expect(toastMessages()).toEqual(Array(4).fill('Switched Claude account to b@y.com.'));
+  });
+
+  it('warns when a switch failed', () => {
+    applyProviderAccountAutoSwitch(event({ reason: 'threshold', limitName: 'Current session', usedPercent: 96, error: 'credential file is unavailable' }));
+
+    expect(getToasts().map((toast) => [toast.type, toast.message])).toEqual([
+      ['warning', 'Could not auto-switch the Claude account to b@y.com: credential file is unavailable'],
+    ]);
+  });
+
+  // Like the sign-in toast: the event is about the computer it came from,
+  // and only a session holding that computer's admin grant is told.
+  it('answers to the grant of the computer the event came from', () => {
+    stageBackend({ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' });
+
+    applyProviderAccountAutoSwitch(event({ reason: 'refused' }), 'studio');
+    expect(toastMessages()).toEqual([]);
+
+    setCarriedSessionScopes('studio', ['access:admin']);
+    applyProviderAccountAutoSwitch(event({ reason: 'refused' }), 'studio');
+    expect(toastMessages()).toEqual([
+      'Switched Claude account to b@y.com. a@x.com was refused for a usage limit.',
+    ]);
+  });
+});
+
+describe('setProviderAccountAutoSwitch', () => {
+  let saved: Record<string, boolean>;
+  const pool = () => Object.fromEntries(getProviderAccountsFor('claude').map((a) => [a.id, a.autoSwitch]));
+
+  beforeEach(async () => {
+    saved = { 'claude-a': true, 'claude-b': true };
+    setBindingMock('ListProviderAccounts', async () =>
+      Object.entries(saved).map(([id, autoSwitch]) => account({ id, autoSwitch, active: id === 'claude-a' })),
+    );
+    await loadProviderAccounts();
+  });
+
+  it('shows the new value at once and keeps it through a listing that lands mid-write', async () => {
+    const write = deferred<void>();
+    const rpc = setBindingMock('SetProviderAccountAutoSwitch', () => write.promise);
+
+    const pending = setProviderAccountAutoSwitch('claude', 'claude-b', false);
+    expect(pool()).toEqual({ 'claude-a': true, 'claude-b': false });
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledWith('claude', 'claude-b', false));
+
+    applyProviderAccountsChanged();
+    await vi.waitFor(() => expect(getBindingMock('ListProviderAccounts')).toHaveBeenCalledTimes(2));
+    await Promise.resolve();
+    expect(pool()['claude-b'], 'a stale listing must not undo the toggle').toBe(false);
+
+    saved['claude-b'] = false;
+    write.resolve();
+    await pending;
+    expect(pool()['claude-b']).toBe(false);
+  });
+
+  it('writes in call order, so the last click wins', async () => {
+    const order: boolean[] = [];
+    const first = deferred<void>();
+    setBindingMock('SetProviderAccountAutoSwitch', (_p: string, _id: string, enabled: boolean) => {
+      order.push(enabled);
+      return order.length === 1 ? first.promise : Promise.resolve();
+    });
+
+    const off = setProviderAccountAutoSwitch('claude', 'claude-b', false);
+    const on = setProviderAccountAutoSwitch('claude', 'claude-b', true);
+    expect(pool()['claude-b']).toBe(true);
+    await Promise.resolve();
+    expect(order, 'the second write waits for the first').toEqual([false]);
+    first.resolve();
+    await Promise.all([off, on]);
+    expect(order).toEqual([false, true]);
+  });
+
+  it('reloads the saved value and says so when the write is refused', async () => {
+    setBindingMock('SetProviderAccountAutoSwitch', async () => {
+      throw new Error('disk full');
+    });
+
+    await setProviderAccountAutoSwitch('claude', 'claude-b', false);
+
+    expect(pool()['claude-b']).toBe(true);
+    expect(toastMessages().some((m) => m.startsWith('Claude account auto-switch was not turned off.'))).toBe(true);
+  });
+
+  it('targets the computer it was called for', async () => {
+    stageBackend({ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' });
+    let target: string | null = null;
+    setBindingMock('SetProviderAccountAutoSwitch', async () => {
+      target = getPinnedBackend();
+    });
+    setBindingMock('ListProviderAccounts', async () => []);
+
+    try {
+      await setProviderAccountAutoSwitch('claude', 'claude-b', false, 'studio');
+      expect(target).toBe('studio');
+    } finally {
+      resetStagedBackends();
+    }
   });
 });
 

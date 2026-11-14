@@ -96,6 +96,8 @@
         const chip = agentThreadOriginChip(origin, threadMachine(item.threadId, null));
         return { testid: 'user-message-thread-origin', label: chip.label, open: chip.open };
       }
+      case 'app':
+        return { testid: 'user-message-app-origin', label: 'Agent Overflow' };
       default:
         return null;
     }

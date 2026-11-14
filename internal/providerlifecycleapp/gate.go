@@ -7,8 +7,9 @@ import (
 )
 
 type usageProbeGate struct {
-	probe func(context.Context) error
-	ctxFn func() context.Context
+	probe       func(context.Context) error
+	ctxFn       func() context.Context
+	minInterval time.Duration
 
 	now       func() time.Time
 	afterFunc func(time.Duration, func())
@@ -25,9 +26,10 @@ func newUsageProbeGate(
 	ctxFn func() context.Context,
 ) *usageProbeGate {
 	return &usageProbeGate{
-		probe: probe,
-		ctxFn: ctxFn,
-		now:   time.Now,
+		probe:       probe,
+		ctxFn:       ctxFn,
+		minInterval: probeMinInterval,
+		now:         time.Now,
 		afterFunc: func(delay time.Duration, callback func()) {
 			time.AfterFunc(delay, callback)
 		},
@@ -67,7 +69,7 @@ func (g *usageProbeGate) request(fromTimer bool) {
 }
 
 func (g *usageProbeGate) holdLocked(now time.Time) time.Duration {
-	return probeMinInterval - now.Sub(g.lastStart)
+	return g.minInterval - now.Sub(g.lastStart)
 }
 
 func (g *usageProbeGate) scheduleLocked(wait time.Duration) {
@@ -83,16 +85,30 @@ func (g *usageProbeGate) scheduleLocked(wait time.Duration) {
 
 func (s *Service) claudeUsageGate() *usageProbeGate {
 	s.claudeGateOnce.Do(func() {
-		s.claudeGate = newUsageProbeGate(s.probeClaudeRateLimits, s.context)
+		s.claudeGate = s.newGate(s.probeClaudeRateLimits)
 	})
 	return s.claudeGate
 }
 
 func (s *Service) codexUsageGate() *usageProbeGate {
 	s.codexGateOnce.Do(func() {
-		s.codexGate = newUsageProbeGate(s.probeCodexRateLimits, s.context)
+		s.codexGate = s.newGate(s.probeCodexRateLimits)
 	})
 	return s.codexGate
+}
+
+// newGate builds a gate whose trailing runs Close joins.
+func (s *Service) newGate(probe func(context.Context) error) *usageProbeGate {
+	gate := newUsageProbeGate(probe, s.context)
+	if s.deps.ProbeMinInterval != nil {
+		if gap := s.deps.ProbeMinInterval(); gap > 0 {
+			gate.minInterval = gap
+		}
+	}
+	gate.afterFunc = func(delay time.Duration, callback func()) {
+		time.AfterFunc(delay, func() { s.runMember(callback) })
+	}
+	return gate
 }
 
 func (s *Service) RequestClaudeUsage() { s.claudeUsageGate().Request() }

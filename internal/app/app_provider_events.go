@@ -141,13 +141,13 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		}
 
 		if evt.Kind == provider.EventTurnComplete {
-			// Turn completion marks activity; it deliberately does NOT
-			// probe. The 2-minute poll loop (startRateLimitProbeLoop)
-			// reads this mark and issues at most one usage request per
-			// interval no matter how many sessions are completing turns —
-			// per-turn probing multiplied across parallel sessions and
-			// machines sharing one account is what earned server 429s on
-			// the usage endpoint.
+			// Turn completion marks activity for the provider's usage
+			// family; it deliberately does NOT probe. The one-minute usage
+			// poll (providerlifecycleapp) reads this mark and issues at most
+			// one usage request per interval however many sessions complete
+			// turns. Per-turn probing multiplied across parallel sessions
+			// and machines sharing one account earned server 429s on the
+			// usage endpoint.
 			a.providerLifecycleService().NoteTurnActivity(providerType)
 			// The idle edge is where a peer rename deferred mid-turn
 			// converges. Stateless: syncPeerSessionName re-derives the

@@ -15,7 +15,8 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   descendant of it. Every launch passes `HARNESS_TIMING`
   (`diagenv.HarnessTiming`), which shortens product cadences a spec should
   not wait out (pairing probe, thread poll, transfer retry, PR update retry,
-  PR CI live, follow and log wait polls); a spec that needs another value,
+  PR CI live, follow and log wait polls, and the gap between two usage
+  probes of one provider); a spec that needs another value,
   or the PR update poll cadence (`pr-update`), the merged-PR cleanup poll
   (`merged-pr-poll`) or the first retry of a failed open-PR lookup
   (`pr-lookup-retry`), passes its own through `env`.

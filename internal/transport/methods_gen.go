@@ -475,6 +475,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetPipelineActive", ID: 1113626255, Scope: "git:operate", Route: "home"},                                          // main.App.SetPipelineActive
 	{Name: "SetPipelineFollows", ID: 2435786137, Scope: "git:operate", Route: "home"},                                         // main.App.SetPipelineFollows
 	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate", Route: "project", StepUp: true},               // main.App.SetProjectWorktreeSetup
+	{Name: "SetProviderAccountAutoSwitch", ID: 2230720062, Scope: "access:admin", Route: "home"},                              // main.App.SetProviderAccountAutoSwitch
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", Route: "home", StepUp: true},                   // main.App.SetProviderCustomEnvVar
 	{Name: "SetPushSenderCredential", ID: 719170063, Scope: "access:admin", Route: "home", StepUp: true, Remote: true},        // main.App.SetPushSenderCredential
 	{Name: "SetThreadGroup", ID: 2514763466, Scope: "threads:operate", Route: "home"},                                         // main.App.SetThreadGroup

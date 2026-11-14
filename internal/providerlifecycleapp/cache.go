@@ -16,7 +16,8 @@ const rateLimitResetJitterTolerance = time.Minute
 
 // RememberEvent observes the provider:usage channel before root publishes it.
 // Persistence remains synchronous and precedes bus emission, matching the
-// original event ordering.
+// original event ordering. Deps.OnReading follows persistence, on the
+// emitter's goroutine.
 func (s *Service) RememberEvent(name eventchan.Channel, data any) {
 	if name != eventchan.ProviderUsage {
 		return
@@ -53,6 +54,9 @@ func (s *Service) RememberEvent(name eventchan.Channel, data any) {
 		if err := s.deps.Accounts.RememberRateLimit(providerName, incoming.AccountID, merged); err != nil {
 			log.Printf("rate limits: persist %s account %s: %v", providerName, incoming.AccountID, err)
 		}
+	}
+	if s.deps.OnReading != nil {
+		s.deps.OnReading(providerName, incoming.AccountID)
 	}
 }
 
@@ -208,6 +212,18 @@ func (s *Service) Forget(providerName, accountID string) {
 			},
 		})
 	}
+}
+
+// Snapshot returns a copy of the cached snapshot for one account.
+func (s *Service) Snapshot(providerName, accountID string) (provider.RateLimitsSnapshot, bool) {
+	providerName = provider.UsageProviderFamily(providerName)
+	s.cacheMu.RLock()
+	snapshot, ok := s.cache[CacheKey(providerName, accountID)]
+	s.cacheMu.RUnlock()
+	if !ok {
+		return provider.RateLimitsSnapshot{}, false
+	}
+	return CloneSnapshot(snapshot), true
 }
 
 // Snapshots returns a sorted defensive copy for the Wails façade.

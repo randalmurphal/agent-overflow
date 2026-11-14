@@ -89,6 +89,26 @@ const PROVIDER_FIELDS = [
     keywords: ['login', 'sign in', 'switch', 'usage', 'limits', 'rate limit'],
   },
   {
+    slug: 'auto-switch-strategy',
+    heading: 'Accounts',
+    label: 'Use accounts in order of',
+    keywords: ['auto-switch', 'auto switch', 'soonest weekly reset', 'card order', 'account order', 'strategy', 'usage limit', 'rate limit', 'quota'],
+  },
+  {
+    slug: 'auto-switch-threshold',
+    heading: 'Accounts',
+    label: 'Switch at',
+    hint: 'Leave an account once any limit that applies to a running model reaches this. When every account is past it, the current one is used until the provider refuses it.',
+    keywords: ['auto-switch', 'auto switch', 'threshold', 'percent', 'usage limit', 'rate limit', 'quota'],
+  },
+  {
+    slug: 'auto-continue',
+    heading: 'Accounts',
+    label: 'Continue threads after a usage limit',
+    hint: 'When a usage limit stops a thread, send it "Continue" once another account takes over or the limit resets.',
+    keywords: ['auto-continue', 'resume', 'restart', 'rate limit', 'spawned', 'agents', 'auto-switch'],
+  },
+  {
     slug: 'auto-compact',
     heading: 'Context window',
     label: 'Auto-compact',

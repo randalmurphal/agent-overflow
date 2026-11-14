@@ -319,6 +319,17 @@ func validateSettings(current Settings) (Settings, error) {
 	if err := validateClaudeMaxCommandTimeoutHours("claudeMaxCommandTimeoutHours", current.ClaudeMaxCommandTimeoutHours); err != nil {
 		return Settings{}, err
 	}
+	current.AccountAutoSwitchStrategy = strings.TrimSpace(current.AccountAutoSwitchStrategy)
+	if err := validateOption(
+		"accountAutoSwitchStrategy",
+		current.AccountAutoSwitchStrategy,
+		allowedAccountAutoSwitchStrategies,
+	); err != nil {
+		return Settings{}, err
+	}
+	if err := validateAccountAutoSwitchThreshold("accountAutoSwitchThreshold", current.AccountAutoSwitchThreshold); err != nil {
+		return Settings{}, err
+	}
 	current.ClaudeThinking, err = validateClaudeThinking("claudeThinking", current.ClaudeThinking)
 	if err != nil {
 		return Settings{}, err
@@ -498,6 +509,16 @@ func sanitizeLoadedSettings(current Settings) Settings {
 	current.ClaudeMaxCommandTimeoutHours = sanitizeClaudeMaxCommandTimeoutHours(
 		"claudeMaxCommandTimeoutHours",
 		current.ClaudeMaxCommandTimeoutHours,
+	)
+	current.AccountAutoSwitchStrategy = sanitizeOption(
+		"accountAutoSwitchStrategy",
+		current.AccountAutoSwitchStrategy,
+		DefaultSettings.AccountAutoSwitchStrategy,
+		allowedAccountAutoSwitchStrategies,
+	)
+	current.AccountAutoSwitchThreshold = sanitizeAccountAutoSwitchThreshold(
+		"accountAutoSwitchThreshold",
+		current.AccountAutoSwitchThreshold,
 	)
 	current.ClaudeThinking = sanitizeClaudeThinking("claudeThinking", current.ClaudeThinking)
 	current.SpinnerCustomVerbs = sanitizeSpinnerCustomVerbs("spinnerCustomVerbs", current.SpinnerCustomVerbs)

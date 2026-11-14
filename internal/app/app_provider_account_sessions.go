@@ -37,11 +37,13 @@ func providerSessionMatchesAccount(sess session, selection providerAccountSelect
 
 // ensureProviderAccountReadyForSendLocked applies a provider account switch
 // at the last safe moment before a new user turn. The caller holds the
-// thread-action lock.
+// thread-action lock. Auto-switch decides after an outside login is
+// reconciled, so a selection made outside the app counts as pinned.
 func (a *App) ensureProviderAccountReadyForSendLocked(thread store.Thread) error {
 	if err := a.reconcileExternalProviderAccount(thread.Provider); err != nil {
 		return fmt.Errorf("check %s account before send: %w", thread.Provider, err)
 	}
+	a.accountSwitchBeforeSend(thread.ID, thread.Provider, a.threadRunningModel(thread))
 	selection := a.captureProviderAccountSelection(thread.Provider)
 	return a.ensureProviderAccountSelectionReadyForSendLocked(thread, selection)
 }

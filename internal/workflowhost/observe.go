@@ -138,7 +138,7 @@ func (r *Runner) observe(runKey string, event provider.ProviderEvent) {
 		// windows are advisory and model/bucket granularity is not reliable across
 		// providers, so neither is used for control flow: the real refusal is the
 		// proof, and an explicit resume always gets another real attempt.
-		if workflowUsageLimitRefusal(event) {
+		if provider.IsUsageLimitRefusal(event) {
 			r.disarmTimerLocked(attempt)
 			attempt.pendingTransient = false
 			identity, identified := attempt.dispatchIdentity, attempt.dispatchIdentitySet

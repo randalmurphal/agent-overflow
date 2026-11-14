@@ -710,6 +710,17 @@ var channelPolicies = []ChannelPolicy{
 			"listing a reconnecting client re-reads already holds the result.",
 	},
 	{
+		Channel:   eventchan.ProviderAccountAutoSwitch,
+		Audience:  AudienceAny,
+		Retention: RetentionEphemeral,
+		Scope:     ScopeAccessAdmin,
+		Why: "Reports a switch auto-switch made, or one it could not " +
+			"make, for the toast every admin client shows. Same grant " +
+			"and audience as provider:account_signin. Ephemeral for the " +
+			"same reason: a replayed frame toasts a switch from before " +
+			"the gap, and the listing already holds the selection.",
+	},
+	{
 		Channel:   eventchan.ProviderApproval,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

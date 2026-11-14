@@ -37,8 +37,8 @@ func TestWorkflowQuotaRefusalReadsNormalizedFailureOnly(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			event := provider.ProviderEvent{Kind: test.kind, Failure: test.failure, Meta: json.RawMessage(test.meta)}
-			if got := workflowUsageLimitRefusal(event); got != test.want {
-				t.Fatalf("workflowUsageLimitRefusal = %v, want %v", got, test.want)
+			if got := provider.IsUsageLimitRefusal(event); got != test.want {
+				t.Fatalf("IsUsageLimitRefusal = %v, want %v", got, test.want)
 			}
 		})
 	}

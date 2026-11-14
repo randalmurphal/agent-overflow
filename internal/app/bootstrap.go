@@ -77,6 +77,10 @@ type IsolationConfig struct {
 	PRCILogWaitInterval  time.Duration
 	MergedPRPollInterval time.Duration
 	PRLookupRetryBase    time.Duration
+	// UsageProbeGap replaces the shortest gap between two usage probes of
+	// one provider, so a spec that sets a usage answer is not held behind a
+	// probe the boot just made. Zero keeps the product gap.
+	UsageProbeGap time.Duration
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -97,6 +101,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.preview.scanScope = isolatedScanScope(config.ScanScopePIDs)
 	a.downloadsIsolated = true
 	a.threadPollOverride = config.ThreadRequestPoll
+	a.usageProbeGap = config.UsageProbeGap
 	a.transferPendingRetry = config.TransferPendingRetry
 	a.prUpdates.interval = config.PRUpdateInterval
 	a.prUpdates.retryBase = config.PRUpdateRetryBase
@@ -107,7 +112,11 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.
-	a.rateLimitProbeClientOverride = isolatedHTTPClient
+	// Usage is answered only for an identity a harness sets a reading for.
+	a.claudeUsageFake = claudefake.NewUsage()
+	a.rateLimitProbeClientOverride = &http.Client{
+		Transport: isolatedProviderTransport{claudeUsage: a.claudeUsageFake},
+	}
 	// The user's OpenAI key file lives under the test's own data root, and
 	// what it would send to OpenAI is answered in process.
 	a.openAIClientOverride = isolatedHTTPClient
@@ -128,13 +137,16 @@ var isolatedHTTPClient = &http.Client{Transport: isolatedProviderTransport{}}
 // isolatedProviderTransport refuses every request except Claude's OAuth
 // profile, the two transcriptions and OpenAI speech, which it answers
 // in-process so account identification, dictation and read aloud run end to
-// end through the real clients. The profile is claudefake's. Codex
-// transcription names the bytes and type it received, and an access token
-// of "refused" is answered as an expired login; OpenAI live transcription
-// and speech are openaifake's.
-type isolatedProviderTransport struct{}
+// end through the real clients. The profile is claudefake's. Claude usage is
+// answered from claudeUsage for an identity it holds a reading for and
+// refused otherwise. Codex transcription names the bytes and type it
+// received, and an access token of "refused" is answered as an expired
+// login; OpenAI live transcription and speech are openaifake's.
+type isolatedProviderTransport struct {
+	claudeUsage *claudefake.Usage
+}
 
-func (isolatedProviderTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
+func (t isolatedProviderTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if req.Body != nil {
 		defer func() {
 			if closeErr := req.Body.Close(); closeErr != nil && err == nil {
@@ -144,6 +156,9 @@ func (isolatedProviderTransport) RoundTrip(req *http.Request) (resp *http.Respon
 	}
 	if claudefake.IsProfile(req) {
 		return claudefake.ServeProfile(req)
+	}
+	if resp, ok, err := t.claudeUsage.Serve(req); ok {
+		return resp, err
 	}
 	if req.Method == http.MethodPost && req.URL.String() == codex.TranscribeURL {
 		return fakeTranscription(req)

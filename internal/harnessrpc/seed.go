@@ -588,6 +588,11 @@ func (h *Harness) HarnessReset() (err error) {
 	h.mu.Unlock()
 	h.forge.Reset()
 	h.forgeAPIServer().setOffline(false)
+	if h.config.Host != nil {
+		if usage := h.config.Host.ClaudeUsageFake(); usage != nil {
+			usage.Clear("")
+		}
+	}
 	if replayer != nil {
 		replayer.Stop()
 	}

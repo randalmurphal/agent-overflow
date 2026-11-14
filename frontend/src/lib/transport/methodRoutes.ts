@@ -436,6 +436,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1113626255: 'home', // SetPipelineActive
 	2435786137: 'home', // SetPipelineFollows
 	322092470: 'project', // SetProjectWorktreeSetup
+	2230720062: 'home', // SetProviderAccountAutoSwitch
 	2118904465: 'home', // SetProviderCustomEnvVar
 	719170063: 'home', // SetPushSenderCredential
 	2514763466: 'home', // SetThreadGroup

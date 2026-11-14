@@ -46,7 +46,7 @@ var (
 // startSystemStatsSampler runs the sidebar's CPU+memory sampler.
 // Starts at app boot, exits when the lifeCtx is cancelled (Shutdown
 // step 1b). Read-only — no FS writes, no subprocesses, no settings
-// mutation. Mirrors the loop shape of `startRateLimitProbeLoop`.
+// mutation. Mirrors the loop shape of `providerlifecycleapp.StartProbeLoop`.
 //
 // The first emit is deliberately at t = systemStatsInterval, not t=0:
 // gopsutil computes CPU% as a delta against the prior `cpu.Percent`

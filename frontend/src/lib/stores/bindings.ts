@@ -211,6 +211,7 @@ export {
   SwitchProviderAccount,
   RemoveProviderAccount,
   ReorderProviderAccounts,
+  SetProviderAccountAutoSwitch,
   RefreshProviderAccountUsage,
 
   // Per-client UI view state (ui_state table) behind stores/appStorage.ts.
