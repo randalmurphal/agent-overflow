@@ -357,6 +357,11 @@ type App struct {
 	// first use for the reason forgeAttachCache is lazy.
 	ciLogOnce  sync.Once
 	ciLogStore *cilog.Store
+	// claudeRetentionLogged is the last Claude transcript-retention failure
+	// logged per working directory, so a repeated one is logged once
+	// (app_claude_retention.go).
+	claudeRetentionLogMu  sync.Mutex
+	claudeRetentionLogged map[string]string
 	// dictation holds recordings clients are uploading for transcription
 	// (app_dictation.go), created on first use.
 	dictationOnce sync.Once

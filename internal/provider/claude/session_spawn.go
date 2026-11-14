@@ -152,6 +152,9 @@ type Config struct {
 	// the CLI runs on Linux — including the WSL backend — because the
 	// implementation reads /proc/self/cgroup.
 	ToolMemoryLimit string
+	// CleanupPeriodDays is the `cleanupPeriodDays` the block carries, from
+	// CleanupPeriodOverride. Zero sends none. See retention.go.
+	CleanupPeriodDays int
 	// Thinking is the extended-thinking axis: leave it to the CLI, turn it
 	// off, or pin a fixed token budget, plus whether thinking text reaches
 	// the wire.
@@ -242,7 +245,7 @@ func withClaudeTaskListEnv(env map[string]string, taskListID string) map[string]
 }
 
 func claudeSpawnUnsetEnv() []string {
-	return append([]string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"}, CrossSessionUnsetEnv()...)
+	return append(ConfigHomeUnsetEnv(), CrossSessionUnsetEnv()...)
 }
 
 // claudeCodeEntrypointEnv tags spawned `claude` processes so the

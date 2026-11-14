@@ -362,6 +362,14 @@ Mechanism in
 - Sharing `~/.claude` between AO, terminal `claude`, and Claude Code is the
   designed mode; never "fix" it with per-account `CLAUDE_CONFIG_DIR`
   (`internal/provideraccounts/AGENTS.md` has the case table).
+- The retention window lengthens Claude Code's own transcript cleanup for
+  the Claude processes AO starts and never shortens it: the
+  `cleanupPeriodDays` override is sent only when the window is longer than
+  the period the process resolves from `~/.claude/settings.json` and its
+  workspace's `.claude/settings.json` and `settings.local.json`, and
+  disabled cleanup sends the cap. AO does not write those files; the storage
+  settings page names the value to set for `claude` run outside AO. Codex
+  keeps its sessions indefinitely and AO leaves them.
 - A model that exists only as probe enrichment (`claude-fable-5-1`) is not
   added to the hand catalog; the point of enrichment is that a new model
   needs no release (see `internal/claudemodels/AGENTS.md`). The exception is

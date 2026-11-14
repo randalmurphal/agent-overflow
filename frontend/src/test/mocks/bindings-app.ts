@@ -267,6 +267,7 @@ export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
+export const GetClaudeTranscriptRetention = dispatch('GetClaudeTranscriptRetention');
 export const ClearBrowserSiteData = dispatch('ClearBrowserSiteData');
 export const BrowserCompanionRevealPageFile = dispatch('BrowserCompanionRevealPageFile');
 export const BrowserCompanionDo = dispatch('BrowserCompanionDo');

@@ -4,6 +4,7 @@
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import ArchivedThreads from './ArchivedThreads.svelte';
+  import ClaudeTranscriptRetentionNote from './ClaudeTranscriptRetentionNote.svelte';
   import { INPUT_CLASS } from './styles';
 
   // Mirrors internal/settings.MaxRetentionDays. Hard-capped on the Go
@@ -48,6 +49,7 @@
           class="{INPUT_CLASS} max-w-[6rem]"
         />
       </SettingsField>
+      <ClaudeTranscriptRetentionNote days={settings.retention.days} />
     </div>
   </section>
 

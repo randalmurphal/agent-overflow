@@ -549,6 +549,7 @@ export interface MockSessionConfig {
   systemPromptSnapshot?: string;
   developerInstructions?: string;
   bashMaxTimeoutMs?: string;
+  cleanupPeriodDays?: number;
 }
 
 /** One message a Codex mock received through `thread/inject_items`. */

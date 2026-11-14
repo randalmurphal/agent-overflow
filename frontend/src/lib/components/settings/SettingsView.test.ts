@@ -26,6 +26,13 @@ async function seed(): Promise<void> {
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('ListThreads', async () => []);
   setBindingMock('ListArchivedThreads', async () => []);
+  // The storage page reads Claude Code's own transcript retention on mount.
+  setBindingMock('GetClaudeTranscriptRetention', async () => ({
+    settingsPath: '/home/test/.claude/settings.json',
+    claudeDays: 30,
+    explicit: false,
+    sessionDays: 0,
+  }));
   // The Performance page asks whether it runs under the Windows launcher.
   setBindingMock('IsWSL', async () => false);
   // The notifications block below reads the push status on mount.

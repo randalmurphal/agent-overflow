@@ -51,6 +51,12 @@ type ProbeConfig struct {
 	// so bytes that look fresh still rotate. See armRotationWatch.
 	RotationExpected bool
 
+	// CleanupPeriodDays is the `cleanupPeriodDays` the probe carries, from
+	// CleanupPeriodOverride. Zero sends none. A probe held open for a token
+	// rotation lives long enough to run the CLI's transcript sweep, so it
+	// carries the same value a session does. See retention.go.
+	CleanupPeriodDays int
+
 	// OnModels, when non-nil, fires exactly once on a successful probe with
 	// the `models` array carried by the same initialize response that produced
 	// the AccountInfo. It exists so the model catalog can be enriched from the
@@ -167,10 +173,10 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 
 	proc, err := provider.Spawn(spawnCtx, provider.SpawnConfig{
 		Binary:   binary,
-		Args:     buildProbeArgs(),
+		Args:     buildProbeArgs(cfg),
 		Dir:      cfg.WorkDir,
 		Env:      cfg.Env,
-		UnsetEnv: []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"},
+		UnsetEnv: ConfigHomeUnsetEnv(),
 		// The probe runs under a deadline and drives the CLI's own token
 		// refresh; a SIGKILL between the token endpoint answering and the
 		// credential write ends the account's chain (see GracefulCancel).
@@ -229,14 +235,18 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 // `--bare` is NOT a substitute: it never reads OAuth at all, which would
 // report every subscription login as unauthenticated and disable the
 // refresh path this probe exists to drive.
-func buildProbeArgs() []string {
-	return []string{
+//
+// `--safe-mode` still applies `--settings`, which is how the probe carries
+// cfg.CleanupPeriodDays.
+func buildProbeArgs(cfg ProbeConfig) []string {
+	args := []string{
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--max-turns", "0",
 		"--safe-mode",
 	}
+	return append(args, CleanupPeriodArgs(cfg.CleanupPeriodDays)...)
 }
 
 // initResponse is everything ProbeAccount reads out of one initialize
