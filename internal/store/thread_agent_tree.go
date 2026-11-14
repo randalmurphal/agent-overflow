@@ -362,38 +362,6 @@ func (s *Store) ThreadsWithOpenAgentRows(waiting []string, limit int) (_ []strin
 	return out, nil
 }
 
-// LocalSpawnersOf names the thread whose local spawn reaches each of ids
-// (idx_thread_requests_spawn_link), the parent the Agents listing nests it
-// under. A thread no such spawn reaches is left out.
-func (s *Store) LocalSpawnersOf(ids []string) (_ map[string]string, err error) {
-	action := "store: name the spawners of threads"
-	out := make(map[string]string, len(ids))
-	if len(ids) == 0 {
-		return out, nil
-	}
-	encoded, err := json.Marshal(ids)
-	if err != nil {
-		return nil, fmt.Errorf("%s: encode ids: %w", action, err)
-	}
-	rows, err := s.reader().Query(`SELECT r.target_thread_id, r.caller_thread_id FROM json_each(?1) j CROSS JOIN thread_requests r
-		 WHERE r.target_thread_id = j.value AND `+agentSpawnLinkSQL("r"), string(encoded))
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
-	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
-	for rows.Next() {
-		var child, parent string
-		if err := rows.Scan(&child, &parent); err != nil {
-			return nil, fmt.Errorf("%s: scan: %w", action, err)
-		}
-		out[child] = parent
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: iterate: %w", action, err)
-	}
-	return out, nil
-}
-
 // MaxPastAgentRowsPage bounds one page of ListThreadPastAgentRequests.
 const MaxPastAgentRowsPage = 50
 
@@ -567,52 +535,71 @@ func (s *Store) ThreadRequestDeliveries(callerThreadID string, tokens []string) 
 	return out, nil
 }
 
-// ThreadAgentRowCaller is a request a change frame names, and its caller.
-type ThreadAgentRowCaller struct {
-	Token          string
-	CallerThreadID string
+// ThreadAgentRowFrame is one change frame: the request Token, or every
+// request when Token is empty, of a thread ThreadID lists.
+type ThreadAgentRowFrame struct {
+	Token    string
+	ThreadID string
 }
 
-// ThreadAgentRowCallers names the caller of each request among tokens, and
-// of each request this computer's threads made (the receipts owner names)
-// that is accepted or running in one of targets. Reminders and requests
-// past the retention floor are left out.
-func (s *Store) ThreadAgentRowCallers(tokens, targets []string, owner string) (_ []ThreadAgentRowCaller, err error) {
-	action := "store: name the callers of changed agent rows"
-	if tokens == nil {
-		tokens = []string{}
+// ThreadAgentRowFrames names the frames a batch of changes sends, in one
+// statement: each request among tokens, and each request this computer's
+// threads made (the receipts owner names) that is accepted or running in
+// one of targets, framed for its caller; each of callers framed for itself
+// with no token; and each of those frames again for every thread up the
+// local spawns above it (idx_thread_requests_spawn_link) whose listing
+// nests it, fewer than depth spawns up, a thread once per chain. Reminders
+// and requests past the retention floor are left out.
+func (s *Store) ThreadAgentRowFrames(tokens, targets, callers []string, owner string, depth int) (_ []ThreadAgentRowFrame, err error) {
+	action := "store: name the frames of changed agent rows"
+	encoded := make([]string, 0, 3)
+	for _, list := range [][]string{tokens, targets, callers} {
+		if list == nil {
+			list = []string{}
+		}
+		value, err := json.Marshal(list)
+		if err != nil {
+			return nil, fmt.Errorf("%s: encode: %w", action, err)
+		}
+		encoded = append(encoded, string(value))
 	}
-	if targets == nil {
-		targets = []string{}
-	}
-	encodedTokens, err := json.Marshal(tokens)
-	if err != nil {
-		return nil, fmt.Errorf("%s: encode tokens: %w", action, err)
-	}
-	encodedTargets, err := json.Marshal(targets)
-	if err != nil {
-		return nil, fmt.Errorf("%s: encode targets: %w", action, err)
-	}
-	rows, err := s.reader().Query(`SELECT r.token, r.caller_thread_id FROM thread_requests r
-		 WHERE r.token IN (SELECT value FROM json_each(?1)
-		                   UNION SELECT rc.token FROM json_each(?2) t CROSS JOIN thread_request_receipts rc
-		                          WHERE rc.target_thread_id = t.value AND rc.owner_device_id = ?3
-		                            AND rc.state IN ('accepted','running'))
-		   AND r.lineage_only = 0 AND r.kind <> 'remind'`, string(encodedTokens), string(encodedTargets), owner)
+	rows, err := s.reader().Query(threadAgentRowFramesSQL, encoded[0], encoded[1], owner, encoded[2], depth)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
-	out := []ThreadAgentRowCaller{}
+	out := []ThreadAgentRowFrame{}
 	for rows.Next() {
-		var c ThreadAgentRowCaller
-		if err := rows.Scan(&c.Token, &c.CallerThreadID); err != nil {
+		var f ThreadAgentRowFrame
+		if err := rows.Scan(&f.Token, &f.ThreadID); err != nil {
 			return nil, fmt.Errorf("%s: scan: %w", action, err)
 		}
-		out = append(out, c)
+		out = append(out, f)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("%s: iterate: %w", action, err)
 	}
 	return out, nil
 }
+
+// threadAgentRowFramesSQL is ThreadAgentRowFrames' read: ?1 the tokens, ?2
+// the targets, ?3 the receipts' owner, ?4 the callers, ?5 the depth. `up`
+// climbs one local spawn a step from each named frame's thread, keyed by
+// the queued thread, carrying the threads above it so a cycle ends.
+var threadAgentRowFramesSQL = `WITH RECURSIVE
+  named(token, thread) AS (
+    SELECT r.token, r.caller_thread_id FROM thread_requests r
+     WHERE r.token IN (SELECT value FROM json_each(?1)
+                       UNION SELECT rc.token FROM json_each(?2) CROSS JOIN thread_request_receipts rc
+                              WHERE rc.target_thread_id = json_each.value AND rc.owner_device_id = ?3
+                                AND rc.state IN ('accepted','running'))
+       AND r.lineage_only = 0 AND r.kind <> 'remind'
+    UNION SELECT '', value FROM json_each(?4)),
+  up(token, thread, depth, path) AS (
+    SELECT token, thread, 0, json_array(thread) FROM named
+    UNION ALL
+    SELECT up.token, sp.caller_thread_id, up.depth + 1, json_insert(up.path, '$[#]', sp.caller_thread_id)
+      FROM up CROSS JOIN thread_requests sp
+     WHERE up.depth + 1 < ?5 AND ` + agentSpawnLinkSQL("sp") + ` AND sp.target_thread_id = up.thread
+       AND NOT EXISTS (SELECT 1 FROM json_each(up.path) WHERE json_each.value = sp.caller_thread_id))
+SELECT DISTINCT token, thread FROM up`

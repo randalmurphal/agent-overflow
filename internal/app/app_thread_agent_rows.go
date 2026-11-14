@@ -1150,78 +1150,22 @@ func (a *App) drainThreadAgentEmits() {
 		}
 		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 		e.mu.Unlock()
-		frames := make([]ThreadAgentRowChange, 0, len(callers)+len(tokens))
-		for caller := range callers {
-			frames = append(frames, ThreadAgentRowChange{ThreadID: caller})
-		}
-		if len(tokens)+len(targets) > 0 {
-			named, err := a.store.ThreadAgentRowCallers(slices.Collect(maps.Keys(tokens)), slices.Collect(maps.Keys(targets)), threadReceiptLocalOwner)
-			if err != nil {
-				log.Printf("agent rows: name the callers of %d changed requests and %d targets: %v", len(tokens), len(targets), err)
-			}
-			for _, changed := range named {
-				frames = append(frames, ThreadAgentRowChange{ThreadID: changed.CallerThreadID, ID: changed.Token})
-			}
-		}
-		a.emitThreadAgentRowFrames(frames)
-	}
-}
-
-// emitThreadAgentRowFrames emits each frame for its caller and again for
-// every thread up the spawns above it whose listing nests the caller's
-// rows, within the listing's depth: those threads' listings, and the worker
-// summaries their sidebar rows read, change with it. Each thread hears a
-// frame once.
-func (a *App) emitThreadAgentRowFrames(frames []ThreadAgentRowChange) {
-	if len(frames) == 0 {
-		return
-	}
-	// spawner is each thread's parent in the listing, read one level of
-	// spawns at a time for every caller at once.
-	spawner := map[string]string{}
-	asked := map[string]bool{}
-	var level []string
-	for _, frame := range frames {
-		if !asked[frame.ThreadID] {
-			asked[frame.ThreadID] = true
-			level = append(level, frame.ThreadID)
-		}
-	}
-	for range threadAgentRowDepth - 1 {
-		if len(level) == 0 {
-			break
-		}
-		found, err := a.store.LocalSpawnersOf(level)
+		// One statement names every frame: each changed request's caller,
+		// and each thread up to the listing's depth above it, whose listing
+		// and worker summary change with it.
+		frames, err := a.store.ThreadAgentRowFrames(slices.Collect(maps.Keys(tokens)), slices.Collect(maps.Keys(targets)),
+			slices.Collect(maps.Keys(callers)), threadReceiptLocalOwner, threadAgentRowDepth)
 		if err != nil {
-			log.Printf("agent rows: name the spawners above %d changed callers: %v", len(level), err)
-			break
-		}
-		level = level[:0]
-		for child, parent := range found {
-			spawner[child] = parent
-			if !asked[parent] {
-				asked[parent] = true
-				level = append(level, parent)
+			log.Printf("agent rows: name the frames of %d changed requests, %d targets and %d callers: %v", len(tokens), len(targets), len(callers), err)
+			// The callers are known without the read; their readers read
+			// their lists again.
+			for caller := range callers {
+				a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: caller})
 			}
+			continue
 		}
-	}
-	sent := map[ThreadAgentRowChange]bool{}
-	for _, frame := range frames {
-		threads := []string{frame.ThreadID}
-		for current := frame.ThreadID; len(threads) < threadAgentRowDepth; {
-			parent, ok := spawner[current]
-			if !ok || slices.Contains(threads, parent) {
-				break
-			}
-			threads = append(threads, parent)
-			current = parent
-		}
-		for _, thread := range threads {
-			out := ThreadAgentRowChange{ThreadID: thread, ID: frame.ID}
-			if !sent[out] {
-				sent[out] = true
-				a.emit(eventchan.ThreadAgentRowsChanged, out)
-			}
+		for _, frame := range frames {
+			a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: frame.ThreadID, ID: frame.Token})
 		}
 	}
 }

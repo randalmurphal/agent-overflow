@@ -334,16 +334,21 @@ func TestConfirmedWakesNameTheirRow(t *testing.T) {
 }
 
 // A change frame names the caller of each changed request and of each
-// open request this computer made of a changed target.
-func TestThreadAgentRowCallersNameTokensAndTargets(t *testing.T) {
+// open request this computer made of a changed target, and each changed
+// caller; each frame goes again to every thread up the local spawns above
+// its caller within the depth, and no further.
+func TestThreadAgentRowFramesNameCallersAndTheThreadsAboveThem(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	for _, id := range []string{"lead", "peer"} {
+	for _, id := range []string{"lead", "peer", "z0", "z1", "z2", "out"} {
 		mustCreateThread(t, s, id)
 	}
 	seedAgentRequest(t, s, "direct", "lead", ThreadRequestSend, "peer", true, 100)
 	seedAgentRequest(t, s, "running", "peer", ThreadRequestSend, "lead", true, 101)
 	seedThreadRequest(t, s, "remind", "lead", ThreadRequestRemind, 102)
+	for _, spawn := range [][2]string{{"out", "z0"}, {"z0", "z1"}, {"z1", "z2"}, {"z2", "lead"}} {
+		seedAgentRequest(t, s, spawn[0]+"-"+spawn[1], spawn[0], ThreadRequestSpawn, spawn[1], false, 90)
+	}
 	for _, receipt := range []ThreadRequestReceipt{
 		{Token: "running", OwnerDeviceID: "local", SourceThreadID: "peer", Kind: ThreadRequestSend, TargetThreadID: "lead", State: ThreadReceiptRunning},
 		{Token: "foreign", OwnerDeviceID: "device-2", SourceThreadID: "x", Kind: ThreadRequestSend, TargetThreadID: "lead", State: ThreadReceiptRunning},
@@ -352,13 +357,20 @@ func TestThreadAgentRowCallersNameTokensAndTargets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := s.ThreadAgentRowCallers([]string{"direct", "remind", "missing"}, []string{"lead"}, "local")
+	got, err := s.ThreadAgentRowFrames([]string{"direct", "remind", "missing"}, []string{"lead"}, []string{"peer", "z1"}, "local", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	slices.SortFunc(got, func(a, b ThreadAgentRowCaller) int { return strings.Compare(a.Token, b.Token) })
-	if want := []ThreadAgentRowCaller{{"direct", "lead"}, {"running", "peer"}}; !slices.Equal(got, want) {
-		t.Fatalf("callers %+v; want %+v", got, want)
+	slices.SortFunc(got, func(a, b ThreadAgentRowFrame) int {
+		return strings.Compare(a.Token+"/"+a.ThreadID, b.Token+"/"+b.ThreadID)
+	})
+	want := []ThreadAgentRowFrame{
+		{"", "out"}, {"", "peer"}, {"", "z0"}, {"", "z1"},
+		{"direct", "lead"}, {"direct", "z0"}, {"direct", "z1"}, {"direct", "z2"},
+		{"running", "peer"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("frames %+v; want %+v", got, want)
 	}
 }
 

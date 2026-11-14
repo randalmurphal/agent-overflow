@@ -155,11 +155,4 @@ func TestThreadsWithOpenAgentRows(t *testing.T) {
 	if got, err := s.ThreadsWithOpenAgentRows(nil, 2); err != nil || len(got) != 2 {
 		t.Errorf("bounded to 2 = %q, %v", got, err)
 	}
-	spawners, err := s.LocalSpawnersOf([]string{"leaf", "mid", "root", "far"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(spawners) != 2 || spawners["leaf"] != "mid" || spawners["mid"] != "root" {
-		t.Errorf("spawners = %v, want leaf under mid under root", spawners)
-	}
 }
