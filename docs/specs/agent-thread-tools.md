@@ -571,7 +571,10 @@ drained into a turn already running did not start that turn: the request
 settles cancelled, the turn keeps running, and the effect is
 `turn_left_running`. A message the provider holds and no turn has read
 yet is not stopped either: the request settles cancelled, the thread may
-still read the message, and the effect is `message_left_unread`. A paired
+still read the message, and the effect is `message_left_unread`; if the
+provider then runs the message as a turn of its own, that turn is
+interrupted when its delivery names it. Which turn a message opened is
+read only from its delivery, never from timestamps. A paired
 caller is told `nothing_to_stop` for both, because the peer call carries
 no version and an older build would read an unknown effect as an
 interruption; its note for a request on another computer says nothing
@@ -1106,7 +1109,8 @@ when it is written: Claude can drain it into that turn or hold it and run
 it as a turn of its own, and only its `command_lifecycle` `started` (or the
 message's echo, on a provider without it) says which. Until then the
 request is `running` with no turn, a reply still settles it, and a cancel
-interrupts nothing. The binding records whether the turn opened for the
+waits for the delivery and interrupts only a turn that opened for the
+message. The binding records whether the turn opened for the
 message (or the joined message carrying it); a Codex steer joins a running
 turn, so it never does. A message sent with no turn running reserved a
 turn of its own, and is never bound to an earlier one, even when the CLI

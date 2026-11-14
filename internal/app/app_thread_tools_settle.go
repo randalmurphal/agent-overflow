@@ -48,6 +48,9 @@ func (a *App) installThreadRequestObserver() {
 			if a.hasAnsweredReads(threadID) && a.lifeCtx().Err() == nil {
 				a.goThreadRequestSettling(func() { a.finishAnsweredReads(threadID, sessionEnded) })
 			}
+			if sessionEnded {
+				a.disarmRequestCancels(threadID)
+			}
 			// So does an echo whose confirmation failed to write.
 			if a.hasUnwrittenEchoes(threadID) && a.lifeCtx().Err() == nil {
 				a.goThreadRequestSettling(func() { a.retryOwnedEchoes(threadID) })

@@ -50,6 +50,10 @@ type threadRequestState struct {
 	// A binding leaves with its token's running entry.
 	bindings map[string]receiptBinding
 	echoes   map[string]ownedEcho
+	// cancels are the cancels waiting on their request's delivery, by
+	// token (armRequestCancel). One goes with that delivery, the cancel's
+	// own reading of the turn, or its thread's session end.
+	cancels map[string]requestCancel
 	// stops is who stopped a turn on a thread in running, for the requests
 	// that turn answers (app_turn_stop.go). It leaves with the thread's
 	// last running receipt.

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -969,47 +970,89 @@ func TestARequestAnArchivedThreadCannotTakeBackSettlesUnread(t *testing.T) {
 }
 
 // A cancel that reads the receipt as `accepted` while the dispatch is
-// already writing the message into a running turn finds a dispatched row
-// whose turn is that running turn. The message did not start it, so the
-// cancel leaves it running.
+// already writing the message finds a dispatched row and no delivery. The
+// timestamps of the row and the running turn say nothing of which turn the
+// message opens: they can share a millisecond or run backwards with the
+// clock. The cancel leaves the running turn alone and waits for the
+// delivery, which interrupts the turn only when it opened for the message.
 func TestCancellingARequestCaughtInItsFlushLeavesTheRunningTurnAlone(t *testing.T) {
 	t.Parallel()
-	f := newRequestFixture(t)
-	h := newHeldRequestTarget(t, f)
-	token := newThreadRequestToken()
-	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
-		Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
-		TargetThreadID: h.thread.ID, State: store.ThreadRequestAccepted,
-	}); err != nil {
-		t.Fatalf("InsertThreadRequest: %v", err)
-	}
-	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
-		Token: token, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: f.caller.ID,
-		Kind: store.ThreadRequestSend, TargetThreadID: h.thread.ID,
-	}); err != nil {
-		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
-	}
-	// Queued and flushed with no dispatch mark: the receipt stays
-	// `accepted` while the message is with the provider.
-	if _, err := f.app.sendMessageWithOptions(t.Context(), h.thread.ID, "check the changelog", sendMessageOptions{
-		SendID: threadRequestSendID(token), ReconcileBySendID: true, QueueIfActive: true, PreserveDraft: true,
-	}); err != nil {
-		t.Fatalf("queue the request message: %v", err)
-	}
-	f.app.dispatchFlush(h.thread.ID, f.app.triage.QueuedFlushItems(h.thread.ID))
-	if record, found, err := f.app.findRecordedSend(h.thread.ID, threadRequestSendID(token)); err != nil || !found || !record.dispatched {
-		t.Fatalf("fixture: the message was not dispatched: %+v found=%v err=%v", record, found, err)
-	}
+	for _, tc := range []string{"turn started earlier", "same millisecond", "clock reversed", "held for a turn of its own"} {
+		t.Run(tc, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			h := newHeldRequestTarget(t, f)
+			token := newThreadRequestToken()
+			if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+				Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
+				TargetThreadID: h.thread.ID, State: store.ThreadRequestAccepted,
+			}); err != nil {
+				t.Fatalf("InsertThreadRequest: %v", err)
+			}
+			if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+				Token: token, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: f.caller.ID,
+				Kind: store.ThreadRequestSend, TargetThreadID: h.thread.ID,
+			}); err != nil {
+				t.Fatalf("AcceptThreadRequestReceipt: %v", err)
+			}
+			// Queued and flushed with no dispatch mark: the receipt stays
+			// `accepted` while the message is with the provider.
+			if _, err := f.app.sendMessageWithOptions(t.Context(), h.thread.ID, "check the changelog", sendMessageOptions{
+				SendID: threadRequestSendID(token), ReconcileBySendID: true, QueueIfActive: true, PreserveDraft: true,
+			}); err != nil {
+				t.Fatalf("queue the request message: %v", err)
+			}
+			if queued := f.app.triage.QueuedFlushItems(h.thread.ID); len(queued) > 0 {
+				f.app.dispatchFlush(h.thread.ID, queued)
+			}
+			record, found, err := f.app.findRecordedSend(h.thread.ID, threadRequestSendID(token))
+			if err != nil || !found || !record.dispatched {
+				t.Fatalf("fixture: the message was not dispatched: %+v found=%v err=%v", record, found, err)
+			}
+			switch tc {
+			case "same millisecond":
+				execOnStore(t, f.dbPath, fmt.Sprintf(`UPDATE turns SET started_at = %d WHERE thread_id = '%s' AND turn_index = 0`, record.item.CreatedAt, h.thread.ID))
+			case "clock reversed":
+				execOnStore(t, f.dbPath, fmt.Sprintf(`UPDATE turns SET started_at = %d WHERE thread_id = '%s' AND turn_index = 0`, record.item.CreatedAt+60_000, h.thread.ID))
+			}
+			head, ok := f.app.triage.PeekPendingSendHeadForTest(h.thread.ID)
+			if !ok {
+				t.Fatal("no pending send for the dispatched message")
+			}
 
-	report, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: token})
-	if err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	if report.Effect != threadtools.EffectLeftUnread {
-		t.Fatalf("cancel effect = %q, want the request cancelled unread, nothing stopped", report.Effect)
-	}
-	if turn, found, err := f.app.store.GetActiveTurn(h.thread.ID); err != nil || !found || turn.TurnIndex != 0 {
-		t.Fatalf("the running turn was touched: %+v found=%v err=%v", turn, found, err)
+			report, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: token})
+			if err != nil {
+				t.Fatalf("Cancel: %v", err)
+			}
+			if report.Effect != threadtools.EffectLeftUnread {
+				t.Fatalf("cancel effect = %q, want the request cancelled unread, nothing stopped yet", report.Effect)
+			}
+			if n := h.interruptsSent(t); n != 0 {
+				t.Fatalf("the cancel interrupted %d turns before the delivery named one", n)
+			}
+			if tc != "held for a turn of its own" {
+				if turn, found, err := f.app.store.GetActiveTurn(h.thread.ID); err != nil || !found || turn.TurnIndex != 0 {
+					t.Fatalf("the running turn was touched: %+v found=%v err=%v", turn, found, err)
+				}
+				// Drained into the running turn: still not the message's.
+				h.lifecycle(t, head.ExpectedProviderItemID, provider.CommandStarted)
+				if n := h.interruptsSent(t); n != 0 {
+					t.Fatalf("a delivery into the running turn interrupted it %d times", n)
+				}
+				return
+			}
+			// The CLI held the message: the running turn ends untouched, and
+			// the turn it opens for the message is the one stopped. The
+			// interrupt runs off the read loop and the recorder never acks
+			// it, so the frame is handed over without waiting on it.
+			h.turnComplete(t)
+			h.lifecycle(t, head.ExpectedProviderItemID, provider.CommandStarted)
+			if n := h.interruptsSent(t); n != 0 {
+				t.Fatalf("interrupted %d times before the message's turn opened", n)
+			}
+			h.handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: h.thread.ID, Timestamp: time.Now()})
+			waitUntil(t, 10*time.Second, func() bool { return h.interruptsSent(t) == 1 })
+		})
 	}
 }
 

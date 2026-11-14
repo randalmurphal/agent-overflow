@@ -890,7 +890,9 @@ func (a *App) bindRequestDelivery(token, targetThreadID, messageItemID string, t
 		}
 		if !bound {
 			// Bound by an earlier delivery, or cancelled or settled while the
-			// message was on its way. Whoever did that owns it.
+			// message was on its way. Whoever did that owns it; a cancel
+			// waiting on this delivery stops the turn if it is the message's.
+			a.cancelOnDelivery(token, targetThreadID, turnIndex, ownTurn)
 			return
 		}
 		work = t.settleIfTurnAlreadyEnded(token, targetThreadID, turnIndex)

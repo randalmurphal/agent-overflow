@@ -494,6 +494,26 @@ func (r *Router) PendingSendTurn(threadID, aoItemID string) (int, PendingSendSta
 	return 0, PendingSendNone
 }
 
+// PendingSendOpensTurn reports the turn the send whose row is aoItemID
+// reserved for itself, written with no turn running. ok is false for a send
+// written into a running turn, which only its delivery can place
+// (SendDelivery), and for a send this router no longer holds.
+func (r *Router) PendingSendOpensTurn(threadID, aoItemID string) (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return 0, false
+	}
+	for i := range st.pendingSends {
+		entry := &st.pendingSends[i]
+		if entry.AOItemID == aoItemID {
+			return entry.TurnIndex, entry.WrittenDuringTurn < 0
+		}
+	}
+	return 0, false
+}
+
 // turnOpeningPendingSend reads the entry claimTurnOpeningPendingSend would
 // claim, without claiming it.
 func (r *Router) turnOpeningPendingSend(threadID string) (pendingSend, bool) {

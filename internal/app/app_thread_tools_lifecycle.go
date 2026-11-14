@@ -73,17 +73,21 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 		hook(token)
 	}
 	repeated := false
+	stop := a.requestCancelStop(receipt, answer)
 	switch {
 	case slices.Contains(store.ThreadReceiptOpenStates(), state):
 		// The door takes the settle lock for the settlement and releases it
 		// before the queue and provider work below: both take thread locks,
-		// and neither settles anything.
+		// and neither settles anything. The cancel is armed first, for a
+		// delivery that comes after the settlement (armRequestCancel).
+		a.armRequestCancel(token, receipt.TargetThreadID, stop)
 		work, settled, err := a.settleReceiptUnderLock(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptCancelled,
 			Answer:     []byte(answer),
 			AnswerKind: store.ThreadAnswerError,
 		}, dropScratchThread)
 		if err != nil {
+			a.disarmRequestCancel(token)
 			return "", err
 		}
 		a.runThreadSettlementWork(work)
@@ -93,6 +97,7 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 		// request's work. Only the settlement's own answer says which
 		// happened last.
 		if !settled {
+			a.disarmRequestCancel(token)
 			return threadtools.EffectNothing, nil
 		}
 	case state == store.ThreadReceiptCancelled:
@@ -109,12 +114,14 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 		return threadtools.EffectNothing, nil
 	}
 	ctx = context.WithoutCancel(ctx)
-	stop := a.requestCancelStop(receipt, answer)
 
 	if state == store.ThreadReceiptAccepted {
 		// The message was still on the queue when the receipt was read, so
 		// the first thing to try is taking it back.
 		removal, err := a.removeQueuedItem(ctx, receipt.TargetThreadID, threadRequestSendID(token))
+		if err != nil || removal == queueRemovalRemoved {
+			a.disarmRequestCancel(token)
+		}
 		if err != nil {
 			return "", err
 		}
@@ -124,13 +131,14 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 	}
 	// The turn is read after the settlement: a delivery that bound the
 	// receipt first names the turn that read the message, and none can bind
-	// it after.
+	// it after: a later delivery finds the cancel armed.
 	if settled, found, err := a.store.GetThreadRequestReceipt(token); err != nil {
 		return "", err
 	} else if found {
 		receipt = settled
 	}
 	if index, ok := threadRequestTurnIndex(receipt.TargetThreadID, receipt.TurnID); ok {
+		a.disarmRequestCancel(token)
 		turn, found, err := a.store.GetTurnByThreadIndex(receipt.TargetThreadID, index)
 		if err != nil {
 			return "", err
@@ -157,16 +165,10 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 	if repeated {
 		return threadtools.EffectNothing, nil
 	}
-	if state == store.ThreadReceiptAccepted {
-		// It is not on the queue any more and no delivery bound it: the
-		// dispatch claimed it while the cancel was running, or it reached
-		// the provider before the receipt moved to `running`.
-		return a.interruptDispatchedRequest(ctx, receipt.TargetThreadID, threadRequestSendID(token), stop)
-	}
-	// Running with no turn bound: the message is with the provider and no
-	// turn has read it yet. The turn running meanwhile is someone else's,
-	// and a token never interrupts that.
-	return threadtools.EffectLeftUnread, nil
+	// No delivery bound it: the dispatch claimed it while the cancel was
+	// running, it reached the provider before the receipt moved to
+	// `running`, or the provider has it and no turn has read it yet.
+	return a.cancelUndeliveredRequest(ctx, token, receipt.TargetThreadID, state, stop)
 }
 
 // receiptCanceller is the stop of a request cancelled by its own sender.
@@ -180,31 +182,105 @@ func (a *App) receiptCanceller(receipt store.ThreadRequestReceipt) turnStop {
 	return stopByThread(receipt.SourceThreadTitle, receipt.SourceThreadID, computer)
 }
 
-// interruptDispatchedRequest stops the turn a request's message started, for
-// a cancel that found nothing left to take off the queue. The send id names
-// the message, and the row it produced names the turn: without that the
-// cancel would report that there was nothing to stop while the turn it was
-// asked to stop ran on.
-func (a *App) interruptDispatchedRequest(ctx context.Context, threadID, sendID string, stop turnStop) (string, error) {
-	record, found, err := a.findRecordedSend(threadID, sendID)
+// requestCancel is a cancel waiting on the delivery of its request's
+// message: the message is with the provider and no delivery has said which
+// turn reads it. The delivery decides (cancelOnDelivery): a turn that opened
+// for the message is interrupted, and one it was drained into is left
+// running.
+type requestCancel struct {
+	threadID string
+	stop     turnStop
+}
+
+// armRequestCancel holds a cancel for token's delivery. It is armed before
+// the cancel's settlement, under whose settle lock every delivery binds, so
+// a delivery either bound the receipt first, and the cancel reads its turn,
+// or finds the cancel armed.
+func (a *App) armRequestCancel(token, threadID string, stop turnStop) {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	if a.threadRequests.cancels == nil {
+		a.threadRequests.cancels = make(map[string]requestCancel)
+	}
+	a.threadRequests.cancels[token] = requestCancel{threadID: threadID, stop: stop}
+}
+
+// disarmRequestCancel takes back token's held cancel, reporting it.
+func (a *App) disarmRequestCancel(token string) (requestCancel, bool) {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	c, ok := a.threadRequests.cancels[token]
+	delete(a.threadRequests.cancels, token)
+	return c, ok
+}
+
+// disarmRequestCancels drops the held cancels of a thread whose session
+// ended: no delivery is coming, and a message given back is a new delivery
+// with nothing to stop.
+func (a *App) disarmRequestCancels(threadID string) {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	for token, c := range a.threadRequests.cancels {
+		if c.threadID == threadID {
+			delete(a.threadRequests.cancels, token)
+		}
+	}
+}
+
+// cancelOnDelivery applies the cancel held for token to the delivery its
+// receipt, settled cancelled, could not bind: a turn that opened for the
+// message is interrupted, off the provider read loop this runs on. Caller
+// holds the token's settle lock.
+func (a *App) cancelOnDelivery(token, threadID string, turnIndex int, ownTurn bool) {
+	c, ok := a.disarmRequestCancel(token)
+	if !ok || !ownTurn || c.threadID != threadID {
+		return
+	}
+	a.goThreadRequestSettling(func() {
+		if _, err := a.interruptRequestTurn(a.lifeCtx(), threadID, turnIndex, c.stop); err != nil {
+			log.Printf("thread tools: stop the turn cancelled request %s opened on %s: %v", token, threadID, err)
+		}
+	})
+}
+
+// cancelUndeliveredRequest is a cancel's effect on a request whose message
+// no delivery has bound a turn for. A message never sent, or restored into
+// the composer, has nothing to stop. A delivery whose binding failed to
+// write names its turn (keptReceiptBinding), and a message written with no
+// turn running reserved its own (PendingSendOpensTurn). Otherwise the
+// provider has the message and has not said which turn reads it, and the
+// turn running meanwhile is someone else's: the cancel stays armed for the
+// delivery (cancelOnDelivery) and the request is left unread.
+func (a *App) cancelUndeliveredRequest(ctx context.Context, token, threadID string, state string, stop turnStop) (string, error) {
+	if b, ok := a.keptReceiptBinding(token); ok && b.threadID == threadID {
+		a.disarmRequestCancel(token)
+		if !b.ownTurn {
+			return threadtools.EffectLeftRunning, nil
+		}
+		return a.interruptRequestTurn(ctx, threadID, b.turnIndex, stop)
+	}
+	record, found, err := a.findRecordedSend(threadID, threadRequestSendID(token))
 	if err != nil {
+		a.disarmRequestCancel(token)
 		return "", err
 	}
 	if !found || !record.dispatched {
-		// The message was never sent, or it was restored into the composer.
-		return threadtools.EffectNothing, nil
-	}
-	// A message written into a turn that was already running did not start
-	// it, and the provider may still hold the message for a turn of its own:
-	// that turn is someone else's, and a token never interrupts it.
-	turn, turnFound, err := a.store.GetTurnByThreadIndex(threadID, record.item.TurnIndex)
-	if err != nil {
-		return "", err
-	}
-	if turnFound && turn.StartedAt < record.item.CreatedAt {
+		if state == store.ThreadReceiptAccepted {
+			a.disarmRequestCancel(token)
+			return threadtools.EffectNothing, nil
+		}
 		return threadtools.EffectLeftUnread, nil
 	}
-	return a.interruptRequestTurn(ctx, threadID, record.item.TurnIndex, stop)
+	// A message written with no turn running reserved its own turn, as the
+	// send that binds it records (requestMessage): once open, that turn is
+	// the request's. Before it opens, its delivery stops it.
+	if a.triage != nil {
+		if turnIndex, opens := a.triage.PendingSendOpensTurn(threadID, record.item.ID); opens && a.triage.OpenTurnIndex(threadID) == turnIndex {
+			a.disarmRequestCancel(token)
+			return a.interruptRequestTurn(ctx, threadID, turnIndex, stop)
+		}
+	}
+	return threadtools.EffectLeftUnread, nil
 }
 
 // interruptRequestTurn interrupts one thread only while the named turn is the
