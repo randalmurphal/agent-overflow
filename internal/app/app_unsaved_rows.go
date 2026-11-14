@@ -24,6 +24,13 @@ import (
 // it for a client that opens the thread later. An entry leaves when a later
 // write of its row succeeds, when DismissUnsavedThreadRows names it, or with
 // the thread's deletion.
+//
+// A row id does not identify an entry. Triage's per-turn id counters restart
+// with the session (CleanupThread), and a provider id is reused for a row's
+// next state, so a later row can carry the id of a different one kept here.
+// An entry is the same row only when the id, the severity and the text all
+// match (UnsavedThreadRow.isRow), and clients name entries by an id of
+// their own.
 
 // maxUnsavedThreadRows bounds the rows kept per thread. Older ones are
 // dropped and counted in Omitted.
@@ -32,8 +39,8 @@ const maxUnsavedThreadRows = 5
 // UnsavedThreadRow is one thread error or notice AO could not save to
 // history.
 type UnsavedThreadRow struct {
-	// ID is the id the row would have had. A refused retry of the same
-	// row replaces the entry rather than adding one.
+	// ID names this entry for DismissUnsavedThreadRows. It is the entry's
+	// own, not the row's, and survives a refused retry of the same row.
 	ID string `json:"id"`
 	// Severity is "error" for an error row and "warning" for a notice.
 	Severity string `json:"severity"`
@@ -42,6 +49,15 @@ type UnsavedThreadRow struct {
 	// SaveError is why the row could not be written.
 	SaveError  string `json:"saveError"`
 	OccurredAt int64  `json:"occurredAt"`
+	// rowID is the id the row would have had, empty for a row produced
+	// before the router could assign one.
+	rowID string
+}
+
+// isRow reports whether the entry is the given row: the same id, severity
+// and text. The id alone is not enough; see the file comment.
+func (row UnsavedThreadRow) isRow(rowID, severity, message string) bool {
+	return row.rowID == rowID && row.Severity == severity && row.Message == message
 }
 
 // UnsavedThreadRowsEvent is the `thread:unsaved_rows` payload and the
@@ -93,13 +109,13 @@ func (s unsavedRowSink) RowRefused(row triage.UnsavedRow, err error) {
 	s.app.deliverUnsavedThreadRow(row, err)
 }
 
-func (s unsavedRowSink) RowSaved(threadID, itemID string) {
-	s.app.withdrawSavedThreadRow(threadID, itemID)
+func (s unsavedRowSink) RowSaved(row triage.UnsavedRow) {
+	s.app.withdrawSavedThreadRow(row)
 }
 
 // deliverUnsavedThreadRow keeps a row the store refused and pushes the
-// thread's list to every client. A row with the id of one already kept
-// replaces it at the end of the list.
+// thread's list to every client. A refused retry of a row already kept
+// moves its entry to the end of the list with the new reason.
 func (a *App) deliverUnsavedThreadRow(row triage.UnsavedRow, saveErr error) {
 	if row.ThreadID == "" {
 		return
@@ -108,14 +124,10 @@ func (a *App) deliverUnsavedThreadRow(row triage.UnsavedRow, saveErr error) {
 	if saveErr != nil {
 		reason = triage.ClampErrorSummary(saveErr.Error())
 	}
+	message := triage.ClampErrorSummary(row.Summary)
 	s := &a.unsavedRows
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.seq++
-	id := row.ItemID
-	if id == "" {
-		id = fmt.Sprintf("unsaved-%d", s.seq)
-	}
 	entry, ok := s.threads[row.ThreadID]
 	if !ok {
 		if s.threads == nil {
@@ -124,18 +136,26 @@ func (a *App) deliverUnsavedThreadRow(row triage.UnsavedRow, saveErr error) {
 		entry = &UnsavedThreadRowsEvent{ThreadID: row.ThreadID}
 		s.threads[row.ThreadID] = entry
 	}
+	id := ""
 	kept := entry.Rows[:0:0]
 	for _, existing := range entry.Rows {
-		if existing.ID != id {
-			kept = append(kept, existing)
+		if existing.isRow(row.ItemID, row.Severity, message) {
+			id = existing.ID
+			continue
 		}
+		kept = append(kept, existing)
+	}
+	if id == "" {
+		s.seq++
+		id = fmt.Sprintf("unsaved-%d", s.seq)
 	}
 	kept = append(kept, UnsavedThreadRow{
 		ID:         id,
 		Severity:   row.Severity,
-		Message:    triage.ClampErrorSummary(row.Summary),
+		Message:    message,
 		SaveError:  reason,
 		OccurredAt: time.Now().UnixMilli(),
+		rowID:      row.ItemID,
 	})
 	if over := len(kept) - maxUnsavedThreadRows; over > 0 {
 		kept = kept[over:]
@@ -149,26 +169,28 @@ func (a *App) deliverUnsavedThreadRow(row triage.UnsavedRow, saveErr error) {
 // succeeded, so it no longer reads as unsaved, and pushes the list. Called
 // for every saved error or notification row: a thread with nothing kept
 // costs one map lookup and pushes nothing.
-func (a *App) withdrawSavedThreadRow(threadID, itemID string) {
+func (a *App) withdrawSavedThreadRow(row triage.UnsavedRow) {
+	message := triage.ClampErrorSummary(row.Summary)
 	s := &a.unsavedRows
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entry, ok := s.threads[threadID]
+	entry, ok := s.threads[row.ThreadID]
 	if !ok {
 		return
 	}
-	if !removeUnsavedRows(entry, map[string]bool{itemID: true}) {
+	saved := func(kept UnsavedThreadRow) bool { return kept.isRow(row.ItemID, row.Severity, message) }
+	if !removeUnsavedRows(entry, saved) {
 		return
 	}
 	s.publishLocked(a, entry)
 }
 
-// removeUnsavedRows drops the rows whose ids are in ids and reports
-// whether any was there.
-func removeUnsavedRows(entry *UnsavedThreadRowsEvent, ids map[string]bool) bool {
+// removeUnsavedRows drops the rows drop selects and reports whether any
+// was there.
+func removeUnsavedRows(entry *UnsavedThreadRowsEvent, drop func(UnsavedThreadRow) bool) bool {
 	kept := entry.Rows[:0:0]
 	for _, row := range entry.Rows {
-		if !ids[row.ID] {
+		if !drop(row) {
 			kept = append(kept, row)
 		}
 	}
@@ -207,9 +229,10 @@ func (a *App) GetThreadUnsavedRows(threadID string) (UnsavedThreadRowsEvent, err
 
 // DismissUnsavedThreadRows removes the entries named by rowIDs, the ones
 // the caller displayed, and pushes what remains to every client. A row
-// that arrived after the caller's screen last updated is not named, so it
-// stays. The dismiss also clears the omitted count: the note about older
-// rows was displayed with them. Ids no longer kept are ignored.
+// that arrived after the caller's screen last updated has an id of its
+// own, so it stays. The dismiss also clears the omitted count: the note
+// about older rows was displayed with them, and a row dropped since was
+// one of those displayed. Ids no longer kept are ignored.
 //
 //ao:scope threads:operate
 func (a *App) DismissUnsavedThreadRows(threadID string, rowIDs []string) error {
@@ -228,7 +251,7 @@ func (a *App) DismissUnsavedThreadRows(threadID string, rowIDs []string) error {
 	if !ok {
 		return nil
 	}
-	removed := removeUnsavedRows(entry, ids)
+	removed := removeUnsavedRows(entry, func(kept UnsavedThreadRow) bool { return ids[kept.ID] })
 	clearedOmitted := entry.Omitted != 0
 	entry.Omitted = 0
 	if removed || clearedOmitted {

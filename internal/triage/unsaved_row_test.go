@@ -22,7 +22,7 @@ type unsavedRowReport struct {
 type unsavedRowRecorder struct {
 	mu      sync.Mutex
 	reports []unsavedRowReport
-	saved   []string
+	saved   []UnsavedRow
 }
 
 func (r *unsavedRowRecorder) RowRefused(row UnsavedRow, err error) {
@@ -31,16 +31,16 @@ func (r *unsavedRowRecorder) RowRefused(row UnsavedRow, err error) {
 	r.reports = append(r.reports, unsavedRowReport{row: row, err: err})
 }
 
-func (r *unsavedRowRecorder) RowSaved(threadID, itemID string) {
+func (r *unsavedRowRecorder) RowSaved(row UnsavedRow) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.saved = append(r.saved, threadID+"/"+itemID)
+	r.saved = append(r.saved, row)
 }
 
-func (r *unsavedRowRecorder) savedIDs() []string {
+func (r *unsavedRowRecorder) savedRows() []UnsavedRow {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]string(nil), r.saved...)
+	return append([]UnsavedRow(nil), r.saved...)
 }
 
 func (r *unsavedRowRecorder) snapshot() []unsavedRowReport {
@@ -239,8 +239,8 @@ func TestARefusedRowThatLaterSavesIsReportedSaved(t *testing.T) {
 		t.Fatalf("replayed session death: %v", err)
 	}
 
-	if got := recorder.savedIDs(); len(got) != 1 || got[0] != "t1/"+refused[0].row.ItemID {
-		t.Fatalf("saved = %v, want the refused notice's id", got)
+	if got := recorder.savedRows(); len(got) != 1 || got[0] != refused[0].row {
+		t.Fatalf("saved = %+v, want the refused notice %+v", got, refused[0].row)
 	}
 	if rows := findItemsByKind(t, st, "t1", itemKindNotification); len(rows) != 1 {
 		t.Fatalf("notification rows = %+v, want the saved death", rows)
@@ -249,7 +249,7 @@ func TestARefusedRowThatLaterSavesIsReportedSaved(t *testing.T) {
 	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1})
 	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: "t1", Content: "an answer"})
 	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta()})
-	if got := recorder.savedIDs(); len(got) != 1 {
+	if got := recorder.savedRows(); len(got) != 1 {
 		t.Fatalf("saved = %v, want nothing for rows of other kinds", got)
 	}
 }

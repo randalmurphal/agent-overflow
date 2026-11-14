@@ -90,7 +90,10 @@ export interface ThreadLiveStateHydrationOptions {
 }
 
 export interface LiveStateFetchResult {
-  /** Present when the full execution snapshot could not be fetched. */
+  /**
+   * Present when the execution snapshot or the unsaved-rows read failed;
+   * the snapshot's failure when both did.
+   */
   error?: unknown;
   /**
    * Apply the fetched snapshot to the pane and the global registries,
@@ -289,12 +292,14 @@ export function createThreadLiveStateHydration(
     // than the operate snapshot: a view-only session reads them too. Read
     // beside the snapshot, applied by the same token.
     let unsavedRows: UnsavedThreadRowsEvent | null = null;
+    let unsavedRowsError: unknown;
     const unsavedRowsRead = !grantsPending && threadHasScope('threads:read', threadID)
       ? withBackendTarget(backend, () => GetThreadUnsavedRows(threadID)).then(
         (rows) => {
           unsavedRows = rows as UnsavedThreadRowsEvent;
         },
         (err: unknown) => {
+          unsavedRowsError = err;
           if (currentTarget()) console.error('Failed to read unsaved thread rows:', err);
         },
       )
@@ -352,7 +357,7 @@ export function createThreadLiveStateHydration(
 
     let tokenConsumed = false;
     return {
-      error: snapshotError,
+      error: snapshotError ?? unsavedRowsError,
       apply(onStaleQueue): void {
         if (tokenConsumed) return;
         try {

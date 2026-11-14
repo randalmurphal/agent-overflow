@@ -8566,8 +8566,8 @@ export class TimelinePageOptions {
  */
 export class UnsavedThreadRow {
     /**
-     * ID is the id the row would have had. A refused retry of the same
-     * row replaces the entry rather than adding one.
+     * ID names this entry for DismissUnsavedThreadRows. It is the entry's
+     * own, not the row's, and survives a refused retry of the same row.
      */
     "id": string;
 

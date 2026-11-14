@@ -1156,9 +1156,10 @@ export function DismissThreadWorktreeSetup(threadID: string): $CancellablePromis
 /**
  * DismissUnsavedThreadRows removes the entries named by rowIDs, the ones
  * the caller displayed, and pushes what remains to every client. A row
- * that arrived after the caller's screen last updated is not named, so it
- * stays. The dismiss also clears the omitted count: the note about older
- * rows was displayed with them. Ids no longer kept are ignored.
+ * that arrived after the caller's screen last updated has an id of its
+ * own, so it stays. The dismiss also clears the omitted count: the note
+ * about older rows was displayed with them, and a row dropped since was
+ * one of those displayed. Ids no longer kept are ignored.
  */
 export function DismissUnsavedThreadRows(threadID: string, rowIDs: string[]): $CancellablePromise<void> {
     return $Call.ByID(1456387330, threadID, rowIDs);

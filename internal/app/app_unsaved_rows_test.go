@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -356,19 +357,67 @@ func TestUnsavedErrorsAndNoticesShareOneList(t *testing.T) {
 }
 
 // A refused retry of the same row (a replayed session death) replaces its
-// entry instead of filling the list.
+// entry instead of filling the list, under the id the client already has.
 func TestARetriedUnsavedRowReplacesItsEntry(t *testing.T) {
 	t.Parallel()
 	app := &App{}
 	row := triage.UnsavedRow{ThreadID: "thread-retry", ItemID: "session_died:3", Severity: triage.UnsavedSeverityWarning, Summary: "Provider session exited with code 1"}
 
-	app.deliverUnsavedThreadRow(triage.UnsavedRow{ThreadID: "thread-retry", ItemID: "error:3:0", Severity: triage.UnsavedSeverityError, Summary: "boom"}, errors.New("full"))
 	app.deliverUnsavedThreadRow(row, errors.New("full"))
+	first := app.unsavedRows.snapshot("thread-retry").Rows[0].ID
+	app.deliverUnsavedThreadRow(triage.UnsavedRow{ThreadID: "thread-retry", ItemID: "error:3:0", Severity: triage.UnsavedSeverityError, Summary: "boom"}, errors.New("full"))
 	app.deliverUnsavedThreadRow(row, errors.New("still full"))
 
 	retained := app.unsavedRows.snapshot("thread-retry")
-	if retained == nil || len(retained.Rows) != 2 || retained.Rows[1].ID != "session_died:3" || retained.Rows[1].SaveError != "still full" {
-		t.Fatalf("retained = %+v, want the error and one session_died entry with the latest failure", retained)
+	if retained == nil || len(retained.Rows) != 2 || retained.Rows[0].Message != "boom" ||
+		retained.Rows[1].ID != first || retained.Rows[1].SaveError != "still full" {
+		t.Fatalf("retained = %+v, want the error then the one death entry %q with the latest failure", retained, first)
+	}
+}
+
+// Row ids repeat: a turn's id counters restart with the session, so a
+// different row can arrive under the id of one kept here. It neither
+// withdraws that entry when it saves nor replaces it when it is refused,
+// and a dismiss sent for the first does not take the second.
+func TestADifferentRowUnderAReusedIDLeavesTheEntryAlone(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	const thread = "thread-reused"
+	first := triage.UnsavedRow{ThreadID: thread, ItemID: "notification:3:0", Severity: triage.UnsavedSeverityWarning, Summary: "first notice"}
+	second := triage.UnsavedRow{ThreadID: thread, ItemID: "notification:3:0", Severity: triage.UnsavedSeverityWarning, Summary: "second notice"}
+	messages := func() []string {
+		retained := app.unsavedRows.snapshot(thread)
+		if retained == nil {
+			return nil
+		}
+		out := make([]string, 0, len(retained.Rows))
+		for _, row := range retained.Rows {
+			out = append(out, row.Message)
+		}
+		return out
+	}
+
+	app.deliverUnsavedThreadRow(first, errors.New("full"))
+	shown := app.unsavedRows.snapshot(thread).Rows[0].ID
+	app.withdrawSavedThreadRow(second)
+	if got := messages(); !slices.Equal(got, []string{"first notice"}) {
+		t.Fatalf("after a different row saved under the id = %v, want the first notice kept", got)
+	}
+
+	app.deliverUnsavedThreadRow(second, errors.New("full"))
+	if got := messages(); !slices.Equal(got, []string{"first notice", "second notice"}) {
+		t.Fatalf("after a different row was refused under the id = %v, want both", got)
+	}
+	if err := app.DismissUnsavedThreadRows(thread, []string{shown}); err != nil {
+		t.Fatalf("DismissUnsavedThreadRows: %v", err)
+	}
+	if got := messages(); !slices.Equal(got, []string{"second notice"}) {
+		t.Fatalf("after dismissing the first = %v, want the second kept", got)
+	}
+
+	app.withdrawSavedThreadRow(second)
+	if got := messages(); got != nil {
+		t.Fatalf("after the second saved = %v, want none", got)
 	}
 }
 

@@ -736,6 +736,27 @@ describe('createThreadPane', () => {
     expect(pane.unsavedRows).toBeNull();
   });
 
+  // A failed read leaves the pane showing no unsaved rows, so the failure
+  // itself has to be on screen: on open and on reload, with every other
+  // read succeeding.
+  it('reports a failed unsaved-rows read as a pane error', async () => {
+    const pane = createThreadPane();
+    setBindingMock('GetThreadUnsavedRows', async () => {
+      throw new Error('unsaved rows unavailable');
+    });
+    const failure = [{
+      kind: 'general',
+      message: 'Could not synchronize live conversation state: unsaved rows unavailable',
+    }];
+
+    await pane.switchThread(makeThread({ id: 'thread-unsaved', provider: 'claude' }));
+    expect(pane.paneErrorList.map(({ kind, message }) => ({ kind, message }))).toEqual(failure);
+
+    pane.clearPaneError();
+    await pane.refreshFromBackend();
+    expect(pane.paneErrorList.map(({ kind, message }) => ({ kind, message }))).toEqual(failure);
+  });
+
   it('keeps an unsaved row pushed while the snapshot read was in flight', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-race', provider: 'claude' }));

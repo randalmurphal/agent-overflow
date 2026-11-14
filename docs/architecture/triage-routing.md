@@ -62,8 +62,9 @@ Every row upsert and its `thread:error_notice` follow a successful write
 in `persistItemWithEmit`. When the store refuses an `error`, `api_error`
 or `notification` row, that funnel hands it to the unsaved row observer
 (`unsaved_rows.go`) instead, whatever produced it, and the app shows it
-live on `thread:unsaved_rows`. A later successful write of a row with the
-same id is reported to the observer too, so the row stops reading as
+live on `thread:unsaved_rows`. The funnel also reports each such row it
+saves, and the app withdraws the entry of the same row (same id, severity
+and text; an id alone repeats across sessions), so it stops reading as
 unsaved. A once-per-event side effect keyed on a row's first write is gated
 on whether a saved row already existed, not on whether this write succeeded
 (`persistTimelineNotificationWithID`). `provider:session_died` adds a

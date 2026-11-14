@@ -8,17 +8,19 @@ import "agent-overflow/internal/store"
 // which persistItemWithEmit sends only after the write succeeds. When the
 // database refuses the write (disk full, read-only filesystem, I/O error),
 // the funnel hands the row to the unsaved row observer instead, and the app
-// shows it live (internal/app/app_unsaved_rows.go). When a later write of a
-// row with the same id succeeds, the funnel tells the observer, so the row
-// stops reading as unsaved. Every producer of those rows writes through the
-// funnel, so none has to remember this.
+// shows it live (internal/app/app_unsaved_rows.go). The funnel also tells
+// the observer about every such row it saves, so a refused row that a later
+// write saves stops reading as unsaved. Every producer of those rows writes
+// through the funnel, so none has to remember this.
 
-// UnsavedRow is a refused error or notification row, as the user sees it.
+// UnsavedRow is an error or notification row, as the user sees it.
 type UnsavedRow struct {
 	ThreadID string
-	// ItemID is the id the row would have had. A refused retry of the
-	// same row (a replayed session death, a background bell's next state)
-	// carries the same id.
+	// ItemID is the row's id. It does not identify the row by itself: the
+	// per-turn counters behind ErrorItemID and NotificationItemID restart
+	// at CleanupThread, and a provider id is reused for a row's next
+	// state. A retry of the same row (a replayed session death) carries
+	// the same id, severity and summary.
 	ItemID   string
 	Severity string
 	Summary  string
@@ -28,10 +30,10 @@ type UnsavedRow struct {
 type UnsavedRowObserver interface {
 	// RowRefused receives a row the store refused, with the write error.
 	RowRefused(row UnsavedRow, err error)
-	// RowSaved receives the id of a row the store just wrote. Called for
-	// every saved error or notification row, so it must be cheap when
-	// the id was never refused.
-	RowSaved(threadID, itemID string)
+	// RowSaved receives a row the store just wrote. Called for every
+	// saved error or notification row, so it must be cheap when the row
+	// was never refused.
+	RowSaved(row UnsavedRow)
 }
 
 // The severities of an unsaved row: an error row, or any notification row.
@@ -57,26 +59,25 @@ func unsavedRowSeverity(kind string) string {
 // observer. Other kinds are history the user is not told about one row at
 // a time; their callers report the failure as before.
 func (r *Router) reportUnsavedRow(item store.Item, err error) {
-	if r.unsavedRows == nil || item.ThreadID == "" {
-		return
+	if row, ok := r.observedRow(item); ok {
+		r.unsavedRows.RowRefused(row, err)
 	}
-	severity := unsavedRowSeverity(item.Kind)
-	if severity == "" {
-		return
-	}
-	r.unsavedRows.RowRefused(UnsavedRow{
-		ThreadID: item.ThreadID,
-		ItemID:   item.ID,
-		Severity: severity,
-		Summary:  item.Summary,
-	}, err)
 }
 
-// reportSavedRow tells the observer a saved error or notification row's
-// id, so an earlier refusal of it is withdrawn. Nothing for other kinds.
+// reportSavedRow tells the observer about a saved error or notification
+// row, so an earlier refusal of it is withdrawn. Nothing for other kinds.
 func (r *Router) reportSavedRow(item store.Item) {
-	if r.unsavedRows == nil || item.ThreadID == "" || unsavedRowSeverity(item.Kind) == "" {
-		return
+	if row, ok := r.observedRow(item); ok {
+		r.unsavedRows.RowSaved(row)
 	}
-	r.unsavedRows.RowSaved(item.ThreadID, item.ID)
+}
+
+// observedRow is the item as the observer sees it; false for a kind the
+// observer is not told about, or with no observer.
+func (r *Router) observedRow(item store.Item) (UnsavedRow, bool) {
+	severity := unsavedRowSeverity(item.Kind)
+	if r.unsavedRows == nil || item.ThreadID == "" || severity == "" {
+		return UnsavedRow{}, false
+	}
+	return UnsavedRow{ThreadID: item.ThreadID, ItemID: item.ID, Severity: severity, Summary: item.Summary}, true
 }
