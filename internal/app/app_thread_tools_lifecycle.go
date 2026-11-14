@@ -76,30 +76,19 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 	stop := a.requestCancelStop(receipt, answer)
 	switch {
 	case slices.Contains(store.ThreadReceiptOpenStates(), state):
-		// The door takes the settle lock for the settlement and releases it
-		// before the queue and provider work below: both take thread locks,
-		// and neither settles anything. The cancel is armed first, for a
-		// delivery that comes after the settlement (armRequestCancel).
-		a.armRequestCancel(token, receipt.TargetThreadID, stop)
-		work, settled, err := a.settleReceiptUnderLock(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
-			State:      store.ThreadReceiptCancelled,
-			Answer:     []byte(answer),
-			AnswerKind: store.ThreadAnswerError,
-		}, dropScratchThread)
+		settled, err := a.cancelOpenReceipt(token, answer, stop, &receipt)
 		if err != nil {
-			a.disarmRequestCancel(token)
 			return "", err
 		}
-		a.runThreadSettlementWork(work)
-		// A receipt something else settled first (a reply, a turn end, an
-		// earlier cancel), before the read above or after it, has nothing
-		// left to stop: its turn, still running or not, is no longer this
-		// request's work. Only the settlement's own answer says which
-		// happened last.
 		if !settled {
-			a.disarmRequestCancel(token)
+			// A receipt something else settled first (a reply, a turn end,
+			// an earlier cancel), before the read above or after it, has
+			// nothing left to stop: its turn, still running or not, is no
+			// longer this request's work, and the cancel that settled it
+			// owns what it armed.
 			return threadtools.EffectNothing, nil
 		}
+		state = receipt.State
 	case state == store.ThreadReceiptCancelled:
 		// A turn bound to the receipt means it was running when cancelled,
 		// and that turn is the one to stop. Otherwise its message may still
@@ -129,16 +118,7 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 			return threadtools.EffectQueuedRemoved, nil
 		}
 	}
-	// The turn is read after the settlement: a delivery that bound the
-	// receipt first names the turn that read the message, and none can bind
-	// it after: a later delivery finds the cancel armed.
-	if settled, found, err := a.store.GetThreadRequestReceipt(token); err != nil {
-		return "", err
-	} else if found {
-		receipt = settled
-	}
 	if index, ok := threadRequestTurnIndex(receipt.TargetThreadID, receipt.TurnID); ok {
-		a.disarmRequestCancel(token)
 		turn, found, err := a.store.GetTurnByThreadIndex(receipt.TargetThreadID, index)
 		if err != nil {
 			return "", err
@@ -171,6 +151,43 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 	return a.cancelUndeliveredRequest(ctx, token, receipt.TargetThreadID, state, stop)
 }
 
+// cancelOpenReceipt settles an open receipt cancelled and, when no delivery
+// has bound it, arms the cancel for the delivery still to come
+// (armRequestCancel). The receipt it settled from replaces *receipt: read
+// under the token's settle lock, under which every delivery binds, it names
+// the turn a delivery bound, written or kept, and none binds after it. A
+// cancel that does not settle the receipt arms and disarms nothing.
+func (a *App) cancelOpenReceipt(token, answer string, stop turnStop, receipt *store.ThreadRequestReceipt) (bool, error) {
+	var work threadSettlementWork
+	settled, err := func() (bool, error) {
+		unlock := a.threadRequestSettleLock(token)
+		defer unlock()
+		current, found, err := a.deliveredReceiptLocked(token)
+		if err != nil || !found {
+			return false, err
+		}
+		var settled bool
+		work, settled, err = a.settleReadReceiptLocked(current, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+			State:      store.ThreadReceiptCancelled,
+			Answer:     []byte(answer),
+			AnswerKind: store.ThreadAnswerError,
+		}, dropScratchThread)
+		if err != nil || !settled {
+			return false, err
+		}
+		if current.TurnID == "" {
+			a.armRequestCancel(token, current.TargetThreadID, stop)
+		}
+		*receipt = current
+		return true, nil
+	}()
+	// The settle lock is released before this and the queue and provider
+	// work the caller does: both take thread locks, and neither settles
+	// anything.
+	a.runThreadSettlementWork(work)
+	return settled, err
+}
+
 // receiptCanceller is the stop of a request cancelled by its own sender.
 // The request itself is already settled cancelled; the cause reaches any
 // other request the same turn was answering.
@@ -192,10 +209,10 @@ type requestCancel struct {
 	stop     turnStop
 }
 
-// armRequestCancel holds a cancel for token's delivery. It is armed before
-// the cancel's settlement, under whose settle lock every delivery binds, so
+// armRequestCancel holds a cancel for token's delivery. The cancel's
+// settlement arms it, under the settle lock every delivery binds under, so
 // a delivery either bound the receipt first, and the cancel reads its turn,
-// or finds the cancel armed.
+// or finds the cancel armed. Caller holds the token's settle lock.
 func (a *App) armRequestCancel(token, threadID string, stop turnStop) {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
@@ -245,20 +262,12 @@ func (a *App) cancelOnDelivery(token, threadID string, turnIndex int, ownTurn bo
 
 // cancelUndeliveredRequest is a cancel's effect on a request whose message
 // no delivery has bound a turn for. A message never sent, or restored into
-// the composer, has nothing to stop. A delivery whose binding failed to
-// write names its turn (keptReceiptBinding), and a message written with no
-// turn running reserved its own (PendingSendOpensTurn). Otherwise the
-// provider has the message and has not said which turn reads it, and the
-// turn running meanwhile is someone else's: the cancel stays armed for the
-// delivery (cancelOnDelivery) and the request is left unread.
+// the composer, has nothing to stop. A message written with no turn running
+// reserved its own (PendingSendOpensTurn). Otherwise the provider has the
+// message and has not said which turn reads it, and the turn running
+// meanwhile is someone else's: the cancel stays armed for the delivery
+// (cancelOnDelivery) and the request is left unread.
 func (a *App) cancelUndeliveredRequest(ctx context.Context, token, threadID string, state string, stop turnStop) (string, error) {
-	if b, ok := a.keptReceiptBinding(token); ok && b.threadID == threadID {
-		a.disarmRequestCancel(token)
-		if !b.ownTurn {
-			return threadtools.EffectLeftRunning, nil
-		}
-		return a.interruptRequestTurn(ctx, threadID, b.turnIndex, stop)
-	}
 	record, found, err := a.findRecordedSend(threadID, threadRequestSendID(token))
 	if err != nil {
 		a.disarmRequestCancel(token)
