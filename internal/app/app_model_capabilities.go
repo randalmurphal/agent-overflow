@@ -94,28 +94,21 @@ func (a *App) draftModelDefaults(providerName, model, effort string, fastMode bo
 	}
 	candidate, found := a.modelInfoForProvider(providerName, model)
 	effort = coerceReasoningEffortFromModelInfo(providerName, model, effort, candidate, found)
-	fastMode = fastMode && supportsFastModeFromModelInfo(providerName, model, candidate, found)
+	fastMode = fastMode && a.savedFastModeStands(providerName, model)
 	return effort, fastMode
 }
 
 // sanitizeChatModelProfile normalizes stored values without revoking Codex
 // selections when catalog availability changes.
-//
-// Which Claude models run fast is known only from the CLI's reported model
-// list. Once it has reported, fast mode stays only on a model the report
-// marks fast; until then the saved choice stands.
 func (a *App) sanitizeChatModelProfile(profile store.ChatModelProfile) store.ChatModelProfile {
 	profile = chatmodel.SanitizeProfile(profile)
 	if profile.Provider == string(provider.Codex) {
 		return profile
 	}
-	// Read before the lookup, so a report that lands in between is judged
-	// by a lookup at least as new.
-	reported := a.claudeCatalogReported(profile.Provider)
-	candidate, found := a.modelInfoForProvider(profile.Provider, profile.Model)
-	if reported && !supportsFastModeFromModelInfo(profile.Provider, profile.Model, candidate, found) {
+	if profile.FastMode && !a.savedFastModeStands(profile.Provider, profile.Model) {
 		profile.FastMode = false
 	}
+	candidate, found := a.modelInfoForProvider(profile.Provider, profile.Model)
 	if !found {
 		return profile
 	}
@@ -193,11 +186,19 @@ func (a *App) validateModelChoice(providerName, model string) error {
 	return provider.ValidateModelID(providerName, model, a.claudeModelsForProvider(providerName))
 }
 
-// claudeCatalogReported reports whether providerName's models carry a Claude
-// CLI report, live or restored at boot, rather than the shipped list alone.
-func (a *App) claudeCatalogReported(providerName string) bool {
-	return provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.ClaudeProbeEnrichedCatalog &&
-		a.providerDiscoveryService().ClaudeCatalog(providerName).Provenance == provider.CatalogProbed
+// savedFastModeStands reports whether a fast-mode choice made earlier is
+// kept on the model. A new choice must pass supportsFastModeForModel. A saved
+// one passes the same check, and also stands while the Claude CLI has
+// reported nothing: which Claude models run fast is known only from its
+// reported model list, live or restored at boot.
+func (a *App) savedFastModeStands(providerName, model string) bool {
+	// The provenance is read before the lookup, so a report that lands in
+	// between is judged by a lookup at least as new.
+	if provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.ClaudeProbeEnrichedCatalog &&
+		a.providerDiscoveryService().ClaudeCatalog(providerName).Provenance != provider.CatalogProbed {
+		return true
+	}
+	return a.supportsFastModeForModel(providerName, model)
 }
 
 // modelInfoForProvider uses capability evidence already available locally.

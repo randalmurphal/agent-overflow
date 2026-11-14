@@ -34,6 +34,9 @@ func (m *testModels) SupportsFastMode(providerName, model string) bool {
 	candidate, found := provider.FindModel(providerName, model)
 	return found && chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
 }
+func (m *testModels) SavedFastModeStands(providerName, model string) bool {
+	return m.SupportsFastMode(providerName, model)
+}
 func (m *testModels) ContextWindowOptions(providerName, model string) []provider.ContextWindowOption {
 	return chatmodel.ContextWindowOptions(providerName, model)
 }

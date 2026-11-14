@@ -173,6 +173,38 @@ func TestClaudeFastModeWithoutAReport(t *testing.T) {
 	if !f.launchesFast(thread.ID) {
 		t.Error("launch dropped a saved fast flag with no report")
 	}
+
+	// A remembered profile's fast choice is inherited, not chosen now: a
+	// draft, a new thread and an edit of another default all keep it.
+	remembered := f.app.fallbackChatModelProfile(claudeName, reportedSlowModel)
+	remembered.FastMode = true
+	if err := f.app.store.UpsertChatModelProfile(remembered); err != nil {
+		t.Fatalf("UpsertChatModelProfile: %v", err)
+	}
+	inherit := CreateThreadOptions{ProjectID: f.project.ID, Provider: claudeName, Model: reportedSlowModel}
+	if defaults, err := f.app.GetThreadDefaults(inherit); err != nil || !defaults.FastMode {
+		t.Errorf("draft defaults fast mode = %v (err %v), want the remembered choice", defaults.FastMode, err)
+	}
+	if created, err := f.app.CreateThread(t.Context(), inherit); err != nil || !created.FastMode {
+		t.Errorf("created thread fast mode = %v (err %v), want the remembered choice", created.FastMode, err)
+	}
+	if _, err := f.app.UpdateNewThreadDefaults(t.Context(), NewThreadDefaultsUpdate{
+		ProjectID: f.project.ID, Provider: claudeName, Model: reportedSlowModel, ReasoningEffort: "low",
+	}); err != nil {
+		t.Fatalf("UpdateNewThreadDefaults(effort): %v", err)
+	}
+	if saved, err := f.app.store.GetChatModelProfile(claudeName, reportedSlowModel); err != nil || !saved.FastMode {
+		t.Errorf("remembered fast mode = %v (err %v) after an effort edit, want it kept", saved.FastMode, err)
+	}
+
+	// A report that does not mark the model fast withdraws all three.
+	storeFastModeReport(t, f.app)
+	if defaults, err := f.app.GetThreadDefaults(inherit); err != nil || defaults.FastMode {
+		t.Errorf("draft defaults fast mode = %v (err %v) under a report that withdraws it", defaults.FastMode, err)
+	}
+	if created, err := f.app.CreateThread(t.Context(), inherit); err != nil || created.FastMode {
+		t.Errorf("created thread fast mode = %v (err %v) under a report that withdraws it", created.FastMode, err)
+	}
 }
 
 // Once the CLI has reported, fast mode is offered, kept and launched exactly
