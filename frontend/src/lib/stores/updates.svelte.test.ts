@@ -21,7 +21,7 @@ import {
   RestartToUpdate,
   CancelRestartToUpdate,
 } from './bindings';
-import { TransportError } from '../transport/wsClient';
+import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
 import {
   getUpdateState,
@@ -38,8 +38,10 @@ import {
   canInstallSelected,
   initUpdates,
   resetForTest,
+  UPDATE_CHECK_INTERVAL_MS,
   type ReleaseSummary,
 } from './updates.svelte';
+import { deferred } from '../../test/helpers/providerAccounts';
 import {
   emitWailsEvent,
   resetWailsMocks,
@@ -793,6 +795,250 @@ describe('updates store', () => {
       expect(wailsListenerCount('updater:progress')).toBe(1);
       secondCleanup(); // no-op cleanup; the real subscription stays live
       expect(wailsListenerCount('updater:progress')).toBe(1);
+    });
+  });
+
+  // The repeating check initUpdates starts. It runs on a timer nobody
+  // pressed, so it must not flash the Updates page or raise an error for a
+  // release source it cannot reach.
+  describe('background check', () => {
+    let cleanup: () => void;
+
+    // start runs initUpdates and settles the launch check on `launch`.
+    async function start(launch: Partial<Availability> = {}): Promise<void> {
+      mockCheck.mockResolvedValueOnce(availability(launch));
+      cleanup = initUpdates();
+      await vi.advanceTimersByTimeAsync(0);
+      mockCheck.mockClear();
+    }
+
+    const interval = () => vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS);
+
+    // pendingCheck leaves the next CheckForUpdate unanswered until settled.
+    function pendingCheck() {
+      const reply = deferred<Availability>();
+      mockCheck.mockReturnValueOnce(reply.promise as ReturnType<typeof CheckForUpdate>);
+      return reply;
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      cleanup = () => {};
+    });
+
+    afterEach(() => {
+      cleanup();
+      vi.useRealTimers();
+    });
+
+    it('asks again every interval while the page is open', async () => {
+      await start();
+      mockCheck.mockResolvedValue(availability());
+      await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS - 1);
+      expect(mockCheck).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mockCheck).toHaveBeenCalledTimes(1);
+      await interval();
+      expect(mockCheck).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops with the cleanup, and a second init starts one timer', async () => {
+      await start();
+      mockCheck.mockResolvedValue(availability());
+      cleanup();
+      await interval();
+      expect(mockCheck).not.toHaveBeenCalled();
+
+      await start();
+      mockCheck.mockResolvedValue(availability());
+      initUpdates();
+      await interval();
+      expect(mockCheck).toHaveBeenCalledTimes(1);
+    });
+
+    it('finds a release published after launch without showing "checking"', async () => {
+      await start();
+      expect(hasPendingUpdate()).toBe(false);
+      const reply = pendingCheck();
+      await interval();
+      expect(mockCheck).toHaveBeenCalledTimes(1);
+      expect(getUpdateState().phase).toBe('up-to-date');
+
+      reply.resolve(availability({ available: true, latestVersion: '2.0.0', releaseNotes: 'n' }));
+      await vi.advanceTimersByTimeAsync(0);
+      const s = getUpdateState();
+      expect(s.phase).toBe('available');
+      expect(s.latestVersion).toBe('2.0.0');
+      expect(s.releaseNotes).toBe('n');
+      expect(hasPendingUpdate()).toBe(true);
+    });
+
+    it('moves an offered release on to a newer one', async () => {
+      await start({ available: true, latestVersion: '2.0.0' });
+      mockCheck.mockResolvedValue(availability({ available: true, latestVersion: '3.0.0' }));
+      await interval();
+      expect(getUpdateState().phase).toBe('available');
+      expect(getUpdateState().latestVersion).toBe('3.0.0');
+    });
+
+    it('says nothing when the release source cannot be reached', async () => {
+      await start();
+      mockCheck.mockResolvedValue(availability({ checkError: 'check for update: offline' }));
+      await interval();
+      const s = getUpdateState();
+      expect(s.phase).toBe('up-to-date');
+      expect(s.error).toBe('');
+    });
+
+    it('still copies the boot notice from a check that failed', async () => {
+      await start();
+      mockCheck.mockResolvedValue(
+        availability({ checkError: 'check for update: offline', lastApplyFailure: 'did not apply' }),
+      );
+      await interval();
+      expect(getUpdateState().lastApplyFailure).toBe('did not apply');
+    });
+
+    it('reports a failed check that took an offered download away', async () => {
+      // The backend drops its resolved release when a check fails, so the
+      // Download button the page showed could no longer run.
+      await start({ available: true, latestVersion: '2.0.0' });
+      mockCheck.mockResolvedValue(availability({ checkError: 'check for update: offline' }));
+      await interval();
+      const s = getUpdateState();
+      expect(s.phase).toBe('error');
+      expect(s.error).not.toBe('');
+      expect(hasPendingUpdate()).toBe(true);
+    });
+
+    it('keeps an offered download when the call never reached the backend', async () => {
+      await start({ available: true, latestVersion: '2.0.0' });
+      mockCheck.mockRejectedValue(new DisconnectedError());
+      await interval();
+      expect(getUpdateState().phase).toBe('available');
+      expect(getUpdateState().error).toBe('');
+    });
+
+    it('reports a failure that is neither the release source nor the connection', async () => {
+      await start();
+      mockCheck.mockRejectedValue(methodError('check for update: panic'));
+      await interval();
+      expect(getUpdateState().phase).toBe('error');
+      expect(getUpdateState().error).not.toBe('');
+    });
+
+    it('recovers from a launch check that failed', async () => {
+      await start({ checkError: 'check for update: offline' });
+      expect(getUpdateState().phase).toBe('error');
+
+      // Still offline: the launch error stays as it was.
+      mockCheck.mockResolvedValueOnce(availability({ checkError: 'check for update: offline' }));
+      await interval();
+      expect(getUpdateState().phase).toBe('error');
+
+      mockCheck.mockResolvedValueOnce(availability({ available: true, latestVersion: '2.0.0' }));
+      await interval();
+      const s = getUpdateState();
+      expect(s.phase).toBe('available');
+      expect(s.error).toBe('');
+    });
+
+    it.each([
+      ['a failed download', () => emitWailsEvent('updater:error', { stage: 'verify', message: 'digest mismatch' })],
+      ['a failed restart', () => emitWailsEvent('updater:restart', { phase: 'failed', error: 'no helper' })],
+    ])('leaves the error of %s for the user', async (_label, failFlow) => {
+      await start({ available: true, latestVersion: '2.0.0' });
+      failFlow();
+      const shown = getUpdateState().error;
+      mockCheck.mockResolvedValue(availability({ available: true, latestVersion: '2.0.0' }));
+      await interval();
+      expect(mockCheck).not.toHaveBeenCalled();
+      expect(getUpdateState().phase).toBe('error');
+      expect(getUpdateState().error).toBe(shown);
+    });
+
+    it('a manual check after a failed download lets background checks resume', async () => {
+      await start({ available: true, latestVersion: '2.0.0' });
+      emitWailsEvent('updater:error', { stage: 'verify', message: 'digest mismatch' });
+      mockCheck.mockResolvedValue(availability({ checkError: 'check for update: offline' }));
+      await runUpdateCheck();
+      expect(getUpdateState().phase).toBe('error');
+      mockCheck.mockClear();
+
+      mockCheck.mockResolvedValue(availability({ available: true, latestVersion: '2.0.0' }));
+      await interval();
+      expect(mockCheck).toHaveBeenCalledTimes(1);
+      expect(getUpdateState().phase).toBe('available');
+    });
+
+    it('does not run while an update is staged ready', async () => {
+      await start({ available: true, latestVersion: '2.0.0' });
+      emitWailsEvent('updater:ready', null);
+      await interval();
+      expect(mockCheck).not.toHaveBeenCalled();
+      expect(getUpdateState().phase).toBe('ready');
+    });
+
+    it('drops its answer when an install by tag started while it was asking', async () => {
+      await start({ available: true, latestVersion: '2.0.0' });
+      const reply = pendingCheck();
+      await interval();
+      await startUpdateDownload('v1.5.0');
+      expect(getUpdateState().phase).toBe('downloading');
+
+      reply.resolve(availability({ available: true, latestVersion: '2.0.0' }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getUpdateState().phase).toBe('downloading');
+    });
+
+    // The backend runs a download after the check in flight, on the release
+    // that check resolves, so Download waits for the answer the page will show.
+    it('holds Download until its answer is in, then downloads what the page shows', async () => {
+      await start({ available: true, latestVersion: '2.0.0' });
+      const reply = pendingCheck();
+      await interval();
+
+      const first = startUpdateDownload();
+      const second = startUpdateDownload();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockDownload).not.toHaveBeenCalled();
+      expect(getUpdateState().phase).toBe('available');
+
+      reply.resolve(availability({ available: true, latestVersion: '3.0.0' }));
+      await Promise.all([first, second]);
+      expect(mockDownload).toHaveBeenCalledTimes(1);
+      expect(getUpdateState().phase).toBe('downloading');
+      expect(getUpdateState().latestVersion).toBe('3.0.0');
+    });
+
+    it('does not download when the check it waited for took the offer away', async () => {
+      await start({ available: true, latestVersion: '2.0.0' });
+      const reply = pendingCheck();
+      await interval();
+
+      const download = startUpdateDownload();
+      reply.resolve(availability({ checkError: 'check for update: offline' }));
+      await download;
+      expect(mockDownload).not.toHaveBeenCalled();
+      expect(getUpdateState().phase).toBe('error');
+      expect(getUpdateState().error).not.toBe('');
+    });
+
+    it('drops its answer when a manual check answered first', async () => {
+      // The manual check ends in the phase the background one started in, so
+      // only their order tells the older answer apart.
+      await start({ available: true, latestVersion: '2.0.0' });
+      const background = pendingCheck();
+      await interval();
+
+      mockCheck.mockResolvedValueOnce(availability({ available: true, latestVersion: '3.0.0' }));
+      await runUpdateCheck();
+      expect(getUpdateState().latestVersion).toBe('3.0.0');
+
+      background.resolve(availability({ available: true, latestVersion: '2.0.0' }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getUpdateState().phase).toBe('available');
+      expect(getUpdateState().latestVersion).toBe('3.0.0');
     });
   });
 });

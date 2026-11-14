@@ -57,6 +57,13 @@ type serviceUpdateRig struct {
 	frames []ServiceUpdateStatus
 	// requested is every version handed to the supervisor.
 	requested []string
+	// logs is every line the seam logged.
+	logs []string
+	// checkTicks drives the passive check when the rig was built with one.
+	checkTicks chan time.Time
+	// frameEntered, when set, is closed by the next status frame, which then
+	// waits for frameRelease.
+	frameEntered, frameRelease chan struct{}
 	// requestErr, when set, is what the supervisor answers with.
 	requestErr error
 	// preflight answers what the downloaded file claims to be.
@@ -80,6 +87,31 @@ type serviceUpdateOptions struct {
 	configure bool
 	// supervised is false for a `serve` nobody supervises.
 	supervised bool
+	// feed, when set, makes the published releases changeable between checks.
+	feed *serviceUpdateFeedControl
+	// checkTicks, when set, drives the passive check's interval.
+	checkTicks chan time.Time
+}
+
+// serviceUpdateFeedControl changes what the mock feed publishes while a test
+// runs: the tags it lists, or a listing failure.
+type serviceUpdateFeedControl struct {
+	mu   sync.Mutex
+	tags []string
+	fail bool
+}
+
+func (c *serviceUpdateFeedControl) set(fail bool, tags ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fail = fail
+	c.tags = tags
+}
+
+func (c *serviceUpdateFeedControl) current() ([]string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.tags...), c.fail
 }
 
 func newServiceUpdateRig(t *testing.T, opts serviceUpdateOptions) *serviceUpdateRig {
@@ -91,6 +123,7 @@ func newServiceUpdateRig(t *testing.T, opts serviceUpdateOptions) *serviceUpdate
 		t:                 t,
 		preflightVersion:  "1.5.0",
 		preflightProtocol: supervise.ProtocolVersion,
+		checkTicks:        opts.checkTicks,
 	}
 
 	layout, err := supervise.NewLayout(t.TempDir())
@@ -122,6 +155,15 @@ func newServiceUpdateRig(t *testing.T, opts serviceUpdateOptions) *serviceUpdate
 	app := &App{version: serviceUpdateRunningVer}
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
 	t.Cleanup(app.appCancel)
+	// Ends a release check loop the test left running, without joining it.
+	t.Cleanup(func() {
+		app.serviceUpdate.mu.Lock()
+		stop := app.serviceUpdate.stopChecks
+		app.serviceUpdate.mu.Unlock()
+		if stop != nil {
+			stop()
+		}
+	})
 	app.testEmitHook = func(name string, data any) {
 		if eventchan.Channel(name) != eventchan.ServiceUpdateStatus {
 			return
@@ -133,9 +175,18 @@ func newServiceUpdateRig(t *testing.T, opts serviceUpdateOptions) *serviceUpdate
 		}
 		rig.mu.Lock()
 		rig.frames = append(rig.frames, status)
+		entered, release := rig.frameEntered, rig.frameRelease
+		rig.frameEntered = nil
 		rig.mu.Unlock()
+		if entered != nil {
+			close(entered)
+			<-release
+		}
 	}
 	rig.app = app
+	if opts.checkTicks != nil {
+		app.serviceUpdate.checkTicks = opts.checkTicks
+	}
 
 	if opts.supervised {
 		SetServiceUpdateRequester(app, func(target string) (string, error) {
@@ -153,6 +204,7 @@ func newServiceUpdateRig(t *testing.T, opts serviceUpdateOptions) *serviceUpdate
 		deps := ServiceUpdateDeps{
 			Layout:    layout,
 			Preflight: rig.fakePreflight,
+			Log:       rig.log,
 		}
 		if opts.supervised || opts.configure {
 			deps.Source = rig.source
@@ -169,6 +221,26 @@ func (r *serviceUpdateRig) configureWithoutSource() {
 		Layout:    r.layout,
 		Preflight: r.fakePreflight,
 	})
+}
+
+func (r *serviceUpdateRig) log(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logs = append(r.logs, fmt.Sprintf(format, args...))
+}
+
+// check returns once a passive check that began after the call has finished.
+// The tick channel is unbuffered and the loop receives only between checks, so
+// the second send proves the first one's check completed.
+func (r *serviceUpdateRig) check() {
+	r.t.Helper()
+	for range 2 {
+		select {
+		case r.checkTicks <- time.Now():
+		case <-time.After(10 * time.Second):
+			r.t.Fatal("the passive check loop stopped receiving ticks")
+		}
+	}
 }
 
 func (r *serviceUpdateRig) fakePreflight(_ context.Context, binary string) (supervise.Preflight, error) {
@@ -305,6 +377,13 @@ func newServiceUpdateFeed(t *testing.T, opts serviceUpdateOptions) *httptest.Ser
 		return map[string]any{"tag_name": tag, "name": "Release " + tag, "assets": assets}
 	}
 
+	publishedTags := func() ([]string, bool) {
+		if opts.feed != nil {
+			return opts.feed.current()
+		}
+		return opts.tags, false
+	}
+
 	write := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(v); err != nil {
@@ -314,7 +393,8 @@ func newServiceUpdateFeed(t *testing.T, opts serviceUpdateOptions) *httptest.Ser
 
 	mux.HandleFunc(base+"/tags/", func(w http.ResponseWriter, r *http.Request) {
 		tag := strings.TrimPrefix(r.URL.Path, base+"/tags/")
-		for _, published := range opts.tags {
+		tags, _ := publishedTags()
+		for _, published := range tags {
 			if published == tag {
 				write(w, release(tag))
 				return
@@ -323,8 +403,13 @@ func newServiceUpdateFeed(t *testing.T, opts serviceUpdateOptions) *httptest.Ser
 		http.NotFound(w, r)
 	})
 	mux.HandleFunc(base, func(w http.ResponseWriter, _ *http.Request) {
-		out := make([]map[string]any, 0, len(opts.tags))
-		for _, tag := range opts.tags {
+		tags, fail := publishedTags()
+		if fail {
+			http.Error(w, "feed unavailable", http.StatusBadGateway)
+			return
+		}
+		out := make([]map[string]any, 0, len(tags))
+		for _, tag := range tags {
 			out = append(out, release(tag))
 		}
 		write(w, out)
@@ -755,8 +840,8 @@ func TestTheReleaseListAndThePassiveCheckReportWhatIsPublished(t *testing.T) {
 		t.Errorf("v1.4.0 is the running version and is not marked current: %+v", releases[2])
 	}
 
-	// ConfigureServiceUpdates started the passive check; it is one call with
-	// no retry, so wait for its answer rather than assuming it landed.
+	// ConfigureServiceUpdates started the passive check on its own goroutine,
+	// so wait for the boot check's answer rather than assuming it landed.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		status, err := rig.app.GetServiceUpdateStatus()
@@ -802,6 +887,321 @@ func TestThePassiveCheckRunsDuringATrial(t *testing.T) {
 			t.Fatalf("a parked backend never ran its release check (%+v)", status)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func newServiceUpdateCheckRig(t *testing.T, tags ...string) (*serviceUpdateRig, *serviceUpdateFeedControl) {
+	t.Helper()
+	feed := &serviceUpdateFeedControl{}
+	feed.set(false, tags...)
+	rig := newServiceUpdateRig(t, serviceUpdateOptions{
+		feed: feed, checkTicks: make(chan time.Time), configure: true, supervised: true,
+	})
+	return rig, feed
+}
+
+func (r *serviceUpdateRig) requireLatest(version, tag string) ServiceUpdateStatus {
+	r.t.Helper()
+	status, err := r.app.GetServiceUpdateStatus()
+	if err != nil {
+		r.t.Fatalf("GetServiceUpdateStatus: %v", err)
+	}
+	if status.LatestVersion != version || status.LatestTag != tag {
+		r.t.Fatalf("latest = %q/%q, want %q/%q", status.LatestVersion, status.LatestTag, version, tag)
+	}
+	return status
+}
+
+func (r *serviceUpdateRig) requireFrames(want int) {
+	r.t.Helper()
+	r.app.serviceUpdate.mu.Lock()
+	status := r.app.serviceUpdate.status
+	r.app.serviceUpdate.mu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.frames) != want {
+		r.t.Fatalf("published %d status frames, want %d: %+v", len(r.frames), want, r.frames)
+	}
+	if want == 0 {
+		return
+	}
+	last := r.frames[len(r.frames)-1]
+	if last.LatestVersion != status.LatestVersion || last.LatestTag != status.LatestTag {
+		r.t.Fatalf("last frame says %q/%q, state says %q/%q",
+			last.LatestVersion, last.LatestTag, status.LatestVersion, status.LatestTag)
+	}
+}
+
+// The passive check repeats on its interval, publishes a frame only when its
+// answer changes, and clears the answer when no newer release is published.
+func TestThePassiveCheckRepeatsAndPublishesOnlyChanges(t *testing.T) {
+	t.Parallel()
+	rig, feed := newServiceUpdateCheckRig(t, "v1.5.0")
+
+	rig.check()
+	rig.requireLatest("1.5.0", "v1.5.0")
+	rig.requireFrames(1)
+
+	rig.check()
+	rig.requireFrames(1)
+
+	feed.set(false, "v1.6.0", "v1.5.0")
+	rig.check()
+	rig.requireLatest("1.6.0", "v1.6.0")
+	rig.requireFrames(2)
+
+	// A pulled release: the newest published is the running version.
+	feed.set(false, "v1.4.0")
+	rig.check()
+	rig.requireLatest("", "")
+	rig.requireFrames(3)
+}
+
+// A failed check keeps the last answer, logs, publishes nothing, and the next
+// tick still runs.
+func TestAFailedPassiveCheckKeepsTheLastAnswer(t *testing.T) {
+	t.Parallel()
+	rig, feed := newServiceUpdateCheckRig(t, "v1.5.0")
+	rig.check()
+	rig.requireLatest("1.5.0", "v1.5.0")
+
+	feed.set(true)
+	rig.check()
+	rig.requireLatest("1.5.0", "v1.5.0")
+	rig.requireFrames(1)
+	rig.mu.Lock()
+	logs := strings.Join(rig.logs, "\n")
+	rig.mu.Unlock()
+	if !strings.Contains(logs, "could not check for a newer release") {
+		t.Fatalf("a failed check logged nothing: %q", logs)
+	}
+
+	feed.set(false, "v1.6.0", "v1.5.0")
+	rig.check()
+	rig.requireLatest("1.6.0", "v1.6.0")
+	rig.requireFrames(2)
+}
+
+// A check during an update flow publishes the new answer without disturbing
+// the flow's phase or target.
+func TestThePassiveCheckRunsBesideAnUpdateFlow(t *testing.T) {
+	t.Parallel()
+	rig, feed := newServiceUpdateCheckRig(t, "v1.5.0")
+	rig.check()
+
+	rig.app.serviceUpdate.mu.Lock()
+	rig.app.serviceUpdate.busy = true
+	rig.app.serviceUpdate.status.Phase = serviceUpdatePhaseDownloading
+	rig.app.serviceUpdate.status.TargetTag = "v1.5.0"
+	rig.app.serviceUpdate.mu.Unlock()
+
+	feed.set(false, "v1.6.0", "v1.5.0")
+	rig.check()
+	status := rig.requireLatest("1.6.0", "v1.6.0")
+	if status.Phase != serviceUpdatePhaseDownloading || status.TargetTag != "v1.5.0" {
+		t.Fatalf("the check disturbed the flow: %+v", status)
+	}
+	rig.requireFrames(2)
+}
+
+// Shutdown stops the check loop and waits for a check that is still
+// publishing.
+func TestShutdownJoinsThePassiveCheck(t *testing.T) {
+	t.Parallel()
+	rig, feed := newServiceUpdateCheckRig(t, "v1.5.0")
+	rig.check()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	rig.mu.Lock()
+	rig.frameEntered, rig.frameRelease = entered, release
+	rig.mu.Unlock()
+	// The check in flight from rig.check may be the one that sees the change.
+	feed.set(false, "v1.6.0", "v1.5.0")
+	deadline := time.After(10 * time.Second)
+waitForFrame:
+	for {
+		select {
+		case <-entered:
+			break waitForFrame
+		case rig.checkTicks <- time.Now():
+		case <-deadline:
+			t.Fatal("the check never published the newer release")
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- rig.app.Shutdown(context.Background()) }()
+	// Shutdown is at the join once the group refuses new members.
+	checks := &rig.app.serviceUpdate.checks
+	waitUntil(t, 10*time.Second, func() bool {
+		checks.mu.Lock()
+		defer checks.mu.Unlock()
+		return checks.closed
+	})
+	select {
+	case err := <-done:
+		t.Fatalf("Shutdown returned (%v) while the release check was still publishing", err)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown never joined the release check loop")
+	}
+	if n := rig.app.serviceUpdate.checks.members(); n != 0 {
+		t.Fatalf("%d release check loops outlived Shutdown", n)
+	}
+}
+
+// A supervised boot configures updates before Start creates the app context,
+// so the check loop cannot live on it: Shutdown must still end and join it.
+func TestShutdownStopsAPassiveCheckConfiguredBeforeStart(t *testing.T) {
+	t.Parallel()
+	rig := newServiceUpdateRig(t, serviceUpdateOptions{supervised: true})
+	rig.app.appCtx, rig.app.appCancel = nil, nil
+	rig.checkTicks = make(chan time.Time)
+	rig.app.serviceUpdate.checkTicks = rig.checkTicks
+	ConfigureServiceUpdates(rig.app, ServiceUpdateDeps{
+		Source: rig.source, Layout: rig.layout, Preflight: rig.fakePreflight,
+	})
+	rig.check()
+
+	done := make(chan error, 1)
+	go func() { done <- rig.app.Shutdown(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown never returned: the release check loop outlived it")
+	}
+	if n := rig.app.serviceUpdate.checks.members(); n != 0 {
+		t.Fatalf("%d release check loops outlived Shutdown", n)
+	}
+}
+
+// Configuring after Shutdown starts no loop, and Shutdown without any
+// configuration returns.
+func TestNoPassiveCheckStartsAfterShutdown(t *testing.T) {
+	t.Parallel()
+	rig := newServiceUpdateRig(t, serviceUpdateOptions{supervised: true})
+	if err := rig.app.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	ConfigureServiceUpdates(rig.app, ServiceUpdateDeps{
+		Source: rig.source, Layout: rig.layout, Preflight: rig.fakePreflight,
+	})
+	if n := rig.app.serviceUpdate.checks.members(); n != 0 {
+		t.Fatalf("%d release check loops started after Shutdown", n)
+	}
+}
+
+// requireCheckLoops waits for the number of running release check loops.
+func (r *serviceUpdateRig) requireCheckLoops(want int) {
+	r.t.Helper()
+	waitUntil(r.t, 10*time.Second, func() bool { return r.app.serviceUpdate.checks.members() == want })
+}
+
+// A configuration replaces the one before it: taking the source away ends
+// the loop and the answer it found, giving one back starts a single loop,
+// and configuring twice leaves one loop.
+func TestReconfiguringReplacesThePassiveCheck(t *testing.T) {
+	t.Parallel()
+	rig, _ := newServiceUpdateCheckRig(t, "v1.5.0")
+	rig.check()
+	rig.requireLatest("1.5.0", "v1.5.0")
+
+	rig.configureWithoutSource()
+	rig.requireCheckLoops(0)
+	if status := rig.requireLatest("", ""); status.Available {
+		t.Fatalf("a host without a release source reports updates available: %+v", status)
+	}
+
+	withSource := ServiceUpdateDeps{Source: rig.source, Layout: rig.layout, Preflight: rig.fakePreflight}
+	ConfigureServiceUpdates(rig.app, withSource)
+	rig.check()
+	rig.requireLatest("1.5.0", "v1.5.0")
+	rig.requireCheckLoops(1)
+
+	ConfigureServiceUpdates(rig.app, withSource)
+	rig.check()
+	rig.requireCheckLoops(1)
+}
+
+// Status frames leave in the order their mutations happened. One publisher
+// advances Written on every frame while release checks publish alternating
+// answers. The subscriber is slow on the first frame carrying a new answer,
+// which is the check's own, and must never see Written go backwards: that is
+// a check's stale whole-status snapshot emitted after a newer frame.
+func TestServiceUpdateFramesLeaveInMutationOrder(t *testing.T) {
+	t.Parallel()
+	feed := &serviceUpdateFeedControl{}
+	feed.set(false, "v1.5.0")
+	rig := newServiceUpdateRig(t, serviceUpdateOptions{
+		feed: feed, checkTicks: make(chan time.Time), configure: true, supervised: true,
+	})
+	rig.check()
+
+	var mu sync.Mutex
+	var seen []int64
+	lastLatest := "1.5.0"
+	rig.app.serviceUpdate.mu.Lock()
+	deps := rig.app.serviceUpdate.deps
+	rig.app.serviceUpdate.mu.Unlock()
+	rig.app.testEmitHook = func(_ string, data any) {
+		status, ok := data.(ServiceUpdateStatus)
+		if !ok {
+			return
+		}
+		mu.Lock()
+		changed := status.LatestVersion != lastLatest
+		lastLatest = status.LatestVersion
+		mu.Unlock()
+		if changed {
+			time.Sleep(200 * time.Microsecond)
+		}
+		mu.Lock()
+		seen = append(seen, status.Written)
+		mu.Unlock()
+	}
+
+	stop := make(chan struct{})
+	flowDone := make(chan struct{})
+	go func() {
+		defer close(flowDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			rig.app.publishServiceUpdate(func(status *ServiceUpdateStatus) { status.Written++ })
+		}
+	}()
+	for i := range 40 {
+		if i%2 == 0 {
+			feed.set(false, "v1.6.0", "v1.5.0")
+		} else {
+			feed.set(false, "v1.5.0")
+		}
+		rig.app.checkServiceUpdate(context.Background(), deps)
+	}
+	close(stop)
+	<-flowDone
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i := 1; i < len(seen); i++ {
+		if seen[i] < seen[i-1] {
+			t.Fatalf("frame %d carried Written=%d after a frame with %d (of %d frames)",
+				i, seen[i], seen[i-1], len(seen))
+		}
 	}
 }
 

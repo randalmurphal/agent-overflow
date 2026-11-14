@@ -29,6 +29,7 @@ import { resetProviderModelsForTest } from '../../lib/stores/providerModels.svel
 import { resetSettingsForTest } from '../../lib/stores/settings.svelte';
 import { resetThreadActionConfirmationsForTest } from '../../lib/stores/threadActionConfirmations.svelte';
 import { resetSettingsOverlayForTest } from '../../lib/stores/settingsOverlay.svelte';
+import { resetForTest as resetUpdatesForTest } from '../../lib/stores/updates.svelte';
 import { resetWorkflowsOverlayForTest } from '../../lib/stores/workflowsOverlay.svelte';
 import { resetToolPanesForTest } from '../../lib/stores/toolPanes.svelte';
 import { closeAccountSwitcher } from '../../lib/stores/accountSwitcher.svelte';
@@ -82,6 +83,9 @@ export function resetAppState(): void {
   // Settings and the workflows navigation are module state, so an open one
   // would otherwise ride into the next test.
   resetSettingsOverlayForTest();
+  // A release one case's launch check found would show the sidebar's Update
+  // button in the next.
+  resetUpdatesForTest();
   resetWorkflowsOverlayForTest();
   resetToolPanesForTest();
   closeAccountSwitcher();
