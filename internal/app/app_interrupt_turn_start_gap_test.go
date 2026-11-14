@@ -59,7 +59,7 @@ func interruptInTurnStartGap(t *testing.T, name string, interrupt func(app *App,
 	}
 
 	// The start is released only once the interrupt is waiting on it in
-	// InterruptTurnIndex; an interrupt that finishes first sampled the gap.
+	// SampleInterrupt; an interrupt that finishes first sampled the gap.
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
 	app.triage.SetInterruptWaitHook(func(_ string, woke bool) {

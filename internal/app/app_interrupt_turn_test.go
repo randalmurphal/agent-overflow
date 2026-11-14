@@ -89,7 +89,7 @@ func claudeTUINotices(t *testing.T, st *store.Store, threadID string) int {
 // openTurnIndex is the turn an interrupt would stop now.
 func openTurnIndex(t *testing.T, app *App, threadID string) int {
 	t.Helper()
-	turn := app.triage.InterruptTurnIndex(threadID)
+	turn := app.triage.SampleInterrupt(threadID).Turn
 	if turn < 0 {
 		t.Fatal("no open turn")
 	}
@@ -373,6 +373,43 @@ func TestInterruptTurnClaudeTUIWithNoOpenTurnNoticesOnlyAPendingSend(t *testing.
 				t.Fatalf("notices = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// A Stop after a send reached the provider, before its turn start reached
+// the router, cuts the turn that send opens: the turn gets the stop row
+// once it opens, and an open request answered by it reads the user's stop.
+func TestInterruptTurnStopsTheTurnOfASendWaitingForIt(t *testing.T) {
+	t.Parallel()
+	f := newClaudeAgentKillFixture(t)
+	f.app.triage = triage.NewRouter(f.app.store, func(eventchan.Channel, any) {})
+	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "just sent")
+	f.app.triage.RegisterPendingSendWithExpectation(f.thread.ID, "u:1", 1, triage.PendingSendExpectation{})
+	f.app.noteReceiptRunning(f.thread.ID, "tok")
+	t.Cleanup(func() { f.app.forgetReceiptRunning(f.thread.ID, "tok") })
+
+	if err := f.app.InterruptTurn(f.thread.ID, nil); err != nil {
+		t.Fatalf("InterruptTurn: %v", err)
+	}
+	if got := f.interrupts(t); got != 1 {
+		t.Fatalf("interrupts = %d, want 1", got)
+	}
+	if got, want := f.app.turnStopCause(f.thread.ID, 1), stopByUser(nil).cause; got != want {
+		t.Fatalf("cause of turn 1 = %q, want %q", got, want)
+	}
+	f.handle(t, provider.ProviderEvent{Kind: provider.EventInit}, nil)
+	items, err := f.app.store.ListItems(f.thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var stopped []store.Item
+	for _, item := range items {
+		if item.Kind == triage.ItemKindError && item.Summary == triage.StoppedByUser {
+			stopped = append(stopped, item)
+		}
+	}
+	if len(stopped) != 1 || stopped[0].TurnIndex != 1 {
+		t.Fatalf("stop rows = %+v, want one on turn 1", stopped)
 	}
 }
 
