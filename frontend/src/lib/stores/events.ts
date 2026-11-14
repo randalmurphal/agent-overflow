@@ -67,7 +67,7 @@ import { setSystemStats } from './systemStats.svelte';
 import { applyThreadGroupUpdated } from './threadGroups.svelte';
 import { transportGapChannel, type TransportGap } from '../transport/wsClient';
 import { attachedBackends, backendKeyForOrigin } from '../transport/backends';
-import type { UnsavedThreadErrorsEvent } from '../../../bindings/agent-overflow/internal/app/models';
+import type { UnsavedThreadRowsEvent } from '../../../bindings/agent-overflow/internal/app/models';
 import type { BackendKey } from '../transport/backendKey';
 import { onBackendHelloChange } from './transportStatus.svelte';
 import {
@@ -131,7 +131,7 @@ import {
   applyProviderAccount,
   hydrateProviderAccounts,
   applyProviderSessionAccount,
-  applyThreadUnsavedErrors,
+  applyThreadUnsavedRows,
   applyTurnStarted,
   applyTurnCompleted,
   applySessionDied,
@@ -630,12 +630,12 @@ export function setupEventListeners(): () => void {
     applyThreadErrorNotice,
   );
 
-  // thread:unsaved_error — the thread errors the backend could not save to
+  // thread:unsaved_rows — the thread errors the backend could not save to
   // history, as the thread's whole list. Live state for the pane showing
   // the thread; GetThreadLiveState mirrors it for a pane that opens later.
-  const cancelThreadUnsavedError = wailsEventOn<UnsavedThreadErrorsEvent>(
-    'thread:unsaved_error',
-    (evt, origin) => applyThreadUnsavedErrors(evt, backendKeyForOrigin(origin.backendId)),
+  const cancelThreadUnsavedRows = wailsEventOn<UnsavedThreadRowsEvent>(
+    'thread:unsaved_rows',
+    (evt, origin) => applyThreadUnsavedRows(evt, backendKeyForOrigin(origin.backendId)),
   );
 
   // backend:attach — how a pairing this machine started from Settings →
@@ -897,7 +897,7 @@ export function setupEventListeners(): () => void {
     cancelUserMessageReverted();
     cancelThreadUpdated();
     cancelThreadErrorNotice();
-    cancelThreadUnsavedError();
+    cancelThreadUnsavedRows();
     cancelBackendAttach();
     cancelBackendSetChanged();
     cancelProjectUpdated();

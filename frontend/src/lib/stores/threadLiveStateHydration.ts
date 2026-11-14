@@ -44,7 +44,7 @@ import {
 } from './sendQueue.svelte';
 import type { ThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import type { LiveTodoState } from './liveTodoState.svelte';
-import type { ThreadUnsavedErrors } from './threadUnsavedErrors.svelte';
+import type { ThreadUnsavedRows } from './threadUnsavedRows.svelte';
 import { compactingRevision, hydrateCompactingState } from './compactingState.svelte';
 import { reconcileShellRun, shellRunRevision } from './shellCommands.svelte';
 
@@ -61,8 +61,8 @@ export interface ThreadLiveStateHydrationOptions {
   pendingInteractiveState: ThreadPendingInteractiveState;
   /** The pane's createLiveTodoState instance. */
   liveTodoState: LiveTodoState;
-  /** The pane's createThreadUnsavedErrors instance. */
-  unsavedErrors: ThreadUnsavedErrors;
+  /** The pane's createThreadUnsavedRows instance. */
+  unsavedRows: ThreadUnsavedRows;
   getProviderSessionAccountRevision(): number;
   hydrateProviderAccount(
     account: ProviderSessionAccountEvent | null,
@@ -235,7 +235,7 @@ export function createThreadLiveStateHydration(
     options.hydratePromptStaleBanner(snapshot.promptStale ? (snapshot.promptStaleRevision ?? 1) : 0);
     // Replaces, clearing included: the backend's list is the whole answer,
     // and a push that landed during the read wins.
-    options.unsavedErrors.hydrateSnapshotIfUnchanged(snapshot.unsavedErrors, guard.unsavedErrorsRevisionAtRequest);
+    options.unsavedRows.hydrateSnapshotIfUnchanged(snapshot.unsavedRows, guard.unsavedRowsRevisionAtRequest);
   }
 
   async function startLiveStateFetch(
@@ -259,7 +259,7 @@ export function createThreadLiveStateHydration(
       activeTurnAtRequest: getActiveTurn(threadID),
       queueRevisionAtRequest: getQueueRevisionForThread(threadID),
       liveTodoRevisionAtRequest: options.liveTodoState.revision,
-      unsavedErrorsRevisionAtRequest: options.unsavedErrors.revision,
+      unsavedRowsRevisionAtRequest: options.unsavedRows.revision,
       providerSessionAccountRevisionAtRequest:
         options.getProviderSessionAccountRevision(),
       effectiveModelRevisionAtRequest: options.getEffectiveModelRevision(),

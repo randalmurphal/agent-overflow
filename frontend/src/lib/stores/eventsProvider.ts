@@ -48,7 +48,7 @@ import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { patchThreadDurableStatus, syncLatestTurnCompleted, syncThreadActivity, updateThreadUsageCache } from './eventsThreadRows';
 
 import type { ErrorSurface, ThreadPaneIngest } from './threadPaneRoles';
-import type { UnsavedThreadErrorsEvent } from '../../../bindings/agent-overflow/internal/app/models';
+import type { UnsavedThreadRowsEvent } from '../../../bindings/agent-overflow/internal/app/models';
 import { getConnectionId } from '../transport/clientIdentity';
 
 // The provider fan-out writes the ingest surface AND the slice of the
@@ -67,7 +67,7 @@ type ProviderEventPane = ThreadPaneIngest &
     | 'setProviderBanner'
     | 'setSessionBanner'
     | 'clearSessionBanners'
-    | 'applyUnsavedErrors'
+    | 'applyUnsavedRows'
   >;
 
 function ingestPanes(): Iterable<ProviderEventPane> {
@@ -410,19 +410,19 @@ export function applyProviderAccount(evt: ProviderAccountEvent, backend: Backend
   setProviderAccount(provider, evt.account, evt.accountId, evt.generation, backend);
 }
 
-// thread:unsaved_error carries the thread's whole list of errors the
+// thread:unsaved_rows carries the thread's whole list of errors the
 // backend could not save, so the pane showing that thread replaces its
 // list. Not tied to the session: the error can arrive after the session
 // ended, and only a dismiss or a newer list changes it.
-export function applyThreadUnsavedErrors(
-  evt: UnsavedThreadErrorsEvent,
+export function applyThreadUnsavedRows(
+  evt: UnsavedThreadRowsEvent,
   backend: BackendKey = HOME_BACKEND,
 ): void {
   if (!evt?.threadId) return;
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     if (threadMachine(pane.threadId, pane.thread?.projectId) !== backend) continue;
-    pane.applyUnsavedErrors(evt);
+    pane.applyUnsavedRows(evt);
   }
 }
 

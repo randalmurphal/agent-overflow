@@ -374,19 +374,21 @@ describe('<ProviderStatusBanner>', () => {
     });
   });
 
-  // Thread errors the backend could not save to history arrive live on
-  // `thread:unsaved_error`, each frame the thread's whole list. They read as
-  // not saved, say why, outlive the session, and clear only on dismiss.
-  describe('unsaved errors', () => {
-    function emitUnsaved(errors: Array<{ id: string; message: string; saveError: string }>, threadId = 'thread-1', omitted = 0): void {
-      emitWailsEvent('thread:unsaved_error', {
+  // Thread errors and notices the backend could not save to history arrive
+  // live on `thread:unsaved_rows`, each frame the thread's whole list. They
+  // read as not saved, say why, keep their own tone, outlive the session,
+  // and clear only on dismiss.
+  describe('unsaved rows', () => {
+    type Entry = { id: string; message: string; saveError: string; severity?: string };
+    function emitUnsaved(rows: Entry[], threadId = 'thread-1', omitted = 0): void {
+      emitWailsEvent('thread:unsaved_rows', {
         threadId,
         omitted,
-        errors: errors.map((entry) => ({ ...entry, occurredAt: 1 })),
+        rows: rows.map((entry) => ({ severity: 'error', ...entry, occurredAt: 1 })),
       });
     }
 
-    it('renders each error marked as not saved, with why', async () => {
+    it('renders each entry marked as not saved, with why', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
       emitUnsaved(
         [
@@ -398,17 +400,44 @@ describe('<ProviderStatusBanner>', () => {
       );
 
       const { getByTestId, getAllByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
-      const banner = getByTestId('unsaved-error-banner');
-      expect(banner.textContent).toContain("Errors not saved to this thread's history");
-      const rows = getAllByTestId('unsaved-error');
+      const banner = getByTestId('unsaved-rows-banner');
+      expect(banner.textContent).toContain("Not saved to this thread's history");
+      const rows = getAllByTestId('unsaved-row');
       expect(rows).toHaveLength(2);
       expect(rows[0].textContent).toContain('session could not be resumed: boom');
       expect(rows[0].textContent).toContain('Could not save: database or disk is full');
       expect(rows[1].textContent).toContain('Could not save: disk I/O error');
-      expect(getByTestId('unsaved-error-omitted').textContent).toContain('3 earlier errors not shown.');
+      expect(getByTestId('unsaved-rows-omitted').textContent).toContain('3 earlier entries not shown.');
       // Not a saved error row and not a session claim.
       expect(queryByTestId('pane-error-banner')).toBeNull();
       expect(queryByTestId('provider-status-banner')).toBeNull();
+    });
+
+    it('keeps the error tone for errors and the warning tone for notices', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      emitUnsaved([
+        { id: 'error:1:0', message: 'reconnect failed', saveError: 'full', severity: 'error' },
+        { id: 'notification:1:0', message: 'Kept worktree feature.', saveError: 'full', severity: 'warning' },
+      ]);
+
+      const { getByTestId, getAllByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      const [error, notice] = getAllByTestId('unsaved-row');
+      expect(error.dataset.severity).toBe('error');
+      expect(error.className).toContain('text-error');
+      expect(notice.dataset.severity).toBe('warning');
+      expect(notice.className).toContain('text-warning');
+      // The frame takes the most severe entry's tone.
+      expect(getByTestId('unsaved-rows-banner').className).toContain('bg-error/15');
+    });
+
+    it('frames a list of notices in the warning tone', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      emitUnsaved([{ id: 'session_died:2', message: 'Provider session exited with code 1', saveError: 'full', severity: 'warning' }]);
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      const banner = getByTestId('unsaved-rows-banner');
+      expect(banner.className).toContain('bg-warning/15');
+      expect(banner.className).not.toContain('bg-error/15');
     });
 
     it("ignores another thread's list", async () => {
@@ -416,7 +445,7 @@ describe('<ProviderStatusBanner>', () => {
       emitUnsaved([{ id: 'unsaved-1', message: 'elsewhere', saveError: 'full' }], 'thread-2');
 
       const { queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
-      expect(queryByTestId('unsaved-error-banner')).toBeNull();
+      expect(queryByTestId('unsaved-rows-banner')).toBeNull();
     });
 
     it('dismisses through the backend for every screen', async () => {
@@ -425,19 +454,19 @@ describe('<ProviderStatusBanner>', () => {
       emitUnsaved([{ id: 'unsaved-1', message: 'boom', saveError: 'full' }]);
 
       const { getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
-      await fireEvent.click(getByTestId('unsaved-error-dismiss'));
-      expect(dismiss).toHaveBeenCalledWith('thread-1', 'unsaved_error');
-      await waitFor(() => expect(queryByTestId('unsaved-error-banner')).toBeNull());
+      await fireEvent.click(getByTestId('unsaved-rows-dismiss'));
+      expect(dismiss).toHaveBeenCalledWith('thread-1', 'unsaved_rows');
+      await waitFor(() => expect(queryByTestId('unsaved-rows-banner')).toBeNull());
     });
 
     it('clears when another screen dismisses', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
       emitUnsaved([{ id: 'unsaved-1', message: 'boom', saveError: 'full' }]);
       const { queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
-      expect(queryByTestId('unsaved-error-banner')).not.toBeNull();
+      expect(queryByTestId('unsaved-rows-banner')).not.toBeNull();
 
       emitUnsaved([]);
-      await waitFor(() => expect(queryByTestId('unsaved-error-banner')).toBeNull());
+      await waitFor(() => expect(queryByTestId('unsaved-rows-banner')).toBeNull());
     });
 
     it('stays when the session disconnects', async () => {
@@ -447,7 +476,7 @@ describe('<ProviderStatusBanner>', () => {
 
       emitWailsEvent('provider:session_account', { threadId: 'thread-1', connected: false });
       await tick();
-      expect(queryByTestId('unsaved-error-banner')).not.toBeNull();
+      expect(queryByTestId('unsaved-rows-banner')).not.toBeNull();
     });
 
     it('keeps a failed dismiss visible as a pane error', async () => {
@@ -458,12 +487,11 @@ describe('<ProviderStatusBanner>', () => {
       emitUnsaved([{ id: 'unsaved-1', message: 'boom', saveError: 'full' }]);
 
       const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
-      await fireEvent.click(getByTestId('unsaved-error-dismiss'));
+      await fireEvent.click(getByTestId('unsaved-rows-dismiss'));
       await waitFor(() => expect(pane.generalError).toBe('Backend away.'));
-      expect(getByTestId('unsaved-error-banner')).toBeInTheDocument();
+      expect(getByTestId('unsaved-rows-banner')).toBeInTheDocument();
     });
   });
-
   // `{#if providerStatus?.actionable && primaryActionLabel}` sits inside
   // `{#if providerStatus && pane.thread}`, and its deref is the FIRST operand
   // of a two-dep condition. Nulling the status in the same flush that moves

@@ -252,7 +252,7 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 		closeErr = fmt.Errorf("delete empty draft thread %s: close browser pages opened during the delete: %w", threadID, err)
 	}
 	a.forgetThreadMCP(threadID)
-	a.forgetUnsavedThreadErrors(threadID)
+	a.forgetUnsavedThreadRows(threadID)
 	a.broadcastThreadDeleted(threadID)
 	return true, closeErr
 }

@@ -7979,11 +7979,11 @@ export class ThreadLiveState {
     "shellCommandRunId"?: string;
 
     /**
-     * UnsavedErrors mirrors the `thread:unsaved_error` push: the thread
-     * errors AO could not save to history that the user has not dismissed.
-     * Absent when there are none. See app_unsaved_errors.go.
+     * UnsavedRows mirrors the `thread:unsaved_rows` push: the thread errors
+     * and notices AO could not save to history that the user has not
+     * dismissed. Absent when there are none. See app_unsaved_rows.go.
      */
-    "unsavedErrors"?: UnsavedThreadErrorsEvent | null;
+    "unsavedRows"?: UnsavedThreadRowsEvent | null;
 
     /** Creates a new ThreadLiveState instance. */
     constructor($$source: Partial<ThreadLiveState> = {}) {
@@ -8050,8 +8050,8 @@ export class ThreadLiveState {
         if ("providerAccount" in $$parsedSource) {
             $$parsedSource["providerAccount"] = $$createField11_0($$parsedSource["providerAccount"]);
         }
-        if ("unsavedErrors" in $$parsedSource) {
-            $$parsedSource["unsavedErrors"] = $$createField18_0($$parsedSource["unsavedErrors"]);
+        if ("unsavedRows" in $$parsedSource) {
+            $$parsedSource["unsavedRows"] = $$createField18_0($$parsedSource["unsavedRows"]);
         }
         return new ThreadLiveState($$parsedSource as Partial<ThreadLiveState>);
     }
@@ -8572,13 +8572,23 @@ export class TimelinePageOptions {
 }
 
 /**
- * UnsavedThreadError is one thread error AO could not save to history.
+ * UnsavedThreadRow is one thread error or notice AO could not save to
+ * history.
  */
-export class UnsavedThreadError {
+export class UnsavedThreadRow {
+    /**
+     * ID is the id the row would have had. A refused retry of the same
+     * row replaces the entry rather than adding one.
+     */
     "id": string;
 
     /**
-     * Message is the error the row would have shown.
+     * Severity is "error" for an error row and "warning" for a notice.
+     */
+    "severity": string;
+
+    /**
+     * Message is the text the row would have shown.
      */
     "message": string;
 
@@ -8588,10 +8598,13 @@ export class UnsavedThreadError {
     "saveError": string;
     "occurredAt": number;
 
-    /** Creates a new UnsavedThreadError instance. */
-    constructor($$source: Partial<UnsavedThreadError> = {}) {
+    /** Creates a new UnsavedThreadRow instance. */
+    constructor($$source: Partial<UnsavedThreadRow> = {}) {
         if (!("id" in $$source)) {
             this["id"] = "";
+        }
+        if (!("severity" in $$source)) {
+            this["severity"] = "";
         }
         if (!("message" in $$source)) {
             this["message"] = "";
@@ -8607,50 +8620,50 @@ export class UnsavedThreadError {
     }
 
     /**
-     * Creates a new UnsavedThreadError instance from a string or object.
+     * Creates a new UnsavedThreadRow instance from a string or object.
      */
-    static createFrom($$source: any = {}): UnsavedThreadError {
+    static createFrom($$source: any = {}): UnsavedThreadRow {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new UnsavedThreadError($$parsedSource as Partial<UnsavedThreadError>);
+        return new UnsavedThreadRow($$parsedSource as Partial<UnsavedThreadRow>);
     }
 }
 
 /**
- * UnsavedThreadErrorsEvent is the `thread:unsaved_error` payload and the
+ * UnsavedThreadRowsEvent is the `thread:unsaved_rows` payload and the
  * GetThreadLiveState mirror: the thread's whole current list, newest last.
  * An empty list clears it.
  */
-export class UnsavedThreadErrorsEvent {
+export class UnsavedThreadRowsEvent {
     "threadId": string;
-    "errors": UnsavedThreadError[];
+    "rows": UnsavedThreadRow[];
 
     /**
-     * Omitted counts older unsaved errors dropped to keep the list bounded.
+     * Omitted counts older unsaved rows dropped to keep the list bounded.
      */
     "omitted"?: number;
 
-    /** Creates a new UnsavedThreadErrorsEvent instance. */
-    constructor($$source: Partial<UnsavedThreadErrorsEvent> = {}) {
+    /** Creates a new UnsavedThreadRowsEvent instance. */
+    constructor($$source: Partial<UnsavedThreadRowsEvent> = {}) {
         if (!("threadId" in $$source)) {
             this["threadId"] = "";
         }
-        if (!("errors" in $$source)) {
-            this["errors"] = [];
+        if (!("rows" in $$source)) {
+            this["rows"] = [];
         }
 
         Object.assign(this, $$source);
     }
 
     /**
-     * Creates a new UnsavedThreadErrorsEvent instance from a string or object.
+     * Creates a new UnsavedThreadRowsEvent instance from a string or object.
      */
-    static createFrom($$source: any = {}): UnsavedThreadErrorsEvent {
+    static createFrom($$source: any = {}): UnsavedThreadRowsEvent {
         const $$createField1_0 = $$createType151;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("errors" in $$parsedSource) {
-            $$parsedSource["errors"] = $$createField1_0($$parsedSource["errors"]);
+        if ("rows" in $$parsedSource) {
+            $$parsedSource["rows"] = $$createField1_0($$parsedSource["rows"]);
         }
-        return new UnsavedThreadErrorsEvent($$parsedSource as Partial<UnsavedThreadErrorsEvent>);
+        return new UnsavedThreadRowsEvent($$parsedSource as Partial<UnsavedThreadRowsEvent>);
     }
 }
 
@@ -12365,7 +12378,7 @@ const $$createType137 = LiveStateTodo.createFrom;
 const $$createType138 = $Create.Nullable($$createType137);
 const $$createType139 = ProviderSessionAccountEvent.createFrom;
 const $$createType140 = $Create.Nullable($$createType139);
-const $$createType141 = UnsavedThreadErrorsEvent.createFrom;
+const $$createType141 = UnsavedThreadRowsEvent.createFrom;
 const $$createType142 = $Create.Nullable($$createType141);
 const $$createType143 = threadtools$0.Caller.createFrom;
 const $$createType144 = threadtools$0.SpawnDefaults.createFrom;
@@ -12374,7 +12387,7 @@ const $$createType146 = $Create.Array($$createType145);
 const $$createType147 = ThreadPeerRequest.createFrom;
 const $$createType148 = $Create.Array($$createType147);
 const $$createType149 = $Create.Nullable($$createType147);
-const $$createType150 = UnsavedThreadError.createFrom;
+const $$createType150 = UnsavedThreadRow.createFrom;
 const $$createType151 = $Create.Array($$createType150);
 const $$createType152 = $Create.Nullable($$createType128);
 const $$createType153 = EditDiffVerifyFile.createFrom;

@@ -222,10 +222,14 @@ func (r *Router) persistTimelineNotification(evt provider.ProviderEvent, notific
 // persistTimelineNotificationWithID is the explicit-id variant. Used
 // by callers (handleSessionDied) that need a deterministic id rather
 // than the per-thread counter fallback so that re-emitted events
-// upsert in place instead of producing duplicate rows. Returns
-// wasNew=true on the row's first persistence; subsequent calls
-// upsert the same row but return false so callers can skip
-// already-fired side effects.
+// upsert in place instead of producing duplicate rows.
+//
+// firstReport is true unless a saved row with this id already existed, so
+// callers fire their side effects once per event. It answers whether the
+// event was reported before, not whether this write succeeded: a refused
+// write still returns true with its error, and its row reaches the unsaved
+// row observer, so a death the store cannot record is still announced. A
+// failed lookup cannot tell, and reads as a first report.
 func (r *Router) persistTimelineNotificationWithID(evt provider.ProviderEvent, itemID, notificationKind, summary string) (bool, error) {
 	notificationKind = strings.TrimSpace(notificationKind)
 	if notificationKind == "" {
@@ -249,17 +253,16 @@ func (r *Router) persistTimelineNotificationWithID(evt provider.ProviderEvent, i
 	}
 	existing, found, err := r.store.GetThreadItem(evt.ThreadID, item.ID)
 	if err != nil {
-		return false, fmt.Errorf("timeline notification existing lookup %s: %w", item.ID, err)
+		err = fmt.Errorf("timeline notification existing lookup %s: %w", item.ID, err)
+		r.reportUnsavedRow(item, err)
+		return true, err
 	}
 	if found {
 		item.CreatedAt = existing.CreatedAt
 		item.ItemIndex = existing.ItemIndex
 		item.PayloadID = existing.PayloadID
 	}
-	if err := r.persistItem(item, nil); err != nil {
-		return false, err
-	}
-	return !found, nil
+	return !found, r.persistItem(item, nil)
 }
 
 // timelineNotificationTurnIndex is the turn a system-row (notification,

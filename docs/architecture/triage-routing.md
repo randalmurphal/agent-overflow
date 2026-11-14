@@ -20,7 +20,7 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | `session_status` | `handleSessionStatus`: precise mapping to `ProviderStatusEventKind`, emit `provider:status` when persistent. |
 | `usage_progress` | `handleUsageProgress`: persist absolute reported token snapshots and invalidate usage queries through `provider:usage`. Final accounting reconciles them with the ledger. |
 | `token_usage` | `handleTokenUsage`: persist and emit a provider-normalized context-window snapshot. Generic token-spend totals are ignored here. |
-| `error` | `handleError`: persist error row, mark turn items errored on fatal, emit `provider:item_event` upsert + `thread:error_notice` (the sidebar's Failed badge, on a wildcard channel — see below). An error row the store refuses (from any producer, through `persistProviderErrorItem`) goes to the unsaved error observer instead: the app keeps the thread's last few and pushes them on `thread:unsaved_error` (`internal/app/app_unsaved_errors.go`). |
+| `error` | `handleError`: persist error row, mark turn items errored on fatal, emit `provider:item_event` upsert + `thread:error_notice` (the sidebar's Failed badge, on a wildcard channel — see below). |
 | `compact_boundary` | `handleCompaction`: persist compaction marker; emit an included context-window snapshot when present, otherwise emit `provider:usage` reset. |
 | `rate_limits` | `handleRateLimits`: emit `provider:usage` (rate_limits). |
 | `content_block_start` / `content_block_stop` | Streaming text/thinking block markers; settle streaming rows on stop. A start's `apiMessageId` and `index` bind the row the first delta creates to its API response (`abandoned_blocks.go`). |
@@ -57,6 +57,15 @@ sites for the first three live beside the persists that cause them
 (`emitErrorNotice`, `emitThreadRow`, `bumpThreadActivityForUserText` in
 `router.go`). Adding a new global consumer of an item row is the thing
 this split exists to prevent.
+
+Every row upsert and its `thread:error_notice` follow a successful write
+in `persistItemWithEmit`. When the store refuses an `error`, `api_error`
+or `notification` row, that funnel hands it to the unsaved row observer
+(`unsaved_rows.go`) instead, whatever produced it, and the app shows it
+live on `thread:unsaved_rows`. A once-per-event side effect keyed on a
+row's first write, such as `provider:session_died`, is gated on whether a
+saved row already existed, not on whether this write succeeded
+(`persistTimelineNotificationWithID`).
 
 ## Pre-dispatch rewrites
 

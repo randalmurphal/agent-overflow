@@ -111,7 +111,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ThreadModeChanged,
 		eventchan.ThreadRuntimeModeChanged,
 		eventchan.ThreadTitleGeneration,
-		eventchan.ThreadUnsavedError,
+		eventchan.ThreadUnsavedRows,
 		eventchan.ThreadUpdated,
 		eventchan.ThreadTransfer,
 		eventchan.UpdaterDownloadStarted,

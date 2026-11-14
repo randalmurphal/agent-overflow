@@ -709,37 +709,37 @@ describe('createThreadPane', () => {
     expect(pane.sessionBanners).toEqual([]);
   });
 
-  // Unsaved thread errors are live state: the snapshot is the backend's
+  // Unsaved thread rows are live state: the snapshot is the backend's
   // whole list, so it replaces (and clears) the pane's copy on open and on
   // reload, and nothing carries across a thread switch.
-  it('hydrates unsaved errors from live state and drops them on reload and switch', async () => {
+  it('hydrates unsaved rows from live state and drops them on reload and switch', async () => {
     const pane = createThreadPane();
     const unsaved = {
       threadId: 'thread-unsaved',
-      errors: [{ id: 'unsaved-1', message: 'boom', saveError: 'database or disk is full', occurredAt: 1 }],
+      rows: [{ id: 'unsaved-1', severity: 'error', message: 'boom', saveError: 'database or disk is full', occurredAt: 1 }],
     };
-    let snapshot: { unsavedErrors?: typeof unsaved } = { unsavedErrors: unsaved };
+    let snapshot: { unsavedRows?: typeof unsaved } = { unsavedRows: unsaved };
     setBindingMock('GetThreadLiveState', async (threadId: string) => ({ threadId, ...snapshot }));
 
     await pane.switchThread(makeThread({ id: 'thread-unsaved', provider: 'claude' }));
-    expect(pane.unsavedErrors?.errors.map((entry) => entry.message)).toEqual(['boom']);
+    expect(pane.unsavedRows?.rows.map((entry) => entry.message)).toEqual(['boom']);
 
     snapshot = {};
     await pane.refreshFromBackend();
-    expect(pane.unsavedErrors).toBeNull();
+    expect(pane.unsavedRows).toBeNull();
 
-    snapshot = { unsavedErrors: unsaved };
+    snapshot = { unsavedRows: unsaved };
     await pane.refreshFromBackend();
-    expect(pane.unsavedErrors).not.toBeNull();
+    expect(pane.unsavedRows).not.toBeNull();
     // The switch itself drops them, even when the new thread's read fails.
     setBindingMock('GetThreadLiveState', async () => {
       throw new Error('live state unavailable');
     });
     await pane.switchThread(makeThread({ id: 'thread-other', provider: 'claude' }));
-    expect(pane.unsavedErrors).toBeNull();
+    expect(pane.unsavedRows).toBeNull();
   });
 
-  it('keeps an unsaved error pushed while the live-state read was in flight', async () => {
+  it('keeps an unsaved row pushed while the live-state read was in flight', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-race', provider: 'claude' }));
     let release: (() => void) | null = null;
@@ -751,14 +751,14 @@ describe('createThreadPane', () => {
 
     const refresh = pane.refreshFromBackend();
     await vi.waitFor(() => expect(release).not.toBeNull());
-    pane.applyUnsavedErrors({
+    pane.applyUnsavedRows({
       threadId: 'thread-race',
-      errors: [{ id: 'unsaved-1', message: 'boom', saveError: 'full', occurredAt: 1 }],
+      rows: [{ id: 'unsaved-1', severity: 'error', message: 'boom', saveError: 'full', occurredAt: 1 }],
     });
     release!();
     await refresh;
 
-    expect(pane.unsavedErrors?.errors.map((entry) => entry.id)).toEqual(['unsaved-1']);
+    expect(pane.unsavedRows?.rows.map((entry) => entry.id)).toEqual(['unsaved-1']);
   });
 
   it('marks hydrated pending sends with the flush position of the read', async () => {

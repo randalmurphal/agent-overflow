@@ -67,7 +67,7 @@ import type { PayloadExpansionHandle } from '../utils/payloadExpansion.svelte';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import type { PaneErrorRow } from './threadPaneErrors.svelte';
-import type { UnsavedThreadErrorsEvent } from '../../../bindings/agent-overflow/internal/app/models';
+import type { UnsavedThreadRowsEvent } from '../../../bindings/agent-overflow/internal/app/models';
 import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import type { TextWindow } from '../utils/liveText';
 import type { TimelineCursorLike } from './threadItems';
@@ -361,7 +361,7 @@ export interface ErrorSurface {
   /** Thread-owned banner rows (stale binary, stale prompt), in display order. */
   readonly sessionBanners: readonly ProviderStatusEvent[];
   /** Thread errors the backend could not save to history, null when none. */
-  readonly unsavedErrors: UnsavedThreadErrorsEvent | null;
+  readonly unsavedRows: UnsavedThreadRowsEvent | null;
   readonly setPaneError: (message: string, kind?: PaneErrorKind, err?: unknown) => void;
   readonly clearPaneError: (kind?: PaneErrorKind) => void;
   /** `err`, when given, is the failure behind `message` (details and copy). */
@@ -374,8 +374,8 @@ export interface ErrorSurface {
   /** Raise (event) or withdraw (null) one thread-owned banner by kind. */
   readonly setSessionBanner: (kind: SessionBannerKind, status: ProviderStatusEvent | null) => void;
   readonly clearSessionBanners: () => void;
-  /** Apply a `thread:unsaved_error` frame: the thread's whole list. */
-  readonly applyUnsavedErrors: (evt: UnsavedThreadErrorsEvent) => void;
+  /** Apply a `thread:unsaved_rows` frame: the thread's whole list. */
+  readonly applyUnsavedRows: (evt: UnsavedThreadRowsEvent) => void;
   readonly retryHistoryLoad: () => Promise<void>;
   readonly refreshFromBackend: (requireItems?: boolean) => Promise<void>;
 }
