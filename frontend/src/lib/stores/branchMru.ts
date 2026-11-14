@@ -1,5 +1,6 @@
-// Per-project MRU of branches the user explicitly selected in the
-// BranchPicker (checkout, worktree attach, branch creation). The picker
+// Per-project MRU of branches and tags the user explicitly selected in the
+// BranchPicker (checkout, worktree attach, branch creation), stored as wire
+// refs (utils/gitRef.ts) so a branch and a tag of one name stay distinct. The picker
 // reads this once per open to lift recently-used branches above the
 // backend's committerdate ordering. Bounded so a long-lived project's
 // entry can't grow with repo age. Base picks during branch creation are

@@ -19,10 +19,13 @@ type SpawnCall struct {
 	// another computer unless WorktreeBranch is set.
 	WorkspacePath string `json:"workspace_path,omitempty"`
 	// WorktreeBranch is the branch of a fresh worktree cut through the
-	// same draft-worktree path the sidebar uses. Empty means no worktree,
-	// so there is no worktree without a branch name.
+	// same draft-worktree path the sidebar uses, or a tag (bare when no
+	// branch has the name, or refs/tags/<name>) checked out detached;
+	// refs/heads/<name> names a branch only.
+	// Empty means no worktree.
 	WorktreeBranch string `json:"worktree_branch,omitempty"`
-	// WorktreeBase names the branch the worktree starts from. Empty means
+	// WorktreeBase names the branch, else the tag, the worktree's new
+	// branch starts from; a tag is cut locally. Empty means
 	// the project's current branch. WorktreeBaseLocal cuts from the local
 	// head of that branch with no fetch; otherwise the cut fetches origin
 	// and starts from origin's head of it, falling back to the local head

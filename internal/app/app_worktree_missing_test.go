@@ -144,7 +144,7 @@ func TestThreadSpawnNamesAWorktreeWhoseDirectoryIsGone(t *testing.T) {
 		"by path":   {call: threadtools.SpawnCall{WorkspacePath: worktree}},
 		"inherited": {caller: inside},
 	} {
-		opts := CreateThreadOptions{ProjectID: f.project.ID}
+		opts := spawnOptions{CreateThreadOptions: CreateThreadOptions{ProjectID: f.project.ID}}
 		err := threadToolsApp{app: f.app}.applySpawnWorkspace(&opts, tc.caller, tc.call)
 		_, message, public := errorsx.PublicDetails(err)
 		if !public || !strings.Contains(message, "its folder is gone") || !strings.Contains(message, opts.WorktreePath) {

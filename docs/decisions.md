@@ -268,6 +268,21 @@ Mechanism in
   owns that turn as it stands. The fork's timeline holds no origin row;
   the thread row records where it came from
   ([pointer forks](architecture/sqlite-store.md#pointer-forks)).
+- A tag is picked like a branch: in place, as a new worktree, or as the base
+  of a new branch. Picking a tag checks out the tag itself, which leaves the
+  workspace on no branch; no branch is made for it. The workspace then reads
+  the tag's name, or "detached at" the short commit once HEAD is at no tag,
+  never "No branch". There, Push gives way to "Create branch from here", and
+  removing a worktree counts commits no branch holds as unsaved work.
+- The branch picker has no tags section. With no search text, tags not
+  recently picked follow every branch; while searching, branches and tags
+  share the branch order (default branch, recent picks, newest first). Tags
+  are rare, so they never take list space from branches.
+- Tags are never force-fetched or pruned automatically. "Refresh tags from
+  origin", the last row of the picker's list, force-fetches them without
+  pruning when clicked: a forced fetch replaces a local tag of the same name,
+  and an unforced one stores no tags at all once any tag has moved upstream.
+- Workflows take branches only: a run merges its work back into its base.
 
 ## Subagents and background work
 

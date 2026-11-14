@@ -86,7 +86,9 @@ func (c *Core) pushArgs(cwd string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []string{"push", "--set-upstream", remote, branch}, nil
+	// Fully qualified: a bare name that is also a tag matches two refs.
+	qualified := BranchRef(branch).revision()
+	return []string{"push", "--set-upstream", remote, qualified + ":" + qualified}, nil
 }
 
 // Pull fast-forwards the current branch from its upstream.
@@ -130,7 +132,9 @@ func (c *Core) SyncBranch(cwd, branch string) error {
 		return fmt.Errorf("invalid upstream branch in %q: %w", upstream, err)
 	}
 
-	refspec := fmt.Sprintf("%s:%s", remoteBranch, branch)
+	// Both sides qualified, so a tag of either name is neither the source
+	// nor the destination.
+	refspec := fmt.Sprintf("%s:%s", BranchRef(remoteBranch).revision(), BranchRef(branch).revision())
 	_, _, err := c.executeInteractive(cwd, "fetch", remote, refspec)
 	return err
 }
@@ -243,27 +247,13 @@ func (c *Core) InvalidateFetchCache(cwd string) {
 	c.fetchCacheMu.Unlock()
 }
 
-// Checkout switches to an existing branch.
+// Checkout switches to an existing branch (CheckoutRef).
 func (c *Core) Checkout(cwd, branch string) error {
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
 		return fmt.Errorf("git checkout branch is required")
 	}
-	if err := validateBranchName(branch); err != nil {
-		return err
-	}
-
-	if local, ok := c.localBranchFromRemote(cwd, branch); ok {
-		if err := validateBranchName(local); err != nil {
-			return err
-		}
-		if c.branchExists(cwd, local) {
-			return c.executeCheckout(cwd, local)
-		}
-		return c.executeCheckout(cwd, "--track", branch)
-	}
-
-	return c.executeCheckout(cwd, branch)
+	return c.CheckoutRef(cwd, BranchRef(branch))
 }
 
 func (c *Core) executeCheckout(cwd string, args ...string) error {
@@ -472,19 +462,4 @@ func gitReportsBranchAlreadyExists(stderr, name string) bool {
 		return false
 	}
 	return strings.Contains(message, "branch") || strings.Contains(message, "refs/heads/")
-}
-
-func (c *Core) localBranchFromRemote(cwd, branch string) (string, bool) {
-	for _, remote := range c.listRemoteNames(cwd) {
-		prefix := remote + "/"
-		if !strings.HasPrefix(branch, prefix) {
-			continue
-		}
-		local := strings.TrimPrefix(branch, prefix)
-		if local == "" || strings.HasSuffix(local, "/HEAD") {
-			return "", false
-		}
-		return local, true
-	}
-	return "", false
 }

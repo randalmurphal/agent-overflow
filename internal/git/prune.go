@@ -34,8 +34,10 @@ func (c *Core) ListPruneCandidates(cwd string) ([]PruneCandidate, error) {
 
 	// NUL-separated: no field can contain a NUL byte, so branch names or
 	// subjects holding any printable delimiter can never shift columns.
+	// lstrip=2, not short: short spells a branch that shares its name with
+	// a tag "heads/<name>".
 	result, err := c.run(cwd, "for-each-ref", "refs/heads",
-		"--format=%(refname:short)%00%(worktreepath)%00%(upstream:track,nobracket)%00%(objectname)%00%(contents:subject)")
+		"--format=%(refname:lstrip=2)%00%(worktreepath)%00%(upstream:track,nobracket)%00%(objectname)%00%(contents:subject)")
 	if err != nil {
 		return nil, err
 	}
@@ -118,10 +120,10 @@ func (c *Core) ListPruneCandidates(cwd string) ([]PruneCandidate, error) {
 }
 
 // mergedLocalBranches returns the set of local branch names whose tips
-// are reachable from mergeBase.
+// are reachable from local branch mergeBase, never a tag of its name.
 func (c *Core) mergedLocalBranches(cwd, mergeBase string) (map[string]bool, error) {
 	result, err := c.run(cwd, "for-each-ref", "refs/heads",
-		"--merged="+mergeBase, "--format=%(refname:short)")
+		"--merged="+BranchRef(mergeBase).revision(), "--format=%(refname:lstrip=2)")
 	if err != nil {
 		return nil, err
 	}

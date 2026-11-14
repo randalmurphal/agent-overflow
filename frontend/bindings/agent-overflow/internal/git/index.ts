@@ -22,6 +22,8 @@ export {
     GitActionResult,
     GitBranch,
     GitStatus,
+    GitTag,
+    LeftBehind,
     MergeBlocker,
     MergeMessage,
     MergeOptions,

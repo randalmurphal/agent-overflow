@@ -733,6 +733,11 @@ export class GitBranch {
     "aheadCount"?: number;
     "behindCount"?: number;
 
+    /**
+     * Date is the tip's committer date in unix seconds.
+     */
+    "date"?: number;
+
     /** Creates a new GitBranch instance. */
     constructor($$source: Partial<GitBranch> = {}) {
         if (!("name" in $$source)) {
@@ -763,6 +768,18 @@ export class GitBranch {
 export class GitStatus {
     "isRepo": boolean;
     "branch": string;
+
+    /**
+     * HeadCommit is the full commit id of a detached HEAD; empty on a
+     * branch.
+     */
+    "headCommit"?: string;
+
+    /**
+     * Tag is set only on a detached HEAD at least one tag points at: the
+     * first such tag in ListTags order.
+     */
+    "tag"?: string;
     "isDefaultBranch": boolean;
     "hasChanges": boolean;
     "insertions": number;
@@ -852,6 +869,64 @@ export class GitStatus {
     static createFrom($$source: any = {}): GitStatus {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new GitStatus($$parsedSource as Partial<GitStatus>);
+    }
+}
+
+/**
+ * GitTag is a tag the branch picker can offer. Date is git's creatordate in
+ * unix seconds: the tagger date of an annotated tag, the commit date of a
+ * lightweight one.
+ */
+export class GitTag {
+    "name": string;
+    "date": number;
+
+    /** Creates a new GitTag instance. */
+    constructor($$source: Partial<GitTag> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("date" in $$source)) {
+            this["date"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitTag instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitTag {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitTag($$parsedSource as Partial<GitTag>);
+    }
+}
+
+/**
+ * LeftBehind is what moving a detached HEAD away from commit orphans.
+ */
+export class LeftBehind {
+    "count": number;
+    "commit": string;
+
+    /** Creates a new LeftBehind instance. */
+    constructor($$source: Partial<LeftBehind> = {}) {
+        if (!("count" in $$source)) {
+            this["count"] = 0;
+        }
+        if (!("commit" in $$source)) {
+            this["commit"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LeftBehind instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LeftBehind {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LeftBehind($$parsedSource as Partial<LeftBehind>);
     }
 }
 

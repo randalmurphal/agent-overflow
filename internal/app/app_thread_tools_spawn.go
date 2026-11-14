@@ -27,9 +27,9 @@ import (
 // the sidebar's own grouping uses, so the group is created in the NEW
 // thread's project: a fork's source project, or the destination's.
 func (t threadToolsApp) createSpawnedThread(
-	ctx context.Context, call threadtools.SpawnCall, create CreateThreadOptions,
+	ctx context.Context, call threadtools.SpawnCall, create spawnOptions,
 ) (store.Thread, error) {
-	thread, err := t.createSpawnedThreadUngrouped(ctx, call, create)
+	thread, err := t.createSpawned(ctx, call, create)
 	if err != nil || call.Group == "" {
 		return thread, err
 	}
@@ -51,11 +51,21 @@ func (t threadToolsApp) createSpawnedThread(
 		"That spawn could not join group %q: %v. No thread was left behind; make the request again.", group, err), err)
 }
 
-func (t threadToolsApp) createSpawnedThreadUngrouped(
-	ctx context.Context, call threadtools.SpawnCall, create CreateThreadOptions,
+// spawnOptions is what a spawn resolved: the thread's options and, for a
+// fresh worktree, the cut its name resolved to, which creation uses as is.
+// The worktree fields of CreateThreadOptions stay empty.
+type spawnOptions struct {
+	CreateThreadOptions
+	worktree *threadapp.WorktreeCut
+}
+
+func (t threadToolsApp) createSpawned(
+	ctx context.Context, call threadtools.SpawnCall, spawn spawnOptions,
 ) (store.Thread, error) {
+	create := spawn.CreateThreadOptions
 	if call.FromThread == "" {
-		return t.app.createThread(ctx, create, false)
+		thread, _, err := t.app.createThreadCutting(ctx, create, spawn.worktree, false)
+		return thread, err
 	}
 	// A fork runs in its source's project and workspace with its source's
 	// provider: that is what forking is, and the tools layer already refused
@@ -82,10 +92,10 @@ func (t threadToolsApp) createSpawnedThreadUngrouped(
 // Every refusal names what this computer offers, because the caller cannot
 // know another provider's model ids and a wrong guess should cost one call,
 // not a discovery round trip.
-func (t threadToolsApp) spawnThreadOptions(ctx context.Context, origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
+func (t threadToolsApp) spawnThreadOptions(ctx context.Context, origin threadRequestOrigin, call threadtools.SpawnCall) (spawnOptions, error) {
 	opts, err := t.resolveSpawnOptions(origin, call)
 	if err != nil {
-		return CreateThreadOptions{}, err
+		return spawnOptions{}, err
 	}
 	// Judged here, on the mode the new thread will actually RUN in, because
 	// this is the one place both spawn shapes resolve it: a fresh thread
@@ -94,16 +104,17 @@ func (t threadToolsApp) spawnThreadOptions(ctx context.Context, origin threadReq
 	// paired computer forwarded is judged against that computer's grants,
 	// the same rule the sidebar's own create obeys.
 	if err := t.app.requireAutonomy(ctx, opts.RuntimeMode); err != nil {
-		return CreateThreadOptions{}, err
+		return spawnOptions{}, err
 	}
 	return opts, nil
 }
 
 // resolveSpawnOptions is the resolution itself, split from the gate above so
 // the gate sees one answer for both shapes.
-func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
+func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call threadtools.SpawnCall) (spawnOptions, error) {
 	if call.FromThread != "" {
-		return t.forkSpawnOptions(origin, call)
+		opts, err := t.forkSpawnOptions(origin, call)
+		return spawnOptions{CreateThreadOptions: opts}, err
 	}
 	// A spawn a paired computer forwarded has no caller thread here, so
 	// there is no project or checkout to inherit; the call names them and
@@ -113,10 +124,10 @@ func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call thr
 		var err error
 		caller, err = t.localThread(origin.caller.ThreadID)
 		if err != nil {
-			return CreateThreadOptions{}, err
+			return spawnOptions{}, err
 		}
 	}
-	opts := CreateThreadOptions{
+	opts := spawnOptions{CreateThreadOptions: CreateThreadOptions{
 		ProjectID:       caller.ProjectID,
 		Title:           call.Title,
 		Provider:        origin.inherit.Provider,
@@ -124,16 +135,16 @@ func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call thr
 		Mode:            origin.inherit.Mode,
 		ReasoningEffort: origin.inherit.Effort,
 		RuntimeMode:     origin.inherit.RuntimeMode,
-	}
+	}}
 	if call.ProjectID != "" {
 		if _, err := t.app.store.GetProject(call.ProjectID); err != nil {
-			return CreateThreadOptions{}, errorsx.Public(threadtools.CodeNotFound,
+			return spawnOptions{}, errorsx.Public(threadtools.CodeNotFound,
 				fmt.Sprintf("There is no project %s on this computer. thread_options lists the projects it has.", call.ProjectID), err)
 		}
 		opts.ProjectID = call.ProjectID
 	}
 	if opts.ProjectID == "" {
-		return CreateThreadOptions{}, errorsx.Public(threadtools.CodeInvalidRequest,
+		return spawnOptions{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			"A spawn needs a project: this thread has none to inherit. thread_options lists this computer's projects.", nil)
 	}
 	if call.Mode != "" {
@@ -142,11 +153,11 @@ func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call thr
 	if call.RuntimeMode != "" {
 		opts.RuntimeMode = call.RuntimeMode
 	}
-	if err := t.applySpawnModel(&opts, call); err != nil {
-		return CreateThreadOptions{}, err
+	if err := t.applySpawnModel(&opts.CreateThreadOptions, call); err != nil {
+		return spawnOptions{}, err
 	}
 	if err := t.applySpawnWorkspace(&opts, caller, call); err != nil {
-		return CreateThreadOptions{}, err
+		return spawnOptions{}, err
 	}
 	return opts, nil
 }
@@ -276,48 +287,65 @@ func threadToolsModelSlugs(models []threadtools.ModelOption) []string {
 	return slugs
 }
 
-// applySpawnWorktree runs the thread in the worktree of call's branch. A
-// branch already checked out runs where it is, because git checks a branch
-// out in one place at a time; that place is the project root when the
-// root has it. Any other branch gets a fresh worktree through thread
-// creation, which checks out a branch that exists locally or on origin and
-// creates one that does not from base.
-func (t threadToolsApp) applySpawnWorktree(opts *CreateThreadOptions, call threadtools.SpawnCall) error {
+// applySpawnWorktree runs the thread in the worktree of call's branch or
+// tag. A branch already checked out runs where it is, because git checks a
+// branch out in one place at a time; that place is the project root when
+// the root has it. Any other name is resolved here, once
+// (resolveWorktreeTarget), and thread creation cuts the answer: a branch
+// that exists locally or on a remote is checked out, a tag is checked out
+// detached with base and base_local refused, and a name that is neither
+// becomes a branch created from base. refs/heads/<name> names a branch
+// only.
+func (t threadToolsApp) applySpawnWorktree(opts *spawnOptions, call threadtools.SpawnCall) error {
 	project, worktrees, err := t.spawnCheckouts(opts.ProjectID)
 	if err != nil {
 		return err
 	}
+	named, err := gitops.ParseRef(call.WorktreeBranch)
+	if err != nil {
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("worktree %q is not a branch or tag name: %v", call.WorktreeBranch, err), err)
+	}
 	newBranch := call.WorktreeBase != "" || call.WorktreeBaseLocal
-	for _, worktree := range worktrees {
-		if worktree.Branch != call.WorktreeBranch {
-			continue
-		}
-		if newBranch {
-			return spawnBranchExists(call, "is checked out at "+worktree.Path)
-		}
-		opts.WorkspaceOverride = worktree.Path
-		if !gitops.SameFilesystemPath(worktree.Path, project.Path) {
-			opts.WorktreePath = worktree.Path
-			opts.Branch = worktree.Branch
-		}
-		return nil
-	}
-	if newBranch {
-		exists, fetchErr, err := t.app.gitCore().BranchToCheckOut(t.app.lifeCtx(), project.Path, call.WorktreeBranch)
-		if fetchErr != nil {
-			log.Printf("thread tools: spawn worktree %q: fetch origin: %v (reading the tracking refs as they stand)", call.WorktreeBranch, fetchErr)
-		}
-		if err != nil {
-			return err
-		}
-		if exists {
-			return spawnBranchExists(call, "already exists")
+	if named.IsBranch() {
+		for _, worktree := range worktrees {
+			if worktree.Branch != named.Name {
+				continue
+			}
+			if newBranch {
+				return spawnBranchExists(call, "is checked out at "+worktree.Path)
+			}
+			opts.WorkspaceOverride = worktree.Path
+			if !gitops.SameFilesystemPath(worktree.Path, project.Path) {
+				opts.WorktreePath = worktree.Path
+				opts.Branch = worktree.Branch
+			}
+			return nil
 		}
 	}
-	opts.WorktreeBranch = call.WorktreeBranch
-	opts.WorktreeBase = call.WorktreeBase
-	opts.WorktreeBaseLocal = call.WorktreeBaseLocal
-	return t.checkSpawnWorktreeBase(opts.ProjectID, call)
+	// Creation uses this answer as is.
+	target, err := t.app.resolveWorktreeTarget(t.app.lifeCtx(), project.Path, call.WorktreeBranch)
+	if err != nil {
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("worktree %q cannot be used: %v", call.WorktreeBranch, err), err)
+	}
+	switch {
+	case target.Ref.IsTag() && !target.Exists:
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("This computer has no tag %q as of its last fetch from origin, which brings only tags on the commits it fetches. Name an existing tag, or a branch.", target.Ref.Name), nil)
+	case target.Ref.IsTag() && newBranch:
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("%q is a tag, so worktree checks it out as it is, detached at the tag, and base and base_local do not apply. Drop them to work at that tag, or name a new branch and pass the tag as base to start one from it.",
+				target.Ref.Name), nil)
+	case target.Exists && newBranch:
+		return spawnBranchExists(call, "already exists")
+	}
+	base, err := t.resolveSpawnWorktreeBase(project.Path, call)
+	if err != nil {
+		return err
+	}
+	opts.worktree = &threadapp.WorktreeCut{Target: target, Base: base, BaseLocal: call.WorktreeBaseLocal}
+	return nil
 }
 
 // spawnBranchExists refuses base or base_local for a branch that exists:
@@ -343,37 +371,35 @@ func (t threadToolsApp) spawnCheckouts(projectID string) (store.Project, []gitop
 	return project, worktrees, nil
 }
 
-// checkSpawnWorktreeBase refuses a named base the project does not have
-// before the request exists, naming what would have worked. A base that is
-// only on origin cannot seed a base_local cut, so that case is refused too.
-func (t threadToolsApp) checkSpawnWorktreeBase(projectID string, call threadtools.SpawnCall) error {
+// resolveSpawnWorktreeBase resolves a named base to its wire ref, a branch
+// first and then a tag, and refuses one the project does not have before
+// the request exists, naming what would have worked. A branch only origin
+// has cannot seed a base_local cut, so that case is refused too; a tag is
+// local and serves either way.
+func (t threadToolsApp) resolveSpawnWorktreeBase(projectPath string, call threadtools.SpawnCall) (string, error) {
 	if call.WorktreeBase == "" {
-		return nil
+		return "", nil
 	}
-	project, err := t.app.store.GetProject(projectID)
+	base, found, err := t.app.gitCore().ResolveRef(projectPath, call.WorktreeBase, call.WorktreeBaseLocal)
 	if err != nil {
-		return err
-	}
-	known, err := t.app.gitCore().BaseBranchKnown(project.Path, call.WorktreeBase, call.WorktreeBaseLocal)
-	if err != nil {
-		return errorsx.Public(threadtools.CodeInvalidRequest,
+		return "", errorsx.Public(threadtools.CodeInvalidRequest,
 			fmt.Sprintf("base %q cannot be used: %v", call.WorktreeBase, err), err)
 	}
-	if known {
-		return nil
+	if found {
+		return base.Wire(), nil
 	}
 	if call.WorktreeBaseLocal {
-		return errorsx.Public(threadtools.CodeInvalidRequest,
-			fmt.Sprintf("This computer has no local branch %q to start from. Omit base_local to start from origin's head of it, or name a local branch.", call.WorktreeBase), nil)
+		return "", errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("This computer has no local branch or tag %q to start from. Omit base_local to start from origin's head of a branch, or name a local branch or a tag.", call.WorktreeBase), nil)
 	}
-	return errorsx.Public(threadtools.CodeInvalidRequest,
-		fmt.Sprintf("Neither this computer nor origin has a branch %q as of the last fetch. Name an existing branch as base.", call.WorktreeBase), nil)
+	return "", errorsx.Public(threadtools.CodeInvalidRequest,
+		fmt.Sprintf("Neither this computer nor origin has a branch %q as of the last fetch, and this computer has no tag of that name. Name an existing branch or tag as base.", call.WorktreeBase), nil)
 }
 
 // applySpawnWorkspace picks the checkout the new thread runs in and refuses
 // a worktree git still registers whose folder is gone, naming it: thread
 // creation refuses it too, in prose the model never sees.
-func (t threadToolsApp) applySpawnWorkspace(opts *CreateThreadOptions, caller store.Thread, call threadtools.SpawnCall) error {
+func (t threadToolsApp) applySpawnWorkspace(opts *spawnOptions, caller store.Thread, call threadtools.SpawnCall) error {
 	if err := t.pickSpawnWorkspace(opts, caller, call); err != nil {
 		return err
 	}
@@ -389,7 +415,7 @@ func (t threadToolsApp) applySpawnWorkspace(opts *CreateThreadOptions, caller st
 // a named checkout of the project, or the caller's own. Checkouts are read
 // from git, as the sidebar's picker reads them, so a worktree made outside
 // the app is one too.
-func (t threadToolsApp) pickSpawnWorkspace(opts *CreateThreadOptions, caller store.Thread, call threadtools.SpawnCall) error {
+func (t threadToolsApp) pickSpawnWorkspace(opts *spawnOptions, caller store.Thread, call threadtools.SpawnCall) error {
 	if call.WorktreeBranch != "" {
 		return t.applySpawnWorktree(opts, call)
 	}

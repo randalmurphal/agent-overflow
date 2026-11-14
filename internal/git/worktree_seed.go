@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -16,13 +17,13 @@ import (
 // sleeping; never reassigned in production code.
 var worktreeSeedFetchTimeout = 5 * time.Second
 
-// WorktreeSeed reports how CreateWorktreeFromFreshBase chose the start
+// WorktreeSeed reports how CreateWorktreeFromFreshRef chose the start
 // point of the branch it cut. Callers use it for diagnostics only — every
 // combination is a successful worktree.
 type WorktreeSeed struct {
 	// Ref is the revision the new branch was actually cut from: either
-	// the remote-tracking ref ("origin/main") or the caller's base branch
-	// ("main"). Empty when the caller passed no base at all, i.e. the cut
+	// the remote-tracking ref ("origin/main") or the caller's base in its
+	// wire form ("main", "refs/tags/v1"). Empty when the caller passed no base at all, i.e. the cut
 	// used the repository's current HEAD.
 	Ref string
 	// FromRemote is true when Ref is origin's tracking ref rather than the
@@ -37,11 +38,13 @@ type WorktreeSeed struct {
 	FetchErr error
 }
 
-// CreateWorktreeFromFreshBase cuts newBranch's worktree the way a person
-// would if they remembered to fetch first: it refreshes origin (bounded by
-// worktreeSeedFetchTimeout, throttled by the shared fetch window) and then
-// seeds the new branch from `origin/<baseBranch>` when that ref exists,
-// falling back to the local baseBranch on any doubt.
+// CreateWorktreeFromFreshRef cuts newBranch's worktree the way a person
+// would if they remembered to fetch first: for a base branch it refreshes
+// origin (bounded by worktreeSeedFetchTimeout, throttled by the shared
+// fetch window) and then seeds the new branch from `origin/<base>` when
+// that ref exists, falling back to the local base on any doubt. A tag or
+// commit base is local: nothing is fetched, origin is not preferred, and
+// the new branch gets no upstream.
 //
 // The problem it solves: a local base branch is only as fresh as the last
 // time the user fetched, so a thread's worktree silently starts from a
@@ -50,8 +53,8 @@ type WorktreeSeed struct {
 //
 // The rules, in order:
 //
-//   - An empty baseBranch means "cut from HEAD" (CreateWorktreeFromBranch's
-//     own contract). Nothing is fetched and nothing is resolved.
+//   - The zero base means "cut from HEAD" (CreateWorktreeFromRef's own
+//     contract). Nothing is fetched and nothing is resolved.
 //   - The fetch is origin-only and skipped entirely when the repository has
 //     no origin, or when the shared fetch window (FetchStaleWindow, keyed on
 //     the git common dir and shared with MaybeFetchRemotes /
@@ -79,30 +82,32 @@ type WorktreeSeed struct {
 // would make its first `git push` argue about a name mismatch and would
 // change what ahead/behind counts mean, neither of which anyone asked for
 // by creating a worktree.
-func (c *Core) CreateWorktreeFromFreshBase(
-	ctx context.Context, cwd, path, baseBranch, newBranch string,
+func (c *Core) CreateWorktreeFromFreshRef(
+	ctx context.Context, cwd, path string, base Ref, newBranch string,
 ) (WorktreeSeed, error) {
-	baseBranch = strings.TrimSpace(baseBranch)
-	seed := WorktreeSeed{Ref: baseBranch}
-	if baseBranch != "" {
-		if err := validateBranchName(baseBranch); err != nil {
-			return seed, err
-		}
-		// Read before the fetch, which cannot create a local branch: it is
-		// what decides whether an unverified tracking ref is a downgrade or
-		// the only start point there is.
-		local, err := c.branchExistsChecked(cwd, baseBranch)
-		if err != nil {
-			return seed, err
-		}
-		trusted, fetchErr := c.fetchOriginForSeed(ctx, cwd)
-		seed.FetchErr = fetchErr
-		if remoteRef, ok := c.originTrackingRef(cwd, baseBranch); ok && (trusted || !local) {
-			seed.Ref = remoteRef
-			seed.FromRemote = true
-		}
+	seed := WorktreeSeed{Ref: base.Wire()}
+	if err := base.validate(); err != nil {
+		return seed, err
 	}
-	if err := c.createWorktreeAt(cwd, path, seed.Ref, newBranch, seed.FromRemote); err != nil {
+	if !base.IsBranch() {
+		return seed, c.CreateWorktreeFromRef(cwd, path, base, newBranch)
+	}
+	// Read before the fetch, which cannot create a local branch: it is
+	// what decides whether an unverified tracking ref is a downgrade or the
+	// only start point there is.
+	local, err := c.branchExistsChecked(cwd, base.Name)
+	if err != nil {
+		return seed, err
+	}
+	trusted, fetchErr := c.fetchOriginForSeed(ctx, cwd)
+	seed.FetchErr = fetchErr
+	startPoint := base.revision()
+	if remoteRef, ok := c.originTrackingRef(cwd, base.Name); ok && (trusted || !local) {
+		seed.Ref = remoteRef
+		seed.FromRemote = true
+		startPoint = "refs/remotes/" + remoteRef
+	}
+	if err := c.createWorktreeAt(cwd, path, startPoint, newBranch, seed.FromRemote); err != nil {
 		return seed, err
 	}
 	return seed, nil
@@ -180,8 +185,10 @@ func (c *Core) BaseBranchKnown(cwd, branch string, localOnly bool) (bool, error)
 	return remote, nil
 }
 
-// BranchToCheckOut reports whether branch already exists for a worktree to
-// check out: as a local branch, or as origin's once origin is refreshed. The
+// BranchToCheckOut reports whether branch already exists for a checkout:
+// as a local branch, or, once origin is refreshed, on a remote by the rule
+// every checkout follows (checkoutSource), which is an error for a branch
+// only several remotes other than origin have. Only origin is fetched. The
 // refresh is the one a fresh-base cut makes, shared and bounded the same
 // way, so a branch pushed since the last fetch is found and a cut that
 // follows does not fetch again. A local branch answers without a fetch.
@@ -199,8 +206,80 @@ func (c *Core) BranchToCheckOut(ctx context.Context, cwd, branch string) (exists
 		return local, nil, err
 	}
 	_, fetchErr = c.fetchOriginForSeed(ctx, cwd)
-	_, remote := c.originTrackingRef(cwd, branch)
-	return remote, fetchErr, nil
+	if _, _, err := c.checkoutSource(cwd, branch); err != nil {
+		var notFound branchNotFoundError
+		if errors.As(err, &notFound) {
+			return false, fetchErr, nil
+		}
+		return false, fetchErr, err
+	}
+	return true, fetchErr, nil
+}
+
+// WorktreeTarget is what a name typed for a fresh worktree resolved to:
+// Ref, a branch or a tag, and whether it Exists. A branch that does not
+// exist is one to create, named exactly Ref.Name; a tag that does not
+// exist names nothing.
+type WorktreeTarget struct {
+	Ref    Ref
+	Exists bool
+}
+
+// ResolveWorktreeTarget is the one resolution of a name typed for a fresh
+// worktree. It runs after the bounded origin fetch a cut makes
+// (fetchOriginForSeed), so what the fetch brings counts; a local branch or
+// tag answers with no fetch.
+//
+// "refs/heads/<n>" is that branch and "refs/tags/<n>" that tag, exactly as
+// spelled, and either fails when git would refuse the name. A bare name is
+// a branch that exists to check out (BranchToCheckOut), else a tag of that
+// name, else a branch to create named newBranch(name). An empty name, or a
+// plain one git would refuse, is a branch to create named newBranch(name)
+// with nothing looked up. newBranch is the caller's tidying of a typed
+// name; its result is validated, never tidied again. fetchErr is
+// diagnostics only: the refs are read as they stand.
+func (c *Core) ResolveWorktreeTarget(
+	ctx context.Context, cwd, name string, newBranch func(typed string) string,
+) (target WorktreeTarget, fetchErr error, err error) {
+	ref, explicit, err := parseRef(name)
+	if err != nil && explicit {
+		return WorktreeTarget{}, nil, err
+	}
+	if err != nil || ref.IsZero() {
+		target, err := branchToCreate(newBranch(strings.TrimSpace(name)))
+		return target, nil, err
+	}
+	if ref.IsBranch() {
+		exists, fetchErr, err := c.BranchToCheckOut(ctx, cwd, ref.Name)
+		if err != nil || exists || explicit {
+			return WorktreeTarget{Ref: ref, Exists: exists}, fetchErr, err
+		}
+		tag, err := c.TagExists(cwd, ref.Name)
+		if err != nil {
+			return WorktreeTarget{}, fetchErr, err
+		}
+		if tag {
+			return WorktreeTarget{Ref: TagRef(ref.Name), Exists: true}, fetchErr, nil
+		}
+		target, err := branchToCreate(newBranch(ref.Name))
+		return target, fetchErr, err
+	}
+	exists, err := c.TagExists(cwd, ref.Name)
+	if err != nil || exists {
+		return WorktreeTarget{Ref: ref, Exists: exists}, nil, err
+	}
+	_, fetchErr = c.fetchOriginForSeed(ctx, cwd)
+	exists, err = c.TagExists(cwd, ref.Name)
+	return WorktreeTarget{Ref: ref, Exists: exists}, fetchErr, err
+}
+
+// branchToCreate is the target of a new branch named exactly name.
+func branchToCreate(name string) (WorktreeTarget, error) {
+	ref := BranchRef(name)
+	if err := ref.validate(); err != nil {
+		return WorktreeTarget{}, err
+	}
+	return WorktreeTarget{Ref: ref}, nil
 }
 
 // originTrackingRef reports origin's tracking ref for branch

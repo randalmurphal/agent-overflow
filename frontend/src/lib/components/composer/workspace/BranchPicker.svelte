@@ -5,50 +5,45 @@
   // base picker, not a checkout target. Otherwise behavior splits by
   // workspace mode:
   //
-  //   - mode='local':         pick a row → checkout that branch
+  //   - mode='local':         pick a row → checkout that branch, or the
+  //     tag detached
   //   - mode='new-worktree':  pick a row → stage as the worktree's
   //     attach target. Branches already checked out in another worktree
   //     are disabled here; workspace selection belongs to EnvPicker.
   //
+  // Rows carry wire refs (utils/gitRef.ts), so a tag travels as its tag ref
+  // to every binding and into the intent and MRU. Tags load only from a
+  // backend with `git-tags.v1` and only while the menu is open.
+  //
+  // A staged base of '' is the current checkout: the trigger names it and
+  // its row is the selected one.
+  //
   // The "+ New branch…" entry inside the dropdown is the local-mode
   // entry point into the create-branch flow; the inline "+ new branch"
   // button next to BranchPicker (in WorktreeNameInput.svelte) is the
-  // new-worktree-mode entry point. Both call enterCreateBranchMode and
+  // new-worktree-mode entry point. Both call startNewBranch and
   // surface the same WorktreeNameInput text input above the strip.
 
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
-  import GitBranchIcon from '@lucide/svelte/icons/git-branch';
   import Plus from '@lucide/svelte/icons/plus';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import X from '@lucide/svelte/icons/x';
   import Icon from '../../primitives/Icon.svelte';
+  import SteppedSpinner from '../../primitives/SteppedSpinner.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import type { GitBranch } from '../../../types/git';
-  import {
-    GitCheckout,
-    GitListBranches,
-    GitMaybeFetchRemotes,
-    GitSyncBranch,
-  } from '../../../stores/bindings';
-  import type { GitWorkspaceState, WorkspaceRef } from '../../../types/git';
-  import {
-    applyToDraftPlaceholdersInWorkspace,
-    placeholderWorkspaceOf,
-  } from '../../../stores/draftWorkspaceSync';
-  import { workspaceKeyForRef, workspaceRefForProject } from '../../../utils/workspaceKey';
-  import { addErrorToast, addToast } from '../../../stores/toast.svelte';
+  import type { GitBranch, WorkspaceRef } from '../../../types/git';
+  import { addToast } from '../../../stores/toast.svelte';
   import { recentBranchSelections, recordBranchSelection } from '../../../stores/branchMru';
-  import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
   import {
-    enterCreateBranchMode,
     exitCreateBranchMode,
     isLocalBase,
     LOCAL_BASE_SENTINEL,
     setAttachBranch,
     setNewBranchBase,
+    startNewBranch,
     worktreeIntentForThread,
   } from '../../../stores/worktreeIntent.svelte';
   import Popover from '../../primitives/Popover.svelte';
@@ -61,6 +56,24 @@
   import { restorePickerFocus } from '../../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
   import { chordHintSuffix } from '../../../stores/keybindings.svelte';
+  import {
+    checkoutDisplay,
+    checkoutIcon,
+    paneCheckout,
+    refCheckout,
+    type CheckoutKind,
+  } from '../../../utils/checkout';
+  import { orderPickerRows, type PickerRow } from './branchPickerRows';
+  import { createPickerTags, workspaceHasTags } from './branchPickerTags.svelte';
+  import { checkoutPickerRow } from './branchPickerCheckout';
+  import {
+    branchUsesAnotherWorktree,
+    ROW_LABEL_MAX_CHARS,
+    rowSuffix,
+    truncateRowLabel,
+  } from './branchRowFacts';
+  import { createBranchSync } from './branchPickerSync.svelte';
+  import { createPickerBranches } from './branchPickerBranches.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -72,19 +85,19 @@
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
-  let branches: GitBranch[] = $state([]);
   let query = $state('');
-  let loading = $state(false);
-  // Why the open list is empty; cleared by the next successful list.
-  let loadError = $state<string | null>(null);
   let applying = $state(false);
   // Non-null while the prune preview dialog is up; captures the WORKSPACE
   // at open so a pane switch mid-dialog can't retarget the deletion.
   let pruneDialogWorkspace: WorkspaceRef | null = $state(null);
-  let syncingBranch: string | null = $state(null);
-  let syncConfirmation: { branchName: string; targetWorkspace: string } | null = $state(null);
-  let lastOpenBranchKey = $state('');
-  let branchRefreshSeq = 0;
+  const pickerTags = createPickerTags();
+  const pickerBranches = createPickerBranches({
+    pane: () => pane,
+    checkoutBranch: () => checkout.branch,
+    isOpen: () => open,
+    onFetched: (ws) => pickerTags.reload(ws),
+  });
+  const branchSync = createBranchSync({ pane: () => pane, onBranches: pickerBranches.replace });
 
   // One read for every pane. A draft placeholder holds a git-status
   // subscription of its own now (ChatHeaderActions attaches on the
@@ -94,62 +107,53 @@
   // The checkout this picker acts on. Null disables the trigger outright.
   let workspace = $derived(pane.workspace);
 
-  let currentBranch = $derived(pane.thread?.branch ?? '');
+  // What the workspace is on: live status once loaded, else the row's branch.
+  let checkout = $derived(paneCheckout(pane));
+  let currentDisplay = $derived(checkoutDisplay(checkout));
   let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
   let intent = $derived(worktreeIntentForThread(pane.thread));
 
-  // Trigger label reflects what picking a row will do next:
-  //   - creatingBranch:        "From <base>" (rows set the base)
-  //   - new-worktree, !creating: <attach branch | currentBranch> (rows attach)
-  //   - local, !creating:      currentBranch (rows checkout)
+  // The ref staged by the active flow, or '' for the current checkout:
+  //   - creatingBranch:        the base (rows set the base)
+  //   - new-worktree, !creating: the attach target (rows attach)
+  //   - local, !creating:      nothing staged (rows checkout)
+  let stagedRef = $derived.by(() => {
+    if (intent.creatingBranch) return isLocalBase(intent.newBranchBase) ? '' : intent.newBranchBase;
+    if (intent.mode === 'new-worktree') return intent.attachBranch;
+    return '';
+  });
+  let triggerDisplay = $derived(stagedRef ? checkoutDisplay(refCheckout(stagedRef)) : currentDisplay);
   let triggerLabel = $derived.by(() => {
     if (intent.creatingBranch) {
       if (isLocalBase(intent.newBranchBase)) return 'From Base (with changes)';
-      const base = intent.newBranchBase || currentBranch;
-      return `From ${base || 'branch'}`;
+      return `From ${triggerDisplay.name || 'branch'}`;
     }
-    if (intent.mode === 'new-worktree') {
-      return intent.attachBranch || currentBranch || 'No branch';
-    }
-    return currentBranch || 'No branch';
+    return triggerDisplay.label;
   });
   export function label(): string { return triggerLabel; }
+  /** What the trigger names; picks its icon (`checkoutIcon`). */
+  export function kind(): CheckoutKind { return triggerDisplay.kind; }
+  export function title(): string { return triggerDisplay.title; }
   export function openPicker(): void {
     if (!open && pane.thread && !applying) void handleTrigger();
   }
   let pickerChordSuffix = $derived(chordHintSuffix('composer.picker.branch'));
 
-  // Display order: default branch pinned first, then the user's recent
-  // selections (most recent first), then the rest in the backend's
-  // committerdate order (latest commit first).
-  function orderBranchesForDisplay(sourceBranches: GitBranch[], mru: string[]): GitBranch[] {
-    const mruRank = new Map(mru.map((name, rank) => [name, rank]));
-    return sourceBranches
-      .map((branch, index) => ({ branch, index }))
-      .sort((left, right) => {
-        if (left.branch.isDefault !== right.branch.isDefault) {
-          return left.branch.isDefault ? -1 : 1;
-        }
-        const leftRank = mruRank.get(left.branch.name) ?? Infinity;
-        const rightRank = mruRank.get(right.branch.name) ?? Infinity;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        return left.index - right.index;
-      })
-      .map(({ branch }) => branch);
-  }
+  let tagsSupported = $derived(workspaceHasTags(workspace));
+  let showRefreshTags = $derived(tagsSupported && !!pane.gitStatus.status?.hasOriginRemote);
 
-  let mruBranches: string[] = $state([]);
-  let orderedBranches = $derived(orderBranchesForDisplay(branches, mruBranches));
+  // Recent picks, as wire refs, read once per open.
+  let mruRefs: string[] = $state([]);
+  let pickerRows = $derived(orderPickerRows({
+    branches: pickerBranches.branches,
+    tags: pickerTags.tags,
+    recent: mruRefs,
+    query,
+  }));
 
   function refreshMru(): void {
-    mruBranches = recentBranchSelections(pane.thread?.projectId ?? '');
+    mruRefs = recentBranchSelections(pane.thread?.projectId ?? '');
   }
-
-  let filteredBranches = $derived.by(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return orderedBranches;
-    return orderedBranches.filter((branch) => branch.name.toLowerCase().includes(needle));
-  });
 
   // Local-row only makes sense as a base picker — the user is choosing
   // what their NEW branch is built off. Outside the create flow it would
@@ -158,157 +162,24 @@
 
   let isLocalSelected = $derived(intent.creatingBranch && isLocalBase(intent.newBranchBase));
 
-  function branchRefreshKey(
-    threadIdentity: string | undefined,
-    ws: WorkspaceRef | null,
-    branch: string,
-  ): string {
-    return `${threadIdentity ?? ''}\0${workspaceKeyForRef(ws) ?? ''}\0${branch}`;
-  }
-
-  async function refreshBranches(threadIdentity: string, ws: WorkspaceRef): Promise<void> {
-    const seq = ++branchRefreshSeq;
-    try {
-      const res = (await GitListBranches(ws)) as GitBranch[] | null;
-      if (seq !== branchRefreshSeq) return;
-      if (pane.thread?.id !== threadIdentity || !open) return;
-      branches = Array.isArray(res) ? res : [];
-      loadError = null;
-    } catch (err) {
-      if (seq !== branchRefreshSeq) return;
-      if (pane.thread?.id !== threadIdentity || !open) return;
-      branches = [];
-      loadError = userFacingError(err);
-    }
-  }
-
   async function handleTrigger(): Promise<void> {
     open = !open;
-    if (!open) return;
-    if (!pane.thread || loading) return;
-    const ws = workspace;
-    if (!ws) return;
-    const threadIdentity = pane.thread.id;
-    lastOpenBranchKey = branchRefreshKey(threadIdentity, ws, currentBranch);
-    refreshMru();
-    loading = true;
-    loadError = null;
-    // The dirty bit streams in through the shared workspace-keyed git-status
-    // store for every pane, placeholder included — nothing to fetch here.
-    const fetchBranches = refreshBranches(threadIdentity, ws);
-    void (async () => {
-      let fetched: boolean;
-      try {
-        fetched = !!(await GitMaybeFetchRemotes(ws));
-      } catch (err) {
-        console.error('background fetch failed:', err);
-        return;
-      }
-      // Refresh what the picker lists now: the pane may have moved to
-      // another workspace while the fetch ran.
-      const current = workspace;
-      if (!fetched || !open || !pane.thread || !current) return;
-      await refreshBranches(pane.thread.id, current);
-    })();
-    try {
-      await fetchBranches;
-    } finally {
-      loading = false;
-    }
-  }
-
-  $effect(() => {
-    const branch = currentBranch;
-    const threadIdentity = pane.thread?.id;
-    const ws = workspace;
-    const key = branchRefreshKey(threadIdentity, ws, branch);
-    if (!open || !threadIdentity || !ws) {
-      lastOpenBranchKey = key;
+    if (!open) {
+      pickerTags.clear();
       return;
     }
-    if (key === lastOpenBranchKey) return;
-    lastOpenBranchKey = key;
-    void refreshBranches(threadIdentity, ws);
+    refreshMru();
+    await pickerBranches.open();
+  }
+
+  // Tags belong to the repository, not the checked-out ref: the open
+  // picker follows its workspace.
+  $effect(() => {
+    if (open && workspace) pickerTags.ensure(workspace);
   });
 
-  // FF-only sync. Diverged rows render the icon disabled with a
-  // tooltip; backend mirrors the gate via git's native non-FF refusal.
-  function canSync(branch: GitBranch): boolean {
-    return (branch.behindCount ?? 0) > 0 && (branch.aheadCount ?? 0) === 0;
-  }
-
-  function isDiverged(branch: GitBranch): boolean {
-    return (branch.behindCount ?? 0) > 0 && (branch.aheadCount ?? 0) > 0;
-  }
-
-  function showsSyncAction(branch: GitBranch): boolean {
-    return canSync(branch) || isDiverged(branch);
-  }
-
-  function syncDisabledTitle(branch: GitBranch): string | undefined {
-    if (!isDiverged(branch)) return undefined;
-    return `Branch has diverged from upstream (${branch.aheadCount} ahead, ${branch.behindCount} behind). Push or rebase first.`;
-  }
-
-  function syncActionTitle(branch: GitBranch): string | undefined {
-    const disabledTitle = syncDisabledTitle(branch);
-    if (disabledTitle) return disabledTitle;
-    if (branchUsesAnotherWorktree(branch)) {
-      return `Sync ${branch.name} in ${branch.worktreePath}`;
-    }
-    return undefined;
-  }
-
-  function syncActionDisabled(branch: GitBranch): boolean {
-    return workspace === null || !canSync(branch) || syncingBranch !== null;
-  }
-
-  async function performSync(branchName: string, targetWorkspace: string): Promise<void> {
-    if (!pane.thread) return;
-    if (syncingBranch) return;
-    const threadIdentity = pane.thread.id;
-    // Sync runs in the worktree that HOLDS the branch, which is this pane's
-    // checkout for a local row and another one of the project's worktrees
-    // for a checked-out-elsewhere row. One call either way.
-    const target = workspaceRefForProject(pane.thread.projectId, targetWorkspace);
-    if (!target) {
-      addToast('error', 'Project is unavailable for sync.');
-      return;
-    }
-    syncingBranch = branchName;
-    try {
-      const res = (await GitSyncBranch(target, branchName)) as GitBranch[] | null;
-      if (pane.thread?.id === threadIdentity && Array.isArray(res)) {
-        branches = res;
-      }
-      addToast('info', `Synced ${branchName}`);
-    } catch (err) {
-      addErrorToast(`Sync failed: ${userFacingError(err)}`, err);
-    } finally {
-      syncingBranch = null;
-    }
-  }
-
-  async function handleSync(branch: GitBranch): Promise<void> {
-    if (!pane.thread || !canSync(branch)) return;
-    if (syncingBranch) return;
-    const targetWorkspace = branchUsesAnotherWorktree(branch)
-      ? branch.worktreePath ?? ''
-      : pane.thread.workspacePath ?? '';
-    if (!targetWorkspace) return;
-    if (branchUsesAnotherWorktree(branch)) {
-      syncConfirmation = { branchName: branch.name, targetWorkspace };
-      closeMenu();
-      return;
-    }
-    await performSync(branch.name, targetWorkspace);
-  }
-
-  function confirmCrossWorktreeSync(): void {
-    const pending = syncConfirmation;
-    if (!pending) return;
-    syncConfirmation = null;
-    void performSync(pending.branchName, pending.targetWorkspace);
+  function handleRefreshTags(): void {
+    if (workspace) void pickerTags.refresh(workspace);
   }
 
   function handlePrune(): void {
@@ -320,6 +191,7 @@
   function closeMenu(reason?: PopoverCloseReason): void {
     open = false;
     query = '';
+    pickerTags.clear();
     restorePickerFocus(reason, { paneId: pane.paneId, triggerEl: anchor ?? triggerEl });
   }
 
@@ -336,70 +208,46 @@
     });
   });
 
-  function branchBadge(branch: GitBranch): string | undefined {
-    const counts: string[] = [];
-    if ((branch.aheadCount ?? 0) > 0) counts.push(`↑${branch.aheadCount}`);
-    if ((branch.behindCount ?? 0) > 0) counts.push(`↓${branch.behindCount}`);
-    let tag: string | undefined;
-    if (branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace)) {
-      tag = 'worktree';
-    } else if (branch.isDefault) {
-      tag = 'default';
-    }
-    if (counts.length === 0) return tag;
-    const arrows = counts.join(' ');
-    return tag ? `${arrows} · ${tag}` : arrows;
-  }
-
-  // Cap visible branch labels at 20 chars (19 + ellipsis); full name
-  // surfaces via the row's title attribute.
-  const BRANCH_LABEL_MAX_CHARS = 20;
-
-  function truncateBranchLabel(name: string): string {
-    if (name.length <= BRANCH_LABEL_MAX_CHARS) return name;
-    return name.slice(0, BRANCH_LABEL_MAX_CHARS - 1) + '…';
-  }
-
-  function branchUsesAnotherWorktree(branch: GitBranch): boolean {
-    return !!branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace);
-  }
-
   function branchUnavailableReason(branch: GitBranch): string | undefined {
     if (intent.creatingBranch) return undefined;
-    if (!branchUsesAnotherWorktree(branch)) return undefined;
+    if (!branchUsesAnotherWorktree(branch, currentWorkspace)) return undefined;
     return `Branch is checked out in ${branch.worktreePath}. Select that worktree from the environment picker.`;
   }
 
-  // Rows disable purely on selection availability; MenuItem's action is
-  // independent of row `disabled`, so a sync icon on a checked-out-elsewhere
-  // branch stays clickable. (The `&& !showsSyncAction` carve-out this
-  // replaces existed only because the old MenuItem killed the action along
-  // with the row.) selectBranch keeps its runtime re-check as backstop.
-  function branchSelectionDisabled(branch: GitBranch): boolean {
-    return !!branchUnavailableReason(branch);
-  }
-
-  function branchRowTitle(branch: GitBranch): string | undefined {
-    const nameTitle = branch.name.length > BRANCH_LABEL_MAX_CHARS ? branch.name : '';
-    const unavailableReason = branchUnavailableReason(branch) ?? '';
-    if (nameTitle && unavailableReason) return `${nameTitle}\n${unavailableReason}`;
-    return nameTitle || unavailableReason || undefined;
-  }
-
   function isSelectedBranch(branch: GitBranch): boolean {
-    if (branch.name !== currentBranch) return false;
+    if (branch.name !== checkout.branch) return false;
     if (branch.worktreePath) return sameNormalizedPath(branch.worktreePath, currentWorkspace);
     return true;
   }
 
+  function isCheckedOut(row: PickerRow): boolean {
+    if (row.kind === 'tag') return row.name === checkout.tag;
+    return isSelectedBranch(row.branch);
+  }
+
   // Highlight reflects the active flow's target:
-  //   - creating: the row that is the staged base
+  //   - creating: the row that is the staged base ('' is the checked-out row)
   //   - new-worktree, !creating: the row that is the staged attach target
   //   - local, !creating: the row that's currently checked out
-  function isBaseSelected(branch: GitBranch): boolean {
-    if (intent.creatingBranch) return branch.name === intent.newBranchBase;
-    if (intent.mode === 'new-worktree') return branch.name === intent.attachBranch;
-    return isSelectedBranch(branch);
+  function isRowSelected(row: PickerRow): boolean {
+    if (intent.creatingBranch) return intent.newBranchBase ? row.ref === intent.newBranchBase : isCheckedOut(row);
+    if (intent.mode === 'new-worktree') return row.ref === intent.attachBranch;
+    return isCheckedOut(row);
+  }
+
+  // Rows disable purely on selection availability; MenuItem's action is
+  // independent of row `disabled`, so a sync icon on a checked-out-elsewhere
+  // branch stays clickable. selectRow re-checks as backstop. A tag is never
+  // unavailable: any number of worktrees may sit on one.
+  function rowUnavailableReason(row: PickerRow): string | undefined {
+    return row.kind === 'branch' ? branchUnavailableReason(row.branch) : undefined;
+  }
+
+  function rowTitle(row: PickerRow): string | undefined {
+    const nameTitle = row.name.length > ROW_LABEL_MAX_CHARS ? row.name : '';
+    const unavailableReason = rowUnavailableReason(row) ?? '';
+    if (nameTitle && unavailableReason) return `${nameTitle}\n${unavailableReason}`;
+    return nameTitle || unavailableReason || undefined;
   }
 
   function handleSearchKeydown(event: KeyboardEvent): void {
@@ -407,8 +255,7 @@
   }
 
   function startCreate(): void {
-    if (!pane.thread) return;
-    enterCreateBranchMode(pane.thread, { workspaceDirty, currentBranch });
+    startNewBranch(pane);
     closeMenu();
   }
 
@@ -425,13 +272,13 @@
     closeMenu();
   }
 
-  async function selectBranch(branch: GitBranch): Promise<void> {
+  async function selectRow(row: PickerRow): Promise<void> {
     if (!pane.thread) {
       closeMenu();
       return;
     }
     if (intent.creatingBranch) {
-      setNewBranchBase(pane.thread, branch.name);
+      setNewBranchBase(pane.thread, row.ref);
       closeMenu();
       return;
     }
@@ -439,27 +286,22 @@
       closeMenu();
       return;
     }
-    const unavailableReason = branchUnavailableReason(branch);
+    const unavailableReason = rowUnavailableReason(row);
     if (unavailableReason) {
       addToast('error', unavailableReason);
       closeMenu();
       return;
     }
     if (intent.mode === 'new-worktree') {
-      setAttachBranch(pane.thread, branch.name);
-      recordBranchSelection(pane.thread.projectId ?? '', branch.name);
+      setAttachBranch(pane.thread, row.ref);
+      recordBranchSelection(pane.thread.projectId ?? '', row.ref);
       closeMenu();
       return;
     }
-    if (isSelectedBranch(branch)) {
+    if (isCheckedOut(row)) {
       closeMenu();
       return;
     }
-    // One checkout path for every pane. Captured BEFORE the first await, and
-    // read from the captures for the rest of the flow: a pane switch
-    // mid-checkout re-points `pane.thread`, and re-reading it after an await
-    // asked the backend about workspace B and then wrote B's branch into the
-    // draft placeholders parked in workspace A.
     const ws = workspace;
     if (!ws) {
       addToast('error', 'Project is unavailable for checkout.');
@@ -467,36 +309,8 @@
       return;
     }
     applying = true;
-    const placeholderId = pane.draftPlaceholder?.id ?? '';
     try {
-      const next = (await GitCheckout(ws, branch.name)) as GitWorkspaceState;
-      const checkedOut = placeholderWorkspaceOf(next);
-      if (!checkedOut.branch) checkedOut.branch = branch.name;
-      // A checkout happens in a DIRECTORY. Persisted thread rows in it are
-      // re-branched by the backend and arrive as a thread:updated broadcast;
-      // draft composers have no row for that broadcast to name, so they are
-      // told here. Panes on the same project but a different worktree are
-      // untouched: the checkout did not move them.
-      const reached = applyToDraftPlaceholdersInWorkspace(ws, checkedOut);
-      // The acting placeholder is normally one of those; apply directly when
-      // it is not in the registry, guarding the placeholder identity and the
-      // workspace the checkout was launched against (either can move under
-      // the await).
-      if (
-        pane.hasDraftPlaceholder &&
-        !reached.has(pane.paneId) &&
-        pane.draftPlaceholder?.id === placeholderId &&
-        sameNormalizedPath(pane.thread?.workspacePath ?? '', ws.workspacePath)
-      ) {
-        pane.applyDraftPlaceholderWorkspace(checkedOut);
-      }
-      // Recorded against the captured project, not the pane's current one:
-      // the checkout happened in that project whatever the pane shows now.
-      recordBranchSelection(ws.projectId, branch.name);
-      addToast('info', `Checked out ${checkedOut.branch}`);
-    } catch (err) {
-      console.error('branch checkout failed:', err);
-      addErrorToast(`Failed to checkout: ${userFacingError(err)}`, err);
+      await checkoutPickerRow(pane, ws, row);
     } finally {
       applying = false;
       closeMenu();
@@ -516,11 +330,12 @@
   disabled={!pane.thread || applying}
   aria-haspopup="menu"
   aria-expanded={open}
-  title={`Branch: ${triggerLabel}${pickerChordSuffix}`}
+  title={`${triggerDisplay.title}${pickerChordSuffix}`}
   data-testid="branch-picker-trigger"
+  data-checkout-kind={triggerDisplay.kind}
   class={composerTriggerClasses}
 >
-  <Icon icon={GitBranchIcon} size={12} strokeWidth={2} class="opacity-70" />
+  <Icon icon={checkoutIcon(triggerDisplay.kind)} size={12} strokeWidth={2} class="opacity-70" />
   <span class="truncate max-w-[160px] text-fg">{triggerLabel}</span>
   <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
@@ -567,7 +382,7 @@
       <input
         type="search"
         value={query}
-        placeholder="Search Branches"
+        placeholder={tagsSupported ? 'Search branches and tags' : 'Search Branches'}
         onkeydown={handleSearchKeydown}
         oninput={(e) => (query = (e.target as HTMLInputElement).value)}
         class={[
@@ -577,7 +392,7 @@
         ].join(' ')}
       />
     </div>
-    {#if loading}
+    {#if pickerBranches.loading}
       <div
         class="px-3 py-1.5 text-xs text-text-secondary/60"
         role="presentation"
@@ -589,63 +404,99 @@
       {#if showLocalRow}
         <MenuItem
           label="Base (with changes)"
-          description={currentBranch || undefined}
+          description={currentDisplay.kind === 'none' ? undefined : currentDisplay.label}
           checked={isLocalSelected}
           onSelect={selectLocalRow}
         />
         <MenuDivider />
       {/if}
-      {#if loadError}
+      {#if pickerBranches.error}
         <div
           class="line-clamp-3 max-w-72 break-words px-3 py-1.5 text-xs text-error"
           role="presentation"
-          title={loadError}
+          title={pickerBranches.error}
           data-testid="branch-picker-error"
         >
-          Failed to load branches: {loadError}
+          Failed to load branches: {pickerBranches.error}
         </div>
-      {:else if filteredBranches.length === 0}
+      {:else if pickerRows.rows.length === 0 && !pickerTags.error}
         <div
           class="px-3 py-1.5 text-xs text-text-secondary/60"
           role="presentation"
           data-testid="branch-picker-empty"
         >
-          No branches
+          {tagsSupported ? 'No branches or tags' : 'No branches'}
         </div>
-      {:else}
-        <div class="max-h-56 overflow-y-auto">
-          {#each filteredBranches as branch (branch.name)}
+      {/if}
+      {#if pickerRows.rows.length > 0 || pickerTags.error || showRefreshTags}
+        <!-- Refresh is the list's last row, so it costs no menu height. -->
+        <div class="max-h-56 overflow-y-auto" data-testid="branch-picker-list">
+          {#each pickerRows.rows as row (row.ref)}
             <MenuItem
-              label={truncateBranchLabel(branch.name)}
-              suffix={branchBadge(branch)}
-              checked={isBaseSelected(branch)}
-              disabled={branchSelectionDisabled(branch)}
-              title={branchRowTitle(branch)}
-              onSelect={() => selectBranch(branch)}
-              action={showsSyncAction(branch) ? syncIcon : undefined}
-              actionLabel={syncingBranch === branch.name
-                ? `Syncing ${branch.name}`
-                : `Sync ${branch.name} from upstream`}
-              actionDisabled={syncActionDisabled(branch)}
-              actionTitle={syncActionTitle(branch)}
-              onAction={() => handleSync(branch)}
+              label={truncateRowLabel(row.name)}
+              suffix={rowSuffix(row, currentWorkspace)}
+              checked={isRowSelected(row)}
+              disabled={!!rowUnavailableReason(row)}
+              title={rowTitle(row)}
+              testId={row.kind === 'tag' ? 'branch-picker-tag-row' : undefined}
+              onSelect={() => selectRow(row)}
+              action={branchSync.shows(row) ? syncIcon : undefined}
+              actionLabel={branchSync.actionLabel(row)}
+              actionDisabled={branchSync.actionDisabled(row)}
+              actionTitle={branchSync.actionTitle(row)}
+              onAction={() => void branchSync.request(row, closeMenu)}
             />
           {/each}
+          {#if pickerTags.error}
+            <div
+              class="line-clamp-3 max-w-72 break-words px-3 py-1.5 text-xs text-error"
+              role="presentation"
+              title={pickerTags.error}
+              data-testid="branch-picker-tags-error"
+            >
+              Failed to load tags: {pickerTags.error}
+            </div>
+          {/if}
+          {#if pickerRows.hiddenTags > 0}
+            <div
+              class="px-3 py-1.5 text-xs text-fg-hint"
+              role="presentation"
+              data-testid="branch-picker-more-tags"
+            >
+              {pickerRows.hiddenTags} more {pickerRows.hiddenTags === 1 ? 'tag' : 'tags'}. Search to narrow.
+            </div>
+          {/if}
+          {#if showRefreshTags}
+            <MenuItem
+              label={pickerTags.refreshing ? 'Refreshing tags…' : 'Refresh tags from origin'}
+              disabled={pickerTags.refreshing || workspace === null}
+              testId="branch-picker-refresh-tags"
+              onSelect={handleRefreshTags}
+            >
+              {#snippet icon()}
+                {#if pickerTags.refreshing}
+                  <SteppedSpinner size={12} />
+                {:else}
+                  <Icon icon={RefreshCw} size={12} strokeWidth={2} />
+                {/if}
+              {/snippet}
+            </MenuItem>
+          {/if}
         </div>
       {/if}
     {/if}
-	  </Menu>
-	</Popover>
+  </Menu>
+</Popover>
 
 <ConfirmDialog
-  open={!!syncConfirmation}
+  open={!!branchSync.confirmation}
   title="Sync Worktree Branch"
-  description={syncConfirmation
-    ? `${syncConfirmation.branchName} is checked out in ${syncConfirmation.targetWorkspace}. Syncing it will run git pull in that worktree.`
+  description={branchSync.confirmation
+    ? `${branchSync.confirmation.branchName} is checked out in ${branchSync.confirmation.targetWorkspace}. Syncing it will run git pull in that worktree.`
     : ''}
   confirmLabel="Sync"
-  onConfirm={confirmCrossWorktreeSync}
-  onCancel={() => { syncConfirmation = null; }}
+  onConfirm={branchSync.confirm}
+  onCancel={branchSync.cancel}
 />
 
 {#if pruneDialogWorkspace}

@@ -32,6 +32,7 @@
   import { SPLIT_BTN_BASE } from '../primitives/splitButton';
   import { createWorkspaceChangeLockState } from '../../stores/workspaceChangeLock.svelte';
   import {
+    menuPullEnabled,
     menuPushEnabled,
     primaryActionFor,
     runPullAction,
@@ -41,6 +42,8 @@
     type RemoveWorktreeCtx,
   } from './gitActions';
   import type { WorkspaceRef } from '../../types/git';
+  import { startNewBranchFromHere } from '../../stores/worktreeIntent.svelte';
+  import { checkoutOf, isDetached } from '../../utils/checkout';
   import {
     TerminalsClosingNote,
     terminalsClosingNoteForWorktree,
@@ -159,6 +162,9 @@
   );
 
   let primaryAction = $derived(primaryActionFor(status));
+  // A detached HEAD has nothing to push; the menu offers keeping its
+  // commits on a new branch instead, through the shared new-branch flow.
+  let detachedHead = $derived(!!status && isDetached(checkoutOf(status)));
 
   function ctx(ws: WorkspaceRef): GitActionCtx {
     return {
@@ -270,17 +276,28 @@
             showCommit = true;
           }}
         />
-        <MenuItem
-          label="Push"
-          disabled={!menuPushEnabled(menuStatus) || gitUngranted}
-          onSelect={() => {
-            showDropdown = false;
-            void guard(() => runPushAction(ctx(ws)));
-          }}
-        />
+        {#if detachedHead}
+          <MenuItem
+            label="Create branch from here"
+            disabled={gitUngranted || !pane.thread}
+            onSelect={() => {
+              showDropdown = false;
+              startNewBranchFromHere(pane);
+            }}
+          />
+        {:else}
+          <MenuItem
+            label="Push"
+            disabled={!menuPushEnabled(menuStatus) || gitUngranted}
+            onSelect={() => {
+              showDropdown = false;
+              void guard(() => runPushAction(ctx(ws)));
+            }}
+          />
+        {/if}
         <MenuItem
           label="Pull"
-          disabled={menuStatus.behindCount === 0 || gitUngranted}
+          disabled={!menuPullEnabled(menuStatus) || gitUngranted}
           onSelect={() => {
             showDropdown = false;
             void guard(() => runPullAction(ctx(ws)));
