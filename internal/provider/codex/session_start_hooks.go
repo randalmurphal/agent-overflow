@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"maps"
 	"strconv"
 	"strings"
@@ -172,7 +173,8 @@ func writeSerdeJSONString(b *strings.Builder, text string) {
 // may have stopped before the hooks ran, and Codex keeps them queued, so
 // the expectation waits for the next turn; a turn that ends with the
 // expectation still pending forgets the thread's records
-// (SessionStartDelivery.ForgetWhilePending).
+// (SessionStartDelivery.ForgetWhilePending), and so does the end of the
+// read loop (endSessionStartDeliveryAtTeardown).
 func (s *Session) observeSessionStartHooks(method string, params json.RawMessage) bool {
 	if s.sessionStart == nil {
 		return false
@@ -263,6 +265,21 @@ func (s *Session) observeSessionStartHooks(method string, params json.RawMessage
 		}
 	}
 	return false
+}
+
+// endSessionStartDeliveryAtTeardown forgets the thread's records when the
+// read loop ends with a delivery still pending, after its last notification:
+// the app-server exited or the session closed after a start or a compaction
+// and before the hook delivered. A later session resumes the thread without
+// the hook, so its prompts must deliver the whole memory.
+func (s *Session) endSessionStartDeliveryAtTeardown() {
+	if !s.sessionStart.Pending() {
+		return
+	}
+	log.Printf("codex: %s: the session ended before its SessionStart hooks delivered after its %s", s.threadID, s.sessionStart.Expecting())
+	if warning := s.sessionStart.ForgetWhilePending(); warning != "" {
+		s.emitNonFatalError(warning)
+	}
 }
 
 // expectSessionStartAfterCompaction arms the hook for a compaction. Codex

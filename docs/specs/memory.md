@@ -205,7 +205,8 @@ next prompt delivers the whole memory:
 - a start or a compaction that ended without the SessionStart output;
 - on Codex, a turn that ends with that output still pending: Codex runs a
   compaction's hook only at the next turn, which a stop of the session
-  or the app can prevent;
+  or the app can prevent, and a session that ends, closed or with its
+  app-server exited, with that output still pending;
 - on claude-tui, a session closed before a model request showed the
   output;
 - a revert that cuts the history in place (Codex's in-place rollback,

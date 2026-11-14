@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -829,5 +830,107 @@ func TestCodexIgnoresAChildThreadsHookRuns(t *testing.T) {
 	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 ||
 		!strings.HasPrefix(warnings[0], "the memory did not reach this session after its start") {
 		t.Fatalf("warnings = %v", warnings)
+	}
+}
+
+// A session whose read loop ends with a delivery still pending, after a
+// compaction and before the hook delivered, forgets the thread's records:
+// a later session resumes the thread without the hook, so its prompts must
+// deliver the whole memory. That holds for a close and for an app-server
+// that exits on its own; a failure to forget is a warning; a delivery that
+// arrived forgets nothing.
+func TestCodexForgetsAPendingDeliveryWhenTheSessionEnds(t *testing.T) {
+	t.Parallel()
+	const root = "codex-teardown"
+	line := func(method string, params map[string]any) string {
+		params["threadId"] = root
+		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.ReplaceAll(string(raw), `\`, `\\`) + "\n"
+	}
+	run := map[string]any{
+		"id": "session_start:0:0", "eventName": "sessionStart", "handlerType": "command", "executionMode": "sync",
+		"scope": "thread", "sourcePath": "/<session-flags>/config.toml", "source": "sessionFlags", "displayOrder": 0,
+		"status": "completed", "startedAt": 1,
+		"entries": []any{map[string]any{"kind": "context", "text": memoryContext}},
+	}
+	compaction := line("turn/started", map[string]any{"turn": map[string]any{"id": "t1", "status": "inProgress", "items": []any{}}}) +
+		line("item/completed", map[string]any{"turnId": "t1", "item": map[string]any{"type": "contextCompaction", "id": "compact-t1"}})
+	delivered := line("hook/completed", map[string]any{"turnId": "t1", "run": run})
+	for _, tc := range []struct {
+		name      string
+		early     string
+		exit      bool
+		forgetErr error
+		forgets   int
+		warning   string
+	}{
+		{"close", compaction, false, nil, 1, ""},
+		{"exit", compaction, true, nil, 1, ""},
+		{"forget fails", compaction, false, errors.New("disk full"), 1, "since its compaction, so a later prompt may deliver only what changed: disk full"},
+		{"delivered", compaction + delivered, false, nil, 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
+				`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+				`"method":"thread/resume"`: tc.early + `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"` + root + `"}}}`,
+				"":                         `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+			})
+			recorder := &errorRecorder{}
+			var mu sync.Mutex
+			forgot := 0
+			sess, err := NewSession(t.Context(), "thread-1", Config{
+				Binary: binary, WorkDir: t.TempDir(), ResumeThreadID: root,
+				SessionStartHook: testHook(), SessionStartForget: func() error {
+					mu.Lock()
+					defer mu.Unlock()
+					forgot++
+					return tc.forgetErr
+				},
+			}, recorder.onEvent)
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			t.Cleanup(func() { _ = sess.Close() })
+			mu.Lock()
+			before := forgot
+			mu.Unlock()
+			if before != 0 {
+				t.Fatalf("forgot %d times before the session ended", before)
+			}
+			if tc.exit {
+				proc, err := os.FindProcess(sess.PID())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := proc.Kill(); err != nil {
+					t.Fatal(err)
+				}
+				<-sess.readDone
+			} else if err := sess.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			mu.Lock()
+			got := forgot
+			mu.Unlock()
+			if got != tc.forgets {
+				t.Errorf("forgot %d times, want %d", got, tc.forgets)
+			}
+			var warnings []string
+			for _, msg := range recorder.take() {
+				if strings.Contains(msg, "SessionStart") || strings.Contains(msg, "the memory") {
+					warnings = append(warnings, msg)
+				}
+			}
+			switch {
+			case tc.warning == "" && len(warnings) != 0:
+				t.Errorf("warnings %v, want none", warnings)
+			case tc.warning != "" && (len(warnings) != 1 || !strings.HasSuffix(warnings[0], tc.warning)):
+				t.Errorf("warnings %v, want one ending %q", warnings, tc.warning)
+			}
+		})
 	}
 }

@@ -487,6 +487,10 @@ func (s *Session) readLoop() {
 		// The process is already gone, so only emit local resolution events.
 		s.drainPendingApprovals("lost", true, false)
 
+		// Every notification has been dispatched, so a delivery still
+		// pending will not arrive in this process.
+		s.endSessionStartDeliveryAtTeardown()
+
 		// The abnormal-exit "error" (host did not initiate this close) plus
 		// the unconditional "disconnected" — shared with claude so the two
 		// read loops cannot drift on the signal triage gates its synthesized
