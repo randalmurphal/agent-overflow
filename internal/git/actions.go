@@ -463,18 +463,3 @@ func gitReportsBranchAlreadyExists(stderr, name string) bool {
 	}
 	return strings.Contains(message, "branch") || strings.Contains(message, "refs/heads/")
 }
-
-func (c *Core) localBranchFromRemote(cwd, branch string) (string, bool) {
-	for _, remote := range c.listRemoteNames(cwd) {
-		prefix := remote + "/"
-		if !strings.HasPrefix(branch, prefix) {
-			continue
-		}
-		local := strings.TrimPrefix(branch, prefix)
-		if local == "" || strings.HasSuffix(local, "/HEAD") {
-			return "", false
-		}
-		return local, true
-	}
-	return "", false
-}

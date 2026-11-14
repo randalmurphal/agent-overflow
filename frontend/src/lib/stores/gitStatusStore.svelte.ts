@@ -101,9 +101,12 @@ function removeAlias(cwdKey: string, key: string, owner: AliasOwner): void {
   if (keys.size === 0) localKeysByCwd.delete(cwdKey);
 }
 
-// Statuses applied per held key, from any source. `withCheckoutAnswer` reads
-// it to tell whether a status landed while its mutation was in flight.
-const appliedByKey = new Map<string, number>();
+// The latest status applied to each held key, from any source, as a number
+// no other apply ever has: a key released and reacquired never repeats one.
+// `withCheckoutAnswer` reads it to tell whether a status landed while its
+// mutation was in flight.
+const lastApplyByKey = new Map<string, number>();
+let applySequence = 0;
 
 const store = createEntityStore<GitStatus, GitStatusCtx>({
   name: 'gitStatus',
@@ -143,7 +146,7 @@ const store = createEntityStore<GitStatus, GitStatusCtx>({
     };
   },
   onApply: (key, value, prev) => {
-    appliedByKey.set(key, (appliedByKey.get(key) ?? 0) + 1);
+    lastApplyByKey.set(key, ++applySequence);
     if (!value.isRepo) return;
     const branch = value.branch ?? '';
     // First observation for a key always writes: the thread rows' cached
@@ -155,7 +158,7 @@ const store = createEntityStore<GitStatus, GitStatusCtx>({
     queueBranchPersist(key, branch);
   },
   onDrop: (key) => {
-    appliedByKey.delete(key);
+    lastApplyByKey.delete(key);
   },
 });
 
@@ -362,10 +365,12 @@ export async function withCheckoutAnswer<T extends GitWorkspaceState | null>(
   mutate: () => Promise<T>,
 ): Promise<T> {
   const key = workspaceKeyForRef(ws);
-  const applied = key === null ? 0 : (appliedByKey.get(key) ?? 0);
+  const before = key === null ? undefined : lastApplyByKey.get(key);
   const state = await mutate();
   const status = state?.status;
-  if (status && key !== null && store.snapshot(key) !== null && (appliedByKey.get(key) ?? 0) === applied) {
+  // `before` is undefined for a workspace that held no status when the call
+  // began; one acquired since has a status newer than the answer.
+  if (status && key !== null && before !== undefined && lastApplyByKey.get(key) === before) {
     store.apply(key, status);
   }
   return state;

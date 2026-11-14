@@ -318,6 +318,30 @@ describe('<BranchPicker> tags', () => {
     expect(pane.gitStatus.status?.openPrLookupPending).toBeFalsy();
   });
 
+  it('keeps the status of a workspace released and reacquired during the checkout', async () => {
+    __seedGitStatusForTest('/repo', status());
+    const pane = await buildPane('main');
+    mockLists();
+    const onBranch = { branch: 'feat/new', isDefaultBranch: false };
+    setBindingMock('GitCheckout', async () => {
+      // The only holder leaves and comes back: the fresh hold's first status
+      // is the same count of applies as before, and newer than the answer.
+      __resetGitStatusStoreForTest();
+      __seedGitStatusForTest('/repo', status({ ...onBranch, openPrNumber: 7, openPrUrl: 'https://forge/pr/7' }));
+      return {
+        workspacePath: '/repo', worktreePath: '', branch: 'feat/new',
+        status: status({ ...onBranch, openPrLookupPending: true }),
+      };
+    });
+    const { findByRole } = await openWithTags(pane);
+
+    await fireEvent.click(await findByRole('menuitem', { name: /^feat\/new/ }));
+
+    await waitFor(() => expect(getToasts().map((t) => t.message)).toContain('Checked out feat/new'));
+    expect(pane.gitStatus.status?.openPrNumber).toBe(7);
+    expect(pane.gitStatus.status?.openPrLookupPending).toBeFalsy();
+  });
+
   it('keeps the held label for an answer without a status and names the row in the toast', async () => {
     __seedGitStatusForTest('/repo', status());
     const pane = await buildPane('main');

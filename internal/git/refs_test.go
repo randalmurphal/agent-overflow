@@ -338,9 +338,9 @@ func TestCheckoutRefPicksTheNamedKindWhenABranchAndATagShareAName(t *testing.T) 
 	}
 }
 
-// A local branch named "<remote>/<name>" is checked out as itself; the name
-// reads as that remote's branch only when no branch has it.
-func TestCheckoutRefOfALocalBranchNamedLikeARemoteBranch(t *testing.T) {
+// A branch ref is the branch's exact name: "origin/topic" is the local
+// branch of that name and, when there is none, not origin's topic.
+func TestCheckoutRefOfABranchNamedLikeARemoteBranch(t *testing.T) {
 	t.Parallel()
 	repo, bare := testutil.InitGitRepoWithOrigin(t)
 	originOnlyBranch(t, bare, "topic")
@@ -356,11 +356,13 @@ func TestCheckoutRefOfALocalBranchNamedLikeARemoteBranch(t *testing.T) {
 	}
 	testutil.RunGit(t, repo, "checkout", "-q", "main")
 	testutil.RunGit(t, repo, "branch", "-q", "-D", "origin/topic")
-	if err := core.CheckoutRef(repo, BranchRef("origin/topic")); err != nil {
-		t.Fatal(err)
+	testutil.RunGit(t, repo, "branch", "-q", "topic", "main")
+	err := core.CheckoutRef(repo, BranchRef("origin/topic"))
+	if err == nil || !strings.Contains(err.Error(), `branch "origin/topic" not found`) {
+		t.Fatalf("CheckoutRef(origin/topic) = %v, want not found", err)
 	}
-	if branch := core.CurrentBranch(repo); branch != "topic" {
-		t.Fatalf("branch = %q, want topic tracking origin's", branch)
+	if branch := core.CurrentBranch(repo); branch != "main" {
+		t.Fatalf("branch = %q after a refused checkout, want main", branch)
 	}
 }
 
