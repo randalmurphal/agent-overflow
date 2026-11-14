@@ -43,6 +43,13 @@ func agentMessageLabel(text string, meta usermessage.Meta) string {
 }
 
 func agentMessageHead(text string, meta usermessage.Meta) (sender, head string) {
+	// A joined row is headed by its first member, read with that member's
+	// own attribution. Without recorded parts the row is read whole.
+	if members, ok := usermessage.SplitJoinedParts(text, meta.JoinedParts); ok && len(members) > 1 {
+		first := meta.JoinedParts[0]
+		text = members[0]
+		meta = usermessage.Meta{SendID: first.SendID, Origin: first.Origin, OriginThread: first.OriginThread, OriginWake: first.OriginWake}
+	}
 	if meta.Origin == usermessage.OriginAgentWake {
 		return agentWakeHead(text, meta.OriginWake)
 	}
@@ -51,7 +58,7 @@ func agentMessageHead(text string, meta usermessage.Meta) (sender, head string) 
 		origin = *meta.OriginThread
 	}
 	if origin.Kind == "wake" || origin.Kind == "" && strings.HasPrefix(meta.SendID, "thread-wake") {
-		if title, body, reminder, ok := readThreadWake(firstJoinedWake(text, len(meta.JoinedSendIDs))); ok {
+		if title, body, reminder, ok := readThreadWake(text); ok {
 			if reminder {
 				return "This thread", firstLineOf(body)
 			}
@@ -78,26 +85,6 @@ func firstRequestBody(text string) (body, title string) {
 	return text[:at], title
 }
 
-// firstJoinedWake is the first wake of a row Claude joined from members
-// wakes: an answer can hold the separator, so a cut counts only where a
-// wake's status line follows it.
-func firstJoinedWake(text string, members int) string {
-	if members < 2 {
-		return text
-	}
-	for from := 0; ; {
-		cut := strings.Index(text[from:], usermessage.JoinSeparator)
-		if cut < 0 {
-			return text
-		}
-		cut += from
-		if _, _, _, ok := readThreadWake(text[cut+len(usermessage.JoinSeparator):]); ok {
-			return text[:cut]
-		}
-		from = cut + 1
-	}
-}
-
 // readThreadWake reads a wake an answer, a reminder or a settlement wrote
 // (threadtools.Wake): the answering thread's title and the body after the
 // status line and the standing-agent line. ok is false when text is not one.
@@ -121,7 +108,7 @@ func readThreadWake(text string) (title, body string, reminder, ok bool) {
 		return "", "", false, false
 	}
 	_, rest := cutWakeToken(naming[len(quoted)+close+1:])
-	if line, next, _ := strings.Cut(after, "\n"); strings.HasPrefix(line, "That thread "+threadtools.AgentSentence) || strings.HasPrefix(line, "That thread "+threadtools.PromotedAgentSentence) {
+	if line, next, _ := strings.Cut(after, "\n"); strings.HasPrefix(line, "That thread "+threadtools.AgentSentence) {
 		after = next
 	}
 	switch {

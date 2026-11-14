@@ -67,12 +67,8 @@ type SenderAgent struct {
 }
 
 // AgentSentence follows the sender or the answering thread on a footer or a
-// wake when it is an assistant's thread. Messages written before assistants
-// replaced promotion say PromotedAgentSentence.
-const (
-	AgentSentence         = "is a standing agent."
-	PromotedAgentSentence = "is a standing agent, a thread the user promoted."
-)
+// wake when it is an assistant's thread.
+const AgentSentence = "is a standing agent."
 
 // sentence says the sender or the answering thread is a standing agent and
 // quotes its role line.

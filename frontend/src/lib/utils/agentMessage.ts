@@ -21,6 +21,7 @@ import type { Item } from '../types/models';
 import {
   isAgentMessageMeta,
   parseUserMessageMeta,
+  splitJoinedParts,
   userMessageOrigin,
   userMessageOriginThread,
   userMessageOriginWake,
@@ -125,10 +126,7 @@ export interface AgentMessage {
 }
 
 const FOOTER_MARKER = 'Agent request from thread ';
-const JOIN_SEPARATOR = '\n\n---\n\n';
 const AGENT_SENTENCE = 'is a standing agent.';
-// Messages written before assistants replaced promotion say this instead.
-const PROMOTED_AGENT_SENTENCE = 'is a standing agent, a thread the user promoted.';
 const ROLE_PREFIX = ' Its role, in its own words: ';
 const ROUTES_SENTENCE = ' It spawned this thread, so your questions and approval requests go to it, not to the user.';
 const WAITING_PREFIX = 'It is waiting for your answer. When you are done, call thread_reply with token ';
@@ -207,10 +205,8 @@ function readThreadNaming(text: string): { title: string; threadId: string; comp
 
 /** The standing-agent sentence after `who`, or null when the line is not one. */
 function readAgentSentence(line: string, who: string): { role: string; rest: string } | null {
-  const opening = [AGENT_SENTENCE, PROMOTED_AGENT_SENTENCE]
-    .map((sentence) => `${who} ${sentence}`)
-    .find((candidate) => line.startsWith(candidate));
-  if (!opening) return null;
+  const opening = `${who} ${AGENT_SENTENCE}`;
+  if (!line.startsWith(opening)) return null;
   let rest = line.slice(opening.length);
   let role = '';
   if (rest.startsWith(ROLE_PREFIX)) {
@@ -443,33 +439,6 @@ export function parseWakeText(text: string): AgentMessagePart | null {
   return { body, footer: null, wake: facts };
 }
 
-/**
- * Split a wake row into its wakes. A joined row of `members` wakes is cut at
- * the separators that open another status line, leftmost first; an answer
- * may itself hold the separator, which is why the count bounds the cuts.
- */
-export function parseWakeRow(text: string, members: number): AgentMessagePart[] | null {
-  const pieces: string[] = [];
-  let rest = text;
-  while (pieces.length < members - 1) {
-    let cut = rest.indexOf(JOIN_SEPARATOR);
-    while (cut >= 0 && parseWakeText(rest.slice(cut + JOIN_SEPARATOR.length)) === null) {
-      cut = rest.indexOf(JOIN_SEPARATOR, cut + 1);
-    }
-    if (cut < 0) break;
-    pieces.push(rest.slice(0, cut));
-    rest = rest.slice(cut + JOIN_SEPARATOR.length);
-  }
-  pieces.push(rest);
-  const parts: AgentMessagePart[] = [];
-  for (const piece of pieces) {
-    const part = parseWakeText(piece);
-    if (!part) return null;
-    parts.push(part);
-  }
-  return parts;
-}
-
 // Gutter labels fit the tool gutter at its narrowest (compact), five
 // characters; the title says the kind in full.
 const WAKE_KIND_LABELS: Record<WakeKind, { label: string; title: string }> = {
@@ -516,10 +485,6 @@ export function firstLineOf(text: string): string {
 
 const REQUEST_KINDS: Record<string, AgentMessageKind> = { spawn: 'spawn', send: 'request', ask: 'question' };
 
-function memberCount(meta: UserMessageMeta): number {
-  return Array.isArray(meta.joinedSendIds) && meta.joinedSendIds.length > 1 ? meta.joinedSendIds.length : 1;
-}
-
 function sendIdOf(meta: UserMessageMeta): string {
   return typeof meta.sendId === 'string' ? meta.sendId : '';
 }
@@ -530,9 +495,13 @@ function fromThread(text: string, meta: UserMessageMeta): AgentMessage {
     ?? { computerId: '', computerName: '', threadId: '', title: '', token: '', kind: '' };
   const sendId = sendIdOf(meta);
   const wakeRow = origin.kind === 'wake' || (origin.kind === '' && sendId.startsWith('thread-wake'));
-  let parts = wakeRow ? parseWakeRow(text, memberCount(meta)) : parseRequestText(text);
+  const wake = (): AgentMessagePart[] | null => {
+    const part = parseWakeText(text);
+    return part ? [part] : null;
+  };
   // A row that reads as neither is still the agent's: shown whole, unparsed.
-  if (!parts) parts = parseWakeRow(text, memberCount(meta)) ?? parseRequestText(text) ?? [{ body: text, footer: null, wake: null }];
+  const parts = (wakeRow ? wake() ?? parseRequestText(text) : parseRequestText(text) ?? wake())
+    ?? [{ body: text, footer: null, wake: null }];
   const lead = parts[0];
   let kind: AgentMessageKind = REQUEST_KINDS[origin.kind] ?? 'request';
   if (lead.wake) kind = lead.wake.kind;
@@ -626,16 +595,6 @@ function wakeSender(wake: UserMessageOriginWake, attributed: boolean, title: str
   }
 }
 
-/**
- * The wakes of a row the provider joined, one part each. A wake's data
- * lines are quoted, so a bare separator line is always the join's.
- */
-function wakeParts(text: string, members: number): AgentMessagePart[] {
-  const pieces = members > 1 ? text.split(JOIN_SEPARATOR) : [text];
-  const texts = pieces.length === members ? pieces : [text];
-  return texts.map((piece) => ({ body: wakeBody(piece), footer: null, wake: null }));
-}
-
 function fromWake(text: string, meta: UserMessageMeta): AgentMessage {
   // A row whose attribution did not decode is still a wake's.
   const decoded = userMessageOriginWake(meta);
@@ -663,7 +622,7 @@ function fromWake(text: string, meta: UserMessageMeta): AgentMessage {
       : null,
     senderRole: '',
     firstLine: reportFirstLine(kind, text),
-    parts: wakeParts(text, memberCount(meta)),
+    parts: [{ body: wakeBody(text), footer: null, wake: null }],
   };
 }
 
@@ -722,10 +681,31 @@ export function agentMessageFromItem(item: Pick<Item, 'kind' | 'meta' | 'summary
   if (item.kind !== 'user_text') return null;
   const meta = parseUserMessageMeta(item.meta);
   const text = item.summary ?? '';
-  if (isAgentMessageMeta(meta)) {
-    return userMessageOrigin(meta) === 'agent-thread' ? fromThread(text, meta) : fromWake(text, meta);
+  if (!isAgentMessageMeta(meta)) return fromProvider(text, meta);
+  // A joined row is cut where its recorded members end, never by reading
+  // its text, and each member is read with its own attribution. A row
+  // whose members are unknown is read whole.
+  const members = splitJoinedParts(text, meta);
+  if (!members || members.length < 2) return fromAgent(text, meta);
+  const messages = members.map((member) => fromAgent(member.text, member.meta));
+  const lead = messages.find((message) => message !== null);
+  if (!lead) return fromAgent(text, meta);
+  return {
+    ...lead,
+    parts: messages.flatMap((message, index) => message?.parts ?? [{ body: members[index].text, footer: null, wake: null }]),
+  };
+}
+
+/** An agent's message read with its attribution; null for a member that is not an agent's. */
+function fromAgent(text: string, meta: UserMessageMeta): AgentMessage | null {
+  switch (userMessageOrigin(meta)) {
+    case 'agent-thread':
+      return fromThread(text, meta);
+    case 'agent-wake':
+      return fromWake(text, meta);
+    default:
+      return null;
   }
-  return fromProvider(text, meta);
 }
 
 /**

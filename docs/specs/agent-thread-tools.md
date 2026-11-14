@@ -1229,8 +1229,11 @@ it shows the message and the routing parsed into facts: whether the
 sender waits, whether a reply reaches it, its role, where its spawned
 thread's prompts go, the sender's user message it quoted and the token;
 on an answer, who answered, how long ago, what stopped it and
-where the clipped rest is. The footer and a wake's status line never
-render raw; a loop, watch, outside send or worker wake shows its data
+where the clipped rest is. A joined row shows each member its
+`joinedParts` record, cut by their lengths and read by their own
+attribution, never by finding separators in its text; a row whose parts
+are missing or do not describe its text is read as one message. The
+footer and a wake's status line never render raw; a loop, watch, outside send or worker wake shows its data
 decoded without the line written for the agent. A remote job's
 completion names the job and its computer and leads with its result; a
 workflow wake names the workflow and leads with the run's headline. Every

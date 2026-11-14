@@ -50,10 +50,14 @@ type fixturePart struct {
 	Wake   *fixtureWake   `json:"wake"`
 }
 
+// fixtureCase is a row's text and its messages. Members is each joined
+// member's length in bytes, as usermessage.JoinedPart records it, so the
+// frontend splits the row the way a stored row's meta tells it to.
 type fixtureCase struct {
-	Name  string        `json:"name"`
-	Text  string        `json:"text"`
-	Parts []fixturePart `json:"parts"`
+	Name    string        `json:"name"`
+	Text    string        `json:"text"`
+	Members []int         `json:"members"`
+	Parts   []fixturePart `json:"parts"`
 }
 
 func role(agent *SenderAgent) *string {
@@ -148,15 +152,17 @@ func wakePart(wake Wake) (string, fixturePart) {
 	return wake.String(), part
 }
 
-func join(cases ...func() (string, fixturePart)) (string, []fixturePart) {
+func join(cases ...func() (string, fixturePart)) (string, []int, []fixturePart) {
 	texts := make([]string, 0, len(cases))
+	members := make([]int, 0, len(cases))
 	parts := make([]fixturePart, 0, len(cases))
 	for _, build := range cases {
 		text, part := build()
 		texts = append(texts, text)
+		members = append(members, len(text))
 		parts = append(parts, part)
 	}
-	return strings.Join(texts, "\n\n---\n\n"), parts
+	return strings.Join(texts, "\n\n---\n\n"), members, parts
 }
 
 func agentMessageFixtureCases() []fixtureCase {
@@ -169,7 +175,7 @@ func agentMessageFixtureCases() []fixtureCase {
 	}
 	one := func(name string, build func() (string, fixturePart)) fixtureCase {
 		text, part := build()
-		return fixtureCase{Name: name, Text: text, Parts: []fixturePart{part}}
+		return fixtureCase{Name: name, Text: text, Members: []int{len(text)}, Parts: []fixturePart{part}}
 	}
 	long := strings.Repeat("0123456789abcdef", WakePreviewBytes/16+4)
 	cases := []fixtureCase{
@@ -238,16 +244,23 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("reminder", wake(Wake{Kind: WakeReminder, Token: token, Text: "Check the build."})),
 		one("clipped reply", wake(Wake{Kind: WakeReply, Title: "Worker", ThreadID: "t-work", Token: token, Text: long})),
 	}
-	text, parts := join(
+	text, members, parts := join(
 		request("First ask.", Footer{Title: "Lead", ThreadID: "t-lead", Token: token, AnswerRequested: true, SenderReachable: true}),
 		request("Second ask.", Footer{Title: "Lead", ThreadID: "t-lead", Token: "tok-2", SenderReachable: true}),
 	)
-	cases = append(cases, fixtureCase{Name: "two requests joined", Text: text, Parts: parts})
-	text, parts = join(
+	cases = append(cases, fixtureCase{Name: "two requests joined", Text: text, Members: members, Parts: parts})
+	text, members, parts = join(
 		wake(Wake{Kind: WakeReply, Title: "A", ThreadID: "t-a", Token: token, Text: "one\n\n---\n\nstill one"}),
 		wake(Wake{Kind: WakeFinished, Title: "B", ThreadID: "t-b", Token: "tok-2", Text: "two"}),
 	)
-	cases = append(cases, fixtureCase{Name: "two wakes joined, the first answer holding a rule", Text: text, Parts: parts})
+	cases = append(cases, fixtureCase{Name: "two wakes joined, the first answer holding a rule", Text: text, Members: members, Parts: parts})
+	// An answer is free text: it can quote a whole wake after a rule, and
+	// only the recorded lengths tell that quote from the next member.
+	text, members, parts = join(
+		wake(Wake{Kind: WakeReply, Title: "Café", ThreadID: "t-a", Token: token, Text: "Example:\n\n---\n\nReply from \"B\" (t-b) [token tok-2]:\nnot B's answer"}),
+		wake(Wake{Kind: WakeFinished, Title: "B", ThreadID: "t-b", Token: "tok-2", Text: "B's answer, naïve"}),
+	)
+	cases = append(cases, fixtureCase{Name: "two wakes joined, the first answer quoting a wake", Text: text, Members: members, Parts: parts})
 	return cases
 }
 

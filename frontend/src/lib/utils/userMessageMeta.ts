@@ -152,6 +152,52 @@ export function userMessageOriginTokens(meta: UserMessageMeta): string[] {
   return token ? [token] : [];
 }
 
+/** One member of a joined row: its text and its own attribution. */
+export interface JoinedMember {
+  text: string;
+  meta: UserMessageMeta;
+}
+
+const JOIN_SEPARATOR_BYTES = new TextEncoder().encode('\n\n---\n\n');
+
+/**
+ * Cut a joined row's text into the members its `joinedParts` record, each
+ * with its own attribution: the TypeScript twin of usermessage
+ * SplitJoinedParts. A member's text is free text and can hold the separator,
+ * so only the recorded UTF-8 lengths cut it. null when the row records no
+ * parts or they do not describe its text exactly.
+ */
+export function splitJoinedParts(text: string, meta: UserMessageMeta): JoinedMember[] | null {
+  if (!Array.isArray(meta.joinedParts) || meta.joinedParts.length === 0) return null;
+  const bytes = new TextEncoder().encode(text);
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const members: JoinedMember[] = [];
+  let at = 0;
+  for (const [index, value] of (meta.joinedParts as unknown[]).entries()) {
+    const part = objectRecord(value);
+    if (!part) return null;
+    if (index > 0) {
+      if (!JOIN_SEPARATOR_BYTES.every((byte, offset) => bytes[at + offset] === byte)) return null;
+      at += JOIN_SEPARATOR_BYTES.length;
+    }
+    const length = part.bytes;
+    if (typeof length !== 'number' || !Number.isInteger(length) || length < 0 || length > bytes.length - at) return null;
+    let member: string;
+    try {
+      member = decoder.decode(bytes.subarray(at, at + length));
+    } catch {
+      // A length that cuts a character is not this text's.
+      return null;
+    }
+    members.push({
+      text: member,
+      meta: { sendId: part.sendId, origin: part.origin, originThread: part.originThread, originWake: part.originWake },
+    });
+    at += length;
+  }
+  return at === bytes.length ? members : null;
+}
+
 /**
  * What wrote an `agent-wake` row: `loop` or `watch` with its label, `send`
  * for a script's outside message, or `question` or `approval` for a worker's

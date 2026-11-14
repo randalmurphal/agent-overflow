@@ -20,7 +20,11 @@ vi.mock('../../stores/threads.svelte', async (importOriginal) => ({
   getThreadById: (id: string) => (id === 't-plan' || id === 't-work' ? makeThread({ id }) : undefined),
 }));
 
-const text = (name: string) => (fixture as { name: string; text: string }[]).find((c) => c.name === name)!.text;
+const fixtureCase = (name: string) => (fixture as { name: string; text: string; members: number[] }[]).find((c) => c.name === name)!;
+const text = (name: string) => fixtureCase(name).text;
+/** The joinedParts a join records for a fixture case's members, each attributed `origins[i]`. */
+const joinedParts = (name: string, origins: Record<string, unknown>[]) =>
+  fixtureCase(name).members.map((bytes, index) => ({ bytes, origin: 'agent-thread', originThread: origins[index] }));
 
 function agentRow(summary: string, meta: Record<string, unknown>, overrides: Partial<Item> = {}): Item {
   return makeItem({ id: 'msg-1', kind: 'user_text', role: 'user', summary, meta: JSON.stringify(meta), ...overrides });
@@ -139,6 +143,10 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
       origin: 'agent-thread',
       originThread: { threadId: 't-a', title: 'A', kind: 'wake' },
       joinedSendIds: ['thread-wake:a', 'thread-wake:b'],
+      joinedParts: joinedParts('two wakes joined, the first answer holding a rule', [
+        { threadId: 't-a', title: 'A', kind: 'wake' },
+        { threadId: 't-b', title: 'B', kind: 'wake' },
+      ]),
     });
     const view = render(TimelineLeaf, { props: { pane, item } });
     const parts = view.getAllByTestId('agent-message-part');
@@ -153,6 +161,10 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
       origin: 'agent-thread',
       originThread: { threadId: 't-lead', title: 'Lead', kind: 'send' },
       joinedSendIds: ['thread-request:a', 'thread-request:b'],
+      joinedParts: joinedParts('two requests joined', [
+        { threadId: 't-lead', title: 'Lead', kind: 'send' },
+        { threadId: 't-lead', title: 'Lead', kind: 'send' },
+      ]),
     });
     const view = render(TimelineLeaf, { props: { pane, item } });
     expect(view.getAllByTestId('agent-message-part')).toHaveLength(2);

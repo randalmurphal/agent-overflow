@@ -53,6 +53,23 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	appWake := func(text string, origin *usermessage.OriginWake) (string, string) {
 		return text, marshal(usermessage.Meta{Origin: usermessage.OriginAgentWake, OriginWake: origin, SendID: "agent-wake:w1:1"})
 	}
+	// joined records its members as a join does (usermessage.RecordMembers).
+	joined := func(texts []string, metas []string) (string, string) {
+		parts := make([]usermessage.TextPart, len(texts))
+		members := make([]usermessage.Meta, len(metas))
+		for i := range texts {
+			parts[i] = usermessage.TextPart{Text: texts[i]}
+			decoded, err := usermessage.FromItem(store.Item{Meta: metas[i]})
+			if err != nil {
+				t.Fatal(err)
+			}
+			members[i] = decoded
+		}
+		text, lengths := usermessage.JoinRenumberedTextLengths(parts)
+		meta := usermessage.JoinMetas(members)
+		meta.RecordMembers(members, texts, lengths)
+		return text, marshal(meta)
+	}
 	worker := "Worker"
 	cases := []agentMessageLabelCase{}
 	add := func(name string, text, meta string) {
@@ -69,12 +86,10 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("an empty request", text, meta)
 	text, meta = request(nil, "Untitled origin.", footer)
 	add("a request whose attribution names no thread", text, meta)
-	first, _ := request(from("send", "Lead"), "First ask.", footer)
-	second, _ := request(from("send", "Lead"), "Second ask.", footer)
-	add("two requests joined", first+usermessage.JoinSeparator+second, marshal(usermessage.Meta{
-		Origin: usermessage.OriginAgentThread, OriginThread: from("send", "Lead"),
-		SendID: "thread-request:tok-1", JoinedSendIDs: []string{"thread-request:tok-1", "thread-request:tok-2"},
-	}))
+	first, firstMeta := request(from("send", "Lead"), "First ask.", footer)
+	second, secondMeta := request(from("send", "Lead"), "Second ask.", footer)
+	text, meta = joined([]string{first, second}, []string{firstMeta, secondMeta})
+	add("two requests joined", text, meta)
 
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: "All green.\nSecond line."}, from("wake", worker))
 	add("a reply", text, meta)
@@ -113,12 +128,22 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("a reminder", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: "Untitled reply."}, nil)
 	add("a reply whose attribution names no thread", text, meta)
-	firstWake := threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: "A", ThreadID: "t-a", Token: "tok-1"}.String()
-	secondWake := threadtools.Wake{Kind: threadtools.WakeReply, Title: "B", ThreadID: "t-b", Token: "tok-2", Text: "two"}.String()
-	add("two wakes joined, the first saying nothing", firstWake+usermessage.JoinSeparator+secondWake, marshal(usermessage.Meta{
-		Origin: usermessage.OriginAgentThread, OriginThread: from("wake", "A"),
-		SendID: "thread-wake:tok-1", JoinedSendIDs: []string{"thread-wake:tok-1", "thread-wake:tok-2"},
-	}))
+	firstWake, firstWakeMeta := answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: "A", ThreadID: "t-a", Token: "tok-1"}, from("wake", "A"))
+	secondWake, secondWakeMeta := answer(threadtools.Wake{Kind: threadtools.WakeReply, Title: "B", ThreadID: "t-b", Token: "tok-2", Text: "two"}, from("wake", "B"))
+	text, meta = joined([]string{firstWake, secondWake}, []string{firstWakeMeta, secondWakeMeta})
+	add("two wakes joined, the first saying nothing", text, meta)
+	// The first answer quotes a whole wake after a rule; only the recorded
+	// lengths tell it from the next member.
+	quoting, quotingMeta := answer(threadtools.Wake{
+		Kind: threadtools.WakeReply, Title: "A", ThreadID: "t-a", Token: "tok-1",
+		Text: "Example:" + usermessage.JoinSeparator + "Reply from \"B\" (t-b) [token tok-2]:\nnot B's answer",
+	}, from("wake", "A"))
+	text, meta = joined([]string{quoting, secondWake}, []string{quotingMeta, secondWakeMeta})
+	add("two wakes joined, the first answer quoting a wake", text, meta)
+	// A loop's wake joined ahead of an answer heads the row as a loop.
+	loopFirst, loopFirstMeta := appWake(renderAgentLoopWake(store.AgentWake{Label: "nightly", Note: "Go."}, agentWakeFire{}), &usermessage.OriginWake{Kind: "loop", Label: "nightly"})
+	text, meta = joined([]string{loopFirst, secondWake}, []string{loopFirstMeta, secondWakeMeta})
+	add("a loop's wake joined with an answer", text, meta)
 
 	loop := store.AgentWake{Label: "nightly", Note: "Check  the build."}
 	text, meta = appWake(renderAgentLoopWake(loop, agentWakeFire{missed: 2}), &usermessage.OriginWake{Kind: "loop", Label: "nightly"})
