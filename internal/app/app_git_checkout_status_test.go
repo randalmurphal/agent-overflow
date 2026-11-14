@@ -69,7 +69,11 @@ func TestCheckoutRefreshesTheWorkspaceStatusStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	defer f.app.GitStatusUnsubscribe(context.Background(), res.ID)
+	defer func() {
+		if err := f.app.GitStatusUnsubscribe(context.Background(), res.ID); err != nil {
+			t.Errorf("unsubscribe: %v", err)
+		}
+	}()
 	events, mu := captureGitStatusEmissions(f.app)
 	stub.setStatus(gitops.GitStatus{IsRepo: true, Tag: "v1"})
 
