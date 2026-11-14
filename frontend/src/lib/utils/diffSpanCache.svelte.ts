@@ -97,8 +97,9 @@ export const INCOMPLETE_RETRY_MS = 30_000;
 
 /** The backend's highlight input cap (`internal/highlight` MaxRequestBytes).
  * A longer patch comes back all plain whatever is sent, so it is never
- * sent: its lines render plain without a request. UTF-16 length is a
- * lower bound on the UTF-8 bytes the backend counts. */
+ * sent: its lines render plain without a request. A patch's UTF-16
+ * length and a body's `textSize` are lower bounds on the UTF-8 bytes the
+ * backend counts. */
 export const HIGHLIGHT_MAX_PATCH_CHARS = 4 * 1024 * 1024;
 
 /** Byte budget for cached span runs. Spans are compact (plain lines
@@ -357,7 +358,7 @@ export async function requestReviewFileSpans(
   context?: PatchScopeContext | null,
 ): Promise<void> {
   const body = file.body;
-  if (body.lineCount === 0 || body.textLength > HIGHLIGHT_MAX_PATCH_CHARS) return;
+  if (body.lineCount === 0 || body.textSize > HIGHLIGHT_MAX_PATCH_CHARS) return;
   // The key reads the text once; the patch is read only for a request.
   let key = body.contentKey();
   if (key === null) {
@@ -756,7 +757,7 @@ export function getSpansForReviewLine(
   const body = file.body;
   // A body with evicted text has no key until it is read again; the span
   // request that reads it bumps the generation when its answer lands.
-  const key = body.textLength <= HIGHLIGHT_MAX_PATCH_CHARS ? body.contentKey() : null;
+  const key = body.textSize <= HIGHLIGHT_MAX_PATCH_CHARS ? body.contentKey() : null;
   if (key !== null) {
     const direct = entryForKey(`${file.path} ${key}`, context);
     if (direct) {

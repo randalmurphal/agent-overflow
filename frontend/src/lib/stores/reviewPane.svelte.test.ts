@@ -44,7 +44,7 @@ import type { GitStatus, WorkspaceRef } from '../types/git';
 import { diffSourceKey } from '../utils/diffSourceKey';
 import { PATCH_PARSE_CACHE_MAX_ENTRY_CHARS, type PatchDisplayRow, type PatchLine } from '../utils/patchFiles';
 import { displayRowCount, FILE_START, materializeRows } from '../utils/patchRows';
-import { keptText, parseReviewFiles, type ReviewFile } from '../utils/patchStore';
+import { keptText, parseReviewFiles, sourceHash, type ReviewFile } from '../utils/patchStore';
 import { buildReviewRows, REVIEW_COMMIT_CARD_ROW_KEY } from '../utils/reviewRows';
 import { RANGE_LINE_NOT_IN_PR } from './reviewRangeComments';
 import {
@@ -57,6 +57,7 @@ import { commitList } from '../../test/helpers/commitList';
 import { REVIEW_DIFF_READ_BYTES } from './reviewDiffStream';
 import { patchTextHeldBytes, setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
 import { PatchTextLost } from '../utils/patchStore';
+import { textKey, wideMarks } from '../../test/helpers/streamedPatch';
 import { mergePatchFilesByPath, parsePatchFiles } from '../utils/patchFiles';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 
@@ -4539,6 +4540,183 @@ describe('reviewPane store — diffs past the memory budget', () => {
     const expanded = app();
     expect(await expanded.body.whenResident(() => expanded.body.text(3))).toBe('@@ -1,11 +1,11 @@ function app()');
   });
+});
+
+describe('reviewPane store — packed diff reads', () => {
+  afterEach(() => {
+    __resetReviewPaneStateForTest();
+    setPatchTextBudgetForTest(null);
+    __setTransportHelloForTest(null);
+  });
+
+  function packedHello(capabilities: string[]): void {
+    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities, backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+  }
+
+  // A diff served by byte offset in both forms, each chunk cut back to a
+  // character as the backend cuts it; the packed read answers a chunk
+  // with no byte past ASCII plain, as the backend does. `keyed` false is a
+  // backend older than the source key: no chunk carries one.
+  function installByteDiff(patch: string, size: number, keyed = true) {
+    const bytes = new TextEncoder().encode(patch);
+    const cut = (offset: number, max: number) => {
+      let next = Math.min(bytes.length, offset + max);
+      while (next < bytes.length && (bytes[next] & 0xc0) === 0x80) next -= 1;
+      return next;
+    };
+    const keyOf = (next: number) => (keyed ? { key: textKey(new TextDecoder().decode(bytes.subarray(0, next))) } : {});
+    const plainAt = (offset: number, max: number) => {
+      const next = cut(offset, max);
+      return { data: new TextDecoder().decode(bytes.subarray(offset, next)), offset, nextOffset: next, eof: next === bytes.length, ...keyOf(next) };
+    };
+    const packedAt = (offset: number, max: number) => {
+      const next = cut(offset, max);
+      const data = String.fromCharCode(...bytes.subarray(offset, next));
+      const wide = wideMarks(data);
+      if (wide.length === 0) {
+        answeredPlain.add(offset);
+        return { ...plainAt(offset, max), packed: false, wide: [] };
+      }
+      return { data, packed: true, wide, offset, nextOffset: next, eof: next === bytes.length, ...keyOf(next) };
+    };
+    // Offsets of the chunks the packed read answered plain.
+    const answeredPlain = new Set<number>();
+    setBindingMock('OpenWorkspaceDiff', async () => ({ id: 'diff-1', chunk: plainAt(0, size), headSha: '' }));
+    const plain = setBindingMock('ReadReviewDiff', async (_id: string, offset: number, max: number) => plainAt(offset, Math.min(max, size)));
+    const packed = setBindingMock('ReadReviewDiffPacked', async (_id: string, offset: number, max: number) => packedAt(offset, Math.min(max, size)));
+    setBindingMock('ReleaseReviewDiff', async () => undefined);
+    return { plain, packed, answeredPlain };
+  }
+
+  const patch = [patchFor('src/à côté.ts', 3), patchFor('src/日本.ts', 3), patchFor('src/c.ts', 3)].join('\n')
+    .replace(/\+line (\d)/g, '+lïne $1 ✓😀');
+
+  for (const capable of [true, false]) {
+    it(`reads ${capable ? 'packed from a backend that serves it' : 'plain from a backend that does not'}, and reads evicted text again the same way`, async () => {
+      packedHello(capable ? ['review-diff.packed.v1'] : []);
+      setPatchTextBudgetForTest(100);
+      // A backend without the packed read may also predate the key.
+      const { plain, packed, answeredPlain } = installByteDiff(patch, 40, capable);
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      expect(state.error).toBeNull();
+      const [used, unused] = capable ? [packed, plain] : [plain, packed];
+      expect(used).toHaveBeenCalled();
+      expect(unused).not.toHaveBeenCalled();
+      expect(state.files.map((file) => file.path).sort()).toEqual(['src/c.ts', 'src/à côté.ts', 'src/日本.ts']);
+      expect(state.sourceKey).toBe(diffSourceKey(patch));
+
+      const last = state.files.find((file) => file.path === 'src/c.ts')!;
+      expect(last.body.resident()).toBe(false);
+      used.mockClear();
+      const lines = await last.body.whenResident(() => last.body.toPatchLines());
+      expect(lines.map((line) => line.content)).toEqual(patch.split('\n').slice(-9));
+      expect(used).toHaveBeenCalled();
+      // A chunk the packed read answered plain is read again plain.
+      expect(unused.mock.calls.map(([, offset]) => offset).filter((offset) => !answeredPlain.has(offset as number))).toEqual([]);
+    });
+  }
+
+  it('holds a chunk the packed read answered as text as text, and reads it again with the plain read', async () => {
+    packedHello(['review-diff.packed.v1']);
+    setPatchTextBudgetForTest(100);
+    const { plain, packed } = installByteDiff(patch, 40);
+    const servePlain = plain.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
+    packed.mockImplementation(async (...args: unknown[]) => ({ ...(await servePlain(...args)), packed: false, wide: [] }));
+    plain.mockClear();
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    expect(state.error).toBeNull();
+    expect(packed).toHaveBeenCalled();
+    expect(plain).not.toHaveBeenCalled();
+    expect(state.files.map((file) => file.path).sort()).toEqual(['src/c.ts', 'src/à côté.ts', 'src/日本.ts']);
+    expect(state.sourceKey).toBe(diffSourceKey(patch));
+
+    const last = state.files.find((file) => file.path === 'src/c.ts')!;
+    expect(last.body.resident()).toBe(false);
+    packed.mockClear();
+    const lines = await last.body.whenResident(() => last.body.toPatchLines());
+    expect(lines.map((line) => line.content)).toEqual(patch.split('\n').slice(-9));
+    expect(plain).toHaveBeenCalled();
+    expect(packed).not.toHaveBeenCalled();
+  });
+
+  it('reports text lost when a packed chunk is answered as text on its next read', async () => {
+    packedHello(['review-diff.packed.v1']);
+    setPatchTextBudgetForTest(100);
+    const { packed } = installByteDiff(patch, 40);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    const last = state.files.find((file) => file.path === 'src/c.ts')!;
+    expect(last.body.resident()).toBe(false);
+    const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
+    packed.mockImplementation(async (...args: unknown[]) => ({ ...(await serve(...args)), packed: false }));
+    await expect(last.body.whenResident(() => last.body.toPatchLines())).rejects.toBeInstanceOf(PatchTextLost);
+  });
+
+  for (const wide of [[], null, undefined]) {
+    it(`fails the load on a packed chunk whose marks are ${JSON.stringify(wide) ?? 'missing'}`, async () => {
+      packedHello(['review-diff.packed.v1']);
+      const { packed } = installByteDiff(patch, 40);
+      const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
+      packed.mockImplementation(async (...args: unknown[]) => ({ ...(await serve(...args)), wide }));
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      expect(state.error).toContain('without its wide marks');
+    });
+  }
+
+  it('fails the load on a packed chunk whose marks are not at bytes past ASCII', async () => {
+    packedHello(['review-diff.packed.v1']);
+    const { packed } = installByteDiff(patch, 40);
+    const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
+    packed.mockImplementation(async (...args: unknown[]) => ({ ...(await serve(...args)), wide: [0, 1_000_000] }));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    expect(state.error).toContain('wide mark');
+  });
+
+  it('keys the patch from the chunks\' keys without hashing its text', async () => {
+    packedHello(['review-diff.packed.v1']);
+    setPatchTextBudgetForTest(100);
+    const { packed } = installByteDiff(patch, 40);
+    const append = vi.spyOn(sourceHash, 'append');
+    try {
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      expect(state.error).toBeNull();
+      expect(packed).toHaveBeenCalled();
+      expect(state.sourceKey).toBe(diffSourceKey(patch));
+      expect(append).not.toHaveBeenCalled();
+    } finally {
+      append.mockRestore();
+    }
+  });
+
+  it('fails the load on a packed chunk without its key', async () => {
+    packedHello(['review-diff.packed.v1']);
+    const { packed } = installByteDiff(patch, 40);
+    const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
+    packed.mockImplementation(async (...args: unknown[]) => {
+      const { key: _key, ...chunk } = (await serve(...args)) as { key?: unknown };
+      return chunk;
+    });
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    expect(state.error).toContain('review diff: a packed chunk came without its key');
+  });
+
+  for (const key of [null, { hash: -1, units: 10_000 }, { hash: 1, units: 0 }]) {
+    it(`fails the load on a chunk whose key is ${JSON.stringify(key)}`, async () => {
+      packedHello(['review-diff.packed.v1']);
+      const { packed } = installByteDiff(patch, 40);
+      const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
+      packed.mockImplementation(async (...args: unknown[]) => ({ ...(await serve(...args)), key }));
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      expect(state.error).toContain('key that cannot be');
+    });
+  }
 });
 
 describe('reviewPane store — PR whose first fetch failed', () => {

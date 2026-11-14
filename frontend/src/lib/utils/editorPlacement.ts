@@ -94,7 +94,7 @@ export function fileIdentity(file: ReviewFile): FileIdentity {
 }
 
 async function sectionKey(file: ReviewFile, budget: RelocationBudget): Promise<string | null> {
-  budget.spend(file.body.lineCount, file.body.textLength);
+  budget.spend(file.body.lineCount, file.body.textSize);
   return await file.body.whenResident(() => file.body.contentKey());
 }
 
@@ -534,7 +534,7 @@ export async function relocateEditors<K>(
       const table = findRows(file, requests.filter((request) => request !== null), budget, true)!;
       const located = requests.flatMap((request) => (request?.row ? [request.row.lineIndex] : []));
       // Spent before the read, by the lengths the rows' metadata gives.
-      budget.spend(located.length, located.reduce((bytes, index) => bytes + file.body.lineLength(index), 0));
+      budget.spend(located.length, located.reduce((bytes, index) => bytes + file.body.lineSize(index), 0));
       const ranges = located.flatMap((index) => file.body.slice(index, index + 1));
       const texts = await whenResident(ranges, () => new Map(located.map((index) => [index, file.body.text(index)])));
       check();
@@ -582,12 +582,12 @@ async function suggest<K>(
 ): Promise<void> {
   const list = keys.map((key) => targets.get(key)!);
   const body = file.body;
-  const byText = body.lineCount <= SUGGEST_TEXT_MAX_ROWS && body.textLength <= SUGGEST_TEXT_MAX_BYTES && budget.trySpend(table.length, body.textLength);
+  const byText = body.lineCount <= SUGGEST_TEXT_MAX_ROWS && body.textSize <= SUGGEST_TEXT_MAX_BYTES && budget.trySpend(table.length, body.textSize);
   const rows = byText
     ? await body.whenResident(() => suggestRows(table, list, (lineIndex) => body.text(lineIndex)))
     : suggestRows(table, list, null);
   const found = rows.filter((at) => at >= 0);
-  budget.spend(found.length, found.reduce((bytes, at) => bytes + body.lineLength(table.lineIndex[at]), 0));
+  budget.spend(found.length, found.reduce((bytes, at) => bytes + body.lineSize(table.lineIndex[at]), 0));
   const ranges = found.flatMap((at) => body.slice(table.lineIndex[at], table.lineIndex[at] + 1));
   const quotes = await whenResident(ranges, () => new Map(found.map((at) => [at, body.text(table.lineIndex[at])])));
   keys.forEach((key, index) => {

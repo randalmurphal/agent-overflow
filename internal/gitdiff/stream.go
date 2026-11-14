@@ -14,9 +14,12 @@ import (
 )
 
 // Chunk bounds for Diff.Read. The ceiling keeps one chunk's JSON frame
-// under the transport's frame limit even when every byte needs a six-byte
-// escape; the floor keeps a caller from splitting a large diff into
-// millions of reads.
+// under the transport's 75 MiB read limit even when every byte needs a
+// six-byte escape: 48 MiB. A packed chunk (PackText) is also at most six
+// bytes per raw byte, plus its wide index: at most nine bytes for each
+// wide line, which under PackText's rule number at most one for every 32
+// packed characters, so under one more byte per raw byte. The floor
+// keeps a caller from splitting a large diff into millions of reads.
 const (
 	MinChunkBytes = 64 << 10
 	MaxChunkBytes = 8 << 20
@@ -341,6 +344,13 @@ func (s *diffStream) stop() {
 // for a window inside one long line, before a trailing incomplete UTF-8
 // sequence so the split falls between characters. Every review diff reader
 // cuts its chunks here.
+//
+// For a window longer than utf8.UTFMax, as every reader's is
+// (MinChunkBytes), the cut is never inside a valid UTF-8 sequence of the
+// patch. The text a JSON client receives for consecutive chunks, where
+// each invalid byte is one U+FFFD, is therefore the text of the whole
+// patch, and a key folded chunk by chunk is the whole patch's
+// (fnv1a.FoldUTF16).
 func ChunkCut(window []byte) int {
 	for i := len(window) - 1; i >= 0; i-- {
 		if window[i] == '\n' {

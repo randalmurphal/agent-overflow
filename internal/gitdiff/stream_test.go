@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"agent-overflow/internal/fnv1a"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -190,6 +192,32 @@ func TestChunkCut(t *testing.T) {
 				t.Fatalf("ChunkCut(%q) = %d, want %d", tc.window, got, tc.want)
 			}
 		})
+	}
+}
+
+// A cut never falls inside a valid UTF-8 sequence, so the text a client
+// receives for consecutive chunks, and its key, is the whole patch's.
+func TestChunkCutKeepsTheTextOfTheWholePatch(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewPCG(5, 6))
+	alphabet := []string{"a", "\n", "é", "€", "\U0001F600", "\xff", "\xc3", "\xe2\x82", "\xf0\x9f\x98", "\xed\xa0\x80", "\x80"}
+	for round := range 20000 {
+		var b strings.Builder
+		for n := 2 + rng.IntN(16); n > 0; n-- {
+			b.WriteString(alphabet[rng.IntN(len(alphabet))])
+		}
+		patch := b.String()
+		if len(patch) <= utf8.UTFMax+1 {
+			continue
+		}
+		end := utf8.UTFMax + 1 + rng.IntN(len(patch)-utf8.UTFMax)
+		cut := ChunkCut([]byte(patch[:end]))
+		wholeHash, wholeUnits := fnv1a.FoldUTF16(fnv1a.OffsetBasis, patch)
+		hash, units := fnv1a.FoldUTF16(fnv1a.OffsetBasis, patch[:cut])
+		hash, rest := fnv1a.FoldUTF16(hash, patch[cut:])
+		if hash != wholeHash || units+rest != wholeUnits {
+			t.Fatalf("round %d: %q cut at %d of a %d-byte window changes the text", round, patch, cut, end)
+		}
 	}
 }
 

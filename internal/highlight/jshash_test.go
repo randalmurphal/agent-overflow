@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"agent-overflow/internal/fnv1a"
 )
 
 // Vectors generated from the frontend implementation
@@ -66,7 +68,7 @@ func TestFrontendLineHashesArePrefixHashes(t *testing.T) {
 		t.Fatalf("got %d hashes, want %d", len(hashes), len(prefixes))
 	}
 	for i, prefix := range prefixes {
-		h, _ := jsHashUnits(jsFNVOffsetBasis, prefix)
+		h, _ := fnv1a.FoldUTF16(fnv1a.OffsetBasis, prefix)
 		if hashes[i] != h {
 			t.Errorf("hashes[%d] = %d, want prefix hash %d of %q", i, hashes[i], h, prefix)
 		}

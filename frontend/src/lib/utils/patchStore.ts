@@ -1,4 +1,5 @@
 import { appendFNV1a32 } from './fnv1a';
+import { checkWideMarks, unpackText } from './packedText';
 import { patchMemory, type EvictableText } from './patchMemory.svelte';
 import {
   cleanPath,
@@ -21,6 +22,12 @@ import {
 // the patch is open. Nothing allocates per line. Rows, line objects and
 // line strings are materialized only for the rows on screen
 // (`patchRows.ts`).
+//
+// A chunk is plain (its text) or packed (its UTF-8 bytes, one character
+// each: `packedText.ts`). A line of packed text holding a byte past ASCII
+// is a wide line, one bit per line; reading one decodes it, and every
+// other line reads as it is stored. Positions and lengths the store keeps
+// count stored characters, which for packed text are bytes.
 //
 // `PatchParser` classifies lines as they complete and splits the patch
 // into files with the same rules as `parsePatchFiles`; each file is a
@@ -71,12 +78,40 @@ export interface StoredLine {
   fold?: { id: number; lines: number };
 }
 
+/** The patch text from offset 0 to a chunk's end, as the backend keys it:
+ * FNV-1a (32-bit) over the text's UTF-16 code units, and how many units
+ * that is. */
+export interface PatchTextKey {
+  hash: number;
+  units: number;
+}
+
+/** A chunk's backend byte range, which an evicted chunk is read again
+ * by, and its form: `wide` present means its text is packed, and lists
+ * the index of the first byte past ASCII of each line that has one.
+ * `key` is the text's key through the chunk's end; a packed chunk always
+ * has one. */
+export interface PatchChunkSpan {
+  offset: number;
+  nextOffset: number;
+  wide?: readonly number[];
+  key?: PatchTextKey;
+}
+
+/** Runs for each line a chunk completes: the text its first character is
+ * in, the line's offset there and stored length, and whether that range
+ * is packed text holding a byte past ASCII (unpack what is kept of it). */
+export type PatchLineCallback = (line: number, text: string, offset: number, length: number, packed: boolean) => void;
+
 /** Where a store's chunks came from, to read an evicted one again. */
 export interface PatchTextSource {
-  /** Reads the chunk at backend bytes [offset, nextOffset) again. */
-  read(offset: number, nextOffset: number): Promise<{ data: string; nextOffset: number }>;
+  /** Reads the chunk at backend bytes [offset, nextOffset) again, asking
+   * the form it first arrived in, and says which form the answer has. */
+  read(offset: number, nextOffset: number, packed: boolean): Promise<{ data: string; nextOffset: number; packed: boolean }>;
   release(): void;
 }
+
+const NO_MARKS: readonly number[] = [];
 
 /** Evicted text that can no longer be read: the diff's handle ended, the
  * diff no longer serves the same bytes, or the store was disposed. */
@@ -101,8 +136,8 @@ const heldText = new FinalizationRegistry<{ bytes: number; pinned: number }>((he
   patchMemory.pin(-held.pinned);
 });
 
-// What a chunk's text costs: V8 holds a string with any character past
-// Latin-1 at two bytes per character.
+// What a plain chunk's text costs: V8 holds a string with any character
+// past Latin-1 at two bytes per character. Packed text is one byte each.
 function textBytes(text: string): number {
   return /[\u0100-\uffff]/.test(text) ? text.length * 2 : text.length;
 }
@@ -122,6 +157,12 @@ export function ownText(text: string): string {
  * through it. */
 export const keptText = { own: ownText };
 
+/** The hash a chunk without a key runs through for the source key. An
+ * object so a test can see that a keyed chunk is not hashed. */
+export const sourceHash = { append: appendFNV1a32 };
+
+const FNV_OFFSET_BASIS_32 = 0x811c9dc5;
+
 /**
  * The lines of one patch, stored as the chunks they arrived in.
  *
@@ -136,7 +177,10 @@ export class PatchStore implements EvictableText {
   private readonly starts: Uint32Array[] = [];
   private readonly firstLines: number[] = [];
   private readonly counts: number[] = [];
-  private readonly charStarts: number[] = [];
+  // Per chunk: where it starts, in stored characters, and whether it is
+  // packed.
+  private readonly storedStarts: number[] = [];
+  private readonly packed: boolean[] = [];
   // Per chunk: whether its text holds a newline and ends with one, so a
   // line's chunks are known without its text.
   private readonly newlines: boolean[] = [];
@@ -169,10 +213,13 @@ export class PatchStore implements EvictableText {
   private hunkNew = new Int32Array(16);
   private hunkCount = 0;
   private folds: Map<number, { id: number; lines: number }> | null = null;
+  // One bit per line: whether it is a wide line. Null until the first.
+  private wideBits: Uint8Array | null = null;
   /** Lines started so far. */
   lineCount = 0;
-  /** UTF-16 length of everything appended. */
-  totalChars = 0;
+  /** Stored characters of everything appended: a size, not the text's
+   * UTF-16 length (packed text stores bytes). */
+  storedSize = 0;
   private openLine = -1;
   private openChunk = 0;
   private openOffset = 0;
@@ -184,28 +231,26 @@ export class PatchStore implements EvictableText {
 
   /**
    * Appends one chunk of patch text. `onLine` runs once per line that the
-   * chunk completes, in line order, with the text its first character is
-   * in and that line's length; it may not read the store's line text,
-   * which is indexed after the chunk is. `span` is the chunk's backend
-   * byte range, which an evicted chunk is read again by.
+   * chunk completes, in line order; it may not read the store's line
+   * text, which is indexed after the chunk is. `span` is the chunk's
+   * backend byte range and form (PatchChunkSpan).
    */
-  append(
-    data: string,
-    onLine: (line: number, text: string, offset: number, length: number) => void,
-    span?: { offset: number; nextOffset: number },
-  ): void {
+  append(data: string, onLine: PatchLineCallback, span?: PatchChunkSpan): void {
     const chunk = this.texts.length;
+    const wide = span?.wide;
+    if (wide !== undefined) checkWideMarks(data, wide);
     this.texts.push(data);
-    this.charStarts.push(this.totalChars);
-    this.totalChars += data.length;
+    this.storedStarts.push(this.storedSize);
+    this.packed.push(wide !== undefined);
+    this.storedSize += data.length;
     this.newlines.push(data.includes('\n'));
     this.newlineEnds.push(data.endsWith('\n'));
     this.offsets.push(span?.offset ?? -1);
     this.nextOffsets.push(span?.nextOffset ?? -1);
-    const size = textBytes(data);
+    const size = wide !== undefined ? data.length : textBytes(data);
     this.sizes.push(size);
     this.hold(size);
-    this.index(data, onLine);
+    this.index(data, onLine, wide ?? NO_MARKS);
     this.pinOpenLine();
     if (this.source && span) {
       patchMemory.offer(this, chunk, true);
@@ -230,10 +275,16 @@ export class PatchStore implements EvictableText {
     this.held.pinned = explicit + open;
   }
 
-  private index(data: string, onLine: (line: number, text: string, offset: number, length: number) => void): void {
+  // A cursor over the chunk's marks (`wide`) marks its wide lines.
+  private index(data: string, onLine: PatchLineCallback, wide: readonly number[]): void {
     let pos = 0;
+    let mark = 0;
     if (this.openLine >= 0) {
       const end = data.indexOf('\n');
+      if (mark < wide.length && wide[mark] < (end < 0 ? data.length : end)) {
+        this.markWide(this.openLine);
+        mark += 1;
+      }
       if (end < 0) {
         // The middle of a line longer than the chunk.
         this.openLength += data.length;
@@ -259,6 +310,12 @@ export class PatchStore implements EvictableText {
       count += 1;
       this.ensureKindCapacity(this.lineCount);
       const end = data.indexOf('\n', pos);
+      let packed = false;
+      if (mark < wide.length && wide[mark] < (end < 0 ? data.length : end)) {
+        this.markWide(line);
+        mark += 1;
+        packed = true;
+      }
       if (end < 0) {
         this.openLine = line;
         this.openChunk = this.texts.length - 1;
@@ -266,7 +323,7 @@ export class PatchStore implements EvictableText {
         this.openLength = data.length - pos;
         break;
       }
-      onLine(line, data, pos, end - pos);
+      onLine(line, data, pos, end - pos, packed);
       pos = end + 1;
     }
     this.firstLines.push(firstLine);
@@ -275,7 +332,7 @@ export class PatchStore implements EvictableText {
   }
 
   /** Completes the last line when the patch does not end with a newline. */
-  end(onLine: (line: number, text: string, offset: number, length: number) => void): void {
+  end(onLine: PatchLineCallback): void {
     if (this.openLine < 0) return;
     this.completeOpenLine(this.openLength, onLine);
     this.pinOpenLine();
@@ -285,9 +342,14 @@ export class PatchStore implements EvictableText {
   // A line that spans chunks is classified from its first characters,
   // joined from its pieces: a header line is short and arrives whole this
   // way, and a longer line only needs its prefix.
-  private completeOpenLine(length: number, onLine: (line: number, text: string, offset: number, length: number) => void): void {
+  private completeOpenLine(length: number, onLine: PatchLineCallback): void {
     const line = this.openLine;
     this.openLine = -1;
+    if (this.isWide(line)) {
+      // The open line's chunks are pinned while it is open.
+      onLine(line, this.wideText(line, this.openChunk, this.openOffset, Math.min(length, SPANNING_PREFIX_CHARS), false), 0, length, false);
+      return;
+    }
     let prefix = '';
     // The open line's chunks are pinned while it is open.
     for (let chunk = this.openChunk; chunk < this.texts.length && prefix.length < SPANNING_PREFIX_CHARS; chunk += 1) {
@@ -295,7 +357,56 @@ export class PatchStore implements EvictableText {
       prefix += chunk === this.openChunk ? text.slice(this.openOffset) : text;
     }
     prefix = prefix.slice(0, Math.min(length, SPANNING_PREFIX_CHARS));
-    onLine(line, prefix, 0, length);
+    onLine(line, prefix, 0, length, false);
+  }
+
+  private markWide(line: number): void {
+    this.wideBits ??= new Uint8Array(this.kinds.length >> 3);
+    this.wideBits[line >> 3] |= 1 << (line & 7);
+  }
+
+  private isWide(line: number): boolean {
+    const bits = this.wideBits;
+    return bits !== null && (bits[line >> 3] & (1 << (line & 7))) !== 0;
+  }
+
+  // The first wide line in [line, end), or end.
+  private nextWide(line: number, end: number): number {
+    const bits = this.wideBits;
+    if (bits === null) return end;
+    while (line < end) {
+      const rest = bits[line >> 3] >> (line & 7);
+      if (rest === 0) line = (line | 7) + 1;
+      else if ((rest & 1) !== 0) return line;
+      else line += 1;
+    }
+    return end;
+  }
+
+  // A wide line's text from `start` in `chunk`: its pieces joined, each
+  // run of packed pieces unpacked together so a sequence cut between
+  // chunks decodes whole. Reads at most `limit` stored characters;
+  // `touch` counts the read as a use of the chunks.
+  private wideText(line: number, chunk: number, start: number, limit: number, touch: boolean): string {
+    let out = '';
+    let packed = '';
+    let stored = 0;
+    for (let at = chunk; at < this.texts.length && stored < limit; at += 1) {
+      const text = touch ? this.residentText(at, line) : this.texts[at] ?? '';
+      const from = at === chunk ? start : 0;
+      const newline = text.indexOf('\n', from);
+      const to = Math.min(newline < 0 ? text.length : newline, from + limit - stored);
+      stored += to - from;
+      if (this.packed[at]) {
+        packed += text.slice(from, to);
+      } else {
+        if (packed !== '') out += unpackText(packed);
+        packed = '';
+        out += text.slice(from, to);
+      }
+      if (newline >= 0) break;
+    }
+    return packed === '' ? out : out + unpackText(packed);
   }
 
   /** A store of explicitly typed lines, for patches built in memory. Its
@@ -324,7 +435,8 @@ export class PatchStore implements EvictableText {
       }
     }
     store.texts.push(text);
-    store.charStarts.push(0);
+    store.storedStarts.push(0);
+    store.packed.push(false);
     store.newlines.push(true);
     store.newlineEnds.push(true);
     store.offsets.push(-1);
@@ -334,7 +446,7 @@ export class PatchStore implements EvictableText {
     store.counts.push(lines.length);
     store.starts.push(starts);
     store.lineCount = lines.length;
-    store.totalChars = text.length;
+    store.storedSize = text.length;
     return store;
   }
 
@@ -377,9 +489,10 @@ export class PatchStore implements EvictableText {
    * when the store does not hold it. */
   text(line: number): string {
     const chunk = this.chunkOf(line);
-    const text = this.residentText(chunk, line);
     const local = line - this.firstLines[chunk];
     const start = this.starts[chunk][local];
+    if (this.isWide(line)) return this.wideText(line, chunk, start, Infinity, true);
+    const text = this.residentText(chunk, line);
     if (local + 1 < this.counts[chunk]) return text.slice(start, this.starts[chunk][local + 1] - 1);
     const newline = text.indexOf('\n', start);
     if (newline >= 0) return text.slice(start, newline);
@@ -547,14 +660,17 @@ export class PatchStore implements EvictableText {
     if (!source || this.disposed) return Promise.reject(new PatchTextLost('patch text: the diff was closed'));
     const offset = this.offsets[chunk];
     const next = this.nextOffsets[chunk];
-    const chars = this.charLength(chunk);
+    const packed = this.packed[chunk];
+    const stored = this.storedLength(chunk);
     const read = this.reloadChain
       .then(() => {
         if (this.disposed) throw new PatchTextLost('patch text: the diff was closed');
-        return source.read(offset, next);
+        return source.read(offset, next, packed);
       })
       .then((answer) => {
-        if (answer.nextOffset !== next || answer.data.length !== chars) {
+        // The line index and wide bits stay from the first read, so the
+        // answer must be that chunk in that form.
+        if (answer.nextOffset !== next || answer.packed !== packed || answer.data.length !== stored) {
           throw new PatchTextLost('patch text: the diff no longer serves the same chunk');
         }
         if (this.disposed || this.texts[chunk] !== null) return;
@@ -586,8 +702,8 @@ export class PatchStore implements EvictableText {
     return read;
   }
 
-  private charLength(chunk: number): number {
-    return (chunk + 1 < this.charStarts.length ? this.charStarts[chunk + 1] : this.totalChars) - this.charStarts[chunk];
+  private storedLength(chunk: number): number {
+    return (chunk + 1 < this.storedStarts.length ? this.storedStarts[chunk + 1] : this.storedSize) - this.storedStarts[chunk];
   }
 
   // The chunk a line's text ends in. A chunk's last line continues into
@@ -602,34 +718,52 @@ export class PatchStore implements EvictableText {
     return chunk;
   }
 
-  /** Absolute UTF-16 offset of a line's first character. */
-  lineStart(line: number): number {
+  /** Stored position of a line's first character: a size bound, not a
+   * UTF-16 offset (packed text stores bytes). */
+  storedLineStart(line: number): number {
     const chunk = this.chunkOf(line);
-    return this.charStarts[chunk] + this.starts[chunk][line - this.firstLines[chunk]];
+    return this.storedStarts[chunk] + this.starts[chunk][line - this.firstLines[chunk]];
   }
 
-  /** Absolute UTF-16 offset just past a line's last character. */
-  lineEnd(line: number): number {
-    if (line + 1 < this.lineCount) return this.lineStart(line + 1) - 1;
-    return this.totalChars - (this.newlineEnds[this.newlineEnds.length - 1] ? 1 : 0);
+  /** Stored position just past a line's last character. */
+  storedLineEnd(line: number): number {
+    if (line + 1 < this.lineCount) return this.storedLineStart(line + 1) - 1;
+    return this.storedSize - (this.newlineEnds[this.newlineEnds.length - 1] ? 1 : 0);
   }
 
   /** Lines [start, end) joined with newlines. Throws PatchTextNotResident
    * when the store does not hold all of them. */
   textRange(start: number, end: number): string {
     if (end <= start) return '';
-    const from = this.lineStart(start);
-    const to = this.lineEnd(end - 1);
+    let wide = this.nextWide(start, end);
+    if (wide === end) return this.storedRange(start, end);
+    // Stored slices between wide lines, each wide line decoded alone.
+    let out = '';
+    let run = start;
+    while (wide < end) {
+      if (run < wide) out += this.storedRange(run, wide) + '\n';
+      out += this.text(wide);
+      run = wide + 1;
+      if (run < end) out += '\n';
+      wide = this.nextWide(run, end);
+    }
+    return run < end ? out + this.storedRange(run, end) : out;
+  }
+
+  // Lines [start, end) as stored, joined with newlines.
+  private storedRange(start: number, end: number): string {
+    const from = this.storedLineStart(start);
+    const to = this.storedLineEnd(end - 1);
     const first = this.chunkOf(start);
     const last = this.chunkOf(end - 1);
-    const firstBase = this.charStarts[first];
+    const firstBase = this.storedStarts[first];
     const firstText = this.residentText(first, start);
     if (first === last && to - firstBase <= firstText.length) {
       return firstText.slice(from - firstBase, to - firstBase);
     }
     let out = '';
     for (let chunk = first; chunk < this.texts.length; chunk += 1) {
-      const base = this.charStarts[chunk];
+      const base = this.storedStarts[chunk];
       if (base >= to) break;
       const text = this.residentText(chunk, start);
       out += text.slice(Math.max(0, from - base), Math.min(text.length, to - base));
@@ -670,11 +804,16 @@ export class PatchStore implements EvictableText {
     const grown = new Uint8Array(size);
     grown.set(this.kinds);
     this.kinds = grown;
+    if (this.wideBits !== null) {
+      const bits = new Uint8Array(size >> 3);
+      bits.set(this.wideBits);
+      this.wideBits = bits;
+    }
   }
 
   /** Bytes the store holds, for tests and measurement. */
   heldBytes(): number {
-    let bytes = this.kinds.byteLength + this.hunkLines.byteLength * 3;
+    let bytes = this.kinds.byteLength + this.hunkLines.byteLength * 3 + (this.wideBits?.byteLength ?? 0);
     for (let chunk = 0; chunk < this.texts.length; chunk += 1) {
       bytes += (this.texts[chunk] === null ? 0 : this.sizes[chunk]) + this.starts[chunk].byteLength;
     }
@@ -721,8 +860,10 @@ export class PatchBody {
   readonly maxLine: number;
   /** Conflict pseudo-files carry marker rows and never show gaps. */
   readonly hasMarkers: boolean;
-  /** Length of `patchText()`. */
-  readonly textLength: number;
+  /** Stored size of `patchText()`, known without its text: at least its
+   * UTF-16 length and at most its UTF-8 length (packed text stores
+   * bytes). A size bound, never a string length. */
+  readonly textSize: number;
   private key: string | null = null;
 
   constructor(segments: readonly BodySegment[]) {
@@ -778,7 +919,7 @@ export class PatchBody {
         hasMarkers = true;
         contentRows += 1;
         const { store, line } = this.locate(index);
-        markerChars += MARKER_PATCH_TEXT.length - (store.lineEnd(line) - store.lineStart(line));
+        markerChars += MARKER_PATCH_TEXT.length - (store.storedLineEnd(line) - store.storedLineStart(line));
       }
     }
     this.contentRows = contentRows;
@@ -788,11 +929,11 @@ export class PatchBody {
     this.maxLine = maxLine;
     this.hasMarkers = hasMarkers;
 
-    let textLength = Math.max(0, this.segments.length - 1);
+    let textSize = Math.max(0, this.segments.length - 1);
     for (const segment of this.segments) {
-      textLength += segment.store.lineEnd(segment.end - 1) - segment.store.lineStart(segment.start);
+      textSize += segment.store.storedLineEnd(segment.end - 1) - segment.store.storedLineStart(segment.start);
     }
-    this.textLength = lineCount === 0 ? 0 : textLength + markerChars;
+    this.textSize = lineCount === 0 ? 0 : textSize + markerChars;
   }
 
   /** A body over explicitly typed lines. */
@@ -818,10 +959,11 @@ export class PatchBody {
     return store.text(line);
   }
 
-  /** A line's length in UTF-16 units, known without its text. */
-  lineLength(index: number): number {
+  /** A line's stored size, known without its text: bounded as
+   * `textSize` is. */
+  lineSize(index: number): number {
     const { store, line } = this.locate(index);
-    return store.lineEnd(line) - store.lineStart(line);
+    return store.storedLineEnd(line) - store.storedLineStart(line);
   }
 
   /** Whether a line's text is resident. */
@@ -885,17 +1027,26 @@ export class PatchBody {
   contentKey(): string | null {
     if (this.key !== null) return this.key;
     if (!this.resident()) return null;
-    let hash = 0x811c9dc5;
+    let hash = FNV_OFFSET_BASIS_32;
+    // The length of the text hashed: the stored size is not it.
+    let length = 0;
     if (!this.hasMarkers) {
       for (let index = 0; index < this.segments.length; index += 1) {
-        if (index > 0) hash = appendFNV1a32(hash, '\n');
+        if (index > 0) {
+          hash = appendFNV1a32(hash, '\n');
+          length += 1;
+        }
         const segment = this.segments[index];
-        hash = appendFNV1a32(hash, segment.store.textRange(segment.start, segment.end));
+        const text = segment.store.textRange(segment.start, segment.end);
+        hash = appendFNV1a32(hash, text);
+        length += text.length;
       }
     } else {
-      hash = appendFNV1a32(hash, this.patchText());
+      const text = this.patchText();
+      hash = appendFNV1a32(hash, text);
+      length = text.length;
     }
-    this.key = `${this.textLength}:${hash.toString(36)}`;
+    this.key = `${length}:${hash.toString(36)}`;
     return this.key;
   }
 
@@ -1131,20 +1282,47 @@ export class PatchParser {
   private held: Section | null = null;
   private readonly body = new HunkBody();
   private readonly finished: ([Section] | [Section, Section])[] = [];
-  private hash = 0x811c9dc5;
+  // The source key of the text so far: the last chunk's key, or the hash
+  // continued over each chunk that came without one.
+  private hash = FNV_OFFSET_BASIS_32;
+  private units = 0;
   private ended = false;
-  private readonly onLine = (line: number, text: string, offset: number, length: number): void => {
-    this.completeLine(line, text, offset, length);
+  private readonly onLine: PatchLineCallback = (line, text, offset, length, packed) => {
+    this.completeLine(line, text, offset, length, packed);
   };
 
   /** Appends patch text; any chunk boundary is allowed. `span` is the
-   * chunk's backend byte range, for a store that can evict it. */
-  append(data: string, span?: { offset: number; nextOffset: number }): void {
+   * chunk's backend byte range and form (PatchChunkSpan): the range for
+   * a store that can evict it, `wide` for packed text, `key` for the
+   * source key through the chunk's end. A chunk with a key is not hashed;
+   * a packed chunk without one is refused. */
+  append(data: string, span?: PatchChunkSpan): void {
     if (this.ended) throw new Error('patch parser: append after end');
     if (data === '') return;
-    this.hash = appendFNV1a32(this.hash, data);
+    const key = span?.key;
+    if (key !== undefined) this.checkKey(key, data, span?.wide !== undefined);
+    else if (span?.wide !== undefined) throw new Error('patch parser: a packed chunk came without its key');
     this.store.append(data, this.onLine, span);
+    if (key !== undefined) {
+      this.hash = key.hash;
+      this.units = key.units;
+    } else {
+      this.hash = sourceHash.append(this.hash, data);
+      this.units += data.length;
+    }
     this.publish();
+  }
+
+  // A key is cumulative. A plain chunk's text is its units, so its key
+  // counts exactly those more; a packed chunk's bytes decode to no more
+  // units than bytes.
+  private checkKey(key: PatchTextKey, data: string, packed: boolean): void {
+    const most = this.units + data.length;
+    const valid = typeof key === 'object' && key !== null
+      && Number.isInteger(key.hash) && key.hash >= 0 && key.hash < 0x1_0000_0000
+      && Number.isSafeInteger(key.units)
+      && (packed ? key.units >= this.units && key.units <= most : key.units === most);
+    if (!valid) throw new Error('patch parser: a chunk came with a key that cannot be its text\'s');
   }
 
   /** Marks the end of the patch and publishes the last files. */
@@ -1167,16 +1345,18 @@ export class PatchParser {
   /** The review comment source key of the whole patch: `diffSourceKey`
    * of its text. Empty for an empty patch and before the end. */
   sourceKey(): string {
-    if (!this.ended || this.store.totalChars === 0) return '';
-    return `fnv1a:${this.hash.toString(16).padStart(8, '0')}:${this.store.totalChars}`;
+    if (!this.ended || this.units === 0) return '';
+    return `fnv1a:${this.hash.toString(16).padStart(8, '0')}:${this.units}`;
   }
 
-  private completeLine(line: number, text: string, offset: number, length: number): void {
+  // Prefixes and hunk headers are ASCII, so they read the same in packed
+  // text; what a line keeps is unpacked when `packed`.
+  private completeLine(line: number, text: string, offset: number, length: number, packed: boolean): void {
     const store = this.store;
     const kind = this.body.next(text, offset, length);
     if (startsAt(text, offset, length, 'diff --git ')) {
       this.finishSection(line);
-      const header = text.slice(offset, offset + length);
+      const header = lineText(text, offset, offset + length, packed);
       const parts = header.split(/\s+/);
       this.current = {
         path: cleanPath(parts[3] ?? ''),
@@ -1206,10 +1386,10 @@ export class PatchParser {
       if (startsAt(text, offset, length, 'deleted file')) current.kind = 'deleted';
       if (startsAt(text, offset, length, 'rename from ')) current.kind = 'renamed';
       if (startsAt(text, offset, length, 'rename to ')) {
-        current.path = cleanPath(text.slice(offset + 'rename to '.length, offset + length));
+        current.path = cleanPath(lineText(text, offset + 'rename to '.length, offset + length, packed));
       }
       if (outside && startsAt(text, offset, length, '+++ ')) {
-        const next = cleanPath(text.slice(offset + 4, offset + length));
+        const next = cleanPath(lineText(text, offset + 4, offset + length, packed));
         if (next && next !== '/dev/null') current.path = next;
       }
       if (plus) current.additions += 1;
@@ -1228,7 +1408,7 @@ export class PatchParser {
     } else if (kind !== HUNK_OUTSIDE || PATCH_META_PREFIXES.some((prefix) => startsAt(text, offset, length, prefix))) {
       // A malformed hunk header, the no-newline marker, or a file header.
       store.setKind(line, LINE_META);
-      if (current?.leading) readHeaderLine(current.header, text.slice(offset, offset + length));
+      if (current?.leading) readHeaderLine(current.header, lineText(text, offset, offset + length, packed));
       return;
     } else {
       // git's one line for a binary file stays a line of the body, as it
@@ -1303,6 +1483,11 @@ export class PatchParser {
 const BINARY_PREFIX_MAX = 16;
 function isBinaryLine(text: string): boolean {
   return text.startsWith('Binary files ') || text.startsWith('GIT binary patch');
+}
+
+// The text of [from, to) of a line callback's `text`.
+function lineText(text: string, from: number, to: number, packed: boolean): string {
+  return packed ? unpackText(text.slice(from, to)) : text.slice(from, to);
 }
 
 function startsAt(text: string, offset: number, length: number, prefix: string): boolean {

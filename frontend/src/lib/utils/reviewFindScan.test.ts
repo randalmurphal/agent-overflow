@@ -333,9 +333,9 @@ describe('scanReviewFind over evicted text', () => {
     const { files: evicted, source, spans } = streamed(2000);
     const gates: (() => void)[] = [];
     const real = source.read.getMockImplementation()!;
-    source.read.mockImplementation(async (offset, next) => {
+    source.read.mockImplementation(async (offset, next, packed) => {
       await new Promise<void>((resolve) => gates.push(resolve));
-      return real(offset, next);
+      return real(offset, next, packed);
     });
     let live = true;
     const hits: ReviewFindHit[] = [];

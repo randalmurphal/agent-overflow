@@ -1132,13 +1132,13 @@ describe('review find over the real list', () => {
     let release = () => {};
     let gated = 0;
     const read = streamed.source.read.getMockImplementation()!;
-    streamed.source.read.mockImplementation(async (offset, nextOffset) => {
+    streamed.source.read.mockImplementation(async (offset, nextOffset, packed) => {
       const mine = gate;
       if (mine && nextOffset > at - 8000 && offset < at + 8000) {
         gated += 1;
         await mine;
       }
-      return read(offset, nextOffset);
+      return read(offset, nextOffset, packed);
     });
     const { props, scrollEl, body } = await mountBody(onePatch('x', '@@ -1 +1 @@', ['x']));
     const files = streamed.files;

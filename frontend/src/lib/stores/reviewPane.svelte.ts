@@ -2406,10 +2406,10 @@ export function createReviewPaneState(
     // and within the files the backend verifies per call.
     for (let start = 0; start < candidates.length;) {
       let end = start + 1;
-      let chars = candidates[start].body.textLength;
+      let chars = candidates[start].body.textSize;
       while (end < candidates.length && end - start < VERIFY_BATCH_FILES
-        && chars + candidates[end].body.textLength <= VERIFY_BATCH_CHARS) {
-        chars += candidates[end].body.textLength;
+        && chars + candidates[end].body.textSize <= VERIFY_BATCH_CHARS) {
+        chars += candidates[end].body.textSize;
         end += 1;
       }
       const batch = candidates.slice(start, end);
