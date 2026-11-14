@@ -8,8 +8,8 @@
   import VolumeX from '@lucide/svelte/icons/volume-x';
   import Icon from '../primitives/Icon.svelte';
   import Button from '../primitives/Button.svelte';
-  import UpdateBadge from '../shared/UpdateBadge.svelte';
   import { hasPendingUpdate } from '../../stores/updates.svelte';
+  import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { hasScope, isViewOnly } from '../../transport/scopes';
   import { isFrontendOnly } from '../../transport/runMode';
@@ -47,24 +47,43 @@
   // notifies. So unlike keep-awake above it carries no host gate — a
   // view-only or remote session owns its own speaker and gets the switch.
   let soundsOn = $derived(settings.notificationSoundsEnabled);
+  let updatePending = $derived(hasPendingUpdate());
 </script>
 
 {#if onOpenSettings}
-  <div class="border-t border-border-subtle p-2 shrink-0 flex items-center gap-1">
+  <div class="@container border-t border-border-subtle p-2 shrink-0 flex items-center gap-1">
     <Button
       variant="ghost"
       size="sm"
       onclick={onOpenSettings}
       testId="sidebar-settings-button"
+      title="Settings"
+      ariaLabel="Settings"
       class="flex-1 min-w-0 justify-start"
     >
       {#snippet leading()}
-        <Icon icon={Settings} size={13} strokeWidth={2} class="opacity-80" />
+        <Icon icon={Settings} size={13} strokeWidth={2} class="opacity-80 shrink-0" />
       {/snippet}
       {#snippet children()}
-        Settings{#if hasPendingUpdate()}<UpdateBadge />{/if}
+        <!-- The row cannot hold both labels on a narrow sidebar, so Settings
+             keeps its icon and gives its label up to the Update button. -->
+        <span data-testid="sidebar-settings-label" class={updatePending ? '@max-[15rem]:hidden' : ''}>Settings</span>
       {/snippet}
     </Button>
+    {#if updatePending}
+      <Button
+        variant="tinted"
+        size="sm"
+        onclick={() => openSettingsOverlay('updates')}
+        testId="sidebar-update-button"
+        title="A new version is available. Open Updates."
+        class="shrink-0"
+      >
+        {#snippet children()}
+          Update
+        {/snippet}
+      </Button>
+    {/if}
     {#if viewOnly}
       <span
         class="shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1.5 py-0.5 text-[0.625rem] font-medium uppercase tracking-[0.12em] text-fg-subtle"

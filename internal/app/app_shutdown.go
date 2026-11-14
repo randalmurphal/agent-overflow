@@ -279,6 +279,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// The usage poll loops, requested readings and trailing gate runs persist
 	// readings; appCtx is cancelled, so each is exiting or finishing one probe.
 	a.providerLifecycleService().Close()
+	// The passive release check emits status frames. It has its own
+	// lifetime, which this cancels before joining it.
+	a.stopServiceUpdateChecks()
 	// A permission-mode follow writes the thread row; appCtx is cancelled,
 	// so it is returning or finishing one bounded write.
 	a.permissionModeFollowWG.Wait()

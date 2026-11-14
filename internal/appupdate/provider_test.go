@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -645,13 +646,23 @@ func TestDownloadUpdateRejectedWhileBusy(t *testing.T) {
 // mock GitHub server, so service-level updater methods can be driven end to end.
 func newUpdaterApp(t *testing.T, srv *httptest.Server, current string) (*Service, *targetableProvider) {
 	t.Helper()
+	return newUpdaterAppWithHost(t, srv, current, func(*Service) updater.Host { return noopUpdaterHost{} })
+}
+
+// newUpdaterAppWithHost is newUpdaterApp with the library's events delivered
+// to the host host returns for the service.
+func newUpdaterAppWithHost(
+	t *testing.T, srv *httptest.Server, current string, host func(*Service) updater.Host,
+) (*Service, *targetableProvider) {
+	t.Helper()
 	gh, err := newGitHubProvider(testRepo, "SHASUMS256", srv.URL, srv.Client())
 	if err != nil {
 		t.Fatalf("newGitHubProvider: %v", err)
 	}
 	req := updater.CheckRequest{CurrentVersion: current, Platform: runtime.GOOS, Arch: runtime.GOARCH}
 	tp := newTargetableProvider(gh, newGitHubFeed(testRepo, srv.URL, srv.Client()), githubAssetURLKey, "SHASUMS256", req)
-	up := updater.New(noopUpdaterHost{})
+	a := &Service{}
+	up := updater.New(host(a))
 	if err := up.Init(updater.Config{
 		CurrentVersion: req.CurrentVersion,
 		Platform:       req.Platform,
@@ -661,7 +672,144 @@ func newUpdaterApp(t *testing.T, srv *httptest.Server, current string) (*Service
 	}); err != nil {
 		t.Fatalf("init updater: %v", err)
 	}
-	return &Service{updater: appUpdaterState{handle: up, provider: tp}}, tp
+	a.updater.handle = up
+	a.updater.provider = tp
+	return a, tp
+}
+
+// bridgingHosts are the two production routes from the library's events to
+// the transport: the desktop's ForwardFrameworkEvent and the WSL host.
+var bridgingHosts = map[string]func(*Service) updater.Host{
+	"desktop": func(a *Service) updater.Host { return &desktopTestHost{service: a} },
+	"wsl":     func(a *Service) updater.Host { return wslUpdaterHost{service: a} },
+}
+
+// updaterErrorRecord is one updater:error a test saw, with whether the
+// service's busy fence was still set when it went out.
+type updaterErrorRecord struct {
+	info updater.ErrorInfo
+	busy bool
+}
+
+// recordUpdaterErrors captures every updater:error the service emits. The
+// library emits a check-stage error from inside Check, which DownloadUpdate
+// runs under a.updater.mu, so a lock that cannot be taken means the event is
+// from inside that call and busy is set.
+func recordUpdaterErrors(a *Service) (records func() []updaterErrorRecord, arrived <-chan struct{}) {
+	var mu sync.Mutex
+	var got []updaterErrorRecord
+	signal := make(chan struct{}, 16)
+	a.deps.Emit = func(name eventchan.Channel, data any) {
+		if name != updaterErrorChannel {
+			return
+		}
+		info, _ := data.(updater.ErrorInfo)
+		busy := true
+		if a.updater.mu.TryLock() {
+			busy = a.updater.busy
+			a.updater.mu.Unlock()
+		}
+		mu.Lock()
+		got = append(got, updaterErrorRecord{info: info, busy: busy})
+		mu.Unlock()
+		signal <- struct{}{}
+	}
+	return func() []updaterErrorRecord {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]updaterErrorRecord(nil), got...)
+	}, signal
+}
+
+// A failed check reaches the caller as CheckError only: the library's
+// check-stage error event is not pushed to clients on either host.
+func TestAFailedCheckForUpdateEmitsNoError(t *testing.T) {
+	for name, host := range bridgingHosts {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "feed unavailable", http.StatusBadGateway)
+			}))
+			t.Cleanup(srv.Close)
+			a, _ := newUpdaterAppWithHost(t, srv, "0.0.1", host)
+			records, _ := recordUpdaterErrors(a)
+
+			avail, err := a.CheckForUpdate()
+			if err != nil {
+				t.Fatalf("CheckForUpdate: %v", err)
+			}
+			if avail.CheckError == "" {
+				t.Fatalf("CheckForUpdate = %+v, want a CheckError", avail)
+			}
+			if got := records(); len(got) != 0 {
+				t.Fatalf("a failed check emitted updater:error %+v", got)
+			}
+		})
+	}
+}
+
+// A by-tag download whose resolve fails ends with exactly one updater:error,
+// the service's own, after the busy fence drops.
+func TestDownloadUpdateByTagResolveFailureEmitsOneErrorAfterBusyDrops(t *testing.T) {
+	for name, host := range bridgingHosts {
+		t.Run(name, func(t *testing.T) {
+			srv := newMockGitHub(t, []relSpec{
+				{tag: "v0.0.8", withPlatform: true, withChecksum: true},
+			}, sumsForPlatform)
+			a, _ := newUpdaterAppWithHost(t, srv, "0.0.1", host)
+			records, arrived := recordUpdaterErrors(a)
+
+			if err := a.DownloadUpdate("v9.9.9"); err != nil {
+				t.Fatalf("DownloadUpdate: %v", err)
+			}
+			// The service's terminal is the flow's last act, so any library
+			// event was recorded before the first record whose busy is false.
+			deadline := time.After(10 * time.Second)
+			for {
+				select {
+				case <-arrived:
+				case <-deadline:
+					t.Fatalf("no terminal updater:error; saw %+v", records())
+				}
+				got := records()
+				if got[len(got)-1].busy {
+					continue
+				}
+				if len(got) != 1 || got[0].info.Stage != updater.StageCheck || got[0].info.Provider != "github" {
+					t.Fatalf("updater:error emissions = %+v, want one github check error after busy dropped", got)
+				}
+				return
+			}
+		})
+	}
+}
+
+// Library errors past the check, here a checksum mismatch, still reach
+// clients through both hosts.
+func TestALibraryVerifyErrorStillBridges(t *testing.T) {
+	for name, host := range bridgingHosts {
+		t.Run(name, func(t *testing.T) {
+			// sumsForPlatform's digest is not platformAssetBytes', so the
+			// library's verify step fails after a successful download.
+			srv := newMockGitHub(t, []relSpec{
+				{tag: "v0.0.8", withPlatform: true, withChecksum: true},
+			}, sumsForPlatform)
+			a, _ := newUpdaterAppWithHost(t, srv, "0.0.1", host)
+			records, arrived := recordUpdaterErrors(a)
+
+			if err := a.DownloadUpdate("v0.0.8"); err != nil {
+				t.Fatalf("DownloadUpdate: %v", err)
+			}
+			select {
+			case <-arrived:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the library's verify error never reached updater:error")
+			}
+			got := records()
+			if got[0].info.Stage != updater.StageVerify {
+				t.Fatalf("updater:error = %+v, want the library's verify error", got)
+			}
+		})
+	}
 }
 
 func TestDownloadUpdateByTagResolveFailureEmitsError(t *testing.T) {

@@ -724,19 +724,15 @@ func (h wslUpdaterHost) Emit(name string, data ...any) bool {
 	if name == updater.EventUpdateReady {
 		return true
 	}
-	channel, ok := updaterEventBridge[name]
-	if !ok {
-		// Not a failure — the framework emits several events we deliberately
-		// don't bridge (check-started, update-available, no-update, meta), all
-		// of them redundant with the CheckForUpdate RPC's return value.
-		log.Printf("updater: unbridged event %s", name)
-		return true
-	}
 	var payload any
 	if len(data) > 0 {
 		payload = data[0]
 	}
-	h.service.emit(channel, payload)
+	// Not a failure when nothing is bridged: the framework emits several events
+	// that are redundant with the CheckForUpdate RPC's return value.
+	if channel, ok := bridgedChannel(name, payload); ok {
+		h.service.emit(channel, payload)
+	}
 	return true
 }
 

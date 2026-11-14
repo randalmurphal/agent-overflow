@@ -16,7 +16,6 @@
   import Search from '@lucide/svelte/icons/search';
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
-  import UpdateBadge from '../shared/UpdateBadge.svelte';
   import { hasPendingUpdate } from '../../stores/updates.svelte';
   import {
     settingsSectionGroups,
@@ -212,7 +211,10 @@
             >
               {section.label}
               {#if section.id === 'updates' && hasPendingUpdate()}
-                <UpdateBadge />
+                <span
+                  class="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-accent align-middle"
+                  aria-label="Update available"
+                ></span>
               {/if}
             </button>
           {/each}

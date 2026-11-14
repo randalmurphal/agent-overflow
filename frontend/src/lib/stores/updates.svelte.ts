@@ -1,10 +1,15 @@
 // Self-update store. Owns the reactive updater state shared by the Settings →
-// Updates panel and the sidebar "update available" badge, and bridges the
-// backend updater:* events into that state.
+// Updates panel and the sidebar's Update button, and bridges the backend
+// updater:* events into that state.
 //
-// UX contract (mirrors the backend in internal/appupdate): the on-launch check only
-// reads release metadata — nothing downloads or installs without an explicit
-// button press. The download and the restart are each a separate user action.
+// UX contract (mirrors the backend in internal/appupdate): a check only reads
+// release metadata — nothing downloads or installs without an explicit button
+// press. The download and the restart are each a separate user action.
+//
+// The store checks at launch and then every UPDATE_CHECK_INTERVAL_MS while the
+// page is open. The repeating check is a background check: it never shows the
+// 'checking' phase, and a release source it cannot reach leaves the state as
+// it was, unless that state offered a download the backend can no longer run.
 
 import {
   CheckForUpdate,
@@ -16,6 +21,7 @@ import {
 import type { ReleaseSummary } from './bindings';
 import { wailsEventOn } from './wailsEvents';
 import { isScopeRefusal } from '../transport/scopeRefusal';
+import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { isMethodUnavailableError } from './transportStatus.svelte';
 import { userFacingError } from '../utils/userFacingError';
@@ -65,6 +71,10 @@ interface RestartPayload {
 }
 
 const restartFailedMessage = 'Could not restart to apply the update.';
+const checkFailedMessage = 'Could not check for updates.';
+
+/** How often an open page asks the release source again after the launch check. */
+export const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 const state = $state({
   // supported is false on builds that can't self-update (dev builds) and on
@@ -114,17 +124,29 @@ export function getUpdateState(): UpdateState {
 
 /**
  * hasPendingUpdate reports whether a newer version has been found and not yet
- * installed+restarted. Drives the sidebar badge. A successful restart relaunches
- * into the new version, whose on-launch check returns up-to-date and clears
- * latestVersion, so the badge naturally goes dark.
+ * installed+restarted. Drives the sidebar's Update button and the dot on the
+ * Updates tab. A successful restart relaunches into the new version, whose
+ * launch check returns up-to-date and clears latestVersion, so both go away.
  *
- * The same badge also lights for a SUPERVISED machine this client is attached
- * to with a newer release waiting (`serviceUpdate.svelte.ts`): the two
- * updaters are different mechanisms, but "something on Settings → Updates
- * wants you" is one fact, and the badge sites ask it here once.
+ * Both also show for a SUPERVISED machine this client is attached to with a
+ * newer release waiting (`serviceUpdate.svelte.ts`): the two updaters are
+ * different mechanisms, but "something on Settings → Updates wants you" is
+ * one fact, and both sites ask it here once.
  */
 export function hasPendingUpdate(): boolean {
   return (state.supported && state.latestVersion !== '') || hasPendingServiceUpdate();
+}
+
+// errorFromCheck is whether the current 'error' phase came from a release
+// check. A background check may replace that error with its own answer. An
+// error from a download or a restart stays until the user acts on it. fail is
+// the only writer of the 'error' phase, so the two cannot disagree.
+let errorFromCheck = false;
+
+function fail(message: string, fromCheck = false): void {
+  state.phase = 'error';
+  state.error = message;
+  errorFromCheck = fromCheck;
 }
 
 /** isDownloadInFlight reports whether the phase is one of the active
@@ -202,35 +224,67 @@ export function canInstallSelected(): boolean {
 
 /**
  * runUpdateCheck asks the backend whether a newer release exists. Read-only:
- * it never downloads or installs. Safe to call repeatedly; overlapping or
- * mid-download calls are ignored.
+ * it never downloads or installs. Safe to call repeatedly; mid-flow calls are
+ * ignored and the newest of overlapping checks wins.
  */
-export async function runUpdateCheck(): Promise<void> {
+export function runUpdateCheck(): Promise<void> {
+  return startCheck(false);
+}
+
+// newestCheck settles once the newest check has applied or dropped its answer.
+let newestCheck: Promise<void> = Promise.resolve();
+
+function startCheck(background: boolean): Promise<void> {
+  newestCheck = check(background);
+  return newestCheck;
+}
+
+// checkSeq numbers the checks so a reply applies only while its check is the
+// newest one.
+let checkSeq = 0;
+
+/**
+ * check runs one release check. A background check is the repeating one
+ * nobody asked for: it leaves the phase alone while it runs, and a release
+ * source it cannot reach is not reported.
+ */
+async function check(background: boolean): Promise<void> {
+  // The updater RPCs are `host`-scoped, and this runs unprompted. Off-host
+  // the call can only be refused, so ask first and land in the same resting
+  // state the refusal would have produced — the reactive catch below stays as
+  // the backstop for a refusal nobody predicted.
+  // The answer lands with the bootstrap manifest, AFTER App mounts and the
+  // launch check starts; reading it earlier marked updates unsupported on
+  // every launch of the merged build.
+  await pageGrantsResolved();
   // Skip while the flow is mid-action. The 'ready' member of that set matters
   // most here: a re-check would re-resolve the same release and flip the phase
   // back to 'available', dropping the user from "Restart to update" to
-  // "Download" even though the staged build is still valid and waiting. Every
-  // branch below sets a terminal phase, so no overlap flag or finally is
-  // needed.
+  // "Download" even though the staged build is still valid and waiting.
   if (isUpdateFlowBusy(state.phase)) {
     return;
   }
-  // The updater RPCs are `host`-scoped, and this one runs unprompted at
-  // launch. Off-host that call can only be refused, so ask first and land in
-  // the same resting state the refusal would have produced — the reactive
-  // catch below stays as the backstop for a refusal nobody predicted.
-  // The answer lands with the bootstrap manifest, AFTER App mounts and this
-  // check starts; reading it earlier marked updates unsupported on every
-  // launch of the merged build.
-  await pageGrantsResolved();
+  // The error of a download or a restart is the user's to read.
+  if (background && state.phase === 'error' && !errorFromCheck) {
+    return;
+  }
   if (!hasScope('host')) {
     markUnsupported();
     return;
   }
-  state.phase = 'checking';
-  state.error = '';
+  if (!background) {
+    state.phase = 'checking';
+    state.error = '';
+  }
+  const seq = ++checkSeq;
+  const startedIn = state.phase;
+  // A reply is stale once a newer check started or the phase moved on under
+  // it: a download the user started, or a flow event from the backend. What
+  // moved the phase owns it.
+  const stale = () => seq !== checkSeq || state.phase !== startedIn;
   try {
     const result = await CheckForUpdate();
+    if (stale()) return;
     state.currentVersion = result.currentVersion;
     if (!result.supported) {
       markUnsupported();
@@ -256,10 +310,15 @@ export async function runUpdateCheck(): Promise<void> {
       // than an RPC error, so lastApplyFailure above still arrives — a boot
       // notice must not vanish behind an offline check. Rendered exactly like
       // a thrown failure.
-      state.phase = 'error';
-      state.error = userFacingError(result.checkError, 'Could not check for updates.');
+      //
+      // A failed check also drops the release the backend had resolved, so a
+      // Download offered from 'available' could no longer run. That is the one
+      // background failure that shows.
+      if (background && startedIn !== 'available') return;
+      fail(userFacingError(result.checkError, checkFailedMessage), true);
       return;
     }
+    state.error = '';
     if (result.available) {
       state.latestVersion = result.latestVersion ?? '';
       state.releaseName = result.releaseName ?? '';
@@ -272,6 +331,7 @@ export async function runUpdateCheck(): Promise<void> {
       state.phase = 'up-to-date';
     }
   } catch (err) {
+    if (stale()) return;
     if (isScopeRefusal(err) || isMethodUnavailableError(err)) {
       // A remote session. The updater RPCs carry `//ao:scope host`, which no
       // session may be granted, so the transport refuses them with
@@ -286,8 +346,10 @@ export async function runUpdateCheck(): Promise<void> {
       markUnsupported();
       return;
     }
-    state.phase = 'error';
-    state.error = userFacingError(err, 'Could not check for updates.');
+    // The call never reached the backend, so its resolved release stands and
+    // the connection banner owns the failure.
+    if (background && isPassiveConnectionFailure(err)) return;
+    fail(userFacingError(err, checkFailedMessage), true);
   }
 }
 
@@ -322,6 +384,12 @@ export async function startUpdateDownload(tag = ''): Promise<void> {
   if (!state.supported) return;
   if (tag === '') {
     if (state.phase !== 'available') return;
+    // A background check may be asking right now, and the backend runs this
+    // download after it, on whatever release that check resolves. Wait for
+    // its answer so the download starts from the offer the page then shows,
+    // or not at all.
+    await newestCheck;
+    if (state.phase !== 'available') return;
   } else if (isUpdateFlowBusy(state.phase)) {
     return;
   }
@@ -334,8 +402,7 @@ export async function startUpdateDownload(tag = ''): Promise<void> {
   try {
     await DownloadUpdate(tag);
   } catch (err) {
-    state.phase = 'error';
-    state.error = userFacingError(err, 'Could not start the update download.');
+    fail(userFacingError(err, 'Could not start the update download.'));
   }
 }
 
@@ -358,8 +425,7 @@ export async function restartForUpdate(): Promise<void> {
     // busy host answers at once and holds the restart; updater:restart then
     // moves us to 'waiting'.
   } catch (err) {
-    state.phase = 'error';
-    state.error = userFacingError(err, restartFailedMessage);
+    fail(userFacingError(err, restartFailedMessage));
   }
 }
 
@@ -387,9 +453,10 @@ export async function cancelRestartForUpdate(): Promise<void> {
 let initialized = false;
 
 /**
- * initUpdates subscribes to the backend updater event channels and kicks off
- * the passive on-launch check. Idempotent; returns a cleanup function that
- * tears down the subscriptions. Call once from the app root.
+ * initUpdates subscribes to the backend updater event channels, runs the
+ * launch check and starts the repeating background check. Idempotent; returns
+ * a cleanup function that tears down the subscriptions and the timer. Call
+ * once from the app root.
  */
 export function initUpdates(): () => void {
   if (initialized) return () => {};
@@ -426,24 +493,24 @@ export function initUpdates(): () => void {
           if (state.phase === 'waiting' || state.phase === 'restarting') state.phase = 'ready';
           break;
         case 'failed':
-          state.phase = 'error';
-          state.error = userFacingError(e.error, restartFailedMessage);
+          fail(userFacingError(e.error, restartFailedMessage));
           break;
         // 'idle': the launcher abandoned the handoff; updater:error says why.
       }
       state.waitingFor = '';
     }),
     wailsEventOn<ErrorPayload>('updater:error', (e) => {
-      state.phase = 'error';
       const stage = e?.stage ? `${e.stage} ` : '';
-      state.error = e?.message ? `Update ${stage}failed: ${e.message}` : 'Update failed.';
+      fail(e?.message ? `Update ${stage}failed: ${e.message}` : 'Update failed.');
     }),
   ];
 
-  // Passive on-launch check — surfaces availability without installing anything.
+  // Launch check — surfaces availability without installing anything.
   void runUpdateCheck();
+  const backgroundChecks = setInterval(() => void startCheck(true), UPDATE_CHECK_INTERVAL_MS);
 
   return () => {
+    clearInterval(backgroundChecks);
     for (const cancel of cancels) cancel();
     initialized = false;
   };
@@ -473,5 +540,8 @@ export function resetForTest(): void {
   state.versionsLoading = false;
   state.versionsError = '';
   state.selectedTag = '';
+  errorFromCheck = false;
+  checkSeq += 1;
+  newestCheck = Promise.resolve();
   initialized = false;
 }
