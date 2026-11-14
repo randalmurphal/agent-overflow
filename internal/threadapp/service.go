@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -37,20 +38,29 @@ type ModelPolicy interface {
 }
 
 // WorktreeCut describes one fresh worktree. Branch is the branch it checks
-// out, or empty for a generated name. With no Base and no BaseLocal, a
-// Branch that already exists, locally or on origin, is checked out as it
-// is. Otherwise Branch is created from Base, empty for the project's
-// current branch. BaseLocal starts from Base's local head with no fetch;
-// otherwise the cut starts from origin's head of Base when origin can be
-// reached and has it.
+// out, or empty for a generated name; a tag in its wire form
+// ("refs/tags/<name>") is checked out detached, takes no Base, and makes
+// no branch. With no Base and no BaseLocal, a Branch that already exists,
+// locally or on origin, is checked out as it is. Otherwise Branch is
+// created from Base, a branch name or tag wire ref, empty for the
+// project's current branch. BaseLocal starts from Base's local head with
+// no fetch; otherwise the cut starts from origin's head of a branch Base
+// when origin can be reached and has it. A tag Base is cut locally.
+//
+// Target, when set, replaces Branch: the caller resolved the name already
+// (gitops.Core.ResolveWorktreeTarget), and the cut checks out an existing
+// target as it is or creates the branch it names, deciding nothing again
+// and never tidying the name. A plain Branch is a typed name: tidied into
+// a branch name when it is created.
 type WorktreeCut struct {
 	Branch    string
+	Target    *gitops.WorktreeTarget
 	Base      string
 	BaseLocal bool
 }
 
 // CutWorktree is a worktree a cut made: where it is, the branch it checks
-// out, and whether the cut made that branch (a new one, or the local branch
+// out ("" for a tag), and whether the cut made that branch (a new one, or the local branch
 // of one only origin had), which undoing the cut deletes.
 type CutWorktree struct {
 	Path          string

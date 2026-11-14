@@ -2,6 +2,8 @@ import type { Thread } from '../types/models';
 import { threadMachine } from './attachedBackends.svelte';
 import { getSettings } from './settings.svelte';
 import { generateWorktreeBranchName } from '../utils/worktreeBranchName';
+import { branchRef, currentCheckout, currentCheckoutRef, type CurrentCheckout } from '../utils/gitRef';
+import type { GitStatus } from '../types/git';
 
 export type WorktreeIntentMode = 'local' | 'new-worktree';
 
@@ -22,15 +24,17 @@ export function isLocalBase(value: string | undefined | null): boolean {
 }
 
 // Maps a UI base selection to the (baseBranch, carryLocalChanges) pair
-// the backend bindings expect. The sentinel resolves to the thread's
-// current branch with carry=true; anything else passes through with
+// the backend bindings expect. Bases are wire refs (utils/gitRef.ts). The
+// sentinel resolves to the source checkout's current ref (its branch, else
+// the tag at its HEAD, else '' for the HEAD commit) with carry=true, the
+// only base the backend lets carry; anything else passes through with
 // carry=false.
 export function resolveBaseForWire(
   base: string,
-  currentBranch: string,
+  currentRef: string,
 ): { baseBranch: string; carryLocalChanges: boolean } {
   if (isLocalBase(base)) {
-    return { baseBranch: currentBranch, carryLocalChanges: true };
+    return { baseBranch: currentRef, carryLocalChanges: true };
   }
   return { baseBranch: base, carryLocalChanges: false };
 }
@@ -39,7 +43,7 @@ export function resolveBaseForWire(
 //
 //   mode='local'         creatingBranch=false → no special intent (checkout existing in current workspace)
 //   mode='local'         creatingBranch=true  → create branch off newBranchBase, checkout in current workspace
-//   mode='new-worktree'  creatingBranch=false → create worktree pointing at attachBranch (existing branch)
+//   mode='new-worktree'  creatingBranch=false → create worktree pointing at attachBranch (existing branch, or a tag ref checked out detached)
 //   mode='new-worktree'  creatingBranch=true  → create branch off newBranchBase, then worktree pointing at it
 //
 // `carryLocalChanges` is intentionally NOT a stored field. It is
@@ -80,7 +84,7 @@ export function seedDefaultWorktreeIntentForDraft(thread: Thread): void {
     mode: 'new-worktree',
     creatingBranch: true,
     newBranchName: generateWorktreeBranchName(getSettings(threadMachine(thread.id, thread.projectId)).worktreeBranchPrefix),
-    newBranchBase: thread.branch ?? '',
+    newBranchBase: thread.branch ? branchRef(thread.branch) : '',
     attachBranch: '',
   });
 }
@@ -108,12 +112,15 @@ export function setThreadEnvMode(thread: Thread, mode: WorktreeIntentMode): void
 // mode, or "+ New branch…" inside the BranchPicker dropdown). Default
 // base mirrors the destructive-default convention: dirty workspace
 // pre-selects the LOCAL sentinel so checkout-style data loss is opt-in.
+// Otherwise the base is the checkout's current ref, a tag ref when it is
+// detached at a tag.
+// `fromHere` sets the base to the current ref even over a staged base.
 export function enterCreateBranchMode(
   thread: Thread,
-  opts: { workspaceDirty: boolean; currentBranch: string },
+  opts: { workspaceDirty: boolean; currentRef: string; fromHere?: boolean },
 ): void {
   const current = worktreeIntentForThread(thread);
-  const baseFallback = opts.workspaceDirty ? LOCAL_BASE_SENTINEL : opts.currentBranch;
+  const baseFallback = opts.workspaceDirty ? LOCAL_BASE_SENTINEL : opts.currentRef;
   // Auto-fill the name in worktree mode (matches today's seed flow);
   // leave it blank in local mode so the input starts empty for the
   // user to type.
@@ -125,8 +132,51 @@ export function enterCreateBranchMode(
     ...current,
     creatingBranch: true,
     newBranchName: current.newBranchName || seedName,
-    newBranchBase: current.newBranchBase || baseFallback,
+    newBranchBase: opts.fromHere ? opts.currentRef : current.newBranchBase || baseFallback,
     attachBranch: '',
+  });
+}
+
+/** What a pane reads its checkout from: the thread row and the live status. */
+export interface PaneCheckoutSource {
+  readonly thread: Thread | null;
+  readonly gitStatus: { readonly status: GitStatus | null };
+}
+
+/** The pane's current checkout (`currentCheckout`). Reactive. */
+export function paneCheckout(pane: PaneCheckoutSource): CurrentCheckout {
+  return currentCheckout(pane.thread?.branch, pane.gitStatus.status);
+}
+
+/**
+ * The one entry into creating a branch from where the pane is: the branch
+ * picker's "New branch…" and the inline "+ new branch" keep a staged base
+ * and otherwise default to the current checkout's ref (the carry sentinel
+ * on a dirty tree). At a detached HEAD at no tag that ref is '', which the
+ * backend reads as that HEAD, so its commits are kept.
+ */
+export function startNewBranch(
+  pane: PaneCheckoutSource,
+  workspaceDirty = !!pane.gitStatus.status?.hasChanges,
+): void {
+  if (!pane.thread) return;
+  enterCreateBranchMode(pane.thread, {
+    workspaceDirty,
+    currentRef: currentCheckoutRef(paneCheckout(pane)),
+  });
+}
+
+/**
+ * The git menu's "Create branch from here": always the current checkout,
+ * replacing any staged base. A dirty tree stays with the new branch because
+ * it is cut at the ref the tree is on.
+ */
+export function startNewBranchFromHere(pane: PaneCheckoutSource): void {
+  if (!pane.thread) return;
+  enterCreateBranchMode(pane.thread, {
+    workspaceDirty: !!pane.gitStatus.status?.hasChanges,
+    currentRef: currentCheckoutRef(paneCheckout(pane)),
+    fromHere: true,
   });
 }
 
@@ -162,9 +212,9 @@ export function setNewBranchBase(thread: Thread, base: string): void {
   });
 }
 
-// User picked an existing branch from BranchPicker while in
-// new-worktree + !creatingBranch mode — stages it as the worktree's
-// target. No-op outside that quadrant; callers handle dedup separately
+// User picked an existing branch or a tag (as its wire ref) from
+// BranchPicker while in new-worktree + !creatingBranch mode — stages it
+// as the worktree's target. No-op outside that quadrant; callers handle dedup separately
 // (a branch that already has a worktree should flip mode='local'
 // instead of staging an attach).
 export function setAttachBranch(thread: Thread, branch: string): void {

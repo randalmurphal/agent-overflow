@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
@@ -92,45 +93,107 @@ func (p threadWorkspacePort) CreateWorktree(
 	projectPath string,
 	cut threadapp.WorktreeCut,
 ) (threadapp.CutWorktree, error) {
-	if existing := strings.TrimSpace(cut.Branch); existing != "" && cut.Base == "" && !cut.BaseLocal {
-		exists, fetchErr, err := p.app.gitCore().BranchToCheckOut(ctx, projectPath, existing)
+	if cut.Target != nil {
+		return p.cutResolvedWorktree(ctx, projectPath, *cut.Target, cut)
+	}
+	ref, parseErr := gitops.ParseRef(cut.Branch)
+	if parseErr != nil && gitops.IsQualifiedRef(cut.Branch) {
+		// A spelled-out ref names exactly one thing; tidying it would
+		// create an unrelated branch.
+		return threadapp.CutWorktree{}, fmt.Errorf("worktree %q: %w", cut.Branch, parseErr)
+	}
+	if parseErr == nil && ref.IsTag() {
+		return p.cutResolvedWorktree(ctx, projectPath, gitops.WorktreeTarget{Ref: ref, Exists: true}, cut)
+	}
+	name := strings.TrimSpace(cut.Branch)
+	explicit := parseErr == nil && gitops.IsQualifiedRef(cut.Branch)
+	if parseErr == nil && ref.IsBranch() {
+		name = ref.Name
+	}
+	if name != "" && cut.Base == "" && !cut.BaseLocal {
+		exists, fetchErr, err := p.app.gitCore().BranchToCheckOut(ctx, projectPath, name)
 		if fetchErr != nil {
 			log.Printf("create worktree %s: fetch origin for branch %q: %v (reading the tracking refs as they stand)",
-				projectPath, existing, fetchErr)
+				projectPath, name, fetchErr)
 		}
 		if err != nil {
 			return threadapp.CutWorktree{}, err
 		}
 		if exists {
-			worktreePath, err := p.app.defaultWorktreePath(projectPath, existing)
-			if err != nil {
-				return threadapp.CutWorktree{}, err
-			}
-			created, err := p.app.gitCore().AttachWorktree(projectPath, worktreePath, existing)
-			if err != nil {
-				return threadapp.CutWorktree{}, err
-			}
-			return threadapp.CutWorktree{Path: worktreePath, Branch: existing, CreatedBranch: created}, nil
+			return p.attachWorktree(projectPath, gitops.BranchRef(name))
 		}
 	}
-	resolvedBranch := p.app.resolveWorktreeBranch(cut.Branch)
+	// A typed plain name is tidied into a branch name (or generated when
+	// empty); a refs/heads/ spelling is created exactly as named.
+	if !explicit {
+		name = p.app.resolveWorktreeBranch(name)
+	}
+	return p.cutNewBranch(ctx, projectPath, name, cut)
+}
+
+// cutResolvedWorktree cuts what target names without resolving anything
+// again: an existing branch or tag is checked out as it is, a branch that
+// does not exist is created from cut's base.
+func (p threadWorkspacePort) cutResolvedWorktree(
+	ctx context.Context, projectPath string, target gitops.WorktreeTarget, cut threadapp.WorktreeCut,
+) (threadapp.CutWorktree, error) {
+	if !target.Ref.IsTag() && !target.Exists {
+		return p.cutNewBranch(ctx, projectPath, target.Ref.Name, cut)
+	}
+	if strings.TrimSpace(cut.Base) != "" || cut.BaseLocal {
+		return threadapp.CutWorktree{}, fmt.Errorf("%s is checked out as it is, so a base does not apply", target.Ref.Wire())
+	}
+	if !target.Exists {
+		return threadapp.CutWorktree{}, fmt.Errorf("there is no tag %q", target.Ref.Name)
+	}
+	return p.attachWorktree(projectPath, target.Ref)
+}
+
+// attachWorktree checks out an existing branch or tag as it is in a fresh
+// worktree named after it. A tag leaves the worktree on no branch, so
+// undoing the cut deletes none.
+func (p threadWorkspacePort) attachWorktree(projectPath string, ref gitops.Ref) (threadapp.CutWorktree, error) {
+	worktreePath, err := p.app.defaultWorktreePath(projectPath, ref.Name)
+	if err != nil {
+		return threadapp.CutWorktree{}, err
+	}
+	created, err := p.app.gitCore().AttachWorktreeAt(projectPath, worktreePath, ref)
+	if err != nil {
+		return threadapp.CutWorktree{}, err
+	}
+	made := threadapp.CutWorktree{Path: worktreePath}
+	if ref.IsBranch() {
+		made.Branch, made.CreatedBranch = ref.Name, created
+	}
+	return made, nil
+}
+
+// cutNewBranch creates branch resolvedBranch, exactly as named, in a fresh
+// worktree from cut's base: the project's current branch when none is
+// named. Tidying a typed name is the caller's, before this.
+func (p threadWorkspacePort) cutNewBranch(ctx context.Context, projectPath, resolvedBranch string, cut threadapp.WorktreeCut) (threadapp.CutWorktree, error) {
 	worktreePath, err := p.app.defaultWorktreePath(projectPath, resolvedBranch)
 	if err != nil {
 		return threadapp.CutWorktree{}, err
 	}
-	baseBranch := strings.TrimSpace(cut.Base)
-	if baseBranch == "" {
-		baseBranch = p.app.gitCore().CurrentBranch(projectPath)
+	base, err := gitops.ParseRef(cut.Base)
+	if err != nil {
+		return threadapp.CutWorktree{}, fmt.Errorf("base: %w", err)
+	}
+	if base.IsZero() {
+		if current := p.app.gitCore().CurrentBranch(projectPath); current != "" {
+			base = gitops.BranchRef(current)
+		}
 	}
 	if cut.BaseLocal {
 		// The caller asked for this computer's head of the base, unpushed
 		// commits included, so origin is not consulted at all.
-		if err := p.app.gitCore().CreateWorktreeFromBranch(projectPath, worktreePath, baseBranch, resolvedBranch); err != nil {
+		if err := p.app.gitCore().CreateWorktreeFromRef(projectPath, worktreePath, base, resolvedBranch); err != nil {
 			return threadapp.CutWorktree{}, err
 		}
 		return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, CreatedBranch: true}, nil
 	}
-	if err := p.app.cutWorktreeFromFreshBase(ctx, projectPath, worktreePath, baseBranch, resolvedBranch); err != nil {
+	if err := p.app.cutWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, resolvedBranch); err != nil {
 		return threadapp.CutWorktree{}, err
 	}
 	return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, CreatedBranch: true}, nil

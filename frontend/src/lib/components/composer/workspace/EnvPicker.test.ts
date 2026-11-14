@@ -43,6 +43,7 @@ function cleanStatus(overrides: Record<string, unknown> = {}) {
     dirty: false,
     uncommittedCount: 0,
     unpushedCommits: 0,
+    orphanCommits: 0,
     hasUpstream: true,
     attachedThreads: 0,
     terminals: 0,
@@ -161,13 +162,14 @@ describe('<EnvPicker>', () => {
     });
     await fireEvent.click(getByTestId('env-picker-trigger'));
 
-    await findByRole('menuitem', { name: /^wt\/develop/ });
-    await findByRole('menuitem', { name: /^scratchpad\/develop/ });
+    // Detached rows lead with their commit; the directory label follows.
+    await findByRole('menuitem', { name: /^detached at def · wt\/develop/ });
+    await findByRole('menuitem', { name: /^detached at ghi · scratchpad\/develop/ });
     await findByRole('menuitem', { name: /^unique/ });
 
     await fireEvent.click(await findByLabelText('Remove worktree wt/develop'));
     const confirmRow = await findByTestId('env-picker-confirm-row');
-    expect(confirmRow.textContent ?? '').toMatch(/Remove\s*wt\/develop\?/);
+    expect(confirmRow.textContent ?? '').toMatch(/Remove\s*detached at def\s*·\s*wt\/develop\?/);
   });
 
   it('marks a worktree whose directory is gone, refuses to enter it and still removes it', async () => {
@@ -921,6 +923,53 @@ describe('<EnvPicker>', () => {
     await waitFor(() => {
       const call = getBindingMock('RemoveOtherWorktree')?.mock.calls[0];
       expect(call).toEqual([WS, '/tmp/wt-feature', true]);
+    });
+  });
+
+  it('names a worktree with no branch by its tag or detached commit, with their icons', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/repo', branch: 'main', head: 'abc' },
+      { path: '/tmp/release', branch: '', tag: 'v2.4.0', head: 'aaa1111' },
+      { path: '/tmp/v1.0', branch: '', tag: 'v1.0', head: 'bbb2222' },
+      { path: '/tmp/poke', branch: '', head: '0123456789abcdef' },
+    ]);
+    const { getByTestId, findByRole } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+
+    const tagRow = await findByRole('menuitem', { name: /^v2\.4\.0 · release/ });
+    expect(tagRow.querySelector('[data-checkout-kind="tag"]')).not.toBeNull();
+    // A tag named like its directory is not repeated; its icon still marks it.
+    const sameNameRow = await findByRole('menuitem', { name: /^v1\.0$/ });
+    expect(sameNameRow.querySelector('[data-checkout-kind="tag"]')).not.toBeNull();
+    const commitRow = await findByRole('menuitem', { name: /^detached at 0123456 · poke/ });
+    expect(commitRow.querySelector('[data-checkout-kind="commit"]')).not.toBeNull();
+  });
+
+  it('treats commits on no branch as unsaved work in the remove confirmation', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/repo', branch: 'main', head: 'abc' },
+      { path: '/tmp/release', branch: '', tag: 'v2.4.0', head: 'aaa1111' },
+    ]);
+    setBindingMock('GitWorktreeStatus', async () =>
+      cleanStatus({ path: '/tmp/release', branch: '', hasUpstream: false, orphanCommits: 2 }));
+    setBindingMock('RemoveOtherWorktree', async () => removal());
+    const { getByTestId, findByLabelText, findByTestId, queryByTestId } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+    await fireEvent.click(await findByLabelText('Remove worktree release'));
+
+    const confirmRow = await findByTestId('env-picker-confirm-row');
+    await waitFor(() => expect(confirmRow.textContent ?? '').toContain('2 commits on no branch'));
+    expect(confirmRow.textContent ?? '').toMatch(/Remove\s*v2\.4\.0\s*·\s*release/);
+    expect(queryByTestId('env-picker-confirm-remove')).toBeNull();
+    await fireEvent.click(getByTestId('env-picker-confirm-force'));
+    await waitFor(() => {
+      expect(getBindingMock('RemoveOtherWorktree')?.mock.calls[0]).toEqual([WS, '/tmp/release', true]);
     });
   });
 });

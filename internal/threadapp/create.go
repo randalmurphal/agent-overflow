@@ -29,15 +29,23 @@ type CreateOptions struct {
 	AutoCompactStandardPercent *int
 	AutoCompactExtendedPercent *int
 	RuntimeMode                string
-	WorktreeBranch             string
-	// WorktreeBase is the branch WorktreeBranch starts from; empty means
-	// the project's current branch. WorktreeBaseLocal starts from its local
-	// head with no fetch instead of origin's head.
+	// WorktreeBranch names the fresh worktree's branch, or a tag wire ref
+	// to check out detached (WorktreeCut).
+	WorktreeBranch string
+	// WorktreeTarget, when set, is what the caller already resolved the
+	// worktree name to and replaces WorktreeBranch (WorktreeCut.Target).
+	WorktreeTarget *gitops.WorktreeTarget
+	// WorktreeBase is the branch or tag wire ref WorktreeBranch starts
+	// from; empty means the project's current branch. WorktreeBaseLocal
+	// starts from its local head with no fetch instead of origin's head.
 	WorktreeBase      string
 	WorktreeBaseLocal bool
 	WorkspaceOverride string
 	WorktreePath      string
-	Branch            string
+	// Branch is a branch name git or a thread row already holds (a
+	// worktree's checkout, a sibling thread's branch), recorded verbatim:
+	// tidying it would name a different branch.
+	Branch string
 	// CreatedByDevice names the screen this call came from, or "" when the
 	// backend created the thread on its own behalf. Root reads it off the
 	// connection; this package only records it.
@@ -234,16 +242,15 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 		branch = strings.TrimSpace(opts.Branch)
 		if branch == "" {
 			branch = worktreeBranch
-		} else {
-			branch = gitops.SanitizeBranchNamePreservingSlashes(branch)
 		}
-	case strings.TrimSpace(opts.WorktreeBranch) != "":
+	case opts.WorktreeTarget != nil || strings.TrimSpace(opts.WorktreeBranch) != "":
 		if s.deps.Workspace == nil {
 			return store.Thread{}, fmt.Errorf("create thread: worktree: workspace resolver unavailable")
 		}
 		made, createErr := s.deps.Workspace.CreateWorktree(
 			s.deps.LifeContext(), project.Path, WorktreeCut{
 				Branch:    strings.TrimSpace(opts.WorktreeBranch),
+				Target:    opts.WorktreeTarget,
 				Base:      strings.TrimSpace(opts.WorktreeBase),
 				BaseLocal: opts.WorktreeBaseLocal,
 			},
@@ -257,9 +264,7 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 		branch = made.Branch
 		cutWorktree = true
 	default:
-		if explicit := strings.TrimSpace(opts.Branch); explicit != "" {
-			branch = gitops.SanitizeBranchNamePreservingSlashes(explicit)
-		}
+		branch = strings.TrimSpace(opts.Branch)
 	}
 	if branch == "" && s.deps.Workspace != nil {
 		branch = s.deps.Workspace.CurrentBranch(workspace)

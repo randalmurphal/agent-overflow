@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
@@ -125,6 +126,15 @@ func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememb
 // createThreadWithWorktree is createThread that also reports the worktree
 // it cut, for a caller that undoes the thread and so owns what the cut made.
 func (a *App) createThreadWithWorktree(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, threadapp.CutWorktree, error) {
+	return a.createThreadWithWorktreeTarget(ctx, opts, nil, rememberDefaults)
+}
+
+// createThreadWithWorktreeTarget is createThreadWithWorktree for a caller
+// that already resolved the worktree name: target, when set, replaces
+// opts.WorktreeBranch and creation decides nothing about it again.
+func (a *App) createThreadWithWorktreeTarget(
+	ctx context.Context, opts CreateThreadOptions, target *gitops.WorktreeTarget, rememberDefaults bool,
+) (store.Thread, threadapp.CutWorktree, error) {
 	endWork, admitErr := a.workAdmission.begin(ctx)
 	if admitErr != nil {
 		return store.Thread{}, threadapp.CutWorktree{}, admitErr
@@ -145,6 +155,7 @@ func (a *App) createThreadWithWorktree(ctx context.Context, opts CreateThreadOpt
 		AutoCompactExtendedPercent: opts.AutoCompactExtendedPercent,
 		RuntimeMode:                opts.RuntimeMode,
 		WorktreeBranch:             opts.WorktreeBranch,
+		WorktreeTarget:             target,
 		WorktreeBase:               opts.WorktreeBase,
 		WorktreeBaseLocal:          opts.WorktreeBaseLocal,
 		WorkspaceOverride:          opts.WorkspaceOverride,

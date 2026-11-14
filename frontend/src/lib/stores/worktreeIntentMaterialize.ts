@@ -13,7 +13,11 @@ import {
   GitCreateBranchFrom,
   PrepareThreadWorktree,
 } from './bindings';
-import { workspaceRefForThread } from '../utils/workspaceKey';
+import { workspaceKeyForThread, workspaceRefForThread } from '../utils/workspaceKey';
+import { currentCheckout, currentCheckoutRef } from '../utils/gitRef';
+import { applyCheckoutState, peekGitStatus } from './gitStatusStore.svelte';
+import { warnLeftBehind } from './gitLeftBehind';
+import type { GitWorkspaceState } from '../types/git';
 import { syncThreadReply } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
 import { recordBranchSelection } from './branchMru';
@@ -129,6 +133,11 @@ function applyIntentToThread(
   return run;
 }
 
+// The thread's checkout as a wire ref (`currentCheckout`).
+function currentRefOf(thread: Thread): string {
+  return currentCheckoutRef(currentCheckout(thread.branch, peekGitStatus(workspaceKeyForThread(thread))));
+}
+
 async function runThreadMutation(
   opts: MaterializeWorktreeIntentOnThreadOptions,
 ): Promise<Thread | null> {
@@ -136,7 +145,7 @@ async function runThreadMutation(
   let updated: Thread | null = null;
   const mark = threadRowFrameMark();
   if (intent.mode === 'new-worktree' && intent.creatingBranch) {
-    const wire = resolveBaseForWire(intent.newBranchBase, targetThread.branch ?? '');
+    const wire = resolveBaseForWire(intent.newBranchBase, currentRefOf(targetThread));
     updated = (await PrepareThreadWorktree(
       targetThread.id,
       wire.baseBranch,
@@ -146,7 +155,7 @@ async function runThreadMutation(
   } else if (intent.mode === 'new-worktree') {
     updated = (await AttachThreadWorktree(
       targetThread.id,
-      intent.attachBranch || (targetThread.branch ?? ''),
+      intent.attachBranch || currentRefOf(targetThread),
     )) as Thread;
   } else if (intent.creatingBranch) {
     const workspace = workspaceRefForThread(targetThread);
@@ -160,17 +169,19 @@ async function runThreadMutation(
         `Cannot create a branch for thread ${targetThread.id}: it names no project workspace.`,
       );
     }
-    const wire = resolveBaseForWire(intent.newBranchBase, targetThread.branch ?? '');
+    const wire = resolveBaseForWire(intent.newBranchBase, currentRefOf(targetThread));
     // Workspace-keyed: the branch is created in a DIRECTORY, and the backend
     // re-branches every thread row in it. This caller wants its own row back,
     // so it re-reads it rather than guessing the fields locally — the returned
     // GitWorkspaceState describes the checkout, not the thread.
-    await GitCreateBranchFrom(
+    const state = (await GitCreateBranchFrom(
       workspace,
       intent.newBranchName,
       wire.baseBranch,
       wire.carryLocalChanges,
-    );
+    )) as GitWorkspaceState | null;
+    applyCheckoutState(workspace, state);
+    warnLeftBehind(state);
     updated = (await GetThread(targetThread.id)) as Thread | null;
   }
   if (!updated) return null;

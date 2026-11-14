@@ -32,6 +32,28 @@ func (s *Service) ListBranches(ref WorkspaceRef) ([]gitops.GitBranch, error) {
 	return s.core.ListBranches(project)
 }
 
+// ListTags lists every tag of the workspace's repository, newest first.
+func (s *Service) ListTags(ref WorkspaceRef) ([]gitops.GitTag, error) {
+	project, _, err := s.ResolveWorkspace(ref)
+	if err != nil {
+		return nil, err
+	}
+	return s.core.ListTags(project)
+}
+
+// RefreshTags force-fetches origin's tags into the workspace's repository,
+// pruning none, and returns the fresh list.
+func (s *Service) RefreshTags(ref WorkspaceRef) ([]gitops.GitTag, error) {
+	project, _, err := s.ResolveWorkspace(ref)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.core.RefreshTags(project); err != nil {
+		return nil, err
+	}
+	return s.core.ListTags(project)
+}
+
 func (s *Service) MaybeFetchRemotes(ref WorkspaceRef) (bool, error) {
 	project, _, err := s.ResolveWorkspace(ref)
 	if err != nil {

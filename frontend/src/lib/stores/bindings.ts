@@ -338,6 +338,8 @@ export {
   GitStatusSubscribe,
   GitStatusUnsubscribe,
   GitListBranches,
+  GitListTags,
+  GitRefreshTags,
   GitListWorktrees,
   GitCommit,
   ListCommitFiles,

@@ -44,6 +44,29 @@ func TestSpawnPassesThePromptAndSettingsThrough(t *testing.T) {
 	}
 }
 
+// TestSpawnPassesATagThrough: a tag spelled refs/tags/<name>, as worktree
+// or base, reaches the app as written, which resolves it; the guide says
+// what a tag name does.
+func TestSpawnPassesATagThrough(t *testing.T) {
+	app := spawnApp()
+	call(t, New(app), localCaller(), "thread_spawn", `{"prompt":"look","project_id":"p1","worktree":"refs/tags/v1.0"}`)
+	call(t, New(app), localCaller(), "thread_spawn", `{"prompt":"fix","project_id":"p1","worktree":"hotfix","base":"refs/tags/v1.0"}`)
+	if len(app.spawns) != 2 {
+		t.Fatalf("spawns = %v", app.spawns)
+	}
+	if got := app.spawns[0].WorktreeBranch; got != "refs/tags/v1.0" {
+		t.Errorf("worktree = %q, want the tag as written", got)
+	}
+	if got := app.spawns[1]; got.WorktreeBranch != "hotfix" || got.WorktreeBase != "refs/tags/v1.0" {
+		t.Errorf("spawn = %+v, want base as written", got)
+	}
+	for _, shape := range []Shape{soloShape(), pairedShape()} {
+		if text := New(app).Instructions(shape); !strings.Contains(text, "detached at the tag when the name is no branch but a tag") {
+			t.Errorf("paired=%v: the guide does not say what a tag worktree does", shape.Paired())
+		}
+	}
+}
+
 // TestSpawnValidatesEverythingItCan, so a bad call costs one refusal and
 // never a half-started thread.
 func TestSpawnValidatesEverythingItCan(t *testing.T) {

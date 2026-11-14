@@ -32,15 +32,15 @@ func spawnSchema(shape Shape) map[string]any {
 		},
 		"worktree": map[string]any{
 			"type":        "string",
-			"description": "Branch to run on. A branch already checked out runs in that checkout; one that exists locally or on origin (after a fetch) is checked out as it is in a fresh worktree, tracking origin's when only origin has it, so this is how to work on or review an existing branch such as a merge request's. A branch that does not exist yet is created in a fresh worktree from base, or from the project's current branch when base is omitted. On another computer it is resolved in project_id's repository there. Pass workspace_path or worktree, not both, and neither with from_thread.",
+			"description": "Branch to run on. A branch already checked out runs in that checkout; one that exists locally or on origin (after a fetch) is checked out as it is in a fresh worktree, tracking origin's when only origin has it, so this is how to work on or review an existing branch such as a merge request's. A name that is no branch but is a tag, or refs/tags/<name>, is checked out as it is in a fresh worktree detached at the tag, on no branch; base is refused for it. refs/heads/<name> names a branch only. A branch that does not exist yet is created in a fresh worktree from base, or from the project's current branch when base is omitted. On another computer it is resolved in project_id's repository there. Pass workspace_path or worktree, not both, and neither with from_thread.",
 		},
 		"base": map[string]any{
 			"type":        "string",
-			"description": "Branch a new worktree branch starts from, for example main or release/2.4: from origin's head of it after a fetch, or from the local head when origin cannot be reached or does not have it. Omit to start from the project's current branch. Only with worktree naming a branch that does not exist yet; an existing branch is checked out as it is and base is refused for it.",
+			"description": "Branch or tag a new worktree branch starts from, for example main, release/2.4 or v2.4.0: a branch from origin's head of it after a fetch, or from the local head when origin cannot be reached or does not have it; a name that is no branch is a tag of that name (or spell it refs/tags/<name>), which is local; refs/heads/<name> names a branch only. Omit to start from the project's current branch. Only with worktree naming a branch that does not exist yet; an existing branch is checked out as it is and base is refused for it.",
 		},
 		"base_local": map[string]any{
 			"type":        "boolean",
-			"description": "Start from the local head of base instead of origin's, with no fetch: commits on this computer that are not pushed yet are then in the worktree. Only with worktree naming a new branch. Default false, which starts from origin's head so the thread works on what was pushed.",
+			"description": "Start from the local head of base instead of origin's, with no fetch: commits on this computer that are not pushed yet are then in the worktree. A tag base is local either way. Only with worktree naming a new branch. Default false, which starts from origin's head so the thread works on what was pushed.",
 		},
 		"group": map[string]any{
 			"type":        "string",

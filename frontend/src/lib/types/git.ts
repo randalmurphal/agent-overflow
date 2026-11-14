@@ -58,6 +58,13 @@ export interface GitStatus {
    * "bisect".
    */
   pendingOperation?: string;
+  /**
+   * Set only on a detached HEAD at least one tag points at: the first such
+   * tag, newest first.
+   */
+  tag?: string;
+  /** Full commit id of HEAD, set only when HEAD is detached. */
+  headCommit?: string;
 }
 
 export interface GitBranch {
@@ -67,7 +74,13 @@ export interface GitBranch {
   worktreePath?: string;
   aheadCount?: number;
   behindCount?: number;
+  /** Tip committer date in unix seconds. */
+  date?: number;
 }
+
+// A tag the branch picker offers (`GitListTags` / `GitRefreshTags`), and
+// what moving a detached HEAD away from unreferenced commits reports.
+export type { GitTag, LeftBehind } from '../../../bindings/agent-overflow/internal/git/models';
 
 export interface GitActionResult {
   action: string;

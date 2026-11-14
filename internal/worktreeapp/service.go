@@ -18,8 +18,12 @@ type WorktreeStatus struct {
 	Dirty            bool   `json:"dirty"`
 	UncommittedCount int    `json:"uncommittedCount"`
 	UnpushedCommits  int    `json:"unpushedCommits"`
-	HasUpstream      bool   `json:"hasUpstream"`
-	AttachedThreads  int    `json:"attachedThreads"`
+	// OrphanCommits counts, for a worktree with no branch, the commits its
+	// HEAD reaches that no branch, tag or remote-tracking ref does; removing
+	// the worktree loses them. Zero for a worktree on a branch.
+	OrphanCommits   int  `json:"orphanCommits"`
+	HasUpstream     bool `json:"hasUpstream"`
+	AttachedThreads int  `json:"attachedThreads"`
 	// Missing is true when git still registers the worktree but its
 	// directory is gone. Removing it then deletes only git's registration.
 	Missing bool `json:"missing"`
@@ -27,8 +31,11 @@ type WorktreeStatus struct {
 
 // WorktreeListItem is the picker-facing worktree shape.
 type WorktreeListItem struct {
-	Path          string `json:"path"`
-	Branch        string `json:"branch"`
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+	// Tag is, for a worktree with no branch, the tag at its HEAD
+	// (gitops.Core.TagAt).
+	Tag           string `json:"tag,omitempty"`
 	Head          string `json:"head"`
 	DeleteBlocked bool   `json:"deleteBlocked"`
 	// Missing is true when git still registers the worktree but its
@@ -258,6 +265,12 @@ func (s *Service) Status(project, worktreePath string) (WorktreeStatus, error) {
 		}
 		status.UnpushedCommits = unpushed
 		status.HasUpstream = hasUpstream
+	} else if worktree.HEAD != "" {
+		orphans, err := s.core.OrphanCommits(cwd, worktree.HEAD)
+		if err != nil {
+			return WorktreeStatus{}, fmt.Errorf("orphan commits: %w", err)
+		}
+		status.OrphanCommits = orphans
 	}
 	attached, err := s.ThreadsReferencingWorkspace(worktree.Path)
 	if err != nil {
@@ -282,6 +295,13 @@ func (s *Service) List(project string) ([]WorktreeListItem, error) {
 	itemByPath := make(map[string]int, len(items))
 	for index, worktree := range worktrees {
 		items[index] = WorktreeListItem{Path: worktree.Path, Branch: worktree.Branch, Head: worktree.HEAD, Missing: DirectoryGone(worktree.Path)}
+		if worktree.Branch == "" && worktree.HEAD != "" {
+			tag, err := s.core.TagAt(project, worktree.HEAD)
+			if err != nil {
+				return nil, err
+			}
+			items[index].Tag = tag
+		}
 		itemByPath[gitops.CanonicalPath(worktree.Path)] = index
 	}
 	for _, ref := range refs {

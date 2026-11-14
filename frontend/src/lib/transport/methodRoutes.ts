@@ -202,11 +202,13 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3327650914: 'thread', // GitCreateWorktree
 	3795082615: 'workspace', // GitListBranchPruneCandidates
 	2693102179: 'workspace', // GitListBranches
+	3443522126: 'workspace', // GitListTags
 	3232495403: 'workspace', // GitListWorktrees
 	2000020570: 'workspace', // GitMaybeFetchRemotes
 	3331815821: 'workspace', // GitPruneBranches
 	3933172764: 'workspace', // GitPull
 	4036251239: 'workspace', // GitPush
+	1116232271: 'workspace', // GitRefreshTags
 	4002429606: 'thread', // GitRemoveWorktree
 	3282404643: 'workspace', // GitStatusSubscribe
 	3263989430: 'home', // GitStatusUnsubscribe

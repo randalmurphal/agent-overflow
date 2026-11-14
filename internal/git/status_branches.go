@@ -23,6 +23,8 @@ type GitBranch struct {
 	WorktreePath string `json:"worktreePath,omitempty"`
 	AheadCount   int    `json:"aheadCount,omitempty"`
 	BehindCount  int    `json:"behindCount,omitempty"`
+	// Date is the tip's committer date in unix seconds.
+	Date int64 `json:"date,omitempty"`
 }
 
 // BranchIsDefault reports whether branch is the repo's default (e.g.
@@ -41,15 +43,20 @@ func (c *Core) BranchIsDefault(cwd, branch string) bool {
 	return false
 }
 
-// ListBranches returns local and remote branches from git branch output.
+// ListBranches returns local and remote branches, newest tip first. It reads
+// for-each-ref rather than `git branch -a`, which adds a "(HEAD detached at
+// ...)" pseudo entry on a detached HEAD. Names are lstrip=2, not
+// refname:short, which spells a branch that shares its name with a tag
+// "heads/<name>".
 func (c *Core) ListBranches(cwd string) ([]GitBranch, error) {
-	result, err := c.run(cwd, "branch", "-a", "--sort=-committerdate",
-		"--format=%(refname:short)|%(HEAD)|%(worktreepath)|%(upstream:track,nobracket)")
+	result, err := c.run(cwd, "for-each-ref", "--sort=-committerdate",
+		"--format=%(refname:lstrip=2)|%(HEAD)|%(worktreepath)|%(upstream:track,nobracket)|%(committerdate:unix)",
+		"refs/heads", "refs/remotes")
 	if err != nil {
 		return nil, err
 	}
 	if result.exitCode != 0 {
-		return nil, fmt.Errorf("git branch failed: %s", strings.TrimSpace(result.stderr))
+		return nil, fmt.Errorf("git for-each-ref branches failed: %s", strings.TrimSpace(result.stderr))
 	}
 
 	defaultBranch, _ := c.defaultBranchName(cwd)
@@ -63,6 +70,7 @@ func parseBranchList(stdout, defaultBranch string, remoteNames []string) []GitBr
 		worktreePath string
 		ahead        int
 		behind       int
+		date         int64
 		isRemote     bool
 	}
 
@@ -78,8 +86,8 @@ func parseBranchList(stdout, defaultBranch string, remoteNames []string) []GitBr
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "|", 4)
-		if len(parts) != 4 {
+		parts := strings.SplitN(line, "|", 5)
+		if len(parts) != 5 {
 			continue
 		}
 		name := strings.TrimSpace(parts[0])
@@ -100,7 +108,9 @@ func parseBranchList(stdout, defaultBranch string, remoteNames []string) []GitBr
 			continue
 		}
 		ahead, behind := parseUpstreamTrack(parts[3])
+		date, _ := strconv.ParseInt(strings.TrimSpace(parts[4]), 10, 64)
 		raws = append(raws, rawEntry{
+			date:         date,
 			name:         name,
 			isCurrent:    strings.TrimSpace(parts[1]) == "*",
 			worktreePath: strings.TrimSpace(parts[2]),
@@ -135,6 +145,7 @@ func parseBranchList(stdout, defaultBranch string, remoteNames []string) []GitBr
 			WorktreePath: e.worktreePath,
 			AheadCount:   e.ahead,
 			BehindCount:  e.behind,
+			Date:         e.date,
 		})
 	}
 	return branches

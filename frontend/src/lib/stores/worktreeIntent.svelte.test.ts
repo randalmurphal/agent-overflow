@@ -88,14 +88,14 @@ describe('worktreeIntent store', () => {
   it('enterCreateBranchMode seeds an auto branch name in new-worktree mode but leaves it blank in local mode', () => {
     const wtThread = makeThread({ id: 'thread-wt-create' });
     setThreadEnvMode(wtThread, 'new-worktree');
-    enterCreateBranchMode(wtThread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(wtThread, { workspaceDirty: false, currentRef: 'main' });
     const wt = worktreeIntentForThread(wtThread);
     expect(wt.creatingBranch).toBe(true);
     expect(wt.newBranchName).toMatch(/^ao-[0-9a-f]{8}$/);
     expect(wt.newBranchBase).toBe('main');
 
     const localThread = makeThread({ id: 'thread-local-create' });
-    enterCreateBranchMode(localThread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(localThread, { workspaceDirty: false, currentRef: 'main' });
     const local = worktreeIntentForThread(localThread);
     expect(local.mode).toBe('local');
     expect(local.creatingBranch).toBe(true);
@@ -105,14 +105,14 @@ describe('worktreeIntent store', () => {
 
   it('enterCreateBranchMode pre-selects the LOCAL sentinel when the workspace is dirty', () => {
     const thread = makeThread({ id: 'thread-dirty' });
-    enterCreateBranchMode(thread, { workspaceDirty: true, currentBranch: 'main' });
+    enterCreateBranchMode(thread, { workspaceDirty: true, currentRef: 'main' });
     expect(worktreeIntentForThread(thread).newBranchBase).toBe(LOCAL_BASE_SENTINEL);
   });
 
   it('exitCreateBranchMode drops creatingBranch + name/base but preserves the workspace mode', () => {
     const thread = makeThread({ id: 'thread-exit' });
     setThreadEnvMode(thread, 'new-worktree');
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentRef: 'main' });
     setNewBranchName(thread, 'feat/x');
     expect(worktreeIntentForThread(thread).creatingBranch).toBe(true);
 
@@ -135,7 +135,7 @@ describe('worktreeIntent store', () => {
     expect(before.newBranchName).toBe('');
     expect(before.newBranchBase).toBe('');
 
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentRef: 'main' });
     setNewBranchName(thread, 'feat/now');
     setNewBranchBase(thread, 'dev');
     const after = worktreeIntentForThread(thread);
@@ -156,7 +156,7 @@ describe('worktreeIntent store', () => {
     expect(worktreeIntentForThread(thread).attachBranch).toBe('feat/x');
 
     // new-worktree, creating: ignored
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentRef: 'main' });
     setAttachBranch(thread, 'feat/y');
     expect(worktreeIntentForThread(thread).attachBranch).toBe('');
   });
@@ -164,7 +164,7 @@ describe('worktreeIntent store', () => {
   it('records the LOCAL sentinel as the stored newBranchBase when the user picks it', () => {
     const thread = makeThread({ id: 'thread-local-base' });
     setThreadEnvMode(thread, 'new-worktree');
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentRef: 'main' });
 
     setNewBranchBase(thread, LOCAL_BASE_SENTINEL);
     expect(worktreeIntentForThread(thread).newBranchBase).toBe(LOCAL_BASE_SENTINEL);
@@ -186,7 +186,7 @@ describe('worktreeIntent store', () => {
     expect(hasStagedWorktreeIntent(thread)).toBe(true);
     setThreadEnvMode(thread, 'local');
     expect(hasStagedWorktreeIntent(thread)).toBe(false);
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentRef: 'main' });
     expect(hasStagedWorktreeIntent(thread)).toBe(true);
   });
 

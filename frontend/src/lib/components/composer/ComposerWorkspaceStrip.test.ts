@@ -109,7 +109,7 @@ describe('<ComposerWorkspaceStrip>', () => {
     expect(await findByTestId('new-branch-toggle')).toBeInTheDocument();
     expect(queryByTestId('worktree-branch-name-input')).toBeNull();
 
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentRef: 'main' });
     await tick();
     expect(getByTestId('composer-workspace-strip').contains(await findByTestId('worktree-branch-name-input'))).toBe(true);
     expect(await findByTestId('cancel-new-branch-button')).toBeInTheDocument();
@@ -122,14 +122,14 @@ describe('<ComposerWorkspaceStrip>', () => {
     const { findByTestId, queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
 
     setThreadEnvMode(thread, 'new-worktree');
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentRef: 'main' });
     await tick();
 
     await fireEvent.click(await findByTestId('cancel-new-branch-button'));
     expect(worktreeIntentForThread(thread).creatingBranch).toBe(false);
     expect(queryByTestId('worktree-branch-name-input')).toBeNull();
 
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentRef: 'main' });
     await tick();
 
     await fireEvent.keyDown(await findByTestId('worktree-branch-name-input'), { key: 'Escape' });

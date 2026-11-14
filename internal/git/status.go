@@ -11,8 +11,14 @@ import (
 
 // GitStatus summarizes repository state for a thread workspace.
 type GitStatus struct {
-	IsRepo          bool   `json:"isRepo"`
-	Branch          string `json:"branch"`
+	IsRepo bool   `json:"isRepo"`
+	Branch string `json:"branch"`
+	// HeadCommit is the full commit id of a detached HEAD; empty on a
+	// branch.
+	HeadCommit string `json:"headCommit,omitempty"`
+	// Tag is set only on a detached HEAD at least one tag points at: the
+	// first such tag in ListTags order.
+	Tag             string `json:"tag,omitempty"`
 	IsDefaultBranch bool   `json:"isDefaultBranch"`
 	HasChanges      bool   `json:"hasChanges"`
 	Insertions      int    `json:"insertions"`
@@ -60,6 +66,8 @@ type GitStatus struct {
 func (s GitStatus) Equal(other GitStatus) bool {
 	return s.IsRepo == other.IsRepo &&
 		s.Branch == other.Branch &&
+		s.HeadCommit == other.HeadCommit &&
+		s.Tag == other.Tag &&
 		s.IsDefaultBranch == other.IsDefaultBranch &&
 		s.HasChanges == other.HasChanges &&
 		s.Insertions == other.Insertions &&
@@ -227,6 +235,14 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 	status.Forge = forge
 	status.IsDefaultBranch = isDefaultBranchName(status.Branch, defaultBranch)
 	status.PendingOperation = pending
+	if status.HeadCommit != "" {
+		// Only a detached HEAD pays for the extra read.
+		tag, err := c.TagAt(cwd, status.HeadCommit)
+		if err != nil {
+			return GitStatus{}, err
+		}
+		status.Tag = tag
+	}
 
 	return status, nil
 }
@@ -252,8 +268,10 @@ func (c *Core) WorkingTreeDiff(cwd string) (string, error) {
 	return combineDiffs(headDiff.stdout, cachedDiff.stdout), nil
 }
 
+// currentBranch reads HEAD's branch. The full ref is read and trimmed:
+// --short spells a branch that shares its name with a tag "heads/<name>".
 func (c *Core) currentBranch(cwd string) (string, error) {
-	result, err := c.run(cwd, "symbolic-ref", "--quiet", "--short", "HEAD")
+	result, err := c.run(cwd, "symbolic-ref", "--quiet", "HEAD")
 	if err != nil {
 		return "", err
 	}
@@ -263,7 +281,7 @@ func (c *Core) currentBranch(cwd string) (string, error) {
 		}
 		return "", fmt.Errorf("cannot operate on detached HEAD")
 	}
-	branch := strings.TrimSpace(result.stdout)
+	branch := trimBranchRef(strings.TrimSpace(result.stdout))
 	if branch == "" {
 		return "", fmt.Errorf("git symbolic-ref HEAD returned an empty branch")
 	}
@@ -295,6 +313,9 @@ func (c *Core) CurrentBranch(cwd string) string {
 func parseStatusOutput(statusStdout, headNumstat string) GitStatus {
 	var status GitStatus
 	paths := make(map[string]struct{})
+	// branch.oid is "(initial)" before the first commit; branch.head is
+	// "(detached)" on a detached HEAD.
+	oid, detached := "", false
 
 	for _, line := range strings.Split(statusStdout, "\n") {
 		line = strings.TrimSpace(line)
@@ -302,11 +323,14 @@ func parseStatusOutput(statusStdout, headNumstat string) GitStatus {
 			continue
 		}
 		switch {
+		case strings.HasPrefix(line, "# branch.oid "):
+			oid = strings.TrimSpace(strings.TrimPrefix(line, "# branch.oid "))
 		case strings.HasPrefix(line, "# branch.head "):
 			branch := strings.TrimSpace(strings.TrimPrefix(line, "# branch.head "))
 			if !strings.HasPrefix(branch, "(") {
 				status.Branch = branch
 			}
+			detached = branch == "(detached)"
 		case strings.HasPrefix(line, "# branch.upstream "):
 			status.HasUpstream = strings.TrimSpace(strings.TrimPrefix(line, "# branch.upstream ")) != ""
 		case strings.HasPrefix(line, "# branch.ab "):
@@ -334,6 +358,9 @@ func parseStatusOutput(statusStdout, headNumstat string) GitStatus {
 		paths[entry.Path] = struct{}{}
 	}
 
+	if detached && isFullCommitID(oid) {
+		status.HeadCommit = oid
+	}
 	status.Insertions = insertions
 	status.Deletions = deletions
 	status.FileCount = len(paths)
@@ -437,13 +464,14 @@ func (c *Core) CountUnpushedCommits(cwd, branch string) (count int, hasUpstream 
 	if err := validateBranchName(branch); err != nil {
 		return 0, false, err
 	}
-	upstream, ok := c.upstreamFor(cwd, branch)
+	upstream, ok := c.upstreamRefFor(cwd, branch)
 	if !ok {
 		return 0, false, nil
 	}
+	// Both sides fully qualified so a tag of either name is not counted.
 	// The trailing "--" disambiguates refs from pathspecs when a branch
 	// name also exists as a filesystem path in the worktree.
-	stdout, _, err := c.Execute(cwd, "rev-list", "--count", branch, "^"+upstream, "--")
+	stdout, _, err := c.Execute(cwd, "rev-list", "--count", BranchRef(branch).revision(), "^"+upstream, "--")
 	if err != nil {
 		return 0, true, err
 	}
@@ -474,9 +502,10 @@ func (c *Core) CountCommitsAhead(cwd, branch, base string) (int, error) {
 	if err := validateBranchName(base); err != nil {
 		return 0, err
 	}
-	// The trailing "--" disambiguates refs from pathspecs when a branch
-	// name also exists as a filesystem path in the worktree.
-	stdout, _, err := c.Execute(cwd, "rev-list", "--count", branch, "^"+base, "--")
+	// Qualified so a tag of either name is not counted. The trailing "--"
+	// disambiguates refs from pathspecs when a branch name also exists as a
+	// filesystem path in the worktree.
+	stdout, _, err := c.Execute(cwd, "rev-list", "--count", BranchRef(branch).revision(), "^"+BranchRef(base).revision(), "--")
 	if err != nil {
 		return 0, err
 	}
@@ -488,9 +517,20 @@ func (c *Core) CountCommitsAhead(cwd, branch, base string) (int, error) {
 }
 
 // upstreamFor resolves the upstream ref for branch (e.g. "origin/main").
-// Returns false when no upstream is configured.
+// Returns false when no upstream is configured. <name>@{upstream} reads
+// the branch's configuration, so a tag of its name does not interfere.
 func (c *Core) upstreamFor(cwd, branch string) (string, bool) {
-	result, err := c.run(cwd, "rev-parse", "--abbrev-ref", "--symbolic-full-name", branch+"@{upstream}")
+	return c.readUpstream(cwd, "rev-parse", "--abbrev-ref", "--symbolic-full-name", branch+"@{upstream}")
+}
+
+// upstreamRefFor is upstreamFor fully qualified ("refs/remotes/origin/main"),
+// for use as a revision.
+func (c *Core) upstreamRefFor(cwd, branch string) (string, bool) {
+	return c.readUpstream(cwd, "rev-parse", "--symbolic-full-name", branch+"@{upstream}")
+}
+
+func (c *Core) readUpstream(cwd string, args ...string) (string, bool) {
+	result, err := c.run(cwd, args...)
 	if err != nil {
 		return "", false
 	}

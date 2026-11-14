@@ -62,7 +62,10 @@ func (c *Core) MergeBranch(cwd, base, head string) (MergeResult, error) {
 	if err := c.requireCleanWorkingTree(cwd); err != nil {
 		return MergeResult{}, err
 	}
-	preflight, err := c.MergeTreeConflicts(cwd, base, head)
+	// Git reads a bare name as a tag before a branch, so every revision
+	// below is the qualified branch.
+	baseRev, headRev := BranchRef(base).revision(), BranchRef(head).revision()
+	preflight, err := c.MergeTreeConflicts(cwd, baseRev, headRev)
 	if err != nil {
 		return MergeResult{}, fmt.Errorf("preflight merge %q into %q: %w", head, base, err)
 	}
@@ -70,13 +73,13 @@ func (c *Core) MergeBranch(cwd, base, head string) (MergeResult, error) {
 		return MergeResult{}, fmt.Errorf("merge %q into %q has conflicts: %s", head, base, strings.Join(preflight.Paths, ", "))
 	}
 
-	mode, err := c.mergeMode(cwd, base, head)
+	mode, err := c.mergeMode(cwd, baseRev, headRev)
 	if err != nil {
 		return MergeResult{}, err
 	}
-	args := []string{"merge", "--ff-only", head}
+	args := []string{"merge", "--ff-only", headRev}
 	if mode == "merge" {
-		args = []string{"merge", "--no-ff", "--no-edit", head}
+		args = []string{"merge", "--no-ff", "--no-edit", headRev}
 	}
 	if _, _, err := c.Execute(cwd, args...); err != nil {
 		mergeErr := fmt.Errorf("merge %q into %q: %w", head, base, err)
