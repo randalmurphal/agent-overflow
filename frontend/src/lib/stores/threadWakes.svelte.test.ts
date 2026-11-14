@@ -60,6 +60,44 @@ describe('thread wakes store', () => {
     expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
   });
 
+  it('replays a frame over a slow computer\'s late answer, however late it lands', async () => {
+    vi.useFakeTimers();
+    try {
+      stageBackend({ id: 'gpu' });
+      let gpuAnswer: (rows: { threadId: string; rows: ThreadWakeRow[] }[]) => void = () => {};
+      setBindingMock('ListStandingAgentWakes', () => {
+        if (takePinnedBackend() !== 'gpu') return Promise.resolve([{ threadId: 'agent', rows: [row('l1')] }]);
+        return new Promise((resolve) => { gpuAnswer = resolve; });
+      });
+      const done = refreshAgentWakes();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
+      // Well past the startup read budget, the loop is cancelled.
+      await vi.advanceTimersByTimeAsync(10_000);
+      applyThreadWakesChanged({ threadId: 'gpu-agent', id: 'g1', row: row('g1', { state: 'running' }) }, 'gpu');
+      applyThreadWakesChanged({ threadId: 'gpu-agent', id: 'g1', removed: true }, 'gpu');
+      // The computer's answer predates the cancel.
+      gpuAnswer([{ threadId: 'gpu-agent', rows: [row('g1'), row('g2')] }]);
+      await done;
+      expect(getAgentWakeRows('gpu-agent').map((r) => r.id)).toEqual(['g2']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lets only the newest bulk read of a computer decide', async () => {
+    const answers: ((rows: { threadId: string; rows: ThreadWakeRow[] }[]) => void)[] = [];
+    setBindingMock('ListStandingAgentWakes', () => new Promise((resolve) => { answers.push(resolve); }));
+    const older = refreshAgentWakes();
+    const newer = refreshAgentWakes();
+    await flush();
+    answers[1]([{ threadId: 'agent', rows: [row('new')] }]);
+    await newer;
+    answers[0]([{ threadId: 'agent', rows: [row('old')] }]);
+    await older;
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['new']);
+  });
+
   it('loads every agent\'s live loops and watches, dropping reminders', async () => {
     setBindingMock('ListStandingAgentWakes', async () => [
       { threadId: 'agent', rows: [row('l1'), row('r1', { kind: 'reminder' }), row('w1', { kind: 'watch' })] },

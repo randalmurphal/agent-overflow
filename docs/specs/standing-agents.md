@@ -830,7 +830,10 @@ Mechanics, as built:
   only the row of the thread it names; the state line
   (`utils/agentStateLine.ts`) shows the running row, else the soonest
   loop or watch, with `+N more`. A row the bulk read missed asks
-  `ListThreadWakes` once on mount.
+  `ListThreadWakes` once on mount. Each computer's bulk read settles
+  when that computer answers, however late, with the frames that landed
+  meanwhile replayed over its answer; a newer read of the computer
+  supersedes it.
 - `ListArchivedSpawnedThreads` (every container's, newest first, the
   same rows `archivedChildCounts` counts) feeds the done footers
   through `stores/agentArchivedChildren.svelte.ts`, keyed by the total

@@ -7,7 +7,9 @@
 // Loops and watches are kept for every standing agent the sidebar knows and
 // every thread a tray retains; reminders only while a tray retains the
 // thread. One bulk read per computer at boot and on resync
-// (ListStandingAgentWakes, which lists standing agents alone), one
+// (ListStandingAgentWakes, which lists standing agents alone), each
+// settling when its own computer answers and superseded only by a newer
+// read of that computer, one
 // ListThreadWakes for an agent row the bulk missed (a thread promoted since)
 // and for a tray's thread when it opens, after its computer reconnects and
 // after a lost frame. `thread:wakes_changed` frames are applied in place, in
@@ -26,7 +28,7 @@ import { ListStandingAgentWakes, ListThreadWakes, type ThreadWakeRow, type Threa
 import { onThreadWakesChanged, type ThreadWakeChange } from './eventsThreadWakes';
 import { readComputerRows } from './computerRows';
 import { getTransportStatusFor, onBackendStatusChange } from './transportStatus.svelte';
-import { onBackendDetached, withBackendTarget } from '../transport/backends';
+import { attachedBackends, onBackendDetached, withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { threadBackend } from '../transport/entityIndex';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
@@ -194,22 +196,37 @@ function applyListing(threadId: string, backend: BackendKey, wakes: ThreadWakes 
   setReminders(threadId, rows.filter((row) => row.kind === 'reminder'), wakes?.moreReminders ?? 0);
 }
 
-/** Boot-time / resync wholesale load. Errors surface to the console only: the line is decoration. */
-export async function refreshAgentWakes(): Promise<void> {
+/** Each computer's bulk read in flight, by a ticket only that read holds. */
+const bulkReads = new Map<BackendKey, object>();
+
+/**
+ * Boot-time / resync wholesale load: every attached computer, or `only`.
+ * Each computer's read stands alone and settles when that computer answers,
+ * however late. Errors surface to the console only: the line is decoration.
+ */
+export async function refreshAgentWakes(only?: BackendKey): Promise<void> {
+  const targets = attachedBackends().filter((entry) => only === undefined || entry.id === only);
+  await Promise.all(targets.map((entry) => refreshComputerAgentWakes(entry.id)));
+}
+
+async function refreshComputerAgentWakes(backend: BackendKey): Promise<void> {
+  // A newer read of the computer supersedes this one; frames from here
+  // until this answer lands replay over it.
+  const ticket = {};
+  bulkReads.set(backend, ticket);
   const log = openLog(() => true);
   try {
-    // Each row's computer is the one that answered it: the read may land
-    // before the thread list has indexed the agent.
-    const owners = new Map<string, BackendKey>();
     await readComputerRows<StandingAgentWakes>(
       async () => await ListStandingAgentWakes(),
-      (row, backend) => owners.set(row.threadId, backend),
+      () => {},
       (result) => {
+        if (bulkReads.get(backend) !== ticket) return;
         const listed = new Set<string>();
         for (const agent of result.rows) {
           listed.add(agent.threadId);
           agents.add(agent.threadId);
-          const backend = owners.get(agent.threadId) ?? threadBackend(agent.threadId) ?? HOME_BACKEND;
+          // The row's computer is the one that answered it: the read may
+          // land before the thread list has indexed the agent.
           setLoops(agent.threadId, backend, agent.rows.filter(isLoop));
         }
         for (const [threadId, entry] of untrack(() => [...loops])) {
@@ -224,13 +241,18 @@ export async function refreshAgentWakes(): Promise<void> {
             dropLoopsIfUnshown(threadId);
           }
         }
+        replay(log);
       },
+      // Wait for the computer itself: the frames this read buffers replay
+      // only over its own answer.
+      { only: backend, deadlineMs: null },
     );
-    replay(log);
   } catch (err) {
-    reads.delete(log);
     if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to load standing agent wakes:', err);
+  } finally {
+    reads.delete(log);
+    if (bulkReads.get(backend) === ticket) bulkReads.delete(backend);
   }
 }
 
@@ -403,7 +425,7 @@ function applyReminderChange(threadId: string, id: string, row: ThreadWakeRow | 
 
 /** A frame for any thread of `backend` may have been lost: read every thread of it again. */
 function readComputerAgain(backend: string): void {
-  void refreshAgentWakes();
+  void refreshAgentWakes(backend as BackendKey);
   for (const [threadId, retention] of retained) {
     if (threadBackend(threadId) === backend) retention.refresh.request({ immediate: true });
   }
@@ -447,6 +469,7 @@ export function resetThreadWakesForTest(): void {
   for (const retention of retained.values()) retention.refresh.dispose();
   retained.clear();
   reads.clear();
+  bulkReads.clear();
   loops.clear();
   reminders.clear();
   agents.clear();
