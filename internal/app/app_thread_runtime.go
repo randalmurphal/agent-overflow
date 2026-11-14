@@ -88,57 +88,30 @@ func (p threadWorkspacePort) FindWorktree(projectPath, candidate string) (string
 	return worktree.Path, worktree.Branch, found, err
 }
 
-func (p threadWorkspacePort) CreateWorktree(
-	ctx context.Context,
-	projectPath string,
-	cut threadapp.WorktreeCut,
-) (threadapp.CutWorktree, error) {
-	if cut.Target != nil {
-		return p.cutResolvedWorktree(ctx, projectPath, *cut.Target, cut)
+// resolveWorktreeTarget resolves a name typed for a fresh worktree in
+// projectPath (gitops.Core.ResolveWorktreeTarget); a branch it creates from
+// a plain name is named by resolveWorktreeBranch. A failed origin fetch is
+// logged and the refs are read as they stand.
+func (a *App) resolveWorktreeTarget(ctx context.Context, projectPath, name string) (gitops.WorktreeTarget, error) {
+	target, fetchErr, err := a.gitCore().ResolveWorktreeTarget(ctx, projectPath, name, a.resolveWorktreeBranch)
+	if fetchErr != nil {
+		log.Printf("worktree %q in %s: fetch origin: %v (reading the refs as they stand)", name, projectPath, fetchErr)
 	}
-	ref, parseErr := gitops.ParseRef(cut.Branch)
-	if parseErr != nil && gitops.IsQualifiedRef(cut.Branch) {
-		// A spelled-out ref names exactly one thing; tidying it would
-		// create an unrelated branch.
-		return threadapp.CutWorktree{}, fmt.Errorf("worktree %q: %w", cut.Branch, parseErr)
-	}
-	if parseErr == nil && ref.IsTag() {
-		return p.cutResolvedWorktree(ctx, projectPath, gitops.WorktreeTarget{Ref: ref, Exists: true}, cut)
-	}
-	name := strings.TrimSpace(cut.Branch)
-	explicit := parseErr == nil && gitops.IsQualifiedRef(cut.Branch)
-	if parseErr == nil && ref.IsBranch() {
-		name = ref.Name
-	}
-	if name != "" && cut.Base == "" && !cut.BaseLocal {
-		exists, fetchErr, err := p.app.gitCore().BranchToCheckOut(ctx, projectPath, name)
-		if fetchErr != nil {
-			log.Printf("create worktree %s: fetch origin for branch %q: %v (reading the tracking refs as they stand)",
-				projectPath, name, fetchErr)
-		}
-		if err != nil {
-			return threadapp.CutWorktree{}, err
-		}
-		if exists {
-			return p.attachWorktree(projectPath, gitops.BranchRef(name))
-		}
-	}
-	// A typed plain name is tidied into a branch name (or generated when
-	// empty); a refs/heads/ spelling is created exactly as named.
-	if !explicit {
-		name = p.app.resolveWorktreeBranch(name)
-	}
-	return p.cutNewBranch(ctx, projectPath, name, cut)
+	return target, err
 }
 
-// cutResolvedWorktree cuts what target names without resolving anything
+// CreateWorktree cuts what cut.Target names without resolving anything
 // again: an existing branch or tag is checked out as it is, a branch that
 // does not exist is created from cut's base.
-func (p threadWorkspacePort) cutResolvedWorktree(
-	ctx context.Context, projectPath string, target gitops.WorktreeTarget, cut threadapp.WorktreeCut,
+func (p threadWorkspacePort) CreateWorktree(
+	ctx context.Context, projectPath string, cut threadapp.WorktreeCut,
 ) (threadapp.CutWorktree, error) {
-	if !target.Ref.IsTag() && !target.Exists {
+	target := cut.Target
+	if target.Ref.IsBranch() && !target.Exists {
 		return p.cutNewBranch(ctx, projectPath, target.Ref.Name, cut)
+	}
+	if !target.Ref.IsBranch() && !target.Ref.IsTag() {
+		return threadapp.CutWorktree{}, fmt.Errorf("a worktree checks out a branch or a tag, not %q", target.Ref.Wire())
 	}
 	if strings.TrimSpace(cut.Base) != "" || cut.BaseLocal {
 		return threadapp.CutWorktree{}, fmt.Errorf("%s is checked out as it is, so a base does not apply", target.Ref.Wire())
@@ -170,7 +143,7 @@ func (p threadWorkspacePort) attachWorktree(projectPath string, ref gitops.Ref) 
 
 // cutNewBranch creates branch resolvedBranch, exactly as named, in a fresh
 // worktree from cut's base: the project's current branch when none is
-// named. Tidying a typed name is the caller's, before this.
+// named. Naming it is resolveWorktreeTarget's, before this.
 func (p threadWorkspacePort) cutNewBranch(ctx context.Context, projectPath, resolvedBranch string, cut threadapp.WorktreeCut) (threadapp.CutWorktree, error) {
 	worktreePath, err := p.app.defaultWorktreePath(projectPath, resolvedBranch)
 	if err != nil {

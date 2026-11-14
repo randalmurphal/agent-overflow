@@ -304,15 +304,20 @@ app. `worktree` (optional branch or tag name) runs the thread on that branch
 instead of inheriting the workspace. A branch already checked out runs in
 that checkout, the project root included, because git checks a branch out
 in one place. A worktree git still registers whose folder is gone is
-refused, named in the error. A branch that exists locally, or on origin after a fetch,
-gets a fresh worktree that checks it out as it is (tracking origin's when
-only origin has it), the same checkout the composer's branch picker makes;
+refused, named in the error. A branch that exists locally, or on a remote
+after a fetch of origin, gets a fresh worktree that checks it out as it is,
+the same checkout the composer's branch picker makes: one only a remote has
+becomes a local branch tracking origin's, else the one remote's that has
+it, and one only several remotes other than origin have is refused.
 `base` and `base_local` are refused for an existing branch. A name that is
 no branch but is a tag, bare or spelled `refs/tags/<name>`, gets a fresh
 worktree detached at the tag, the thread on no branch, the same checkout
 the branch picker makes for a tag; `base` and `base_local` are refused for
 it. Branch versus tag is decided once, after the fetch, so a tag that
-fetch brings counts. In `worktree` and `base`, `refs/heads/<name>` names a
+fetch brings counts. That fetch is a plain bounded `git fetch origin`,
+skipped when origin was fetched recently, so it brings only the tags on
+the commits it fetches; a tag spelling no tag on this computer has is
+refused as missing as of the last fetch. In `worktree` and `base`, `refs/heads/<name>` names a
 branch only, which addresses a branch whose own name starts with
 `refs/`. A branch that
 does not exist is created in a fresh worktree through the existing
@@ -572,7 +577,7 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > Starting work. `thread_spawn` opens a new visible thread and runs
 > your `prompt` there; `from_thread` gives it an existing thread's
 > history first, `worktree` runs it on that branch, checked out as it
-> is when the branch exists here or on origin, detached at the tag when
+> is when the branch exists here or on a remote, detached at the tag when
 > the name is no branch but a tag, and otherwise created from `base` (a
 > branch or tag; origin's head of a branch unless `base_local`), and
 > `group` files it

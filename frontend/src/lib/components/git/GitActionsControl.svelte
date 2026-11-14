@@ -43,6 +43,7 @@
   } from './gitActions';
   import type { WorkspaceRef } from '../../types/git';
   import { startNewBranchFromHere } from '../../stores/worktreeIntent.svelte';
+  import { checkoutOf, isDetached } from '../../utils/checkout';
   import {
     TerminalsClosingNote,
     terminalsClosingNoteForWorktree,
@@ -163,7 +164,7 @@
   let primaryAction = $derived(primaryActionFor(status));
   // A detached HEAD has nothing to push; the menu offers keeping its
   // commits on a new branch instead, through the shared new-branch flow.
-  let detachedHead = $derived(!!status && !status.branch && !!(status.tag || status.headCommit));
+  let detachedHead = $derived(!!status && isDetached(checkoutOf(status)));
 
   function ctx(ws: WorkspaceRef): GitActionCtx {
     return {

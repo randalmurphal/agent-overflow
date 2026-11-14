@@ -22,6 +22,7 @@ import { __setTransportHelloForTest } from '../../../stores/transportStatus.svel
 import { getToasts, resetToastsForTest } from '../../../stores/toast.svelte';
 import { idleWorkspaceActivity } from '../../../../test/helpers/workspaceLock';
 import { createThreadPane } from '../../../stores/thread.svelte';
+import { checkoutPickerRow } from './branchPickerCheckout';
 
 const WS = { projectId: 'project-1', workspacePath: '/repo' };
 const SHA = 'abc1234def5678900000000000000000000000000';
@@ -157,14 +158,14 @@ describe('<BranchPicker> tags', () => {
     const pane = await buildPane('main');
     mockLists();
     const checkout = setBindingMock('GitCheckout', async () => ({
-      workspacePath: '/repo', worktreePath: '', branch: '', tag: 'v2', headCommit: SHA,
+      workspacePath: '/repo', worktreePath: '', branch: '', status: detachedAt('v2'),
     }));
     const { findByRole } = await openWithTags(pane);
 
     await fireEvent.click(await findByRole('menuitem', { name: /^v2/ }));
 
     await waitFor(() => expect(checkout).toHaveBeenCalledWith(WS, 'refs/tags/v2'));
-    expect(recentBranchSelections('project-1')).toEqual(['refs/tags/v2']);
+    await waitFor(() => expect(recentBranchSelections('project-1')).toEqual(['refs/tags/v2']));
     await waitFor(() => expect(getToasts().map((t) => t.message)).toContain('Checked out v2'));
   });
 
@@ -186,7 +187,7 @@ describe('<BranchPicker> tags', () => {
 
   it('sets a tag as the new branch base', async () => {
     const pane = await buildPane('main');
-    enterCreateBranchMode(pane.thread!, { workspaceDirty: false, currentRef: 'main' });
+    enterCreateBranchMode(pane.thread!, 'main');
     mockLists();
     const { findByRole, getByTestId } = await openWithTags(pane);
 
@@ -210,7 +211,7 @@ describe('<BranchPicker> tags', () => {
     expect((await findByRole('menuitem', { name: /^v3/ })).textContent).not.toContain('✓');
   });
 
-  it('defaults a new branch from a tag checkout to the tag', async () => {
+  it('defaults a new branch from a tag checkout to the checkout, its row selected', async () => {
     __seedGitStatusForTest('/repo', detachedAt('v2'));
     const pane = await buildPane('');
     mockLists();
@@ -218,8 +219,11 @@ describe('<BranchPicker> tags', () => {
 
     await fireEvent.click(await findByRole('menuitem', { name: /New branch/ }));
 
-    expect(worktreeIntentForThread(pane.thread).newBranchBase).toBe('refs/tags/v2');
+    expect(worktreeIntentForThread(pane.thread)).toMatchObject({ creatingBranch: true, newBranchBase: '' });
     await waitFor(() => expect(getByTestId('branch-picker-trigger').textContent).toContain('From v2'));
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    expect((await findByRole('menuitem', { name: /^v2/ })).textContent).toContain('✓');
+    expect((await findByRole('menuitem', { name: /^main/ })).textContent).not.toContain('✓');
   });
 
   it('names a detached HEAD at no tag by its commit, and branches from it with an empty base', async () => {
@@ -234,8 +238,31 @@ describe('<BranchPicker> tags', () => {
     expect(trigger.querySelector('.lucide-git-commit-horizontal')).not.toBeNull();
 
     await fireEvent.click(await findByRole('menuitem', { name: /New branch/ }));
-    expect(worktreeIntentForThread(pane.thread).newBranchBase).toBe('');
+    expect(worktreeIntentForThread(pane.thread)).toMatchObject({ creatingBranch: true, newBranchBase: '' });
     await waitFor(() => expect(trigger.textContent).toContain('From abc1234'));
+  });
+
+  it('describes the "Base (with changes)" row and titles the trigger by the actual checkout', async () => {
+    for (const [at, description, title] of [
+      [detachedAt('v2'), 'v2', 'Tag: v2'],
+      [detachedAt(), 'detached at abc1234', 'Commit: abc1234'],
+      [status(), 'main', 'Branch: main'],
+    ] as const) {
+      resetWorktreeIntent();
+      __seedGitStatusForTest('/repo', { ...at, hasChanges: true });
+      const pane = await buildPane('');
+      mockLists();
+      const view = await openWithTags(pane);
+      const trigger = view.getByTestId('branch-picker-trigger');
+      expect(trigger.title).toMatch(new RegExp(`^${title}`));
+      await fireEvent.click(await view.findByRole('menuitem', { name: /New branch/ }));
+      await fireEvent.click(trigger);
+
+      const base = await view.findByRole('menuitem', { name: /Base \(with changes\)/ });
+      expect(base.textContent).toContain(description);
+      expect(base.textContent).toContain('✓');
+      view.unmount();
+    }
   });
 
   it('reads "No branch" only when no branch, tag or commit is known', async () => {
@@ -245,23 +272,66 @@ describe('<BranchPicker> tags', () => {
     expect(getByTestId('branch-picker-trigger').dataset.checkoutKind).toBe('none');
   });
 
-  it('names the checked-out tag at once, before the status stream reports it', async () => {
+  it('names the checked-out tag from the checkout\'s answer at once', async () => {
     __seedGitStatusForTest('/repo', status());
     const pane = await buildPane('main');
     mockLists();
     setBindingMock('GitCheckout', async () => {
-      // The backend re-branches the row; the status stream has not caught up.
+      // The backend re-branches the row; no status has been pushed yet.
       pane.replaceThread({ ...pane.thread!, branch: '' });
-      return { workspacePath: '/repo', worktreePath: '', branch: '', tag: 'v3', headCommit: SHA };
+      return { workspacePath: '/repo', worktreePath: '', branch: '', status: detachedAt('v3') };
     });
     const { findByRole, getByTestId } = await openWithTags(pane);
 
     await fireEvent.click(await findByRole('menuitem', { name: /^v3/ }));
 
-    await waitFor(() => {
-      expect(getByTestId('branch-picker-trigger').textContent).toContain('v3');
-      expect(getByTestId('branch-picker-trigger').dataset.checkoutKind).toBe('tag');
-    });
+    const trigger = getByTestId('branch-picker-trigger') as HTMLButtonElement;
+    await waitFor(() => expect(trigger.disabled).toBe(false));
+    expect(trigger.textContent).toContain('v3');
+    expect(trigger.dataset.checkoutKind).toBe('tag');
+    expect(trigger.title).toMatch(/^Tag: v3/);
+    expect(getToasts().map((t) => t.message)).toContain('Checked out v3');
+    expect(getBindingMock('GetGitStatus')).toBeUndefined();
+  });
+
+  it('keeps the held label for an answer without a status and names the row in the toast', async () => {
+    __seedGitStatusForTest('/repo', status());
+    const pane = await buildPane('main');
+    mockLists();
+    setBindingMock('GitCheckout', async () => ({ workspacePath: '/repo', worktreePath: '', branch: '' }));
+    const { findByRole, getByTestId } = await openWithTags(pane);
+
+    await fireEvent.click(await findByRole('menuitem', { name: /^v3/ }));
+
+    const trigger = getByTestId('branch-picker-trigger') as HTMLButtonElement;
+    await waitFor(() => expect(trigger.disabled).toBe(false));
+    expect(trigger.textContent).toContain('main');
+    expect(getToasts().map((t) => t.message)).toContain('Checked out v3');
+  });
+
+  it('names a draft\'s branch from the answer\'s status, and from a branch row only without one', async () => {
+    const draft = () => {
+      const pane = createThreadPane();
+      pane.startDraftPlaceholder(
+        { id: 'project-1', path: '/repo', name: 'Repo', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false },
+        'chat',
+        { provider: 'claude', model: 'm', workspacePath: '/repo', branch: 'main' },
+      );
+      return pane;
+    };
+    const row = { kind: 'branch', ref: 'feat/new', name: 'feat/new', branch: BRANCHES[1] } as const;
+
+    const answered = draft();
+    setBindingMock('GitCheckout', async () => ({
+      workspacePath: '/repo', worktreePath: '', branch: '', status: status({ branch: 'feat/resolved' }),
+    }));
+    await checkoutPickerRow(answered, WS, row);
+    expect(answered.thread?.branch).toBe('feat/resolved');
+
+    const older = draft();
+    setBindingMock('GitCheckout', async () => ({ workspacePath: '/repo', worktreePath: '', branch: '' }));
+    await checkoutPickerRow(older, WS, row);
+    expect(older.thread?.branch).toBe('feat/new');
   });
 
   it('warns with the short sha when a checkout leaves commits on no branch', async () => {
@@ -279,7 +349,7 @@ describe('<BranchPicker> tags', () => {
     await waitFor(() => {
       expect(getToasts()).toContainEqual(expect.objectContaining({
         type: 'warning',
-        message: 'Left 3 commits on no branch at abc1234d. Create a branch from abc1234d to keep them.',
+        message: 'Left 3 commits on no branch at abc1234. Create a branch from abc1234 to keep them.',
       }));
     });
   });
@@ -417,6 +487,22 @@ describe('<BranchPicker> tags', () => {
     await waitFor(() => expect(getBindingMock('GitCheckout')).toHaveBeenCalledWith(WS, 'feat/new'));
   });
 
+  it('reads tags once per open workspace, not again when the checked-out branch moves', async () => {
+    __seedGitStatusForTest('/repo', status());
+    const pane = await buildPane('main');
+    mockLists();
+    await openWithTags(pane);
+    expect(getBindingMock('GitListTags')).toHaveBeenCalledTimes(1);
+
+    __seedGitStatusForTest('/repo', status({ branch: 'feat/new', isDefaultBranch: false }));
+    await waitFor(() => expect(getBindingMock('GitListBranches')).toHaveBeenCalledTimes(2));
+    expect(getBindingMock('GitListTags')).toHaveBeenCalledTimes(1);
+
+    pane.replaceThread({ ...pane.thread!, workspacePath: '/other' });
+    await waitFor(() => expect(getBindingMock('GitListTags')).toHaveBeenCalledTimes(2));
+    expect(getBindingMock('GitListTags')).toHaveBeenLastCalledWith({ projectId: 'project-1', workspacePath: '/other' });
+  });
+
   it('drops the tag list when the menu closes', async () => {
     const pane = await buildPane('main');
     mockLists();
@@ -451,7 +537,7 @@ describe('<BranchPicker> tags', () => {
     expect((await findByRole('menuitem', { name: /^v2/ })).textContent).toContain('✓');
     expect((await findByRole('menuitem', { name: /^main/ })).textContent).not.toContain('✓');
     await fireEvent.click(await findByRole('menuitem', { name: /New branch/ }));
-    expect(worktreeIntentForThread(pane.thread).newBranchBase).toBe('refs/tags/v2');
+    expect(worktreeIntentForThread(pane.thread)).toMatchObject({ creatingBranch: true, newBranchBase: '' });
     await waitFor(() => expect(trigger.textContent).toContain('From v2'));
   });
 
@@ -466,7 +552,8 @@ describe('<BranchPicker> tags', () => {
     await fireEvent.click(trigger);
     expect((await findByRole('menuitem', { name: /^feat\/new/ })).textContent).toContain('✓');
     await fireEvent.click(await findByRole('menuitem', { name: /New branch/ }));
-    expect(worktreeIntentForThread(pane.thread).newBranchBase).toBe('feat/new');
+    expect(worktreeIntentForThread(pane.thread)).toMatchObject({ creatingBranch: true, newBranchBase: '' });
+    await waitFor(() => expect(trigger.textContent).toContain('From feat/new'));
   });
 
   it('drops a pending refresh when the pane moves to another workspace and lists that one', async () => {

@@ -57,7 +57,7 @@
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
   import Button from '../../primitives/Button.svelte';
-  import { checkoutDisplay, checkoutIcon, type CheckoutDisplay } from '../../git/checkoutDisplay';
+  import { checkoutDisplay, checkoutIcon, checkoutOf, type CheckoutDisplay } from '../../../utils/checkout';
 
   interface Props {
     pane: ThreadPane;
@@ -319,14 +319,9 @@
     return label ? formatPathLabel(label) : directoryName(wt);
   }
 
-  // What a worktree is checked out on: its branch, else the tag at its
-  // detached HEAD, else the detached commit.
+  // What a worktree is checked out on, or null when nothing is known.
   function worktreeCheckout(wt: WorktreeListItem): CheckoutDisplay | null {
-    const display = checkoutDisplay({
-      branch: wt.branch,
-      tag: wt.tag,
-      headCommit: wt.branch ? '' : wt.head,
-    });
+    const display = checkoutDisplay(checkoutOf({ branch: wt.branch, tag: wt.tag, headCommit: wt.head }));
     return display.kind === 'none' ? null : display;
   }
 

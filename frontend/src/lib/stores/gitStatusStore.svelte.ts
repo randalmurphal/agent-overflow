@@ -337,39 +337,18 @@ export async function refreshGitStatus(
 }
 
 /**
- * A mutation's answer about the checkout in `ws` (GitCheckout,
- * GitCreateBranchFrom), applied to its held status so every pane on the
- * workspace, draft placeholders included, names the new branch, tag or
- * detached commit before the status stream catches up. The next pushed
- * status replaces it. Nothing to do for a workspace no one holds.
+ * A checkout mutation's answer (GitCheckout, GitCreateBranchFrom) applied to
+ * the status held for `ws`: its `status` is the workspace's real status right
+ * after the change, so every pane on the workspace shows the new checkout and
+ * its upstream, counts and default flag at once. An answer without one (an
+ * older backend) changes nothing; the pushed status stream catches up. Nothing
+ * to do for a workspace no one holds.
  */
-export function applyCheckoutState(ws: WorkspaceRef, state: GitWorkspaceState | null | undefined): void {
-  if (!state) return;
+export function applyCheckoutAnswer(ws: WorkspaceRef, state: GitWorkspaceState | null | undefined): void {
+  const status = state?.status;
   const key = workspaceKeyForRef(ws);
-  const current = key === null ? null : store.snapshot(key);
-  if (key === null || current === null) return;
-  // Upstream, counts, default flag and PR describe the branch that was
-  // left; the next push fills them in for the new one. Working-tree and
-  // repository fields stay.
-  const branchFacts: Partial<GitStatus> = state.branch === current.branch
-    ? {}
-    : {
-        isDefaultBranch: false,
-        hasUpstream: false,
-        aheadCount: 0,
-        behindCount: 0,
-        openPrUrl: undefined,
-        openPrNumber: undefined,
-        openPrLookupError: undefined,
-        openPrLookupPending: undefined,
-      };
-  store.apply(key, {
-    ...current,
-    ...branchFacts,
-    branch: state.branch,
-    tag: state.tag,
-    headCommit: state.headCommit,
-  });
+  if (!status || key === null || store.snapshot(key) === null) return;
+  store.apply(key, status);
 }
 
 /**

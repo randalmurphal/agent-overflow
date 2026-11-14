@@ -34,11 +34,11 @@ func TestAgentThreadCreationPreservesUserProfiles(t *testing.T) {
 			adapter := threadToolsApp{app: f.app}
 			fast, compact := true, 65
 			for _, mode := range []string{"read-only", "approval-required"} {
-				spawned, err := adapter.createSpawnedThreadUngrouped(t.Context(), threadtools.SpawnCall{}, CreateThreadOptions{
+				spawned, err := adapter.createSpawned(t.Context(), threadtools.SpawnCall{}, spawnOptions{CreateThreadOptions: CreateThreadOptions{
 					ProjectID: f.project.ID, Title: "Agent work", Provider: providerName, Model: model,
 					ReasoningEffort: "low", FastMode: &fast, RuntimeMode: mode, ContextWindow: 1000000,
 					AutoCompactStandardPercent: &compact, AutoCompactExtendedPercent: &compact,
-				})
+				}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -301,9 +301,9 @@ func TestAgentCreationDoesNotIntroduceAnUnrememberedProfile(t *testing.T) {
 			if providerName == "codex" {
 				model = "gpt-5.4"
 			}
-			_, err := (threadToolsApp{app: f.app}).createSpawnedThreadUngrouped(t.Context(), threadtools.SpawnCall{}, CreateThreadOptions{
+			_, err := (threadToolsApp{app: f.app}).createSpawned(t.Context(), threadtools.SpawnCall{}, spawnOptions{CreateThreadOptions: CreateThreadOptions{
 				ProjectID: f.project.ID, Title: "Unremembered agent", Provider: providerName, Model: model, RuntimeMode: "read-only", ReasoningEffort: "low",
-			})
+			}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -339,9 +339,9 @@ func TestAgentOverridesDoNotSurviveAsDefaultsAfterRestart(t *testing.T) {
 	if err := app.store.UpsertChatModelProfile(profile); err != nil {
 		t.Fatal(err)
 	}
-	_, err = (threadToolsApp{app: app}).createSpawnedThreadUngrouped(t.Context(), threadtools.SpawnCall{}, CreateThreadOptions{
+	_, err = (threadToolsApp{app: app}).createSpawned(t.Context(), threadtools.SpawnCall{}, spawnOptions{CreateThreadOptions: CreateThreadOptions{
 		ProjectID: defaultTestProjectID, Title: "Temporary reader", Provider: profile.Provider, Model: profile.Model, RuntimeMode: "read-only", ReasoningEffort: "low",
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

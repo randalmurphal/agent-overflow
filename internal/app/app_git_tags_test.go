@@ -81,7 +81,7 @@ func TestGitCheckoutOfATagDetachesAndClearsThreadBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GitCheckout(tag): %v", err)
 	}
-	if state.Branch != "" || state.Tag != "v1" || state.HeadCommit != f.v1 || state.LeftBehind != nil {
+	if state.Branch != "" || state.Status == nil || state.Status.Tag != "v1" || state.Status.HeadCommit != f.v1 || state.LeftBehind != nil {
 		t.Fatalf("state = %+v, want no branch at tag v1 (%s) and nothing left behind", state, f.v1)
 	}
 	if head := gitRev(t, f.repo, "HEAD"); head != f.v1 {
@@ -93,10 +93,10 @@ func TestGitCheckoutOfATagDetachesAndClearsThreadBranches(t *testing.T) {
 
 	// A branch and a tag of one name: the bare name is the branch, the
 	// refs/tags/ spelling the tag.
-	if state, err = f.app.GitCheckout(f.ref, "refs/tags/dup"); err != nil || state.Tag != "dup" || gitRev(t, f.repo, "HEAD") != f.dupTag {
+	if state, err = f.app.GitCheckout(f.ref, "refs/tags/dup"); err != nil || state.Status == nil || state.Status.Tag != "dup" || gitRev(t, f.repo, "HEAD") != f.dupTag {
 		t.Fatalf("GitCheckout(refs/tags/dup) = %+v, %v; want detached at the tag", state, err)
 	}
-	if state, err = f.app.GitCheckout(f.ref, "dup"); err != nil || state.Branch != "dup" || state.Tag != "" || state.HeadCommit != "" || gitRev(t, f.repo, "HEAD") != f.dupHead {
+	if state, err = f.app.GitCheckout(f.ref, "dup"); err != nil || state.Branch != "dup" || state.Status == nil || state.Status.Tag != "" || state.Status.HeadCommit != "" || gitRev(t, f.repo, "HEAD") != f.dupHead {
 		t.Fatalf("GitCheckout(dup) = %+v, %v; want the branch", state, err)
 	}
 	if branch := f.storedBranch(t, f.thread.ID); branch != "dup" {
@@ -351,5 +351,60 @@ func TestRemoveWorktreeRefusesOrphanCommits(t *testing.T) {
 	}
 	if _, registered, err := f.app.findWorktree(f.repo, worktree); err != nil || registered {
 		t.Fatalf("after forced removal: registered=%v err=%v", registered, err)
+	}
+}
+
+// On a detached HEAD the current base is a commit: another tag at that
+// commit is the same base, so carrying changes onto it is allowed and they
+// stay in the tree, for a fresh worktree and for a branch made in place.
+func TestATagAtTheDetachedCommitIsTheCurrentBase(t *testing.T) {
+	t.Parallel()
+	f := newTagFixture(t, initMainGitRepo(t))
+	testutil.RunGit(t, f.repo, "tag", "pair-a", f.v1)
+	testutil.RunGit(t, f.repo, "tag", "pair-b", f.v1)
+	if _, err := f.app.GitCheckout(f.ref, "refs/tags/pair-a"); err != nil {
+		t.Fatal(err)
+	}
+	if tag := strings.TrimSpace(gitOutput(t, f.repo, "for-each-ref", "--count=1", "--points-at=HEAD", "--sort=refname", "--sort=-creatordate", "--format=%(refname:lstrip=2)", "refs/tags")); tag == "pair-b" {
+		t.Fatal("the fixture needs a current ref other than pair-b")
+	}
+	dirty := filepath.Join(f.repo, "README.txt")
+	if err := os.WriteFile(dirty, []byte("carried\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := f.app.PrepareThreadWorktree(f.thread.ID, "refs/tags/pair-b", "carried-worktree", true)
+	if err != nil {
+		t.Fatalf("PrepareThreadWorktree(other tag at HEAD, carry): %v", err)
+	}
+	t.Cleanup(func() { _ = f.app.gitCore().RemoveWorktreeForce(f.repo, updated.WorktreePath, true) })
+	if data, err := os.ReadFile(filepath.Join(updated.WorktreePath, "README.txt")); err != nil || string(data) != "carried\n" {
+		t.Fatalf("carried change in the worktree = %q, %v", data, err)
+	}
+
+	if err := os.WriteFile(dirty, []byte("carried\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state, err := f.app.GitCreateBranchFrom(f.ref, "carried-branch", "refs/tags/pair-b", true)
+	if err != nil {
+		t.Fatalf("GitCreateBranchFrom(other tag at HEAD, carry): %v", err)
+	}
+	if state.Branch != "carried-branch" || gitRev(t, f.repo, "refs/heads/carried-branch") != f.v1 {
+		t.Fatalf("state = %+v, want carried-branch at %s", state, f.v1)
+	}
+	if data, err := os.ReadFile(dirty); err != nil || string(data) != "carried\n" {
+		t.Fatalf("carried change = %q, %v", data, err)
+	}
+
+	// Without carry the same base keeps the tree too: it is the current
+	// base, so nothing is stashed and discarded.
+	if _, err := f.app.GitCheckout(f.ref, "refs/tags/pair-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.GitCreateBranchFrom(f.ref, "kept-branch", "refs/tags/pair-b", false); err != nil {
+		t.Fatalf("GitCreateBranchFrom(other tag at HEAD): %v", err)
+	}
+	if data, err := os.ReadFile(dirty); err != nil || string(data) != "carried\n" {
+		t.Fatalf("change after a create from the current base = %q, %v; want it kept", data, err)
 	}
 }

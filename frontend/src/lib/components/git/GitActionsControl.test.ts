@@ -25,11 +25,13 @@ import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import {
   enterCreateBranchMode,
   resetForTest as resetWorktreeIntent,
-  setNewBranchBase,
+  setThreadEnvMode,
   worktreeIntentForThread,
 } from '../../stores/worktreeIntent.svelte';
 import { peekGitStatus } from '../../stores/gitStatusStore.svelte';
 import { checkoutPickerRow } from '../composer/workspace/branchPickerCheckout';
+import type { PickerRow } from '../composer/workspace/branchPickerRows';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 
 // GitActionsControl is a pure consumer of the shared workspace-keyed
 // git-status store — it owns no subscription (ChatHeaderActions attaches).
@@ -245,45 +247,27 @@ describe('<GitActionsControl> on a detached checkout', () => {
       expect(queryByRole('menuitem', { name: 'Push' })).toBeNull();
       await fireEvent.click(create);
 
-      const intent = worktreeIntentForThread(pane.thread);
-      expect(intent.creatingBranch).toBe(true);
-      expect(intent.newBranchBase).toBe('refs/tags/v2');
+      expect(worktreeIntentForThread(pane.thread)).toMatchObject({ mode: 'local', creatingBranch: true, newBranchBase: '' });
       expect(queryByRole('menu', { name: 'Git actions' })).toBeNull();
     });
 
-    it(`creates from HEAD at a detached commit with an empty base (${layout})`, async () => {
-      const pane = await buildPane();
-      __seedGitStatusForTest(WORKSPACE, detached());
-      const { findByRole, queryByRole } = await openActions(layout, pane);
-
-      await fireEvent.click(await findByRole('menuitem', { name: 'Create branch from here' }));
-      expect(queryByRole('menuitem', { name: 'Push' })).toBeNull();
-      const intent = worktreeIntentForThread(pane.thread);
-      expect(intent.creatingBranch).toBe(true);
-      expect(intent.newBranchBase).toBe('');
-    });
-
-    it(`replaces a staged base with the current checkout (${layout})`, async () => {
-      for (const [tag, expected] of [['v2', 'refs/tags/v2'], [undefined, '']] as const) {
+    // '' is the current checkout and also the initial base, so each case
+    // stages another base and worktree first: the action must replace them.
+    it(`branches the current checkout in place over a staged worktree and base (${layout})`, async () => {
+      for (const [tag, hasChanges] of [['v2', false], [undefined, false], ['v2', true]] as const) {
         resetWorktreeIntent();
         const pane = await buildPane();
-        __seedGitStatusForTest(WORKSPACE, detached(tag));
-        enterCreateBranchMode(pane.thread!, { workspaceDirty: false, currentRef: '' });
-        setNewBranchBase(pane.thread!, 'main');
+        __seedGitStatusForTest(WORKSPACE, { ...detached(tag), hasChanges });
+        setThreadEnvMode(pane.thread!, 'new-worktree');
+        enterCreateBranchMode(pane.thread!, 'main');
         const view = await openActions(layout, pane);
 
         await fireEvent.click(await view.findByRole('menuitem', { name: 'Create branch from here' }));
-        expect(worktreeIntentForThread(pane.thread)).toMatchObject({ creatingBranch: true, newBranchBase: expected });
+        expect(worktreeIntentForThread(pane.thread)).toMatchObject({
+          mode: 'local', creatingBranch: true, newBranchBase: '', attachBranch: '',
+        });
         view.unmount();
       }
-    });
-
-    it(`branches from the current ref, not the carry sentinel, on a dirty tree (${layout})`, async () => {
-      const pane = await buildPane();
-      __seedGitStatusForTest(WORKSPACE, { ...detached('v2'), hasChanges: true });
-      const { findByRole } = await openActions(layout, pane);
-      await fireEvent.click(await findByRole('menuitem', { name: 'Create branch from here' }));
-      expect(worktreeIntentForThread(pane.thread).newBranchBase).toBe('refs/tags/v2');
     });
 
     it(`keeps Push on a branch (${layout})`, async () => {
@@ -300,6 +284,8 @@ describe('<GitActionsControl> on a detached checkout', () => {
 describe('<GitActionsControl> after a checkout', () => {
   beforeEach(async () => {
     resetPanesForTest();
+    resetToastsForTest();
+    setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     setBindingMock('UpdateThreadBranch', async () => []);
@@ -308,49 +294,73 @@ describe('<GitActionsControl> after a checkout', () => {
 
   const AHEAD = status({
     branch: 'feature', isDefaultBranch: false, hasUpstream: true, aheadCount: 2, behindCount: 1,
-    openPrUrl: 'https://github.com/o/r/pull/7', openPrNumber: 7, hasChanges: true, fileCount: 1,
+    openPrUrl: 'https://github.com/o/r/pull/7', openPrNumber: 7,
   });
+  const OTHER: PickerRow = {
+    kind: 'branch', ref: 'other', name: 'other', branch: { name: 'other', isCurrent: false, isDefault: false },
+  };
+  const primaryOf = (container: HTMLElement) => container.querySelector('button:not([aria-label])') as HTMLButtonElement;
 
-  it('drops the left branch\'s counts and PR when checking out a tag', async () => {
+  // The checkout answers with the workspace's real status, so the controls
+  // act on the new checkout's facts from the moment it answers.
+  it('acts on the status the checkout answered with', async () => {
     const pane = await buildPane();
     __seedGitStatusForTest(WORKSPACE, AHEAD);
     const { container, findByLabelText, findByRole, queryByRole } = render(GitActionsControl, { props: { pane } });
     await flush();
-    setBindingMock('GitCheckout', async () => ({ workspacePath: WORKSPACE, worktreePath: '', branch: '', tag: 'v2', headCommit: 'abc' }));
+    expect(primaryOf(container).textContent?.trim()).toBe('Push');
+    const answered = status({ branch: 'other', isDefaultBranch: false, hasUpstream: true });
+    setBindingMock('GitCheckout', async () => ({ workspacePath: WORKSPACE, worktreePath: '', branch: 'other', status: answered }));
 
-    await checkoutPickerRow(pane, pane.workspace!, {
-      kind: 'tag', ref: 'refs/tags/v2', name: 'v2', tag: { name: 'v2', date: 1 },
-    });
+    await checkoutPickerRow(pane, pane.workspace!, OTHER);
     await flush();
 
-    const primary = container.querySelector('button:not([aria-label])') as HTMLButtonElement;
-    expect(primary.textContent?.trim()).toBe('Commit');
+    expect(peekGitStatus(` ${WORKSPACE}`)).toEqual(answered);
+    expect(primaryOf(container).textContent?.trim()).toBe('Commit');
+    expect(primaryOf(container).disabled).toBe(true);
     await fireEvent.click(await findByLabelText('More git actions'));
-    expect(queryByRole('menuitem', { name: 'Open PR' })).toBeNull();
+    expect((await findByRole('menuitem', { name: 'Push' })).getAttribute('aria-disabled')).toBe('true');
     expect((await findByRole('menuitem', { name: 'Pull' })).getAttribute('aria-disabled')).toBe('true');
-    // Working-tree facts are not branch facts.
-    expect(peekGitStatus(` ${WORKSPACE}`)).toMatchObject({ hasChanges: true, fileCount: 1, aheadCount: 0, behindCount: 0 });
+    expect(queryByRole('menuitem', { name: 'Open PR' })).toBeNull();
+    expect(getToasts().map((t) => t.message)).toContain('Checked out other');
   });
 
-  it('drops the left branch\'s counts when checking out another branch', async () => {
+  it('offers Push for a never-pushed branch and a new branch in Push\'s place at a tag', async () => {
+    for (const [answered, item] of [
+      [status({ branch: 'other', isDefaultBranch: false, hasUpstream: false }), 'Push'],
+      [status({ branch: '', isDefaultBranch: false, hasUpstream: false, tag: 'v2', headCommit: 'feedface' }), 'Create branch from here'],
+    ] as const) {
+      resetPanesForTest();
+      const pane = await buildPane();
+      __seedGitStatusForTest(WORKSPACE, { ...AHEAD, aheadCount: 0, behindCount: 0 });
+      const view = render(GitActionsControl, { props: { pane } });
+      setBindingMock('GitCheckout', async () => ({ workspacePath: WORKSPACE, worktreePath: '', branch: answered.branch, status: answered }));
+
+      await checkoutPickerRow(pane, pane.workspace!, OTHER);
+      await flush();
+      await fireEvent.click(await view.findByLabelText('More git actions'));
+      expect((await view.findByRole('menuitem', { name: item })).getAttribute('aria-disabled')).not.toBe('true');
+      view.unmount();
+    }
+  });
+
+  it('leaves the held status alone for an answer without one, and for a failed checkout', async () => {
     const pane = await buildPane();
-    __seedGitStatusForTest(WORKSPACE, { ...AHEAD, hasChanges: false });
+    __seedGitStatusForTest(WORKSPACE, AHEAD);
     const { container } = render(GitActionsControl, { props: { pane } });
-    await flush();
-    expect((container.querySelector('button:not([aria-label])') as HTMLButtonElement).textContent?.trim()).toBe('Push');
     setBindingMock('GitCheckout', async () => ({ workspacePath: WORKSPACE, worktreePath: '', branch: 'other' }));
 
-    await checkoutPickerRow(pane, pane.workspace!, {
-      kind: 'branch', ref: 'other', name: 'other', branch: { name: 'other', isCurrent: false, isDefault: false },
-    });
+    await checkoutPickerRow(pane, pane.workspace!, OTHER);
     await flush();
+    expect(peekGitStatus(` ${WORKSPACE}`)).toEqual(AHEAD);
+    expect(getToasts().map((t) => t.message)).toContain('Checked out other');
 
-    expect(peekGitStatus(` ${WORKSPACE}`)).toMatchObject({
-      branch: 'other', aheadCount: 0, behindCount: 0, hasUpstream: false, openPrUrl: undefined,
-    });
-    const primary = container.querySelector('button:not([aria-label])') as HTMLButtonElement;
-    expect(primary.textContent?.trim()).toBe('Commit');
-    expect(primary.disabled).toBe(true);
+    setBindingMock('GitCheckout', async () => { throw new Error('would overwrite local changes'); });
+    await checkoutPickerRow(pane, pane.workspace!, OTHER);
+    await flush();
+    expect(peekGitStatus(` ${WORKSPACE}`)).toEqual(AHEAD);
+    expect(primaryOf(container).textContent?.trim()).toBe('Push');
+    expect(getToasts().map((t) => t.message)).toContainEqual(expect.stringMatching(/^Failed to checkout: would overwrite local changes/i));
   });
 });
 

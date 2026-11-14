@@ -97,6 +97,10 @@ export interface GitActionResult {
 // import path for the type every `workspaceRefFor*` helper returns.
 export type { WorkspaceRef } from '../../../bindings/agent-overflow/internal/app/models';
 
-// The caller's checkout after a mutation that may have moved its branch
-// (GitCheckout / GitCreateBranchFrom / RemoveOtherWorktree).
+/**
+ * The caller's checkout after a mutation that may have moved its branch
+ * (GitCheckout / GitCreateBranchFrom / RemoveOtherWorktree). `status` is
+ * the workspace's status right after a checkout or branch create; a backend
+ * that predates it sends none.
+ */
 export type { GitWorkspaceState } from '../../../bindings/agent-overflow/internal/app/models';

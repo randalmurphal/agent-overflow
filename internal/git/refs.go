@@ -78,14 +78,6 @@ func parseRef(wire string) (ref Ref, explicit bool, err error) {
 	return ref, explicit, nil
 }
 
-// IsQualifiedRef reports whether wire is spelled "refs/heads/<name>" or
-// "refs/tags/<name>", so a caller that tidies a plain branch name it was
-// given never rewrites one of these into a different ref.
-func IsQualifiedRef(wire string) bool {
-	_, explicit, _ := parseRef(wire)
-	return explicit
-}
-
 // IsZero reports whether r names nothing, meaning HEAD.
 func (r Ref) IsZero() bool { return r.Kind == RefHead }
 
@@ -226,34 +218,84 @@ func (c *Core) ResolveRef(cwd, name string, localOnly bool) (ref Ref, found bool
 	return ref, true, nil
 }
 
-// CurrentRef is cwd's checkout as a Ref: its branch (an unborn one
-// included), else the first tag at a detached HEAD (TagAt), else the
-// detached HEAD's commit.
-func (c *Core) CurrentRef(cwd string) (Ref, error) {
+// Head is a checkout's HEAD: the Branch it is on, an unborn one included,
+// or, when detached, its full Commit id and the first Tag at it (TagAt, ""
+// when none). Branch is "" exactly when HEAD is detached.
+type Head struct {
+	Branch string
+	Commit string
+	Tag    string
+}
+
+// Ref is h as a Ref: its branch, else its tag, else its commit.
+func (h Head) Ref() Ref {
+	switch {
+	case h.Branch != "":
+		return BranchRef(h.Branch)
+	case h.Tag != "":
+		return TagRef(h.Tag)
+	default:
+		return CommitRef(h.Commit)
+	}
+}
+
+// Head reads cwd's HEAD; the commit and tag are read only when it is
+// detached. A branch-only read is CurrentBranch.
+func (c *Core) Head(cwd string) (Head, error) {
 	result, err := c.run(cwd, "symbolic-ref", "--quiet", "HEAD")
 	if err != nil {
-		return Ref{}, err
+		return Head{}, err
 	}
-	if result.exitCode == 0 {
-		if branch := trimBranchRef(strings.TrimSpace(result.stdout)); branch != "" {
-			return BranchRef(branch), nil
+	switch result.exitCode {
+	case 0:
+		branch := trimBranchRef(strings.TrimSpace(result.stdout))
+		if branch == "" {
+			return Head{}, fmt.Errorf("git symbolic-ref HEAD returned an empty branch")
 		}
+		return Head{Branch: branch}, nil
+	case 1:
+	default:
+		return Head{}, fmt.Errorf("git symbolic-ref HEAD failed: %s", strings.TrimSpace(result.stderr))
 	}
-	if result.exitCode > 1 {
-		return Ref{}, fmt.Errorf("git symbolic-ref HEAD failed: %s", strings.TrimSpace(result.stderr))
-	}
-	head, err := c.headCommit(cwd)
+	commit, err := c.headCommit(cwd)
 	if err != nil {
-		return Ref{}, err
+		return Head{}, err
 	}
-	tag, err := c.TagAt(cwd, head)
+	tag, err := c.TagAt(cwd, commit)
 	if err != nil {
-		return Ref{}, err
+		return Head{}, err
 	}
-	if tag != "" {
-		return TagRef(tag), nil
+	return Head{Commit: commit, Tag: tag}, nil
+}
+
+// IsCurrentBase reports whether a branch cut from base starts where head
+// is: base is head's own ref, or head is detached and base resolves to its
+// commit, so two tags of one commit are one base. On a branch, another ref
+// at the same commit is a different base, because cutting from it leaves
+// the branch. The zero base is HEAD. A base that names no commit is not
+// current.
+func (c *Core) IsCurrentBase(cwd string, head Head, base Ref) (bool, error) {
+	if base.IsZero() || base == head.Ref() {
+		return true, nil
 	}
-	return CommitRef(head), nil
+	if head.Branch != "" {
+		return false, nil
+	}
+	if err := base.validate(); err != nil {
+		return false, err
+	}
+	result, err := c.run(cwd, "rev-parse", "--verify", "--quiet", base.revision()+"^{commit}")
+	if err != nil {
+		return false, err
+	}
+	switch result.exitCode {
+	case 0:
+		return strings.TrimSpace(result.stdout) == head.Commit, nil
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("resolve %s: %s", base.Label(), strings.TrimSpace(result.stderr))
+	}
 }
 
 // headCommit is the full id of cwd's HEAD commit.
@@ -310,44 +352,13 @@ type LeftBehind struct {
 // detached HEAD, its orphan commits and the HEAD's full id; nil when HEAD is
 // on a branch or orphans nothing.
 func (c *Core) DetachedOrphans(cwd string) (*LeftBehind, error) {
-	head, err := c.detachedCommit(cwd)
-	if err != nil || head == "" {
+	head, err := c.Head(cwd)
+	if err != nil || head.Branch != "" {
 		return nil, err
 	}
-	count, err := c.OrphanCommits(cwd, head)
+	count, err := c.OrphanCommits(cwd, head.Commit)
 	if err != nil || count == 0 {
 		return nil, err
 	}
-	return &LeftBehind{Count: count, Commit: head}, nil
-}
-
-// DetachedHead describes cwd's HEAD when it is detached: its full commit id
-// and the tag at it (TagAt, "" when none). Both are "" on a branch.
-func (c *Core) DetachedHead(cwd string) (commit, tag string, err error) {
-	commit, err = c.detachedCommit(cwd)
-	if err != nil || commit == "" {
-		return "", "", err
-	}
-	tag, err = c.TagAt(cwd, commit)
-	if err != nil {
-		return "", "", err
-	}
-	return commit, tag, nil
-}
-
-// detachedCommit is the full id of cwd's HEAD commit when HEAD is detached,
-// "" when it is on a branch.
-func (c *Core) detachedCommit(cwd string) (string, error) {
-	result, err := c.run(cwd, "symbolic-ref", "--quiet", "HEAD")
-	if err != nil {
-		return "", err
-	}
-	switch result.exitCode {
-	case 0:
-		return "", nil
-	case 1:
-		return c.headCommit(cwd)
-	default:
-		return "", fmt.Errorf("git symbolic-ref HEAD failed: %s", strings.TrimSpace(result.stderr))
-	}
+	return &LeftBehind{Count: count, Commit: head.Commit}, nil
 }

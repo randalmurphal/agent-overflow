@@ -14,8 +14,8 @@ import {
   PrepareThreadWorktree,
 } from './bindings';
 import { workspaceKeyForThread, workspaceRefForThread } from '../utils/workspaceKey';
-import { currentCheckout, currentCheckoutRef } from '../utils/gitRef';
-import { applyCheckoutState, peekGitStatus } from './gitStatusStore.svelte';
+import { checkoutRef, currentCheckout } from '../utils/checkout';
+import { applyCheckoutAnswer, peekGitStatus } from './gitStatusStore.svelte';
 import { warnLeftBehind } from './gitLeftBehind';
 import type { GitWorkspaceState } from '../types/git';
 import { syncThreadReply } from './panes.svelte';
@@ -133,9 +133,10 @@ function applyIntentToThread(
   return run;
 }
 
-// The thread's checkout as a wire ref (`currentCheckout`).
+// The thread's checkout as a wire ref, for the one binding that needs a ref
+// named: AttachThreadWorktree with nothing staged attaches where the thread is.
 function currentRefOf(thread: Thread): string {
-  return currentCheckoutRef(currentCheckout(thread.branch, peekGitStatus(workspaceKeyForThread(thread))));
+  return checkoutRef(currentCheckout(thread.branch, peekGitStatus(workspaceKeyForThread(thread))));
 }
 
 async function runThreadMutation(
@@ -145,7 +146,7 @@ async function runThreadMutation(
   let updated: Thread | null = null;
   const mark = threadRowFrameMark();
   if (intent.mode === 'new-worktree' && intent.creatingBranch) {
-    const wire = resolveBaseForWire(intent.newBranchBase, currentRefOf(targetThread));
+    const wire = resolveBaseForWire(intent.newBranchBase);
     updated = (await PrepareThreadWorktree(
       targetThread.id,
       wire.baseBranch,
@@ -169,7 +170,7 @@ async function runThreadMutation(
         `Cannot create a branch for thread ${targetThread.id}: it names no project workspace.`,
       );
     }
-    const wire = resolveBaseForWire(intent.newBranchBase, currentRefOf(targetThread));
+    const wire = resolveBaseForWire(intent.newBranchBase);
     // Workspace-keyed: the branch is created in a DIRECTORY, and the backend
     // re-branches every thread row in it. This caller wants its own row back,
     // so it re-reads it rather than guessing the fields locally — the returned
@@ -180,7 +181,7 @@ async function runThreadMutation(
       wire.baseBranch,
       wire.carryLocalChanges,
     )) as GitWorkspaceState | null;
-    applyCheckoutState(workspace, state);
+    applyCheckoutAnswer(workspace, state);
     warnLeftBehind(state);
     updated = (await GetThread(targetThread.id)) as Thread | null;
   }

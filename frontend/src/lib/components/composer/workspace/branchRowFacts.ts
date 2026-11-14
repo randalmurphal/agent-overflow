@@ -14,26 +14,6 @@ export function truncateRowLabel(name: string): string {
   return name.slice(0, ROW_LABEL_MAX_CHARS - 1) + '…';
 }
 
-// FF-only sync. Diverged rows render the icon disabled with a tooltip; the
-// backend mirrors the gate via git's native non-FF refusal.
-export function canSync(branch: GitBranch): boolean {
-  return (branch.behindCount ?? 0) > 0 && (branch.aheadCount ?? 0) === 0;
-}
-
-export function isDiverged(branch: GitBranch): boolean {
-  return (branch.behindCount ?? 0) > 0 && (branch.aheadCount ?? 0) > 0;
-}
-
-/** Tags have no upstream, so only branch rows ever sync. */
-export function showsSyncAction(row: PickerRow): boolean {
-  return row.kind === 'branch' && (canSync(row.branch) || isDiverged(row.branch));
-}
-
-export function syncDisabledTitle(branch: GitBranch): string | undefined {
-  if (!isDiverged(branch)) return undefined;
-  return `Branch has diverged from upstream (${branch.aheadCount} ahead, ${branch.behindCount} behind). Push or rebase first.`;
-}
-
 export function branchUsesAnotherWorktree(branch: GitBranch, currentWorkspace: string): boolean {
   return !!branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace);
 }

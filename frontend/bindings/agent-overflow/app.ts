@@ -2530,6 +2530,9 @@ export function GitCommit(ws: app$0.WorkspaceRef, subject: string, body: string,
  * current ref: its branch, else the tag at HEAD, else the detached HEAD
  * itself, so a branch made there keeps the commits made on no branch.
  * 
+ * A base is the current ref when it is the branch HEAD is on or, for a
+ * detached HEAD, any ref at its commit.
+ * 
  * carryLocalChanges has three meaningful combinations with baseBranch:
  *   - base = current ref, carry = true: the "Local with changes" path —
  *     `git checkout -b <name>` from HEAD; uncommitted changes stay attached.
@@ -4033,7 +4036,8 @@ export function PostPRLineComment(pr: git$0.PRReference, req: app$0.PRLineCommen
  * + unstaged + untracked) is stashed under a per-call message, the worktree
  * is created, and the stash is applied in the new worktree before the entry
  * is dropped from the stash stack. carryLocalChanges only applies when the
- * new worktree's base matches the source workspace's current ref — a
+ * new worktree's base is the source workspace's current ref
+ * (gitops.Core.IsCurrentBase) — a
  * "Local with changes" semantic only makes sense when both ends agree on the
  * base. When base diverges from current, the request is rejected with a
  * clear error so the caller can surface it.

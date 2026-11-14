@@ -28,36 +28,36 @@ func workspaceRefForThread(thread store.Thread) WorkspaceRef {
 
 // GitWorkspaceState is the caller's checkout after a mutation that may have
 // moved its branch. WorktreePath is empty when the workspace is the project
-// root. HeadCommit is the full commit id of a detached HEAD and Tag the tag
-// at it (gitops.Core.DetachedHead); both are empty on a branch. LeftBehind
-// is set when the mutation moved a detached HEAD away from commits no ref
-// reaches.
+// root; Branch is empty on a detached HEAD. Status, set by a checkout
+// (GitCheckout, GitCreateBranchFrom), is the checkout's git status as it
+// produced it, read without waiting on the forge (gitops.Core.StatusFast).
+// LeftBehind is set when the mutation moved a detached HEAD away from
+// commits no ref reaches.
 type GitWorkspaceState struct {
 	WorkspacePath string             `json:"workspacePath"`
 	WorktreePath  string             `json:"worktreePath,omitempty"`
 	Branch        string             `json:"branch"`
-	HeadCommit    string             `json:"headCommit,omitempty"`
-	Tag           string             `json:"tag,omitempty"`
+	Status        *gitops.GitStatus  `json:"status,omitempty"`
 	LeftBehind    *gitops.LeftBehind `json:"leftBehind,omitempty"`
 }
 
 // workspaceState projects a resolved (project, workspace) pair plus the
-// checkout's live branch, or its detached HEAD when it has none, into the
-// wire shape.
+// checkout's live branch into the wire shape.
 func (a *App) workspaceState(project, workspace string) (GitWorkspaceState, error) {
-	core := a.gitCore()
-	state := GitWorkspaceState{WorkspacePath: workspace, Branch: core.CurrentBranch(workspace)}
+	head, err := a.gitCore().Head(workspace)
+	if err != nil {
+		return GitWorkspaceState{}, err
+	}
+	return newWorkspaceState(project, workspace, head.Branch), nil
+}
+
+// newWorkspaceState is the wire shape of workspace in project on branch.
+func newWorkspaceState(project, workspace, branch string) GitWorkspaceState {
+	state := GitWorkspaceState{WorkspacePath: workspace, Branch: branch}
 	if !gitops.SameFilesystemPath(workspace, project) {
 		state.WorktreePath = workspace
 	}
-	if state.Branch == "" {
-		commit, tag, err := core.DetachedHead(workspace)
-		if err != nil {
-			return GitWorkspaceState{}, err
-		}
-		state.HeadCommit, state.Tag = commit, tag
-	}
-	return state, nil
+	return state
 }
 
 // GetGitStatus returns git status for the referenced workspace.
@@ -210,17 +210,23 @@ func (a *App) GitCheckout(ws WorkspaceRef, branch string) (GitWorkspaceState, er
 	return a.recordWorkspaceCheckout("git checkout", project, workspace, leftBehind)
 }
 
-// recordWorkspaceCheckout reads the workspace's state after a branch change,
-// writes its branch onto every thread row in the directory, and attaches
-// what the change left behind.
+// recordWorkspaceCheckout reads the workspace's status after a branch
+// change without waiting on the forge, writes its branch onto every thread
+// row in the directory, and answers with the status and what the change
+// left behind. It asks the workspace's status stream to refresh, so every
+// other client sees the change and the open-PR lookup StatusFast left
+// pending is answered there.
 func (a *App) recordWorkspaceCheckout(label, project, workspace string, leftBehind *gitops.LeftBehind) (GitWorkspaceState, error) {
-	state, err := a.workspaceState(project, workspace)
+	status, err := a.gitCore().StatusFast(workspace)
 	if err != nil {
-		return GitWorkspaceState{}, fmt.Errorf("%s: read workspace: %w", label, err)
+		return GitWorkspaceState{}, fmt.Errorf("%s: read status: %w", label, err)
 	}
-	if _, err := a.UpdateThreadBranch(workspace, state.Branch); err != nil {
+	a.gitApplication().RequestRefresh(workspace)
+	if _, err := a.UpdateThreadBranch(workspace, status.Branch); err != nil {
 		return GitWorkspaceState{}, fmt.Errorf("%s: record branch on threads: %w", label, err)
 	}
+	state := newWorkspaceState(project, workspace, status.Branch)
+	state.Status = &status
 	state.LeftBehind = leftBehind
 	return state, nil
 }
@@ -230,6 +236,9 @@ func (a *App) recordWorkspaceCheckout(label, project, workspace string, leftBehi
 // it out. baseBranch may be a tag ref. An empty base is the workspace's
 // current ref: its branch, else the tag at HEAD, else the detached HEAD
 // itself, so a branch made there keeps the commits made on no branch.
+//
+// A base is the current ref when it is the branch HEAD is on or, for a
+// detached HEAD, any ref at its commit.
 //
 // carryLocalChanges has three meaningful combinations with baseBranch:
 //   - base = current ref, carry = true: the "Local with changes" path —
@@ -265,11 +274,7 @@ func (a *App) GitCreateBranchFrom(ws WorkspaceRef, name, baseBranch string, carr
 	defer release()
 
 	core := a.gitCore()
-	current, err := core.CurrentRef(workspace)
-	if err != nil {
-		return GitWorkspaceState{}, fmt.Errorf("create branch: read current ref: %w", err)
-	}
-	sanitized, resolvedBase, baseIsCurrent, err := resolveBranchCreatePlan(current, name, base, carryLocalChanges)
+	sanitized, resolvedBase, baseIsCurrent, err := resolveBranchCreatePlan(core, workspace, name, base, carryLocalChanges)
 	if err != nil {
 		return GitWorkspaceState{}, err
 	}
@@ -310,10 +315,12 @@ var errCarryRequiresCurrentBase = errors.New("'Local with changes' only applies 
 // base-is-current decision that selects between the two git sequences in
 // createBranchInWorkspace, and the carry refusal.
 //
-// current is the current ref of the checkout the caller is about to mutate —
-// the one thing that must not be guessed at from the project root when the
-// caller is in a worktree. A branch and a tag of one name are different refs.
-func resolveBranchCreatePlan(current gitops.Ref, name string, base gitops.Ref, carryLocalChanges bool) (string, gitops.Ref, bool, error) {
+// workspace is the checkout the caller is about to mutate, whose HEAD is the
+// one thing that must not be guessed at from the project root when the
+// caller is in a worktree. The base is current by gitops.Core.IsCurrentBase:
+// a branch and a tag of one name are different bases, and two tags of a
+// detached HEAD's commit are one.
+func resolveBranchCreatePlan(core *gitops.Core, workspace, name string, base gitops.Ref, carryLocalChanges bool) (string, gitops.Ref, bool, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", gitops.Ref{}, false, fmt.Errorf("create branch: name is required")
@@ -322,14 +329,18 @@ func resolveBranchCreatePlan(current gitops.Ref, name string, base gitops.Ref, c
 	if sanitized == "" {
 		return "", gitops.Ref{}, false, fmt.Errorf("create branch: name %q is not a valid branch name", name)
 	}
+	head, err := core.Head(workspace)
+	if err != nil {
+		return "", gitops.Ref{}, false, fmt.Errorf("create branch: read HEAD: %w", err)
+	}
 	resolvedBase := base
 	if resolvedBase.IsZero() {
-		resolvedBase = current
+		resolvedBase = head.Ref()
 	}
-	if resolvedBase.IsZero() {
-		return "", gitops.Ref{}, false, fmt.Errorf("create branch: base branch is required")
+	baseIsCurrent, err := core.IsCurrentBase(workspace, head, resolvedBase)
+	if err != nil {
+		return "", gitops.Ref{}, false, fmt.Errorf("create branch: base: %w", err)
 	}
-	baseIsCurrent := resolvedBase == current
 	if carryLocalChanges && !baseIsCurrent {
 		return "", gitops.Ref{}, false, fmt.Errorf("create branch: %w", errCarryRequiresCurrentBase)
 	}

@@ -193,7 +193,7 @@ func TestSpawnWorktreeIsABranchName(t *testing.T) {
 			t.Errorf("paired=%v: worktree is %v, want a branch name string", shape.Paired(), worktree["type"])
 		}
 		description, _ := worktree["description"].(string)
-		for _, want := range []string{"Branch to run on", "already checked out", "exists locally or on origin", "checked out as it is", "is a tag, or refs/tags/<name>", "detached at the tag", "refs/heads/<name> names a branch only", "created in a fresh worktree from base", "project_id"} {
+		for _, want := range []string{"Branch to run on", "already checked out", "exists locally or on a remote", "checked out as it is", "is a tag, or refs/tags/<name>", "detached at the tag", "refs/heads/<name> names a branch only", "created in a fresh worktree from base", "project_id"} {
 			if !strings.Contains(description, want) {
 				t.Errorf("paired=%v: the worktree description does not say %q: %q", shape.Paired(), want, description)
 			}

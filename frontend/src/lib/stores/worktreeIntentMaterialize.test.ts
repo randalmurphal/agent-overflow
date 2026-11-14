@@ -10,6 +10,7 @@ import {
 import {
   enterCreateBranchMode,
   isWorktreeIntentApplying,
+  LOCAL_BASE_SENTINEL,
   migrateWorktreeIntent,
   resetForTest as resetWorktreeIntent,
   setNewBranchBase,
@@ -18,7 +19,11 @@ import {
   setThreadEnvMode,
   worktreeIntentForThread,
 } from './worktreeIntent.svelte';
-import { __resetGitStatusStoreForTest, __seedGitStatusForTest } from './gitStatusStore.svelte';
+import {
+  __resetGitStatusStoreForTest,
+  __seedGitStatusForTest,
+  peekGitStatus,
+} from './gitStatusStore.svelte';
 import { getToasts, resetToastsForTest } from './toast.svelte';
 import type { GitStatus } from '../types/git';
 import {
@@ -93,6 +98,7 @@ describe('worktree intent materialization', () => {
     resetWorktreeIntentMaterializeForTest();
     __resetGitStatusStoreForTest();
     resetToastsForTest();
+    setBindingMock('UpdateThreadBranch', async () => []);
   });
 
   it('materializes a placeholder before applying its worktree intent', async () => {
@@ -189,7 +195,7 @@ describe('worktree intent materialization', () => {
   it('creates a new worktree branch with the selected base and carry flag', async () => {
     const source = thread({ branch: 'feature/base' });
     setThreadEnvMode(source, 'new-worktree');
-    enterCreateBranchMode(source, { workspaceDirty: true, currentRef: 'feature/base' });
+    enterCreateBranchMode(source, LOCAL_BASE_SENTINEL);
     setNewBranchName(source, 'feature/new');
     const prepare = setBindingMock('PrepareThreadWorktree', async () =>
       moved(source, { branch: 'feature/new' }),
@@ -199,7 +205,7 @@ describe('worktree intent materialization', () => {
 
     expect(prepare).toHaveBeenCalledWith(
       'thread-1',
-      'feature/base',
+      '',
       'feature/new',
       true,
     );
@@ -208,7 +214,7 @@ describe('worktree intent materialization', () => {
 
   it('creates a local branch through the thread-scoped checkout', async () => {
     const source = thread();
-    enterCreateBranchMode(source, { workspaceDirty: false, currentRef: 'main' });
+    enterCreateBranchMode(source, 'main');
     setNewBranchName(source, 'feature/local');
     setNewBranchBase(source, 'develop');
     const create = setBindingMock('GitCreateBranchFrom', async () => ({
@@ -235,6 +241,43 @@ describe('worktree intent materialization', () => {
     expect(worktreeIntentForThread(source).creatingBranch).toBe(false);
   });
 
+  it('shows the answer\'s status for the workspace as soon as the branch create answers', async () => {
+    __seedGitStatusForTest('/repo', detachedStatus({ branch: 'main', headCommit: '', hasUpstream: true, aheadCount: 3 }));
+    const source = thread();
+    enterCreateBranchMode(source, '');
+    setNewBranchName(source, 'feature/fresh');
+    const fresh = detachedStatus({ branch: 'feature/fresh', headCommit: '', hasUpstream: false });
+    setBindingMock('GitCreateBranchFrom', async () => ({
+      workspacePath: '/repo', worktreePath: '', branch: 'feature/fresh', status: fresh,
+    }));
+    setBindingMock('GetThread', async () => ({ ...source, branch: 'feature/fresh' }));
+
+    await applyWorktreeIntentNow(paneFor(source));
+
+    expect(peekGitStatus(' /repo')).toEqual(fresh);
+    expect(getBindingMock('GetGitStatus')).toBeUndefined();
+  });
+
+  it('leaves the held status alone for an answer without one, and for a failed create', async () => {
+    const held = detachedStatus({ branch: 'main', headCommit: '', hasUpstream: true, aheadCount: 3 });
+    __seedGitStatusForTest('/repo', held);
+    const older = thread({ id: 'older' });
+    enterCreateBranchMode(older, '');
+    setNewBranchName(older, 'feature/older');
+    setBindingMock('GitCreateBranchFrom', async () => ({ workspacePath: '/repo', worktreePath: '', branch: 'feature/older' }));
+    setBindingMock('GetThread', async () => ({ ...older, branch: 'feature/older' }));
+    await applyWorktreeIntentNow(paneFor(older));
+    expect(peekGitStatus(' /repo')).toEqual(held);
+
+    const refused = thread({ id: 'refused' });
+    enterCreateBranchMode(refused, 'develop');
+    setNewBranchName(refused, 'feature/refused');
+    setBindingMock('GitCreateBranchFrom', async () => { throw new Error('refused'); });
+    await expect(applyWorktreeIntentNow(paneFor(refused))).rejects.toThrow('refused');
+    expect(peekGitStatus(' /repo')).toEqual(held);
+    expect(getBindingMock('GetGitStatus')).toBeUndefined();
+  });
+
   it('sends a staged tag ref to every workspace binding', async () => {
     const attachSource = thread({ id: 'attach' });
     setThreadEnvMode(attachSource, 'new-worktree');
@@ -245,7 +288,7 @@ describe('worktree intent materialization', () => {
 
     const prepareSource = thread({ id: 'prepare' });
     setThreadEnvMode(prepareSource, 'new-worktree');
-    enterCreateBranchMode(prepareSource, { workspaceDirty: false, currentRef: 'main' });
+    enterCreateBranchMode(prepareSource, 'main');
     setNewBranchName(prepareSource, 'feature/from-tag');
     setNewBranchBase(prepareSource, 'refs/tags/v2.4.0');
     const prepare = setBindingMock('PrepareThreadWorktree', async () => moved(prepareSource));
@@ -253,7 +296,7 @@ describe('worktree intent materialization', () => {
     expect(prepare).toHaveBeenCalledWith('prepare', 'refs/tags/v2.4.0', 'feature/from-tag', false);
 
     const localSource = thread({ id: 'local' });
-    enterCreateBranchMode(localSource, { workspaceDirty: false, currentRef: 'main' });
+    enterCreateBranchMode(localSource, 'main');
     setNewBranchName(localSource, 'feature/local-tag');
     setNewBranchBase(localSource, 'refs/tags/v2.4.0');
     const create = setBindingMock('GitCreateBranchFrom', async () => ({
@@ -279,15 +322,33 @@ describe('worktree intent materialization', () => {
     const attach = setBindingMock('AttachThreadWorktree', async () => moved(attachSource, { branch: '' }));
     await applyWorktreeIntentNow(paneFor(attachSource));
     expect(attach).toHaveBeenCalledWith('attach', 'refs/tags/v2.4.0');
+  });
 
-    // Carrying changes branches from the current ref, the only base carry allows.
-    const carrySource = thread({ id: 'carry', branch: '' });
+  // The status this client holds can trail the checkout. Carry is allowed
+  // only from the current ref, so the backend resolves it when the call runs.
+  it('carries changes with an empty base, not the ref this client last saw', async () => {
+    __seedGitStatusForTest('/repo', detachedStatus({ tag: 'v2.4.0' }));
+    setBindingMock('UpdateThreadBranch', async () => []);
+
+    const carrySource = thread({ id: 'carry', branch: 'main' });
     setThreadEnvMode(carrySource, 'new-worktree');
-    enterCreateBranchMode(carrySource, { workspaceDirty: true, currentRef: 'refs/tags/v2.4.0' });
+    enterCreateBranchMode(carrySource, LOCAL_BASE_SENTINEL);
     setNewBranchName(carrySource, 'feature/carry');
     const prepare = setBindingMock('PrepareThreadWorktree', async () => moved(carrySource));
     await applyWorktreeIntentNow(paneFor(carrySource));
-    expect(prepare).toHaveBeenCalledWith('carry', 'refs/tags/v2.4.0', 'feature/carry', true);
+    expect(prepare).toHaveBeenCalledWith('carry', '', 'feature/carry', true);
+
+    const localSource = thread({ id: 'local', branch: 'main' });
+    enterCreateBranchMode(localSource, LOCAL_BASE_SENTINEL);
+    setNewBranchName(localSource, 'feature/local-carry');
+    const create = setBindingMock('GitCreateBranchFrom', async () => ({
+      workspacePath: '/repo', worktreePath: '', branch: 'feature/local-carry',
+    }));
+    setBindingMock('GetThread', async () => ({ ...localSource, branch: 'feature/local-carry' }));
+    await applyWorktreeIntentNow(paneFor(localSource));
+    expect(create).toHaveBeenCalledWith(
+      { projectId: 'project-1', workspacePath: '/repo' }, 'feature/local-carry', '', true,
+    );
   });
 
   it('prefers the live checkout over a stale cached branch', async () => {
@@ -312,7 +373,7 @@ describe('worktree intent materialization', () => {
     __seedGitStatusForTest('/repo', detachedStatus({ headCommit: 'abcdef0123456789' }));
     setBindingMock('UpdateThreadBranch', async () => []);
     const source = thread({ branch: '' });
-    enterCreateBranchMode(source, { workspaceDirty: true, currentRef: '' });
+    enterCreateBranchMode(source, LOCAL_BASE_SENTINEL);
     setNewBranchName(source, 'rescue');
     const create = setBindingMock('GitCreateBranchFrom', async () => ({
       workspacePath: '/repo', worktreePath: '', branch: 'rescue',
@@ -326,7 +387,7 @@ describe('worktree intent materialization', () => {
       { projectId: 'project-1', workspacePath: '/repo' }, 'rescue', '', true,
     );
     expect(getToasts()).toEqual([
-      expect.objectContaining({ type: 'warning', message: expect.stringContaining('abcdef01') }),
+      expect.objectContaining({ type: 'warning', message: expect.stringContaining('at abcdef0.') }),
     ]);
   });
 
@@ -336,7 +397,7 @@ describe('worktree intent materialization', () => {
   // does nothing.
   it('throws instead of no-oping when the target thread names no workspace', async () => {
     const source = thread({ projectId: undefined });
-    enterCreateBranchMode(source, { workspaceDirty: false, currentRef: 'main' });
+    enterCreateBranchMode(source, 'main');
     setNewBranchName(source, 'feature/local');
     const create = setBindingMock('GitCreateBranchFrom', async () => ({
       workspacePath: '/repo',

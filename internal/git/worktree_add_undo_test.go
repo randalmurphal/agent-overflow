@@ -101,7 +101,7 @@ func TestAttachWorktreeOfAnOriginBranchUndoesAFailedCheckout(t *testing.T) {
 			failCheckoutHook(t, repo)
 		}
 
-		created, err := NewCore().AttachWorktree(repo, path, "feature/mr")
+		created, err := NewCore().AttachWorktreeAt(repo, path, BranchRef("feature/mr"))
 		if err == nil || created {
 			t.Fatalf("%s: AttachWorktree = created %v, %v; want a failure that made nothing", failure, created, err)
 		}
@@ -128,7 +128,7 @@ func TestAttachWorktreeOfALocalBranchKeepsItWhenTheCheckoutFails(t *testing.T) {
 			failCheckoutHook(t, repo)
 		}
 
-		created, err := NewCore().AttachWorktree(repo, path, "feature/local")
+		created, err := NewCore().AttachWorktreeAt(repo, path, BranchRef("feature/local"))
 		if err == nil || created {
 			t.Fatalf("%s: AttachWorktree = created %v, %v; want a failure", failure, created, err)
 		}
@@ -144,11 +144,11 @@ func TestAttachWorktreeKeepsAWorktreeThatWasAlreadyThere(t *testing.T) {
 	core := NewCore()
 	testutil.RunGit(t, repo, "branch", "feature/there")
 	path := filepath.Join(t.TempDir(), "there")
-	if _, err := core.AttachWorktree(repo, path, "feature/there"); err != nil {
+	if _, err := core.AttachWorktreeAt(repo, path, BranchRef("feature/there")); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := core.AttachWorktree(repo, path, "feature/there"); err == nil {
+	if _, err := core.AttachWorktreeAt(repo, path, BranchRef("feature/there")); err == nil {
 		t.Fatal("a second attach at the same path succeeded")
 	}
 	registered, err := worktreeRegisteredAt(repo, path)
@@ -174,7 +174,7 @@ func TestAttachWorktreeKeepsAnotherProcessesCheckoutAtThePath(t *testing.T) {
 		}
 	}
 
-	if _, err := core.AttachWorktree(repo, path, "feature/theirs"); err == nil {
+	if _, err := core.AttachWorktreeAt(repo, path, BranchRef("feature/theirs")); err == nil {
 		t.Fatal("the attach succeeded over another process's checkout")
 	} else if strings.Contains(err.Error(), "undo") {
 		t.Fatalf("the refused attach undid something: %v", err)
@@ -195,7 +195,7 @@ func TestCheckoutsLeaveTheWorktreeUnlocked(t *testing.T) {
 	core := NewCore()
 	testutil.RunGit(t, repo, "branch", "feature/open")
 	attached := filepath.Join(t.TempDir(), "attached")
-	if _, err := core.AttachWorktree(repo, attached, "feature/open"); err != nil {
+	if _, err := core.AttachWorktreeAt(repo, attached, BranchRef("feature/open")); err != nil {
 		t.Fatal(err)
 	}
 	created := filepath.Join(t.TempDir(), "created")
@@ -220,7 +220,7 @@ func TestAttachWorktreeUndoesACheckoutItCouldNotUnlock(t *testing.T) {
 	failFirstUnlock(t)
 	path := filepath.Join(t.TempDir(), "held")
 
-	created, err := NewCore().AttachWorktree(repo, path, "feature/held")
+	created, err := NewCore().AttachWorktreeAt(repo, path, BranchRef("feature/held"))
 	if err == nil || created || !strings.Contains(err.Error(), "injected unlock failure") {
 		t.Fatalf("AttachWorktree = created %v, %v; want the unlock's failure", created, err)
 	}
@@ -249,7 +249,7 @@ func TestAttachWorktreeUndoTakesItsOwnRegistrationAtANearIdenticalPath(t *testin
 	failFirstUnlock(t)
 	attempt := keep + " "
 
-	if _, err := NewCore().AttachWorktree(repo, attempt, "feature/attempt"); err == nil || !strings.Contains(err.Error(), "injected unlock failure") {
+	if _, err := NewCore().AttachWorktreeAt(repo, attempt, BranchRef("feature/attempt")); err == nil || !strings.Contains(err.Error(), "injected unlock failure") {
 		t.Fatalf("AttachWorktree = %v, want the unlock's failure", err)
 	} else if strings.Contains(err.Error(), "undo") {
 		t.Fatalf("the undo failed: %v", err)
@@ -347,9 +347,9 @@ func TestCreateWorktreeUndoesTheBranchOfAFailedCheckout(t *testing.T) {
 		}
 
 		// The fresh-base cut from origin takes the same path.
-		_, err = NewCore().CreateWorktreeFromFreshBase(t.Context(), repo, path, "main", "ao-fresh")
+		_, err = NewCore().CreateWorktreeFromFreshRef(t.Context(), repo, path, BranchRef("main"), "ao-fresh")
 		if err == nil {
-			t.Fatalf("%s: CreateWorktreeFromFreshBase succeeded", failure)
+			t.Fatalf("%s: CreateWorktreeFromFreshRef succeeded", failure)
 		}
 		assertAddUndone(t, repo, "ao-fresh", false)
 	}
@@ -405,7 +405,7 @@ func TestCompetingAttachesOfOneBranchKeepTheWinnersWorktree(t *testing.T) {
 	errs := make([]error, len(cores))
 	var wg sync.WaitGroup
 	for i, core := range cores {
-		wg.Go(func() { _, errs[i] = core.AttachWorktree(repo, path, "feature/race") })
+		wg.Go(func() { _, errs[i] = core.AttachWorktreeAt(repo, path, BranchRef("feature/race")) })
 	}
 	wg.Wait()
 	if (errs[0] == nil) == (errs[1] == nil) {

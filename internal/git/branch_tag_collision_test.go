@@ -154,7 +154,7 @@ func TestAttachWorktreeTracksTheOneRemoteThatHasTheBranch(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("AttachWorktreeAt = %v, %v; want the local branch created", created, err)
 	}
-	if ref, err := core.CurrentRef(path); err != nil || ref != BranchRef("feature/fork") {
+	if ref, err := core.Head(path); err != nil || ref.Ref() != BranchRef("feature/fork") {
 		t.Errorf("worktree is on %+v (%v), want branch feature/fork", ref, err)
 	}
 	if got := revParse(t, repo, "refs/heads/feature/fork"); got != tip {
@@ -174,5 +174,39 @@ func TestAttachWorktreeTracksTheOneRemoteThatHasTheBranch(t *testing.T) {
 	}
 	if testutil.RunGitAllowError(repo, "rev-parse", "--verify", "--quiet", "refs/heads/feature/both") == nil {
 		t.Error("a refused attach left the local branch feature/both")
+	}
+}
+
+// Whether a branch exists to check out follows the rule a checkout uses
+// (checkoutSource): local, else origin's, else the one remote that has it;
+// a branch only several non-origin remotes have is an error, never a branch
+// to create.
+func TestBranchToCheckOutFollowsTheCheckoutRemoteRule(t *testing.T) {
+	t.Parallel()
+	repo, _ := testutil.InitGitRepoWithOrigin(t)
+	for _, remote := range []string{"fork", "mirror"} {
+		bare := t.TempDir()
+		testutil.RunGit(t, bare, "init", "-q", "--bare")
+		testutil.RunGit(t, repo, "remote", "add", remote, bare)
+	}
+	for _, branch := range []string{"feature/fork", "feature/both"} {
+		testutil.RunGit(t, repo, "branch", branch)
+		testutil.RunGit(t, repo, "push", "-q", "fork", branch)
+	}
+	testutil.RunGit(t, repo, "push", "-q", "mirror", "feature/both")
+	testutil.RunGit(t, repo, "branch", "-q", "-D", "feature/fork", "feature/both")
+
+	core := NewCore()
+	if exists, _, err := core.BranchToCheckOut(t.Context(), repo, "feature/fork"); err != nil || !exists {
+		t.Errorf("BranchToCheckOut(branch only fork has) = %v, %v; want it found", exists, err)
+	}
+	if exists, _, err := core.BranchToCheckOut(t.Context(), repo, "feature/both"); err == nil || exists || !strings.Contains(err.Error(), "several remotes") {
+		t.Errorf("BranchToCheckOut(branch on two remotes) = %v, %v; want a several remotes error", exists, err)
+	}
+	if err := core.CheckoutRef(repo, BranchRef("feature/both")); err == nil || !strings.Contains(err.Error(), "several remotes") {
+		t.Errorf("CheckoutRef(branch on two remotes) = %v; want a several remotes error", err)
+	}
+	if exists, _, err := core.BranchToCheckOut(t.Context(), repo, "nowhere"); err != nil || exists {
+		t.Errorf("BranchToCheckOut(nowhere) = %v, %v; want not found", exists, err)
 	}
 }

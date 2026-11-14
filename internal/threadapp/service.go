@@ -37,24 +37,17 @@ type ModelPolicy interface {
 	DefaultModel(providerName string) string
 }
 
-// WorktreeCut describes one fresh worktree. Branch is the branch it checks
-// out, or empty for a generated name; a tag in its wire form
-// ("refs/tags/<name>") is checked out detached, takes no Base, and makes
-// no branch. With no Base and no BaseLocal, a Branch that already exists,
-// locally or on origin, is checked out as it is. Otherwise Branch is
-// created from Base, a branch name or tag wire ref, empty for the
-// project's current branch. BaseLocal starts from Base's local head with
-// no fetch; otherwise the cut starts from origin's head of a branch Base
-// when origin can be reached and has it. A tag Base is cut locally.
-//
-// Target, when set, replaces Branch: the caller resolved the name already
-// (gitops.Core.ResolveWorktreeTarget), and the cut checks out an existing
-// target as it is or creates the branch it names, deciding nothing again
-// and never tidying the name. A plain Branch is a typed name: tidied into
-// a branch name when it is created.
+// WorktreeCut describes one fresh worktree. Target is what the name typed
+// for it resolved to (gitops.Core.ResolveWorktreeTarget), and the cut
+// decides nothing about it again: an existing branch or tag is checked out
+// as it is, a tag detached and with no branch, and takes no Base; a branch
+// that does not exist is created, named exactly Target.Ref.Name, from
+// Base, a branch name or tag wire ref, empty for the project's current
+// branch. BaseLocal starts from Base's local head with no fetch; otherwise
+// the cut starts from origin's head of a branch Base when origin can be
+// reached and has it. A tag Base is cut locally.
 type WorktreeCut struct {
-	Branch    string
-	Target    *gitops.WorktreeTarget
+	Target    gitops.WorktreeTarget
 	Base      string
 	BaseLocal bool
 }

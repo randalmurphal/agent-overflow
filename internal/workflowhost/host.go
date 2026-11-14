@@ -75,7 +75,7 @@ type ThreadHost interface {
 type WorktreeHost interface {
 	GitCore() *gitops.Core
 	FindWorktree(project, path string) (gitops.Worktree, bool, error)
-	CutWorktreeFromFreshBase(ctx context.Context, projectPath, worktreePath, baseBranch, newBranch string) error
+	CutWorktreeFromFreshRef(ctx context.Context, projectPath, worktreePath string, base gitops.Ref, newBranch string) error
 	DefaultWorktreePath(projectPath, branch string) (string, error)
 	WorktreeBranchPrefix() string
 	// RemoveWorktree deletes a checkout the run owns (`git worktree remove`,

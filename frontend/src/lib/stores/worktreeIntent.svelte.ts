@@ -2,8 +2,8 @@ import type { Thread } from '../types/models';
 import { threadMachine } from './attachedBackends.svelte';
 import { getSettings } from './settings.svelte';
 import { generateWorktreeBranchName } from '../utils/worktreeBranchName';
-import { branchRef, currentCheckout, currentCheckoutRef, type CurrentCheckout } from '../utils/gitRef';
-import type { GitStatus } from '../types/git';
+import { branchRef } from '../utils/gitRef';
+import type { PaneCheckoutSource } from '../utils/checkout';
 
 export type WorktreeIntentMode = 'local' | 'new-worktree';
 
@@ -24,17 +24,13 @@ export function isLocalBase(value: string | undefined | null): boolean {
 }
 
 // Maps a UI base selection to the (baseBranch, carryLocalChanges) pair
-// the backend bindings expect. Bases are wire refs (utils/gitRef.ts). The
-// sentinel resolves to the source checkout's current ref (its branch, else
-// the tag at its HEAD, else '' for the HEAD commit) with carry=true, the
-// only base the backend lets carry; anything else passes through with
-// carry=false.
-export function resolveBaseForWire(
-  base: string,
-  currentRef: string,
-): { baseBranch: string; carryLocalChanges: boolean } {
+// the backend bindings expect. Bases are wire refs (utils/gitRef.ts); ''
+// is the source checkout's current ref, which the backend resolves when the
+// call runs. The sentinel is that base with carry=true, the only base the
+// backend lets carry; anything else passes through with carry=false.
+export function resolveBaseForWire(base: string): { baseBranch: string; carryLocalChanges: boolean } {
   if (isLocalBase(base)) {
-    return { baseBranch: currentRef, carryLocalChanges: true };
+    return { baseBranch: '', carryLocalChanges: true };
   }
   return { baseBranch: base, carryLocalChanges: false };
 }
@@ -45,6 +41,9 @@ export function resolveBaseForWire(
 //   mode='local'         creatingBranch=true  → create branch off newBranchBase, checkout in current workspace
 //   mode='new-worktree'  creatingBranch=false → create worktree pointing at attachBranch (existing branch, or a tag ref checked out detached)
 //   mode='new-worktree'  creatingBranch=true  → create branch off newBranchBase, then worktree pointing at it
+//
+// An empty newBranchBase is the current checkout, whatever it is on when
+// the intent applies.
 //
 // `carryLocalChanges` is intentionally NOT a stored field. It is
 // always `isLocalBase(newBranchBase)` — derived at the wire boundary
@@ -108,22 +107,12 @@ export function setThreadEnvMode(thread: Thread, mode: WorktreeIntentMode): void
   intents = next;
 }
 
-// User clicked "+ new branch" (either inline button in new-worktree
-// mode, or "+ New branch…" inside the BranchPicker dropdown). Default
-// base mirrors the destructive-default convention: dirty workspace
-// pre-selects the LOCAL sentinel so checkout-style data loss is opt-in.
-// Otherwise the base is the checkout's current ref, a tag ref when it is
-// detached at a tag.
-// `fromHere` sets the base to the current ref even over a staged base.
-export function enterCreateBranchMode(
-  thread: Thread,
-  opts: { workspaceDirty: boolean; currentRef: string; fromHere?: boolean },
-): void {
+// Enters the create-branch flow for `thread`, keeping a staged base and
+// otherwise using `defaultBase`. The name is auto-filled in worktree mode
+// (matching the seed flow) and left blank in local mode for the user to
+// type.
+export function enterCreateBranchMode(thread: Thread, defaultBase: string): void {
   const current = worktreeIntentForThread(thread);
-  const baseFallback = opts.workspaceDirty ? LOCAL_BASE_SENTINEL : opts.currentRef;
-  // Auto-fill the name in worktree mode (matches today's seed flow);
-  // leave it blank in local mode so the input starts empty for the
-  // user to type.
   const seedName =
     current.mode === 'new-worktree'
       ? generateWorktreeBranchName(getSettings(threadMachine(thread.id, thread.projectId)).worktreeBranchPrefix)
@@ -132,51 +121,38 @@ export function enterCreateBranchMode(
     ...current,
     creatingBranch: true,
     newBranchName: current.newBranchName || seedName,
-    newBranchBase: opts.fromHere ? opts.currentRef : current.newBranchBase || baseFallback,
+    newBranchBase: current.newBranchBase || defaultBase,
     attachBranch: '',
   });
 }
 
-/** What a pane reads its checkout from: the thread row and the live status. */
-export interface PaneCheckoutSource {
-  readonly thread: Thread | null;
-  readonly gitStatus: { readonly status: GitStatus | null };
-}
-
-/** The pane's current checkout (`currentCheckout`). Reactive. */
-export function paneCheckout(pane: PaneCheckoutSource): CurrentCheckout {
-  return currentCheckout(pane.thread?.branch, pane.gitStatus.status);
-}
-
 /**
- * The one entry into creating a branch from where the pane is: the branch
- * picker's "New branch…" and the inline "+ new branch" keep a staged base
- * and otherwise default to the current checkout's ref (the carry sentinel
- * on a dirty tree). At a detached HEAD at no tag that ref is '', which the
- * backend reads as that HEAD, so its commits are kept.
+ * The branch picker's "New branch…" and the inline "+ new branch": keep a
+ * staged base, else branch from the current checkout (''). A dirty tree in
+ * local mode pre-selects the carry sentinel instead, so that checking out
+ * another base, which discards the changes, is opt-in. Worktree mode leaves
+ * the source tree where it is, so nothing is carried by default.
  */
-export function startNewBranch(
-  pane: PaneCheckoutSource,
-  workspaceDirty = !!pane.gitStatus.status?.hasChanges,
-): void {
+export function startNewBranch(pane: PaneCheckoutSource): void {
   if (!pane.thread) return;
-  enterCreateBranchMode(pane.thread, {
-    workspaceDirty,
-    currentRef: currentCheckoutRef(paneCheckout(pane)),
-  });
+  const carry = worktreeIntentForThread(pane.thread).mode === 'local' && !!pane.gitStatus.status?.hasChanges;
+  enterCreateBranchMode(pane.thread, carry ? LOCAL_BASE_SENTINEL : '');
 }
 
 /**
- * The git menu's "Create branch from here": always the current checkout,
- * replacing any staged base. A dirty tree stays with the new branch because
- * it is cut at the ref the tree is on.
+ * The git menu's "Create branch from here": a branch at the current
+ * checkout, in place, replacing any staged base or worktree. Uncommitted
+ * changes stay with the new branch.
  */
 export function startNewBranchFromHere(pane: PaneCheckoutSource): void {
   if (!pane.thread) return;
-  enterCreateBranchMode(pane.thread, {
-    workspaceDirty: !!pane.gitStatus.status?.hasChanges,
-    currentRef: currentCheckoutRef(paneCheckout(pane)),
-    fromHere: true,
+  const current = worktreeIntentForThread(pane.thread);
+  intents = new Map(intents).set(pane.thread.id, {
+    mode: 'local',
+    creatingBranch: true,
+    newBranchName: current.newBranchName,
+    newBranchBase: '',
+    attachBranch: '',
   });
 }
 

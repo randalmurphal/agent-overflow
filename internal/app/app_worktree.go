@@ -107,7 +107,8 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 // + unstaged + untracked) is stashed under a per-call message, the worktree
 // is created, and the stash is applied in the new worktree before the entry
 // is dropped from the stash stack. carryLocalChanges only applies when the
-// new worktree's base matches the source workspace's current ref — a
+// new worktree's base is the source workspace's current ref
+// (gitops.Core.IsCurrentBase) — a
 // "Local with changes" semantic only makes sense when both ends agree on the
 // base. When base diverges from current, the request is rejected with a
 // clear error so the caller can surface it.
@@ -176,19 +177,26 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 		}
 	}
 	if base.IsZero() || carryLocalChanges {
-		current, err := a.gitCore().CurrentRef(sourceWorkspace)
+		core := a.gitCore()
+		head, err := core.Head(sourceWorkspace)
 		if err != nil {
-			return store.Thread{}, fmt.Errorf("create worktree: read current ref: %w", err)
+			return store.Thread{}, fmt.Errorf("create worktree: read HEAD: %w", err)
 		}
 		if base.IsZero() {
-			base = current
+			base = head.Ref()
 		}
-		// Carry-over only makes sense from the source's current ref. Its
-		// dirty state is what we'd be moving — moving it onto an unrelated
-		// base is a different semantic (rebase-style) we deliberately don't
-		// support.
-		if carryLocalChanges && base != current {
-			return store.Thread{}, fmt.Errorf("create worktree: %w", errCarryRequiresCurrentBase)
+		// Carry-over only makes sense from where the source is
+		// (IsCurrentBase). Its dirty state is what we'd be moving — moving it
+		// onto an unrelated base is a different semantic (rebase-style) we
+		// deliberately don't support.
+		if carryLocalChanges {
+			current, err := core.IsCurrentBase(sourceWorkspace, head, base)
+			if err != nil {
+				return store.Thread{}, fmt.Errorf("create worktree: base: %w", err)
+			}
+			if !current {
+				return store.Thread{}, fmt.Errorf("create worktree: %w", errCarryRequiresCurrentBase)
+			}
 		}
 	}
 
@@ -1234,16 +1242,6 @@ func (a *App) findWorktree(project, path string) (gitops.Worktree, bool, error) 
 	return a.worktreeApplication().Find(project, path)
 }
 
-// cutWorktreeFromFreshBase is the app's one entry point for cutting a NEW
-// worktree branch from a base branch that may also live on origin: chat
-// threads (new-thread and switch-to-worktree) and workflow items all route
-// through it, so the fetch-first rule can't drift between them.
-//
-// It owns the failure posture that internal/git deliberately leaves to the
-// caller: a fetch that fails or times out is a log line and nothing more.
-// The user asked for a worktree, not for a network round trip, and the cut
-// they asked for succeeded — from the local base, exactly as it did before
-// this behaviour existed.
 // undoWorktreeCut takes back a worktree a checkout move cut, and its branch
 // when the cut made it. The move's own error is what its caller reports, so
 // a failure here is logged.
@@ -1254,16 +1252,16 @@ func (a *App) undoWorktreeCut(projectPath, worktreePath, branch string, createdB
 	}
 }
 
-func (a *App) cutWorktreeFromFreshBase(ctx context.Context, projectPath, worktreePath, baseBranch, newBranch string) error {
-	base := gitops.Ref{}
-	if baseBranch = strings.TrimSpace(baseBranch); baseBranch != "" {
-		base = gitops.BranchRef(baseBranch)
-	}
-	return a.cutWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, newBranch)
-}
-
-// cutWorktreeFromFreshRef is cutWorktreeFromFreshBase for any base: a tag
-// or commit base is cut locally with nothing fetched.
+// cutWorktreeFromFreshRef is the app's one entry point for cutting a NEW
+// worktree branch from a base that may also live on origin: chat threads
+// (new-thread and switch-to-worktree) and workflow items all route through
+// it, so the fetch-first rule can't drift between them. A tag or commit
+// base is cut locally with nothing fetched.
+//
+// It owns the failure posture that internal/git deliberately leaves to the
+// caller: a fetch that fails or times out is a log line and nothing more.
+// The user asked for a worktree, not for a network round trip, and the cut
+// they asked for succeeded, from the local base.
 func (a *App) cutWorktreeFromFreshRef(ctx context.Context, projectPath, worktreePath string, base gitops.Ref, newBranch string) error {
 	seed, err := a.gitCore().CreateWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, newBranch)
 	if seed.FetchErr != nil {

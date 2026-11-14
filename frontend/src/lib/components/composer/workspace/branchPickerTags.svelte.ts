@@ -1,8 +1,9 @@
 // The branch picker's tag list. Held only while the picker is open: the
-// owner loads it on open, clears it on close, and a reply that lands after
-// a clear or a newer read is dropped. The list belongs to one workspace: a
-// read for another workspace supersedes everything in flight, so a reply
-// for one repository never lands as another's tags.
+// owner calls `ensure` while it is open and `clear` on close, and a reply
+// that lands after a clear or a newer read is dropped. The list belongs to
+// one workspace: a read for another workspace supersedes everything in
+// flight, so a reply for one repository never lands as another's tags.
+// Every read is a no-op on a backend without `git-tags.v1`.
 
 import { GitListTags, GitRefreshTags } from '../../../stores/bindings';
 import { addErrorToast } from '../../../stores/toast.svelte';
@@ -11,7 +12,7 @@ import type { GitTag, WorkspaceRef } from '../../../types/git';
 import { userFacingError } from '../../../utils/userFacingError';
 import { workspaceKeyBackend, workspaceKeyForRef } from '../../../utils/workspaceKey';
 
-export const GIT_TAGS_CAPABILITY = 'git-tags.v1';
+const GIT_TAGS_CAPABILITY = 'git-tags.v1';
 
 /** Whether the backend that owns `ws` serves `GitListTags` and `GitRefreshTags`. Reactive. */
 export function workspaceHasTags(ws: WorkspaceRef | null): boolean {
@@ -25,7 +26,10 @@ export interface PickerTags {
   /** Why the last read failed, until a read succeeds. */
   readonly error: string | null;
   readonly refreshing: boolean;
-  load(ws: WorkspaceRef): Promise<void>;
+  /** Reads the list for `ws` unless it is already held or being read. */
+  ensure(ws: WorkspaceRef): void;
+  /** Reads the list for `ws` again, after a fetch that may have brought tags. */
+  reload(ws: WorkspaceRef): void;
   /** Forced fetch from origin, then the fresh list. Failure is a toast. */
   refresh(ws: WorkspaceRef): Promise<void>;
   clear(): void;
@@ -35,16 +39,13 @@ export function createPickerTags(): PickerTags {
   let tags = $state.raw<GitTag[]>([]);
   let error = $state<string | null>(null);
   let refreshing = $state(false);
-  // Bumped by every read; a reply from an older read is dropped.
+  // Bumped by every read and every clear; a reply from an older one is dropped.
   let generation = 0;
-  // Bumped by every clear; a refresh from before a clear settles nothing.
-  let clears = 0;
-  // The workspace the held list and any refresh in flight belong to.
+  // The workspace the held list and any read in flight belong to.
   let heldKey: string | null = null;
 
   function clear(): void {
     generation++;
-    clears++;
     heldKey = null;
     tags = [];
     error = null;
@@ -58,6 +59,24 @@ export function createPickerTags(): PickerTags {
     heldKey = key;
   }
 
+  async function read(ws: WorkspaceRef): Promise<void> {
+    if (!workspaceHasTags(ws)) return;
+    bind(ws);
+    // A refresh in flight for this workspace answers with a fresher list.
+    if (refreshing) return;
+    const at = ++generation;
+    try {
+      const res = (await GitListTags(ws)) as GitTag[] | null;
+      if (at !== generation) return;
+      tags = Array.isArray(res) ? res : [];
+      error = null;
+    } catch (err) {
+      if (at !== generation) return;
+      tags = [];
+      error = userFacingError(err);
+    }
+  }
+
   return {
     get tags() {
       return tags;
@@ -68,37 +87,27 @@ export function createPickerTags(): PickerTags {
     get refreshing() {
       return refreshing;
     },
-    async load(ws) {
-      bind(ws);
-      // A refresh in flight for this workspace answers with a fresher list.
-      if (refreshing) return;
-      const read = ++generation;
-      try {
-        const res = (await GitListTags(ws)) as GitTag[] | null;
-        if (read !== generation) return;
-        tags = Array.isArray(res) ? res : [];
-        error = null;
-      } catch (err) {
-        if (read !== generation) return;
-        tags = [];
-        error = userFacingError(err);
-      }
+    ensure(ws) {
+      if (workspaceKeyForRef(ws) === heldKey) return;
+      void read(ws);
+    },
+    reload(ws) {
+      void read(ws);
     },
     async refresh(ws) {
       bind(ws);
       if (refreshing) return;
       refreshing = true;
-      const cleared = clears;
-      const read = ++generation;
+      const at = ++generation;
       try {
         const res = (await GitRefreshTags(ws)) as GitTag[] | null;
-        if (read !== generation) return;
+        if (at !== generation) return;
         tags = Array.isArray(res) ? res : [];
         error = null;
       } catch (err) {
         addErrorToast(`Failed to refresh tags: ${userFacingError(err)}`, err);
       } finally {
-        if (cleared === clears) refreshing = false;
+        if (at === generation) refreshing = false;
       }
     },
     clear,

@@ -1,7 +1,6 @@
 package git
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,20 +13,11 @@ func (c *Core) CreateWorktree(cwd, path, branch string) error {
 	return c.CreateWorktreeFromBranch(cwd, path, "", branch)
 }
 
-// AttachWorktree is AttachWorktreeAt for an existing branch.
-func (c *Core) AttachWorktree(cwd, path, branch string) (createdBranch bool, err error) {
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return false, errors.New("git worktree branch is required")
-	}
-	return c.AttachWorktreeAt(cwd, path, BranchRef(branch))
-}
-
 // AttachWorktreeAt creates a new worktree at path checking out ref as it
-// is. A branch, a local one or one only a remote has (origin, else the one
-// remote that does), is checked out on itself and fails if another worktree
-// has it (git's one branch, one worktree invariant); a branch that exists
-// nowhere is an error. A tag or commit leaves the worktree detached there,
+// is. A branch, a local one or one only a remote has (checkoutSource), is
+// checked out on itself and fails if another worktree has it (git's one
+// branch, one worktree invariant); a branch that exists nowhere, or only on
+// several remotes other than origin, is an error. A tag or commit leaves the worktree detached there,
 // and any number of worktrees may sit on one tag. createdBranch reports
 // that the branch was a remote's alone and this call made the local branch,
 // which a caller undoing the attach deletes with the worktree. A failed
@@ -47,31 +37,28 @@ func (c *Core) AttachWorktreeAt(cwd, path string, ref Ref) (createdBranch bool, 
 		return false, err
 	}
 	defer unlock()
+	ownedBranch := ""
 	if ref.IsBranch() {
 		// A branch only a remote has is made a local branch tracking it,
-		// named explicitly (remoteTrackingCandidate). Left to git, a name
-		// with no local branch detaches at a tag or commit of that name, and
-		// its remote guess needs exactly one remote to have it.
-		local, err := c.branchExistsChecked(cwd, ref.Name)
+		// named explicitly. Left to git, a name with no local branch detaches
+		// at a tag or commit of that name, and its remote guess needs exactly
+		// one remote to have it.
+		local, remote, err := c.checkoutSource(cwd, ref.Name)
 		if err != nil {
 			return false, err
 		}
 		if !local {
-			remote, err := c.remoteTrackingCandidate(cwd, ref.Name)
-			if err != nil {
-				return false, err
-			}
 			_, stderr, err := c.Execute(cwd, "branch", "--track", "--", ref.Name, "refs/remotes/"+remote+"/"+ref.Name)
 			if err != nil {
 				return false, fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
 			}
-			createdBranch = true
+			ownedBranch = ref.Name
 		}
 	}
-	if err := c.checkoutWorktree(cwd, path, ref, createdBranch); err != nil {
+	if err := c.checkoutWorktree(cwd, path, ref, ownedBranch); err != nil {
 		return false, err
 	}
-	return createdBranch, nil
+	return ownedBranch != "", nil
 }
 
 // CreateWorktreeFromBranch is CreateWorktreeFromRef from a base branch;
@@ -157,7 +144,7 @@ func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack
 		}
 		return fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
 	}
-	return c.checkoutWorktree(cwd, path, BranchRef(newBranch), true)
+	return c.checkoutWorktree(cwd, path, BranchRef(newBranch), newBranch)
 }
 
 // checkoutWorktree checks ref out in a new worktree at path: a branch on
@@ -167,14 +154,14 @@ func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack
 // to this attempt (checkoutLockReason), and a failed checkout takes back
 // only what carries it: a failing post-checkout hook leaves the worktree
 // registered and locked, so the registration locked with this attempt's
-// reason is removed, and then, when ownsBranch (the caller made the branch
-// for this worktree), the branch is deleted. A registration another process
+// reason is removed, and then ownedBranch, the branch the caller made for
+// this worktree ("" for none), is deleted. A registration another process
 // made at path, or one git refused the add for, carries no such lock and
 // stays as it was; a branch the caller did not make is never deleted. What
 // the undo could not take back is joined to git's diagnosis. A checkout that
 // succeeded and could not be unlocked is a failure too, undone the same
 // way, so an error means the call left nothing behind.
-func (c *Core) checkoutWorktree(cwd, path string, ref Ref, ownsBranch bool) error {
+func (c *Core) checkoutWorktree(cwd, path string, ref Ref, ownedBranch string) error {
 	reason := checkoutLockReason + uuid.NewString()
 	if c.beforeWorktreeAdd != nil {
 		c.beforeWorktreeAdd(path)
@@ -186,10 +173,6 @@ func (c *Core) checkoutWorktree(cwd, path string, ref Ref, ownsBranch bool) erro
 		target = ref.revision()
 	}
 	args = append(args, "--", path, target)
-	ownedBranch := ""
-	if ownsBranch && ref.IsBranch() {
-		ownedBranch = ref.Name
-	}
 	_, stderr, err := c.Execute(cwd, args...)
 	if err != nil {
 		failure := fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
@@ -229,11 +212,3 @@ func (c *Core) undoCheckout(cwd, ownedBranch, reason string, failure error) erro
 // checkoutLockReason prefixes the lock reason checkoutWorktree adds a
 // worktree with; a random id follows it, so the lock names one attempt.
 const checkoutLockReason = "Agent Overflow checkout "
-
-// CreateWorktreeFromFreshBase is CreateWorktreeFromFreshRef from a base
-// branch; an empty baseBranch cuts from the current HEAD.
-func (c *Core) CreateWorktreeFromFreshBase(
-	ctx context.Context, cwd, path, baseBranch, newBranch string,
-) (WorktreeSeed, error) {
-	return c.CreateWorktreeFromFreshRef(ctx, cwd, path, branchArg(baseBranch), newBranch)
-}

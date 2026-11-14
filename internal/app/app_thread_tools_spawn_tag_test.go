@@ -109,7 +109,7 @@ func TestThreadSpawnChecksATagOutDetached(t *testing.T) {
 		"tag with base_local":         {threadtools.SpawnCall{Prompt: "x", WorktreeBranch: "v1.0", WorktreeBaseLocal: true}, `"v1.0" is a tag, so worktree checks it out as it is`},
 		"refs/tags/ tag with base":    {threadtools.SpawnCall{Prompt: "x", WorktreeBranch: "refs/tags/v1.0", WorktreeBase: "main"}, "is a tag"},
 		"branch of a tag's name+base": {threadtools.SpawnCall{Prompt: "x", WorktreeBranch: "both", WorktreeBase: "main"}, `Branch "both" is checked out at`},
-		"missing tag":                 {threadtools.SpawnCall{Prompt: "x", WorktreeBranch: "refs/tags/nope"}, `Neither this computer nor origin has a tag "nope"`},
+		"missing tag":                 {threadtools.SpawnCall{Prompt: "x", WorktreeBranch: "refs/tags/nope"}, `This computer has no tag "nope" as of its last fetch from origin`},
 		"unknown base":                {threadtools.SpawnCall{Prompt: "x", WorktreeBranch: "b", WorktreeBase: "nowhere"}, "Name an existing branch or tag as base"},
 		"unknown local base":          {threadtools.SpawnCall{Prompt: "x", WorktreeBranch: "b", WorktreeBase: "nowhere", WorktreeBaseLocal: true}, "no local branch or tag"},
 	} {

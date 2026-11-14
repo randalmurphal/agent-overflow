@@ -46,6 +46,7 @@ describe('<ChatHeaderFactsLine> branch segment', () => {
     const segment = await renderAt(detached());
     expect(segment).toHaveTextContent('detached at 9f8e7d6');
     expect(segment.dataset.checkoutKind).toBe('commit');
+    expect(segment.getAttribute('title')).toBe('Commit: 9f8e7d6');
     expect(segment.querySelector('.lucide-git-commit-horizontal')).not.toBeNull();
   });
 
@@ -61,6 +62,7 @@ describe('<ChatHeaderFactsLine> branch segment', () => {
     const segment = await renderAt(null, 'main');
     expect(segment).toHaveTextContent('main');
     expect(segment.dataset.checkoutKind).toBe('branch');
+    expect(segment.getAttribute('title')).toBe('Branch: main');
     expect(segment.querySelector('.lucide-git-branch')).not.toBeNull();
   });
 });

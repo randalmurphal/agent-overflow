@@ -28,27 +28,24 @@
   import { isImeComposingEvent } from '../../../utils/imeComposition';
   import {
     exitCreateBranchMode,
-    paneCheckout,
     setNewBranchName,
     startNewBranch,
     worktreeIntentForThread,
   } from '../../../stores/worktreeIntent.svelte';
   import { applyWorktreeIntentNow } from '../../../stores/worktreeIntentMaterialize';
-  import { currentCheckoutRef, refLabel } from '../../../utils/gitRef';
+  import { checkoutDisplay, paneCheckout, refCheckout } from '../../../utils/checkout';
 
   interface Props {
     pane: ThreadPane;
-    workspaceDirty: boolean;
     workspaceLock: WorkspaceChangeLockState;
   }
 
-  let { pane, workspaceDirty, workspaceLock }: Props = $props();
+  let { pane, workspaceLock }: Props = $props();
 
   let applying = $state(false);
 
   let intent = $derived(worktreeIntentForThread(pane.thread));
   let inputId = $derived(`new-branch-name-${pane.thread?.id ?? 'none'}`);
-  let currentRef = $derived(currentCheckoutRef(paneCheckout(pane)));
   let showInput = $derived(intent.creatingBranch);
   let showButton = $derived(!intent.creatingBranch && intent.mode === 'new-worktree');
   let nameMissing = $derived(intent.creatingBranch && !intent.newBranchName.trim());
@@ -85,7 +82,9 @@
     applying = true;
     const wasWorktree = intent.mode === 'new-worktree';
     // An attach to a tag binds no branch; the toast names the tag instead.
-    const attachTarget = intent.creatingBranch ? '' : refLabel(intent.attachBranch || currentRef);
+    const attachTarget = intent.creatingBranch
+      ? ''
+      : checkoutDisplay(intent.attachBranch ? refCheckout(intent.attachBranch) : paneCheckout(pane)).name;
     try {
       const applied = await applyWorktreeIntentNow(pane);
       if (applied) {
@@ -119,7 +118,7 @@
 
   function startCreate(): void {
     if (!pane.thread) return;
-    startNewBranch(pane, workspaceDirty);
+    startNewBranch(pane);
   }
 
   const smallButtonClasses = [

@@ -211,21 +211,111 @@ func TestStatusOfAnUnbornBranchHasNoHeadCommit(t *testing.T) {
 	}
 }
 
-func TestCurrentRef(t *testing.T) {
+func TestHead(t *testing.T) {
 	t.Parallel()
 	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "tag", "v1")
+	v1 := revParse(t, repo, "HEAD")
 	core := NewCore()
-	if ref, err := core.CurrentRef(repo); err != nil || ref != BranchRef("main") {
-		t.Fatalf("on main: CurrentRef = %+v, %v", ref, err)
+	if head, err := core.Head(repo); err != nil || head != (Head{Branch: "main"}) || head.Ref() != BranchRef("main") {
+		t.Fatalf("on main: Head = %+v, %v", head, err)
 	}
 	testutil.RunGit(t, repo, "checkout", "-q", "--detach", "v1")
-	if ref, err := core.CurrentRef(repo); err != nil || ref != TagRef("v1") {
-		t.Fatalf("at v1: CurrentRef = %+v, %v", ref, err)
+	if head, err := core.Head(repo); err != nil || head != (Head{Commit: v1, Tag: "v1"}) || head.Ref() != TagRef("v1") {
+		t.Fatalf("at v1: Head = %+v, %v", head, err)
 	}
-	head := emptyCommit(t, repo, "detached work")
-	if ref, err := core.CurrentRef(repo); err != nil || ref != CommitRef(head) {
-		t.Fatalf("past v1: CurrentRef = %+v, %v; want commit %s", ref, err, head)
+	past := emptyCommit(t, repo, "detached work")
+	if head, err := core.Head(repo); err != nil || head != (Head{Commit: past}) || head.Ref() != CommitRef(past) {
+		t.Fatalf("past v1: Head = %+v, %v; want commit %s", head, err, past)
+	}
+	unborn := t.TempDir()
+	testutil.RunGit(t, unborn, "init", "-q", "-b", "fresh")
+	if head, err := core.Head(unborn); err != nil || head != (Head{Branch: "fresh"}) {
+		t.Fatalf("unborn: Head = %+v, %v", head, err)
+	}
+	if _, err := core.Head(t.TempDir()); err == nil {
+		t.Fatal("Head outside a repository succeeded")
+	}
+}
+
+// On a detached HEAD any ref at its commit is the current base; on a
+// branch only the branch is.
+func TestIsCurrentBase(t *testing.T) {
+	t.Parallel()
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "tag", "pair-a")
+	testutil.RunGit(t, repo, "tag", "pair-b")
+	testutil.RunGit(t, repo, "branch", "twin")
+	emptyCommit(t, repo, "elsewhere")
+	testutil.RunGit(t, repo, "tag", "later")
+	core := NewCore()
+	check := func(label string, base Ref, want bool) {
+		t.Helper()
+		head, err := core.Head(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := core.IsCurrentBase(repo, head, base); err != nil || got != want {
+			t.Errorf("%s: IsCurrentBase(%+v, %+v) = %v, %v; want %v", label, head, base, got, err, want)
+		}
+	}
+	check("own branch", BranchRef("main"), true)
+	check("tag at the branch tip", TagRef("later"), false)
+	check("HEAD", Ref{}, true)
+
+	testutil.RunGit(t, repo, "checkout", "-q", "--detach", "pair-a")
+	check("own tag", TagRef("pair-a"), true)
+	check("other tag at the commit", TagRef("pair-b"), true)
+	check("branch at the commit", BranchRef("twin"), true)
+	check("tag elsewhere", TagRef("later"), false)
+	check("missing tag", TagRef("nope"), false)
+	if _, err := core.IsCurrentBase(repo, Head{Commit: revParse(t, repo, "HEAD")}, BranchRef("--bad")); err == nil {
+		t.Error("IsCurrentBase accepted a flag-shaped base")
+	}
+}
+
+// ResolveWorktreeTarget: a spelled-out ref is exactly that ref and never
+// tidied; a bare name is a branch to check out, else a tag, else a branch
+// to create named by newBranch; an empty or untidy plain name is a branch
+// to create with nothing looked up.
+func TestResolveWorktreeTarget(t *testing.T) {
+	t.Parallel()
+	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	originOnlyBranch(t, bare, "remote-only")
+	testutil.RunGit(t, repo, "branch", "dup")
+	testutil.RunGit(t, repo, "tag", "dup")
+	testutil.RunGit(t, repo, "tag", "v1")
+	tidy := func(typed string) string {
+		if typed == "" {
+			return "generated"
+		}
+		return "tidy-" + strings.ReplaceAll(typed, " ", "-")
+	}
+	core := NewCore()
+	for _, tc := range []struct {
+		name string
+		want WorktreeTarget
+	}{
+		{"dup", WorktreeTarget{Ref: BranchRef("dup"), Exists: true}},
+		{"refs/tags/dup", WorktreeTarget{Ref: TagRef("dup"), Exists: true}},
+		{"v1", WorktreeTarget{Ref: TagRef("v1"), Exists: true}},
+		{"remote-only", WorktreeTarget{Ref: BranchRef("remote-only"), Exists: true}},
+		{"fresh", WorktreeTarget{Ref: BranchRef("tidy-fresh")}},
+		{"refs/heads/fresh", WorktreeTarget{Ref: BranchRef("fresh")}},
+		{"refs/heads/v1", WorktreeTarget{Ref: BranchRef("v1")}},
+		{"refs/tags/nope", WorktreeTarget{Ref: TagRef("nope")}},
+		{"my thing", WorktreeTarget{Ref: BranchRef("tidy-my-thing")}},
+		{"", WorktreeTarget{Ref: BranchRef("generated")}},
+	} {
+		got, _, err := core.ResolveWorktreeTarget(t.Context(), repo, tc.name, tidy)
+		if err != nil || got != tc.want {
+			t.Errorf("ResolveWorktreeTarget(%q) = %+v, %v; want %+v", tc.name, got, err, tc.want)
+		}
+	}
+	for _, name := range []string{"refs/tags/a..b", "refs/heads/a..b"} {
+		if got, _, err := core.ResolveWorktreeTarget(t.Context(), repo, name, tidy); err == nil {
+			t.Errorf("ResolveWorktreeTarget(%q) = %+v, want the invalid name refused", name, got)
+		}
 	}
 }
 

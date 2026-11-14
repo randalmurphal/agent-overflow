@@ -8,10 +8,11 @@ import {
   placeholderWorkspaceOf,
 } from '../../../stores/draftWorkspaceSync';
 import { warnLeftBehind } from '../../../stores/gitLeftBehind';
-import { applyCheckoutState } from '../../../stores/gitStatusStore.svelte';
+import { applyCheckoutAnswer } from '../../../stores/gitStatusStore.svelte';
 import { addErrorToast, addToast } from '../../../stores/toast.svelte';
 import type { ThreadPane } from '../../../stores/thread.svelte';
 import type { GitWorkspaceState, WorkspaceRef } from '../../../types/git';
+import { checkoutDisplay, checkoutOf } from '../../../utils/checkout';
 import { sameNormalizedPath } from '../../../utils/path';
 import { userFacingError } from '../../../utils/userFacingError';
 import type { PickerRow } from './branchPickerRows';
@@ -35,12 +36,12 @@ export async function checkoutPickerRow(
   const placeholderId = pane.draftPlaceholder?.id ?? '';
   try {
     const next = (await GitCheckout(ws, row.ref)) as GitWorkspaceState;
+    applyCheckoutAnswer(ws, next);
     const checkedOut = placeholderWorkspaceOf(next);
-    // A tag checkout has no branch; only a branch row names one.
-    if (!checkedOut.branch && row.kind === 'branch') checkedOut.branch = row.name;
-    // The branch, tag or detached commit the label shows, before the status
-    // stream reports it.
-    applyCheckoutState(ws, { ...next, branch: checkedOut.branch });
+    // The answer's status names the branch ('' on a tag). An answer without
+    // one comes from an older backend; a branch row names its own branch.
+    if (next.status) checkedOut.branch = next.status.branch ?? '';
+    else if (!checkedOut.branch && row.kind === 'branch') checkedOut.branch = row.name;
     // A checkout happens in a DIRECTORY. Persisted thread rows in it are
     // re-branched by the backend and arrive as a thread:updated broadcast;
     // draft composers have no row for that broadcast to name, so they are
@@ -62,7 +63,8 @@ export async function checkoutPickerRow(
     // Recorded against the captured project, not the pane's current one:
     // the checkout happened in that project whatever the pane shows now.
     recordBranchSelection(ws.projectId, row.ref);
-    addToast('info', `Checked out ${checkedOut.branch || next.tag || row.name}`);
+    const name = next.status ? checkoutDisplay(checkoutOf(next.status)).label : row.name;
+    addToast('info', `Checked out ${name}`);
     warnLeftBehind(next);
   } catch (err) {
     console.error('branch checkout failed:', err);

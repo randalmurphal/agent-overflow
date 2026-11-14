@@ -45,7 +45,8 @@ export function primaryActionFor(status: GitStatus | null): PrimaryAction {
   if (status.hasChanges) {
     return { label: 'Commit', action: 'commit', disabled: false, tooltip: 'Stage and commit changes' };
   }
-  // A detached HEAD has no branch to push or pull, whatever counts it holds.
+  // On no branch (detached, or none reported) there is nothing to push or
+  // pull, whatever counts the status holds.
   if (!status.branch) {
     return { label: 'Commit', action: 'commit', disabled: true, tooltip: 'No changes to commit' };
   }
@@ -72,7 +73,7 @@ export function primaryActionFor(status: GitStatus | null): PrimaryAction {
  * Whether the menu's Push item is offered. Git porcelain reports no
  * ahead/behind counts for a branch without an upstream, so a branch that
  * was never pushed has aheadCount 0; the backend push sets the upstream in
- * that case. A detached HEAD (empty branch) has nothing to push.
+ * that case. A checkout on no branch has nothing to push.
  */
 export function menuPushEnabled(status: GitStatus): boolean {
   if (!status.branch) return false;

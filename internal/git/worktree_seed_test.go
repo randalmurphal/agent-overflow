@@ -56,9 +56,9 @@ func TestWorktreeSeedCutsFromTheFetchedOriginTip(t *testing.T) {
 
 	core := NewCore()
 	worktree := filepath.Join(t.TempDir(), "seeded")
-	seed, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, worktree, "main", "ao-seeded")
+	seed, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, worktree, BranchRef("main"), "ao-seeded")
 	if err != nil {
-		t.Fatalf("CreateWorktreeFromFreshBase: %v", err)
+		t.Fatalf("CreateWorktreeFromFreshRef: %v", err)
 	}
 	if seed.FetchErr != nil {
 		t.Fatalf("fetch against a local bare origin failed: %v", seed.FetchErr)
@@ -102,7 +102,7 @@ func TestWorktreeSeedFallsBackToLocalWhenTheFetchFails(t *testing.T) {
 	}
 
 	worktree := filepath.Join(t.TempDir(), "fallback")
-	seed, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, worktree, "main", "ao-fallback")
+	seed, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, worktree, BranchRef("main"), "ao-fallback")
 	if err != nil {
 		t.Fatalf("a failed fetch must not fail worktree creation: %v", err)
 	}
@@ -123,9 +123,9 @@ func TestWorktreeSeedFallsBackToLocalWhenTheFetchFails(t *testing.T) {
 		return core.fetchOriginQuiet(ctx, cwd)
 	}
 	second := filepath.Join(t.TempDir(), "recovered")
-	seed, err = core.CreateWorktreeFromFreshBase(t.Context(), repo, second, "main", "ao-recovered")
+	seed, err = core.CreateWorktreeFromFreshRef(t.Context(), repo, second, BranchRef("main"), "ao-recovered")
 	if err != nil {
-		t.Fatalf("CreateWorktreeFromFreshBase after recovery: %v", err)
+		t.Fatalf("CreateWorktreeFromFreshRef after recovery: %v", err)
 	}
 	if seed.FetchErr != nil || !seed.FromRemote {
 		t.Fatalf("seed = %+v, want a successful fetch and the remote base", seed)
@@ -155,7 +155,7 @@ func TestWorktreeSeedFallsBackWhenTheFetchTimesOut(t *testing.T) {
 
 	worktree := filepath.Join(t.TempDir(), "timeout")
 	start := time.Now()
-	seed, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, worktree, "main", "ao-timeout")
+	seed, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, worktree, BranchRef("main"), "ao-timeout")
 	if err != nil {
 		t.Fatalf("a timed-out fetch must not fail worktree creation: %v", err)
 	}
@@ -190,11 +190,11 @@ func TestWorktreeSeedReusesTheSharedFetchWindow(t *testing.T) {
 	}
 
 	first := filepath.Join(t.TempDir(), "first")
-	if _, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, first, "main", "ao-first"); err != nil {
+	if _, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, first, BranchRef("main"), "ao-first"); err != nil {
 		t.Fatalf("first cut: %v", err)
 	}
 	second := filepath.Join(t.TempDir(), "second")
-	seed, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, second, "main", "ao-second")
+	seed, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, second, BranchRef("main"), "ao-second")
 	if err != nil {
 		t.Fatalf("second cut: %v", err)
 	}
@@ -225,9 +225,9 @@ func TestWorktreeSeedSkipsTheFetchWithoutAnOrigin(t *testing.T) {
 	calls := countingFetch(core)
 
 	worktree := filepath.Join(t.TempDir(), "no-origin")
-	seed, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, worktree, "main", "ao-no-origin")
+	seed, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, worktree, BranchRef("main"), "ao-no-origin")
 	if err != nil {
-		t.Fatalf("CreateWorktreeFromFreshBase: %v", err)
+		t.Fatalf("CreateWorktreeFromFreshRef: %v", err)
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("fetch ran %d times against a repo with no origin, want 0", got)
@@ -252,9 +252,9 @@ func TestWorktreeSeedUsesTheLocalBaseWhenOriginHasNoSuchBranch(t *testing.T) {
 	core := NewCore()
 	calls := countingFetch(core)
 	worktree := filepath.Join(t.TempDir(), "local-only")
-	seed, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, worktree, "local-only", "ao-local-only")
+	seed, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, worktree, BranchRef("local-only"), "ao-local-only")
 	if err != nil {
-		t.Fatalf("CreateWorktreeFromFreshBase: %v", err)
+		t.Fatalf("CreateWorktreeFromFreshRef: %v", err)
 	}
 	// The fetch still runs — whether origin has this branch is only
 	// knowable after it — but the cut falls back to the local ref.
@@ -276,9 +276,9 @@ func TestWorktreeSeedWithoutABaseCutsFromHeadAndNeverFetches(t *testing.T) {
 	calls := countingFetch(core)
 
 	worktree := filepath.Join(t.TempDir(), "from-head")
-	seed, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, worktree, "", "ao-from-head")
+	seed, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, worktree, Ref{}, "ao-from-head")
 	if err != nil {
-		t.Fatalf("CreateWorktreeFromFreshBase: %v", err)
+		t.Fatalf("CreateWorktreeFromFreshRef: %v", err)
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("fetch ran %d times with no base branch to resolve, want 0", got)
@@ -298,7 +298,7 @@ func TestWorktreeSeedRejectsAFlagShapedBaseBeforeFetching(t *testing.T) {
 	calls := countingFetch(core)
 
 	worktree := filepath.Join(t.TempDir(), "rejected")
-	if _, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, worktree, "--upload-pack=x", "ao-rejected"); err == nil {
+	if _, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, worktree, BranchRef("--upload-pack=x"), "ao-rejected"); err == nil {
 		t.Fatal("expected a flag-shaped base branch to be rejected")
 	}
 	if got := calls.Load(); got != 0 {
@@ -315,7 +315,7 @@ func TestWorktreeSeedReportsCreationFailureWithTheFetchDiagnostics(t *testing.T)
 	// `main` already exists, so the cut fails at the branch preflight —
 	// after the fetch. The seed still describes what the cut would have
 	// used, so a caller logging FetchErr can't lose it to an error return.
-	seed, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, worktree, "main", "main")
+	seed, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, worktree, BranchRef("main"), "main")
 	if err == nil {
 		t.Fatal("expected the cut to fail on an existing branch")
 	}
@@ -328,8 +328,8 @@ func TestWorktreeSeedRejectsANonRepository(t *testing.T) {
 	t.Parallel()
 	core := NewCore()
 	calls := countingFetch(core)
-	if _, err := core.CreateWorktreeFromFreshBase(
-		t.Context(), t.TempDir(), filepath.Join(t.TempDir(), "wt"), "main", "ao-nonrepo",
+	if _, err := core.CreateWorktreeFromFreshRef(
+		t.Context(), t.TempDir(), filepath.Join(t.TempDir(), "wt"), BranchRef("main"), "ao-nonrepo",
 	); err == nil {
 		t.Fatal("expected an error outside a repository")
 	}
@@ -359,9 +359,9 @@ func TestWorktreeSeedUsesTheTrackingRefForAnOriginOnlyBaseAfterAFailedFetch(t *t
 	core.fetchFn = func(context.Context, string) error { return failure }
 
 	worktree := filepath.Join(t.TempDir(), "origin-only")
-	seed, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, worktree, "release/2.4", "ao-origin-only")
+	seed, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, worktree, BranchRef("release/2.4"), "ao-origin-only")
 	if err != nil {
-		t.Fatalf("CreateWorktreeFromFreshBase: %v", err)
+		t.Fatalf("CreateWorktreeFromFreshRef: %v", err)
 	}
 	if !errors.Is(seed.FetchErr, failure) {
 		t.Fatalf("seed.FetchErr = %v, want %v", seed.FetchErr, failure)
@@ -462,7 +462,7 @@ func TestAttachWorktreeChecksOutABranchOnlyOriginHasTrackingOrigin(t *testing.T)
 
 	core := NewCore()
 	worktree := filepath.Join(t.TempDir(), "mr")
-	if created, err := core.AttachWorktree(repo, worktree, "feature/mr"); err != nil || !created {
+	if created, err := core.AttachWorktreeAt(repo, worktree, BranchRef("feature/mr")); err != nil || !created {
 		t.Fatalf("AttachWorktree = created %v, %v; want the local branch made from origin's", created, err)
 	}
 	if head := revParse(t, worktree, "HEAD"); head != revParse(t, repo, "origin/feature/mr") {

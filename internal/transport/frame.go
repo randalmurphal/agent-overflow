@@ -124,7 +124,7 @@ const CapabilityPRSuggestionsReactions = "pr-suggestions-reactions.v1"
 
 // CapabilityGitTags names tag checkout: GitListTags, GitRefreshTags, a
 // "refs/tags/<name>" ref wherever a branch name travels, the tag and
-// headCommit of GitStatus and GitWorkspaceState, GitWorkspaceState's
+// headCommit of GitStatus, GitWorkspaceState's status and
 // leftBehind, WorktreeStatus.orphanCommits and WorktreeListItem.tag. A
 // client reading a backend without it offers no tags.
 const CapabilityGitTags = "git-tags.v1"
