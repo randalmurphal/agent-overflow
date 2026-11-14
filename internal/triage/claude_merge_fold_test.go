@@ -560,21 +560,88 @@ func TestClaudeMergeFold_DeferredMemberHasNoRowToDelete(t *testing.T) {
 	}
 }
 
-// TestFlushSendDigestLedgerIsBounded pins the retention rule: the ledger holds
-// a fixed window of recent flush sends, so a long-lived thread cannot grow it.
+// Nine messages flushed during one turn and merged at its boundary fold into
+// the survivor: the evidence for every member is kept until its boundary
+// resolves, however many there are.
+func TestClaudeMergeFold_NineMessages(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	const members = 9
+	rows := make([]store.Item, 0, members)
+	texts := make([]string, 0, members)
+	for n := 1; n <= members; n++ {
+		text := fmt.Sprintf("message %d", n)
+		texts = append(texts, text)
+		rows = append(rows, mergeFoldSend(t, router, "t1", fmt.Sprintf("user:3:flush:%d", n), fmt.Sprintf("uuid-%d", n), text, nil,
+			usermessage.Meta{SendID: fmt.Sprintf("send-%d", n)}, 3, 4))
+	}
+	for n := 1; n < members; n++ {
+		if err := router.Handle(mergeEcho(t, "t1", fmt.Sprintf("uuid-%d", n), textBlocks(texts[n-1]), false)); err != nil {
+			t.Fatalf("merged-away echo %d: %v", n, err)
+		}
+	}
+	if err := router.Handle(mergeEcho(t, "t1", fmt.Sprintf("uuid-%d", members), textBlocks(texts...), true)); err != nil {
+		t.Fatalf("survivor echo: %v", err)
+	}
+	for _, gone := range rows[:members-1] {
+		if _, found := rowSummary(t, st, "t1", gone.ID); found {
+			t.Errorf("row %s survived the fold", gone.ID)
+		}
+	}
+	survivor, found := rowSummary(t, st, "t1", rows[members-1].ID)
+	if !found {
+		t.Fatal("the survivor row is gone")
+	}
+	if want := strings.Join(texts, usermessage.JoinSeparator); survivor.Summary != want {
+		t.Errorf("survivor summary:\n got %q\nwant %q", survivor.Summary, want)
+	}
+}
+
+// The ledger keeps a send's evidence while a send at or after it waits for
+// its echo, since a merge's members precede its survivor, and retires it once
+// none does.
+func TestFlushSendDigestLedgerRetiresResolvedSends(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	ledger := func() []string {
+		router.mu.Lock()
+		defer router.mu.Unlock()
+		var ids []string
+		for _, entry := range router.threadStateIfPresent("t1").recentFlushDigests {
+			ids = append(ids, entry.AOItemID)
+		}
+		return ids
+	}
+	mergeFoldSend(t, router, "t1", "user:3:flush:1", "uuid-1", "one", nil, usermessage.Meta{SendID: "send-1"}, 3, 4)
+	mergeFoldSend(t, router, "t1", "user:3:flush:2", "uuid-2", "two", nil, usermessage.Meta{SendID: "send-2"}, 3, 4)
+	if err := router.Handle(mergeEcho(t, "t1", "uuid-1", textBlocks("one"), false)); err != nil {
+		t.Fatal(err)
+	}
+	if got := ledger(); !slices.Equal(got, []string{"user:3:flush:1", "user:3:flush:2"}) {
+		t.Fatalf("ledger with the second send waiting = %v, want both: the first may be merged into it", got)
+	}
+	if err := router.Handle(mergeEcho(t, "t1", "uuid-2", textBlocks("two"), true)); err != nil {
+		t.Fatal(err)
+	}
+	if got := ledger(); len(got) != 0 {
+		t.Fatalf("ledger with no send waiting = %v, want it empty", got)
+	}
+}
+
+// The ledger is bounded by the sends that can be outstanding at once.
 func TestFlushSendDigestLedgerIsBounded(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	for i := 0; i < flushSendDigestHistory*3; i++ {
-		router.RegisterPendingFlushResendWithExpectation("t1", "user:0:flush:"+string(rune('a'+i)), 0,
-			PendingSendExpectation{ContentBlockDigest: []string{"t:" + string(rune('a'+i))}})
+	for i := 0; i < maxOutstandingFlushSends*2; i++ {
+		router.RegisterPendingFlushResendWithExpectation("t1", fmt.Sprintf("user:0:flush:%d", i), 0,
+			PendingSendExpectation{ContentBlockDigest: []string{fmt.Sprintf("t:%d", i)}})
 	}
 	router.mu.Lock()
 	got := len(router.threadStateIfPresent("t1").recentFlushDigests)
 	router.mu.Unlock()
-	if got != flushSendDigestHistory {
-		t.Errorf("ledger length: got %d, want the %d-entry bound", got, flushSendDigestHistory)
+	if got != maxOutstandingFlushSends {
+		t.Errorf("ledger length: got %d, want the %d-entry bound", got, maxOutstandingFlushSends)
 	}
 }
 

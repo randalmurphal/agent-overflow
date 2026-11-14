@@ -274,6 +274,11 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 		// provably contains it (round-5, R5-3).
 		r.reinsertPendingSendHead(evt.ThreadID, pending)
 	}
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(evt.ThreadID); st != nil {
+		st.retireResolvedFlushDigests()
+	}
+	r.mu.Unlock()
 	return handleErr
 }
 

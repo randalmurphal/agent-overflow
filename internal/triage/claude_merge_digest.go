@@ -21,12 +21,12 @@ type flushSendDigest struct {
 	Digest   []string
 }
 
-// flushSendDigestHistory bounds recentFlushDigests. The CLI merges the
-// commands sitting in its queue at one turn boundary; that is bounded by how
-// many messages a person types during a single turn, and the ledger only has
-// to reach back far enough to decompose one such batch. Eight is well past any
-// observed batch and still nothing to hold.
-const flushSendDigestHistory = 8
+// maxOutstandingFlushSends bounds recentFlushDigests by the most messages
+// that can wait in a thread's queue at once (the app's queueMaxLength). The
+// ledger holds only sends whose boundary is unresolved
+// (retireResolvedFlushDigests), and every one of them was dispatched from
+// that queue.
+const maxOutstandingFlushSends = 64
 
 // recordFlushSendDigest appends a flush send to the thread's ledger, evicting
 // the oldest entry past the bound. A re-registration of the same row id (a
@@ -41,9 +41,32 @@ func (st *threadState) recordFlushSendDigest(aoItemID string, digest []string) {
 		AOItemID: aoItemID,
 		Digest:   slices.Clone(digest),
 	})
-	if overflow := len(st.recentFlushDigests) - flushSendDigestHistory; overflow > 0 {
+	if overflow := len(st.recentFlushDigests) - maxOutstandingFlushSends; overflow > 0 {
 		st.recentFlushDigests = slices.Clone(st.recentFlushDigests[overflow:])
 	}
+}
+
+// retireResolvedFlushDigests drops the ledger's entries that no merge still
+// to be echoed can include. A merge's members are the commands queued before
+// its survivor, and its survivor has no echo yet, so every entry after the
+// last send still pending (pendingSends, including one put back for a
+// retry) is resolved. Caller holds r.mu.
+func (st *threadState) retireResolvedFlushDigests() {
+	keep := 0
+	for i, entry := range st.recentFlushDigests {
+		if slices.ContainsFunc(st.pendingSends, func(send pendingSend) bool { return send.AOItemID == entry.AOItemID }) {
+			keep = i + 1
+		}
+	}
+	if keep == len(st.recentFlushDigests) {
+		return
+	}
+	if keep == 0 {
+		st.recentFlushDigests = nil
+		return
+	}
+	clear(st.recentFlushDigests[keep:])
+	st.recentFlushDigests = st.recentFlushDigests[:keep]
 }
 
 // dropFlushSendDigests removes the named rows from the ledger — used when a
