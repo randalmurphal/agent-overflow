@@ -97,11 +97,11 @@ func joinFlushMembers(members []flushMember) (joinedFlushMessage, error) {
 		sendID:            first.payload.SendID,
 		guardSlashCommand: !first.payload.ExpandComposerCommands || first.resolved.command != "",
 	}
-	// One member with no inherited ids is its own message already: reuse the
-	// meta resolveUserMessageEnvelope built. A member that inherited a joined
-	// row's ids (session-death requeue) still goes through joinFlushMeta so
-	// those ids survive the re-dispatch.
-	if len(members) == 1 && len(first.payload.JoinedSendIDs) == 0 {
+	// One member that is not itself joined is its own message already: reuse
+	// the meta resolveUserMessageEnvelope built. A member that inherited a
+	// joined row's ids and parts (session-death requeue) still goes through
+	// joinFlushMeta so they survive the re-dispatch.
+	if len(members) == 1 && len(first.payload.JoinedSendIDs) == 0 && len(first.payload.JoinedParts) == 0 {
 		joined.content = first.resolved.content
 		joined.providerContent = first.resolved.providerContent
 		joined.attachments = first.resolved.providerAttachments
@@ -109,23 +109,21 @@ func joinFlushMembers(members []flushMember) (joinedFlushMessage, error) {
 		return joined, nil
 	}
 
-	// BOTH texts are renumbered by the same walk. The stored summary is not
+	// BOTH texts are renumbered by the same walk, the summary's inside
+	// joinFlushMeta with the parts it measures. The stored summary is not
 	// display-only: the bubble renders its markers beside the row's attachment
 	// strip, and an edit-resend or a session-death requeue re-dispatches that
 	// exact string against the joined attachment list.
-	var lengths []int
-	joined.content, lengths = joinRenumberedTextLengths(members, func(member flushMember) string {
-		return member.resolved.content
-	})
 	joined.providerContent = joinRenumberedText(members, func(member flushMember) string {
 		return member.resolved.providerContent
 	})
 	joined.attachments = joinProviderAttachments(members)
 
-	meta, parts, sendID, err := joinFlushMeta(members, lengths)
+	content, meta, parts, sendID, err := joinFlushMeta(members)
 	if err != nil {
 		return joinedFlushMessage{}, err
 	}
+	joined.content = content
 	joined.meta = meta
 	joined.parts = parts
 	joined.sendID = sendID
@@ -139,13 +137,6 @@ func joinFlushMembers(members []flushMember) (joinedFlushMessage, error) {
 // surrounds them (command expansion, file attachment lines), so one walk serves
 // both and the two cannot drift apart.
 func joinRenumberedText(members []flushMember, pick func(flushMember) string) string {
-	text, _ := joinRenumberedTextLengths(members, pick)
-	return text
-}
-
-// joinRenumberedTextLengths is joinRenumberedText that also returns each
-// member's length in the joined text.
-func joinRenumberedTextLengths(members []flushMember, pick func(flushMember) string) (string, []int) {
 	parts := make([]usermessage.TextPart, 0, len(members))
 	for _, member := range members {
 		parts = append(parts, usermessage.TextPart{
@@ -153,7 +144,7 @@ func joinRenumberedTextLengths(members []flushMember, pick func(flushMember) str
 			ImageCount: len(member.resolved.providerAttachments),
 		})
 	}
-	return usermessage.JoinRenumberedTextLengths(parts)
+	return usermessage.JoinRenumberedText(parts)
 }
 
 // joinProviderAttachments is the image list those renumbered markers index
@@ -167,13 +158,12 @@ func joinProviderAttachments(members []flushMember) []provider.ImageAttachment {
 	return attachments
 }
 
-// joinFlushMeta unions the members' row metadata (usermessage.JoinMetas) and
-// returns it with the joined message's parts (usermessage.PartsOf), which it
-// also records on the row, and the send id that names the joined row.
-// lengths are the members' lengths in the joined text.
-func joinFlushMeta(members []flushMember, lengths []int) (string, []usermessage.JoinedPart, string, error) {
-	metas := make([]usermessage.Meta, 0, len(members))
-	texts := make([]string, 0, len(members))
+// joinFlushMeta joins the members' stored texts and row metadata
+// (usermessage.Join) and returns the joined summary, its encoded meta, the
+// joined message's parts, which the meta records too, and the send id that
+// names the joined row.
+func joinFlushMeta(members []flushMember) (string, string, []usermessage.JoinedPart, string, error) {
+	joinMembers := make([]usermessage.JoinMember, 0, len(members))
 	for _, member := range members {
 		resolved := member.resolved
 		meta := usermessage.Input{
@@ -195,12 +185,11 @@ func joinFlushMeta(members []flushMember, lengths []int) (string, []usermessage.
 			OriginWake:   member.payload.OriginWake,
 		}.Projection()
 		meta.JoinedParts = member.payload.JoinedParts
-		meta.JoinedOriginTokens = member.payload.JoinedOriginTokens
-		metas = append(metas, meta)
-		texts = append(texts, resolved.content)
+		joinMembers = append(joinMembers, usermessage.JoinMember{
+			Meta: meta, Text: resolved.content, ImageCount: len(resolved.providerAttachments),
+		})
 	}
-	joined := usermessage.JoinMetas(metas)
-	joined.RecordMembers(metas, texts, lengths)
+	content, joined := usermessage.Join(joinMembers)
 	// The joined text without the review comments any member rendered,
 	// renumbered by the same walk as the summary.
 	for _, member := range members {
@@ -217,7 +206,7 @@ func joinFlushMeta(members []flushMember, lengths []int) (string, []usermessage.
 	}
 	meta, err := usermessage.MarshalMeta(joined)
 	if err != nil {
-		return "", nil, "", err
+		return "", "", nil, "", err
 	}
-	return meta, joined.JoinedParts, joined.SendID, nil
+	return content, meta, joined.JoinedParts, joined.SendID, nil
 }

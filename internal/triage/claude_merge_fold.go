@@ -327,20 +327,15 @@ func (r *Router) resolveMergedFlushRow(threadID, aoItemID string) (mergedFlushRo
 // survivor's existing blob so its provider correlation keys and promotion
 // markers survive.
 func joinMergedFlushContent(survivorMetaJSON string, members []mergedFlushRow) (string, string, error) {
-	parts := make([]usermessage.TextPart, 0, len(members))
-	metas := make([]usermessage.Meta, 0, len(members))
-	texts := make([]string, 0, len(members))
+	joinMembers := make([]usermessage.JoinMember, 0, len(members))
 	for _, member := range members {
-		parts = append(parts, usermessage.TextPart{
+		joinMembers = append(joinMembers, usermessage.JoinMember{
+			Meta:       member.meta,
 			Text:       member.summary,
 			ImageCount: usermessage.ImageAttachmentCount(member.meta.Attachments),
 		})
-		metas = append(metas, member.meta)
-		texts = append(texts, member.summary)
 	}
-	summary, lengths := usermessage.JoinRenumberedTextLengths(parts)
-	joined := usermessage.JoinMetas(metas)
-	joined.RecordMembers(metas, texts, lengths)
+	summary, joined := usermessage.Join(joinMembers)
 	meta, err := usermessage.MergeJoinedMeta(survivorMetaJSON, joined)
 	if err != nil {
 		return "", "", err

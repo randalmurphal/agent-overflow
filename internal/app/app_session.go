@@ -1491,7 +1491,7 @@ func (a *App) unconfirmedOwnedMessages(threadID string, held []ownedMessage) []o
 			slices.ContainsFunc(owned, func(m ownedMessage) bool { return m.sendID == id })
 	}
 	for _, item := range a.triage.UnconfirmedFlushSends(threadID) {
-		for _, id := range unconfirmedSendIDs(item) {
+		for _, id := range unconfirmedMembersOf(item).ids {
 			if ownedSendID(id) && !named(id) {
 				owned = append(owned, ownedMessage{sendID: id, unconfirmed: true})
 			}

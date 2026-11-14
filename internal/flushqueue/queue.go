@@ -84,9 +84,6 @@ type Payload struct {
 	// (usermessage.JoinedPart). Set on the same requeue path, when the
 	// dispatch that joined the message recorded them.
 	JoinedParts []usermessage.JoinedPart `json:"joinedParts,omitempty"`
-	// JoinedOriginTokens are that joined message's request tokens when it
-	// recorded no parts (usermessage.Meta.JoinedOriginTokens).
-	JoinedOriginTokens []string `json:"joinedOriginTokens,omitempty"`
 	// TextBeforeReviewComments is set when the message is the summary of
 	// the row an earlier dispatch of it landed as, which renders the diff
 	// review comments it carried (`usermessage.Meta.TextBeforeReviewComments`).

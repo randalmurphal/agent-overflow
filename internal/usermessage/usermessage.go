@@ -82,12 +82,6 @@ type Meta struct {
 	// OriginThread names the thread that wrote this row, on an
 	// `agent-thread` row. Absent on every other origin.
 	OriginThread *OriginThread `json:"originThread,omitempty"`
-	// JoinedOriginTokens lists the request token of every member an agent
-	// thread wrote, in queue order, on a joined row that has no
-	// JoinedParts. The parts name each member's token when they could be
-	// recorded (RecordMembers); this list is how a request still finds the
-	// row that answered it when they could not.
-	JoinedOriginTokens []string `json:"joinedOriginTokens,omitempty"`
 	// OriginWake names the loop, watch or outside send that wrote this row,
 	// on an `agent-wake` row. Absent on every other origin.
 	OriginWake *OriginWake `json:"originWake,omitempty"`
@@ -96,7 +90,8 @@ type Meta struct {
 	// joined. Origin above is the first attributed member's; these say
 	// which words are whose, so a restore that takes the row back gives the
 	// person back their own text and an agent's member back to its owner.
-	// Absent on a row of one message and on rows joined before it existed.
+	// Absent on a row of one message, on rows joined before it existed, and
+	// on a join of a member whose own parts are unknown (Join).
 	JoinedParts []JoinedPart `json:"joinedParts,omitempty"`
 	// TextBeforeReviewComments is the message as it read before the diff
 	// review comments it carries were rendered into it, set when it

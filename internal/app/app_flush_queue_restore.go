@@ -485,9 +485,6 @@ func requeuePayloadFromMeta(m usermessage.Meta) flushQueuePayload {
 		SendID:                   m.SendID,
 		JoinedSendIDs:            m.JoinedSendIDs,
 		TextBeforeReviewComments: m.TextBeforeReviewComments,
-		// A joined row without parts names the requests it answers by
-		// their tokens alone.
-		JoinedOriginTokens: m.JoinedOriginTokens,
 		// An agent's message requeued stays the agent's, so its next row
 		// is an agent row and never the person's to take back.
 		Origin:       m.Origin,
@@ -729,7 +726,7 @@ func queuePayloadFromUserItem(item store.Item, parts []usermessage.JoinedPart, f
 		return fallback
 	}
 	requeued := requeuePayloadFromMeta(meta)
-	requeued.JoinedParts = joinedPartsOf(strings.TrimSpace(item.Summary), parts)
+	requeued.JoinedParts = usermessage.TrimJoinedParts(item.Summary, parts)
 	payload, err := json.Marshal(requeued)
 	if err != nil {
 		return fallback

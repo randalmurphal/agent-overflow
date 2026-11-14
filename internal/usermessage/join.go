@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -48,32 +49,124 @@ type TextPart struct {
 // while its literal `#1` stays in the text. Re-emitting each marker from the
 // part's attachment offset keeps every image where the user dropped it.
 func JoinRenumberedText(parts []TextPart) string {
-	text, _ := JoinRenumberedTextLengths(parts)
+	text, _ := joinRenumbered(parts, make([][]int, len(parts)))
 	return text
 }
 
-// JoinRenumberedTextLengths is JoinRenumberedText that also returns each
-// part's length in bytes in the joined text, which renumbering can change.
-func JoinRenumberedTextLengths(parts []TextPart) (string, []int) {
+// joinRenumbered is JoinRenumberedText that also measures, in the joined
+// text, the leaves of each part: leaves[i] are the lengths of the members
+// part i is itself joined from, separators excluded, or nil for a part of
+// one message. It returns every leaf's length in the joined text, in order.
+//
+// Renumbering changes a marker's length (#9 becomes #10), so a leaf's length
+// in the joined text is its own length plus what its markers grew by. A
+// marker never spans a separator, which holds no marker character, and the
+// walk appends a part's images that have no marker at the end of the part,
+// which is its last leaf's.
+func joinRenumbered(parts []TextPart, leaves [][]int) (string, []int) {
 	var text strings.Builder
-	lengths := make([]int, 0, len(parts))
+	var lengths []int
 	base := 0
 	for i, part := range parts {
 		if i > 0 {
 			text.WriteString(JoinSeparator)
 		}
-		start := text.Len()
+		bounds := leaves[i]
+		if bounds == nil {
+			bounds = []int{len(part.Text)}
+		}
+		measured := slices.Clone(bounds)
+		leaf, leafEnd := 0, bounds[0]
+		in := 0
 		for _, split := range provider.SplitContentByImageMarkers(part.Text, part.ImageCount) {
-			if split.ImageIndex >= 0 {
-				text.WriteString(provider.ImagePlaceholderLabel(base + split.ImageIndex + 1))
+			if split.ImageIndex < 0 {
+				text.WriteString(split.Text)
+				in += len(split.Text)
 				continue
 			}
-			text.WriteString(split.Text)
+			label := provider.ImagePlaceholderLabel(base + split.ImageIndex + 1)
+			text.WriteString(label)
+			own := provider.ImagePlaceholderLabel(split.ImageIndex + 1)
+			if !strings.HasPrefix(part.Text[in:], own) {
+				// An image with no marker, appended after the whole text.
+				measured[len(measured)-1] += len(label)
+				continue
+			}
+			for in >= leafEnd && leaf < len(bounds)-1 {
+				leafEnd += len(JoinSeparator) + bounds[leaf+1]
+				leaf++
+			}
+			measured[leaf] += len(label) - len(own)
+			in += len(own)
 		}
-		lengths = append(lengths, text.Len()-start)
+		lengths = append(lengths, measured...)
 		base += part.ImageCount
 	}
 	return text.String(), lengths
+}
+
+// JoinMember is one message a joined message is made of: its row metadata,
+// with JoinedParts when it is itself a joined message, its text, and how
+// many images its markers index into.
+type JoinMember struct {
+	Meta       Meta
+	Text       string
+	ImageCount int
+}
+
+// Join makes one message of members: their texts joined with their image
+// markers renumbered (JoinRenumberedText), their metadata unioned
+// (JoinMetas), and every message it is made of, a joined member's own
+// members included, recorded with its length in the joined text and its
+// attribution (JoinedParts), so the text and the parts that describe it
+// come from one walk. A member that is itself joined and whose recorded
+// parts do not describe its text leaves the joined message's parts unknown:
+// it records none, and nothing splits it.
+func Join(members []JoinMember) (string, Meta) {
+	parts := make([]TextPart, len(members))
+	metas := make([]Meta, len(members))
+	leaves := make([][]int, len(members))
+	known := true
+	for i, member := range members {
+		parts[i] = TextPart{Text: member.Text, ImageCount: member.ImageCount}
+		metas[i] = member.Meta
+		if !member.Meta.joined() {
+			continue
+		}
+		if _, fits := SplitJoinedParts(member.Text, member.Meta.JoinedParts); !fits {
+			known = false
+			continue
+		}
+		for _, part := range member.Meta.JoinedParts {
+			leaves[i] = append(leaves[i], part.Bytes)
+		}
+	}
+	text, lengths := joinRenumbered(parts, leaves)
+	joined := JoinMetas(metas)
+	if !known {
+		return text, joined
+	}
+	joined.JoinedParts = make([]JoinedPart, 0, len(lengths))
+	for i, member := range members {
+		if leaves[i] == nil {
+			joined.JoinedParts = append(joined.JoinedParts, JoinedPart{
+				SendID: member.Meta.SendID, Bytes: lengths[len(joined.JoinedParts)],
+				Origin: member.Meta.Origin, OriginThread: member.Meta.OriginThread, OriginWake: member.Meta.OriginWake,
+			})
+			continue
+		}
+		for _, part := range member.Meta.JoinedParts {
+			part.Bytes = lengths[len(joined.JoinedParts)]
+			joined.JoinedParts = append(joined.JoinedParts, part)
+		}
+	}
+	return text, joined
+}
+
+// joined reports whether m is a joined message's: one that answers for
+// several sends or records the members it was joined from.
+func (m Meta) joined() bool {
+	return len(m.JoinedSendIDs) > 0 || len(m.JoinedParts) > 0
 }
 
 // JoinedPart is one member of a joined message as it appears in the joined
@@ -93,68 +186,6 @@ type JoinedPart struct {
 // IsAgent reports whether the part is a message an agent or the app wrote.
 func (p JoinedPart) IsAgent() bool {
 	return IsAgentMessage(Meta{Origin: p.Origin})
-}
-
-// PartsOf names the members of a joined message: one part per member with
-// its length in the joined text (lengths, from JoinRenumberedTextLengths) and
-// attribution. A member that is itself a joined message contributes its own
-// parts while they still describe its text; when it has none, or renumbering
-// its image markers changed its length, the message's parts are unknown and
-// PartsOf returns nil.
-func PartsOf(members []Meta, texts []string, lengths []int) []JoinedPart {
-	parts := make([]JoinedPart, 0, len(members))
-	for i, member := range members {
-		if len(member.JoinedSendIDs) == 0 {
-			parts = append(parts, JoinedPart{
-				SendID: member.SendID, Bytes: lengths[i],
-				Origin: member.Origin, OriginThread: member.OriginThread, OriginWake: member.OriginWake,
-			})
-			continue
-		}
-		if lengths[i] != len(texts[i]) {
-			return nil
-		}
-		if _, ok := SplitJoinedParts(texts[i], member.JoinedParts); !ok {
-			return nil
-		}
-		parts = append(parts, member.JoinedParts...)
-	}
-	return parts
-}
-
-// RecordMembers records the members of the joined message m was joined
-// from: their parts (PartsOf), or, when the parts cannot be known, the
-// request token of every member an agent thread wrote, so each request still
-// finds the row that answered it.
-func (m *Meta) RecordMembers(members []Meta, texts []string, lengths []int) {
-	m.JoinedParts = PartsOf(members, texts, lengths)
-	m.JoinedOriginTokens = nil
-	if m.JoinedParts != nil {
-		return
-	}
-	var tokens []string
-	add := func(token string) {
-		if token != "" && !slices.Contains(tokens, token) {
-			tokens = append(tokens, token)
-		}
-	}
-	for _, member := range members {
-		switch {
-		case len(member.JoinedParts) > 0:
-			for _, part := range member.JoinedParts {
-				if part.OriginThread != nil {
-					add(part.OriginThread.Token)
-				}
-			}
-		case len(member.JoinedOriginTokens) > 0:
-			for _, token := range member.JoinedOriginTokens {
-				add(token)
-			}
-		case member.Origin == OriginAgentThread && member.OriginThread != nil:
-			add(member.OriginThread.Token)
-		}
-	}
-	m.JoinedOriginTokens = tokens
 }
 
 // SplitPersonParts cuts a joined row's text into the person's text and the
@@ -213,6 +244,26 @@ func SplitJoinedParts(text string, parts []JoinedPart) (members []string, ok boo
 		at += part.Bytes
 	}
 	return members, at == len(text)
+}
+
+// TrimJoinedParts is parts as they describe strings.TrimSpace(text): the
+// first and last members lose the white space the trim cuts from them. It
+// is nil when parts do not describe text, or when the trim reaches past a
+// member into a separator.
+func TrimJoinedParts(text string, parts []JoinedPart) []JoinedPart {
+	if _, ok := SplitJoinedParts(text, parts); !ok {
+		return nil
+	}
+	lead := len(text) - len(strings.TrimLeftFunc(text, unicode.IsSpace))
+	trail := len(text) - len(strings.TrimRightFunc(text, unicode.IsSpace))
+	trimmed := slices.Clone(parts)
+	last := len(trimmed) - 1
+	if lead == len(text) || lead > trimmed[0].Bytes || trail > trimmed[last].Bytes || last == 0 && lead+trail > trimmed[0].Bytes {
+		return nil
+	}
+	trimmed[0].Bytes -= lead
+	trimmed[last].Bytes -= trail
+	return trimmed
 }
 
 // ImageAttachmentCount reports how many of a row's persisted attachments are
@@ -367,7 +418,6 @@ func (m Meta) isZero() bool {
 		m.Command == "" &&
 		m.SendID == "" &&
 		len(m.JoinedSendIDs) == 0 &&
-		len(m.JoinedOriginTokens) == 0 &&
 		m.Origin == "" &&
 		m.OriginThread == nil &&
 		m.OriginWake == nil &&
@@ -397,7 +447,6 @@ var metaTypedKeys = []string{
 	"joinedSendIds",
 	"origin",
 	"originThread",
-	"joinedOriginTokens",
 	"originWake",
 	"joinedParts",
 	"textBeforeReviewComments",

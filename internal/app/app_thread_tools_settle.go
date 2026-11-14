@@ -153,7 +153,7 @@ func (a *App) heldSendIDs(threadID string) (map[string]bool, error) {
 		items = append(items, triage.UnconfirmedFlushItem{QueueItemID: queued.ID, Payload: queued.Payload})
 	}
 	for _, item := range items {
-		for _, id := range unconfirmedSendIDs(item) {
+		for _, id := range unconfirmedMembersOf(item).ids {
 			held[id] = true
 		}
 	}

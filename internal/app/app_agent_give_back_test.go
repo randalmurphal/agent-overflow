@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -196,6 +197,66 @@ func TestASessionDeathSplitsAJoinedAnswerAndCompletionExactly(t *testing.T) {
 
 	requireGivenBack(t, f, token, false, w)
 	requireDraft(t, f.app, f.caller.ID, "my own words"+usermessage.JoinSeparator+"and after")
+}
+
+// A person's message with no send id, joined with one answer, names one send
+// id but holds two members. The session's end splits it by its parts: the
+// person's text goes to the composer and the answer back to its request.
+func TestASessionDeathKeepsTheTextOfAPersonWithoutASendID(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	token := owedWakeSeeds()[0].seed(t, f)
+	if _, err := f.app.RegisterQueueItem(context.Background(), f.caller.ID, "my own words", SendMessageOptions{}); err != nil {
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
+	f.app.deliverThreadWake(token, false)
+	f.app.waitAgentNoticeWork()
+
+	dispatchUnconfirmed(t, f)
+	f.app.restoreUnconfirmedQueueOnSessionDeath(f.caller.ID)
+
+	requireOwedAgain(t, f, token, false)
+	requireDraft(t, f.app, f.caller.ID, "my own words")
+}
+
+// splitSessionEndParts splits a joined message by its parts whatever number
+// of its members have send ids, and declines one whose parts are unknown or
+// no longer describe its text; a message of one member is that member's.
+func TestSplitSessionEndPartsSplitsByTheRecordedParts(t *testing.T) {
+	t.Parallel()
+	wake, request := "agent-wake:w:1", threadRequestSendID("tok-1")
+	text, meta := usermessage.Join([]usermessage.JoinMember{
+		{Text: "mine, no send id"},
+		{Meta: usermessage.Meta{SendID: wake, Origin: usermessage.OriginAgentWake}, Text: "the wake"},
+		{Meta: usermessage.Meta{SendID: "p2"}, Text: "and mine"},
+		{Meta: usermessage.Meta{SendID: request, Origin: usermessage.OriginAgentThread}, Text: "the request"},
+	})
+	joined := unconfirmedMembers{ids: meta.JoinedSendIDs, joined: true, parts: meta.JoinedParts}
+	app, person, ok := splitSessionEndParts(joined, text)
+	if want := "mine, no send id" + usermessage.JoinSeparator + "and mine"; !ok || person == nil || *person != want {
+		t.Fatalf("ok %v person %v; want %q", ok, person, want)
+	}
+	if !maps.Equal(app, map[string]string{wake: "the wake", request: "the request"}) {
+		t.Fatalf("app parts = %q", app)
+	}
+
+	oneID := usermessage.Meta{SendID: wake, Origin: usermessage.OriginAgentWake}
+	text, meta = usermessage.Join([]usermessage.JoinMember{{Text: "mine"}, {Meta: oneID, Text: "the wake"}})
+	app, person, ok = splitSessionEndParts(unconfirmedMembers{ids: meta.JoinedSendIDs, joined: true, parts: meta.JoinedParts}, text)
+	if !ok || person == nil || *person != "mine" || app[wake] != "the wake" {
+		t.Fatalf("one send id, two members: ok %v person %v app %q", ok, person, app)
+	}
+	if _, _, ok := splitSessionEndParts(unconfirmedMembers{ids: []string{wake}, joined: true}, text); ok {
+		t.Fatal("split a joined message whose parts are unknown")
+	}
+	if _, _, ok := splitSessionEndParts(unconfirmedMembers{ids: meta.JoinedSendIDs, joined: true, parts: meta.JoinedParts}, text+" "); ok {
+		t.Fatal("split a joined message whose parts no longer describe it")
+	}
+	app, person, ok = splitSessionEndParts(unconfirmedMembers{ids: []string{wake}}, "the wake")
+	if !ok || person != nil || app[wake] != "the wake" {
+		t.Fatalf("a lone wake: ok %v person %v app %q", ok, person, app)
+	}
 }
 
 // An answer or a completion sent alone and never confirmed has no queue row

@@ -1198,10 +1198,9 @@ thread to another distinguishable. A row written before `kind` existed
 is read by its send id (`thread-request:`, `thread-wake`). When Claude
 joins messages that queued together into one row, the attribution is the
 first member's (a thread or a wake), and `meta.joinedParts` records each
-member's length, attribution and token. A join that cannot measure its
-members (a member that was itself joined and whose image markers were
-renumbered) records `meta.joinedOriginTokens`, every member's token,
-instead.
+member's length, attribution and token. A member that was itself joined
+contributes its own members, remeasured where renumbering its image
+markers changed their length.
 
 ### How agent messages appear
 

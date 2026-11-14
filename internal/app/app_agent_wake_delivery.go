@@ -505,7 +505,8 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 		wakeOutcome, sendWhy = agentWakeOutcomeNotDelivered, "the provider did not take it in"
 	}
 	sessionEnded := reason == queueRestoredReasonSessionDied || item.Discarded
-	ids := unconfirmedSendIDs(item)
+	members := unconfirmedMembersOf(item)
+	ids := members.ids
 	if !slices.ContainsFunc(ids, appWrittenSendID) {
 		return part, true, notTakenIn{}
 	}
@@ -518,12 +519,12 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 		// never left the queue. The members of a joined one lost theirs at
 		// the provider write, which handed them over unconfirmed.
 		rowID := ""
-		if len(ids) == 1 {
+		if !members.joined {
 			rowID = item.QueueItemID
 		}
 		owed.owned = append(owed.owned, ownedMessage{sendID: id, rowID: rowID, unconfirmed: true, ended: true})
 	}
-	bodies, person, split := splitSessionEndParts(ids, unconfirmedJoinedParts(item), part.Content)
+	bodies, person, split := splitSessionEndParts(members, part.Content)
 	if !split {
 		// The text does not hold a part for every app message the item
 		// names, so none of it can be told apart from the person's: all of
@@ -632,11 +633,12 @@ func (a *App) returnRequestsAtTeardown(threadID string) teardownRequests {
 		}
 	}
 	for _, item := range a.triage.UnconfirmedFlushSends(threadID) {
-		ids := unconfirmedSendIDs(item)
+		members := unconfirmedMembersOf(item)
+		ids := members.ids
 		if len(ids) == 0 || slices.ContainsFunc(ids, func(id string) bool { return threadRequestSendIDToken(id) == "" && !movedWake(id) }) {
 			continue
 		}
-		bodies, person, split := splitSessionEndParts(ids, unconfirmedJoinedParts(item), a.restoredFlushDraftPart(threadID, item).Content)
+		bodies, person, split := splitSessionEndParts(members, a.restoredFlushDraftPart(threadID, item).Content)
 		if !split || person != nil {
 			continue
 		}
@@ -819,37 +821,36 @@ func threadRequestSendIDToken(sendID string) string {
 }
 
 // splitSessionEndParts splits an unconfirmed item's text into the bodies of
-// the app-written messages ids names, by send id, and the rest, which is the
-// person's (person nil when nothing is left). A single message is all one
-// part. A joined one splits by the parts its dispatch recorded, exactly. A
-// joined one without them splits by each app part's first line
-// (splitJoinedAgentParts), which needs a part to hold no separator: an
-// answer's, a completion's or a request's text can, so one of those makes it
-// unsplittable.
-func splitSessionEndParts(ids []string, parts []usermessage.JoinedPart, content string) (app map[string]string, person *string, ok bool) {
-	if len(ids) == 1 {
-		return map[string]string{ids[0]: content}, nil, true
-	}
-	if members, fits := usermessage.SplitJoinedParts(content, parts); fits && partsNameIDs(parts, ids) {
-		app = make(map[string]string)
-		var kept []string
-		for i, part := range parts {
-			if appWrittenSendID(part.SendID) {
-				app[part.SendID] = members[i]
-				continue
-			}
-			kept = append(kept, members[i])
+// the app-written messages it names, by send id, and the rest, which is the
+// person's (person nil when nothing is left). A message of one member is all
+// that member's. A joined one splits by the parts its dispatch recorded,
+// exactly, whatever number of its members have send ids; one whose parts
+// are unknown or no longer describe its text does not split.
+func splitSessionEndParts(members unconfirmedMembers, content string) (app map[string]string, person *string, ok bool) {
+	if !members.joined {
+		if len(members.ids) != 1 {
+			return nil, nil, false
 		}
-		if len(kept) == 0 {
-			return app, nil, true
-		}
-		joined := strings.Join(kept, usermessage.JoinSeparator)
-		return app, &joined, true
+		return map[string]string{members.ids[0]: content}, nil, true
 	}
-	if slices.ContainsFunc(ids, func(id string) bool { return ownedSendID(id) || threadRequestSendIDToken(id) != "" }) {
+	texts, fits := usermessage.SplitJoinedParts(content, members.parts)
+	if !fits || !partsNameIDs(members.parts, members.ids) {
 		return nil, nil, false
 	}
-	return splitJoinedAgentParts(ids, content)
+	app = make(map[string]string)
+	var kept []string
+	for i, part := range members.parts {
+		if appWrittenSendID(part.SendID) {
+			app[part.SendID] = texts[i]
+			continue
+		}
+		kept = append(kept, texts[i])
+	}
+	if len(kept) == 0 {
+		return app, nil, true
+	}
+	joined := strings.Join(kept, usermessage.JoinSeparator)
+	return app, &joined, true
 }
 
 // partsNameIDs reports whether parts name the send ids of a joined message
@@ -864,36 +865,6 @@ func partsNameIDs(parts []usermessage.JoinedPart, ids []string) bool {
 	return slices.Equal(named, ids)
 }
 
-// unconfirmedJoinedParts is the parts a joined item's dispatch recorded:
-// from its pending send, from its queue payload when it was requeued, or
-// from its row.
-func unconfirmedJoinedParts(item triage.UnconfirmedFlushItem) []usermessage.JoinedPart {
-	if len(item.JoinedParts) > 0 {
-		return item.JoinedParts
-	}
-	var payload flushQueuePayload
-	if len(item.Payload) > 0 && json.Unmarshal(item.Payload, &payload) == nil && len(payload.JoinedParts) > 0 {
-		return payload.JoinedParts
-	}
-	for _, row := range []*store.Item{item.DeferredItem, item.QuietItem} {
-		if row == nil {
-			continue
-		}
-		if meta, err := usermessage.FromItem(*row); err == nil && len(meta.JoinedParts) > 0 {
-			return meta.JoinedParts
-		}
-	}
-	return nil
-}
-
-// joinedPartsOf keeps parts only while they describe text exactly.
-func joinedPartsOf(text string, parts []usermessage.JoinedPart) []usermessage.JoinedPart {
-	if _, ok := usermessage.SplitJoinedParts(text, parts); !ok {
-		return nil
-	}
-	return parts
-}
-
 // agentAppPartRoot is the send id root of a message the app wrote for a
 // thread (a loop or watch wake, an outside send, a worker's prompt), or
 // empty for any other message, which is a person's.
@@ -906,93 +877,74 @@ func agentAppPartRoot(sendID string) string {
 	return ""
 }
 
-// agentAppPartRootOf recognizes one part of a joined message as an
-// app-written one by its first line, which names its kind and ends with the
-// data notice. A person can type the same, so a match counts only where the
-// joined message's send ids place an app part.
-func agentAppPartRootOf(text string) string {
-	first, _, _ := strings.Cut(text, "\n")
-	if !strings.HasSuffix(first, " "+agentWakeDataNotice) {
-		return ""
-	}
-	switch {
-	case strings.HasPrefix(first, "Loop "), strings.HasPrefix(first, "Watch "):
-		return agentWakeSendIDRoot
-	case first == agentSendWakeHeader+" "+agentWakeDataNotice:
-		return agentSendIDRoot
-	case strings.HasPrefix(first, "Thread "):
-		return workerPromptSendIDRoot
-	}
-	return ""
+// unconfirmedMembers is what an unconfirmed item says of the messages it
+// carries: their send ids in order, whether it is a joined message, and the
+// parts its dispatch recorded when it is.
+type unconfirmedMembers struct {
+	ids    []string
+	joined bool
+	parts  []usermessage.JoinedPart
 }
 
-// splitJoinedAgentParts splits a message's text into the parts of the app
-// messages ids names, by send id, and the rest, which is the person's,
-// joined as it was; person is nil when nothing is left. A joined message
-// holds its members in id order, but a member without a send id is missing
-// from ids, so only the app parts are placed: each takes the first part from
-// where the last one ended that is of its kind, and whatever lies between is
-// the person's. An app part never holds the separator, because every line of
-// its data is quoted and so none is blank; a person's text may. ok is false
-// when an app message named has no part.
-func splitJoinedAgentParts(ids []string, content string) (app map[string]string, person *string, ok bool) {
-	parts := strings.Split(content, usermessage.JoinSeparator)
-	app = make(map[string]string)
-	var kept []string
-	next := 0
-	for _, id := range ids {
-		root := agentAppPartRoot(id)
-		if root == "" {
-			continue
+// unconfirmedMembersOf reads an unconfirmed item's members: from the row it
+// reserved or deferred, which a joined message lists them all on, or from
+// its queue payload when it never got that far, which a joined message
+// requeued after a session death lists them on too. Parts come from its
+// pending send, its payload or its row, in that order.
+func unconfirmedMembersOf(item triage.UnconfirmedFlushItem) unconfirmedMembers {
+	var members unconfirmedMembers
+	members.ids, members.joined = unconfirmedSendIDs(item)
+	var payload flushQueuePayload
+	decoded := len(item.Payload) > 0 && json.Unmarshal(item.Payload, &payload) == nil
+	switch {
+	case len(item.JoinedParts) > 0:
+		members.parts = item.JoinedParts
+	case decoded && len(payload.JoinedParts) > 0:
+		members.parts = payload.JoinedParts
+	default:
+		for _, row := range []*store.Item{item.DeferredItem, item.QuietItem} {
+			if row == nil {
+				continue
+			}
+			if meta, err := usermessage.FromItem(*row); err == nil && len(meta.JoinedParts) > 0 {
+				members.parts = meta.JoinedParts
+				break
+			}
 		}
-		for next < len(parts) && agentAppPartRootOf(parts[next]) != root {
-			kept = append(kept, parts[next])
-			next++
-		}
-		if next == len(parts) {
-			return nil, nil, false
-		}
-		app[id] = parts[next]
-		next++
 	}
-	kept = append(kept, parts[next:]...)
-	if len(kept) == 0 {
-		return app, nil, true
-	}
-	joined := strings.Join(kept, usermessage.JoinSeparator)
-	return app, &joined, true
+	members.joined = members.joined || len(members.parts) > 0
+	return members
 }
 
 // unconfirmedSendIDs names every message an unconfirmed item carries, in
-// order: from the row it reserved or deferred, which a joined message lists
-// them all on, or from its queue payload when it never got that far, which a
-// joined message requeued after a session death lists them on too.
-func unconfirmedSendIDs(item triage.UnconfirmedFlushItem) []string {
+// order, and reports whether the item is a joined message
+// (unconfirmedMembersOf).
+func unconfirmedSendIDs(item triage.UnconfirmedFlushItem) (ids []string, joined bool) {
 	for _, row := range []*store.Item{item.DeferredItem, item.QuietItem} {
 		if row == nil {
 			continue
 		}
 		meta, err := usermessage.FromItem(*row)
 		if err != nil {
-			return nil
+			return nil, false
 		}
 		if len(meta.JoinedSendIDs) > 0 {
-			return meta.JoinedSendIDs
+			return meta.JoinedSendIDs, true
 		}
 		if meta.SendID != "" {
-			return []string{meta.SendID}
+			return []string{meta.SendID}, false
 		}
 	}
 	var payload flushQueuePayload
 	if len(item.Payload) > 0 && json.Unmarshal(item.Payload, &payload) == nil {
 		if len(payload.JoinedSendIDs) > 0 {
-			return payload.JoinedSendIDs
+			return payload.JoinedSendIDs, true
 		}
 		if payload.SendID != "" {
-			return []string{payload.SendID}
+			return []string{payload.SendID}, false
 		}
 	}
-	return nil
+	return nil, false
 }
 
 // noteAgentWakesDropped records `not delivered` on the rows whose wakes a
