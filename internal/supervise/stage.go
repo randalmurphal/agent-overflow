@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"syscall"
 
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/selfupdate"
@@ -29,7 +28,7 @@ import (
 // the same bytes.
 //
 // StageBinary takes no fork lock. A caller that runs the staged binary from
-// this same process holds holdForks around the call.
+// this same process holds procutil.HoldForks around the call.
 func StageBinary(layout Layout, version, source string) error {
 	dir, err := layout.VersionDir(version)
 	if err != nil {
@@ -59,19 +58,6 @@ func StageBinary(layout Layout, version, source string) error {
 		return err
 	}
 	return atomicfile.SyncDir(layout.VersionsDir())
-}
-
-// holdForks keeps this process from forking until release is called. A
-// process that writes an executable and then runs it itself holds it while
-// the file is open for writing: a child forked in that window keeps the
-// descriptor until its own exec, and the kernel refuses to run a file that
-// has a writer (ETXTBSY, "text file busy"). Every fork in the process waits
-// for the release, so a process that only writes an executable for another
-// process to run does not take it. It takes syscall.ForkLock for reading, so
-// concurrent writers do not wait for each other.
-func holdForks() (release func()) {
-	syscall.ForkLock.RLock()
-	return syscall.ForkLock.RUnlock
 }
 
 func fileDigest(path string) ([]byte, error) {
