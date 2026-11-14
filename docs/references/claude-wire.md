@@ -3272,7 +3272,12 @@ the job table past the fire. History import keeps the same row
 (`cron_schedule.go`): five fields, each a comma list of `*`, `*/n`,
 `a-b`, `a-b/n` or `n`, weekday 7 = 0, no names; local time; day of month
 and day of week are ORed when both are restricted, where a field whose
-set covers its whole range counts as unrestricted. The CLI fires a
+set covers its whole range counts as unrestricted. The search sets the
+wall clock as JavaScript's `Date` does, so a repeated hour matches at its
+first occurrence; from inside its second occurrence, where those setters
+name an instant already past, the parser keeps the anchor's instant and
+takes its next minute, assuming the CLI fires such a past match at once.
+Every match is strictly after its anchor. The CLI fires a
 recurring job at its next match `i` plus a per-job delay of
 `frac(id) x recurringFrac x o` capped at `recurringCapMs` (`o` is the gap
 to the following match; a `*/n` minute job may instead fire up to

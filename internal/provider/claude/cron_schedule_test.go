@@ -156,3 +156,79 @@ func TestCronScheduleNextCrossesDaylightSavingChanges(t *testing.T) {
 		}
 	}
 }
+
+// A match and a deadline are strictly after their anchor for every anchor,
+// one inside the second occurrence of a fall-back hour included, where the
+// wall clock alone names an earlier instant. Anchors run every 50 seconds
+// through three hours either side of each 2026 offset change of zones that
+// shift by an hour at different wall times and by 30 minutes.
+func TestCronScheduleNextIsAfterEveryAnchorAcrossOffsetChanges(t *testing.T) {
+	t.Parallel()
+	exprs := []string{"* * * * *", "*/20 * * * *", "0 * * * *", "30 * * * *", "45 1 * * *", "15 2 * * *", "0 3 * * *"}
+	for _, name := range []string{"Europe/Berlin", "America/New_York", "Australia/Lord_Howe"} {
+		zone, err := time.LoadLocation(name)
+		if err != nil {
+			t.Skip("no tz database:", err)
+		}
+		var changes []time.Time
+		start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		for at := start; at.Year() == 2026; at = at.Add(time.Hour) {
+			if _, before := at.In(zone).Zone(); func() bool { _, after := at.Add(time.Hour).In(zone).Zone(); return after != before }() {
+				changes = append(changes, at.Add(time.Hour))
+			}
+		}
+		if len(changes) != 2 {
+			t.Fatalf("%s: offset changes %v, want two in 2026", name, changes)
+		}
+		for _, expr := range exprs {
+			schedule, ok := parseCronSchedule(expr)
+			if !ok {
+				t.Fatalf("parse %q", expr)
+			}
+			for _, change := range changes {
+				for at := change.Add(-3 * time.Hour); at.Before(change.Add(3 * time.Hour)); at = at.Add(50 * time.Second) {
+					anchor := at.In(zone)
+					match, ok := schedule.next(anchor)
+					if !ok || !match.After(anchor) || match.Sub(anchor) > 48*time.Hour {
+						t.Fatalf("%s %q after %s (%s) = %s (%s), %v", name, expr, anchor, anchor.UTC(), match, match.UTC(), ok)
+					}
+					for _, recurring := range []bool{false, true} {
+						if fireBy, ok := schedule.fireBy(anchor, recurring); !ok || fireBy.Before(match) {
+							t.Fatalf("%s %q after %s: fire by %s (%v) before the match %s", name, expr, anchor, fireBy, ok, match)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// From inside the second occurrence of a repeated hour the search keeps the
+// anchor's instant: the next minute, and the next match of the hour, are
+// those after it, not their first occurrence an hour earlier.
+func TestCronScheduleNextFromTheRepeatedHour(t *testing.T) {
+	t.Parallel()
+	zone, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skip("no tz database:", err)
+	}
+	// 2026-10-25 03:00 CEST -> 02:00 CET; 01:10Z is the second 02:10.
+	anchor := time.Date(2026, 10, 25, 1, 10, 0, 0, time.UTC).In(zone)
+	for _, tc := range []struct {
+		expr string
+		want time.Time
+	}{
+		{"* * * * *", time.Date(2026, 10, 25, 1, 11, 0, 0, time.UTC)},
+		{"30 * * * *", time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC)},
+		{"0 * * * *", time.Date(2026, 10, 25, 2, 0, 0, 0, time.UTC)},
+	} {
+		schedule, _ := parseCronSchedule(tc.expr)
+		if got, ok := schedule.next(anchor); !ok || !got.Equal(tc.want) {
+			t.Errorf("%q after %s = %s (%v), want %s", tc.expr, anchor, got.UTC(), ok, tc.want)
+		}
+	}
+	every, _ := parseCronSchedule("* * * * *")
+	if fireBy, ok := every.fireBy(anchor, true); !ok || !fireBy.Equal(time.Date(2026, 10, 25, 1, 12, 0, 0, time.UTC)) {
+		t.Errorf("recurring fire by %s (%v), want 01:12Z", fireBy.UTC(), ok)
+	}
+}

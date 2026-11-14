@@ -147,31 +147,45 @@ func (s cronSchedule) has(set uint64, v int) bool { return set&(1<<v) != 0 }
 // after's location (the CLI matches in local time). The walk is the
 // CLI's: start at the next whole minute, then skip a whole month, day or
 // hour whenever that field cannot match. Each step sets the wall clock as
-// JavaScript's Date setters do (cronWallTime), so it always moves forward,
-// across a daylight-saving gap included.
+// JavaScript's Date setters do (cronWallTime), across a daylight-saving gap
+// included, and moves forward (cronStep), so the result is always strictly
+// after `after`.
 func (s cronSchedule) next(after time.Time) (time.Time, bool) {
 	t, loc := after, after.Location()
-	t = cronWallTime(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute()+1, loc)
+	t = cronStep(t, cronWallTime(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute()+1, loc))
 	for range cronSearchLimit {
 		if !s.has(s.month, int(t.Month())) {
-			t = cronWallTime(t.Year(), t.Month()+1, 1, 0, 0, loc)
+			t = cronStep(t, cronWallTime(t.Year(), t.Month()+1, 1, 0, 0, loc))
 			continue
 		}
 		if !s.dayMatches(t) {
-			t = cronWallTime(t.Year(), t.Month(), t.Day()+1, 0, 0, loc)
+			t = cronStep(t, cronWallTime(t.Year(), t.Month(), t.Day()+1, 0, 0, loc))
 			continue
 		}
 		if !s.has(s.hour, t.Hour()) {
-			t = cronWallTime(t.Year(), t.Month(), t.Day(), t.Hour()+1, 0, loc)
+			t = cronStep(t, cronWallTime(t.Year(), t.Month(), t.Day(), t.Hour()+1, 0, loc))
 			continue
 		}
 		if !s.has(s.minute, t.Minute()) {
-			t = cronWallTime(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute()+1, loc)
+			t = cronStep(t, cronWallTime(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute()+1, loc))
 			continue
 		}
 		return t, true
 	}
 	return time.Time{}, false
+}
+
+// cronStep moves the walk from t to the wall time a step names, unless that
+// is not after t: a wall time inside the second occurrence of a fall-back
+// hour names its first occurrence, an hour back. The walk then keeps t's
+// instant and moves to its next whole minute. The CLI's own setters go back
+// there, to a match already past, which it fires at once; the minute after
+// t bounds that fire, and every later match stays where the CLI finds it.
+func cronStep(t, wall time.Time) time.Time {
+	if wall.After(t) {
+		return wall
+	}
+	return t.Add(time.Minute - time.Duration(t.Second())*time.Second - time.Duration(t.Nanosecond()))
 }
 
 // cronZoneProbe is how far before a wall time the offset in effect before
