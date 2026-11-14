@@ -1433,7 +1433,9 @@ transport session and is not gated by it.
 
 Two more forwarded tools serve the caller's Agents segment, both refused
 unless the thread they name is one the calling device's thread spawned
-there, directly or through that computer's own spawn lineage:
+there, directly or through that computer's own spawn lineage (the
+spawn's receipt there, which the retention floor keeps while that thread
+or one up to four spawns below it has open work):
 `agent_rows` over `ThreadToolQuery` lists that thread's own Agents rows
 to the nesting depth left, so the caller nests them under its spawn named
 by their computer, and `agent_stop` over `ThreadToolCall` runs a Stop's

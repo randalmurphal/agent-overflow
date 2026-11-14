@@ -290,6 +290,11 @@ func TestThreadRequestSweepSkipsWithNothingPastTheFloor(t *testing.T) {
 	assertPlanSearches(t, s, "the request floor probe", "thread_requests", []string{"idx_thread_requests_age"}, probe, int64(1))
 	probe = `SELECT EXISTS (SELECT 1 FROM thread_request_receipts WHERE ` + receiptPastFloorSQL + `)`
 	assertPlanSearches(t, s, "the receipt floor probe", "thread_request_receipts", []string{"idx_thread_request_receipts_age"}, probe, int64(1))
+	// A spawn's receipt asks whether its thread has open work through the
+	// indexes that hold only open work.
+	assertPlanSearches(t, s, "the receipt floor's open work", "o", []string{
+		"idx_thread_requests_open_created", "idx_thread_requests_nested_caller", "idx_thread_requests_open_below",
+	}, probe, int64(1))
 	// The lineage probe walks the lineage rows alone, one per spawned
 	// thread that outlived the floor, in their own index.
 	probe = `SELECT EXISTS (SELECT 1 FROM thread_requests WHERE ` + orphanLineageSQL + `)`

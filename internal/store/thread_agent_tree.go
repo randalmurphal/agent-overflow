@@ -280,6 +280,19 @@ func agentOpenWorkSQL(alias string) string {
         OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)))`
 }
 
+// agentOpenUnderSQL is whether thread, or a thread up to agentOpenDepth
+// spawns below it, made open work: a request thread made that is open work
+// (agentOpenWorkSQL), or a local spawn it made with open work under that
+// spawn's target (agentOpenBelowSQL). Each arm is read through its index.
+func agentOpenUnderSQL(thread string) string {
+	return `(EXISTS (SELECT 1 FROM thread_requests o INDEXED BY idx_thread_requests_open_created
+              WHERE o.caller_thread_id = ` + thread + ` AND o.lineage_only = 0 AND o.settled_at IS NULL AND ` + agentOpenWorkSQL("o") + `)
+           OR EXISTS (SELECT 1 FROM thread_requests o INDEXED BY idx_thread_requests_nested_caller
+              WHERE o.caller_thread_id = ` + thread + ` AND ` + nestedRemoteSpawnSQL("o") + `)
+           OR EXISTS (SELECT 1 FROM thread_requests o INDEXED BY idx_thread_requests_open_below
+              WHERE o.caller_thread_id = ` + thread + ` AND ` + agentSpawnLinkSQL("o") + ` AND ` + agentOpenBelowSQL("o") + `))`
+}
+
 // agentRowKindSQL matches a request kind the listing shows: every spawn,
 // and a send or ask whose wake is armed or that a call is parked on (?2).
 func agentRowKindSQL(alias string) string {

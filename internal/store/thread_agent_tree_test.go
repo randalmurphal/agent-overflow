@@ -135,6 +135,78 @@ func TestRetentionKeepsSpawnsWithOpenWorkUnderThem(t *testing.T) {
 	}
 }
 
+// A settled spawn's receipt is what lets the computer that made the spawn
+// list and stop the work under its thread, so the retention floor keeps it
+// while that work is open: an open request its thread made, open work below
+// a spawn its thread made, or a remote spawn its thread made that reported
+// open work. The first sweep after the work settles deletes it. A send's
+// receipt authorizes nothing and goes at the floor.
+func TestRetentionKeepsSpawnReceiptsWithOpenWorkUnderThem(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"own", "nests", "nests-child", "far", "sent"} {
+		mustCreateThread(t, s, id)
+	}
+	receipt := func(token, kind, target string) {
+		t.Helper()
+		if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: token, OwnerDeviceID: "desk", Kind: kind, TargetThreadID: target, CreatedAt: 10}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{State: ThreadReceiptFinished, SettledAt: 20}, ThreadRequestFinished); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receipt("in-own", ThreadRequestSpawn, "own")
+	receipt("in-nests", ThreadRequestSpawn, "nests")
+	receipt("in-far", ThreadRequestSpawn, "far")
+	receipt("in-sent", ThreadRequestSend, "sent")
+	// own's open send; an open ask two spawns below nests; far's settled
+	// remote spawn whose computer reports open work; sent's open send.
+	seedAgentRequest(t, s, "own-open", "own", ThreadRequestSend, "x", true, 100)
+	seedAgentRequest(t, s, "nests-spawn", "nests", ThreadRequestSpawn, "nests-child", false, 100)
+	settleAgentRequest(t, s, "nests-spawn", 200)
+	seedAgentRequest(t, s, "deep-open", "nests-child", ThreadRequestAsk, "x", true, 110)
+	if err := s.InsertThreadRequest(ThreadRequest{Token: "far-remote", CallerThreadID: "far", Kind: ThreadRequestSpawn,
+		TargetComputerID: "other", TargetThreadID: "there", State: ThreadRequestRunning, CreatedAt: 100, UpdatedAt: 100}); err != nil {
+		t.Fatal(err)
+	}
+	settleAgentRequest(t, s, "far-remote", 200)
+	if ok, err := s.SetThreadRequestNestedOpen("far-remote", true); err != nil || !ok {
+		t.Fatalf("nested open: %v %v", ok, err)
+	}
+	seedAgentRequest(t, s, "sent-open", "sent", ThreadRequestSend, "x", true, 100)
+	receipts := func() []string {
+		t.Helper()
+		var out []string
+		for _, token := range []string{"in-own", "in-nests", "in-far", "in-sent"} {
+			if _, found, err := s.GetThreadRequestReceipt(token); err != nil {
+				t.Fatal(err)
+			} else if found {
+				out = append(out, token)
+			}
+		}
+		return out
+	}
+	if _, err := s.DeleteThreadRequestsBefore(5_000); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := receipts(), []string{"in-own", "in-nests", "in-far"}; !slices.Equal(got, want) {
+		t.Fatalf("after the sweep the receipts = %v, want %v", got, want)
+	}
+
+	settleAgentRequest(t, s, "own-open", 6_000)
+	settleAgentRequest(t, s, "deep-open", 6_000)
+	if ok, err := s.SetThreadRequestNestedOpen("far-remote", false); err != nil || !ok {
+		t.Fatalf("nested closed: %v %v", ok, err)
+	}
+	if _, err := s.DeleteThreadRequestsBefore(5_000); err != nil {
+		t.Fatal(err)
+	}
+	if got := receipts(); len(got) != 0 {
+		t.Fatalf("after the work settled and the next sweep the receipts = %v, want none", got)
+	}
+}
+
 // A row carries the head of its newer answer and whether a late reply came,
 // and a read by token reads that one row.
 func TestListThreadAgentTreeReadsTheAnswerHead(t *testing.T) {
