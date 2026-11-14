@@ -479,8 +479,11 @@ while its own handoff of the assistant runs.
 4. The old session is torn down as an archive tears down. What was queued
    for it goes on: an answer, reminder or remote completion to its owner,
    which delivers it to the successor; a request not taken in to the
-   successor's queue; a worker's prompt to the successor, since its
-   spawn row moved; a loop or watch wake, taken back before the queue is
+   successor's queue; a worker's prompt to the successor under a new
+   token, since its spawn row moved, the successor answering it and a
+   withdrawal or the user's answer acting on that registration alone (a
+   prompt whose delivery was still queued when the handoff committed goes
+   to the successor the same way); a loop or watch wake, taken back before the queue is
    dropped, to the successor's queue, keeping the wake's row and a
    watch's `last_output`. A request the old thread had read
    and not answered settles `interrupted` with "The assistant moved to a

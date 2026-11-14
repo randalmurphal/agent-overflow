@@ -79,6 +79,10 @@ type agentNotice struct {
 	startFailed func(error) string
 	// fromPerson marks a person's own words, which an archived thread takes.
 	fromPerson bool
+	// recipient, when set, is told the thread the notice is queued in,
+	// before prepare runs: threadID, or the assistant's current thread when
+	// New Thread, Same Assistant superseded threadID.
+	recipient func(threadID string)
 }
 
 // queueAgentNotice queues one notice and makes sure something will run to
@@ -97,6 +101,9 @@ func (a *App) queueAgentNotice(notice agentNotice) error {
 		if current, ok := a.assistantCurrentThread(notice.threadID); ok {
 			notice.threadID = current
 		}
+	}
+	if notice.recipient != nil {
+		notice.recipient(notice.threadID)
 	}
 	body, proceed, err := notice.prepare()
 	if err != nil || !proceed {
