@@ -561,7 +561,13 @@ func (t threadToolsApp) wakeQueued(row store.ThreadRequest, late bool) bool {
 	if !threadRequestDelivered(row, late) || row.DeliveredHow != store.ThreadWakeQueued {
 		return false
 	}
-	record, found, err := t.app.findRecordedSend(row.CallerThreadID, threadWakeSendIDFor(row.Token, late))
+	// One message can answer several requests; it is queued under the send
+	// id of the request that carried it.
+	carrier := row.Token
+	if !late && row.DeliveredWith != "" {
+		carrier = row.DeliveredWith
+	}
+	record, found, err := t.app.findRecordedSend(row.CallerThreadID, threadWakeSendIDFor(carrier, late))
 	if err != nil {
 		log.Printf("thread tools: probe queued wake %s: %v", row.Token, err)
 		return false

@@ -138,7 +138,7 @@ func TestSettledRemotePollBacksOffThenRetires(t *testing.T) {
 		if delay := f.scheduleDelay(t, token); delay == 0 {
 			t.Fatal("a request still awaiting a late reply was retired")
 		}
-		stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), now.UnixMilli())
+		stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), now.UnixMilli(), false)
 		if err != nil || !stored {
 			t.Fatalf("store late reply: stored=%v err=%v", stored, err)
 		}
@@ -335,7 +335,7 @@ func TestRemoteTargetTitleSurvivesARestart(t *testing.T) {
 	}
 
 	after := f.restart(t)
-	origin := after.app.threadWakeOrigin(after.request(t, token))
+	origin := soloWakeOrigin(after.app, after.request(t, token))
 	if origin == nil || origin.Title != "Release checklist" || origin.ThreadID != target {
 		t.Fatalf("wake origin after a restart = %+v", origin)
 	}
@@ -356,6 +356,11 @@ func TestWakeUnarchivesTheCallerItIsFor(t *testing.T) {
 	f.settleRemote(t, token, now, now.Add(threadLateReplyWindow))
 	if err := f.app.ArchiveThread(f.caller.ID); err != nil {
 		t.Fatalf("archive the caller: %v", err)
+	}
+	// The archive disarmed the request. A later wait or thread_status on it
+	// arms it again, and that is the wake that brings the thread back.
+	if armed, err := f.app.store.SetThreadRequestNotify(token, true); err != nil || !armed {
+		t.Fatalf("re-arm the request: armed=%v err=%v", armed, err)
 	}
 
 	f.app.deliverThreadWake(token, false)

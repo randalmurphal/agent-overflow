@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -94,14 +96,18 @@ type ThreadRequest struct {
 	Notify bool   `json:"notify"`
 	State  string `json:"state"`
 	// Answer is the whole settled text, never truncated.
-	Answer          []byte `json:"-"`
-	AnswerKind      string `json:"answerKind,omitempty"`
-	LateReply       []byte `json:"-"`
-	LateReplyAt     int64  `json:"lateReplyAt,omitempty"`
-	Revision        int64  `json:"revision"`
-	SettledAt       int64  `json:"settledAt,omitempty"`
-	DeliveredAt     int64  `json:"deliveredAt,omitempty"`
-	DeliveredHow    string `json:"deliveredHow,omitempty"`
+	Answer       []byte `json:"-"`
+	AnswerKind   string `json:"answerKind,omitempty"`
+	LateReply    []byte `json:"-"`
+	LateReplyAt  int64  `json:"lateReplyAt,omitempty"`
+	Revision     int64  `json:"revision"`
+	SettledAt    int64  `json:"settledAt,omitempty"`
+	DeliveredAt  int64  `json:"deliveredAt,omitempty"`
+	DeliveredHow string `json:"deliveredHow,omitempty"`
+	// DeliveredWith is the token of the request whose wake message carried
+	// this answer, when one message answered several requests. Empty when
+	// the request's own message carried it, or none did.
+	DeliveredWith   string `json:"-"`
 	LateDeliveredAt int64  `json:"lateDeliveredAt,omitempty"`
 	// ExpiresAt is the destination's deadline for collecting the answer.
 	ExpiresAt int64 `json:"expiresAt,omitempty"`
@@ -131,7 +137,23 @@ type ThreadRequestSettlement struct {
 	// sets it to SettledAt plus a day; the source copies what the
 	// destination reported.
 	ExpiresAt int64
+	// ArmWake arms `notify` on the source row with the settlement. An
+	// explicit reply sets it: the reply is owed to the caller as a message
+	// whether or not the caller asked to be told. An archived caller is
+	// never armed (threadRequestArmSQL). A receipt has no wake, and its
+	// settlement refuses the flag.
+	ArmWake bool
 }
+
+// threadRequestArmSQL is the `notify` value a statement that stores a reply
+// writes; its one parameter is whether the reply arms the wake. It refuses
+// an archived caller in the statement itself: archiving disarms the caller's
+// requests, and a reply that read the thread before the archive must not arm
+// one after it.
+const threadRequestArmSQL = `CASE WHEN ? = 1 AND NOT EXISTS (
+		        SELECT 1 FROM threads
+		         WHERE threads.id = thread_requests.caller_thread_id AND threads.archived = 1)
+		     THEN 1 ELSE notify END`
 
 func (s ThreadRequestSettlement) validate(action string, states map[string]struct{}) error {
 	if _, ok := states[s.State]; !ok || s.State == "" {
@@ -146,7 +168,7 @@ func (s ThreadRequestSettlement) validate(action string, states map[string]struc
 const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0),
     target_computer_id, target_thread_id, target_thread_title, origin_thread_id, notify, state,
     answer, answer_kind, late_reply, COALESCE(late_reply_at, 0), revision,
-    COALESCE(settled_at, 0), COALESCE(delivered_at, 0), delivered_how,
+    COALESCE(settled_at, 0), COALESCE(delivered_at, 0), delivered_how, delivered_with,
     COALESCE(late_delivered_at, 0), COALESCE(expires_at, 0),
     polling, next_check, attempts, issue,
     wake_attempts, wake_next_check, wake_issue, created_at, updated_at`
@@ -158,7 +180,7 @@ func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 		&r.Token, &r.CallerThreadID, &r.Kind, &r.DueAt,
 		&r.TargetComputerID, &r.TargetThreadID, &r.TargetThreadTitle, &r.OriginThreadID, &notify, &r.State,
 		&r.Answer, &r.AnswerKind, &r.LateReply, &r.LateReplyAt, &r.Revision,
-		&r.SettledAt, &r.DeliveredAt, &r.DeliveredHow,
+		&r.SettledAt, &r.DeliveredAt, &r.DeliveredHow, &r.DeliveredWith,
 		&r.LateDeliveredAt, &r.ExpiresAt,
 		&polling, &r.NextCheck, &r.Attempts, &r.Issue,
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &r.CreatedAt, &r.UpdatedAt,
@@ -254,6 +276,10 @@ var threadRequestOpenStates = []string{ThreadRequestUnconfirmed, ThreadRequestAc
 //
 // Pass ThreadRequestOpenStates() for the ordinary collection path.
 func (s *Store) SettleThreadRequest(token string, from []string, settlement ThreadRequestSettlement) (bool, error) {
+	return settleThreadRequest(s.db, token, from, settlement)
+}
+
+func settleThreadRequest(db sqlExecutor, token string, from []string, settlement ThreadRequestSettlement) (bool, error) {
 	action := fmt.Sprintf("store: settle thread request %s", token)
 	if err := settlement.validate(action, threadRequestStates); err != nil {
 		return false, err
@@ -267,11 +293,12 @@ func (s *Store) SettleThreadRequest(token string, from []string, settlement Thre
 		settledAt = nowMillis()
 	}
 	set := []any{settlement.State, nilIfEmptyBytes(settlement.Answer), settlement.AnswerKind,
-		settledAt, nilIfZero(settlement.ExpiresAt), nowMillis(), token}
-	result, err := s.db.Exec(
+		settledAt, nilIfZero(settlement.ExpiresAt), boolToInt(settlement.ArmWake), nowMillis(), token}
+	result, err := db.Exec(
 		`UPDATE thread_requests
 		    SET state = ?, answer = ?, answer_kind = ?, revision = revision + 1,
-		        settled_at = ?, expires_at = ?, updated_at = ?
+		        settled_at = ?, expires_at = ?,
+		        notify = `+threadRequestArmSQL+`, updated_at = ?
 		  WHERE token = ? AND `+clause,
 		append(set, args...)...,
 	)
@@ -279,6 +306,37 @@ func (s *Store) SettleThreadRequest(token string, from []string, settlement Thre
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
 	return rowsChanged(result, action)
+}
+
+// SettleThreadRequestDelivered settles a source row and records the answer
+// as delivered inline, in one transaction. It is for a settlement the
+// caller's own tool call returns: a request refused before any thread ran it
+// is answered by that call's error, so no message is owed for it and no pass
+// may find the row settled and undelivered in between.
+func (s *Store) SettleThreadRequestDelivered(token string, from []string, settlement ThreadRequestSettlement) (bool, error) {
+	action := fmt.Sprintf("store: settle delivered thread request %s", token)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer tx.Rollback()
+	settled, err := settleThreadRequest(tx, token, from, settlement)
+	if err != nil || !settled {
+		return false, err
+	}
+	marked, err := MarkThreadRequestDeliveredTx(tx, token, ThreadWakeInline, 0, false)
+	if err != nil {
+		return false, err
+	}
+	if !marked {
+		// The settlement left the row open (a state that is not an end),
+		// so there is nothing to deliver and nothing is written.
+		return false, fmt.Errorf("%s: state %q does not end the request", action, settlement.State)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return true, nil
 }
 
 // ThreadRequestOpenStates returns the states a settlement may replace.
@@ -290,16 +348,20 @@ func ThreadRequestOpenStates() []string {
 // request had already settled. It is a new revision, so a `thread_status`
 // waiting past the collected revision returns and the wake path delivers a
 // second message. Only the first late reply is stored.
-func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64) (bool, error) {
+//
+// `armWake` arms `notify` with the reply, as a settlement's ArmWake does and
+// under the same rule.
+func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64, armWake bool) (bool, error) {
 	action := fmt.Sprintf("store: store thread request late reply %s", token)
 	if at == 0 {
 		at = nowMillis()
 	}
 	result, err := s.db.Exec(
 		`UPDATE thread_requests
-		    SET late_reply = ?, late_reply_at = ?, revision = revision + 1, updated_at = ?
+		    SET late_reply = ?, late_reply_at = ?, revision = revision + 1,
+		        notify = `+threadRequestArmSQL+`, updated_at = ?
 		  WHERE token = ? AND settled_at IS NOT NULL AND late_reply IS NULL`,
-		nilIfEmptyBytes(reply), at, nowMillis(), token,
+		nilIfEmptyBytes(reply), at, boolToInt(armWake), nowMillis(), token,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
@@ -403,15 +465,17 @@ func (s *Store) SetThreadRequestNotify(token string, notify bool) (bool, error) 
 	return rowsChanged(result, action)
 }
 
-// SetThreadRequestsNotifyForCaller disarms (or arms) every open request one
-// thread owns. Archiving, deleting or moving the caller uses it so no wake
-// lands on a thread that cannot receive it.
-func (s *Store) SetThreadRequestsNotifyForCaller(callerThreadID string, notify bool) (int64, error) {
-	action := fmt.Sprintf("store: set thread requests notify for %s", callerThreadID)
+// DisarmThreadRequestWakesForCaller turns `notify` off on every request one
+// thread made. Archiving, deleting or moving the caller uses it so no wake
+// lands on a thread that cannot receive it. It covers a request whose first
+// answer was already delivered: that row can still take a late reply, and
+// an armed one would wake the thread with it.
+func (s *Store) DisarmThreadRequestWakesForCaller(callerThreadID string) (int64, error) {
+	action := fmt.Sprintf("store: disarm thread request wakes for %s", callerThreadID)
 	result, err := s.db.Exec(
-		`UPDATE thread_requests SET notify = ?, updated_at = ?
-		  WHERE caller_thread_id = ? AND delivered_at IS NULL AND notify IS NOT ?`,
-		boolToInt(notify), nowMillis(), callerThreadID, boolToInt(notify),
+		`UPDATE thread_requests SET notify = 0, updated_at = ?
+		  WHERE caller_thread_id = ? AND notify = 1`,
+		nowMillis(), callerThreadID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", action, err)
@@ -623,6 +687,63 @@ func (s *Store) DueThreadRequestPolls(now int64, limit int) ([]ThreadRequest, er
 	return collectThreadRequests(rows, "store: list due thread request polls")
 }
 
+// OpenThreadRequestPollsOn returns the requests the given threads still have
+// open on one computer, due or not, soonest first. A poll for a due request
+// asks about its thread's other open ones with it, so answers written there
+// by one event (a turn that consumed several messages, a restart) are
+// collected in one pass. An `unconfirmed` row is left out: the call that
+// makes it has not returned, and asking early would read a request the
+// destination has not seen as one it refused.
+//
+// The predicate repeats idx_thread_requests_poll's so the read stays on the
+// outstanding rows. The unary plus keeps the caller term out of index
+// selection: idx_thread_requests_caller would read every request the callers
+// ever made and sort them.
+const openThreadRequestPollsOnSQL = `SELECT ` + threadRequestColumns + ` FROM thread_requests
+		  WHERE polling = 1
+		    AND target_computer_id <> ''
+		    AND state IN ('unconfirmed','accepted','running','finished')
+		    AND target_computer_id = ?
+		    AND state IN ('accepted','running')
+		    AND +caller_thread_id IN (SELECT value FROM json_each(?))
+		  ORDER BY next_check ASC LIMIT `
+
+func (s *Store) OpenThreadRequestPollsOn(computerID string, callerThreadIDs []string, limit int) ([]ThreadRequest, error) {
+	if limit < 1 {
+		limit = 32
+	}
+	callers, err := json.Marshal(callerThreadIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: list open thread request polls on %s: %w", computerID, err)
+	}
+	rows, err := s.reader().Query(openThreadRequestPollsOnSQL+strconv.Itoa(limit), computerID, string(callers))
+	if err != nil {
+		return nil, fmt.Errorf("store: list open thread request polls on %s: %w", computerID, err)
+	}
+	return collectThreadRequests(rows, "store: list open thread request polls on "+computerID)
+}
+
+// The owed rule: a row has an answer no route has delivered when its first
+// answer is owed or its late reply is. A late reply supersedes a first answer
+// that was never handed over, as it does in `thread_status`, so such a row
+// owes the reply alone. ThreadRequest.WakeOwed states the same rule for a row
+// already read; TestWakeOwedAgreesWithItsSQL holds the two together.
+const (
+	threadFirstWakeOwedSQL = `(settled_at IS NOT NULL AND delivered_at IS NULL AND late_reply IS NULL)`
+	threadLateWakeOwedSQL  = `(late_reply IS NOT NULL AND late_delivered_at IS NULL)`
+	threadWakeOwedSQL      = `(` + threadFirstWakeOwedSQL + ` OR ` + threadLateWakeOwedSQL + `)`
+)
+
+// WakeOwed reports whether the row's first answer (late false) or its late
+// reply (late true) is still to be delivered. `notify` is not part of it:
+// that is whether anyone is to be told.
+func (r ThreadRequest) WakeOwed(late bool) bool {
+	if late {
+		return len(r.LateReply) > 0 && r.LateDeliveredAt == 0
+	}
+	return r.SettledAt != 0 && r.DeliveredAt == 0 && len(r.LateReply) == 0
+}
+
 // UndeliveredThreadRequestWakes returns the settled requests that still owe
 // their caller a message: `notify` is armed, the retry's own clock has come
 // round, and the answer, or a late reply, has never been handed over. Oldest
@@ -638,8 +759,7 @@ func (s *Store) UndeliveredThreadRequestWakes(now int64, limit int) ([]ThreadReq
 		`SELECT `+threadRequestColumns+` FROM thread_requests
 		  WHERE notify = 1
 		    AND wake_next_check <= ?
-		    AND ((settled_at IS NOT NULL AND delivered_at IS NULL)
-		      OR (late_reply IS NOT NULL AND late_delivered_at IS NULL))
+		    AND `+threadWakeOwedSQL+`
 		  ORDER BY settled_at ASC, token ASC LIMIT `+strconv.Itoa(limit), now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list undelivered thread request wakes: %w", err)
@@ -680,9 +800,7 @@ func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 		     WHERE polling = 1 AND target_computer_id <> ''
 		       AND state IN ('unconfirmed','accepted','running','finished')),
 		   (SELECT MIN(wake_next_check) FROM thread_requests
-		     WHERE notify = 1
-		       AND ((settled_at IS NOT NULL AND delivered_at IS NULL)
-		         OR (late_reply IS NOT NULL AND late_delivered_at IS NULL)))`,
+		     WHERE notify = 1 AND `+threadWakeOwedSQL+`)`,
 	).Scan(&reminder, &poll, &wake); err != nil {
 		return ThreadRequestSchedule{}, fmt.Errorf("store: read next thread request work: %w", err)
 	}
@@ -814,23 +932,49 @@ func nilIfEmptyBytes(value []byte) any {
 	return value
 }
 
-// QueueThreadWake hands one settled request's wake to the ordinary durable
-// message queue and records the delivery in the same transaction: the queue
-// row is the message's only copy from that moment on, and `delivered_at` is
-// what keeps a second observation of the same settlement from queueing it
-// twice.
+// ErrThreadWakeNotOwed is QueueThreadWake refusing a message because one of
+// the requests it answers no longer owes that wake: another route delivered
+// it, a late reply superseded its first answer, or the wake was disarmed
+// (the caller was archived, deleted or moved). Nothing was written. The
+// caller reads the requests again and queues what is still owed.
+var ErrThreadWakeNotOwed = errors.New("store: a request in this wake no longer owes it")
+
+// QueueThreadWake hands a wake to the ordinary durable message queue and
+// records the delivery in the same transaction: the queue row is the
+// message's only copy from that moment on, and `delivered_at` is what keeps a
+// second observation of the same settlement from queueing it twice.
+//
+// One message can answer several requests. `token` is the carrier, the
+// request whose send id the message is queued under; `riders` are the other
+// requests it answers, each marked delivered with the carrier recorded on it.
+//
+// The message is written only if every request it names was made by the
+// thread the message is queued on, is still armed (`notify`) and still owes
+// this wake, checked by the statement that marks it. Otherwise nothing is written and the error is
+// ErrThreadWakeNotOwed: a message naming a request that was already answered
+// would deliver that answer twice.
 //
 // It is the `persist` hook of the caller's registerQueueItem, so it runs
 // BEFORE the in-memory queue register, exactly where InsertFlushQueueItem
 // runs for an ordinary send.
 //
-// `late` marks the second wake (a late reply) instead of the first. A
-// delivery mark that does not apply means another path already delivered
-// this revision, and the wake is refused rather than duplicated.
-func (s *Store) QueueThreadWake(token string, late bool, item FlushQueueItem) error {
+// `late` marks the second wake (a late reply) instead of the first, and
+// takes no riders.
+func (s *Store) QueueThreadWake(token string, riders []string, late bool, item FlushQueueItem) error {
 	action := fmt.Sprintf("store: queue thread wake %s", token)
 	if token == "" {
 		return fmt.Errorf("%s: token is required", action)
+	}
+	if late && len(riders) > 0 {
+		return fmt.Errorf("%s: a late reply carries no other request", action)
+	}
+	named := make(map[string]struct{}, len(riders)+1)
+	named[token] = struct{}{}
+	for _, rider := range riders {
+		if _, twice := named[rider]; twice || rider == "" {
+			return fmt.Errorf("%s: rider %q is empty or named twice", action, rider)
+		}
+		named[rider] = struct{}{}
 	}
 	tx, release, err := s.beginDurableTx(context.Background())
 	if err != nil {
@@ -838,12 +982,13 @@ func (s *Store) QueueThreadWake(token string, late bool, item FlushQueueItem) er
 	}
 	defer release()
 	defer tx.Rollback()
-	marked, err := MarkThreadRequestDeliveredTx(tx, token, ThreadWakeQueued, item.EnqueuedAt, late)
-	if err != nil {
-		return err
+	if err := markThreadWakeQueuedTx(tx, token, "", late, item); err != nil {
+		return fmt.Errorf("%s: %w", action, err)
 	}
-	if !marked {
-		return fmt.Errorf("%s: the answer was already delivered", action)
+	for _, rider := range riders {
+		if err := markThreadWakeQueuedTx(tx, rider, token, late, item); err != nil {
+			return fmt.Errorf("%s: %w", action, err)
+		}
 	}
 	if err := insertFlushQueueItem(tx, item); err != nil {
 		return err
@@ -854,21 +999,83 @@ func (s *Store) QueueThreadWake(token string, late bool, item FlushQueueItem) er
 	return nil
 }
 
+// markThreadWakeQueuedTx marks one request delivered by the queued message
+// `item`, recording `carrier` as the request whose message it is (empty for
+// the carrier itself). It is stricter than an inline delivery, which hands
+// over whatever the row holds: the request must belong to the thread the
+// message is queued on, and a first answer a late reply has superseded is
+// not sent, because the reply's own message is.
+func markThreadWakeQueuedTx(tx *sql.Tx, token, carrier string, late bool, item FlushQueueItem) error {
+	at := item.EnqueuedAt
+	if at == 0 {
+		at = nowMillis()
+	}
+	// `delivered_with` describes the first answer's message, so a late
+	// reply's mark leaves it as it is.
+	set, owed, args := "delivered_at = ?, delivered_with = ?", threadFirstWakeOwedSQL, []any{at, carrier}
+	if late {
+		set, owed, args = "late_delivered_at = ?", threadLateWakeOwedSQL, []any{at}
+	}
+	args = append(args, ThreadWakeQueued, nowMillis(), token, item.ThreadID)
+	result, err := tx.Exec(
+		`UPDATE thread_requests
+		    SET `+set+`, delivered_how = ?, updated_at = ?,
+		        wake_attempts = 0, wake_next_check = 0, wake_issue = ''
+		  WHERE token = ? AND caller_thread_id = ? AND notify = 1 AND `+owed,
+		args...,
+	)
+	if err != nil {
+		return fmt.Errorf("mark request %s delivered: %w", token, err)
+	}
+	marked, err := rowsChanged(result, "mark request "+token+" delivered")
+	if err != nil {
+		return err
+	}
+	if !marked {
+		return fmt.Errorf("request %s: %w", token, ErrThreadWakeNotOwed)
+	}
+	return nil
+}
+
+// threadWakeRidersToDraftSQL corrects the requests one carrier's message
+// delivered. The predicate restates idx_thread_requests_delivered_with's.
+const threadWakeRidersToDraftSQL = `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
+			  WHERE delivered_with = ? AND delivered_with <> ''
+			    AND delivered_at IS NOT NULL AND delivered_how = ?`
+
 // MarkThreadRequestDeliveredAsDraft records that boot recovery restored a
 // queued wake into the composer instead of dispatching it. The row is
 // already `queued`; this is the correction, so it applies to a delivered
-// row rather than an undelivered one.
+// row rather than an undelivered one. The requests that rode with a first
+// wake (`delivered_with`) are in the same message and are corrected with it.
 func (s *Store) MarkThreadRequestDeliveredAsDraft(token string, late bool) (bool, error) {
 	action := fmt.Sprintf("store: mark thread request %s restored to draft", token)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer tx.Rollback()
 	query := `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
 	           WHERE token = ? AND delivered_at IS NOT NULL AND delivered_how = ?`
 	if late {
 		query = `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
 		          WHERE token = ? AND late_delivered_at IS NOT NULL AND delivered_how = ?`
 	}
-	result, err := s.db.Exec(query, ThreadWakeDraft, nowMillis(), token, ThreadWakeQueued)
+	result, err := tx.Exec(query, ThreadWakeDraft, nowMillis(), token, ThreadWakeQueued)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	changed, err := rowsChanged(result, action)
+	if err != nil {
+		return false, err
+	}
+	if !late {
+		if _, err := tx.Exec(threadWakeRidersToDraftSQL, ThreadWakeDraft, nowMillis(), token, ThreadWakeQueued); err != nil {
+			return false, fmt.Errorf("%s: riders: %w", action, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return changed, nil
 }
