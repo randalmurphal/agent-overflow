@@ -178,7 +178,7 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 	if next <= now.UnixMilli() {
 		next = now.UnixMilli() + row.IntervalSeconds*1000
 	}
-	claimedRow, claimed, err := a.store.ClaimAgentWake(row.ID, now.UnixMilli(), next, fire.missed)
+	claimedRow, claimed, err := a.store.ClaimAgentWake(row, now.UnixMilli(), next, fire.missed)
 	if err != nil {
 		logThreadRequestSweep("claim "+row.Kind+" "+row.ID, err)
 		return false

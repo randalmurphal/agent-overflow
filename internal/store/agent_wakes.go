@@ -321,14 +321,27 @@ func (s *Store) NextAgentWakeDue() (ScheduledMoment, error) {
 	return ScheduledMoment{At: next.Int64, Set: next.Valid}, nil
 }
 
-// ClaimAgentWake starts one interval run: armed to running, with the next fire
-// and the fires this one stands in for written in the same update. It
-// returns the row as the claim left it. Claimed false is a lost race:
-// cancelled, re-registered or claimed elsewhere.
-func (s *Store) ClaimAgentWake(id string, now, nextAt, missed int64) (AgentWake, bool, error) {
-	return s.changeAgentWakeRow(fmt.Sprintf("store: claim agent wake %s", id),
+// ClaimAgentWake starts one interval run of the row as the caller read it
+// (selected): armed to running, with the next fire and the fires this one
+// stands in for written in the same update. It returns the row as the claim
+// left it. Claimed false is a lost race: cancelled, claimed elsewhere, or
+// registered again since the read, which reuses the row's id and leaves it
+// armed: the claim applies only while every column a registration writes
+// is as the caller read it, so a stale selection neither runs the new
+// registration early nor writes the old schedule over its own.
+func (s *Store) ClaimAgentWake(selected AgentWake, now, nextAt, missed int64) (AgentWake, bool, error) {
+	longRunning := 0
+	if selected.LongRunning {
+		longRunning = 1
+	}
+	return s.changeAgentWakeRow(fmt.Sprintf("store: claim agent wake %s", selected.ID),
 		`UPDATE agent_wakes SET state = 'running', last_run_at = ?, next_at = ?, missed = ?
-		  WHERE id = ? AND state = 'armed'`, now, nullableMillis(nextAt), missed, id)
+		  WHERE id = ? AND state = 'armed'
+		    AND (kind, note, command, cwd, interval_seconds, timeout_seconds, long_running, next_at)
+		     IS (?, ?, ?, ?, ?, ?, ?, ?)`,
+		now, nullableMillis(nextAt), missed, selected.ID,
+		selected.Kind, selected.Note, selected.Command, selected.Cwd, nullableMillis(selected.IntervalSeconds),
+		nullableMillis(selected.TimeoutSeconds), longRunning, nullableMillis(selected.NextAt))
 }
 
 // AgentWakeCarry is what a run did with its row's `undelivered` outcome. The

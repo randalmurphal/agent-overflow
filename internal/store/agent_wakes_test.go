@@ -265,6 +265,42 @@ func TestRegisterAgentWakeKeepsOneRowPerLabel(t *testing.T) {
 	}
 }
 
+// A claim made from a due read loses to a registration of the same label
+// since, which reuses the row and leaves it armed: the new command does not
+// run early and keeps its own schedule. A claim from a read of the new
+// registration, once due, runs it.
+func TestAStaleClaimLosesToARegistration(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t")
+	if _, err := s.RegisterAgentWake(AgentWake{ID: "w", ThreadID: "t", Kind: AgentWakeWatch, Label: "poll", Command: "old",
+		IntervalSeconds: 60, NextAt: 100}); err != nil {
+		t.Fatal(err)
+	}
+	due, err := s.DueAgentWakes(100, 8)
+	if err != nil || len(due) != 1 {
+		t.Fatalf("due = %v %v", due, err)
+	}
+	replaced, err := s.RegisterAgentWake(AgentWake{ID: "other", ThreadID: "t", Kind: AgentWakeWatch, Label: "poll", Command: "new",
+		IntervalSeconds: 3600, NextAt: 5_000})
+	if err != nil || replaced.ID != "w" || replaced.State != AgentWakeArmed {
+		t.Fatalf("re-register = %+v %v, want the row reused and armed", replaced, err)
+	}
+	if _, claimed, err := s.ClaimAgentWake(due[0], 100, 160, 0); err != nil || claimed {
+		t.Fatalf("the stale claim = %v %v, want a lost race", claimed, err)
+	}
+	if row, _, _ := s.GetAgentWake("w"); row.State != AgentWakeArmed || row.NextAt != 5_000 || row.Command != "new" {
+		t.Fatalf("after the stale claim = state %s next %d command %q, want the new registration as it was", row.State, row.NextAt, row.Command)
+	}
+	due, err = s.DueAgentWakes(5_000, 8)
+	if err != nil || len(due) != 1 {
+		t.Fatalf("due at the new time = %v %v", due, err)
+	}
+	if row, claimed, err := s.ClaimAgentWake(due[0], 5_000, 8_600_000, 0); err != nil || !claimed || row.State != AgentWakeRunning {
+		t.Fatalf("a claim of the new registration = %+v %v %v", row, claimed, err)
+	}
+}
+
 // A run is claimed and finished conditionally, so a second claim, a claim of
 // a cancelled row and a finish of a row nobody claimed are all lost races.
 func TestAgentWakeRunsAreConditional(t *testing.T) {
@@ -284,10 +320,10 @@ func TestAgentWakeRunsAreConditional(t *testing.T) {
 	if _, finished, err := s.FinishAgentWake(row.ID, "early", "", 0, AgentWakeNoWake); err != nil || finished {
 		t.Fatalf("finish before claim: %v %v", finished, err)
 	}
-	if _, claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || !claimed {
+	if _, claimed, err := s.ClaimAgentWake(row, 100, 160, 0); err != nil || !claimed {
 		t.Fatalf("claim: %v %v", claimed, err)
 	}
-	if _, claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || claimed {
+	if _, claimed, err := s.ClaimAgentWake(row, 100, 160, 0); err != nil || claimed {
 		t.Fatalf("second claim: %v %v", claimed, err)
 	}
 	if _, finished, err := s.FinishAgentWake(row.ID, "delivered", "", 0, AgentWakeCarried); err != nil || !finished {
@@ -299,7 +335,7 @@ func TestAgentWakeRunsAreConditional(t *testing.T) {
 	if ids, err := s.CancelAgentWakesForThread("t", "", "archived"); err != nil || len(ids) != 1 {
 		t.Fatalf("cancel thread: %v %v", ids, err)
 	}
-	if _, claimed, err := s.ClaimAgentWake(row.ID, 200, 260, 0); err != nil || claimed {
+	if _, claimed, err := s.ClaimAgentWake(row, 200, 260, 0); err != nil || claimed {
 		t.Fatalf("claim of a cancelled row: %v %v", claimed, err)
 	}
 	if next, err := s.NextAgentWakeDue(); err != nil || next.Set {
@@ -453,7 +489,7 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 	at := int64(100)
 	finish := func(outcome, output string, missed int64, carry AgentWakeCarry) AgentWake {
 		t.Helper()
-		if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, missed); err != nil || !claimed {
+		if _, claimed, err := s.ClaimAgentWake(read(), at, at+60_000, missed); err != nil || !claimed {
 			t.Fatalf("claim at %d: %v %v", at, claimed, err)
 		}
 		at += 60_000
@@ -478,7 +514,7 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 	if _, err := s.NoteAgentWakeOutcome("w", "exited; restarting in 1s", AgentWakeNoWake); err != nil {
 		t.Fatal(err)
 	}
-	if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, 1); err != nil || !claimed {
+	if _, claimed, err := s.ClaimAgentWake(read(), at, at+60_000, 1); err != nil || !claimed {
 		t.Fatalf("claim before the quit: %v %v", claimed, err)
 	}
 	if _, err := s.RecoverAgentWake("w", "cancelled-by-quit"); err != nil {
@@ -497,7 +533,7 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 		write func(outcome string) error
 	}{
 		{"finish", func(outcome string) error {
-			if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
+			if _, claimed, err := s.ClaimAgentWake(read(), at, at+60_000, 0); err != nil || !claimed {
 				return fmt.Errorf("claim: %v %v", claimed, err)
 			}
 			at += 60_000
@@ -506,7 +542,7 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 		}},
 		{"session end", func(outcome string) error { _, err := s.NoteAgentWakeUndelivered("w", outcome, ""); return err }},
 		{"shutdown", func(outcome string) error {
-			if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
+			if _, claimed, err := s.ClaimAgentWake(read(), at, at+60_000, 0); err != nil || !claimed {
 				return fmt.Errorf("claim: %v %v", claimed, err)
 			}
 			_, err := s.ReleaseUndeliveredAgentWake("w", outcome, "", at)
