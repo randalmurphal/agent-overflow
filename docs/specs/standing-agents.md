@@ -123,15 +123,19 @@ user changes it.
     ticket keys. Evidence comes from harness fixtures, or from a clone
     of the real database with every such string replaced in the DOM
     before the capture.
-19. **A worker's question goes to its agent.** A thread spawned by a
-    standing agent never puts a question or approval to the user. Its
-    awaiting-input and approval stops are delivered to the spawning
-    agent as a badged wake, the worker shows `waiting on <agent>` rather
-    than needs-you, and the agent answers through `thread_reply` or
-    escalates by asking the user itself, as one question with the
-    context. The user can still open the worker and answer directly,
-    which settles the wake. This supersedes the thread tools non-goal
-    of not relaying approval requests, for agent-spawned threads only.
+19. **A worker's question goes to the thread that spawned it.** A
+    thread another thread spawned on this computer does not put a
+    question or approval to the user while its spawner is not archived,
+    whoever the spawner is: an assistant, an ordinary thread or another
+    worker, whose own worker then asks it. Its awaiting-input and
+    approval stops are delivered to the spawner as a badged wake, the
+    worker shows `waiting on <spawner>` rather than needs-you, and the
+    spawner answers through `thread_reply` or escalates by asking the
+    user itself, as one question with the context. The user can still
+    open the worker and answer directly, which settles the wake. A
+    worker whose spawner is archived, or that was spawned from another
+    computer, asks the user. This supersedes the thread tools non-goal
+    of not relaying approval requests, for spawned threads only.
 20. **Other threads' work is an Agents segment, not Background.** The
     requests a thread is owed (spawns, and sends and asks it waits on or
     asked to be told about) list in their own rail segment after
@@ -640,7 +644,7 @@ standing agent reads and writes:
 
 | Surface | What the receiver lacked | Now |
 |---|---|---|
-| `thread_send` / `thread_spawn` footer | Whether the sender is a lead or a worker; for a worker, that its questions go to the agent (ruling 19) | A standing agent sender is named as one with its role line, the first non-blank line of its `instructions.md` after a leading frontmatter block and rule lines (one cleaned line, at most 200 characters, quoted), read when the message is sent. A frontmatter block that is never closed is not skipped, so its first key line is the role. When it spawned the receiver on this computer, the footer adds that the receiver's questions and approval requests go to it. A sender on another computer carries its role in the forwarded call and never routes. An ordinary sender's footer is unchanged |
+| `thread_send` / `thread_spawn` footer | Whether the sender is a lead or a worker; for a worker, that its questions go to the agent (ruling 19) | A standing agent sender is named as one with its role line, the first non-blank line of its `instructions.md` after a leading frontmatter block and rule lines (one cleaned line, at most 200 characters, quoted), read when the message is sent. A frontmatter block that is never closed is not skipped, so its first key line is the role. When the sender, standing agent or not, spawned the receiver on this computer, the footer adds that the receiver's questions and approval requests go to it. A sender on another computer carries its role in the forwarded call and never routes |
 | A spawned thread's first message | The sender's standards, which it could only paste | `home_files` on `thread_spawn` and `thread_send`: files from the caller's home prepended under their names, framed as the sender's own text ([thread tools](agent-thread-tools.md#thread_spawn-q5-q6-q18)) |
 | Wake of a reply, final message or failure | Whether the answering thread is an agent | A standing agent is named with its role line on the line after the status line, as it was when the answer that wake carries was written, the first answer and the late reply each recording their own: the answering computer's receipt records it then, and the request row copies it when it collects the answer, from this computer or another, so the wake reads the same on either. A role is bounded again where it is collected, and bounding a bounded role changes nothing. A computer that reports none answered from an ordinary thread |
 | `thread_search`, `thread_show` | Which rows are agents and whose workers | `assistant` and `spawned_by` on every row |
@@ -845,7 +849,7 @@ Mechanics, as built:
   remote, waits for that work to settle, so the floor never takes rows
   out of a tree. The ledger tools treat that
   token as unknown; the lineage reads, and a worker's prompt routing
-  (`StandingAgentSpawnerOf`), still find the row.
+  (`SpawnerOf`), still find the row.
 - `SetThreadGroup` refuses an assistant's thread
   (`ErrStandingAgentGrouped`). The drag payload marks only agent rows
   `agentBound`, so a group target accepts a child.
@@ -1359,7 +1363,9 @@ closes up their spacing so the row holds at a phone width.
   every change to a request, to the target a running request works in,
   and to a wait parked on one, coalesced off the emit path: one statement
   names the callers of a batch. The frame names the caller and the
-  request and carries no row. `ListThreadAgentRows` is read when the
+  request and carries no row, and is sent again, with the same request, to
+  each thread up to three spawns above the caller, whose listing nests
+  the caller's rows. `ListThreadAgentRows` is read when the
   thread opens, after a reconnect or a lost frame, and on a frame naming
   the thread or a thread its list nests that is not about a local row the
   pane lists: a new row, a frame about every request of a caller, a row a
@@ -1393,6 +1399,26 @@ closes up their spacing so the row holds at a phone width.
   (`thread_requests.wake_item_id`, `late_wake_item_id`, recorded when the
   echo confirms the wake), not by a send-id lookup. A tool row's state
   read (`GetThreadRequestStates`) is one statement for all its tokens.
+  A spawn row whose thread is on this computer carries that thread's
+  stored `placement` and whether it is `archived`; every other row
+  carries neither, a row a paired computer listed included.
+- **Past.** `ListThreadPastAgentRows` pages the thread's settled rows,
+  flat and newest settled first, ties by token: every spawn and ask it
+  made and its sends with notify armed, with the total. Each row is
+  derived as an open one is. A page is at most 50 rows, read from a
+  cursor (settled time and token) through
+  `idx_thread_requests_caller_settled` in index order, never offset or
+  sorted; the total counts the caller's settled rows, which the
+  retention floor bounds. A spawn past the floor is listed as its lineage
+  row, with no answer.
+- **Worker summaries.** `GetThreadWorkerSummary` counts the open rows of
+  the thread's listing, nested ones included, read as a pane reads it,
+  and those blocked on a prompt not routed to an agent.
+  `ListThreadWorkerSummaries` lists the summaries of the threads whose
+  listing holds an open row, at most 128, found from the open work only:
+  callers of open requests the listing shows, local spawns whose counts
+  hold open work below them, and remote spawns that last reported open
+  work. A frame naming a thread is the cue to read its summary again.
 
 #### Agent thread companion
 

@@ -270,10 +270,14 @@ func (s *Store) ListThreadLastMessages(threadIDs []string, cutAt string) (map[st
 type ThreadName struct {
 	Title    string
 	Provider string
+	// Placement is the thread's stored placement, Archived whether it is
+	// archived: what an Agents row offers for the thread its spawn made.
+	Placement string
+	Archived  bool
 }
 
-// ThreadNames reads the title and provider of each of ids that has a row,
-// in one statement.
+// ThreadNames reads the title, provider, placement and archive state of
+// each of ids that has a row, in one statement.
 func (s *Store) ThreadNames(ids []string) (_ map[string]ThreadName, err error) {
 	out := make(map[string]ThreadName, len(ids))
 	if len(ids) == 0 {
@@ -283,7 +287,7 @@ func (s *Store) ThreadNames(ids []string) (_ map[string]ThreadName, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: encode thread ids for their names: %w", err)
 	}
-	rows, err := s.reader().Query(`SELECT t.id, t.title, t.provider FROM json_each(?) j CROSS JOIN threads t WHERE t.id = j.value`, string(encoded))
+	rows, err := s.reader().Query(`SELECT t.id, t.title, t.provider, t.placement, t.archived FROM json_each(?) j CROSS JOIN threads t WHERE t.id = j.value`, string(encoded))
 	if err != nil {
 		return nil, fmt.Errorf("store: read thread names: %w", err)
 	}
@@ -291,7 +295,7 @@ func (s *Store) ThreadNames(ids []string) (_ map[string]ThreadName, err error) {
 	for rows.Next() {
 		var id string
 		var name ThreadName
-		if err := rows.Scan(&id, &name.Title, &name.Provider); err != nil {
+		if err := rows.Scan(&id, &name.Title, &name.Provider, &name.Placement, &name.Archived); err != nil {
 			return nil, fmt.Errorf("store: scan a thread name: %w", err)
 		}
 		out[id] = name

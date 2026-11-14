@@ -127,6 +127,16 @@ func TestThreadAgentRowsNestAPairedComputersAgents(t *testing.T) {
 		nested.OwnerComputerID != pair.computer || nested.CallerThreadID != pair.child {
 		t.Fatalf("the nested row = %+v, want depth 1 on %s (%s) made by %s", nested, pair.computer, parent.Computer, pair.child)
 	}
+	// That computer says where its own sidebar places the thread; this one
+	// offers nothing for it.
+	answer, cached := pair.source.cachedPeerAgentRows(pair.spawn)
+	there, listed := agentRowByToken(answer.listing.Rows, pair.grand)
+	if !cached || !listed || there.Placement == "" {
+		t.Fatalf("the paired computer's own row = %+v (cached %v, listed %v), want its placement", there, cached, listed)
+	}
+	if nested.Placement != "" || nested.Archived || parent.Placement != "" {
+		t.Fatalf("rows on a paired computer carry a placement here: spawn %q, nested %q archived %v", parent.Placement, nested.Placement, nested.Archived)
+	}
 	child, err := pair.dest.store.GetThread(pair.child)
 	if err != nil || child.Provider == "" || parent.Provider != child.Provider {
 		t.Fatalf("the spawn row's provider = %q, want the child's %q (%v)", parent.Provider, child.Provider, err)

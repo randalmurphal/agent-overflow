@@ -91,11 +91,15 @@ import (
 //
 // The Agents segment's read (threadAgentRequestsSQL) searches each thread
 // on a spawn walk by caller through an index that leaves its settled history
-// and lineage rows out: idx_thread_requests_open_created for open rows in
-// tree order, idx_thread_requests_caller_settled for rows settled inside the
-// window, idx_thread_requests_open_below for the local spawns kept for open
-// work under them, idx_thread_requests_nested_caller for remote spawns with
-// open work. idx_thread_requests_nested_open holds the settled remote spawns
+// and lineage rows out, or a range of one that reaches neither:
+// idx_thread_requests_open_created for open rows in tree order,
+// idx_thread_requests_caller_settled for rows settled inside the window,
+// idx_thread_requests_open_below for the local spawns kept for open work
+// under them, idx_thread_requests_nested_caller for remote spawns with open
+// work. idx_thread_requests_caller_settled holds every row, lineage rows
+// included, so the segment's Past list pages a caller's settled rows newest
+// first through it (ListThreadPastAgentRequests).
+// idx_thread_requests_nested_open holds the settled remote spawns
 // with open work there, in the order the sweep pages through them.
 // idx_thread_requests_spawn_target serves the lineage reads by spawned
 // thread. idx_thread_requests_age and idx_thread_request_receipts_age index
@@ -213,8 +217,7 @@ CREATE INDEX idx_thread_requests_nested_open ON thread_requests(settled_at, toke
   WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
     AND target_computer_id <> '' AND lineage_only = 0;
 CREATE INDEX idx_thread_requests_caller_settled
-    ON thread_requests(caller_thread_id, settled_at)
- WHERE lineage_only = 0;
+    ON thread_requests(caller_thread_id, settled_at, token);
 CREATE INDEX idx_thread_requests_nested_caller
     ON thread_requests(caller_thread_id)
  WHERE nested_open = 1 AND kind = 'spawn' AND target_computer_id <> '' AND lineage_only = 0;

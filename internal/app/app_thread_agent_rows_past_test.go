@@ -1,0 +1,283 @@
+package app
+
+import (
+	"encoding/json"
+	"slices"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
+)
+
+// seedSettledAgentRow writes a request and settles it at settledAt.
+func seedSettledAgentRow(t *testing.T, a *App, row store.ThreadRequest, settledAt int64, answer string) {
+	t.Helper()
+	row.State = store.ThreadRequestRunning
+	if err := a.store.InsertThreadRequest(row); err != nil {
+		t.Fatalf("insert %s: %v", row.Token, err)
+	}
+	settled, err := a.store.SettleThreadRequest(row.Token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadRequestReplied, Answer: []byte(answer), AnswerKind: store.ThreadAnswerReply, SettledAt: settledAt,
+	})
+	if err != nil || !settled {
+		t.Fatalf("settle %s: settled=%v err=%v", row.Token, settled, err)
+	}
+}
+
+// Past lists a thread's settled rows newest settled first across pages,
+// ties by token, each once, flat, with the facts an open row carries: an
+// answered ask opens the thread it asked about and shows its answer, a
+// spawn the retention floor reduced to lineage shows none, and a spawn's
+// row says where its thread is placed and whether it is archived. Open
+// rows and quiet sends are not Past.
+func TestPastAgentRowsPageTheSettledRowsNewestFirst(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	lead := noticeTestThread(t, a, "past-lead")
+	old := noticeTestThread(t, a, "past-old")
+	shelved := noticeTestThread(t, a, "past-shelved")
+	fresh := noticeTestThread(t, a, "past-fresh")
+	asked := noticeTestThread(t, a, "past-asked")
+	open := noticeTestThread(t, a, "past-open")
+	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "old", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: old.ID, CreatedAt: 1}, 2, "long ago")
+	if _, err := a.store.DeleteThreadRequestsBefore(10); err != nil {
+		t.Fatal(err)
+	}
+	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "b-shelved", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: shelved.ID, CreatedAt: 20}, 300, "shelved it")
+	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "a-fresh", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: fresh.ID, CreatedAt: 20}, 300, "fresh one")
+	seedSettledAgentRow(t, a, store.ThreadRequest{
+		Token: "ask", CallerThreadID: lead.ID, Kind: store.ThreadRequestAsk, TargetThreadID: "gone-scratch-copy",
+		TargetThreadTitle: "Asked", OriginThreadID: asked.ID, CreatedAt: 20,
+	}, 200, "it says yes")
+	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "told", CallerThreadID: lead.ID, Kind: store.ThreadRequestSend, TargetThreadID: fresh.ID, Notify: true, CreatedAt: 20}, 100, "noted")
+	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "quiet", CallerThreadID: lead.ID, Kind: store.ThreadRequestSend, TargetThreadID: asked.ID, CreatedAt: 20}, 250, "not owed")
+	if err := a.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "open", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: open.ID, State: store.ThreadRequestRunning, CreatedAt: 30,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.store.ArchiveThread(shelved.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var rows []ThreadAgentRow
+	after := store.PastAgentRowsCursor{}
+	for range 5 {
+		page, err := a.ListThreadPastAgentRows(lead.ID, after, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if page.Total != 5 {
+			t.Fatalf("total %d, want 5", page.Total)
+		}
+		rows = append(rows, page.Rows...)
+		if page.Next == nil {
+			break
+		}
+		after = *page.Next
+	}
+	if got, want := agentRowTokens(rows), []string{"b-shelved", "a-fresh", "ask", "told", "old"}; !slices.Equal(got, want) {
+		t.Fatalf("past rows %q, want %q", got, want)
+	}
+	byToken := map[string]ThreadAgentRow{}
+	for _, row := range rows {
+		byToken[row.Token] = row
+		if row.Depth != 0 || threadAgentRowOpen(row.State) || row.SettledAt == 0 {
+			t.Errorf("past row %+v is not a flat settled row", row)
+		}
+	}
+	stored := func(id string) string {
+		t.Helper()
+		thread, err := a.store.GetThread(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return thread.Placement
+	}
+	if row := byToken["b-shelved"]; row.Placement != stored(shelved.ID) || row.Placement == "" || !row.Archived || row.Answer != "shelved it" {
+		t.Errorf("the archived spawn's row = %+v", row)
+	}
+	if row := byToken["a-fresh"]; row.Placement != stored(fresh.ID) || row.Archived {
+		t.Errorf("the live spawn's row = %+v", row)
+	}
+	if row := byToken["ask"]; row.OpenThreadID != asked.ID || row.Answer != "it says yes" || row.Title != asked.Title || row.Placement != "" || row.State != threadtools.RequestReplied {
+		t.Errorf("the answered ask's row = %+v", row)
+	}
+	// A send to a spawned thread is not the spawn that placed it.
+	if row := byToken["told"]; row.Placement != "" || row.Answer != "noted" {
+		t.Errorf("the send's row = %+v", row)
+	}
+	if row := byToken["old"]; row.Answer != "" || row.ThreadID != old.ID {
+		t.Errorf("the lineage spawn's row = %+v", row)
+	}
+
+	// The open list carries the same two facts for its spawn rows.
+	listing, err := a.ListThreadAgentRows(t.Context(), lead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Rows) != 1 || listing.Rows[0].Token != "open" || listing.Rows[0].Placement != stored(open.ID) || listing.Rows[0].Archived {
+		t.Errorf("open rows = %+v", listing.Rows)
+	}
+}
+
+// approvalOn opens an approval prompt in threadID, as its provider would.
+func approvalOn(t *testing.T, a *App, threadID, requestID string) {
+	t.Helper()
+	meta, err := json.Marshal(provider.ApprovalRequest{RequestID: requestID, ThreadID: threadID, ToolName: "Bash", Kind: "command"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventApprovalRequest, ThreadID: threadID, ItemID: requestID, Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A sidebar row's summary counts the open rows its Agents listing shows,
+// nested ones included, and those blocked on a prompt the user must answer:
+// a worker's prompt routed to its spawner is not the user's, one handed
+// back is, and one answered is no longer counted. Only threads with open
+// rows are listed.
+func TestWorkerSummariesCountOpenRowsAndThoseWaitingOnTheUser(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	a.triage.SetPromptRouter(a.routeWorkerPrompt)
+	lead := noticeTestThread(t, a, "sum-lead")
+	worker := noticeTestThread(t, a, "sum-worker")
+	grand := noticeTestThread(t, a, "sum-grand")
+	done := noticeTestThread(t, a, "sum-done")
+	idle := noticeTestThread(t, a, "sum-idle")
+	for _, spawn := range []struct{ token, caller, target string }{
+		{"lead-worker", lead.ID, worker.ID}, {"worker-grand", worker.ID, grand.ID},
+	} {
+		if err := a.store.InsertThreadRequest(store.ThreadRequest{
+			Token: spawn.token, CallerThreadID: spawn.caller, TargetThreadID: spawn.target,
+			Kind: store.ThreadRequestSpawn, State: store.ThreadRequestRunning,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "done-idle", CallerThreadID: done.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: idle.ID}, time.Now().UnixMilli(), "ok")
+	summary := func(threadID string) ThreadWorkerSummary {
+		t.Helper()
+		got, err := a.GetThreadWorkerSummary(t.Context(), threadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	want := func(threadID string, open, needYou int) {
+		t.Helper()
+		if got := summary(threadID); got != (ThreadWorkerSummary{ThreadID: threadID, Open: open, NeedYou: needYou}) {
+			t.Errorf("summary of %s = %+v, want open %d need you %d", threadID, got, open, needYou)
+		}
+	}
+	want(lead.ID, 2, 0)
+	want(worker.ID, 1, 0)
+
+	approvalOn(t, a, grand.ID, "grand-approval")
+	if pending := a.triage.PendingInteractiveRequests(grand.ID).Approvals; len(pending) != 1 || pending[0].RoutedTo == nil {
+		t.Fatalf("the grand worker's prompt = %+v, want it routed", pending)
+	}
+	want(lead.ID, 2, 0)
+	want(worker.ID, 1, 0)
+
+	if !a.triage.UnroutePrompt(grand.ID, "grand-approval") {
+		t.Fatal("the prompt did not go back to the user")
+	}
+	want(lead.ID, 2, 1)
+	want(worker.ID, 1, 1)
+
+	all, err := a.ListThreadWorkerSummaries(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []ThreadWorkerSummary{{ThreadID: lead.ID, Open: 2, NeedYou: 1}, {ThreadID: worker.ID, Open: 1, NeedYou: 1}}; !slices.Equal(all, want) {
+		t.Errorf("summaries = %+v, want %+v", all, want)
+	}
+
+	resolve, err := json.Marshal(map[string]any{"requestId": "grand-approval", "decision": "approved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventApprovalResolved, ThreadID: grand.ID, ItemID: "grand-approval", Meta: resolve, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want(lead.ID, 2, 0)
+	want(worker.ID, 1, 0)
+
+	settled, err := a.store.SettleThreadRequest("worker-grand", store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: time.Now().UnixMilli(),
+	})
+	if err != nil || !settled {
+		t.Fatalf("settle: %v %v", settled, err)
+	}
+	want(worker.ID, 0, 0)
+	want(lead.ID, 1, 0)
+	all, err = a.ListThreadWorkerSummaries(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []ThreadWorkerSummary{{ThreadID: lead.ID, Open: 1}}; !slices.Equal(all, want) {
+		t.Errorf("summaries after the grand worker settled = %+v, want %+v", all, want)
+	}
+}
+
+// A change to a nested caller's request is framed for that caller and for
+// every thread above it whose listing nests its rows, so each of their
+// sidebar summaries is read again; a thread past the listing's depth is
+// not told.
+func TestAgentRowFramesReachTheThreadsAboveTheCaller(t *testing.T) {
+	t.Parallel()
+	a, rec := newAppForFlushQueueRPC(t)
+	ids := []string{"frame-0", "frame-1", "frame-2", "frame-3", "frame-4"}
+	for _, id := range ids {
+		noticeTestThread(t, a, id)
+	}
+	for i := range len(ids) - 1 {
+		if err := a.store.InsertThreadRequest(store.ThreadRequest{
+			Token: ids[i] + "-spawn", CallerThreadID: ids[i], TargetThreadID: ids[i+1],
+			Kind: store.ThreadRequestSpawn, State: store.ThreadRequestRunning,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "deep-send", CallerThreadID: ids[4], TargetThreadID: ids[0], Kind: store.ThreadRequestSend, Notify: true,
+		State: store.ThreadRequestRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	framed := func(id string) []string {
+		var out []string
+		for _, call := range rec.snapshot() {
+			if call.Channel != eventchan.ThreadAgentRowsChanged.String() {
+				continue
+			}
+			if change, ok := call.Data.(ThreadAgentRowChange); ok && change.ID == id {
+				out = append(out, change.ThreadID)
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	a.noteThreadRequestChanged(store.ThreadRequestChange{Token: "deep-send", CallerThreadID: ids[4]})
+	drained := func() bool {
+		e := &a.threadAgentEmits
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return !e.draining
+	}
+	want := []string{"frame-1", "frame-2", "frame-3", "frame-4"}
+	waitUntil(t, 10*time.Second, func() bool { return len(framed("deep-send")) >= len(want) && drained() })
+	if got := framed("deep-send"); !slices.Equal(got, want) {
+		t.Fatalf("frames for the deep send = %q, want %q", got, want)
+	}
+}

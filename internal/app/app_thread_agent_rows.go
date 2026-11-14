@@ -32,9 +32,13 @@ import (
 // Every write to a request (OnThreadRequestChanged), every wait parked on or
 // leaving one, and every change to a running target the row shows (turn,
 // prompt, title, latest activity) emits `thread:agent_rows_changed` naming
-// the request and its caller. A pane reads the one row again
-// (GetThreadAgentRows) on a frame naming a row it lists, and its list again
-// on any other frame that names its thread or a thread its list nests.
+// the request and its caller, and again naming each thread whose listing
+// nests that caller. A pane reads the one row again (GetThreadAgentRows) on
+// a frame naming a row it lists, and its list again on any other frame that
+// names its thread or a thread its list nests. A sidebar row's worker
+// summary (GetThreadWorkerSummary) is read again on a frame naming its
+// thread. Past rows (ListThreadPastAgentRows) are the ledger's settled rows,
+// read by page.
 
 const (
 	// threadAgentRowLimit bounds one listing, nested rows included. A
@@ -85,6 +89,10 @@ type ThreadAgentRow struct {
 	ComputerID string `json:"computerId,omitempty"`
 	Computer   string `json:"computer,omitempty"`
 	Title      string `json:"title"`
+	// Placement and Archived are the stored placement and archive state of
+	// the thread a local spawn made; empty and false for every other row.
+	Placement string `json:"placement,omitempty"`
+	Archived  bool   `json:"archived,omitempty"`
 	// Provider is the target's provider: a local target's row, or what a
 	// paired computer reported with its acknowledgement or its agent_rows
 	// answer.
@@ -96,7 +104,7 @@ type ThreadAgentRow struct {
 	// BlockedOn is approval or question for a local target waiting on a
 	// prompt, person for a paired computer's target that reports it is
 	// blocked; BlockedDetail says what it asks and BlockedRoutedTo names
-	// the standing agent its prompt went to (ruling 19).
+	// the spawner its prompt went to (ruling 19).
 	BlockedOn       string `json:"blockedOn,omitempty"`
 	BlockedDetail   string `json:"blockedDetail,omitempty"`
 	BlockedRoutedTo string `json:"blockedRoutedTo,omitempty"`
@@ -140,8 +148,10 @@ type ThreadAgentRows struct {
 }
 
 // ThreadAgentRowChange is one `thread:agent_rows_changed` frame: the request
-// ID of ThreadID changed, or, without an ID, any request of the thread.
-// Whether and how the request is listed now is GetThreadAgentRows' answer.
+// ID that ThreadID made changed, or, without an ID, any request of the
+// thread. The frame is sent again for each thread above ThreadID whose
+// listing nests its rows, with the same ID. Whether and how the request is
+// listed now is GetThreadAgentRows' answer.
 type ThreadAgentRowChange struct {
 	ThreadID string `json:"threadId"`
 	ID       string `json:"id,omitempty"`
@@ -284,6 +294,117 @@ func (a *App) GetThreadAgentRows(threadID string, tokens []string) ([]ThreadAgen
 		out = append(out, read)
 	}
 	return out, nil
+}
+
+// PastAgentRows is one page of a thread's settled Agents rows, flat
+// (depth 0) and newest settled first. Total counts every settled row the
+// thread has; Next starts the following page and is absent on the last.
+type PastAgentRows struct {
+	Rows  []ThreadAgentRow           `json:"rows"`
+	Total int                        `json:"total"`
+	Next  *store.PastAgentRowsCursor `json:"next,omitempty"`
+}
+
+// ListThreadPastAgentRows lists one page of the requests the thread made
+// that its Agents segment lists under Past: every spawn and ask it made and
+// its sends with their wake armed, once settled, newest settled first, from
+// after the cursor, at most limit (1 to store.MaxPastAgentRowsPage) rows.
+// Each row carries what an open row carries, derived the same way; a spawn
+// the retention floor reduced to its lineage shows no answer.
+//
+//ao:scope threads:read
+func (a *App) ListThreadPastAgentRows(threadID string, after store.PastAgentRowsCursor, limit int) (PastAgentRows, error) {
+	if _, err := a.store.GetThread(threadID); err != nil {
+		return PastAgentRows{}, fmt.Errorf("read the thread: %w", err)
+	}
+	page, err := a.store.ListThreadPastAgentRequests(threadID, after, limit, threadAgentAnswerHead)
+	if err != nil {
+		return PastAgentRows{}, fmt.Errorf("read past agent rows: %w", err)
+	}
+	rows, err := newThreadAgentView(a).rows(page.Requests)
+	if err != nil {
+		return PastAgentRows{}, fmt.Errorf("read past agent rows: %w", err)
+	}
+	return PastAgentRows{Rows: rows, Total: page.Total, Next: page.Next}, nil
+}
+
+// ThreadWorkerSummary is what a thread's sidebar row says of its Agents
+// listing: Open counts the open rows it shows, nested rows included, and
+// NeedYou those of them blocked on a prompt no agent was given.
+type ThreadWorkerSummary struct {
+	ThreadID string `json:"threadId"`
+	Open     int    `json:"open"`
+	NeedYou  int    `json:"needYou"`
+}
+
+// maxThreadWorkerSummaries bounds one ListThreadWorkerSummaries read: each
+// summary reads its thread's listing.
+const maxThreadWorkerSummaries = 128
+
+// ListThreadWorkerSummaries summarizes every thread whose Agents listing
+// shows an open row, at most maxThreadWorkerSummaries of them, by thread
+// id. A thread with none is left out.
+//
+//ao:scope threads:read
+//ao:route all
+func (a *App) ListThreadWorkerSummaries(ctx context.Context) ([]ThreadWorkerSummary, error) {
+	ids, err := a.store.ThreadsWithOpenAgentRows(a.parkedRequestTokens(), maxThreadWorkerSummaries)
+	if err != nil {
+		return nil, fmt.Errorf("list worker summaries: %w", err)
+	}
+	out := make([]ThreadWorkerSummary, 0, len(ids))
+	for _, id := range ids {
+		summary, err := a.threadWorkerSummary(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("list worker summaries: %w", err)
+		}
+		if summary.Open > 0 {
+			out = append(out, summary)
+		}
+	}
+	return out, nil
+}
+
+// GetThreadWorkerSummary summarizes the thread's Agents listing as it stands
+// now: zero counts when it shows no open row.
+//
+//ao:scope threads:read
+func (a *App) GetThreadWorkerSummary(ctx context.Context, threadID string) (ThreadWorkerSummary, error) {
+	if _, err := a.store.GetThread(threadID); err != nil {
+		return ThreadWorkerSummary{}, fmt.Errorf("read the thread: %w", err)
+	}
+	return a.threadWorkerSummary(ctx, threadID)
+}
+
+// threadWorkerSummary counts the open rows of the thread's listing, read
+// as a pane reads it, so the counts are the rows the pane shows.
+func (a *App) threadWorkerSummary(ctx context.Context, threadID string) (ThreadWorkerSummary, error) {
+	listing, _, err := a.threadAgentTreeDepth(ctx, threadID, threadAgentRowDepth, threadAgentPeersCached)
+	if err != nil {
+		return ThreadWorkerSummary{}, err
+	}
+	summary := ThreadWorkerSummary{ThreadID: threadID}
+	for _, row := range listing.Rows {
+		if !threadAgentRowOpen(row.State) {
+			continue
+		}
+		summary.Open++
+		if row.BlockedOn != "" && row.BlockedRoutedTo == "" {
+			summary.NeedYou++
+		}
+	}
+	return summary, nil
+}
+
+// threadAgentRowOpen reports whether a row's state is one before the
+// request settled.
+func threadAgentRowOpen(state string) bool {
+	switch state {
+	case threadtools.RequestUnconfirmed, threadtools.RequestAccepted, threadtools.RequestRunning, threadtools.RequestBlocked:
+		return true
+	default:
+		return false
+	}
 }
 
 // threadAgentPeerMode is how a listing reads a spawn's rows on a paired
@@ -430,6 +551,10 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 			continue
 		}
 		row.OwnerComputerID = slot.spawn.TargetComputerID
+		// A placement is the sidebar's of the computer that holds the
+		// thread; this one offers none for a thread another computer
+		// listed.
+		row.Placement, row.Archived = "", false
 		switch row.ComputerID {
 		case "":
 			// A thread on that computer.
@@ -549,6 +674,9 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	}
 	if name, ok := names[row.TargetThreadID]; ok && local {
 		out.Provider = name.Provider
+		if row.Kind == store.ThreadRequestSpawn {
+			out.Placement, out.Archived = name.Placement, name.Archived
+		}
 	}
 	switch {
 	case settled:
@@ -1022,19 +1150,78 @@ func (a *App) drainThreadAgentEmits() {
 		}
 		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 		e.mu.Unlock()
+		frames := make([]ThreadAgentRowChange, 0, len(callers)+len(tokens))
 		for caller := range callers {
-			a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: caller})
+			frames = append(frames, ThreadAgentRowChange{ThreadID: caller})
 		}
-		if len(tokens)+len(targets) == 0 {
-			continue
+		if len(tokens)+len(targets) > 0 {
+			named, err := a.store.ThreadAgentRowCallers(slices.Collect(maps.Keys(tokens)), slices.Collect(maps.Keys(targets)), threadReceiptLocalOwner)
+			if err != nil {
+				log.Printf("agent rows: name the callers of %d changed requests and %d targets: %v", len(tokens), len(targets), err)
+			}
+			for _, changed := range named {
+				frames = append(frames, ThreadAgentRowChange{ThreadID: changed.CallerThreadID, ID: changed.Token})
+			}
 		}
-		named, err := a.store.ThreadAgentRowCallers(slices.Collect(maps.Keys(tokens)), slices.Collect(maps.Keys(targets)), threadReceiptLocalOwner)
+		a.emitThreadAgentRowFrames(frames)
+	}
+}
+
+// emitThreadAgentRowFrames emits each frame for its caller and again for
+// every thread up the spawns above it whose listing nests the caller's
+// rows, within the listing's depth: those threads' listings, and the worker
+// summaries their sidebar rows read, change with it. Each thread hears a
+// frame once.
+func (a *App) emitThreadAgentRowFrames(frames []ThreadAgentRowChange) {
+	if len(frames) == 0 {
+		return
+	}
+	// spawner is each thread's parent in the listing, read one level of
+	// spawns at a time for every caller at once.
+	spawner := map[string]string{}
+	asked := map[string]bool{}
+	var level []string
+	for _, frame := range frames {
+		if !asked[frame.ThreadID] {
+			asked[frame.ThreadID] = true
+			level = append(level, frame.ThreadID)
+		}
+	}
+	for range threadAgentRowDepth - 1 {
+		if len(level) == 0 {
+			break
+		}
+		found, err := a.store.LocalSpawnersOf(level)
 		if err != nil {
-			log.Printf("agent rows: name the callers of %d changed requests and %d targets: %v", len(tokens), len(targets), err)
-			continue
+			log.Printf("agent rows: name the spawners above %d changed callers: %v", len(level), err)
+			break
 		}
-		for _, changed := range named {
-			a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: changed.CallerThreadID, ID: changed.Token})
+		level = level[:0]
+		for child, parent := range found {
+			spawner[child] = parent
+			if !asked[parent] {
+				asked[parent] = true
+				level = append(level, parent)
+			}
+		}
+	}
+	sent := map[ThreadAgentRowChange]bool{}
+	for _, frame := range frames {
+		threads := []string{frame.ThreadID}
+		for current := frame.ThreadID; len(threads) < threadAgentRowDepth; {
+			parent, ok := spawner[current]
+			if !ok || slices.Contains(threads, parent) {
+				break
+			}
+			threads = append(threads, parent)
+			current = parent
+		}
+		for _, thread := range threads {
+			out := ThreadAgentRowChange{ThreadID: thread, ID: frame.ID}
+			if !sent[out] {
+				sent[out] = true
+				a.emit(eventchan.ThreadAgentRowsChanged, out)
+			}
 		}
 	}
 }
