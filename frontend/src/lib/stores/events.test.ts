@@ -2096,6 +2096,35 @@ describe('setupEventListeners', () => {
       await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
     });
 
+    it("moves a pane on a handoff whose unlisted frame was lost after the new thread's listed frame", async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+
+      emitWailsEvent('thread:updated', { action: 'listed', thread: successor });
+      setBindingMock('ListThreads', async () => [successor]);
+      await refreshThreads();
+
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+    });
+
+    it('moves a pane to the new thread from a catalog read while the handoff ran, listing both as current', async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+
+      // The list holds the new thread as current and the old one as past.
+      setBindingMock('ListThreads', async () => [successor, makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+
+      expect(getThreads().find((t) => t.id === 'thread-1')?.pastAgentId).toBe('agent-1');
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+    });
+
     it('keeps a pane a live handoff moved when a catalog read from before the handoff lands', async () => {
       setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
       await refreshThreads();

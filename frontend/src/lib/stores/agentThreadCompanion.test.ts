@@ -28,7 +28,7 @@ import {
   openThreadInPane,
   resetPanesForTest,
 } from './panes.svelte';
-import { removeThread, replaceAllThreads } from './threads.svelte';
+import { getThreadById, removeThread, replaceAllThreads } from './threads.svelte';
 import { applyThreadUpdated, reconcileThreadRows } from './eventsThreadRows';
 import type { Thread } from '../types/models';
 import { installPaneMocks, makeThread } from '../../test/helpers/chat';
@@ -59,6 +59,9 @@ beforeEach(() => {
   installCompanionPanes();
   installCompanionStash();
   installPaneMocks();
+  // A switch answers with the thread as its computer holds it.
+  setBindingMock('SwitchThread', async (threadId: unknown) =>
+    getThreadById(String(threadId)) ?? makeThread({ id: String(threadId) }));
   replaceAllThreads([SOURCE, OTHER, WORKER, SECOND]);
   setBindingMock('DeleteThread', async () => {});
   setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 600 }]);
@@ -193,6 +196,22 @@ describe('the agent thread companion in the stash', () => {
 
     // The old thread was archived by the handoff: the catalog no longer has it.
     const current = makeThread({ id: 'assistant-2', title: 'Ops', agentId: 'agent-ops' });
+    reconcileThreadRows([SOURCE, OTHER, current]);
+    await openThreadInPane(SOURCE, 'main');
+
+    await vi.waitFor(() => expect(getPane('agent-thread-main')?.threadId).toBe(current.id));
+  });
+
+  it('follows a handoff whose unlisted frame was lost after its successor listed, from the catalog', async () => {
+    const past = makeThread({ id: 'assistant-1', title: 'Ops', agentId: 'agent-ops' });
+    replaceAllThreads([SOURCE, OTHER, past]);
+    await source();
+    await openAgentThreadCompanion(getPane('main')!, past);
+    await openThreadInPane(OTHER, 'main');
+
+    // Only the successor's listed frame arrives; the old thread's is lost.
+    const current = makeThread({ id: 'assistant-2', title: 'Ops', agentId: 'agent-ops' });
+    applyThreadUpdated({ action: 'listed', thread: current });
     reconcileThreadRows([SOURCE, OTHER, current]);
     await openThreadInPane(SOURCE, 'main');
 

@@ -225,16 +225,17 @@ export function reconcileThreadRows(rows: Thread[]): void {
   const merged = rows.map((row) => mergeThreadRowWithLocal(row, cachedById.get(row.id)));
   replaceAllThreads(merged);
   const mergedById = new Map(merged.map((thread) => [thread.id, thread]));
-  // A thread this client held as an assistant's current thread, while the
-  // answer names another current thread of that assistant, was replaced
-  // by a handoff whose frame this client missed (lost, or sent while it was
-  // away): what showed it moves as the frame would have moved it. One held
-  // as a past thread was opened as one and stays.
-  const currentByAgent = new Map(merged.flatMap((thread) => (thread.agentId ? [[thread.agentId, thread] as const] : [])));
-  const successorOf = (thread: Thread): Thread | undefined => {
-    const agentId = (cachedById.get(thread.id) ?? thread).agentId;
-    const current = agentId ? currentByAgent.get(agentId) : undefined;
-    return current && current.id !== thread.id ? current : undefined;
+  // A pane or hidden companion that recorded a thread as an assistant's
+  // current thread, while the list as stored (one current thread per
+  // assistant) names another, missed the handoff frame that would have
+  // moved it (lost, or sent while this client was away) and moves as that
+  // frame would have. Its own record decides, not the list's row, which the
+  // successor's listed frame already marks past. One opened on a past
+  // thread recorded it as past and stays.
+  const currentByAgent = new Map(getThreads().flatMap((thread) => (thread.agentId ? [[thread.agentId, thread] as const] : [])));
+  const successorOf = (shown: Thread): Thread | undefined => {
+    const current = shown.agentId ? currentByAgent.get(shown.agentId) : undefined;
+    return current && current.id !== shown.id ? current : undefined;
   };
   const handedOff = new Map<string, Thread>();
   for (const pane of ingestPanes()) {
