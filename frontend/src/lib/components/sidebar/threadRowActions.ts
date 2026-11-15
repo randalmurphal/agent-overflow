@@ -45,6 +45,9 @@ import type { ArchiveThreadResult, Thread } from '../../types/models';
 
 type ArchiveWorkerFailure = NonNullable<ArchiveThreadResult['workersNotArchived']>[number];
 import { autoPinNewThread } from '../../stores/threadAutoPin';
+import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
+import type { BackendKey } from '../../transport/backendKey';
+import { resolveThreadBackend } from '../../transport/entityIndex';
 import { openConversationTransfer } from '../../stores/conversationTransfers.svelte';
 
 export function transferThreadAction(ctx: ThreadActionCtx): void {
@@ -164,10 +167,14 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
     // process is released for every client rather than only the one
     // that remembers to ask first — and, unlike a client-side stop, it
     // re-checks that the thread was not re-engaged in the gap.
-    const result = await ArchiveThread(ctx.thread.id);
+    // The workers it reports are threads this client may never have
+    // listed, so the computer this archive goes to is captured now, before
+    // anything awaits, and the retry is pinned to it.
+    const backend = requireEntityBackend(resolveThreadBackend(ctx.thread.id));
+    const result = await withBackendTarget(backend, () => ArchiveThread(ctx.thread.id));
     removeThread(ctx.thread.id);
     closePanesShowingThread(ctx.thread.id);
-    reportArchiveLeftovers(ctx.thread.title, result);
+    reportArchiveLeftovers(backend, ctx.thread.title, result);
   } catch (err) {
     console.error('Failed to archive thread:', err);
     ctx.reportError(userFacingError(err), err);
@@ -179,14 +186,14 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
  * whose archive was refused stay open, and the toast archives them again;
  * work it could not stop is said once.
  */
-function reportArchiveLeftovers(title: string, result: ArchiveThreadResult): void {
+function reportArchiveLeftovers(backend: BackendKey, title: string, result: ArchiveThreadResult): void {
   const workers = result.workersNotArchived ?? [];
   if (workers.length > 0) {
     const names = workers.map((worker) => `"${worker.title || worker.threadId}"`).join(', ');
     const which = workers.length === 1 ? `its worker ${names} is` : `its workers ${names} are`;
     addToast('warning', `Archived "${title}", but ${which} still open: ${userFacingError(workers[0].error)}`, 10000, {
       label: 'Archive again',
-      run: () => void archiveWorkersAgain(workers),
+      run: () => void archiveWorkersAgain(backend, workers),
     });
   }
   if (result.cleanupError) {
@@ -194,11 +201,11 @@ function reportArchiveLeftovers(title: string, result: ArchiveThreadResult): voi
   }
 }
 
-async function archiveWorkersAgain(workers: ArchiveWorkerFailure[]): Promise<void> {
+async function archiveWorkersAgain(backend: BackendKey, workers: ArchiveWorkerFailure[]): Promise<void> {
   for (const worker of workers) {
     const title = worker.title || worker.threadId;
     try {
-      reportArchiveLeftovers(title, await ArchiveThread(worker.threadId));
+      reportArchiveLeftovers(backend, title, await withBackendTarget(backend, () => ArchiveThread(worker.threadId)));
     } catch (err) {
       console.error('Failed to archive worker:', err);
       addErrorToast(`Could not archive "${title}": ${userFacingError(err)}`, err);
