@@ -817,7 +817,11 @@ first: dropped. A restart of the caller's computer before a queued wake
 reached the provider restores it into the composer draft, as every
 queued message is; the request then reads `delivered: draft`, distinct
 from `delivered: inline` and `delivered: queued`, and `thread_status`
-still returns the answer.
+still returns the answer. A Stop, archive or revert that clears the
+caller's queue drops a queued wake with it; every request that message
+answered then reads as not delivered, with `notify` off so nothing
+queues it again, and `thread_status` delivers the answer when it reads
+it.
 
 A wake the settlement could not hand over (a caller thread whose lock
 never came free, a fenced thread, a crash between the two

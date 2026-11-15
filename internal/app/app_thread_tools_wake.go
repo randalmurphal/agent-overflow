@@ -13,16 +13,13 @@ import (
 // up with the reason recorded.
 
 // threadWakeSendID and threadWakeLateSendID name the two messages one request
-// can deliver. They are distinct so a late reply is never mistaken for a
-// retry of the first wake and dropped by send admission.
-func threadWakeSendID(token string) string     { return "thread-wake:" + token }
-func threadWakeLateSendID(token string) string { return "thread-wake-late:" + token }
+// can deliver (store.ThreadWakeSendID). The store reads them too, to correct
+// the requests whose wake a dropped queue held.
+func threadWakeSendID(token string) string     { return store.ThreadWakeSendID(token, false) }
+func threadWakeLateSendID(token string) string { return store.ThreadWakeSendID(token, true) }
 
 func threadWakeSendIDFor(token string, late bool) string {
-	if late {
-		return threadWakeLateSendID(token)
-	}
-	return threadWakeSendID(token)
+	return store.ThreadWakeSendID(token, late)
 }
 
 // threadWakeRef names one of a request's two wakes: its first answer, or the

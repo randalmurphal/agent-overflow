@@ -1160,6 +1160,64 @@ func markThreadWakeQueuedTx(tx *sql.Tx, token, carrier string, late bool, item F
 	return nil
 }
 
+// ThreadWakeSendID names the message a request's wake is queued under: its
+// first answer, or its late reply (late). The two are distinct so a late
+// reply is never mistaken for a retry of the first wake and dropped by send
+// admission.
+func ThreadWakeSendID(token string, late bool) string {
+	if late {
+		return threadWakeLateSendIDPrefix + token
+	}
+	return threadWakeSendIDPrefix + token
+}
+
+const (
+	threadWakeSendIDPrefix     = "thread-wake:"
+	threadWakeLateSendIDPrefix = "thread-wake-late:"
+)
+
+// threadWakeDroppedIssue is what a request records when the queue holding its
+// wake is thrown away.
+const threadWakeDroppedIssue = "The message carrying this answer was removed with the thread's queue before the agent read it."
+
+// retractDroppedThreadWakesTx corrects the requests whose wake is in one
+// thread's durable queue, in the transaction that throws that queue away (a
+// Stop, an archive, a revert). The agent never read the message, so the
+// request is no longer delivered, and it is disarmed: the drop is the
+// person's, and a wake queued again would bring back what they threw away.
+// `thread_status` still returns the answer, and reading it there delivers it.
+// The requests that rode with a first wake (`delivered_with`) were in the
+// same message and are corrected with it.
+func retractDroppedThreadWakesTx(tx *sql.Tx, threadID string) error {
+	action := fmt.Sprintf("store: retract dropped thread wakes for %s", threadID)
+	queued := `(SELECT send_id FROM flush_queue_items WHERE thread_id = ? AND send_id <> '')`
+	if _, err := tx.Exec(
+		`UPDATE thread_requests
+		    SET delivered_at = NULL, delivered_how = '', delivered_with = '',
+		        notify = 0, wake_issue = ?, updated_at = ?
+		  WHERE caller_thread_id = ? AND delivered_at IS NOT NULL AND delivered_how = ?
+		    AND late_delivered_at IS NULL
+		    AND ((? || token) IN `+queued+`
+		      OR (delivered_with <> '' AND (? || delivered_with) IN `+queued+`))`,
+		threadWakeDroppedIssue, nowMillis(), threadID, ThreadWakeQueued,
+		threadWakeSendIDPrefix, threadID, threadWakeSendIDPrefix, threadID,
+	); err != nil {
+		return fmt.Errorf("%s: first answers: %w", action, err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE thread_requests
+		    SET late_delivered_at = NULL, delivered_how = '',
+		        notify = 0, wake_issue = ?, updated_at = ?
+		  WHERE caller_thread_id = ? AND late_delivered_at IS NOT NULL AND delivered_how = ?
+		    AND (? || token) IN `+queued,
+		threadWakeDroppedIssue, nowMillis(), threadID, ThreadWakeQueued,
+		threadWakeLateSendIDPrefix, threadID,
+	); err != nil {
+		return fmt.Errorf("%s: late replies: %w", action, err)
+	}
+	return nil
+}
+
 // threadWakeRidersToDraftSQL corrects the requests one carrier's message
 // delivered. The predicate restates idx_thread_requests_delivered_with's.
 const threadWakeRidersToDraftSQL = `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
