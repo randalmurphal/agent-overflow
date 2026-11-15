@@ -160,6 +160,7 @@ func threadAgentTreeSQL(limit int) string {
        AND r.token IN (`+arm.first(n)+`)`)
 	}
 	return `WITH RECURSIVE
+  ` + agentParkedSQL + `,
   tree(t_token, t_depth, t_sort, t_path, t_kind, t_computer, t_target) AS (
     ` + strings.Join(seeds, `
     UNION ALL
@@ -185,6 +186,7 @@ SELECT ` + threadAgentRequestColumns + `, tree.t_depth,
 // listing's sort key: the row is listed when the row and every spawn above
 // it are, within the depth. The cost is the depth per named row.
 var threadAgentNamedRowsSQL = `WITH RECURSIVE
+  ` + agentParkedSQL + `,
   up(token, at, depth, sort) AS (
     SELECT r.token, r.caller_thread_id, 0, printf('%020d', r.created_at) || r.token || char(1)
       FROM json_each(?6) CROSS JOIN thread_requests r
@@ -226,15 +228,16 @@ func (arm agentArm) first(limit string) string {
         ORDER BY a.created_at, a.token LIMIT ` + limit
 }
 
-// agentRowArms are the requests of caller the listing keeps as four
+// agentRowArms are the requests of caller the listing keeps as five
 // disjoint arms, each read through the index whose predicate it states:
 // open (idx_thread_requests_open_created, in tree order); settled inside
 // the window (idx_thread_requests_caller_settled); a local spawn settled
-// before it with open work under it (idx_thread_requests_open_below); a
-// spawn on another computer that last reported open work
-// (idx_thread_requests_nested_caller). None reads the caller's settled
-// history, and only the open arm can hold many rows. The last two are held
-// to their index: unheld, the planner reads them through
+// before it with open work under it, stored (idx_thread_requests_open_below)
+// or only parked (`parked`, by token); a spawn on another computer that
+// last reported open work (idx_thread_requests_nested_caller). None reads
+// the caller's settled history, and only the open arm can hold many rows.
+// The stored and remote arms are held to their index, and the parked arm's
+// other terms are kept off theirs: otherwise the planner reads them through
 // idx_thread_requests_caller_settled from the history's settled_at range
 // (TestThreadAgentTreeSearchesItsArms).
 func agentRowArms(alias, caller string) []agentArm {
@@ -244,9 +247,31 @@ func agentRowArms(alias, caller string) []agentArm {
 		{"idx_thread_requests_open_created", false, by + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL`},
 		{"idx_thread_requests_caller_settled", false, by + a + `lineage_only = 0 AND ` + a + `settled_at >= ` + agentWindowSQL},
 		{"idx_thread_requests_open_below", true, by + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL},
+		{"sqlite_autoindex_thread_requests_1", false, a + `token IN (SELECT token FROM parked WHERE thread = ` + caller + `) AND +` + a + `caller_thread_id = ` + caller +
+			` AND NOT ` + agentOpenBelowSQL(alias) + ` AND +` + a + `settled_at < ` + agentWindowSQL},
 		{"idx_thread_requests_nested_caller", true, by + nestedRemoteSpawnSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL},
 	}
 }
+
+// agentParkedSQL is the `parked` table of the tree reads: each local spawn
+// with a send or ask a call is parked on (?2) open within agentOpenDepth
+// spawns below its target, with the spawn's caller. That is open work the
+// marks do not count, since only an armed wake is stored
+// (agentOpenWorkSQL): a parked call is held in memory, and arms its wake
+// only once its wait ends. `parked` climbs one spawn a step from each
+// parked request's caller, keyed by the queued thread
+// (idx_thread_requests_spawn_link), so its cost is the depth per parked
+// request.
+var agentParkedSQL = `parked(token, thread, depth) AS (
+    SELECT ps.token, ps.caller_thread_id, 1
+      FROM json_each(?2) CROSS JOIN thread_requests pr CROSS JOIN thread_requests ps
+     WHERE pr.token = json_each.value AND pr.kind IN ('send','ask') AND pr.lineage_only = 0 AND pr.settled_at IS NULL
+       AND ps.target_thread_id = pr.caller_thread_id AND ps.kind = 'spawn' AND ps.target_computer_id = '' AND ps.superseded = 0 AND ps.target_thread_id <> ''
+    UNION
+    SELECT ps.token, ps.caller_thread_id, parked.depth + 1
+      FROM parked CROSS JOIN thread_requests ps
+     WHERE parked.depth < ` + strconv.Itoa(agentOpenDepth) + ` AND ps.target_thread_id = parked.thread
+       AND ps.kind = 'spawn' AND ps.target_computer_id = '' AND ps.superseded = 0 AND ps.target_thread_id <> '')`
 
 // agentRowsUnderSQL is whether thread has a row the listing would nest.
 func agentRowsUnderSQL(thread string) string {
@@ -313,7 +338,7 @@ func agentRowListedSQL(alias string) string {
 	a := alias + "."
 	return `((` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ` + agentWindowSQL + `
          OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)))
-         OR (` + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + `))`
+         OR (` + agentSpawnLinkSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM parked))))`
 }
 
 // ThreadsWithOpenAgentRows lists, by id, at most limit threads whose Agents
@@ -338,15 +363,7 @@ func (s *Store) ThreadsWithOpenAgentRows(waiting []string, limit int) (_ []strin
 		return nil, fmt.Errorf("%s: encode waiting tokens: %w", action, err)
 	}
 	// ?1 is unused: agentRowKindSQL reads the waiting tokens as ?2.
-	rows, err := s.reader().Query(`SELECT a.caller_thread_id FROM thread_requests a INDEXED BY idx_thread_requests_open_created
-		 WHERE a.lineage_only = 0 AND a.settled_at IS NULL AND `+agentRowKindSQL("a")+`
-		UNION
-		SELECT a.caller_thread_id FROM thread_requests a INDEXED BY idx_thread_requests_open_below
-		 WHERE `+agentSpawnLinkSQL("a")+` AND `+agentOpenBelowSQL("a")+`
-		UNION
-		SELECT a.caller_thread_id FROM thread_requests a INDEXED BY idx_thread_requests_nested_caller
-		 WHERE `+nestedRemoteSpawnSQL("a")+`
-		ORDER BY 1 LIMIT `+strconv.Itoa(limit), nil, string(tokens))
+	rows, err := s.reader().Query(threadsWithOpenAgentRowsSQL(limit), nil, string(tokens))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
@@ -363,6 +380,23 @@ func (s *Store) ThreadsWithOpenAgentRows(waiting []string, limit int) (_ []strin
 		return nil, fmt.Errorf("%s: iterate: %w", action, err)
 	}
 	return out, nil
+}
+
+// threadsWithOpenAgentRowsSQL is ThreadsWithOpenAgentRows' read of its first
+// limit threads: ?2 is the waiting tokens.
+func threadsWithOpenAgentRowsSQL(limit int) string {
+	return `WITH RECURSIVE ` + agentParkedSQL + `
+		SELECT a.caller_thread_id FROM thread_requests a INDEXED BY idx_thread_requests_open_created
+		 WHERE a.lineage_only = 0 AND a.settled_at IS NULL AND ` + agentRowKindSQL("a") + `
+		UNION
+		SELECT thread FROM parked
+		UNION
+		SELECT a.caller_thread_id FROM thread_requests a INDEXED BY idx_thread_requests_open_below
+		 WHERE ` + agentSpawnLinkSQL("a") + ` AND ` + agentOpenBelowSQL("a") + `
+		UNION
+		SELECT a.caller_thread_id FROM thread_requests a INDEXED BY idx_thread_requests_nested_caller
+		 WHERE ` + nestedRemoteSpawnSQL("a") + `
+		ORDER BY 1 LIMIT ` + strconv.Itoa(limit)
 }
 
 // MaxPastAgentRowsPage bounds one page of ListThreadPastAgentRequests.

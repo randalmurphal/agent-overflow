@@ -527,6 +527,65 @@ func TestAnExpiredSpawnsNewWorkListsAndStopsUnderItsOwner(t *testing.T) {
 	}
 }
 
+// A worker's quiet send it waits on is open work under its owner, as the
+// worker's own listing shows it: the owner's listing nests it under the
+// worker's settled spawn and its summary counts it while the call waits,
+// and once the wait ends with the send open its wake is armed and it stays.
+func TestAWorkersParkedQuietSendListsUnderItsOwner(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "working")
+	worker, peer := f.plainThread(t), f.plainThread(t)
+	f.seedAgentRow(t, "lead-worker", f.caller.ID, store.ThreadRequestSpawn, worker.ID, false)
+	long := time.Now().Add(-time.Hour).UnixMilli()
+	if settled, err := f.app.store.SettleThreadRequest("lead-worker", store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: long,
+	}); err != nil || !settled {
+		t.Fatalf("settle: %v %v", settled, err)
+	}
+	type sent struct {
+		ack threadtools.RequestAck
+		err error
+	}
+	done := make(chan sent, 1)
+	go func() {
+		ack, err := f.adapter().Send(t.Context(), f.targetIdentity(t, worker.ID), threadtools.SendCall{
+			ThreadID: peer.ID, Message: "look", WaitSeconds: 2,
+		})
+		done <- sent{ack, err}
+	}()
+	var token string
+	waitUntil(t, 10*time.Second, func() bool {
+		parked := f.app.parkedRequestTokens()
+		if len(parked) == 1 {
+			token = parked[0]
+		}
+		return token != ""
+	})
+	if row := f.request(t, token); row.Notify || row.CallerThreadID != worker.ID {
+		t.Fatalf("the parked send %+v; want the worker's, with no wake armed", row)
+	}
+	if got := agentRowTokens(f.agentRows(t, worker.ID).Rows); !slices.Equal(got, []string{token}) {
+		t.Fatalf("the worker's own rows %v; want its parked send", got)
+	}
+	if got, want := agentRowTokens(f.agentRows(t, f.caller.ID).Rows), []string{"lead-worker", token}; !slices.Equal(got, want) {
+		t.Fatalf("the owner's rows while the worker waits %v; want %v", got, want)
+	}
+	if summary, err := f.app.GetThreadWorkerSummary(t.Context(), f.caller.ID); err != nil || summary.Open != 1 {
+		t.Fatalf("the owner's summary while the worker waits %+v, %v; want the send counted", summary, err)
+	}
+	result := <-done
+	if result.err != nil || result.ack.Token != token {
+		t.Fatalf("Send = %+v, %v", result.ack, result.err)
+	}
+	if row := f.request(t, token); !row.Notify || threadRequestSettled(row) {
+		t.Fatalf("the send after its wait %+v; want it open with its wake armed", row)
+	}
+	if got, want := agentRowTokens(f.agentRows(t, f.caller.ID).Rows), []string{"lead-worker", token}; !slices.Equal(got, want) {
+		t.Fatalf("the owner's rows after the wait %v; want %v", got, want)
+	}
+}
+
 // A settled row whose answer the caller's provider took in names the
 // timeline row that carried it, which the pane opens.
 func TestThreadAgentRowsNameTheWakeThatDeliveredTheAnswer(t *testing.T) {

@@ -1348,15 +1348,21 @@ closes up their spacing so the row holds at a phone width.
   tree's size: the tree's shape with each row's depth in one recursive
   read, the listed rows in one, the targets' titles and providers in one,
   their last messages in one. Each thread's rows are read by caller in
-  four arms, open, settled inside the window, local spawns kept for open
-  work and remote spawns with open work, each through its own index and
+  five arms, open, settled inside the window, local spawns kept for
+  stored open work, local spawns kept only for a parked call below them,
+  and remote spawns with open work, each through its own index and
   each taking at most the row limit, and the recursion stops at the limit,
   so the cost follows the listed rows and the depth, not the threads'
   settled history, their open spawns or the open work of threads outside
   the tree, whatever statistics the database holds. A local spawn is kept
   for open work by counts it carries of the open work up to four spawns
   below its target, which the ledger keeps in the transaction of every
-  write to a request. A thread is reached by at most one local spawn, so
+  write to a request. Open work is what a thread's own listing shows
+  open: a spawn, and a send or ask with its wake armed or a call parked
+  on it. A parked call lives in memory and arms its wake only when its
+  wait ends, so the counts hold the armed part and each read climbs the
+  spawns above the parked requests it is given, a spawn a step: a worker's
+  quiet wait lists, and counts, under its owner as under itself. A thread is reached by at most one local spawn, so
   a read of named rows climbs from each row to the listed thread, one
   spawn a step, and gives each row the listing's place, wherever it falls
   against the row limit; the rows and their targets are read for those
@@ -1409,8 +1415,8 @@ closes up their spacing so the row holds at a phone width.
   `ListThreadWorkerSummaries` lists the summaries of the threads whose
   listing holds an open row, at most 128, found from the open work only:
   callers of open requests the listing shows, local spawns whose counts
-  hold open work below them, and remote spawns that last reported open
-  work. A frame naming a thread is the cue to read its summary again.
+  hold open work below them or that sit above a parked call, and remote
+  spawns that last reported open work. A frame naming a thread is the cue to read its summary again.
 
 #### Agent thread companion
 

@@ -199,6 +199,68 @@ func TestAnExpiredSpawnStillNestsItsThreadsNewWork(t *testing.T) {
 	}
 }
 
+// A quiet send or ask a call is parked on is open work under the spawns
+// above its caller, as an armed one is: a worker's listing shows it while
+// its owner waits, so the owner's listing nests it under the worker's
+// settled spawn, by listing and by name, says a spawn at the depth bound
+// hides it, and names the owner a summary candidate. Once the call stops
+// waiting the row and the spawn above it leave.
+func TestAParkedQuietRequestKeepsTheSpawnsAboveIt(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "child", "grand", "peer"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "l-c", "lead", ThreadRequestSpawn, "child", false, 100)
+	settleAgentRequest(t, s, "l-c", 200)
+	seedAgentRequest(t, s, "c-g", "child", ThreadRequestSpawn, "grand", false, 110)
+	settleAgentRequest(t, s, "c-g", 210)
+	seedAgentRequest(t, s, "g-p", "grand", ThreadRequestAsk, "peer", false, 120)
+	read := func(waiting []string, depth int, tokens []string) []string {
+		t.Helper()
+		r := agentTreeRead("lead", depth)
+		r.Waiting, r.Tokens = waiting, tokens
+		rows, _, err := s.ListThreadAgentTree(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agentTreeEntries(rows)
+	}
+	parked := []string{"g-p"}
+	// The worker's own listing shows the parked row.
+	if rows, _, err := s.ListThreadAgentTree(ThreadAgentTreeRead{Root: "grand", Waiting: parked, SettledSince: 10_000, Depth: 4, Limit: 8, AnswerHead: 1}); err != nil || len(rows) != 1 {
+		t.Fatalf("the worker's own listing %v, %v; want its parked ask", agentTreeEntries(rows), err)
+	}
+	if got, want := read(parked, 4, nil), []string{"l-c@0", "c-g@1", "g-p@2"}; !slices.Equal(got, want) {
+		t.Fatalf("the owner's tree %v; want %v", got, want)
+	}
+	if got, want := read(parked, 4, []string{"g-p", "c-g"}), []string{"c-g@1", "g-p@2"}; !slices.Equal(got, want) {
+		t.Fatalf("the named rows %v; want %v", got, want)
+	}
+	if got, want := read(parked, 2, nil), []string{"l-c@0", "c-g@1+hidden"}; !slices.Equal(got, want) {
+		t.Fatalf("the two-level tree %v; want %v", got, want)
+	}
+	if ids, err := s.ThreadsWithOpenAgentRows(parked, 10); err != nil || !slices.Equal(ids, []string{"child", "grand", "lead"}) {
+		t.Fatalf("summary candidates %v, %v; want every thread up the chain", ids, err)
+	}
+	if got := read(nil, 4, nil); len(got) != 0 {
+		t.Fatalf("with no call parked the tree %v; want none", got)
+	}
+	if got := read(nil, 4, []string{"g-p", "c-g"}); len(got) != 0 {
+		t.Fatalf("with no call parked the named rows %v; want none", got)
+	}
+	if ids, err := s.ThreadsWithOpenAgentRows(nil, 10); err != nil || len(ids) != 0 {
+		t.Fatalf("with no call parked the candidates %v, %v; want none", ids, err)
+	}
+	// An armed wake below is counted once: the parked spawn is the marks'.
+	if ok, err := s.SetThreadRequestNotify("g-p", true); err != nil || !ok {
+		t.Fatalf("arm: %v %v", ok, err)
+	}
+	if got, want := read(parked, 4, nil), []string{"l-c@0", "c-g@1", "g-p@2"}; !slices.Equal(got, want) {
+		t.Fatalf("armed and parked, the owner's tree %v; want %v", got, want)
+	}
+}
+
 // A settled spawn's receipt is what lets the computer that made the spawn
 // list and stop the work under its thread, so the retention floor keeps it
 // while that work is open: an open request its thread made, open work below

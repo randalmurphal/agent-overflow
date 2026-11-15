@@ -60,12 +60,15 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 		"SEARCH a USING INDEX idx_thread_requests_open_created (caller_thread_id=?)",
 		"SEARCH a USING INDEX idx_thread_requests_caller_settled (caller_thread_id=? AND settled_at>?)",
 		"SEARCH a USING INDEX idx_thread_requests_open_below (caller_thread_id=?)",
+		"SEARCH a USING INDEX sqlite_autoindex_thread_requests_1 (token=?)",
 		"SEARCH a USING INDEX idx_thread_requests_nested_caller (caller_thread_id=?)",
 	}
 	under := []string{
 		"SEARCH c USING INDEX idx_thread_requests_caller_settled (caller_thread_id=? AND settled_at>?)",
 		"SEARCH c USING INDEX idx_thread_requests_open_below (caller_thread_id=?)",
+		"SEARCH c USING INDEX sqlite_autoindex_thread_requests_1 (token=?)",
 		"SEARCH c USING INDEX idx_thread_requests_nested_caller (caller_thread_id=?)",
+		"SEARCH ps USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
 	}
 	named := []string{
 		"SEARCH r USING INDEX sqlite_autoindex_thread_requests_1 (token=?)",
@@ -86,7 +89,7 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 		} {
 			name := fmt.Sprintf("%s (analyzed %v)", read.name, analyzed)
 			arm := []string{"idx_thread_requests_open_created", "idx_thread_requests_caller_settled",
-				"idx_thread_requests_open_below", "idx_thread_requests_nested_caller"}
+				"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller"}
 			assertPlanSearches(t, s, name, "r", []string{"sqlite_autoindex_thread_requests_1"}, read.query, read.args...)
 			assertPlanSearches(t, s, name, "c", arm, read.query, read.args...)
 			text := planText(explainPlan(t, s, read.query, read.args...))
@@ -184,7 +187,7 @@ func compilesOnceWithStatistics(t *testing.T, shape agentTreeShape, namedFirst b
 	}
 }
 
-// The four arms list what one predicate would: an open row, one settled
+// The arms list what one predicate would: an open row, one settled
 // inside the window, a settled spawn with open work under it locally or on
 // another computer. A long settled history adds nothing.
 func TestThreadAgentRequestsArmsAgainstAHistory(t *testing.T) {
