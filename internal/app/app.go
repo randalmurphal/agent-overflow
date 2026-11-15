@@ -493,8 +493,8 @@ type App struct {
 	// construction keeps focused bare-App tests valid.
 	sessionRuntimeOnce sync.Once
 	sessionRuntime     *sessionruntime.Manager
-	// orphanReaper is the macOS sidecar process that kills provider
-	// process groups if this app dies ungracefully; orphanRegistry is the
+	// orphanReaper is the macOS sidecar process that kills provider and
+	// shell command process groups if this app dies ungracefully; orphanRegistry is the
 	// durable backstop the next launch sweeps. Both stay nil on
 	// Linux/Windows (which rely on Pdeathsig / a Job Object) and in tests
 	// — the watch/release helpers and Client methods are nil-safe. See

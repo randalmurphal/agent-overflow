@@ -305,7 +305,7 @@ func (a *App) startSessionNow(threadID string) error {
 	// (macOS only; no-op elsewhere). Paired with the release in
 	// closeProviderSession.
 	if ps := newSess.ProviderSession(); ps != nil {
-		a.watchSessionProcess(ps.PID(), sessionToken)
+		a.watchProcessGroup(ps.PID(), sessionToken)
 	}
 
 	// A session-death restore can requeue messages instead of restoring

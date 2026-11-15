@@ -156,7 +156,7 @@ func (a *App) closeProviderSession(threadID string, sess session) error {
 	// tracking it. On a Close error we deliberately keep the watch: an
 	// abandoned-but-still-alive subprocess must still be reaped if the app
 	// later dies.
-	a.releaseSessionProcess(pgid)
+	a.releaseProcessGroup(pgid)
 	return nil
 }
 

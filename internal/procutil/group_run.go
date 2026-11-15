@@ -40,6 +40,15 @@ type GroupCommand struct {
 	// Terminal, when set, is the command's controlling terminal. Stdin and
 	// Output are unchanged. The caller closes it after Wait returns.
 	Terminal *Terminal
+	// EndWithParent ends the command when this process dies without
+	// stopping it, the way a provider process ends: on Linux the kernel
+	// sends its leader SIGTERM (Pdeathsig). Other platforms have no such
+	// signal, and the caller records the group for the app's orphan reaper
+	// from Started.
+	EndWithParent bool
+	// Started, when set, receives the command's pid, which is also its
+	// process group id, once the command runs and before StartGroup returns.
+	Started func(pid int)
 	// kill replaces KillConfiguredGroup in a test that needs a group no
 	// signal ends.
 	kill func(*exec.Cmd) error
@@ -148,6 +157,9 @@ func StartGroup(ctx context.Context, command GroupCommand) (*Group, error) {
 	if command.Terminal != nil {
 		command.Terminal.attach(cmd)
 	}
+	if command.EndWithParent {
+		endWithParent(cmd)
+	}
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -169,6 +181,9 @@ func StartGroup(ctx context.Context, command GroupCommand) (*Group, error) {
 			_, _ = io.Copy(io.Discard, reader)
 		}
 	}()
+	if command.Started != nil {
+		command.Started(cmd.Process.Pid)
+	}
 	return group, nil
 }
 

@@ -147,4 +147,10 @@ type Config struct {
 	// procutil.OpenTerminal is the default.
 	OpenTerminal func() (*procutil.Terminal, error)
 	Now          func() time.Time
+	// Watch receives a run's process group once its process exists, and
+	// Release receives it once the group is gone. The host records the group
+	// for its orphan reaper with them, so a command does not outlive a host
+	// that dies without stopping it. Either may be nil.
+	Watch   func(pgid int, runID string)
+	Release func(pgid int)
 }

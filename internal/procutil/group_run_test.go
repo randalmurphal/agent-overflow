@@ -111,6 +111,32 @@ func TestRunGroupReportsTheExitCodeAndCombinedOutput(t *testing.T) {
 	}
 }
 
+// Started names the running leader, whose pid is the group a reaper kills.
+func TestStartGroupReportsTheLeaderAsTheGroup(t *testing.T) {
+	t.Parallel()
+	started := 0
+	group, err := StartGroup(context.Background(), GroupCommand{
+		Argv: []string{"sleep", "60"}, Output: &syncBuffer{}, TerminateGrace: time.Second,
+		Started: func(pid int) { started = pid },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started == 0 {
+		t.Fatal("StartGroup returned before Started")
+	}
+	pgid, err := syscall.Getpgid(started)
+	if err != nil || pgid != started {
+		t.Fatalf("Getpgid(%d) = %d %v, want the leader's own group", started, pgid, err)
+	}
+	if err := SignalGroup(started, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := group.Wait(); err == nil {
+		t.Fatal("a killed command reported success")
+	}
+}
+
 func TestRunGroupRefusesAnEmptyArgv(t *testing.T) {
 	t.Parallel()
 	if _, err := RunGroup(context.Background(), GroupCommand{Output: &syncBuffer{}}); err == nil {

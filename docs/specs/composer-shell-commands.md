@@ -55,6 +55,11 @@ the bound methods and what a result becomes.
 - Deleting the thread, removing a worktree (every command running in or
   below it) and shutdown stop the run and join it. A stopped run sends
   nothing.
+- A backend that dies without stopping the run takes it down by the rule
+  provider processes follow (`procutil.GroupCommand.EndWithParent`): on
+  Linux, the backend's platform on Windows too, the run's leader gets
+  SIGTERM; on macOS the run's group is watched by the orphan reaper, whose
+  sidecar kills it at once and whose registry the next launch sweeps.
 - A running command holds back an app update, and keeps an empty draft
   thread from being deleted.
 

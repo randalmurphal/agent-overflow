@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -499,6 +500,111 @@ func TestACommandThatSurvivesTheKillIsReported(t *testing.T) {
 	}
 	if final := rec.terminal(t); final.State != StateFailed || !strings.Contains(final.Error, "still running") {
 		t.Fatalf("terminal frame: %+v", final)
+	}
+}
+
+// groupWatch records the Watch and Release calls a service makes.
+type groupWatch struct {
+	mu       sync.Mutex
+	watched  map[int]string
+	released []int
+}
+
+func (w *groupWatch) install(config *Config) {
+	w.watched = map[int]string{}
+	config.Watch = func(pgid int, runID string) {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.watched[pgid] = runID
+	}
+	config.Release = func(pgid int) {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.released = append(w.released, pgid)
+	}
+}
+
+func (w *groupWatch) snapshot() (map[int]string, []int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	watched := make(map[int]string, len(w.watched))
+	for pgid, runID := range w.watched {
+		watched[pgid] = runID
+	}
+	return watched, append([]int(nil), w.released...)
+}
+
+// A run's process group is handed to the host's orphan reaper while the
+// command runs and taken back once the group is gone, whether the command
+// exits or is stopped. The command is told to end with this process.
+func TestARunsGroupIsWatchedWhileItRuns(t *testing.T) {
+	t.Parallel()
+	for _, stop := range []bool{false, true} {
+		watch := &groupWatch{}
+		rec := &recorder{}
+		var ended bool
+		service := newService(t, rec, func(config *Config) {
+			watch.install(config)
+			config.Run = func(ctx context.Context, command procutil.GroupCommand) (procutil.GroupOutcome, error) {
+				ended = command.EndWithParent
+				return procutil.RunGroup(ctx, command)
+			}
+		})
+		command := "echo started"
+		if stop {
+			command = "echo started; sleep 60"
+		}
+		if _, err := service.Start(shellRequest(t, "run-1", command)); err != nil {
+			t.Fatal(err)
+		}
+		if stop {
+			waitActiveOutput(t, service, "started")
+			watched, released := watch.snapshot()
+			if len(watched) != 1 || len(released) != 0 {
+				t.Fatalf("while running: watched %v, released %v", watched, released)
+			}
+			for pgid, runID := range watched {
+				if group, err := syscall.Getpgid(pgid); err != nil || group != pgid || runID != "run-1" {
+					t.Fatalf("watched %d for %q: group %d %v, want the running command's own group", pgid, runID, group, err)
+				}
+			}
+			if err := service.StopRun("thread-1", "run-1"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rec.terminal(t)
+		watched, released := watch.snapshot()
+		if len(watched) != 1 || len(released) != 1 || watched[released[0]] != "run-1" {
+			t.Fatalf("stop=%v: watched %v, released %v, want the one group watched and released", stop, watched, released)
+		}
+		if !ended {
+			t.Fatalf("stop=%v: the command was not told to end with this process", stop)
+		}
+	}
+}
+
+// A group the kill could not end is still running, so it stays watched.
+func TestAGroupThatSurvivesTheKillStaysWatched(t *testing.T) {
+	t.Parallel()
+	watch := &groupWatch{}
+	rec := &recorder{}
+	service := newService(t, rec, func(config *Config) {
+		watch.install(config)
+		config.Run = func(ctx context.Context, command procutil.GroupCommand) (procutil.GroupOutcome, error) {
+			command.Started(4242)
+			<-ctx.Done()
+			return procutil.GroupOutcome{ExitCode: -1}, procutil.ErrGroupSurvived
+		}
+	})
+	if _, err := service.Start(shellRequest(t, "run-1", "sudo tail -f /dev/null")); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StopRun("thread-1", "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	rec.terminal(t)
+	if watched, released := watch.snapshot(); watched[4242] != "run-1" || len(released) != 0 {
+		t.Fatalf("watched %v, released %v, want the surviving group still watched", watched, released)
 	}
 }
 
