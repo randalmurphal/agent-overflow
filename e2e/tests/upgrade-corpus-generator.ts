@@ -61,6 +61,8 @@ function prng(seed: number): () => number {
 interface SeedItem {
   kind: string;
   summary: string;
+  role?: string;
+  meta?: Record<string, unknown>;
   toolName?: string;
   payload?: { kind: string; data: string; padAfter: number };
 }
@@ -182,6 +184,21 @@ function threadPlan(n: number, total: number, archived: boolean, random: () => n
   const turns: SeedTurn[] = [];
   let itemCount = 0;
   let payloadBytes = 0;
+  if (n === 0) {
+    // A message queued behind a running turn whose row kept its
+    // pendingFlush mark when releases before v152 let a session Stop sweep
+    // the pending send, with later turns after it. It is history: the
+    // migration clears the mark and the boot leaves the row and the
+    // composer alone.
+    turns.push({
+      userText: `A turn of corpus thread #${n + 1} a queued message arrived during.`,
+      items: [
+        { kind: 'user_text', role: 'user', summary: `A message queued behind that turn of corpus thread #${n + 1}.`, meta: { sendId: `corpus-stale-send-${n + 1}`, pendingFlush: true } },
+        { kind: 'assistant_text', summary: `The turn of corpus thread #${n + 1} the session Stop ended.` },
+      ],
+    });
+    itemCount += 3;
+  }
   shapes.forEach((k, s) => {
     const turnItems: SeedItem[] = [];
     let turnBytes = 0;
