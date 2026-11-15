@@ -187,18 +187,28 @@ describe('scanReviewFind filtered by the stored text', () => {
         files = streamed.files;
       }
       const conflict = randomConflict(next);
+      const residentFiles = form === 'resident' ? files : parseReviewFiles(patch);
       files = [...files, conflict.file];
       const { drafts, prThreads } = randomComments(next, files);
-      const source = content({ files, drafts, prThreads, foldLines: (path) => (path === 'm.go' ? conflict.folds : null) });
+      const around = { drafts, prThreads, foldLines: (path: string) => (path === 'm.go' ? conflict.folds : null) };
+      const source = content({ files, ...around });
+      // The rule on every row reads the same diff held resident: a scan
+      // over evicted text reads each chunk again, so one of the two scans
+      // of a streamed round does not.
+      const oracle = form === 'resident' ? source : content({ files: [...residentFiles, conflict.file], ...around });
       const lines = patch.split('\n');
-      const queries = [...SCAN_QUERIES, ...Array.from({ length: 6 }, () => {
+      // A streamed round takes every third query, a different third each
+      // time its form comes round.
+      const turn = Math.floor(round / forms.length);
+      const fixed = form === 'resident' ? SCAN_QUERIES : SCAN_QUERIES.filter((_, index) => (index + turn) % 3 === 0);
+      const queries = [...fixed, ...Array.from({ length: 6 }, () => {
         const line = [...lines[next(lines.length)]];
         const at = next(line.length + 1);
         return line.slice(at, at + 1 + next(4)).join('');
       })];
       for (const query of queries) {
         const limit = next(4) === 0 ? 1 + next(20) : 100_000;
-        const want = await unfilteredScan(source, query, limit);
+        const want = await unfilteredScan(oracle, query, limit);
         const got = await collectScan(source, query, limit);
         expect(got, `round ${round} (${form}) ${JSON.stringify(query)} limit ${limit}`).toEqual(want);
         if (want.hits.some((hit) => hit.place.kind === 'line')) compared += 1;
