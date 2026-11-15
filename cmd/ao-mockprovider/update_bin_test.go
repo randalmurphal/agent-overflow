@@ -154,14 +154,17 @@ func (f updateFixture) mustRun(t *testing.T, args ...string) oneShotResult {
 func TestDoctorReportsLatestChannel(t *testing.T) {
 	t.Parallel()
 	f := newUpdateFixture(t)
-	res := f.mustRun(t, "doctor")
-	for _, want := range []string{
-		"Claude Code doctor\n",
-		"Running: native (" + mockVersionNumber + ")\n",
-		"Auto-update channel: latest\n",
-	} {
-		if !strings.Contains(res.stdout, want) {
-			t.Fatalf("doctor stdout missing %q:\n%s", want, res.stdout)
+	// The app puts the transcript retention block ahead of the subcommand.
+	for _, args := range [][]string{{"doctor"}, {"--settings", `{"cleanupPeriodDays":90}`, "doctor"}} {
+		res := f.mustRun(t, args...)
+		for _, want := range []string{
+			"Claude Code doctor\n",
+			"Running: native (" + mockVersionNumber + ")\n",
+			"Auto-update channel: latest\n",
+		} {
+			if !strings.Contains(res.stdout, want) {
+				t.Fatalf("%q stdout missing %q:\n%s", args, want, res.stdout)
+			}
 		}
 	}
 }
@@ -174,7 +177,8 @@ func TestUpdateWithNothingAdvertisedChangesNothing(t *testing.T) {
 	t.Parallel()
 	f := newUpdateFixture(t)
 	before := f.mtime(t)
-	res := f.mustRun(t, "update")
+	// As the app runs it, with the transcript retention block first.
+	res := f.mustRun(t, "--settings", `{"cleanupPeriodDays":90}`, "update")
 	want := "Current version: " + mockVersionNumber + "\n" +
 		"Checking for updates to latest version...\n" +
 		"Claude Code is up to date (" + mockVersionNumber + ")\n"

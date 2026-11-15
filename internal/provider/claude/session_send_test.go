@@ -588,6 +588,7 @@ done
 	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
+		Retention:          UserHomeRetention(0),
 		Binary:             scriptPath,
 		BasePermissionMode: "default",
 		InteractionMode:    provider.ModePlan,
@@ -671,6 +672,7 @@ done
 			mockexec.Write(t, scriptPath, script)
 
 			s, err := NewSession(context.Background(), testThread, Config{
+				Retention:          UserHomeRetention(0),
 				Binary:             scriptPath,
 				BasePermissionMode: baseMode,
 				InteractionMode:    provider.ModeChat,
@@ -993,7 +995,7 @@ done
 `
 			mockexec.Write(t, path, script)
 			events := make(chan provider.ProviderEvent, 128)
-			s, err := NewSession(context.Background(), testThread, Config{Binary: path}, func(evt provider.ProviderEvent) { events <- evt })
+			s, err := NewSession(context.Background(), testThread, Config{Retention: UserHomeRetention(0), Binary: path}, func(evt provider.ProviderEvent) { events <- evt })
 			if err != nil {
 				t.Fatal(err)
 			}

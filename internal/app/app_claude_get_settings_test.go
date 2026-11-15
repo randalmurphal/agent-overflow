@@ -62,6 +62,7 @@ func seedClaudeGetSettingsThread(
 	started := seedClaudeLiveConfigThread(t, app, id, token, launchOpts)
 
 	sess, err := claude.NewSession(context.Background(), id, claude.Config{
+		Retention:       claude.UserHomeRetention(0),
 		Binary:          binary,
 		Model:           "claude-opus-5",
 		ReasoningEffort: "high",

@@ -341,8 +341,9 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -446,8 +447,9 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  binary,
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    binary,
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -622,8 +624,9 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)

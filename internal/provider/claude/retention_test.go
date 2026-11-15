@@ -207,21 +207,10 @@ func TestCleanupPeriodOverrideOnlyLengthensTheUsersPeriod(t *testing.T) {
 	}
 }
 
-func TestCleanupPeriodArgsRenderOneSettingsPair(t *testing.T) {
-	if got, want := CleanupPeriodArgs(90), []string{"--settings", `{"cleanupPeriodDays":90}`}; !slices.Equal(got, want) {
-		t.Fatalf("CleanupPeriodArgs(90) = %v, want %v", got, want)
-	}
-	for _, days := range []int{0, -1} {
-		if got := CleanupPeriodArgs(days); got != nil {
-			t.Fatalf("CleanupPeriodArgs(%d) = %v, want nil", days, got)
-		}
-	}
-}
-
 // The session block carries the retention beside its other keys, in one
 // `--settings` flag.
 func TestBuildArgsCarriesCleanupPeriodDaysInTheSettingsBlock(t *testing.T) {
-	args := buildArgs(Config{FastMode: true, CleanupPeriodDays: 90}, "", "")
+	args := buildArgs(Config{FastMode: true, Retention: UserHomeRetention(90)}, "", "")
 	joined := strings.Join(args, " ")
 	if want := `--settings {"fastMode":true,"cleanupPeriodDays":90}`; !strings.Contains(joined, want) {
 		t.Fatalf("args missing %q: %v", want, args)
@@ -231,17 +220,24 @@ func TestBuildArgsCarriesCleanupPeriodDaysInTheSettingsBlock(t *testing.T) {
 	}
 
 	// A value the CLI's schema rejects is never rendered.
-	if joined := strings.Join(buildArgs(Config{CleanupPeriodDays: -3}, "", ""), " "); strings.Contains(joined, "--settings") {
+	if joined := strings.Join(buildArgs(Config{Retention: UserHomeRetention(-3)}, "", ""), " "); strings.Contains(joined, "--settings") {
 		t.Fatalf("a negative period rendered a settings block: %s", joined)
 	}
 }
 
 func TestProbeArgsCarryCleanupPeriodDays(t *testing.T) {
-	args := buildProbeArgs(ProbeConfig{CleanupPeriodDays: 90})
-	if !slices.Contains(args, `{"cleanupPeriodDays":90}`) || !slices.Contains(args, "--settings") {
+	line, err := probeCommandLine(ProbeConfig{Retention: UserHomeRetention(90)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args := line.Args(); !slices.Contains(args, `{"cleanupPeriodDays":90}`) || !slices.Contains(args, "--settings") {
 		t.Fatalf("probe args carry no retention: %v", args)
 	}
-	if args := buildProbeArgs(ProbeConfig{}); slices.Contains(args, "--settings") {
-		t.Fatalf("a probe with no retention rendered a settings flag: %v", args)
+	line, err = probeCommandLine(ProbeConfig{Retention: UserHomeRetention(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args := line.Args(); slices.Contains(args, "--settings") {
+		t.Fatalf("a probe with no period rendered a settings flag: %v", args)
 	}
 }

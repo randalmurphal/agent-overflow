@@ -802,6 +802,17 @@ describe("provider page: CLI updates", () => {
     expect(failure.title).toBe("could not read the installed version");
   });
 
+  it("says a sign-in is needed when the login expired, not that the check failed", async () => {
+    await seed();
+    setBindingMock("CheckProviderUpdates", async () => [
+      updateStatus("claude", { latestVersion: "", available: false, signInRequired: true }),
+    ]);
+    const { findByTestId, queryByTestId } = render(ClaudeSettings);
+    const notice = await findByTestId("settings-provider-update-sign-in");
+    expect(notice.textContent).toBe("Sign in to check for updates");
+    expect(queryByTestId("settings-provider-update-check-error")).toBeNull();
+  });
+
   it("opens the notes for this page's provider", async () => {
     await seed();
     setBindingMock("CheckProviderUpdates", async () => [updateStatus("codex")]);

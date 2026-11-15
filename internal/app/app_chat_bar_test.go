@@ -254,7 +254,7 @@ func TestSendMessageExpandsComposerCommandOnTheWireOnly(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Binary: writeClaudeStdinCapture(t, capturePath), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinCapture(t, capturePath), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -343,7 +343,7 @@ func TestSendMessageSkipsExpansionForInjectedText(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Binary: writeClaudeStdinCapture(t, capturePath), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinCapture(t, capturePath), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {

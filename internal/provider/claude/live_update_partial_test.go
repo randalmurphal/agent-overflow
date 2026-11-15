@@ -48,7 +48,7 @@ done
 	cfg.Env["CAPTURE_FILE"] = capturePath
 	cfg.Env["FAIL_SUBTYPE"] = failSubtype
 
-	s, err := NewSession(context.Background(), testThread, cfg, func(provider.ProviderEvent) {})
+	s, err := NewSession(context.Background(), testThread, withTestRetention(cfg), func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

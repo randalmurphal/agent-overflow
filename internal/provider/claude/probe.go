@@ -51,11 +51,11 @@ type ProbeConfig struct {
 	// so bytes that look fresh still rotate. See armRotationWatch.
 	RotationExpected bool
 
-	// CleanupPeriodDays is the `cleanupPeriodDays` the probe carries, from
-	// CleanupPeriodOverride. Zero sends none. A probe held open for a token
-	// rotation lives long enough to run the CLI's transcript sweep, so it
-	// carries the same value a session does. See retention.go.
-	CleanupPeriodDays int
+	// Retention is the probe's answer to the transcript sweep. A probe held
+	// open for a token rotation lives long enough to run it, so it carries
+	// the same value a session does (retention.go). The zero value refuses
+	// the probe.
+	Retention Retention
 
 	// OnModels, when non-nil, fires exactly once on a successful probe with
 	// the `models` array carried by the same initialize response that produced
@@ -171,12 +171,16 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 	readCtx, cancelRead := context.WithTimeout(ctx, timeout)
 	defer cancelRead()
 
+	line, err := probeCommandLine(cfg)
+	if err != nil {
+		return provider.AccountInfo{}, err
+	}
 	proc, err := provider.Spawn(spawnCtx, provider.SpawnConfig{
 		Binary:   binary,
-		Args:     buildProbeArgs(cfg),
+		Args:     line.Args(),
 		Dir:      cfg.WorkDir,
-		Env:      cfg.Env,
-		UnsetEnv: ConfigHomeUnsetEnv(),
+		Env:      line.Env(cfg.Env),
+		UnsetEnv: line.UnsetEnv(),
 		// The probe runs under a deadline and drives the CLI's own token
 		// refresh; a SIGKILL between the token endpoint answering and the
 		// credential write ends the account's chain (see GracefulCancel).
@@ -222,7 +226,7 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 	return response.Account, nil
 }
 
-// buildProbeArgs returns the CLI flags used by ProbeAccount. Kept
+// probeCommandLine returns the command line ProbeAccount runs. Kept
 // separate so the flag set is visible and testable without running a
 // full session. `--max-turns 0` expresses intent but does not enforce
 // it — see the ProbeAccount doc comment for the real no-inference
@@ -237,16 +241,15 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 // refresh path this probe exists to drive.
 //
 // `--safe-mode` still applies `--settings`, which is how the probe carries
-// cfg.CleanupPeriodDays.
-func buildProbeArgs(cfg ProbeConfig) []string {
-	args := []string{
+// cfg.Retention.
+func probeCommandLine(cfg ProbeConfig) (CommandLine, error) {
+	return NewCommandLine(cfg.Retention, "",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--max-turns", "0",
 		"--safe-mode",
-	}
-	return append(args, CleanupPeriodArgs(cfg.CleanupPeriodDays)...)
+	)
 }
 
 // initResponse is everything ProbeAccount reads out of one initialize

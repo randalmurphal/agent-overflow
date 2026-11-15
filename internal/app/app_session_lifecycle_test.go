@@ -83,8 +83,9 @@ func TestServiceShutdownClosesSessionsWithoutDeadlock(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		app.sessionEventHandler(thread.ID, "shutdown-token", ""),
 	)
@@ -138,8 +139,9 @@ func TestServiceShutdownTreatsSubprocessExitAsCleanClose(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  "false",
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    "false",
+			WorkDir:   thread.WorkspacePath,
 		},
 		app.sessionEventHandler(thread.ID, "shutdown-error-token", ""),
 	)
@@ -193,8 +195,9 @@ func TestStartSessionProceedsWhenPriorSubprocessExitsNonZero(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudeFailOnCloseBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudeFailOnCloseBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		app.sessionEventHandler(thread.ID, "replace-close-error-token", ""),
 	)

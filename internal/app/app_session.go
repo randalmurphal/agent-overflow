@@ -549,7 +549,7 @@ func (a *App) spawnProviderSession(
 		cfg.MCPServers = mcpServers
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
 		applyClaudeSessionAxes(&cfg, a.settings.Get().ClaudeSessionAxesForProvider(t.Provider))
-		cfg.CleanupPeriodDays = a.claudeCleanupPeriodDays(cfg.WorkDir)
+		cfg.Retention = a.claudeRetention(cfg.WorkDir)
 		// The peer-visible name rides the Config rather than the options
 		// bundle on purpose: it is live-changeable through `/rename`, so
 		// letting the reconciler see it would queue a restart every time a
@@ -775,7 +775,7 @@ func (a *App) claudeTUISessionConfig(
 		opts.ClaudeMaxCommandTimeoutHours,
 	))
 	cfg.AdditionalDirs = a.claudeAdditionalDirs()
-	cfg.CleanupPeriodDays = a.claudeCleanupPeriodDays(cfg.WorkDir)
+	cfg.Retention = a.claudeRetention(cfg.WorkDir)
 	cfg.Upstream = a.claudetuiUpstream()
 	cfg.EventLogger = a.logger
 	var err error

@@ -13,6 +13,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
@@ -274,9 +275,10 @@ func newClaudeTUIInterruptThread(t *testing.T, closed bool) (*App, store.Thread)
 	binary := filepath.Join(dir, "mock-claude-tui")
 	mockexec.Write(t, binary, "#!/bin/sh\nwhile IFS= read -r _; do :; done\n")
 	sess, err := claudetui.NewSession(context.Background(), thread.ID, claudetui.Config{
-		Binary:  binary,
-		WorkDir: dir,
-		Env:     []string{"HOME=" + dir, "PATH=" + os.Getenv("PATH")},
+		Retention: claude.UserHomeRetention(0),
+		Binary:    binary,
+		WorkDir:   dir,
+		Env:       []string{"HOME=" + dir, "PATH=" + os.Getenv("PATH")},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claudetui.NewSession: %v", err)

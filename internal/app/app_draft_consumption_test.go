@@ -78,7 +78,7 @@ func TestComposerAdmissionConsumesOnlyCapturedDraft(t *testing.T) {
 					t.Fatal(err)
 				}
 				if path == "direct" {
-					sess, err := claude.NewSession(context.Background(), thread.ID, claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath}, func(provider.ProviderEvent) {})
+					sess, err := claude.NewSession(context.Background(), thread.ID, claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath}, func(provider.ProviderEvent) {})
 					if err != nil {
 						t.Fatal(err)
 					}

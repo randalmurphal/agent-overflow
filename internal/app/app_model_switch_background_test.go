@@ -60,6 +60,7 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 				}
 				if providerName == "claude" {
 					cfg := claude.ConfigFromOptions(opts)
+					cfg.Retention = claude.UserHomeRetention(0)
 					cfg.Binary = binary
 					entry.Claude, err = claude.NewSession(context.Background(), thread.ID, cfg, func(provider.ProviderEvent) {})
 					if err != nil {
@@ -212,6 +213,7 @@ func TestDeferredConfigReconnectRechecksWorkAfterLiveApply(t *testing.T) {
 	mockexec.Write(t, binary, string(script))
 	live := newSessionLiveness(time.Now().Add(-time.Minute))
 	cfg := claude.ConfigFromOptions(opts)
+	cfg.Retention = claude.UserHomeRetention(0)
 	cfg.Binary = binary
 	sess, err := claude.NewSession(context.Background(), thread.ID, cfg, func(evt provider.ProviderEvent) {
 		if evt.Kind == provider.EventInit {

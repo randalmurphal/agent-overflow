@@ -15,8 +15,9 @@ func TestNewSessionWithMock(t *testing.T) {
 	ctx := context.Background()
 	eventCh := make(chan provider.ProviderEvent, 100)
 	s, err := NewSession(ctx, testThread, Config{
-		Binary: "bash",
-		Model:  "", // keep args minimal
+		Retention: UserHomeRetention(0),
+		Binary:    "bash",
+		Model:     "", // keep args minimal
 	}, func(evt provider.ProviderEvent) {
 		eventCh <- evt
 	})
@@ -44,7 +45,7 @@ func TestNewSessionSpawnsAndRunsReadLoop(t *testing.T) {
 
 	ctx := context.Background()
 	eventCh := make(chan provider.ProviderEvent, 100)
-	s, err := NewSession(ctx, testThread, Config{Binary: scriptPath}, func(evt provider.ProviderEvent) {
+	s, err := NewSession(ctx, testThread, Config{Retention: UserHomeRetention(0), Binary: scriptPath}, func(evt provider.ProviderEvent) {
 		eventCh <- evt
 	})
 	if err != nil {

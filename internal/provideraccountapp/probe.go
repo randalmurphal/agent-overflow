@@ -215,6 +215,16 @@ func (m *Manager) runStableAccountProbe(
 	)
 }
 
+// CanonicalLoginExpired is canonicalLoginExpired for a caller outside the
+// manager that is about to start the provider's CLI against its canonical
+// home. Unattached storage holds no login to expire.
+func (m *Manager) CanonicalLoginExpired(providerName string) (bool, error) {
+	if !m.available() {
+		return false, nil
+	}
+	return m.canonicalLoginExpired(providerName)
+}
+
 // canonicalLoginExpired reports that the canonical credential holds a login
 // whose OAuth session has ended. An absent credential is not expired — there
 // is nothing there to expire — and a read failure is reported, because
