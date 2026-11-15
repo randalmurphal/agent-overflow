@@ -14,6 +14,8 @@ import (
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
+	"github.com/google/uuid"
 )
 
 // An agent's thread_cancel by thread id of a thread it spawned brings that
@@ -271,7 +273,10 @@ func TestAThreadBeingStoppedTakesNoAppMessage(t *testing.T) {
 		t.Fatalf("the refused message started the thread %d times", n)
 	}
 	// A notice queued before the rest began, whose start comes once it has.
-	a.startAgentNoticeSession(agentNotice{threadID: thread.ID, sendID: "wake:queued-before"}, false)
+	a.startAgentNoticeSession(agentNotice{
+		threadID: thread.ID, sendID: "wake:queued-before",
+		startFailed: func(err error) string { return err.Error() },
+	}, false)
 	if n := starts.Load(); n != 0 {
 		release()
 		t.Fatalf("a notice's start during the rest started the thread %d times", n)
@@ -325,6 +330,43 @@ func TestAStopCancelsTheThreadsRemoteCommands(t *testing.T) {
 	}
 }
 
+// A remote command's completion queued for the stopped thread and not yet
+// taken in is dropped, not given back to its watch by the session end,
+// which would deliver it again and start the thread.
+func TestAStopDropsARemoteCompletionItsAgentHadNotTakenIn(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	f := newRequestFixture(t)
+	target := f.plainThread(t)
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "spawn-finished-runner", CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSpawn,
+		TargetThreadID: target.ID, State: store.ThreadRequestAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := store.RemoteWatch{
+		ComputerID: uuid.NewString(), RequestID: uuid.NewString(), ThreadID: target.ID,
+		Fingerprint: strings.Repeat("a", 64), Label: "job",
+	}
+	if _, err := f.app.store.RegisterRemoteWatch(w); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.store.QueueRemoteCompletion(w.ComputerID, w.RequestID, store.FlushQueueItem{
+		ID: "queue:" + w.RequestID, ThreadID: target.ID, SendID: remoteCompletionSendID(w), Message: "done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, "spawn-finished-runner")
+	if err != nil || len(stop.Failures) != 0 {
+		t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
+	}
+	watch, err := f.app.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil || watch.Notification != "dismissed" {
+		t.Fatalf("the watch = %q, %v; want its completion dropped", watch.Notification, err)
+	}
+}
+
 // A Stop of a spawn on a paired computer brings that thread to rest there,
 // and the thread it spawned there too.
 func TestAStopOfAPairedSpawnBringsItToRestThere(t *testing.T) {
@@ -343,5 +385,62 @@ func TestAStopOfAPairedSpawnBringsItToRestThere(t *testing.T) {
 		if _, live := pair.dest.sessionManager().get(id); live {
 			t.Fatalf("%s still has a session on the paired computer", id)
 		}
+	}
+}
+
+// interruptOnlyPeer is a destination that predates the rest: its thread_cancel
+// by thread id interrupts and says so.
+type interruptOnlyPeer struct{ *App }
+
+func (p *interruptOnlyPeer) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	return p.App.ThreadToolQuery(ctx, call)
+}
+
+func (p *interruptOnlyPeer) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	if call.Tool == "thread_cancel" {
+		return ThreadPeerReply{Effect: threadtools.EffectInterrupted}, nil
+	}
+	return p.App.ThreadToolCall(ctx, call)
+}
+
+// An agent's thread_cancel of a thread it spawned on a paired computer
+// disarms its spawn's wake when that computer brought the thread to rest,
+// and leaves it armed when that computer only interrupted the turn, since
+// the thread is still working and still owes an answer.
+func TestAnAgentsCancelOfARemoteSpawnDisarmsItsWakeOnlyForARest(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		serve  func(*testing.T, *App) *pairedBackend
+		effect string
+		notify bool
+	}{
+		{name: "a computer that rests it", serve: func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) },
+			effect: threadtools.EffectThreadStopped, notify: false},
+		{name: "a computer that predates the rest", serve: func(t *testing.T, app *App) *pairedBackend {
+			return servePairedApp(t, app, func(cfg *transport.Config) {
+				dispatcher := transport.NewDispatcher()
+				if _, err := dispatcher.Register(&interruptOnlyPeer{App: app}, transport.RegisterOptions{
+					Package: "main", TypeName: "App", AllowList: transport.NewMethodAllowList(),
+				}); err != nil {
+					t.Fatalf("register the older destination: %v", err)
+				}
+				cfg.Dispatcher = dispatcher
+			})
+		}, effect: threadtools.EffectInterrupted, notify: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pair := newAgentPeerPair(t, tc.serve)
+			report, err := pair.source.threadTools().cancelRemoteSpawnedThread(t.Context(),
+				pair.source.threadAgentCaller(pair.caller.ID),
+				threadtools.CancelCall{ThreadID: pair.child, ComputerID: pair.spawn.TargetComputerID})
+			if err != nil || report.Effect != tc.effect {
+				t.Fatalf("cancel = %+v, %v; want %s", report, err, tc.effect)
+			}
+			if row := pair.request(t, pair.spawn.Token); row.Notify != tc.notify {
+				t.Fatalf("the spawn's wake armed = %v, want %v", row.Notify, tc.notify)
+			}
+		})
 	}
 }
