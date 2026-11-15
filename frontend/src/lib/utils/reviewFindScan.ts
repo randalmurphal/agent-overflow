@@ -25,16 +25,31 @@
 // match is to `emit` so the owner can seed the resolver.
 //
 // The scan yields to the event loop between slices of work and stops
-// when its owner says it is no longer live. Every unit of work counts
-// against the slice: a row, a file, a hidden fold line, a comment's run of
-// text, and each `LONG_TEXT` characters of one long line. Text the patch
-// memory budget evicted is read back through `whenResident`.
+// when its owner says it is no longer live. Work is counted in units: a
+// file, a row, a hidden fold line and a comment's run of text count one
+// each, and every character the scan reads or searches counts as well, one
+// unit per `UNIT_CHARS` (`LONG_TEXT` characters are `CLOCK_ROWS` units).
+// A text the rule searches counts the characters each chunk folds: its
+// `LONG_TEXT` and up to the needle's length less one past them. A filter
+// block, at most `LONG_TEXT` stored characters, counts its stored length
+// once searched. The clock is read once a count crosses a multiple of
+// `CLOCK_ROWS` units, and the scan pauses there once the slice is spent,
+// so between two clock reads it reads or searches under
+// 2 x `LONG_TEXT` + the needle's length characters, besides one line it
+// reads whole. Text the patch memory budget evicted is read back
+// through `whenResident`.
+//
+// The rule reads a row's text only when its line can match: the scan runs
+// a filter (findMatch.ts#findFilterPattern) over the stored text of a
+// block of lines at a time, never decoded or folded, and a row whose line
+// it does not flag costs its walk, its count toward the slice and its
+// inserts, nothing else.
 
 import type { DiffReviewComment, ReviewComment, ReviewThread } from '../types/models';
-import { findNeedle, foldFindText } from './findMatch';
+import { findFilterPattern, findNeedle, foldFindText } from './findMatch';
 import type { FindRun } from './findHighlights';
 import { RowWalker } from './patchRows';
-import type { ReviewFile } from './patchStore';
+import type { PatchBody, ReviewFile } from './patchStore';
 import { findableBody } from './suggestionMarks';
 import { reviewInsertsByFile, type InsertRow } from './reviewRows';
 
@@ -234,11 +249,37 @@ export interface ReviewFindScanOptions {
 
 /** Lines read back together when the scan meets evicted text. */
 const LOAD_LINES = 512;
+/** Most lines one filter block reads. */
+const BLOCK_LINES = 512;
 /** Units of work between clock reads. */
 const CLOCK_ROWS = 256;
+/** Characters read or searched that count one unit of work. */
+const UNIT_CHARS = LONG_TEXT / CLOCK_ROWS;
+/** Most stored characters one filter block reads: the size the rule
+ * searches at a time. A longer line is never read by the filter: the rule
+ * searches it `LONG_TEXT` at a time. */
+const BLOCK_SIZE = LONG_TEXT;
 const DEFAULT_SLICE_MS = 8;
 
 class StopScan extends Error {}
+
+// The end of the filter block from line `start`: lines of one segment, at
+// most BLOCK_LINES and BLOCK_SIZE stored characters, and at least one.
+function blockEndOf(body: PatchBody, start: number): number {
+  const base = body.storedLineStart(start);
+  let low = start + 1;
+  let high = Math.min(body.segmentEnd(start), start + BLOCK_LINES);
+  while (low < high) {
+    const mid = (low + high + 1) >> 1;
+    if (body.storedLineEnd(mid - 1) - base <= BLOCK_SIZE) low = mid;
+    else high = mid - 1;
+  }
+  return low;
+}
+
+function lineSpot(path: string, lineIndex: number): ReviewFindFileSpot {
+  return { rowKey: findLineKey(path, lineIndex), line: lineIndex, place: { kind: 'line', lineIndex } };
+}
 
 /**
  * Scans `content` for `query`. Resolves true when the matches stopped at
@@ -255,29 +296,39 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
   let rows = 0;
   let sliceEnd = now() + sliceMs;
 
-  // Counts `units` of work; once a slice is spent, gives the event loop
-  // a turn. Liveness is asked before and after: the owner shows progress
-  // first.
-  async function tick(units = 1): Promise<void> {
+  // Counts `units` of work and reads the clock each CLOCK_ROWS units: true
+  // once the slice is spent, when the caller must `pause` before more.
+  function spent(units = 1): boolean {
     const was = rows;
     rows += units;
-    if (Math.floor(rows / CLOCK_ROWS) === Math.floor(was / CLOCK_ROWS) || now() < sliceEnd) return;
+    return Math.floor(rows / CLOCK_ROWS) !== Math.floor(was / CLOCK_ROWS) && now() >= sliceEnd;
+  }
+
+  // Gives the event loop a turn and starts a new slice. Liveness is asked
+  // before and after: the owner shows progress first.
+  async function pause(): Promise<void> {
     if (!options.live()) throw new StopScan();
     await options.pause();
     if (!options.live()) throw new StopScan();
     sliceEnd = now() + sliceMs;
   }
 
-  // A run's matches by `findMatchChunk`; a long run reads the clock after
-  // each chunk. `each` answers true to stop.
+  // A run's matches by `findMatchChunk`, counting its characters as
+  // searched a chunk at a time. `each` answers true to stop.
   async function eachMatch(run: string, each: () => boolean): Promise<boolean> {
-    for (let from = 0; from + needle.length <= run.length;) {
+    let from = 0;
+    while (from + needle.length <= run.length) {
       const chunk = findMatchChunk(run, from, needle);
       for (let i = 0; i < chunk.count; i += 1) if (each()) return true;
-      if (chunk.last) break;
+      // What findMatchChunk folded: the chunk and up to needle.length - 1
+      // characters past its end, never past the run.
+      const end = codePointBoundary(run, Math.min(run.length, from + LONG_TEXT));
+      const folded = codePointBoundary(run, Math.min(run.length, end + needle.length - 1)) - from;
+      if (spent(Math.floor(folded / UNIT_CHARS))) await pause();
+      if (chunk.last) return false;
       from = chunk.next;
-      await tick(CLOCK_ROWS);
     }
+    if (spent(Math.floor((run.length - from) / UNIT_CHARS))) await pause();
     return false;
   }
 
@@ -288,7 +339,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
     const runs = typeof text === 'string' ? [{ text, shown: true }] : text;
     for (let i = 0; i < runs.length; i += 1) {
       if (!runs[i].shown) continue;
-      if (i > 0) await tick();
+      if (i > 0 && spent()) await pause();
       let occurrence = 0;
       if (await eachMatch(runs[i].text, () => {
         options.emit(makeReviewFindHit(file.path, at, i, occurrence), file, spot);
@@ -310,10 +361,59 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
     return text;
   }
 
+  // Which rows the rule reads. A line never holds a newline, so a needle
+  // holding one matches no row; a needle the filter cannot spell
+  // (findFilterPattern) has every row read; otherwise a row is read only
+  // when the filter flags its line. The rule decides what a flagged line
+  // matches.
+  const rowNeedle = !needle.includes('\n');
+  const pattern = rowNeedle ? findFilterPattern(needle) : null;
+  const everyLine = rowNeedle && pattern === null;
+  // The flagged lines, ascending, of the current file's block of lines
+  // [.., blockEnd); `flagAt` is the first not behind the walk.
+  const flags = new Int32Array(BLOCK_LINES);
+  let flagCount = 0;
+  let flagAt = 0;
+  let blockEnd = 0;
+
+  // A block's stored text, read back when evicted; a scan that stopped
+  // being live while the read was out goes no further.
+  async function evictedBlock(body: PatchBody, start: number, end: number): Promise<string> {
+    const stored = await body.whenResident(() => body.storedRange(start, end), start, end);
+    if (!options.live()) throw new StopScan();
+    return stored;
+  }
+
+  // Flags each line of [start, end) that `stored`, its stored text, holds
+  // a pattern match in. A match is placed by the lines' stored starts, and
+  // the search goes on from the next line, so the work is per match, not
+  // per line.
+  function flagLines(body: PatchBody, start: number, end: number, stored: string, filter: RegExp): void {
+    const base = body.storedLineStart(start);
+    flagCount = 0;
+    filter.lastIndex = 0;
+    // The first line the search can still be in.
+    let from = start;
+    for (let match = filter.exec(stored); match !== null; match = filter.exec(stored)) {
+      let low = from;
+      let high = end - 1;
+      while (low < high) {
+        const mid = (low + high + 1) >> 1;
+        if (body.storedLineStart(mid) - base <= match.index) low = mid;
+        else high = mid - 1;
+      }
+      flags[flagCount] = low;
+      flagCount += 1;
+      from = low + 1;
+      if (from >= end) break;
+      filter.lastIndex = body.storedLineStart(from) - base;
+    }
+  }
+
   const inserts = reviewInsertsByFile(content.files, content.drafts, [], content.prThreads, new Set());
   try {
     for (let fileIndex = 0; fileIndex < content.files.length; fileIndex += 1) {
-      await tick();
+      if (spent()) await pause();
       const file = content.files[fileIndex];
       const path = file.path;
       if (await emitText(path, file, { kind: 'header' }, { rowKey: findHeaderKey(path), line: -2, place: { kind: 'header' } })) return true;
@@ -321,7 +421,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
       const fileInserts = inserts.get(path);
       const emitInserts = async (bucket: readonly InsertRow[] | undefined, line: number): Promise<boolean> => {
         for (const insert of bucket ?? []) {
-          await tick();
+          if (spent()) await pause();
           if (await emitInsert(insert, line)) return true;
         }
         return false;
@@ -341,7 +441,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
           const rowKey = findThreadCommentKey(thread.id, key);
           // A sent comment open in its editor shows the editor, not its body.
           if (content.editing?.has(rowKey)) continue;
-          await tick();
+          if (spent()) await pause();
           const shown = findableBody(comment);
           if (shown !== '' && await emitText(content.commentText(shown, rowKey), file, { kind: 'thread', threadId: thread.id, comment: key }, {
             rowKey, line, place: { kind: 'thread', threadId: thread.id },
@@ -353,7 +453,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
           if (draft.status !== 'draft' || draft.replyThreadId !== thread.id) continue;
           const rowKey = findDraftKey(draft.id);
           if (content.editing?.has(rowKey)) continue;
-          await tick();
+          if (spent()) await pause();
           if (await emitText(draft.body, file, { kind: 'draft', commentId: draft.id }, { rowKey, line, place: { kind: 'thread', threadId: thread.id } })) return true;
         }
         return false;
@@ -367,36 +467,64 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
       let markerRun = 0;
       let lastLine = -1;
       const media = content.showsMedia?.(file) ?? false;
+      blockEnd = 0;
+      flagCount = 0;
+      flagAt = 0;
       while (!media && walker.next()) {
-        await tick();
+        if (spent()) await pause();
         if (walker.type === 'gap') continue;
         const lineIndex = walker.lineIndex;
         lastLine = lineIndex;
-        const lineSpot: ReviewFindFileSpot = { rowKey: findLineKey(path, lineIndex), line: lineIndex, place: { kind: 'line', lineIndex } };
+        let flagged = everyLine;
+        if (pattern !== null) {
+          if (lineIndex >= blockEnd) {
+            const end = blockEndOf(body, lineIndex);
+            blockEnd = end;
+            flagAt = 0;
+            if (body.storedLineEnd(end - 1) - body.storedLineStart(lineIndex) > BLOCK_SIZE) {
+              // One line over the block size: the rule searches it.
+              flags[0] = lineIndex;
+              flagCount = 1;
+            } else {
+              const stored = body.residentRange(lineIndex, end) ? body.storedRange(lineIndex, end) : await evictedBlock(body, lineIndex, end);
+              flagLines(body, lineIndex, end, stored, pattern);
+              if (spent(Math.ceil(stored.length / UNIT_CHARS))) await pause();
+            }
+          }
+          while (flagAt < flagCount && flags[flagAt] < lineIndex) flagAt += 1;
+          flagged = flagAt < flagCount && flags[flagAt] === lineIndex;
+        }
         if (walker.type === 'marker') {
           const fold = body.fold(lineIndex);
-          const { oldAt, newAt } = findMarkerLines(walker);
           if (fold) {
             markerRun = 0;
+            const { oldAt, newAt } = findMarkerLines(walker);
             const hidden = folds?.get(fold.id) ?? [];
             const place: ReviewFindPlace = { kind: 'fold', foldId: fold.id };
+            const rowKey = findLineKey(path, lineIndex);
             for (let h = 0; h < hidden.length; h += 1) {
-              await tick();
-              if (await emitText(hidden[h], file, { kind: 'line', tag: `c${oldAt + h}:${newAt + h}` }, { rowKey: lineSpot.rowKey, line: lineIndex, place, foldLine: h })) return true;
+              if (spent()) await pause();
+              if (await emitText(hidden[h], file, { kind: 'line', tag: `c${oldAt + h}:${newAt + h}` }, { rowKey, line: lineIndex, place, foldLine: h })) return true;
             }
           } else {
-            const tag = `m${oldAt}:${newAt}:${markerRun}`;
+            const run = markerRun;
             markerRun += 1;
-            const text = await lineText(file, lineIndex);
-            if (await emitText(text, file, { kind: 'line', tag }, lineSpot)) return true;
+            if (flagged) {
+              const { oldAt, newAt } = findMarkerLines(walker);
+              const text = await lineText(file, lineIndex);
+              if (await emitText(text, file, { kind: 'line', tag: `m${oldAt}:${newAt}:${run}` }, lineSpot(path, lineIndex))) return true;
+            }
           }
         } else {
           markerRun = 0;
-          // Code text: the +/- or context prefix is the gutter's.
-          const text = (await lineText(file, lineIndex)).slice(1);
-          if (await emitText(text, file, { kind: 'line', tag: findRowTag(walker) }, lineSpot)) return true;
+          if (flagged) {
+            // Code text: the +/- or context prefix is the gutter's.
+            const text = (await lineText(file, lineIndex)).slice(1);
+            if (await emitText(text, file, { kind: 'line', tag: findRowTag(walker) }, lineSpot(path, lineIndex))) return true;
+          }
         }
-        const bucket = fileInserts?.take(walker.type, walker.oldLine, walker.newLine);
+        if (fileInserts === undefined) continue;
+        const bucket = fileInserts.take(walker.type, walker.oldLine, walker.newLine);
         if (bucket && await emitInserts(bucket, lineIndex)) return true;
       }
       if (await emitInserts(fileInserts?.takeRest(), lastLine)) return true;

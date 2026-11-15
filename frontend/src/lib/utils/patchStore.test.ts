@@ -575,6 +575,48 @@ describe('packed chunks', () => {
     for (const file of parser.files) expect(file.body.contentKey(), label).toBe(contentKey(file.body.patchText()));
   }
 
+  it('reads lines as stored, never decoded, at any chunking', () => {
+    for (const size of [1, 7, 64, 4096]) {
+      for (const form of ['plain', 'packed'] as const) {
+        const parser = streamed(unicode, size, form);
+        const store = parser.store;
+        const spell = (text: string) => (form === 'packed' ? packText(text) : text);
+        for (let start = 0; start < store.lineCount; start += 3) {
+          for (const end of [start, start + 1, start + 4, store.lineCount]) {
+            const to = Math.min(end, store.lineCount);
+            expect(store.storedRange(start, to), `${form}/${size} ${start}-${to}`).toBe(spell(store.textRange(start, to)));
+          }
+        }
+        // A body's lines of one segment, and where each starts in them.
+        for (const file of parser.files) {
+          const body = file.body;
+          const stored = body.storedRange(0, body.lineCount);
+          for (let index = 0; index < body.lineCount; index += 1) {
+            const at = body.storedLineStart(index) - body.storedLineStart(0);
+            expect(stored.slice(at, at + body.storedLineEnd(index) - body.storedLineStart(index)), `${form}/${size} ${file.path} ${index}`).toBe(spell(body.text(index)));
+          }
+        }
+      }
+    }
+  });
+
+  it('a body reads stored lines one segment at a time', () => {
+    const [changed] = parseReviewFiles([
+      'diff --git a/t b/t', 'deleted file mode 100644', '--- a/t', '+++ /dev/null', '@@ -1,1 +0,0 @@', '-gone',
+      'diff --git a/t b/t', 'new file mode 120000', '--- /dev/null', '+++ b/t', '@@ -0,0 +1,1 @@', '+came', '',
+    ].join('\n'));
+    const body = changed.body;
+    expect(body.segments).toHaveLength(2);
+    const first = body.segmentEnd(0);
+    expect(first).toBe(6);
+    expect(body.segmentEnd(first)).toBe(body.lineCount);
+    expect(body.storedRange(first - 1, first)).toBe('-gone');
+    expect(body.storedRange(first, body.lineCount)).toBe('@@ -0,0 +1,1 @@\n+came');
+    expect(() => body.storedRange(first - 1, first + 1)).toThrow(RangeError);
+    expect(() => body.segmentEnd(body.lineCount)).toThrow(RangeError);
+    expect(() => body.segmentEnd(-1)).toThrow(RangeError);
+  });
+
   it('reads as the plain store does at any chunking and form, cuts inside characters included', () => {
     for (const patch of [unicode, `${unicode}\n`, mixed]) {
       for (const form of ['plain', 'packed', 'plain-first'] as const) {

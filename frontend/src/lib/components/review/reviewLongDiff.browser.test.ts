@@ -28,6 +28,7 @@ import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import { spyScheduling } from '../../../test/helpers/schedulingSpy';
 import { reviewThreadRowSnippet } from '../../../test/helpers/reviewThreadRowSnippet.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { holdReviewFindScans } from '../../../test/helpers/reviewFindHold';
 
 // The diff shows every draft as drafted and no file as an image.
 const NO_MEDIA_HOST = { renderedPaths: new Set<string>() };
@@ -618,11 +619,12 @@ describe('review find over the real list', () => {
 
   it('a recount during a query still scanning keeps the published matches and the shifted line, and a gone match gives way to the next one published', async () => {
     const long = (fill: string, tail: string) => `${fill.repeat(300)} ${tail}`;
-    // The matches sit deep in a large file, so a scan from the start takes
-    // many frames to reach them and more to finish past them.
-    const filler = (from: number) => Array.from({ length: 250_000 }, (_, i) => `filler ${from + i}`);
+    // The matches sit before the scan's first pause (CLOCK_ROWS units) and
+    // the file goes on far past it, so a scan held there has published
+    // them and not reached the end.
+    const filler = (from: number, count: number) => Array.from({ length: count }, (_, i) => `filler ${from + i}`);
     const patchOf = (middle: string[], extra: string[] = []) => {
-      const lines = [...filler(0), ...middle, ...filler(250_000), ...extra, 'zq end'];
+      const lines = [...filler(0, 100), ...middle, ...filler(100, 1000), ...extra, 'zq end'];
       return ['diff --git a/src/big.ts b/src/big.ts', '--- a/src/big.ts', '+++ b/src/big.ts', `@@ -1,${lines.length} +1,${lines.length} @@`, ...lines.map((line) => ` ${line}`), ''].join('\n');
     };
     const lines = ['short', long('w', 'zq one'), long('v', 'zq two'), long('u', 'zq three'), 'tail'];
@@ -651,13 +653,16 @@ describe('review find over the real list', () => {
     const rowText = (hit: ReviewFindHit | undefined) => (hit ? scrollEl.querySelector<HTMLElement>(`[data-find-key="${keyIn(files, hit)}"]`)?.textContent ?? '' : '');
     const shiftedLine = () => [...scrollEl.querySelectorAll<HTMLElement>('[data-testid="review-line-block"] *')].find((el) => el.scrollLeft > 0);
     let sampling = true;
+    const scans = holdReviewFindScans();
     try {
       // Read from the top: the first match is zq one.
       scrollEl.scrollTop = 0;
       await settle(scrollEl);
       openPaneFind('pane-recount');
+      scans.hold();
       setPaneFindQuery('pane-recount', 'zq');
       await waitFor(() => find.hits.length === 3 && shiftedLine() !== undefined, 'the middle matches published');
+      expect(scans.held).toBe(1);
       expect(find.result.pending).toBe(true);
       find.next();
       await waitFor(() => rowText(find.hits[find.result.current]).includes('zq two') && shiftedLine()?.textContent?.includes('zq two') === true, 'the second match shifted');
@@ -671,10 +676,14 @@ describe('review find over the real list', () => {
         requestAnimationFrame(sample);
       };
       requestAnimationFrame(sample);
-      // A content change while the query scans: a recount, with the match surviving.
+      // A content change while the query's scan waits at its pause: a
+      // recount, with the match surviving, which waits at its own.
+      expect(scans.held).toBe(1);
       replace(readFiles(patchOf(lines, ['filler more'])));
       expect(find.result.pending).toBe(true);
+      await waitFor(() => scans.held === 2, 'the recount at a pause');
       for (let i = 0; i < 6; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      expect(scans.held).toBe(2);
       expect(find.result.pending).toBe(true);
       expect(find.hits.map((hit) => hit.identity)).toEqual(published);
       expect(rowText(find.hits[find.result.current])).toContain('zq two');
@@ -686,19 +695,22 @@ describe('review find over the real list', () => {
       replace(readFiles(patchOf(lines.map((text) => (text.includes('zq two') ? long('v', 'no match') : text)), ['filler more'])));
       expect(find.result.pending).toBe(true);
       expect(find.hits.map((hit) => hit.identity)).toEqual(published);
+      await waitFor(() => scans.held === 3, 'the last recount at a pause');
+      scans.release();
       await waitFor(() => !find.result.pending, 'the recount', 1200);
       expect(find.result.count).toBe(3);
       expect(rowText(find.hits[find.result.current])).toContain('zq three');
     } finally {
       sampling = false;
+      scans.restore();
       unmount(finder);
     }
   });
 
-  // A first file on screen, then a large one that keeps a scan going for
-  // many frames.
+  // A first file on screen, then one with enough rows that a held scan
+  // stops at a pause inside it (reviewFindHold.ts).
   const recountPatch = (first: string[]) => {
-    const big = Array.from({ length: 400_000 }, (_, i) => `filler ${i}`);
+    const big = Array.from({ length: 1000 }, (_, i) => `filler ${i}`);
     const file = (path: string, lines: string[]) => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, `@@ -1,${lines.length} +1,${lines.length} @@`, ...lines.map((line) => ` ${line}`)];
     return [...file('src/a.ts', first), ...file('src/big.ts', big), ''].join('\n');
   };
@@ -726,6 +738,7 @@ describe('review find over the real list', () => {
       },
     });
     flushSync();
+    const scans = holdReviewFindScans();
     try {
       const find = getPaneFindProvider('pane-gone') as ReviewFind<ReviewFindHit>;
       scrollEl.scrollTop = 0;
@@ -738,17 +751,22 @@ describe('review find over the real list', () => {
       expect(currentText('pane-gone')).toEqual(['zq']);
       const published = find.hits.map((hit) => hit.identity);
       // The first draft is deleted: its row goes, and the view recounts.
+      scans.hold();
       const rest = drafts.slice(1);
       props.drafts = rest;
       review.drafts = rest;
       review.shownDrafts = rest;
       flushSync();
       await waitFor(() => scrollEl.querySelector(`[data-find-key="${findDraftKey('first')}"]`) === null, 'the row gone');
+      // The recount waits at a pause: begun and not done through these frames.
+      await waitFor(() => scans.held === 1, 'the recount at a pause');
       for (let i = 0; i < 4; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      expect(scans.held).toBe(1);
       expect(find.result.pending).toBe(true);
       expect(find.hits.map((hit) => hit.identity)).toEqual(published);
       expect(find.hits[find.result.current].at).toEqual({ kind: 'draft', commentId: 'first' });
       expect(currentText('pane-gone')).toEqual([]);
+      scans.release();
       await waitFor(() => !find.result.pending, 'the recount', 1200);
       await settle(scrollEl);
       expect(find.result.count).toBe(2);
@@ -758,6 +776,7 @@ describe('review find over the real list', () => {
       expect(range.toString()).toBe('zq');
       expect(range.startContainer.parentElement?.closest(`[data-find-key="${findDraftKey('second')}"]`)).not.toBeNull();
     } finally {
+      scans.restore();
       unmount(finder);
     }
   });
@@ -780,6 +799,7 @@ describe('review find over the real list', () => {
     const find = getPaneFindProvider('pane-edit') as ReviewFind<ReviewFindHit>;
     const shiftedLine = () => [...scrollEl.querySelectorAll<HTMLElement>('[data-testid="review-line-block"] *')].find((el) => el.scrollLeft > 0);
     let sampling = true;
+    const scans = holdReviewFindScans();
     try {
       scrollEl.scrollTop = 0;
       await settle(scrollEl);
@@ -801,16 +821,20 @@ describe('review find over the real list', () => {
       };
       requestAnimationFrame(sample);
       // A line on screen changes: the highlighter sees the rows mutate while
-      // the recount runs.
+      // the recount waits at a pause, begun and not done.
+      scans.hold();
       const files = readFiles(recountPatch(['short', long, 'edited now', 'tail']));
       props.files = files;
       findProps.files = files;
       flushSync();
       await waitFor(edited, 'the edit on screen');
+      await waitFor(() => scans.held === 1, 'the recount at a pause');
       for (let i = 0; i < 6; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      expect(scans.held).toBe(1);
       expect(find.result.pending).toBe(true);
       expect(editSeen).toBe(true);
       expect(new Set(samples)).toEqual(new Set([left]));
+      scans.release();
       await waitFor(() => !find.result.pending, 'the recount', 1200);
       await settle(scrollEl);
       sampling = false;
@@ -818,14 +842,16 @@ describe('review find over the real list', () => {
       expect(new Set(samples)).toEqual(new Set([left]));
     } finally {
       sampling = false;
+      scans.restore();
       unmount(finder);
     }
   });
 
-  // A second file large enough that a scan over it takes many frames.
+  // A file with enough rows that a held scan stops at a pause inside it
+  // (reviewFindHold.ts).
   const bigFiles = (() => {
     let files: ReviewFile[] | null = null;
-    return () => (files ??= readFiles(['diff --git a/src/big.ts b/src/big.ts', '--- a/src/big.ts', '+++ b/src/big.ts', '@@ -1,400000 +1,400000 @@', ...Array.from({ length: 400_000 }, (_, i) => ` filler ${i}`), ''].join('\n')));
+    return () => (files ??= readFiles(['diff --git a/src/big.ts b/src/big.ts', '--- a/src/big.ts', '+++ b/src/big.ts', '@@ -1,1000 +1,1000 @@', ...Array.from({ length: 1000 }, (_, i) => ` filler ${i}`), ''].join('\n')));
   })();
   const onePatch = (path: string, hunk: string, lines: string[]) => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, hunk, ...lines.map((line) => ` ${line}`), ''].join('\n');
   // The row holding the current match's painted range.
@@ -844,7 +870,7 @@ describe('review find over the real list', () => {
   it('a step during the recount a filter starts reveals a match in a later file before the swap', async () => {
     const { props, scrollEl, body } = await mountBody(onePatch('src/a.test.ts', '@@ -1,3 +1,3 @@', ['alpha', 'zq in the test', 'beta']));
     // The later file's match is deep, far below the first.
-    const deep = readFiles(onePatch('src/b.ts', '@@ -1,200001 +1,200001 @@', [...Array.from({ length: 200_000 }, (_, i) => `lead ${i}`), 'zq deep in b']));
+    const deep = readFiles(onePatch('src/b.ts', '@@ -1,3001 +1,3001 @@', [...Array.from({ length: 3000 }, (_, i) => `lead ${i}`), 'zq deep in b']));
     const all = [...readFiles(onePatch('src/a.test.ts', '@@ -1,3 +1,3 @@', ['alpha', 'zq in the test', 'beta'])), ...deep, ...bigFiles()];
     props.files = all;
     await settle(scrollEl);
@@ -855,6 +881,7 @@ describe('review find over the real list', () => {
     });
     const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
     flushSync();
+    const scans = holdReviewFindScans();
     try {
       const find = getPaneFindProvider('pane-hide') as ReviewFind<ReviewFindHit>;
       scrollEl.scrollTop = 0;
@@ -868,12 +895,15 @@ describe('review find over the real list', () => {
       await waitFor(() => onScreen(scrollEl, 'zq deep in b'), 'the later match shown', 600);
       find.previous();
       await waitFor(() => onScreen(scrollEl, 'zq in the test'), 'the first match shown again', 600);
-      // Hide tests: the test file leaves the list, and the view recounts.
+      // Hide tests: the test file leaves the list, and the view recounts;
+      // the recount waits at a pause, short of the later file's match.
+      scans.hold();
       const shown = all.filter((file) => !file.path.endsWith('.test.ts'));
       props.files = shown;
       findProps.files = shown;
       flushSync();
       expect(find.result.pending).toBe(true);
+      await waitFor(() => scans.held === 1, 'the recount at a pause');
       // Enter while it runs: the published next match is the later file's.
       find.next();
       expect(find.hits[find.result.current].path).toBe('src/b.ts');
@@ -884,11 +914,14 @@ describe('review find over the real list', () => {
         return true;
       }, 'the later match on screen', 600);
       expect(pendingWhenShown).toBe(true);
+      expect(scans.held).toBe(1);
+      scans.release();
       await waitFor(() => !find.result.pending, 'the recount', 1200);
       await settle(scrollEl);
       expect([find.result.count, find.result.current]).toEqual([1, 0]);
       expect(onScreen(scrollEl, 'zq deep in b')).toBe(true);
     } finally {
+      scans.restore();
       unmount(finder);
     }
   });
@@ -897,7 +930,7 @@ describe('review find over the real list', () => {
     const fill = (from: number) => Array.from({ length: 300 }, (_, i) => `lead ${from + i}`);
     const lines = (two: string) => ['zq one', ...fill(0), two, ...fill(300), 'zq three'];
     const { props, scrollEl, body } = await mountBody(onePatch('x', '@@ -1 +1 @@', ['x']));
-    // The large file after: a recount runs for many frames past the matches.
+    // A file after, with enough rows that a held recount stops at a pause.
     let files = [...readFiles(onePatch('src/a.ts', '@@ -1,603 +1,603 @@', lines('zq two'))), ...bigFiles()];
     props.files = files;
     await settle(scrollEl);
@@ -908,6 +941,7 @@ describe('review find over the real list', () => {
     });
     const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
     flushSync();
+    const scans = holdReviewFindScans();
     try {
       const find = getPaneFindProvider('pane-lost') as ReviewFind<ReviewFindHit>;
       scrollEl.scrollTop = 0;
@@ -918,12 +952,14 @@ describe('review find over the real list', () => {
       await settle(scrollEl);
       expect(currentRow('pane-lost')?.textContent).toContain('zq one');
       // The second match's line keeps its number and loses its text.
+      scans.hold();
       files = [...readFiles(onePatch('src/a.ts', '@@ -1,603 +1,603 @@', lines('no match here'))), ...bigFiles()];
       props.files = files;
       findProps.files = files;
       flushSync();
       const top = scrollEl.scrollTop;
       expect(find.result.pending).toBe(true);
+      await waitFor(() => scans.held === 1, 'the recount at a pause');
       // Enter during the recount: the published next match is not present.
       find.next();
       expect(find.hits[find.result.current].at).toEqual({ kind: 'line', tag: 'c302:302' });
@@ -931,12 +967,15 @@ describe('review find over the real list', () => {
       expect(find.result.pending).toBe(true);
       expect(scrollEl.scrollTop).toBe(top);
       expect(currentRow('pane-lost')).toBeNull();
+      expect(scans.held).toBe(1);
+      scans.release();
       await waitFor(() => !find.result.pending, 'the recount', 1200);
       // The step was never shown: its survivor is revealed and painted.
       await waitFor(() => onScreen(scrollEl, 'zq three'), 'the survivor on screen', 600);
       expect(find.hits[find.result.current].at).toEqual({ kind: 'line', tag: 'c603:603' });
       await waitFor(() => currentRow('pane-lost')?.textContent?.includes('zq three') === true, 'the survivor painted', 600);
     } finally {
+      scans.restore();
       unmount(finder);
     }
   });
@@ -1192,7 +1231,8 @@ describe('review find over the real list', () => {
     const { props, scrollEl, body } = await mountBody(onePatch('x', '@@ -1 +1 @@', ['x']));
     const host = mounted.at(-1)!.host;
     host.style.width = '360px';
-    // The large file first: a recount reaches the changed one late.
+    // A file first: a held recount waits at a pause inside it, short of
+    // the changed one.
     let files = [...bigFiles(), ...before];
     props.files = files;
     await settle(scrollEl);
@@ -1204,6 +1244,7 @@ describe('review find over the real list', () => {
     const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
     flushSync();
     const shifted = () => [...scrollEl.querySelectorAll<HTMLElement>('[data-testid="review-line-block"] *')].filter((el) => el.scrollLeft > 0);
+    const scans = holdReviewFindScans();
     try {
       const find = getPaneFindProvider('pane-gap') as ReviewFind<ReviewFindHit>;
       scrollEl.scrollTop = 0;
@@ -1214,15 +1255,19 @@ describe('review find over the real list', () => {
       expect(find.hits[find.result.current].at).toEqual({ kind: 'line', tag: 'c100:100' });
       expect(currentRow('pane-gap')?.textContent).toContain('needle hundred');
       // The leading gap opens one line: line 99, also a match, above it.
+      scans.hold();
       files = [...bigFiles(), ...expanded];
       props.files = files;
       findProps.files = files;
       flushSync();
       await waitFor(() => scrollEl.textContent?.includes('needle ninety-nine') === true, 'the expanded line');
+      await waitFor(() => scans.held === 1, 'the recount at a pause');
       for (let i = 0; i < 8; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      expect(scans.held).toBe(1);
       expect(find.result.pending).toBe(true);
       expect(currentRow('pane-gap')?.textContent).toContain('needle hundred');
       expect(shifted().map((line) => line.textContent?.includes('needle hundred'))).toEqual([true]);
+      scans.release();
       await waitFor(() => !find.result.pending, 'the recount', 1200);
       await settle(scrollEl);
       expect(find.result.count).toBe(2);
@@ -1230,6 +1275,7 @@ describe('review find over the real list', () => {
       expect(currentRow('pane-gap')?.textContent).toContain('needle hundred');
       expect(shifted().map((line) => line.textContent?.includes('needle hundred'))).toEqual([true]);
     } finally {
+      scans.restore();
       unmount(finder);
     }
   });

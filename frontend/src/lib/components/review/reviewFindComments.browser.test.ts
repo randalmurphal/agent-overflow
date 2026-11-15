@@ -15,6 +15,7 @@ import { scanReviewFind, type ReviewFindFileSpot, type ReviewFindHit } from '../
 import type { DiffReviewComment, ReviewThread } from '../../types/models';
 import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
+import { holdReviewFindScans } from '../../../test/helpers/reviewFindHold';
 import type { ReviewFind } from '../../stores/reviewFind.svelte';
 
 // The diff shows every draft as drafted and no file as an image.
@@ -194,10 +195,11 @@ describe('review find over a comment its projection misreads', () => {
 
 
 describe('review find\'s current comment match across a recount held open', () => {
-  // A large file after the thread's keeps a recount running for many frames.
+  // A file after the thread's with enough rows that a held recount stops
+  // at a pause inside it (reviewFindHold.ts).
   const BIG = [
-    'diff --git a/src/big.ts b/src/big.ts', '--- a/src/big.ts', '+++ b/src/big.ts', '@@ -1,400000 +1,400000 @@',
-    ...Array.from({ length: 400_000 }, (_, i) => ` filler ${i}`), '',
+    'diff --git a/src/big.ts b/src/big.ts', '--- a/src/big.ts', '+++ b/src/big.ts', '@@ -1,1000 +1,1000 @@',
+    ...Array.from({ length: 1000 }, (_, i) => ` filler ${i}`), '',
   ].join('\n');
   const comments = [
     { authorLogin: 'a', body: 'needle first', createdAt: '', databaseID: 11, id: `n${11}`, viewerCanEdit: false, viewerCanDelete: false },
@@ -230,39 +232,51 @@ describe('review find\'s current comment match across a recount held open', () =
       },
     });
     const find = getPaneFindProvider(key) as ReviewFind<ReviewFindHit>;
+    const scans = holdReviewFindScans();
+    onTestFinished(() => scans.restore());
     openPaneFind(key);
     setPaneFindQuery(key, 'needle');
     await waitFor(() => expect([find.result.count, find.result.pending]).toEqual([3, false]), { timeout: 10_000 });
-    return { host, shown, review, find };
+    return { host, shown, review, find, scans };
   }
 
   it('a deleted earlier comment leaves the current match painted in its own comment', async () => {
-    const { shown, review, find } = await setup('pane-held-delete');
+    const { shown, review, find, scans } = await setup('pane-held-delete');
     find.next();
     find.next();
     await waitFor(() => expect(current('pane-held-delete')).toMatchObject({ text: 'needle', node: 'needle third' }));
+    scans.hold();
     const rest: ReviewThread = { ...thread, comments: comments.slice(1) };
     review.prThreads = [rest];
     review.shownPRThreads = [rest];
     await shown.rerender({ thread: rest, findKeys: true });
     flushSync();
+    // The recount waits at a pause: begun and not done through these frames.
+    await waitFor(() => expect(scans.held).toBe(1));
     for (let i = 0; i < 4; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(scans.held).toBe(1);
     expect(find.result.pending).toBe(true);
     expect(current('pane-held-delete')).toMatchObject({ text: 'needle', node: 'needle third' });
+    scans.release();
     await waitFor(() => expect(find.result.pending).toBe(false), { timeout: 10_000 });
     expect([find.result.count, current('pane-held-delete')?.node]).toEqual([2, 'needle third']);
   });
 
   it('a <details> opened before the current match leaves it painted where it is', async () => {
-    const { host, find } = await setup('pane-held-details');
+    const { host, find, scans } = await setup('pane-held-details');
     find.next();
     await waitFor(() => expect(current('pane-held-details')).toMatchObject({ text: 'needle', row: 'pc:p1:12' }));
     expect(current('pane-held-details')?.node).toContain('after');
+    scans.hold();
     host.querySelector<HTMLElement>('[data-find-key="pc:p1:12"] summary')!.click();
     await waitFor(() => expect(find.result.pending).toBe(true));
+    // The recount waits at a pause: begun and not done through these frames.
+    await waitFor(() => expect(scans.held).toBe(1));
     for (let i = 0; i < 4; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(scans.held).toBe(1);
     expect(find.result.pending).toBe(true);
     expect(current('pane-held-details')?.node).toContain('after');
+    scans.release();
     await waitFor(() => expect(find.result.pending).toBe(false), { timeout: 10_000 });
     expect(find.result.count).toBe(4);
     expect(current('pane-held-details')?.node).toContain('after');

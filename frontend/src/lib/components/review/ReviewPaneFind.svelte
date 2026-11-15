@@ -1,6 +1,14 @@
 <script lang="ts" module>
   /** What the pane shows; `none` while it shows nothing searchable. */
   export type ReviewFindView = 'diff' | 'conflicts' | 'log' | 'none';
+
+  /** The clock the pane's find slices its diff scan by and the turn it
+   * gives the event loop between slices (scanReviewFind's `now` and
+   * `pause`). An object so a browser test can hold a scan at a pause. */
+  export const reviewFindTurn = {
+    now: (): number => performance.now(),
+    pause: (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+  };
 </script>
 
 <script lang="ts">
@@ -89,7 +97,6 @@
   let { findKey, title, review, view, files, root, diff, log }: Props = $props();
 
   const isLogHit = (hit: Hit): hit is CILogFindHit => !('at' in hit);
-  const pause = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   function scroller(): HTMLElement | null {
     return root?.querySelector<HTMLElement>('[data-testid="review-scroll"], [data-testid="review-ci-log-scroll"]') ?? null;
@@ -453,7 +460,8 @@
           seedReviewFindSpot(file, hit, spot);
           context.emit(hit);
         },
-        pause,
+        now: () => reviewFindTurn.now(),
+        pause: () => reviewFindTurn.pause(),
       });
     },
   };

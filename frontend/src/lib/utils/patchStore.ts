@@ -750,8 +750,11 @@ export class PatchStore implements EvictableText {
     return run < end ? out + this.storedRange(run, end) : out;
   }
 
-  // Lines [start, end) as stored, joined with newlines.
-  private storedRange(start: number, end: number): string {
+  /** Lines [start, end) as stored, joined with newlines: not their text.
+   * A packed line is its UTF-8 bytes, one character each, never decoded.
+   * Throws PatchTextNotResident when the store does not hold all of them. */
+  storedRange(start: number, end: number): string {
+    if (end <= start) return '';
     const from = this.storedLineStart(start);
     const to = this.storedLineEnd(end - 1);
     const first = this.chunkOf(start);
@@ -970,6 +973,47 @@ export class PatchBody {
   residentLine(index: number): boolean {
     const { store, line } = this.locate(index);
     return store.resident(line);
+  }
+
+  /** The end of the segment holding line `index`: lines [index, end) are
+   * consecutive lines of one store. */
+  segmentEnd(index: number): number {
+    if (!(index >= 0 && index < this.lineCount)) throw new RangeError(`patch body: line ${index} is not in the body`);
+    let segment = 0;
+    while (segment + 1 < this.bases.length && this.bases[segment + 1] <= index) segment += 1;
+    return this.bases[segment] + this.segments[segment].end - this.segments[segment].start;
+  }
+
+  /** Stored position of a line's first character in its store. Within one
+   * segment, the distance between two lines' positions is their distance
+   * in `storedRange`. A size, not a UTF-16 offset (packed text stores
+   * bytes). */
+  storedLineStart(index: number): number {
+    const { store, line } = this.locate(index);
+    return store.storedLineStart(line);
+  }
+
+  /** Stored position just past a line's last character, as
+   * `storedLineStart` counts. */
+  storedLineEnd(index: number): number {
+    const { store, line } = this.locate(index);
+    return store.storedLineEnd(line);
+  }
+
+  /** Whether the text of lines [start, end) is resident. */
+  residentRange(start: number, end: number): boolean {
+    return this.slice(start, end).every((range) => range.store.residentRange(range.start, range.end));
+  }
+
+  /** Lines [start, end) of one segment (`segmentEnd`) as stored, joined
+   * with newlines: not their text (PatchStore.storedRange), for a filter
+   * that runs over storage. Throws PatchTextNotResident when any is
+   * evicted. */
+  storedRange(start: number, end: number): string {
+    if (end <= start) return '';
+    if (end > this.segmentEnd(start)) throw new RangeError(`patch body: lines ${start}..${end} are not in one segment`);
+    const { store, line } = this.locate(start);
+    return store.storedRange(line, line + end - start);
   }
 
   /** Whether the text of every line is resident. */
