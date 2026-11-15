@@ -42,10 +42,24 @@ func outlivingWorker(t *testing.T, f *requestFixture, lineage bool) threadtools.
 }
 
 // workerStoppedMessages counts the messages threadID holds, queued or taken
-// in, that tell it the user stopped the worker of token.
+// in, that tell it the user stopped the worker of token, and checks that
+// each says the worker is at rest.
 func workerStoppedMessages(t *testing.T, a *App, threadID, token string) int {
 	t.Helper()
-	count := 0
+	texts := workerStoppedTexts(t, a, threadID, token)
+	for _, text := range texts {
+		if !strings.Contains(text, "It is at rest") {
+			t.Fatalf("the message = %q, want it to say the worker is at rest", text)
+		}
+	}
+	return len(texts)
+}
+
+// workerStoppedTexts is the text of each message threadID holds, queued or
+// taken in, that tells it the user stopped the worker of token.
+func workerStoppedTexts(t *testing.T, a *App, threadID, token string) []string {
+	t.Helper()
+	var texts []string
 	ids := []string{workerStoppedSendIDRoot + token}
 	for n := 1; n <= 8; n++ {
 		ids = append(ids, fmt.Sprintf("%s%s:%d", workerStoppedSendIDRoot, token, n))
@@ -65,9 +79,9 @@ func workerStoppedMessages(t *testing.T, a *App, threadID, token string) int {
 		if !strings.Contains(text, "The user stopped thread") {
 			t.Fatalf("the message = %q, want it to say the user stopped the worker", text)
 		}
-		count++
+		texts = append(texts, text)
 	}
-	return count
+	return texts
 }
 
 // continueWorker has a person send the worker a message and waits for it to
@@ -164,6 +178,74 @@ func TestStopsRacingOnOneStoppingOfAWorkerTellTheSpawnerOnce(t *testing.T) {
 	}
 	if got := workerStoppedMessages(t, f.app, f.caller.ID, ack.Token); got != 1 {
 		t.Fatalf("the spawner was told %d times, want once", got)
+	}
+}
+
+// A Stop that stopped the worker but could not bring all of it to rest tells
+// the spawner which parts it could not stop, and does not say it is at rest.
+func TestAStopThatLeftPartOfAWorkerRunningNamesItToTheSpawner(t *testing.T) {
+	t.Parallel()
+	t.Run("here", func(t *testing.T) {
+		t.Parallel()
+		f := newRequestFixture(t)
+		ack := outlivingWorker(t, f, false)
+		unpausableRunReportingTo(t, f.app, ack.ThreadID)
+		stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
+		assertSpawnerToldOfTheUnpausedRun(t, f.app, f.caller.ID, ack.Token, stop, err)
+	})
+	t.Run("on a paired computer", func(t *testing.T) {
+		t.Parallel()
+		pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+		destID, _ := pair.dest.backendIdentity()
+		if _, err := (threadToolsApp{app: pair.dest}).Reply(t.Context(),
+			threadtools.Caller{ThreadID: pair.child, ComputerID: destID, ComputerName: "destination"},
+			threadtools.ReplyCall{Token: pair.spawn.Token, Text: "Started; still at it."}); err != nil {
+			t.Fatalf("Reply there: %v", err)
+		}
+		waitUntil(t, 10*time.Second, func() bool {
+			pair.poll(t)
+			row, found, err := pair.source.store.GetThreadRequest(pair.spawn.Token)
+			return err == nil && found && row.State == store.ThreadRequestReplied
+		})
+		waitUntil(t, 10*time.Second, func() bool {
+			rest, err := pair.dest.workerUnrest(pair.child)
+			return err == nil && rest.unrest == workerRunning
+		})
+		unpausableRunReportingTo(t, pair.dest, pair.child)
+		stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, pair.spawn.Token)
+		assertSpawnerToldOfTheUnpausedRun(t, pair.source, pair.caller.ID, pair.spawn.Token, stop, err)
+	})
+}
+
+// unpausableRunReportingTo stores a running run reporting to threadID that
+// the engine does not hold, which a pause refuses.
+func unpausableRunReportingTo(t *testing.T, a *App, threadID string) {
+	t.Helper()
+	if err := a.store.CreateWorkItem(store.WorkItem{
+		ID: "run-the-engine-lost", ProjectID: defaultTestProjectID, Goal: "lost", WorkflowID: "campaign",
+		WorkflowScope: "shared", State: "running", Source: workflowSourceAgent,
+		OriginThreadID: threadID, CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertSpawnerToldOfTheUnpausedRun checks that stop stopped the worker of
+// token but not the run of unpausableRunReportingTo, and that the spawner
+// was told once, naming the run and not saying the worker is at rest.
+func assertSpawnerToldOfTheUnpausedRun(t *testing.T, a *App, spawnerID, token string, stop ThreadAgentStop, err error) {
+	t.Helper()
+	if err != nil || stop.Outcome != threadAgentStopped || len(stop.Failures) != 1 ||
+		!strings.HasPrefix(stop.Failures[0], "pause its workflow run run-the-engine-lost") {
+		t.Fatalf("Stop = %+v, %v; want the worker stopped with the run named", stop, err)
+	}
+	texts := workerStoppedTexts(t, a, spawnerID, token)
+	if len(texts) != 1 {
+		t.Fatalf("the spawner was told %d times, want once", len(texts))
+	}
+	if !strings.Contains(texts[0], stop.Failures[0]) || strings.Contains(texts[0], "It is at rest") ||
+		strings.Contains(texts[0], "were paused") {
+		t.Fatalf("the message = %q, want it to name %q and not say the worker is at rest", texts[0], stop.Failures[0])
 	}
 }
 

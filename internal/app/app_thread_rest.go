@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 
 	"agent-overflow/internal/errorsx"
@@ -685,9 +686,7 @@ func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, sendID string, re
 		title = thread.Title
 	}
 	origin.Title = title
-	body := fmt.Sprintf("The user stopped thread %q (%s), which you spawned, from the Agents tray after it had answered you; you did not stop it. "+
-		"Its session ended; its queued messages, loops, watches, reminders and requests were cancelled; the workflow runs that report to it were paused; "+
-		"and the threads it spawned were stopped the same way. Nothing it did was undone. A later message starts it again.", title, spawn.TargetThreadID)
+	body := workerStoppedBody(title, spawn.TargetThreadID, result.Failures)
 	err := a.queueAgentNotice(agentNotice{
 		threadID:     spawn.CallerThreadID,
 		sendID:       sendID,
@@ -701,6 +700,20 @@ func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, sendID string, re
 	if err != nil && !errors.Is(err, errThreadArchived) {
 		result.Failures = append(result.Failures, "tell its spawner: "+err.Error())
 	}
+}
+
+// workerStoppedBody is the message telling a spawner the user stopped its
+// worker, from the Stop's failures: at rest when there are none, and
+// otherwise each part the Stop could not bring to rest, named as the Stop's
+// result names it.
+func workerStoppedBody(title, threadID string, failures []string) string {
+	state := "It is at rest, with nothing running or queued; nothing it did was undone."
+	if len(failures) > 0 {
+		state = "These parts of the stop failed and may still be running or queued: " +
+			strings.TrimSuffix(strings.Join(failures, "; "), ".") + "."
+	}
+	return fmt.Sprintf("The user stopped thread %q (%s), which you spawned, from the Agents tray after it had answered you; you did not stop it. %s A later message starts it again.",
+		title, threadID, state)
 }
 
 // stopRemoteAgentRequestBy is stopAgentRequestBy for a target on a paired
