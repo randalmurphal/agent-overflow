@@ -49,6 +49,7 @@ import { createPRPickerState, type PRManageTarget, type PRPickerView } from './p
 import { addErrorToast, addToast } from './toast.svelte';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
+import type { ReviewPRIdentity } from './reviewPRIdentity.svelte';
 import type { PRPerson } from '../types/models';
 import { labelChange, peopleChange, PR_STATE_LABEL, wirePerson, type PRManageRow, type PRStateChange } from '../utils/prManage';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
@@ -57,9 +58,10 @@ import { userFacingError } from '../utils/userFacingError';
 /** What the review pane lends the management state. */
 export interface PRManageHost {
   readonly prRef: PRRef | null;
-  /** The PR's computer-scoped key whatever the scope (computerPRKey of
-   * prRef), or null: the identity the management state belongs to. */
-  readonly identity: string | null;
+  /** The PR the management state belongs to: its `live` key is the PR's
+   * computer-scoped key whatever the scope (computerPRKey of prRef), or
+   * null; its change discards everything. */
+  readonly prIdentity: ReviewPRIdentity;
   /** The PR's computer-scoped key (computerPRKey), whose applied
    * sequence settles a pending action; null outside the PR scope. */
   readonly entityKey: string | null;
@@ -193,14 +195,13 @@ export function createPRManageState(host: PRManageHost): PRManageView {
   const running = new SvelteMap<string, Running>();
   const awaiting = new SvelteMap<string, Await>();
   let operations = 0;
-  // Which PR's management this is: a PR change ends it (discardAll), and
-  // an answer for an earlier one settles nothing. A moment without a PR
-  // is not a change.
-  let epoch = 0;
+  // Which PR's management this is (the identity's epoch): a PR change
+  // ends it (discardAll), and an answer for an earlier one settles
+  // nothing. A moment without a PR is not a change.
   let disposed = false;
 
   const pending = $derived.by<PRManagePending | null>(() => {
-    const key = host.identity;
+    const key = host.prIdentity.live;
     if (key === null) return null;
     const live = running.get(key);
     if (live) return { kind: live.kind, target: live.target };
@@ -214,7 +215,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
   // The PR on screen, to capture when an editor or picker opens.
   function currentTarget(): PRManageTarget | null {
     const ref = host.prRef;
-    const key = host.identity;
+    const key = host.prIdentity.live;
     return ref && key !== null ? { ref, key } : null;
   }
 
@@ -223,7 +224,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
   // closed), `gone` once the pane closed (a toast), else `alive` (its
   // surface, whether or not the PR is on screen this moment).
   function fate(started: number): 'alive' | 'gone' | 'discarded' {
-    if (started !== epoch) return 'discarded';
+    if (started !== host.prIdentity.epoch) return 'discarded';
     return disposed ? 'gone' : 'alive';
   }
 
@@ -259,7 +260,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
       result = await withBackendTarget(host.backend, () => call(on.ref));
     } catch (err) {
       if (running.get(on.key) === op) running.delete(on.key);
-      if (!disposed && on.key === host.identity) host.refresh();
+      if (!disposed && on.key === host.prIdentity.live) host.refresh();
       return { ok: false, err };
     }
     if (running.get(on.key) !== op) return { ok: true };
@@ -307,12 +308,12 @@ export function createPRManageState(host: PRManageHost): PRManageView {
   let title = $state<{ text: string; submitted: boolean; on: PRManageTarget } | null>(null);
   let titleError = $state<PRManageError | null>(null);
   const titleSaving = $derived(pending?.kind === 'edit_title');
-  const titleDraft = $derived(title && title.on.key === host.identity && !(title.submitted && !titleSaving) ? title.text : null);
+  const titleDraft = $derived(title && title.on.key === host.prIdentity.live && !(title.submitted && !titleSaving) ? title.text : null);
 
   let description = $state<{ text: string; expected: string; submitted: boolean; on: PRManageTarget } | null>(null);
   let descriptionError = $state<PRManageError | null>(null);
   const descriptionSaving = $derived(pending?.kind === 'edit_description');
-  const descriptionOpen = $derived(description !== null && description.on.key === host.identity && !(description.submitted && !descriptionSaving));
+  const descriptionOpen = $derived(description !== null && description.on.key === host.prIdentity.live && !(description.submitted && !descriptionSaving));
 
   let detailsOpen = $state(false);
   let rowErrors = $state<Partial<Record<PRManageRow, PRManageError>>>({});
@@ -328,7 +329,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
   let failedDismiss: { reviewId: string; text: string } | null = null;
   let changeRequestError = $state<PRManageError | null>(null);
   const dismissSaving = $derived(pending?.kind === 'dismiss');
-  const dismissDraft = $derived(dismissState && dismissState.on.key === host.identity && !(dismissState.submitted && !dismissSaving)
+  const dismissDraft = $derived(dismissState && dismissState.on.key === host.prIdentity.live && !(dismissState.submitted && !dismissSaving)
     ? { reviewId: dismissState.reviewId, text: dismissState.text }
     : null);
 
@@ -346,10 +347,10 @@ export function createPRManageState(host: PRManageHost): PRManageView {
 
   const picker = createPRPickerState({
     get target() { return currentTarget(); },
-    get identity() { return host.identity; },
+    get identity() { return host.prIdentity.live; },
     get backend() { return host.backend; },
     async apply(row, change, on) {
-      const started = epoch;
+      const started = host.prIdentity.epoch;
       const token = claim(row);
       const wire = row === 'labels' ? labelChange(change.labels) : peopleChange(change.people);
       const outcome = await run(row, '', on, (ref) => {
@@ -369,14 +370,13 @@ export function createPRManageState(host: PRManageHost): PRManageView {
 
   const mergeMessage = createPRMergeMessageState({
     get prRef() { return host.prRef; },
-    get identity() { return host.identity; },
+    get identity() { return host.prIdentity.live; },
     get backend() { return host.backend; },
     get methods() { return host.mergeMethods; },
   });
 
   // The PR on screen became another: drop everything that was its.
   function discardAll(): void {
-    epoch += 1;
     surfaceOwner.clear();
     title = null;
     titleError = null;
@@ -389,16 +389,8 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     picker.discard();
     mergeMessage.discard();
   }
-  let identity: string | null = untrack(() => host.identity);
-  const stopIdentityWatch = $effect.root(() => {
-    $effect(() => {
-      const next = host.identity;
-      // A moment without a PR (git status settling) is not another PR.
-      if (next === null || next === identity) return;
-      const was = identity;
-      identity = next;
-      if (was !== null) untrack(discardAll);
-    });
+  const stopIdentityWatch = host.prIdentity.onChange((from) => {
+    if (from !== null) discardAll();
   });
 
   return {
@@ -431,7 +423,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
         return;
       }
       titleError = null;
-      const started = epoch;
+      const started = host.prIdentity.epoch;
       const outcome = await run('edit_title', '', draft.on, (ref) => EditPR(prReferenceWire(ref), { title: text }));
       const where = fate(started);
       if (where === 'discarded') return;
@@ -470,7 +462,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
       // The description the editor opened with is the precondition: a
       // description changed since is refused, and the editor stays open
       // with the backend's sentence.
-      const started = epoch;
+      const started = host.prIdentity.epoch;
       const outcome = await run('edit_description', '', draft.on, (ref) => EditPR(prReferenceWire(ref), { description: draft.text, expectedDescription: draft.expected }));
       const where = fate(started);
       if (where === 'discarded') return;
@@ -491,7 +483,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     async setState(state: PRStateChange): Promise<void> {
       const on = currentTarget();
       if (!on) return;
-      const started = epoch;
+      const started = host.prIdentity.epoch;
       const outcome = await run(state, '', on, (ref) => SetPRState(prReferenceWire(ref), state));
       if (fate(started) !== 'discarded' && !outcome.ok) toastFailure(state, outcome);
     },
@@ -499,7 +491,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
       const on = currentTarget();
       if (!on) return;
       const person = wirePerson(reviewer);
-      const started = epoch;
+      const started = host.prIdentity.epoch;
       const token = claim('reviewers');
       setRowError('reviewers', null);
       const outcome = await run('rerequest', reviewer.login, on, (ref) => RerequestPRReview(prReferenceWire(ref), person));
@@ -529,7 +521,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
       if (!draft || dismissDraft === null || dismissSaving) return;
       const message = draft.text.trim();
       if (message === '') return;
-      const started = epoch;
+      const started = host.prIdentity.epoch;
       const token = claim('changes');
       changeRequestError = null;
       const outcome = await run('dismiss', draft.reviewId, draft.on, (ref) => DismissPRReview(prReferenceWire(ref), draft.reviewId, message));
@@ -551,7 +543,7 @@ export function createPRManageState(host: PRManageHost): PRManageView {
     async bypass(): Promise<void> {
       const on = currentTarget();
       if (!on) return;
-      const started = epoch;
+      const started = host.prIdentity.epoch;
       const token = claim('changes');
       changeRequestError = null;
       const outcome = await run('bypass', '', on, (ref) => BypassPRRequestedChanges(prReferenceWire(ref)));

@@ -814,6 +814,16 @@ fake forge on desktop and compact.
 - A fork PR (head in another repository) shows readiness and merge like
   any other; the branch delete toggle is absent since the branch is not
   the project's.
+- The PR under a thread's review becomes another (a branch checkout, or
+  the branch's PR merging and a new one opening). The review summary and
+  verdict, a submit's failure or lost answer, a merge action in flight,
+  the "Comment…" field and a sent comment's open edit belong to the PR
+  they were for: the new PR shows its own, the earlier PR's come back
+  when the pane is back on it, and an answer settles the PR it was for.
+  A comment of the earlier PR waiting for its frame closes as answered.
+  A moment without a PR (git status settling) is not another PR. PR
+  management discards its editors instead ("Managing a PR"), as
+  reactions and suggestion applies do their failures.
 
 ### Reading the diff
 

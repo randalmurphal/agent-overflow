@@ -48,6 +48,7 @@ import { parseReviewFiles, sourceHash, type ReviewFile } from '../utils/patchPar
 import { keptText } from '../utils/patchStore';
 import { buildReviewRows, REVIEW_COMMIT_CARD_ROW_KEY } from '../utils/reviewRows';
 import { RANGE_LINE_NOT_IN_PR } from './reviewRangeComments';
+import { commentWriteKey } from './reviewCommentWrites.svelte';
 import {
   getSpansForReviewLine,
   resetDiffSpanCacheForTest,
@@ -5983,5 +5984,259 @@ describe('reviewPane store — runs of a PR\'s commits', () => {
     expect(whole.mock.calls.length).toBe(before + 1);
     state.dismissCommitSelectionLost();
     expect(state.commitSelectionLost).toBe(false);
+  });
+});
+
+describe('reviewPane store — the PR under the pane changing', () => {
+  // The workspace's open PR is what moves under a pane: a checkout of
+  // another branch, or the branch's PR merging and a new one opening.
+  // null is a moment without one (git status settling).
+  function onPR(number: number | null): void {
+    seedPaneWorkspaceStatus('pane-1', number === null
+      ? { forge: 'github', openPrUrl: '', openPrNumber: 0 }
+      : { forge: 'github', openPrUrl: `https://github.com/owner/repo/pull/${number}`, openPrNumber: number });
+    flushSync();
+  }
+
+  function hello(capabilities: string[]): void {
+    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities, backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+  }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  function installTwoPRs(): void {
+    installPRMocks();
+    setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
+      id: `sub-${pr.Number}`,
+      prKey: `github:owner/repo:${pr.Number}`,
+      detail: prDetailStub({ number: pr.Number, url: `https://github.com/owner/repo/pull/${pr.Number}`, headSHA: `sha-${pr.Number}` }),
+      threads: [],
+      headSHA: `sha-${pr.Number}`,
+      seq: 1,
+    }));
+  }
+
+  async function prPane(): Promise<ReturnType<typeof reviewStateForPane>> {
+    installTwoPRs();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    state.setSubmitTarget('pr');
+    return state;
+  }
+
+  // The pane on PR `number`, its diff loaded.
+  async function switchTo(state: ReturnType<typeof reviewStateForPane>, number: number): Promise<void> {
+    onPR(number);
+    expect(state.prRef?.number).toBe(number);
+    await state.reload();
+    await waitLoaded(state);
+    expect(state.prHeadSHA).toBe(`sha-${number}`);
+  }
+
+  const POSTED = { postedReview: true, postedFileComments: 0, posted: true };
+
+  afterEach(() => __setTransportHelloForTest(null));
+
+  it('shows another PR nothing typed, picked or refused for the first, and gives the first its own back', async () => {
+    hello(['pr-review-drafts.v1']);
+    const state = await prPane();
+    const submit = setBindingMock('SubmitPRReview', async () => {
+      throw new TransportError('forge_refused', 'The forge refused the review.');
+    });
+    state.setSummaryBody('for five');
+    state.setVerdict('request-changes');
+    await expect(state.submitPRReview()).rejects.toBeInstanceOf(TransportError);
+    expect(state.submitError).toBe('The forge refused the review.');
+
+    await switchTo(state, 7);
+    expect(state.summaryBody).toBe('');
+    expect(state.verdict).toBe('comment');
+    expect(state.submitError).toBeNull();
+    expect(state.sendStripShown).toBe(false);
+    // Send on #7 carries only what was given for #7.
+    submit.mockImplementation(async () => POSTED);
+    state.setVerdict('approve');
+    await state.submitPRReview();
+    expect(submit).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 7 }), expect.objectContaining({ verdict: 'approve', body: '' }));
+    expect(state.verdict).toBe('comment');
+
+    await switchTo(state, 5);
+    expect(state.summaryBody).toBe('for five');
+    expect(state.verdict).toBe('request-changes');
+    expect(state.submitError).toBe('The forge refused the review.');
+    expect(state.sendStripShown).toBe(true);
+  });
+
+  it('keeps the review through a moment without a PR, and not into the next PR', async () => {
+    installTwoPRs();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    state.setSummaryBody('for five');
+    state.setVerdict('approve');
+    onPR(null);
+    expect(state.prRef).toBeNull();
+    expect(state.summaryBody).toBe('for five');
+    onPR(5);
+    expect(state.summaryBody).toBe('for five');
+    expect(state.verdict).toBe('approve');
+    onPR(null);
+    onPR(7);
+    expect(state.summaryBody).toBe('');
+    expect(state.verdict).toBe('comment');
+    onPR(5);
+    expect(state.summaryBody).toBe('for five');
+  });
+
+  for (const outcome of ['posted', 'refused'] as const) {
+    it(`a review in flight when the PR changes holds nothing of the next PR's and settles its own (${outcome})`, async () => {
+      hello(['pr-review-drafts.v1']);
+      const state = await prPane();
+      const first = deferred<typeof POSTED>();
+      const submit = setBindingMock('SubmitPRReview', (pr: { Number: number }) => (pr.Number === 5 ? first.promise : Promise.resolve(POSTED)));
+      state.setSummaryBody('for five');
+      state.setVerdict('approve');
+      const sending = state.submitPRReview();
+      expect(state.sendingComments).toBe(true);
+
+      await switchTo(state, 7);
+      expect(state.sendingComments).toBe(false);
+      expect(state.sendStripShown).toBe(false);
+      state.setSummaryBody('for seven');
+      state.setVerdict('approve');
+      if (outcome === 'posted') first.resolve(POSTED);
+      else first.reject(new TransportError('forge_refused', 'The forge refused the review.'));
+      await (outcome === 'posted' ? sending : expect(sending).rejects.toBeInstanceOf(TransportError));
+      // #5's answer lands on #5: #7's summary, verdict, failure and the
+      // pane's error are untouched.
+      expect(state.summaryBody).toBe('for seven');
+      expect(state.verdict).toBe('approve');
+      expect(state.submitError).toBeNull();
+      expect(state.error).toBeNull();
+
+      await state.submitPRReview();
+      expect(submit).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 7 }), expect.objectContaining({ verdict: 'approve', body: 'for seven' }));
+
+      await switchTo(state, 5);
+      expect(state.summaryBody).toBe(outcome === 'posted' ? '' : 'for five');
+      expect(state.verdict).toBe(outcome === 'posted' ? 'comment' : 'approve');
+      expect(state.submitError).toBe(outcome === 'posted' ? null : 'The forge refused the review.');
+    });
+  }
+
+  it('asks about a review whose answer was lost only on its own PR', async () => {
+    hello(['pr-review-drafts.v1']);
+    const state = await prPane();
+    const submit = setBindingMock('SubmitPRReview', async (pr: { Number: number }) => {
+      if (pr.Number === 5) throw new DisconnectedError('socket closed');
+      return POSTED;
+    });
+    const ask = setBindingMock('GetPRReviewSubmitOutcome', async () => {
+      throw new DisconnectedError('socket closed');
+    });
+    state.setSummaryBody('for five');
+    await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+    expect(state.submitError).toContain('Send asks again');
+    expect(ask).toHaveBeenCalledTimes(1);
+
+    await switchTo(state, 7);
+    expect(state.submitError).toBeNull();
+    expect(state.sendStripShown).toBe(false);
+    state.setVerdict('approve');
+    await state.submitPRReview();
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 7 }), expect.objectContaining({ verdict: 'approve' }));
+
+    await switchTo(state, 5);
+    expect(state.submitError).toContain('Send asks again');
+    ask.mockImplementation(async () => ({ state: 'posted', result: POSTED }));
+    await state.submitPRReview();
+    expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 5 }), attemptOf(submit, 0));
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(state.summaryBody).toBe('');
+  });
+
+  it('a merge action in flight on one PR does not hold the next PR\'s', async () => {
+    const state = await prPane();
+    const first = deferred<{ seq: number }>();
+    const approve = setBindingMock('ApprovePR', (pr: { Number: number }) => (pr.Number === 5 ? first.promise : Promise.resolve({ seq: 0 })));
+    const approving = state.approvePR();
+    expect(state.mergeAction).toBe('approve');
+
+    await switchTo(state, 7);
+    expect(state.mergeAction).toBeNull();
+    await state.approvePR();
+    expect(approve).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 7 }), 'sha-7');
+    first.resolve({ seq: 0 });
+    await approving;
+    expect(state.mergeAction).toBeNull();
+  });
+
+  describe('the PR comment field', () => {
+    beforeEach(() => hello(['pr-comment-actions.v1']));
+
+    it('belongs to its PR, and a comment waiting for its frame is released by the switch', async () => {
+      const state = await prPane();
+      const post = setBindingMock('PostPRComment', async (pr: { Number: number }) => ({ seq: pr.Number === 5 ? 9 : 0, commentId: `c-${pr.Number}` }));
+      state.sentComments.setPRCommentOpen(true);
+      state.sentComments.setPRCommentBody('to five');
+      await state.sentComments.postPRComment();
+      expect(state.commentWritePending(commentWriteKey.prComment)).toBe(true);
+
+      await switchTo(state, 7);
+      expect(state.commentWritePending(commentWriteKey.prComment)).toBe(false);
+      expect(state.sentComments.prCommentOpen).toBe(false);
+      expect(state.sentComments.prCommentBody).toBe('');
+      state.sentComments.setPRCommentOpen(true);
+      state.sentComments.setPRCommentBody('to seven');
+      await state.sentComments.postPRComment();
+      expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 7 }), 'to seven');
+      expect(state.sentComments.prCommentOpen).toBe(false);
+
+      // #5's comment was taken: back on #5 its field is done, not waiting.
+      await switchTo(state, 5);
+      expect(state.commentWritePending(commentWriteKey.prComment)).toBe(false);
+      expect(state.sentComments.prCommentOpen).toBe(false);
+      expect(state.sentComments.prCommentBody).toBe('');
+    });
+
+    for (const outcome of ['taken', 'refused'] as const) {
+      it(`a comment answered after the switch settles on its own PR (${outcome})`, async () => {
+        const state = await prPane();
+        const first = deferred<{ seq: number; commentId: string }>();
+        setBindingMock('PostPRComment', (pr: { Number: number }) => (pr.Number === 5 ? first.promise : Promise.resolve({ seq: 0, commentId: 'c-7' })));
+        state.sentComments.setPRCommentOpen(true);
+        state.sentComments.setPRCommentBody('to five');
+        const posting = state.sentComments.postPRComment();
+
+        await switchTo(state, 7);
+        expect(state.commentWritePending(commentWriteKey.prComment)).toBe(false);
+        state.sentComments.setPRCommentOpen(true);
+        state.sentComments.setPRCommentBody('to seven');
+        if (outcome === 'taken') first.resolve({ seq: 9, commentId: 'c-5' });
+        else first.reject(new TransportError('forge_refused', 'The forge refused the comment.'));
+        await posting;
+        expect(state.commentWritePending(commentWriteKey.prComment)).toBe(false);
+        expect(state.commentWriteError(commentWriteKey.prComment)).toBeNull();
+        expect(state.sentComments.prCommentOpen).toBe(true);
+        expect(state.sentComments.prCommentBody).toBe('to seven');
+
+        await switchTo(state, 5);
+        expect(state.commentWritePending(commentWriteKey.prComment)).toBe(false);
+        if (outcome === 'taken') {
+          expect(state.sentComments.prCommentOpen).toBe(false);
+          expect(state.sentComments.prCommentBody).toBe('');
+        } else {
+          expect(state.sentComments.prCommentOpen).toBe(true);
+          expect(state.sentComments.prCommentBody).toBe('to five');
+          expect(state.commentWriteError(commentWriteKey.prComment)).toBe('The forge refused the comment.');
+        }
+      });
+    }
   });
 });

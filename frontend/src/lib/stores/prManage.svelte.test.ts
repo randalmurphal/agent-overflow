@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { createPRManageState, type PRManageHost, type PRManageView } from './prManage.svelte';
+import { createReviewPRIdentity } from './reviewPRIdentity.svelte';
 import { PICKER_SEARCH_DEBOUNCE_MS } from './prManagePicker.svelte';
 import { getToasts, resetToastsForTest } from './toast.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -41,7 +42,7 @@ function makeHost() {
   });
   const lent: PRManageHost = {
     get prRef() { return host.prRef; },
-    get identity() { return host.identity; },
+    prIdentity: createReviewPRIdentity(() => host.identity),
     get entityKey() { return host.entityKey; },
     get mergeMethods() { return host.mergeMethods; },
     get appliedSeq() { return host.appliedSeq; },
