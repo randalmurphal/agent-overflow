@@ -5,11 +5,14 @@ package app
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/power"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/providerdiscoveryapp"
+	"agent-overflow/internal/settings"
 )
 
 // detachTestProcessHome is TestMain's half of the isolation: no test in this
@@ -32,6 +35,25 @@ func TestTheTestProcessHomeIsDetached(t *testing.T) {
 	}
 	if home != isolation.Home {
 		t.Fatalf("UserHomeDir() = %q, want the detached process home %q", home, isolation.Home)
+	}
+}
+
+// A fixture's App that outlives its settings directory reads every setting
+// at its default. Its provider binaries are then the fixture's poison, never
+// a bare name an exec would resolve on PATH.
+func TestAFixtureWithoutItsSettingsResolvesNoProviderOnPath(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	if err := os.RemoveAll(app.configDir); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.currentSettings().CodexBinaryPath; got != settings.DefaultSettings.CodexBinaryPath {
+		t.Fatalf("settings without their directory read codexBinaryPath %q, want the default", got)
+	}
+	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
+		if got := app.providerBinaryPath(name); !filepath.IsAbs(got) {
+			t.Fatalf("providerBinaryPath(%s) = %q at the default setting, want the fixture's poisoned binary", name, got)
+		}
 	}
 }
 
@@ -61,6 +83,11 @@ func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	if _, err := app.settings.Update(kerneltest.ProviderBinarySettings(isolation.PoisonedBinary)); err != nil {
 		t.Fatalf("poison provider binary settings: %v", err)
 	}
+	// A setting at its default, including every setting once the fixture's
+	// settings directory is removed, runs the poison rather than a bare name
+	// on PATH. Tests of default resolution clear it
+	// (resetProviderBinarySettings, putCodexOnPath).
+	app.defaultProviderBinaryOverride = isolation.PoisonedBinary
 	// A test that restores the default `codex` setting must not have it
 	// resolved to the developer's installed native binary. Tests of that
 	// resolution install their own lookup over this.

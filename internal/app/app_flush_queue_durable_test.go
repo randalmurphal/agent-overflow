@@ -34,6 +34,7 @@ func TestRegisterQueueItemWritesItsDurableRowFirst(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
+	holdFlushQueue(app)
 	queued, err := app.RegisterQueueItem(context.Background(), thread.ID, "queued follow-up", SendMessageOptions{
 		SendID:        "send-abc",
 		AttachmentIDs: []string{"att-1"},

@@ -280,7 +280,12 @@ func (a *App) startUnattendedWork() error {
 	// surface "claude not found" / "codex too old" before the user opens
 	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
 	// (up to 5s per provider) and we never want that blocking app startup.
-	go a.probeStartupProviderStatuses()
+	// Shutdown joins it through startupProbeWG.
+	a.startupProbeWG.Add(1)
+	go func() {
+		defer a.startupProbeWG.Done()
+		a.probeStartupProviderStatuses()
+	}()
 
 	// Probe authenticated account info (planType, subscription) for both
 	// providers. Separate goroutine because the account probe spawns a

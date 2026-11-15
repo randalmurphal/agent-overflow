@@ -225,8 +225,9 @@ type App struct {
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
-	// startupProbeWG joins the startup account probes and the Claude probe's
-	// retry loop (probeStartupAccountInfo).
+	// startupProbeWG joins the startup provider status probe, the startup
+	// account probes and the Claude probe's retry loop
+	// (probeStartupAccountInfo), and the provider binary watcher.
 	startupProbeWG sync.WaitGroup
 	// permissionModeFollowWG joins the goroutines that move a thread onto
 	// the permission mode Claude moved to (followClaudePermissionMode).
@@ -799,6 +800,13 @@ type App struct {
 	// no longer repoint a spawn at a real claude/codex binary. Set once
 	// before Start; never mutated afterwards.
 	providerBinaryOverride string
+	// defaultProviderBinaryOverride, when non-empty, is what a provider
+	// binary setting left at its default runs, in place of the bare name
+	// resolved on PATH. Test fixtures point it at their poisoned binary
+	// (isolateE2EProviderSpawns), so a default read after the fixture's
+	// settings directory is gone cannot reach an installed CLI. Production
+	// leaves it empty. Set before the App is used.
+	defaultProviderBinaryOverride string
 	// fileKeychainOverride makes initStores build Credentials with the
 	// file-backed Keychain stand-in instead of security(1). Harness mode
 	// sets it because a redirected $HOME isolates every file store but

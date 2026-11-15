@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,6 +40,41 @@ func noSessionQueueThread(t *testing.T, app *App, name string) (store.Thread, st
 	}
 	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
 	return thread, capture
+}
+
+// The session start a queued message makes runs on the dispatch worker. The
+// fixture joins that worker when its test ends, as Shutdown does, so the
+// start never runs against a test whose directories are gone.
+func TestTheFixtureJoinsTheDispatchWorkerAtCleanup(t *testing.T) {
+	t.Parallel()
+	var finished atomic.Bool
+	t.Run("queue", func(t *testing.T) {
+		app := newTestAppWithStore(t)
+		thread := testThread("joined-dispatch")
+		if err := app.store.CreateThread(thread); err != nil {
+			t.Fatal(err)
+		}
+		started := make(chan struct{})
+		app.startSessionFn = func(string) error {
+			close(started)
+			// Long enough that an unjoined worker is still here when the
+			// subtest's cleanups have run.
+			time.Sleep(300 * time.Millisecond)
+			finished.Store(true)
+			return nil
+		}
+		if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "start me", SendMessageOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-started:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the dispatch worker never started the session")
+		}
+	})
+	if !finished.Load() {
+		t.Fatal("the dispatch worker was still starting a session after its test's cleanups ran")
+	}
 }
 
 // holdFlushQueue keeps queued messages in triage's queue, where a test stages

@@ -106,7 +106,10 @@ func TestQueueAdmitsAttachmentAndRevisionCommentOnlyInput(t *testing.T) {
 			if err := app.store.CreateThread(thread); err != nil {
 				t.Fatal(err)
 			}
-			// Queue admission retains references; dispatch resolves their content.
+			// Queue admission retains references; dispatch resolves their
+			// content. Held, so the dispatch worker does not start the
+			// thread's session and take the row.
+			holdFlushQueue(app)
 			if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "", tc.opts); err != nil {
 				t.Fatal(err)
 			}

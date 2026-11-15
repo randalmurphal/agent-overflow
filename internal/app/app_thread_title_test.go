@@ -734,6 +734,7 @@ func TestGeneratedThreadTitle_RoutesToClaudeWhenConfigured(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+	resetProviderBinarySettings(t, app)
 	if _, err := app.settings.Update(map[string]any{
 		"textGenerationProvider": "claude",
 	}); err != nil {

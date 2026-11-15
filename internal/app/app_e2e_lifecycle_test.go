@@ -299,26 +299,29 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 		}
 	})
 
-	joinThreadRequestWorkAtCleanup(t, app)
+	joinBackgroundWorkAtCleanup(t, app)
 
 	return app, bus
 }
 
-// joinThreadRequestWorkAtCleanup ends the App's thread request work when
-// the test ends, as Shutdown does. A settlement or a wake delivery runs on
-// its own goroutine and can start a session. One that outlived the test
-// would read the settings file after its directory is removed, where the
-// provider binaries are the bare defaults on PATH.
+// joinBackgroundWorkAtCleanup ends the App's session-starting background
+// work when the test ends, as Shutdown does: thread request settlements and
+// wake deliveries, and the flush dispatch workers that start a session for a
+// message queued without one. Work that outlived the test would run against
+// its removed directories and closed store.
 //
 // Call it after the fixture's other cleanups are registered, so it runs
 // before the store closes and before sessions are torn down.
-func joinThreadRequestWorkAtCleanup(t *testing.T, app *App) {
+func joinBackgroundWorkAtCleanup(t *testing.T, app *App) {
 	t.Helper()
 	t.Cleanup(func() {
 		if app.appCancel != nil {
 			app.appCancel()
 		}
 		app.threadRequestsWG.Close()
+		if err := app.drainFlushDispatch(context.Background(), 30*time.Second); err != nil {
+			t.Errorf("join flush dispatch workers: %v", err)
+		}
 	})
 }
 

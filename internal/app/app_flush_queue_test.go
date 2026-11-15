@@ -3041,7 +3041,11 @@ func TestGetQueueState_ReturnsSnapshot(t *testing.T) {
 		t.Errorf("empty queue should return nil, got %+v", got)
 	}
 
-	q, _ := app.RegisterQueueItem(context.Background(), thread.ID, "snapshot me", SendMessageOptions{})
+	holdFlushQueue(app)
+	q, err := app.RegisterQueueItem(context.Background(), thread.ID, "snapshot me", SendMessageOptions{})
+	if err != nil {
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
 
 	snap, err := app.GetQueueState(thread.ID)
 	if err != nil {

@@ -58,6 +58,7 @@ func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
 		}
 	})
 
+	joinBackgroundWorkAtCleanup(t, app)
 	return app, bus, dbDir
 }
 
