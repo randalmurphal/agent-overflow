@@ -1528,8 +1528,10 @@ there, directly or through that computer's own spawn lineage (the
 spawn's receipt there, which the retention floor keeps while that thread
 or one up to four spawns below it has open work):
 `agent_rows` over `ThreadToolQuery` lists that thread's own Agents rows
-to the nesting depth left, so the caller nests them under its spawn named
-by their computer, and `agent_stop` over `ThreadToolCall` runs a Stop's
+to the nesting depth left, and says whether that thread is not at rest
+(`worker`), so the caller nests them under its spawn named by their
+computer and keeps the spawn open while its thread works there
+([owned workers](standing-agents.md#owned-workers)), and `agent_stop` over `ThreadToolCall` runs a Stop's
 cascade there, for the whole thread (its Backgrounded items, its turn and
 its own rows) or for one nested row by token. A request inside that
 lineage is cancelled with its wake disarmed. A forwarded spawn, send or

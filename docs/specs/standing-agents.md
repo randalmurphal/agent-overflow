@@ -715,6 +715,29 @@ Ruling 36, as built:
   owner again retries it, however deep, without repeating any archived
   thread's own cleanup.
   The sidebar's archive says so in a toast that archives them again.
+- A spawn's Agents row follows its worker's lifetime, not only its
+  request's: it is open while its request is open or the thread the spawn
+  made is not at rest, whatever its placement. Not at rest is an active
+  turn, queued sends or an open prompt (`triage.LiveStateSnapshotForThread`),
+  answered in one place (`workerUnrest`); a later source, such as running
+  background work or armed wakes, is one more case there. The app keeps
+  the spawned threads not at rest in memory (`liveWorkers`), each with
+  its spawn link, and re-evaluates a thread (`noteWorkerLiveness`) when
+  its turn starts or completes, a prompt opens or resolves, its session
+  dies or its queue changes; a deleted thread is forgotten. After a
+  restart nothing is live until a turn starts or a message is queued. A
+  thread only sent to is no worker: a send's row follows its request.
+- An open row whose request settled shows its worker's state (`running`,
+  `blocked`, `queued`; `ThreadAgentRow.worker`), its activity or blocked
+  line and Stop, and keeps its answer in its digest. It is counted once
+  per worker however many requests went to that thread, on the toggle and
+  in the worker summaries, kept past the linger and the settled window,
+  left out of Past, and framed to its spawner and the threads above it
+  when it changes. Once the worker rests the row is in Past: at once when
+  its request settled outside the settled window, after the linger
+  otherwise. A paired computer's `agent_rows` answer carries whether the
+  spawn's thread there is not at rest, and the sweep keeps asking while
+  it is (`thread_requests.nested_open`).
 
 ### Sidebar
 
@@ -1232,8 +1255,8 @@ call's own stamp, so the settled row reads the same on any later day.
 #### Agents segment
 
 The other threads a thread is waiting on get a segment of their own after
-Background: the `users-round` icon, `Agents`, a count of open rows and
-incoming messages, and its own `Stop All`. Every thread with rows, open
+Background: the `users-round` icon, `Agents`, a count of the workers its
+open rows go to, each once, and incoming messages, and its own `Stop All`. Every thread with rows, open
 or past, shows it, a standing agent's pane included, and so does a
 thread whose read of either failed. With nothing open the toggle shows
 no count, as Background, which hides at zero, never shows one. It
@@ -1263,10 +1286,12 @@ closes up their spacing so the row holds at a phone width.
 - **Nesting.** A spawned thread's own rows nest under its row, as provider
   subagents nest under theirs, four levels deep; a row at the bound whose
   thread has agents of its own says so. A settled spawn stays listed while
-  anything nested under it within the bound is open, here or, by the last
+  its worker or anything nested under it within the bound is open, here or, by the last
   `agent_rows` answer, on a paired computer. The listing holds at most 128
   rows and says when it left some out.
-- **Lifetime.** An open row stays. A settled row stays for 8 s
+- **Lifetime.** An open row stays: its request is open, or its spawn's
+  worker is not at rest ([Owned workers](#owned-workers)). Any other row
+  stays for 8 s
   (`AGENT_ROW_SETTLED_LINGER_MS`) from when the pane first saw it settled,
   then leaves the open rows; it is in Past from when it settled, and
   while Past is expanded and lists it, it is listed there alone, unless
@@ -1366,7 +1391,8 @@ closes up their spacing so the row holds at a phone width.
   shown or stopped.
 - **Live updates.** The backend sends `thread:agent_rows_changed` after
   every change to a request, to the target a running request works in,
-  and to a wait parked on one, coalesced off the emit path: one statement
+  to a wait parked on one, and to a worker not at rest, through its spawn
+  link, coalesced off the emit path: one statement
   names the callers of a batch. The frame names the caller and the
   request and carries no row, and is sent again, with the same request, to
   each thread up to three spawns above the caller, whose listing nests
@@ -1390,7 +1416,8 @@ closes up their spacing so the row holds at a phone width.
   read, the listed rows in one, the targets' titles and providers in one,
   their last messages in one. Each thread's rows are read by caller in
   five arms, open, settled inside the window, local spawns kept for
-  stored open work, local spawns kept only for a parked call below them,
+  stored open work, local spawns kept only for a parked call or a worker
+  not at rest at or below their targets,
   and remote spawns with open work, each through its own index and
   each taking at most the row limit, and the recursion stops at the limit,
   so the cost follows the listed rows and the depth, not the threads'
@@ -1403,7 +1430,9 @@ closes up their spacing so the row holds at a phone width.
   on it. A parked call lives in memory and arms its wake only when its
   wait ends, so the counts hold the armed part and each read climbs the
   spawns above the parked requests it is given, a spawn a step: a worker's
-  quiet wait lists, and counts, under its owner as under itself. A thread is reached by at most one local spawn, so
+  quiet wait lists, and counts, under its owner as under itself. The
+  workers not at rest are memory too, and each read climbs from their
+  spawn links the same way. A thread is reached by at most one local spawn, so
   a read of named rows climbs from each row to the listed thread, one
   spawn a step, and gives each row the listing's place, wherever it falls
   against the row limit; the rows and their targets are read for those
@@ -1419,16 +1448,17 @@ closes up their spacing so the row holds at a phone width.
   every other row carries neither, a row a paired computer listed
   included.
 - **Past.** Below the open and incoming rows, one Past row with the
-  count of the thread's settled rows; expanding it lists them newest
+  count of the thread's settled rows, less spawns whose workers are not
+  at rest; expanding it lists them newest
   first, 8 and then 20 more per "Show N more…", each with the open
   row's layout and digest, no Stop, and when it settled in place of the
   elapsed time. Collapsed, the pane holds only the count, read as a page
   of one row when the thread opens; it reads again after a reconnect or
   a lost frame, on a frame naming the thread and no row the list holds,
   when a row of the thread's own the list shows settles, so a row that
-  settles is counted and first in Past without a reload, and on a frame
-  about a settled row the list holds that the open list's next read does
-  not supply. A settled row of the thread's own that an open-list read
+  settles or whose worker rests is counted and first in Past without a
+  reload, and on a frame about a settled row the list holds that the open
+  list's next read does not supply. A settled row of the thread's own that an open-list read
   supplies (a late reply while it lingers) is taken into Past from that
   read. Reads and Show in Sidebar are ordered by when each started: a
   page read never shows a row older than an open-list row or a placement
@@ -1452,19 +1482,21 @@ closes up their spacing so the row holds at a phone width.
   cursor (settled time and token) through
   `idx_thread_requests_caller_settled` in index order, never offset or
   sorted; the total counts the caller's settled rows, which the
-  retention floor bounds. A spawn past the floor is listed as its lineage
+  retention floor bounds, less the spawn links of workers not at rest. A spawn past the floor is listed as its lineage
   row, with no answer.
-- **Worker summaries.** `GetThreadWorkerSummary` counts the open rows of
-  the thread's listing, nested ones included, read as a pane reads it,
-  and those whose blocked fields say they wait on the user: the row's
-  own open and needs-you rule (`ThreadAgentRow.open`, `needsYou`). The
+- **Worker summaries.** `GetThreadWorkerSummary` counts the workers the
+  open rows of the thread's listing go to, nested ones included, read as
+  a pane reads it, each thread once however many of its requests are
+  open, and those whose blocked fields say they wait on the user: the
+  row's own open and needs-you rule (`ThreadAgentRow.open`, `needsYou`). The
   count reads each row's state and what it is blocked on, and none of
   the text a row shows: no answer head, target names or last messages.
   `ListThreadWorkerSummaries` summarizes one page of 64 of the threads
   whose listing may hold an open row, in id order after a cursor, found
   from the open work only: callers of open requests the listing shows,
   local spawns whose counts hold open work below them or that sit above
-  a parked call, and remote spawns that last reported open work. Its
+  a parked call or a worker not at rest, and remote spawns that last
+  reported open work. Its
   `next` is the page's last thread, empty on the last page. A frame
   naming a thread is the cue to read its summary again.
 
