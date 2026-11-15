@@ -1107,6 +1107,51 @@ func TestGitHubListOpenPRsReadsPastForks(t *testing.T) {
 	}
 }
 
+// A checkout of a fork finds the pull requests it opened in the fork's
+// parent: those whose head is the fork's branch, not another fork's or the
+// parent's own branch of the same name. Its merged heads add the parent's
+// merges from the fork. A repository that is no fork sends nothing more.
+func TestGitHubForkCheckoutFindsItsUpstreamPRs(t *testing.T) {
+	t.Parallel()
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		upstream := call.Vars["owner"] == "acme"
+		switch {
+		case call.Op == "OpenPRsByHead" && !upstream:
+			return githubData(`{"repository":{"id":"R_fork","parent":{"owner":{"login":"acme"},"name":"repo"},"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}`)
+		case call.Op == "OpenPRsByHead":
+			return githubData(`{"repository":{"id":"R_acme","parent":null,"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
+				`{"id":"PR_other","url":"https://github.com/acme/repo/pull/1","number":1,"title":"Other fork","state":"OPEN","isCrossRepository":true,"headRepository":{"id":"R_other"}},` +
+				`{"id":"PR_mine","url":"https://github.com/acme/repo/pull/2","number":2,"title":"Mine","state":"OPEN","baseRefName":"main","isCrossRepository":true,"headRepository":{"id":"R_fork"}},` +
+				`{"id":"PR_theirs","url":"https://github.com/acme/repo/pull/3","number":3,"title":"Upstream's own","state":"OPEN","isCrossRepository":false,"headRepository":{"id":"R_acme"}}]}}}`)
+		case call.Op == "MergedPRs" && !upstream:
+			return githubData(`{"repository":{"id":"R_fork","parent":{"owner":{"login":"acme"},"name":"repo"},"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"headRefName":"local","headRefOid":"aaa","url":"https://github.com/alice/repo/pull/1","headRepository":{"id":"R_fork"}}]}}}`)
+		case call.Op == "MergedPRs":
+			return githubData(`{"repository":{"id":"R_acme","parent":null,"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
+				`{"headRefName":"feature","headRefOid":"bbb","url":"https://github.com/acme/repo/pull/9","headRepository":{"id":"R_fork"}},` +
+				`{"headRefName":"feature","headRefOid":"ccc","url":"https://github.com/acme/repo/pull/8","headRepository":{"id":"R_other"}},` +
+				`{"headRefName":"gone","headRefOid":"ddd","url":"https://github.com/acme/repo/pull/7","headRepository":null}]}}}`)
+		}
+		return forgeUnexpected(t, call)
+	})
+	cwd := t.TempDir()
+	seedForgeCacheGitHubOrigin(t, core, cwd, "https://github.com/alice/repo.git")
+	pulls, err := core.ListOpenPRs(t.Context(), cwd, "feature")
+	if err != nil || len(pulls) != 1 || pulls[0] != (GitPR{ID: "PR_mine", URL: "https://github.com/acme/repo/pull/2", Number: 2, Title: "Mine", State: "open", BaseBranch: "main"}) {
+		t.Fatalf("ListOpenPRs = %+v, %v; want the fork's PR in acme/repo alone", pulls, err)
+	}
+	if sent := calls.all(); len(sent) != 2 || sent[0].Vars["owner"] != "alice" || sent[1].Vars["owner"] != "acme" || sent[1].Vars["name"] != "repo" || sent[1].Vars["head"] != "feature" {
+		t.Fatalf("requests = %+v", sent)
+	}
+	heads, err := core.ListMergedPRHeads(t.Context(), cwd, 50)
+	want := []MergedPRHead{{HeadRefName: "local", HeadOid: "aaa", URL: "https://github.com/alice/repo/pull/1"}, {HeadRefName: "feature", HeadOid: "bbb", URL: "https://github.com/acme/repo/pull/9"}}
+	if err != nil || !slices.Equal(heads, want) {
+		t.Fatalf("ListMergedPRHeads = %+v, %v; want %+v", heads, err, want)
+	}
+	if sent := calls.all()[3]; sent.Vars["owner"] != "acme" || sent.Vars["first"] != float64(50) {
+		t.Fatalf("parent merged read = %+v", sent.Vars)
+	}
+}
+
 // An open-PR read the forge refuses is the transport's status error, and
 // a head with no open PR is an empty answer, not an error.
 func TestGitHubListOpenPRsAnswers(t *testing.T) {

@@ -932,10 +932,35 @@ func ghOpenPRsByHead(e *Engine, c *call, v graphQLVars) response {
 		}
 		nodes = append(nodes, map[string]any{
 			"id": p.NodeID, "url": githubPullURL(r, p), "number": p.Number, "title": p.Title, "state": "OPEN",
-			"baseRefName": p.BaseRef, "isCrossRepository": p.HeadRepo != "",
+			"baseRefName": p.BaseRef, "isCrossRepository": p.HeadRepo != "", "headRepository": e.githubHeadRepository(r, p),
 		})
 	}
-	return graphQLData(map[string]any{"repository": map[string]any{"pullRequests": graphQLConnection(nodes, offset, githubGraphQLPageSize)}})
+	repository := e.githubRepoParent(r)
+	repository["pullRequests"] = graphQLConnection(nodes, offset, githubGraphQLPageSize)
+	return graphQLData(map[string]any{"repository": repository})
+}
+
+// githubRepoParent is a repository's node id and the parent it is a fork
+// of (Repo.Parent), null for none. Callers hold mu.
+func (e *Engine) githubRepoParent(r *Repo) map[string]any {
+	var parent any
+	if r.Parent != "" {
+		owner, name, _ := strings.Cut(r.Parent, "/")
+		parent = map[string]any{"owner": map[string]any{"login": owner}, "name": name}
+	}
+	return map[string]any{"id": githubRepoNodeID(r), "parent": parent}
+}
+
+// githubHeadRepository is a pull's head repository: its own, or the fork
+// its headRepo names, by node id. Callers hold mu.
+func (e *Engine) githubHeadRepository(r *Repo, p *Pull) map[string]any {
+	if p.HeadRepo == "" {
+		return map[string]any{"id": githubRepoNodeID(r)}
+	}
+	if fork := e.repoOn("github", r.Host, p.HeadRepo); fork != nil {
+		return map[string]any{"id": githubRepoNodeID(fork)}
+	}
+	return map[string]any{"id": "R_ao" + strconv.FormatInt(p.headRepoID, 10)}
 }
 
 // ghPRStates answers pull requests by node id, at most 100, each resolved
@@ -1009,10 +1034,12 @@ func ghMergedPRs(e *Engine, c *call, v graphQLVars) response {
 	nodes := []map[string]any{}
 	for i := range r.Pulls {
 		if p := &r.Pulls[i]; p.State == "merged" {
-			nodes = append(nodes, map[string]any{"headRefName": p.HeadRef, "headRefOid": p.HeadSHA, "url": githubPullURL(r, p)})
+			nodes = append(nodes, map[string]any{"headRefName": p.HeadRef, "headRefOid": p.HeadSHA, "url": githubPullURL(r, p), "headRepository": e.githubHeadRepository(r, p)})
 		}
 	}
-	return graphQLData(map[string]any{"repository": map[string]any{"pullRequests": graphQLConnection(nodes, offset, first)}})
+	repository := e.githubRepoParent(r)
+	repository["pullRequests"] = graphQLConnection(nodes, offset, first)
+	return graphQLData(map[string]any{"repository": repository})
 }
 
 // graphQLLast is the page of at most last nodes before the before offset

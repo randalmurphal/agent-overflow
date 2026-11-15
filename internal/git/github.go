@@ -103,20 +103,42 @@ func (f *githubForge) githubOriginRepo(cwd string) (client *forgeapi.Client, own
 	return client, owner, repo, nil
 }
 
+// githubRepoParentRaw is a repository's node id and the repository it
+// was forked from (null for one that is no fork). A checkout of a fork
+// opens its pull requests in that parent, from a head in the fork.
+type githubRepoParentRaw struct {
+	ID     string `json:"id"`
+	Parent *struct {
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name string `json:"name"`
+	} `json:"parent"`
+}
+
+// githubHeadRepoRaw is a pull request's head repository, null when it was
+// deleted.
+type githubHeadRepoRaw struct {
+	ID string `json:"id"`
+}
+
 // githubOpenPRsQuery finds open pull requests by head branch name. The
 // filter matches a fork's branch of the same name too, so each node says
-// whether its head is in another repository.
+// whose repository its head is in.
 const githubOpenPRsQuery = `query OpenPRsByHead($owner: String!, $name: String!, $head: String!, $after: String) {
   repository(owner: $owner, name: $name) {
+    id parent { owner { login } name }
     pullRequests(headRefName: $head, states: [OPEN], first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id url number title state baseRefName isCrossRepository }
+      nodes { id url number title state baseRefName isCrossRepository headRepository { id } }
     }
   }
 }`
 
 // ListOpenPRs returns the open pull requests whose head is the given
-// branch of cwd's origin repository itself. A fork's pull request from a
+// branch of cwd's origin repository itself: those opened in the origin
+// from its own branch, and, when the origin is a fork, those opened in
+// its parent from the fork's branch. A pull request from another fork's
 // branch of the same name is not one: it is someone else's work.
 func (f *githubForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error) {
 	if strings.TrimSpace(head) == "" {
@@ -126,29 +148,53 @@ func (f *githubForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 	if err != nil {
 		return nil, err
 	}
+	origin, pulls, err := githubOpenPRsByHead(ctx, client, owner, repo, head, func(_ string, crossRepository bool) bool { return !crossRepository })
+	if err != nil || origin.Parent == nil {
+		return pulls, err
+	}
+	_, upstream, err := githubOpenPRsByHead(ctx, client, origin.Parent.Owner.Login, origin.Parent.Name, head, func(headRepo string, _ bool) bool { return headRepo == origin.ID })
+	if err != nil {
+		return nil, err
+	}
+	return append(pulls, upstream...), nil
+}
+
+// githubOpenPRsByHead reads owner/name's open pull requests from a head
+// branch named head, keeping those keep accepts by their head
+// repository's node id and whether it is another repository, beside the
+// repository's id and parent.
+func githubOpenPRsByHead(ctx context.Context, client *forgeapi.Client, owner, name, head string, keep func(headRepo string, crossRepository bool) bool) (githubRepoParentRaw, []GitPR, error) {
+	var repository githubRepoParentRaw
 	pulls := []GitPR{}
 	var after any
 	for pages := 0; pages < githubReadMaxPages; pages++ {
 		var raw struct {
 			Repository *struct {
+				githubRepoParentRaw
 				PullRequests struct {
 					PageInfo githubPageInfo `json:"pageInfo"`
 					Nodes    []struct {
 						GitPR
-						IsCrossRepository bool `json:"isCrossRepository"`
+						IsCrossRepository bool               `json:"isCrossRepository"`
+						HeadRepository    *githubHeadRepoRaw `json:"headRepository"`
 					} `json:"nodes"`
 				} `json:"pullRequests"`
 			} `json:"repository"`
 		}
-		vars := map[string]any{"owner": owner, "name": repo, "head": head, "after": after}
+		vars := map[string]any{"owner": owner, "name": name, "head": head, "after": after}
 		if _, err := client.GraphQL(ctx, "OpenPRsByHead", githubOpenPRsQuery, vars, &raw); err != nil {
-			return nil, err
+			return githubRepoParentRaw{}, nil, err
 		}
 		if raw.Repository == nil {
-			return nil, fmt.Errorf("GitHub answered no repository %s/%s", owner, repo)
+			return githubRepoParentRaw{}, nil, fmt.Errorf("GitHub answered no repository %s/%s", owner, name)
 		}
+		repository = raw.Repository.githubRepoParentRaw
 		for _, node := range raw.Repository.PullRequests.Nodes {
-			if node.IsCrossRepository {
+			headRepo := ""
+			if node.HeadRepository != nil {
+				headRepo = node.HeadRepository.ID
+			}
+			if !keep(headRepo, node.IsCrossRepository) {
 				continue
 			}
 			pr := node.GitPR
@@ -163,24 +209,26 @@ func (f *githubForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 		}
 		after = page.EndCursor
 	}
-	return pulls, nil
+	return repository, pulls, nil
 }
 
 // githubMergedPRsQuery lists merged pull requests, most recently updated
-// first.
+// first, each with its head repository.
 const githubMergedPRsQuery = `query MergedPRs($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
+    id parent { owner { login } name }
     pullRequests(states: [MERGED], first: $first, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
-      nodes { headRefName headRefOid url }
+      nodes { headRefName headRefOid url headRepository { id } }
     }
   }
 }`
 
 // ListMergedPRHeads fetches up to limit recently merged PRs' head
-// coordinates, 100 per request. Recency-bounded by limit: old merges fall
-// off the window, which prune surfaces as "no merged PR found" rather
-// than an error.
+// coordinates, 100 per request: the origin's, and when the origin is a
+// fork, those among its parent's latest limit whose head was in the
+// fork. Recency-bounded by limit: old merges fall off the window, which
+// prune surfaces as "no merged PR found" rather than an error.
 func (f *githubForge) ListMergedPRHeads(ctx context.Context, cwd string, limit int) ([]MergedPRHead, error) {
 	if limit <= 0 {
 		return nil, errors.New("merged PR list limit must be positive")
@@ -189,38 +237,65 @@ func (f *githubForge) ListMergedPRHeads(ctx context.Context, cwd string, limit i
 	if err != nil {
 		return nil, err
 	}
+	origin, heads, err := githubMergedPRHeads(ctx, client, owner, repo, limit, func(string) bool { return true })
+	if err != nil || origin.Parent == nil {
+		return heads, err
+	}
+	_, upstream, err := githubMergedPRHeads(ctx, client, origin.Parent.Owner.Login, origin.Parent.Name, limit, func(headRepo string) bool { return headRepo == origin.ID })
+	if err != nil {
+		return heads, err
+	}
+	return append(heads, upstream...), nil
+}
+
+// githubMergedPRHeads reads owner/name's latest limit merged pull
+// requests, newest first, keeping those keep accepts by their head
+// repository's node id, beside the repository's id and parent.
+func githubMergedPRHeads(ctx context.Context, client *forgeapi.Client, owner, name string, limit int, keep func(headRepo string) bool) (githubRepoParentRaw, []MergedPRHead, error) {
+	var repository githubRepoParentRaw
 	heads := make([]MergedPRHead, 0, min(limit, githubReadPageSize))
 	var after any
-	for len(heads) < limit {
+	for read := 0; read < limit; {
 		var raw struct {
 			Repository *struct {
+				githubRepoParentRaw
 				PullRequests struct {
 					PageInfo githubPageInfo `json:"pageInfo"`
 					Nodes    []struct {
-						HeadRefName string `json:"headRefName"`
-						HeadRefOid  string `json:"headRefOid"`
-						URL         string `json:"url"`
+						HeadRefName    string             `json:"headRefName"`
+						HeadRefOid     string             `json:"headRefOid"`
+						URL            string             `json:"url"`
+						HeadRepository *githubHeadRepoRaw `json:"headRepository"`
 					} `json:"nodes"`
 				} `json:"pullRequests"`
 			} `json:"repository"`
 		}
-		vars := map[string]any{"owner": owner, "name": repo, "first": min(limit-len(heads), githubReadPageSize), "after": after}
+		vars := map[string]any{"owner": owner, "name": name, "first": min(limit-read, githubReadPageSize), "after": after}
 		if _, err := client.GraphQL(ctx, "MergedPRs", githubMergedPRsQuery, vars, &raw); err != nil {
-			return nil, err
+			return githubRepoParentRaw{}, nil, err
 		}
 		if raw.Repository == nil {
-			return nil, fmt.Errorf("GitHub answered no repository %s/%s", owner, repo)
+			return githubRepoParentRaw{}, nil, fmt.Errorf("GitHub answered no repository %s/%s", owner, name)
 		}
-		for _, row := range raw.Repository.PullRequests.Nodes {
-			heads = append(heads, MergedPRHead{HeadRefName: row.HeadRefName, HeadOid: row.HeadRefOid, URL: row.URL})
+		repository = raw.Repository.githubRepoParentRaw
+		nodes := raw.Repository.PullRequests.Nodes
+		read += len(nodes)
+		for _, row := range nodes {
+			headRepo := ""
+			if row.HeadRepository != nil {
+				headRepo = row.HeadRepository.ID
+			}
+			if keep(headRepo) {
+				heads = append(heads, MergedPRHead{HeadRefName: row.HeadRefName, HeadOid: row.HeadRefOid, URL: row.URL})
+			}
 		}
 		page := raw.Repository.PullRequests.PageInfo
-		if !page.HasNextPage || page.EndCursor == "" {
+		if len(nodes) == 0 || !page.HasNextPage || page.EndCursor == "" {
 			break
 		}
 		after = page.EndCursor
 	}
-	return heads, nil
+	return repository, heads, nil
 }
 
 // SubmitReview posts the review with its line and range comments, then

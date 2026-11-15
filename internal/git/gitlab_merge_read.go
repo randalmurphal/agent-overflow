@@ -32,6 +32,13 @@ const gitlabCacheMax = 256
 
 // gitlabProjectSettings is the subset of projects/P the merge options read.
 type gitlabProjectSettings struct {
+	// ID and ForkedFrom are the project's id and, for a fork, the project
+	// it was forked from, where a fork checkout's merge requests open
+	// (ListOpenPRs).
+	ID         int64 `json:"id"`
+	ForkedFrom *struct {
+		ID int64 `json:"id"`
+	} `json:"forked_from_project"`
 	MergeMethod                               string `json:"merge_method"`
 	SquashOption                              string `json:"squash_option"`
 	RemoveSourceBranchAfterMerge              bool   `json:"remove_source_branch_after_merge"`

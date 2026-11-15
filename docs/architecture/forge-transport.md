@@ -426,7 +426,17 @@ only PRs whose head is the origin repository: GitHub
 `githubReadMaxPages` pages of 100), GitLab merge requests whose
 `source_project_id` is their `project_id` (the full view, since the simple
 one lacks it; paged by 100 until one is found, at most
-`gitlabOpenMRsMaxPages` pages). A branch with no
+`gitlabOpenMRsMaxPages` pages). An origin that is a fork opens its PRs in
+its parent, so the lookup also reads the parent's: GitHub's
+`OpenPRsByHead` answer names the origin's `id` and `parent`, and the
+parent's nodes count when their `headRepository.id` is the origin's;
+GitLab reads the parent only when the origin has no merge request of its
+own, from `projects/P`'s `id` and `forked_from_project` (the merge
+settings read, cached per login for `gitlabCacheTTL`), keeping merge
+requests whose `source_project_id` is the origin's. `ListMergedPRHeads`
+adds, the same way, the parent's latest `limit` merges whose head was
+the origin; a failed parent read answers the origin's heads beside the
+error. A branch with no
 `refs/remotes/origin/<branch>` has no PR, so it is answered without a
 forge request. An answer is cached for `prLookupTTL` (30s), a "no open PR"
 included and never longer. A failed lookup is retried after 20s, doubling

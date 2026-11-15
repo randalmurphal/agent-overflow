@@ -690,6 +690,51 @@ func TestPullListsResolveTheCheckoutsOrigin(t *testing.T) {
 	}
 }
 
+// A checkout of a fork finds the pull request it opened in the fork's
+// parent, through the app's forge code on both forges: the one whose head
+// is the fork, not another fork's branch of the same name. Its merged
+// heads add the parent's merges from the fork.
+func TestForkCheckoutsFindTheirUpstreamPulls(t *testing.T) {
+	sha := strings.Repeat("f", 40)
+	pulls := func(fork string) []forgefake.Pull {
+		return []forgefake.Pull{
+			{Number: 1, Title: "Other fork", HeadRef: "feature", HeadRepo: "zed/" + fork, HeadSHA: strings.Repeat("1", 40)},
+			{Number: 2, Title: "Mine", HeadRef: "feature", HeadRepo: "alice/" + fork, HeadSHA: strings.Repeat("2", 40)},
+			{Number: 3, Title: "Merged", State: "merged", HeadRef: "done", HeadRepo: "alice/" + fork, HeadSHA: sha},
+		}
+	}
+	r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "acme/forked", Pulls: pulls("forked")},
+		{Forge: "github", Project: "alice/forked", Parent: "acme/forked"},
+		{Forge: "gitlab", Project: "grp/forked", Pulls: pulls("forked")},
+		{Forge: "gitlab", Project: "alice/forked", Parent: "grp/forked"},
+	}})
+	for _, tc := range []struct{ origin, url string }{
+		{"git@github.com:alice/forked.git", "https://github.com/acme/forked/pull/2"},
+		{"https://gitlab.com/alice/forked.git", "https://gitlab.com/grp/forked/-/merge_requests/2"},
+	} {
+		dir := t.TempDir()
+		for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", tc.origin}} {
+			if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		open, err := r.core.ListOpenPRs(t.Context(), dir, "feature")
+		if err != nil || len(open) != 1 || open[0].URL != tc.url || open[0].State != "open" {
+			t.Fatalf("%s ListOpenPRs = %+v, %v; want %s", tc.origin, open, err, tc.url)
+		}
+		merged, err := r.core.ListMergedPRHeads(t.Context(), dir, 10)
+		if err != nil || len(merged) != 1 || merged[0].HeadRefName != "done" || merged[0].HeadOid != sha {
+			t.Fatalf("%s ListMergedPRHeads = %+v, %v", tc.origin, merged, err)
+		}
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Fatalf("unimplemented invocation: %+v", inv)
+		}
+	}
+}
+
 // The merged-PR detection reads the state and merge time of tracked pulls in
 // one request per repository: GitHub by the node id the open-PR lookup
 // reported, GitLab by iid. A pull the forge no longer resolves is absent.

@@ -85,10 +85,7 @@ func (e *Engine) gitlabMRJSON(r *Repo, p *Pull) map[string]any {
 	if p.CI != nil {
 		pipeline = gitlabPipelineJSON(r, p.CI)
 	}
-	source := r.ID
-	if p.HeadRepo != "" {
-		source = p.headRepoID
-	}
+	source := e.headRepoID(r, p)
 	var mergedAt, closedAt, mergeCommit, squashCommit any
 	mergedBy, closedBy, mergeUser := "", "", ""
 	switch p.State {
@@ -298,8 +295,13 @@ func glabProjectRead(e *Engine, c *call, m []string) response {
 		return fail
 	}
 	settings := r.Merge
+	var forkedFrom any
+	if parent := e.repoOn("gitlab", r.Host, r.Parent); r.Parent != "" && parent != nil {
+		forkedFrom = map[string]any{"id": parent.ID, "path_with_namespace": parent.Project}
+	}
 	return glabOK(jsonResponse(map[string]any{
 		"id":                                    r.ID,
+		"forked_from_project":                   forkedFrom,
 		"full_name":                             r.Project,
 		"path_with_namespace":                   r.Project,
 		"merge_method":                          settings.MergeMethod,
@@ -543,10 +545,7 @@ func (e *Engine) gitlabMRListItem(r *Repo, p *Pull) map[string]any {
 	if p.MergedAt != "" {
 		mergedAt = p.MergedAt
 	}
-	source := r.ID
-	if p.HeadRepo != "" {
-		source = p.headRepoID
-	}
+	source := e.headRepoID(r, p)
 	return map[string]any{
 		"iid":               p.Number,
 		"project_id":        r.ID,

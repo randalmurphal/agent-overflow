@@ -71,6 +71,11 @@ type Repo struct {
 	Organization bool     `json:"organization,omitempty"`
 	Labels       []Label  `json:"labels,omitempty"`
 	ServerLacks  []string `json:"serverLacks,omitempty"`
+	// Parent is the project this repository is a fork of, seeded on the
+	// same host: a checkout of the fork opens its pull requests there
+	// (GitHub's parent, GitLab's forked_from_project), and a pull there
+	// whose headRepo names this repository has it as its head repository.
+	Parent string `json:"parent,omitempty"`
 	// TokenCannotRead is what the viewer's fine-grained GitHub token may
 	// not read: "checks" (check runs) and "actions" (their workflow runs).
 	// A PR read selecting one answers it null with a FORBIDDEN error
@@ -683,6 +688,9 @@ func (r *Repo) normalize(ids *idSource) error {
 			}
 			pull.headRepoID = ids.next()
 		}
+	}
+	if r.Parent != "" && (!strings.Contains(r.Parent, "/") || strings.EqualFold(r.Parent, r.Project)) {
+		return fmt.Errorf("parent %q is not another repository's path", r.Parent)
 	}
 	if err := r.normalizePipelines(ids); err != nil {
 		return err

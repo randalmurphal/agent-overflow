@@ -91,8 +91,11 @@ func TestForgeListReadsTakeAPageOverTheDefaultBodyBound(t *testing.T) {
 		t.Parallel()
 		page := overDefault(t, pageOf(100, gitlabMR))
 		core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-			if strings.HasPrefix(call.Path, gitlabTestProject+"/merge_requests?") {
+			switch {
+			case strings.HasPrefix(call.Path, gitlabTestProject+"/merge_requests?"):
 				return forgeAPIAnswer{Body: page}
+			case call.Path == gitlabTestProject:
+				return forgeAPIAnswer{Body: `{"id":10}`}
 			}
 			return forgeUnexpected(t, call)
 		})

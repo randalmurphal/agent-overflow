@@ -303,6 +303,8 @@ export interface ForgeRepo {
   labels?: { name: string; color?: string; id?: string }[];
   /** GitLab: what an older server lacks. */
   serverLacks?: ('rereview' | 'overrideRequestedChanges' | 'operationMode' | 'awardEmoji')[];
+  /** The project this one is a fork of, seeded on the same host: a checkout of the fork opens its pull requests there. */
+  parent?: string;
   /** GitHub: what the viewer's fine-grained token cannot read in a PR read. */
   tokenCannotRead?: ('checks' | 'actions')[];
 }
