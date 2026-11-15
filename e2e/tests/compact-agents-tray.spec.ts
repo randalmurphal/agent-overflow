@@ -5,18 +5,24 @@
 // its own line above the state, elapsed time and touch-sized actions; a
 // row's digest opens in place; a tap on Stop cascades as a click does
 // on desktop; and the stopped row leaves for Past, whose rows fit the same
-// way with touch-sized Open in Agent Pane and Show in Sidebar.
+// way with touch-sized Open in Agent Pane and Show in Sidebar. Failed reads
+// of the list and of Past fit with touch-sized Retry, which reads them; an
+// ask's Past row is the thread asked with its provider; and an assistant's
+// helper row, open and past, has Open in Agent Pane and no Show in Sidebar.
 import type { Locator } from '@playwright/test';
 
 import { test, expect } from './fixtures.js';
-import { awaitGate, type ProviderName } from './thread-tools-helpers.js';
+import { advanceGate, awaitGate, type ProviderName } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
 import {
+  ASKED,
   CHILD,
+  HELPER,
   LEAD,
   agentRow,
   agentsBody,
   approvalTool,
+  failAgentReads,
   ledgerRow,
   mockInterrupt,
   openAgentRow,
@@ -24,6 +30,8 @@ import {
   openPast,
   pastRow,
   seedAgentsTree,
+  seedAssistantWithHelper,
+  seedPastWithAsk,
   startTree,
 } from './agents-tray-helpers.js';
 
@@ -97,5 +105,57 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(past.getByTestId('agent-tray-row-stop')).toHaveCount(0);
     await expectFits(past, width, ['agent-tray-row-details', 'agent-tray-row-open-pane', 'agent-tray-row-show-in-sidebar']);
     await capture(page, `agents-${provider}-compact-past.png`, agentsBody(page));
+  });
+
+  test(`${provider}: a failed read fits a phone with a touch-sized Retry, and Past then shows an ask as the thread asked`, async ({ harness, page }) => {
+    test.setTimeout(240_000);
+    const { askToken } = await seedPastWithAsk(harness, provider, `compact-agents-fail-${provider}`);
+    const reads = await failAgentReads(page);
+    await harness.open(page);
+    await openAgents(page, LEAD);
+    const width = page.viewportSize()!.width;
+    const body = agentsBody(page);
+    const error = body.getByTestId('activity-rail-agents-error');
+    await expect(error.getByTestId('row-error-msg')).toContainText('Could not read agents:', { timeout: 30_000 });
+    const pastError = body.getByTestId('activity-rail-agents-past-error');
+    await expect(pastError).toBeVisible();
+    for (const [region, retry] of [[error, 'activity-rail-agents-error-retry'], [pastError, 'activity-rail-agents-past-error-retry']] as const) {
+      const box = (await region.getByTestId(retry).boundingBox())!;
+      expect(box.height, retry).toBeGreaterThanOrEqual(36);
+      expect(box.x + box.width, retry).toBeLessThanOrEqual(width);
+    }
+    await capture(page, `agents-${provider}-compact-read-failed.png`, body);
+
+    reads.failing = false;
+    await error.getByTestId('activity-rail-agents-error-retry').tap();
+    await pastError.getByTestId('activity-rail-agents-past-error-retry').tap();
+    await expect(error).toHaveCount(0);
+    await expect(pastError).toHaveCount(0);
+    await openPast(page);
+    const ask = pastRow(page, askToken);
+    await expect(ask.getByTestId('agent-tray-row-title')).toHaveText(ASKED);
+    await expect(ask.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', provider);
+    await expectFits(ask, width, ['agent-tray-row-details', 'agent-tray-row-open-pane']);
+    await capture(page, `agents-${provider}-compact-ask.png`, body);
+  });
+
+  test(`${provider}: an assistant's helper row fits a phone with Open in Agent Pane and no Show in Sidebar`, async ({ harness, page }) => {
+    test.setTimeout(240_000);
+    const { home, token } = await seedAssistantWithHelper(harness, provider, `compact-agents-helper-${provider}`);
+    const hold = await awaitGate(harness, 'helper-hold', home);
+    await harness.open(page);
+    await openAgents(page, LEAD);
+    const width = page.viewportSize()!.width;
+    const row = openAgentRow(page, token);
+    await expect(row.getByTestId('agent-tray-row-title')).toHaveText(HELPER, { timeout: 30_000 });
+    await expect(row.getByTestId('agent-tray-row-show-in-sidebar')).toHaveCount(0);
+    await expectFits(row, width, ['agent-tray-row-stop', 'agent-tray-row-open-pane']);
+    await capture(page, `agents-${provider}-compact-helper.png`, agentsBody(page));
+    await advanceGate(harness, hold.mockId, 'helper-hold');
+    await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText('1', { timeout: 30_000 });
+    await openPast(page);
+    const past = pastRow(page, token);
+    await expect(past.getByTestId('agent-tray-row-show-in-sidebar')).toHaveCount(0);
+    await expectFits(past, width, ['agent-tray-row-open-pane']);
   });
 }

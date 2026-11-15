@@ -8,10 +8,14 @@
 // copy answered, lingers, leaves and is first in Past with its answer in
 // the digest and a count that moved without a reload; a stopped worker
 // joins Past; Open in Agent Pane opens a past worker beside the thread, an
-// archived one included, and an ask's row the thread that was asked; Show
-// in Sidebar gives an owned worker its sidebar row and goes; and a worker's
-// question routes to the ordinary thread that spawned it, whose row says
-// so, and no prompt waits on the user.
+// archived one included, and an ask's row the thread that was asked, which
+// the row names with its provider, open and past; Show in Sidebar gives an
+// owned worker its sidebar row and goes; with nothing open the toggle
+// counts nothing; failed reads of the list and of Past say so with Retry,
+// which reads them; an assistant's helper offers no Show in Sidebar, open
+// or past, opens beside the assistant, and once settled is listed under
+// Past alone; and a worker's question routes to the ordinary thread that
+// spawned it, whose row says so, and no prompt waits on the user.
 import { test, expect, type SeedResult } from './fixtures.js';
 import {
   advanceGate,
@@ -25,10 +29,14 @@ import {
 } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
 import {
+  ASK_ANSWER,
+  ASKED,
+  HELPER,
   LEAD,
   PEER,
   agentsBody,
   companionPane,
+  failAgentReads,
   ledgerRequests,
   openAgentRow,
   openAgents,
@@ -36,20 +44,13 @@ import {
   pastList,
   pastRow,
   pastToggle,
+  pastTotal,
+  seedAssistantWithHelper,
+  seedPastWithAsk,
 } from './agents-tray-helpers.js';
 
 const WORKERS = 10;
 const HELD = 'Held worker';
-const ASK_ANSWER = 'The changelog covers every merged change.';
-
-interface PastPage {
-  rows: { token: string }[];
-  total: number;
-}
-
-function pastTotal(harness: { rpc<T>(method: string, ...args: unknown[]): Promise<T> }, thread: string): Promise<number> {
-  return harness.rpc<PastPage>('ListThreadPastAgentRows', thread, { settledAt: 0, token: '' }, 1).then((page) => page.total);
-}
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: settled workers and asks list under Past, page, open beside and show in the sidebar`, async ({ harness, page }) => {
@@ -119,7 +120,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const askRow = openAgentRow(page, ask.token);
     await expect(askRow).toHaveAttribute('data-kind', 'ask');
     await expect(askRow.getByTestId('agent-tray-row-state')).toHaveText('running');
-    await expect(askRow.getByTestId('agent-tray-row-title')).toHaveText(`Ask: ${PEER}`);
+    // The row is the thread asked, its kind the ask.
+    await expect(askRow.getByTestId('agent-tray-row-title')).toHaveText(PEER);
+    await expect(askRow.getByTestId('agent-tray-row-kind')).toHaveText('ask');
+    await expect(askRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', provider);
     await expect(openAgentRow(page, held.token).getByTestId('agent-tray-row-state')).toHaveText('running');
     await expect(pastToggle(page)).toHaveAttribute('aria-expanded', 'false');
     await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText(String(WORKERS));
@@ -138,7 +142,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(page.getByTestId('toast-message').filter({ hasText: `Stopped ${HELD}` })).toBeVisible({ timeout: 30_000 });
     await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText(String(WORKERS + 2), { timeout: 30_000 });
     await expect(openAgentRow(page, held.token)).toHaveCount(0, { timeout: 30_000 });
-    await expect(page.getByTestId('activity-rail-agents-count').filter({ visible: true })).toHaveText('0');
+    // Nothing is open: the toggle names the segment and counts nothing.
+    await expect(page.getByTestId('activity-rail-agents-count').filter({ visible: true })).toHaveCount(0);
+    await expect(page.getByTestId('activity-rail-agents-toggle').filter({ visible: true })).toHaveAttribute('aria-label', 'Agents');
 
     // Past opens on its newest 8, the stop and the ask first.
     const list = await openPast(page);
@@ -148,6 +154,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(rows.nth(0).getByTestId('agent-tray-row-state')).toHaveText('stopped');
     await expect(rows.nth(1)).toHaveAttribute('data-token', ask.token);
     await expect(rows.nth(1).getByTestId('agent-tray-row-state')).toHaveText(/replied|finished/);
+    // Its copy is deleted: the row is still the thread asked, with its provider.
+    await expect(rows.nth(1).getByTestId('agent-tray-row-title')).toHaveText(PEER);
+    await expect(rows.nth(1).getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', provider);
     await expect(rows.nth(2).getByTestId('agent-tray-row-state')).toHaveText('finished');
     await expect(list.getByTestId('agent-tray-row-stop')).toHaveCount(0);
     await expect(rows.nth(2).getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', provider);
@@ -190,6 +199,73 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await pastToggle(page).click();
     await expect(pastList(page)).toHaveCount(0);
     await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText(String(WORKERS + 2));
+  });
+
+  test(`${provider}: a failed read says so with Retry, and Retry shows Past with an ask as the thread asked`, async ({ harness, page }) => {
+    test.setTimeout(240_000);
+    const { askToken, workerToken } = await seedPastWithAsk(harness, provider, `agents-past-fail-${provider}`);
+    const reads = await failAgentReads(page);
+    await harness.open(page);
+    await openAgents(page, LEAD);
+    const body = agentsBody(page);
+    // Both reads failed: the segment is there, says so, and counts nothing.
+    const error = body.getByTestId('activity-rail-agents-error');
+    await expect(error.getByTestId('row-error-msg')).toContainText('Could not read agents:', { timeout: 30_000 });
+    const pastError = body.getByTestId('activity-rail-agents-past-error');
+    await expect(pastError.getByTestId('row-error-msg')).toContainText('Could not read past agents:');
+    await expect(page.getByTestId('activity-rail-agents-count').filter({ visible: true })).toHaveCount(0);
+    const retry = error.getByTestId('activity-rail-agents-error-retry');
+    await expect(retry).toHaveAttribute('title', 'Retry');
+    await expect(retry).toHaveAttribute('aria-label', 'Retry reading agents');
+    await capture(page, `agents-past-${provider}-read-failed.png`, body);
+
+    reads.failing = false;
+    await retry.click();
+    await expect(error).toHaveCount(0);
+    await expect(pastError).toBeVisible();
+    await pastError.getByTestId('activity-rail-agents-past-error-retry').click();
+    await expect(pastError).toHaveCount(0);
+    await expect(body.getByTestId('activity-rail-agents-past-count')).toHaveText('2');
+
+    const list = await openPast(page);
+    await expect(list.getByTestId('agent-tray-row')).toHaveCount(2);
+    const askRow = pastRow(page, askToken);
+    await expect(askRow.getByTestId('agent-tray-row-kind')).toHaveText('ask');
+    await expect(askRow.getByTestId('agent-tray-row-title')).toHaveText(ASKED);
+    await expect(askRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', provider);
+    await askRow.getByTestId('agent-tray-row-details').click();
+    await expect(askRow.getByTestId('agent-tray-row-digest')).toContainText(ASK_ANSWER);
+    await expect(pastRow(page, workerToken).getByTestId('agent-tray-row-state')).toHaveText(/finished|replied/);
+    await capture(page, `agents-past-${provider}-ask.png`, body);
+  });
+
+  test(`${provider}: an assistant's helper opens beside it and offers no sidebar row, open or past`, async ({ harness, page }) => {
+    test.setTimeout(240_000);
+    const { home, token, helper } = await seedAssistantWithHelper(harness, provider, `agents-helper-${provider}`);
+    const hold = await awaitGate(harness, 'helper-hold', home);
+    await harness.open(page);
+    await openAgents(page, LEAD);
+    const row = openAgentRow(page, token);
+    await expect(row.getByTestId('agent-tray-row-title')).toHaveText(HELPER, { timeout: 30_000 });
+    await expect(row.getByTestId('agent-tray-row-state')).toHaveText('running');
+    await expect(row.getByTestId('agent-tray-row-show-in-sidebar')).toHaveCount(0);
+    await expect(row.getByTestId('agent-tray-row-open-pane')).toBeVisible();
+    await capture(page, `agents-helper-${provider}-open.png`, agentsBody(page));
+
+    // The helper is in no catalog: Open in Agent Pane reads it, then opens it beside.
+    await row.getByTestId('agent-tray-row-open-pane').click();
+    await expect(companionPane(page).getByTestId('chat-header-title')).toHaveText(HELPER, { timeout: 30_000 });
+    await expect(companionPane(page).locator(`[data-thread-id="${helper}"]`).first()).toBeVisible();
+
+    // It finishes: Past lists it once, still with no sidebar row to give.
+    await advanceGate(harness, hold.mockId, 'helper-hold');
+    await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText('1', { timeout: 30_000 });
+    await openPast(page);
+    const past = pastRow(page, token);
+    await expect(past.getByTestId('agent-tray-row-show-in-sidebar')).toHaveCount(0);
+    await expect(past.getByTestId('agent-tray-row-open-pane')).toBeVisible();
+    await expect(openAgentRow(page, token), 'listed above and under Past').toHaveCount(0);
+    await capture(page, `agents-helper-${provider}-past.png`, agentsBody(page));
   });
 
   test(`${provider}: an ordinary thread's worker asks it, not the user, and its row says so`, async ({ harness, page }) => {

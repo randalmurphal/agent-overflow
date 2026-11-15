@@ -1190,7 +1190,10 @@ call's own stamp, so the settled row reads the same on any later day.
 The other threads a thread is waiting on get a segment of their own after
 Background: the `users-round` icon, `Agents`, a count of open rows and
 incoming messages, and its own `Stop All`. Every thread with rows, open
-or past, shows it, a standing agent's pane included. It renders at every density of the
+or past, shows it, a standing agent's pane included, and so does a
+thread whose read of either failed. With nothing open the toggle shows
+no count, as Background, which hides at zero, never shows one. It
+renders at every density of the
 rail; the densest rung (`tight`) drops the segments' running pulses and
 closes up their spacing so the row holds at a phone width.
 
@@ -1199,7 +1202,8 @@ closes up their spacing so the row holds at a phone width.
   call parked on it. Reminders are wakes, not rows. A row shows the
   target's provider (a paired computer's from its acknowledgement), the
   kind, its title, its computer when it is not this
-  one, its state (queued, running, blocked, replied, finished, failed,
+  one (an ask on this computer shows the thread asked, its title and
+  provider, while its copy runs and after the copy is deleted), its state (queued, running, blocked, replied, finished, failed,
   stopped, interrupted, expired, refused, a late reply marked), how long
   since the request, and what a blocked row waits on: the approval with
   its tool and detail, or the question, and who it was routed to. A
@@ -1217,7 +1221,9 @@ closes up their spacing so the row holds at a phone width.
   rows and says when it left some out.
 - **Lifetime.** An open row stays. A settled row stays for 8 s
   (`AGENT_ROW_SETTLED_LINGER_MS`) from when the pane first saw it settled,
-  then leaves the open rows; it is in Past from when it settled. The backend keeps listing settled rows for 30 s so a pane
+  then leaves the open rows; it is in Past from when it settled, and
+  while Past is expanded and lists it, it is listed there alone, unless
+  a row open under it keeps it above. The backend keeps listing settled rows for 30 s so a pane
   that reconnects still sees them. The linger is longer than Background's
   because a settled row is a click target: clicking it takes it out early
   and scrolls to its wake item when the answer landed in this thread, or
@@ -1230,7 +1236,8 @@ closes up their spacing so the row holds at a phone width.
   companion pane below, settled or archived alike; an ask opens the
   thread asked, since its copy is deleted once it answers. A spawn row
   whose thread is owned, on the listing computer and not archived has
-  Show in Sidebar (`panel-left-open`): `SetThreadPlacement` standalone on
+  Show in Sidebar (`panel-left-open`); an assistant's helper, outside
+  every project, takes no placement and has none. It is `SetThreadPlacement` standalone on
   that computer, after which the row's placement is standalone and the
   button is gone; a refusal is an error toast. Both are icon buttons with
   a title and a matching label, as Background's Open in Agent Pane. Stop
@@ -1315,7 +1322,10 @@ closes up their spacing so the row holds at a phone width.
   listed, the pane reads the list. Reads go through the rate-bounded
   refresh scheduler, so a burst of frames is one read. A frame that
   lands during a list read, about the thread or a thread that read's
-  answer nests, reads the list again after it.
+  answer nests, reads the list again after it. A failed list read keeps
+  the last list and is said at the top of the body, with the app's row
+  error and a Retry icon button, until a read succeeds; the segment shows
+  while it stands, so a failed first read is not taken for no agents.
 - **Reads.** A listing is a constant number of statements whatever the
   tree's size: the tree's shape with each row's depth in one recursive
   read, the listed rows in one, the targets' titles and providers in one,
@@ -1339,8 +1349,10 @@ closes up their spacing so the row holds at a phone width.
   echo confirms the wake), not by a send-id lookup. A tool row's state
   read (`GetThreadRequestStates`) is one statement for all its tokens.
   A spawn row whose thread is on this computer carries that thread's
-  stored `placement` and whether it is `archived`; every other row
-  carries neither, a row a paired computer listed included.
+  stored `placement`, empty for a thread that takes none (outside every
+  project, or a standing agent's own), and whether it is `archived`;
+  every other row carries neither, a row a paired computer listed
+  included.
 - **Past.** Below the open and incoming rows, one Past row with the
   count of the thread's settled rows; expanding it lists them newest
   first, 8 and then 20 more per "Show N more…", each with the open
@@ -1348,16 +1360,22 @@ closes up their spacing so the row holds at a phone width.
   elapsed time. Collapsed, the pane holds only the count, read as a page
   of one row when the thread opens; it reads again after a reconnect or
   a lost frame, on a frame naming the thread and no row the list holds,
-  and when a row of the thread's own the list shows settles, so a row
-  that settles is counted and first in Past without a reload, while it
-  still lingers above. Expanded, those cues read the rows shown again
-  from the newest, up to one page; rows shown past it stay when that
-  page reaches them and are dropped when it does not. The rows are held
+  when a row of the thread's own the list shows settles, so a row that
+  settles is counted and first in Past without a reload, and on a frame
+  about a settled row the list holds that the open list's next read does
+  not supply. A settled row of the thread's own that an open-list read
+  supplies (a late reply while it lingers) is taken into Past from that
+  read. Expanded, those cues read every row shown again, from the newest
+  through cursor pages down to the oldest row shown, so rows that
+  settled since go first and none shown is dropped. The rows are held
   only while Past is expanded and dropped when it collapses, the
-  segment's body closes or the pane shows another thread. Its reads go
-  through their own refresh scheduler, so a newer read supersedes an
-  older one and a cue during a read reads again after it; a failed read
-  while expanded is said under the list until one succeeds.
+  segment's body closes or the pane shows another thread; each expansion
+  is its own lifetime, and a read or Show more that answers after it
+  ended lands nothing. Its reads go through their own refresh scheduler,
+  so a newer read supersedes an older one and a cue during a read reads
+  again after it; a failed read, collapsed or expanded, is said below
+  Past with a Retry until one succeeds, and the segment shows while it
+  stands.
   `ListThreadPastAgentRows` pages the rows,
   flat and newest settled first, ties by token: every spawn and ask it
   made and its sends with notify armed, with the total. Each row is
@@ -1393,7 +1411,11 @@ is stashed and reopened with its source thread like a side chat
 (`companionStash.ts`), not restored after a restart, and closing it
 never deletes or archives the thread. A row whose thread is already
 shown in another pane reveals that pane instead, since a thread is in
-one pane at a time. Under the compact layout the pane is a screen of the
+one pane at a time. A thread the client must read first opens beside
+the pane as it was when the row was clicked: if that pane closed or
+moved to another thread during the read, nothing opens and a toast says
+so. An agent message's sender chip opens in the focused pane under the
+same rule. Under the compact layout the pane is a screen of the
 strip like any companion.
 
 #### Interrupt and end session

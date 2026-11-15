@@ -4,7 +4,9 @@
 // shell, a grandchild held on an approval, the row locators, and reads of
 // the request ledger, and the Past list's locators (agents-tray-past.spec.ts
 // too). seedLeadWithWorker is the companion pane specs' one
-// assistant with one held worker.
+// assistant with one held worker. seedPastWithAsk, seedAssistantWithHelper
+// and failAgentReads set up the Past, helper and failed-read cases the
+// desktop and compact specs share.
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Locator, Page } from '@playwright/test';
@@ -26,6 +28,7 @@ import {
   toolResultLine,
   toolUseLine,
 } from './agent-visibility-helpers.js';
+import { methodIdByName } from './offhost-helpers.js';
 
 export const LEAD = 'Release lead';
 export const CHILD = 'Child worker';
@@ -332,4 +335,133 @@ export function mockInterrupt(harness: HarnessApp, cwd: string, timeoutMs = 60_0
     (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === cwd,
     timeoutMs,
   );
+}
+
+export const ASKED = 'Asked desk';
+export const ASK_ANSWER = 'The changelog covers every merged change.';
+export const HELPER = 'Notes helper';
+
+/** How many rows a thread's Past holds, as the backend counts them. */
+export function pastTotal(harness: HarnessApp, thread: string): Promise<number> {
+  return harness.rpc<{ total: number }>('ListThreadPastAgentRows', thread, { settledAt: 0, token: '' }, 1).then((page) => page.total);
+}
+
+/** What seedPastWithAsk made: a lead whose Past holds a finished worker and an answered ask. */
+export interface PastWithAsk {
+  lead: string;
+  workerToken: string;
+  askToken: string;
+}
+
+/**
+ * A lead titled LEAD that spawned a worker, which finished, and then asked
+ * a thread titled ASKED, whose copy answered ASK_ANSWER: two Past rows,
+ * the ask settled last. Resolves once both are in Past.
+ */
+export async function seedPastWithAsk(harness: HarnessApp, provider: ProviderName, tag: string): Promise<PastWithAsk> {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: `${tag}-lead`, repo: {}, threads: [{ title: LEAD, provider }] },
+      { name: `${tag}-asked`, repo: {}, threads: [{ title: ASKED, provider }] },
+      { name: `${tag}-worker`, repo: {}, threads: [] },
+    ],
+  });
+  const [leadP, askedP, workerP] = seed.projects;
+  const lead = leadP.threadIds[0];
+  const asked = askedP.threadIds[0];
+  // The asked thread runs a turn first, so its copy has a session to be
+  // cut from; the copy's session reads the scenario set after it.
+  await setScenario(harness, askedP.path, threadToolsScenario({ name: `${tag}-asked`, provider, turns: [{ text: 'Read the changelog.' }] }));
+  await harness.rpc('StartSession', asked);
+  await harness.rpc('SendMessage', asked, 'read the changelog', null);
+  await awaitTurnCompleted(harness, asked);
+  await setScenario(harness, askedP.path, threadToolsScenario({ name: `${tag}-asked-copy`, provider, turns: [{ text: ASK_ANSWER }] }));
+  await setScenario(harness, workerP.path, threadToolsScenario({ name: `${tag}-worker`, provider, turns: [{ text: 'Done.' }], afterTurns: 'repeatLast' }));
+  await setScenario(harness, leadP.path, threadToolsScenario({
+    name: `${tag}-lead`, provider, echoUserMessage: true,
+    turns: [
+      { steps: [
+        { call: { tool: 'thread_spawn', args: { prompt: 'Write the changelog.', title: 'Changelog worker', project_id: workerP.projectId, provider, notify: true } } },
+        { call: { tool: 'thread_ask', args: { thread_id: asked, question: 'Is the changelog complete?', wait_seconds: 0, notify: true } } },
+      ], text: 'Started it and asked.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await harness.rpc('StartSession', lead);
+  await harness.rpc('SendMessage', lead, 'write the changelog and ask', null);
+  await awaitTurnCompleted(harness, lead);
+  const [spawn, ask] = ledgerRequests(harness, lead);
+  expect([spawn?.kind, ask?.kind]).toEqual(['spawn', 'ask']);
+  await expect.poll(() => pastTotal(harness, lead), { timeout: 90_000 }).toBe(2);
+  return { lead, workerToken: spawn.token, askToken: ask.token };
+}
+
+/** What seedAssistantWithHelper made. */
+export interface AssistantWithHelper {
+  lead: string;
+  home: string;
+  token: string;
+  helper: string;
+}
+
+/**
+ * An assistant titled LEAD that spawned a helper titled HELPER (a spawn
+ * naming no project: outside every project, always the assistant's
+ * worker). The helper's turn holds on the `helper-hold` gate in the
+ * assistant's home until the spec releases it.
+ */
+export async function seedAssistantWithHelper(harness: HarnessApp, provider: ProviderName, tag: string): Promise<AssistantWithHelper> {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: `${tag}-lead`, repo: {}, threads: [{ title: LEAD, provider, assistant: true }] }],
+  });
+  const lead = seed.projects[0].threadIds[0];
+  const home = await assistantHome(harness, lead);
+  // The helper runs in the assistant's home too. A session reads its
+  // scenario when it starts, so the assistant's session starts on its own
+  // before the helper's scenario takes the home.
+  await setScenario(harness, home, threadToolsScenario({
+    name: `${tag}-lead`, provider, echoUserMessage: true,
+    turns: [
+      { text: 'Ready.' },
+      { steps: [{ call: { tool: 'thread_spawn', args: { prompt: 'Keep the release notes.', title: HELPER, provider, notify: true } } }], text: 'Started the notes.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await harness.rpc('StartSession', lead);
+  await harness.rpc('SendMessage', lead, 'get ready', null);
+  await awaitTurnCompleted(harness, lead);
+  await setScenario(harness, home, threadToolsScenario({
+    name: `${tag}-helper`, provider, echoUserMessage: true,
+    turns: [{ steps: [{ gate: 'helper-hold' }], text: 'Notes kept.' }],
+    afterTurns: 'silent',
+  }));
+  await harness.rpc('SendMessage', lead, 'keep the release notes', null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home, timeoutMs: 60_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  return { lead, home, token: spawn.value!.token, helper: spawn.value!.thread_id };
+}
+
+/**
+ * Answers the page's reads of the Agents segment (its open list and its
+ * Past) with a method error while `failing` is set, as a backend that
+ * cannot read its ledger answers them. Install before the page opens.
+ */
+export async function failAgentReads(page: Page): Promise<{ failing: boolean }> {
+  const control = { failing: true };
+  const methods = new Set([methodIdByName('ListThreadAgentRows'), methodIdByName('ListThreadPastAgentRows')]);
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number };
+      if (control.failing && frame.type === 'rpc' && frame.id && frame.methodId !== undefined && methods.has(frame.methodId)) {
+        socket.send(JSON.stringify({ type: 'rpc', id: frame.id, error: { code: 'method_error', message: 'the ledger could not be read' } }));
+        return;
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => socket.send(message));
+  });
+  return control;
 }
