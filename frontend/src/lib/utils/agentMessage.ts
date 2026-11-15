@@ -99,6 +99,13 @@ export interface WakeFacts {
   clipped: boolean;
   /** A digest's threads, two or more; empty for a wake from one thread. */
   threads: WakeThreadFacts[];
+  /**
+   * The assistant's past thread the request was made in and its current
+   * thread, when the wake reached the current one after New Thread, Same
+   * Assistant (threadtools WakeMadeIn); '' otherwise.
+   */
+  madeIn: string;
+  now: string;
 }
 
 /** One message of a row. A joined row holds several. */
@@ -392,6 +399,24 @@ const WAKE_TAILS: ReadonlyArray<{ kind: WakeKind; opening: string; body: 'line' 
   { kind: 'settled', opening: ' settled.', body: 'none' },
 ];
 
+/** threadtools WakeMadeIn: the line naming the assistant's past thread a request was made in. */
+const MADE_IN = /^Made in thread ([^\s,]+), before New Thread, Same Assistant; now (\S+)\.$/;
+
+/**
+ * The past-thread line a wake carries after its status line (and a digest
+ * after its list), when the request was made in an assistant's past thread:
+ * both threads into `facts`, and the text after the line. Text that does not
+ * open with one is returned unchanged.
+ */
+function readMadeIn(text: string, facts: WakeFacts): string {
+  const newline = text.indexOf('\n');
+  const made = MADE_IN.exec(newline < 0 ? text : text.slice(0, newline));
+  if (!made) return text;
+  facts.madeIn = made[1];
+  facts.now = made[2];
+  return newline < 0 ? '' : text.slice(newline + 1);
+}
+
 /** ` [token X]` or ` [tokens X, Y]` at the start of `text`. */
 function readTokens(text: string): { tokens: string[]; rest: string } {
   const one = /^ \[token ([^\]\s]+)\]/.exec(text);
@@ -436,7 +461,7 @@ function parseDigest(text: string): AgentMessagePart | null {
   const opening = lines[0].slice(count[0].length);
   const facts: WakeFacts = {
     kind: 'settled', title: '', threadId: '', computer: '', age: '', token: '', tokens: [],
-    agentRole: null, stoppedBy: '', clipped: false, threads: [],
+    agentRole: null, stoppedBy: '', clipped: false, threads: [], madeIn: '', now: '',
   };
   let shared: 'text' | 'reason' | 'none' = 'none';
   if (opening.startsWith(DIGEST_RESTART) && opening.endsWith('.')) {
@@ -469,7 +494,7 @@ function parseDigest(text: string): AgentMessagePart | null {
   }
   if (facts.threads.length !== threadCount || threadCount < 2) return null;
   facts.token = facts.tokens[0] ?? '';
-  let body = lines.slice(i).join('\n');
+  let body = readMadeIn(lines.slice(i).join('\n'), facts);
   if (shared === 'reason') {
     const newline = body.indexOf('\n');
     const reason = interruptReason(newline < 0 ? body : body.slice(0, newline), newline < 0 ? '' : body.slice(newline + 1));
@@ -485,7 +510,7 @@ function parseDigest(text: string): AgentMessagePart | null {
   return { body, footer: null, wake: facts };
 }
 
-/** Parse one wake: its status line, the standing-agent line, its answer. */
+/** Parse one wake: its status line, the standing-agent and past-thread lines, its answer. */
 export function parseWakeText(text: string): AgentMessagePart | null {
   if (/^\d+ threads[ :]/.test(text)) return parseDigest(text);
   const newline = text.indexOf('\n');
@@ -493,7 +518,7 @@ export function parseWakeText(text: string): AgentMessagePart | null {
   let after = newline < 0 ? '' : text.slice(newline + 1);
   const facts: WakeFacts = {
     kind: 'settled', title: '', threadId: '', computer: '', age: '', token: '', tokens: [],
-    agentRole: null, stoppedBy: '', clipped: false, threads: [],
+    agentRole: null, stoppedBy: '', clipped: false, threads: [], madeIn: '', now: '',
   };
   let body = '';
   if (head.startsWith('Reminder you set')) {
@@ -502,7 +527,7 @@ export function parseWakeText(text: string): AgentMessagePart | null {
     facts.kind = 'reminder';
     facts.tokens = tokens;
     facts.token = tokens[0] ?? '';
-    body = after;
+    body = readMadeIn(after, facts);
   } else {
     const reply = head.startsWith('Reply from ');
     const naming = readThreadNaming(reply ? head.slice('Reply from '.length) : head);
@@ -519,6 +544,7 @@ export function parseWakeText(text: string): AgentMessagePart | null {
       facts.agentRole = agent.role;
       after = agentNewline < 0 ? '' : after.slice(agentNewline + 1);
     }
+    after = readMadeIn(after, facts);
     const reason = !reply && rest.startsWith(': ') ? interruptReason(rest.slice(2), after) : null;
     if (reply) {
       if (rest !== ':') return null;

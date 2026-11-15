@@ -1300,8 +1300,9 @@ it), a standing agent's role line, and the message's first line. Opened,
 it shows the message and the routing parsed into facts: whether the
 sender waits, whether a reply reaches it, its role, where its spawned
 thread's prompts go, the sender's user message it quoted and the token;
-on an answer, who answered, how long ago, what stopped it and
-where the clipped rest is. An answer to several requests is one row
+on an answer, who answered, how long ago, what stopped it,
+where the clipped rest is, and for a request made in an assistant's
+past thread that thread and the current one. An answer to several requests is one row
 listing every token; a wake that lists several threads is one row whose
 sender is the count of threads, opening none of them, with each thread,
 its computer, age, role and tokens as a fact. A joined row shows each member its

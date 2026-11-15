@@ -214,6 +214,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -242,6 +244,8 @@
           "agentRole": "Runs the builds.",
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -270,6 +274,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -298,6 +304,8 @@
           "agentRole": "",
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -326,6 +334,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -354,6 +364,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -382,6 +394,8 @@
           "agentRole": null,
           "stoppedBy": "a restart of this computer",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -410,6 +424,8 @@
           "agentRole": null,
           "stoppedBy": "a restart of desk",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -438,6 +454,8 @@
           "agentRole": null,
           "stoppedBy": "the session ended before it read the request",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -466,6 +484,8 @@
           "agentRole": null,
           "stoppedBy": "the session ended before it answered the request",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -494,6 +514,8 @@
           "agentRole": null,
           "stoppedBy": "the session ended during the turn that read the request",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -522,6 +544,8 @@
           "agentRole": "Runs the builds.",
           "stoppedBy": "the session ended during the turn that read the request",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -550,6 +574,8 @@
           "agentRole": null,
           "stoppedBy": "the session ended during the turn that read the request",
           "clipped": true,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -578,6 +604,8 @@
           "agentRole": null,
           "stoppedBy": "the thread did not take it in",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -606,6 +634,8 @@
           "agentRole": null,
           "stoppedBy": "the thread did not take it in, and its message went back to that thread's composer",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -634,6 +664,8 @@
           "agentRole": null,
           "stoppedBy": "a move to Desk (Linux)",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -662,6 +694,8 @@
           "agentRole": null,
           "stoppedBy": "a move to another computer",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -690,6 +724,8 @@
           "agentRole": null,
           "stoppedBy": "the assistant moving to a new thread",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -718,6 +754,8 @@
           "agentRole": null,
           "stoppedBy": "an interrupt",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -746,6 +784,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -774,6 +814,8 @@
           "agentRole": null,
           "stoppedBy": "the user",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -802,6 +844,8 @@
           "agentRole": null,
           "stoppedBy": "an interrupt",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -830,6 +874,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -858,6 +904,8 @@
           "agentRole": null,
           "stoppedBy": "the user",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -886,6 +934,8 @@
           "agentRole": "Runs the builds.",
           "stoppedBy": "the user",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -914,6 +964,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -942,6 +994,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -970,6 +1024,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": true,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -998,6 +1054,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -1028,6 +1086,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -1057,6 +1117,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": true,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -1087,6 +1149,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1139,6 +1203,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1191,6 +1257,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1243,6 +1311,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1295,6 +1365,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1347,6 +1419,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1399,6 +1473,8 @@
           "agentRole": null,
           "stoppedBy": "a restart of the computer each ran on",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1450,6 +1526,8 @@
           "agentRole": null,
           "stoppedBy": "a restart of desk",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1501,6 +1579,8 @@
           "agentRole": null,
           "stoppedBy": "the session ended before it read the request",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1553,6 +1633,8 @@
           "agentRole": null,
           "stoppedBy": "the session ended during the turn that read the request",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1605,6 +1687,8 @@
           "agentRole": null,
           "stoppedBy": "an interrupt",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1657,6 +1741,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1709,6 +1795,8 @@
           "agentRole": null,
           "stoppedBy": "the user",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1761,6 +1849,8 @@
           "agentRole": null,
           "stoppedBy": "the user",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1813,6 +1903,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": [
             {
               "title": "Worker",
@@ -1865,6 +1957,350 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": true,
+          "madeIn": "",
+          "now": "",
+          "threads": [
+            {
+              "title": "Worker",
+              "threadId": "t-work",
+              "computer": "",
+              "age": "",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ],
+              "agentRole": null
+            },
+            {
+              "title": "Lexer",
+              "threadId": "t-lex",
+              "computer": "desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ],
+              "agentRole": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "reply made in a past thread",
+    "text": "Reply from \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]:\nThat thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\nAll green.",
+    "members": [
+      233
+    ],
+    "parts": [
+      {
+        "body": "All green.",
+        "footer": null,
+        "wake": {
+          "kind": "reply",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": "Runs the builds.",
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "t-old",
+          "now": "t-new",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "reminder made in a past thread",
+    "text": "Reminder you set [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]:\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\nCheck the build.",
+    "members": [
+      147
+    ],
+    "parts": [
+      {
+        "body": "Check the build.",
+        "footer": null,
+        "wake": {
+          "kind": "reminder",
+          "title": "",
+          "threadId": "",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "t-old",
+          "now": "t-new",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "stopped by the person with its last message, made in a past thread",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The user stopped this turn before it answered. Its last message:\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\nHalf done.",
+    "members": [
+      207
+    ],
+    "parts": [
+      {
+        "body": "Half done.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "the user",
+          "clipped": false,
+          "madeIn": "t-old",
+          "now": "t-new",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "stopped by the person before it said anything, made in a past thread",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The user stopped this turn before it answered.\nMade in thread t-old, before New Thread, Same Assistant; now t-new.",
+    "members": [
+      178
+    ],
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "the user",
+          "clipped": false,
+          "madeIn": "t-old",
+          "now": "t-new",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "session ended before it answered, made in a past thread",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread's session ended before it answered the request.\nMade in thread t-old, before New Thread, Same Assistant; now t-new.",
+    "members": [
+      190
+    ],
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "the session ended before it answered the request",
+          "clipped": false,
+          "madeIn": "t-old",
+          "now": "t-new",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "session ended during the turn with what it wrote, made in a past thread",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread's session ended during the turn that read the request. What it had written by then:\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\n\nHalf done.",
+    "members": [
+      238
+    ],
+    "parts": [
+      {
+        "body": "Half done.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "the session ended during the turn that read the request",
+          "clipped": false,
+          "madeIn": "t-old",
+          "now": "t-new",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "digest: the same reply, made in a past thread",
+    "text": "2 threads sent the same reply:\n- \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]\n- \"Lexer\" (t-lex, on desk, answered 3h ago) [tokens tok-2, tok-3]\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\nDone.",
+    "members": [
+      235
+    ],
+    "parts": [
+      {
+        "body": "Done.",
+        "footer": null,
+        "wake": {
+          "kind": "reply",
+          "title": "",
+          "threadId": "",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "t-old",
+          "now": "t-new",
+          "threads": [
+            {
+              "title": "Worker",
+              "threadId": "t-work",
+              "computer": "",
+              "age": "",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ],
+              "agentRole": null
+            },
+            {
+              "title": "Lexer",
+              "threadId": "t-lex",
+              "computer": "desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ],
+              "agentRole": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "digest: interrupted by their sessions ending, made in a past thread",
+    "text": "2 threads were interrupted, each for the same reason:\n- \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]\n- \"Lexer\" (t-lex, on desk, answered 3h ago) [tokens tok-2, tok-3]\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\nThe thread's session ended before it read the request.",
+    "members": [
+      307
+    ],
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "",
+          "threadId": "",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "agentRole": null,
+          "stoppedBy": "the session ended before it read the request",
+          "clipped": false,
+          "madeIn": "t-old",
+          "now": "t-new",
+          "threads": [
+            {
+              "title": "Worker",
+              "threadId": "t-work",
+              "computer": "",
+              "age": "",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ],
+              "agentRole": null
+            },
+            {
+              "title": "Lexer",
+              "threadId": "t-lex",
+              "computer": "desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ],
+              "agentRole": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "digest: stopped by the person, made in a past thread",
+    "text": "2 threads: The user stopped their turns before they answered.\n- \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]\n- \"Lexer\" (t-lex, on desk, answered 3h ago) [tokens tok-2, tok-3]\nMade in thread t-old, before New Thread, Same Assistant; now t-new.",
+    "members": [
+      260
+    ],
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "",
+          "threadId": "",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "agentRole": null,
+          "stoppedBy": "the user",
+          "clipped": false,
+          "madeIn": "t-old",
+          "now": "t-new",
           "threads": [
             {
               "title": "Worker",
@@ -1956,6 +2392,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       },
@@ -1975,6 +2413,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }
@@ -2004,6 +2444,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       },
@@ -2023,6 +2465,8 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
           "threads": []
         }
       }

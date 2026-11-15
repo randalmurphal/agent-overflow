@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -135,6 +136,21 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("a digest of sessions that ended during the turn", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: digest, Text: stopByWorkflow().cause}, from("wake", worker))
 	add("a digest of stops with their recorded cause", text, meta)
+	// A request made in an assistant's past thread names it after the status
+	// line, or after a digest's list; the label reads past it.
+	for _, w := range []threadtools.Wake{
+		{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "All green."},
+		{Kind: threadtools.WakeReminder, Sources: []threadtools.WakeSource{{Tokens: []string{"tok-1"}}}, Text: "Check the build."},
+		{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}},
+		{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Half done."},
+		{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: threadtools.InterruptSessionEndedUnanswered},
+		{Kind: threadtools.WakeReply, Sources: digest, Text: "Same answer."},
+		{Kind: threadtools.WakeInterrupted, Sources: digest, Text: threadtools.InterruptSessionEndedUnread},
+	} {
+		w.MadeIn, w.Now = "t-old", "t-new"
+		text, meta = answer(w, from("wake", worker))
+		add("made in a past thread: "+w.Kind+" from "+strconv.Itoa(len(w.Sources))+" sources, "+firstNonEmpty(w.Text, "no text"), text, meta)
+	}
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Untitled reply."}, nil)
 	add("a reply whose attribution names no thread", text, meta)
 	firstWake, firstWakeMeta := answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: "A", ThreadID: "t-a", Tokens: []string{"tok-1"}}}}, from("wake", "A"))
@@ -211,6 +227,40 @@ func TestAgentMessageLabelFixture(t *testing.T) {
 	}
 	if string(committed) != string(encoded) {
 		t.Fatalf("%s is stale: regenerate it (see the comment above) and check the frontend test agrees", agentMessageLabelsFixture)
+	}
+}
+
+// TestAgentMessageLabelReadsPastThePastThreadLine: the line a wake carries
+// for a request made in an assistant's past thread is routing, never the
+// answer the label quotes.
+func TestAgentMessageLabelReadsPastThePastThreadLine(t *testing.T) {
+	t.Parallel()
+	want := map[string]string{
+		"made in a past thread: reply from 1 sources, All green.":                                           "Worker: All green.",
+		"made in a past thread: reminder from 1 sources, Check the build.":                                  "This thread: Check the build.",
+		"made in a past thread: stopped from 1 sources, no text":                                            "Worker",
+		"made in a past thread: stopped from 1 sources, Half done.":                                         "Worker: Half done.",
+		"made in a past thread: interrupted from 1 sources, " + threadtools.InterruptSessionEndedUnanswered: "Worker",
+		"made in a past thread: reply from 2 sources, Same answer.":                                         "2 threads: Same answer.",
+		"made in a past thread: interrupted from 2 sources, " + threadtools.InterruptSessionEndedUnread:     "2 threads: Worker, Lexer",
+	}
+	seen := 0
+	for _, tc := range agentMessageLabelCases(t) {
+		expected, ok := want[tc.Name]
+		if !ok {
+			continue
+		}
+		seen++
+		decoded, err := usermessage.FromItem(store.Item{Meta: tc.Meta})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := agentMessageLabel(tc.Text, decoded); got != expected {
+			t.Errorf("%s: label = %q, want %q", tc.Name, got, expected)
+		}
+	}
+	if seen != len(want) {
+		t.Fatalf("found %d of the %d cases", seen, len(want))
 	}
 }
 

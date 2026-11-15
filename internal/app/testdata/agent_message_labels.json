@@ -174,6 +174,48 @@
     "label": "2 threads: Its workflow stopped the turn before it answered."
   },
   {
+    "name": "made in a past thread: reply from 1 sources, All green.",
+    "text": "Reply from \"Worker\" (t-worker) [token tok-1]:\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\nAll green.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker: All green."
+  },
+  {
+    "name": "made in a past thread: reminder from 1 sources, Check the build.",
+    "text": "Reminder you set [token tok-1]:\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\nCheck the build.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "This thread: Check the build."
+  },
+  {
+    "name": "made in a past thread: stopped from 1 sources, no text",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The user stopped this turn before it answered.\nMade in thread t-old, before New Thread, Same Assistant; now t-new.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker"
+  },
+  {
+    "name": "made in a past thread: stopped from 1 sources, Half done.",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The user stopped this turn before it answered. Its last message:\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\nHalf done.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker: Half done."
+  },
+  {
+    "name": "made in a past thread: interrupted from 1 sources, The thread's session ended before it answered the request.",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The thread's session ended before it answered the request.\nMade in thread t-old, before New Thread, Same Assistant; now t-new.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker"
+  },
+  {
+    "name": "made in a past thread: reply from 2 sources, Same answer.",
+    "text": "2 threads sent the same reply:\n- \"Worker\" (t-worker) [token tok-1]\n  That thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\n- \"Lexer\" (t-lexer, on desk) [tokens tok-2, tok-3]\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\nSame answer.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "2 threads: Same answer."
+  },
+  {
+    "name": "made in a past thread: interrupted from 2 sources, The thread's session ended before it read the request.",
+    "text": "2 threads were interrupted, each for the same reason:\n- \"Worker\" (t-worker) [token tok-1]\n  That thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\n- \"Lexer\" (t-lexer, on desk) [tokens tok-2, tok-3]\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\nThe thread's session ended before it read the request.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "2 threads: Worker, Lexer"
+  },
+  {
     "name": "a reply whose attribution names no thread",
     "text": "Reply from \"Worker\" (t-worker) [token tok-1]:\nUntitled reply.",
     "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\"}",

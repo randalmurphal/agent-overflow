@@ -44,6 +44,10 @@ type fixtureWake struct {
 	AgentRole *string  `json:"agentRole"`
 	StoppedBy string   `json:"stoppedBy"`
 	Clipped   bool     `json:"clipped"`
+	// MadeIn and Now name the assistant's past thread the request was made
+	// in and its current thread, after New Thread, Same Assistant.
+	MadeIn string `json:"madeIn"`
+	Now    string `json:"now"`
 	// Threads lists a digest's threads; a wake for one thread names it in
 	// the fields above and lists none.
 	Threads []fixtureWakeThread `json:"threads"`
@@ -108,7 +112,7 @@ func fixtureAge(age time.Duration) string {
 }
 
 func wakePart(wake Wake) (string, fixturePart) {
-	part := fixturePart{Wake: &fixtureWake{Kind: wake.Kind, Token: wake.firstToken(), Tokens: []string{}, Threads: []fixtureWakeThread{}}}
+	part := fixturePart{Wake: &fixtureWake{Kind: wake.Kind, Token: wake.firstToken(), Tokens: []string{}, Threads: []fixtureWakeThread{}, MadeIn: wake.MadeIn, Now: wake.Now}}
 	for _, source := range wake.Sources {
 		part.Wake.Tokens = append(part.Wake.Tokens, source.Tokens...)
 	}
@@ -292,6 +296,17 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("digest: stopped by the person, with the same last message", wake(Wake{Kind: WakeStopped, Text: "Half done.", Sources: digestSources})),
 		one("digest: expired", wake(Wake{Kind: WakeExpired, Sources: digestSources})),
 		one("digest: clipped shared error", wake(Wake{Kind: WakeErrored, Text: long, Sources: digestSources})),
+		// A request made in an assistant's past thread names it after the
+		// status line and, in a digest, after the list.
+		one("reply made in a past thread", wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}, Agent: &SenderAgent{Role: "Runs the builds."}}}, Text: "All green.", MadeIn: "t-old", Now: "t-new"})),
+		one("reminder made in a past thread", wake(Wake{Kind: WakeReminder, Sources: []WakeSource{{Tokens: []string{token}}}, Text: "Check the build.", MadeIn: "t-old", Now: "t-new"})),
+		one("stopped by the person with its last message, made in a past thread", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Half done.", MadeIn: "t-old", Now: "t-new"})),
+		one("stopped by the person before it said anything, made in a past thread", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, MadeIn: "t-old", Now: "t-new"})),
+		one("session ended before it answered, made in a past thread", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedUnanswered, MadeIn: "t-old", Now: "t-new"})),
+		one("session ended during the turn with what it wrote, made in a past thread", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + "Half done.", MadeIn: "t-old", Now: "t-new"})),
+		one("digest: the same reply, made in a past thread", wake(Wake{Kind: WakeReply, Text: "Done.", Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
+		one("digest: interrupted by their sessions ending, made in a past thread", wake(Wake{Kind: WakeInterrupted, Text: InterruptSessionEndedUnread, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
+		one("digest: stopped by the person, made in a past thread", wake(Wake{Kind: WakeStopped, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
 	}
 	text, members, parts := join(
 		request("First ask.", Footer{Title: "Lead", ThreadID: "t-lead", Token: token, AnswerRequested: true, SenderReachable: true}),

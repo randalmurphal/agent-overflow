@@ -200,6 +200,33 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     expect(wrote.getByTestId('agent-message-row').textContent).not.toContain('What it had written by then');
   });
 
+  it('shows the past thread a request was made in as facts, never as its answer', async () => {
+    for (const [name, answer] of [
+      ['reply made in a past thread', 'All green.'],
+      ['stopped by the person before it said anything, made in a past thread', null],
+      ['digest: the same reply, made in a past thread', 'Done.'],
+    ] as const) {
+      const pane = await buildPane();
+      pane.setUserMessageExpanded('msg-1', true);
+      const view = render(TimelineLeaf, {
+        props: {
+          pane,
+          item: agentRow(text(name), {
+            origin: 'agent-thread', originThread: { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' },
+          }),
+        },
+      });
+      const row = view.getByTestId('agent-message-row');
+      expect(row.textContent, name).not.toContain('Made in thread');
+      expect(row.querySelector('[data-fact="Made in"]')?.textContent, name).toBe('t-old, before New Thread, Same Assistant');
+      expect(row.querySelector('[data-fact="Now in"]')?.textContent, name).toBe('t-new');
+      if (answer === null) expect(view.queryByTestId('agent-message-text'), name).toBeNull();
+      else expect(view.getByTestId('agent-message-text').textContent, name).toBe(answer);
+      if (answer !== null) expect(view.getByTestId('agent-message-first-line').textContent, name).toBe(answer);
+      view.unmount();
+    }
+  });
+
   it('shows one card for a message answering several requests, naming every token', async () => {
     const pane = await buildPane();
     const several = render(TimelineLeaf, {

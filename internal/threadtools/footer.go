@@ -241,7 +241,30 @@ func (w Wake) String() string {
 // WakeMadeIn names the past thread a request was made in, for a wake that
 // reaches the assistant's current thread after New Thread, Same Assistant.
 func WakeMadeIn(madeIn, now string) string {
-	return fmt.Sprintf("Made in thread %s, before New Thread, Same Assistant; now %s.", madeIn, now)
+	return wakeMadeInOpening + madeIn + wakeMadeInMiddle + now + "."
+}
+
+const (
+	wakeMadeInOpening = "Made in thread "
+	wakeMadeInMiddle  = ", before New Thread, Same Assistant; now "
+)
+
+// CutWakeMadeIn reads the WakeMadeIn line off the front of text: the line a
+// wake carries after its status line and its standing-agent line, and a
+// digest after its list. It returns the text after the line, or text
+// unchanged and ok false when it does not open with one.
+func CutWakeMadeIn(text string) (madeIn, now, rest string, ok bool) {
+	line, rest, _ := strings.Cut(text, "\n")
+	named, found := strings.CutPrefix(line, wakeMadeInOpening)
+	if !found {
+		return "", "", text, false
+	}
+	madeIn, now, found = strings.Cut(named, wakeMadeInMiddle)
+	now, closed := strings.CutSuffix(now, ".")
+	if !found || !closed || madeIn == "" || now == "" || strings.ContainsAny(madeIn+now, " ,") {
+		return "", "", text, false
+	}
+	return madeIn, now, rest, true
 }
 
 // source is the one thread a single-source wake speaks for; a reminder has

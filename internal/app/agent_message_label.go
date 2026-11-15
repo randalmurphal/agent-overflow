@@ -94,13 +94,14 @@ func firstRequestBody(text string) (body, title string) {
 
 // readThreadWake reads a wake an answer, a reminder or a settlement wrote
 // (threadtools.Wake): the answering thread's title and the body after the
-// status line and the standing-agent line. ok is false when text is not one.
+// status line, the standing-agent line and the past-thread line. ok is false when text is not one.
 func readThreadWake(text string) (title, body string, reminder, ok bool) {
 	head, after, _ := strings.Cut(text, "\n")
 	if rest, found := strings.CutPrefix(head, "Reminder you set"); found {
 		if _, rest = cutWakeToken(rest); rest != ":" {
 			return "", "", false, false
 		}
+		_, _, after, _ = threadtools.CutWakeMadeIn(after)
 		return "", after, true, true
 	}
 	reply := strings.HasPrefix(head, "Reply from ")
@@ -118,6 +119,7 @@ func readThreadWake(text string) (title, body string, reminder, ok bool) {
 	if line, next, _ := strings.Cut(after, "\n"); strings.HasPrefix(line, "That thread "+threadtools.AgentSentence) {
 		after = next
 	}
+	_, _, after, _ = threadtools.CutWakeMadeIn(after)
 	if reply {
 		if rest != ":" {
 			return "", "", false, false
@@ -190,7 +192,7 @@ func readThreadWakeDigest(text string) (titles []string, body string, ok bool) {
 	if len(titles) != want {
 		return nil, "", false
 	}
-	body = strings.Join(lines[at:], "\n")
+	_, _, body, _ = threadtools.CutWakeMadeIn(strings.Join(lines[at:], "\n"))
 	if opening == " were interrupted, each for the same reason:" {
 		sentence, after, _ := strings.Cut(body, "\n")
 		if reason, known := wakeStatusBody(": "+sentence, after); known {

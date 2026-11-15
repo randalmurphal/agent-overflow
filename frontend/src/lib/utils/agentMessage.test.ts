@@ -84,7 +84,7 @@ describe('parseWakeText', () => {
       footer: null,
       wake: {
         kind: 'cancelled', title: 'W', threadId: 't-w', computer: '', age: '', token: 'k', tokens: ['k'],
-        agentRole: null, stoppedBy: '', clipped: false, threads: [],
+        agentRole: null, stoppedBy: '', clipped: false, threads: [], madeIn: '', now: '',
       },
     });
   });

@@ -132,6 +132,9 @@
       if (wake.agentRole !== null) facts.push({ label: 'Role', value: wake.agentRole || 'Standing agent' });
       if (wake.age) facts.push({ label: 'Answered', value: `${wake.age} ago` });
       if (wake.stoppedBy) facts.push({ label: 'Stopped by', value: wake.stoppedBy });
+      // A request made in an assistant's past thread, answered in its current one.
+      if (wake.madeIn) facts.push({ label: 'Made in', value: `${wake.madeIn}, before New Thread, Same Assistant` });
+      if (wake.now) facts.push({ label: 'Now in', value: wake.now });
       // A digest names each thread it speaks for, with its tokens.
       if (wake.threads.length > 0) {
         facts.push({

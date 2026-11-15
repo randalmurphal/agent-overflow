@@ -509,3 +509,27 @@ func TestWakeDigestNamesStandingAgentsAndThePastThread(t *testing.T) {
 		t.Fatalf("wake:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// TestCutWakeMadeInReadsWhatWakeMadeInWrites: the readers take the line off
+// a wake by this, and anything else stays the answer.
+func TestCutWakeMadeInReadsWhatWakeMadeInWrites(t *testing.T) {
+	madeIn, now, rest, ok := CutWakeMadeIn(WakeMadeIn("old1", "new2") + "\ndone")
+	if !ok || madeIn != "old1" || now != "new2" || rest != "done" {
+		t.Fatalf("CutWakeMadeIn = %q, %q, %q, %v", madeIn, now, rest, ok)
+	}
+	if _, _, rest, ok := CutWakeMadeIn(WakeMadeIn("old1", "new2")); !ok || rest != "" {
+		t.Fatalf("a last line: rest %q, ok %v", rest, ok)
+	}
+	for _, text := range []string{
+		"done",
+		"Made in thread old1, before New Thread, Same Assistant; now new2",
+		"Made in thread old1, before New Thread, Same Assistant; now .",
+		"Made in thread , before New Thread, Same Assistant; now new2.",
+		"Made in thread my old one, before New Thread, Same Assistant; now new2.",
+		"Made in thread old1.\nMore.",
+	} {
+		if _, _, rest, ok := CutWakeMadeIn(text); ok || rest != text {
+			t.Errorf("CutWakeMadeIn(%q) = %q, %v, want it unchanged", text, rest, ok)
+		}
+	}
+}
