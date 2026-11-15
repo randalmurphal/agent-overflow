@@ -216,8 +216,44 @@ func TestAnAssistantSpawnsHelpersAndProjectWork(t *testing.T) {
 	if _, err := spawn(threadtools.SpawnCall{WorktreeBranch: "feature"}); err == nil || !strings.Contains(err.Error(), "takes no worktree") {
 		t.Fatalf("a helper with a worktree = %v", err)
 	}
-	if _, err := spawn(threadtools.SpawnCall{FromThread: helper.ID}); err != nil {
+	forked, err := spawn(threadtools.SpawnCall{FromThread: helper.ID})
+	if err != nil {
 		t.Fatalf("fork its own helper: %v", err)
+	}
+	if forked.ProjectID != "" || forked.HelperOfAgentID != agent.ID || forked.Placement != store.PlacementOwned {
+		t.Fatalf("fork of a helper = project %q helperOf %q placement %s, want an owned helper", forked.ProjectID, forked.HelperOfAgentID, forked.Placement)
+	}
+	// A thread outside every project is shown only as its spawner's worker,
+	// so a fresh helper and a fork of one take no group or placement, and a
+	// refusal leaves no thread behind.
+	threadsNow := func() int {
+		t.Helper()
+		rows, err := f.app.store.ListThreads()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(rows)
+	}
+	before := threadsNow()
+	for name, call := range map[string]threadtools.SpawnCall{
+		"helper standalone": {Placement: threadtools.PlacementStandalone},
+		"helper grouped":    {Group: "drafts"},
+		"fork standalone":   {FromThread: helper.ID, Placement: threadtools.PlacementStandalone},
+		"fork grouped":      {FromThread: helper.ID, Group: "drafts"},
+	} {
+		if _, err := spawn(call); err == nil || !strings.Contains(err.Error(), "takes no group or placement") {
+			t.Errorf("%s = %v, want refused", name, err)
+		}
+	}
+	// A paired computer's spawn has no spawner here to own its thread, so
+	// it cannot fork a thread outside every project.
+	foreign := threadRequestOrigin{caller: threadtools.Caller{ThreadID: "peer-caller", ComputerID: "peer"}, foreign: true, ownerDevice: "peer-device"}
+	if _, err := f.adapter().spawnThreadOptions(t.Context(), foreign, threadtools.SpawnCall{FromThread: helper.ID, Prompt: "do it"}); err == nil ||
+		!strings.Contains(err.Error(), "outside every project") {
+		t.Errorf("a paired computer's fork of a helper = %v, want refused", err)
+	}
+	if after := threadsNow(); after != before {
+		t.Errorf("refused spawns left %d threads behind", after-before)
 	}
 	stranger, err := createTestThread(t, f.app, "claude", unserved.Path, "claude-opus-4-7", "chat")
 	if err != nil {

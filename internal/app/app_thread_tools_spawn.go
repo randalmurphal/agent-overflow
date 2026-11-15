@@ -161,6 +161,9 @@ func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call thr
 		return spawnOptions{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			"A spawn needs a project: this thread has none to inherit. thread_options lists this computer's projects.", nil)
 	}
+	if err := checkSpawnPlacement(origin, call, opts.ProjectID); err != nil {
+		return spawnOptions{}, err
+	}
 	if opts.home != "" {
 		// A helper lives in its assistant's home, outside every project:
 		// there is no checkout to pick or worktree to cut.
@@ -215,14 +218,39 @@ func (t threadToolsApp) placeAssistantSpawn(opts *CreateThreadOptions, owner sto
 			return errorsx.Public(threadtools.CodeInvalidRequest,
 				"A spawn without project_id is a helper of your own work in your home, so it takes no worktree or workspace_path. Name a project_id you serve to work in a checkout.", nil)
 		}
-		if call.Group != "" || (call.Placement != "" && call.Placement != threadtools.PlacementOwned) {
-			return errorsx.Public(threadtools.CodeInvalidRequest,
-				"A spawn without project_id is a helper of your own work, outside every project and always your worker, so it takes no group or placement. Name a project_id you serve to give the thread a sidebar row there.", nil)
-		}
 		opts.ProjectID, opts.home, opts.helperOfAgentID = "", owner.Home, owner.ID
 		return nil
 	}
 	return t.requireServedProject(owner, call.ProjectID)
+}
+
+// checkSpawnPlacement refuses a placement the spawn's thread could not
+// keep, given projectID, the project it will live in: a fresh spawn's
+// resolved project or a fork's source's. A thread outside every project
+// (a helper, or a fork of a thread under an assistant) has no sidebar row
+// to take and is shown only as its spawner's worker, so it takes no group
+// or placement, and a paired computer's spawn, which has no spawner here
+// to own it, cannot make one. Both spawn shapes run it before anything is
+// created.
+func checkSpawnPlacement(origin threadRequestOrigin, call threadtools.SpawnCall, projectID string) error {
+	if projectID != "" {
+		return nil
+	}
+	if origin.foreign {
+		return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+			"Thread %s is outside every project, so a fork of it is shown only as the worker of a thread on this computer, and a spawn from another computer has none. Fork it from a thread on its own computer.",
+			call.FromThread), nil)
+	}
+	if call.Group == "" && (call.Placement == "" || call.Placement == threadtools.PlacementOwned) {
+		return nil
+	}
+	if call.FromThread != "" {
+		return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+			"A fork lives where its source does, and %s is outside every project, so the fork is always your worker and takes no group or placement. Spawn a fresh thread with a project_id to give it a sidebar row.",
+			call.FromThread), nil)
+	}
+	return errorsx.Public(threadtools.CodeInvalidRequest,
+		"A spawn without project_id is a helper of your own work, outside every project and always your worker, so it takes no group or placement. Name a project_id you serve to give the thread a sidebar row there.", nil)
 }
 
 // requireServedProject refuses work for owner in a project it does not
@@ -298,6 +326,9 @@ func (t threadToolsApp) forkSpawnOptions(origin threadRequestOrigin, call thread
 				return CreateThreadOptions{}, err
 			}
 		}
+	}
+	if err := checkSpawnPlacement(origin, call, source.ProjectID); err != nil {
+		return CreateThreadOptions{}, err
 	}
 	if call.Provider != "" && call.Provider != source.Provider {
 		return CreateThreadOptions{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(

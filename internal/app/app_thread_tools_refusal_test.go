@@ -127,8 +127,10 @@ func TestARefusalWithholdsOnlyADatabaseFailure(t *testing.T) {
 	f.nothingOwed(t)
 }
 
-// The real spawn path: a spawn refused after its thread existed, made with
-// notify, leaves nothing owed.
+// A fork whose thread could not keep the spawn's group, its source being
+// outside every project, is refused before its request or thread exists,
+// so a notify spawn leaves nothing owed. A spawn refused after its thread
+// existed is TestASpawnWhoseThreadExistsNamesItInTheRefusal.
 func TestARefusedSpawnWithNotifyQueuesNoMessage(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -147,15 +149,21 @@ func TestARefusedSpawnWithNotifyQueuesNoMessage(t *testing.T) {
 	_, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
 		FromThread: source.ID, Prompt: "carry on", Group: "Release", Notify: true,
 	})
-	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest || !strings.Contains(err.Error(), "takes no group or placement") {
 		t.Fatalf("spawn into an impossible group: code = %q, err = %v", code, err)
 	}
 	rows, err := f.app.store.ListThreadRequestsByCaller(f.caller.ID, 10, 0)
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("requests = %+v err %v, want the one refused spawn", rows, err)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("requests = %+v err %v, want none: the refusal comes before the request exists", rows, err)
 	}
-	if rows[0].State != store.ThreadRequestRefused || rows[0].DeliveredHow != store.ThreadWakeInline {
-		t.Fatalf("request = %q delivered %q, want refused and delivered by the call", rows[0].State, rows[0].DeliveredHow)
+	threads, err := f.app.store.ListThreads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, thread := range threads {
+		if thread.ForkedFromThreadID == source.ID {
+			t.Fatalf("the refused fork left thread %s behind", thread.ID)
+		}
 	}
 	f.nothingOwed(t)
 }

@@ -375,7 +375,10 @@ a plain row in its own project
 `group` implies `grouped`; `grouped` without `group`, or `group` with
 `owned` or `standalone`, is refused before a request exists. A
 `from_thread` fork takes the spawn's placement too and leaves its
-source's group unless `group` names one. A thread spawned on another
+source's group unless `group` names one. A thread outside every
+project, a helper or a fork of a thread under an assistant, is shown
+only as its spawner's worker: it takes no `group` or `placement`, and a
+spawn from another computer cannot fork one. A thread spawned on another
 computer is a plain row there unless grouped, whatever `placement`
 says. Placement is organization only: the spawn record, the reply path
 and the read mark
