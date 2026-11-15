@@ -213,3 +213,32 @@ describe('terminal surface reconciliation', () => {
     expect(listTerminals).not.toHaveBeenCalled();
   });
 });
+
+// OpenTerminal starts the shell before it answers, and the transport writes
+// the frames queued for this connection ahead of the reply, so a shell that
+// ends at once announces its exit before the answer that names it.
+describe('opening a terminal', () => {
+  it('adds no tab for a shell whose exit arrived before the OpenTerminal reply', async () => {
+    running['thread-H'] = [];
+    const setVisible = vi.fn();
+    setBindingMock('OpenTerminal', async (threadID: string) => {
+      emitWailsEvent('terminal:opened', { terminalID: 'quick', threadID, summary: summary('quick', threadID) });
+      emitWailsEvent('terminal:exit', { terminalID: 'quick', threadID, code: 1 });
+      return { terminalID: 'quick', threadID, summary: summary('quick', threadID) };
+    });
+    render(TerminalSurface, { surface: surfaceFor('thread-H', setVisible) as never });
+
+    await vi.waitFor(() => expect(setVisible).toHaveBeenCalledWith(false));
+    expect(ids('thread-H')).toEqual([]);
+  });
+
+  it('removes the tab when the exit arrives after the OpenTerminal reply', async () => {
+    running['thread-H'] = [];
+    setBindingMock('OpenTerminal', async (threadID: string) => ({ terminalID: 'slow', threadID, summary: summary('slow', threadID) }));
+    render(TerminalSurface, { surface: surfaceFor('thread-H') as never });
+    await vi.waitFor(() => expect(ids('thread-H')).toEqual(['slow']));
+
+    emitWailsEvent('terminal:exit', { terminalID: 'slow', threadID: 'thread-H', code: 0 });
+    expect(ids('thread-H')).toEqual([]);
+  });
+});
