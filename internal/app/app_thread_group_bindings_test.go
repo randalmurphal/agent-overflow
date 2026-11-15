@@ -32,8 +32,10 @@ func emittedThreadRows(rec *emitRecorder) []store.Thread {
 		if !ok {
 			continue
 		}
-		if evt.Action != "full" || evt.Thread == nil {
-			panic("thread:updated from a group/pin binding must be a whole-row \"full\" frame")
+		// A group move announces with AnnouncePlaced, `listed` for a row the
+		// sidebar lists; a pin is `full`. Never `unlisted`, which closes panes.
+		if (evt.Action != triage.ThreadActionFull && evt.Action != triage.ThreadActionListed) || evt.Thread == nil {
+			panic("thread:updated from a group/pin binding must be a whole-row \"full\" or \"listed\" frame")
 		}
 		out = append(out, *evt.Thread)
 	}

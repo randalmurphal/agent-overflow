@@ -1856,19 +1856,18 @@ func TestThreadToolsLateCollectionStatesTheAnswersAge(t *testing.T) {
 }
 
 // A fork of a grouped thread on the paired computer is made there, and the
-// source forwards an omitted placement as omitted: the destination keeps a
-// plain caller's fork in its source's group and nests an assistant's.
-func TestThreadToolsReachForkKeepsOrLeavesItsSourcesGroupByCaller(t *testing.T) {
+// source forwards an omitted placement as omitted: the destination resolves
+// it as a spawn's default, which leaves the source's group, and with no
+// local spawner there to own it the fork is a standalone row, whoever asked.
+func TestThreadToolsReachForkLeavesItsSourcesGroup(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	for _, tc := range []struct {
-		name          string
-		assistant     bool
-		wantPlacement string
-		wantGroup     bool
+		name      string
+		assistant bool
 	}{
-		{name: "plain caller", wantPlacement: store.PlacementGrouped, wantGroup: true},
-		{name: "assistant", assistant: true, wantPlacement: store.PlacementStandalone},
+		{name: "plain caller"},
+		{name: "assistant", assistant: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1891,12 +1890,8 @@ func TestThreadToolsReachForkKeepsOrLeavesItsSourcesGroupByCaller(t *testing.T) 
 			if err != nil {
 				t.Fatalf("the fork on the destination (%v): %v", result, err)
 			}
-			wantGroup := ""
-			if tc.wantGroup {
-				wantGroup = group.ID
-			}
-			if fork.Placement != tc.wantPlacement || fork.GroupID != wantGroup {
-				t.Errorf("fork = %s in group %q, want %s in group %q", fork.Placement, fork.GroupID, tc.wantPlacement, wantGroup)
+			if fork.Placement != store.PlacementStandalone || fork.GroupID != "" {
+				t.Errorf("fork = %s in group %q, want standalone in no group", fork.Placement, fork.GroupID)
 			}
 		})
 	}
