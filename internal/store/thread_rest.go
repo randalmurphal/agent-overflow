@@ -82,19 +82,18 @@ func (s *Store) CallerRequestedOf(callerThreadID, threadID string) (bool, error)
 	return linked, nil
 }
 
-// ListThreadStartedWorkItems returns, oldest first, the runs threadID
-// started that have not ended: bound to it, which only a root run can be,
-// and recorded with source and no source ref, as a run an interactive thread
-// asks for is. A run a person bound to the thread carries another source and
-// is not listed.
-func (s *Store) ListThreadStartedWorkItems(threadID, source string) ([]WorkItem, error) {
+// ListWorkItemsReportingTo returns, oldest first, the runs that report to
+// threadID and have not ended: the root runs whose binding names it, whoever
+// started them and whatever their source. A run bound elsewhere or to no
+// thread is not listed, whichever thread started it. A called run is never
+// bound.
+func (s *Store) ListWorkItemsReportingTo(threadID string) ([]WorkItem, error) {
 	return s.queryWorkItems(
 		`SELECT `+workItemColumns+` FROM work_items
 		 WHERE origin_thread_id = `+boundText+` AND origin_thread_id <> ''
-		   AND source = `+boundText+` AND source_ref = ''
 		   AND state NOT IN ('done','failed','cancelled')
 		 ORDER BY created_at ASC, id ASC`,
-		"list the runs thread "+threadID+" started", threadID, source,
+		"list the runs that report to thread "+threadID, threadID,
 	)
 }
 

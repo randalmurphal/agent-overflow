@@ -238,14 +238,17 @@ func TestAStopNamesARunItCouldNotPauseAndRunsTheRest(t *testing.T) {
 	}
 }
 
-// A thread a running run works in, and did not start, is that run's: the
-// Stop names the run and leaves the run and the thread's session alone,
-// rather than stopping the run's work or ending a session the run would
-// start again.
+// A thread a running run works in is that run's, even when the run also
+// reports to it: the Stop names the run and leaves the run and the thread's
+// session alone, rather than stopping the run's work or ending a session the
+// run would start again.
 func TestAStopLeavesAThreadARunWorksInToTheRun(t *testing.T) {
 	t.Parallel()
 	f := newRestRunFixture(t)
 	item, member := f.startRun(t, "member")
+	if err := f.app.store.UpdateWorkItemOriginThread(item.ID, member); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
 		Token: "spawn-of-a-member", CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSpawn,
 		TargetThreadID: member, State: store.ThreadRequestAccepted,
@@ -366,4 +369,46 @@ func TestAStopCancelsTheScheduledResumeOfAParkedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForWorkflowItem(t, f.app, item.ID, engine.StateRunning, "")
+}
+
+// A Stop pauses every run that reports to the thread, a run a person started
+// and bound to it included, and leaves alone a run the thread started that a
+// person bound elsewhere or unbound.
+func TestAStopPausesTheRunsThatReportToTheThread(t *testing.T) {
+	t.Parallel()
+	f := newRestRunFixture(t)
+	bound, err := f.app.WorkflowStartRun(f.project.ID, "reliability-flow", "shared", "a person's", json.RawMessage(`{}`), nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.WorkflowBindThread(bound.ID, f.worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	awaitLivePhaseSession(t, f.app, bound.ID)
+	repointed, _ := f.startRun(t, "the worker's, bound elsewhere")
+	if _, err := f.app.WorkflowBindThread(repointed.ID, f.caller.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Two runs hold the provider's capacity; this one waits for it, running.
+	unbound, err := f.app.startWorkflowRun(f.project.ID, "reliability-flow", "shared", "the worker's, unbound", json.RawMessage(`{}`), nil, "", false, workflowSourceAgent, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.store.UpdateWorkItemOriginThread(unbound.ID, f.worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.WorkflowUnbindThread(unbound.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if stop := f.stop(t); len(stop.Failures) != 0 {
+		t.Fatalf("the Stop failed: %q", stop.Failures)
+	}
+	waitForWorkflowItem(t, f.app, bound.ID, engine.StateNeedsHuman, engine.ReasonPaused)
+	f.settle()
+	for _, id := range []string{repointed.ID, unbound.ID} {
+		if row, err := f.app.store.GetWorkItem(id); err != nil || row.State != string(engine.StateRunning) {
+			t.Fatalf("run %s = %s, %v; want it still running", id, row.State, err)
+		}
+	}
 }

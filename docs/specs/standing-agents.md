@@ -758,7 +758,7 @@ Ruling 36, as built:
 
 A thread is at rest when it has no turn, no queued message, no open
 prompt, no background work, no armed loop, watch or reminder, no running
-workflow run it started, and no open work below it. A Stop of a thread a thread spawned brings it to
+workflow run that reports to it, and no open work below it. A Stop of a thread a thread spawned brings it to
 rest: the Agents row's Stop of a spawn and Stop All
 ([Agents segment](#agents-segment)), and an agent's `thread_cancel` by
 thread id of a thread it spawned
@@ -785,8 +785,8 @@ computer that holds the thread:
    outcome `cancelled: the user stopped the thread` (an agent's stop:
    `cancelled: thread "<title>" stopped the thread`) and dismisses the
    remote completions its agent has not taken in, queued or not.
-3. Pauses every workflow run it started that is running, with Pause and
-   End Sessions ([Interrupt and end session](#interrupt-and-end-session)):
+3. Pauses every workflow run that reports to it (bound to it, whoever
+   started the run and whatever its source), with Pause and End Sessions ([Interrupt and end session](#interrupt-and-end-session)):
    the run reads paused, its members' sessions end, and it stays bound
    to the thread and resumable from the workflows view. The rest the
    pause makes does not wake the thread, whenever it arrives; a rest
@@ -796,8 +796,8 @@ computer that holds the thread:
    parked root are paused. A resume scheduled on any run in the tree is
    cancelled first, after one already firing has finished, so neither its
    timer nor the next boot resumes the run; Resume from the workflows
-   view still does. A run a person bound to the thread is not the
-   thread's and is left running.
+   view still does. A run the thread started that is bound to another
+   thread or to none is left as it is.
 4. Settles every open request on it, from any thread on any computer,
    cancelled as the user's Stop (`The user stopped it from the Agents
    tray; you did not cancel it.`) or the agent's: its message is taken
@@ -1646,7 +1646,7 @@ also ends the session of every member of the tree that has not ended,
 running or already parked, a running descendant of a parked root
 included, as the engine names them once the pause is made, and Resume
 starts them again on the same provider threads. A Stop that brings a thread to rest
-makes the same Pause and End Sessions of the runs it started. The Agents row's Stop on a spawned
+makes the same Pause and End Sessions of the runs that report to it. The Agents row's Stop on a spawned
 thread brings it to rest ([At rest](#at-rest)), which ends its session.
 
 ### Workflows to MCP

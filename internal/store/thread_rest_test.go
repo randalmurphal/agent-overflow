@@ -126,10 +126,10 @@ func TestCallerSpawnsOfReadsTheSpawnLink(t *testing.T) {
 	}
 }
 
-// A rest pauses the root runs the thread started and that have not ended:
-// not a run a person bound to it, one a phase started, a run that ended, or
-// another thread's. A called run is never bound.
-func TestListThreadStartedWorkItemsReadsTheRunsARestPauses(t *testing.T) {
+// A rest pauses the runs that report to the thread and have not ended,
+// whoever started them: not a run that ended, or one bound to another thread
+// or to none. A called run is never bound.
+func TestListWorkItemsReportingToReadsTheRunsARestPauses(t *testing.T) {
 	s := newTestStore(t)
 	create := func(id, state, source, sourceRef, origin string, at int64) {
 		t.Helper()
@@ -145,8 +145,9 @@ func TestListThreadStartedWorkItemsReadsTheRunsARestPauses(t *testing.T) {
 	create("phase-started", "running", "agent", "phase:x", "t-rest", 40)
 	create("ended", "done", "agent", "", "t-rest", 60)
 	create("elsewhere", "running", "agent", "", "t-other", 70)
+	create("unbound", "running", "agent", "", "", 80)
 
-	runs, err := s.ListThreadStartedWorkItems("t-rest", "agent")
+	runs, err := s.ListWorkItemsReportingTo("t-rest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +155,7 @@ func TestListThreadStartedWorkItemsReadsTheRunsARestPauses(t *testing.T) {
 	for _, run := range runs {
 		got = append(got, run.ID)
 	}
-	if want := []string{"started", "parked"}; !slices.Equal(got, want) {
+	if want := []string{"started", "parked", "bound-by-a-person", "phase-started"}; !slices.Equal(got, want) {
 		t.Fatalf("runs = %q, want %q", got, want)
 	}
 }
