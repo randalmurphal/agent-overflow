@@ -52,6 +52,11 @@ describe('payloadVersion', () => {
     expect(boundedPayloadVersionString(first)).not.toBe(boundedPayloadVersionString(second));
   });
 
+  it('pins the bounded form: length, FNV-1a of the code units, head and tail', () => {
+    const value = 'payload é ✓ '.repeat(20);
+    expect(boundedPayloadVersionString(value)).toBe(`240:47ed0665:${value.slice(0, 64)}:${value.slice(-64)}`);
+  });
+
   it('keeps streaming thinking versions stable across deltas', () => {
     const first = thinkingPayloadVersionForItem(makeItem({
       kind: 'thinking',

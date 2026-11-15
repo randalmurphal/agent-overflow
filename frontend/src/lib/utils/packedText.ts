@@ -22,6 +22,25 @@ export function unpackText(packed: string): string {
   return decoder.decode(bytes.subarray(0, length));
 }
 
+/** Throws unless packed `data` starts and ends between characters. The
+ * backend sends sanitized UTF-8 and never cuts a chunk inside a
+ * character (gitdiff.ChunkCut), so each packed chunk decodes alone; a
+ * chunk that does not would decode its cut character as U+FFFD. Reads at
+ * most four bytes. */
+export function checkPackedCut(data: string): void {
+  const length = data.length;
+  if (length === 0) return;
+  if ((data.charCodeAt(0) & 0xc0) === 0x80) throw new Error('patch text: a packed chunk starts inside a character');
+  for (let back = 1; back <= 4 && back <= length; back += 1) {
+    const byte = data.charCodeAt(length - back);
+    if ((byte & 0xc0) === 0x80) continue;
+    const needs = byte < 0x80 ? 1 : byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : 2;
+    if (needs === back) return;
+    break;
+  }
+  throw new Error('patch text: a packed chunk ends inside a character');
+}
+
 /** Throws unless `wide` can be a packed chunk's marks: ascending indexes
  * of bytes past ASCII in `data`. A mark that is not would index the wrong
  * lines as wide. */

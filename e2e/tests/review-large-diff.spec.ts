@@ -43,7 +43,8 @@ const READ_REVIEW_DIFF_PACKED = 4058838878;
 // A pane opened from a thread saves its drafts under the thread.
 const CREATE_DIFF_REVIEW_COMMENT = 565306783;
 
-interface ChunkAnswer { data: string; packed?: boolean; key?: { hash: number; units: number } }
+// A chunk is packed exactly when it carries wide-line marks.
+interface ChunkAnswer { data: string; wide?: number[]; key?: { hash: number; units: number } }
 interface RPCFrame {
   type?: string;
   id: string;
@@ -76,8 +77,9 @@ async function watchDiff(page: Page) {
         // An open starts the patch over. Packed data is the text's UTF-8,
         // one character per byte.
         if (method === OPEN_WORKSPACE_DIFF) seen.text = '';
-        seen.text += chunk.packed ? Buffer.from(chunk.data, 'latin1').toString('utf8') : chunk.data;
-        if (chunk.packed) seen.packedChunks += 1;
+        const packed = (chunk.wide?.length ?? 0) > 0;
+        seen.text += packed ? Buffer.from(chunk.data, 'latin1').toString('utf8') : chunk.data;
+        if (packed) seen.packedChunks += 1;
         seen.lastChunkKey = chunk.key ? `fnv1a:${chunk.key.hash.toString(16).padStart(8, '0')}:${chunk.key.units}` : '';
       }
       route.send(message);

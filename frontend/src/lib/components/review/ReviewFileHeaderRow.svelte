@@ -8,7 +8,7 @@
     REVIEW_FILE_HEADER_PX,
   } from '../../utils/reviewRows';
   import type { DiffFileSummary } from '../../utils/patchParser';
-  import { findHeaderKey } from '../../utils/reviewFindScan';
+  import { findHeaderKey } from '../../utils/reviewFindIdentity';
 
   // File header row — rendered both as a virtualized row and as the
   // sticky overlay copy. The virtualized row paints the between-files

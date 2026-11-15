@@ -1,4 +1,4 @@
-package gitdiff
+package jstext
 
 import (
 	"strings"
@@ -12,20 +12,22 @@ import (
 // this share and 8 ms when all are.
 const packedWideShare = 16
 
-// PackText returns a chunk's text packed one byte per character when that
-// is the cheaper form for a client whose strings cost two bytes per
-// character once any character is past U+00FF. ok reports whether it
-// packed; otherwise packed is raw, to be sent as the text it is.
+// PackText returns raw's text packed one byte per character when that is
+// the cheaper form for a client whose strings cost two bytes per character
+// once any character is past U+00FF, with the marks of its wide lines. The
+// text is packed exactly when wide is non-empty; otherwise packed is raw,
+// to be sent as the text it is.
 //
-// The text is first sanitized as encoding/json sanitizes a string: each
-// byte for which utf8.DecodeRuneInString reports (RuneError, 1) becomes
-// U+FFFD. Each byte b of the sanitized UTF-8 then becomes the character
-// U+00b, so decoding the packed characters' code points as UTF-8 bytes
-// gives exactly the string a JSON client receives for raw.
+// Packing first sanitizes raw as encoding/json does (see the package
+// rule): each byte that does not begin a valid sequence becomes U+FFFD.
+// Each byte b of the sanitized UTF-8 then becomes the character U+00b, so
+// decoding the packed characters' code points as UTF-8 bytes gives exactly
+// the text a JSON client receives for raw.
 //
 // wide holds, for each line (a run between newlines) of the packed text
 // that has a byte past ASCII (a wide line), the index in characters of the
-// first such byte, ascending. It is never nil, and empty when !ok.
+// first such byte, ascending. Packing needs a byte past ASCII, so packed
+// text always has a wide line.
 //
 // A client reads an ASCII line of packed text as it is and decodes a wide
 // line each time it reads one. Packing therefore pays only where
@@ -36,19 +38,24 @@ const packedWideShare = 16
 // three UTF-8 bytes each. The answer depends on raw alone, so a chunk read
 // again has the form it had.
 //
-// As a JSON string, packed text is at most six bytes per raw byte, as the
-// plain string is. MaxChunkBytes states the frame bound that follows.
-func PackText(raw string) (packed string, wide []uint32, ok bool) {
+// As JSON, packed text and its marks are at most seven bytes per raw byte.
+// Packed text is at most six, as the plain string is: an ASCII byte is one
+// character (at most a six-byte escape), any other byte one character of
+// two bytes, and an invalid byte U+FFFD's three. A wide line holds at
+// least two packed characters, so under the share rule there is at most
+// one mark per 32 packed characters, at most three per 32 raw bytes, and
+// a mark is at most nine bytes while the packed text is under 10^8
+// characters.
+func PackText(raw string) (packed string, wide []uint32) {
 	first := asciiPrefix(raw)
 	if first == len(raw) {
-		return raw, []uint32{}, false
+		return raw, nil
 	}
 	shape := measurePacked(raw, first)
 	if !shape.pays() {
-		return raw, []uint32{}, false
+		return raw, nil
 	}
-	packed, wide = pack(raw, shape)
-	return packed, wide, true
+	return pack(raw, shape)
 }
 
 // packedShape is what packing raw would produce.

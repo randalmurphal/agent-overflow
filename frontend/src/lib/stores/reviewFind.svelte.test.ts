@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createReviewFind, REVIEW_FIND_REMOTE_DEBOUNCE_MS, type ReviewFindHost, type ReviewFindSource } from './reviewFind.svelte';
 import { closePaneFind, openPaneFind, registerPaneFindProvider, resetPaneFindForTest, setPaneFindQuery } from './paneFind.svelte';
 import { setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
-import { scanReviewFind, type ReviewFindHit } from '../utils/reviewFindScan';
+import type { ReviewFindHit } from '../utils/reviewFindIdentity';
+import { scanReviewFind } from '../utils/reviewFindScan';
 import { placeReviewFindHit } from '../utils/reviewFindRows';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 

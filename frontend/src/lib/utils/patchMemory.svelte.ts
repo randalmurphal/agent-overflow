@@ -81,7 +81,8 @@ export const patchMemory = {
     heldBytes -= bytes;
   },
 
-  /** Changes the bytes of pinned text, which the budget leaves out. */
+  /** Changes the bytes of text both held and pinned, which the budget
+   * leaves out. */
   pin(delta: number): void {
     pinnedBytes += delta;
   },
@@ -132,13 +133,14 @@ export const patchMemory = {
   },
 };
 
-/** Held text in bytes, for tests and measurement. */
+/** Held text in bytes: what tests read to see the budget kept. */
 export function patchTextHeldBytes(): number {
   return heldBytes;
 }
 
-/** Chunks the budget can still reach, for tests and measurement. Each one
- * keeps its store, and so all of that store's text, alive. */
+/** Chunks the budget can still reach: what tests read to see a store let
+ * go, since each one keeps its store, and so all of that store's text,
+ * alive. */
 export function patchTextEvictableChunks(): number {
   return unread.size + read.size;
 }

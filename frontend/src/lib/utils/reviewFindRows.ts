@@ -22,8 +22,8 @@ import type { FindRun } from './findHighlights';
 import { RowWalker, splitRowCount } from './patchRows';
 import type { ReviewFile } from './patchParser';
 import { findableBody } from './suggestionMarks';
+import { countFindMatches } from './findMatch';
 import {
-  countFindMatches,
   findDraftKey,
   findHeaderKey,
   findLineKey,
@@ -34,7 +34,7 @@ import {
   type ReviewFindFileSpot,
   type ReviewFindHit,
   type ReviewFindPlace,
-} from './reviewFindScan';
+} from './reviewFindIdentity';
 import { prThreadAnchor, REVIEW_LINE_HEIGHT_PX, reviewInsertsByFile, type InsertRow, type LineBlockRow, type ReviewRowsResult } from './reviewRows';
 
 /** The content a match is placed in. */
@@ -267,7 +267,7 @@ export function resolveReviewFindHit(shown: ReviewFindShown, hit: ReviewFindHit,
   }
   if (spot.place.kind !== 'line') return ABSENT;
   const lineIndex = spot.place.lineIndex;
-  if (!file.body.residentLine(lineIndex)) return { kind: 'evicted', file, lineIndex };
+  if (!file.body.resident(lineIndex, lineIndex + 1)) return { kind: 'evicted', file, lineIndex };
   const raw = file.body.text(lineIndex);
   // Code text: the +/- or context prefix is the gutter's; a marker is all text.
   const text = at.tag.startsWith('m') ? raw : raw.slice(1);

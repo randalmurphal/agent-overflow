@@ -42,7 +42,8 @@ PR stores; components own presentation and interaction.
   row outside the held range has no scroll offset, so reach it through
   `scrollToIndex`. Review-specific anchoring and selection stay here.
   The file tree's rows share one height and mount through
-  `shared/VirtualList`.
+  `shared/VirtualList`: its scroll height, rows times row height, stays
+  under every engine's element height limit past 400,000 files.
 - Remember and restore reading positions as reading anchors (file, line,
   pixel delta; `utils/reviewAnchor.ts`), never as pixel offsets: a pixel
   names a different line once the held range moves.
@@ -143,7 +144,7 @@ PR stores; components own presentation and interaction.
   [review diff streaming](../../../../../docs/architecture/review-diff-streaming.md).
   Do not mount hidden diff bodies.
 - Find paints only text inside a `data-find-key` element, keyed as
-  `utils/reviewFindScan.ts` and `utils/ciLogFind.ts` key their hits. A PR
+  `utils/reviewFindIdentity.ts` and `utils/ciLogFind.ts` key their hits. A PR
   thread comment is keyed by its thread and `reviewCommentKey` (its forge
   id), never its position in the thread. A row
   that renders searched text carries the matching key; text the scanner

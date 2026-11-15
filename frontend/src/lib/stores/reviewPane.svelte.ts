@@ -151,7 +151,8 @@ import { createReviewDiffMedia, type ReviewMediaHost } from './reviewDiffMedia.s
 import { DiffFilesHandle, type DiffFilesTarget } from './reviewDiffFiles';
 import { whenResident } from '../utils/patchBody';
 import { reviewFileFromPatchFile, type PatchParser, type ReviewFile } from '../utils/patchParser';
-import { keptText, PatchTextLost } from '../utils/patchStore';
+import { PatchTextLost } from '../utils/patchChunks';
+import { keptText } from '../utils/patchStore';
 import { anchorRow, anchorRows, completeAnchor, namesOneRow } from '../utils/patchRows';
 import { anchorKey, type CommentAnchor, type EditorRow, type EditorState } from '../utils/reviewRows';
 import {

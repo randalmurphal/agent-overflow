@@ -9,9 +9,10 @@ import { CILogBlockCache } from '../../stores/ciLogBlocks.svelte';
 import { createMarkdownFindTextCache } from '../chat/markdown/markdownFindText';
 import { conflictPatchFile } from '../../utils/conflictFile';
 import { createFindHighlighter, type FindHighlighter } from '../../utils/findHighlights';
-import { countFindMatches } from '../../utils/findMatch';
+import { countFindMatches, findNeedle } from '../../utils/findMatch';
 import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from '../../utils/patchParser';
-import { scanReviewFind, type ReviewFindFileSpot, type ReviewFindHit } from '../../utils/reviewFindScan';
+import type { ReviewFindFileSpot, ReviewFindHit } from '../../utils/reviewFindIdentity';
+import { scanReviewFind } from '../../utils/reviewFindScan';
 import type { CommentAnchor } from '../../utils/reviewRows';
 import type { DiffReviewComment, ReviewThread } from '../../types/models';
 import { waitFor } from '../../../test/helpers/browserFrames';
@@ -212,7 +213,7 @@ describe('review find over row chrome', () => {
     // The search reads each line as the view shows it, without escapes.
     const shownText = ['short gamma', `${'x'.repeat(40)} gamma`, 'gamma red'];
     for (const query of [...LOG_CHROME, 'gamma']) {
-      const count = shownText.reduce((sum, line) => sum + countFindMatches(line, query), 0);
+      const count = shownText.reduce((sum, line) => sum + countFindMatches(line, findNeedle(query)), 0);
       expect(painted(target, query).length, query).toBe(count);
       expect(target.textContent, `${query} is on the page`).toContain(query);
     }

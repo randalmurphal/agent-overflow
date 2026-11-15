@@ -11,8 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"agent-overflow/internal/fnv1a"
 	"agent-overflow/internal/gitdiff"
+	"agent-overflow/internal/jstext"
 	"agent-overflow/internal/transport"
 )
 
@@ -42,47 +42,48 @@ var ErrTooManyReviewDiffs = errors.New("review diff: too many open diffs")
 var ErrReviewDiffNotFound = errors.New("review diff: not open")
 
 // ReviewDiffChunk is patch bytes [Offset, NextOffset) of an open review
-// diff; EOF marks the end of the patch.
+// diff; EOF marks the end of the patch. An open's first chunk and
+// ReadReviewDiff's answer the bytes as text; ReadReviewDiffPacked's
+// answers them packed where jstext.PackText packs them.
 type ReviewDiffChunk struct {
-	Data       string `json:"data"`
-	Offset     int64  `json:"offset"`
-	NextOffset int64  `json:"nextOffset"`
-	EOF        bool   `json:"eof"`
-	// Key is the key of the patch text [0, NextOffset). No key is zero
-	// (the empty text's hash is fnv1a.OffsetBasis), so every chunk carries
-	// one; omitzero makes the generated binding leave a chunk from an
-	// older backend without a key instead of filling in a zero one.
-	Key TextKey `json:"key,omitzero"`
+	// Data is the chunk's text, or, when Wide is non-empty, that text
+	// packed: its UTF-8 one byte per character (U+0000..U+00FF). A packed
+	// chunk's length in characters differs from NextOffset-Offset when the
+	// chunk held invalid UTF-8.
+	Data string `json:"data"`
+	// Wide holds, for each line of packed Data that has a byte past
+	// ASCII, the index in Data of the first such byte, ascending. A line
+	// here is a run of Data between newlines, so the piece of a line that
+	// began in an earlier chunk counts as one. Packed text always has one,
+	// so a chunk is packed exactly when Wide is non-empty.
+	Wide       []uint32 `json:"wide,omitempty"`
+	Offset     int64    `json:"offset"`
+	NextOffset int64    `json:"nextOffset"`
+	EOF        bool     `json:"eof"`
+	// Key is the key of the patch text [0, NextOffset), whichever form
+	// carries it. No key is zero, so every chunk carries one; omitzero
+	// makes the generated binding leave a chunk from an older backend
+	// without a key instead of filling in a zero one.
+	Key jstext.Key `json:"key,omitzero"`
 }
 
-// TextKey is the patch text from offset 0 to a chunk's end, as the
-// frontend keys it: FNV-1a (32-bit) over the text's UTF-16 code units,
-// and how many units that is. The text is what a JSON client receives for
-// the chunks' bytes (fnv1a.FoldUTF16), the same whichever form a chunk is
-// answered in.
-type TextKey struct {
-	Hash  uint32 `json:"hash"`
-	Units int64  `json:"units"`
+// plainReviewDiffChunk answers a chunk as text.
+func plainReviewDiffChunk(chunk gitdiff.Chunk) ReviewDiffChunk {
+	return ReviewDiffChunk{Data: chunk.Data, Offset: chunk.Offset, NextOffset: chunk.NextOffset, EOF: chunk.EOF, Key: chunk.Key}
 }
 
-// emptyTextKey is the key of no text.
-var emptyTextKey = TextKey{Hash: fnv1a.OffsetBasis}
-
-// extend returns the key of k's text followed by text.
-func (k TextKey) extend(text string) TextKey {
-	hash, units := fnv1a.FoldUTF16(k.Hash, text)
-	return TextKey{Hash: hash, Units: k.Units + int64(units)}
+// packedReviewDiffChunk answers a chunk packed where that is its cheaper
+// form for the client.
+func packedReviewDiffChunk(chunk gitdiff.Chunk) ReviewDiffChunk {
+	answer := plainReviewDiffChunk(chunk)
+	answer.Data, answer.Wide = jstext.PackText(chunk.Data)
+	return answer
 }
 
 // emptyReviewDiffOpened answers an open of a diff that has no patch.
 func emptyReviewDiffOpened() ReviewDiffOpened {
-	return ReviewDiffOpened{Chunk: ReviewDiffChunk{EOF: true, Key: emptyTextKey}}
+	return ReviewDiffOpened{Chunk: ReviewDiffChunk{EOF: true, Key: jstext.EmptyKey}}
 }
-
-// errReviewDiffKey fails a read whose key cannot be answered from what
-// the handle served. The diff's reader accepted the read, so it is a
-// defect in a reader, never a client's mistake.
-var errReviewDiffKey = errors.New("no key for the chunk's text")
 
 // ReviewDiffOpened answers an Open*Diff call: the diff's first chunk, and
 // the handle that reads the rest with ReadReviewDiff. ID is empty when the
@@ -104,8 +105,9 @@ type ReviewDiffOpened struct {
 // reviewDiffReader is an open review diff: a git diff or a thread's edit
 // payloads. Read keeps gitdiff.Diff.Read's contract: offset is 0 or a
 // NextOffset an earlier read returned, chunks end where gitdiff.ChunkCut
-// puts them, and re-reads that no longer match what was served fail with
-// an error that says the diff changed since it was opened.
+// puts them, each carries the key of the patch text up to its end, and
+// re-reads that no longer match what was served fail with an error that
+// says the diff changed since it was opened. Reads may run concurrently.
 type reviewDiffReader interface {
 	Read(ctx context.Context, offset int64, maxBytes int) (gitdiff.Chunk, error)
 	Close() error
@@ -132,61 +134,6 @@ type openReviewDiff struct {
 	// requires it again, so a session narrowed after the Open stops
 	// reading.
 	scope transport.Scope
-
-	mu sync.Mutex
-	// keys holds the key at the end of every chunk served, by its
-	// NextOffset. A read starts at 0 or at one of those (reviewDiffReader),
-	// so its start key is here.
-	keys map[int64]TextKey
-}
-
-// newOpenReviewDiff is diff, not yet held, owned by ctx's connection.
-func newOpenReviewDiff(ctx context.Context, diff reviewDiffReader, scope transport.Scope) *openReviewDiff {
-	return &openReviewDiff{diff: diff, owner: transport.ConnStateFromContext(ctx), scope: scope}
-}
-
-// read reads a chunk and answers it with its key, recording the key at
-// the chunk's end for the read that starts there. Reads may run
-// concurrently. A re-read answers the key it answered first, and a chunk
-// whose start has no recorded key fails rather than answer a key folded
-// from a wrong start.
-func (o *openReviewDiff) read(ctx context.Context, offset int64, maxBytes int) (ReviewDiffChunk, error) {
-	chunk, err := o.diff.Read(ctx, offset, maxBytes)
-	if err != nil {
-		return ReviewDiffChunk{}, err
-	}
-	if chunk.Offset != offset || chunk.NextOffset != chunk.Offset+int64(len(chunk.Data)) {
-		return ReviewDiffChunk{}, fmt.Errorf("%w: a read at %d answered %d bytes spanning [%d, %d)", errReviewDiffKey, offset, len(chunk.Data), chunk.Offset, chunk.NextOffset)
-	}
-	start, ok := o.keyAt(offset)
-	if !ok {
-		return ReviewDiffChunk{}, fmt.Errorf("%w: nothing served ends at offset %d", errReviewDiffKey, offset)
-	}
-	end := start.extend(chunk.Data)
-	o.mu.Lock()
-	prev, seen := o.keys[chunk.NextOffset]
-	if !seen {
-		if o.keys == nil {
-			o.keys = make(map[int64]TextKey)
-		}
-		o.keys[chunk.NextOffset] = end
-	}
-	o.mu.Unlock()
-	if seen && prev != end {
-		return ReviewDiffChunk{}, fmt.Errorf("%w: the text up to offset %d differs from what was served", errReviewDiffKey, chunk.NextOffset)
-	}
-	return ReviewDiffChunk{Data: chunk.Data, Offset: chunk.Offset, NextOffset: chunk.NextOffset, EOF: chunk.EOF, Key: end}, nil
-}
-
-// keyAt returns the key of the text before offset.
-func (o *openReviewDiff) keyAt(offset int64) (TextKey, bool) {
-	if offset == 0 {
-		return emptyTextKey, true
-	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	key, ok := o.keys[offset]
-	return key, ok
 }
 
 // openReviewDiff opens the patch between the sides open resolves, returns
@@ -232,42 +179,41 @@ func (a *App) openReviewDiff(ctx context.Context, action string, scope transport
 // holdOpenedReviewDiff reads an open diff's first chunk and, when there is
 // more, keeps the diff under a handle. The diff is closed otherwise.
 func (a *App) holdOpenedReviewDiff(ctx context.Context, action string, scope transport.Scope, diff reviewDiffReader) (ReviewDiffOpened, error) {
-	open := newOpenReviewDiff(ctx, diff, scope)
-	chunk, err := open.read(ctx, 0, reviewDiffFirstChunkBytes)
+	chunk, err := diff.Read(ctx, 0, reviewDiffFirstChunkBytes)
 	if err != nil || chunk.EOF {
 		closeErr := diff.Close()
 		if err != nil {
 			return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, errors.Join(err, closeErr))
 		}
 		logReviewDiffCloseError(closeErr)
-		return ReviewDiffOpened{Chunk: chunk}, nil
+		return ReviewDiffOpened{Chunk: plainReviewDiffChunk(chunk)}, nil
 	}
-	id, err := a.holdReviewDiff(open)
+	id, err := a.holdReviewDiff(ctx, diff, scope)
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
 	}
-	return ReviewDiffOpened{ID: id, Chunk: chunk}, nil
+	return ReviewDiffOpened{ID: id, Chunk: plainReviewDiffChunk(chunk)}, nil
 }
 
-// holdReviewDiff registers open under a new handle owned by its
+// holdReviewDiff registers diff under a new handle owned by the calling
 // connection. On failure the diff is closed.
-func (a *App) holdReviewDiff(open *openReviewDiff) (string, error) {
+func (a *App) holdReviewDiff(ctx context.Context, diff reviewDiffReader, scope transport.Scope) (string, error) {
 	state := &a.reviewDiffs
-	owner := open.owner
+	owner := transport.ConnStateFromContext(ctx)
 	id := uuid.NewString()
 	state.mu.Lock()
 	if state.closed {
 		state.mu.Unlock()
-		return "", errors.Join(ErrShuttingDown, open.diff.Close())
+		return "", errors.Join(ErrShuttingDown, diff.Close())
 	}
 	if len(state.diffs) >= maxReviewDiffHandles {
 		state.mu.Unlock()
-		return "", errors.Join(ErrTooManyReviewDiffs, open.diff.Close())
+		return "", errors.Join(ErrTooManyReviewDiffs, diff.Close())
 	}
 	if state.diffs == nil {
 		state.diffs = make(map[string]*openReviewDiff)
 	}
-	state.diffs[id] = open
+	state.diffs[id] = &openReviewDiff{diff: diff, owner: owner, scope: scope}
 	state.mu.Unlock()
 	// Closing removes the snapshot directory, which connection teardown
 	// should not wait on.
@@ -294,71 +240,51 @@ func (a *App) holdReviewDiff(open *openReviewDiff) (string, error) {
 //ao:route home
 //ao:callerbound
 func (a *App) ReadReviewDiff(ctx context.Context, id string, offset int64, maxBytes int) (ReviewDiffChunk, error) {
-	return a.readReviewDiff(ctx, id, offset, maxBytes)
-}
-
-// ReviewDiffPackedChunk is a ReviewDiffChunk whose text is packed where
-// gitdiff.PackText packs it. Offset, NextOffset and EOF are the raw
-// chunk's, so len(Data) in characters differs from NextOffset-Offset when
-// the chunk had invalid UTF-8.
-type ReviewDiffPackedChunk struct {
-	// Data is the chunk's text: as UTF-8, one byte per character
-	// (U+0000..U+00FF), when Packed, and otherwise the text itself, as
-	// ReadReviewDiff answers it.
-	Data string `json:"data"`
-	// Packed depends on the chunk's bytes alone: a chunk read again has
-	// the form it had.
-	Packed bool `json:"packed"`
-	// Wide holds, for each line of packed Data that has a byte past
-	// ASCII, the index in Data of the first such byte, ascending. A line
-	// here is a run of Data between newlines, so the piece of a line that
-	// began in an earlier chunk counts as one. Never null; empty when
-	// !Packed.
-	Wide       []uint32 `json:"wide"`
-	Offset     int64    `json:"offset"`
-	NextOffset int64    `json:"nextOffset"`
-	EOF        bool     `json:"eof"`
-	// Key is the plain chunk's: the key of the text, not of its form.
-	Key TextKey `json:"key,omitzero"`
+	chunk, err := a.readReviewDiff(ctx, id, offset, maxBytes)
+	if err != nil {
+		return ReviewDiffChunk{}, err
+	}
+	return plainReviewDiffChunk(chunk), nil
 }
 
 // ReadReviewDiffPacked is ReadReviewDiff with the chunk's text packed
-// where that is its cheaper form for the client (gitdiff.PackText): the
-// same chunk, handle, owner and scope rules. A client calls it only on a
-// backend that advertises transport.CapabilityReviewDiffPacked.
+// where that is its cheaper form for the client (jstext.PackText): the
+// same chunk, key, handle, owner and scope rules. The form depends on the
+// chunk's bytes alone, so a chunk read again has the form it had. A
+// client calls it only on a backend that advertises
+// transport.CapabilityReviewDiffPacked.
 //
 //ao:scope session
 //ao:route home
 //ao:callerbound
-func (a *App) ReadReviewDiffPacked(ctx context.Context, id string, offset int64, maxBytes int) (ReviewDiffPackedChunk, error) {
+func (a *App) ReadReviewDiffPacked(ctx context.Context, id string, offset int64, maxBytes int) (ReviewDiffChunk, error) {
 	chunk, err := a.readReviewDiff(ctx, id, offset, maxBytes)
 	if err != nil {
-		return ReviewDiffPackedChunk{}, err
+		return ReviewDiffChunk{}, err
 	}
-	data, wide, packed := gitdiff.PackText(chunk.Data)
-	return ReviewDiffPackedChunk{Data: data, Packed: packed, Wide: wide, Offset: chunk.Offset, NextOffset: chunk.NextOffset, EOF: chunk.EOF, Key: chunk.Key}, nil
+	return packedReviewDiffChunk(chunk), nil
 }
 
 // readReviewDiff reads a chunk of a diff the calling connection holds,
 // under the scope its Open required.
-func (a *App) readReviewDiff(ctx context.Context, id string, offset int64, maxBytes int) (ReviewDiffChunk, error) {
+func (a *App) readReviewDiff(ctx context.Context, id string, offset int64, maxBytes int) (gitdiff.Chunk, error) {
 	if a.shuttingDown.Load() {
-		return ReviewDiffChunk{}, ErrShuttingDown
+		return gitdiff.Chunk{}, ErrShuttingDown
 	}
 	open, err := a.ownedReviewDiff(ctx, id)
 	if err != nil {
-		return ReviewDiffChunk{}, err
+		return gitdiff.Chunk{}, err
 	}
 	if err := a.requireScope(ctx, open.scope, "reading a review diff"); err != nil {
-		return ReviewDiffChunk{}, err
+		return gitdiff.Chunk{}, err
 	}
-	chunk, err := open.read(ctx, offset, maxBytes)
+	chunk, err := open.diff.Read(ctx, offset, maxBytes)
 	if errors.Is(err, gitdiff.ErrDiffClosed) {
 		// Released while this read ran.
-		return ReviewDiffChunk{}, ErrReviewDiffNotFound
+		return gitdiff.Chunk{}, ErrReviewDiffNotFound
 	}
 	if err != nil {
-		return ReviewDiffChunk{}, fmt.Errorf("read review diff: %w", err)
+		return gitdiff.Chunk{}, fmt.Errorf("read review diff: %w", err)
 	}
 	return chunk, nil
 }

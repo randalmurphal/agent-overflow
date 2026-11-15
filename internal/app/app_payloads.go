@@ -39,24 +39,38 @@ type PayloadContent struct {
 	PatchSpans []PatchSpanSeed `json:"patchSpans,omitempty"`
 }
 
+// payloadRead is a read of a payload's text: data starts at byte offset,
+// total is the payload's size, and complete reports that data reaches its
+// end.
+type payloadRead struct {
+	data     []byte
+	offset   int
+	total    int
+	complete bool
+}
+
 // payloadText reads up to maxBytes of a payload's text from byte offset,
-// which is 0 or the end of an earlier read, and reports the payload's size
-// and whether the read reached its end. A read that stops before the end
-// stops between characters: a character the window would split is left
-// for the next read, so the text a JSON client receives for consecutive
-// reads, where each invalid byte is one U+FFFD, is the payload's. A
-// window of 1 to utf8.UTFMax-1 bytes is read as utf8.UTFMax, so every
-// read of a window short of the end returns at least one byte. A window
-// of 0 reads nothing and reports the size.
-func (a *App) payloadText(threadID, payloadID string, offset, maxBytes int) (data []byte, total int, complete bool, err error) {
+// which is 0 or the end of an earlier read; a negative offset reads from
+// 0, and the read reports the offset it read from. A read that stops
+// before the end stops between characters: a character the window would
+// split is left for the next read, so the text a JSON client receives for
+// consecutive reads, where each invalid byte is one U+FFFD, is the
+// payload's. A window of 1 to utf8.UTFMax-1 bytes is read as utf8.UTFMax,
+// so every read of a window short of the end returns at least one byte. A
+// window of 0 reads nothing and reports the size.
+func (a *App) payloadText(threadID, payloadID string, offset, maxBytes int) (payloadRead, error) {
+	offset = max(offset, 0)
 	if maxBytes > 0 {
 		maxBytes = max(maxBytes, utf8.UTFMax)
 	}
-	data, total, complete, err = a.store.GetPayloadChunk(threadID, payloadID, offset, maxBytes)
-	if err != nil || complete {
-		return data, total, complete, err
+	data, total, complete, err := a.store.GetPayloadChunk(threadID, payloadID, offset, maxBytes)
+	if err != nil {
+		return payloadRead{}, err
 	}
-	return data[:stringsx.CompleteRunePrefix(data)], total, false, nil
+	if !complete {
+		data = data[:stringsx.CompleteRunePrefix(data)]
+	}
+	return payloadRead{data: data, offset: offset, total: total, complete: complete}, nil
 }
 
 // GetPayloadPreview serves a payload's leading text (payloadText), with
@@ -71,15 +85,15 @@ func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int)
 	if err != nil {
 		return PayloadPreview{}, err
 	}
-	data, totalSize, isComplete, err := a.payloadText(threadID, payloadID, 0, maxBytes)
+	read, err := a.payloadText(threadID, payloadID, 0, maxBytes)
 	if err != nil {
 		return PayloadPreview{}, err
 	}
 	return PayloadPreview{
-		Data:       string(data),
-		NextOffset: len(data),
-		TotalSize:  totalSize,
-		IsComplete: isComplete,
+		Data:       string(read.data),
+		NextOffset: len(read.data),
+		TotalSize:  read.total,
+		IsComplete: read.complete,
 		PatchSpans: a.persistedPayloadPatchSpans(threadID, meta.Kind, payloadID),
 	}, nil
 }
@@ -95,17 +109,16 @@ func (a *App) GetPayloadChunk(threadID string, payloadID string, offset int, max
 	if _, err := a.getThreadPayloadMeta(threadID, payloadID); err != nil {
 		return PayloadChunk{}, err
 	}
-	offset = max(offset, 0)
-	data, totalSize, isComplete, err := a.payloadText(threadID, payloadID, offset, maxBytes)
+	read, err := a.payloadText(threadID, payloadID, offset, maxBytes)
 	if err != nil {
 		return PayloadChunk{}, err
 	}
 	return PayloadChunk{
-		Data:       string(data),
-		Offset:     offset,
-		NextOffset: offset + len(data),
-		TotalSize:  totalSize,
-		IsComplete: isComplete,
+		Data:       string(read.data),
+		Offset:     read.offset,
+		NextOffset: read.offset + len(read.data),
+		TotalSize:  read.total,
+		IsComplete: read.complete,
 	}, nil
 }
 

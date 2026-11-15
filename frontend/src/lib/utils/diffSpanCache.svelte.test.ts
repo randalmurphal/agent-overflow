@@ -184,10 +184,14 @@ describe('requestFileSpans', () => {
 
   it('sends nothing when a keyed file\'s text can no longer be read, and reports nothing', async () => {
     const pad = `diff --git a/pad.ts b/pad.ts\n@@ -1,0 +1,1 @@\n+${'p'.repeat(200)}\n`;
+    // A store that ends with all of its text keeps it, so this one
+    // evicts as it arrives; the file is keyed once read back.
+    setPatchTextBudgetForTest(1);
     const { parser, files, source } = streamPatch(`${pad}diff --git a/src/a.ts b/src/a.ts\n@@ -1,1 +1,1 @@\n+const x = 1;\n`, 20);
     try {
       const file = files[1];
-      expect(file.body.contentKey()).not.toBeNull();
+      setPatchTextBudgetForTest(null);
+      expect(await file.body.whenResident(() => file.body.contentKey())).not.toBeNull();
       setPatchTextBudgetForTest(1);
       patchMemory.enforce();
       expect(file.body.resident()).toBe(false);
@@ -803,7 +807,7 @@ describe('byte-budget eviction', () => {
   function hugeResult(file: PatchFile, runPairs: number) {
     return {
       lang: 'typescript',
-      lines: [{ r: new Array(runPairs).fill(1) }, ...file.lines.slice(1).map(() => ({}))],
+      lines: [{ r: Array.from({ length: runPairs }, () => 1) }, ...file.lines.slice(1).map(() => ({}))],
       truncated: false,
     };
   }

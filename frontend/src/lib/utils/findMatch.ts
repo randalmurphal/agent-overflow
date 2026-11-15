@@ -56,20 +56,60 @@ export function forEachFindMatch(folded: string, needle: string, each: (at: numb
   for (let at = folded.indexOf(needle); at >= 0; at = folded.indexOf(needle, at + needle.length)) each(at);
 }
 
+/** Characters of one text `findMatchChunk` folds and searches at a time. */
+export const LONG_TEXT = 16_384;
+
+// `at`, moved past a low surrogate so a slice there keeps its pair.
+function codePointBoundary(text: string, at: number): number {
+  if (at <= 0 || at >= text.length) return at;
+  const low = text.charCodeAt(at);
+  const high = text.charCodeAt(at - 1);
+  return low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff ? at + 1 : at;
+}
+
+/**
+ * The rule over unfolded text a chunk at a time, so no call folds more
+ * than a chunk: the matches of `needle` (folded, `findNeedle`) in `run`
+ * from `from`, left to right without overlap, `LONG_TEXT` characters at a
+ * time. Answers how many start in this chunk, where the next chunk
+ * starts, whether this one ended the run, and how many characters from
+ * `from` it folded: the chunk and up to the needle's length less one past
+ * it, never past the run.
+ */
+export function findMatchChunk(run: string, from: number, needle: string): { count: number; next: number; last: boolean; folded: number } {
+  const end = codePointBoundary(run, Math.min(run.length, from + LONG_TEXT));
+  const foldEnd = codePointBoundary(run, Math.min(run.length, end + needle.length - 1));
+  const folded = foldFindText(run.slice(from, foldEnd));
+  let count = 0;
+  let next = end;
+  for (let at = folded.indexOf(needle); at >= 0 && from + at < end; at = folded.indexOf(needle, at + needle.length)) {
+    count += 1;
+    next = Math.max(next, from + at + needle.length);
+  }
+  return { count, next, last: end >= run.length, folded: foldEnd - from };
+}
+
+/** The matches of `needle` (folded, `findNeedle`) in unfolded `run`, by
+ * `findMatchChunk`. */
+export function countFindMatches(run: string, needle: string): number {
+  let count = 0;
+  for (let from = 0; needle !== '' && from + needle.length <= run.length;) {
+    const chunk = findMatchChunk(run, from, needle);
+    count += chunk.count;
+    if (chunk.last) break;
+    from = chunk.next;
+  }
+  return count;
+}
+
 /** Code points of a needle a filter pattern spells. A text holding a
  * match of the needle holds a match of its first code points, so a
- * longer needle is filtered by its prefix. Each spelled code point is one
- * more alternative a start position can walk, so the bound trades lines
- * flagged in vain against the worst-case search. Measured over 200,000
- * lines of this repository's Go and TypeScript with 200 needles of 9 to
- * 40 characters copied from it, lines flagged that the needle does not
- * match, per 100,000: 85 at 8 code points, 8 at 12, 3 at 16. On text that
- * matches all but the last spelled code point at every start (512 lines
- * of 100 "é"), a block searches in 0.5 ms at 8, 0.9 ms at 12, 1.4 ms at 16
- * and 8.1 ms at 64, against 5.6 ms for the rule over the same lines. Each
- * code point spells as at most 3 preimages (the fold table's largest),
- * each at most 2 UTF-16 units plain and 4 bytes packed, so the pattern
- * source stays under 2 KB. */
+ * longer needle is filtered by its prefix, and lines holding the prefix
+ * without the rest are flagged in vain. The bound caps the alternatives a
+ * start position can try, and so the work per position. Each code point
+ * spells as at most 3 preimages (the fold table's largest), each at most
+ * 2 UTF-16 units plain and 4 bytes packed, so the pattern source stays
+ * under 2 KB. */
 export const FIND_FILTER_CODE_POINTS = 12;
 
 // Every code point x with foldCodePointValue(x) === code, read from the
@@ -138,10 +178,36 @@ export function findFilterPattern(needle: string): RegExp | null {
   return new RegExp(source, 'g');
 }
 
-/** The number of matches of `needle` in folded text. */
-export function countFindMatches(folded: string, needle: string): number {
+/**
+ * Writes to `out`, ascending, each line of [start, end) whose stored text
+ * holds a match of `filter` (`findFilterPattern`), and returns how many.
+ * `stored` is those lines' stored text joined by newlines
+ * (PatchBody.storedRange); `lineStart(line)` is a line's position in the
+ * store, in an origin of the caller's choice. A match is placed by
+ * binary search over the starts and the search goes on from the next
+ * line, so the work is one search and one placement per flagged line.
+ * `out` must hold `end - start` lines.
+ */
+export function flagFilterLines(filter: RegExp, stored: string, start: number, end: number, lineStart: (line: number) => number, out: Int32Array): number {
+  const base = lineStart(start);
   let count = 0;
-  forEachFindMatch(folded, needle, () => { count += 1; });
+  filter.lastIndex = 0;
+  // The first line the search can still be in.
+  let from = start;
+  for (let match = filter.exec(stored); match !== null; match = filter.exec(stored)) {
+    let low = from;
+    let high = end - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if (lineStart(mid) - base <= match.index) low = mid;
+      else high = mid - 1;
+    }
+    out[count] = low;
+    count += 1;
+    from = low + 1;
+    if (from >= end) break;
+    filter.lastIndex = lineStart(from) - base;
+  }
   return count;
 }
 

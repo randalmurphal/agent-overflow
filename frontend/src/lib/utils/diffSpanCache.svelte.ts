@@ -37,7 +37,7 @@ import { workspaceKeyForRef } from './workspaceKey';
 import type { WorkspaceRef } from '../types/git';
 import type { PatchFile, PatchLine } from './patchFiles';
 import type { ReviewFile } from './patchParser';
-import { PatchTextLost } from './patchStore';
+import { PatchTextLost } from './patchChunks';
 import {
   ensureHighlightSchemaVersion,
   ensureSyntaxClassNames,

@@ -1,0 +1,138 @@
+[
+  {
+    "name": "after the last newline in the window",
+    "rawHex": "61620a63640a65666768",
+    "offset": 0,
+    "window": 7,
+    "cut": 6
+  },
+  {
+    "name": "after the last newline, from an offset",
+    "rawHex": "61620a63640a65666768",
+    "offset": 3,
+    "window": 4,
+    "cut": 6
+  },
+  {
+    "name": "before a three-byte character the window ends one byte into",
+    "rawHex": "6162e282ac6364",
+    "offset": 0,
+    "window": 3,
+    "cut": 2
+  },
+  {
+    "name": "before a three-byte character the window ends two bytes into",
+    "rawHex": "6162e282ac6364",
+    "offset": 0,
+    "window": 4,
+    "cut": 2
+  },
+  {
+    "name": "after a character that ends the window",
+    "rawHex": "6162e282ac6364",
+    "offset": 0,
+    "window": 5,
+    "cut": 5
+  },
+  {
+    "name": "before a four-byte character straddling the window, from an offset",
+    "rawHex": "78f09f988079f09f98807a",
+    "offset": 5,
+    "window": 3,
+    "cut": 6
+  },
+  {
+    "name": "an invalid byte that ends the window is kept",
+    "rawHex": "6162ff6364",
+    "offset": 0,
+    "window": 3,
+    "cut": 3
+  },
+  {
+    "name": "invalid continuation bytes are kept",
+    "rawHex": "618080808062",
+    "offset": 0,
+    "window": 4,
+    "cut": 4
+  },
+  {
+    "name": "an encoded surrogate is invalid, so it is kept",
+    "rawHex": "6162eda08063",
+    "offset": 0,
+    "window": 4,
+    "cut": 4
+  },
+  {
+    "name": "before an unfinished sequence the text never finishes",
+    "rawHex": "6162e2826364",
+    "offset": 0,
+    "window": 4,
+    "cut": 2
+  },
+  {
+    "name": "past an unfinished sequence once the window shows it is invalid",
+    "rawHex": "6162e2826364",
+    "offset": 2,
+    "window": 3,
+    "cut": 5
+  },
+  {
+    "name": "a lone unfinished sequence at the end of the text, read whole",
+    "rawHex": "616263e2",
+    "offset": 0,
+    "window": 4,
+    "cut": 4
+  },
+  {
+    "name": "a lone unfinished sequence at the end of the text, window before it",
+    "rawHex": "616263e2",
+    "offset": 0,
+    "window": 3,
+    "cut": 3
+  },
+  {
+    "name": "a window of one byte of a three-byte character",
+    "rawHex": "e282ac616263",
+    "offset": 0,
+    "window": 1,
+    "cut": 1,
+    "shorterThanItsCharacter": true
+  },
+  {
+    "name": "a window of two bytes of a three-byte character",
+    "rawHex": "e282ac616263",
+    "offset": 0,
+    "window": 2,
+    "cut": 2,
+    "shorterThanItsCharacter": true
+  },
+  {
+    "name": "a window of three bytes of a four-byte character, from an offset",
+    "rawHex": "61f09f988062",
+    "offset": 1,
+    "window": 3,
+    "cut": 4,
+    "shorterThanItsCharacter": true
+  },
+  {
+    "name": "a cut at exactly the end",
+    "rawHex": "61620a6364",
+    "offset": 3,
+    "window": 2,
+    "cut": 5
+  },
+  {
+    "name": "the rest in a window larger than it",
+    "rawHex": "61620a6364",
+    "offset": 0,
+    "window": 100,
+    "cut": 5
+  },
+  {
+    "name": "a full window with one byte more to come",
+    "rawHex": "61626364",
+    "offset": 0,
+    "window": 3,
+    "cut": 3
+  }
+]

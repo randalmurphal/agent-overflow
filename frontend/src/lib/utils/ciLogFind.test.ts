@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ciLogAnswerHits, ciLogFindHits, findCILogKey, placeCILogLine, resolveCILogHit, type CILogFindHit, type CILogResolution } from './ciLogFind';
-import { findNeedle } from './findMatch';
-import { countFindMatches } from './reviewFindScan';
+import { countFindMatches, findNeedle } from './findMatch';
 import { ansiShownText } from './ansiText';
 import { CI_LOG_BLOCK_LINES } from '../stores/ciLogBlocks.svelte';
 import type { CILogSection } from '../types/models';

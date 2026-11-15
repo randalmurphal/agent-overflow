@@ -1,4 +1,4 @@
-import { appendFNV1a32, FNV_OFFSET_BASIS_32 } from './fnv1a';
+import { appendFNV1a32, FNV_OFFSET_BASIS_32, formatContentKey } from './fnv1a';
 import { parseHunkHeader, type PatchLine } from './patchFiles';
 import {
   LINE_ADD,
@@ -131,16 +131,11 @@ export class PatchBody {
     this.textSize = lineCount === 0 ? 0 : textSize + markerChars;
   }
 
-  /** A body over explicitly typed lines. */
-  static fromLines(lines: readonly StoredLine[]): PatchBody {
-    const store = PatchStore.fromLines(lines);
-    return new PatchBody([{ store, start: 0, end: store.lineCount }]);
-  }
-
   /** A body over a parsed PatchFile's lines (conflict pseudo-files,
    * merged edit sections). */
   static fromPatchLines(lines: readonly PatchLine[]): PatchBody {
-    return PatchBody.fromLines(lines.map(storedLine));
+    const store = PatchStore.fromLines(lines.map(storedLine));
+    return new PatchBody([{ store, start: 0, end: store.lineCount }]);
   }
 
   kind(index: number): LineKind {
@@ -161,18 +156,25 @@ export class PatchBody {
     return store.storedLineEnd(line) - store.storedLineStart(line);
   }
 
-  /** Whether a line's text is resident. */
-  residentLine(index: number): boolean {
-    const { store, line } = this.locate(index);
-    return store.resident(line);
+  /** Whether the text of lines [start, end) is resident, by default of
+   * every line. */
+  resident(start = 0, end = this.lineCount): boolean {
+    if (end <= start) return true;
+    for (let at = this.segmentAt(start); at < this.segments.length && this.bases[at] < end; at += 1) {
+      const segment = this.segments[at];
+      const base = this.bases[at];
+      const from = segment.start + Math.max(0, start - base);
+      const to = segment.start + Math.min(end - base, segment.end - segment.start);
+      if (!segment.store.resident(from, to)) return false;
+    }
+    return true;
   }
 
   /** The end of the segment holding line `index`: lines [index, end) are
    * consecutive lines of one store. */
   segmentEnd(index: number): number {
     if (!(index >= 0 && index < this.lineCount)) throw new RangeError(`patch body: line ${index} is not in the body`);
-    let segment = 0;
-    while (segment + 1 < this.bases.length && this.bases[segment + 1] <= index) segment += 1;
+    const segment = this.segmentAt(index);
     return this.bases[segment] + this.segments[segment].end - this.segments[segment].start;
   }
 
@@ -192,11 +194,6 @@ export class PatchBody {
     return store.storedLineEnd(line);
   }
 
-  /** Whether the text of lines [start, end) is resident. */
-  residentRange(start: number, end: number): boolean {
-    return this.slice(start, end).every((range) => range.store.residentRange(range.start, range.end));
-  }
-
   /** Lines [start, end) of one segment (`segmentEnd`) as stored, joined
    * with newlines: not their text (PatchStore.storedRange), for a filter
    * that runs over storage. Throws PatchTextNotResident when any is
@@ -208,21 +205,23 @@ export class PatchBody {
     return store.storedRange(line, line + end - start);
   }
 
-  /** Whether the text of every line is resident. */
-  resident(): boolean {
-    return this.segments.every((segment) => segment.store.residentRange(segment.start, segment.end));
-  }
-
-  /** Reads the evicted text of lines [start, end) again (PatchStore.load). */
-  loadLines(start: number, end: number): Promise<void> {
-    return Promise.all(
-      this.slice(start, end).map((range) => range.store.load(range.start, range.end)),
-    ).then(() => undefined);
-  }
-
   /** Runs `read` with lines [start, end) resident (whenResident). */
   whenResident<T>(read: () => T, start = 0, end = this.lineCount): Promise<T> {
     return whenResident(this.slice(start, end), read);
+  }
+
+  /** Keeps the text of lines [start, end) from eviction until the
+   * returned function runs; running it again does nothing. */
+  pin(start: number, end: number): () => void {
+    return pinRanges(this.slice(start, end));
+  }
+
+  /** Reads the evicted text of lines [start, end) again: null when none
+   * is evicted. Text can be evicted again once it lands unless it is
+   * pinned (`pin`). Rejects with PatchTextLost when evicted text can no
+   * longer be read. */
+  load(start: number, end: number): Promise<void> | null {
+    return loadRanges(this.slice(start, end));
   }
 
   hunkOldStart(index: number): number {
@@ -282,7 +281,7 @@ export class PatchBody {
       hash = appendFNV1a32(hash, text);
       length = text.length;
     }
-    this.key = `${length}:${hash.toString(36)}`;
+    this.key = formatContentKey(hash, length);
     return this.key;
   }
 
@@ -315,10 +314,13 @@ export class PatchBody {
   }
 
   private locate(index: number): { store: PatchStore; line: number } {
-    if (this.segments.length === 1) {
-      const segment = this.segments[0];
-      return { store: segment.store, line: segment.start + index };
-    }
+    const at = this.segmentAt(index);
+    const segment = this.segments[at];
+    return { store: segment.store, line: segment.start + index - this.bases[at] };
+  }
+
+  // The segment holding line `index`.
+  private segmentAt(index: number): number {
     let low = 0;
     let high = this.bases.length - 1;
     while (low < high) {
@@ -326,8 +328,7 @@ export class PatchBody {
       if (this.bases[mid] <= index) low = mid;
       else high = mid - 1;
     }
-    const segment = this.segments[low];
-    return { store: segment.store, line: segment.start + index - this.bases[low] };
+    return low;
   }
 }
 
@@ -337,16 +338,28 @@ export class PatchBody {
  * with PatchTextLost when evicted text can no longer be read.
  */
 export async function whenResident<T>(ranges: readonly BodySegment[], read: () => T): Promise<T> {
-  const releases = ranges.map((range) => range.store.pin(range.start, range.end));
+  const release = pinRanges(ranges);
   try {
-    const loads = ranges
-      .filter((range) => !range.store.residentRange(range.start, range.end))
-      .map((range) => range.store.load(range.start, range.end));
-    if (loads.length > 0) await Promise.all(loads);
+    const loading = loadRanges(ranges);
+    if (loading !== null) await loading;
     return read();
   } finally {
-    for (const release of releases) release();
+    release();
   }
+}
+
+function pinRanges(ranges: readonly BodySegment[]): () => void {
+  const releases = ranges.map((range) => range.store.pin(range.start, range.end));
+  return () => {
+    for (const release of releases.splice(0)) release();
+  };
+}
+
+function loadRanges(ranges: readonly BodySegment[]): Promise<void> | null {
+  const loads = ranges
+    .filter((range) => !range.store.resident(range.start, range.end))
+    .map((range) => range.store.load(range.start, range.end));
+  return loads.length > 0 ? Promise.all(loads).then(() => undefined) : null;
 }
 
 export function lineTypeOf(kind: LineKind): PatchLine['type'] {
@@ -375,6 +388,6 @@ function storedLine(line: PatchLine): StoredLine {
     case 'marker':
       return line.fold ? { content: line.content, kind: LINE_MARKER, fold: line.fold } : { content: line.content, kind: LINE_MARKER };
     default:
-      return { content: line.content, kind: parseHunkHeader(line.content) ? LINE_HUNK : LINE_META };
+      return { content: line.content, kind: parseHunkHeader(line.content) ?? LINE_META };
   }
 }

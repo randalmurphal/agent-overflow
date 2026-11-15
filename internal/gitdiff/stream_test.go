@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,17 +12,18 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"agent-overflow/internal/fnv1a"
+	"agent-overflow/internal/jstext"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
 // readDiff reads a whole diff in chunks of chunkBytes, checking that every
-// chunk continues the previous one.
+// chunk continues the previous one and carries the key of the text so far.
 func readDiff(t *testing.T, diff *Diff, chunkBytes int) ([]Chunk, error) {
 	t.Helper()
 	var chunks []Chunk
 	var offset int64
+	key := jstext.EmptyKey
 	for {
 		chunk, err := diff.Read(context.Background(), offset, chunkBytes)
 		if err != nil {
@@ -32,6 +32,9 @@ func readDiff(t *testing.T, diff *Diff, chunkBytes int) ([]Chunk, error) {
 		if chunk.Offset != offset || chunk.NextOffset != offset+int64(len(chunk.Data)) {
 			t.Fatalf("chunk [%d,%d) with %d bytes does not continue offset %d",
 				chunk.Offset, chunk.NextOffset, len(chunk.Data), offset)
+		}
+		if key = key.Extend(chunk.Data); chunk.Key != key {
+			t.Fatalf("chunk [%d,%d) key %+v, want %+v", chunk.Offset, chunk.NextOffset, chunk.Key, key)
 		}
 		chunks = append(chunks, chunk)
 		offset = chunk.NextOffset
@@ -172,55 +175,6 @@ func TestDiffSplitsALongLineBetweenCharacters(t *testing.T) {
 	}
 }
 
-func TestChunkCut(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		window string
-		want   int
-	}{
-		{"after the last newline", "ab\ncd\nef", 6},
-		{"whole window ending in a newline", "ab\n", 3},
-		{"no newline, complete characters", "abcé", 5},
-		{"no newline, two-byte character cut", "abc\xc3", 3},
-		{"no newline, three-byte character cut after one byte", "ab\xe2\x82", 2},
-		{"no newline, invalid bytes are kept", "ab\x80\x80\x80\x80", 6},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := ChunkCut([]byte(tc.window)); got != tc.want {
-				t.Fatalf("ChunkCut(%q) = %d, want %d", tc.window, got, tc.want)
-			}
-		})
-	}
-}
-
-// A cut never falls inside a valid UTF-8 sequence, so the text a client
-// receives for consecutive chunks, and its key, is the whole patch's.
-func TestChunkCutKeepsTheTextOfTheWholePatch(t *testing.T) {
-	t.Parallel()
-	rng := rand.New(rand.NewPCG(5, 6))
-	alphabet := []string{"a", "\n", "é", "€", "\U0001F600", "\xff", "\xc3", "\xe2\x82", "\xf0\x9f\x98", "\xed\xa0\x80", "\x80"}
-	for round := range 20000 {
-		var b strings.Builder
-		for n := 2 + rng.IntN(16); n > 0; n-- {
-			b.WriteString(alphabet[rng.IntN(len(alphabet))])
-		}
-		patch := b.String()
-		if len(patch) <= utf8.UTFMax+1 {
-			continue
-		}
-		end := utf8.UTFMax + 1 + rng.IntN(len(patch)-utf8.UTFMax)
-		cut := ChunkCut([]byte(patch[:end]))
-		wholeHash, wholeUnits := fnv1a.FoldUTF16(fnv1a.OffsetBasis, patch)
-		hash, units := fnv1a.FoldUTF16(fnv1a.OffsetBasis, patch[:cut])
-		hash, rest := fnv1a.FoldUTF16(hash, patch[cut:])
-		if hash != wholeHash || units+rest != wholeUnits {
-			t.Fatalf("round %d: %q cut at %d of a %d-byte window changes the text", round, patch, cut, end)
-		}
-	}
-}
-
 func TestDiffRereadsReturnTheSnapshotAfterTheWorktreeAndHeadMove(t *testing.T) {
 	t.Parallel()
 	repo := testutil.InitGitRepo(t)
@@ -304,8 +258,8 @@ func TestDiffReadRefusesAnOffsetNoReadEndedAt(t *testing.T) {
 		t.Fatalf("read: %+v, %v", chunk, err)
 	}
 	end, err := diff.Read(context.Background(), chunk.NextOffset, MinChunkBytes)
-	if err != nil || !end.EOF || end.Data != "" {
-		t.Fatalf("read at the end: %+v, %v; want an empty EOF chunk", end, err)
+	if err != nil || !end.EOF || end.Data != "" || end.Key != chunk.Key {
+		t.Fatalf("read at the end: %+v, %v; want an empty EOF chunk with key %+v", end, err, chunk.Key)
 	}
 }
 

@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import shared from '../../test/fixtures/ansiShownVectors.json';
 import { ansiHtml, ansiScanStepsForTest, ansiShownText } from './ansiText';
-import { countFindMatches, findNeedle, foldFindText } from './findMatch';
+import { countFindMatches, findNeedle } from './findMatch';
 
 // internal/cilog/search_test.go reads the same vectors, and
 // AnsiText.browser.test.ts holds them to AnsiText's DOM.
 describe('ansiShownText', () => {
   it.each(shared.vectors.map((vector) => [vector.name, vector] as const))('%s', (_name, vector) => {
     expect(ansiShownText(vector.input)).toBe(vector.shown);
-    expect(countFindMatches(foldFindText(ansiShownText(vector.input)), findNeedle(vector.query))).toBe(vector.count);
+    expect(countFindMatches(ansiShownText(vector.input), findNeedle(vector.query))).toBe(vector.count);
   });
 
   it('never hides across a newline, so a run of lines shows each line', () => {

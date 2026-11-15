@@ -1,7 +1,7 @@
 import { render, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseReviewFiles, type ReviewFile } from '../../utils/patchParser';
-import { PatchTextLost } from '../../utils/patchStore';
+import { PatchTextLost } from '../../utils/patchChunks';
 import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 import PatchLines from './PatchLines.svelte';
 import PatchLinesBlock from './PatchLinesBlock.svelte';

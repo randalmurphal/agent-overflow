@@ -17,7 +17,10 @@ configuration.
 
 Patches have no size limit and are never held whole. An `Open*` function
 resolves both endpoints to object IDs through `Sides` (`sides.go`) and returns
-a `Diff`, read in chunks by byte offset (`stream.go`). `Sides.Pin` answers
+a `Diff`, read in chunks by byte offset (`stream.go`); each chunk carries
+the `jstext.Key` of the patch text up to its end, which `Read` records per
+boundary beside the hash that verifies a re-read. Encoding a chunk for a
+client (`jstext.PackText`) belongs to the caller. `Sides.Pin` answers
 the sides as object IDs, `WorktreeBlobs` what a working-tree side's
 snapshot recorded for each changed path (streamed, stopped at its bound),
 and `OpenedSides` reopens a pin for file reads (`pin.go`): one literal path

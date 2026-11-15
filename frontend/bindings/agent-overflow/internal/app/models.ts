@@ -34,6 +34,9 @@ import * as highlight$0 from "../highlight/models.js";
 import * as highlightapp$0 from "../highlightapp/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as jstext$0 from "../jstext/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as openaikey$0 from "../openaikey/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -6443,21 +6446,38 @@ export class RevertAndResendResult {
 
 /**
  * ReviewDiffChunk is patch bytes [Offset, NextOffset) of an open review
- * diff; EOF marks the end of the patch.
+ * diff; EOF marks the end of the patch. An open's first chunk and
+ * ReadReviewDiff's answer the bytes as text; ReadReviewDiffPacked's
+ * answers them packed where jstext.PackText packs them.
  */
 export class ReviewDiffChunk {
+    /**
+     * Data is the chunk's text, or, when Wide is non-empty, that text
+     * packed: its UTF-8 one byte per character (U+0000..U+00FF). A packed
+     * chunk's length in characters differs from NextOffset-Offset when the
+     * chunk held invalid UTF-8.
+     */
     "data": string;
+
+    /**
+     * Wide holds, for each line of packed Data that has a byte past
+     * ASCII, the index in Data of the first such byte, ascending. A line
+     * here is a run of Data between newlines, so the piece of a line that
+     * began in an earlier chunk counts as one. Packed text always has one,
+     * so a chunk is packed exactly when Wide is non-empty.
+     */
+    "wide"?: number[];
     "offset": number;
     "nextOffset": number;
     "eof": boolean;
 
     /**
-     * Key is the key of the patch text [0, NextOffset). No key is zero
-     * (the empty text's hash is fnv1a.OffsetBasis), so every chunk carries
-     * one; omitzero makes the generated binding leave a chunk from an
-     * older backend without a key instead of filling in a zero one.
+     * Key is the key of the patch text [0, NextOffset), whichever form
+     * carries it. No key is zero, so every chunk carries one; omitzero
+     * makes the generated binding leave a chunk from an older backend
+     * without a key instead of filling in a zero one.
      */
-    "key"?: TextKey;
+    "key"?: jstext$0.Key;
 
     /** Creates a new ReviewDiffChunk instance. */
     constructor($$source: Partial<ReviewDiffChunk> = {}) {
@@ -6481,10 +6501,14 @@ export class ReviewDiffChunk {
      * Creates a new ReviewDiffChunk instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewDiffChunk {
-        const $$createField4_0 = $$createType110;
+        const $$createField1_0 = $$createType110;
+        const $$createField5_0 = $$createType111;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("wide" in $$parsedSource) {
+            $$parsedSource["wide"] = $$createField1_0($$parsedSource["wide"]);
+        }
         if ("key" in $$parsedSource) {
-            $$parsedSource["key"] = $$createField4_0($$parsedSource["key"]);
+            $$parsedSource["key"] = $$createField5_0($$parsedSource["key"]);
         }
         return new ReviewDiffChunk($$parsedSource as Partial<ReviewDiffChunk>);
     }
@@ -6587,8 +6611,8 @@ export class ReviewDiffFileSizes {
      * Creates a new ReviewDiffFileSizes instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewDiffFileSizes {
-        const $$createField2_0 = $$createType111;
-        const $$createField3_0 = $$createType111;
+        const $$createField2_0 = $$createType112;
+        const $$createField3_0 = $$createType112;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("old" in $$parsedSource) {
             $$parsedSource["old"] = $$createField2_0($$parsedSource["old"]);
@@ -6631,8 +6655,8 @@ export class ReviewDiffImage {
      * Creates a new ReviewDiffImage instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewDiffImage {
-        const $$createField0_0 = $$createType112;
-        const $$createField1_0 = $$createType112;
+        const $$createField0_0 = $$createType113;
+        const $$createField1_0 = $$createType113;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("old" in $$parsedSource) {
             $$parsedSource["old"] = $$createField0_0($$parsedSource["old"]);
@@ -6737,7 +6761,7 @@ export class ReviewDiffOpened {
      * Creates a new ReviewDiffOpened instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewDiffOpened {
-        const $$createField1_0 = $$createType113;
+        const $$createField1_0 = $$createType114;
         const $$createField2_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunk" in $$parsedSource) {
@@ -6747,84 +6771,6 @@ export class ReviewDiffOpened {
             $$parsedSource["payloadIds"] = $$createField2_0($$parsedSource["payloadIds"]);
         }
         return new ReviewDiffOpened($$parsedSource as Partial<ReviewDiffOpened>);
-    }
-}
-
-/**
- * ReviewDiffPackedChunk is a ReviewDiffChunk whose text is packed where
- * gitdiff.PackText packs it. Offset, NextOffset and EOF are the raw
- * chunk's, so len(Data) in characters differs from NextOffset-Offset when
- * the chunk had invalid UTF-8.
- */
-export class ReviewDiffPackedChunk {
-    /**
-     * Data is the chunk's text: as UTF-8, one byte per character
-     * (U+0000..U+00FF), when Packed, and otherwise the text itself, as
-     * ReadReviewDiff answers it.
-     */
-    "data": string;
-
-    /**
-     * Packed depends on the chunk's bytes alone: a chunk read again has
-     * the form it had.
-     */
-    "packed": boolean;
-
-    /**
-     * Wide holds, for each line of packed Data that has a byte past
-     * ASCII, the index in Data of the first such byte, ascending. A line
-     * here is a run of Data between newlines, so the piece of a line that
-     * began in an earlier chunk counts as one. Never null; empty when
-     * !Packed.
-     */
-    "wide": number[];
-    "offset": number;
-    "nextOffset": number;
-    "eof": boolean;
-
-    /**
-     * Key is the plain chunk's: the key of the text, not of its form.
-     */
-    "key"?: TextKey;
-
-    /** Creates a new ReviewDiffPackedChunk instance. */
-    constructor($$source: Partial<ReviewDiffPackedChunk> = {}) {
-        if (!("data" in $$source)) {
-            this["data"] = "";
-        }
-        if (!("packed" in $$source)) {
-            this["packed"] = false;
-        }
-        if (!("wide" in $$source)) {
-            this["wide"] = [];
-        }
-        if (!("offset" in $$source)) {
-            this["offset"] = 0;
-        }
-        if (!("nextOffset" in $$source)) {
-            this["nextOffset"] = 0;
-        }
-        if (!("eof" in $$source)) {
-            this["eof"] = false;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new ReviewDiffPackedChunk instance from a string or object.
-     */
-    static createFrom($$source: any = {}): ReviewDiffPackedChunk {
-        const $$createField2_0 = $$createType114;
-        const $$createField6_0 = $$createType110;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("wide" in $$parsedSource) {
-            $$parsedSource["wide"] = $$createField2_0($$parsedSource["wide"]);
-        }
-        if ("key" in $$parsedSource) {
-            $$parsedSource["key"] = $$createField6_0($$parsedSource["key"]);
-        }
-        return new ReviewDiffPackedChunk($$parsedSource as Partial<ReviewDiffPackedChunk>);
     }
 }
 
@@ -7817,38 +7763,6 @@ export class TerminalReplay {
     static createFrom($$source: any = {}): TerminalReplay {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new TerminalReplay($$parsedSource as Partial<TerminalReplay>);
-    }
-}
-
-/**
- * TextKey is the patch text from offset 0 to a chunk's end, as the
- * frontend keys it: FNV-1a (32-bit) over the text's UTF-16 code units,
- * and how many units that is. The text is what a JSON client receives for
- * the chunks' bytes (fnv1a.FoldUTF16), the same whichever form a chunk is
- * answered in.
- */
-export class TextKey {
-    "hash": number;
-    "units": number;
-
-    /** Creates a new TextKey instance. */
-    constructor($$source: Partial<TextKey> = {}) {
-        if (!("hash" in $$source)) {
-            this["hash"] = 0;
-        }
-        if (!("units" in $$source)) {
-            this["units"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new TextKey instance from a string or object.
-     */
-    static createFrom($$source: any = {}): TextKey {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new TextKey($$parsedSource as Partial<TextKey>);
     }
 }
 
@@ -12521,11 +12435,11 @@ const $$createType106 = $Create.Array($$createType105);
 const $$createType107 = store$0.RemoteJob.createFrom;
 const $$createType108 = UserMessageRevertedEvent.createFrom;
 const $$createType109 = $Create.Nullable($$createType108);
-const $$createType110 = TextKey.createFrom;
-const $$createType111 = ReviewDiffFileSide.createFrom;
-const $$createType112 = ReviewDiffImageSide.createFrom;
-const $$createType113 = ReviewDiffChunk.createFrom;
-const $$createType114 = $Create.Array($Create.Any);
+const $$createType110 = $Create.Array($Create.Any);
+const $$createType111 = jstext$0.Key.createFrom;
+const $$createType112 = ReviewDiffFileSide.createFrom;
+const $$createType113 = ReviewDiffImageSide.createFrom;
+const $$createType114 = ReviewDiffChunk.createFrom;
 const $$createType115 = store$0.DiffReviewPRContext.createFrom;
 const $$createType116 = $Create.Nullable($$createType115);
 const $$createType117 = DraftSnapshot.createFrom;

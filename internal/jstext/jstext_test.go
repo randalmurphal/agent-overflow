@@ -1,10 +1,11 @@
-package fnv1a
+package jstext
 
 import (
-	"encoding/json"
 	"math/rand/v2"
 	"testing"
 	"unicode/utf8"
+
+	"agent-overflow/internal/jstext/jstexttest"
 )
 
 // Values from frontend/src/lib/utils/fnv1a.ts run under node.
@@ -41,14 +42,7 @@ func TestFoldUTF16FoldsTheTextJSONDelivers(t *testing.T) {
 		for i := range raw {
 			raw[i] = byte(rng.IntN(256))
 		}
-		encoded, err := json.Marshal(string(raw))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var delivered string
-		if err := json.Unmarshal(encoded, &delivered); err != nil {
-			t.Fatal(err)
-		}
+		delivered := jstexttest.JSONDelivered(t, string(raw))
 		gotHash, gotUnits := FoldUTF16(OffsetBasis, string(raw))
 		wantHash, wantUnits := FoldUTF16(OffsetBasis, delivered)
 		if gotHash != wantHash || gotUnits != wantUnits {
@@ -61,8 +55,8 @@ func TestFoldUTF16FoldsTheTextJSONDelivers(t *testing.T) {
 // sequence of s, decoded from the start as ranging decodes it.
 func insideValidSequence(s string, cut int) bool {
 	for i := 0; i < len(s); {
-		r, n := utf8.DecodeRuneInString(s[i:])
-		if i < cut && cut < i+n && !(r == utf8.RuneError && n == 1) {
+		_, n := utf8.DecodeRuneInString(s[i:])
+		if i < cut && cut < i+n {
 			return true
 		}
 		i += n
@@ -97,5 +91,37 @@ func TestFoldUTF16IsCumulativeAtCutsBetweenSequences(t *testing.T) {
 	}
 	if splitInside == 0 {
 		t.Fatal("no round cut inside a sequence")
+	}
+}
+
+func TestEmptyKeyIsTheEmptyTextsAndNotZero(t *testing.T) {
+	if EmptyKey != (Key{Hash: 2166136261}) || EmptyKey == (Key{}) {
+		t.Fatalf("EmptyKey = %+v", EmptyKey)
+	}
+	if got := EmptyKey.Extend(""); got != EmptyKey {
+		t.Fatalf("extending by no text = %+v", got)
+	}
+}
+
+// Extending a key at each cut between sequences gives the key of the whole
+// text, with units counted as the client counts them.
+func TestKeyExtendIsTheJoinedTextsKey(t *testing.T) {
+	text := "a é — \U0001F600 \xff \xe2\x82 end"
+	hash, units := FoldUTF16(OffsetBasis, text)
+	whole := Key{Hash: hash, Units: int64(units)}
+	// Each invalid byte is one unit, the astral character two.
+	if want := int64(len([]rune(text)) + 1); whole.Units != want {
+		t.Fatalf("%q is %d units, want %d", text, whole.Units, want)
+	}
+	if got := EmptyKey.Extend(text); got != whole {
+		t.Fatalf("EmptyKey.Extend = %+v, want %+v", got, whole)
+	}
+	for cut := 0; cut <= len(text); cut++ {
+		if insideValidSequence(text, cut) {
+			continue
+		}
+		if got := EmptyKey.Extend(text[:cut]).Extend(text[cut:]); got != whole {
+			t.Fatalf("cut at %d: %+v, want %+v", cut, got, whole)
+		}
 	}
 }

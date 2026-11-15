@@ -10,10 +10,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/jstext"
+	"agent-overflow/internal/jstext/jstexttest"
 	"agent-overflow/internal/transport"
 )
 
@@ -22,7 +23,7 @@ import (
 const packedTestLine = "+café — \U0001F600 lone \xe9 cut \xe2\x82 ff \xff surrogate \xed\xa0\x80 end\n"
 
 // sparsePackedTestText is about size bytes of ASCII lines with a
-// packedTestLine after every 40: sparse enough that gitdiff.PackText packs
+// packedTestLine after every 40: sparse enough that jstext.PackText packs
 // every chunk of it.
 func sparsePackedTestText(size int) string {
 	block := strings.Repeat("+a line of plain code, forty bytes long.\n", 40) + packedTestLine
@@ -42,32 +43,15 @@ func wireRoundTrip(t *testing.T, v, out any) {
 	}
 }
 
-// unpackChunkText decodes received packed text: each character is one
-// byte of UTF-8.
-func unpackChunkText(t *testing.T, packed string) string {
-	t.Helper()
-	out := make([]byte, 0, len(packed))
-	for _, r := range packed {
-		if r > 0xFF {
-			t.Fatalf("packed text holds %U", r)
-		}
-		out = append(out, byte(r))
-	}
-	if !utf8.Valid(out) {
-		t.Fatal("packed text unpacks to invalid UTF-8")
-	}
-	return string(out)
-}
-
 // comparePackedReads reads an open diff to its end with ReadReviewDiff and
 // ReadReviewDiffPacked from each offset, and checks that the two answer
 // the same chunk as a client receives them, each in the form
-// gitdiff.PackText gives its bytes. wantPacked says whether the full-size
+// jstext.PackText gives its bytes. wantPacked says whether the full-size
 // chunks are packed (the last can be a tail of any shape). It returns the
 // packed method's chunks.
-func comparePackedReads(t *testing.T, app *App, ctx context.Context, opened ReviewDiffOpened, maxBytes int, wantPacked bool) []ReviewDiffPackedChunk {
+func comparePackedReads(t *testing.T, app *App, ctx context.Context, opened ReviewDiffOpened, maxBytes int, wantPacked bool) []ReviewDiffChunk {
 	t.Helper()
-	var packedChunks []ReviewDiffPackedChunk
+	var packedChunks []ReviewDiffChunk
 	for offset := opened.Chunk.NextOffset; ; {
 		plain, err := app.ReadReviewDiff(ctx, opened.ID, offset, maxBytes)
 		if err != nil {
@@ -82,29 +66,30 @@ func comparePackedReads(t *testing.T, app *App, ctx context.Context, opened Revi
 				packed.Offset, packed.NextOffset, packed.EOF, plain.Offset, plain.NextOffset, plain.EOF)
 		}
 		var gotPlain ReviewDiffChunk
-		var gotPacked ReviewDiffPackedChunk
+		var gotPacked ReviewDiffChunk
 		wireRoundTrip(t, plain, &gotPlain)
 		wireRoundTrip(t, packed, &gotPacked)
 		// The key is of the text, whichever form carries it.
 		if gotPacked.Key != gotPlain.Key || gotPlain.Key != plain.Key || plain.Key.Units == 0 {
 			t.Fatalf("chunk at %d: packed key %+v, plain key %+v, sent %+v", offset, gotPacked.Key, gotPlain.Key, plain.Key)
 		}
-		if gotPacked.Wide == nil {
-			t.Fatalf("chunk at %d: wide arrived null", offset)
+		if len(plain.Wide) != 0 || len(gotPlain.Wide) != 0 {
+			t.Fatalf("chunk at %d: the plain read answered wide marks", offset)
 		}
-		data, wide, isPacked := gitdiff.PackText(plain.Data)
-		if packed.Packed != isPacked || packed.Data != data || !reflect.DeepEqual(packed.Wide, wide) {
-			t.Fatalf("chunk at %d: not gitdiff.PackText of the plain chunk's bytes", offset)
+		data, wide := jstext.PackText(plain.Data)
+		if packed.Data != data || !reflect.DeepEqual(packed.Wide, wide) {
+			t.Fatalf("chunk at %d: not jstext.PackText of the plain chunk's bytes", offset)
 		}
-		if !packed.EOF && gotPacked.Packed != wantPacked {
-			t.Fatalf("chunk at %d: packed = %v, want %v", offset, gotPacked.Packed, wantPacked)
+		isPacked := len(gotPacked.Wide) > 0
+		if !packed.EOF && isPacked != wantPacked {
+			t.Fatalf("chunk at %d: packed = %v, want %v", offset, isPacked, wantPacked)
 		}
-		if gotPacked.Packed {
-			if len(gotPacked.Wide) == 0 || unpackChunkText(t, gotPacked.Data) != gotPlain.Data {
+		if isPacked {
+			if jstexttest.Unpack(t, gotPacked.Data) != gotPlain.Data {
 				t.Fatalf("chunk at %d: packed text with %d marks does not unpack to the plain chunk's text", offset, len(gotPacked.Wide))
 			}
-		} else if len(gotPacked.Wide) != 0 || gotPacked.Data != gotPlain.Data {
-			t.Fatalf("chunk at %d: an unpacked chunk with %d marks differs from the plain chunk", offset, len(gotPacked.Wide))
+		} else if gotPacked.Data != gotPlain.Data {
+			t.Fatalf("chunk at %d: an unpacked chunk differs from the plain chunk", offset)
 		}
 		packedChunks = append(packedChunks, packed)
 		if packed.EOF {
@@ -219,7 +204,7 @@ func TestReadReviewDiffPackedKeepsTheReadRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEditsDiff() error = %v", err)
 	}
-	id, err := app.holdReviewDiff(newOpenReviewDiff(ctx, diff, transport.ScopeFilesRead))
+	id, err := app.holdReviewDiff(ctx, diff, transport.ScopeFilesRead)
 	if err != nil {
 		t.Fatalf("holdReviewDiff() error = %v", err)
 	}
@@ -260,14 +245,14 @@ func TestReviewDiffPackedChunkAtTheCeilingFitsTheReadLimit(t *testing.T) {
 	t.Parallel()
 	unit := "\xff\n" + strings.Repeat("\x01", 43) + "\n"
 	raw := strings.Repeat(unit, gitdiff.MaxChunkBytes/len(unit))
-	data, wide, packed := gitdiff.PackText(raw)
-	if !packed || len(wide) != gitdiff.MaxChunkBytes/len(unit) {
-		t.Fatalf("packed = %v with %d marks; want the densest text PackText packs", packed, len(wide))
+	data, wide := jstext.PackText(raw)
+	if len(wide) != gitdiff.MaxChunkBytes/len(unit) {
+		t.Fatalf("%d marks; want the densest text PackText packs", len(wide))
 	}
-	if _, _, denser := gitdiff.PackText(strings.Repeat("\xff\n"+strings.Repeat("\x01", 42)+"\n", 1000)); denser {
+	if _, denser := jstext.PackText(strings.Repeat("\xff\n"+strings.Repeat("\x01", 42)+"\n", 1000)); len(denser) > 0 {
 		t.Fatal("text with more wide lines was packed: the case above is not the worst")
 	}
-	buf, err := json.Marshal(ReviewDiffPackedChunk{Data: data, Packed: true, Wide: wide, Offset: 1 << 40, NextOffset: 1<<40 + gitdiff.MaxChunkBytes})
+	buf, err := json.Marshal(ReviewDiffChunk{Data: data, Wide: wide, Offset: 1 << 40, NextOffset: 1<<40 + gitdiff.MaxChunkBytes})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

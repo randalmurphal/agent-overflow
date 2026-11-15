@@ -1,4 +1,4 @@
-package gitdiff
+package jstext
 
 import (
 	"encoding/hex"
@@ -8,42 +8,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"unicode/utf8"
-	"unsafe"
 
-	"agent-overflow/internal/fnv1a"
+	"agent-overflow/internal/jstext/jstexttest"
 )
-
-// unpackForTest decodes packed text: each character's code point is one
-// byte of UTF-8, decoded as a JSON client's TextDecoder would.
-func unpackForTest(t *testing.T, packed string) string {
-	t.Helper()
-	out := make([]byte, 0, len(packed))
-	for _, r := range packed {
-		if r > 0xFF {
-			t.Fatalf("packed text holds %U, past U+00FF", r)
-		}
-		out = append(out, byte(r))
-	}
-	if !utf8.Valid(out) {
-		t.Fatalf("packed text unpacks to invalid UTF-8 %q", out)
-	}
-	return string(out)
-}
-
-// jsonDelivered is the string a JSON client receives for raw.
-func jsonDelivered(t *testing.T, raw string) string {
-	t.Helper()
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var got string
-	if err := json.Unmarshal(encoded, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	return got
-}
 
 // referenceShape derives a packed text's wide marks and shape from the
 // packed text and the text it stands for, one character at a time.
@@ -90,8 +57,8 @@ func packAlways(raw string) (string, []uint32, packedShape) {
 func checkPacked(t *testing.T, raw string) []uint32 {
 	t.Helper()
 	packed, wide, shape := packAlways(raw)
-	text := jsonDelivered(t, raw)
-	if got := unpackForTest(t, packed); got != text {
+	text := jstexttest.JSONDelivered(t, raw)
+	if got := jstexttest.Unpack(t, packed); got != text {
 		t.Fatalf("pack(%q) unpacks to %q, JSON delivers %q", raw, got, text)
 	}
 	wantWide, wantShape := referenceShape(packed, text)
@@ -101,27 +68,38 @@ func checkPacked(t *testing.T, raw string) []uint32 {
 	if shape != wantShape {
 		t.Fatalf("measurePacked(%q) = %+v, want %+v", raw, shape, wantShape)
 	}
-	// The bound MaxChunkBytes rests on: at most six JSON bytes per raw
-	// byte, as for the plain string.
+	// The bound PackText states: at most six JSON bytes per raw byte for
+	// the packed text, as for the plain string, and seven with the marks
+	// (the quotes and brackets aside).
 	encodedPacked, _ := json.Marshal(packed)
 	if len(encodedPacked) > 6*len(raw)+2 {
 		t.Fatalf("packed JSON is %d bytes for %d raw bytes", len(encodedPacked), len(raw))
 	}
+	encodedWide, _ := json.Marshal(wide)
+	if len(encodedPacked)+len(encodedWide) > 7*len(raw)+4 {
+		t.Fatalf("packed JSON and marks are %d bytes for %d raw bytes", len(encodedPacked)+len(encodedWide), len(raw))
+	}
 
-	got, gotWide, ok := PackText(raw)
-	if gotWide == nil {
-		t.Fatalf("PackText(%q) wide is nil", raw)
-	}
-	if want := wantShape.high && wantShape.wideBytes*packedWideShare <= wantShape.size; ok != want {
-		t.Fatalf("PackText(%q) packed = %v, want %v for %+v", raw, ok, want, wantShape)
-	}
-	if ok && (got != packed || !slices.Equal(gotWide, wide)) {
+	got, gotWide := PackText(raw)
+	want := wantShape.high && wantShape.wideBytes*packedWideShare <= wantShape.size
+	if want && (got != packed || !slices.Equal(gotWide, wide)) {
 		t.Fatalf("PackText(%q) = %q %v, want %q %v", raw, got, gotWide, packed, wide)
 	}
-	if !ok && (unsafe.StringData(got) != unsafe.StringData(raw) || len(got) != len(raw) || len(gotWide) != 0) {
-		t.Fatalf("PackText(%q) left unpacked answered %q %v, want the input and no marks", raw, got, gotWide)
+	// Packed exactly when there are marks: a client tells the forms apart
+	// by them alone.
+	if want != (len(gotWide) > 0) {
+		t.Fatalf("PackText(%q) packs %v with %d marks", raw, want, len(gotWide))
+	}
+	if !want && got != raw {
+		t.Fatalf("PackText(%q) left unpacked answered %q, want the input", raw, got)
 	}
 	return wide
+}
+
+// isPacked reports whether PackText packs raw.
+func isPacked(raw string) bool {
+	_, wide := PackText(raw)
+	return len(wide) > 0
 }
 
 func TestPackCases(t *testing.T) {
@@ -186,7 +164,7 @@ func TestPackTextPacksOnlySparseWideText(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			checkPacked(t, tc.raw)
-			if _, _, ok := PackText(tc.raw); ok != tc.want {
+			if ok := isPacked(tc.raw); ok != tc.want {
 				t.Fatalf("PackText packed = %v, want %v", ok, tc.want)
 			}
 		})
@@ -205,7 +183,7 @@ func TestPackTextLeavesUnpackedTextUnallocated(t *testing.T) {
 // Serial: AllocsPerRun refuses a parallel test.
 func TestPackTextSizesOutputOnce(t *testing.T) {
 	raw := strings.Repeat(strings.Repeat("+plain line of code, forty bytes long ..\n", 8)+"+café — \xe9\n", 2000)
-	if _, _, ok := PackText(raw); !ok {
+	if !isPacked(raw) {
 		t.Fatal("the text was not packed")
 	}
 	// The builder's one buffer, which String returns, and the wide slice.
@@ -279,15 +257,16 @@ func TestPackTextMatchesTheSharedVectors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: rawHex: %v", v.Name, err)
 		}
-		if got := jsonDelivered(t, string(raw)); got != v.Text {
+		if got := jstexttest.JSONDelivered(t, string(raw)); got != v.Text {
 			t.Errorf("%s: a JSON client receives %q, the vector says %q", v.Name, got, v.Text)
 		}
-		data, wide, ok := PackText(string(raw))
+		data, wide := PackText(string(raw))
+		ok := len(wide) > 0
 		// The vector's data is the chunk's data as a client receives it.
-		if got := jsonDelivered(t, data); ok != v.Packed || got != v.Data || !slices.Equal(wide, v.Wide) {
+		if got := jstexttest.JSONDelivered(t, data); ok != v.Packed || got != v.Data || !slices.Equal(wide, v.Wide) {
 			t.Errorf("%s: PackText = packed %v %q %v, the vector says packed %v %q %v", v.Name, ok, got, wide, v.Packed, v.Data, v.Wide)
 		}
-		hash, units := fnv1a.FoldUTF16(fnv1a.OffsetBasis, string(raw))
+		hash, units := FoldUTF16(OffsetBasis, string(raw))
 		if v.Key == nil || v.Key.Hash != hash || v.Key.Units != units {
 			t.Errorf("%s: the bytes fold to hash %d over %d units, the vector's key is %+v", v.Name, hash, units, v.Key)
 		}

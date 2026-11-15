@@ -1,10 +1,10 @@
-import { ReadReviewDiff, ReadReviewDiffPacked, ReleaseReviewDiff } from './bindings';
+import { ReadReviewDiff, ReadReviewDiffPacked, ReleaseReviewDiff, type ReviewDiffChunk, type ReviewDiffOpened } from './bindings';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { PatchParser } from '../utils/patchParser';
-import type { PatchChunkSpan, PatchTextKey, PatchTextLost, PatchTextSource } from '../utils/patchStore';
+import type { PatchTextLost, PatchTextSource } from '../utils/patchChunks';
 
 // A review diff read from the backend in chunks. An Open*Diff call returns
 // the first chunk and, when the patch continues, a handle that only the
@@ -26,45 +26,8 @@ export const REVIEW_DIFF_READ_BYTES = 2 * 1024 * 1024;
 // The backend serves ReadReviewDiffPacked (internal/transport/frame.go).
 const REVIEW_DIFF_PACKED = 'review-diff.packed.v1';
 
-export interface ReviewDiffChunk {
-  data: string;
-  offset: number;
-  nextOffset: number;
-  eof: boolean;
-  /** Set on a chunk ReadReviewDiffPacked packed, with its wide-line
-   * marks (PatchChunkSpan). */
-  packed?: boolean;
-  wide?: number[];
-  /** The patch text's source key through the chunk's end
-   * (PatchChunkSpan). A backend older than the key answers none. */
-  key?: PatchTextKey;
-}
-
-// The span a chunk is stored under: its byte range, its source key, and
-// its marks when it is packed.
-function chunkSpan(chunk: ReviewDiffChunk): PatchChunkSpan {
-  const span: PatchChunkSpan = { offset: chunk.offset, nextOffset: chunk.nextOffset };
-  if (chunk.key !== undefined) span.key = chunk.key;
-  if (chunk.packed !== true) return span;
-  // The backend packs only text holding a byte past ASCII, so a packed
-  // chunk has a mark; without them its wide lines would read as bytes.
-  if (!chunk.wide?.length) throw new Error('review diff: a packed chunk came without its wide marks');
-  // The packed read and the key ship together, and a packed chunk is not
-  // hashed here.
-  if (chunk.key === undefined) throw new Error('review diff: a packed chunk came without its key');
-  span.wide = chunk.wide;
-  return span;
-}
-
-/** The answer of an Open*Diff call. */
-export interface ReviewDiffOpened {
-  id: string;
-  chunk: ReviewDiffChunk;
-  /** Edits diffs: the payloads joined, in patch order. */
-  payloadIds?: string[];
-  /** A git diff's handle for its file reads (every git-backed open
-   * answers one; an edits diff none). */
-  filesHandle?: string;
+function isPacked(chunk: ReviewDiffChunk): boolean {
+  return (chunk.wide?.length ?? 0) > 0;
 }
 
 export interface ReviewDiffRead {
@@ -152,15 +115,14 @@ export class ReviewDiffSource {
       let chunk = opened.chunk;
       for (;;) {
         if (cancelled()) return null;
-        parser.append(chunk.data, chunkSpan(chunk));
+        parser.append(chunk.data, chunk);
         if (chunk.eof) break;
         if (!id) throw new Error('review diff: the backend returned no handle for an unfinished diff');
         onProgress?.(parser);
         chunk = await this.readChunk(id, chunk.nextOffset, REVIEW_DIFF_READ_BYTES, packed);
       }
+      // Releases the handle when all of the text stayed resident.
       parser.end();
-      // All of the text is resident: nothing needs the handle again.
-      if (!store.evictedAny) store.detachSource()?.release();
       read = {
         parser,
         onLost: (listener) => store.whenLost(listener),
@@ -189,7 +151,7 @@ export class ReviewDiffSource {
       // A chunk that arrived as text reads the same from either method.
       read: async (offset, nextOffset, packed) => {
         const chunk = await this.readChunk(id, offset, nextOffset - offset, packed);
-        return { data: chunk.data, nextOffset: chunk.nextOffset, packed: chunk.packed === true };
+        return { data: chunk.data, nextOffset: chunk.nextOffset, packed: isPacked(chunk) };
       },
       release: () => this.release(id),
     };

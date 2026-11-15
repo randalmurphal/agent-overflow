@@ -1,5 +1,5 @@
 import type { Item } from '../types/models';
-import { FNV_OFFSET_BASIS_32 } from './fnv1a';
+import { fnv1a32 } from './fnv1a';
 import { parseJsonObject } from './parseJsonObject';
 
 const PAYLOAD_VERSION_EDGE_CHARS = 64;
@@ -19,12 +19,7 @@ export const COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY =
 export const COMMAND_RESULT_PAYLOAD_EXPANSION_STATE_KEY = 'command-result-full';
 
 function stableStringHash(value: string): string {
-  let hash = FNV_OFFSET_BASIS_32;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
+  return fnv1a32(value).toString(16).padStart(8, '0');
 }
 
 export function boundedPayloadVersionString(value: string): string {

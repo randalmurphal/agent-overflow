@@ -9,14 +9,14 @@
 // most one block of one section, ReviewCILogView) and its index among that
 // row's matches are derived against the sections and the line text shown
 // at the moment of use (`resolveCILogHit`), by review find's matching rule
-// (reviewFindScan.ts#findMatchChunk) over each line's text as AnsiText
+// (findMatch.ts#findMatchChunk) over each line's text as AnsiText
 // shows it (ansiText.ts#ansiShownText, the escapes the backend's search
 // hides as well), never from other published matches.
 
 import { CI_LOG_BLOCK_LINES } from '../stores/ciLogBlocks.svelte';
 import type { CILogSearch, CILogSection } from '../types/models';
 import { ansiShownText } from './ansiText';
-import { countFindMatches } from './reviewFindScan';
+import { countFindMatches } from './findMatch';
 
 /** `data-find-key` of a row of log lines, by its first line. */
 export function findCILogKey(from: number): string {

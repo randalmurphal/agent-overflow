@@ -3,8 +3,8 @@ import { reviewFindTurn } from '../../lib/components/review/ReviewPaneFind.svelt
 
 // Holds the review pane's find scans at their pauses. While held, the
 // scan's clock (reviewFindTurn.now) reads every slice as spent, so a scan
-// pauses at its first clock read, after CLOCK_ROWS (256) units of work,
-// and waits there; content with fewer units finishes without pausing.
+// pauses at its first clock read, after CLOCK_ROWS (reviewFindScan.ts)
+// units of work, and waits there; content with fewer units finishes without pausing.
 // Released, scans run on the real clock. Restore it in the test's finally.
 
 export interface ReviewFindHold {

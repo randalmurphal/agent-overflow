@@ -869,8 +869,8 @@ releases. No client cache.
   that stops before the payload's end stops between characters, so it
   can hold up to three bytes fewer than `maxBytes`; a `maxBytes` of 1 to
   3 is read as 4. The next read starts at `nextOffset`.
-- `isComplete=true` if totalSize ≤ maxBytes. That's the whole payload
-  and stage 2 is skipped.
+- `isComplete=true` when the read reaches the payload's end. That's the
+  whole payload and stage 2 is skipped.
 - Rendered as raw text through the client-side payload renderer
   (`AnsiText` for terminal-style output).
 

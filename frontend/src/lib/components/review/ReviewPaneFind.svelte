@@ -51,7 +51,8 @@
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
   import { findableBody, isSuggestionMark } from '../../utils/suggestionMarks';
   import { readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
-  import { findDraftKey, findThreadCommentKey, findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
+  import { findDraftKey, findThreadCommentKey, findThreadCommentOfKey, reviewCommentKey, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindIdentity';
+  import { scanReviewFind } from '../../utils/reviewFindScan';
   import {
     findHitAtOrBelow,
     placeReviewFindHit,

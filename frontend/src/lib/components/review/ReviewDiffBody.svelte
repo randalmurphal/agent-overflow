@@ -20,7 +20,7 @@
     type ReadingAnchor,
   } from '../../utils/reviewAnchor';
   import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
-  import { findLineKeyIndex, findLineKeyPath, type ReviewFindPlace } from '../../utils/reviewFindScan';
+  import { findLineKeyIndex, findLineKeyPath, type ReviewFindPlace } from '../../utils/reviewFindIdentity';
   import { findHitRow, findRowPosition } from '../../utils/reviewFindRows';
   import { reviewDiffKeydown, type ReviewDiffKeysHost } from './reviewDiffKeys';
   import { elementAtEdge } from '../../utils/findReadingEdge';

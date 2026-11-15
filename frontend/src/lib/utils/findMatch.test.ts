@@ -2,39 +2,25 @@ import { describe, expect, it, vi } from 'vitest';
 import vectors from '../../test/fixtures/findVectors.json';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { countFindMatches, FIND_FILTER_CODE_POINTS, findFilterPattern, findNeedle, foldFindText, forEachFindMatch, textsMatchNeedle } from './findMatch';
+import {
+  countFindMatches, FIND_FILTER_CODE_POINTS, findFilterPattern, findMatchChunk, findNeedle, flagFilterLines, foldFindText, forEachFindMatch, LONG_TEXT,
+  textsMatchNeedle,
+} from './findMatch';
 import { FIND_FOLD_RANGES, FIND_FOLD_UNICODE_VERSION } from './findFoldTable';
 import { unpackText } from './packedText';
 import { packText } from '../../test/helpers/streamedPatch';
+import { seededRandom as random } from '../../test/helpers/seededRandom';
 
-function random(seed: number): (n: number) => number {
-  let state = seed >>> 0;
-  return (n) => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    return state % n;
-  };
-}
-
-// The lines of `lines.join('\n')` a filter pattern flags, searched as the
-// review scan searches a block: whole, going on from the end of each line
-// it flags.
+// The lines `flagFilterLines` flags in `lines` stored as one block.
 function flaggedLines(pattern: RegExp, lines: readonly string[]): Set<number> {
-  const stored = lines.join('\n');
   const starts: number[] = [];
   for (let at = 0, line = 0; line < lines.length; line += 1) {
     starts.push(at);
     at += lines[line].length + 1;
   }
-  const out = new Set<number>();
-  pattern.lastIndex = 0;
-  for (let match = pattern.exec(stored); match !== null; match = pattern.exec(stored)) {
-    let line = starts.length - 1;
-    while (starts[line] > match.index) line -= 1;
-    out.add(line);
-    if (line + 1 >= lines.length) break;
-    pattern.lastIndex = starts[line + 1];
-  }
-  return out;
+  const out = new Int32Array(lines.length);
+  const count = flagFilterLines(pattern, lines.join('\n'), 0, lines.length, (line) => starts[line], out);
+  return new Set(out.subarray(0, count));
 }
 
 function ruleMatches(text: string, needle: string): boolean {
@@ -45,7 +31,7 @@ function ruleMatches(text: string, needle: string): boolean {
 
 // Plain text with no character in U+0080..U+00FF: no packed spelling can
 // match it, so the filter is exact there.
-const PACKED_RANGE = /[\u0080-ÿ]/;
+const PACKED_RANGE = /[\u0080-\u00ff]/;
 
 // ASCII, capitals, letters past ASCII with and without a fold, astral
 // letters that fold (Deseret), regex syntax, the Kelvin sign, dotted and
@@ -54,8 +40,8 @@ const PACKED_RANGE = /[\u0080-ÿ]/;
 const ALPHABET = [
   'a', 'b', 'k', 'i', 's', 'A', 'B', 'K', 'I', 'S', ' ', '+', '-', '0',
   '.', '*', '[', ']', '\\', '(', ')', '^', '$', '|', '?', '{', '}', '/',
-  'K', 'İ', 'ı', 'ſ', 'é', 'É', 'Ã', '©', 'ß', 'ẞ',
-  'Σ', 'σ', 'ς', 'Ж', 'ж', '中', 'Ᲊ', 'ᲊ', '\u{10400}', '\u{10428}', '😀', '�',
+  '\u212a', 'İ', 'ı', 'ſ', 'é', 'É', 'Ã', '©', 'ß', 'ẞ',
+  'Σ', 'σ', 'ς', 'Ж', 'ж', '中', '\u1c89', '\u1c8a', '\u{10400}', '\u{10428}', '😀', '\ufffd',
 ];
 
 describe('find filter pattern', () => {
@@ -63,7 +49,7 @@ describe('find filter pattern', () => {
     expect(findFilterPattern('')).toBeNull();
     expect(findFilterPattern('a\ud800b')).toBeNull();
     expect(findFilterPattern('\udc28')).toBeNull();
-    expect(findFilterPattern('x�')).toBeNull();
+    expect(findFilterPattern('x\ufffd')).toBeNull();
     // Past the spelled prefix nothing is read, a lone surrogate included.
     expect(findFilterPattern('a'.repeat(FIND_FILTER_CODE_POINTS) + '\ud800')).not.toBeNull();
     // The largest spelling of one code point, spelled at every place: a
@@ -138,7 +124,7 @@ describe('find filter pattern', () => {
       const needle = findNeedle(next(2) === 0 ? query : query.toUpperCase());
       const pattern = needle === '' ? null : findFilterPattern(needle);
       if (pattern === null) {
-        expect(needle === '' || needle.includes('�')).toBe(true);
+        expect(needle === '' || needle.includes('\ufffd')).toBe(true);
         continue;
       }
       const want = new Set(lines.flatMap((line, index) => ruleMatches(line, needle) ? [index] : []));
@@ -161,7 +147,7 @@ describe('find filter pattern', () => {
       const chars = [...text];
       const at = next(chars.length + 1);
       const needle = findNeedle(chars.slice(at, at + 1 + next(3)).join(''));
-      if (needle === '' || needle.includes('�')) continue;
+      if (needle === '' || needle.includes('\ufffd')) continue;
       if (ruleMatches(text, needle)) expect(flaggedLines(findFilterPattern(needle)!, [packed]).size, `${needle} in ${text}`).toBe(1);
     }
   });
@@ -177,13 +163,33 @@ describe('find matching', () => {
       expect(foldFindText(text)).toHaveLength(text.length);
     }
     for (const { text, query, count } of vectors.count) {
-      expect(countFindMatches(foldFindText(text), findNeedle(query)), `${query} in ${text}`).toBe(count);
+      expect(countFindMatches(text, findNeedle(query)), `${query} in ${text}`).toBe(count);
     }
     for (const { text, query, at } of vectors.offsets) {
       const found: number[] = [];
       forEachFindMatch(foldFindText(text), findNeedle(query), (offset) => found.push(Array.from(text.slice(0, offset)).length));
       expect(found, `${query} in ${text}`).toEqual(at);
     }
+  });
+
+  it('a chunk says what it folded: the chunk and the needle less one past it, never past the run or inside a pair', () => {
+    const run = 'a'.repeat(LONG_TEXT + 10);
+    expect(findMatchChunk(run, 0, 'abcd').folded).toBe(LONG_TEXT + 3);
+    expect(findMatchChunk(run, 5, 'abcd').folded).toBe(LONG_TEXT + 3);
+    expect(findMatchChunk(run, 0, 'a'.repeat(40)).folded).toBe(run.length);
+    expect(findMatchChunk('needle', 0, 'needle')).toEqual({ count: 1, next: 6, last: true, folded: 6 });
+    // Both edges fall inside a pair and move past it.
+    const pairs = 'x'.repeat(LONG_TEXT - 1) + '\u{10400}'.repeat(4);
+    expect(findMatchChunk(pairs, 0, 'xx').folded).toBe(LONG_TEXT + 3);
+  });
+
+  it('flags lines placed by the caller\'s line starts, from any line of the store', () => {
+    const lines = ['zero', 'one needle', 'two', 'needle three needle', 'four'];
+    // Lines 2..4 of a store whose positions start at 1000.
+    const starts = [1000, 1005, 1016, 1020, 1040];
+    const out = new Int32Array(3);
+    const count = flagFilterLines(findFilterPattern('needle')!, lines.slice(2).join('\n'), 2, 5, (line) => starts[line], out);
+    expect(Array.from(out.subarray(0, count))).toEqual([3]);
   });
 
   it('keeps the UTF-16 length of every code point', () => {

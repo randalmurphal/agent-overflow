@@ -342,7 +342,7 @@ func TestReadReviewDiffRequiresTheScopeItsOpenRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEditsDiff() error = %v", err)
 	}
-	id, err := app.holdReviewDiff(newOpenReviewDiff(ctx, diff, transport.ScopeFilesRead))
+	id, err := app.holdReviewDiff(ctx, diff, transport.ScopeFilesRead)
 	if err != nil {
 		t.Fatalf("holdReviewDiff() error = %v", err)
 	}

@@ -202,7 +202,7 @@ function applyContextExpansionUncached(file: ReviewFile, state: ContextExpansion
     const header = added.length;
     added.push({
       content: formatHunkHeader(hunk.oldStart, hunk.oldCount + extra, hunk.newStart, hunk.newCount + extra, hunk.suffix),
-      kind: LINE_HUNK,
+      kind: { oldStart: hunk.oldStart, newStart: hunk.newStart },
     });
     const before = added.length;
     for (const text of hunk.before) added.push({ content: ` ${text}`, kind: LINE_CONTEXT });

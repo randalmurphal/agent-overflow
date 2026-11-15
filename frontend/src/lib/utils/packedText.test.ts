@@ -10,11 +10,11 @@ function packedOf(bytes: readonly number[]): string {
 
 // Text with every UTF-8 length, an astral character (a surrogate pair in
 // UTF-16), U+FFFD, a BOM and line ends of both kinds.
-const sample = '﻿ascii é ✓ 😀 � end\r\nnext line ü\n\nlast 𝄞 line';
+const sample = '\ufeffascii é ✓ 😀 \ufffd end\r\nnext line ü\n\nlast 𝄞 line';
 
 describe('unpackText', () => {
   it('decodes packed UTF-8 to the text, a BOM and astral characters included', () => {
-    for (const text of [sample, '', 'plain ascii', '😀', '﻿', 'x'.repeat(70_000) + 'é']) {
+    for (const text of [sample, '', 'plain ascii', '😀', '\ufeff', 'x'.repeat(70_000) + 'é']) {
       expect(unpackText(packText(text))).toBe(text);
     }
   });

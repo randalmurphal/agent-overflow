@@ -3,7 +3,7 @@ import type { DiffReviewComment, ReviewThread } from '../types/models';
 import { setPatchTextBudgetForTest } from './patchMemory.svelte';
 import { InsertSlots, materializeRows } from './patchRows';
 import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchParser';
-import { PatchTextLost } from './patchStore';
+import { PatchTextLost } from './patchChunks';
 import { mergePatchFilesByPath, parsePatchFiles } from './patchFiles';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import { streamPatch } from '../../test/helpers/streamedPatch';

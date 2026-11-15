@@ -71,7 +71,7 @@ func TestShutdownClosesHeldReviewDiffs(t *testing.T) {
 		t.Fatal("a file record was reserved after shutdown")
 	}
 	late := &closingReviewDiff{}
-	if _, err := app.holdReviewDiff(newOpenReviewDiff(context.Background(), late, transport.ScopeFilesRead)); !errors.Is(err, ErrShuttingDown) {
+	if _, err := app.holdReviewDiff(context.Background(), late, transport.ScopeFilesRead); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("hold after shutdown: err = %v, want ErrShuttingDown", err)
 	}
 }
@@ -101,7 +101,7 @@ func TestCloseReviewDiffsReportsACloseFailureAndRefusesNewHandles(t *testing.T) 
 	app := newReviewDiffTestApp(t)
 	failure := errors.New("snapshot not removed")
 	held := &closingReviewDiff{err: failure}
-	if _, err := app.holdReviewDiff(newOpenReviewDiff(context.Background(), held, transport.ScopeFilesRead)); err != nil {
+	if _, err := app.holdReviewDiff(context.Background(), held, transport.ScopeFilesRead); err != nil {
 		t.Fatalf("holdReviewDiff: %v", err)
 	}
 	if err := app.closeReviewDiffs(); !errors.Is(err, failure) {
@@ -112,7 +112,7 @@ func TestCloseReviewDiffsReportsACloseFailureAndRefusesNewHandles(t *testing.T) 
 	}
 
 	late := &closingReviewDiff{}
-	if _, err := app.holdReviewDiff(newOpenReviewDiff(context.Background(), late, transport.ScopeFilesRead)); !errors.Is(err, ErrShuttingDown) {
+	if _, err := app.holdReviewDiff(context.Background(), late, transport.ScopeFilesRead); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("hold after shutdown closed the diffs: err = %v, want ErrShuttingDown", err)
 	}
 	if n := late.closes.Load(); n != 1 {
@@ -133,7 +133,7 @@ func TestCloseReviewDiffsWaitsForACloseAConnectionStarted(t *testing.T) {
 	app := newReviewDiffTestApp(t)
 	ctx, conn := reviewDiffConn(t)
 	diff := &closingReviewDiff{entered: make(chan struct{}), release: make(chan struct{})}
-	if _, err := app.holdReviewDiff(newOpenReviewDiff(ctx, diff, transport.ScopeFilesRead)); err != nil {
+	if _, err := app.holdReviewDiff(ctx, diff, transport.ScopeFilesRead); err != nil {
 		t.Fatalf("holdReviewDiff: %v", err)
 	}
 	conn.RunCleanups()

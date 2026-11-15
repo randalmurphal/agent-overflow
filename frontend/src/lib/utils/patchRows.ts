@@ -298,7 +298,7 @@ export function materializeRows(file: ReviewFile, start: Readonly<RowStart>, cou
   const textOf = (index: number): string | null => {
     let text = texts.get(index);
     if (text === undefined) {
-      text = body.residentLine(index) ? ownText(body.text(index)) : null;
+      text = body.resident(index, index + 1) ? ownText(body.text(index)) : null;
       texts.set(index, text);
       if (text === null) complete = false;
       lines.start = Math.min(lines.start, index);

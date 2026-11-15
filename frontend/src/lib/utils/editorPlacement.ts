@@ -1,4 +1,4 @@
-import { FNV_OFFSET_BASIS_32 } from './fnv1a';
+import { fnv1a32 } from './fnv1a';
 import { namesOneRow, rowMatchesAnchor, RowWalker, type RowType } from './patchRows';
 import { whenResident } from './patchBody';
 import type { ReviewFile } from './patchParser';
@@ -30,12 +30,7 @@ export interface LineGuard {
 
 export function lineGuard(text: string): LineGuard {
   const normalized = text.replace(/\s+/g, '');
-  let hash = FNV_OFFSET_BASIS_32;
-  for (let index = 0; index < normalized.length; index += 1) {
-    hash ^= normalized.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return { hash, length: normalized.length };
+  return { hash: fnv1a32(normalized), length: normalized.length };
 }
 
 function sameGuard(a: LineGuard, b: LineGuard): boolean {

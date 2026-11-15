@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/jstext/jstexttest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -112,21 +112,6 @@ func TestGetPayloadBindingsRequireOwningThread(t *testing.T) {
 	}
 }
 
-// jsonClientText is the text a JSON client receives for data: each invalid
-// byte is one U+FFFD.
-func jsonClientText(t *testing.T, data string) string {
-	t.Helper()
-	encoded, err := json.Marshal(data)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var text string
-	if err := json.Unmarshal(encoded, &text); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	return text
-}
-
 func TestPayloadTextReadsStopBetweenCharacters(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -138,7 +123,7 @@ func TestPayloadTextReadsStopBetweenCharacters(t *testing.T) {
 		thread := testThread("thread-" + name)
 		payload := store.Payload{ID: "payload-" + name, Kind: "command_output", Meta: "{}", Data: []byte(text), CreatedAt: time.Now().UnixMilli()}
 		seedPayloadOwner(t, app, thread, payload, "item-"+name)
-		want := jsonClientText(t, text)
+		want := jstexttest.JSONDelivered(t, text)
 		for window := 1; window <= len(text)+1; window++ {
 			preview, err := app.GetPayloadPreview(thread.ID, payload.ID, window)
 			if err != nil {
@@ -171,7 +156,7 @@ func TestPayloadTextReadsStopBetweenCharacters(t *testing.T) {
 				if name == "valid" && !utf8.ValidString(piece) {
 					t.Fatalf("%s window %d: piece %d %q splits a character", name, window, i, piece)
 				}
-				got.WriteString(jsonClientText(t, piece))
+				got.WriteString(jstexttest.JSONDelivered(t, piece))
 			}
 			if got.String() != want {
 				t.Fatalf("%s window %d: a client reads %q, want %q", name, window, got.String(), want)

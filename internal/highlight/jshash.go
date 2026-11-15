@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
-	"agent-overflow/internal/fnv1a"
+	"agent-overflow/internal/jstext"
+	"agent-overflow/internal/stringsx"
 )
 
 // Frontend-parity content hashing. The frontend's span caches key by
-// `frontend/src/lib/utils/fnv1a.ts`, whose fold internal/fnv1a computes,
+// `frontend/src/lib/utils/fnv1a.ts`, whose fold internal/jstext computes,
 // so anything the backend pushes for those caches to adopt (persisted
 // spans, live code spans) must hash identically. Parity is pinned by test
 // vectors generated from the JS implementation; changing either side
@@ -27,7 +27,7 @@ import (
 // FrontendContentKey returns the exact string the frontend's
 // `contentKey(s)` produces: `<UTF-16 length>:<fnv1a32 base36>`.
 func FrontendContentKey(s string) string {
-	hash, units := fnv1a.FoldUTF16(fnv1a.OffsetBasis, s)
+	hash, units := jstext.FoldUTF16(jstext.OffsetBasis, s)
 	return strconv.Itoa(units) + ":" + strconv.FormatUint(uint64(hash), 36)
 }
 
@@ -40,18 +40,18 @@ func FrontendContentKey(s string) string {
 // crossing the wire twice.
 func FrontendLineHashes(s string) []uint32 {
 	hashes := make([]uint32, 0, strings.Count(s, "\n")+1)
-	hash := fnv1a.OffsetBasis
+	hash := jstext.OffsetBasis
 	for {
 		nl := strings.IndexByte(s, '\n')
 		if nl < 0 {
 			break
 		}
-		hash, _ = fnv1a.FoldUTF16(hash, s[:nl])
+		hash, _ = jstext.FoldUTF16(hash, s[:nl])
 		hashes = append(hashes, hash)
-		hash = fnv1a.FoldUnit(hash, '\n')
+		hash = jstext.FoldUnit(hash, '\n')
 		s = s[nl+1:]
 	}
-	hash, _ = fnv1a.FoldUTF16(hash, s)
+	hash, _ = jstext.FoldUTF16(hash, s)
 	return append(hashes, hash)
 }
 
@@ -69,7 +69,7 @@ type LineHashChain struct {
 // left out of the last entry until the rest of it arrives.
 func (c *LineHashChain) Hashes(text []byte, from int) []uint32 {
 	if c.folded == 0 && len(c.done) == 0 {
-		c.hash = fnv1a.OffsetBasis
+		c.hash = jstext.OffsetBasis
 	}
 	for {
 		nl := bytes.IndexByte(text[c.folded:], '\n')
@@ -77,21 +77,14 @@ func (c *LineHashChain) Hashes(text []byte, from int) []uint32 {
 			break
 		}
 		line := text[c.folded : c.folded+nl]
-		hash, _ := fnv1a.FoldUTF16(c.hash, string(line))
+		hash, _ := jstext.FoldUTF16(c.hash, string(line))
 		c.done = append(c.done, hash)
-		c.hash = fnv1a.FoldUnit(hash, '\n')
+		c.hash = jstext.FoldUnit(hash, '\n')
 		c.folded += nl + 1
 	}
 	tail := text[c.folded:]
-	for cut := len(tail) - 1; cut >= 0 && cut >= len(tail)-utf8.UTFMax; cut-- {
-		if utf8.RuneStart(tail[cut]) {
-			if !utf8.FullRune(tail[cut:]) {
-				tail = tail[:cut]
-			}
-			break
-		}
-	}
-	last, _ := fnv1a.FoldUTF16(c.hash, string(tail))
+	tail = tail[:stringsx.CompleteRunePrefix(tail)]
+	last, _ := jstext.FoldUTF16(c.hash, string(tail))
 	out := make([]uint32, 0, max(0, len(c.done)+1-from))
 	if from < len(c.done) {
 		out = append(out, c.done[from:]...)

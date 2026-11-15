@@ -1,5 +1,6 @@
+import { formatSourceKey } from './diffSourceKey';
 import { appendFNV1a32, FNV_OFFSET_BASIS_32 } from './fnv1a';
-import { unpackText } from './packedText';
+import { checkPackedCut, checkWideMarks, unpackText } from './packedText';
 import { PatchBody, type BodySegment } from './patchBody';
 import {
   cleanPath,
@@ -17,9 +18,9 @@ import {
   LINE_ADD,
   LINE_CONTEXT,
   LINE_DEL,
-  LINE_HUNK,
   LINE_META,
   PatchStore,
+  type LineClass,
   type PatchChunkSpan,
   type PatchLineCallback,
   type PatchTextKey,
@@ -28,6 +29,17 @@ import {
 // `PatchParser` classifies lines as they complete and splits the patch
 // into files with the same rules as `parsePatchFiles`; each file is a
 // `PatchBody` (`patchBody.ts`).
+
+/** A chunk's byte range and marks as the backend answers them
+ * (ReviewDiffChunk): a chunk is packed exactly when `wide` is non-empty,
+ * and a backend older than the key answers none. PatchParser.append
+ * checks them and stores the chunk under the PatchChunkSpan they make. */
+export interface PatchChunkMarks {
+  offset: number;
+  nextOffset: number;
+  wide?: readonly number[];
+  key?: PatchTextKey;
+}
 
 /** The hash a chunk without a key runs through for the source key. An
  * object so a test can see that a keyed chunk is not hashed. */
@@ -177,22 +189,20 @@ export class PatchParser {
   private hash = FNV_OFFSET_BASIS_32;
   private units = 0;
   private ended = false;
-  private readonly onLine: PatchLineCallback = (line, text, offset, length, packed) => {
-    this.completeLine(line, text, offset, length, packed);
-  };
+  private readonly onLine: PatchLineCallback = (line, text, offset, length, wide) => this.classifyLine(line, text, offset, length, wide);
 
-  /** Appends patch text; any chunk boundary is allowed. `span` is the
-   * chunk's backend byte range and form (PatchChunkSpan): the range for
-   * a store that can evict it, `wide` for packed text, `key` for the
-   * source key through the chunk's end. A chunk with a key is not hashed;
-   * a packed chunk without one is refused. */
-  append(data: string, span?: PatchChunkSpan): void {
+  /** Appends patch text. A plain chunk may end anywhere; a packed one
+   * ends between characters. `chunk` is what the backend answered with
+   * the text (PatchChunkMarks): the byte range for a store that can evict
+   * it, `wide` for packed text, `key` for the source key through the
+   * chunk's end. A chunk with a key is not hashed. Marks the chunk cannot
+   * have are refused before any of the chunk is stored. */
+  append(data: string, chunk?: PatchChunkMarks): void {
     if (this.ended) throw new Error('patch parser: append after end');
     if (data === '') return;
-    const key = span?.key;
-    if (key !== undefined) this.checkKey(key, data, span?.wide !== undefined);
-    else if (span?.wide !== undefined) throw new Error('patch parser: a packed chunk came without its key');
+    const span = chunk === undefined ? undefined : this.checkSpan(data, chunk);
     this.store.append(data, this.onLine, span);
+    const key = span?.key;
     if (key !== undefined) {
       this.hash = key.hash;
       this.units = key.units;
@@ -201,6 +211,22 @@ export class PatchParser {
       this.units += data.length;
     }
     this.publish();
+  }
+
+  // The one check of what a chunk arrives with, and the span it is stored
+  // under. The marks come off the wire, so their types are checked too.
+  private checkSpan(data: string, chunk: PatchChunkMarks): PatchChunkSpan {
+    const { offset, nextOffset, wide, key } = chunk;
+    if (wide === undefined || (Array.isArray(wide) && wide.length === 0)) {
+      if (key !== undefined) this.checkKey(key, data, false);
+      return { offset, nextOffset, key };
+    }
+    if (!Array.isArray(wide)) throw new Error('patch parser: a packed chunk came with wide marks that are not a list');
+    if (key === undefined) throw new Error('patch parser: a packed chunk came without its key');
+    checkWideMarks(data, wide);
+    checkPackedCut(data);
+    this.checkKey(key, data, true);
+    return { offset, nextOffset, wide, key };
   }
 
   // A key is cumulative. A plain chunk's text is its units, so its key
@@ -236,17 +262,16 @@ export class PatchParser {
    * of its text. Empty for an empty patch and before the end. */
   sourceKey(): string {
     if (!this.ended || this.units === 0) return '';
-    return `fnv1a:${this.hash.toString(16).padStart(8, '0')}:${this.units}`;
+    return formatSourceKey(this.hash, this.units);
   }
 
   // Prefixes and hunk headers are ASCII, so they read the same in packed
-  // text; what a line keeps is unpacked when `packed`.
-  private completeLine(line: number, text: string, offset: number, length: number, packed: boolean): void {
-    const store = this.store;
+  // text; what a line keeps is unpacked when `wide`.
+  private classifyLine(line: number, text: string, offset: number, length: number, wide: boolean): LineClass {
     const kind = this.body.next(text, offset, length);
     if (startsAt(text, offset, length, 'diff --git ')) {
       this.finishSection(line);
-      const header = lineText(text, offset, offset + length, packed);
+      const header = lineText(text, offset, offset + length, wide);
       const parts = header.split(/\s+/);
       this.current = {
         path: cleanPath(parts[3] ?? ''),
@@ -260,8 +285,7 @@ export class PatchParser {
         leading: true,
       };
       readHeaderLine(this.current.header, header);
-      store.setKind(line, LINE_META);
-      return;
+      return LINE_META;
     }
     const current = this.current;
     // parsePatchFiles' rule: a hunk body's lines by its header's counts,
@@ -276,37 +300,37 @@ export class PatchParser {
       if (startsAt(text, offset, length, 'deleted file')) current.kind = 'deleted';
       if (startsAt(text, offset, length, 'rename from ')) current.kind = 'renamed';
       if (startsAt(text, offset, length, 'rename to ')) {
-        current.path = cleanPath(lineText(text, offset + 'rename to '.length, offset + length, packed));
+        current.path = cleanPath(lineText(text, offset + 'rename to '.length, offset + length, wide));
       }
       if (outside && startsAt(text, offset, length, '+++ ')) {
-        const next = cleanPath(lineText(text, offset + 4, offset + length, packed));
+        const next = cleanPath(lineText(text, offset + 4, offset + length, wide));
         if (next && next !== '/dev/null') current.path = next;
       }
       if (plus) current.additions += 1;
       if (minus) current.deletions += 1;
     }
+    let lineClass: LineClass;
     if (plus) {
-      store.setKind(line, LINE_ADD);
+      lineClass = LINE_ADD;
     } else if (minus) {
-      store.setKind(line, LINE_DEL);
+      lineClass = LINE_DEL;
     } else if (kind === HUNK_CONTEXT) {
-      store.setKind(line, LINE_CONTEXT);
+      lineClass = LINE_CONTEXT;
     } else if (kind === HUNK_HEADER && this.body.header) {
-      store.addHunk(line, this.body.header.oldStart, this.body.header.newStart);
-      store.setKind(line, LINE_HUNK);
+      lineClass = this.body.header;
       if (current && current.firstHunk < 0) current.firstHunk = line;
     } else if (kind !== HUNK_OUTSIDE || PATCH_META_PREFIXES.some((prefix) => startsAt(text, offset, length, prefix))) {
       // A malformed hunk header, the no-newline marker, or a file header.
-      store.setKind(line, LINE_META);
-      if (current?.leading) readHeaderLine(current.header, lineText(text, offset, offset + length, packed));
-      return;
+      if (current?.leading) readHeaderLine(current.header, lineText(text, offset, offset + length, wide));
+      return LINE_META;
     } else {
       // git's one line for a binary file stays a line of the body, as it
       // always rendered; the header says what it is.
       if (current?.leading && isBinaryLine(text.slice(offset, offset + Math.min(length, BINARY_PREFIX_MAX)))) current.header.binary = true;
-      store.setKind(line, LINE_CONTEXT);
+      lineClass = LINE_CONTEXT;
     }
     if (current) current.leading = false;
+    return lineClass;
   }
 
   // Sections finish while a chunk is being indexed, so their files are
@@ -364,7 +388,6 @@ export class PatchParser {
       deletions: deleted.deletions + added.deletions,
       body: new PatchBody(segments),
       suppressGaps: true,
-      // The created section's header is dropped with its block.
       header: deleted.header,
     };
   }
@@ -376,8 +399,8 @@ function isBinaryLine(text: string): boolean {
 }
 
 // The text of [from, to) of a line callback's `text`.
-function lineText(text: string, from: number, to: number, packed: boolean): string {
-  return packed ? unpackText(text.slice(from, to)) : text.slice(from, to);
+function lineText(text: string, from: number, to: number, wide: boolean): string {
+  return wide ? unpackText(text.slice(from, to)) : text.slice(from, to);
 }
 
 function startsAt(text: string, offset: number, length: number, prefix: string): boolean {
