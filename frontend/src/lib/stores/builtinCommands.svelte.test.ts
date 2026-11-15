@@ -76,6 +76,7 @@ import {
   terminalStateKeyForPane,
 } from '../components/terminal/terminalStore.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { DisconnectedError } from '../transport/wsClient';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import {
   getPendingThreadActionConfirmation,
@@ -560,6 +561,36 @@ function registerFixtureCommands(pane: ReturnType<typeof createThreadPane>): voi
   void pane;
   registerBuiltinCommands(makeBuiltinHooks());
 }
+
+describe('git push and pull commands', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+  });
+
+  for (const [id, binding, noun, done] of [
+    ['git.push', 'GitPush', 'push', 'Pushed.'],
+    ['git.pull', 'GitPull', 'pull', 'Pulled.'],
+  ] as const) {
+    it(`${id} reports a write whose answer was lost from the computer's record of it`, async () => {
+      const pane = readyPane({ projectId: 'project-1' });
+      registerFixtureCommands(pane);
+      const write = setBindingMock(binding, async () => {
+        throw new DisconnectedError('socket closed');
+      });
+      const outcome = setBindingMock('GetGitActionOutcome', async () => ({
+        state: 'succeeded',
+        result: { action: noun },
+      }));
+      const command = getCommand(id);
+      if (!command) throw new Error(`${id} was not registered`);
+      await command.run(makeCommandContext(pane, { hasActiveThread: true }));
+      await vi.waitFor(() => expect(getToasts().at(-1)?.message).toBe(done));
+      expect(write).toHaveBeenCalledTimes(1);
+      const [workspace, attemptId] = write.mock.calls[0]!;
+      expect(outcome).toHaveBeenCalledWith(workspace, noun, attemptId);
+    });
+  }
+});
 
 describe('thread rename command', () => {
   beforeEach(() => {

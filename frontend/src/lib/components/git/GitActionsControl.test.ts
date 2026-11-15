@@ -201,7 +201,7 @@ describe('<GitActionsControl> consumer rendering', () => {
     await fireEvent.click(await findByLabelText('More git actions'));
     await fireEvent.click(await findByRole('menuitem', { name: 'Push' }));
     await flush();
-    expect(pushArgs).toEqual([[pane.workspace]]);
+    expect(pushArgs).toEqual([[pane.workspace, expect.any(String)]]);
   });
 });
 
@@ -569,7 +569,7 @@ describe('<GitActionsControl> palette dialog event', () => {
     await flush();
 
     expect(pane.threadId).toBeNull();
-    expect(pullArgs).toEqual([[{ projectId: 'project-1', workspacePath: WORKSPACE }]]);
+    expect(pullArgs).toEqual([[{ projectId: 'project-1', workspacePath: WORKSPACE }, expect.any(String)]]);
   });
 
   // A terminal-only thread carries no project, so `pane.workspace` is null and

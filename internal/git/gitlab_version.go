@@ -45,6 +45,19 @@ func parseGitLabVersion(s string) (gitlabVersion, error) {
 // gitlabSupportedFloor is the oldest GitLab release the app supports.
 var gitlabSupportedFloor = gitlabVersion{18, 0}
 
+// The capabilities past the floor, each the first release that has it.
+// A request that depends on one asks gitlabServer.has.
+var (
+	// gitlabReviewerStateSince: the draft notes API documents
+	// bulk_publish's reviewer_state (docs.gitlab.com/19.3/api/draft_notes;
+	// absent from the 19.2 page).
+	gitlabReviewerStateSince = gitlabVersion{19, 3}
+	// gitlabCancelAutoMergeSince: POST .../cancel_auto_merge ("Introduced
+	// in GitLab 19.5", merge requests API). Before it the route is
+	// .../cancel_merge_when_pipeline_succeeds.
+	gitlabCancelAutoMergeSince = gitlabVersion{19, 5}
+)
+
 // gitlabServer is what a read or a write knows of the host: its release
 // and edition (GET /metadata's version and enterprise, "Indicates whether
 // GitLab instance is Enterprise Edition"), or why they could not be read.
@@ -54,6 +67,11 @@ type gitlabServer struct {
 	// (MergeRequest.approvalState) and its approval rules.
 	enterprise bool
 	err        error
+}
+
+// has reports whether the server is known to run since or later.
+func (s gitlabServer) has(since gitlabVersion) bool {
+	return s.err == nil && s.version.atLeast(since)
 }
 
 // supported is nil for a server at or past gitlabSupportedFloor; an
@@ -101,16 +119,16 @@ func (f *gitlabForge) writeClient(ctx context.Context, ref PRReference) (*forgea
 	return client, err
 }
 
-// writeServer is writeClient with the server's release, for a write whose
-// request depends on it.
-func (f *gitlabForge) writeServer(ctx context.Context, ref PRReference) (*forgeapi.Client, gitlabVersion, error) {
+// writeServer is writeClient with the server, for a write whose request
+// depends on its release (gitlabServer.has).
+func (f *gitlabForge) writeServer(ctx context.Context, ref PRReference) (*forgeapi.Client, gitlabServer, error) {
 	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
-		return nil, gitlabVersion{}, err
+		return nil, gitlabServer{}, err
 	}
 	server := f.server(ctx, client, ref.Host)
 	if err := server.supported(ref.Host); err != nil {
-		return nil, gitlabVersion{}, &forgeapi.NotSentError{Err: err}
+		return nil, gitlabServer{}, &forgeapi.NotSentError{Err: err}
 	}
-	return client, server.version, nil
+	return client, server, nil
 }

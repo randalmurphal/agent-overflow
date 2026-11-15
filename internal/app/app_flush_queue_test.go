@@ -2613,11 +2613,11 @@ func TestCodexResendAfterInterrupt_FailedSendRestoresDraft(t *testing.T) {
 }
 
 // TestCodexResendAfterInterrupt_DraftMergeFailureRequeues pins the
-// fallback inside restoreEagerPersistedFlushesToDraft: when the draft
-// write fails after the eager rows are already deleted, the messages
-// must keep a delivery vehicle — requeued with their queue identity —
-// and the row removal must still reach the frontend so no ghost
-// timeline row outlives its deleted store row.
+// fallback inside restoreEagerPersistedFlushesToDraft: the draft write and
+// the eager rows' removal are one write, so when it fails the rows stay and
+// the messages keep a delivery vehicle, requeued with their queue identity
+// and naming their rows for the redispatch to retire. Nothing tells the
+// frontend to drop a row the store still has.
 func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
@@ -2661,11 +2661,11 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 
 	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
 
-	// The row deletion happened before the draft write failed...
+	// The failed write removed nothing...
 	if _, found, err := app.store.GetThreadItem(thread.ID, "user:1:flush:1"); err != nil {
 		t.Fatalf("GetThreadItem: %v", err)
-	} else if found {
-		t.Error("eager row survived — cleanup runs before the draft write")
+	} else if !found {
+		t.Error("eager row deleted by a restore whose draft write failed")
 	}
 	// ...so the message falls back to the queue with its identity intact...
 	requeued := app.triage.QueuedFlushItems(thread.ID)
@@ -2677,27 +2677,20 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 		t.Errorf("requeued identity = %+v, want queue:q1/resend me/enqueued 10", got)
 	}
 	if got.StaleUserItemID != "user:1:flush:1" {
-		// The marker resolves as already-cleaned at redispatch (the row
-		// is gone); carrying it is what makes a partial delete retry-safe.
+		// The redispatch retires the row before it persists a fresh one.
 		t.Errorf("requeued StaleUserItemID = %q, want user:1:flush:1", got.StaleUserItemID)
 	}
-	// ...and the frontend still learns the row is gone.
-	restored := emittedQueueRestored(rec)
-	if len(restored) != 1 {
-		t.Fatalf("queue restored events = %+v, want one", restored)
-	}
-	if restored[0].Reason != "resend_failed" {
-		t.Errorf("restore reason = %q, want resend_failed", restored[0].Reason)
-	}
-	if strings.Join(restored[0].UserItemIDs, ",") != "user:1:flush:1" {
-		t.Errorf("restored user ids = %+v, want [user:1:flush:1]", restored[0].UserItemIDs)
+	// ...and the frontend keeps the row the store still has.
+	if restored := emittedQueueRestored(rec); len(restored) != 0 {
+		t.Fatalf("queue restored events = %+v, want none", restored)
 	}
 }
 
-// An eager row whose resend failed and whose draft write fails is requeued
-// as the row renders it: its summary with the review comments, which the
-// row's retire returned with their bodies for the resend to claim again,
-// and the text before them for a later restore to the composer.
+// An eager row whose resend failed and whose draft write fails is left as
+// it was, with its review comments claimed: the composer write and the
+// row's retire are one write. The message is requeued as the row renders
+// it, naming the row, so the resend retires it and claims the comments
+// again, and with the text before them for a later restore to the composer.
 func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
 	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
@@ -2734,8 +2727,8 @@ func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
 	}})
 
 	requeued := app.triage.QueuedFlushItems(thread.ID)
-	if len(requeued) != 1 || requeued[0].Message != resolved.content {
-		t.Fatalf("requeued = %+v, want the row's summary %q", requeued, resolved.content)
+	if len(requeued) != 1 || requeued[0].Message != resolved.content || requeued[0].StaleUserItemID != rowID {
+		t.Fatalf("requeued = %+v, want the row's summary %q naming row %s", requeued, resolved.content, rowID)
 	}
 	var payload flushQueuePayload
 	if err := json.Unmarshal(requeued[0].Payload, &payload); err != nil {
@@ -2744,14 +2737,12 @@ func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
 	if payload.TextBeforeReviewComments == nil || *payload.TextBeforeReviewComments != "Resend me." {
 		t.Errorf("payload text before the review comments = %v, want the message's own text", payload.TextBeforeReviewComments)
 	}
-	want := []flushqueue.RenderedReviewComments{{
-		Source:   store.DiffReviewSourceRef{ThreadID: thread.ID, Scope: draft.Scope, SourceKey: draft.SourceKey},
-		Comments: []store.DiffReviewCommentSnapshot{{ID: draft.ID, Body: draft.Body}},
-	}}
-	if !reflect.DeepEqual(payload.RenderedReviewComments, want) {
-		t.Errorf("rendered review comments = %+v, want %+v", payload.RenderedReviewComments, want)
+	if _, found, err := app.store.GetThreadItem(thread.ID, rowID); err != nil || !found {
+		t.Fatalf("row after the failed restore: found=%v err=%v, want it kept", found, err)
 	}
-	wantReviewDraft(t, app, store.ThreadReviewOwner(thread.ID), draft.ID, "after the requeue")
+	if got, err := app.store.GetDiffReviewComment(store.ThreadReviewOwner(thread.ID), draft.ID); err != nil || got.Status != "sent" {
+		t.Fatalf("comment after the failed restore = %+v, %v; want it still claimed by the row", got, err)
+	}
 }
 
 // TestStartSession_FlushesRequeuedItems pins R12-2 (round 12): a
@@ -2919,7 +2910,7 @@ func TestQueuedFlushItemFromUnconfirmed_CarriesStaleMarker(t *testing.T) {
 		Message:         "still stale",
 		EnqueuedAt:      10,
 		StaleUserItemID: "user:2:flush:1",
-	}, nil)
+	})
 	if !ok {
 		t.Fatal("conversion rejected a message-bearing item")
 	}
@@ -3483,7 +3474,7 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 		"revisionSourceDiffCommentIds":["d1"],
 		"expandComposerCommands":true
 	}`
-	raw, err := flushPayloadFromUserMeta(meta, nil)
+	raw, err := flushPayloadFromUserMeta(meta)
 	if err != nil {
 		t.Fatalf("flushPayloadFromUserMeta: %v", err)
 	}
@@ -3512,24 +3503,31 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 
 	// A row whose summary renders its review comments is resent as it is:
 	// the payload marks it with the text before them, keeps the diff ids as
-	// provenance and claims again the comments its retire returned. A row
-	// that renders none ignores a retire's comments. Plan ids still drop
-	// from both rebuilds.
+	// provenance, and the redispatch's retire adds the comments it returned
+	// for the resend to claim again (addReturnedReviewComments). A row that
+	// renders none ignores a retire's comments. Plan ids still drop from
+	// both rebuilds.
 	rendered := strings.Replace(meta, `"expandComposerCommands":true`, `"expandComposerCommands":true,"textBeforeReviewComments":"own text"`, 1)
 	returned := []store.DiffReviewReturnedComments{{
 		DiffReviewCommentSource: store.DiffReviewCommentSource{Owner: store.ThreadReviewOwner("t1"), Scope: "pr", SourceKey: "k"},
 		Comments:                []store.DiffReviewCommentSnapshot{{ID: "d1", Body: "Rename it."}},
 	}}
-	fromMeta, err := flushPayloadFromUserMeta(rendered, returned)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fromItem := withReturnedReviewComments(queuePayloadFromUserItem(store.Item{Summary: "own text, rendered", Meta: rendered}, nil), returned)
-	for _, raw := range []json.RawMessage{fromMeta, fromItem} {
+	resent := func(raw json.RawMessage) flushQueuePayload {
+		t.Helper()
 		var payload flushQueuePayload
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			t.Fatal(err)
 		}
+		addReturnedReviewComments(&payload, returned)
+		return payload
+	}
+	fromMeta, err := flushPayloadFromUserMeta(rendered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromItem := queuePayloadFromUserItem(store.Item{Summary: "own text, rendered", Meta: rendered}, nil)
+	for _, raw := range []json.RawMessage{fromMeta, fromItem} {
+		payload := resent(raw)
 		if len(payload.RevisionSourceCommentIDs) != 0 || strings.Join(payload.RevisionSourceDiffCommentIDs, ",") != "d1" {
 			t.Errorf("payload plan ids %v, diff ids %v; want none and [d1]", payload.RevisionSourceCommentIDs, payload.RevisionSourceDiffCommentIDs)
 		}
@@ -3544,15 +3542,11 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 			t.Errorf("rendered review comments = %+v, want %+v", payload.RenderedReviewComments, want)
 		}
 	}
-	plain, err := flushPayloadFromUserMeta(meta, returned)
+	plain, err := flushPayloadFromUserMeta(meta)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var plainPayload flushQueuePayload
-	if err := json.Unmarshal(plain, &plainPayload); err != nil {
-		t.Fatal(err)
-	}
-	if plainPayload.TextBeforeReviewComments != nil || len(plainPayload.RenderedReviewComments) != 0 {
+	if plainPayload := resent(plain); plainPayload.TextBeforeReviewComments != nil || len(plainPayload.RenderedReviewComments) != 0 {
 		t.Errorf("payload of a row rendering no review comments = %+v, want no rendered comments", plainPayload)
 	}
 	if got := rowTextWithoutReviewComments("own text, rendered", rendered); got != "own text" {
@@ -3580,13 +3574,13 @@ func TestQueuePayloadFromUserItemPreservesComposerCommandProvenance(t *testing.T
 // and provenance. Both decode helpers must fail loudly instead.
 func TestFlushUserMetaHelpers_RejectNullMeta(t *testing.T) {
 	t.Parallel()
-	if _, err := flushPayloadFromUserMeta("null", nil); err == nil {
+	if _, err := flushPayloadFromUserMeta("null"); err == nil {
 		t.Error("flushPayloadFromUserMeta(null) = nil error, want corrupt-meta failure")
 	}
 	if _, err := attachmentIDsFromUserMeta("null"); err == nil {
 		t.Error("attachmentIDsFromUserMeta(null) = nil error, want corrupt-meta failure")
 	}
-	if _, err := flushPayloadFromUserMeta("", nil); err != nil {
+	if _, err := flushPayloadFromUserMeta(""); err != nil {
 		t.Errorf("flushPayloadFromUserMeta(empty) = %v, want nil — absent meta is legitimate", err)
 	}
 }

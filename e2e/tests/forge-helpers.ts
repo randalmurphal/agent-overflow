@@ -313,9 +313,11 @@ export interface ForgeRepo {
   teamsRefused?: boolean;
   /** The repository's labels; color "#rrggbb". */
   labels?: { name: string; color?: string; id?: string }[];
-  /** GitLab: what an older server lacks. */
+  /** GitLab: the host's release, and what its server lacks. */
   serverVersion?: string;
   serverLacks?: 'introspection'[];
+  /** GitLab: a tier without Request changes; a requested state reads reviewed. */
+  noChangeRequests?: boolean;
 }
 
 interface ForgeInvocationCommon {

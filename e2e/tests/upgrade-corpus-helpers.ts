@@ -1,23 +1,18 @@
 // Helpers for the release upgrade check (upgrade-corpus.manual.spec.ts):
 // the read-only census of the database the check compares before and after
-// the migration, the fingerprint of the launcher's snapshot against the
-// migrated store, the version-keyed exceptions that narrow both, the
-// deferred-phase wait, and the sidebar and timeline reads the migrated boot
-// must answer.
+// the migration, the version-keyed exceptions that narrow it and the
+// fingerprint (upgrade-corpus-fingerprint.ts), the deferred-phase wait, and
+// the sidebar and timeline reads the migrated boot must answer.
 import { expect, type Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
-import {
-  countIgnoredTables,
-  fingerprintIgnoredTables,
-  migrationExceptions,
-  type MigrationException,
-} from './upgrade-corpus-config.js';
+import { countIgnoredTables, migrationExceptions, type MigrationException } from './upgrade-corpus-config.js';
+import type { RecoveryRemoved } from './upgrade-corpus-fingerprint.js';
 import { dbQuery, tableNames } from './upgrade-corpus-tools.js';
 
-const CONFIG_FILE = 'e2e/tests/upgrade-corpus-config.ts';
+export const CONFIG_FILE = 'e2e/tests/upgrade-corpus-config.ts';
 
 /** The exceptions that apply to a run migrating from one version to another. */
-function exceptionsFor(from: number, to: number): MigrationException[] {
+export function exceptionsFor(from: number, to: number): MigrationException[] {
   return migrationExceptions.filter((entry) => entry.version > from && entry.version <= to);
 }
 
@@ -34,66 +29,6 @@ export function assertExceptionsCurrent(corpusVersion: number): void {
   }
 }
 
-export interface Fingerprint {
-  /** Table to the number of its pre-migration rows now missing or changed. */
-  changedRows: Record<string, number>;
-  /** Tables of the snapshot the migrated store no longer has. */
-  droppedTables: string[];
-  /** Tables whose comparison an exception narrowed or skipped. */
-  excepted: string[];
-}
-
-/**
- * fingerprint compares every table of the pre-migration snapshot with the
- * migrated store, row by row over the columns both schemas share (BLOBs by
- * length), and fails on the first old row that is missing or changed, or
- * table that is gone, unless a migrationExceptions entry for a migration in
- * (from, to] covers it. Rows a migration adds are not its concern; a row a
- * migration took away or altered is user data, and the failure names the
- * entry an intentional change must declare.
- */
-export async function fingerprint(dbPath: string, snapshotPath: string, from: number, to: number): Promise<Fingerprint> {
-  const exceptions = exceptionsFor(from, to);
-  const span = from + 1 === to ? `migration v${to}` : `the migrations v${from + 1}..v${to}`;
-  const instruction = (table: string, what: string) =>
-    `${span} ${what} in ${table}. If that is the migration's intent, add a migrationExceptions entry ` +
-    `{ version, table: '${table}', ... reason } to ${CONFIG_FILE}; otherwise the migration lost or altered user data.`;
-  const before = await tableNames(dbPath, 'snap', snapshotPath);
-  const after = new Set(await tableNames(dbPath, 'main', snapshotPath));
-  const out: Fingerprint = { changedRows: {}, droppedTables: [], excepted: [] };
-  for (const table of before) {
-    const forTable = exceptions.filter((entry) => entry.table === table);
-    if (!after.has(table)) {
-      out.droppedTables.push(table);
-      if (!forTable.some((entry) => entry.dropped)) throw new Error(instruction(table, 'dropped the table'));
-      out.excepted.push(table);
-      continue;
-    }
-    if (table in fingerprintIgnoredTables) continue;
-    const virtual = await dbQuery<{ n: number }>(dbPath,
-      `SELECT COUNT(*) AS n FROM snap.sqlite_master WHERE name = '${table}' AND sql LIKE 'CREATE VIRTUAL TABLE%'`, snapshotPath);
-    if (virtual[0].n > 0) continue;
-    const skipColumns = new Set(forTable.flatMap((entry) => entry.columns ?? []));
-    const shrink = forTable.some((entry) => entry.rowsMayShrink);
-    if (skipColumns.size > 0 || shrink) out.excepted.push(table);
-    if (shrink) continue;
-    const snapColumns = await dbQuery<{ name: string; type: string }>(dbPath,
-      `SELECT name, type FROM pragma_table_info('${table}', 'snap')`, snapshotPath);
-    const mainColumns = new Set((await dbQuery<{ name: string }>(dbPath,
-      `SELECT name FROM pragma_table_info('${table}')`, snapshotPath)).map((column) => column.name));
-    const projection = snapColumns
-      .filter((column) => mainColumns.has(column.name) && !skipColumns.has(column.name))
-      .map((column) => (/BLOB/i.test(column.type) ? `length("${column.name}")` : `"${column.name}"`))
-      .join(', ');
-    if (!projection) continue;
-    const [{ n }] = await dbQuery<{ n: number }>(dbPath,
-      `SELECT COUNT(*) AS n FROM (SELECT ${projection} FROM snap."${table}" EXCEPT SELECT ${projection} FROM main."${table}")`, snapshotPath);
-    out.changedRows[table] = n;
-    if (n > 0) throw new Error(instruction(table, `left ${n} pre-migration row(s) missing or changed`));
-  }
-  return out;
-}
-
 /**
  * Census is what the check compares across the migration: the entity
  * counts a user would notice missing, every thread's top-level item count,
@@ -105,7 +40,13 @@ export interface Census {
   /** Non-archived projects, what ListProjects and the sidebar show. */
   projects: number;
   archivedProjects: number;
+  /**
+   * Non-archived threads, what HarnessListThreadRows lists: owned_threads,
+   * so a holder (the retired source a pointer fork still reads) or a thread
+   * mid-delete is not counted.
+   */
   threads: number;
+  /** Archived threads, what ListArchivedThreads lists: hidden modes excluded. */
   archived: number;
   /** Pinned non-archived threads, what HarnessListThreadRows carries. */
   pinned: number;
@@ -124,14 +65,17 @@ export interface Census {
   tables: Record<string, number>;
 }
 
+/** threadmode.HiddenModes, which ListArchivedThreads leaves out. */
+const hiddenModes = ['workflow', 'workflow-studio', 'workflow-triage', 'scratch', 'holder'].map((m) => `'${m}'`).join(', ');
+
 export async function census(dbPath: string): Promise<Census> {
   const [counts] = await dbQuery<Omit<Census, 'threadItems' | 'tables'>>(dbPath, `
     SELECT (SELECT MAX(version) FROM migration_versions) AS schemaVersion,
            (SELECT COUNT(*) FROM projects WHERE archived = 0) AS projects,
            (SELECT COUNT(*) FROM projects WHERE archived = 1) AS archivedProjects,
-           (SELECT COUNT(*) FROM threads WHERE archived = 0) AS threads,
-           (SELECT COUNT(*) FROM threads WHERE archived = 1) AS archived,
-           (SELECT COUNT(*) FROM threads WHERE archived = 0 AND pinned_at IS NOT NULL) AS pinned,
+           (SELECT COUNT(*) FROM owned_threads WHERE archived = 0) AS threads,
+           (SELECT COUNT(*) FROM owned_threads WHERE archived = 1 AND mode NOT IN (${hiddenModes})) AS archived,
+           (SELECT COUNT(*) FROM owned_threads WHERE archived = 0 AND pinned_at IS NOT NULL) AS pinned,
            (SELECT COUNT(*) FROM thread_groups) AS groups,
            (SELECT COUNT(*) FROM turns) AS turns,
            (SELECT COUNT(*) FROM items) AS items,
@@ -159,7 +103,8 @@ export async function census(dbPath: string): Promise<Census> {
  * compareCensus is the rule a run must keep from one census to the next:
  * the entities a user sees (projects, threads, archived, pinned, groups)
  * are exactly what they were plus what `growth` declares; no table shrinks
- * or disappears; no thread loses rows. Rows may be added, by a repair
+ * or disappears; no thread loses rows, beyond the rows `growth.removed`
+ * says a boot's recovery rules removed. Rows may be added, by a repair
  * migration, by boot recovery of in-flight turns, by the top-up. Returns
  * every count's delta for the report; throws naming the first violation
  * and the exception entry an intentional change must declare.
@@ -172,6 +117,29 @@ export interface CensusGrowth {
   exact?: Partial<Record<CensusEntity, number>>;
   /** Entities that must grow by at least this much. */
   atLeast?: Partial<Record<CensusEntity, number>>;
+  /**
+   * Rows a boot removed under a recovery rule (Fingerprint.recoveryRemoved):
+   * a table or a thread may shrink by that many. recoveryGrowth builds it.
+   */
+  removed?: { tables: Record<string, number>; threadItems: Record<string, number> };
+}
+
+/**
+ * recoveryGrowth is the census growth of a trial whose boot removed rows
+ * under recovery rules: the entities of the threads it removed whole, read
+ * from the snapshot it started from, are gone, and their rows may be.
+ */
+export async function recoveryGrowth(snapshotDB: string, removed: RecoveryRemoved): Promise<CensusGrowth> {
+  const exact: Partial<Record<CensusEntity, number>> = {};
+  if (removed.threads.length > 0) {
+    const [gone] = await dbQuery<Record<'threads' | 'archived' | 'pinned', number>>(snapshotDB, `
+      SELECT COALESCE(SUM(archived = 0), 0) AS threads,
+             COALESCE(SUM(archived = 1 AND mode NOT IN (${hiddenModes})), 0) AS archived,
+             COALESCE(SUM(archived = 0 AND pinned_at IS NOT NULL), 0) AS pinned
+        FROM owned_threads WHERE id IN (${removed.threads.map((id) => `'${id.replaceAll("'", "''")}'`).join(', ')})`);
+    for (const key of ['threads', 'archived', 'pinned'] as const) exact[key] = 0 - gone[key];
+  }
+  return { exact, removed };
 }
 
 export function compareCensus(before: Census, after: Census, from: number, to: number, growth: CensusGrowth = {}): Record<string, number> {
@@ -202,15 +170,15 @@ export function compareCensus(before: Census, after: Census, from: number, to: n
         `{ version, table: '${table}', dropped: true, reason } in ${CONFIG_FILE}`);
     }
     deltas[`table:${table}`] = now - n;
-    if (now < n && !(table in countIgnoredTables) && !forTable.some((entry) => entry.rowsMayShrink)) {
+    if (now < n - (growth.removed?.tables[table] ?? 0) && !(table in countIgnoredTables) && !forTable.some((entry) => entry.rowsMayShrink)) {
       throw new Error(`table ${table} shrank from ${n} to ${now} rows; a migration that removes or moves its rows declares ` +
         `{ version, table: '${table}', rowsMayShrink: true, reason } in ${CONFIG_FILE}`);
     }
   }
   for (const [threadID, n] of Object.entries(before.threadItems)) {
-    const now = after.threadItems[threadID];
-    if (now === undefined) throw new Error(`thread ${threadID} had ${n} rows before the migration and none after`);
-    if (now < n) throw new Error(`thread ${threadID} had ${n} rows before the migration, ${now} after`);
+    const now = after.threadItems[threadID] ?? 0;
+    const floor = n - (growth.removed?.threadItems[threadID] ?? 0);
+    if (now < floor) throw new Error(`thread ${threadID} had ${n} rows before the migration, ${now || 'none'} after`);
   }
   return deltas;
 }

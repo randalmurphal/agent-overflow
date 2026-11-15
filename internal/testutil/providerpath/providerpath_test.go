@@ -63,8 +63,15 @@ func TestEveryTestBinaryThatCanStartAProviderInstallsThePoison(t *testing.T) {
 		if !strings.HasSuffix(pkg.ImportPath, ".test") {
 			continue
 		}
-		if slices.ContainsFunc(spawnPackages, func(p string) bool { return slices.Contains(pkg.Deps, p) }) &&
-			!slices.Contains(pkg.Deps, selfPackage) {
+		// A dependency that imports the package under test is rebuilt for
+		// the test binary and listed as "<path> [<pkg>.test]"; it links the
+		// same exec sites as the plain one.
+		deps := make([]string, len(pkg.Deps))
+		for i, dep := range pkg.Deps {
+			deps[i], _, _ = strings.Cut(dep, " [")
+		}
+		if slices.ContainsFunc(spawnPackages, func(p string) bool { return slices.Contains(deps, p) }) &&
+			!slices.Contains(deps, selfPackage) {
 			missing = append(missing, strings.TrimSuffix(pkg.ImportPath, ".test"))
 		}
 	}

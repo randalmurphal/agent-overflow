@@ -813,12 +813,15 @@ not re-arm it. A wake already on its way when the archive lands is not
 written: the queue write requires every request it answers to still be
 armed, and the unarchive is decided under the thread lock the archive
 holds. Caller deleted
-first: dropped. A restart of the caller's computer before a queued wake
-reached the provider restores it into the composer draft, as every
-queued message is; the request then reads `delivered: draft`, distinct
-from `delivered: inline` and `delivered: queued`, and `thread_status`
-still returns the answer. A Stop, archive or revert that clears the
-caller's queue drops a queued wake with it; every request that message
+first: dropped. A queued wake that returns to the composer draft
+instead of reaching the agent, as every queued message does on a
+restart, a session that ends or cannot start, or a provider that drops
+the message unrun, makes the request read `delivered: draft` in the
+write that restores it, distinct from `delivered: inline` and
+`delivered: queued`, and `thread_status` still returns the answer. A
+Stop, archive or revert that clears the caller's queue drops a queued
+wake with it, and a Stop also drops a wake the session was handed and
+never confirmed; every request that message
 answered then reads as not delivered, with `notify` off so nothing
 queues it again, and `thread_status` delivers the answer when it reads
 it.
@@ -830,7 +833,7 @@ towards a ten-minute ceiling for eight attempts. What stops a wake is
 the caller thread's own state, which no number of retries changes, so
 the retry ends rather than running for the life of the row: the request
 keeps its answer and records why the message never arrived, and
-`thread_status` returns both. A pass that finds a call holding the token
+`thread_status` returns both, the reason as `wake_issue`. A pass that finds a call holding the token
 books no attempt, so when that call's reply does not carry the answer,
 the wake is due again the moment the call lets go.
 
@@ -843,8 +846,8 @@ is answered by one message naming all of them, at most 512 per message.
 The message is queued under the oldest request's send id, and each
 other request records that request's token (`delivered_with`) with its
 own delivery mark in the same transaction, so `thread_status` on any of
-them reads the one message's state and a restart that restores the
-message to the composer corrects all of them to `delivered: draft`. A
+them reads the one message's state and a restore of the message to the
+composer corrects all of them to `delivered: draft`. A
 late reply is never folded. A message that speaks for one thread is
 badged with that thread; one that speaks for several is in the app's
 own voice. A message is written only if every request it names still

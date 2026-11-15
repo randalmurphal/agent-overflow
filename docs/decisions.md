@@ -717,7 +717,10 @@ and anti-changes that live only here:
   nothing is recorded that the dialog did not show. A commit, hooks and
   signing included, gets 10 minutes, long enough for a project's checks in
   a pre-commit hook; one stopped there ends its hooks and leaves the index
-  unlocked. During a merge,
+  unlocked. Every other git command that runs a user's hook (push and the
+  forge CLIs' create, which pushes, pull, checkout, branch creation,
+  worktree add, merge) gets the same 10 minutes and the same stop. A fetch
+  runs no hook and keeps the 45 second bound. During a merge,
   cherry-pick or revert a commit takes every change, so every file is
   selected and locked. Not built: hunk staging, discard, amend, push
   after commit.

@@ -111,7 +111,8 @@ func gitlabReviewNode(p *Pull) map[string]any {
 
 // gitlabReviewState is a reviewer's reviewState: approved while their
 // approval stands, requested_changes for one in changeRequests, reviewed
-// for one who commented on the merge request, else unreviewed.
+// for one a publish set so or who commented on the merge request, else
+// unreviewed.
 func gitlabReviewState(p *Pull, login string) string {
 	switch {
 	case gitlabViewerApproved(p, login):
@@ -120,7 +121,7 @@ func gitlabReviewState(p *Pull, login string) string {
 		return "requested_changes"
 	case containsFold(p.rerequested, login):
 		return "unreviewed"
-	case len(gitlabComments(p, login)) > 0:
+	case containsFold(p.reviewedBy, login), len(gitlabComments(p, login)) > 0:
 		return "reviewed"
 	}
 	return "unreviewed"
@@ -144,9 +145,13 @@ func gitlabComments(p *Pull, login string) []gitlabComment {
 		}
 	}
 	for _, thread := range p.Threads {
+		targetType := "DiffNote"
+		if thread.Path == "" {
+			targetType = "DiscussionNote"
+		}
 		for _, comment := range thread.Comments {
 			if strings.EqualFold(comment.Author, login) {
-				out = append(out, gitlabComment{at: comment.CreatedAt, targetType: "DiffNote"})
+				out = append(out, gitlabComment{at: comment.CreatedAt, targetType: targetType})
 			}
 		}
 	}

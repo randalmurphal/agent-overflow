@@ -18,14 +18,11 @@ import (
 	"agent-overflow/internal/procutil"
 )
 
-// configureChromiumProcess puts Chromium in a process group of its own and
-// has the kernel kill it when the thread that started it exits, which for
-// this process means when the backend dies, so a backend that crashes or is
-// killed leaves no browser behind. The Go runtime ends a thread only when a
-// goroutine exits while locked to it, and the launch runs on an ordinary
-// goroutine.
+// configureChromiumProcess puts Chromium in a process group of its own. The
+// reaper ends the whole group when the backend dies; a parent-death signal
+// would reach only the browser process and leave its children running.
 func configureChromiumProcess(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
 // awaitExit returns once the child pid has exited, leaving it unreaped.

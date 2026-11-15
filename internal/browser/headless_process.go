@@ -33,8 +33,10 @@ import (
 // reading are independent and nothing the process wrote is lost. The
 // allocator would also add --no-sandbox when the backend runs as root.
 //
-// Chromium runs in a process group of its own, and stop kills the group and
-// returns only once every process in it has exited. The renderers, the GPU
+// Chromium runs in a process group of its own, which the reaper watches from
+// the start until stop has ended it, so the whole group ends with the
+// backend too. stop kills the group and returns only once every process in
+// it has exited. The renderers, the GPU
 // process and the network and storage services all stay in that group, and
 // the services write into the user-data directory until they die, so the
 // group, not the browser process, is what an ephemeral profile's removal
@@ -42,7 +44,8 @@ import (
 // only under the user-data directory (chromiumEnv) and exit with the
 // browser.
 type chromiumProcess struct {
-	cmd *exec.Cmd
+	cmd    *exec.Cmd
+	reaper procutil.Reaper
 	// output is the read end of the pipe. stop closes it, which ends the
 	// reader even while a process outside the group still holds the write
 	// end.
@@ -91,10 +94,14 @@ const chromiumExitTimeout = 5 * time.Second
 const chromiumDrainGrace = 250 * time.Millisecond
 
 // startChromium starts binary with args, and env added to the inherited
-// environment, and waits, within ctx, for the DevTools websocket URL it
-// prints. On error the process has been killed and reaped, and the error
-// carries the tail of what it printed.
-func startChromium(ctx context.Context, binary string, args, env []string) (*chromiumProcess, string, error) {
+// environment, with its group watched by reaper, and waits, within ctx, for
+// the DevTools websocket URL it prints. On error the process has been killed
+// and reaped, and the error carries the tail of what it printed. A nil
+// reaper starts nothing.
+func startChromium(ctx context.Context, reaper procutil.Reaper, binary string, args, env []string) (*chromiumProcess, string, error) {
+	if reaper == nil {
+		return nil, "", procutil.ErrNoReaper
+	}
 	output, input, err := os.Pipe()
 	if err != nil {
 		return nil, "", fmt.Errorf("create the output pipe: %w", err)
@@ -103,8 +110,10 @@ func startChromium(ctx context.Context, binary string, args, env []string) (*chr
 	if err := cmd.Start(); err != nil {
 		return nil, "", errors.Join(err, input.Close(), output.Close())
 	}
+	reaper.Watch(cmd.Process.Pid)
 	c := &chromiumProcess{
 		cmd:      cmd,
+		reaper:   reaper,
 		output:   output,
 		said:     procutil.NewTailBuffer(headlessOutputTail),
 		endpoint: make(chan string, 1),
@@ -232,10 +241,14 @@ func (c *chromiumProcess) close(timeout time.Duration) error {
 // chromiumDrainGrace to take everything the group wrote; closing the pipe
 // discards what it has not read. It is safe to call more than once and from
 // several goroutines; every caller returns after the first stop completes.
-// An error means something Chromium started may still be running.
+// An error means something Chromium started may still be running, and the
+// reaper keeps watching the group.
 func (c *chromiumProcess) stop() error {
 	c.stopOnce.Do(func() {
 		c.stopErr = c.kill()
+		if c.stopErr == nil {
+			c.reaper.Release(c.cmd.Process.Pid)
+		}
 		if c.stopErr == nil && c.wsURL == "" {
 			timer := time.NewTimer(chromiumDrainGrace)
 			select {

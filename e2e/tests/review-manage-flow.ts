@@ -29,7 +29,10 @@
 // as the sentence naming its release and the floor, with no management
 // control anywhere. A GitLab project that asks for the approver's
 // password offers no Approve and says why, and one that takes one
-// reviewer refuses a second with that limit. A held Enter on the title bar's
+// reviewer refuses a second with that limit. A Request changes on
+// GitLab 19.6 and 18.5 posts a thread to resolve, and Details shows the
+// reviewer state each recorded (changes requested, reviewed). A held
+// Enter on the title bar's
 // `⋯` opens the menu and activates nothing. Closing the pane with Ctrl+W
 // while a picker holds a change writes that change (desktop). A
 // description save whose answer the fake holds until Back (compact) or
@@ -632,6 +635,49 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     }
     await expectEveryForgeCallHandled(harness);
   });
+
+  // 19.6 takes reviewer_state on the publish; 18.5 does not, and the fake
+  // refuses it there, so the handled-calls check proves none was sent.
+  for (const [version, state] of [['19.6.1-ee', 'CHANGES_REQUESTED'], ['18.5.2', 'COMMENTED']] as const) {
+    test(`gitlab ${version}: Request changes posts a thread to resolve and Details shows the state GitLab recorded`, async ({ harness, page }, testInfo: TestInfo) => {
+      test.setTimeout(180_000);
+      const thread = `Manage request changes ${version}`;
+      await seedPullRequest(harness, 'gitlab', thread, (seed) => ({
+        ...seed,
+        serverVersion: version,
+        pulls: (seed.pulls ?? []).map((pr) => ({ ...pr, reviewers: [...(pr.reviewers ?? []), 'ao-viewer'] })),
+      }));
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await harness.open(page);
+      const review = await openReview(page, thread, 'gitlab', compact);
+      const press = (target: Locator) => (compact ? target.tap() : target.click());
+      await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+
+      const row = review.locator('[data-testid="review-line-block"] > div').filter({ hasText: 'await post()' });
+      if (!compact) await row.hover();
+      await press(row.getByTestId('review-add-comment'));
+      const editor = review.getByTestId('review-draft-editor');
+      await editor.locator('textarea').fill('Retry here, once.');
+      await press(editor.getByTestId('review-draft-editor-add'));
+      const strip = review.getByTestId('review-send-strip');
+      await expect(strip).toBeVisible();
+      await strip.getByTestId('review-submit-target').selectOption('pr');
+      await press(strip.getByRole('button', { name: 'Request changes' }));
+      await strip.getByTestId('review-summary').fill('Cap the retries at one.');
+      await press(strip.getByTestId('review-send-comments'));
+      await expect(strip).toHaveCount(0, { timeout: 30_000 });
+
+      const conversation = await expandReviewSection(page, 'review-pr-conversation');
+      const changes = conversation.getByTestId('review-conversation-thread').filter({ hasText: 'Cap the retries at one.' });
+      await expect(changes).toContainText('Changes requested:', { timeout: 30_000 });
+      await expect(changes.getByTestId('review-thread-resolve')).toBeAttached();
+      const details = review.getByTestId('review-pr-details');
+      if ((await details.getAttribute('data-open')) !== 'true') await press(details.locator('button[aria-expanded]').first());
+      await expect(details.locator('[data-testid="review-details-reviewer"][data-login="ao-viewer"]')).toHaveAttribute('data-state', state, { timeout: 30_000 });
+      await review.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-request-changes-${version}.png`) });
+      await expectEveryForgeCallHandled(harness);
+    });
+  }
 
   test('gitlab: a server below the supported floor says so in Details and offers no management control', async ({ harness, page }, testInfo: TestInfo) => {
     test.setTimeout(180_000);

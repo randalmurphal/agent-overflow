@@ -17,16 +17,9 @@ import (
 // orphans are actually found.
 const orphanReaperSweepGrace = 2 * time.Second
 
-// providerGroupsReaped reports whether provider session groups are watched.
-// On Linux a provider keeps its own parent-death rule: Pdeathsig sends its
-// leader SIGTERM (provider/process_linux.go), and a terminal-hosted Claude
-// gets the hangup of its pty. Watching them there would add a group SIGTERM
-// and a SIGKILL two seconds later to every provider a dying backend leaves.
-const providerGroupsReaped = runtime.GOOS == "darwin"
-
 // startOrphanReaper guards against the process groups the app starts
-// outliving an ungraceful app death: every group procutil.StartGroup starts
-// (App.groupReaper), and provider sessions on macOS (providerGroupsReaped).
+// outliving an ungraceful app death: every group procutil.StartGroup starts,
+// the headless browser and provider sessions, each through App.groupReaper.
 // Windows runs its backend in WSL, so this is a no-op there.
 //
 // Distinct from the idle-session reaper in app_session_reaper.go, which
@@ -35,8 +28,6 @@ const providerGroupsReaped = runtime.GOOS == "darwin"
 // behind (before any new session can register, so the load→kill→clear
 // can't race a fresh Add), then start the live sidecar that kills watched
 // groups the instant this process dies. A missing sidecar is a startup error.
-// The next launch's sweep cannot protect providers spawned by this launch
-// after an ungraceful death.
 func (a *App) startOrphanReaper(dbDir string) error {
 	if runtime.GOOS == "windows" {
 		return nil
@@ -87,20 +78,6 @@ func (r appGroupReaper) Release(pgid int) { r.app.releaseProcessGroup(pgid) }
 // starts.
 func (a *App) groupReaper(owner string) procutil.Reaper {
 	return appGroupReaper{app: a, owner: owner}
-}
-
-// watchProviderGroup and releaseProviderGroup watch a provider session's
-// group where providerGroupsReaped.
-func (a *App) watchProviderGroup(pgid int, sessionToken string) {
-	if providerGroupsReaped {
-		a.watchProcessGroup(pgid, sessionToken)
-	}
-}
-
-func (a *App) releaseProviderGroup(pgid int) {
-	if providerGroupsReaped {
-		a.releaseProcessGroup(pgid)
-	}
 }
 
 // watchProcessGroup registers a freshly started process group with the

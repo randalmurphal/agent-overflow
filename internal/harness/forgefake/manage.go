@@ -86,6 +86,17 @@ var gitlabLacks = []string{lacksIntrospection}
 // its repositories names another (Repo.ServerVersion).
 const gitlabDefaultVersion = "19.6.0-ee"
 
+// gitlabReviewerStateSince is the release whose draft notes API first
+// documents bulk_publish's reviewer_state (docs.gitlab.com/19.3; absent
+// from 19.2).
+var gitlabReviewerStateSince = [2]int{19, 3}
+
+// gitlabBefore reports whether host runs a release older than since.
+func (e *Engine) gitlabBefore(host string, since [2]int) bool {
+	v, err := parseGitLabRelease(e.gitlabHostVersion(host))
+	return err == nil && (v[0] < since[0] || (v[0] == since[0] && v[1] < since[1]))
+}
+
 // parseGitLabRelease is a version's major.minor.
 func parseGitLabRelease(s string) ([2]int, error) {
 	parts := strings.SplitN(s, ".", 3)

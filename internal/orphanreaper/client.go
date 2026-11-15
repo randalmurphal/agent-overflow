@@ -13,15 +13,15 @@ const reapSubcommand = "__reap"
 // Subcommand returns the argv token that routes a process into RunChild.
 // Every executable that calls Spawn with its own path compares os.Args[1]
 // against this before any other startup: main() in the app, and TestMain in
-// a test binary that boots the app on macOS.
+// a test binary that boots the app.
 func Subcommand() string { return reapSubcommand }
 
 // Client is the parent-side handle to a reaper sidecar. It owns the write
 // end of the control pipe: writing watch/release commands updates the
 // sidecar's watched set, and closing the client (or the parent dying)
 // sends EOF, which triggers the sidecar's cleanup. Every method is
-// nil-safe so callers on platforms that don't start a reaper (Linux,
-// Windows) can invoke them unconditionally.
+// nil-safe so callers on Windows, which starts no reaper, and in tests can
+// invoke them unconditionally.
 type Client struct {
 	mu   sync.Mutex
 	cmd  *exec.Cmd

@@ -306,6 +306,9 @@ export function ArchiveThread(id: string): $CancellablePromise<void> {
  * elsewhere — git's own one-branch-one-worktree invariant. Frontend dedups by
  * flipping to the existing worktree before calling here. Any number of
  * worktrees may sit on one tag; each gets its own directory named after it.
+ * 
+ * The budget covers the worktree's add, whose post-checkout hook runs
+ * inside it (gitops.HookTimeout).
  */
 export function AttachThreadWorktree(threadID: string, branch: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2367642633, threadID, branch).then(($result: any) => {
@@ -912,6 +915,9 @@ export function CreateProposedPlanComment(threadID: string, input: store$0.Propo
  * The created row is broadcast as `listed` so a second attached client puts
  * it in its sidebar without a refresh, matching what the creating client does
  * with the return value.
+ * 
+ * The budget covers cutting a worktree, whose post-checkout hook runs
+ * inside its add (gitops.HookTimeout).
  */
 export function CreateThread(opts: app$0.CreateThreadOptions): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2579322833, opts).then(($result: any) => {
@@ -1634,28 +1640,18 @@ export function GetCodexSkills(workspacePath: string, forceReload: boolean): $Ca
 }
 
 /**
- * GetCommitOutcome answers what the commit attempt attemptID in ws did,
- * waiting for one still running; its budget is GitCommit's for that reason.
- */
-export function GetCommitOutcome(ws: app$0.WorkspaceRef, attemptID: string): $CancellablePromise<app$0.CommitOutcome> {
-    return $Call.ByID(3107819266, ws, attemptID).then(($result: any) => {
-        return $$createType51($result);
-    });
-}
-
-/**
  * GetComputerRoutes refreshes this computer's public addresses over an already
  * authenticated socket when a listener move made HTTP bootstrap unreachable.
  */
 export function GetComputerRoutes(): $CancellablePromise<computerroute$0.Route[]> {
     return $Call.ByID(873893084).then(($result: any) => {
-        return $$createType53($result);
+        return $$createType52($result);
     });
 }
 
 export function GetContextSettings(providerName: string, model: string): $CancellablePromise<app$0.ContextSettingsProfile> {
     return $Call.ByID(3416004963, providerName, model).then(($result: any) => {
-        return $$createType54($result);
+        return $$createType53($result);
     });
 }
 
@@ -1665,7 +1661,7 @@ export function GetContextSettings(providerName: string, model: string): $Cancel
  */
 export function GetConversationMutationState(threadID: string, userItemID: string, sendID: string): $CancellablePromise<app$0.ConversationMutationState> {
     return $Call.ByID(3307838728, threadID, userItemID, sendID).then(($result: any) => {
-        return $$createType55($result);
+        return $$createType54($result);
     });
 }
 
@@ -1684,7 +1680,7 @@ export function GetConversationMutationState(threadID: string, userItemID: strin
  */
 export function GetDevServers(): $CancellablePromise<devscan$0.DevServerList> {
     return $Call.ByID(139818238).then(($result: any) => {
-        return $$createType56($result);
+        return $$createType55($result);
     });
 }
 
@@ -1705,7 +1701,7 @@ export function GetDeviceName(): $CancellablePromise<string> {
  */
 export function GetDiffContextLines(ws: app$0.WorkspaceRef, req: app$0.DiffContextRequest): $CancellablePromise<app$0.DiffContextResult> {
     return $Call.ByID(1590634674, ws, req).then(($result: any) => {
-        return $$createType57($result);
+        return $$createType56($result);
     });
 }
 
@@ -1714,7 +1710,7 @@ export function GetDiffContextLines(ws: app$0.WorkspaceRef, req: app$0.DiffConte
  */
 export function GetDiscussion(name: string, scope: string): $CancellablePromise<store$0.DiscussionDefinition> {
     return $Call.ByID(1924583939, name, scope).then(($result: any) => {
-        return $$createType58($result);
+        return $$createType57($result);
     });
 }
 
@@ -1724,7 +1720,7 @@ export function GetDiscussion(name: string, scope: string): $CancellablePromise<
  */
 export function GetDraft(threadID: string): $CancellablePromise<app$0.Draft> {
     return $Call.ByID(875977146, threadID).then(($result: any) => {
-        return $$createType59($result);
+        return $$createType58($result);
     });
 }
 
@@ -1736,7 +1732,7 @@ export function GetDraft(threadID: string): $CancellablePromise<app$0.Draft> {
  */
 export function GetEditDiffContextLines(threadID: string, req: app$0.DiffContextRequest): $CancellablePromise<app$0.DiffContextResult> {
     return $Call.ByID(949275134, threadID, req).then(($result: any) => {
-        return $$createType57($result);
+        return $$createType56($result);
     });
 }
 
@@ -1750,7 +1746,7 @@ export function GetEditDiffContextLines(threadID: string, req: app$0.DiffContext
  */
 export function GetEditDiffImage(threadID: string, req: app$0.EditDiffImageRequest): $CancellablePromise<app$0.ReviewDiffImage> {
     return $Call.ByID(711021853, threadID, req).then(($result: any) => {
-        return $$createType60($result);
+        return $$createType59($result);
     });
 }
 
@@ -1762,7 +1758,7 @@ export function GetEditDiffImage(threadID: string, req: app$0.EditDiffImageReque
  */
 export function GetEditorSettings(): $CancellablePromise<settings$0.EditorSettings> {
     return $Call.ByID(1655853383).then(($result: any) => {
-        return $$createType61($result);
+        return $$createType60($result);
     });
 }
 
@@ -1775,6 +1771,17 @@ export function GetEditorSettings(): $CancellablePromise<settings$0.EditorSettin
  */
 export function GetErrorLogLines(ref: string): $CancellablePromise<app$0.ErrorLogLines> {
     return $Call.ByID(1581952506, ref).then(($result: any) => {
+        return $$createType61($result);
+    });
+}
+
+/**
+ * GetGitActionOutcome answers what attempt attemptID of action ("commit",
+ * "push", "pull" or "pr") in ws did, waiting for one still running; its
+ * budget is the longest of those actions' for that reason.
+ */
+export function GetGitActionOutcome(ws: app$0.WorkspaceRef, action: string, attemptID: string): $CancellablePromise<app$0.GitActionOutcome> {
+    return $Call.ByID(2541596437, ws, action, attemptID).then(($result: any) => {
         return $$createType62($result);
     });
 }
@@ -2143,7 +2150,7 @@ export function GetReviewDiffFileSizes(ws: app$0.WorkspaceRef, handle: string, f
  */
 export function GetReviewDiffImage(ws: app$0.WorkspaceRef, handle: string, file: app$0.ReviewDiffFile): $CancellablePromise<app$0.ReviewDiffImage> {
     return $Call.ByID(3506270873, ws, handle, file).then(($result: any) => {
-        return $$createType60($result);
+        return $$createType59($result);
     });
 }
 
@@ -2601,6 +2608,8 @@ export function GetWorkspaceActivity(workspacePath: string): $CancellablePromise
  * workspace-keyed write UpdateThreadBranch uses (and broadcast the same way),
  * so a sibling thread sharing the worktree syncs without the frontend
  * guessing which rows moved. A tag checkout leaves them with no branch.
+ * 
+ * The budget covers the checkout's post-checkout hook (gitops.HookTimeout).
  */
 export function GitCheckout(ws: app$0.WorkspaceRef, branch: string): $CancellablePromise<app$0.GitWorkspaceState> {
     return $Call.ByID(1598126927, ws, branch).then(($result: any) => {
@@ -2616,10 +2625,8 @@ export function GitCheckout(ws: app$0.WorkspaceRef, branch: string): $Cancellabl
  * commit with ErrCommitFilesChanged.
  * 
  * attemptID, fresh for each press of Commit, records the commit's outcome
- * (commitAttempts): GetCommitOutcome answers it after a lost answer, and a
- * request repeating the id gets the recorded outcome and commits nothing.
- * The budget covers the commit's hooks (gitops.CommitTimeout) and the
- * snapshot and index steps around them.
+ * (attemptGitAction). The budget covers the commit's hooks
+ * (gitops.HookTimeout) and the snapshot and index steps around them.
  */
 export function GitCommit(ws: app$0.WorkspaceRef, subject: string, body: string, selection: app$0.CommitSelection, attemptID: string): $CancellablePromise<git$0.GitActionResult> {
     return $Call.ByID(1971060042, ws, subject, body, selection, attemptID).then(($result: any) => {
@@ -2652,6 +2659,9 @@ export function GitCommit(ws: app$0.WorkspaceRef, subject: string, body: string,
  * 
  * Thread rows in the workspace are re-branched as for GitCheckout. Does not
  * restart provider sessions because the cwd is unchanged.
+ * 
+ * The budget covers two checkouts, each with its post-checkout hook
+ * (gitops.HookTimeout).
  */
 export function GitCreateBranchFrom(ws: app$0.WorkspaceRef, name: string, baseBranch: string, carryLocalChanges: boolean): $CancellablePromise<app$0.GitWorkspaceState> {
     return $Call.ByID(429779991, ws, name, baseBranch, carryLocalChanges).then(($result: any) => {
@@ -2662,9 +2672,12 @@ export function GitCreateBranchFrom(ws: app$0.WorkspaceRef, name: string, baseBr
 /**
  * GitCreatePR opens a pull request for the workspace's current branch. When
  * draft is true the PR is opened as a GitHub draft (gh pr create --draft).
+ * attemptID records the creation's outcome (attemptGitAction); the budget
+ * covers the forge CLI, which pushes the branch and runs its pre-push hook
+ * (gitops.HookTimeout), and the open-PR lookup after it.
  */
-export function GitCreatePR(ws: app$0.WorkspaceRef, title: string, body: string, draft: boolean): $CancellablePromise<git$0.GitActionResult> {
-    return $Call.ByID(4106667105, ws, title, body, draft).then(($result: any) => {
+export function GitCreatePR(ws: app$0.WorkspaceRef, title: string, body: string, draft: boolean, attemptID: string): $CancellablePromise<git$0.GitActionResult> {
+    return $Call.ByID(4106667105, ws, title, body, draft, attemptID).then(($result: any) => {
         return $$createType117($result);
     });
 }
@@ -2756,19 +2769,23 @@ export function GitPruneBranches(ws: app$0.WorkspaceRef, selections: app$0.Branc
 }
 
 /**
- * GitPull fast-forwards the workspace's current branch.
+ * GitPull fast-forwards the workspace's current branch. attemptID records
+ * the pull's outcome (attemptGitAction); the budget covers its transfer and
+ * post-merge hook (gitops.HookTimeout).
  */
-export function GitPull(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitActionResult> {
-    return $Call.ByID(3933172764, ws).then(($result: any) => {
+export function GitPull(ws: app$0.WorkspaceRef, attemptID: string): $CancellablePromise<git$0.GitActionResult> {
+    return $Call.ByID(3933172764, ws, attemptID).then(($result: any) => {
         return $$createType117($result);
     });
 }
 
 /**
- * GitPush pushes the workspace's current branch.
+ * GitPush pushes the workspace's current branch. attemptID records the
+ * push's outcome (attemptGitAction); the budget covers its pre-push hook and
+ * transfer (gitops.HookTimeout).
  */
-export function GitPush(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitActionResult> {
-    return $Call.ByID(4036251239, ws).then(($result: any) => {
+export function GitPush(ws: app$0.WorkspaceRef, attemptID: string): $CancellablePromise<git$0.GitActionResult> {
+    return $Call.ByID(4036251239, ws, attemptID).then(($result: any) => {
         return $$createType117($result);
     });
 }
@@ -2834,6 +2851,9 @@ export function GitStatusUnsubscribe(subscriptionID: string): $CancellablePromis
  * thread in the workspace is locked across the current-branch read so a
  * concurrent checkout can't flip the path between the check and the
  * operation.
+ * 
+ * The budget covers the pull's transfer and post-merge hook
+ * (gitops.HookTimeout).
  */
 export function GitSyncBranch(ws: app$0.WorkspaceRef, branch: string): $CancellablePromise<git$0.GitBranch[]> {
     return $Call.ByID(1057032236, ws, branch).then(($result: any) => {
@@ -3819,7 +3839,7 @@ export function MintReadAloudTicket(text: string, voice: string): $CancellablePr
  */
 export function MoveDraftToThread(threadID: string, destinationThreadID: string, snapshot: app$0.DraftSnapshot): $CancellablePromise<app$0.Draft> {
     return $Call.ByID(913927214, threadID, destinationThreadID, snapshot).then(($result: any) => {
-        return $$createType59($result);
+        return $$createType58($result);
     });
 }
 
@@ -4096,11 +4116,8 @@ export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
  * next-turn context automatically (see promptDiscussionSpeaker's
  * unseen-messages window).
  * 
- * PostChannelMessage has a side-effecting path (it can dispatch a
- * prompt into a participant's live provider session via
- * promptDiscussionSpeakerAsync → sendMessage), so it carries
- * threads:operate rather than a read scope — the same annotation
- * SendMessage does, for the same reason.
+ * A post drives every participant in turn, so it is judged as a send into
+ * each of them (participantDriveCheck), the same as SendMessage.
  */
 export function PostChannelMessage(channelID: string, content: string): $CancellablePromise<store$0.ChannelMessage> {
     return $Call.ByID(1315440605, channelID, content).then(($result: any) => {
@@ -4148,6 +4165,9 @@ export function PostPRLineComment(pr: git$0.PRReference, req: app$0.PRLineCommen
  * 
  * On stash-apply failure the worktree is removed and the stash entry is
  * kept so the user can recover via `git stash list`.
+ * 
+ * The budget covers the worktree's add, whose post-checkout hook runs
+ * inside it (gitops.HookTimeout).
  */
 export function PrepareThreadWorktree(threadID: string, baseBranch: string, requestedBranch: string, carryLocalChanges: boolean): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2870364785, threadID, baseBranch, requestedBranch, carryLocalChanges).then(($result: any) => {
@@ -4410,20 +4430,6 @@ export function ReadPipelineStages(repo: git$0.RepoReference, ids: string[], int
  */
 export function ReadReviewDiff(id: string, offset: number, maxBytes: number): $CancellablePromise<app$0.ReviewDiffChunk> {
     return $Call.ByID(2473150982, id, offset, maxBytes).then(($result: any) => {
-        return $$createType203($result);
-    });
-}
-
-/**
- * ReadReviewDiffPacked is ReadReviewDiff with the chunk's text packed
- * where that is its cheaper form for the client (jstext.PackText): the
- * same chunk, key, handle, owner and scope rules. The form depends on the
- * chunk's bytes alone, so a chunk read again has the form it had. A
- * client calls it only on a backend that advertises
- * transport.CapabilityReviewDiffPacked.
- */
-export function ReadReviewDiffPacked(id: string, offset: number, maxBytes: number): $CancellablePromise<app$0.ReviewDiffChunk> {
-    return $Call.ByID(4058838878, id, offset, maxBytes).then(($result: any) => {
         return $$createType203($result);
     });
 }
@@ -5561,7 +5567,7 @@ export function SetDeviceName(name: string): $CancellablePromise<void> {
  */
 export function SetEditorSettings(s: settings$0.EditorSettings): $CancellablePromise<settings$0.EditorSettings> {
     return $Call.ByID(3655340267, s).then(($result: any) => {
-        return $$createType61($result);
+        return $$createType60($result);
     });
 }
 
@@ -5939,6 +5945,9 @@ export function StartDiscussion(threadID: string, discussionName: string): $Canc
     return $Call.ByID(3188309099, threadID, discussionName);
 }
 
+/**
+ * StartDiscussionByID is StartDiscussion for a definition named by id.
+ */
 export function StartDiscussionByID(threadID: string, discussionID: string): $CancellablePromise<void> {
     return $Call.ByID(2336869067, threadID, discussionID);
 }
@@ -6320,6 +6329,8 @@ export function TerminateCodexBackgroundTerminal(threadID: string, processID: st
  * ThreadToolCall runs one write tool here. spawn, send, ask and cancel
  * carry the source's token and mint or settle a receipt; thread_update
  * and thread_group are ordinary tool calls with no request behind them.
+ * The budget covers a spawn that forks and cuts a worktree, whose
+ * post-checkout hook runs inside its add (gitops.HookTimeout).
  */
 export function ThreadToolCall(call: app$0.ThreadPeerCall): $CancellablePromise<app$0.ThreadPeerReply> {
     return $Call.ByID(894716875, call).then(($result: any) => {
@@ -6488,7 +6499,7 @@ export function UpdateClientDeviceName(name: string, platform: string): $Cancell
 
 export function UpdateContextSettingsProfile(update: app$0.ContextSettingsUpdate): $CancellablePromise<app$0.ContextSettingsProfile> {
     return $Call.ByID(1472386383, update).then(($result: any) => {
-        return $$createType54($result);
+        return $$createType53($result);
     });
 }
 
@@ -7497,18 +7508,18 @@ const $$createType47 = app$0.ClaudeTranscriptRetention.createFrom;
 const $$createType48 = app$0.CodexAccountUsage.createFrom;
 const $$createType49 = $Create.Nullable($$createType48);
 const $$createType50 = codexskills$0.CwdSkills.createFrom;
-const $$createType51 = app$0.CommitOutcome.createFrom;
-const $$createType52 = computerroute$0.Route.createFrom;
-const $$createType53 = $Create.Array($$createType52);
-const $$createType54 = app$0.ContextSettingsProfile.createFrom;
-const $$createType55 = app$0.ConversationMutationState.createFrom;
-const $$createType56 = devscan$0.DevServerList.createFrom;
-const $$createType57 = app$0.DiffContextResult.createFrom;
-const $$createType58 = store$0.DiscussionDefinition.createFrom;
-const $$createType59 = app$0.Draft.createFrom;
-const $$createType60 = app$0.ReviewDiffImage.createFrom;
-const $$createType61 = settings$0.EditorSettings.createFrom;
-const $$createType62 = app$0.ErrorLogLines.createFrom;
+const $$createType51 = computerroute$0.Route.createFrom;
+const $$createType52 = $Create.Array($$createType51);
+const $$createType53 = app$0.ContextSettingsProfile.createFrom;
+const $$createType54 = app$0.ConversationMutationState.createFrom;
+const $$createType55 = devscan$0.DevServerList.createFrom;
+const $$createType56 = app$0.DiffContextResult.createFrom;
+const $$createType57 = store$0.DiscussionDefinition.createFrom;
+const $$createType58 = app$0.Draft.createFrom;
+const $$createType59 = app$0.ReviewDiffImage.createFrom;
+const $$createType60 = settings$0.EditorSettings.createFrom;
+const $$createType61 = app$0.ErrorLogLines.createFrom;
+const $$createType62 = app$0.GitActionOutcome.createFrom;
 const $$createType63 = git$0.GitStatus.createFrom;
 const $$createType64 = keybindings$0.LoadResult.createFrom;
 const $$createType65 = app$0.LocalImage.createFrom;
@@ -7597,7 +7608,7 @@ const $$createType147 = store$0.ChatBarFavorite.createFrom;
 const $$createType148 = $Create.Array($$createType147);
 const $$createType149 = app$0.CommitFiles.createFrom;
 const $$createType150 = $Create.Array($$createType23);
-const $$createType151 = $Create.Array($$createType58);
+const $$createType151 = $Create.Array($$createType57);
 const $$createType152 = app$0.ForgeProject.createFrom;
 const $$createType153 = $Create.Array($$createType152);
 const $$createType154 = app$0.ImportScanResult.createFrom;

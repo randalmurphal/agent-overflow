@@ -18,11 +18,6 @@ import (
 // app layer explains it (ExplainForgeError). See
 // docs/specs/pull-requests.md#actions.
 
-// gitlabCancelAutoMergeRelease is the release that added POST
-// .../cancel_auto_merge ("Introduced in GitLab 19.5", merge requests
-// API). Before it the route is .../cancel_merge_when_pipeline_succeeds.
-var gitlabCancelAutoMergeRelease = gitlabVersion{19, 5}
-
 // Approve posts the viewer's approval of headSHA; GitLab refuses it when
 // the merge request's head has moved past it.
 func (f *gitlabForge) Approve(ctx context.Context, ref PRReference, headSHA string) error {
@@ -164,15 +159,15 @@ func gitlabJoinMergeTrain(ctx context.Context, client *forgeapi.Client, ref PRRe
 // also removing the merge request from its train ("If the merge request
 // is on a merge train, this also removes it from the train"). The route
 // follows the server's release: POST .../cancel_auto_merge from
-// gitlabCancelAutoMergeRelease, which answers 409 when nothing is armed,
+// gitlabCancelAutoMergeSince, which answers 409 when nothing is armed,
 // else POST .../cancel_merge_when_pipeline_succeeds, which answers 201
 // with {"status":"error"} then, an error here.
 func (f *gitlabForge) CancelAutoMerge(ctx context.Context, ref PRReference) error {
-	client, version, err := f.writeServer(ctx, ref)
+	client, server, err := f.writeServer(ctx, ref)
 	if err != nil {
 		return err
 	}
-	if version.atLeast(gitlabCancelAutoMergeRelease) {
+	if server.has(gitlabCancelAutoMergeSince) {
 		_, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: gitlabMRPath(ref) + "/cancel_auto_merge"}, nil)
 		return err
 	}

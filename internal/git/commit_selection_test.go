@@ -99,7 +99,7 @@ func TestAStoppedCommitEndsItsHookAndLeavesNoIndexLock(t *testing.T) {
 			pidFile := filepath.Join(t.TempDir(), "hook.pid")
 			installPreCommitHook(t, repo, "echo $$ > '"+pidFile+"'\nsleep 30\n")
 			core := NewCore()
-			core.commitTimeout = time.Second
+			core.hookTimeout = time.Second
 			writeRepoFile(t, repo, "README.txt", "hello\nedited\n")
 			if _, err := core.CommitSelected(repo, "stopped", "", selection(repo)); err == nil {
 				t.Fatal("the commit finished")
@@ -116,7 +116,7 @@ func TestAStoppedCommitEndsItsHookAndLeavesNoIndexLock(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			deadline := time.Now().Add(CommitStopGrace)
+			deadline := time.Now().Add(HookStopGrace)
 			for hook.Signal(syscall.Signal(0)) == nil {
 				if time.Now().After(deadline) {
 					t.Fatal("the hook outlived the stopped commit")

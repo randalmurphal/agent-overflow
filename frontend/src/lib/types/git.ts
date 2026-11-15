@@ -19,7 +19,7 @@ export type { CommitFiles } from '../../../bindings/agent-overflow/internal/app/
 // exactly the given rows of the file list.
 export type { CommitSelection } from '../../../bindings/agent-overflow/internal/app/models';
 // What a commit attempt did, asked for after its answer was lost.
-export type { CommitOutcome } from '../../../bindings/agent-overflow/internal/app/models';
+export type { GitActionOutcome } from '../../../bindings/agent-overflow/internal/app/models';
 export type { ChangedFile as CommitFile } from '../../../bindings/agent-overflow/internal/gitdiff/models';
 
 export interface GitStatus {

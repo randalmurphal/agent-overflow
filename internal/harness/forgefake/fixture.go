@@ -73,6 +73,9 @@ type Repo struct {
 	Labels        []Label  `json:"labels,omitempty"`
 	ServerVersion string   `json:"serverVersion,omitempty"`
 	ServerLacks   []string `json:"serverLacks,omitempty"`
+	// NoChangeRequests is a GitLab tier without Request changes (Free):
+	// bulk_publish's reviewer_state requested_changes sets reviewed.
+	NoChangeRequests bool `json:"noChangeRequests,omitempty"`
 }
 
 // RepoMerge is a project's merge settings (GitHub repository settings,
@@ -267,6 +270,9 @@ type Pull struct {
 	// rerequested are GitLab reviewers asked again, whose state reads
 	// unreviewed until they approve.
 	rerequested []string
+	// reviewedBy are GitLab reviewers a bulk_publish reviewer_state set to
+	// reviewed.
+	reviewedBy []string
 
 	// squash is how a GitLab merge request merges or merged (its squash
 	// flag), squashSHA the squash commit of a squashed merge; forceRemove

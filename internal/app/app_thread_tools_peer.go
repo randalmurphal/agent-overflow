@@ -183,10 +183,12 @@ func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadP
 // ThreadToolCall runs one write tool here. spawn, send, ask and cancel
 // carry the source's token and mint or settle a receipt; thread_update
 // and thread_group are ordinary tool calls with no request behind them.
+// The budget covers a spawn that forks and cuts a worktree, whose
+// post-checkout hook runs inside its add (gitops.HookTimeout).
 //
 //ao:scope terminal:operate
 //ao:route selected
-//ao:budget 2m
+//ao:budget 13m
 func (a *App) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
 	owner, err := a.remoteCommandOwner(ctx)
 	if err != nil {

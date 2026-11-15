@@ -259,6 +259,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		EventLogger: cfg.EventLogger,
 		ThreadID:    threadID,
 		Provider:    string(provider.Claude),
+		Reaper:      cfg.Reaper,
 	})
 	if err != nil {
 		cancel()
