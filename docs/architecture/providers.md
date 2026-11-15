@@ -95,6 +95,11 @@ provider stdout → Go parses → emits approval-request event (with request_id)
 ```
 
 Both providers use the same frontend shape (`ApprovalRequest` with `kind`).
+Triage stamps each prompt with an opaque `occurrence`, on the live event and
+on the pending snapshot a pane hydrates from, because a provider can ask again
+under a request id it used before. The answer echoes it, so it reaches only the
+prompt the screen showed; an answer without one, from an older client, answers
+the prompt open under the request id.
 Provider-specific adaptation (`CanUseTool` vs Codex sandbox/approval policies)
 stays inside the provider package.
 

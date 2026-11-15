@@ -80,7 +80,7 @@ type workerPrompt struct {
 	agentID   string
 	requestID string
 	// occurrence is the prompt's (provider.ApprovalRequest.Occurrence).
-	occurrence uint64
+	occurrence provider.PromptOccurrence
 	approval   *provider.ApprovalRequest
 	question   *provider.UserInputRequest
 	state      workerPromptState
@@ -259,7 +259,7 @@ func (a *App) workerPromptOpenTo(prompt workerPrompt) bool {
 // or was announced as the user's. Unless the agent's own answer resolved
 // it, the user answered it in the worker, the worker stopped waiting or the
 // prompt went to the user, and a wake still queued is withdrawn.
-func (a *App) settleWorkerPrompt(workerID, requestID string, occurrence uint64) {
+func (a *App) settleWorkerPrompt(workerID, requestID string, occurrence provider.PromptOccurrence) {
 	prompt, settled := a.workerPrompts.settle(workerID, requestID, occurrence)
 	if !settled {
 		return
@@ -349,9 +349,11 @@ func (a *App) answerWorkerPrompt(ctx context.Context, caller threadtools.Caller,
 	}
 	// The answer goes to the session that asked, or nowhere.
 	if approval != nil {
-		err = a.respondToApproval(ctx, prompt.workerID, prompt.occurrence, *approval)
+		approval.Occurrence = prompt.occurrence
+		err = a.RespondToApproval(ctx, prompt.workerID, *approval)
 	} else {
-		err = a.respondToUserInput(ctx, prompt.workerID, prompt.occurrence, *question)
+		question.Occurrence = prompt.occurrence
+		err = a.RespondToUserInput(ctx, prompt.workerID, *question)
 	}
 	if err != nil {
 		if errors.Is(err, transport.ErrAlreadyHandled) {
@@ -546,7 +548,7 @@ func (w *workerPrompts) get(token string) (workerPrompt, bool) {
 // to close, and zero, a resolution that named no prompt, closes nothing.
 // Settled is false when it is not routed, including when the agent is
 // answering or answered it: that answer is what resolved it.
-func (w *workerPrompts) settle(workerID, requestID string, upTo uint64) (workerPrompt, bool) {
+func (w *workerPrompts) settle(workerID, requestID string, upTo provider.PromptOccurrence) (workerPrompt, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	prompt := w.byToken[w.current[workerPromptKey{workerID: workerID, requestID: requestID}]]

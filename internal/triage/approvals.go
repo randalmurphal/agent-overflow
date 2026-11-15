@@ -111,7 +111,7 @@ func (r *Router) setPendingApproval(threadID string, approval pendingApprovalSta
 // takePendingApproval takes the approval open under requestID. occurrence,
 // when not zero, names the prompt the resolution answered: another prompt
 // open under the same id is left open, and other reports it.
-func (r *Router) takePendingApproval(threadID, requestID string, occurrence uint64) (approval pendingApprovalState, ok, other bool) {
+func (r *Router) takePendingApproval(threadID, requestID string, occurrence provider.PromptOccurrence) (approval pendingApprovalState, ok, other bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.threadStateIfPresent(threadID)
@@ -305,7 +305,7 @@ func (r *Router) handleApprovalRequest(evt provider.ProviderEvent) error {
 	itemID := approvalItemID(evt, request)
 	request.ParentToolUseID = r.resolveInteractiveScope(evt, request.ParentToolUseID, itemID)
 	request.RoutedTo = r.routePrompt(evt.ThreadID)
-	request.SessionToken, request.Occurrence = evt.SessionToken, r.promptOccurrences.Add(1)
+	request.SessionToken, request.Occurrence = evt.SessionToken, provider.PromptOccurrence(r.promptOccurrences.Add(1))
 	if !r.setPendingApproval(evt.ThreadID, pendingApprovalState{
 		Request: request,
 		ItemID:  itemID,

@@ -39,7 +39,7 @@ func classifyInteractiveResponseError(err error) error {
 
 // claimPrompt is triage.Router.ClaimPrompt; with no router every answer
 // passes.
-func (a *App) claimPrompt(threadID, requestID string, occurrence uint64) (triage.PromptClaim, bool) {
+func (a *App) claimPrompt(threadID, requestID string, occurrence provider.PromptOccurrence) (triage.PromptClaim, bool) {
 	if a.triage == nil {
 		return triage.PromptClaim{Ref: triage.PromptRef{ThreadID: threadID, RequestID: requestID}}, true
 	}
@@ -91,20 +91,18 @@ func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingI
 // generated TS bindings strip a leading ctx, so the wire signature is
 // unchanged.
 //
+// The answer is for the prompt response.Occurrence names, the one the
+// client showed (triage.PromptRef), and is written only to the session
+// that asked it: a prompt of a session that no longer holds the thread was
+// handled by that session's end, and a later prompt under the same request
+// id, in that session or a replacement, is not the one answered. Zero, from
+// a client that predates the occurrence, answers the prompt open under
+// response.RequestID.
+//
 //ao:scope approvals:respond
 func (a *App) RespondToApproval(ctx context.Context, threadID string, response provider.ApprovalResponse) error {
-	return a.respondToApproval(ctx, threadID, 0, response)
-}
-
-// respondToApproval is RespondToApproval for the prompt occurrence names
-// (triage.PromptRef), or, when it is zero, for the prompt open under
-// response.RequestID. The answer is written only to the session that asked
-// it: a prompt of a session that no longer holds the thread was handled by
-// that session's end, and a later prompt under the same request id, in that
-// session or a replacement, is not the one answered.
-func (a *App) respondToApproval(ctx context.Context, threadID string, occurrence uint64, response provider.ApprovalResponse) error {
 	who := clientOf(ctx)
-	claim, claimed := a.claimPrompt(threadID, response.RequestID, occurrence)
+	claim, claimed := a.claimPrompt(threadID, response.RequestID, response.Occurrence)
 	if !claimed {
 		return fmt.Errorf("approval %s: %w", response.RequestID, transport.ErrAlreadyHandled)
 	}
@@ -165,13 +163,8 @@ func (a *App) respondToApproval(ctx context.Context, threadID string, occurrence
 //
 //ao:scope approvals:respond
 func (a *App) RespondToUserInput(ctx context.Context, threadID string, response provider.UserInputResponse) error {
-	return a.respondToUserInput(ctx, threadID, 0, response)
-}
-
-// respondToUserInput is respondToApproval's twin.
-func (a *App) respondToUserInput(ctx context.Context, threadID string, occurrence uint64, response provider.UserInputResponse) error {
 	who := clientOf(ctx)
-	claim, claimed := a.claimPrompt(threadID, response.RequestID, occurrence)
+	claim, claimed := a.claimPrompt(threadID, response.RequestID, response.Occurrence)
 	if !claimed {
 		return fmt.Errorf("user input %s: %w", response.RequestID, transport.ErrAlreadyHandled)
 	}
@@ -215,7 +208,7 @@ func (a *App) respondToUserInput(ctx context.Context, threadID string, occurrenc
 
 // emitApprovalResolution resolves the prompt occurrence names, or the one
 // open under requestID when it is zero, as answered by this app.
-func (a *App) emitApprovalResolution(threadID string, occurrence uint64, requestID, decision string, updatedInput json.RawMessage) {
+func (a *App) emitApprovalResolution(threadID string, occurrence provider.PromptOccurrence, requestID, decision string, updatedInput json.RawMessage) {
 	metaFields := map[string]any{
 		"requestId": requestID,
 		"decision":  decision,
@@ -269,7 +262,7 @@ func (a *App) emitApprovalFailure(who transport.ClientIdentity, threadID, reques
 }
 
 // emitUserInputResolution is emitApprovalResolution's twin.
-func (a *App) emitUserInputResolution(threadID string, occurrence uint64, requestID, decision string, answers map[string]provider.UserInputAnswer) {
+func (a *App) emitUserInputResolution(threadID string, occurrence provider.PromptOccurrence, requestID, decision string, answers map[string]provider.UserInputAnswer) {
 	meta, _ := json.Marshal(map[string]any{
 		"requestId": requestID,
 		"decision":  decision,

@@ -184,12 +184,12 @@ func TestAResolutionOfAnEndedPromptLeavesTheOneAskedSince(t *testing.T) {
 		channel eventchan.Channel
 		resolve provider.EventKind
 		ask     func(t *testing.T, r *Router, toolUseID string)
-		open    func(r *Router) []uint64
+		open    func(r *Router) []provider.PromptOccurrence
 	}{
 		{
 			name: "approval", channel: eventchan.ProviderApproval, resolve: provider.EventApprovalResolved,
 			ask: func(t *testing.T, r *Router, toolUseID string) { agentApproval(t, r, "t1", "req", toolUseID, "") },
-			open: func(r *Router) (out []uint64) {
+			open: func(r *Router) (out []provider.PromptOccurrence) {
 				for _, request := range r.PendingInteractiveRequests("t1").Approvals {
 					out = append(out, request.Occurrence)
 				}
@@ -199,7 +199,7 @@ func TestAResolutionOfAnEndedPromptLeavesTheOneAskedSince(t *testing.T) {
 		{
 			name: "question", channel: eventchan.ProviderUserInput, resolve: provider.EventUserInputResolved,
 			ask: func(t *testing.T, r *Router, toolUseID string) { agentQuestion(t, r, "t1", "req", toolUseID, "") },
-			open: func(r *Router) (out []uint64) {
+			open: func(r *Router) (out []provider.PromptOccurrence) {
 				for _, request := range r.PendingInteractiveRequests("t1").UserInputs {
 					out = append(out, request.Occurrence)
 				}
@@ -211,7 +211,7 @@ func TestAResolutionOfAnEndedPromptLeavesTheOneAskedSince(t *testing.T) {
 			t.Parallel()
 			r, st, emits := newTestRouter(t)
 			createTestThread(t, st, "t1")
-			resolve := func(occurrence uint64) {
+			resolve := func(occurrence provider.PromptOccurrence) {
 				t.Helper()
 				parkHandle(t, r, provider.ProviderEvent{
 					Kind: family.resolve, ThreadID: "t1", ItemID: "req",

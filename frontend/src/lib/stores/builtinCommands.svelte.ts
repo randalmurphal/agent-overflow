@@ -489,6 +489,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         pane.removeUserInput(userInput.requestId);
         void RespondToUserInput(threadID, new UserInputResponse({
           requestId: userInput.requestId,
+          occurrence: userInput.occurrence,
           decision: 'decline',
           answers: {},
         })).catch((err) => reportNonBenignInterruptError(pane, err));
@@ -496,6 +497,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         pane.removeApproval(approval.requestId);
         void RespondToApproval(threadID, new ApprovalResponse({
           requestId: approval.requestId,
+          occurrence: approval.occurrence,
           decision: 'cancel',
         })).catch((err) => reportNonBenignInterruptError(pane, err));
       }

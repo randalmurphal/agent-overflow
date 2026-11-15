@@ -360,7 +360,7 @@ type ProviderEvent struct {
 	// user-input resolution answered (ApprovalRequest.Occurrence), so it
 	// resolves that prompt and no later one asked under the same request
 	// id. Provider frames carry none.
-	PromptOccurrence uint64 `json:"-"`
+	PromptOccurrence PromptOccurrence `json:"-"`
 }
 
 // MetaTranscriptMirroredKey marks a subagent launch whose sidechain is

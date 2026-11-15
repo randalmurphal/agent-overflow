@@ -361,7 +361,7 @@ func TestAnOldPromptTokenCannotAnswerAReplacementSessionsPrompt(t *testing.T) {
 	stillOpen("the old token's reply")
 	// An answer bound to the ended session is refused at the provider
 	// write, whatever holds the request id now.
-	if err := app.respondToApproval(t.Context(), worker.ID, ended.occurrence, provider.ApprovalResponse{RequestID: ended.requestID, Decision: "accept"}); !errors.Is(err, transport.ErrAlreadyHandled) {
+	if err := app.RespondToApproval(t.Context(), worker.ID, provider.ApprovalResponse{RequestID: ended.requestID, Occurrence: ended.occurrence, Decision: "accept"}); !errors.Is(err, transport.ErrAlreadyHandled) {
 		t.Fatalf("an answer for the ended session: %v, want already handled", err)
 	}
 	stillOpen("an answer for the ended session")

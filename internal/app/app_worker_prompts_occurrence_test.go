@@ -196,10 +196,12 @@ func openPromptRef(t *testing.T, router *triage.Router, threadID, requestID stri
 	return triage.PromptRef{}
 }
 
-// A user's answer goes only to the session that asked: a prompt a
-// replacement session's start left open is that ended session's, and the
-// answer is refused rather than written to the replacement.
-func TestAUsersAnswerIsWrittenOnlyToTheSessionThatAsked(t *testing.T) {
+// An answer naming no prompt, from a client that predates the occurrence,
+// goes only to the session that asked the prompt open under its request
+// id: a prompt a replacement session's start left open is that ended
+// session's, and the answer is refused rather than written to the
+// replacement.
+func TestAnAnswerNamingNoPromptIsNotWrittenToAReplacementSession(t *testing.T) {
 	t.Parallel()
 	f := newWorkerPromptFixture(t, "bound-answer", false)
 	f.app.triage.CleanupThread(f.worker.ID)

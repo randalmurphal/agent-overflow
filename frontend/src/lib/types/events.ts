@@ -95,6 +95,12 @@ export interface ApprovalRequest {
    * that spawned this one (ruling 19). The user can still answer it here.
    */
   routedTo?: PromptRoute | null;
+  /**
+   * Names this one prompt, which a request id does not: the provider can ask
+   * again under the same id. Opaque; an answer echoes it, so it answers only
+   * the prompt this screen showed.
+   */
+  occurrence?: string;
 }
 
 /** The standing agent a worker's prompt was delivered to. */
@@ -147,6 +153,8 @@ export interface UserInputRequest {
   questions: UserInputQuestion[];
   /** Same route as ApprovalRequest.routedTo. */
   routedTo?: PromptRoute | null;
+  /** Same as ApprovalRequest.occurrence. */
+  occurrence?: string;
 }
 
 export interface UserInputEvent {

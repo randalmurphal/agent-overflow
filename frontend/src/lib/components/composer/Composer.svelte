@@ -1043,6 +1043,12 @@
   // first. That is not a failure to report — the question is closed, just not
   // by this click — so it resolves quietly and the panel closes on the
   // resolution event like any other.
+  // A prompt asked again under the same request id is another prompt: its
+  // panel starts fresh rather than carry the earlier one's answers.
+  function promptKey(prompt: { requestId: string; occurrence?: string }): string {
+    return `${prompt.requestId}\u0000${prompt.occurrence ?? ''}`;
+  }
+
   async function resolveApproval(response: ApprovalResponse): Promise<void> {
     const threadId = pane.threadId;
     if (!threadId || respondUngranted) return;
@@ -1153,7 +1159,7 @@
     {/if}
 
     {#if activeApproval}
-      {#key activeApproval.requestId}
+      {#key promptKey(activeApproval)}
         <ComposerPendingApprovalPanel
           approval={activeApproval}
           count={blockingApprovals.length}
@@ -1163,7 +1169,7 @@
         />
       {/key}
     {:else if activeUserInput && pane.threadId}
-      {#key activeUserInput.requestId}
+      {#key promptKey(activeUserInput)}
         <ComposerPendingUserInputPanel
           request={activeUserInput}
           ungranted={respondUngranted}

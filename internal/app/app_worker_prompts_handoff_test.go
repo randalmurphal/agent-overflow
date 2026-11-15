@@ -93,7 +93,7 @@ func TestALaterRegistrationRetiresTheEarlierOne(t *testing.T) {
 func TestAWorkerPromptNoLongerOpenIsClosed(t *testing.T) {
 	t.Parallel()
 	var prompts workerPrompts
-	ended := map[uint64]bool{}
+	ended := map[provider.PromptOccurrence]bool{}
 	open := func(ref triage.PromptRef) bool { return !ended[ref.Occurrence] }
 	first, _ := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "a", occurrence: 1}, open)
 	ended[1] = true

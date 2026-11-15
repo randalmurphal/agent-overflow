@@ -1,7 +1,10 @@
 package triage
 
 import (
+	"encoding/json"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -224,5 +227,45 @@ func TestRejectPromptMovesOnlyThatPromptOffItsRecipient(t *testing.T) {
 	f.wantRoute(t, sibling, true, "lead")
 	if f.router.RejectPrompt("lead", current) {
 		t.Fatal("a second rejection moved the prompt again")
+	}
+}
+
+// A client is told each prompt's occurrence, on the live announcement and on
+// the pending snapshot a pane hydrates from, so its answer can name it.
+func TestAClientIsToldEachPromptsOccurrence(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var announced []string
+	router := NewRouter(nil, func(_ eventchan.Channel, data any) {
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		mu.Lock()
+		announced = append(announced, string(raw))
+		mu.Unlock()
+	})
+	f := &promptRouteFixture{router: router, routes: map[string]string{}, announced: map[string][]string{}}
+	f.approval(t, "worker", "approve", "")
+	f.question(t, "worker", "ask", "")
+	approval, question := f.open(t, "worker", "approve"), f.open(t, "worker", "ask")
+	if approval.Occurrence == 0 || question.Occurrence == 0 || approval.Occurrence == question.Occurrence {
+		t.Fatalf("occurrences %v and %v, want two distinct ones", approval.Occurrence, question.Occurrence)
+	}
+	field := func(occurrence provider.PromptOccurrence) string {
+		return `"occurrence":"` + strconv.FormatUint(uint64(occurrence), 10) + `"`
+	}
+	mu.Lock()
+	live := strings.Join(announced, "\n")
+	mu.Unlock()
+	snapshot, err := json.Marshal(router.PendingInteractiveRequests("worker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string]string{"announcement": live, "pending snapshot": string(snapshot)} {
+		if !strings.Contains(raw, field(approval.Occurrence)) || !strings.Contains(raw, field(question.Occurrence)) {
+			t.Errorf("%s = %s, want both prompts' occurrences", name, raw)
+		}
 	}
 }

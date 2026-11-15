@@ -359,6 +359,7 @@ describe('thread.interrupt command', () => {
     pane.addUserInput({
       threadId: 'thread-1',
       requestId: 'ui-1',
+      occurrence: '41',
       toolName: 'AskUserQuestion',
       title: 'Pick scope',
       questions: [{ id: 'scope', header: 'Scope', question: 'Choose', options: [{ label: 'turn', description: 'This turn' }] }],
@@ -381,9 +382,11 @@ describe('thread.interrupt command', () => {
     await command.run(makeCommandContext(pane, {}));
 
     expect(sequence).toEqual(['RespondToUserInput', 'InterruptTurn']);
+    // The cancel names the prompt it cancels, not a later one under its id.
     expect(userInputArgs).toEqual({
       threadId: 'thread-1',
       requestId: 'ui-1',
+      occurrence: '41',
       decision: 'decline',
       answers: {},
     });
@@ -394,6 +397,7 @@ describe('thread.interrupt command', () => {
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
     pane.addApproval({
       requestId: 'app-1',
+      occurrence: '42',
       kind: 'command',
       toolName: 'Bash',
     } as unknown as Parameters<typeof pane.addApproval>[0]);
@@ -418,6 +422,7 @@ describe('thread.interrupt command', () => {
     expect(approvalArgs).toEqual({
       threadId: 'thread-1',
       requestId: 'app-1',
+      occurrence: '42',
       decision: 'cancel',
     });
   });

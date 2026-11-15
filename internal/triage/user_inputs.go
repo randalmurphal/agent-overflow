@@ -58,7 +58,7 @@ func (r *Router) setPendingUserInput(threadID string, request provider.UserInput
 }
 
 // takePendingUserInput is takePendingApproval for questions.
-func (r *Router) takePendingUserInput(threadID, requestID string, occurrence uint64) (request provider.UserInputRequest, ok, other bool) {
+func (r *Router) takePendingUserInput(threadID, requestID string, occurrence provider.PromptOccurrence) (request provider.UserInputRequest, ok, other bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.threadStateIfPresent(threadID)
@@ -106,7 +106,7 @@ func (r *Router) handleUserInputRequest(evt provider.ProviderEvent) error {
 	}
 
 	request.RoutedTo = r.routePrompt(evt.ThreadID)
-	request.SessionToken, request.Occurrence = evt.SessionToken, r.promptOccurrences.Add(1)
+	request.SessionToken, request.Occurrence = evt.SessionToken, provider.PromptOccurrence(r.promptOccurrences.Add(1))
 	if !r.setPendingUserInput(evt.ThreadID, request, evt.SessionToken) {
 		return nil
 	}

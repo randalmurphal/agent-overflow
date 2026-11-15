@@ -3281,6 +3281,7 @@ describe('<Composer>', () => {
     const pane = await buildPane();
     pane.addUserInput({
       requestId: 'req-input',
+      occurrence: '7',
       threadId: 'thread-1',
       toolName: 'AskUserQuestion',
       title: 'Input requested',
@@ -3304,10 +3305,40 @@ describe('<Composer>', () => {
       'thread-1',
       {
         requestId: 'req-input',
+        occurrence: '7',
         decision: 'accept',
         answers: { name: 'Alex' },
       },
     ]);
+  });
+
+  // A prompt the provider asks again under the same request id is another
+  // prompt: the answer names the one the panel shows, so a late click on the
+  // earlier one is not taken for the later one.
+  it('answers a prompt asked again under its request id as the prompt shown', async () => {
+    const pane = await buildPane();
+    const approval = {
+      requestId: 'req-1',
+      threadId: 'thread-1',
+      kind: 'command' as const,
+      toolName: 'Bash',
+      title: 'Approve command',
+      description: 'make deploy',
+      input: { command: 'make deploy' },
+    };
+    pane.addApproval({ ...approval, occurrence: '1' });
+    const draft = await buildDraft();
+    const respond = setBindingMock('RespondToApproval', async () => {});
+
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.click(getByTestId('approval-allow'));
+    expect(respond.mock.calls[0]).toMatchObject(['thread-1', { requestId: 'req-1', occurrence: '1' }]);
+
+    pane.addApproval({ ...approval, description: 'make destroy', input: { command: 'make destroy' }, occurrence: '2' });
+    await tick();
+    await fireEvent.click(getByTestId('approval-deny'));
+    expect(respond).toHaveBeenCalledTimes(2);
+    expect(respond.mock.calls[1]).toMatchObject(['thread-1', { requestId: 'req-1', occurrence: '2' }]);
   });
 
   // A prompt can arrive while the picker is open. It refuses new

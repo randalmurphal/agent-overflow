@@ -280,7 +280,7 @@ type threadState struct {
 	// a duplicate write to the provider. Bounded like its siblings: an
 	// answered prompt's record is swept at the turn boundary, an open
 	// one's goes with its prompt. See interactive_claim.go.
-	answeredRequests map[string]uint64
+	answeredRequests map[string]provider.PromptOccurrence
 
 	// toolCalls caches the placement (parent, turn) of tool_call rows the
 	// session persisted or asked about, so parent validation and scope

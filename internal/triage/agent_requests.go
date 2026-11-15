@@ -46,7 +46,7 @@ func dropTurnRequestsLocked(st *threadState, agentScopes map[string]bool) {
 	maps.DeleteFunc(st.pendingApprovalItems, func(_ string, remembered approvalDecision) bool {
 		return !agentScopes[remembered.scope]
 	})
-	maps.DeleteFunc(st.answeredRequests, func(requestID string, _ uint64) bool {
+	maps.DeleteFunc(st.answeredRequests, func(requestID string, _ provider.PromptOccurrence) bool {
 		_, approval := st.pendingApprovals[requestID]
 		_, question := st.pendingUserInputs[requestID]
 		return !approval && !question

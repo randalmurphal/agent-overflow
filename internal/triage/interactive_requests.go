@@ -129,12 +129,12 @@ func (r *Router) PendingInteractiveRequests(threadID string) provider.PendingInt
 // predecessor's. The occurrence does (provider.ApprovalRequest.Occurrence).
 type PromptRef struct {
 	ThreadID, RequestID string
-	Occurrence          uint64
+	Occurrence          provider.PromptOccurrence
 }
 
 // openPromptLocked finds the prompt open under threadID and requestID: its
 // route, occurrence and the session that asked. Caller holds r.mu.
-func (r *Router) openPromptLocked(threadID, requestID string) (route *provider.PromptRoute, occurrence uint64, session string, open bool) {
+func (r *Router) openPromptLocked(threadID, requestID string) (route *provider.PromptRoute, occurrence provider.PromptOccurrence, session string, open bool) {
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
 		return nil, 0, "", false

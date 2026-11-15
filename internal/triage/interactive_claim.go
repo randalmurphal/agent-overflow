@@ -1,6 +1,10 @@
 package triage
 
-import "strings"
+import (
+	"strings"
+
+	"agent-overflow/internal/provider"
+)
 
 // Arbitration for an open question two screens can both answer.
 //
@@ -12,10 +16,13 @@ import "strings"
 //
 // The router is the arbiter because it is the only thing that sees every
 // answer for a thread. It records, by request id, the prompt occurrence it has
-// forwarded an answer for, and refuses the second. That closes both windows with one check: the
-// SIMULTANEOUS one, where both calls arrive before either resolution lands,
-// and the SEQUENTIAL one, where the second client is answering a card its
-// screen has not dropped yet.
+// forwarded an answer for, and refuses the second. That closes both windows
+// with one check: the SIMULTANEOUS one, where both calls arrive before either
+// resolution lands, and the SEQUENTIAL one, where the second client is
+// answering a card its screen has not dropped yet. Each client's answer names
+// the occurrence its card showed, so a late answer to a prompt that was
+// answered or ended is refused even after the provider asked again under the
+// same request id.
 //
 // It refuses only on POSITIVE evidence — an answer this router forwarded. A
 // request it has no record of is passed through rather than refused: the
@@ -39,13 +46,13 @@ type PromptClaim struct {
 
 // ClaimPrompt reports whether this caller may forward an answer to the
 // prompt open under threadID and requestID. occurrence names the prompt
-// the caller was shown; zero means whichever is open now, which is what a
-// client card answers. False means that prompt was already answered, by
+// the caller was shown; zero, from a client that predates the occurrence,
+// means whichever is open now. False means that prompt was already answered, by
 // another client or by an earlier call from this one, or, for a named
 // occurrence, that it is no longer open: a later prompt under the same
 // request id is not the one the caller was shown. Approvals and questions
 // share one record: request ids are unique within a thread.
-func (r *Router) ClaimPrompt(threadID, requestID string, occurrence uint64) (PromptClaim, bool) {
+func (r *Router) ClaimPrompt(threadID, requestID string, occurrence provider.PromptOccurrence) (PromptClaim, bool) {
 	threadID = strings.TrimSpace(threadID)
 	requestID = strings.TrimSpace(requestID)
 	claim := PromptClaim{Ref: PromptRef{ThreadID: threadID, RequestID: requestID}}
@@ -71,7 +78,7 @@ func (r *Router) ClaimPrompt(threadID, requestID string, occurrence uint64) (Pro
 		return claim, false
 	}
 	if st.answeredRequests == nil {
-		st.answeredRequests = make(map[string]uint64)
+		st.answeredRequests = make(map[string]provider.PromptOccurrence)
 	}
 	st.answeredRequests[requestID] = claim.Ref.Occurrence
 	return claim, true
