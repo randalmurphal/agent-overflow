@@ -85,6 +85,15 @@ func TestGitLabSubmitReviewStopsAtItsCallersDeadline(t *testing.T) {
 				if call.Method+" "+call.Path == tc.hold && !held {
 					held = true
 					wait()
+					// A read is held until the client cuts it, so it is
+					// not answered before the deadline reaches its steps.
+					if tc.cut {
+						select {
+						case <-call.Done:
+						case <-time.After(10 * time.Second):
+							t.Error("the read was not cut at the deadline")
+						}
+					}
 				}
 				return forge.answer(t, mr)(call)
 			})

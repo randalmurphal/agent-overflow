@@ -738,11 +738,7 @@ func writeSteps(ctx context.Context) (context.Context, context.CancelFunc) {
 		// The caller ends at the same deadline: wait for it, to take its
 		// cause.
 		<-caller.Done()
-		cause := context.Cause(caller)
-		if !errors.Is(caller.Err(), context.DeadlineExceeded) {
-			cause = context.DeadlineExceeded
-		}
-		cancel(cause)
+		cancel(deadlineCause(caller))
 	})
 	return steps, func() {
 		timer.Stop()
@@ -750,13 +746,32 @@ func writeSteps(ctx context.Context) (context.Context, context.CancelFunc) {
 	}
 }
 
+// deadlineCause is why a caller whose deadline passed ended: its own cause,
+// or DeadlineExceeded when it was cancelled otherwise first.
+func deadlineCause(caller context.Context) error {
+	if errors.Is(caller.Err(), context.DeadlineExceeded) {
+		return context.Cause(caller)
+	}
+	return context.DeadlineExceeded
+}
+
 // stopped is the error a write of several requests answers instead of
-// starting its next one once steps ended: a request never sent.
+// starting its next one once steps ended or the caller's deadline passed:
+// a request never sent. The deadline is read here too, since steps ends
+// from the timer's goroutine, which a request answered at the deadline can
+// beat to the next step.
 func stopped(steps context.Context) error {
-	if steps.Err() == nil {
+	if steps.Err() != nil {
+		return &forgeapi.NotSentError{Err: context.Cause(steps)}
+	}
+	caller, _ := steps.Value(forgeWriteCallerKey{}).(context.Context)
+	if caller == nil {
 		return nil
 	}
-	return &forgeapi.NotSentError{Err: context.Cause(steps)}
+	if deadline, bounded := caller.Deadline(); bounded && !time.Now().Before(deadline) {
+		return &forgeapi.NotSentError{Err: deadlineCause(caller)}
+	}
+	return nil
 }
 
 // ReadPR reads the parts of ref want names in one forge read (see
