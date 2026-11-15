@@ -223,9 +223,12 @@ func (f *githubForge) ListMergedPRHeads(ctx context.Context, cwd string, limit i
 // SubmitReview posts the review with its line and range comments, then
 // each file comment and each reply on its own after it: GitHub's review
 // takes neither, so they are follow-ups under the partial-submit contract.
-// A request with nothing for the review itself (a comment verdict with no
-// body and no line comment) posts no review, which GitHub would refuse,
-// and its first follow-up's error decides whether anything posted.
+// The review and every file comment are pinned to review.HeadSHA, so a
+// push since the reviewer loaded the diff moves none of them and approves
+// nothing the reviewer did not see. A request with nothing for the review
+// itself (a comment verdict with no body and no line comment) posts no
+// review, which GitHub would refuse, and its first follow-up's error
+// decides whether anything posted.
 func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
 	number := ref.Number
 	if _, _, err := splitGitHubProject(ref.Project()); err != nil {
@@ -234,7 +237,6 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if number <= 0 {
 		return SubmitReviewResult{}, fmt.Errorf("PR number must be positive, got %d", number)
 	}
-	headSHA := ""
 	fileComments := make([]ReviewLineComment, 0)
 	replies := make([]ReviewLineComment, 0)
 	lineComments := make([]ReviewLineComment, 0, len(review.Comments))
@@ -255,13 +257,6 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
-	if len(fileComments) > 0 {
-		read, err := f.ReadPR(ctx, ref, PRReadParts{Detail: true}, nil, nil)
-		if err != nil {
-			return SubmitReviewResult{}, err
-		}
-		headSHA = read.Detail.HeadSHA
-	}
 	pulls := githubPullPath(ref)
 	body, err := githubReviewRequestBody(review, lineComments)
 	if err != nil {
@@ -269,7 +264,7 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	}
 	fileBodies := make([]githubFileCommentIn, 0, len(fileComments))
 	for _, comment := range fileComments {
-		in, err := githubFileCommentRequestBody(comment, headSHA)
+		in, err := githubFileCommentRequestBody(comment, review.HeadSHA)
 		if err != nil {
 			return SubmitReviewResult{}, err
 		}
@@ -338,8 +333,9 @@ type githubReviewIn struct {
 
 func githubReviewRequestBody(review SubmitReviewRequest, comments []ReviewLineComment) (githubReviewIn, error) {
 	payload := githubReviewIn{
-		Event: githubReviewEvent(review.Verdict),
-		Body:  review.Body,
+		Event:    githubReviewEvent(review.Verdict),
+		Body:     review.Body,
+		CommitID: review.HeadSHA,
 	}
 	for _, comment := range comments {
 		in, err := githubReviewCommentBody(comment)

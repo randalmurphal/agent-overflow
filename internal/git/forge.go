@@ -297,9 +297,15 @@ type ReviewReplyTo struct {
 	DatabaseID int64  `json:"databaseID"`
 }
 
+// SubmitReviewRequest is one review. HeadSHA is the head the reviewer's
+// diff was loaded at, and every comment's lines are of that diff: GitHub
+// pins the review and its file comments to it (commit_id), as Approve and
+// PostLineComment do; GitLab refuses with *HeadMovedError before any write
+// when the merge request's head is another, and approves only that head.
 type SubmitReviewRequest struct {
 	Verdict  string              `json:"verdict"`
 	Body     string              `json:"body"`
+	HeadSHA  string              `json:"headSha"`
 	Comments []ReviewLineComment `json:"comments"`
 }
 
@@ -698,10 +704,17 @@ func (c *Core) ListReviewThreads(ctx context.Context, ref PRReference) ([]Review
 	return read.Threads, err
 }
 
+// SubmitReview posts review (see SubmitReviewRequest); a request without
+// the head it was written against is refused before any request.
 func (c *Core) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
 	if err := ref.Validate(); err != nil {
 		return SubmitReviewResult{}, err
 	}
+	head, err := validMergeHead(review.HeadSHA)
+	if err != nil {
+		return SubmitReviewResult{}, err
+	}
+	review.HeadSHA = head
 	return c.ForgeByID(ref.Forge).SubmitReview(forgeWrite(ctx), ref, review)
 }
 

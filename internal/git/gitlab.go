@@ -770,11 +770,15 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
-	// The draft notes are positioned on the MR's current diff, and an
-	// approval names the head it approves; the MR alone carries both.
+	// The draft notes are positioned on the diff the reviewer loaded, which
+	// is the MR's only while its head is the one they loaded; the approval
+	// names that head too, so a push after this read is refused by GitLab.
 	mr, err := readGitLabMR(ctx, client, ref)
 	if err != nil {
 		return SubmitReviewResult{}, err
+	}
+	if have := mr.headSHA(); !strings.EqualFold(have, review.HeadSHA) {
+		return SubmitReviewResult{}, &HeadMovedError{Want: review.HeadSHA, Have: have}
 	}
 	diffRefs := mr.diffRefs()
 	notes := gitlabDraftNotes(review)
@@ -864,7 +868,7 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		replyFailure = f.confirmGitLabReplies(ctx, client, ref, mr, before, replies, &out)
 	}
 	if strings.EqualFold(review.Verdict, ReviewVerdictApprove) {
-		approve := forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/approve", Body: map[string]string{"sha": mr.headSHA()}}
+		approve := forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/approve", Body: map[string]string{"sha": review.HeadSHA}}
 		if _, err := client.JSON(ctx, approve, nil); err != nil {
 			if replyFailure == nil {
 				return out, gitlabApproveFailure(out, err)

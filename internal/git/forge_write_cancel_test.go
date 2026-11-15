@@ -24,7 +24,7 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 	mr := gitlabTestProject + "/merge_requests/7"
 	discussion := mr + "/discussions/abc"
 	line := 3
-	review := SubmitReviewRequest{Verdict: ReviewVerdictApprove, Body: "Looks good", Comments: []ReviewLineComment{
+	review := SubmitReviewRequest{Verdict: ReviewVerdictApprove, HeadSHA: gitlabTestHead, Body: "Looks good", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 	}}
 	cases := map[string]struct {

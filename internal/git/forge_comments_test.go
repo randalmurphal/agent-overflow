@@ -207,7 +207,7 @@ func TestGitHubSubmitReviewPostsHeldReplies(t *testing.T) {
 		{Body: "first", InReplyTo: &ReviewThreadReply{ThreadID: "PRRT_a", RootDatabaseID: 11}},
 		{Body: "second", InReplyTo: &ReviewThreadReply{ThreadID: "PRRT_b", RootDatabaseID: 12}},
 	}
-	result, err := core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "summary", Comments: append([]ReviewLineComment{{Path: "a.go", Body: "x", Line: &line, Side: "right"}}, replies...)})
+	result, err := core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: githubTestPinnedHead, Body: "summary", Comments: append([]ReviewLineComment{{Path: "a.go", Body: "x", Line: &line, Side: "right"}}, replies...)})
 	if err != nil || !result.PostedReview || result.PostedReplies != 2 {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
@@ -219,7 +219,7 @@ func TestGitHubSubmitReviewPostsHeldReplies(t *testing.T) {
 	}
 
 	seen := len(calls.all())
-	result, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, Comments: replies})
+	result, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: githubTestPinnedHead, Comments: replies})
 	if err != nil || result.PostedReview || result.PostedReplies != 2 {
 		t.Fatalf("replies alone = %+v, %v", result, err)
 	}
@@ -228,7 +228,7 @@ func TestGitHubSubmitReviewPostsHeldReplies(t *testing.T) {
 	}
 
 	goneRoot.Store(12)
-	_, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, Comments: replies})
+	_, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: githubTestPinnedHead, Comments: replies})
 	partial, ok := errors.AsType[*PartialSubmitError](err)
 	if !ok || partial.PostedReview || partial.PostedReplies != 1 || partial.FailedThreadID != "PRRT_b" || partial.Unconfirmed {
 		t.Fatalf("gone thread = %#v", err)
@@ -238,7 +238,7 @@ func TestGitHubSubmitReviewPostsHeldReplies(t *testing.T) {
 	}
 
 	goneRoot.Store(11)
-	_, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, Comments: replies})
+	_, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: githubTestPinnedHead, Comments: replies})
 	if _, partial := errors.AsType[*PartialSubmitError](err); partial || !errors.Is(err, forgeapi.ErrNotFound) {
 		t.Fatalf("a first reply refused with nothing posted = %v, want the refusal itself", err)
 	}
@@ -286,7 +286,7 @@ func TestGitLabPostLineComment(t *testing.T) {
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
 		case call.Method == http.MethodGet && call.Path == mr:
-			return forgeAPIAnswer{Body: strings.ReplaceAll(gitlabTestMR(7, 0), "head2", "abc1234")}
+			return forgeAPIAnswer{Body: strings.ReplaceAll(gitlabTestMR(7, 0), "ab12cd34", "abc1234")}
 		case call.Method == http.MethodGet && call.Path == mr+"/diffs?per_page=100":
 			return gitlabTestDiffsAnswer()
 		case call.Method == http.MethodPost && call.Path == mr+"/discussions":
@@ -408,7 +408,7 @@ func TestGitLabSubmitReviewHeldReply(t *testing.T) {
 		}
 		return forgeUnexpected(t, call)
 	})
-	request := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "summary", Comments: []ReviewLineComment{
+	request := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Body: "summary", Comments: []ReviewLineComment{
 		{Body: "held", InReplyTo: &ReviewThreadReply{ThreadID: "d9"}},
 	}}
 	draftBodies := func(from int) []string {
@@ -428,7 +428,7 @@ func TestGitLabSubmitReviewHeldReply(t *testing.T) {
 		t.Fatalf("draft notes = %v", got)
 	}
 	// An open discussion's reply keeps it open.
-	open := SubmitReviewRequest{Verdict: ReviewVerdictComment, Comments: []ReviewLineComment{{Body: "open root", InReplyTo: &ReviewThreadReply{ThreadID: "d8"}}}}
+	open := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Comments: []ReviewLineComment{{Body: "open root", InReplyTo: &ReviewThreadReply{ThreadID: "d8"}}}}
 	seen := len(calls.all())
 	published.Store(false)
 	_, _ = core.SubmitReview(t.Context(), gitlabTestRef(7), open)

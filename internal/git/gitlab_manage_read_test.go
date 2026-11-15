@@ -31,7 +31,7 @@ func gitlabManageReadCore(t *testing.T, manage func(call forgeAPICall) (forgeAPI
 		case mr + "/approvals":
 			return forgeAPIAnswer{Body: `{"approved_by":[]}`}
 		case mr + "/discussions?per_page=100":
-			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d1", "head2") + "]"}
+			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d1", "ab12cd34") + "]"}
 		case gitlabTestProject:
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
 		case "user":

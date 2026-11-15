@@ -7325,12 +7325,6 @@ export class SubmitPRReviewDrafts {
     "threadId"?: string;
     "ids": string[];
 
-    /**
-     * HeadSHA is the PR head the drafts were written against; a thread's
-     * sent drafts record it (`pr:<head>`).
-     */
-    "headSha"?: string;
-
     /** Creates a new SubmitPRReviewDrafts instance. */
     constructor($$source: Partial<SubmitPRReviewDrafts> = {}) {
         if (!("ids" in $$source)) {
@@ -7356,11 +7350,15 @@ export class SubmitPRReviewDrafts {
 /**
  * SubmitPRReviewRequest is one review submit: a verdict, a summary and the
  * comments, either built by the caller (Comments) or, with Drafts, read
- * from the stored drafts it names.
+ * from the stored drafts it names. HeadSHA is the PR head the caller's
+ * diff was loaded at, required (gitops.SubmitReviewRequest): a head that
+ * moved since is refused as kind stale_head on GitLab and pins the review
+ * to it on GitHub; a thread's sent drafts record it (`pr:<head>`).
  */
 export class SubmitPRReviewRequest {
     "verdict": string;
     "body": string;
+    "headSha": string;
     "comments": git$0.ReviewLineComment[];
 
     /**
@@ -7383,6 +7381,9 @@ export class SubmitPRReviewRequest {
         if (!("body" in $$source)) {
             this["body"] = "";
         }
+        if (!("headSha" in $$source)) {
+            this["headSha"] = "";
+        }
         if (!("comments" in $$source)) {
             this["comments"] = [];
         }
@@ -7394,14 +7395,14 @@ export class SubmitPRReviewRequest {
      * Creates a new SubmitPRReviewRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): SubmitPRReviewRequest {
-        const $$createField2_0 = $$createType120;
-        const $$createField3_0 = $$createType122;
+        const $$createField3_0 = $$createType120;
+        const $$createField4_0 = $$createType122;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
-            $$parsedSource["comments"] = $$createField2_0($$parsedSource["comments"]);
+            $$parsedSource["comments"] = $$createField3_0($$parsedSource["comments"]);
         }
         if ("drafts" in $$parsedSource) {
-            $$parsedSource["drafts"] = $$createField3_0($$parsedSource["drafts"]);
+            $$parsedSource["drafts"] = $$createField4_0($$parsedSource["drafts"]);
         }
         return new SubmitPRReviewRequest($$parsedSource as Partial<SubmitPRReviewRequest>);
     }

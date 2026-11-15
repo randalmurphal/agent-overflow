@@ -25,7 +25,10 @@ func gitlabTestRef(number int) PRReference {
 	return PRReference{Forge: "gitlab", Host: testForgeHost, Namespace: "grp/sub", Repo: "app", Number: number}
 }
 
-// gitlabTestMR is a merge request with a diff head of "head2" and the
+// gitlabTestHead is gitlabTestMR's head.
+const gitlabTestHead = "ab12cd34"
+
+// gitlabTestMR is a merge request with a diff head of gitlabTestHead and the
 // head pipeline 77, or none when pipeline is 0.
 func gitlabTestMR(number int, pipeline int) string {
 	head := "null"
@@ -33,9 +36,9 @@ func gitlabTestMR(number int, pipeline int) string {
 		head = fmt.Sprintf(`{"id":%d,"status":"running","web_url":"https://gitlab.example/p/%d"}`, pipeline, pipeline)
 	}
 	return fmt.Sprintf(`{"iid":%d,"title":"MR","description":"Body","source_branch":"feature","target_branch":"main",
-		"sha":"head2","web_url":"https://gitlab.example/grp/sub/app/-/merge_requests/%d","state":"opened","draft":false,
+		"sha":"ab12cd34","web_url":"https://gitlab.example/grp/sub/app/-/merge_requests/%d","state":"opened","draft":false,
 		"changes_count":"3","has_conflicts":false,"detailed_merge_status":"mergeable","author":{"username":"author","name":"Author"},
-		"diff_refs":{"base_sha":"base","head_sha":"head2","start_sha":"start"},"head_pipeline":%s}`, number, number, head)
+		"diff_refs":{"base_sha":"base","head_sha":"ab12cd34","start_sha":"start"},"head_pipeline":%s}`, number, number, head)
 }
 
 // gitlabDiscussion is one positioned discussion whose note was written
@@ -99,7 +102,7 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 		case mr + "/approvals":
 			return forgeAPIAnswer{Body: `{"approved_by":[{"approved_at":"t","user":{"username":"lead","name":"Lead"}}]}`}
 		case mr + "/discussions?per_page=100":
-			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d1", "head2") + "]", Header: http.Header{"X-Next-Page": {"2"}}}
+			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d1", "ab12cd34") + "]", Header: http.Header{"X-Next-Page": {"2"}}}
 		case mr + "/discussions?page=2&per_page=100":
 			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d2", "head1") + "]", Header: http.Header{"X-Next-Page": {""}}}
 		case gitlabTestProject:
@@ -122,7 +125,7 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 			t.Fatalf("request %s went to %q with Private-Token %q", call.Path, call.Host, call.Header.Get("Private-Token"))
 		}
 	}
-	if d := read.Detail; d.Number != 7 || d.HeadSHA != "head2" || d.BaseRefSHA != "start" || d.ReviewDecision != "APPROVED" || len(d.LatestReviews) != 1 ||
+	if d := read.Detail; d.Number != 7 || d.HeadSHA != "ab12cd34" || d.BaseRefSHA != "start" || d.ReviewDecision != "APPROVED" || len(d.LatestReviews) != 1 ||
 		d.Checks.Total != 1 || d.ChangedFiles != 3 || d.DiffRefs == nil || d.DiffRefs.StartSHA != "start" {
 		t.Fatalf("detail = %+v", d)
 	}
@@ -215,7 +218,7 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 		case call.Path == mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 		case strings.HasPrefix(call.Path, mr+"/discussions?"):
-			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d", "head2") + "]", Header: http.Header{"X-Next-Page": {"1"}}}
+			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d", "ab12cd34") + "]", Header: http.Header{"X-Next-Page": {"1"}}}
 		case call.Path == gitlabTestProject:
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
 		case call.Path == "user":
@@ -265,7 +268,7 @@ func TestGitLabWithoutATransportIsErrNoForgeAPI(t *testing.T) {
 	if _, err := core.StreamCIJobLog(t.Context(), ref.Repository(), CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("StreamCIJobLog = %v", err)
 	}
-	if _, err := core.SubmitReview(t.Context(), ref, SubmitReviewRequest{Verdict: ReviewVerdictApprove}); !errors.Is(err, ErrNoForgeAPI) {
+	if _, err := core.SubmitReview(t.Context(), ref, SubmitReviewRequest{Verdict: ReviewVerdictApprove, HeadSHA: gitlabTestHead}); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("SubmitReview = %v", err)
 	}
 }
@@ -296,7 +299,7 @@ func TestGitLabSubmitReview(t *testing.T) {
 		return forgeUnexpected(t, call)
 	})
 	line, old := 3, 3
-	review := SubmitReviewRequest{Verdict: ReviewVerdictApprove, Body: "Looks good", Comments: []ReviewLineComment{
+	review := SubmitReviewRequest{Verdict: ReviewVerdictApprove, HeadSHA: gitlabTestHead, Body: "Looks good", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 		{Path: "b.go", Body: "gone", Line: &old, Side: "left"},
 	}}
@@ -317,7 +320,7 @@ func TestGitLabSubmitReview(t *testing.T) {
 		t.Fatalf("summary note body = %s (%v)", sent[2].Body, err)
 	}
 	if err := json.Unmarshal(sent[3].Body, &right); err != nil || right.Note != "nit" || right.Position == nil || right.Position.PositionType != "text" ||
-		right.Position.HeadSHA != "head2" || right.Position.BaseSHA != "base" || right.Position.StartSHA != "start" ||
+		right.Position.HeadSHA != "ab12cd34" || right.Position.BaseSHA != "base" || right.Position.StartSHA != "start" ||
 		right.Position.NewLine == nil || *right.Position.NewLine != 3 || right.Position.OldLine != nil {
 		t.Fatalf("right-side note body = %s (%v)", sent[3].Body, err)
 	}
@@ -333,7 +336,7 @@ func TestGitLabSubmitReview(t *testing.T) {
 		t.Fatalf("bulk publish body = %q, want none", sent[5].Body)
 	}
 	var approve map[string]string
-	if err := json.Unmarshal(sent[6].Body, &approve); err != nil || len(approve) != 1 || approve["sha"] != "head2" {
+	if err := json.Unmarshal(sent[6].Body, &approve); err != nil || len(approve) != 1 || approve["sha"] != "ab12cd34" {
 		t.Fatalf("approve body = %s (%v), want the head the MR read named", sent[6].Body, err)
 	}
 
@@ -344,7 +347,7 @@ func TestGitLabSubmitReview(t *testing.T) {
 		t.Fatalf("failed approval after publishing = %v, want a partial submit", err)
 	}
 	// An approval alone that fails posted nothing.
-	_, err = core.SubmitReview(t.Context(), gitlabTestRef(7), SubmitReviewRequest{Verdict: ReviewVerdictApprove})
+	_, err = core.SubmitReview(t.Context(), gitlabTestRef(7), SubmitReviewRequest{Verdict: ReviewVerdictApprove, HeadSHA: gitlabTestHead})
 	if _, partial := errors.AsType[*PartialSubmitError](err); partial || err == nil {
 		t.Fatalf("failed bare approval = %v, want a plain error", err)
 	}

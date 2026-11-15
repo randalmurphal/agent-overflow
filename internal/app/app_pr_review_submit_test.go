@@ -39,12 +39,15 @@ var publishRoute = map[string]string{"gitlab": "glab api publish draft notes", "
 const reviewTestDiff = "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n" +
 	"@@ -1,10 +1,14 @@\n o1\n o2\n+n3\n o3\n+n5\n+n6\n+n7\n+n8\n o4\n o5\n o6\n o7\n o8\n-o9\n o10\n"
 
+// reviewTestHead is the pull's head, the one every case's diff was loaded at.
+const reviewTestHead = "c0ffee0000000000000000000000000000000001"
+
 func newReviewSubmitCase(t *testing.T, forge string) *reviewSubmitCase {
 	t.Helper()
 	app, path := newTestAppWithStorePath(t)
 	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
 	if _, err := engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: forge, Project: "acme/widgets", Pulls: []forgefake.Pull{
-		{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open", Diff: reviewTestDiff},
+		{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", HeadSHA: reviewTestHead, State: "open", Diff: reviewTestDiff},
 	}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -170,14 +173,14 @@ func (c *reviewSubmitCase) draft(t *testing.T, threadOwned bool, line int, body 
 
 // request is a draft submit of drafts, the thread's or the PR's.
 func (c *reviewSubmitCase) request(threadOwned bool, drafts ...store.DiffReviewComment) SubmitPRReviewRequest {
-	selection := &SubmitPRReviewDrafts{HeadSHA: "head"}
+	selection := &SubmitPRReviewDrafts{}
 	if threadOwned {
 		selection.ThreadID = c.thread.ID
 	}
 	for _, draft := range drafts {
 		selection.IDs = append(selection.IDs, draft.ID)
 	}
-	return SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Summary", Drafts: selection}
+	return SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Summary", HeadSHA: reviewTestHead, Drafts: selection}
 }
 
 func (c *reviewSubmitCase) submit(review SubmitPRReviewRequest) (SubmitPRReviewResult, error) {
@@ -247,7 +250,7 @@ func TestSubmitPRReviewWithDraftsPostsAndMarksThemInOneCall(t *testing.T) {
 			got := c.comment(t, threadOwned, draft.ID)
 			wantTurn := ""
 			if threadOwned {
-				wantTurn = "pr:head"
+				wantTurn = "pr:" + reviewTestHead
 			}
 			if got.Status != "sent" || got.SentTurnID != wantTurn {
 				t.Fatalf("%s thread=%v: draft = %+v", forge, threadOwned, got)
@@ -262,6 +265,56 @@ func TestSubmitPRReviewWithDraftsPostsAndMarksThemInOneCall(t *testing.T) {
 	}
 }
 
+// A review written against a head the PR has moved past never lands on
+// the new head: GitLab refuses it as stale_head before any draft note and
+// the drafts stay drafts; GitHub pins the review to the head the reviewer
+// loaded. A request naming no head is refused on both.
+func TestSubmitPRReviewIsPinnedToTheLoadedHead(t *testing.T) {
+	t.Parallel()
+	const older = "0ddba11000000000000000000000000000000002"
+	for _, forge := range []string{"gitlab", "github"} {
+		t.Run(forge, func(t *testing.T) {
+			t.Parallel()
+			c := newReviewSubmitCase(t, forge)
+			draft := c.draft(t, true, 3, "Guard this.")
+			review := c.request(true, draft)
+			review.Verdict = gitops.ReviewVerdictApprove
+			review.HeadSHA = ""
+			if _, err := c.submit(review); err == nil {
+				t.Fatal("a review naming no head was sent")
+			}
+			review.HeadSHA = older
+			result, err := c.submit(review)
+			if forge == "gitlab" {
+				if reviewSubmitCode(err) != "forge_"+gitops.ForgeErrorStaleHead || result.Posted {
+					t.Fatalf("submit at a moved head = %+v, %v; want refused as stale_head", result, err)
+				}
+				if got := c.comment(t, true, draft.ID).Status; got != "draft" {
+					t.Fatalf("draft is %q, want draft", got)
+				}
+				for _, inv := range c.engine.Invocations(0).Invocations {
+					if inv.Method != http.MethodGet {
+						t.Fatalf("a refused review reached the forge: %s %s", inv.Method, inv.Path)
+					}
+				}
+				return
+			}
+			if err != nil || !result.Posted {
+				t.Fatalf("submit = %+v, %v", result, err)
+			}
+			pinned := false
+			for _, inv := range c.engine.Invocations(0).Invocations {
+				if inv.Route == publishRoute[forge] {
+					pinned = strings.Contains(string(inv.Body), `"commit_id":"`+older+`"`)
+				}
+			}
+			if !pinned {
+				t.Fatal("the GitHub review was not pinned to the loaded head")
+			}
+		})
+	}
+}
+
 // A request without drafts, an older client's, is exactly the comments it
 // carries: posted as given, nothing marked; the client marks its drafts
 // with the separate call, which still works.
@@ -270,7 +323,7 @@ func TestSubmitPRReviewWithoutDraftsPostsTheCallersComments(t *testing.T) {
 	c := newReviewSubmitCase(t, "gitlab")
 	draft := c.draft(t, false, 3, "Guard this.")
 	line := 3
-	result, err := c.submit(SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "Guard this.", Line: &line, Side: "right"}}})
+	result, err := c.submit(SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, HeadSHA: reviewTestHead, Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "Guard this.", Line: &line, Side: "right"}}})
 	if err != nil || !result.PostedReview || len(result.SentDraftIDs) != 0 {
 		t.Fatalf("submit = %+v, %v", result, err)
 	}
@@ -405,7 +458,7 @@ func TestSubmitPRReviewGitLabSpellingsOfOneMergeRequestDoNotInterleave(t *testin
 	line := 4
 	second := make(chan error, 1)
 	go func() {
-		_, err := c.app.SubmitPRReview(context.Background(), shouted, SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment,
+		_, err := c.app.SubmitPRReview(context.Background(), shouted, SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, HeadSHA: reviewTestHead,
 			Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "Shouted.", Line: &line, Side: "right"}}})
 		second <- err
 	}()
@@ -434,7 +487,7 @@ func TestSubmitPRReviewGitLabSubmitsOfBothShapesDoNotInterleave(t *testing.T) {
 			c := newReviewSubmitCase(t, "gitlab")
 			stored := c.draft(t, false, 3, "From the page.")
 			line := 6
-			legacy := SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Older client", Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "From an older client.", Line: &line, Side: "right"}}}
+			legacy := SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Older client", HeadSHA: reviewTestHead, Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "From an older client.", Line: &line, Side: "right"}}}
 			first, second := legacy, c.request(false, stored)
 			if !legacyFirst {
 				first, second = second, first

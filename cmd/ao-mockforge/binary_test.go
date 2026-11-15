@@ -1275,7 +1275,7 @@ func TestGitHubSubmitReviewLineCommentsThroughTheAppsForgeCode(t *testing.T) {
 	r := newRig(t, githubMergeFixture("success"))
 	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
 	right, left, start := 3, 7, 5
-	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Two notes", Comments: []gitops.ReviewLineComment{
+	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Two notes", HeadSHA: strings.Repeat("9", 40), Comments: []gitops.ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &right, Side: "right"},
 		{Path: "b.go", Body: "range", Line: &left, Start: &gitops.ReviewLineStart{Line: start, Side: "left"}, Side: "left"},
 	}}
@@ -1314,7 +1314,7 @@ func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
 	ctx := forgeapi.WithInteractive(t.Context())
 	line := 3
-	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "LGTM", Comments: []gitops.ReviewLineComment{
+	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "LGTM", HeadSHA: strings.Repeat("4", 40), Comments: []gitops.ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 	}}
 	routes := func(since int) (created, deleted []string) {

@@ -84,10 +84,14 @@ const reviewUnmarkedKind = "unmarked"
 
 // SubmitPRReviewRequest is one review submit: a verdict, a summary and the
 // comments, either built by the caller (Comments) or, with Drafts, read
-// from the stored drafts it names.
+// from the stored drafts it names. HeadSHA is the PR head the caller's
+// diff was loaded at, required (gitops.SubmitReviewRequest): a head that
+// moved since is refused as kind stale_head on GitLab and pins the review
+// to it on GitHub; a thread's sent drafts record it (`pr:<head>`).
 type SubmitPRReviewRequest struct {
 	Verdict  string                     `json:"verdict"`
 	Body     string                     `json:"body"`
+	HeadSHA  string                     `json:"headSha"`
 	Comments []gitops.ReviewLineComment `json:"comments"`
 	// Drafts names the stored pr-scope drafts the review carries; Comments
 	// is then ignored. Absent from a client older than pr-review-drafts.v1.
@@ -102,9 +106,6 @@ type SubmitPRReviewRequest struct {
 type SubmitPRReviewDrafts struct {
 	ThreadID string   `json:"threadId,omitempty"`
 	IDs      []string `json:"ids"`
-	// HeadSHA is the PR head the drafts were written against; a thread's
-	// sent drafts record it (`pr:<head>`).
-	HeadSHA string `json:"headSha,omitempty"`
 }
 
 // SubmitPRReview posts a review of pr. With review.Drafts it posts the
@@ -138,7 +139,7 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 	}
 	defer unlock()
 	if review.Drafts == nil {
-		result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, Comments: review.Comments})
+		result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, HeadSHA: review.HeadSHA, Comments: review.Comments})
 		mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
 		return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
 	}
@@ -154,7 +155,7 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 			return SubmitPRReviewResult{}, err
 		}
 		owner = store.ThreadReviewOwner(threadID)
-		sentTurnID = "pr:" + review.Drafts.HeadSHA
+		sentTurnID = "pr:" + review.HeadSHA
 	}
 	source := prDraftSource(pr)
 	if err := a.reconcilePostedReviewDrafts(owner); err != nil {
@@ -167,7 +168,7 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 	if err != nil {
 		return SubmitPRReviewResult{}, fmt.Errorf("submit PR review: %w", err)
 	}
-	request := gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, Comments: make([]gitops.ReviewLineComment, 0, len(drafts))}
+	request := gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, HeadSHA: review.HeadSHA, Comments: make([]gitops.ReviewLineComment, 0, len(drafts))}
 	for _, draft := range drafts {
 		if comment, ok := reviewLineCommentForDraft(draft); ok {
 			request.Comments = append(request.Comments, comment)

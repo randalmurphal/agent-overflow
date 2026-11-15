@@ -173,6 +173,9 @@ func forgeUnexpected(t *testing.T, call forgeAPICall) forgeAPIAnswer {
 	return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"Not Found"}`}
 }
 
+// githubTestPinnedHead is the head a test's review was written against.
+const githubTestPinnedHead = "abc1234"
+
 func githubTestRef(number int) PRReference {
 	return PRReference{Forge: "github", Host: testForgeHost, Namespace: "o", Repo: "r", Number: number}
 }
@@ -882,8 +885,8 @@ func TestGitHubJobLog(t *testing.T) {
 }
 
 // A review is one REST POST; each file-level comment is another, against
-// the head commit the PR read reports. A failed file comment after the
-// review landed is a partial submit.
+// the head the review names. A failed file comment after the review landed
+// is a partial submit.
 func TestGitHubSubmitReview(t *testing.T) {
 	t.Parallel()
 	line := 7
@@ -902,7 +905,7 @@ func TestGitHubSubmitReview(t *testing.T) {
 		}
 		return forgeUnexpected(t, call)
 	})
-	review := SubmitReviewRequest{Verdict: ReviewVerdictRequestChanges, Body: "please fix", Comments: []ReviewLineComment{
+	review := SubmitReviewRequest{Verdict: ReviewVerdictRequestChanges, HeadSHA: githubTestPinnedHead, Body: "please fix", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "here", Line: &line, Side: "right"},
 		{Path: "b.go", Body: "whole file", Side: "file"},
 	}}
@@ -911,7 +914,7 @@ func TestGitHubSubmitReview(t *testing.T) {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
 	sent := calls.all()
-	if len(sent) != 3 || sent[0].Op != "PRTick" {
+	if len(sent) != 2 {
 		t.Fatalf("requests = %v", calls.ops())
 	}
 	var reviewBody struct {
@@ -919,13 +922,13 @@ func TestGitHubSubmitReview(t *testing.T) {
 		Body     string
 		Comments []map[string]any
 	}
-	if err := json.Unmarshal(sent[1].Body, &reviewBody); err != nil || reviewBody.Event != "REQUEST_CHANGES" || reviewBody.Body != "please fix" ||
+	if err := json.Unmarshal(sent[0].Body, &reviewBody); err != nil || reviewBody.Event != "REQUEST_CHANGES" || reviewBody.Body != "please fix" ||
 		len(reviewBody.Comments) != 1 || reviewBody.Comments[0]["path"] != "a.go" || reviewBody.Comments[0]["side"] != "RIGHT" || reviewBody.Comments[0]["line"] != float64(7) {
-		t.Fatalf("review body = %s (%v)", sent[1].Body, err)
+		t.Fatalf("review body = %s (%v)", sent[0].Body, err)
 	}
 	var fileBody map[string]string
-	if err := json.Unmarshal(sent[2].Body, &fileBody); err != nil || fileBody["commit_id"] != "abc123" || fileBody["subject_type"] != "file" || fileBody["path"] != "b.go" {
-		t.Fatalf("file comment body = %s (%v)", sent[2].Body, err)
+	if err := json.Unmarshal(sent[1].Body, &fileBody); err != nil || fileBody["commit_id"] != githubTestPinnedHead || fileBody["subject_type"] != "file" || fileBody["path"] != "b.go" {
+		t.Fatalf("file comment body = %s (%v)", sent[1].Body, err)
 	}
 
 	failComments.Store(true)

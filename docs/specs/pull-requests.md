@@ -167,7 +167,11 @@ base's rulesets (`allowedMergeMethods`).
   until this PR's diff is on screen (loading, or a failed load), while
   the diff predates the live head (the stale banner) and while the pump
   is failing; the head-pinned actions send the head the diff was loaded
-  at, never the live one.
+  at, never the live one. A review's Send names that head too: the pane
+  refuses it while the stale banner shows, GitLab refuses a head that
+  moved since (kind `stale_head`, the pane re-reads the PR so the banner
+  and its Reload show), GitHub pins the review and its comments to it,
+  and the drafts, summary and verdict stay for a refused review.
 - Merging from a thread's companion pane is the merge the worktree cleanup
   ruling (2026-10-13) reacts to: the thread moves to Base and the pane
   stays on the merged PR's snapshot until closed.

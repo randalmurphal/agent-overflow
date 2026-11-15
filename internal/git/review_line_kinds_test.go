@@ -42,7 +42,7 @@ func TestGitHubSubmitReviewPostsEachKindOfLine(t *testing.T) {
 		}
 		return forgeUnexpected(t, call)
 	})
-	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "mixed", Comments: reviewLineKinds()}
+	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: githubTestPinnedHead, Body: "mixed", Comments: reviewLineKinds()}
 	if result, err := core.SubmitReview(t.Context(), githubTestRef(5), review); err != nil || !result.PostedReview {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
@@ -94,11 +94,11 @@ func TestGitLabSubmitReviewPostsEachKindOfLine(t *testing.T) {
 		}
 		return forgeUnexpected(t, call)
 	})
-	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Comments: reviewLineKinds()}
+	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Comments: reviewLineKinds()}
 	if result, err := core.SubmitReview(t.Context(), gitlabTestRef(7), review); err != nil || !result.PostedReview {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	refs := `"base_sha":"base","start_sha":"start","head_sha":"head2","old_path":"a.go","new_path":"a.go","position_type":"text"`
+	refs := `"base_sha":"base","start_sha":"start","head_sha":"ab12cd34","old_path":"a.go","new_path":"a.go","position_type":"text"`
 	want := []string{
 		`{"note":"added","position":{` + refs + `,"new_line":5}}`,
 		`{"note":"deleted","position":{` + refs + `,"old_line":9}}`,

@@ -106,7 +106,7 @@ func TestGitLabSubmitReviewFailureRemovesTheDraftsItCreated(t *testing.T) {
 	mr := gitlabTestProject + "/merge_requests/7"
 	line, other := 3, 5
 	// The user's own pending reply reads exactly like this submit's summary.
-	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "LGTM", Comments: []ReviewLineComment{
+	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Body: "LGTM", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 		{Path: "a.go", Body: "nit", Line: &other, Side: "right"},
 	}}
@@ -140,7 +140,7 @@ func TestGitLabSubmitReviewReportsDraftsItCouldNotRemove(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
 	line := 3
-	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "Summary", Comments: []ReviewLineComment{
+	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Body: "Summary", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 	}}
 	forge := &gitlabDraftForge{pending: map[int64]string{}, publishFails: true, deleteFails: true}
@@ -165,7 +165,7 @@ func TestGitLabSubmitReviewUnconfirmedCreateMayLeaveADraft(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
 	line := 3
-	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "Summary", Comments: []ReviewLineComment{
+	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Body: "Summary", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 	}}
 	forge := &gitlabDraftForge{pending: map[int64]string{}, failAt: 2, failAtUnconfirmed: true}
@@ -185,7 +185,7 @@ func TestGitLabSubmitReviewUnconfirmedCreateMayLeaveADraft(t *testing.T) {
 func TestGitLabSubmitReviewPublish500IsSettledByTheDraftNotes(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
-	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "Summary"}
+	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Body: "Summary"}
 	t.Run("applied", func(t *testing.T) {
 		t.Parallel()
 		forge := &gitlabDraftForge{pending: map[int64]string{}, publish500: "applied"}

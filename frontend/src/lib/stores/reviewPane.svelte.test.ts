@@ -2281,7 +2281,7 @@ describe('reviewPane store — PR scope', () => {
 
       await state.submitPRReview();
 
-      expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall note', comments: [{ path: 'src/app.ts', body: 'comment', line: 1, side: 'right' }] });
+      expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall note', headSha: 'sha-a', comments: [{ path: 'src/app.ts', body: 'comment', line: 1, side: 'right' }] });
       expect(mark).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
       expect(state.summaryBody).toBe('');
       expect(state.submitError).toBeNull();
@@ -2443,8 +2443,8 @@ describe('reviewPane store — PR scope', () => {
       await state.submitPRReview();
 
       expect(submit.mock.calls[0]?.[1]).toEqual({
-        verdict: 'comment', body: 'overall note', comments: [],
-        drafts: { threadId: 'thread-1', ids: ['d-1'], headSha: 'sha-a' },
+        verdict: 'comment', body: 'overall note', headSha: 'sha-a', comments: [],
+        drafts: { threadId: 'thread-1', ids: ['d-1'] },
         attemptId: expect.any(String),
       });
       expect(mark).not.toHaveBeenCalled();
@@ -2454,6 +2454,48 @@ describe('reviewPane store — PR scope', () => {
       state.setSummaryBody('another note');
       await state.submitPRReview();
       expect(attemptOf(submit, 1)).not.toBe(attemptOf(submit, 0));
+    });
+
+    it('refuses to send while the pane knows the head moved, keeping the drafts, summary and verdict', async () => {
+      installPRMocks();
+      const rows = [row()];
+      threadDraftsBackend(rows);
+      const { submit } = draftBackend(rows);
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+      state.setVerdict('approve');
+      applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b' });
+      expect(state.prStale).toBe(true);
+
+      await state.submitPRReview();
+
+      expect(submit).not.toHaveBeenCalled();
+      expect(state.submitError).toBe('The branch moved after you loaded this. Reload and try again.');
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.verdict).toBe('approve');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+    });
+
+    it('a head the forge says moved keeps the drafts, summary and verdict and re-reads the PR for the Reload', async () => {
+      installPRMocks();
+      const rows = [row()];
+      threadDraftsBackend(rows);
+      const message = 'The branch moved after you loaded this. Reload and try again.';
+      setBindingMock('SubmitPRReview', async () => {
+        throw new TransportError('forge_stale_head', message);
+      });
+      setBindingMock('GetPRDetail', async () => prDetailStub({ headSHA: 'sha-b' }));
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+      state.setVerdict('approve');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(TransportError);
+
+      expect(state.submitError).toBe(message);
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.verdict).toBe('approve');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+      await vi.waitFor(() => expect(state.prStale).toBe(true));
     });
 
     for (const withDraft of [true, false]) {

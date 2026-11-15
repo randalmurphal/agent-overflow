@@ -12,7 +12,7 @@ import (
 )
 
 const gitlabTestDiscussionWithSuggestion = `{"id":"d1","notes":[{"id":31,"body":"` + "```suggestion\\nTWO\\n```" + `","system":false,"created_at":"t","resolvable":true,"resolved":false,
-	"author":{"username":"rev","name":"Rev"},"position":{"head_sha":"head2","new_path":"a.go","old_path":"a.go","position_type":"text","new_line":2},
+	"author":{"username":"rev","name":"Rev"},"position":{"head_sha":"ab12cd34","new_path":"a.go","old_path":"a.go","position_type":"text","new_line":2},
 	"suggestions":[{"id":901,"from_line":2,"to_line":2,"appliable":true,"applied":false,"from_content":"two\n","to_content":"TWO\n"}]}]}`
 
 func gitlabApplyReq() SuggestionApply {
@@ -29,7 +29,7 @@ func TestGitLabSuggestionReadAndApply(t *testing.T) {
 	head := "dead2" + strings.Repeat("0", 35)
 	var applyAnswer atomic.Value
 	applyAnswer.Store(forgeAPIAnswer{Body: `{"id":901,"from_line":2,"to_line":2,"appliable":false,"applied":true,"from_content":"two\n","to_content":"TWO\n"}`})
-	mrBody := strings.ReplaceAll(gitlabTestMR(7, 0), `"head2"`, `"`+head+`"`)
+	mrBody := strings.ReplaceAll(gitlabTestMR(7, 0), `"ab12cd34"`, `"`+head+`"`)
 	var discussion atomic.Value
 	discussion.Store(gitlabTestDiscussionWithSuggestion)
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
