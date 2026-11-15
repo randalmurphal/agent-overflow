@@ -121,15 +121,19 @@ func glabCreateDiscussion(e *Engine, c *call, m []string) response {
 	if err := decodeRESTBody(c, &in, false); err != nil {
 		return unhandled("%v", err)
 	}
-	if in.Position == nil {
-		return unhandled("a discussion without a position: the app posts a note")
-	}
 	_, p, fail, ok := e.glabMRFrom(c, m)
 	if !ok {
 		return fail
 	}
 	if strings.TrimSpace(in.Body) == "" {
 		return glabStatus(http.StatusBadRequest, "body is missing")
+	}
+	// Without a position it is a general thread: resolvable, on no file.
+	if in.Position == nil {
+		comment := Comment{ID: e.ids.next(), Author: e.viewer, Body: in.Body, CreatedAt: glabNow()}
+		thread := Thread{ID: e.ids.sha(), Comments: []Comment{comment}}
+		p.Threads = append(p.Threads, thread)
+		return glabCreated(map[string]any{"id": thread.ID, "individual_note": false, "notes": []map[string]any{gitlabNote(comment, map[string]any{"type": "DiscussionNote", "resolvable": true, "resolved": false})}})
 	}
 	pos := in.Position
 	if pos.BaseSHA != p.BaseSHA || pos.StartSHA != p.StartSHA || pos.HeadSHA != p.HeadSHA {
