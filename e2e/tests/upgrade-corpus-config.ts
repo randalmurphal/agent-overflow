@@ -1,6 +1,6 @@
 // The release upgrade check's configuration (docs/architecture/release-upgrade-check.md).
-// Everything an author may need to touch when a migration lands is in this
-// file; the check's failure messages name the entry to add.
+// Everything an author may need to touch when a migration or a boot writer
+// lands is in this file; the check's failure messages name the entry to add.
 
 // Production limits the check mirrors. Each is pinned to its Go constant by
 // internal/wsllauncher/release_upgrade_mirror_test.go, so a product change
@@ -55,6 +55,16 @@ export const fingerprintIgnoredTables: Record<string, string> = {
 };
 
 /**
+ * Columns, as `table.column`, the old-row comparison skips, with the
+ * reason: derived data no read serves, which its triggers and backfill
+ * rewrite whenever the row's text does.
+ */
+export const fingerprintIgnoredColumns: Record<string, string> = {
+  'items.find_text': "v150's thread-find candidate text, refilled by its triggers and deferred backfill",
+  'import_history_items.find_text': "v150's thread-find candidate text, refilled by its triggers and deferred backfill",
+};
+
+/**
  * Tables whose row count may shrink across a run, with the reason: the
  * progress tables of work a boot finishes, which delete their rows as the
  * work completes.
@@ -62,10 +72,245 @@ export const fingerprintIgnoredTables: Record<string, string> = {
 export const countIgnoredTables: Record<string, string> = {
   deferred_migration_failures: 'a retried phase clears its own failure rows',
   thread_search_build: 'the search index rebuild deletes its progress row when done',
+  thread_search: 'the contentless FTS index of thread_search_rows, whose rows the census and fingerprint compare',
   agent_end_backfill: "v124's deferred phase deletes each thread's row as it is settled",
   subagent_aggregate_backfill: "v121's deferred phase deletes each thread's row as it is recomputed",
   shown_history_fix: "v131's deferred phase clears its progress once every copy is fixed",
 };
+
+/**
+ * A RecoveryRule declares one change the candidate's boot makes to a row it
+ * finds, almost always settling state the previous process left live: a
+ * clone of a database whose app was running carries running rows, open
+ * turns and queued messages, and the update trial's boot settles them
+ * before the fingerprint reads the store. The check fails on any change the
+ * boot made to an old row that no rule explains, and reports every rule's
+ * count. Each entry names the Go writer and mirrors its own selection.
+ */
+export interface RecoveryRule {
+  name: string;
+  /** The Go function that makes the change. */
+  writer: string;
+  /** The table, or '*' for a writer that deletes whole threads. */
+  table: string;
+  /**
+   * The rows it applies to, as an SQL condition over the snapshot's row
+   * `s` (other snapshot tables are `snap.<table>`); for a '*' rule, a query
+   * of the ids of the threads it deletes, which explains every removed row
+   * of theirs in any table with a `thread_id` (and their `threads` row);
+   * or 'thread-write': the
+   * row's thread had a row of `items` changed, removed or added by the
+   * boot, or for the `items` and `threads` stamp rules also a changed
+   * `subagent_aggregates` row. Stamps move with the writes that cause them,
+   * never on their own.
+   */
+  rows: string | 'thread-write';
+  /** The columns it may change, ['*'] for any. */
+  columns?: string[];
+  /** Keys of `meta` it may set; the rest of `meta` must be unchanged. */
+  metaKeys?: string[];
+  /** A condition over the booted row `b` (and `s`) a changed row must meet. */
+  to?: string;
+  /** It deletes the row. */
+  removes?: boolean;
+  /** The columns that identify a row of a table that declares no primary key. */
+  key?: string[];
+}
+
+/** A key of `meta` on the row `alias`, null when `meta` is not JSON. */
+const meta = (alias: string, key: string) => `(CASE WHEN json_valid(${alias}.meta) THEN json_extract(${alias}.meta, '$.${key}') END)`;
+/** The Claude background launch `x` no live agent or shell will report: RecoverOrphanedBackgroundTasks' selection. */
+const orphanedClaudeLaunch = (x: string) => `${x}.kind = 'tool_call' AND ${x}.status = 'running' AND ${x}.is_background = 1
+  AND COALESCE(${meta(x, 'live_background_active')}, 1) != 0
+  AND NOT EXISTS (SELECT 1 FROM snap.items c WHERE c.thread_id = ${x}.thread_id AND c.completion_of = ${x}.id AND c.completion_of <> '')
+  AND EXISTS (SELECT 1 FROM snap.threads t WHERE t.id = ${x}.thread_id AND t.provider IN ('claude', 'claude-tui'))`;
+/**
+ * The user row `x` of a message the previous process wrote to the provider
+ * and never saw confirmed: still marked pendingFlush, at the thread's newest
+ * turn. A mark on a row a later turn follows outlived its message and is
+ * settled history.
+ */
+const unconfirmedUserRow = (x: string) => `${x}.kind = 'user_text' AND ${x}.parent_id = '' AND ${meta(x, 'pendingFlush')} = 1
+  AND NOT EXISTS (SELECT 1 FROM snap.turns t WHERE t.thread_id = ${x}.thread_id AND t.turn_index > ${x}.turn_index)`;
+/** A credential row PruneCredentials deletes: expired a day before now. */
+const prunedBefore = `(CAST(strftime('%s', 'now') AS INTEGER) * 1000 - 86400000)`;
+const workflowRunLive = `EXISTS (SELECT 1 FROM snap.work_items w WHERE w.id = s.item_id AND w.state IN ('running', 'needs-human'))`;
+
+export const recoveryRules: RecoveryRule[] = [
+  {
+    name: 'terminal-threads', writer: 'app.(*App).endTerminalThreadsAtBoot', table: '*',
+    rows: "SELECT id FROM snap.owned_threads WHERE mode = 'terminal'", removes: true,
+  },
+  {
+    name: 'interrupted-forks', writer: 'app.(*App).cleanupPreparingForks', table: '*',
+    rows: 'SELECT id FROM snap.threads WHERE fork_preparing = 1', removes: true,
+  },
+  {
+    name: 'crashed-turns', writer: 'store.(*Store).RecoverCrashedTurns', table: 'turns',
+    rows: 's.completed_at IS NULL', columns: ['completed_at', 'stop_reason'],
+    to: "b.completed_at IS NOT NULL AND b.stop_reason = 'interrupted'",
+  },
+  {
+    name: 'crashed-turn-rows', writer: 'store.(*Store).RecoverCrashedTurns (flipCrashedTurnItemsTx)', table: 'items',
+    rows: `s.status IN ('streaming', 'running') AND NOT (s.is_background = 1 AND s.kind = 'tool_call')
+      AND EXISTS (SELECT 1 FROM snap.turns t WHERE t.thread_id = s.thread_id AND t.turn_index = s.turn_index AND t.completed_at IS NULL)`,
+    columns: ['status', 'summary', 'updated_at', 'rev'], to: "b.status = 'errored'",
+  },
+  {
+    name: 'codex-background-runtime', writer: 'store.(*Store).RecoverCodexBackgroundRuntime', table: 'items',
+    rows: `s.kind = 'tool_call' AND s.status = 'running' AND s.is_background = 1 AND s.tool_name <> 'collab_agent'
+      AND COALESCE(${meta('s', 'live_background_active')}, 1) != 0
+      AND EXISTS (SELECT 1 FROM snap.threads t WHERE t.id = s.thread_id AND t.provider = 'codex')`,
+    columns: ['status', 'summary', 'decision', 'updated_at', 'rev'], to: "b.status = 'errored' AND b.decision = 'lost'",
+  },
+  {
+    name: 'claude-background-launches',
+    writer: 'triage.(*Router).RecoverOrphanedBackgroundTasks (its session_died sibling fires trg_items_settle_bg_launch_on_completion)',
+    table: 'items', rows: orphanedClaudeLaunch('s'), columns: ['rev'], metaKeys: ['live_background_active'],
+    to: `${meta('b', 'live_background_active')} = 0`,
+  },
+  {
+    name: 'claude-agent-rows', writer: 'store.(*Store).UpsertAgentEnd (settleAgentSubtreeTx), from RecoverOrphanedBackgroundTasks',
+    table: 'items',
+    rows: `s.status IN ('running', 'streaming') AND s.parent_id <> '' AND (s.thread_id, s.id) IN (
+      WITH RECURSIVE owned(thread_id, id, depth) AS (
+        SELECT x.thread_id, x.id, 0 FROM snap.items x WHERE ${orphanedClaudeLaunch('x')}
+        UNION
+        SELECT x.thread_id, ${meta('x', 'transcript_root_id')}, 0 FROM snap.items x
+         WHERE ${orphanedClaudeLaunch('x')} AND ${meta('x', 'transcript_root_id')} <> ''
+        UNION
+        SELECT c.thread_id, c.id, o.depth + 1 FROM owned o JOIN snap.items c ON c.thread_id = o.thread_id AND c.parent_id = o.id
+         WHERE o.depth < 64
+      ) SELECT thread_id, id FROM owned)`,
+    columns: ['status', 'summary', 'updated_at', 'rev'], to: "b.status IN ('errored', 'completed')",
+  },
+  {
+    name: 'unconfirmed-queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RetireUndeliveredUserRow)',
+    table: 'items', rows: unconfirmedUserRow('s'), removes: true,
+  },
+  {
+    name: 'unconfirmed-message-search-rows', writer: 'store.RetireUndeliveredUserRow (deleteThreadItemTx clears its search rows)',
+    table: 'thread_search_rows', removes: true,
+    rows: `s.item_id <> '' AND EXISTS (SELECT 1 FROM snap.items i WHERE i.thread_id = s.thread_id AND i.id = s.item_id
+      AND ${unconfirmedUserRow('i')})`,
+  },
+  {
+    name: 'item-stamps', writer: 'trg_items_rev_* and trg_subagent_aggregates_stamp_* (store/history_rev_triggers.go)',
+    table: 'items', rows: 'thread-write', columns: ['rev'],
+  },
+  {
+    name: 'live-agent-cards', writer: 'store.(*Store).RecoverSubagentCards', table: 'subagent_aggregates',
+    rows: `EXISTS (SELECT 1 FROM snap.items x WHERE x.thread_id = s.thread_id AND x.kind = 'tool_call' AND x.status = 'running'
+      AND x.tool_name <> 'collab_agent' AND (x.is_background = 0 OR COALESCE(${meta('x', 'live_background_active')}, 1) != 0))`,
+    columns: ['*'],
+  },
+  {
+    name: 'written-chain-cards', writer: 'store cardWrite.finish (subagent_card_write.go), after a recovery write',
+    table: 'subagent_aggregates', rows: 'thread-write', columns: ['*'],
+  },
+  {
+    name: 'thread-stamps', writer: 'the items triggers (history_rev_triggers.go, thread_turn_error_aggregate.go)',
+    table: 'threads', rows: 'thread-write',
+    columns: ['history_rev', 'history_epoch', 'newest_turn_error_at', 'newest_turn_error_turn'],
+  },
+  {
+    name: 'worktree-setups', writer: 'store.(*Store).SweepRunningThreadWorktreeSetups', table: 'threads',
+    rows: "s.worktree_setup_state = 'running'", columns: ['worktree_setup_state'], to: "b.worktree_setup_state = 'failed'",
+  },
+  {
+    name: 'queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot', table: 'flush_queue_items', rows: '1', removes: true,
+  },
+  {
+    name: 'queued-message-drafts', writer: 'app.(*App).restoreQueuedDraft', table: 'thread_drafts',
+    rows: `EXISTS (SELECT 1 FROM snap.flush_queue_items q WHERE q.thread_id = s.thread_id)
+      OR EXISTS (SELECT 1 FROM snap.items u WHERE u.thread_id = s.thread_id AND ${unconfirmedUserRow('u')})`,
+    columns: ['*'],
+  },
+  {
+    name: 'queued-wakes-to-draft', writer: 'app.noteThreadWakeRestoredToDraft (store.MarkThreadRequestDeliveredAsDraft)',
+    table: 'thread_requests',
+    rows: `EXISTS (SELECT 1 FROM snap.flush_queue_items q WHERE q.send_id IN ('thread-wake:' || s.token, 'thread-wake-late:' || s.token))
+      OR EXISTS (SELECT 1 FROM snap.items u WHERE ${unconfirmedUserRow('u')} AND instr(u.meta, s.token) > 0)`,
+    columns: ['delivered_how', 'updated_at'], to: "b.delivered_how = 'draft'",
+  },
+  {
+    name: 'retired-message-claims', writer: 'store.(*Store).RetireUndeliveredUserRow', table: 'diff_review_comments',
+    rows: `s.claim_item_id <> '' AND EXISTS (SELECT 1 FROM snap.items u WHERE u.thread_id = s.claim_thread_id AND u.id = s.claim_item_id
+      AND ${unconfirmedUserRow('u')})`,
+    columns: ['status', 'sent_at', 'sent_turn_id', 'claim_thread_id', 'claim_item_id', 'claim_settles'], to: "b.claim_item_id = ''",
+  },
+  {
+    name: 'unsettled-review-claims', writer: 'store.(*Store).ReleaseUnsettledDiffReviewClaims', table: 'diff_review_comments',
+    rows: "s.claim_item_id <> '' AND s.claim_settles <> ''",
+    columns: ['status', 'sent_at', 'sent_turn_id', 'claim_thread_id', 'claim_item_id', 'claim_settles'], to: "b.claim_item_id = ''",
+  },
+  {
+    name: 'replacement-draft-recoveries', writer: 'app.(*App).restoreReplacementDraftsAtBoot', table: 'thread_draft_recoveries',
+    rows: '1', removes: true,
+  },
+  {
+    name: 'replacement-drafts', writer: 'app.(*App).recoverReplacementDraft', table: 'thread_drafts',
+    rows: 'EXISTS (SELECT 1 FROM snap.thread_draft_recoveries r WHERE r.thread_id = s.thread_id)', columns: ['*'],
+  },
+  {
+    name: 'open-receipts', writer: 'app.(*App).sweepThreadRequestsAtBoot', table: 'thread_request_receipts',
+    rows: "s.state IN ('accepted', 'running')", columns: ['*'], to: "b.state NOT IN ('accepted', 'running')",
+  },
+  {
+    name: 'open-local-requests', writer: 'app.(*App).sweepThreadRequestsAtBoot', table: 'thread_requests',
+    rows: `(s.state IN ('unconfirmed', 'accepted', 'running') AND s.kind <> 'remind' AND s.target_computer_id = '')
+      OR EXISTS (SELECT 1 FROM snap.thread_request_receipts r WHERE r.token = s.token AND r.state IN ('accepted', 'running'))`,
+    columns: ['*'],
+  },
+  {
+    name: 'background-terminal-stashes', writer: 'triage.(*Router).RecoverOrphanedBackgroundTasks', table: 'pending_background_task_terminals',
+    rows: '1', removes: true,
+  },
+  {
+    name: 'running-remote-jobs', writer: 'store.(*Store).RecoverRemoteJobs', table: 'remote_jobs',
+    rows: "s.state = 'running'", columns: ['state', 'finished_at', 'error'], to: "b.state = 'interrupted'",
+  },
+  {
+    name: 'workflow-runs', writer: 'workflow/engine.(*Engine).rebuild', table: 'work_items',
+    rows: "s.state IN ('running', 'needs-human')", columns: ['*'],
+  },
+  {
+    name: 'workflow-run-phases', writer: 'workflow/engine.(*Engine).rebuild', table: 'work_item_phases',
+    rows: workflowRunLive, columns: ['*'], key: ['item_id', 'phase_id', 'attempt'],
+  },
+  {
+    name: 'workflow-run-units', writer: 'workflow/engine.(*Engine).rebuild', table: 'work_item_units',
+    rows: workflowRunLive, columns: ['*'], key: ['item_id', 'phase_id', 'attempt', 'unit_id'],
+  },
+  {
+    name: 'usage-attention-claims', writer: 'store.(*Store).ReclaimQueuedWorkflowProviderUsageAttention',
+    table: 'workflow_provider_usage_attention', rows: 's.queued_generation > 0', columns: ['queued_token', 'updated_at'],
+    key: ['scope_id', 'thread_id'],
+  },
+  {
+    name: 'local-session-scopes', writer: 'store.(*Store).EnsureLocalSession', table: 'sessions',
+    rows: `s.binding_class = 'loopback-only' AND s.revoked_at IS NULL
+      AND EXISTS (SELECT 1 FROM snap.devices d WHERE d.id = s.device_id AND d.channel = 'local' AND d.revoked_at IS NULL)`,
+    columns: ['scopes'],
+  },
+  {
+    name: 'expired-sessions', writer: 'identity.(*Sessions).PruneCredentials (store.DeleteSessionsExpiredBefore)', table: 'sessions',
+    rows: `s.expires_at < ${prunedBefore}
+      AND NOT EXISTS (SELECT 1 FROM snap.refresh_secrets r WHERE r.session_id = s.id AND r.expires_at >= ${prunedBefore})`,
+    removes: true,
+  },
+  {
+    name: 'expired-refresh-secrets', writer: 'identity.(*Sessions).PruneCredentials (store.DeleteRefreshSecretsExpiredBefore)',
+    table: 'refresh_secrets',
+    rows: `s.expires_at < ${prunedBefore}
+      AND NOT EXISTS (SELECT 1 FROM snap.refresh_secrets n WHERE n.secret_hash = s.next_secret_hash AND n.consumed_at IS NULL)`,
+    removes: true,
+  },
+  {
+    name: 'expired-pairing-links', writer: 'identity.(*Sessions).PruneCredentials (store.DeletePairingLinksExpiredBefore)',
+    table: 'pairing_links', rows: `s.expires_at < ${prunedBefore} AND s.redeemed_at IS NULL`, removes: true,
+  },
+];
 
 /**
  * The top-up (upgrade-corpus-topup.ts): what the candidate writes into

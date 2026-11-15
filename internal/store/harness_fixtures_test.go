@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/appdirs"
 )
 
 // historyRepairFixtureEnv names the database file TestHistoryRepairHarnessFixture
@@ -49,6 +51,96 @@ const schemaAheadFixtureEnv = "AO_TEST_SCHEMA_AHEAD_FIXTURE"
 // names the file to write.
 func TestSchemaAheadHarnessFixture(t *testing.T) {
 	stampAhead(t, harnessFixturePath(t, schemaAheadFixtureEnv), latestMigrationVersionForTest()+2, 0)
+}
+
+// migrateDatabaseEnv names an existing database TestMigrateHarnessDatabase
+// opens and closes. The release upgrade check
+// (e2e/tests/upgrade-corpus-helpers.ts) migrates a copy of the launcher's
+// snapshot with it, so what the migrations did to old rows can be told
+// from what the candidate's boot did after them.
+const migrateDatabaseEnv = "AO_TEST_MIGRATE_DATABASE"
+
+// TestMigrateHarnessDatabase opens the database migrateDatabaseEnv names
+// with New, which runs the migration chain and writes nothing else, and
+// closes it. It never creates a database and refuses the app's own.
+func TestMigrateHarnessDatabase(t *testing.T) {
+	path := os.Getenv(migrateDatabaseEnv)
+	if path == "" {
+		t.Skip(migrateDatabaseEnv + " is not set")
+	}
+	if err := migrateHarnessDatabase(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// migrateHarnessDatabase migrates the existing database at path, which
+// must be absolute and outside the app's own data directory.
+func migrateHarnessDatabase(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("%q is not an absolute path", path)
+	}
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("%s: not an existing database file (%v)", path, err)
+	}
+	if real, err := appdirs.Root(); err == nil && (path == real || strings.HasPrefix(path, real+string(filepath.Separator))) {
+		return fmt.Errorf("%s is the app's own database", path)
+	}
+	s, err := New(path)
+	if err != nil {
+		return fmt.Errorf("migrate %s: %w", path, err)
+	}
+	if err := s.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", path, err)
+	}
+	return nil
+}
+
+// TestMigrateHarnessDatabaseRefusals pins what the migration fixture will
+// not open: a relative path, a missing file (it never creates one), and
+// the app's own database. A database it opens is at the latest version.
+func TestMigrateHarnessDatabaseRefusals(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
+	t.Setenv("APPDATA", dir)
+	real, err := appdirs.Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := filepath.Join(real, "agent-overflow.db")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(own, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"agent-overflow.db", filepath.Join(dir, "missing.db"), own} {
+		if err := migrateHarnessDatabase(path); err == nil {
+			t.Errorf("migrateHarnessDatabase(%s) succeeded, want a refusal", path)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "missing.db")); !os.IsNotExist(err) {
+		t.Fatalf("the refused missing database was created (%v)", err)
+	}
+	copy := filepath.Join(dir, "copy.db")
+	if err := os.WriteFile(copy, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateHarnessDatabase(copy); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", poolDSN(copy, writerConnPragmas))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version int
+	if err := db.QueryRow(`SELECT MAX(version) FROM migration_versions`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != latestMigrationVersionForTest() {
+		t.Fatalf("migrated to v%d, want v%d", version, latestMigrationVersionForTest())
+	}
 }
 
 // harnessFixturePath returns the database path env names for a harness
