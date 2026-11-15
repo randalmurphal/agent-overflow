@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -65,7 +66,7 @@ func TestStopKillsEveryProcessInChromiumsGroup(t *testing.T) {
 			"echo $! > "+shellQuote(helperFile)+"\n"+
 			"echo 'DevTools listening on "+fakeDevToolsURL+"' >&2\n"+
 			"exec sleep 300\n")
-	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), nopReaper{}, binary, nil, nil)
+	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), procutiltest.Reaper(), binary, nil, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -171,7 +172,7 @@ func TestStopIsNotHeldByAProcessThatLeftTheGroup(t *testing.T) {
 			"echo $! > "+shellQuote(escapeeFile)+"\n"+
 			"echo 'DevTools listening on "+fakeDevToolsURL+"' >&2\n"+
 			"exec sleep 300\n")
-	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), nopReaper{}, binary, nil, nil)
+	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), procutiltest.Reaper(), binary, nil, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

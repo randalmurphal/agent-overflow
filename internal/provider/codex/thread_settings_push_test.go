@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -97,6 +98,7 @@ func TestPlanThreadSettingsPushNamesOnlyChangedPushableAxes(t *testing.T) {
 func TestPushThreadSettingsWireShape(t *testing.T) {
 	t.Parallel()
 	s, capturePath := newSettingsPushSession(t, Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         "",
 		Model:          "gpt-5.5",
 		WorkDir:        "/tmp",
@@ -157,7 +159,7 @@ func TestPushThreadSettingsWireShape(t *testing.T) {
 // expectation.
 func TestPushThreadSettingsSkipsWhenNothingToSay(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newSettingsPushSession(t, Config{Model: "gpt-5.5", WorkDir: "/tmp"})
+	s, capturePath := newSettingsPushSession(t, Config{Reaper: procutiltest.Reaper(), Model: "gpt-5.5", WorkDir: "/tmp"})
 	if err := s.PushThreadSettings(context.Background(), ThreadSettingsPush{}); err != nil {
 		t.Fatalf("PushThreadSettings: %v", err)
 	}
@@ -232,7 +234,7 @@ func TestPushThreadSettingsUnsupportedTransitions(t *testing.T) {
 		// The latch is per session by construction — a live session cannot
 		// swap binaries. Prove the upgrade direction: a new session on a
 		// binary that answers normally pushes.
-		s, capturePath := newSettingsPushSession(t, Config{Model: "gpt-5.5", WorkDir: "/tmp"})
+		s, capturePath := newSettingsPushSession(t, Config{Reaper: procutiltest.Reaper(), Model: "gpt-5.5", WorkDir: "/tmp"})
 		if err := s.PushThreadSettings(context.Background(), push); err != nil {
 			t.Fatalf("PushThreadSettings: %v", err)
 		}
@@ -354,7 +356,7 @@ func newSettingsPushSession(t *testing.T, cfg Config) (*Session, string) {
 func newSessionWithScript(t *testing.T, script string) (*Session, string) {
 	t.Helper()
 	capturePath := codexScriptCapturePath(t, script)
-	return newSessionWithScriptCfg(t, script, Config{Model: "gpt-5.5", WorkDir: "/tmp"}), capturePath
+	return newSessionWithScriptCfg(t, script, Config{Reaper: procutiltest.Reaper(), Model: "gpt-5.5", WorkDir: "/tmp"}), capturePath
 }
 
 func newSessionWithScriptCfg(t *testing.T, script string, cfg Config) *Session {

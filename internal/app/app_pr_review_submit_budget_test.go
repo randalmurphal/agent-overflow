@@ -7,15 +7,18 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 )
 
-// reviewSubmitRun is a submit's run context whose budget ends after
-// cutoff, as withinMethodBudgetFinishing makes SubmitPRReview's.
-func reviewSubmitRun(t *testing.T, cutoff time.Duration) context.Context {
+// reviewSubmitRun is a submit's run context whose budget end ends, with
+// the cause withinMethodBudgetFinishing gives SubmitPRReview's. The test
+// ends it while the forge holds a request, so the request is provably in
+// flight and every later one provably not started.
+func reviewSubmitRun(t *testing.T) (run context.Context, end func()) {
 	t.Helper()
-	run, cancel := context.WithTimeoutCause(context.Background(), cutoff, budgetExceeded{doing: "Posting the review", budget: cutoff})
-	t.Cleanup(cancel)
-	return run
+	run, stop := testutil.DeadlineContext(context.Background())
+	t.Cleanup(func() { stop(nil) })
+	return run, func() { stop(budgetExceeded{doing: "Posting the review", budget: 8 * time.Minute}) }
 }
 
 // A GitHub review whose budget ends while the forge holds it posts, and
@@ -29,7 +32,7 @@ func TestSubmitPRReviewStoppedByItsBudgetSaysWhatPosted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := reviewSubmitRun(t, 300*time.Millisecond)
+	run, end := reviewSubmitRun(t)
 	entered, release := c.gate.hold()
 	defer release()
 	type answer struct {
@@ -42,10 +45,10 @@ func TestSubmitPRReviewStoppedByItsBudgetSaysWhatPosted(t *testing.T) {
 		done <- answer{result, err}
 	}()
 	<-entered
-	<-run.Done()
+	end()
 	release()
 	got := <-done
-	const want = "Posting the review took longer than 300ms, so it was stopped before the rest was sent."
+	const want = "Posting the review took longer than 8m0s, so it was stopped before the rest was sent."
 	if got.err != nil || !got.result.Posted || !got.result.PostedReview || got.result.PostedFileComments != 0 || got.result.PartialFailurePath != "main.go" ||
 		got.result.PartialFailure != want || got.result.PartialFailureKind != methodBudgetExceededCode {
 		t.Fatalf("submit = %+v, %v; want the review posted and the file comment stopped by the budget", got.result, got.err)
@@ -63,7 +66,7 @@ func TestSubmitPRReviewStoppedByItsBudgetBeforeThePublishPostsNothing(t *testing
 	c := newReviewSubmitCase(t, "gitlab")
 	c.gate.publish = "/draft_notes"
 	first, second := c.draft(t, false, 3, "Guard this."), c.draft(t, false, 5, "And this.")
-	run := reviewSubmitRun(t, 300*time.Millisecond)
+	run, end := reviewSubmitRun(t)
 	entered, release := c.gate.hold()
 	defer release()
 	done := make(chan error, 1)
@@ -72,10 +75,10 @@ func TestSubmitPRReviewStoppedByItsBudgetBeforeThePublishPostsNothing(t *testing
 		done <- err
 	}()
 	<-entered
-	<-run.Done()
+	end()
 	release()
 	err := <-done
-	if code, message, _ := errorsx.PublicDetails(err); code != methodBudgetExceededCode || message != "Posting the review took longer than 300ms, so it was stopped." {
+	if code, message, _ := errorsx.PublicDetails(err); code != methodBudgetExceededCode || message != "Posting the review took longer than 8m0s, so it was stopped." {
 		t.Fatalf("submit = %v (code %q, %q); want the budget's stop", err, code, message)
 	}
 	for _, inv := range c.engine.Invocations(0).Invocations {

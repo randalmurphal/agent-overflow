@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 )
 
@@ -31,7 +32,9 @@ const (
 )
 
 type ModelListConfig struct {
-	Binary       string
+	Binary string
+	// Reaper ends the process if the backend dies first. Required.
+	Reaper       procutil.Reaper
 	WorkDir      string
 	Env          map[string]string
 	CustomModels []string
@@ -85,7 +88,7 @@ func ListModels(ctx context.Context, cfg ModelListConfig) ([]provider.ModelInfo,
 	// ever awaited. experimentalApi rides along because this handshake has
 	// always sent it; model/list itself is not `#[experimental]`.
 	// An empty Binary falls through to startOneshotClient's "codex" default.
-	client, err := startOneshotClient(ctx, oneshotSpec{
+	client, err := startOneshotClient(ctx, provider.Bounded(cfg.Reaper), oneshotSpec{
 		Binary:       cfg.Binary,
 		WorkDir:      cfg.WorkDir,
 		Env:          cfg.Env,

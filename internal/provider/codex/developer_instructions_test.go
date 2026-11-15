@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -51,6 +52,7 @@ func TestThreadStartCarriesTheComposedDeveloperInstructions(t *testing.T) {
 	binary := writeDeveloperInstructionsAppServer(t, dir, requestLog, "configured cwd instructions")
 
 	sess, err := NewSession(context.Background(), "thread-1", Config{
+		Reaper:                procutiltest.Reaper(),
 		Binary:                binary,
 		WorkDir:               dir,
 		DeveloperInstructions: "AO thread tools guide",
@@ -85,6 +87,7 @@ func TestThreadStartCarriesTheGuideAloneWhenNothingIsConfigured(t *testing.T) {
 	binary := writeDeveloperInstructionsAppServer(t, dir, requestLog, "")
 
 	sess, err := NewSession(context.Background(), "thread-1", Config{
+		Reaper:                procutiltest.Reaper(),
 		Binary:                binary,
 		WorkDir:               dir,
 		DeveloperInstructions: "AO thread tools guide",
@@ -109,7 +112,7 @@ func TestThreadStartOmitsDeveloperInstructionsWithoutAGuide(t *testing.T) {
 	requestLog := filepath.Join(dir, "requests.jsonl")
 	binary := writeDeveloperInstructionsAppServer(t, dir, requestLog, "configured cwd instructions")
 
-	sess, err := NewSession(context.Background(), "thread-1", Config{Binary: binary, WorkDir: dir}, func(provider.ProviderEvent) {})
+	sess, err := NewSession(context.Background(), "thread-1", Config{Reaper: procutiltest.Reaper(), Binary: binary, WorkDir: dir}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -133,11 +136,11 @@ func TestThreadStartOmitsDeveloperInstructionsWithoutAGuide(t *testing.T) {
 // field's presence rule is pinned on the shared builder too.
 func TestBuildThreadParamsCarriesDeveloperInstructionsOnlyWhenSet(t *testing.T) {
 	t.Parallel()
-	params := buildThreadParams(Config{WorkDir: "/tmp/x", DeveloperInstructions: "guide"}, "0.153.4")
+	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), WorkDir: "/tmp/x", DeveloperInstructions: "guide"}, "0.153.4")
 	if params["developerInstructions"] != "guide" {
 		t.Errorf("developerInstructions = %v, want the composed text", params["developerInstructions"])
 	}
-	params = buildThreadParams(Config{WorkDir: "/tmp/x"}, "0.153.4")
+	params = buildThreadParams(Config{Reaper: procutiltest.Reaper(), WorkDir: "/tmp/x"}, "0.153.4")
 	if _, present := params["developerInstructions"]; present {
 		t.Error("an empty value still reached the wire")
 	}
@@ -153,6 +156,7 @@ func TestThreadForkCarriesTheParentsDeveloperInstructions(t *testing.T) {
 	binary := writeDeveloperInstructionsAppServer(t, dir, requestLog, "configured cwd instructions")
 
 	sess, err := NewSession(context.Background(), "thread-1", Config{
+		Reaper:                procutiltest.Reaper(),
 		Binary:                binary,
 		WorkDir:               dir,
 		DeveloperInstructions: "AO thread tools guide",
@@ -234,6 +238,7 @@ func TestThreadStartSurfacesAFailedDeveloperInstructionsRead(t *testing.T) {
 	var mu sync.Mutex
 	var errorsSeen []provider.ProviderEvent
 	sess, err := NewSession(context.Background(), "thread-1", Config{
+		Reaper:                procutiltest.Reaper(),
 		Binary:                binary,
 		WorkDir:               dir,
 		DeveloperInstructions: "AO guide",

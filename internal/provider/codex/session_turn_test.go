@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -58,7 +60,7 @@ func TestTurnStartEmittedExactlyOncePerTurn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "cat > /dev/null"},
 	})
@@ -240,7 +242,7 @@ func TestCodexInterruptStartupSendsEmptyTurnID(t *testing.T) {
 	// codex-rs/app-server/src/codex_message_processor.rs:7790-7849.
 	capturePath := t.TempDir() + "/request.json"
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args: []string{"-c", `
 			IFS= read -r line || exit 1
@@ -321,7 +323,7 @@ func TestCodexInterruptSendsThreadAndTurnID(t *testing.T) {
 	t.Parallel()
 	capturePath := t.TempDir() + "/request.json"
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args: []string{"-c", `
 			IFS= read -r line || exit 1
@@ -407,6 +409,7 @@ done
 	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         scriptPath,
 		Model:          "test-model",
 		WorkDir:        "/tmp",
@@ -520,6 +523,7 @@ done
 			mockexec.Write(t, scriptPath, script)
 
 			s, err := NewSession(context.Background(), testThread, Config{
+				Reaper:         procutiltest.Reaper(),
 				Binary:         scriptPath,
 				Model:          "test-model",
 				WorkDir:        "/tmp",
@@ -597,6 +601,7 @@ done
 			mockexec.Write(t, scriptPath, script)
 
 			s, err := NewSession(context.Background(), testThread, Config{
+				Reaper:          procutiltest.Reaper(),
 				Binary:          scriptPath,
 				Model:           "test-model",
 				WorkDir:         "/tmp",
@@ -666,6 +671,7 @@ func TestSessionSendIncludesApprovalsReviewerForEveryMode(t *testing.T) {
 				WorkDir:     "/tmp",
 			})
 			cfg.Binary = codexReviewerEchoScript(t, capturePath, threadResult)
+			cfg.Reaper = procutiltest.Reaper()
 
 			s, err := NewSession(context.Background(), testThread, cfg, func(provider.ProviderEvent) {})
 			if err != nil {

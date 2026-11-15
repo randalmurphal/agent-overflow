@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 func newMultiAgentV2RoutingSession(t *testing.T, onEvent func(provider.ProviderEvent)) *Session {
@@ -758,7 +759,7 @@ func TestReadCollabThreadSnapshotLoadsOnlyLatestTurnStatus(t *testing.T) {
 	t.Parallel()
 	capturePath := filepath.Join(t.TempDir(), "requests.jsonl")
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args: []string{"-c", `
 			while IFS= read -r line; do

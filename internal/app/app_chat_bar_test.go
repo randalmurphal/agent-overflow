@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/claudecatalog"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
@@ -254,7 +255,7 @@ func TestSendMessageExpandsComposerCommandOnTheWireOnly(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinCapture(t, capturePath), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinCapture(t, capturePath), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -343,7 +344,7 @@ func TestSendMessageSkipsExpansionForInjectedText(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinCapture(t, capturePath), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinCapture(t, capturePath), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {

@@ -183,6 +183,7 @@ func (s providerAccountEventSink) PublishLogin(state provideraccountapp.LoginSta
 
 func newProviderAccountManager(app *App) *provideraccountapp.Manager {
 	return provideraccountapp.NewManager(provideraccountapp.Deps{
+		Reaper:          app.groupReaper("provider account"),
 		Context:         app.lifeCtx,
 		BeginWork:       app.workAdmission.begin,
 		IsShuttingDown:  func() bool { return app.shuttingDown.Load() },

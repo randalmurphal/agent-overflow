@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -35,7 +36,7 @@ func isFlagToken(arg string) bool { return len(arg) >= 2 && arg[0] == '-' }
 func newTestClaudeSession(t *testing.T) (*Session, <-chan provider.ProviderEvent) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn cat: %v", err)
 	}
@@ -189,7 +190,7 @@ func newInterruptResponderSession(t *testing.T, mode string, interruptTimeout ti
 	scriptPath := scriptDir + "/fake-claude"
 	mockexec.Write(t, scriptPath, interruptResponderScript(mode))
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -213,7 +214,7 @@ func newInterruptResponderSession(t *testing.T, mode string, interruptTimeout ti
 func newTestClaudeSessionWithPendingRequests(t *testing.T) (*Session, <-chan provider.ProviderEvent) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn cat: %v", err)
 	}
@@ -294,7 +295,7 @@ func newStopTaskResponderSession(t *testing.T, mode string, stopTimeout time.Dur
 	scriptPath := scriptDir + "/fake-claude"
 	mockexec.Write(t, scriptPath, stopTaskResponderScript(mode))
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}

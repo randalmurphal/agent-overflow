@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"os"
@@ -412,7 +413,7 @@ func newCodexMcpStatusSession(t *testing.T, app *App, threadID, binary, workspac
 	sess, err := codex.NewSession(
 		context.Background(),
 		threadID,
-		codex.Config{Binary: binary, Model: "gpt-5", WorkDir: workspace},
+		codex.Config{Reaper: procutiltest.Reaper(), Binary: binary, Model: "gpt-5", WorkDir: workspace},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {

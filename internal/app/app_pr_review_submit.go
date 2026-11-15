@@ -304,29 +304,26 @@ func (a *App) GetPRReviewSubmitOutcome(ctx context.Context, pr gitops.PRReferenc
 	if err := pr.Validate(); err != nil {
 		return PRReviewSubmitOutcome{}, err
 	}
-	attempt, forgotten := a.reviewAttempts.find(attemptID, pr.Identity())
-	if forgotten {
-		return PRReviewSubmitOutcome{State: "forgotten"}, nil
-	}
-	if attempt == nil {
-		return PRReviewSubmitOutcome{State: "unknown"}, nil
-	}
-	result, err := attempt.wait(ctx)
-	if ctx.Err() != nil {
-		return PRReviewSubmitOutcome{}, ctx.Err()
+	outcome, err := a.reviewAttempts.outcome(ctx, attemptID, pr.Identity(), attemptFailure{
+		code: reviewNotPostedCode, message: "The review was not posted.",
+	})
+	if err != nil {
+		return PRReviewSubmitOutcome{}, err
 	}
 	switch {
-	case err == nil && result.Unconfirmed:
-		return PRReviewSubmitOutcome{State: "unconfirmed", Result: &result}, nil
-	case err == nil:
-		return PRReviewSubmitOutcome{State: "posted", Result: &result}, nil
+	case outcome.state == attemptDone && outcome.result.Unconfirmed:
+		return PRReviewSubmitOutcome{State: "unconfirmed", Result: &outcome.result}, nil
+	case outcome.state == attemptDone:
+		return PRReviewSubmitOutcome{State: "posted", Result: &outcome.result}, nil
+	case outcome.state == attemptFailed:
+		return PRReviewSubmitOutcome{State: "failed", Code: outcome.code, Message: outcome.message}, nil
 	}
-	code, message, ok := errorsx.PublicDetails(err)
-	if !ok {
-		message = "The review was not posted."
-	}
-	return PRReviewSubmitOutcome{State: "failed", Code: code, Message: message}, nil
+	return PRReviewSubmitOutcome{State: outcome.state}, nil
 }
+
+// reviewNotPostedCode is the code of a failed submit attempt whose error
+// has no public code of its own.
+const reviewNotPostedCode = "review_not_posted"
 
 // prDraftSource is the comment source of pr's pr-scope drafts; the
 // frontend's prSourceKey builds the same string.

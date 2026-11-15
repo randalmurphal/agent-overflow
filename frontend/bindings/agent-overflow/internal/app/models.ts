@@ -2671,13 +2671,14 @@ export class GeneratedCommitMessage {
 
 /**
  * GitActionOutcome is what a git attempt did: "succeeded" (Result),
- * "failed" (Message: it wrote nothing it reports), "unknown" (this process
- * never received it), or "forgotten" (it may have received it and no longer
- * keeps the outcome).
+ * "failed" (Code and Message, the public ones: it wrote nothing it
+ * reports), "unknown" (this process never received it), or "forgotten" (it
+ * may have received it and no longer keeps the outcome).
  */
 export class GitActionOutcome {
     "state": string;
     "result"?: git$0.GitActionResult | null;
+    "code"?: string;
     "message"?: string;
 
     /** Creates a new GitActionOutcome instance. */

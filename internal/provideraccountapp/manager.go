@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccounts"
@@ -56,6 +57,9 @@ type AccountSink interface {
 // Deps are the narrow process/lifecycle ports used by Manager.
 type Deps struct {
 	Context func() context.Context
+	// Reaper ends the provider processes this service starts if the
+	// backend dies first.
+	Reaper procutil.Reaper
 	// BeginWork fences credential transactions and live sign-in sessions
 	// against a host restart. Acquire before account/reconcile locks.
 	BeginWork       func(context.Context) (func(), error)

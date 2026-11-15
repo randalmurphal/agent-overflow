@@ -14,6 +14,7 @@ import (
 
 	"agent-overflow/internal/codexskills"
 	"agent-overflow/internal/codexusage"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/slicesx"
 )
@@ -35,6 +36,9 @@ type AccountSelection struct {
 type SessionLookup func(threadID string) (session *codex.Session, active bool)
 
 type Deps struct {
+	// Reaper ends the provider processes this service starts if the
+	// backend dies first.
+	Reaper           procutil.Reaper
 	Session          SessionLookup
 	SessionForBinary func(binary string) *codex.Session
 	AnySession       func() (session *codex.Session, accountID string)
@@ -158,7 +162,7 @@ func (s *Service) readSkills(ctx context.Context, binary, cwd string, forceReloa
 	if s.deps.CustomEnv != nil {
 		env = s.deps.CustomEnv()
 	}
-	fetcher := &codex.SkillsFetcher{Binary: binary, WorkDir: cwd, Env: env}
+	fetcher := &codex.SkillsFetcher{Binary: binary, WorkDir: cwd, Env: env, Reaper: s.deps.Reaper}
 	entries, err := fetcher.Fetch(ctx, cwds, forceReload)
 	if err != nil {
 		return codexskills.CwdSkills{}, err
@@ -240,7 +244,7 @@ func (s *Service) readAccountUsage(ctx context.Context, binary, accountID string
 	if s.deps.ProbeEnv != nil {
 		env = s.deps.ProbeEnv()
 	}
-	fetcher := &codex.AccountUsageFetcher{Binary: binary, WorkDir: workDir, Env: env}
+	fetcher := &codex.AccountUsageFetcher{Binary: binary, WorkDir: workDir, Env: env, Reaper: s.deps.Reaper}
 	return fetcher.Fetch(ctx)
 }
 

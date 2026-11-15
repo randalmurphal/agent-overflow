@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/forgeapi"
@@ -718,60 +719,77 @@ type forgeWriteCallerKey struct{}
 const SubmitSettleTimeout = 30 * time.Second
 
 // writeSteps is the context the steps of a write of several requests run
-// under, from a forgeWrite context: it ends when the caller's deadline
-// passes, with the caller's cause, and not when the caller cancels. Its
+// under, from a forgeWrite context: it ends when the caller ends at its
+// deadline, with the caller's cause, and not when the caller cancels. Its
 // reads run on it, so the deadline cuts them; each write runs on the
 // forgeWrite context and asks stopped first, so the deadline stops the
 // write before it starts and never while it is in flight. A run past the
 // deadline is then one write and what settles it (SubmitSettleTimeout).
 func writeSteps(ctx context.Context) (context.Context, context.CancelFunc) {
 	steps, cancel := context.WithCancelCause(ctx)
-	caller, _ := ctx.Value(forgeWriteCallerKey{}).(context.Context)
-	deadline, bounded := time.Time{}, false
-	if caller != nil {
-		deadline, bounded = caller.Deadline()
-	}
-	if !bounded {
+	caller := writeCaller(ctx)
+	if caller == nil {
 		return steps, func() { cancel(nil) }
 	}
-	timer := time.AfterFunc(time.Until(deadline), func() {
-		// The caller ends at the same deadline: wait for it, to take its
-		// cause.
-		<-caller.Done()
-		cancel(deadlineCause(caller))
+	var mu sync.Mutex
+	var timer *time.Timer
+	stop := context.AfterFunc(caller, func() {
+		if cause := deadlineCause(caller); cause != nil {
+			cancel(cause)
+			return
+		}
+		// Cancelled first: the deadline still ends the steps.
+		if deadline, ok := caller.Deadline(); ok {
+			mu.Lock()
+			timer = time.AfterFunc(time.Until(deadline), func() { cancel(context.DeadlineExceeded) })
+			mu.Unlock()
+		}
 	})
 	return steps, func() {
-		timer.Stop()
+		stop()
+		mu.Lock()
+		if timer != nil {
+			timer.Stop()
+		}
+		mu.Unlock()
 		cancel(nil)
 	}
 }
 
-// deadlineCause is why a caller whose deadline passed ended: its own cause,
-// or DeadlineExceeded when it was cancelled otherwise first.
+// writeCaller is the caller's context forgeWrite detached ctx from, or nil.
+func writeCaller(ctx context.Context) context.Context {
+	caller, _ := ctx.Value(forgeWriteCallerKey{}).(context.Context)
+	return caller
+}
+
+// deadlineCause is caller's cause once it has ended at its deadline, else
+// nil.
 func deadlineCause(caller context.Context) error {
-	if errors.Is(caller.Err(), context.DeadlineExceeded) {
-		return context.Cause(caller)
+	select {
+	case <-caller.Done():
+	default:
+		return nil
 	}
-	return context.DeadlineExceeded
+	if !errors.Is(caller.Err(), context.DeadlineExceeded) {
+		return nil
+	}
+	return context.Cause(caller)
 }
 
 // stopped is the error a write of several requests answers instead of
-// starting its next one once steps ended or the caller's deadline passed:
-// a request never sent. The deadline is read here too, since steps ends
-// from the timer's goroutine, which a request answered at the deadline can
-// beat to the next step.
+// starting its next one once its caller's deadline ended it: a request
+// never sent. It reads the caller itself, so a deadline that has ended
+// stops the next request whether or not steps has been told yet.
 func stopped(steps context.Context) error {
-	if steps.Err() != nil {
-		return &forgeapi.NotSentError{Err: context.Cause(steps)}
+	if caller := writeCaller(steps); caller != nil {
+		if cause := deadlineCause(caller); cause != nil {
+			return &forgeapi.NotSentError{Err: cause}
+		}
 	}
-	caller, _ := steps.Value(forgeWriteCallerKey{}).(context.Context)
-	if caller == nil {
+	if steps.Err() == nil {
 		return nil
 	}
-	if deadline, bounded := caller.Deadline(); bounded && !time.Now().Before(deadline) {
-		return &forgeapi.NotSentError{Err: deadlineCause(caller)}
-	}
-	return nil
+	return &forgeapi.NotSentError{Err: context.Cause(steps)}
 }
 
 // ReadPR reads the parts of ref want names in one forge read (see

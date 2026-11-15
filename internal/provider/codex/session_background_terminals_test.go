@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 // backgroundTerminalTestTimeout bounds every wait in this file. Generous
@@ -40,7 +41,7 @@ func newCapturingSession(t *testing.T, codexThreadID string) (*Session, string) 
 	t.Helper()
 	capturePath := t.TempDir() + "/requests.ndjson"
 	procCtx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(procCtx, provider.SpawnConfig{
+	proc, err := provider.Spawn(procCtx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", fmt.Sprintf("cat > %q", capturePath)},
 	})

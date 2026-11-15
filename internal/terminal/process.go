@@ -66,7 +66,7 @@ type ProcessConfig struct {
 	Env   []string // if nil, inherit os.Environ(); terminal capabilities are normalized
 	Rows  uint16
 	Cols  uint16
-	// Reaper is SessionOptions.Reaper.
+	// Reaper is SessionOptions.Reaper. Start refuses a nil one.
 	Reaper procutil.Reaper
 }
 
@@ -83,8 +83,7 @@ type ExitStatus struct {
 type Process struct {
 	cmd *exec.Cmd
 	pty *osFilePty
-	// reaper is released once Wait has seen the process exit; nil when the
-	// process is not watched.
+	// reaper is released once Wait has seen the process exit.
 	reaper procutil.Reaper
 	// raw reads the master without blocking a thread (readOutput).
 	raw syscall.RawConn
@@ -111,6 +110,10 @@ type Process struct {
 	pauseNudge func(time.Duration)
 }
 
+// ErrNoReaper is Start's error for a process given no reaper: nothing would
+// end it with the backend.
+var ErrNoReaper = errors.New("terminal: start: no reaper watches the process")
+
 // Start spawns the process. On success Process.Output() returns a channel of
 // raw byte chunks from the PTY until the process exits.
 func Start(cfg ProcessConfig) (*Process, error) {
@@ -118,6 +121,9 @@ func Start(cfg ProcessConfig) (*Process, error) {
 }
 
 func startWithRead(cfg ProcessConfig, readMaster func(fd int, buf []byte) (int, error)) (*Process, error) {
+	if cfg.Reaper == nil {
+		return nil, ErrNoReaper
+	}
 	shell, args := resolveShell(cfg.Shell, cfg.Args)
 	rows, cols := cfg.Rows, cfg.Cols
 	if rows == 0 {
@@ -150,9 +156,7 @@ func startWithRead(cfg ProcessConfig, readMaster func(fd int, buf []byte) (int, 
 		return nil, fmt.Errorf("terminal: pty master: %w", err)
 	}
 	// The pty child leads its own session, so its pid is its group.
-	if cfg.Reaper != nil {
-		cfg.Reaper.Watch(cmd.Process.Pid)
-	}
+	cfg.Reaper.Watch(cmd.Process.Pid)
 
 	p := &Process{
 		cmd:        cmd,
@@ -433,9 +437,7 @@ func (p *Process) awaitExit() {
 		_ = p.pty.SetReadDeadline(time.Now())
 	}()
 	err := p.cmd.Wait()
-	if p.reaper != nil {
-		p.reaper.Release(p.cmd.Process.Pid)
-	}
+	p.reaper.Release(p.cmd.Process.Pid)
 	status := ExitStatus{}
 	if err == nil {
 		status.Code = 0

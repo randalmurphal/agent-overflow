@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,8 +33,8 @@ type forgeAPICall struct {
 	Path     string
 	Header   http.Header
 	Body     []byte
-	// Done ends when the client gives up on the request (r.Context()).
-	Done <-chan struct{}
+	// Context is the request's, done once the client gives up on it.
+	Context context.Context
 }
 
 // forgeAPIAnswer is the fake's reply. A zero Status is 200.
@@ -83,7 +84,7 @@ func newForgeAPIService(t *testing.T, answer func(call forgeAPICall) forgeAPIAns
 	var restBase string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		call := forgeAPICall{RESTBase: restBase, Host: r.Host, Method: r.Method, Header: r.Header.Clone(), Body: body, Done: r.Context().Done()}
+		call := forgeAPICall{RESTBase: restBase, Host: r.Host, Method: r.Method, Header: r.Header.Clone(), Body: body, Context: r.Context()}
 		switch {
 		case r.URL.Path == "/github/graphql" || r.URL.Path == "/gitlab/api/graphql":
 			var payload struct {

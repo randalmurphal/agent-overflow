@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/worktreesetup"
 )
@@ -31,7 +32,7 @@ func TestSetupAdmissionOutlivesLaunchAndEndsAfterCleanup(t *testing.T) {
 	storage := &testStore{threads: map[string]store.Thread{thread.ID: thread}, config: worktreesetup.Config{Run: [][]string{{"/bin/sh", "-c", "exit 0"}}}}
 	events := &admissionSetupEvents{entered: make(chan struct{}), resume: make(chan struct{})}
 	var active atomic.Int32
-	service := New(Config{Store: storage, Reaper: nopReaper{}, Events: events, Context: t.Context, BeginWork: func(context.Context) (func(), error) {
+	service := New(Config{Store: storage, Reaper: procutiltest.Reaper(), Events: events, Context: t.Context, BeginWork: func(context.Context) (func(), error) {
 		active.Add(1)
 		return func() { active.Add(-1) }, nil
 	}})
@@ -116,7 +117,7 @@ func TestStopRacingLaunchKeepsWaitGroupOwnershipStructural(t *testing.T) {
 	}
 
 	shutdownErr := errors.New("shutting down")
-	service := New(Config{Store: storage, Reaper: nopReaper{}, ShutdownError: shutdownErr})
+	service := New(Config{Store: storage, Reaper: procutiltest.Reaper(), ShutdownError: shutdownErr})
 	start := make(chan struct{})
 	var launches sync.WaitGroup
 	for _, thread := range threads {
@@ -185,7 +186,7 @@ func newCancelTestService(t *testing.T, recipe string) (*Service, *testStore, *r
 		config:  worktreesetup.Config{Run: [][]string{{"/bin/sh", "-c", recipe}}, Timeout: "60s"},
 	}
 	events := &recordingSetupEvents{}
-	service := New(Config{Store: storage, Reaper: nopReaper{}, Events: events, Context: t.Context})
+	service := New(Config{Store: storage, Reaper: procutiltest.Reaper(), Events: events, Context: t.Context})
 	t.Cleanup(service.Stop)
 	return service, storage, events, thread
 }
@@ -402,10 +403,3 @@ func TestDismissThreadRefusesABadThread(t *testing.T) {
 		t.Fatal("DismissThread for an unknown thread succeeded, want an error")
 	}
 }
-
-// nopReaper watches nothing: no command these tests start outlives the test
-// binary that waits for it.
-type nopReaper struct{}
-
-func (nopReaper) Watch(int)   {}
-func (nopReaper) Release(int) {}

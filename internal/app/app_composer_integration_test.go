@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -341,6 +342,7 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -447,6 +449,7 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    binary,
 			WorkDir:   thread.WorkspacePath,
@@ -624,6 +627,7 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,

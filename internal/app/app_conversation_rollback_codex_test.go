@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -147,6 +148,7 @@ func TestConversationRollbackCodexForksAtAnchorAndStopsSession(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         binary,
 		Model:          "test-model",
 		WorkDir:        workspace,
@@ -344,6 +346,7 @@ func TestConversationRollbackCodexTurnZeroClearsSessionRef(t *testing.T) {
 		requestLogPath:  requestLog,
 	})
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         binary,
 		Model:          "test-model",
 		WorkDir:        workspace,
@@ -767,6 +770,7 @@ func TestConversationRollbackCodexLiveRevertForgetsToolCallLinks(t *testing.T) {
 		revertLogPath:   revertLog,
 	})
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         binary,
 		Model:          "test-model",
 		WorkDir:        workspace,
@@ -849,6 +853,7 @@ func requireLiveRevertRestoresDeveloperInstructions(t *testing.T, name string, b
 		t.Fatal(err)
 	}
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Reaper:                        procutiltest.Reaper(),
 		Binary:                        binary,
 		Model:                         "test-model",
 		WorkDir:                       workspace,
@@ -1036,6 +1041,7 @@ func TestConversationRollbackCodexStopsLiveSessionBeforeForkFallback(t *testing.
 	thread := paginatedRevertThread(t, app, "codex-live-refused-revert", mock)
 	binary := app.providerBinaryPath(string(provider.Codex))
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         binary,
 		Model:          "test-model",
 		WorkDir:        thread.WorkspacePath,

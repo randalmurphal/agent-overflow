@@ -9,11 +9,12 @@ import (
 
 	"agent-overflow/internal/codexskills"
 	"agent-overflow/internal/codexusage"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider/codex"
 )
 
 func TestBackgroundControlsDistinguishMissingMismatchAndForward(t *testing.T) {
-	missing := New(Deps{Session: func(threadID string) (*codex.Session, bool) {
+	missing := New(Deps{Reaper: procutiltest.Reaper(), Session: func(threadID string) (*codex.Session, bool) {
 		return nil, threadID == "other-provider"
 	}})
 	if err := missing.CleanBackgroundTerminals("missing"); err == nil || !strings.Contains(err.Error(), "no active session") {
@@ -32,7 +33,7 @@ func TestBackgroundControlsDistinguishMissingMismatchAndForward(t *testing.T) {
 		cleanCalled.Store(true)
 		return nil
 	})
-	cleanService := New(Deps{Session: func(string) (*codex.Session, bool) { return session, true }})
+	cleanService := New(Deps{Reaper: procutiltest.Reaper(), Session: func(string) (*codex.Session, bool) { return session, true }})
 	if err := cleanService.CleanBackgroundTerminals("thread"); err != nil {
 		t.Fatalf("CleanBackgroundTerminals: %v", err)
 	}
@@ -43,7 +44,7 @@ func TestBackgroundControlsDistinguishMissingMismatchAndForward(t *testing.T) {
 		processID = id
 		return true, nil
 	})
-	terminateService := New(Deps{Session: func(string) (*codex.Session, bool) { return terminateSession, true }})
+	terminateService := New(Deps{Reaper: procutiltest.Reaper(), Session: func(string) (*codex.Session, bool) { return terminateSession, true }})
 	terminated, err := terminateService.TerminateBackgroundTerminal("thread", "1734029")
 	if err != nil || !terminated || processID != "1734029" || !cleanCalled.Load() {
 		t.Fatalf("terminate=%v id=%q clean=%v err=%v", terminated, processID, cleanCalled.Load(), err)
@@ -61,7 +62,7 @@ func TestStopSubagentForwardsOwnedLaunchUnderDeadline(t *testing.T) {
 		}
 		return nil
 	})
-	service := New(Deps{Session: func(string) (*codex.Session, bool) { return fake, true }})
+	service := New(Deps{Reaper: procutiltest.Reaper(), Session: func(string) (*codex.Session, bool) { return fake, true }})
 	stopped, err := service.StopSubagent("codex-thread", "spawn-1")
 	if err != nil || !stopped {
 		t.Fatalf("StopSubagent = (%v, %v), want (true, nil)", stopped, err)
@@ -87,7 +88,7 @@ func TestSkillsValidationProjectionAndReset(t *testing.T) {
 	if _, err := cache.Get(context.Background(), key, fetch); err != nil {
 		t.Fatalf("prime cache: %v", err)
 	}
-	service := New(Deps{Binary: func() string { return "codex-test" }, SkillsCache: cache})
+	service := New(Deps{Reaper: procutiltest.Reaper(), Binary: func() string { return "codex-test" }, SkillsCache: cache})
 	got, err := service.Skills(context.Background(), cwd, false)
 	if err != nil {
 		t.Fatalf("Skills: %v", err)
@@ -139,6 +140,7 @@ func TestAccountUsagePreservesAbsenceErrorsAndAccountIdentity(t *testing.T) {
 		t.Fatalf("prime usage: %v", err)
 	}
 	service := New(Deps{
+		Reaper:        procutiltest.Reaper(),
 		Binary:        func() string { return "codex-test" },
 		ActiveAccount: func() AccountSelection { return selection },
 		UsageCache:    cache,
@@ -158,6 +160,7 @@ func TestAccountUsagePreservesAbsenceErrorsAndAccountIdentity(t *testing.T) {
 				return codex.AccountUsage{}, cachedErr
 			})
 			failureService := New(Deps{
+				Reaper: procutiltest.Reaper(),
 				Binary: func() string { return "codex-test" }, ActiveAccount: func() AccountSelection { return selection }, UsageCache: failureCache,
 			})
 			got, err := failureService.AccountUsage()
@@ -180,6 +183,7 @@ func TestAccountUsageTreatsAnEmptySuccessfulReportAsAbsence(t *testing.T) {
 		t.Fatalf("prime cache: %v", err)
 	}
 	service := New(Deps{
+		Reaper: procutiltest.Reaper(),
 		Binary: func() string { return "codex-test" },
 		ActiveAccount: func() AccountSelection {
 			return AccountSelection{ID: "account-1"}

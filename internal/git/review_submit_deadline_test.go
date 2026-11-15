@@ -6,19 +6,19 @@ import (
 	"net/http"
 	"slices"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/forgeapi"
+	"agent-overflow/internal/testutil"
 )
 
-// submitDeadline is a caller context that reaches its deadline while the
-// forge holds the request named hold, which then answers: past it the
-// submit starts no request, and the one in flight finishes and is reported.
-func submitDeadline(t *testing.T) (context.Context, func()) {
+// submitDeadline is a caller context whose deadline end ends. A forge
+// handler calls end while it holds a request, so the deadline provably
+// passes with that request in flight and every later one not started.
+func submitDeadline(t *testing.T) (ctx context.Context, end func()) {
 	t.Helper()
-	ctx, cancel := context.WithTimeoutCause(t.Context(), 300*time.Millisecond, errors.New("the caller's budget ran out"))
-	t.Cleanup(cancel)
-	return ctx, func() { <-ctx.Done() }
+	ctx, stop := testutil.DeadlineContext(t.Context())
+	t.Cleanup(func() { stop(nil) })
+	return ctx, func() { stop(errors.New("the caller's budget ran out")) }
 }
 
 // A GitHub submit past its caller's deadline posts the review that was in
@@ -26,13 +26,13 @@ func submitDeadline(t *testing.T) (context.Context, func()) {
 // the comments it never started are not reported as maybe on the PR.
 func TestGitHubSubmitReviewStopsAtItsCallersDeadline(t *testing.T) {
 	t.Parallel()
-	ctx, wait := submitDeadline(t)
+	ctx, end := submitDeadline(t)
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
 		case call.Op == "ViewerReviews":
 			return githubData(`{"repository":{"pullRequest":{"reviews":{"nodes":[]}}}}`)
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/reviews":
-			wait()
+			end()
 			return forgeAPIAnswer{Body: `{"id":1}`}
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/comments":
 			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":9}`}
@@ -78,21 +78,17 @@ func TestGitLabSubmitReviewStopsAtItsCallersDeadline(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			ctx, wait := submitDeadline(t)
+			ctx, end := submitDeadline(t)
 			forge := &gitlabDraftForge{next: 100, pending: map[int64]string{}}
 			held := false
 			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 				if call.Method+" "+call.Path == tc.hold && !held {
 					held = true
-					wait()
-					// A read is held until the client cuts it, so it is
-					// not answered before the deadline reaches its steps.
+					end()
 					if tc.cut {
-						select {
-						case <-call.Done:
-						case <-time.After(10 * time.Second):
-							t.Error("the read was not cut at the deadline")
-						}
+						// A read is cut: its answer comes only after the
+						// submit gave up on it.
+						<-call.Context.Done()
 					}
 				}
 				return forge.answer(t, mr)(call)
@@ -123,14 +119,14 @@ func TestGitLabSubmitReviewStopsAtItsCallersDeadline(t *testing.T) {
 func TestGitLabRequestChangesStopsAtItsCallersDeadline(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
-	ctx, wait := submitDeadline(t)
+	ctx, end := submitDeadline(t)
 	forge := &gitlabDraftForge{next: 100, pending: map[int64]string{}}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
 		case call.Op == "" && call.Path == "metadata":
 			return gitlabMetadata("19.6.0-ee")
 		case call.Method == http.MethodPost && call.Path == mr+"/draft_notes/bulk_publish":
-			wait()
+			end()
 		case call.Method == http.MethodPost && call.Path == mr+"/discussions":
 			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":"abc","individual_note":false,"notes":[{"id":5,"type":"DiscussionNote","resolvable":true}]}`}
 		}

@@ -6,12 +6,15 @@
 //
 // The trial both migrates the store and boots on it, and a boot settles
 // what a dead process left live. The two causes are told apart by
-// migrating a copy of the snapshot alone: a row that copy changed is the
-// migrations' doing, a row it kept and the trial changed is the boot's.
-// The copy is made only when some row changed. Row content never leaves
-// SQLite: the queries return keys, column names and flags.
+// migrating a copy of the snapshot alone (M): the snapshot (S) against M is
+// the migrations' doing, held to migrationExceptions; M against the trial's
+// store (B), over every shared column, is the boot's, held to
+// recoveryRules. An exception narrows only the migrations' comparison, so a
+// column a migration may rewrite is still compared for the boot. The copy
+// is made only when some row changed. Row content never leaves SQLite: the
+// queries return keys, column names and flags.
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, readdir } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { fingerprintIgnoredColumns, fingerprintIgnoredTables, recoveryRules, type RecoveryRule } from './upgrade-corpus-config.js';
@@ -28,11 +31,11 @@ export interface RecoveryCount {
   rows: number;
 }
 
-/** Rows a rule removed: by table, top-level items by thread, and the threads removed whole. */
+/** Rows a rule removed: by table, top-level items by thread, and payload bytes. */
 export interface RecoveryRemoved {
   tables: Record<string, number>;
   threadItems: Record<string, number>;
-  threads: string[];
+  bytes: number;
 }
 
 /** A change to an old row no exception or rule explains, named by its key. */
@@ -53,6 +56,8 @@ export interface Fingerprint {
   excepted: string[];
   /** Table to the rows the migrations alone changed; set once any row changed. */
   migrationChangedRows?: Record<string, number>;
+  /** Table to the rows of migrationChangedRows whose change a migrationExceptions entry declares. */
+  migrationExcepted?: Record<string, number>;
   /** What the boot changed after the migrations, by rule. */
   recovery: RecoveryCount[];
   /** What the boot changed that no rule explains (at most 50 per table). */
@@ -72,8 +77,13 @@ interface Column {
 
 interface Compared {
   table: string;
+  /** Every column both schemas share, less fingerprintIgnoredColumns. */
   columns: Column[];
   projection: string;
+  /** The projection less the columns a migrationExceptions entry lets the migrations rewrite. */
+  migrationProjection: string;
+  /** The primary key, or a rule's declared key; empty when neither exists. */
+  key: string[];
 }
 
 const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
@@ -94,14 +104,33 @@ export async function migrateAlone(snapshotDB: string, dir: string): Promise<str
     if (name === base || name === `${base}-wal`) await copyFile(path.join(path.dirname(snapshotDB), name), path.join(dir, name));
   }
   const copy = path.join(dir, base);
+  await migrate(copy);
+  return copy;
+}
+
+/**
+ * buildSchema is the candidate's schema version: the migration chain run on
+ * an empty database in `dir`, which the caller removes. The check reads it
+ * before any boot touches the root, to know whether a gated boot would
+ * migrate or run straight through.
+ */
+export async function buildSchema(dir: string): Promise<number> {
+  await mkdir(dir, { recursive: true });
+  const db = path.join(dir, 'schema.db');
+  await writeFile(db, '');
+  await migrate(db);
+  const [{ version }] = await dbQuery<{ version: number }>(db, 'SELECT MAX(version) AS version FROM migration_versions');
+  return version;
+}
+
+async function migrate(db: string): Promise<void> {
   const { stdout } = await run(harnessTool('ao-store-test'),
     ['-test.run', '^TestMigrateHarnessDatabase$', '-test.count=1', '-test.timeout=0', '-test.v'], {
-      env: { ...process.env, AO_TEST_MIGRATE_DATABASE: copy },
+      env: { ...process.env, AO_TEST_MIGRATE_DATABASE: db },
       maxBuffer: 16 * 1024 * 1024,
     });
   // The test skips, and exits 0, when it is not handed a path.
-  if (!/--- PASS: TestMigrateHarnessDatabase/.test(stdout)) throw new Error(`migrating the snapshot copy did not run:\n${stdout}`);
-  return copy;
+  if (!/--- PASS: TestMigrateHarnessDatabase/.test(stdout)) throw new Error(`migrating ${db} did not run:\n${stdout}`);
 }
 
 /**
@@ -120,16 +149,16 @@ export async function fingerprint(
     : from + 1 === to ? `migration v${to}` : `the migrations v${from + 1}..v${to}`;
   const out: Fingerprint = {
     changedRows: {}, droppedTables: [], excepted: [], recovery: [], bootUnexplained: [], stampsOfUnexplained: {},
-    recoveryRemoved: { tables: {}, threadItems: {}, threads: [] }, failures: [],
+    recoveryRemoved: { tables: {}, threadItems: {}, bytes: 0 }, failures: [],
   };
   const before = await tableNames(dbPath, 'snap', snapshotPath);
   const after = new Set(await tableNames(dbPath, 'main', snapshotPath));
   // Every table's columns on both sides in one read each.
   const columnsOf = async (schema: 'snap' | 'main') => {
-    const rows = await dbQuery<{ tbl: string; name: string; type: string }>(dbPath,
-      `SELECT m.name AS tbl, p.name AS name, p.type AS type FROM ${schema}.sqlite_master m, pragma_table_info(m.name, '${schema}') p
+    const rows = await dbQuery<{ tbl: string; name: string; type: string; pk: number }>(dbPath,
+      `SELECT m.name AS tbl, p.name AS name, p.type AS type, p.pk AS pk FROM ${schema}.sqlite_master m, pragma_table_info(m.name, '${schema}') p
         WHERE m.type = 'table' AND m.sql NOT LIKE 'CREATE VIRTUAL TABLE%' ORDER BY m.name, p.cid`, snapshotPath);
-    const out = new Map<string, Array<{ name: string; type: string }>>();
+    const out = new Map<string, Array<{ name: string; type: string; pk: number }>>();
     for (const row of rows) out.set(row.tbl, [...(out.get(row.tbl) ?? []), row]);
     return out;
   };
@@ -156,14 +185,20 @@ export async function fingerprint(
     if (shrink) continue;
     const shared = new Set((mainColumns.get(table) ?? []).map((column) => column.name));
     const columns = snapColumns.get(table)!
-      .filter((column) => shared.has(column.name) && !skipColumns.has(column.name)
-        && !(`${table}.${column.name}` in fingerprintIgnoredColumns))
+      .filter((column) => shared.has(column.name) && !(`${table}.${column.name}` in fingerprintIgnoredColumns))
       .map((column) => ({ name: column.name, blob: /BLOB/i.test(column.type) }));
     if (columns.length === 0) continue;
-    const projection = columns
+    const project = (list: Column[]) => list
       .map((column) => (column.blob ? `length(${quote(column.name)}) AS ${quote(column.name)}` : quote(column.name)))
       .join(', ');
-    candidates.push({ table, columns, projection });
+    const pk = snapColumns.get(table)!.filter((column) => column.pk > 0).sort((a, b) => a.pk - b.pk).map((column) => column.name);
+    const key = pk.length > 0 ? pk : recoveryRules.find((rule) => rule.table === table && rule.key)?.key ?? [];
+    // The key stays in the migrations' comparison, so a row they removed still shows.
+    const migrationColumns = columns.filter((column) => !skipColumns.has(column.name) || key.includes(column.name));
+    candidates.push({
+      table, columns, projection: project(columns), key,
+      migrationProjection: migrationColumns.length > 0 ? project(migrationColumns) : '1',
+    });
   }
   const counts = await perTable<{ n: number }>(dbPath, snapshotPath, candidates, ({ table, projection }) =>
     `(SELECT COUNT(*) FROM (SELECT ${projection} FROM snap.${quote(table)} EXCEPT SELECT ${projection} FROM main.${quote(table)})) AS n`);
@@ -179,15 +214,21 @@ export async function fingerprint(
   const alone = await migrated();
   const schemas = { snap: snapshotPath, mig: alone };
   out.migrationChangedRows = {};
+  out.migrationExcepted = {};
   const boot: Compared[] = [];
-  const causes = await perTable<{ migration: number; booted: number }>(dbPath, schemas, compared, ({ table, projection }) => `
-      (SELECT COUNT(*) FROM (SELECT ${projection} FROM snap.${quote(table)} EXCEPT SELECT ${projection} FROM mig.${quote(table)})) AS migration,
-      (SELECT COUNT(*) FROM (SELECT ${projection} FROM snap.${quote(table)} INTERSECT SELECT ${projection} FROM mig.${quote(table)}
-                             EXCEPT SELECT ${projection} FROM main.${quote(table)})) AS booted`);
+  const causes = await perTable<{ all: number; migration: number; booted: number }>(dbPath, schemas, compared, (entry) => {
+    const { table, projection, migrationProjection } = entry;
+    return `
+      (SELECT COUNT(*) FROM (SELECT ${projection} FROM snap.${quote(table)} EXCEPT SELECT ${projection} FROM mig.${quote(table)})) AS "all",
+      (SELECT COUNT(*) FROM (SELECT ${migrationProjection} FROM snap.${quote(table)}
+                             EXCEPT SELECT ${migrationProjection} FROM mig.${quote(table)})) AS migration,
+      (SELECT COUNT(*) FROM (${bootChanged(entry)})) AS booted`;
+  });
   for (const entry of compared) {
     const { table } = entry;
-    const { migration, booted } = causes.get(table)!;
-    out.migrationChangedRows[table] = migration;
+    const { all, migration, booted } = causes.get(table)!;
+    out.migrationChangedRows[table] = all;
+    if (all > migration) out.migrationExcepted[table] = all - migration;
     if (migration > 0) {
       out.failures.push(`${span} left ${migration} pre-migration row(s) missing or changed in ${table} (the snapshot migrated alone shows it). ` +
         `If that is the migration's intent, add a migrationExceptions entry { version, table: '${table}', ... reason } to ${CONFIG_FILE}; ` +
@@ -197,6 +238,22 @@ export async function fingerprint(
   }
   if (boot.length > 0) await classifyBootChanges(dbPath, schemas, boot, out);
   return out;
+}
+
+/**
+ * bootChanged selects, over the full projection, the old rows the boot
+ * changed or removed: the snapshot's rows as the migrations alone left them,
+ * less the trial's store. A table with no key to join by falls back to the
+ * rows the migrations did not touch.
+ */
+function bootChanged({ table, projection, key }: Compared): string {
+  if (key.length === 0) {
+    return `SELECT ${projection} FROM snap.${quote(table)} INTERSECT SELECT ${projection} FROM mig.${quote(table)}
+            EXCEPT SELECT ${projection} FROM main.${quote(table)}`;
+  }
+  const old = key.map((name) => `o.${quote(name)} IS ${quote(table)}.${quote(name)}`).join(' AND ');
+  return `SELECT ${projection} FROM mig.${quote(table)} WHERE EXISTS (SELECT 1 FROM snap.${quote(table)} o WHERE ${old})
+          EXCEPT SELECT ${projection} FROM main.${quote(table)}`;
 }
 
 /** perTable runs one row of `select` per table in a single read. */
@@ -215,9 +272,13 @@ interface BootRow {
   removed: boolean;
   /** A top-level `items` row, which the census counts per thread. */
   top: boolean;
+  /** The payload bytes a removed `payloads` or `payload_chunks` row held. */
+  bytes: number;
   columns: string[];
   /** The first snapshot-scoped rule that explains it. */
   rule?: RecoveryRule;
+  /** The first snapshot-scoped rule that explains it once its thread's stamps may move too. */
+  stamped?: RecoveryRule;
 }
 
 /**
@@ -230,13 +291,10 @@ interface BootRow {
 async function classifyBootChanges(dbPath: string, schemas: Record<string, string>, boot: Compared[], out: Fingerprint): Promise<void> {
   const rows: BootRow[] = [];
   const unkeyed: Record<string, number> = {};
-  for (const { table, columns, projection } of boot) {
-    const rules = recoveryRules.filter((rule) => rule.table === table || rule.table === '*');
-    const pk = (await dbQuery<{ name: string }>(dbPath,
-      `SELECT name FROM pragma_table_info('${table}', 'snap') WHERE pk > 0 ORDER BY pk`, schemas)).map((row) => row.name);
-    const key = pk.length > 0 ? pk : rules.find((rule) => rule.key)?.key ?? [];
-    const changed = `SELECT ${projection} FROM snap.${quote(table)} INTERSECT SELECT ${projection} FROM mig.${quote(table)}
-                     EXCEPT SELECT ${projection} FROM main.${quote(table)}`;
+  for (const entry of boot) {
+    const { table, columns, key } = entry;
+    const rules = recoveryRules.filter((rule) => rule.table === table);
+    const changed = bootChanged(entry);
     if (key.length === 0) {
       const [{ n }] = await dbQuery<{ n: number }>(dbPath, `SELECT COUNT(*) AS n FROM (${changed})`, schemas);
       unkeyed[table] = n;
@@ -246,16 +304,26 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
     const thread = names.has('thread_id') ? 's."thread_id"' : table === 'threads' ? 's."id"' : 'NULL';
     const join = (a: string, b: string) => key.map((name) => `${a}.${quote(name)} IS ${b}.${quote(name)}`).join(' AND ');
     const removed = `NOT EXISTS (SELECT 1 FROM main.${quote(table)} x WHERE ${join('x', 's')})`;
-    const flags = columns.map((column, i) => `NOT (${same(column, 's', 'b')}) AS c${i}`);
-    const matches = rules.filter((rule) => rule.rows !== 'thread-write')
-      .map((rule, i) => `(${ruleMatch(rule, columns, removed, thread)}) AS r${i}`);
+    // What the boot changed: the row as the migrations left it (m) against the booted row (b).
+    const flags = columns.map((column, i) => `NOT (${same(column, 'm', 'b')}) AS c${i}`);
+    const scoped = rules.filter((rule) => rule.rows !== 'thread-write');
+    // A row one rule settles in a thread the boot also wrote in carries that
+    // write's stamps as well: the rule may explain its columns plus them.
+    const stamps = rules.filter((rule) => rule.rows === 'thread-write' && !rule.columns?.includes('*'))
+      .flatMap((rule) => rule.columns ?? []);
+    const matches = scoped.flatMap((rule, i) => [
+      `(${ruleMatch(rule, columns, removed)}) AS r${i}`,
+      `(${stamps.length > 0 && rule.columns && !rule.columns.includes('*')
+        ? ruleMatch({ ...rule, columns: [...rule.columns, ...stamps] }, columns, removed) : '0'}) AS w${i}`,
+    ]);
     const top = table === 'items' ? `s."parent_id" = ''` : '0';
+    const bytes = table === 'payloads' || table === 'payload_chunks' ? 'length(s."data")' : '0';
     const sql = `SELECT ${key.map((name, i) => `s.${quote(name)} AS k${i}`).join(', ')}, ${thread} AS thread,
-        ${removed} AS removed, ${top} AS top, ${[...flags, ...matches].join(', ')}
+        ${removed} AS removed, ${top} AS top, ${bytes} AS bytes, ${[...flags, ...matches].join(', ')}
       FROM (${changed}) d
       JOIN snap.${quote(table)} s ON ${join('s', 'd')}
+      JOIN mig.${quote(table)} m ON ${join('m', 's')}
       LEFT JOIN main.${quote(table)} b ON ${join('b', 's')}`;
-    const scoped = rules.filter((rule) => rule.rows !== 'thread-write');
     for (const row of await dbQuery<Record<string, unknown>>(dbPath, sql, schemas)) {
       const isRemoved = row.removed === 1;
       rows.push({
@@ -264,8 +332,10 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
         thread: (row.thread as string | null) ?? null,
         removed: isRemoved,
         top: row.top === 1,
+        bytes: Number(row.bytes ?? 0),
         columns: isRemoved ? [] : columns.filter((_, i) => row[`c${i}`] === 1).map((column) => column.name),
         rule: scoped.find((_, i) => row[`r${i}`] === 1),
+        stamped: scoped.find((_, i) => row[`w${i}`] === 1),
       });
     }
   }
@@ -293,24 +363,22 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
   const stampWrites = new Set([...explainedWrites, ...cardWrites]);
   const followers: BootRow[] = [];
   for (const row of pending.filter((r) => r.table !== 'subagent_aggregates')) {
-    row.rule = threadWrite(row, stampWrites);
+    row.rule = threadWrite(row, stampWrites) ?? (stampWrites.has(row.thread!) ? row.stamped : undefined);
     if (!row.rule && threadWrite(row, unexplainedWrites)) followers.push(row);
   }
 
-  // By rule, then table: a '*' rule's count is one entry per table.
-  const counts = new Map<RecoveryRule, Map<string, number>>();
+  const counts = new Map<RecoveryRule, number>();
   const removed = out.recoveryRemoved;
   for (const row of rows) {
     if (!row.rule) continue;
-    const byTable = counts.get(row.rule) ?? new Map<string, number>();
-    counts.set(row.rule, byTable.set(row.table, (byTable.get(row.table) ?? 0) + 1));
+    counts.set(row.rule, (counts.get(row.rule) ?? 0) + 1);
     if (!row.removed) continue;
     removed.tables[row.table] = (removed.tables[row.table] ?? 0) + 1;
     if (row.top) removed.threadItems[row.thread!] = (removed.threadItems[row.thread!] ?? 0) + 1;
-    if (row.table === 'threads') removed.threads.push(row.thread!);
+    removed.bytes += row.bytes;
   }
-  out.recovery = recoveryRules.filter((rule) => counts.has(rule)).flatMap((rule) => [...counts.get(rule)!.entries()]
-    .map(([table, n]) => ({ rule: rule.name, writer: rule.writer, table, rows: n })));
+  out.recovery = recoveryRules.filter((rule) => counts.has(rule))
+    .map((rule) => ({ rule: rule.name, writer: rule.writer, table: rule.table, rows: counts.get(rule)! }));
   out.stampsOfUnexplained = Object.fromEntries([...new Set(followers.map((row) => row.table))]
     .map((table) => [table, followers.filter((row) => row.table === table).length]));
 
@@ -335,18 +403,18 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
 
 /**
  * ruleMatch is the SQL for "rule explains this change": the snapshot row
- * is one it selects, and the booted row is gone when it removes rows or
- * differs only in its columns and meta keys, and meets its `to`.
+ * `s` is one it selects, and the booted row `b` is gone when it removes
+ * rows, or differs from the migrated row `m` only in its columns and meta
+ * keys, and meets its `to`.
  */
-function ruleMatch(rule: RecoveryRule, columns: Column[], removed: string, thread: string): string {
-  if (rule.table === '*') return `${thread} IN (${rule.rows}) AND ${removed}`;
+function ruleMatch(rule: RecoveryRule, columns: Column[], removed: string): string {
   const any = rule.columns?.includes('*') ?? false;
   const allowed = new Set([...(rule.columns ?? []), ...(rule.metaKeys ? ['meta'] : [])]);
-  const kept = any ? [] : columns.filter((column) => !allowed.has(column.name)).map((column) => same(column, 's', 'b'));
+  const kept = any ? [] : columns.filter((column) => !allowed.has(column.name)).map((column) => same(column, 'm', 'b'));
   if (rule.metaKeys) {
     const keys = rule.metaKeys.map((key) => `'$.${key}'`).join(', ');
-    kept.push(`(CASE WHEN json_valid(s.meta) AND json_valid(b.meta) THEN json_remove(s.meta, ${keys}) IS json_remove(b.meta, ${keys})
-      ELSE s.meta IS b.meta END)`);
+    kept.push(`(CASE WHEN json_valid(m.meta) AND json_valid(b.meta) THEN json_remove(m.meta, ${keys}) IS json_remove(b.meta, ${keys})
+      ELSE m.meta IS b.meta END)`);
   }
   if (rule.to) kept.push(`(${rule.to})`);
   const change = kept.length > 0 ? kept.join(' AND ') : '1';

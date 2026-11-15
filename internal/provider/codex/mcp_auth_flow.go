@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 )
 
@@ -15,7 +16,9 @@ import (
 // MCP OAuth round trip. No thread/start request is sent, so the flow cannot
 // create provider thread state or spend model tokens.
 type MCPAuthConfig struct {
-	Binary         string
+	Binary string
+	// Reaper ends the process if the backend dies first. Required.
+	Reaper         procutil.Reaper
 	WorkDir        string
 	Env            map[string]string
 	RequestTimeout time.Duration
@@ -44,7 +47,7 @@ func StartMCPAuth(ctx context.Context, cfg MCPAuthConfig, serverName string) (*M
 	if cfg.RequestTimeout <= 0 {
 		return nil, nil, fmt.Errorf("codex: mcp auth request timeout must be positive")
 	}
-	client, err := startOneshotClient(ctx, oneshotSpec{
+	client, err := startOneshotClient(ctx, provider.Watched(cfg.Reaper), oneshotSpec{
 		Binary:            cfg.Binary,
 		WorkDir:           cfg.WorkDir,
 		Env:               cfg.Env,

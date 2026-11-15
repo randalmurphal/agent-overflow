@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -69,7 +70,7 @@ func newInterruptBurstSession(t *testing.T, frames int, onEvent func(provider.Pr
 	path := t.TempDir() + "/fake-claude"
 	mockexec.Write(t, path, interruptBurstScript(frames))
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: path})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: path})
 	if err != nil {
 		cancel()
 		t.Fatalf("spawn: %v", err)

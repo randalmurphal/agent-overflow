@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
@@ -22,7 +23,7 @@ func TestBuildLaunchOptionsPassesTheAppendSystemPromptFileAndSnapshotFlag(t *tes
 	}
 	t.Cleanup(func() { claude.RemoveSystemPromptFile(path) })
 
-	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", AppendSystemPrompt: guide, InstalledCLIVersion: "2.1.284 (Claude Code)"}
+	cfg := Config{Reaper: procutiltest.Reaper(), Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", AppendSystemPrompt: guide, InstalledCLIVersion: "2.1.284 (Claude Code)"}
 	opts, err := buildLaunchOptions(withTestRetention(cfg), "", path, "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
@@ -40,7 +41,7 @@ func TestBuildLaunchOptionsPassesTheAppendSystemPromptFileAndSnapshotFlag(t *tes
 		t.Errorf("launch args lack --system-prompt-snapshot off on 2.1.284: %v", opts.Args)
 	}
 
-	cfg = Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", InstalledCLIVersion: "2.1.266"}
+	cfg = Config{Reaper: procutiltest.Reaper(), Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", InstalledCLIVersion: "2.1.266"}
 	opts, err = buildLaunchOptions(withTestRetention(cfg), "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
@@ -95,6 +96,7 @@ func TestSessionCloseRemovesBothPromptFiles(t *testing.T) {
 func TestNewSessionRemovesBothPromptFilesWhenTheLaunchFails(t *testing.T) {
 	dir := t.TempDir()
 	_, err := NewSession(context.Background(), testThread, Config{
+		Reaper:             procutiltest.Reaper(),
 		WorkDir:            t.TempDir(),
 		SystemPrompt:       "REPLACEMENT",
 		AppendSystemPrompt: "APPENDED GUIDE",

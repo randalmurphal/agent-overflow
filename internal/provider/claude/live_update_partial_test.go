@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -66,6 +67,7 @@ done
 // re-send the model instead of the axis that failed.
 func TestApplyLiveUpdateReportsThePartiallyAppliedAxes(t *testing.T) {
 	s, capturePath := liveUpdatePartialSession(t, Config{
+		Reaper:             procutiltest.Reaper(),
 		BasePermissionMode: "default",
 		Model:              "claude-fable-5",
 	}, "set_max_thinking_tokens")
@@ -100,6 +102,7 @@ func TestApplyLiveUpdateReportsThePartiallyAppliedAxes(t *testing.T) {
 // would otherwise commit a model the CLI rejected.
 func TestApplyLiveUpdateReportsNothingWhenTheFirstAxisFails(t *testing.T) {
 	s, _ := liveUpdatePartialSession(t, Config{
+		Reaper:             procutiltest.Reaper(),
 		BasePermissionMode: "default",
 		Model:              "claude-fable-5",
 	}, "set_model")
@@ -121,7 +124,7 @@ func TestApplyLiveUpdateReportsNothingWhenTheFirstAxisFails(t *testing.T) {
 // A validation refusal happens before any wire write, so it must also
 // report nothing applied.
 func TestApplyLiveUpdateReportsNothingOnAValidationRefusal(t *testing.T) {
-	s, _ := liveUpdateTestSession(t, Config{BasePermissionMode: "default", Model: "claude-fable-5"})
+	s, _ := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default", Model: "claude-fable-5"})
 	// No version noted: the thinking handler's floor is unproven.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

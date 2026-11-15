@@ -113,9 +113,10 @@ made it: never commit it, attach it to a run, or publish it.
 2. The candidate's gated headless boot, started as the Windows launcher
    starts it (`--refuse-pending-migrations`), answers `/bootstrap.json` with
    the `migrations-pending` refusal naming the database's version, and runs
-   no provider probe. When the corpus is already at the build's schema it
-   answers ready instead and the migration steps are skipped.
-3. `__update-snapshot` reports the refused version; `__update-trial-run`
+   no provider probe. A root already at the build's schema (read by
+   migrating an empty store) skips this refusal; steps 3 and 4 still run,
+   so its boot's recovery is classified the same way.
+3. `__update-snapshot` reports the root's version; `__update-trial-run`
    reaches `prepared` through the real App trial boot; the next gated boot
    answers ready. Each command's progress reports are held to the rule the
    Windows launcher applies to them: the gap between reports stays under
@@ -132,10 +133,13 @@ made it: never commit it, attach it to a run, or publish it.
    trial both migrates and boots, so when any row changed the snapshot is
    copied and migrated alone (`TestMigrateHarnessDatabase` in
    `bin/ao-store-test`, the store's open and nothing else): a row that copy
-   changed is the migrations' doing, a row it kept and the trial changed
-   is the boot's. A migration that intentionally rewrites, moves or drops
-   old rows declares it in `migrationExceptions` with the migration
-   version and the reason; the entry applies only while its version lies
+   changed is the migrations' doing, and the boot's changes are the booted
+   rows that differ from that migrated copy. A migration that intentionally
+   rewrites, moves or drops old rows declares it in `migrationExceptions`
+   with the migration version and the reason; it narrows only the
+   migrations' comparison, the rows it explains are counted in
+   `migrationExcepted`, and the boot's comparison still covers its
+   columns. The entry applies only while its version lies
    in the span a run migrates, and an entry at or below a lineage corpus's
    version fails the run as stale, so the list empties itself as releases
    pass. A real data root (`--corpus`) can sit at any version and skips
@@ -148,7 +152,8 @@ made it: never commit it, attach it to a run, or publish it.
    through `HarnessStoreStatus`, and `ListProjects`,
    `HarnessListThreadRows`, `ListArchivedThreads` and `ListThreadGroups`
    return the counts the previous release wrote, less the threads the
-   trial's boot removed under a recovery rule.
+   trial's boot removed under a recovery rule and the threads a sweep rule
+   selects (below).
 6. A real browser page shows every project, shows thread rows, and opens the
    largest thread through the sidebar search until its first timeline row
    paints. No uncaught page error, and the frontend error log stays empty;
@@ -156,16 +161,16 @@ made it: never commit it, attach it to a run, or publish it.
    database's project paths do not exist on the checking machine.
 7. The deferred migration phases, which start once a client has read the
    catalog, finish without a recorded failure.
-8. After the candidate stops, the census is compared with the one before
-   the migration: projects, threads, archived, pinned and groups are
-   exactly what the previous release wrote; turns, items, payloads and
-   payload bytes never shrink, in total or in any thread; every table
-   still exists and none shrank, with the same exceptions as step 4. The
-   rows the trial's boot removed under a recovery rule (the fingerprint's
-   `recoveryRemoved`) are the only allowed shrink: by table, by thread, and
-   the entities of the threads removed whole. A repair may add rows (a carrier, a fork's own copy of shown history);
-   the report carries every count's delta, tables included, so an
-   addition is visible.
+8. The census is taken after the trial and again after the candidate
+   stops. Across each span projects, threads, archived, pinned and groups
+   are exact; turns, items, payloads and payload bytes never shrink, in
+   total or in any thread; every table still exists and none shrank. Across
+   the migrations (`migrationDeltas`) the only allowed shrink is the rows
+   the recovery rules removed (`recoveryRemoved`), plus the migration
+   exceptions of step 4. Across the boots after the trial (`censusDeltas`)
+   it is the rows the sweep rules removed (`sweeps`). A repair may add
+   rows (a carrier, a fork's own copy of shown history); the report carries
+   every count's delta, tables included, so an addition is visible.
 9. `__update-discard` commits the update, as the launcher does.
 10. The candidate boots again and runs the top-up. A third census must show
     exactly the projects, archived project, pins and group the top-up adds,
@@ -199,15 +204,25 @@ Each `recoveryRules` entry names one boot writer (the Go function), the
 table it writes, the snapshot rows it selects (an SQL condition over the
 snapshot row `s`, mirroring the writer's own selection), the columns or
 `meta` keys it may change, a condition the booted row `b` must meet, and
-whether it deletes rows. A writer that deletes whole threads (terminal
-threads, interrupted forks) has a `table: '*'` entry whose `rows` selects
-the thread ids; it explains every removed row of theirs in a table with a
-`thread_id`. Stamps follow writes, never stand alone: a row's
+whether it deletes rows. Stamps follow writes, never stand alone: a row's
 `rev`, the thread's `history_rev` and `history_epoch`, and a subagent card
 may move only in a thread whose `items` rows the boot changed, removed or
-added (`rows: 'thread-write'`). A boot change no entry explains fails the
-run, and so does any removed or changed row of settled history: nothing
-selects a settled row.
+added (`rows: 'thread-write'`), also on a row another rule settles. A boot
+change no entry explains fails the run, and so does any removed or changed
+row of settled history: nothing selects a settled row.
+
+The trial defers some deletions to the first ordinary boot after it: the
+terminal-thread and interrupted-fork cleanup run at its commit
+(`startBeforeClients`), and the side-chat sweep, pending deletes and holder
+collection run with its unattended work. Each `sweepRules` entry names
+that writer and selects, from the store the trial left, the threads it
+removes; those threads may lose their rows and leave the reads. Each
+`rowSweepRules` entry does the same for rows outside any thread: the Pull
+requests page's stored lists (`pr_list_projects`) are pruned to the
+repositories current projects name, which on a clone is none, since
+`ao-harness clone` relocates every project to a repository with no forge
+remote. A shrink across those boots that no sweep rule allows fails as the
+boot's, never as a migration's.
 
 `ao-harness clone` carries the database (a consistent `VACUUM INTO` of the
 running app's store, live rows included) and attachments, with session
@@ -222,21 +237,26 @@ settle are all in the database, so the clone's boot settles the same rows.
 The report's `fingerprint` carries `changedRows` (every compared table's
 old rows the trial left missing or changed), `migrationChangedRows` (the
 same against the snapshot migrated alone; present once any row changed),
+`migrationExcepted` (of those, the rows a migration exception explains),
 `recovery` (each rule that explained a change, with its writer, table and
 row count), `bootUnexplained` (the boot's changes no rule explains, by key
 and changed columns, at most 50 per table), `stampsOfUnexplained` (the
 stamps those writes moved in their threads), `recoveryRemoved` (the rows the
-rules removed, which the census allows) and `failures`. A rule's count
+rules removed, which the census allows) and `failures`; `sweeps` counts,
+per sweep rule, the threads it selected, those gone and the rows they
+lost. A rule's count
 says how much the dead process left live: a clone taken with two agents
 running shows their launches, their running rows, their cards and the
 stamps those writes moved. `upgrade-corpus-recovery.spec.ts` in `make e2e`
 kills a harness with an open turn, a running background agent, a finished
-one, a queued message, a terminal thread and a holder, runs the launcher's
-snapshot and trial on its root, and holds the report and the census to the
-rules it must show; it also proves that an altered settled row, a deleted
-settled user row and a stamp moved in an unwritten thread fail as the
-boot's doing, and a change the migrated copy also carries fails as the
-migrations'.
+one and a queued message, stages one live row for every other recovery
+rule and the threads and rows each sweep rule removes, runs the launcher's
+snapshot and trial and a candidate boot on its root, and holds the report
+and the census to the rules it must show. It also proves that a change
+outside each rule, an altered settled row, a deleted settled user row and
+a stamp moved in an unwritten thread fail as the boot's doing, that a
+change the migrated copy also carries fails as the migrations', and that
+an exception explains the migrations' change but not the boot's.
 
 ## Where it runs
 
@@ -313,10 +333,14 @@ headless binary.
   columns, and the stamps those writes moved. A row of settled history is
   a boot defect. A row that was live when the root was cloned, settled by
   a boot writer no entry covers, needs an entry naming that writer.
-- A count differs after the migration: a migration dropped or duplicated
-  rows. The census compares per thread, so the failing diff names the
-  thread; a shrunken table names the `countIgnoredTables` or
+- A count differs `across the migrations`: a migration dropped or
+  duplicated rows. The census compares per thread, so the failing diff
+  names the thread; a shrunken table names the `countIgnoredTables` or
   `rowsMayShrink` entry that would cover it.
+- A count differs `across the boots after the trial`: an ordinary boot
+  removed rows no sweep rule selects. A writer that prunes what the last
+  process or the clone's relocation left behind needs a `sweepRules` or
+  `rowSweepRules` entry naming it; otherwise the boot lost user data.
 - The config names a stale exception: its migration is already in the
   corpus, so remove the entry. This surfaces on the first pull request
   after the release that runs `upgrade-lineage` (a store, check or version
