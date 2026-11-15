@@ -15,7 +15,11 @@ below before changing the request.
 
 It is off until Settings > Voice turns it on for that computer (host tier
 `dictationSubscriptionEnabled`). With no source on, no composer shows a
-mic and the computer refuses to open or transcribe a recording.
+mic and the computer refuses to open or transcribe a recording. A write to
+the switch ends every recording admitted before it, as it does live
+sessions: a transcription in flight stops, its sign-in retry included, and
+an open recording drops its audio; switching off and on again does not
+spare them.
 
 ## ChatGPT `backend-api/transcribe`
 

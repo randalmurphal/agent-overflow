@@ -70,12 +70,18 @@ func (a *App) dictationSubscriptionOn() bool {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) BeginDictation(ctx context.Context, mimeType string) (string, error) {
+	if a.settings == nil {
+		return "", ErrDictationOff
+	}
+	// Read before the switch, so a write that lands between the two
+	// revokes this recording rather than slipping past it.
+	admitted := a.settings.Revision()
 	if !a.dictationSubscriptionOn() {
 		return "", ErrDictationOff
 	}
-	id, err := a.dictationRecordings().Begin(mimeType)
+	id, err := a.dictationRecordings().Begin(mimeType, admitted)
 	if err != nil {
-		return "", err
+		return "", dictationSwitchedOff(err)
 	}
 	if state := transport.ConnStateFromContext(ctx); state != nil {
 		key := dictationCleanupKey(id)
@@ -104,7 +110,7 @@ func (a *App) MintDictationChunkTicket(ctx context.Context, recordingID string, 
 		return "", err
 	}
 	if err := a.dictationRecordings().Admits(recordingID, seq, size); err != nil {
-		return "", err
+		return "", dictationSwitchedOff(err)
 	}
 	server := a.transportServer.Load()
 	if server == nil {
@@ -127,10 +133,12 @@ func (a *App) FinishDictation(ctx context.Context, recordingID string, pieces in
 	}
 	job, err := a.dictationRecordings().Finish(ctx, recordingID, pieces)
 	if err != nil {
-		return "", err
+		return "", dictationSwitchedOff(err)
 	}
 	defer job.Done()
-	// Switched off while recording: the audio is dropped, never sent.
+	// Switched off while recording: the audio is dropped, never sent. A
+	// write to the switch from here on ends the transcription and its retry
+	// (app_settings_broadcast.go).
 	if !a.dictationSubscriptionOn() {
 		return "", ErrDictationOff
 	}
@@ -158,6 +166,8 @@ const (
 // other ways it ends.
 func dictationFailure(job context.Context, err error) error {
 	switch {
+	case errors.Is(context.Cause(job), dictation.ErrSwitchedOff):
+		return ErrDictationOff
 	case errors.Is(context.Cause(job), dictation.ErrTranscribeBudget):
 		return errorsx.Public(dictationTranscriptionTimeoutCode,
 			"ChatGPT took too long to transcribe the recording, so it was stopped. Try again, or dictate in shorter parts.", err)
@@ -166,6 +176,15 @@ func dictationFailure(job context.Context, err error) error {
 			"ChatGPT refused to transcribe the recording (HTTP 403). Signing in again will not change that; dictation through ChatGPT may be unavailable for now.", err)
 	}
 	return fmt.Errorf("transcribe: %w", err)
+}
+
+// dictationSwitchedOff answers a recording a write to the switch ended as
+// the switch being off.
+func dictationSwitchedOff(err error) error {
+	if errors.Is(err, dictation.ErrSwitchedOff) {
+		return ErrDictationOff
+	}
+	return err
 }
 
 // CancelDictation drops an open recording or stops its transcription.

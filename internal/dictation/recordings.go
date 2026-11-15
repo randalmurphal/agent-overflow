@@ -9,8 +9,16 @@
 //
 // Everything is bounded: bytes per recording, recordings open or
 // transcribing, bytes held across all of them (stored, being read and being
-// transcribed), one piece read at a time per recording, and the idle time
-// after which an abandoned recording is dropped by its own timer.
+// transcribed), one piece read at a time per recording, the time a
+// transcription may take, and the idle time after which an abandoned
+// recording is dropped by its own timer.
+//
+// Each recording carries the settings revision it was admitted at, and
+// RevokeBefore, called with the revision of a write to the subscription
+// switch, ends every recording admitted before it: a transcription's
+// context ends with cause ErrSwitchedOff, and an open recording drops its
+// audio and answers its client's next call with ErrSwitchedOff. A quick off
+// and on again cannot spare an older recording.
 package dictation
 
 import (
@@ -57,6 +65,10 @@ var ErrTranscribeBudget = errors.New("dictation: the transcription outlasted its
 // opened here.
 var ErrUnknownRecording = errors.New("dictation: recording is not open")
 
+// ErrSwitchedOff means the subscription switch was written after the
+// recording was admitted, which ended it (RevokeBefore).
+var ErrSwitchedOff = errors.New("dictation: the dictation switch changed after this recording began")
+
 // Recordings is the set of open recordings.
 type Recordings struct {
 	idle   time.Duration
@@ -67,12 +79,18 @@ type Recordings struct {
 	// held is the bytes reserved across every recording: stored data,
 	// pieces being read, and transcribing jobs' audio.
 	held int64
+	// revokedBefore refuses recordings admitted before it.
+	revokedBefore uint64
 }
 
 type recording struct {
 	mimeType string
-	data     []byte
-	next     int
+	// admitted is the settings revision the recording was admitted at.
+	admitted uint64
+	// revoked is set by the RevokeBefore that ended the recording.
+	revoked bool
+	data    []byte
+	next    int
 	// reading is the size of the piece being read, 0 when none is.
 	reading int64
 	// dropped is set when the recording leaves the set; a reader still
@@ -82,7 +100,7 @@ type recording struct {
 	// onRelease runs, outside the lock, when the recording leaves the set.
 	onRelease func()
 	// cancelJob is set while the recording is being transcribed.
-	cancelJob context.CancelFunc
+	cancelJob context.CancelCauseFunc
 }
 
 // New returns an empty set whose recordings expire after idle without a
@@ -101,8 +119,9 @@ func New(idle, budget time.Duration) *Recordings {
 // Budget is how long a transcription may run.
 func (r *Recordings) Budget() time.Duration { return r.budget }
 
-// Begin opens a recording of the given container type and returns its id.
-func (r *Recordings) Begin(mimeType string) (string, error) {
+// Begin opens a recording of the given container type, admitted at
+// settings revision admitted, and returns its id.
+func (r *Recordings) Begin(mimeType string, admitted uint64) (string, error) {
 	if !SupportedMimeType(mimeType) {
 		return "", fmt.Errorf("dictation: unsupported recording type %q", mimeType)
 	}
@@ -113,10 +132,13 @@ func (r *Recordings) Begin(mimeType string) (string, error) {
 	id := hex.EncodeToString(raw[:])
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if admitted < r.revokedBefore {
+		return "", ErrSwitchedOff
+	}
 	if len(r.open) >= MaxOpenRecordings {
 		return "", errors.New("dictation: too many recordings in progress on this computer")
 	}
-	rec := &recording{mimeType: mimeType}
+	rec := &recording{mimeType: mimeType, admitted: admitted}
 	rec.idle = time.AfterFunc(r.idle, func() { r.expire(id, rec) })
 	r.open[id] = rec
 	return id, nil
@@ -146,12 +168,27 @@ func SupportedMimeType(mimeType string) bool {
 // learns of a refusal before it uploads.
 func (r *Recordings) Admits(id string, seq int, size int64) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	rec, ok := r.open[id]
 	if !ok {
+		r.mu.Unlock()
 		return ErrUnknownRecording
 	}
+	if release, revoked := r.dropRevokedLocked(id, rec); revoked {
+		r.mu.Unlock()
+		runRelease(release)
+		return ErrSwitchedOff
+	}
+	defer r.mu.Unlock()
 	return r.admitsLocked(rec, seq, size)
+}
+
+// dropRevokedLocked drops an open recording RevokeBefore ended, now that
+// its client has called again to hear why.
+func (r *Recordings) dropRevokedLocked(id string, rec *recording) (func(), bool) {
+	if !rec.revoked || rec.cancelJob != nil || rec.reading > 0 {
+		return nil, rec.revoked
+	}
+	return r.dropLocked(id, rec), true
 }
 
 func (r *Recordings) admitsLocked(rec *recording, seq int, size int64) error {
@@ -184,6 +221,11 @@ func (r *Recordings) Append(id string, seq int, size int64, body io.Reader) erro
 		r.mu.Unlock()
 		return ErrUnknownRecording
 	}
+	if release, revoked := r.dropRevokedLocked(id, rec); revoked {
+		r.mu.Unlock()
+		runRelease(release)
+		return ErrSwitchedOff
+	}
 	if err := r.admitsLocked(rec, seq, size); err != nil {
 		r.mu.Unlock()
 		return err
@@ -195,12 +237,18 @@ func (r *Recordings) Append(id string, seq int, size int64, body io.Reader) erro
 	piece, err := readPiece(seq, size, body)
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	rec.reading = 0
 	r.held -= size
 	if rec.dropped {
+		r.mu.Unlock()
 		return ErrUnknownRecording
 	}
+	if release, revoked := r.dropRevokedLocked(id, rec); revoked {
+		r.mu.Unlock()
+		runRelease(release)
+		return ErrSwitchedOff
+	}
+	defer r.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -229,8 +277,9 @@ func readPiece(seq int, size int64, body io.Reader) ([]byte, error) {
 
 // Job is a finished recording being transcribed. It keeps the recording's
 // place and bytes under the caps until Done, and its Context ends when the
-// recording is cancelled, the caller's context ends, or the budget runs out
-// (cause ErrTranscribeBudget).
+// recording is cancelled, the caller's context ends, the budget runs out
+// (cause ErrTranscribeBudget) or RevokeBefore ends it (cause
+// ErrSwitchedOff).
 type Job struct {
 	MimeType string
 	Audio    []byte
@@ -255,6 +304,8 @@ func (r *Recordings) Finish(ctx context.Context, id string, pieces int) (*Job, e
 	}
 	var refusal error
 	switch {
+	case rec.revoked:
+		refusal = ErrSwitchedOff
 	case rec.cancelJob != nil:
 		refusal = errors.New("dictation: recording is already finished")
 	case rec.reading > 0:
@@ -277,8 +328,9 @@ func (r *Recordings) Finish(ctx context.Context, id string, pieces int) (*Job, e
 	}
 	defer r.mu.Unlock()
 	rec.idle.Stop()
-	jobCtx, cancel := context.WithTimeoutCause(ctx, r.budget, ErrTranscribeBudget)
-	rec.cancelJob = cancel
+	stoppable, stop := context.WithCancelCause(ctx)
+	jobCtx, endBudget := context.WithTimeoutCause(stoppable, r.budget, ErrTranscribeBudget)
+	rec.cancelJob = stop
 	var once sync.Once
 	return &Job{
 		MimeType: rec.mimeType,
@@ -286,7 +338,8 @@ func (r *Recordings) Finish(ctx context.Context, id string, pieces int) (*Job, e
 		Context:  jobCtx,
 		done: func() {
 			once.Do(func() {
-				cancel()
+				endBudget()
+				stop(nil)
 				r.mu.Lock()
 				var release func()
 				if r.open[id] == rec {
@@ -309,13 +362,38 @@ func (r *Recordings) Cancel(id string) {
 		return
 	}
 	if rec.cancelJob != nil {
-		rec.cancelJob()
+		rec.cancelJob(nil)
 		r.mu.Unlock()
 		return
 	}
 	release := r.dropLocked(id, rec)
 	r.mu.Unlock()
 	runRelease(release)
+}
+
+// RevokeBefore ends every recording admitted before revision, the settings
+// write that changed the subscription switch, and refuses any still to
+// open with an older admission. A transcription's context ends with cause
+// ErrSwitchedOff; an open recording drops its audio now and answers its
+// client's next call, or leaves with its idle timer or its connection.
+func (r *Recordings) RevokeBefore(revision uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if revision > r.revokedBefore {
+		r.revokedBefore = revision
+	}
+	for _, rec := range r.open {
+		if rec.admitted >= revision || rec.revoked {
+			continue
+		}
+		rec.revoked = true
+		if rec.cancelJob != nil {
+			rec.cancelJob(ErrSwitchedOff)
+			continue
+		}
+		r.held -= int64(len(rec.data))
+		rec.data = nil
+	}
 }
 
 // Open reports how many recordings are open or transcribing.

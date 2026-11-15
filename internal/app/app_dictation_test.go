@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -436,6 +437,128 @@ func TestAnAbandonedDictationStartsNoRefresh(t *testing.T) {
 	}
 }
 
+// Switching subscription dictation off ends a transcription in flight at
+// once, and a recording begun before an off and straight back on is still
+// refused: the write's revision decides, not the switch's value later.
+func TestSwitchingDictationOffEndsItsTranscriptions(t *testing.T) {
+	t.Parallel()
+	t.Run("transcribing", func(t *testing.T) {
+		t.Parallel()
+		app := newDictationTestApp(t, "fresh")
+		started := make(chan struct{})
+		app.rateLimitProbeClientOverride = &http.Client{Transport: blockingTranscription{started: started}}
+		ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+		id, err := app.BeginDictation(ctx, "audio/webm")
+		if err != nil {
+			t.Fatal(err)
+		}
+		uploadDictation(t, app, id, "frames")
+		finished := make(chan error, 1)
+		go func() {
+			_, err := app.FinishDictation(ctx, id, 1)
+			finished <- err
+		}()
+		<-started
+		enableDictation(t, app, false)
+		enableDictation(t, app, true)
+		if err := <-finished; !errors.Is(err, ErrDictationOff) {
+			t.Fatalf("FinishDictation err = %v, want ErrDictationOff", err)
+		}
+		if open := app.dictationRecordings().Open(); open != 0 {
+			t.Fatalf("open recordings after the switch = %d", open)
+		}
+	})
+	t.Run("recording", func(t *testing.T) {
+		t.Parallel()
+		app := newDictationTestApp(t, "fresh")
+		ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+		id, err := app.BeginDictation(ctx, "audio/webm")
+		if err != nil {
+			t.Fatal(err)
+		}
+		uploadDictation(t, app, id, "frames")
+		enableDictation(t, app, false)
+		enableDictation(t, app, true)
+		if held := app.dictationRecordings().Held(); held != 0 {
+			t.Fatalf("audio held after the switch = %d", held)
+		}
+		if _, err := app.FinishDictation(ctx, id, 1); !errors.Is(err, ErrDictationOff) {
+			t.Fatalf("FinishDictation err = %v, want ErrDictationOff", err)
+		}
+		if open := app.dictationRecordings().Open(); open != 0 {
+			t.Fatalf("open recordings after the refused finish = %d", open)
+		}
+	})
+}
+
+// countingRefusal answers every transcription as an expired sign-in and
+// counts them.
+type countingRefusal struct{ sent *atomic.Int32 }
+
+func (c countingRefusal) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.sent.Add(1)
+	return &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"detail":"token expired"}`)),
+		Request:    req,
+	}, nil
+}
+
+// Switching dictation off while the sign-in refresh runs ends the
+// transcription then, and its retry is never sent.
+func TestSwitchingDictationOffEndsTheRetry(t *testing.T) {
+	t.Parallel()
+	app := newDictationTestApp(t, "refused")
+	dir := t.TempDir()
+	refreshing, release, exited := filepath.Join(dir, "refreshing"), filepath.Join(dir, "release"), filepath.Join(dir, "exited")
+	binary := filepath.Join(dir, "mock-codex")
+	mockexec.Write(t, binary, "#!/bin/bash\ntouch '"+refreshing+"'\n"+
+		"while [ ! -e '"+release+"' ]; do sleep 0.01; done\ntouch '"+exited+"'\nexit 1\n")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	var sent atomic.Int32
+	app.rateLimitProbeClientOverride = &http.Client{Transport: countingRefusal{sent: &sent}}
+	ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	id, err := app.BeginDictation(ctx, "audio/webm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadDictation(t, app, id, "frames")
+	finished := make(chan error, 1)
+	go func() {
+		_, err := app.FinishDictation(ctx, id, 1)
+		finished <- err
+	}()
+	waitForFile(t, refreshing)
+	enableDictation(t, app, false)
+	if err := <-finished; !errors.Is(err, ErrDictationOff) {
+		t.Fatalf("FinishDictation err = %v, want ErrDictationOff", err)
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(t, exited)
+	if n := sent.Load(); n != 1 {
+		t.Fatalf("transcription requests = %d, want the first alone", n)
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never appeared", path)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // A transcription that outlasts the computer's budget ends with a readable
 // error and releases the recording, and DictationSources reports that
 // budget, which is what a client waits for (dictation.svelte.ts).
@@ -443,7 +566,8 @@ func TestDictationEndsAtItsBudget(t *testing.T) {
 	t.Parallel()
 	app := newDictationTestApp(t, "fresh")
 	const budget = 100 * time.Millisecond
-	app.dictationOnce.Do(func() { app.dictation = dictation.New(0, budget) })
+	app.dictationRecordings()
+	app.dictation = dictation.New(0, budget)
 	started := make(chan struct{})
 	app.rateLimitProbeClientOverride = &http.Client{Transport: blockingTranscription{started: started}}
 	ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
