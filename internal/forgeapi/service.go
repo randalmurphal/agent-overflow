@@ -2,11 +2,14 @@ package forgeapi
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -71,8 +74,11 @@ type Service struct {
 
 	transport *http.Transport
 	follow    *http.Client
-	gates     *gates
-	etags     *etagStore
+	// hostTransports are the copies hostClient made for hosts with their
+	// own TLS or proxy settings, closed with the Service; guarded by mu.
+	hostTransports []*http.Transport
+	gates          *gates
+	etags          *etagStore
 
 	// now, resolveBase and prepared are replaced only by tests, before
 	// first use; prepared observes every exchange the moment it is prepared.
@@ -146,6 +152,60 @@ func New(opts Options) (*Service, error) {
 	authorizing := authTransport{base: s.transport}
 	s.follow = &http.Client{Transport: authorizing, CheckRedirect: dropCrossHostAuth}
 	return s, nil
+}
+
+// hostClient is the HTTP client a host's requests go through: the shared
+// one, or for a host with its own TLS or proxy settings (HostNetwork) one
+// on a copy of the shared transport that follows them. The CA certificate
+// is trusted beside the system's; a file that cannot be read or holds no
+// certificate, a client certificate without its key (glab's PKCS#12
+// bundle) or a proxy that is not a URL is an error the requests report.
+func (s *Service) hostClient(host string, n HostNetwork) (*http.Client, error) {
+	if n == (HostNetwork{}) {
+		return s.follow, nil
+	}
+	refused := func(err error) error {
+		message := fmt.Sprintf("glab's settings for %s cannot be used: %v.", host, err)
+		return &SetupError{Forge: ForgeGitLab, Binary: "glab", Kind: SetupMissing, Host: host, Message: message, Err: err}
+	}
+	transport := s.transport.Clone()
+	config := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: n.SkipTLSVerify} //nolint:gosec // glab's per-host skip_tls_verify, the user's choice
+	if n.CACert != "" {
+		pem, err := os.ReadFile(n.CACert)
+		if err != nil {
+			return nil, refused(fmt.Errorf("ca_cert: %w", err))
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, refused(fmt.Errorf("ca_cert %s holds no PEM certificate", n.CACert))
+		}
+		config.RootCAs = pool
+	}
+	switch {
+	case n.ClientCert != "" && n.ClientKey != "":
+		pair, err := tls.LoadX509KeyPair(n.ClientCert, n.ClientKey)
+		if err != nil {
+			return nil, refused(fmt.Errorf("client_cert and client_key: %w", err))
+		}
+		config.Certificates = []tls.Certificate{pair}
+	case n.ClientCert != "" || n.ClientKey != "":
+		return nil, refused(errors.New("client_cert needs client_key in PEM; a PKCS#12 bundle is not supported"))
+	}
+	transport.TLSClientConfig = config
+	if n.Proxy != "" {
+		proxy, err := url.Parse(n.Proxy)
+		if err != nil || proxy.Host == "" {
+			return nil, refused(fmt.Errorf("proxy %q is not a URL", n.Proxy))
+		}
+		transport.Proxy = http.ProxyURL(proxy)
+	}
+	s.mu.Lock()
+	s.hostTransports = append(s.hostTransports, transport)
+	s.mu.Unlock()
+	return &http.Client{Transport: authTransport{base: transport}, CheckRedirect: dropCrossHostAuth}, nil
 }
 
 // Isolated reports whether the Service talks to a fake forge
@@ -249,6 +309,13 @@ func (s *Service) Close() {
 	s.gates.clear()
 	s.etags.clear()
 	s.transport.CloseIdleConnections()
+	s.mu.Lock()
+	hostTransports := s.hostTransports
+	s.hostTransports = nil
+	s.mu.Unlock()
+	for _, transport := range hostTransports {
+		transport.CloseIdleConnections()
+	}
 }
 
 // startRead runs read on the Service's lifetime, or reports false after

@@ -59,12 +59,16 @@ func exit(code int, stderr string) fakeAnswer {
 }
 
 func gitlabConfig(oauth2, apiHost, apiProtocol, token string) map[string]fakeAnswer {
-	return map[string]fakeAnswer{
+	answers := map[string]fakeAnswer{
 		"glab config get is_oauth2 --host gl.example":    ok(oauth2 + "\n"),
 		"glab config get api_host --host gl.example":     ok(apiHost + "\n"),
 		"glab config get api_protocol --host gl.example": ok(apiProtocol + "\n"),
 		"glab config get token --host gl.example":        ok(token + "\n"),
 	}
+	for _, key := range []string{"ca_cert", "client_cert", "client_key", "proxy", "skip_tls_verify"} {
+		answers["glab config get "+key+" --host gl.example"] = ok("\n")
+	}
+	return answers
 }
 
 func TestCLITokenSourceReadsEachLoginKind(t *testing.T) {
@@ -94,6 +98,20 @@ func TestCLITokenSourceReadsEachLoginKind(t *testing.T) {
 		}
 		if slices.Contains(runner.commands(), "glab api --hostname gl.example version") {
 			t.Fatal("a personal token was refreshed through glab api")
+		}
+	})
+	t.Run("glab per-host TLS and proxy settings", func(t *testing.T) {
+		answers := gitlabConfig("", "", "", testSecret)
+		answers["glab config get ca_cert --host gl.example"] = ok("/etc/gl/ca.pem\n")
+		answers["glab config get client_cert --host gl.example"] = ok("/etc/gl/me.crt\n")
+		answers["glab config get client_key --host gl.example"] = ok("/etc/gl/me.key\n")
+		answers["glab config get proxy --host gl.example"] = ok("http://proxy.example:3128\n")
+		answers["glab config get skip_tls_verify --host gl.example"] = ok("true\n")
+		runner := &fakeRunner{answers: answers}
+		_, info, err := CLITokenSource{Run: runner.run}.Token(t.Context(), ForgeGitLab, "gl.example")
+		want := HostNetwork{CACert: "/etc/gl/ca.pem", ClientCert: "/etc/gl/me.crt", ClientKey: "/etc/gl/me.key", SkipTLSVerify: true, Proxy: "http://proxy.example:3128"}
+		if err != nil || info.Network != want {
+			t.Fatalf("Network = %+v, %v, want %+v", info.Network, err, want)
 		}
 	})
 	t.Run("glab OAuth2 refreshes before the read and sends Bearer", func(t *testing.T) {
@@ -206,6 +224,9 @@ func TestHandoffOutputNeverReachesAnError(t *testing.T) {
 		"glab config get api_host --host gitlab.com":     ok(""),
 		"glab config get api_protocol --host gitlab.com": ok(""),
 		"glab config get token --host gitlab.com":        exit(3, "keyring daemon crashed"),
+	}
+	for _, key := range []string{"ca_cert", "client_cert", "client_key", "proxy", "skip_tls_verify"} {
+		answers["glab config get "+key+" --host gitlab.com"] = ok("")
 	}
 	runner := &fakeRunner{answers: answers}
 	_, _, err := CLITokenSource{Run: runner.run}.Token(t.Context(), ForgeGitLab, "gitlab.com")

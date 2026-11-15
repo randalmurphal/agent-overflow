@@ -17,7 +17,7 @@ This is the complete list. Everything else is an HTTP request.
 |---|---|
 | `gh pr create`, `glab mr create` | Pushes the branch and may prompt; runs interactive under the user's git credentials. |
 | `gh auth token --hostname H` | Token handoff for a GitHub host. |
-| `glab config get token --host H`, `glab config get api_host --host H`, `glab config get api_protocol --host H`, `glab config get is_oauth2 --host H` | Token and API base handoff for a GitLab host. |
+| `glab config get token --host H`, `glab config get api_host --host H`, `glab config get api_protocol --host H`, `glab config get is_oauth2 --host H`, `glab config get K --host H` for `ca_cert`, `client_cert`, `client_key`, `proxy`, `skip_tls_verify` | Token, API base and TLS and proxy handoff for a GitLab host. |
 | `glab auth status --hostname H -t` | Token handoff when glab keeps the token in the OS keyring (`config get token` is empty). |
 | `glab api --hostname H version` | Makes glab refresh an expired OAuth2 login before the token is read again. |
 | `ssh -G host` | Host alias resolution for remote identity; not a forge call. |
@@ -112,6 +112,15 @@ Three kinds of forge method, two sources of the host:
 | GitLab `H` | `api_protocol://api_host/api/v4/` from glab's per-host config, default `https://H/api/v4/` | `api_protocol://api_host/api/graphql`, default `https://H/api/graphql`; one quota pool with REST |
 
 Base URLs are resolved once per host and kept with the host's client.
+
+A GitLab host's glab `ca_cert`, `client_cert` and `client_key` (PEM),
+`skip_tls_verify` and `proxy` are read with its token and resolved with
+its bases (`Service.hostClient`): its requests then go through a copy of
+the shared transport that trusts the CA beside the system's, presents the
+client certificate, skips verification or uses the proxy. A setting that
+cannot be used (a missing or empty CA file, a certificate without its key,
+which is glab's PKCS#12 `client_cert_password` form, a proxy that is not a
+URL) is the host's setup error. `custom_headers` is not read.
 
 ## Credentials
 

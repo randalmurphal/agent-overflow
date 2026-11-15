@@ -36,6 +36,23 @@ type SourceInfo struct {
 	// config, whose expiry the client asks personal_access_tokens/self
 	// for once (expiry.go). An OAuth2 login is refreshed by glab instead.
 	ExpiryLookup bool
+	// Network is glab's per-host TLS and proxy settings.
+	Network HostNetwork
+}
+
+// HostNetwork is how glab reaches a host: ca_cert ("Path to a CA
+// certificate (PEM) used to verify the GitLab server's TLS
+// certificate"), client_cert and client_key (mutual TLS, PEM),
+// skip_tls_verify ("Skip TLS certificate verification when talking to
+// this host (true/false)") and proxy ("Custom proxy for this host.
+// Overrides environment proxy settings when set."), each empty when
+// unset. The client's transport follows them (Service.hostClient).
+type HostNetwork struct {
+	CACert        string
+	ClientCert    string
+	ClientKey     string
+	SkipTLSVerify bool
+	Proxy         string
 }
 
 // TokenSource reads a host's token. forge is ForgeGitHub or ForgeGitLab;
@@ -136,6 +153,20 @@ func (s CLITokenSource) gitlabToken(ctx context.Context, name string) ([]byte, S
 	if info.APIProtocol, err = config("api_protocol"); err != nil {
 		return nil, SourceInfo{}, err
 	}
+	network := &info.Network
+	for _, key := range []struct {
+		name string
+		into *string
+	}{{"ca_cert", &network.CACert}, {"client_cert", &network.ClientCert}, {"client_key", &network.ClientKey}, {"proxy", &network.Proxy}} {
+		if *key.into, err = config(key.name); err != nil {
+			return nil, SourceInfo{}, err
+		}
+	}
+	skip, err := config("skip_tls_verify")
+	if err != nil {
+		return nil, SourceInfo{}, err
+	}
+	network.SkipTLSVerify = strings.EqualFold(skip, "true")
 	out, err := s.run(ctx, ForgeGitLab, true, "glab", "config", "get", "token", "--host", name)
 	if err != nil {
 		return nil, SourceInfo{}, err

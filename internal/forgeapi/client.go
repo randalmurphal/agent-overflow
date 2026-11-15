@@ -95,12 +95,26 @@ type Client struct {
 	failUntil time.Time
 	rest      *url.URL
 	graphQL   *url.URL
+	// http is the host's HTTP client (Service.hostClient), resolved with
+	// the bases; nil until then.
+	http *http.Client
 	// expiryLookup is SourceInfo.ExpiryLookup of the current token.
 	expiryLookup bool
 
 	// expiry is what the client learned of the current token's expiry
 	// (expiry.go).
 	expiry expiryState
+}
+
+// httpClient is the host's HTTP client, the Service's shared one until
+// the bases are resolved.
+func (c *Client) httpClient() *http.Client {
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
+	if c.http == nil {
+		return c.svc.follow
+	}
+	return c.http
 }
 
 // Do sends r and returns the answer read whole. A GET with no header of
@@ -347,7 +361,7 @@ func (c *Client) attempt(ctx context.Context, r Request, graphQL bool, limit int
 		return nil, false, notSent(err)
 	}
 	defer release()
-	resp, err := c.send(ctx, c.svc.follow, ex.req)
+	resp, err := c.send(ctx, c.httpClient(), ex.req)
 	if err != nil {
 		return nil, false, err
 	}

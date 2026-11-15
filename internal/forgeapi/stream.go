@@ -56,7 +56,7 @@ func (c *Client) streamAttempt(ctx context.Context, r Request, dst io.Writer, li
 	}
 	defer release()
 
-	resp, err := c.send(ctx, c.svc.follow, ex.req)
+	resp, err := c.send(ctx, c.httpClient(), ex.req)
 	if err != nil {
 		return nil, false, err
 	}
