@@ -291,15 +291,11 @@ func glabDeleteNoteAward(e *Engine, c *call, m []string) response {
 // glabNoteReactions answers MRNoteReactions: every note of the merge
 // request (its threads', its conversation comments and replies, its
 // system notes) in pages of 100 from after, each with its awards in one
-// page of 100. A server that lacks Note.awardEmoji (ServerLacks
-// "awardEmoji") refuses the document as such a server does.
+// page of 100.
 func glabNoteReactions(e *Engine, c *call, v graphQLVars) response {
-	r, p, fail, ok := e.glabGraphQLMR(c, v, "fullPath")
+	_, p, fail, ok := e.glabGraphQLMR(c, v, "fullPath")
 	if !ok {
 		return fail
-	}
-	if r.lacks(lacksAwardEmoji) {
-		return glabGraphQLInvalid("Field 'awardEmoji' doesn't exist on type 'Note'")
 	}
 	offset, err := v.cursor("after")
 	if err != nil {

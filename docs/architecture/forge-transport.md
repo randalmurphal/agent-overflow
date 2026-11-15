@@ -945,16 +945,14 @@ after the viewer's own reaction write, or when the last answer is 2
 minutes old; concurrent reads of one merge request share it. The
 viewer's reaction write and `Core.ResetForgeCaches` each start a new
 generation of the memory: a read in flight across one is neither joined
-nor kept, nor is its failure or its finding that the server lacks the
-field. Its failure
+nor kept, nor is its failure. Its failure
 never fails the threads: the comments carry no reactions,
 `PRRead.ReactionsUnavailable` (on the subscription result and every
 frame as `reactionsUnavailable`) says "Reactions are not shown: GitLab's
 reactions could not be read.", the failure is logged with its retry
-time, and it is retried after 20 seconds, doubling to 15 minutes. A
-server whose schema lacks `Note.awardEmoji` says "Reactions are not
-shown: this GitLab server does not report them." and is not asked again
-for 10 minutes. Past the read's bounds the sentence is "Reactions are
+time, and it is retried after 20 seconds, doubling to 15 minutes.
+`Note.awardEmoji` exists in every supported release (18.0 and later).
+Past the read's bounds the sentence is "Reactions are
 shown on the first 1000 comments only." or "Reactions are not shown on
 comments with more than 100."
 

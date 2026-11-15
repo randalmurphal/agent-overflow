@@ -255,21 +255,17 @@ func TestGitLabReactionsReadFailureKeepsTheThreads(t *testing.T) {
 		t.Fatalf("after the retry was due = %+v (%d reads)", r, countOps(calls, "MRNoteReactions"))
 	}
 
+	// Every supported GitLab has Note.awardEmoji, so a document refused for
+	// it is a failure like any other, retried after the backoff.
 	lacking, lackingCalls, _ := gitlabReactionsCore(t, func() forgeAPIAnswer {
 		return forgeAPIAnswer{Body: `{"errors":[{"message":"Field 'awardEmoji' doesn't exist on type 'Note'"}]}`}
 	})
-	for range 2 {
-		out, err := lacking.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
-		if err != nil || out.ReactionsUnavailable != "Reactions are not shown: this GitLab server does not report them." {
-			t.Fatalf("server without the field = %q, %v", out.ReactionsUnavailable, err)
-		}
+	out, err := lacking.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
+	if err != nil || out.ReactionsUnavailable != "Reactions are not shown: GitLab's reactions could not be read." {
+		t.Fatalf("a refused reactions document = %q, %v", out.ReactionsUnavailable, err)
 	}
 	if n := countOps(lackingCalls, "MRNoteReactions"); n != 1 {
-		t.Fatalf("a server without the field was asked %d times", n)
-	}
-	lacking.ResetForgeCaches()
-	if _, err := lacking.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil); err != nil || countOps(lackingCalls, "MRNoteReactions") != 2 {
-		t.Fatalf("ResetForgeCaches kept the host's answer")
+		t.Fatalf("reactions reads = %d", n)
 	}
 }
 
@@ -469,13 +465,12 @@ func TestGitLabReactionsStaleReadIsNotStored(t *testing.T) {
 	}
 }
 
-// A failure and a server without the field learned by a read that began
-// before a reset are not kept past it.
+// A failure learned by a read that began before a reset is not kept past
+// it.
 func TestGitLabReactionsFailureAcrossAReset(t *testing.T) {
 	t.Parallel()
 	for name, answer := range map[string]forgeAPIAnswer{
-		"failure":       {Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`},
-		"lacking field": {Body: `{"errors":[{"message":"Field 'awardEmoji' doesn't exist on type 'Note'"}]}`},
+		"failure": {Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`},
 	} {
 		var calls atomic.Int32
 		reactions, started, release := gitlabBlockedReactions(func() forgeAPIAnswer {

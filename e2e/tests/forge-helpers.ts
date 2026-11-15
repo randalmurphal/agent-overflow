@@ -303,7 +303,7 @@ export interface ForgeRepo {
   labels?: { name: string; color?: string; id?: string }[];
   /** GitLab: what an older server lacks. */
   serverVersion?: string;
-  serverLacks?: ('introspection' | 'awardEmoji')[];
+  serverLacks?: 'introspection'[];
 }
 
 interface ForgeInvocationCommon {

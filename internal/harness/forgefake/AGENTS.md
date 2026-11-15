@@ -230,7 +230,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | GraphQL `ReactionTarget(id)`, `AddReaction`, `RemoveReaction(subjectID, content)` | SetPRCommentReaction: the comment's type, pull and `reactionGroups` (all eight contents); the viewer's reaction added or removed, a repeat changing nothing; an unknown id is `NOT_FOUND` |
 | GitLab | `PUT suggestions/ID/apply` (`glab api apply suggestion`) | ApplyPRSuggestion: the note's lines replaced in the pull's `files`, the head moved, the suggestion applied (`appliedSuggestions`); 403 below developer or `viewer.push` false, 400 "A suggestion is not applicable." when not appliable, 404 for an unknown id |
 | GitLab | `GET`, `POST`, `DELETE projects/P/merge_requests/N/notes/ID/award_emoji[/AWARD]` (`glab api note award emoji`, `glab api create note award emoji`, `glab api delete note award emoji`) | SetPRCommentReaction: the note's awards paged by `X-Next-Page`; an add answers 201, a duplicate GitLab's 404 "has already been taken", a blank name 400; a delete answers 204, another user's award 403, an unknown one 404; a note not on the merge request 404 |
-| GitLab | GraphQL `MRNoteReactions(fullPath, iid, after?)` | ReadPR threads: every note (`gid://gitlab/DiffNote/N`, `Note/N` or `DiscussionNote/N`, system notes included) with its `awardEmoji`, 100 per page; a repository whose `serverLacks` has `awardEmoji` answers GitLab's "Field 'awardEmoji' doesn't exist on type 'Note'" |
+| GitLab | GraphQL `MRNoteReactions(fullPath, iid, after?)` | ReadPR threads: every note (`gid://gitlab/DiffNote/N`, `Note/N` or `DiscussionNote/N`, system notes included) with its `awardEmoji`, 100 per page |
 
 Unhandled (fail with their request): GitLab's discussion resolve PUT.
 A lost or cut-short answer is not
@@ -303,9 +303,9 @@ and then drops or truncates the response.
   close, reopen and merge events (a seeded closed or merged one without
   one gets one) and `changesOverridden` a standing bypass. A GitLab
   repository's `serverVersion` is its host's release (`GET metadata`,
-  default `19.6.0-ee`), which the app compares with its supported floor.
-  `serverLacks` `awardEmoji` makes it a
-  server without `Note.awardEmoji`; `introspection` makes its host refuse
+  default `19.6.0-ee`), which the app compares with its supported floor
+  and with the release of a route it chooses by release (the cancel
+  routes). `serverLacks` `introspection` makes its host refuse
   any document asking for `__type` or `__schema` ("Field '__type'
   doesn't exist on type 'Query'", route `glab graphql introspection
   refused`).

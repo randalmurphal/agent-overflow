@@ -39,11 +39,9 @@ type gitlabForge struct {
 	// stateEventRetries holds the merge requests whose state events read
 	// failed, until it is due again (gitlab_manage.go).
 	stateEventRetries gitlabStateEventRetries
-	// reactions is each login's reaction reads per merge request, and
-	// noNoteAwardEmoji marks a host whose GraphQL has no Note.awardEmoji
+	// reactions is each login's reaction reads per merge request
 	// (gitlab_reactions.go).
-	reactions        gitlabReactionMemory
-	noNoteAwardEmoji gitlabCache[bool]
+	reactions gitlabReactionMemory
 }
 
 // resetCaches forgets what the adapter remembers of each host and
@@ -56,7 +54,6 @@ func (f *gitlabForge) resetCaches() {
 	f.versions.clear()
 	f.stateEventRetries.clear()
 	f.reactions.clear()
-	f.noNoteAwardEmoji.clear()
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }

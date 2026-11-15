@@ -77,14 +77,10 @@ type StateEvent struct {
 // (Repo.ServerLacks): introspection is the __type and __schema fields,
 // which GitLab 18.9 and later refuse in an ordinary document, for every
 // document on the repository's host.
-const (
-	lacksIntrospection = "introspection"
-	// lacksAwardEmoji is GraphQL's Note.awardEmoji (reactions.go).
-	lacksAwardEmoji = "awardEmoji"
-)
+const lacksIntrospection = "introspection"
 
 // gitlabLacks are the features ServerLacks may name.
-var gitlabLacks = []string{lacksIntrospection, lacksAwardEmoji}
+var gitlabLacks = []string{lacksIntrospection}
 
 // gitlabDefaultVersion is the release a GitLab host runs unless one of
 // its repositories names another (Repo.ServerVersion).
