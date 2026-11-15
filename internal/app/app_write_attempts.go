@@ -46,6 +46,41 @@ type writeAttempt[T any] struct {
 	forgotten bool
 }
 
+// attemptRefusals are a write's answers to a repeated id it does not run:
+// one its first arrival used for another key (other), one whose outcome
+// was dropped (forgotten). panicked is the outcome of a write that
+// panicked.
+type attemptRefusals struct {
+	other, forgotten, panicked error
+}
+
+// run runs write as attempt id to key and records its outcome. A repeated
+// id writes nothing: it waits on ctx for the first arrival's outcome and
+// answers with it, or with refuse's answer. A panic in write still settles
+// the attempt, so nothing waits on it forever.
+func (l *writeAttempts[T]) run(ctx context.Context, id, key string, refuse attemptRefusals, write func() (T, error)) (result T, err error) {
+	attempt, repeated := l.begin(id, key)
+	if repeated {
+		var zero T
+		switch {
+		case attempt.key != key:
+			return zero, refuse.other
+		case attempt.forgotten:
+			return zero, refuse.forgotten
+		}
+		return attempt.wait(ctx)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			var zero T
+			l.finish(attempt, zero, refuse.panicked)
+			panic(recovered)
+		}
+		l.finish(attempt, result, err)
+	}()
+	return write()
+}
+
 // begin records attempt id to key, or returns the one already recorded
 // under it (repeated). An id whose outcome was dropped returns a finished
 // attempt marked forgotten, so a repeat writes nothing.

@@ -51,6 +51,12 @@ var methodServerBounds = map[string]time.Duration{
 	// reads and the branch and lock steps around it.
 	"AttachThreadWorktree":  hooked + transport.DefaultMethodBudget,
 	"PrepareThreadWorktree": hooked + transport.DefaultMethodBudget,
+	"GitCreateWorktree":     hooked + transport.DefaultMethodBudget,
+	// The merge and its hooks, then the worktree cleanup.
+	"WorkflowMergeItem": hooked + 2*transport.DefaultMethodBudget,
+	// The push's pre-push hook, `gh pr create` or `glab mr create` (whose
+	// own push runs it again), the head read and the open-PR lookup.
+	"WorkflowCreateItemPR": 2*hooked + 2*transport.DefaultMethodBudget,
 	// The worktree name's origin fetch, then its add.
 	"CreateThread": hooked + 2*transport.DefaultMethodBudget,
 	// The pull request's head fetch, then its worktree's add.
@@ -89,9 +95,8 @@ var methodServerBounds = map[string]time.Duration{
 	// A spawn may fork (the Codex cut), resolve its worktree's name against
 	// origin and add the worktree.
 	"ThreadToolCall": codexForkTimeout + hooked + 2*transport.DefaultMethodBudget,
-	// Three reads and one request per comment, each a forge request, with
-	// no cap on the comments: the budget is a declaration the forge
-	// package does not enforce yet (see the method).
+	// withinMethodBudgetFinishing: the run starts no forge request
+	// reviewSubmitFinish before its budget.
 	"SubmitPRReview":           transport.MethodBudget("SubmitPRReview"),
 	"GetPRReviewSubmitOutcome": transport.MethodBudget("SubmitPRReview"),
 }
@@ -109,10 +114,9 @@ const hooked = gitops.HookTimeout + gitops.HookStopGrace
 // and methodgen reads source syntax only. So every budget names its bound
 // in methodServerBounds, and this fails when a constant grows past the
 // declaration, when a budget appears that no bound justifies, or when an
-// unbudgeted method's step outgrows the default. It cannot see a method
-// that starts reaching a hooked command (gitops.HookTimeout) without a
-// budget: the reach runs through other packages' interfaces, which a
-// syntax scan does not follow.
+// unbudgeted method's step outgrows the default. Which methods reach a
+// long step at all is TestEveryMethodReachingALongStepDeclaresItsBudget's
+// to find.
 func TestMethodBudgetsCoverServerBounds(t *testing.T) {
 	t.Parallel()
 	declared := map[string]bool{}

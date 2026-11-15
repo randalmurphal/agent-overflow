@@ -609,6 +609,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	1971060042: 720000, // GitCommit
 	429779991: 1260000, // GitCreateBranchFrom
 	4106667105: 720000, // GitCreatePR
+	3327650914: 720000, // GitCreateWorktree
 	3933172764: 720000, // GitPull
 	4036251239: 720000, // GitPush
 	1057032236: 720000, // GitSyncBranch
@@ -624,4 +625,6 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	2624544009: 60000, // ThreadToolQuery
 	1291217507: 90000, // TriggerMcpAuth
 	417766274: 90000, // TriggerWorkspaceMcpAuth
+	1792283305: 1320000, // WorkflowCreateItemPR
+	3006532931: 720000, // WorkflowMergeItem
 };
