@@ -17,6 +17,8 @@
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import { hasPendingUpdate } from '../../stores/updates.svelte';
+  import { hasProviderUpdate } from '../../stores/providerUpdates.svelte';
+  import type { BackendKey } from '../../transport/backendKey';
   import {
     settingsSectionGroups,
     settingsSectionIds,
@@ -32,8 +34,11 @@
     activeSection,
     onSelectSection,
     onSelectHit,
+    computer,
   }: {
     activeSection: SettingsSection;
+    /** The computer the provider pages show; their update dots are its. */
+    computer: BackendKey;
     onSelectSection: (section: SettingsSection) => void;
     onSelectHit: (hit: SettingsSearchHit) => void;
   } = $props();
@@ -214,6 +219,13 @@
                 <span
                   class="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-accent align-middle"
                   aria-label="Update available"
+                ></span>
+              {:else if (section.id === 'claude' || section.id === 'codex') && hasProviderUpdate(section.id, computer)}
+                <span
+                  class="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-accent align-middle"
+                  aria-label="Update available"
+                  data-testid="settings-rail-provider-update-dot"
+                  data-provider={section.id}
                 ></span>
               {/if}
             </button>

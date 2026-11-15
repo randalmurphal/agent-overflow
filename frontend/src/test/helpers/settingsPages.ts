@@ -10,6 +10,8 @@ export async function seedSettingsPages(): Promise<void> {
   setBindingMock('UpdateSettings', async () => settings);
   setBindingMock('Version', async () => '0.0.1');
   setBindingMock('GetProviderStatuses', async () => []);
+  // The provider pages check for a newer CLI on mount.
+  setBindingMock('CheckProviderUpdates', async () => []);
   setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('ListProviderAccounts', async () => []);
   setBindingMock('ListDiscussions', async () => []);

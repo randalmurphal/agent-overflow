@@ -23,6 +23,7 @@ import {
 import { __resetPayloadCacheForTest } from '../lib/utils/payloadDataCache';
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { resetProviderModelsForTest } from '../lib/stores/providerModels.svelte';
+import { resetProviderUpdatesForTest } from '../lib/stores/providerUpdates.svelte';
 import { resetCompanionStashForTest } from '../lib/stores/companionStash';
 import { reinitAppStorageForTest } from '../lib/stores/appStorage';
 import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
@@ -329,6 +330,8 @@ afterEach(() => {
   // catalog per case, so stale model capabilities from another suite make
   // menus lie about context windows and fast-mode support.
   resetProviderModelsForTest();
+  // Provider CLI update snapshots and the open notes modal are module state.
+  resetProviderUpdatesForTest();
   // Companions stashed for a thread would reopen on a later test's mount of
   // a same-id thread, from the stash itself or from appStorage's in-memory
   // bucket, which outlives the localStorage wipe below.

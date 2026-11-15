@@ -25,6 +25,8 @@ import { attachMcpServers } from './mcpServers.svelte';
 import { ensureProviderModels, resetProviderModelsForTest } from './providerModels.svelte';
 import { hydrateWorktreeSetup } from './worktreeSetup.svelte';
 import { getUpdateState, resetForTest as resetUpdatesForTest, runUpdateCheck } from './updates.svelte';
+import { checkProviderUpdates, loadProviderUpdates } from './providerUpdates.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
 
 const WORKSPACE = '/workspace';
 const THREAD = 'thread-1';
@@ -43,6 +45,8 @@ function stubBindings() {
       pages: [],
       visible: false,
     })),
+    providerUpdates: setBindingMock('GetProviderUpdates', async () => []),
+    providerUpdateCheck: setBindingMock('CheckProviderUpdates', async () => []),
     updateCheck: setBindingMock('CheckForUpdate', async () => ({
       supported: true,
       updateAvailable: false,
@@ -137,6 +141,21 @@ describe('view-only sessions issue no passive operate RPCs', () => {
     hydrateBrowserCompanionState(THREAD);
     await settle();
     expect(bindings.browserCompanion).toHaveBeenCalled();
+  });
+
+  it('does not read or check provider CLI updates without access:admin', async () => {
+    await pairViewOnly();
+    await loadProviderUpdates(HOME_BACKEND);
+    await checkProviderUpdates(HOME_BACKEND);
+    expect(bindings.providerUpdates).not.toHaveBeenCalled();
+    expect(bindings.providerUpdateCheck).not.toHaveBeenCalled();
+  });
+
+  it('reads and checks provider CLI updates on the local page', async () => {
+    await loadProviderUpdates(HOME_BACKEND);
+    await checkProviderUpdates(HOME_BACKEND);
+    expect(bindings.providerUpdates).toHaveBeenCalledTimes(1);
+    expect(bindings.providerUpdateCheck).toHaveBeenCalledTimes(1);
   });
 
   it('does not run the launch update check off-host, and rests as unsupported', async () => {

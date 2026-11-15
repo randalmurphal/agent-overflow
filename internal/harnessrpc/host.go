@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider/claude/claudefake"
+	"agent-overflow/internal/providerupdate/updatefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 )
@@ -98,4 +99,9 @@ type Host interface {
 	// selected Claude account without waiting for it.
 	ClaudeUsageFake() *claudefake.Usage
 	RequestClaudeUsageReading()
+	// ProviderUpdateFeed is the isolated boot's provider release hosts, nil
+	// on a boot without them. RecheckProviderUpdates checks every provider
+	// again and returns once the result is applied.
+	ProviderUpdateFeed() *updatefake.Feed
+	RecheckProviderUpdates()
 }

@@ -593,6 +593,9 @@ func (h *Harness) HarnessReset() (err error) {
 			usage.Clear("")
 		}
 	}
+	if err := h.resetProviderUpdates(); err != nil {
+		return err
+	}
 	if replayer != nil {
 		replayer.Stop()
 	}

@@ -1,6 +1,10 @@
 package main
 
-// versionString is printed for `--version` in BOTH impersonation modes.
+import "agent-overflow/internal/providerupdate/updatefake"
+
+// versionString is printed for `--version` in BOTH impersonation modes
+// until an `update` records a newer version (update.go); versionLine prints
+// either in the same format.
 // `claude --version` and `codex --version` arrive with identical argv
 // (just the flag — no "app-server"), so one line must satisfy both
 // probes:
@@ -14,8 +18,13 @@ package main
 //
 // TestVersionSatisfiesBothProviders pins this against the real
 // provider.DetectProvider for both names.
-const versionString = "99.0.0 (ao-mockprovider; impersonates Claude Code and codex-cli 99.0.0)"
+var versionString = versionLine(mockVersionNumber)
+
+func versionLine(v string) string {
+	return v + " (ao-mockprovider; impersonates Claude Code and codex-cli " + v + ")"
+}
 
 // mockVersionNumber is the bare semver used inside wire frames (e.g.
-// system/init's claude_code_version).
-const mockVersionNumber = "99.0.0"
+// system/init's claude_code_version), and the installed version until an
+// update records another.
+const mockVersionNumber = updatefake.Baseline

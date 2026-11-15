@@ -933,6 +933,11 @@ export const ListServiceReleases = dispatch('ListServiceReleases');
 export const RequestServiceUpdate = dispatch('RequestServiceUpdate');
 export const CancelServiceUpdate = dispatch('CancelServiceUpdate');
 
+export const GetProviderUpdates = dispatch('GetProviderUpdates');
+export const CheckProviderUpdates = dispatch('CheckProviderUpdates');
+export const GetProviderUpdateNotes = dispatch('GetProviderUpdateNotes');
+export const RunProviderUpdate = dispatch('RunProviderUpdate');
+
 export const GetNativeNetworkConfig = dispatch('GetNativeNetworkConfig');
 
 export const MintOwnDevicePairing = dispatch('MintOwnDevicePairing');

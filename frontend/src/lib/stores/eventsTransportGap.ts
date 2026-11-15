@@ -44,6 +44,7 @@ import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
 import { resendPRCILogFollowsForBackend } from './prReviewCIFollows.svelte';
 import { resyncPipelinesAfterGap, resyncPullsAfterGap } from './pullsStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
+import { resyncProviderUpdatesAfterGap } from './providerUpdates.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { hasRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { resyncSettings } from './settings.svelte';
@@ -355,6 +356,11 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
     }
     case 'mcp:status':
       resyncMcpServersAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
+    case 'provider:updates':
+      // Every frame is the whole list, but none follows the one that ends
+      // a run: a lost one leaves the control busy until the next check.
+      resyncProviderUpdatesAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'project:updated': {
       // Edge-triggered like thread:updated: one frame per persisted project

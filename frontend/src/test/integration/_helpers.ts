@@ -115,6 +115,8 @@ export function installAppDefaults(): void {
   setBindingMock('ListThreadGroups', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('GetProviderStatuses', async () => []);
+  // Provider CLI update state, read on every hello this session administers.
+  setBindingMock('GetProviderUpdates', async () => []);
   setBindingMock('GetProviderLoginState', async () => null);
   setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('GetRateLimitsSnapshots', async () => []);

@@ -16,6 +16,7 @@ import { getTransportHelloFor, getTransportStatusFor, onBackendHelloChange, onBa
 import { loadSettings, getSettings, mirrorFrontendPreferences } from './settings.svelte';
 import { preloadProviderModelsForSettings } from './providerModels.svelte';
 import { loadProviderAccounts, hydrateProviderLogins } from './providerAccounts.svelte';
+import { loadProviderUpdates } from './providerUpdates.svelte';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { reconcileThreadLiveActivity } from './threadLiveActivity';
 import { reconcileSettledFlushes } from './flushSettlement';
@@ -70,6 +71,7 @@ export function installComputerHydration(): () => void {
     if (hasScope('access:admin', backend)) {
       void loadProviderAccounts(backend);
       void hydrateProviderLogins(backend);
+      void loadProviderUpdates(backend);
     }
     if (hasScope('threads:read', backend)) {
       // Every thread of this computer, not only the ones with a pane: the

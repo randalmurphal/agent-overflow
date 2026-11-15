@@ -88,6 +88,12 @@ func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	// own fake over this.
 	app.textGenerationExecutor = kerneltest.StubTextGenerationExecutor()
 
+	// A provider update check runs `claude doctor` and reads the release
+	// hosts; a run replaces the provider CLI. The runner is stubbed and the
+	// hosts are answered by the fake feed an isolated boot gets. A test of
+	// update runs installs its own runner over this.
+	isolateProviderUpdates(app)
+
 	// The OS sleep inhibitor is real system state — a fixture that flips
 	// keepAwakeEnabled must not pin the developer's machine awake for the
 	// rest of the session. internal/power refuses inside a test binary on

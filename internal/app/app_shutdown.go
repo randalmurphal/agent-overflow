@@ -284,6 +284,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// The passive release check emits status frames. It has its own
 	// lifetime, which this cancels before joining it.
 	a.stopServiceUpdateChecks()
+	// The provider update checks and a running update command emit status
+	// frames and spawn provider CLIs. Stop cancels the command (SIGTERM)
+	// and joins every one.
+	a.providerUpdateService().Stop()
 	// A permission-mode follow writes the thread row; appCtx is cancelled,
 	// so it is returning or finishing one bounded write.
 	a.permissionModeFollowWG.Wait()
