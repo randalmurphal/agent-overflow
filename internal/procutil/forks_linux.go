@@ -14,6 +14,6 @@ import "syscall"
 func WriteExecutable(write func() error) error {
 	err := write()
 	syscall.ForkLock.RLock()
-	syscall.ForkLock.RUnlock()
+	syscall.ForkLock.RUnlock() //nolint:staticcheck // SA2001: taking the lock is the wait
 	return err
 }

@@ -227,12 +227,16 @@ func (c *Core) listedEntries(ctx context.Context, cwd string, snapshot *gitdiff.
 // never runs a repository's filter commands on its own reads); a commit the
 // person asked for applies them, as `git commit` does, to those same bytes.
 // A symbolic link's target is stored as it is.
-func (c *Core) publishSnapshotBlob(cwd string, snapshotEnv []string, entry indexEntry, scratch string) (string, error) {
+func (c *Core) publishSnapshotBlob(cwd string, snapshotEnv []string, entry indexEntry, scratch string) (oid string, err error) {
 	content, err := os.CreateTemp(scratch, "blob-")
 	if err != nil {
 		return "", fmt.Errorf("git commit: %w", err)
 	}
-	defer content.Close()
+	defer func() {
+		if closeErr := content.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("git commit: %w", closeErr))
+		}
+	}()
 	if _, _, err := c.executeSpec(commandSpec{
 		binary: "git", cwd: cwd, extraEnv: snapshotEnv,
 		output: content, outputLimit: 1 << 40,
