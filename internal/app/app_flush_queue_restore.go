@@ -319,7 +319,7 @@ func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.E
 		return
 	}
 	for _, p := range persisted {
-		payload, err := flushPayloadFromUserMeta(p.Meta, nil)
+		payload, err := flushPayloadFromUserMeta(p.Meta)
 		if err != nil {
 			// Requeue anyway: the message text survives; only the
 			// attachment/provenance refs on this corrupt meta are lost.
@@ -341,9 +341,8 @@ func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.E
 }
 
 // flushPayloadFromUserMeta rebuilds a flush-queue payload from a
-// persisted user row's usermessage meta and the review comments its retire
-// returned (requeuePayloadFromMeta).
-func flushPayloadFromUserMeta(meta string, returned []store.DiffReviewReturnedComments) (json.RawMessage, error) {
+// persisted user row's usermessage meta (requeuePayloadFromMeta).
+func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
 	if meta == "" {
 		return nil, nil
 	}
@@ -356,9 +355,7 @@ func flushPayloadFromUserMeta(meta string, returned []store.DiffReviewReturnedCo
 	if err := json.Unmarshal([]byte(meta), &m); err != nil {
 		return nil, err
 	}
-	payload := requeuePayloadFromMeta(m)
-	addReturnedReviewComments(&payload, returned)
-	return json.Marshal(payload)
+	return json.Marshal(requeuePayloadFromMeta(m))
 }
 
 // requeuePayloadFromMeta is the payload that sends a message again from the
@@ -537,7 +534,7 @@ func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.Uncon
 		return
 	}
 	for _, item := range items {
-		queued, ok := queuedFlushItemFromUnconfirmed(item, nil)
+		queued, ok := queuedFlushItemFromUnconfirmed(item)
 		if !ok {
 			continue
 		}
@@ -568,9 +565,8 @@ func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.Uncon
 // queuedFlushItemFromUnconfirmed is the queue item that sends a message
 // taken back from the provider again: its row's summary and the payload
 // rebuilt from the row (requeuePayloadFromMeta), or the item's own message
-// and payload when it has no row. returned are the review comments the
-// retire of its row returned.
-func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem, returned []store.DiffReviewReturnedComments) (triage.QueuedFlushItem, bool) {
+// and payload when it has no row.
+func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem) (triage.QueuedFlushItem, bool) {
 	queueItemID := strings.TrimSpace(item.QueueItemID)
 	message := strings.TrimSpace(item.Message)
 	payload := append(json.RawMessage(nil), item.Payload...)
@@ -582,7 +578,6 @@ func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem, returned [
 		message = strings.TrimSpace(item.QuietItem.Summary)
 		payload = queuePayloadFromUserItem(*item.QuietItem, payload)
 	}
-	payload = withReturnedReviewComments(payload, returned)
 	if queueItemID == "" {
 		queueItemID = flushqueue.NewItemID()
 	}
@@ -597,29 +592,6 @@ func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem, returned [
 		StaleUserItemID: item.StaleUserItemID,
 		Settlement:      item.Settlement,
 	}, true
-}
-
-// withReturnedReviewComments is the encoded payload with the review comments
-// a retire returned added (addReturnedReviewComments). A payload that does
-// not decode is kept as it is: the message survives without them.
-func withReturnedReviewComments(raw json.RawMessage, returned []store.DiffReviewReturnedComments) json.RawMessage {
-	if len(returned) == 0 || len(raw) == 0 {
-		return raw
-	}
-	var payload flushQueuePayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		log.Printf("flush queue: decode requeue payload to add its review comments: %v", err)
-		return raw
-	}
-	if !addReturnedReviewComments(&payload, returned) {
-		return raw
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		log.Printf("flush queue: encode requeue payload with its review comments: %v", err)
-		return raw
-	}
-	return encoded
 }
 
 // queuePayloadFromUserItem is the requeue payload of a row's message
