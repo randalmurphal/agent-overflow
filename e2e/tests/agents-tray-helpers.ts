@@ -351,14 +351,20 @@ export interface PastWithAsk {
   lead: string;
   workerToken: string;
   askToken: string;
+  /** The ask's copy, while it exists. */
+  copyThreadId: string;
+  /** The asked thread's workspace, whose scenario the copy's turn reads. */
+  askedPath: string;
 }
 
 /**
  * A lead titled LEAD that spawned a worker, which finished, and then asked
  * a thread titled ASKED, whose copy answered ASK_ANSWER: two Past rows,
- * the ask settled last. Resolves once both are in Past.
+ * the ask settled last. Resolves once both are in Past. With `holdAsk` the
+ * copy's turn waits on the `ask-hold` gate in `askedPath` instead, and the
+ * call resolves with the worker alone in Past and the ask running.
  */
-export async function seedPastWithAsk(harness: HarnessApp, provider: ProviderName, tag: string): Promise<PastWithAsk> {
+export async function seedPastWithAsk(harness: HarnessApp, provider: ProviderName, tag: string, holdAsk = false): Promise<PastWithAsk> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
       { name: `${tag}-lead`, repo: {}, threads: [{ title: LEAD, provider }] },
@@ -375,7 +381,9 @@ export async function seedPastWithAsk(harness: HarnessApp, provider: ProviderNam
   await harness.rpc('StartSession', asked);
   await harness.rpc('SendMessage', asked, 'read the changelog', null);
   await awaitTurnCompleted(harness, asked);
-  await setScenario(harness, askedP.path, threadToolsScenario({ name: `${tag}-asked-copy`, provider, turns: [{ text: ASK_ANSWER }] }));
+  await setScenario(harness, askedP.path, threadToolsScenario({
+    name: `${tag}-asked-copy`, provider, turns: [holdAsk ? { steps: [{ gate: 'ask-hold' }], text: ASK_ANSWER } : { text: ASK_ANSWER }],
+  }));
   await setScenario(harness, workerP.path, threadToolsScenario({ name: `${tag}-worker`, provider, turns: [{ text: 'Done.' }], afterTurns: 'repeatLast' }));
   await setScenario(harness, leadP.path, threadToolsScenario({
     name: `${tag}-lead`, provider, echoUserMessage: true,
@@ -393,8 +401,8 @@ export async function seedPastWithAsk(harness: HarnessApp, provider: ProviderNam
   await awaitTurnCompleted(harness, lead);
   const [spawn, ask] = ledgerRequests(harness, lead);
   expect([spawn?.kind, ask?.kind]).toEqual(['spawn', 'ask']);
-  await expect.poll(() => pastTotal(harness, lead), { timeout: 90_000 }).toBe(2);
-  return { lead, workerToken: spawn.token, askToken: ask.token };
+  await expect.poll(() => pastTotal(harness, lead), { timeout: 90_000 }).toBe(holdAsk ? 1 : 2);
+  return { lead, workerToken: spawn.token, askToken: ask.token, copyThreadId: ask.targetThreadId, askedPath: askedP.path };
 }
 
 /** What seedAssistantWithHelper made. */

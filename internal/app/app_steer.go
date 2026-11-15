@@ -116,6 +116,9 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
 		return store.Item{}, err
 	}
+	if err := refuseAskCopyMessage(thread, opts); err != nil {
+		return store.Item{}, err
+	}
 	if record, found, err := a.findRecordedSend(threadID, opts.SendID); err != nil {
 		return store.Item{}, err
 	} else if found {

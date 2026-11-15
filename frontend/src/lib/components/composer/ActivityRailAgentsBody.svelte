@@ -24,7 +24,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
   import { errString } from '../../utils/errors';
-  import { isSettledAgentRow } from '../../utils/agentTray';
+  import { agentRowHasDigest, agentRowOpenTarget, isSettledAgentRow } from '../../utils/agentTray';
   import { agentStopReport, agentStopAllReport } from '../../utils/agentTrayStops';
   import { agentThreadOpener } from '../chat/agentThreadOrigin';
   import { agentThreadCompanionPlacer } from '../../stores/agentThreadCompanion';
@@ -104,31 +104,42 @@
   const placeInCompanion = () => agentThreadCompanionPlacer(pane);
 
   // An open row opens the thread it went to in this pane's agent thread
-  // companion. A settled one leaves the tray and shows where its answer
-  // landed: this thread's wake item when the answer came here, otherwise
-  // that thread, in the companion.
-  function onActivate(row: ThreadAgentRow): void {
+  // companion, an ask its copy. A settled one shows where its answer
+  // landed: this thread's wake item when the answer came here, leaving the
+  // tray; for an ask, whose copy is gone, its digest with the answer;
+  // otherwise the thread it went to, in the companion, leaving the tray.
+  function activate(row: ThreadAgentRow, key: string): void {
     if (!threadId) return;
     if (isSettledAgentRow(row)) {
-      agents.dismiss(row.token);
       if (row.wakeItemId && row.callerThreadId === threadId) {
+        agents.dismiss(row.token);
         void navigateToThreadItem(pane, threadId, row.wakeItemId);
         return;
       }
+      if (agentRowOpenTarget(row)?.asked && agentRowHasDigest(row)) {
+        if (!expanded.has(key)) toggleExpanded(key);
+        return;
+      }
+      agents.dismiss(row.token);
     }
     onOpenPane(row);
   }
+  const onActivate = (row: ThreadAgentRow) => activate(row, row.token);
+  const onActivatePast = (row: ThreadAgentRow) => activate(row, pastKey(row));
 
-  // Open in Agent Pane: the thread the row went to (for an ask, the thread
-  // asked), beside this one, open or settled, archived included.
+  // Open in Agent Pane: the thread the row went to beside this one, open or
+  // settled, archived included; for an ask its copy while it runs, then the
+  // thread asked (agentRowOpenTarget). A click that races the copy's
+  // delete finds it gone and says so; the row's next read names no copy.
   function onOpenPane(row: ThreadAgentRow): void {
-    const target = row.openThreadId || row.threadId;
+    const target = agentRowOpenTarget(row);
     if (!target) {
       addToast('info', `${row.title} has no thread yet.`);
       return;
     }
+    const title = row.kind === 'ask' && !target.asked ? `the copy asking ${row.title}` : row.title;
     const opener = agentThreadOpener(
-      { threadId: target, computerId: row.computerId ?? '', computerName: row.computer ?? '', title: row.title, token: row.token, kind: '' },
+      { threadId: target.threadId, computerId: row.computerId ?? '', computerName: row.computer ?? '', title, token: row.token, kind: '' },
       viewer,
       placeInCompanion,
     );
@@ -315,7 +326,7 @@
                 expanded={expanded.has(pastKey(row))}
                 isPlacing={!!row.threadId && placing.has(row.threadId)}
                 onToggleExpanded={onTogglePastExpanded}
-                {onActivate}
+                onActivate={onActivatePast}
                 {onOpenPane}
                 {onShowInSidebar}
                 {onStop}

@@ -16,6 +16,8 @@
   import {
     AGENT_ROW_MAX_INDENT,
     agentRowBlockedLabel,
+    agentRowHasDigest,
+    agentRowOpenTarget,
     agentRowStateLabel,
     isSettledAgentRow,
   } from '../../utils/agentTray';
@@ -86,9 +88,21 @@
     }
   });
   let indent = $derived(Math.min(Math.max(0, row.depth), AGENT_ROW_MAX_INDENT) * 0.75);
-  let hasDigest = $derived(Boolean(row.activity || row.blockedDetail || row.lastMessage || row.answer || row.nestedUnavailable));
+  let hasDigest = $derived(agentRowHasDigest(row));
   let digestId = $derived(`agent-tray-row-digest-${past ? 'past-' : ''}${row.token}`);
-  let openLabel = $derived(settled && row.wakeItemId ? `Show the answer from ${row.title}` : `Open ${row.title}`);
+  // An ask's row is titled with the thread asked. While the ask runs it
+  // opens the ask's copy, its worker; once the copy is gone it shows the
+  // answer, and offers the thread asked only as that.
+  let target = $derived(agentRowOpenTarget(row));
+  let asked = $derived(target?.asked === true);
+  let openLabel = $derived(
+    settled && (row.wakeItemId || (asked && hasDigest)) ? `Show the answer from ${row.title}`
+      : asked ? `Open ${row.title}, the thread asked`
+      : row.kind === 'ask' ? `Open the copy asking ${row.title}`
+      : `Open ${row.title}`,
+  );
+  let openPaneTitle = $derived(asked ? 'Open the thread asked in agent pane' : 'Open in agent pane');
+  let openPaneLabel = $derived(asked ? `Open ${row.title}, the thread asked, in Agent Pane` : 'Open in Agent Pane');
   // A spawn on a computer that cannot list or stop what it runs says so
   // wherever the row is read: here, and in the Stop's toast.
   let degraded = $derived(row.nestedUnavailable ? `Its own agents and background work are not shown: ${row.nestedUnavailable}` : '');
@@ -143,8 +157,8 @@
       type="button"
       class={activityRailIconActionClasses}
       onclick={() => onOpenPane(row)}
-      title="Open in agent pane"
-      aria-label="Open in Agent Pane"
+      title={openPaneTitle}
+      aria-label={openPaneLabel}
       data-testid="agent-tray-row-open-pane"
     >
       <Icon icon={PanelRightOpen} size={12} />

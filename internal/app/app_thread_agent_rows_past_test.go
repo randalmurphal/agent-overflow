@@ -105,7 +105,7 @@ func TestPastAgentRowsPageTheSettledRowsNewestFirst(t *testing.T) {
 	if row := byToken["a-fresh"]; row.Placement != stored(fresh.ID) || row.Archived {
 		t.Errorf("the live spawn's row = %+v", row)
 	}
-	if row := byToken["ask"]; row.OpenThreadID != asked.ID || row.Answer != "it says yes" || row.Title != asked.Title || row.Placement != "" || row.State != threadtools.RequestReplied {
+	if row := byToken["ask"]; row.OpenThreadID != "" || row.AskedThreadID != asked.ID || row.Answer != "it says yes" || row.Title != asked.Title || row.Placement != "" || row.State != threadtools.RequestReplied {
 		t.Errorf("the answered ask's row = %+v", row)
 	}
 	// A send to a spawned thread is not the spawn that placed it.
@@ -173,7 +173,8 @@ func TestAgentRowsGiveNoPlacementToAThreadThatTakesNone(t *testing.T) {
 
 // An ask's row presents the thread that was asked, its title and its
 // provider, while its copy runs and after the copy is deleted; the row's
-// kind says it was an ask.
+// kind says it was an ask. It opens the copy, its worker, only while the
+// ask is open and the copy is there; the thread asked is named as that.
 func TestAgentRowsPresentAnAskAsTheThreadAsked(t *testing.T) {
 	t.Parallel()
 	a, _ := newAppForFlushQueueRPC(t)
@@ -194,6 +195,14 @@ func TestAgentRowsPresentAnAskAsTheThreadAsked(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// An open ask whose copy is already gone, as between the copy's delete
+	// and the ask's settlement.
+	if err := a.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "ask-gone", CallerThreadID: lead.ID, Kind: store.ThreadRequestAsk, TargetThreadID: "gone-copy",
+		OriginThreadID: asked.ID, Notify: true, State: store.ThreadRequestRunning, CreatedAt: 11,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	seedSettledAgentRow(t, a, store.ThreadRequest{
 		Token: "ask-past", CallerThreadID: lead.ID, Kind: store.ThreadRequestAsk, TargetThreadID: "deleted-copy",
 		OriginThreadID: asked.ID, Notify: true, CreatedAt: 10,
@@ -209,16 +218,20 @@ func TestAgentRowsPresentAnAskAsTheThreadAsked(t *testing.T) {
 	var rows []ThreadAgentRow
 	rows = append(rows, listing.Rows...)
 	rows = append(rows, page.Rows...)
-	if got := agentRowTokens(rows); !slices.Contains(got, "ask-open") || !slices.Contains(got, "ask-past") {
-		t.Fatalf("rows %q, want the open and the past ask", got)
+	if got := agentRowTokens(rows); !slices.Contains(got, "ask-open") || !slices.Contains(got, "ask-gone") || !slices.Contains(got, "ask-past") {
+		t.Fatalf("rows %q, want the open, the copyless and the past ask", got)
 	}
+	opens := map[string]string{"ask-open": copyRow.ID, "ask-gone": "", "ask-past": ""}
 	for _, row := range rows {
 		if row.Kind != store.ThreadRequestAsk {
 			continue
 		}
-		if row.Title != asked.Title || row.Provider != asked.Provider || row.OpenThreadID != asked.ID {
-			t.Errorf("ask row %s = title %q provider %q opens %q, want the thread asked (%q, %q, %q)",
-				row.Token, row.Title, row.Provider, row.OpenThreadID, asked.Title, asked.Provider, asked.ID)
+		if row.Title != asked.Title || row.Provider != asked.Provider || row.AskedThreadID != asked.ID {
+			t.Errorf("ask row %s = title %q provider %q asked %q, want the thread asked (%q, %q, %q)",
+				row.Token, row.Title, row.Provider, row.AskedThreadID, asked.Title, asked.Provider, asked.ID)
+		}
+		if want := opens[row.Token]; row.OpenThreadID != want {
+			t.Errorf("ask row %s opens %q, want %q (its copy while it runs and is there, else nothing)", row.Token, row.OpenThreadID, want)
 		}
 	}
 }

@@ -24,6 +24,24 @@ import (
 // stale pane or a second Keep.
 const sideChatNotScratchCode = "thread_not_scratch"
 
+// askCopyReadOnlyCode is what a person's message to, or Keep of, the
+// hidden copy a thread_ask runs in answers with (store.Thread.AskCopy).
+// The copy answers the agent that asked and is deleted once it has: a
+// message there would steer that answer or be deleted with the copy, and
+// a kept copy would outlive its request. Its pane offers neither.
+const askCopyReadOnlyCode = "thread_ask_copy"
+
+// refuseAskCopyMessage refuses text a person typed (ExpandComposerCommands
+// marks it) for an ask's copy. The question the ask sends, and what the
+// copy's own thread tools queue there, are the app's and go through.
+func refuseAskCopyMessage(thread store.Thread, opts sendMessageOptions) error {
+	if !thread.AskCopy || !opts.ExpandComposerCommands {
+		return nil
+	}
+	return errorsx.Public(askCopyReadOnlyCode,
+		"This is the copy an agent's question runs in. It takes no messages; send to the thread it copies instead.", nil)
+}
+
 // ForkSideChat forks a thread at its tail into a hidden scratch thread and
 // records where it came from, so the fork can be kept or deleted later.
 //
@@ -131,13 +149,17 @@ func (a *App) PromoteScratchThread(ctx context.Context, threadID string) (store.
 		return store.Thread{}, err
 	}
 	defer unlock()
-	_, found, err := a.store.GetScratchThread(threadID)
+	record, found, err := a.store.GetScratchThread(threadID)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("promote scratch thread: %w", err)
 	}
 	if !found {
 		return store.Thread{}, errorsx.Public(sideChatNotScratchCode,
 			"This thread is not a side chat, so there is nothing to keep.", nil)
+	}
+	if record.RequestToken != "" {
+		return store.Thread{}, errorsx.Public(askCopyReadOnlyCode,
+			"This is the copy an agent's question runs in, and it is deleted once it answers; it cannot be kept.", nil)
 	}
 	promoted, err := a.store.PromoteScratchThread(threadID)
 	if err != nil {

@@ -137,6 +137,9 @@
   // and the disabled state is the affordance the rest of the app already
   // uses for a control that is out of reach.
   let sendUngranted = $derived(!threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId));
+  // An agent's question runs in this hidden copy: it is watched and
+  // stopped from here, never written to.
+  let askCopy = $derived(Boolean(pane.thread?.askCopy));
   // The thread's machine, when it is not this page's own and its socket is
   // down. Empty on a single-backend client and for home, whose drop the
   // transport banner already announces.
@@ -199,7 +202,7 @@
   // An engine that cannot capture for any source the computer has on shows
   // no mic rather than one that fails.
   let showDictation = $derived(
-    !isDisabled && !sendUngranted && !offline && dictationMachine !== null
+    !isDisabled && !sendUngranted && !askCopy && !offline && dictationMachine !== null
       && dictationSource(dictationMachine, dictationEngine) !== null,
   );
   // Hiding the mic mid-recording (a sign-out, a lost grant) abandons the
@@ -327,6 +330,7 @@
     shell: shellSendState,
     isDisabled,
     sendUngranted,
+    askCopy,
     sending: false,
     sendSuspended: sendSuspended || interruptPending,
     hasBlockingPrompt,
@@ -345,6 +349,7 @@
   let inputState = $derived(deriveComposerInputState({
     isDisabled,
     sendUngranted,
+    askCopy,
     unreachableTarget,
     offline,
     compact: compactLayout,

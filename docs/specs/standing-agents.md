@@ -1269,14 +1269,23 @@ closes up their spacing so the row holds at a phone width.
   that reconnects still sees them. The linger is longer than Background's
   because a settled row is a click target: clicking it takes it out early
   and scrolls to its wake item when the answer landed in this thread, or
-  opens the thread it went to otherwise, in the companion pane below.
-  Clicking an open row opens its target in that pane. A pane remembers which settled rows it saw and which
+  opens the thread it went to otherwise, in the companion pane below; a
+  settled ask whose answer did not land here opens its digest with the
+  answer instead and stays. Clicking an open row opens its target in that
+  pane. A pane remembers which settled rows it saw and which
   were clicked for the last 64 threads it showed, so a row that left does
   not come back to the open rows when the pane returns.
 - **Row actions.** Every row, open or past, has Open in Agent Pane
   (`panel-right-open`), which opens the thread it went to in the
-  companion pane below, settled or archived alike; an ask opens the
-  thread asked, since its copy is deleted once it answers. A spawn row
+  companion pane below, settled or archived alike. An ask's worker is its
+  hidden copy: while the ask runs its row, click and icon alike, opens
+  the copy (`ThreadAgentRow.openThreadId`), whose composer takes no
+  message and which offers no Keep (`Thread.askCopy`; the backend
+  refuses a person's message and Keep there too). The copy is deleted
+  once it answers, its pane with it; then the icon opens the thread
+  asked (`askedThreadId`), labeled as the thread asked, never as the
+  worker. A click that lands after the delete and before the row's next
+  read opens nothing and says the copy could not be opened. A spawn row
   whose thread is owned, on the listing computer and not archived has
   Show in Sidebar (`panel-left-open`); an assistant's helper, outside
   every project, takes no placement and has none. It is `SetThreadPlacement` standalone on

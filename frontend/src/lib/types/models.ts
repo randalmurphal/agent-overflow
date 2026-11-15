@@ -130,6 +130,11 @@ export interface Thread {
    */
   placement?: ThreadPlacement | '';
   /**
+   * The hidden copy an agent's thread_ask runs in: it takes no message
+   * from a person and cannot be kept, and it is deleted once it answers.
+   */
+  askCopy?: boolean;
+  /**
    * Unix-ms timestamp of when the user last viewed the thread. New rows
    * start with a creation-time baseline; undefined means "never tracked"
    * for legacy rows and is treated as read so sidebar pills don't flood

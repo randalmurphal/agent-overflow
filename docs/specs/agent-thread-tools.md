@@ -449,7 +449,9 @@ regardless of the source's mode, no title generation, all tools
 available. Sends `question` with the reply footer. The answer comes
 back inline when it arrives within the wait, otherwise as a message.
 The scratch thread is deleted (DB rows only, Q21) as soon as its answer
-is stored. If the answer is a clarifying question, the caller re-asks
+is stored. Until then a person can watch it from the asking thread's
+Agents row, but it takes no message from a person and cannot be kept
+(`Thread.askCopy`). If the answer is a clarifying question, the caller re-asks
 or switches to `thread_send` on the real thread.
 
 `read-only` exists for unattended work: the refusal goes straight back

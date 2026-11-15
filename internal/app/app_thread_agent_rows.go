@@ -79,11 +79,15 @@ type ThreadAgentRow struct {
 	CallerThreadID string `json:"callerThreadId"`
 	// Kind is spawn, send or ask.
 	Kind string `json:"kind"`
-	// ThreadID is the target; for an ask, the hidden fork that answers it.
+	// ThreadID is the target; for an ask, the hidden copy that answers it.
 	ThreadID string `json:"threadId,omitempty"`
-	// OpenThreadID is the thread a click opens: the target, or for an ask
-	// the thread it asked about.
+	// OpenThreadID is the thread the row opens: the target, and for an ask
+	// its copy only while the ask is open and the copy is there (a local
+	// copy is deleted once it answers); empty for an ask after that.
 	OpenThreadID string `json:"openThreadId,omitempty"`
+	// AskedThreadID is the thread an ask asked about, which the row's title
+	// and provider name; empty for every other kind.
+	AskedThreadID string `json:"askedThreadId,omitempty"`
 	// ComputerID and Computer name a target on a paired computer; both are
 	// empty for this one.
 	ComputerID string `json:"computerId,omitempty"`
@@ -702,10 +706,14 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		LateReply: request.HasLateReply, CreatedAt: row.CreatedAt, SettledAt: row.SettledAt,
 		Depth: request.Depth, NestedHidden: request.NestedHidden,
 	}
-	if row.Kind == store.ThreadRequestAsk && row.OriginThreadID != "" {
-		// The fork that answers an ask is hidden; the thread it asked about
-		// is what a person opens.
-		out.OpenThreadID = row.OriginThreadID
+	if row.Kind == store.ThreadRequestAsk {
+		// The copy that answers an ask is the worker: the row opens it while
+		// it runs. Once the ask settles the copy is deleted, and the row
+		// names the thread asked as that, never as its worker.
+		out.AskedThreadID = row.OriginThreadID
+		if _, there := names[row.TargetThreadID]; settled || (local && !there && !v.counts) {
+			out.OpenThreadID = ""
+		}
 	}
 	if row.TargetComputerID != "" {
 		out.Computer, _ = v.app.threadTools().threadToolsBackendName(row.TargetComputerID)

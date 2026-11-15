@@ -6,6 +6,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { setupEventListeners } from '../../stores/events';
 import { noteThread } from '../../transport/entityIndex';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { __resetActivityRailUiPrefsForTest } from '../../stores/liveTodoState.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ThreadAgentRow, ThreadAgentStop } from '../../stores/bindings';
@@ -14,13 +15,17 @@ import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem }
 const navigate = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../stores/threadItemNavigation', () => ({ navigateToThreadItem: navigate }));
 const opened = vi.hoisted(() => vi.fn());
+// The title each open names its thread by, which the opener's toast uses
+// when the thread is gone by the time it is read.
+const openedTitles = vi.hoisted(() => [] as string[]);
 // Both tray openers make their placer on the click and hand it the resolved
 // thread: the pane's agent thread companion.
 type Place = () => (thread: { id: string }) => Promise<unknown>;
 vi.mock('../chat/agentThreadOrigin', async (importOriginal) => {
   const original = await importOriginal<typeof import('../chat/agentThreadOrigin')>();
-  const open = (origin: { threadId: string }, place?: Place) => () => {
+  const open = (origin: { threadId: string; title?: string }, place?: Place) => () => {
     opened(origin.threadId);
+    openedTitles.push(origin.title ?? '');
     void place?.()({ id: origin.threadId });
   };
   return {
@@ -294,13 +299,16 @@ describe('the Agents segment', () => {
     expect(view.queryByTestId('activity-rail-agents-past')).toBeNull();
   });
 
-  it('opens any row\'s thread beside this one from Open in Agent Pane, an ask\'s the thread asked', async () => {
+  it('opens any row\'s thread beside this one from Open in Agent Pane, an answered ask\'s the thread asked, named as that', async () => {
     const { pane, view, toggle } = await openTray(
       (caller) => [
         row('child', { callerThreadId: caller }),
         row('done', { callerThreadId: caller, state: 'replied', settledAt: Date.now(), wakeItemId: 'user:wake-1' }),
       ],
-      (caller) => [row('asked', { callerThreadId: caller, kind: 'ask', threadId: 'scratch-copy', openThreadId: 't-origin', state: 'replied', settledAt: Date.now() })],
+      (caller) => [row('asked', {
+        callerThreadId: caller, kind: 'ask', threadId: 'scratch-copy', askedThreadId: 't-origin', title: 'Release notes',
+        state: 'replied', settledAt: Date.now(), answer: 'It is complete.',
+      })],
     );
     await fireEvent.click(toggle);
     const rows = await view.findAllByTestId('agent-tray-row');
@@ -316,9 +324,62 @@ describe('the Agents segment', () => {
     expect(view.getAllByTestId('agent-tray-row').map((r) => r.dataset.token)).toEqual(['child', 'done']);
     await fireEvent.click(await view.findByTestId('activity-rail-agents-past-toggle'));
     const past = await within(await view.findByTestId('activity-rail-agents-past')).findByTestId('agent-tray-row');
-    await fireEvent.click(within(past).getByTestId('agent-tray-row-open-pane'));
+    // The ask's copy is gone: the icon offers the thread asked, as that.
+    const askedPane = within(past).getByTestId('agent-tray-row-open-pane');
+    expect(askedPane.getAttribute('title')).toBe('Open the thread asked in agent pane');
+    expect(askedPane.getAttribute('aria-label')).toBe('Open Release notes, the thread asked, in Agent Pane');
+    await fireEvent.click(askedPane);
     expect(companion).toHaveBeenLastCalledWith(pane, { id: 't-origin' });
-    await fireEvent.click(within(past).getByTestId('agent-tray-row-open'));
+    expect(opened).not.toHaveBeenCalledWith('scratch-copy');
+    // Its main click shows the answer, and opens nothing.
+    const calls = companion.mock.calls.length;
+    const main = within(past).getByTestId('agent-tray-row-open');
+    expect(main.getAttribute('aria-label')).toBe('Show the answer from Release notes');
+    await fireEvent.click(main);
+    expect(await within(past).findByTestId('agent-tray-row-digest')).toHaveTextContent('It is complete.');
+    expect(companion.mock.calls.length).toBe(calls);
+  });
+
+  it('opens a running ask\'s copy, its worker, and once the copy is gone shows its answer instead', async () => {
+    let state: ThreadAgentRow[] = [];
+    const { pane, view, toggle } = await openTray((caller) => {
+      state = [row('ask', {
+        callerThreadId: caller, kind: 'ask', threadId: 'ask-copy', openThreadId: 'ask-copy', askedThreadId: 't-origin',
+        title: 'Release notes', activity: 'Reading CHANGELOG.md',
+      })];
+      return state;
+    });
+    await fireEvent.click(toggle);
+    const askRow = await view.findByTestId('agent-tray-row');
+    const main = within(askRow).getByTestId('agent-tray-row-open');
+    expect(main.getAttribute('aria-label')).toBe('Open the copy asking Release notes');
+    const openPane = within(askRow).getByTestId('agent-tray-row-open-pane');
+    expect(openPane.getAttribute('aria-label')).toBe('Open in Agent Pane');
+    await fireEvent.click(main);
+    expect(companion).toHaveBeenLastCalledWith(pane, { id: 'ask-copy' });
+    // A click that lands after the copy's delete, before the row's next
+    // read, finds no copy: the opener's toast names it as the copy, never
+    // as the thread asked, and opens nothing.
+    expect(openedTitles.at(-1)).toBe('the copy asking Release notes');
+    await fireEvent.click(openPane);
+    expect(companion).toHaveBeenLastCalledWith(pane, { id: 'ask-copy' });
+    expect(companion).not.toHaveBeenCalledWith(pane, { id: 't-origin' });
+
+    // The copy answered and was deleted: the row's next read names no copy.
+    // Its click shows the answer and keeps the row; its icon offers the
+    // thread asked.
+    setBindingMock('GetThreadAgentRows', async () => [{
+      token: 'ask', listed: true, row: { ...state[0], openThreadId: '', activity: '', state: 'replied', settledAt: Date.now(), answer: 'It is complete.' },
+    }]);
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'ask' });
+    await waitFor(() => expect(view.getByTestId('agent-tray-row').dataset.settled).toBe('true'));
+    const settled = view.getByTestId('agent-tray-row');
+    const calls = companion.mock.calls.length;
+    await fireEvent.click(within(settled).getByTestId('agent-tray-row-open'));
+    expect(await within(settled).findByTestId('agent-tray-row-digest')).toHaveTextContent('It is complete.');
+    expect(companion.mock.calls.length).toBe(calls);
+    expect(view.getAllByTestId('agent-tray-row').map((r) => r.dataset.token)).toEqual(['ask']);
+    await fireEvent.click(within(settled).getByTestId('agent-tray-row-open-pane'));
     expect(companion).toHaveBeenLastCalledWith(pane, { id: 't-origin' });
   });
 

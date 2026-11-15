@@ -59,7 +59,8 @@ func proposedPlanItemSQL() string {
 // spawner). An assistant's current thread reads its record once, as one
 // JSON object (threadAgentColumn) that also carries the projects it serves,
 // and any other thread reads NULL there, so only an assistant's row pays
-// for them.
+// for them. The last column, AskCopy, probes scratch_threads by key only
+// for a scratch thread.
 var threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
@@ -125,7 +126,9 @@ var threadColumns = `id, COALESCE(project_id, ''),
     (SELECT superseded_at FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id),
     COALESCE((SELECT agent_id FROM agent_helpers WHERE agent_helpers.thread_id = threads.id), ''),
     COALESCE(` + spawnerOfSQL("threads.id") + `, ''),
-    attention_kind, attention_reason, attention_at`
+    attention_kind, attention_reason, attention_at,
+    threads.mode = 'scratch' AND EXISTS (SELECT 1 FROM scratch_threads
+      WHERE scratch_threads.thread_id = threads.id AND scratch_threads.request_token IS NOT NULL)`
 
 // threadAgentColumn is the record column threadColumns reads for an
 // assistant's current thread.
@@ -231,7 +234,7 @@ func validAutoCompactPercent(percent int) bool {
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft int
+	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft, askCopy int
 	var agentRecord sql.NullString
 	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt, attentionAt sql.NullInt64
 	var attentionKind, attentionReason string
@@ -249,11 +252,12 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
 		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID,
-		&attentionKind, &attentionReason, &attentionAt,
+		&attentionKind, &attentionReason, &attentionAt, &askCopy,
 	); err != nil {
 		return Thread{}, err
 	}
 	t.FastMode = fastMode != 0
+	t.AskCopy = askCopy != 0
 	t.Archived = archived != 0
 	t.HasActionableProposedPlan = hasActionableProposedPlan != 0
 	t.HasIncompleteTurn = hasIncompleteTurn != 0

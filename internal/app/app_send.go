@@ -527,6 +527,9 @@ func (a *App) sendMessageLocked(
 	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
 		return store.Item{}, err
 	}
+	if err := refuseAskCopyMessage(thread, opts); err != nil {
+		return store.Item{}, err
+	}
 
 	// Idempotency, first thing inside the lock and before ANY side effect:
 	// no runtime-mode write, no takeover registration, no session start, and

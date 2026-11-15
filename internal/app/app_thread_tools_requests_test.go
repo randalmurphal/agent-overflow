@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/flushqueue"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/identity"
@@ -598,6 +599,67 @@ func TestThreadAskScratchForkIsAlwaysReadOnly(t *testing.T) {
 	row, found, err := f.app.store.GetScratchThread(fork.ID)
 	if err != nil || !found || row.RequestToken != ack.Token || row.SourceThreadID != target.ID {
 		t.Fatalf("scratch row = %+v found=%v err=%v", row, found, err)
+	}
+}
+
+// An ask's copy says it is one, and takes nothing from a person: a typed
+// message, sent or steered, and Keep are refused with the reason, and the
+// ask runs on. A side chat, the other scratch fork, is no ask's copy.
+func TestAnAsksCopyRefusesAPersonsMessageAndKeep(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "reading the workspace")
+	target := f.forkableThread(t, "ask-copy-source")
+	ack, err := f.adapter().Ask(t.Context(), f.callerIdentity(), threadtools.AskCall{
+		ThreadID: target.ID, Question: "what does this workspace do?",
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	copyRow, err := f.app.GetThread(ack.ThreadID)
+	if err != nil || !copyRow.AskCopy {
+		t.Fatalf("the ask's copy reads %+v, %v; want it marked an ask's copy", copyRow, err)
+	}
+	refused := func(what string, err error) {
+		t.Helper()
+		if code, _, ok := errorsx.PublicDetails(err); !ok || code != askCopyReadOnlyCode {
+			t.Fatalf("%s on the ask's copy = %v; want it refused as %s", what, err, askCopyReadOnlyCode)
+		}
+	}
+	refused("SendMessage", f.app.SendMessage(copyRow.ID, "and also look at the tests", nil))
+	_, err = f.app.SendMessageWithOptions(t.Context(), copyRow.ID, "and also the docs", SendMessageOptions{SendID: "person-send"})
+	refused("SendMessageWithOptions", err)
+	_, err = f.app.SteerMessageWithOptions(t.Context(), copyRow.ID, "stop reading", SendMessageOptions{SendID: "person-steer"})
+	refused("SteerMessageWithOptions", err)
+	_, err = f.app.PromoteScratchThread(t.Context(), copyRow.ID)
+	refused("Keep", err)
+	if items, err := f.app.store.ListItems(copyRow.ID); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, item := range items {
+			for _, typed := range []string{"look at the tests", "also the docs", "stop reading"} {
+				if strings.Contains(item.Summary, typed) {
+					t.Fatalf("a person's message reached the copy: %+v", item)
+				}
+			}
+		}
+	}
+	if kept, err := f.app.store.GetThread(copyRow.ID); err != nil || kept.Mode != threadmode.ModeScratch {
+		t.Fatalf("the copy after Keep reads %+v, %v; want it still the ask's scratch copy", kept, err)
+	}
+	if state := f.request(t, ack.Token).State; state != store.ThreadRequestRunning && state != store.ThreadRequestAccepted {
+		t.Fatalf("the ask is %s; want it still running", state)
+	}
+
+	side, err := f.app.ForkSideChat(t.Context(), target.ID)
+	if err != nil {
+		t.Fatalf("ForkSideChat: %v", err)
+	}
+	if side.AskCopy {
+		t.Fatal("a side chat reads as an ask's copy")
+	}
+	if read, err := f.app.GetThread(side.ID); err != nil || read.AskCopy {
+		t.Fatalf("the side chat reads %+v, %v; want no ask's copy", read, err)
 	}
 }
 

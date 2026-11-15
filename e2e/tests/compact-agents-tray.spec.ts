@@ -7,8 +7,11 @@
 // on desktop; and the stopped row leaves for Past, whose rows fit the same
 // way with touch-sized Open in Agent Pane and Show in Sidebar. Failed reads
 // of the list and of Past fit with touch-sized Retry, which reads them; an
-// ask's Past row is the thread asked with its provider; and an assistant's
-// helper row, open and past, has Open in Agent Pane and no Show in Sidebar.
+// ask's Past row is the thread asked with its provider; a running ask's tap
+// opens its copy with a composer that takes no message and no Keep, and
+// once answered the copy's pane goes, its Past row's digest carries the
+// answer and its icon offers the thread asked; and an assistant's helper row, open and past, has Open in
+// Agent Pane and no Show in Sidebar.
 import type { Locator } from '@playwright/test';
 
 import { test, expect } from './fixtures.js';
@@ -16,12 +19,14 @@ import { advanceGate, awaitGate, type ProviderName } from './thread-tools-helper
 import { capture } from './wake-rows-helpers.js';
 import {
   ASKED,
+  ASK_ANSWER,
   CHILD,
   HELPER,
   LEAD,
   agentRow,
   agentsBody,
   approvalTool,
+  companionPane,
   failAgentReads,
   ledgerRow,
   mockInterrupt,
@@ -137,6 +142,39 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(ask.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', provider);
     await expectFits(ask, width, ['agent-tray-row-details', 'agent-tray-row-open-pane']);
     await capture(page, `agents-${provider}-compact-ask.png`, body);
+  });
+
+  test(`${provider}: a running ask opens its read-only copy on a phone, and once answered shows the answer and offers the thread asked`, async ({ harness, page }) => {
+    test.setTimeout(240_000);
+    const { askToken, copyThreadId, askedPath } = await seedPastWithAsk(harness, provider, `compact-agents-ask-${provider}`, true);
+    const hold = await awaitGate(harness, 'ask-hold', askedPath);
+    await harness.open(page);
+    await openAgents(page, LEAD);
+    const width = page.viewportSize()!.width;
+    const row = openAgentRow(page, askToken);
+    await expect(row.getByTestId('agent-tray-row-state')).toHaveText('running', { timeout: 30_000 });
+    await expectFits(row, width, ['agent-tray-row-stop', 'agent-tray-row-open-pane']);
+    await row.getByTestId('agent-tray-row-open').tap();
+    const copyPane = companionPane(page);
+    await expect(copyPane.getByTestId('chat-header-title')).toHaveText(`Ask: ${ASKED}`, { timeout: 30_000 });
+    const input = copyPane.getByTestId('composer-root').locator('textarea');
+    await expect(input).toBeDisabled();
+    await expect(input).toHaveAttribute('placeholder', "An agent's question runs in this copy. It takes no messages.");
+    await expect(copyPane.getByTestId('side-chat-keep')).toHaveCount(0);
+    await capture(page, `agents-${provider}-compact-ask-copy.png`, copyPane);
+
+    // Answered: the copy and its pane go, and Past's row shows the answer
+    // on a tap and offers the thread asked as that.
+    await advanceGate(harness, hold.mockId, 'ask-hold');
+    await expect(copyPane).toHaveCount(0, { timeout: 30_000 });
+    await expect.poll(async () => (await harness.rpc<{ id?: string } | null>('GetThread', copyThreadId).catch(() => null))?.id ?? '', { timeout: 30_000 }).toBe('');
+    await openPast(page);
+    const past = pastRow(page, askToken);
+    await expect(past.getByTestId('agent-tray-row-open-pane')).toHaveAttribute('aria-label', `Open ${ASKED}, the thread asked, in Agent Pane`);
+    await past.getByTestId('agent-tray-row-details').tap();
+    await expect(past.getByTestId('agent-tray-row-digest')).toContainText(ASK_ANSWER);
+    await expectFits(past, width, ['agent-tray-row-details', 'agent-tray-row-open-pane']);
+    await capture(page, `agents-${provider}-compact-ask-answered.png`, agentsBody(page));
   });
 
   test(`${provider}: an assistant's helper row fits a phone with Open in Agent Pane and no Show in Sidebar`, async ({ harness, page }) => {

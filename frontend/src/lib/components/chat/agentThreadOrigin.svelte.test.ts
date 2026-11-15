@@ -241,6 +241,24 @@ describe('openAgentThreadOrigin', () => {
     expect(getPane('main')?.threadId).toBe('thread-a');
   });
 
+  // An ask's copy is deleted once it answers; a click that raced the
+  // delete reads nothing, opens nothing beside the source and says so by
+  // the name the row gave it.
+  it('opens no companion for a thread deleted before its read, and names it in the toast', async () => {
+    const a = makeThread({ id: 'thread-a', title: 'A' });
+    replaceAllThreads([a]);
+    setBindingMock('SwitchThread', async () => a);
+    await openThreadInPane(a, 'main');
+    setBindingMock('GetThread', async () => { throw new Error('The requested item no longer exists.'); });
+    const source = getPane('main')!;
+    agentThreadOpener({ ...origin(), title: 'the copy asking Release notes' }, HOME_BACKEND, () => agentThreadCompanionPlacer(source)).open!();
+    await vi.waitFor(() => expect(getToasts().map((toast) => toast.message)).toContain(
+      'Could not open the copy asking Release notes: The requested item no longer exists.',
+    ));
+    expect(companionForSource('main', AGENT_THREAD_COMPANION_KIND)).toBeNull();
+    expect(getPane('main')?.threadId).toBe('thread-a');
+  });
+
   it('opens in the pane it was clicked from when nothing moved during the read', async () => {
     const a = makeThread({ id: 'thread-a', title: 'A' });
     const worker = makeThread({ id: 'thread-9', title: 'Auth rewrite' });

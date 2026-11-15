@@ -4,12 +4,16 @@
 //
 // Coverage: an ordinary thread's finished workers leave the open list and
 // are counted and listed under Past, newest settled first, 8 and then the
-// rest per "Show N more…"; a thread_ask shows while it runs and, once its
-// copy answered, lingers, leaves and is first in Past with its answer in
-// the digest and a count that moved without a reload; a stopped worker
-// joins Past; Open in Agent Pane opens a past worker beside the thread, an
-// archived one included, and an ask's row the thread that was asked, which
-// the row names with its provider, open and past; Show in Sidebar gives an
+// rest per "Show N more…"; a thread_ask shows while it runs, and its click
+// opens its copy beside the thread with a composer that takes no message
+// and no Keep; once its copy answered, the copy's pane goes and the row
+// lingers, leaves and is first in Past, where its click goes to the
+// answer and opens no pane and its digest carries the answer, with a
+// count that moved without a reload; a stopped
+// worker joins Past; Open in Agent Pane opens a past worker beside the
+// thread, an archived one included, and an answered ask's row the thread
+// that was asked, labeled as that, which the row names with its provider,
+// open and past; Show in Sidebar gives an
 // owned worker its sidebar row and goes; with nothing open the toggle
 // counts nothing; failed reads of the list and of Past say so with Retry,
 // which reads them; an assistant's helper offers no Show in Sidebar, open
@@ -129,12 +133,27 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText(String(WORKERS));
     await capture(page, `agents-past-${provider}-open-and-collapsed.png`, agentsBody(page));
 
-    // The ask's copy answers: the row settles and lingers, Past counts it
-    // without a reload, and then the row leaves the open list.
+    // While it runs the ask's row opens its copy, its worker, beside the
+    // thread: watched, never written to, and nothing to keep.
     const askHold = await awaitGate(harness, 'ask-hold', peerP.path);
+    await expect(askRow.getByTestId('agent-tray-row-open')).toHaveAttribute('aria-label', `Open the copy asking ${PEER}`);
+    await askRow.getByTestId('agent-tray-row-open').click();
+    const copyPane = companionPane(page);
+    await expect(copyPane.getByTestId('chat-header-title')).toHaveText(`Ask: ${PEER}`, { timeout: 30_000 });
+    const copyInput = copyPane.getByTestId('composer-root').locator('textarea');
+    await expect(copyInput).toBeDisabled();
+    await expect(copyInput).toHaveAttribute('placeholder', "An agent's question runs in this copy. It takes no messages.");
+    await expect(copyPane.getByTestId('side-chat-keep')).toHaveCount(0);
+    expect((await harness.rpc<{ askCopy?: boolean }>('GetThread', ask.targetThreadId)).askCopy).toBe(true);
+    await capture(page, `agents-past-${provider}-ask-copy.png`, copyPane, askRow);
+
+    // The ask's copy answers: the row settles and lingers, Past counts it
+    // without a reload, and then the row leaves the open list. The copy is
+    // deleted with its pane.
     await advanceGate(harness, askHold.mockId, 'ask-hold');
     await expect(askRow).toHaveAttribute('data-settled', 'true', { timeout: 30_000 });
     await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText(String(WORKERS + 1));
+    await expect(copyPane).toHaveCount(0, { timeout: 30_000 });
     await expect(askRow).toHaveCount(0, { timeout: 30_000 });
 
     // A stopped worker joins Past too.
@@ -164,8 +183,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(more).toHaveText(`Show ${WORKERS + 2 - 8} more…`);
     await capture(page, `agents-past-${provider}-expanded.png`, agentsBody(page));
 
-    // The ask's digest carries its answer.
+    // The ask's copy is gone: its row's click goes to the answer, which
+    // landed in this thread, and opens no pane; its digest carries it.
     const pastAsk = pastRow(page, ask.token);
+    await expect(pastAsk.getByTestId('agent-tray-row-open')).toHaveAttribute('aria-label', `Show the answer from ${PEER}`);
+    await pastAsk.getByTestId('agent-tray-row-open').click();
+    await expect(companionPane(page)).toHaveCount(0);
     await pastAsk.getByTestId('agent-tray-row-details').click();
     await expect(pastAsk.getByTestId('agent-tray-row-digest')).toContainText(ASK_ANSWER);
     await capture(page, `agents-past-${provider}-digest.png`, pastAsk);
@@ -180,7 +203,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await archivedRow.getByTestId('agent-tray-row-open-pane').click();
     await expect(companionPane(page).getByTestId('chat-header-title')).toHaveText(`Worker ${WORKERS}`, { timeout: 30_000 });
 
-    // The ask's row opens the thread that was asked: its copy is gone.
+    // The ask's row offers the thread that was asked, as that.
+    await expect(pastAsk.getByTestId('agent-tray-row-open-pane')).toHaveAttribute('aria-label', `Open ${PEER}, the thread asked, in Agent Pane`);
     await pastAsk.getByTestId('agent-tray-row-open-pane').click();
     await expect(companionPane(page).getByTestId('chat-header-title')).toHaveText(PEER, { timeout: 30_000 });
 

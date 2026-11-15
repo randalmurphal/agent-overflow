@@ -607,6 +607,11 @@ type Thread struct {
 	// row is the record, and it outlives the retention floor while this
 	// thread exists (spawnLineageSQL).
 	SpawnedByThreadID string `json:"spawnedByThreadId,omitempty"`
+	// AskCopy marks the hidden copy a thread_ask runs in (a scratch thread
+	// its request owns, scratch_threads.request_token): it takes no
+	// message from a person and cannot be kept, and it is deleted once it
+	// answers. Derived; false for a side chat and every other thread.
+	AskCopy bool `json:"askCopy,omitempty"`
 	// HasActionableProposedPlan is derived for sidebar boot state. It is
 	// true when the latest assistant proposed plan is completed and has
 	// not been implemented yet. It is not a persisted threads column.

@@ -132,3 +132,27 @@ export function agentRowBlockedLabel(row: Pick<ThreadAgentRow, 'blockedOn' | 'bl
       return '';
   }
 }
+
+/** Whether a row has a digest to open: what it did, waits on, said or answered. */
+export function agentRowHasDigest(row: Pick<ThreadAgentRow, 'activity' | 'blockedDetail' | 'lastMessage' | 'answer' | 'nestedUnavailable'>): boolean {
+  return Boolean(row.activity || row.blockedDetail || row.lastMessage || row.answer || row.nestedUnavailable);
+}
+
+/**
+ * The thread a row opens, and whether it is the thread an ask asked rather
+ * than the row's worker. A spawn or send opens the thread it went to. An
+ * ask's worker is its hidden copy, which the row opens while the backend
+ * names it (`openThreadId`, while the ask runs); the copy is deleted once
+ * it answers, and then the row offers the thread asked (`askedThreadId`)
+ * as that, never as its worker. Null when there is nothing to open yet.
+ */
+export function agentRowOpenTarget(
+  row: Pick<ThreadAgentRow, 'kind' | 'threadId' | 'openThreadId' | 'askedThreadId'>,
+): { threadId: string; asked: boolean } | null {
+  if (row.kind === 'ask') {
+    if (row.openThreadId) return { threadId: row.openThreadId, asked: false };
+    return row.askedThreadId ? { threadId: row.askedThreadId, asked: true } : null;
+  }
+  const threadId = row.openThreadId || row.threadId;
+  return threadId ? { threadId, asked: false } : null;
+}

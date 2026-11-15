@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentRowBlockedLabel, agentRowCallers, visibleAgentRows } from './agentTray';
+import { agentRowBlockedLabel, agentRowCallers, agentRowOpenTarget, visibleAgentRows } from './agentTray';
 import type { ThreadAgentRow } from '../stores/bindings';
 
 function row(token: string, depth: number, state = 'running', over: Partial<ThreadAgentRow> = {}): ThreadAgentRow {
@@ -39,5 +39,18 @@ describe('agentRowBlockedLabel', () => {
     expect(agentRowBlockedLabel({ blockedOn: 'person', computer: 'Studio', blockedRoutedTo: 'Lead' })).toBe('Waiting on Lead on Studio');
     expect(agentRowBlockedLabel({ blockedOn: 'person', computer: 'Studio' })).toBe('Waiting on a person on Studio');
     expect(agentRowBlockedLabel({ blockedOn: 'approval', blockedDetail: 'Bash', blockedRoutedTo: 'Lead' })).toBe('Needs approval for Bash, waiting on Lead');
+  });
+});
+
+describe('agentRowOpenTarget', () => {
+  it('opens a spawn or send thread, an ask copy while it is named, then the thread asked as that', () => {
+    expect(agentRowOpenTarget(row('s', 0))).toEqual({ threadId: 't-s', asked: false });
+    expect(agentRowOpenTarget(row('s', 0, 'running', { openThreadId: 't-open' }))).toEqual({ threadId: 't-open', asked: false });
+    const ask = { kind: 'ask', threadId: 'copy', askedThreadId: 'origin' };
+    expect(agentRowOpenTarget(row('a', 0, 'running', { ...ask, openThreadId: 'copy' }))).toEqual({ threadId: 'copy', asked: false });
+    // The copy is never opened once the backend stops naming it.
+    expect(agentRowOpenTarget(row('a', 0, 'replied', ask))).toEqual({ threadId: 'origin', asked: true });
+    expect(agentRowOpenTarget(row('a', 0, 'replied', { kind: 'ask', threadId: 'copy' }))).toBeNull();
+    expect(agentRowOpenTarget(row('q', 0, 'accepted', { threadId: '' }))).toBeNull();
   });
 });
