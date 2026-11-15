@@ -7,13 +7,17 @@
 // highlight. With a second pane focused, mod+f opens that pane's own bar
 // with its own query and highlight; Escape closes it and returns focus to
 // the composer it came from. An agent pane's find reads only that agent's
-// transcript and the thread pane's only its top-level rows. During a live
+// transcript and the thread pane's only its top-level rows. The count is
+// what the pane paints: text markup joins is one match, a link target, a
+// diagram's source and math are none, and a command card's command, from
+// its meta, is one. During a live
 // turn the count follows streamed text, and Escape from the transcript or
 // the composer closes the find before a further Escape interrupts. mod+f
 // opens nothing behind the settings overlay or the command palette, and the
 // palette's Find in Pane opens the bar. mod+shift+f still opens the
 // dialog, which has no thread mode. Compact Back: compact-pane-find.spec.ts. Unit and component coverage: paneFind.svelte.test.ts,
-// threadFind.svelte.test.ts, PaneFindBar.test.ts, findHighlights.browser.test.ts.
+// threadFind.svelte.test.ts, PaneFindBar.test.ts, findHighlights.browser.test.ts,
+// threadFindText.browser.test.ts.
 import type { Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import {
@@ -173,6 +177,52 @@ test('an agent pane finds only its own transcript, and the thread pane only its 
   await expect(threadPane.getByTestId('pane-find-count')).toHaveText('No results');
   await threadPane.getByTestId('pane-find-input').fill('surveys are done');
   await expect(threadPane.getByTestId('pane-find-count')).toHaveText('1/1');
+});
+
+test('the count is what the pane paints: rendered markdown and a tool card\'s command', async ({ harness, page }) => {
+  const markdown = [
+    '**foo**bar and [docs](https://example.com/hiddentarget)suffix.',
+    '```mermaid\ngraph TD; Start-->Finishline\n```',
+    'Math $qqq+1$ inline.',
+  ].join('\n\n');
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'pane-find-render', repo: {}, threads: [{ title: 'Rendered rows', provider: 'claude', turns: [
+      { userText: 'Render it', items: [{ kind: 'assistant_text', summary: markdown }] },
+      { userText: 'Run it', items: [
+        { kind: 'tool_call', toolName: 'Bash', summary: 'Bash', meta: { input: { command: 'grep -rn toolneedle src/' } } },
+        { kind: 'assistant_text', summary: 'Ran the search.' },
+      ] },
+    ] }] }],
+  });
+  const [threadId] = seed.projects[0].threadIds;
+  await harness.open(page);
+  await page.locator(`[data-sidebar-thread-id="${threadId}"]`).click();
+  const pane = page.locator('section[data-pane-kind="thread"]');
+  await expect(pane.getByText('Ran the search.', { exact: true })).toBeVisible();
+  await pane.getByLabel('Message Input').click();
+  await page.keyboard.press('ControlOrMeta+f');
+  const count = pane.getByTestId('pane-find-count');
+  const input = pane.getByTestId('pane-find-input');
+  const name = await pane.getAttribute('data-pane-id').then((id) => `ao-find-${id!.replace(/[^A-Za-z0-9_-]/g, '_')}`);
+  const shown = async () => [...await painted(page, name), ...await painted(page, `${name}-current`)];
+
+  // Text markup joins is one match, counted and painted.
+  await page.keyboard.type('foobar');
+  await expect(count).toHaveText('1/1');
+  await expect.poll(shown).toEqual(['foobar']);
+  await input.fill('docssuffix');
+  await expect(count).toHaveText('1/1');
+  await expect.poll(shown).toEqual(['docssuffix']);
+  // A link's target, a diagram's source and math show no text find reads.
+  for (const query of ['hiddentarget', 'Finishline', 'qqq']) {
+    await input.fill(query);
+    await expect(count).toHaveText('No results');
+    expect(await shown()).toEqual([]);
+  }
+  // A command card's command comes from its meta, not its summary.
+  await input.fill('toolneedle');
+  await expect(count).toHaveText('1/1');
+  await expect.poll(shown).toEqual(['toolneedle']);
 });
 
 test('a live turn: the count follows streamed text, and Escape closes the find before it interrupts', async ({ harness, page }) => {

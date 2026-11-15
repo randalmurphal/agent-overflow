@@ -16,11 +16,24 @@ function hit(itemId: string, turnIndex: number, itemIndex = 0): Hit {
   return { itemId, turnIndex, itemIndex };
 }
 
-function wireHit(h: Hit) {
+// Every query these tests type is in this text, so a candidate with it is
+// a hit unless a test says otherwise.
+const SHOWN = 'needle needles nee first second third abcde other';
+
+function wireHit(h: Hit, summary = SHOWN) {
   return {
-    ownershipEpoch: 0, threadId: 't1', threadTitle: 'T', provider: 'claude',
-    itemKind: 'assistant_text', itemRole: 'assistant', summary: 's', matchType: 'item', ...h,
+    id: h.itemId, threadId: 't1', turnIndex: h.turnIndex, itemIndex: h.itemIndex,
+    kind: 'assistant_text', role: 'assistant', status: 'completed', summary, createdAt: 0, updatedAt: 0,
   };
+}
+
+type WireItem = ReturnType<typeof wireHit>;
+
+const SINCE = { threadId: 't1', needle: 'needle', selection: {}, limit: THREAD_FIND_LIMIT, capped: false, generation: 'g', rev: 1, epoch: 0, importChunks: 0, importOrder: -1 };
+
+/** A full answer of the store: these candidates. */
+function full(items: WireItem[], capped = false) {
+  return { since: { ...SINCE, capped }, incremental: false, items, changed: [], capped };
 }
 
 function host(overrides: Partial<ThreadFindHost> = {}) {
@@ -33,6 +46,8 @@ function host(overrides: Partial<ThreadFindHost> = {}) {
     pane: () => ({ requestScrollToItem, withdrawScrollToItem }),
     readingPosition: () => null,
     isOnScreen: () => false,
+    findRuns: (item) => [item.summary],
+    findRunsLive: () => false,
     paint,
     ...overrides,
   };
@@ -75,7 +90,7 @@ describe('currentHitIndex', () => {
 
 describe('thread find', () => {
   it('debounces the read, scopes it to the pane, and reports pending until it answers', async () => {
-    const search = setBindingMock('SearchThreadItems', async () => [wireHit(hit('a', 1))]);
+    const search = setBindingMock('SearchThreadItems', async () => full([wireHit(hit('a', 1))]));
     const h = host();
     const find = createThreadFind(h.value);
     find.search('nee');
@@ -83,24 +98,24 @@ describe('thread find', () => {
     expect(find.result.pending).toBe(true);
     await settle();
     expect(search).toHaveBeenCalledTimes(1);
-    expect(search.mock.calls[0]).toEqual(['t1', 'needle', THREAD_FIND_LIMIT]);
+    expect(search.mock.calls[0]).toEqual(['t1', 'needle', THREAD_FIND_LIMIT, null]);
     expect(find.result).toMatchObject({ count: 1, current: 0, pending: false });
     find.clear();
   });
 
   it('reads an agent transcript through the scoped search', async () => {
-    const scoped = setBindingMock('SearchTimelineItems', async () => [wireHit(hit('child', 2))]);
+    const scoped = setBindingMock('SearchTimelineItems', async () => full([wireHit(hit('child', 2))]));
     const h = host({ scope: () => ({ threadId: 't1', scopeRootId: 'root', backend: 'home', generation: 0 }) });
     const find = createThreadFind(h.value);
     find.search('needle');
     await settle();
-    expect(scoped.mock.calls[0]).toEqual(['t1', 'needle', { scopeRootId: 'root' }, THREAD_FIND_LIMIT]);
+    expect(scoped.mock.calls[0]).toEqual(['t1', 'needle', { scopeRootId: 'root' }, THREAD_FIND_LIMIT, null]);
     expect(find.result.count).toBe(1);
     find.clear();
   });
 
   it('drops a late answer for an older query', async () => {
-    const answers: Array<(hits: unknown[]) => void> = [];
+    const answers: Array<(answer: unknown) => void> = [];
     setBindingMock('SearchThreadItems', () => new Promise((resolve) => answers.push(resolve)));
     const h = host();
     const find = createThreadFind(h.value);
@@ -108,17 +123,17 @@ describe('thread find', () => {
     await settle();
     find.search('second');
     await settle();
-    answers[0]([wireHit(hit('a', 1))]);
+    answers[0](full([wireHit(hit('a', 1))]));
     await vi.advanceTimersByTimeAsync(0);
     expect(find.result).toMatchObject({ count: 0, pending: true });
-    answers[1]([wireHit(hit('b', 2)), wireHit(hit('c', 3))]);
+    answers[1](full([wireHit(hit('b', 2)), wireHit(hit('c', 3))]));
     await vi.advanceTimersByTimeAsync(0);
     expect(find.result).toMatchObject({ count: 2, pending: false });
     find.clear();
   });
 
   it('keeps one read in flight and only the newest waiting', async () => {
-    const answers: Array<(hits: unknown[]) => void> = [];
+    const answers: Array<(answer: unknown) => void> = [];
     const search = setBindingMock('SearchThreadItems', () => new Promise((resolve) => answers.push(resolve)));
     const find = createThreadFind(host().value);
     for (const query of ['a', 'ab', 'abc', 'abcd', 'abcde']) {
@@ -128,11 +143,11 @@ describe('thread find', () => {
       await vi.advanceTimersByTimeAsync(2000);
     }
     expect(search).toHaveBeenCalledTimes(1);
-    answers[0]([]);
+    answers[0](full([]));
     await vi.advanceTimersByTimeAsync(0);
     expect(search).toHaveBeenCalledTimes(2);
     expect(search.mock.calls[1][1]).toBe('abcde');
-    answers[1]([wireHit(hit('e', 1))]);
+    answers[1](full([wireHit(hit('e', 1))]));
     await vi.advanceTimersByTimeAsync(2000);
     expect(search).toHaveBeenCalledTimes(2);
     expect(find.result).toMatchObject({ count: 1, pending: false });
@@ -140,7 +155,7 @@ describe('thread find', () => {
   });
 
   it('a remounted find on the same pane queues behind the read the old one left out', async () => {
-    const answers: Array<(hits: unknown[]) => void> = [];
+    const answers: Array<(answer: unknown) => void> = [];
     const search = setBindingMock('SearchThreadItems', () => new Promise((resolve) => answers.push(resolve)));
     const before = createThreadFind(host().value);
     before.search('needle');
@@ -150,10 +165,10 @@ describe('thread find', () => {
     after.search('needle');
     await settle();
     expect(search).toHaveBeenCalledTimes(1);
-    answers[0]([wireHit(hit('a', 1))]);
+    answers[0](full([wireHit(hit('a', 1))]));
     await vi.advanceTimersByTimeAsync(0);
     expect(search).toHaveBeenCalledTimes(2);
-    answers[1]([wireHit(hit('a', 1))]);
+    answers[1](full([wireHit(hit('a', 1))]));
     await vi.advanceTimersByTimeAsync(0);
     expect(after.result).toMatchObject({ count: 1, pending: false });
     expect(before.result.count).toBe(0);
@@ -161,7 +176,7 @@ describe('thread find', () => {
   });
 
   it('a close drops the waiting read', async () => {
-    const answers: Array<(hits: unknown[]) => void> = [];
+    const answers: Array<(answer: unknown) => void> = [];
     const search = setBindingMock('SearchThreadItems', () => new Promise((resolve) => answers.push(resolve)));
     const find = createThreadFind(host().value);
     find.search('first');
@@ -169,7 +184,7 @@ describe('thread find', () => {
     find.search('second');
     await settle();
     find.clear();
-    answers[0]([wireHit(hit('a', 1))]);
+    answers[0](full([wireHit(hit('a', 1))]));
     await vi.advanceTimersByTimeAsync(2000);
     expect(search).toHaveBeenCalledTimes(1);
     expect(find.result).toMatchObject({ count: 0, current: -1, pending: false });
@@ -182,7 +197,7 @@ describe('thread find', () => {
     await settle();
     find.clear();
     find.search('third');
-    answers[1]([]);
+    answers[1](full([]));
     await vi.advanceTimersByTimeAsync(0);
     expect(search).toHaveBeenCalledTimes(2);
     await settle();
@@ -192,7 +207,7 @@ describe('thread find', () => {
   });
 
   it('an invalidation during a pending query re-reads after it', async () => {
-    const answers: Array<(hits: unknown[]) => void> = [];
+    const answers: Array<(answer: unknown) => void> = [];
     const search = setBindingMock('SearchThreadItems', () => new Promise((resolve) => answers.push(resolve)));
     const find = createThreadFind(host().value);
     find.search('needle');
@@ -200,18 +215,18 @@ describe('thread find', () => {
     find.refresh();
     await vi.advanceTimersByTimeAsync(2000);
     expect(search).toHaveBeenCalledTimes(1);
-    answers[0]([]);
+    answers[0](full([]));
     await vi.advanceTimersByTimeAsync(0);
     expect(search).toHaveBeenCalledTimes(2);
-    answers[1]([wireHit(hit('a', 1))]);
+    answers[1](full([wireHit(hit('a', 1))]));
     await vi.advanceTimersByTimeAsync(0);
     expect(find.result).toMatchObject({ count: 1, current: 0, pending: false });
     find.clear();
   });
 
   it('a refresh never moves the view, even from no hits to some', async () => {
-    let answer: ReturnType<typeof wireHit>[] = [];
-    setBindingMock('SearchThreadItems', async () => answer);
+    let answer: WireItem[] = [];
+    setBindingMock('SearchThreadItems', async () => full(answer));
     const h = host({ readingPosition: () => ({ turnIndex: 4, itemIndex: 0 }) });
     const find = createThreadFind(h.value);
     find.search('needle');
@@ -227,13 +242,13 @@ describe('thread find', () => {
   });
 
   it('drops answers from an old owner or generation and searches the new one', async () => {
-    const answers: Array<{ resolve: (hits: unknown[]) => void; reject: (err: unknown) => void }> = [];
+    const answers: Array<{ resolve: (answer: unknown) => void; reject: (err: unknown) => void }> = [];
     const search = setBindingMock('SearchThreadItems', () => new Promise((resolve, reject) => answers.push({ resolve, reject })));
     let scope = { threadId: 't1', backend: 'home', generation: 0 };
     const find = createThreadFind(host({ scope: () => scope }).value);
     find.search('needle');
     await settle();
-    answers[0].resolve([wireHit(hit('a', 1))]);
+    answers[0].resolve(full([wireHit(hit('a', 1))]));
     await vi.advanceTimersByTimeAsync(0);
     expect(find.result.count).toBe(1);
 
@@ -241,7 +256,7 @@ describe('thread find', () => {
     find.refresh();
     await vi.advanceTimersByTimeAsync(2000);
     scope = { ...scope, backend: 'remote' };
-    answers[1].resolve([wireHit(hit('a', 1)), wireHit(hit('b', 2))]);
+    answers[1].resolve(full([wireHit(hit('a', 1)), wireHit(hit('b', 2))]));
     await vi.advanceTimersByTimeAsync(0);
     expect(find.result.count).toBe(1);
     find.rescope();
@@ -260,14 +275,14 @@ describe('thread find', () => {
     expect(find.result.pending).toBe(true);
     find.rescope();
     await vi.advanceTimersByTimeAsync(0);
-    answers[3].resolve([wireHit(hit('c', 3))]);
+    answers[3].resolve(full([wireHit(hit('c', 3))]));
     await vi.advanceTimersByTimeAsync(0);
     expect(find.result).toMatchObject({ count: 1, pending: false });
     find.clear();
   });
 
   it('withdraws its reveal when the query changes or the find closes', async () => {
-    setBindingMock('SearchThreadItems', async () => [wireHit(hit('a', 1))]);
+    setBindingMock('SearchThreadItems', async () => full([wireHit(hit('a', 1))]));
     const h = host();
     const find = createThreadFind(h.value);
     find.search('needle');
@@ -282,7 +297,7 @@ describe('thread find', () => {
   });
 
   it('starts at the hit nearest the reading position and jumps only when it is off screen', async () => {
-    setBindingMock('SearchThreadItems', async () => [wireHit(hit('a', 1)), wireHit(hit('b', 5)), wireHit(hit('c', 9))]);
+    setBindingMock('SearchThreadItems', async () => full([wireHit(hit('a', 1)), wireHit(hit('b', 5)), wireHit(hit('c', 9))]));
     let onScreen = false;
     const h = host({ readingPosition: () => ({ turnIndex: 4, itemIndex: 0 }), isOnScreen: () => onScreen });
     const find = createThreadFind(h.value);
@@ -301,7 +316,7 @@ describe('thread find', () => {
   });
 
   it('steps with wrap in both directions and always reveals the step', async () => {
-    setBindingMock('SearchThreadItems', async () => [wireHit(hit('a', 1)), wireHit(hit('b', 2))]);
+    setBindingMock('SearchThreadItems', async () => full([wireHit(hit('a', 1)), wireHit(hit('b', 2))]));
     const h = host({ isOnScreen: () => true });
     const find = createThreadFind(h.value);
     find.search('needle');
@@ -319,7 +334,7 @@ describe('thread find', () => {
 
   it('a refresh keeps the current hit and does not move the view', async () => {
     let answer = [wireHit(hit('a', 1)), wireHit(hit('b', 2))];
-    setBindingMock('SearchThreadItems', async () => answer);
+    setBindingMock('SearchThreadItems', async () => full(answer));
     const h = host({ isOnScreen: () => true });
     const find = createThreadFind(h.value);
     find.search('needle');
@@ -335,7 +350,7 @@ describe('thread find', () => {
   });
 
   it('an empty query and clear drop hits and paint nothing', async () => {
-    const search = setBindingMock('SearchThreadItems', async () => [wireHit(hit('a', 1))]);
+    const search = setBindingMock('SearchThreadItems', async () => full([wireHit(hit('a', 1))]));
     const h = host();
     const find = createThreadFind(h.value);
     find.search('needle');
@@ -361,13 +376,83 @@ describe('thread find', () => {
     find.clear();
   });
 
-  it('reports a capped count at the limit', async () => {
-    setBindingMock('SearchThreadItems', async () =>
-      Array.from({ length: THREAD_FIND_LIMIT }, (_, i) => wireHit(hit(`i${i}`, i))));
+  it('reports the count capped when the store stopped at its limit', async () => {
+    // A query of punctuation alone narrows nothing in the store: every row
+    // is a candidate up to the limit, and fewer of them show a match.
+    const items = Array.from({ length: THREAD_FIND_LIMIT }, (_, i) => wireHit(hit(`i${i}`, i), i % 2 ? 'a % b' : 'no sign'));
+    setBindingMock('SearchThreadItems', async () => full(items, true));
     const find = createThreadFind(host().value);
-    find.search('e');
+    find.search('%');
     await settle();
-    expect(find.result).toMatchObject({ count: THREAD_FIND_LIMIT, capped: true });
+    expect(find.result).toMatchObject({ count: THREAD_FIND_LIMIT / 2, capped: true });
+    find.clear();
+  });
+
+  it('counts only the candidates whose find text shows a match', async () => {
+    // The store's candidates over-match: a link's target holds "example"
+    // and a summary's markup joins "foo" and "bar", but only what the row
+    // shows counts.
+    setBindingMock('SearchThreadItems', async () => full([
+      wireHit(hit('link', 1), 'Read [docs](https://example.com/x)'),
+      wireHit(hit('bold', 2), '**foo**bar'),
+    ]));
+    const shown: Record<string, string> = { link: 'Read docs', bold: 'foobar' };
+    const h = host({ findRuns: (item) => [shown[item.id]] });
+    const find = createThreadFind(h.value);
+    find.search('example');
+    await settle();
+    expect(find.result).toMatchObject({ count: 0, current: -1, capped: false });
+    find.search('foobar');
+    await settle();
+    expect(find.result).toMatchObject({ count: 1, current: 0 });
+    expect(h.paint).toHaveBeenLastCalledWith('foobar', 'bold');
+    find.clear();
+  });
+
+  it('a refresh passes the last answer and applies only what changed', async () => {
+    const answers: unknown[] = [
+      full([wireHit(hit('a', 1)), wireHit(hit('b', 2))]),
+      // b changed and no longer matches; c is new.
+      { since: { ...SINCE, rev: 5 }, incremental: true, items: [wireHit(hit('c', 3))], changed: ['b', 'c'], capped: false },
+      { since: { ...SINCE, rev: 6 }, incremental: true, items: [], changed: [], capped: false },
+    ];
+    const search = setBindingMock('SearchThreadItems', async () => answers.shift());
+    const find = createThreadFind(host().value);
+    find.search('needle');
+    await settle();
+    expect(find.result.count).toBe(2);
+    find.refresh();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(search.mock.calls[1][3]).toEqual({ ...SINCE, capped: false });
+    expect(find.result.count).toBe(2);
+    find.refresh();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(search.mock.calls[2][3]).toEqual({ ...SINCE, rev: 5 });
+    expect(find.result).toMatchObject({ count: 2, pending: false });
+    // A new query reads in full.
+    answers.push(full([wireHit(hit('d', 4))]));
+    find.search('other');
+    await settle();
+    expect(search.mock.calls[3][3]).toBeNull();
+    expect(find.result.count).toBe(1);
+    find.clear();
+  });
+
+  it('re-decides the hits when live find text changes with no read', async () => {
+    setBindingMock('SearchThreadItems', async () => full([wireHit(hit('think', 1), 'tail only')]));
+    let expanded = false;
+    const h = host({
+      findRuns: () => (expanded ? ['the opening needle, then the tail only'] : []),
+      findRunsLive: () => true,
+    });
+    const find = createThreadFind(h.value);
+    find.search('needle');
+    await settle();
+    expect(find.result.count).toBe(0);
+    expanded = true;
+    find.reevaluate();
+    expect(find.result).toMatchObject({ count: 1, current: 0 });
+    expect(h.paint).toHaveBeenLastCalledWith('needle', 'think');
     find.clear();
   });
 });

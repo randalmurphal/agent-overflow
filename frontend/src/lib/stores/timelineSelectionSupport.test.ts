@@ -113,6 +113,6 @@ it('finds only on an owner that serves the find contract', async () => {
   expect(threadFindBackend('thread')).toBe('remote');
   await SearchThreadItems('thread', 'needle', 10);
   await SearchThreadItems('thread', 'needle', 10, { scopeRootId: 'agent' });
-  expect(main).toHaveBeenCalledExactlyOnceWith('thread', 'needle', 10);
-  expect(scoped).toHaveBeenCalledExactlyOnceWith('thread', 'needle', { scopeRootId: 'agent' }, 10);
+  expect(main).toHaveBeenCalledExactlyOnceWith('thread', 'needle', 10, null);
+  expect(scoped).toHaveBeenCalledExactlyOnceWith('thread', 'needle', { scopeRootId: 'agent' }, 10, null);
 });

@@ -1349,6 +1349,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      *  thread switch — see utils/virtual/priors.ts. */
     expansionSignature: rowUiState.expansionSignature,
     hasUserExpansionWithin: rowUiState.hasUserExpansionWithin,
+    expandedItemData: rowUiState.expandedItemData,
     activityRuns,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
     pruneRowUiState(retention: RowUiStateRetention): void {

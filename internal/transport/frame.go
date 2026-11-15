@@ -96,9 +96,10 @@ const CapabilityFlushSettlement = "flush-settlement.v1"
 
 // CapabilityThreadFind names the find bar's search contract:
 // SearchTimelineItems for an agent transcript, and SearchThreadItems
-// answering only the main transcript's visible top-level rows. A backend
-// without it answers SearchThreadItems with agent descendants included, so
-// a client offers no find for its threads.
+// answering only the main transcript's visible top-level rows, both
+// answering the candidate rows the bar counts in and the incremental
+// refresh (store.ThreadFindAnswer). A client offers no find for the
+// threads of a backend without it.
 const CapabilityThreadFind = "thread-find.v1"
 
 // CapabilityPRReviewDrafts names SubmitPRReview's draft submit: a request

@@ -169,6 +169,7 @@
     bind:this={clipEl}
     id={textDomId}
     data-testid="user-message-summary"
+    data-find-text
     data-clamped={collapsed && overflows ? 'true' : undefined}
     class={[
       'whitespace-pre-wrap wrap-anywhere',
@@ -190,7 +191,7 @@
     >{expanded ? 'Show less' : 'Show more'}</button>
   {/if}
 {:else}
-  <p class="whitespace-pre-wrap wrap-anywhere" data-testid="user-message-summary"
+  <p class="whitespace-pre-wrap wrap-anywhere" data-testid="user-message-summary" data-find-text
   >{@render content()}</p>
 {/if}
 
