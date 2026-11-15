@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"agent-overflow/internal/forgeapi"
@@ -66,7 +67,8 @@ type gitlabMergeAnswer struct {
 // later). The answer is the merge request: merged is Merged, an armed
 // merge_when_pipeline_succeeds is AutoMerge, and a merge request still
 // open with neither is a merge GitLab runs asynchronously, which the
-// pump's next poll shows.
+// pump's next poll shows. A merge train project joins the train instead
+// (gitlabJoinMergeTrain).
 func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeRequest) (MergeOutcome, error) {
 	if err := req.Validate(); err != nil {
 		return MergeOutcome{}, err
@@ -85,6 +87,9 @@ func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 	}
 	if !slices.Contains(allowed, req.Method) {
 		return MergeOutcome{}, fmt.Errorf("%s does not allow the %s merge method (allowed: %s)", ref.Project(), req.Method, strings.Join(allowed, ", "))
+	}
+	if settings.MergeTrainsEnabled {
+		return gitlabJoinMergeTrain(ctx, client, ref, req)
 	}
 	body := map[string]any{
 		"sha":                         strings.TrimSpace(req.HeadSHA),
@@ -122,6 +127,37 @@ func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 		return MergeOutcome{AutoMerge: true}, nil
 	}
 	return MergeOutcome{}, nil
+}
+
+// gitlabJoinMergeTrain is Merge on a merge train project (Premium,
+// Ultimate), which never merges around the train: a PUT .../merge there
+// merges at once ("The commits from the merge request are merged,
+// ignoring the status of the merge train"). It POSTs
+// merge_trains/merge_requests/N with the head and squash; auto_merge
+// "If true, the merge request is added to the merge train when the
+// checks pass. When false or unspecified, the merge request is added
+// directly to the merge train." (merge trains API, 18.0). Both arm the
+// merge request's auto-merge (merge_when_pipeline_succeeds), which
+// CancelAutoMerge cancels, taking it off the train. The train takes no
+// commit message and no branch delete, so either is refused before the
+// write: GitLab writes the message, and the merge request's own "Delete
+// source branch" applies.
+func gitlabJoinMergeTrain(ctx context.Context, client *forgeapi.Client, ref PRReference, req MergeRequest) (MergeOutcome, error) {
+	switch {
+	case req.CommitMessage != nil:
+		return MergeOutcome{}, &ForgeActionError{Kind: ForgeErrorRefused, Message: "This project merges through a merge train, which takes no commit message."}
+	case req.DeleteBranch:
+		return MergeOutcome{}, &ForgeActionError{Kind: ForgeErrorRefused, Message: "This project merges through a merge train, which deletes the source branch by the merge request's own setting."}
+	}
+	body := map[string]any{
+		"sha":        strings.TrimSpace(req.HeadSHA),
+		"squash":     req.Method == MergeMethodSquash,
+		"auto_merge": req.AutoMerge,
+	}
+	if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: gitlabProjectPath(ref.Project()) + "/merge_trains/merge_requests/" + strconv.Itoa(ref.Number), Body: body}, nil); err != nil {
+		return MergeOutcome{}, err
+	}
+	return MergeOutcome{AutoMerge: true}, nil
 }
 
 // CancelAutoMerge disarms an armed auto-merge, on a merge train project

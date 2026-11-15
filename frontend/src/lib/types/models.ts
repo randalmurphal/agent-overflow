@@ -666,6 +666,21 @@ export interface MergeOptions {
   viewerApproved: boolean;
   cannotApproveReason?: string;
   cannotMergeReason?: string;
+  /** The merge queue the target branch merges through (a GitLab merge train). */
+  queue?: MergeQueue | null;
+}
+
+/** Mirrors git.MergeQueue: a target branch's merge queue as this PR sees it. */
+export interface MergeQueue {
+  /** Every merge goes through it: Merge now adds the PR, auto-merge adds it once ready. */
+  required: boolean;
+  /** In the queue now; an armed auto-merge that is not queued waits to join. */
+  queued: boolean;
+  /** 1-based place and the queue's length; absent when unknown. */
+  position?: number;
+  size?: number;
+  /** The viewer may take it out (CancelPRAutoMerge). */
+  canRemove: boolean;
 }
 
 export interface AutoMergeRequest {

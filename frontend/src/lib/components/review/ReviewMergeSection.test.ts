@@ -237,6 +237,50 @@ describe('<ReviewMergeSection>', () => {
     expect(within(reopened).queryByTestId('review-merge-auto')).toBeNull();
   });
 
+  it('adds to a required merge queue, shows the place it holds and removes it', async () => {
+    const queue = { required: true, queued: false, canRemove: false };
+    const ready = prDetailFixture({ merge: { ...prDetailFixture().merge, deleteBranchOffered: false, queue } });
+    const merge = setBindingMock('MergePR', async () => ({ seq: 2, outcome: { merged: false, autoMerge: true } }));
+    const view = await mountReviewPanePR(ready);
+    await openMergeSection(view);
+    // Merge now adds the PR to the queue, and the labels say so; the
+    // queue writes its own commit message.
+    expect(view.getByTestId('review-merge-trigger')).toHaveTextContent('Add to merge queue');
+    const menu = await openMergeMenu(view);
+    expect(within(menu).getByTestId('review-merge-now')).toHaveTextContent('Add to merge queue');
+    expect(within(menu).getByTestId('review-merge-auto')).toHaveTextContent('Add to merge queue when ready');
+    expect(within(menu).queryByTestId('review-merge-edit-message')).toBeNull();
+    expect(within(menu).queryByTestId('review-merge-delete-branch')).toBeNull();
+    await fireEvent.click(within(menu).getByTestId('review-merge-now'));
+    expect(merge).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }), { method: 'merge', headSHA: 'sha-a', deleteBranch: false, autoMerge: false });
+    const autoMerge = { method: 'merge', byLogin: 'octocat', byName: 'Octo Cat', at: '2026-10-20T10:00:00Z', waitsFor: 'all merge checks pass', canCancel: true };
+    frame(prDetailFixture({ merge: { ...ready.merge, autoMerge, queue: { required: true, queued: true, position: 2, size: 3, canRemove: true } } }), 2);
+    await waitFor(() => {
+      expect(view.getByTestId('review-merge-trigger')).toHaveTextContent('In merge queue');
+    });
+    expect(getToasts().some((toast) => toast.message === 'Merging…')).toBe(false);
+    const armed = view.getByTestId('review-merge-armed');
+    expect(armed).toHaveTextContent('In the merge queue · 2 of 3');
+    expect(armed).toHaveTextContent('Added by Octo Cat · Merge commit');
+    const reopened = await openMergeMenu(view);
+    expect(within(reopened).getByTestId('review-merge-cancel-auto')).toHaveTextContent('Remove from merge queue');
+    await fireEvent.click(view.getByTestId('review-merge-trigger'));
+    const cancel = setBindingMock('CancelPRAutoMerge', async () => ({ seq: 3 }));
+    const remove = within(armed).getByTestId('review-merge-row-cancel-auto');
+    expect(remove).toHaveTextContent('Remove');
+    await fireEvent.click(remove);
+    await waitFor(() => {
+      expect(cancel).toHaveBeenCalledTimes(1);
+    });
+    // Waiting to join: the armed row says what it waits for.
+    frame(prDetailFixture({ merge: { ...ready.merge, autoMerge, queue: { required: true, queued: false, canRemove: true } } }), 3);
+    await waitFor(() => {
+      expect(view.getByTestId('review-merge-armed')).toHaveTextContent('Joins the merge queue once all checks pass');
+    });
+    expect(view.getByTestId('review-merge-armed')).not.toHaveTextContent('Merges once');
+    expect(view.getByTestId('review-merge-trigger')).toHaveTextContent('Auto-merge set');
+  });
+
   it('hides the actions a viewer cannot take and says why', async () => {
     const view = await mountReviewPanePR(blocked({
       merge: {

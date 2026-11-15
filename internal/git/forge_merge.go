@@ -124,6 +124,25 @@ type MergeOptions struct {
 	// CannotMergeReason explains a greyed Merge now ("You do not have
 	// merge access to this project").
 	CannotMergeReason string `json:"cannotMergeReason,omitempty"`
+	// Queue is the merge queue the target branch merges through (a
+	// GitLab merge train), nil when it has none.
+	Queue *MergeQueue `json:"queue,omitempty"`
+}
+
+// MergeQueue is a target branch's merge queue as one pull request sees
+// it. Required: every merge goes through the queue, so Merge now adds the
+// pull request to it and auto-merge adds it once its checks pass; the
+// forge merges it when its turn comes. Queued: it is in the queue now,
+// Position its 1-based place and Size the queue's length, each 0 when
+// unknown. An armed AutoMerge that is not Queued waits to join.
+// CanRemove: the viewer may take it out, which cancelling the auto-merge
+// does.
+type MergeQueue struct {
+	Required  bool `json:"required"`
+	Queued    bool `json:"queued"`
+	Position  int  `json:"position,omitempty"`
+	Size      int  `json:"size,omitempty"`
+	CanRemove bool `json:"canRemove"`
 }
 
 // AutoMergeRequest is an armed merge-when-ready: who set it, when, with

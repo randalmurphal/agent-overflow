@@ -18,7 +18,7 @@
   import { OpenExternalURL } from '../../stores/bindings';
   import { relativeTime } from '../../utils/format';
   import { authorDisplayName } from '../../utils/reviewIdentity';
-  import { READINESS_PILL_CLASS, mergeMethodLabel, readinessPill } from '../../utils/reviewReadiness';
+  import { READINESS_PILL_CLASS, mergeMethodLabel, mergeQueueNoun, mergeQueuePlace, readinessPill } from '../../utils/reviewReadiness';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import type { CIJob, MergeBlocker, PRDetail } from '../../types/models';
@@ -66,10 +66,28 @@
   const showMerge = $derived(!settledPR && !!merge && merge.viewerCanMerge);
   const canMergeNow = $derived(mergeState === 'ready' && armed === null);
   const canAutoMerge = $derived(!!merge?.autoMergeAvailable && armed === null && mergeState !== 'ready' && mergeState !== 'draft');
+  // A target branch that merges through a queue (a GitLab merge train):
+  // Merge now adds the PR to it and auto-merge adds it once ready, so the
+  // labels say so; armed and queued, the PR's place shows.
+  const queue = $derived(merge?.queue?.required ? merge.queue : null);
+  const queueNoun = $derived(mergeQueueNoun(review.prRef?.forge));
+  const queued = $derived(!!armed && !!queue?.queued);
+  const queuePlace = $derived(queued ? mergeQueuePlace(queue?.position, queue?.size) : '');
+  const nowLabel = $derived(queue ? `Add to ${queueNoun}` : 'Merge now');
+  const autoLabel = $derived(queue ? `Add to ${queueNoun} when ready` : 'Auto-merge when ready');
   const mergeLabel = $derived.by(() => {
+    if (queued) return `In ${queueNoun}`;
     if (armed) return 'Auto-merge set';
+    if (queue) return canMergeNow || !canAutoMerge ? nowLabel : autoLabel;
     if (canMergeNow || !canAutoMerge) return 'Merge';
-    return 'Auto-merge when ready';
+    return autoLabel;
+  });
+  // The phone's row has no room for the long labels.
+  const compactMergeLabel = $derived.by(() => {
+    if (queued) return 'Queued';
+    if (mergeLabel === autoLabel) return queue ? 'When ready' : 'Auto-merge';
+    if (mergeLabel === nowLabel) return `Add to ${queueNoun.replace('merge ', '')}`;
+    return mergeLabel;
   });
   const mergePending = $derived(pending === 'merge' || pending === 'auto_merge' || pending === 'cancel_auto_merge');
   const approvePending = $derived(pending === 'approve' || pending === 'unapprove');
@@ -81,7 +99,8 @@
   const manage = $derived(review.manage);
   const manageBlocked = $derived(manage.blockedReason);
   const message = $derived(manage.mergeMessage);
-  const offerMessage = $derived(!!detail.manage && methodHasCommitMessage(method));
+  // A queue writes its own commit message (GitLab's train takes none).
+  const offerMessage = $derived(!!detail.manage && !queue && methodHasCommitMessage(method));
   // Edited text stays on screen after its method stopped making a commit,
   // so it is not lost; the editor says it will not be used.
   const showMessage = $derived(showMerge && armed === null && (offerMessage || message.edited) && message.open);
@@ -127,7 +146,7 @@
   });
 
   function commitMessage() {
-    return showMessage ? message.commitMessage : undefined;
+    return showMessage && !queue ? message.commitMessage : undefined;
   }
 
   function openMessage(): void {
@@ -237,6 +256,15 @@
     const when = time(detail.mergedAt);
     return when ? `${parts.join(' ')} · ${when}` : parts.join(' ');
   });
+  // The armed row's who, how and when, and a queued PR's place.
+  const armedLine = $derived.by(() => {
+    if (!armed) return '';
+    const parts = [authorDisplayName({ authorLogin: armed.byLogin, authorName: armed.byName }), mergeMethodLabel(armed.method)];
+    const when = time(armed.at);
+    if (when) parts.push(when);
+    return parts.join(' · ');
+  });
+  const queuedLine = $derived(queuePlace ? `In the ${queueNoun} · ${queuePlace}` : `In the ${queueNoun}`);
   const closedLine = $derived.by(() => {
     const when = time(detail.closedAt);
     return when ? `Closed without merging · ${when}` : 'Closed without merging';
@@ -297,9 +325,8 @@
         {#if mergePending}
           <span class="inline-block size-3 animate-spin rounded-full border border-current border-r-transparent" aria-hidden="true"></span>
         {/if}
-        <!-- The phone's row has no room for the long label. -->
         <span class="compact:hidden">{mergeLabel}</span>
-        <span class="hidden compact:inline">{mergeLabel === 'Auto-merge when ready' ? 'Auto-merge' : mergeLabel}</span>
+        <span class="hidden compact:inline">{compactMergeLabel}</span>
         <Icon icon={ChevronDown} size={12} class="shrink-0 opacity-80" />
       </button>
     {/if}
@@ -323,16 +350,23 @@
         </div>
       {/if}
       {#if armed && !settledPR}
-        <div class={rowClass} data-testid="review-merge-armed">
+        <div class={rowClass} data-testid="review-merge-armed" data-queued={queued ? 'true' : undefined}>
           <span class="size-2 shrink-0 rounded-full bg-accent"></span>
           <span class="min-w-0 flex-1">
-            <span class="block truncate text-fg">Auto-merge set by {authorDisplayName({ authorLogin: armed.byLogin, authorName: armed.byName })} · {mergeMethodLabel(armed.method)}{#if time(armed.at)} · {time(armed.at)}{/if}</span>
-            {#if armed.waitsFor}
-              <span class="block truncate text-[0.6875rem] text-fg-muted compact:whitespace-normal compact:break-words">Merges once {armed.waitsFor}</span>
+            {#if queued}
+              <span class="block truncate text-fg">{queuedLine}</span>
+              <span class="block truncate text-[0.6875rem] text-fg-muted compact:whitespace-normal compact:break-words">Added by {armedLine}</span>
+            {:else}
+              <span class="block truncate text-fg">Auto-merge set by {armedLine}</span>
+              {#if queue}
+                <span class="block truncate text-[0.6875rem] text-fg-muted compact:whitespace-normal compact:break-words">Joins the {queueNoun} once all checks pass</span>
+              {:else if armed.waitsFor}
+                <span class="block truncate text-[0.6875rem] text-fg-muted compact:whitespace-normal compact:break-words">Merges once {armed.waitsFor}</span>
+              {/if}
             {/if}
           </span>
           {#if armed.canCancel}
-            <Button variant="ghost" size="xs" class={actionClass} testId="review-merge-row-cancel-auto" disabled={busy} onclick={() => { void review.cancelPRAutoMerge(); }}>Cancel</Button>
+            <Button variant="ghost" size="xs" class={actionClass} testId="review-merge-row-cancel-auto" disabled={busy} onclick={() => { void review.cancelPRAutoMerge(); }}>{queued ? 'Remove' : 'Cancel'}</Button>
           {/if}
         </div>
       {/if}
@@ -475,22 +509,22 @@
         {/if}
         <MenuDivider />
         <MenuItem
-          label="Merge now"
-          description={canMergeNow ? undefined : armed ? 'auto-merge is set' : blockedSummary || undefined}
+          label={nowLabel}
+          description={canMergeNow ? undefined : queued ? `in the ${queueNoun}` : armed ? 'auto-merge is set' : blockedSummary || undefined}
           disabled={!canMergeNow}
           testId="review-merge-now"
           onSelect={() => pickAndClose(() => { void review.mergePR({ method, deleteBranch, autoMerge: false, commitMessage: commitMessage() }); })}
         />
         {#if armed}
           <MenuItem
-            label="Cancel auto-merge"
+            label={queued ? `Remove from ${queueNoun}` : 'Cancel auto-merge'}
             disabled={!armed.canCancel}
             testId="review-merge-cancel-auto"
             onSelect={() => pickAndClose(() => { void review.cancelPRAutoMerge(); })}
           />
         {:else}
           <MenuItem
-            label="Auto-merge when ready"
+            label={autoLabel}
             description={mergeState === 'ready' ? 'already ready' : !merge?.autoMergeAvailable ? 'not available here' : deleteBranch && review.prRef?.forge === 'github' ? 'GitHub keeps the branch' : undefined}
             disabled={!canAutoMerge}
             testId="review-merge-auto"

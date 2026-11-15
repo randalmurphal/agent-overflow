@@ -142,7 +142,11 @@ export interface ForgeReadiness {
   behind?: boolean;
   /** GitLab only: user_can_approve, overriding the role's. */
   viewerCanApprove?: boolean;
-  autoMerge?: { method?: 'merge' | 'squash' | 'rebase'; by?: string; byName?: string; at?: string };
+  autoMerge?: {
+    method?: 'merge' | 'squash' | 'rebase'; by?: string; byName?: string; at?: string;
+    /** GitLab merge train project: a car on the train, or joining once the checks pass. */
+    strategy?: 'merge_train' | 'add_to_merge_train_when_checks_pass';
+  };
 }
 
 /** One timeline item (GitHub) or system note (GitLab); kinds per forge in forgefake Event. */
@@ -179,6 +183,8 @@ export interface ForgeRepoMerge {
   free?: boolean;
   /** GitLab: "Require user re-authentication to approve" with password sign-in. */
   approvalPassword?: boolean;
+  /** GitLab: merge trains enabled (Premium, Ultimate). */
+  mergeTrains?: boolean;
 }
 
 export interface ForgePipeline {

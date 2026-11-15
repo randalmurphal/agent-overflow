@@ -2094,6 +2094,99 @@ func TestGitLabCancelRoutesFollowTheRelease(t *testing.T) {
 	}
 }
 
+// A merge train project: projects/P says so; a merge request joins the
+// train directly when mergeable (201) or once its checks pass with
+// auto_merge (202), each refused when its strategy is not available
+// (400) or already armed (409); the car and the train's list answer in
+// train order, the list desc by default; cancel removes the car with
+// GitLab's note; a project without trains answers the routes 403, and a
+// PUT merge with auto_merge on a train project schedules the train add.
+func TestGitLabMergeTrains(t *testing.T) {
+	t.Parallel()
+	_, plain := mergeEngine(t)
+	const project = "projects/grp%2Fmerge"
+	if got := glabSend(t, plain, "POST", project+"/merge_trains/merge_requests/1", `{}`); got.status != http.StatusForbidden {
+		t.Fatalf("a project without trains = %+v", got)
+	}
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"viewer": "octo", "repos": [{"forge": "gitlab", "project": "grp/merge", "id": 7700, "merge": {"mergeTrains": true}, "pulls": [
+	  {"number": 1, "title": "No pipeline", "headRef": "one"},
+	  {"number": 2, "title": "Running", "headRef": "two", "headSha": "3333333333333333333333333333333333333333",
+	   "readiness": {"requiredApprovals": 1}, "ci": {"jobs": [{"name": "unit", "status": "running"}]}},
+	  {"number": 4, "title": "Ready", "headRef": "four", "ci": {"jobs": [{"name": "unit", "status": "success"}]}},
+	  {"number": 5, "title": "Ready too", "headRef": "five", "ci": {"jobs": [{"name": "unit", "status": "success"}]}},
+	  {"number": 6, "title": "Running too", "headRef": "six", "readiness": {"requiredApprovals": 1}, "ci": {"jobs": [{"name": "unit", "status": "running"}]}}
+	]}]}`); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	if got := glabJSON(t, srv, project); got["merge_trains_enabled"] != true {
+		t.Fatalf("project = %v", got)
+	}
+	// #1 has no pipeline: neither strategy is available.
+	if got := glabSend(t, srv, "POST", project+"/merge_trains/merge_requests/1", `{}`); got.status != http.StatusBadRequest || !strings.Contains(got.body, "Failed to merge") {
+		t.Fatalf("no pipeline = %+v", got)
+	}
+	// #2's pipeline runs and it needs an approval: it may only join once ready.
+	if got := glabSend(t, srv, "POST", project+"/merge_trains/merge_requests/2", `{"sha":"3333333333333333333333333333333333333333"}`); got.status != http.StatusBadRequest {
+		t.Fatalf("direct add while running = %+v", got)
+	}
+	if got := glabSend(t, srv, "POST", project+"/merge_trains/merge_requests/2", `{"sha":"3333333333333333333333333333333333333333","auto_merge":true}`); got.status != http.StatusAccepted || got.body != "[]\n" {
+		t.Fatalf("auto add = %+v", got)
+	}
+	if got := glabSend(t, srv, "POST", project+"/merge_trains/merge_requests/2", `{"auto_merge":true}`); got.status != http.StatusConflict || !strings.Contains(got.body, "already set to Auto-Merge") {
+		t.Fatalf("second add = %+v", got)
+	}
+	if got := glabSend(t, srv, "GET", project+"/merge_trains/merge_requests/2", ""); got.status != http.StatusNotFound {
+		t.Fatalf("a scheduled add's car = %+v", got)
+	}
+	if mr := glabJSON(t, srv, project+"/merge_requests/2"); mr["merge_when_pipeline_succeeds"] != true {
+		t.Fatalf("scheduled add: %v", mr)
+	}
+	// Two mergeable merge requests join directly, in order.
+	for i, n := range []int{4, 5} {
+		got := glabSend(t, srv, "POST", fmt.Sprintf("%s/merge_trains/merge_requests/%d", project, n), `{"squash":true}`)
+		if got.status != http.StatusCreated || strings.Count(got.body, `"target_branch":"main"`) != i+1 {
+			t.Fatalf("add #%d = %+v", n, got)
+		}
+	}
+	car := glabJSON(t, srv, project+"/merge_trains/merge_requests/5")
+	if car["merge_request"].(map[string]any)["iid"] != float64(5) || car["status"] != "idle" || car["target_branch"] != "main" {
+		t.Fatalf("car = %v", car)
+	}
+	list := glabSend(t, srv, "GET", project+"/merge_trains?scope=active&sort=asc&per_page=1", "")
+	if list.status != http.StatusOK || !strings.Contains(list.body, `"iid":4`) || list.header.Get("X-Next-Page") != "2" || list.header.Get("X-Total") != "2" {
+		t.Fatalf("asc list = %+v", list)
+	}
+	if desc := glabSend(t, srv, "GET", project+"/merge_trains", ""); strings.Index(desc.body, `"iid":5`) > strings.Index(desc.body, `"iid":4`) {
+		t.Fatalf("default list = %s, want desc", desc.body)
+	}
+	if got := glabSend(t, srv, "POST", project+"/merge_requests/4/cancel_auto_merge", ""); got.status != http.StatusCreated {
+		t.Fatalf("cancel = %+v", got)
+	}
+	if got := glabSend(t, srv, "GET", project+"/merge_trains/merge_requests/4", ""); got.status != http.StatusNotFound {
+		t.Fatalf("a removed car = %+v", got)
+	}
+	notes := glabSend(t, srv, "GET", project+"/merge_requests/5/discussions?per_page=100", "").body
+	if !strings.Contains(notes, "added this merge request to the [merge train](https://gitlab.com/-/merge_trains) at position 2") {
+		t.Fatalf("#5 notes = %s", notes)
+	}
+	notes = glabSend(t, srv, "GET", project+"/merge_requests/4/discussions?per_page=100", "").body
+	if !strings.Contains(notes, "started a [merge train]") || !strings.Contains(notes, "removed this merge request from the merge train") {
+		t.Fatalf("#4 notes = %s", notes)
+	}
+	// A PUT merge with auto_merge on a train project schedules the add.
+	if got := glabSend(t, srv, "PUT", project+"/merge_requests/6/merge", `{"auto_merge":true}`); got.status != http.StatusOK {
+		t.Fatalf("PUT auto-merge = %+v", got)
+	}
+	if notes := glabSend(t, srv, "GET", project+"/merge_requests/6/discussions?per_page=100", "").body; !strings.Contains(notes, "enabled automatic add to merge train when checks pass") {
+		t.Fatalf("#6 notes = %s", notes)
+	}
+	if _, err := seedJSON(New(Options{}), `{"repos": [{"forge": "gitlab", "project": "a/b", "pulls": [{"number": 1, "title": "t", "readiness": {"autoMerge": {"strategy": "merge_train"}}}]}]}`); err == nil {
+		t.Fatal("a car seeded on a project without trains")
+	}
+}
+
 // A project that requires the approver's password says so in the
 // approvals answer and refuses an approve without one with GitLab's 401,
 // eligibility unchanged.

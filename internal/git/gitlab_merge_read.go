@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,6 +40,11 @@ type gitlabProjectSettings struct {
 	RemoveSourceBranchAfterMerge              bool   `json:"remove_source_branch_after_merge"`
 	OnlyAllowMergeIfPipelineSucceeds          bool   `json:"only_allow_merge_if_pipeline_succeeds"`
 	OnlyAllowMergeIfAllDiscussionsAreResolved bool   `json:"only_allow_merge_if_all_discussions_are_resolved"`
+	// MergeTrainsEnabled is a Premium or Ultimate project's merge trains
+	// ("Indicates if merge trains are enabled."; exposed to every reader
+	// of a licensed project by ee/lib/ee/api/entities/project.rb at
+	// v18.0.0-ee, absent on Free).
+	MergeTrainsEnabled bool `json:"merge_trains_enabled"`
 }
 
 // gitlabDeveloperAccess is the access level GitLab's default branch
@@ -121,6 +129,63 @@ func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Clie
 	}
 	f.projects.put(key(resp.Credential), settings, f.core.nowFn())
 	return settings, nil
+}
+
+// gitlabTrainCar is a car of the merge trains API.
+type gitlabTrainCar struct {
+	ID           int64  `json:"id"`
+	TargetBranch string `json:"target_branch"`
+}
+
+// gitlabTrainPageSize is the cars one position read asks for: a car past
+// it reads as queued without a position.
+const gitlabTrainPageSize = 100
+
+// readGitLabMergeTrain is an open merge request's merge train on a merge
+// train project (Premium, Ultimate). Only an armed auto-merge can be on
+// the train, so one that is not costs no request. An armed one reads its
+// car (GET merge_trains/merge_requests/N, "Get merge train information
+// for the requested merge request", 404 when it has none: it joins once
+// its checks pass), and a car its position: GitLab orders a train's
+// active cars by id (MergeTrains::Train#all_cars at v18.0.0-ee), so it
+// is the car's place among the target branch's cars of GET
+// merge_trains?scope=active&sort=asc, read without the branch in the
+// path, which the route does not escape.
+func readGitLabMergeTrain(ctx context.Context, client *forgeapi.Client, ref PRReference, mr gitlabMRRaw, canRemove bool) (*MergeQueue, error) {
+	queue := &MergeQueue{Required: true}
+	if !mr.MergeWhenPipelineSucceeds {
+		return queue, nil
+	}
+	queue.CanRemove = canRemove
+	trains := gitlabProjectPath(ref.Project()) + "/merge_trains"
+	var car gitlabTrainCar
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: trains + "/merge_requests/" + strconv.Itoa(ref.Number)}, &car); err != nil {
+		if status, ok := errors.AsType[*forgeapi.StatusError](err); ok && status.Status == http.StatusNotFound {
+			return queue, nil
+		}
+		return nil, err
+	}
+	queue.Queued = true
+	var cars []gitlabTrainCar
+	query := url.Values{"scope": {"active"}, "sort": {"asc"}, "per_page": {strconv.Itoa(gitlabTrainPageSize)}}
+	resp, err := client.JSON(ctx, forgeapi.Request{Path: trains, Query: query}, &cars)
+	if err != nil {
+		return nil, err
+	}
+	size := 0
+	for _, each := range cars {
+		if each.TargetBranch != mr.TargetBranch {
+			continue
+		}
+		size++
+		if each.ID == car.ID {
+			queue.Position = size
+		}
+	}
+	if strings.TrimSpace(resp.Header.Get("X-Next-Page")) == "" {
+		queue.Size = size
+	}
+	return queue, nil
 }
 
 // viewerAccess is the current login's access level in repo (10 guest to
@@ -491,7 +556,8 @@ func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings g
 	if !open {
 		return out
 	}
-	if !fork {
+	// A merge train takes no branch delete (gitlabJoinMergeTrain).
+	if !fork && !settings.MergeTrainsEnabled {
 		out.DeleteBranchOffered = true
 		out.DeleteBranchDefault = settings.RemoveSourceBranchAfterMerge
 		if mr.ForceRemoveSourceBranch != nil {
@@ -646,6 +712,14 @@ func gitlabNoteEvent(body string) (kind, ref, text string, ok bool) {
 		return EventAutoMergeCancel, "", "", true
 	case strings.HasPrefix(plain, "aborted the automatic merge"):
 		return EventAutoMergeCancel, "", plain, true
+	// A merge train's (SystemNotes::MergeTrainService at v18.0.0-ee),
+	// whose link is dropped.
+	case strings.HasPrefix(plain, "started a [merge train]"), strings.HasPrefix(plain, "added this merge request to the [merge train]"),
+		plain == "enabled automatic add to merge train when checks pass":
+		return EventAutoMergeSet, "", gitlabDropLinks(plain), true
+	case strings.HasPrefix(plain, "removed this merge request from the merge train"), plain == "cancelled automatic add to merge train",
+		strings.HasPrefix(plain, "aborted automatic add to merge train"):
+		return EventAutoMergeCancel, "", plain, true
 	case strings.HasPrefix(plain, "changed target branch from "),
 		strings.HasPrefix(plain, "deleted the `") && strings.Contains(plain, "This merge request now targets the `"):
 		return EventBaseChanged, gitlabLastCode(plain), "", true
@@ -653,6 +727,14 @@ func gitlabNoteEvent(body string) (kind, ref, text string, ok bool) {
 		return EventReviewRequested, gitlabReviewers(strings.TrimPrefix(plain, "requested review from ")), "", true
 	}
 	return "", "", "", false
+}
+
+// gitlabMarkdownLink is a Markdown link, its text the first group.
+var gitlabMarkdownLink = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+
+// gitlabDropLinks is text with each Markdown link replaced by its text.
+func gitlabDropLinks(text string) string {
+	return gitlabMarkdownLink.ReplaceAllString(text, "$1")
 }
 
 // gitlabLastCode is the last `quoted` name in a note.

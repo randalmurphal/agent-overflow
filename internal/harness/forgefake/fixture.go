@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -131,6 +132,13 @@ type RepoMerge struct {
 	// approve without approval_password is GitLab's 401, eligibility
 	// (user_can_approve) unchanged.
 	ApprovalPassword bool `json:"approvalPassword,omitempty"`
+	// MergeTrains is a GitLab project with merge trains enabled
+	// (Premium, Ultimate): projects/P answers merge_trains_enabled, the
+	// merge_trains routes answer (403 without it, "If Merge Trains is not
+	// available for the project"), and a PUT merge with auto_merge arms
+	// add_to_merge_train_when_checks_pass, the preferred strategy there.
+	// A PUT merge without it merges at once, skipping the train.
+	MergeTrains bool `json:"mergeTrains,omitempty"`
 }
 
 // Pull is one pull request (GitHub) or merge request (GitLab).
@@ -332,7 +340,23 @@ type AutoMerge struct {
 	ByName string `json:"byName,omitempty"`
 	// At is when, RFC 3339; defaults to 2026-01-01T00:00:00Z.
 	At string `json:"at,omitempty"`
+	// Strategy is a GitLab merge train project's auto-merge strategy:
+	// merge_train (the merge request is a car on its target branch's
+	// train) or add_to_merge_train_when_checks_pass (it joins once its
+	// checks pass, which the fake does not run). Empty is a plain
+	// auto-merge (merge_when_checks_pass). A train strategy needs
+	// merge.mergeTrains.
+	Strategy string `json:"strategy,omitempty"`
+	// car orders the train: the car's id, assigned when it joins.
+	car int64
 }
+
+// The GitLab auto-merge strategies of a merge train project
+// (AutoMergeService at v18.0.0-ee).
+const (
+	gitlabStrategyMergeTrain   = "merge_train"
+	gitlabStrategyAddWhenReady = "add_to_merge_train_when_checks_pass"
+)
 
 // Event is one forge activity item. Kind is the app's vocabulary and
 // each forge answers the kinds it records: GitHub review_dismissed,
@@ -362,7 +386,24 @@ type Event struct {
 	// reason (GitLab: "aborted the automatic merge because <text>"), or a
 	// GitLab base_changed's old branch (defaults to "main").
 	Text string `json:"text,omitempty"`
+	// Train is a GitLab merge train's auto_merge_set (added, Ref its
+	// 1-based position: "started a merge train" or "added this merge
+	// request to the merge train at position N"; scheduled: "enabled
+	// automatic add to merge train when checks pass") or
+	// auto_merge_canceled (removed: "removed this merge request from the
+	// merge train"; unscheduled: "cancelled automatic add to merge
+	// train"), as SystemNotes::MergeTrainService writes them at
+	// v18.0.0-ee.
+	Train string `json:"train,omitempty"`
 }
+
+// Event.Train values.
+const (
+	gitlabTrainAdded       = "added"
+	gitlabTrainScheduled   = "scheduled"
+	gitlabTrainRemoved     = "removed"
+	gitlabTrainUnscheduled = "unscheduled"
+)
 
 // Comment is one comment or note.
 type Comment struct {
@@ -716,8 +757,8 @@ func (r *Repo) normalize(ids *idSource) error {
 
 func (m *RepoMerge) normalize(forge string) error {
 	if forge == "github" {
-		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve || m.CancelRole != "" || m.SharedAccess || m.Free || m.ApprovalPassword {
-			return errors.New("mergeMethod, squashOption, pipelineMustSucceed, discussionsMustResolve, cancelRole, sharedAccess, free and approvalPassword are GitLab project settings")
+		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve || m.CancelRole != "" || m.SharedAccess || m.Free || m.ApprovalPassword || m.MergeTrains {
+			return errors.New("mergeMethod, squashOption, pipelineMustSucceed, discussionsMustResolve, cancelRole, sharedAccess, free, approvalPassword and mergeTrains are GitLab project settings")
 		}
 		m.Permission = defaultString(m.Permission, "WRITE")
 		if githubRoles[m.Permission] == 0 {
@@ -958,6 +999,14 @@ func (p *Pull) normalizeMerge(r *Repo, ids *idSource) error {
 	if err := p.Readiness.normalize(forge, p); err != nil {
 		return fmt.Errorf("readiness: %w", err)
 	}
+	if armed := p.Readiness.AutoMerge; armed != nil && armed.Strategy != "" {
+		if !r.Merge.MergeTrains {
+			return errors.New("readiness: autoMerge strategy needs merge.mergeTrains")
+		}
+		if armed.Strategy == gitlabStrategyMergeTrain {
+			armed.car = ids.next()
+		}
+	}
 	if forge == "gitlab" && p.Readiness.Behind && r.Merge.MergeMethod == "merge" {
 		return errors.New("readiness: behind is GitLab's need_rebase, which a merge-commit project never reports; set merge.mergeMethod to ff or rebase_merge")
 	}
@@ -1024,6 +1073,14 @@ func (rd *Readiness) normalize(forge string, p *Pull) error {
 		if forge == "gitlab" {
 			p.squash = armed.Method == "squash"
 		}
+		switch armed.Strategy {
+		case "", gitlabStrategyMergeTrain, gitlabStrategyAddWhenReady:
+		default:
+			return fmt.Errorf("autoMerge strategy %q is not merge_train or add_to_merge_train_when_checks_pass", armed.Strategy)
+		}
+		if armed.Strategy != "" && forge != "gitlab" {
+			return errors.New("autoMerge strategy is a GitLab merge train's")
+		}
 	}
 	return nil
 }
@@ -1044,6 +1101,22 @@ func (ev *Event) normalize(forge string, p *Pull, ids *idSource) error {
 	}
 	if ev.Method != "" && (forge != "github" || ev.Kind != "auto_merge_set") {
 		return errors.New("method is a GitHub auto_merge_set's")
+	}
+	switch {
+	case ev.Train == "":
+	case forge != "gitlab":
+		return errors.New("train is a GitLab merge train's event")
+	case ev.Kind == "auto_merge_set" && ev.Train == gitlabTrainAdded:
+		ev.Ref = defaultString(ev.Ref, "1")
+		if n, err := strconv.Atoi(ev.Ref); err != nil || n < 1 {
+			return fmt.Errorf("an added train event's ref %q is not its 1-based position", ev.Ref)
+		}
+		return nil
+	case ev.Kind == "auto_merge_set" && ev.Train == gitlabTrainScheduled,
+		ev.Kind == "auto_merge_canceled" && (ev.Train == gitlabTrainRemoved || ev.Train == gitlabTrainUnscheduled):
+		return nil
+	default:
+		return fmt.Errorf("train %q is not one of a %s event's", ev.Train, ev.Kind)
 	}
 	switch ev.Kind {
 	case "auto_merge_set":

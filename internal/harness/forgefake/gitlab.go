@@ -314,6 +314,7 @@ func glabProjectRead(e *Engine, c *call, m []string) response {
 		"remove_source_branch_after_merge":      settings.DeleteBranchOnMerge,
 		"only_allow_merge_if_pipeline_succeeds": settings.PipelineMustSucceed,
 		"only_allow_merge_if_all_discussions_are_resolved": settings.DiscussionsMustResolve,
+		"merge_trains_enabled":                             settings.MergeTrains,
 		"permissions": map[string]any{
 			"project_access": direct,
 			"group_access":   nil,
@@ -424,6 +425,19 @@ func gitlabDiscussions(p *Pull) []map[string]any {
 // gitlabNoteBody is an event's system note in the phrasing GitLab writes
 // (app/services/system_notes/; docs/references/forge-api-measurements.md).
 func gitlabNoteBody(event Event) string {
+	switch event.Train {
+	case gitlabTrainAdded:
+		if event.Ref == "1" {
+			return "started a [merge train](https://gitlab.com/-/merge_trains)"
+		}
+		return "added this merge request to the [merge train](https://gitlab.com/-/merge_trains) at position " + event.Ref
+	case gitlabTrainScheduled:
+		return "enabled automatic add to merge train when checks pass"
+	case gitlabTrainRemoved:
+		return "removed this merge request from the merge train"
+	case gitlabTrainUnscheduled:
+		return "cancelled automatic add to merge train"
+	}
 	switch event.Kind {
 	case "approved":
 		return "approved this merge request"
@@ -961,7 +975,12 @@ func glabMerge(e *Engine, c *call, m []string) response {
 		now := glabNow()
 		p.squash, p.forceRemove = squash, remove
 		p.Readiness.AutoMerge = &AutoMerge{Method: gitlabArmMethod(r, squash), By: e.viewer, At: now}
-		p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "auto_merge_set", Actor: e.viewer, At: now, Ref: p.HeadSHA})
+		event := Event{ID: e.ids.next(), Kind: "auto_merge_set", Actor: e.viewer, At: now, Ref: p.HeadSHA}
+		if r.Merge.MergeTrains {
+			// The preferred strategy of a train project.
+			p.Readiness.AutoMerge.Strategy, event.Ref, event.Train = gitlabStrategyAddWhenReady, "", gitlabTrainScheduled
+		}
+		p.Events = append(p.Events, event)
 		return glabOK(jsonResponse(e.gitlabMRJSON(r, p)))
 	}
 	now := glabNow()
@@ -1035,10 +1054,19 @@ func glabCancelMergeWhenPipelineSucceeds(e *Engine, c *call, m []string) respons
 	return resp
 }
 
-// cancelGitLabAutoMerge disarms p's auto-merge with its system note.
+// cancelGitLabAutoMerge disarms p's auto-merge with its system note; a
+// car leaves its train, as AutoMerge::MergeTrainService#cancel destroys
+// it.
 func (e *Engine) cancelGitLabAutoMerge(p *Pull) {
+	event := Event{ID: e.ids.next(), Kind: "auto_merge_canceled", Actor: e.viewer, At: glabNow()}
+	switch p.Readiness.AutoMerge.Strategy {
+	case gitlabStrategyMergeTrain:
+		event.Train = gitlabTrainRemoved
+	case gitlabStrategyAddWhenReady:
+		event.Train = gitlabTrainUnscheduled
+	}
 	p.Readiness.AutoMerge = nil
-	p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "auto_merge_canceled", Actor: e.viewer, At: glabNow()})
+	p.Events = append(p.Events, event)
 }
 
 // glabRebase rebases the source branch onto the target: 202

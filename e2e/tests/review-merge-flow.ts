@@ -15,8 +15,11 @@
 // and a reviewer approved the pill reads "Ready to merge", a head that
 // moved refuses Merge now with the moved-head sentence and a Reload
 // action, and Merge now then merges: the pill reads "Merged", the section
-// shows the merged row and no actions. Screenshots: the blocked and ready
-// sections on desktop, the wrapped section header on compact.
+// shows the merged row and no actions. On a GitLab merge train project
+// Merge adds to the train, the armed row shows the place and Remove takes
+// it off, with no merge around the train. Screenshots: the blocked and
+// ready sections on desktop, the wrapped section header on compact, the
+// train row on both.
 
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
@@ -324,4 +327,69 @@ export function reviewMergeFlow({ compact }: MergeSurface): void {
       await expectEveryForgeCallHandled(harness);
     });
   }
+
+  // A GitLab merge train project, with another merge request already on
+  // the train: Merge reads "Add to merge train" and offers no branch
+  // delete or commit message; it puts the merge request on the train
+  // behind the other one ("In the merge train · 2 of 2", the button "In
+  // merge train"), and the row's Remove takes it off. Nothing merges
+  // around the train.
+  test('gitlab: a merge train project adds to the train, shows the place and removes it', async ({ harness, page }, testInfo: TestInfo) => {
+    const title = 'Merge train thread';
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [
+        {
+          name: `train-${randomBytes(4).toString('hex')}`,
+          repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+          threads: [{ title, turns: [{ userText: 'Hello.', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }],
+        },
+      ],
+    });
+    const base = repo('gitlab');
+    const ahead = {
+      ...pull('gitlab', 'success', true),
+      number: NUMBER.gitlab + 1,
+      title: 'Ahead on the train',
+      headRef: 'ahead',
+      readiness: { autoMerge: { strategy: 'merge_train' as const } },
+      ci: { id: 44_200, jobs: [{ id: 44_201, name: 'unit', stage: 'test', status: 'success' as const, log: 'unit tests\n' }] },
+    };
+    await publishPullRequest(harness, seed.projects[0].path, {
+      ...base,
+      merge: { pipelineMustSucceed: true, mergeTrains: true },
+      pulls: [pull('gitlab', 'success', true), ahead],
+    }, { 'src/queue/deliver.ts': 'export async function deliver(): Promise<void> {\n  await post();\n}\n' });
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await harness.open(page);
+    const review = await openReview(page, title, 'gitlab', compact);
+    const press = (target: Locator) => (compact ? target.tap() : target.click());
+
+    const pill = review.getByTestId('review-pr-readiness');
+    await expect(pill).toHaveText('Ready to merge', { timeout: 30_000 });
+    await press(pill);
+    const section = review.getByTestId('review-pr-merge');
+    const trigger = section.getByTestId('review-merge-trigger');
+    await expect(trigger).toContainText(compact ? 'Add to train' : 'Add to merge train');
+    await press(trigger);
+    const menu = page.getByTestId('review-merge-menu');
+    await expect(menu.getByTestId('review-merge-now')).toContainText('Add to merge train');
+    await expect(menu.getByTestId('review-merge-delete-branch')).toHaveCount(0);
+    await expect(menu.getByTestId('review-merge-edit-message')).toHaveCount(0);
+    await press(menu.getByTestId('review-merge-now'));
+
+    const armed = section.getByTestId('review-merge-armed');
+    await expect(armed).toContainText('In the merge train · 2 of 2');
+    await expect(armed).toContainText('Added by ao-viewer');
+    await expect(trigger).toContainText(compact ? 'Queued' : 'In merge train');
+    await expect(pill).toHaveText('Ready to merge');
+    await armed.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-merge-train.png`) });
+    await press(armed.getByTestId('review-merge-row-cancel-auto'));
+    await expect(armed).toHaveCount(0);
+    await expect(trigger).toContainText(compact ? 'Add to train' : 'Add to merge train');
+
+    const routes = (await forgeInvocations(harness)).map((call) => call.route);
+    expect(routes).toContain('glab api add to merge train');
+    expect(routes).not.toContain('glab api merge');
+    await expectEveryForgeCallHandled(harness);
+  });
 }

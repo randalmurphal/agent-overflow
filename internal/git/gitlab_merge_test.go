@@ -321,6 +321,13 @@ func TestGitLabNoteEvents(t *testing.T) {
 		{"enabled an automatic merge when the pipeline for 54eaa7e8 succeeds", EventAutoMergeSet, "54eaa7e8", "enabled an automatic merge when the pipeline for 54eaa7e8 succeeds"},
 		{"canceled the automatic merge", EventAutoMergeCancel, "", ""},
 		{"aborted the automatic merge because the source branch was updated", EventAutoMergeCancel, "", "aborted the automatic merge because the source branch was updated"},
+		{"started a [merge train](https://gitlab.example/p/-/merge_trains)", EventAutoMergeSet, "", "started a merge train"},
+		{"added this merge request to the [merge train](https://gitlab.example/p/-/merge_trains) at position 3", EventAutoMergeSet, "", "added this merge request to the merge train at position 3"},
+		{"enabled automatic add to merge train when checks pass", EventAutoMergeSet, "", "enabled automatic add to merge train when checks pass"},
+		{"removed this merge request from the merge train", EventAutoMergeCancel, "", "removed this merge request from the merge train"},
+		{"removed this merge request from the merge train because the pipeline did not succeed", EventAutoMergeCancel, "", "removed this merge request from the merge train because the pipeline did not succeed"},
+		{"cancelled automatic add to merge train", EventAutoMergeCancel, "", "cancelled automatic add to merge train"},
+		{"aborted automatic add to merge train because the source branch was deleted", EventAutoMergeCancel, "", "aborted automatic add to merge train because the source branch was deleted"},
 		{"changed target branch from `main` to `release/2`", EventBaseChanged, "release/2", ""},
 		{"deleted the `stage` branch. This merge request now targets the `main` branch", EventBaseChanged, "main", ""},
 		{"requested review from @a, @b, and @c", EventReviewRequested, "a, b, c", ""},
@@ -928,6 +935,162 @@ func TestGitLabMergeRefusesAMethodTheProjectDoesNotAllow(t *testing.T) {
 // Auto-merge sends auto_merge alone, which every supported GitLab reads
 // (merge_when_pipeline_succeeds is its deprecated spelling from before
 // 17.11). An armed answer is AutoMerge.
+// A merge train project's detail says merges go through the train and
+// offers no branch delete. Not armed, it reads nothing more; armed, the
+// car says whether the merge request is on the train (404: it joins once
+// its checks pass), and the train's active cars, read across branches,
+// give its place among its target branch's; a list with a next page
+// leaves the size unknown, and a car past the page the position.
+func TestGitLabReadPRMergeTrain(t *testing.T) {
+	t.Parallel()
+	mr := gitlabTestProject + "/merge_requests/7"
+	car := gitlabTestProject + "/merge_trains/merge_requests/7"
+	list := gitlabTestProject + "/merge_trains?per_page=100&scope=active&sort=asc"
+	for _, tc := range []struct {
+		name  string
+		armed bool
+		car   forgeAPIAnswer
+		list  forgeAPIAnswer
+		want  MergeQueue
+		reads int
+	}{
+		{name: "not armed", want: MergeQueue{Required: true}},
+		{name: "joins once ready", armed: true, car: forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"404 Merge Train Merge Request Not Found"}`},
+			want: MergeQueue{Required: true, CanRemove: true}, reads: 1},
+		{name: "on the train", armed: true, car: forgeAPIAnswer{Body: `{"id":31,"target_branch":"main"}`},
+			list: forgeAPIAnswer{Body: `[{"id":30,"target_branch":"main"},{"id":29,"target_branch":"release"},{"id":31,"target_branch":"main"},{"id":32,"target_branch":"main"}]`},
+			want: MergeQueue{Required: true, Queued: true, Position: 2, Size: 3, CanRemove: true}, reads: 2},
+		{name: "past the page", armed: true, car: forgeAPIAnswer{Body: `{"id":31,"target_branch":"main"}`},
+			list: forgeAPIAnswer{Body: `[{"id":30,"target_branch":"main"}]`, Header: http.Header{"X-Next-Page": {"2"}}},
+			want: MergeQueue{Required: true, Queued: true, CanRemove: true}, reads: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+				if answer, ok := gitlabManageExtras(call); ok {
+					return answer
+				}
+				switch call.Path {
+				case mr:
+					return forgeAPIAnswer{Body: gitlabMergeMR(t, map[string]any{"merge_when_pipeline_succeeds": tc.armed})}
+				case mr + "/approvals":
+					return forgeAPIAnswer{Body: `{"approvals_required":0,"approvals_left":0,"user_can_approve":true}`}
+				case gitlabTestProject:
+					return forgeAPIAnswer{Body: `{"id":10,"merge_method":"merge","remove_source_branch_after_merge":true,"merge_trains_enabled":true}`}
+				case "user":
+					return forgeAPIAnswer{Body: `{"id":1,"username":"viewer"}`}
+				case car:
+					return tc.car
+				case list:
+					return tc.list
+				}
+				return forgeUnexpected(t, call)
+			})
+			read, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Detail: true}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			merge := read.Detail.Merge
+			if merge.Queue == nil || *merge.Queue != tc.want || merge.DeleteBranchOffered {
+				t.Fatalf("queue = %+v, delete offered %v; want %+v", merge.Queue, merge.DeleteBranchOffered, tc.want)
+			}
+			reads := 0
+			for _, path := range gitlabPaths(calls) {
+				if strings.Contains(path, "/merge_trains") {
+					reads++
+				}
+			}
+			if reads != tc.reads {
+				t.Fatalf("train reads = %d, want %d: %q", reads, tc.reads, gitlabPaths(calls))
+			}
+		})
+	}
+	// A failed car read fails the detail, as its other reads do.
+	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if answer, ok := gitlabManageExtras(call); ok {
+			return answer
+		}
+		switch call.Path {
+		case mr:
+			return forgeAPIAnswer{Body: gitlabMergeMR(t, map[string]any{"merge_when_pipeline_succeeds": true})}
+		case mr + "/approvals":
+			return forgeAPIAnswer{Body: `{}`}
+		case gitlabTestProject:
+			return forgeAPIAnswer{Body: `{"id":10,"merge_trains_enabled":true}`}
+		case "user":
+			return forgeAPIAnswer{Body: `{"id":1,"username":"viewer"}`}
+		case car:
+			return forgeAPIAnswer{Status: http.StatusForbidden, Body: `{"message":"403 Forbidden"}`}
+		}
+		return forgeUnexpected(t, call)
+	})
+	if _, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Detail: true}, nil, nil); err == nil {
+		t.Fatal("a refused car read was not the detail's failure")
+	}
+}
+
+// On a merge train project a merge joins the train and never merges
+// around it: Merge now POSTs merge_trains without auto_merge, auto-merge
+// with it, squash as the method says, and nothing PUTs merge. A commit
+// message or a branch delete, which the train takes no parameter for, is
+// refused before any write.
+func TestGitLabMergeOnATrainProjectJoinsTheTrain(t *testing.T) {
+	t.Parallel()
+	train := gitlabTestProject + "/merge_trains/merge_requests/7"
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		switch {
+		case call.Method == http.MethodGet && call.Path == "metadata":
+			return gitlabMetadata("18.0.1-ee")
+		case call.Method == http.MethodGet && call.Path == gitlabTestProject:
+			return forgeAPIAnswer{Body: `{"id":10,"merge_method":"merge","squash_option":"default_off","merge_trains_enabled":true}`}
+		case call.Method == http.MethodPost && call.Path == train:
+			status := http.StatusCreated
+			if jsonBody(t, call)["auto_merge"] == true {
+				status = http.StatusAccepted
+			}
+			return forgeAPIAnswer{Status: status, Body: `[]`}
+		}
+		return forgeUnexpected(t, call)
+	})
+	for _, req := range []MergeRequest{
+		{Method: MergeMethodMerge, HeadSHA: "abc1234"},
+		{Method: MergeMethodSquash, HeadSHA: "abc1234", AutoMerge: true},
+	} {
+		got, err := core.MergePR(t.Context(), gitlabTestRef(7), req)
+		if err != nil || got != (MergeOutcome{AutoMerge: true}) {
+			t.Fatalf("%+v = %+v, %v", req, got, err)
+		}
+	}
+	var bodies []map[string]any
+	for _, call := range calls.all() {
+		if call.Method == http.MethodPut {
+			t.Fatalf("a train project's merge sent %s %s", call.Method, call.Path)
+		}
+		if call.Method == http.MethodPost {
+			bodies = append(bodies, jsonBody(t, call))
+		}
+	}
+	if len(bodies) != 2 || bodies[0]["sha"] != "abc1234" || bodies[0]["squash"] != false || bodies[0]["auto_merge"] != false ||
+		bodies[1]["squash"] != true || bodies[1]["auto_merge"] != true || len(bodies[0]) != 3 {
+		t.Fatalf("train bodies = %+v", bodies)
+	}
+	before := len(calls.all())
+	for _, req := range []MergeRequest{
+		{Method: MergeMethodMerge, HeadSHA: "abc1234", CommitMessage: &MergeMessage{Title: "t"}},
+		{Method: MergeMethodMerge, HeadSHA: "abc1234", DeleteBranch: true},
+	} {
+		_, err := core.MergePR(t.Context(), gitlabTestRef(7), req)
+		if refused, ok := errors.AsType[*ForgeActionError](err); !ok || refused.Kind != ForgeErrorRefused {
+			t.Fatalf("%+v = %v, want a refusal", req, err)
+		}
+	}
+	for _, call := range calls.all()[before:] {
+		if call.Method != http.MethodGet {
+			t.Fatalf("a refused train merge sent %s %s", call.Method, call.Path)
+		}
+	}
+}
+
 func TestGitLabAutoMergeSendsAutoMerge(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"

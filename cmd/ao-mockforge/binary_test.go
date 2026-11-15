@@ -1361,6 +1361,55 @@ func TestGitLabSharedRoleThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
+// A merge train project through the app's own code: Merge now puts the
+// merge request on the train behind the one already there and the
+// detail says where; auto-merge on one still running schedules it to
+// join; cancel takes it off; nothing merges around the train.
+func TestGitLabMergeTrainThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabMergeFixture("success")
+	repo := &fixture.Repos[0]
+	repo.Merge.MergeTrains, repo.Merge.DeleteBranchOnMerge = true, false
+	repo.Pulls[0].Readiness = nil
+	repo.Pulls = append(repo.Pulls,
+		forgefake.Pull{Number: 6, Title: "First", Author: "octo", HeadRef: "first", Readiness: &forgefake.Readiness{AutoMerge: &forgefake.AutoMerge{Strategy: "merge_train"}},
+			CI: &forgefake.Pipeline{ID: 460, Jobs: []forgefake.Job{{ID: 461, Name: "unit", Status: "success"}}}},
+		forgefake.Pull{Number: 7, Title: "Running", Author: "octo", HeadRef: "running", HeadSHA: strings.Repeat("7", 40),
+			CI: &forgefake.Pipeline{ID: 470, Jobs: []forgefake.Job{{ID: 471, Name: "unit", Status: "running"}}}})
+	r := newRig(t, fixture)
+	ctx := forgeapi.WithInteractive(t.Context())
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	merge := mergeRead(t, r, ref).Detail.Merge
+	if merge.Queue == nil || *merge.Queue != (gitops.MergeQueue{Required: true}) || merge.DeleteBranchOffered {
+		t.Fatalf("before = %+v, queue %+v", merge, merge.Queue)
+	}
+	if outcome, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "merge", HeadSHA: strings.Repeat("4", 40)}); err != nil || !outcome.AutoMerge {
+		t.Fatalf("Merge now = %+v, %v", outcome, err)
+	}
+	merge = mergeRead(t, r, ref).Detail.Merge
+	if q := merge.Queue; q == nil || *q != (gitops.MergeQueue{Required: true, Queued: true, Position: 2, Size: 2, CanRemove: true}) || merge.AutoMerge == nil {
+		t.Fatalf("on the train = %+v, queue %+v", merge, merge.Queue)
+	}
+	if err := r.core.CancelPRAutoMerge(ctx, ref); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if q := mergeRead(t, r, ref).Detail.Merge.Queue; q == nil || q.Queued {
+		t.Fatalf("after remove: %+v", q)
+	}
+	running := ref
+	running.Number = 7
+	if _, err := r.core.MergePR(ctx, running, gitops.MergeRequest{Method: "merge", HeadSHA: strings.Repeat("7", 40), AutoMerge: true}); err != nil {
+		t.Fatalf("auto-merge: %v", err)
+	}
+	if merge := mergeRead(t, r, running).Detail.Merge; merge.Queue == nil || merge.Queue.Queued || merge.AutoMerge == nil {
+		t.Fatalf("scheduled = %+v, queue %+v", merge, merge.Queue)
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled || inv.Route == "glab api merge" {
+			t.Errorf("%s %s (route %q, unhandled %v): %s", inv.Method, inv.Path, inv.Route, inv.Unhandled, inv.Detail)
+		}
+	}
+}
+
 // A project that requires the approver's password withholds Approve and
 // says why, through the app's own code; an approve sent anyway is
 // GitLab's refusal.

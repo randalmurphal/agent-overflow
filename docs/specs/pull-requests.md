@@ -156,6 +156,19 @@ base's rulesets (`allowedMergeMethods`).
   server's release; GitHub `disablePullRequestAutoMerge`. An armed auto-merge shows
   as a settled row "Auto-merge set by X · method" with Cancel, and the
   button reads "Auto-merge set".
+- A merge queue (`MergeOptions.Queue`; GitLab's merge train, Premium and
+  Ultimate, when the project's `merge_trains_enabled`): nothing merges
+  around it. Merge now reads "Add to merge train" (GitLab
+  `POST .../merge_trains/merge_requests/N` with `sha`, `squash`), auto-merge
+  "Add to merge train when ready" (the same with `auto_merge`, which joins
+  once the checks pass); the train takes no commit message and no branch
+  delete, so neither is offered and the adapter refuses either. Queued, the
+  button reads "In merge train" and the armed row "In the merge train · 2
+  of 3" (GitLab: the car, then its place among the target branch's active
+  cars, unknown past the first 100) with Remove, which cancels the
+  auto-merge and so takes it off the train; waiting to join, the row reads
+  "Joins the merge train once all checks pass". GitLab's "Merge
+  immediately" is not offered.
 - No optimistic state: a successful action asks the PR's pump to poll at
   once and the pane follows the forge's answer. The action answers with
   the pump's sequence after that poll (`PRActionResult.Seq`); the button
@@ -902,7 +915,9 @@ workspace, branch and edits diffs, offer no link.
 
 ## Non-goals
 
-- Merge queues and merge trains: the forge's own page.
+- Managing a merge queue or train beyond this PR's own place in it
+  (reordering, merging immediately, the queue's page): the forge's own
+  page.
 - Milestones, changing the target branch.
 - Creating MRs from the page (the chat header's create flow stays).
 - A full activity timeline: only the event kinds listed.

@@ -324,6 +324,11 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		viewer := f.viewerLogin(ctx, client, ref.Host)
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
 		gitlabFillMerge(&out.Detail, mr, approvals, settings, access, events, viewer)
+		if settings.MergeTrainsEnabled && NormalizePRState(mr.State) == "open" {
+			if out.Detail.Merge.Queue, err = readGitLabMergeTrain(ctx, client, ref, mr, mr.User.CanMerge || out.Detail.ViewerIsAuthor); err != nil {
+				return PRRead{}, err
+			}
+		}
 		manage.apply(&out.Detail)
 	}
 	if want.Threads {

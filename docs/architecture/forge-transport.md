@@ -311,7 +311,11 @@ per login and project for 10 minutes, then revalidated through the ETag
 store: a `W/` ETag answered 304), the viewer's role when it cannot merge
 (GraphQL `ProjectAccess`, `project.maxAccessLevel`, cached per login and
 project for 10 minutes; REST `permissions` leave out a role granted
-through a group the project is shared with) and the viewer's login (`user`, cached
+through a group the project is shared with), on a merge train project
+(`merge_trains_enabled`) with an armed auto-merge its car
+(`merge_trains/merge_requests/N`, 404 while it waits to join) and, on the
+train, the active cars (`merge_trains?scope=active&sort=asc&per_page=100`,
+its place among its target branch's) and the viewer's login (`user`, cached
 per login and host for 10 minutes; the author may cancel an auto-merge, and a refused read
 is cached as an unknown viewer), `Threads` and `Events` its discussions
 (`per_page=100`, paged by `X-Next-Page`, at most `prReadMaxPages` (10)
@@ -343,7 +347,7 @@ GitHub external check.
 
 | Tick | GitLab requests |
 |---|---|
-| Pump (`Detail`, `Threads`, `Events`), warm | 1 merge request + 1 discussions page per 100 discussions + 1 state events page per 100 events (at most 3) + 1 approvals + 1 `PRManageChecks` (none below the supported floor) |
+| Pump (`Detail`, `Threads`, `Events`), warm | 1 merge request + 1 discussions page per 100 discussions + 1 state events page per 100 events (at most 3) + 1 approvals + 1 `PRManageChecks` (none below the supported floor) + on a merge train project with an armed auto-merge 1 car read and, on the train, 1 cars page |
 | Pump, the notes changed, the viewer reacted, or the reactions read is 2 minutes old | the warm requests + 1 `MRNoteReactions` per 100 notes (at most 10) |
 | Pump, cold host or project (first read, then every 10 minutes) | the warm requests + 1 `metadata` per host + 1 `projects/P` and 1 `ProjectAccess` per login and project + 1 `user` per login and host |
 | CI phase, a head pipeline | 1 merge request + 1 `PipelineJobs` per 100 rows (+ 1 `metadata` per host per 10 minutes) |
