@@ -810,7 +810,10 @@ type DiffReviewReturnedComments struct {
 // not, and deletes the row if it exists (a deferred message has none). It
 // returns the comments it returned, by source. A comment edited since its
 // message claimed it is not among them: the edit cleared the claim. So
-// each returned body is the one the message carries.
+// each returned body is the one the message carries. A row still marked
+// pendingFlush that the residue rule calls history
+// (unconfirmedUserRowResidueSQL) is refused: its message was shown as sent
+// and a later session ran with it, so it is not the caller's to take back.
 func (s *Store) RetireUndeliveredUserRow(threadID, itemID string) ([]DiffReviewReturnedComments, error) {
 	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(itemID) == "" {
 		return nil, fmt.Errorf("store: retire undelivered user row: the thread and the row are required")
@@ -830,6 +833,13 @@ func (s *Store) RetireUndeliveredUserRow(threadID, itemID string) ([]DiffReviewR
 // retireUndeliveredUserRowTx is RetireUndeliveredUserRow inside the
 // caller's item write.
 func retireUndeliveredUserRowTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) ([]DiffReviewReturnedComments, error) {
+	var history bool
+	if err := tx.QueryRow(markedHistoryRowSQL, threadID, itemID).Scan(&history); err != nil {
+		return nil, fmt.Errorf("store: retire undelivered user row %s/%s: check it is not history: %w", threadID, itemID, err)
+	}
+	if history {
+		return nil, fmt.Errorf("store: retire undelivered user row %s/%s: the row is history a later turn follows, not an unconfirmed message; it is kept", threadID, itemID)
+	}
 	fail := func(err error) ([]DiffReviewReturnedComments, error) {
 		return nil, fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
 	}

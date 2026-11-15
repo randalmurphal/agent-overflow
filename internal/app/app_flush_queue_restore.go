@@ -146,15 +146,7 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 	parts := make([]composerdraft.Part, 0, len(drained))
 	settlements := make([]*triage.FlushSettlement, 0, len(drained))
 	for i, item := range drained {
-		staleID := item.StaleUserItemID
-		if item.QuietItem != nil {
-			staleID = item.QuietItem.ID
-		}
-		if item.DeferredItem != nil && staleID == "" {
-			// A deferred message has no row, but its review drafts were
-			// claimed for the row it would have landed as.
-			staleID = item.DeferredItem.ID
-		}
+		staleID := unconfirmedRowID(item)
 		drained[i].StaleUserItemID = staleID
 		if staleID != "" {
 			retire = append(retire, staleID)
@@ -223,6 +215,78 @@ func (a *App) announceReturnedReviewComments(returned []store.DiffReviewReturned
 	}
 }
 
+// unconfirmedRowID is the row a message taken back from the provider has in
+// the store, which its cleanup retires (cleanupStaleFlushRow): its quiet row,
+// the row an earlier failed cleanup left (StaleUserItemID), or, for a
+// deferred message with no row, the id its review drafts were claimed for.
+// Empty for a message with neither.
+func unconfirmedRowID(item triage.UnconfirmedFlushItem) string {
+	if item.QuietItem != nil {
+		return item.QuietItem.ID
+	}
+	if item.StaleUserItemID != "" {
+		return item.StaleUserItemID
+	}
+	if item.DeferredItem != nil {
+		return item.DeferredItem.ID
+	}
+	return ""
+}
+
+// dropUnconfirmedSends is a dropped queue's other half: the messages the
+// session was sent and never confirmed, and the queued ones that still have
+// a row from an earlier dispatch (dispatched, the batches dropFlushQueue took
+// from the worker, and triage's own queue). They go with the queue, so each
+// row leaves the timeline with the review drafts its message claimed, and a
+// connected client drops it (queue_restored, reason dropped). A message the
+// provider did consume is confirmed instead (DrainUnconfirmedFlushItems). A
+// row whose retire fails stays, and the thread shows the error.
+func (a *App) dropUnconfirmedSends(threadID string, dispatched []triage.QueuedFlushItem) {
+	if a.triage == nil {
+		return
+	}
+	drained := a.triage.DrainUnconfirmedFlushItems(threadID)
+	for _, item := range dispatched {
+		if item.StaleUserItemID != "" {
+			drained = append(drained, triage.UnconfirmedFlushItem{QueueItemID: item.ID, StaleUserItemID: item.StaleUserItemID})
+		}
+	}
+	var queueItemIDs, userItemIDs []string
+	var failed []error
+	for _, item := range drained {
+		rowID := unconfirmedRowID(item)
+		if rowID == "" {
+			continue
+		}
+		if _, err := a.cleanupStaleFlushRow(threadID, rowID); err != nil {
+			failed = append(failed, fmt.Errorf("%s: %w", rowID, err))
+			continue
+		}
+		if item.QuietItem == nil && item.StaleUserItemID == "" {
+			// A deferred message never had a row to remove.
+			continue
+		}
+		if item.QueueItemID != "" {
+			queueItemIDs = append(queueItemIDs, item.QueueItemID)
+		}
+		userItemIDs = append(userItemIDs, rowID)
+	}
+	if len(failed) > 0 {
+		err := errors.Join(failed...)
+		log.Printf("flush queue: drop unconfirmed sends of %s: %v", threadID, err)
+		a.emitErrorToThread(threadID, "A message the stopped session never confirmed could not be removed from the timeline: "+err.Error())
+	}
+	if len(userItemIDs) == 0 {
+		return
+	}
+	a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
+		ThreadID:     threadID,
+		Reason:       queueRestoredReasonDropped,
+		QueueItemIDs: queueItemIDs,
+		UserItemIDs:  userItemIDs,
+	})
+}
+
 // restoreEagerPersistedFlushesToDraft returns eagerly-persisted
 // interrupt rows to the composer draft after a definite Codex resend
 // failure: the store rows are deleted and
@@ -263,6 +327,9 @@ const (
 	queueRestoredReasonResendFailed       = "resend_failed"
 	queueRestoredReasonNeverQueued        = "provider_queue_never_taken"
 	queueRestoredReasonPurgeAborted       = "provider_queue_purge_aborted"
+	// A Stop dropped the queue: the rows named left the timeline and their
+	// text went nowhere (dropUnconfirmedSends).
+	queueRestoredReasonDropped = "dropped"
 )
 
 // restoreEagerPersistedFlushesForReason is the body, parameterised by the
@@ -661,8 +728,10 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 // same `draft:updated` event.
 //
 // Runs at boot, after the store is open and before any session can start, so
-// every remaining row is provably residue: nothing else could still be
-// holding one.
+// nothing else could still be holding a queue row. A marked user row is taken
+// back only while it is residue, in its thread's last turn
+// (store.ListUnconfirmedUserRows); one a later turn follows is history and
+// stays where it is, and the store refuses to retire it.
 func (a *App) restoreDurableFlushQueueAtBoot() {
 	threadIDs, err := a.store.ListThreadsWithFlushQueueItems()
 	if err != nil {
